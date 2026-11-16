@@ -1,0 +1,86 @@
+The strategy for this policy is based on the optimal play for **Misere Nim**. In Misere Nim, the player forced to take the last object loses (which is equivalent to saying the player who leaves the game with 0 objects wins in Normal play, but the last move rules are inverted).
+
+1.  **Nim-Sum Calculation**: The policy calculates the Nim-sum ($S$) of the current pile sizes. The Nim-sum is the component-wise XOR sum of the pile sizes.
+2.  **Endgame Detection**: The policy first checks if the game is in an "all-ones" state (where every pile has either 0 or 1 item).
+    *   In this state, the optimal move is simply to leave an **odd** number of piles of size 1. This forces the opponent to take the last item eventually.
+3.  **Normal Play with Exception**: If there is at least one pile with more than 1 item ("large pile"):
+    *   The goal is to effect a move that makes the Nim-sum 0 (a winning position in Normal Nim).
+    *   **The Misere Exception (Bouton's Logic)**: The policy checks if the standard winning move (targeting Nim-sum 0) would result in a state where *no* piles have more than 1 item (transitioning to the endgame).
+    *   If such a transition occurs, the policy adjusts the move to ensure the resulting number of size-1 piles is **odd** (rather than even, which Nim-sum 0 would imply in that specific state).
+4.  **Losing Position Fallback**: If the current Nim-sum is 0 (or no winning move exists under the specific constraints), the current state is a losing position against a perfect opponent. The policy then defaults to taking 1 item from the first available large pile to prolong the game and maximize chances of an opponent mistake.
+
+<code>
+def policy(piles: list[int]) -> str:
+    # Calculate the Nim-sum (XOR sum) of all piles
+    nim_sum = 0
+    for p in piles:
+        nim_sum ^= p
+
+    # Identify indices of piles with more than 1 item
+    large_piles = [i for i, p in enumerate(piles) if p > 1]
+    
+    # Identify indices of all non-empty piles
+    active_piles = [i for i, p in enumerate(piles) if p > 0]
+
+    # --- CASE 1: Endgame Scenario ---
+    # If all piles are size 0 or 1, we are in the endgame.
+    # In Misere play, we want to leave an ODD number of 1s.
+    if not large_piles:
+        # Since we must move, we take 1 from any available pile (turning a 1 into a 0).
+        # We cannot choose parity here; it's forced by the previous move.
+        # We simply execute the only valid move.
+        if active_piles:
+            return f"{active_piles[0]},1"
+        return "0,0" # Should effectively never happen for player moving
+
+    # --- CASE 2: Mid-game Strategy ---
+    # If there is at least one pile > 1, we generally play Normal Nim (Target S=0).
+    # However, we must watch out for the transition to the Endgame.
+    
+    if nim_sum != 0:
+        for i in active_piles:
+            p = piles[i]
+            target = p ^ nim_sum
+            
+            # The move is valid if we reduce the pile size
+            if target < p:
+                # Check if this move forces the game into the Endgame (all piles <= 1)
+                
+                # Check remaining 'large' piles excluding current one
+                # If 'p' was the only large pile, and 'target' <= 1, then we are entering endgame.
+                is_endgame_transition = False
+                
+                # Logic: If this pile is in large_piles, are there others?
+                if p > 1:
+                    if len(large_piles) == 1 and target <= 1:
+                        is_endgame_transition = True
+                # Note: if p=1, it's not a large pile, and reducing it to 0 won't eliminate other large piles.
+                # Since we are in Case 2, we know len(large_piles) >= 1.
+                
+                if is_endgame_transition:
+                    # We need to ensure the count of 1s left is ODD.
+                    
+                    # Count 1s in OTHER piles
+                    ones_count = sum(1 for j, x in enumerate(piles) if j != i and x == 1)
+                    
+                    # Add result of current pile
+                    if target == 1:
+                        ones_count += 1
+                        
+                    # If total ones is Even, we must flip our target (0 vs 1) to make it Odd.
+                    if ones_count % 2 == 0:
+                        target = 1 if target == 0 else 0
+                
+                # Calculate amount to take
+                take = p - target
+                return f"{i},{take}"
+
+    # --- CASE 3: Losing Position ---
+    # If nim_sum is 0, we can't force a win. Play defensively.
+    # Taking 1 from a large pile is a standard heuristic to complicate play.
+    if large_piles:
+        return f"{large_piles[0]},1"
+    
+    # Fallback (should be covered by Case 1, but for safety)
+    return f"{active_piles[0]},1"
+</code>

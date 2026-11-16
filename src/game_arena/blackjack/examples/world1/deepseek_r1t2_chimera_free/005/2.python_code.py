@@ -1,0 +1,78 @@
+
+def policy(hand: list[str], target: int) -> str:
+    # Calculate current total with the hand
+    total = 0
+    has_ace = False
+    for card in hand:
+        if card == 'A':
+            has_ace = True
+        elif card in ['J', 'Q', 'K']:
+            total += 10
+        else:
+            total += int(card)
+    
+    # Handle Ace in hand
+    if has_ace:
+        if total + 11 <= target:
+            total += 11
+        else:
+            total += 1
+    
+    # If already at target, stay
+    if total == target:
+        return 'STAY'
+    
+    # Get remaining cards in the deck
+    deck = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K']
+    remaining = [card for card in deck if card not in hand]
+    
+    # If no cards left, stay
+    if not remaining:
+        return 'STAY'
+    
+    bust_count = 0
+    can_reach_target = False
+    
+    for card in remaining:
+        if card == 'A':
+            # Ace can be 11 or 1
+            ace_value = 11 if (total + 11 <= target) else 1
+            new_total = total + ace_value
+            if new_total == target:
+                can_reach_target = True
+            if new_total > target:
+                bust_count += 1
+        else:
+            # Calculate value for non-Ace
+            if card in ['J', 'Q', 'K']:
+                val = 10
+            else:
+                val = int(card)
+            new_total = total + val
+            if new_total == target:
+                can_reach_target = True
+            if new_total > target:
+                bust_count += 1
+    
+    # Prefer hitting if can reach target exactly
+    if can_reach_target:
+        return 'HIT'
+    
+    # Calculate bust probability
+    bust_prob = bust_count / len(remaining)
+    
+    # If no chance of busting, hit
+    if bust_prob == 0:
+        return 'HIT'
+    
+    # Determine dynamic threshold based on distance to target
+    distance = target - total
+    if distance >= 10:
+        threshold = 0.7  # More aggressive when far from target
+    elif distance >= 5:
+        threshold = 0.5  # Moderate risk
+    else:
+        threshold = 0.4  # Conservative near target
+    
+    # Decide based on bust probability vs threshold
+    return 'HIT' if bust_prob < threshold else 'STAY'

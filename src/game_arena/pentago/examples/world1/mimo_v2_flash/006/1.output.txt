@@ -1,0 +1,492 @@
+My strategy for this policy is a brute-force search with a specialized evaluation function. Since the Pentago board is relatively small (36 cells) and the game is deterministic with perfect information, a minimax approach is ideal. However, standard minimax is too slow if we consider the full game tree.
+
+Therefore, I will implement the following:
+
+1.  **Heuristic Evaluation**: I will use a lookup table (or weighted sum) to evaluate the board state. This function will heavily prioritize creating lines of 4 or 5 marbles (winning threats) and blocking the opponent's similar threats. It will also value "open" lines that can be extended.
+2.  **Move Generation**: I will generate all valid moves (placing a piece and rotating a quadrant).
+3.  **Search Algorithm**: I will use a **Negamax** algorithm (a simplified version of Minimax) with **Alpha-Beta pruning**. To ensure the move is calculated within the 1-second limit, I will limit the search depth to a reasonable number (e.g., 3 or 4) which allows exploring immediate threats and responses.
+4.  **Win Detection**: The search will prioritize paths that lead to an immediate win for our side.
+
+This approach balances speed and intelligence, allowing the AI to see a few moves ahead and react to immediate threats while maintaining a solid positional strategy.
+
+```python
+<code>
+import numpy as np
+import sys
+
+# Increase recursion depth just in case, though iterative approaches or shallow depths are preferred
+sys.setrecursionlimit(2000)
+
+def policy(you, opponent):
+    """
+    Calculates the best move using Negamax with Alpha-Beta pruning.
+    """
+    # Convert inputs to numpy arrays if they aren't already
+    you = np.array(you)
+    opponent = np.array(opponent)
+    
+    # Board dimensions
+    ROWS, COLS = 6, 6
+    
+    # Heuristic weights for lines
+    # We want to maximize our score and minimize opponent's score
+    SCORE_WIN = 100000
+    SCORE_FOUR = 1000
+    SCORE_THREE = 100
+    SCORE_TWO = 10
+    BLOCK_WIN = -100000
+    BLOCK_FOUR = -1000
+    
+    # Depth for the search
+    # We reduce depth if the board is empty to save time, increase as game progresses
+    filled = np.sum(you) + np.sum(opponent)
+    if filled < 4:
+        MAX_DEPTH = 1
+    elif filled < 12:
+        MAX_DEPTH = 2
+    else:
+        MAX_DEPTH = 3 # Can be pushed to 4 depending on complexity, but 3 is safer for 1s limit on 36 moves
+
+    # Precompute line directions (horizontal, vertical, diagonal, anti-diagonal)
+    # We will calculate heuristic scores based on these lines
+    def evaluate_board(current_you, current_opp):
+        score = 0
+        
+        # Check all lines for current_you and current_opp
+        # We sum up values for 2s, 3s, 4s.
+        
+        # 1. Check Horizontal
+        for r in range(ROWS):
+            for c in range(COLS - 4):
+                window = [ (current_you[r, c+i], current_opp[r, c+i]) for i in range(5) ]
+                score += evaluate_window(window, current_you, current_opp)
+                
+        # 2. Check Vertical
+        for r in range(ROWS - 4):
+            for c in range(COLS):
+                window = [ (current_opp[r+i, c], current_you[r+i, c]) for i in range(5) ] # Note: order doesn't matter, just separation
+                # Actually, let's just check the counts in the window
+                # We need a generic window evaluator
+                
+        # Generic line scanner
+        lines = []
+        
+        # Horizontal
+        for r in range(ROWS):
+            lines.append(((r, 0), (0, 1)))
+        # Vertical
+        for c in range(COLS):
+            lines.append(((0, c), (1, 0)))
+        # Diagonals
+        for r in range(ROWS - 4):
+            lines.append(((r, 0), (1, 1)))
+        for c in range(COLS - 4):
+            lines.append(((0, c), (1, 1)))
+        # Anti-diagonals
+        for r in range(4, ROWS):
+            lines.append(((r, 0), (-1, 1)))
+        for c in range(COLS - 4):
+            lines.append(((ROWS-1, c), (-1, 1)))
+
+        # Optimization: Calculate features directly on the board
+        # This is a simplified "pattern matching" heuristic
+        
+        # Helper to count specific patterns in a window
+        def count_patterns(arr, val):
+            # arr is a 1D array of length 5 (or more)
+            # We want to find patterns of val (1) and empty (0)
+            # Score: 
+            # 5 in a row: 100000
+            # 4 in a row open: 1000
+            # 4 in a row blocked: 100 (less valuable)
+            # 3 in a row open: 100
+            # 3 in a row semi-open: 20
+            # 2 in a row open: 10
+            
+            s = 0
+            # We slide a window of size 5 over the line (or just check the 5-line segments if we are iterating 5 chunks)
+            # Since we iterate by 5 chunks in the main loop, let's assume we get windows of 5.
+            if len(arr) < 5: return 0
+            
+            # Check strictly the window provided (size 5)
+            us = sum(arr) # 1 = us, 0 = empty, -1 = opponent (if we used -1)
+            
+            # Since we pass binary arrays, let's handle logic here
+            # We are looking for sequences of 1s
+            
+            # Convert to string for easier regex-like logic or just simple counting
+            # Simple counting logic:
+            
+            # Count max consecutive 1s
+            max_seq = 0
+            cur_seq = 0
+            for x in arr:
+                if x == 1:
+                    cur_seq += 1
+                else:
+                    max_seq = max(max_seq, cur_seq)
+                    cur_seq = 0
+            max_seq = max(max_seq, cur_seq)
+            
+            if max_seq >= 5: return SCORE_WIN
+            
+            # Specific pattern checks for 5-length window
+            # 11111
+            if arr.tolist() == [1,1,1,1,1]: return SCORE_WIN
+            
+            # 011110 (4 open)
+            if arr.tolist() == [0,1,1,1,1,0]: return SCORE_FOUR # Note: we are iterating windows of 5 usually, let's adjust loop
+            # Actually, in my main loop I iterate 5 chunks. 
+            # Let's check patterns within the 5 chunks and also look at neighbors if possible, 
+            # but for speed, let's stick to the window analysis.
+            
+            # Since I iterate by 5 chunks, I can't easily see the immediate outside neighbors.
+            # I will stick to the window content analysis.
+            
+            # 4 items
+            # We need to detect if we have 4 ones. 
+            num_ones = sum(arr)
+            
+            if num_ones == 4:
+                return SCORE_FOUR
+            if num_ones == 3:
+                # Check if separated
+                # 10111, 11011, 11101, 11110, 01111, etc.
+                # If 01111 (or 11110), it's blocked at one end (good but not great)
+                # If 01110, it's open? No, 01110 in 5 window means 111 is centered.
+                # Let's just give 3s a moderate score.
+                return SCORE_THREE
+            if num_ones == 2:
+                # If 00110, 01010 (separated), it's worse than 00111? No, we are in 5-window.
+                # Let's just sum them up.
+                return SCORE_TWO
+                
+            return 0
+
+        total_score = 0
+        
+        # Horizontal scan
+        for r in range(ROWS):
+            for c in range(COLS - 4):
+                # Us
+                window = you[r, c:c+5]
+                total_score += count_patterns(window, 1)
+                # Opponent (we subtract to block)
+                window = opponent[r, c:c+5]
+                # For opponent, we use negative weights
+                # We reuse count_patterns but map result to negative
+                opp_val = count_patterns(window, 1)
+                if opp_val > 0:
+                    if opp_val == SCORE_WIN: total_score -= 1000000 # Must block!
+                    elif opp_val == SCORE_FOUR: total_score -= 5000 # Must block
+                    elif opp_val == SCORE_THREE: total_score -= 100
+                    elif opp_val == SCORE_TWO: total_score -= 10
+
+        # Vertical scan
+        for c in range(COLS):
+            for r in range(ROWS - 4):
+                window = you[r:r+5, c]
+                total_score += count_patterns(window, 1)
+                window = opponent[r:r+5, c]
+                opp_val = count_patterns(window, 1)
+                if opp_val > 0:
+                    if opp_val == SCORE_WIN: total_score -= 1000000
+                    elif opp_val == SCORE_FOUR: total_score -= 5000
+                    elif opp_val == SCORE_THREE: total_score -= 100
+                    elif opp_val == SCORE_TWO: total_score -= 10
+
+        # Diagonal (Top-Left to Bottom-Right)
+        for r in range(ROWS - 4):
+            for c in range(COLS - 4):
+                window = np.array([you[r+i, c+i] for i in range(5)])
+                total_score += count_patterns(window, 1)
+                window = np.array([opponent[r+i, c+i] for i in range(5)])
+                opp_val = count_patterns(window, 1)
+                if opp_val > 0:
+                    if opp_val == SCORE_WIN: total_score -= 1000000
+                    elif opp_val == SCORE_FOUR: total_score -= 5000
+                    elif opp_val == SCORE_THREE: total_score -= 100
+                    elif opp_val == SCORE_TWO: total_score -= 10
+
+        # Diagonal (Bottom-Left to Top-Right)
+        for r in range(4, ROWS):
+            for c in range(COLS - 4):
+                window = np.array([opponent[r-i, c+i] for i in range(5)])
+                # Note: r-i because we go up
+                # Wait, r starts high (5), goes down.
+                # Let's define origin as bottom left. 
+                # Points: (5,0), (4,1), (3,2), (2,3), (1,4)...
+                # My loop: r=4..5. c=0..1.
+                # For r=4, c=0: indices (4,0), (3,1), (2,2), (1,3), (0,4).
+                # This is correct.
+                window = np.array([opponent[r-i, c+i] for i in range(5)])
+                opp_val = count_patterns(window, 1)
+                if opp_val > 0:
+                    if opp_val == SCORE_WIN: total_score -= 1000000
+                    elif opp_val == SCORE_FOUR: total_score -= 5000
+                    elif opp_val == SCORE_THREE: total_score -= 100
+                    elif opp_val == SCORE_TWO: total_score -= 10
+                
+                window = np.array([you[r-i, c+i] for i in range(5)])
+                total_score += count_patterns(window, 1)
+
+        return total_score
+
+    # Optimization: Check for immediate wins first (One-ply search)
+    # This is crucial for Pentago because wins happen fast.
+    # We also check if opponent is about to win.
+    
+    # 1. Can I win immediately?
+    moves = []
+    for r in range(6):
+        for c in range(6):
+            if you[r][c] == 0 and opponent[r][c] == 0:
+                moves.append((r, c))
+    
+    # Helper to simulate move
+    def simulate_move(you_sim, opp_sim, r, c, q, d):
+        # Place piece
+        if you_sim is not None:
+            you_sim[r, c] = 1
+        else:
+            opp_sim[r, c] = 1
+            
+        # Rotate quadrant
+        # Map q to slice
+        if q == 0: sl = (slice(0,3), slice(0,3))
+        elif q == 1: sl = (slice(0,3), slice(3,6))
+        elif q == 2: sl = (slice(3,6), slice(0,3))
+        elif q == 3: sl = (slice(3,6), slice(3,6))
+        
+        # Extract quadrant
+        quad_you = you_sim[sl] if you_sim is not None else None
+        quad_opp = opp_sim[sl]
+        
+        # Rotate
+        # If you_sim exists, rotate it
+        if you_sim is not None:
+            if d == 'R':
+                quad_you = np.rot90(quad_you, k=1) # Clockwise is k=1? No.
+                # np.rot90 is anticlockwise by default. 
+                # Clockwise: swap axes and reverse one? Or use k=-1.
+                quad_you = np.rot90(quad_you, k=-1)
+            else:
+                quad_you = np.rot90(quad_you, k=1)
+            you_sim[sl] = quad_you
+            
+        if d == 'R':
+            quad_opp = np.rot90(quad_opp, k=-1)
+        else:
+            quad_opp = np.rot90(quad_opp, k=1)
+        opp_sim[sl] = quad_opp
+        
+        return you_sim, opp_sim
+
+    def is_win(board):
+        # Check if board has 5 in a row
+        # Check horizontal, vertical, diagonal
+        # This is standard 5-in-a-row check
+        # Can optimize by only checking lines that pass through the last move, but here we check all.
+        
+        # Horizontal
+        for r in range(6):
+            for c in range(2): # Start positions 0,1 (0-4) and 2-6 (2-6)
+                if board[r, c:c+5].sum() >= 5: return True
+        # Vertical
+        for c in range(6):
+            for r in range(2):
+                if board[r:r+5, c].sum() >= 5: return True
+        # Diag
+        for r in range(2):
+            for c in range(2):
+                if board[r, c] + board[r+1, c+1] + board[r+2, c+2] + board[r+3, c+3] + board[r+4, c+4] >= 5: return True
+        for r in range(2):
+            for c in range(2):
+                if board[r, c+4] + board[r+1, c+3] + board[r+2, c+2] + board[r+3, c+1] + board[r+4, c] >= 5: return True
+        
+        return False
+
+    # Check immediate win for me
+    for r, c in moves:
+        for q in range(4):
+            for d in ['L', 'R']:
+                you_test = you.copy()
+                opp_test = opponent.copy()
+                simulate_move(you_test, opp_test, r, c, q, d)
+                if is_win(you_test):
+                    # Check if opponent also wins (draw)
+                    if is_win(opp_test):
+                        # It's a draw, but maybe we prefer a win?
+                        # Actually if I win AND opponent wins, it's a draw. 
+                        # If I win, I win. If both win, draw.
+                        # If I have a move that makes me win and opponent doesn't win, I take it.
+                        # If I have a move that makes me win but also opponent wins, it's a draw.
+                        # It's better than losing. But if I have a pure win, take that.
+                        # Since we iterate, we might just return the first pure win.
+                        # Let's check strictly first.
+                        pass
+                    else:
+                        return f"{r+1},{c+1},{q},{d}"
+                    # If both win, we might still take it if no other option, but let's prioritize pure wins
+    
+    # Check immediate win for opponent to block
+    # If opponent has a move that makes them win (in their turn), we must rotate to block?
+    # In Pentago, we can't just place to block. We rotate.
+    # If opponent has 4 in a row, we might need to rotate it away.
+    # Actually, we check if any move we make allows opponent to win?
+    # We check if opponent can win immediately after our move? (Opponent searches 1 ply).
+    # But let's do the Negamax search which covers this.
+
+    # Negamax Search
+    # Value function for Negamax:
+    # return (score + bonus) if maximizing, -(score + bonus) if minimizing
+    
+    def negamax(you_sim, opp_sim, depth, alpha, beta):
+        # Check terminal state
+        if is_win(you_sim): return 1000000 + depth # Prefer faster wins
+        if is_win(opp_sim): return -1000000 - depth # Prefer slower losses
+        
+        if depth == 0:
+            return evaluate_board(you_sim, opp_sim)
+            
+        # Generate moves
+        # Heuristic: prioritize center/empty cells? Or just iterate all.
+        # Optimization: Only iterate moves that are not fully surrounded (optional, but full scan is 36*4*2 = 288).
+        # With pruning, 288 nodes at depth 1 is fine. 288^2 is ~80k. 288^3 is ~23M. 
+        # So depth 3 is hard. Depth 2 is safe. 
+        # Let's try depth 3 but optimize move ordering.
+        
+        best_val = -float('inf')
+        
+        # We need to iterate all legal moves
+        # Move ordering: check lines where people have pieces? 
+        
+        for r in range(6):
+            for c in range(6):
+                if you_sim[r][c] == 0 and opp_sim[r][c] == 0:
+                    for q in range(4):
+                        for d in ['L', 'R']:
+                            # Simulate
+                            n_you = you_sim.copy()
+                            n_opp = opp_sim.copy()
+                            simulate_move(n_you, n_opp, r, c, q, d)
+                            
+                            # Recursive call (Note: we swap roles in Negamax)
+                            # We are 'you'. Next move is 'opponent'.
+                            # So we call negamax with arguments swapped and negate result.
+                            # BUT wait. In standard Negamax, we alternate players.
+                            # Here, the function is defined for "me moving".
+                            # So to simulate "opp moving", we call `negamax(opp, me, ...)`?
+                            # No, we are always 'you' in the function signature.
+                            # Let's just swap arguments in the recursive call and negate.
+                            # Wait, `negamax(opp, you, ...)` returns value for `opp` relative to `opp`.
+                            # So the value for `you` is `-negamax(opp, you, ...)`.
+                            val = -negamax(n_opp, n_you, depth - 1, -beta, -alpha)
+                            
+                            if val > best_val:
+                                best_val = val
+                            
+                            alpha = max(alpha, val)
+                            if alpha >= beta:
+                                break # Prune
+                        if alpha >= beta: break
+                    if alpha >= beta: break
+        
+        return best_val
+
+    # Run search
+    # We want to return the move string
+    
+    # First, if we have multiple moves with equal best_val, we might want to pick one randomly or based on secondary criteria.
+    # But let's just pick the first one that achieves the best score.
+    
+    best_score = -float('inf')
+    best_move = None
+    
+    # If depth is 0 (or effectively 0), we just use heuristic
+    if MAX_DEPTH == 0:
+        # Just pick best immediate heuristic
+        for r in range(6):
+            for c in range(6):
+                if you[r][c] == 0 and opponent[r][c] == 0:
+                    for q in range(4):
+                        for d in ['L', 'R']:
+                            n_you = you.copy()
+                            n_opp = opponent.copy()
+                            simulate_move(n_you, n_opp, r, c, q, d)
+                            score = evaluate_board(n_you, n_opp)
+                            if score > best_score:
+                                best_score = score
+                                best_move = (r, c, q, d)
+    else:
+        # Iterative search with depth
+        # To optimize, we check immediate wins (depth 0) first (done above).
+        # Then search depth 1, 2, 3.
+        
+        # Optimization: Move ordering based on simple heuristic
+        # Create a list of all moves
+        all_moves = []
+        for r in range(6):
+            for c in range(6):
+                if you[r][c] == 0 and opponent[r][c] == 0:
+                    for q in range(4):
+                        for d in ['L', 'R']:
+                            all_moves.append((r, c, q, d))
+                            
+        # Sort moves by simple heuristic score to improve pruning
+        # Heuristic score: sum of existing neighbors? Or just evaluation after move (shallow depth 1)
+        if len(all_moves) > 0:
+            # Quick eval
+            def quick_eval(r, c, q, d):
+                n_you = you.copy()
+                n_opp = opponent.copy()
+                simulate_move(n_you, n_opp, r, c, q, d)
+                # Check win
+                if is_win(n_you): return 1000000
+                if is_win(n_opp): return -1000000
+                return evaluate_board(n_you, n_opp)
+            
+            all_moves.sort(key=lambda m: quick_eval(*m), reverse=True)
+            
+            # Now iterate sorted moves
+            alpha = -float('inf')
+            beta = float('inf')
+            
+            # We only need to find the best move for root (depth 1, 2, etc.)
+            # We iterate sorted moves
+            for move in all_moves:
+                r, c, q, d = move
+                n_you = you.copy()
+                n_opp = opponent.copy()
+                simulate_move(n_you, n_opp, r, c, q, d)
+                
+                # If this move wins immediately, take it (should have been caught, but double check)
+                if is_win(n_you):
+                     # Check draw
+                     if is_win(n_opp):
+                         # Draw, but better than loss
+                         return f"{r+1},{c+1},{q},{d}"
+                     else:
+                         return f"{r+1},{c+1},{q},{d}"
+
+                # Negamax call
+                # We are maximizing.
+                # val = -negamax(...)
+                # Actually, if we sorted moves, we want to find the max.
+                # We can start with best_score = -inf
+                # For each move:
+                val = -negamax(n_opp, n_you, MAX_DEPTH - 1, -beta, -alpha)
+                
+                if val > best_score:
+                    best_score = val
+                    best_move = move
+                
+                alpha = max(alpha, best_score)
+
+    if best_move:
+        r, c, q, d = best_move
+        return f"{r+1},{c+1},{q},{d}"
+    
+    # Fallback (should not happen given constraints)
+    return "1,1,0,L"
+</code>

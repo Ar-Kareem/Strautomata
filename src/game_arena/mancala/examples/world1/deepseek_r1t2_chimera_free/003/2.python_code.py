@@ -1,0 +1,98 @@
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    """
+    Selects the best move in Kalah by prioritizing extra moves, then captures, then maximum store gain.
+    In ties, higher-indexed houses are chosen.
+    """
+    
+    def next_pos(current_side: str, current_house: int) -> tuple[str, int]:
+        """Determines the next position for sowing seeds."""
+        if current_side == 'you':
+            if current_house < 5:
+                return 'you', current_house + 1
+            elif current_house == 5:
+                return 'you', 6  # Store
+            elif current_house == 6:
+                return 'opponent', 0
+        else:  # Opponent side
+            if current_house < 5:
+                return 'opponent', current_house + 1
+            elif current_house == 5:
+                return 'you', 0  # After opponent's last house, switch to player's first house
+    
+    def simulate_move(move_i: int) -> tuple[bool, bool, int]:
+        """Simulates a move from house `move_i` and returns whether it grants an extra move, 
+        results in a capture, and the store gain."""
+        you_copy = you.copy()
+        opp_copy = opponent.copy()
+        seeds = you_copy[move_i]
+        you_copy[move_i] = 0  # Pick seeds
+        
+        current_side = 'you'
+        current_house = move_i + 1  # Start sowing from next house
+        
+        extra_move = False
+        capture = False
+        last_side = None
+        last_house = None
+        prev_you_val = None
+        prev_opp_val = None
+        
+        # Sow seeds one by one
+        for seed_num in range(seeds):
+            next_side, next_house = next_pos(current_side, current_house)
+            
+            # Before last seed is placed, record state for capture check
+            if seed_num == seeds - 1:
+                last_side, last_house = next_side, next_house
+                if next_side == 'you' and next_house < 6:
+                    prev_you_val = you_copy[next_house]
+                    prev_opp_val = opp_copy[5 - next_house]
+            
+            # Place the seed
+            if next_side == 'you':
+                if next_house == 6:
+                    you_copy[6] += 1
+                else:
+                    you_copy[next_house] += 1
+            else:  # Opponent's side
+                opp_copy[next_house] += 1
+            
+            current_side, current_house = next_side, next_house
+        
+        # Determine extra move
+        if last_side == 'you' and last_house == 6:
+            extra_move = True
+        
+        # Capture logic
+        if last_side == 'you' and last_house < 6 and prev_you_val == 0 and prev_opp_val > 0:
+            capture = True
+            captured = you_copy[last_house] + opp_copy[5 - last_house]
+            you_copy[6] += captured  # Add captured seeds to store
+            you_copy[last_house] = 0
+            opp_copy[5 - last_house] = 0
+        
+        store_gain = you_copy[6] - you[6]
+        return extra_move, capture, store_gain
+    
+    legal_moves = [i for i in range(6) if you[i] > 0]
+    move_data = [(i, *simulate_move(i)) for i in legal_moves]
+    
+    # Extra moves
+    extra_moves = [(i, gain) for i, extra, cap, gain in move_data if extra]
+    if extra_moves:
+        max_gain = max(gain for i, gain in extra_moves)
+        best_candidates = [i for i, g in extra_moves if g == max_gain]
+        return max(best_candidates)  # Highest house index
+    
+    # Captures
+    cap_moves = [(i, gain) for i, extra, cap, gain in move_data if cap]
+    if cap_moves:
+        max_gain = max(gain for i, gain in cap_moves)
+        best_candidates = [i for i, g in cap_moves if g == max_gain]
+        return max(best_candidates)
+    
+    # Maximize store gain
+    max_gain = max(gain for i, extra, cap, gain in move_data)
+    best_candidates = [i for i, ex, cap, gain in move_data if gain == max_gain]
+    return max(best_candidates)

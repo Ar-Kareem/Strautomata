@@ -1,0 +1,99 @@
+
+import numpy as np
+from typing import List, Tuple
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    """
+    AI policy for 3x3x3 3D Tic Tac Toe.
+    Returns the best move (x, y, z) as a tuple.
+    """
+    board_np = np.array(board)
+    n = 3
+    
+    # Check for winning move
+    for i in range(n):
+        for j in range(n):
+            for k in range(n):
+                if board_np[i, j, k] == 0:
+                    # Try placing our mark
+                    board_np[i, j, k] = 1
+                    if check_winner(board_np) == 1:
+                        return (i, j, k)
+                    board_np[i, j, k] = 0
+    
+    # Check if opponent can win next move (block)
+    for i in range(n):
+        for j in range(n):
+            for k in range(n):
+                if board_np[i, j, k] == 0:
+                    # Try placing opponent's mark
+                    board_np[i, j, k] = -1
+                    if check_winner(board_np) == -1:
+                        board_np[i, j, k] = 0
+                        return (i, j, k)
+                    board_np[i, j, k] = 0
+    
+    # Prefer center positions
+    center_moves = [(1, 1, 1), (1, 1, 0), (1, 1, 2), (1, 0, 1), (1, 2, 1), 
+                    (0, 1, 1), (2, 1, 1), (1, 0, 0), (1, 0, 2), (1, 2, 0), (1, 2, 2)]
+    
+    for move in center_moves:
+        x, y, z = move
+        if board_np[x, y, z] == 0:
+            return move
+    
+    # Otherwise, play first available move
+    for i in range(n):
+        for j in range(n):
+            for k in range(n):
+                if board_np[i, j, k] == 0:
+                    return (i, j, k)
+
+def check_winner(board: np.ndarray) -> int:
+    """
+    Check if there's a winner on the board.
+    Returns 1 if player 1 wins, -1 if player -1 wins, 0 otherwise.
+    """
+    n = 3
+    
+    # Check all possible lines in 3D
+    lines = []
+    
+    # Axes-aligned lines
+    for i in range(n):
+        for j in range(n):
+            # X-lines (fixed y, z)
+            lines.append([(k, i, j) for k in range(n)])
+            # Y-lines (fixed x, z)
+            lines.append([(i, k, j) for k in range(n)])
+            # Z-lines (fixed x, y)
+            lines.append([(i, j, k) for k in range(n)])
+    
+    # Diagonals on each face
+    for k in range(n):  # For each z-slice
+        lines.append([(i, i, k) for i in range(n)])  # main diagonal
+        lines.append([(i, n-1-i, k) for i in range(n)])  # anti-diagonal
+    
+    for j in range(n):  # For each y-slice
+        lines.append([(i, j, i) for i in range(n)])
+        lines.append([(i, j, n-1-i) for i in range(n)])
+    
+    for i in range(n):  # For each x-slice
+        lines.append([(i, j, j) for j in range(n)])
+        lines.append([(i, j, n-1-j) for j in range(n)])
+    
+    # Main 3D diagonals
+    lines.append([(i, i, i) for i in range(n)])
+    lines.append([(i, i, n-1-i) for i in range(n)])
+    lines.append([(i, n-1-i, i) for i in range(n)])
+    lines.append([(n-1-i, i, i) for i in range(n)])
+    
+    # Check each line
+    for line in lines:
+        values = [board[x, y, z] for x, y, z in line]
+        if all(v == 1 for v in values):
+            return 1
+        elif all(v == -1 for v in values):
+            return -1
+    
+    return 0

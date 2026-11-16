@@ -1,0 +1,102 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Selects the next move for 4x4 Tic Tac Toe using a heuristic:
+    1. Immediate win moves
+    2. Blocking opponent win moves
+    3. Center cells (higher connectivity)
+    4. Threat assessment (two-in-a-row patterns)
+    """
+    # Find all empty cells
+    empty_cells = [(i, j) for i in range(4) for j in range(4) if board[i][j] == 0]
+    
+    if not empty_cells:
+        return (0, 0)  # Should not happen as per game rules
+    
+    # Check for immediate wins
+    wins = []
+    blocks = []
+    for i, j in empty_cells:
+        # Check row, column, diagonals for win/block conditions
+        lines = []
+        # Row i
+        lines.append([(i, col) for col in range(4)])
+        # Column j
+        lines.append([(row, j) for row in range(4)])
+        # Main diagonal (i==j)
+        if i == j:
+            lines.append([(row, row) for row in range(4)])
+        # Anti diagonal (i+j==3)
+        if i + j == 3:
+            lines.append([(row, 3 - row) for row in range(4)])
+        
+        for line in lines:
+            vals = [board[r][c] for r, c in line]
+            ones = vals.count(1)
+            zeros = vals.count(0)
+            minus_ones = vals.count(-1)
+            
+            # Check for immediate win opportunity
+            if ones == 3 and zeros == 1:
+                wins.append((i, j))
+            # Check for block opportunity
+            if minus_ones == 3 and zeros == 1:
+                blocks.append((i, j))
+    
+    if wins:
+        return wins[0]  # First win found
+    if blocks:
+        return blocks[0]  # First block found
+    
+    # Center preference
+    center_cells = {(1, 1), (1, 2), (2, 1), (2, 2)}
+    # Threat assessment score
+    score_map = {}
+    for i, j in empty_cells:
+        score = 1 if (i, j) in center_cells else 0
+        
+        # Check all relevant lines
+        lines = []
+        lines.append([(i, col) for col in range(4)])  # Row
+        lines.append([(row, j) for row in range(4)])  # Column
+        # Diagonals
+        if i == j:
+            lines.append([(row, row) for row in range(4)])
+        if i + j == 3:
+            lines.append([(row, 3 - row) for row in range(4)])
+        
+        for line in lines:
+            # Simulate move
+            vals = []
+            for r, c in line:
+                if (r, c) == (i, j):
+                    vals.append(1)
+                else:
+                    vals.append(board[r][c])
+            
+            if vals.count(1) == 2 and vals.count(0) == 2:
+                # Check adjacency of our marks in the line
+                ordered = []
+                if line == [(i, col) for col in range(4)]:  # Row
+                    ordered = sorted(line, key=lambda x: x[1])
+                elif line == [(row, j) for row in range(4)]:  # Column
+                    ordered = sorted(line, key=lambda x: x[0])
+                elif i == j:  # Main diagonal
+                    ordered = sorted(line, key=lambda x: x[0])
+                elif i + j == 3:  # Anti diagonal
+                    ordered = sorted(line, key=lambda x: x[0])
+                else:
+                    continue
+                
+                # Find indices of our marks
+                one_indices = [idx for idx, val in enumerate(ordered) if val == 1]
+                if len(one_indices) == 2 and one_indices[1] - one_indices[0] == 1:
+                    score += 1
+        
+        score_map[(i, j)] = score
+    
+    # Return highest-scoring move (prefer row-major order for ties)
+    max_score = max(score_map.values())
+    for cell in empty_cells:
+        if score_map[cell] == max_score:
+            return cell

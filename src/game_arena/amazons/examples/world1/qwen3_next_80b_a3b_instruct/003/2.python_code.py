@@ -1,0 +1,110 @@
+
+import numpy as np
+
+def policy(board):
+    # Directions: 8 queen moves (horizontal, vertical, diagonal)
+    directions = [
+        (-1, -1), (-1, 0), (-1, 1),
+        (0, -1),           (0, 1),
+        (1, -1),  (1, 0),  (1, 1)
+    ]
+    
+    # Find all our amazons (value 1)
+    our_amazons = np.where(board == 1)
+    our_positions = list(zip(our_amazons[0], our_amazons[1]))
+    
+    # For each of our amazons
+    for from_row, from_col in our_positions:
+        # Try each direction for moving the amazon
+        for dr, dc in directions:
+            # Try each possible step in this direction
+            for step in range(1, 6):  # max 5 steps on 6x6 board
+                to_row = from_row + dr * step
+                to_col = from_col + dc * step
+                
+                # Check if we're out of bounds
+                if to_row < 0 or to_row >= 6 or to_col < 0 or to_col >= 6:
+                    break
+                
+                # Check if the landing square is empty (must be 0)
+                if board[to_row, to_col] != 0:
+                    break  # blocked, can't go further in this direction
+                
+                # Now, from the new position (to_row, to_col), try shooting an arrow in all 8 directions
+                for ar, ac in directions:
+                    for arrow_step in range(1, 6):
+                        arrow_row = to_row + ar * arrow_step
+                        arrow_col = to_col + ac * arrow_step
+                        
+                        # Check bounds
+                        if arrow_row < 0 or arrow_row >= 6 or arrow_col < 0 or arrow_col >= 6:
+                            break
+                        
+                        # Check if arrow destination is blocked by anything:
+                        # After moving, the from square is empty, so we can shoot through it if it's on the path!
+                        # But we must check all squares between to and arrow (inclusive of arrow)
+                        # We check each square along the arrow path, except the 'to' square (already vacated and valid)
+                        
+                        # Check if arrow destination is blocked
+                        if board[arrow_row, arrow_col] != 0:
+                            # If it's not the original 'from' square, then blocked
+                            if (arrow_row, arrow_col) != (from_row, from_col):
+                                break  # blocked by existing piece or arrow
+                            # else: it's the original from square, which is now empty -> allowed!
+                        
+                        # Check if any square in between 'to' and 'arrow' (excluding 'to' and 'arrow') is blocked
+                        blocked = False
+                        for mid_step in range(1, arrow_step):
+                            mid_row = to_row + ar * mid_step
+                            mid_col = to_col + ac * mid_step
+                            if board[mid_row, mid_col] != 0:
+                                # Exception: if this mid square is the original 'from' square, it's now vacant
+                                if (mid_row, mid_col) == (from_row, from_col):
+                                    continue
+                                # Otherwise, it's blocked
+                                blocked = True
+                                break
+                        
+                        if blocked:
+                            continue
+                            
+                        # We found a legal move!
+                        return f"{from_row},{from_col}:{to_row},{to_col}:{arrow_row},{arrow_col}"
+    
+    # According to the problem, the environment won't call this if no legal move exists.
+    # But as a safety, we return a dummy legal move if somehow we didn't find one (should not happen).
+    # This is a fallback: if we get here, scan for any possible move, and if found, return it.
+    # Since the problem says we are always called when we have moves, we could just crash, but let's be safe.
+    for r in range(6):
+        for c in range(6):
+            if board[r, c] == 1:  # our amazon
+                for dr, dc in directions:
+                    for step in range(1, 6):
+                        to_r, to_c = r + dr * step, c + dc * step
+                        if not (0 <= to_r < 6 and 0 <= to_c < 6):
+                            break
+                        if board[to_r, to_c] != 0:
+                            break
+                        # Now shoot arrow from (to_r, to_c)
+                        for ar, ac in directions:
+                            for a_step in range(1, 6):
+                                arrow_r, arrow_c = to_r + ar * a_step, to_c + ac * a_step
+                                if not (0 <= arrow_r < 6 and 0 <= arrow_c < 6):
+                                    break
+                                if board[arrow_r, arrow_c] != 0 and (arrow_r, arrow_c) != (r, c):
+                                    continue
+                                # Check path
+                                blocked = False
+                                for mid in range(1, a_step):
+                                    mid_r, mid_c = to_r + ar * mid, to_c + ac * mid
+                                    if (mid_r, mid_c) == (r, c):
+                                        continue
+                                    if board[mid_r, mid_c] != 0:
+                                        blocked = True
+                                        break
+                                if not blocked:
+                                    return f"{r},{c}:{to_r},{to_c}:{arrow_r},{arrow_c}"
+    
+    # Last resort: if we somehow get here, return a move that is valid on an empty board (should never happen)
+    # This is guaranteed not to occur due to problem constraints, but to satisfy static analysis
+    return "0,0:0,1:0,2"

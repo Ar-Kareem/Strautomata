@@ -1,0 +1,291 @@
+
+import time
+import math
+from collections import deque
+
+# Lines of Action (8x8) policy
+# Board encoding: 0 empty, 1 current player, -1 opponent.
+# Return move as "from_row,from_col:to_row,to_col"
+
+DIRS = [
+    (-1, 0), (1, 0), (0, -1), (0, 1),
+    (-1, -1), (-1, 1), (1, -1), (1, 1)
+]
+
+INF = 10**9
+
+def policy(board) -> str:
+    start = time.time()
+    # Tight budget for arena
+    time_limit = 0.93
+
+    # Convert board to tuple for hashing in TT
+    def board_key(b):
+        return tuple(tuple(row) for row in b)
+
+    def in_bounds(r, c):
+        return 0 <= r < 8 and 0 <= c < 8
+
+    def count_line_pieces(b, r, c, dr, dc):
+        # Count ALL pieces (both colors) on the line through (r,c) in direction (dr,dc)
+        if dr == 0 and dc != 0:
+            # row
+            return sum(1 for cc in range(8) if b[r][cc] != 0)
+        if dc == 0 and dr != 0:
+            # col
+            return sum(1 for rr in range(8) if b[rr][c] != 0)
+        # diagonals
+        if dr == dc:
+            d = r - c
+            cnt = 0
+            for rr in range(8):
+                cc = rr - d
+                if 0 <= cc < 8 and b[rr][cc] != 0:
+                    cnt += 1
+            return cnt
+        else:
+            s = r + c
+            cnt = 0
+            for rr in range(8):
+                cc = s - rr
+                if 0 <= cc < 8 and b[rr][cc] != 0:
+                    cnt += 1
+            return cnt
+
+    def gen_moves(b):
+        # Generate legal moves for current player (1)
+        moves = []
+        for r in range(8):
+            row = b[r]
+            for c in range(8):
+                if row[c] != 1:
+                    continue
+                for dr, dc in DIRS:
+                    steps = count_line_pieces(b, r, c, dr, dc)
+                    tr, tc = r + dr * steps, c + dc * steps
+                    if not in_bounds(tr, tc):
+                        continue
+                    # Can't land on own piece
+                    if b[tr][tc] == 1:
+                        continue
+                    # Can't jump over opponent pieces
+                    ok = True
+                    for k in range(1, steps):
+                        rr, cc = r + dr * k, c + dc * k
+                        if b[rr][cc] == -1:
+                            ok = False
+                            break
+                    if not ok:
+                        continue
+                    capture = (b[tr][tc] == -1)
+                    moves.append((r, c, tr, tc, capture))
+        return moves
+
+    def apply_move_and_flip(b, mv):
+        # Apply move for current player (1), then flip perspective so next player is again "1"
+        fr, fc, tr, tc, _cap = mv
+        nb = [list(row) for row in b]
+        nb[fr][fc] = 0
+        nb[tr][tc] = 1  # capture if enemy existed
+        # Flip perspective: next player to move becomes "1"
+        for r in range(8):
+            for c in range(8):
+                nb[r][c] = -nb[r][c]
+        return nb
+
+    def components_and_largest(b, who):
+        # Count 8-connected components for 'who' and largest component size
+        seen = [[False]*8 for _ in range(8)]
+        comps = 0
+        largest = 0
+        for r in range(8):
+            for c in range(8):
+                if b[r][c] != who or seen[r][c]:
+                    continue
+                comps += 1
+                q = deque([(r, c)])
+                seen[r][c] = True
+                size = 0
+                while q:
+                    rr, cc = q.popleft()
+                    size += 1
+                    for dr in (-1, 0, 1):
+                        for dc in (-1, 0, 1):
+                            if dr == 0 and dc == 0:
+                                continue
+                            nr, nc = rr + dr, cc + dc
+                            if in_bounds(nr, nc) and not seen[nr][nc] and b[nr][nc] == who:
+                                seen[nr][nc] = True
+                                q.append((nr, nc))
+                largest = max(largest, size)
+        return comps, largest
+
+    def piece_positions(b, who):
+        pos = []
+        for r in range(8):
+            for c in range(8):
+                if b[r][c] == who:
+                    pos.append((r, c))
+        return pos
+
+    def cohesion_score(b, who):
+        # Encourage pieces to cluster: negative average distance to centroid (Chebyshev)
+        ps = piece_positions(b, who)
+        if not ps:
+            return -1000.0
+        cr = sum(p[0] for p in ps) / len(ps)
+        cc = sum(p[1] for p in ps) / len(ps)
+        # Chebyshev distance to centroid approximation
+        s = 0.0
+        for r, c in ps:
+            s += max(abs(r - cr), abs(c - cc))
+        return -s / len(ps)
+
+    def center_bonus(b, who):
+        # Mildly prefer occupying/approaching center
+        ps = piece_positions(b, who)
+        if not ps:
+            return -1000.0
+        # center at (3.5, 3.5)
+        s = 0.0
+        for r, c in ps:
+            s -= ((r - 3.5)**2 + (c - 3.5)**2)
+        return s / len(ps)
+
+    def evaluate(b):
+        # From perspective of current player == 1
+        my_comps, my_largest = components_and_largest(b, 1)
+        op_comps, op_largest = components_and_largest(b, -1)
+
+        # Terminal-ish checks
+        if my_comps == 1:
+            return INF - 10  # winning
+        if op_comps == 1:
+            return -INF + 10  # losing
+
+        my_moves = len(gen_moves(b))
+        # opponent mobility: generate on flipped board (so opponent becomes 1)
+        fb = [[-x for x in row] for row in b]
+        op_moves = len(gen_moves(fb))
+
+        # Main connectedness objective dominates
+        score = 0
+        score += 1200 * (op_comps - my_comps)
+        score += 35 * (my_largest - op_largest)
+        score += 8 * (my_moves - op_moves)
+        score += 30 * (cohesion_score(b, 1) - cohesion_score(b, -1))
+        score += 2 * (center_bonus(b, 1) - center_bonus(b, -1))
+        return int(score)
+
+    def move_heuristic(b, mv):
+        # For ordering: captures first, reduce own components, increase largest group
+        fr, fc, tr, tc, cap = mv
+        base = 0
+        if cap:
+            base += 2000
+        # Simulate without flip just for ordering features
+        nb = [list(row) for row in b]
+        nb[fr][fc] = 0
+        nb[tr][tc] = 1
+
+        my_comps0, my_largest0 = components_and_largest(b, 1)
+        my_comps1, my_largest1 = components_and_largest(nb, 1)
+
+        base += 400 * (my_comps0 - my_comps1)  # prefer reducing components
+        base += 40 * (my_largest1 - my_largest0)
+        # slight center preference for moved piece
+        base -= int(((tr - 3.5)**2 + (tc - 3.5)**2) * 2)
+        return base
+
+    # Transposition table: (key, depth) -> (value, flag, bestmove)
+    # flag: 0 exact, -1 upperbound, +1 lowerbound
+    TT = {}
+
+    def negamax(b, depth, alpha, beta):
+        if time.time() - start > time_limit:
+            raise TimeoutError
+
+        key = board_key(b)
+        tt_key = (key, depth)
+        if tt_key in TT:
+            val, flag, bm = TT[tt_key]
+            if flag == 0:
+                return val, bm
+            elif flag == +1:
+                alpha = max(alpha, val)
+            elif flag == -1:
+                beta = min(beta, val)
+            if alpha >= beta:
+                return val, bm
+
+        # Quasi-terminal
+        my_comps, _ = components_and_largest(b, 1)
+        op_comps, _ = components_and_largest(b, -1)
+        if my_comps == 1:
+            return INF - 10, None
+        if op_comps == 1:
+            return -INF + 10, None
+        if depth == 0:
+            return evaluate(b), None
+
+        moves = gen_moves(b)
+        if not moves:
+            # Should be rare; treat as very bad
+            return -INF + 100, None
+
+        # Order moves
+        moves.sort(key=lambda mv: move_heuristic(b, mv), reverse=True)
+
+        best_val = -INF
+        best_move = moves[0]
+        orig_alpha = alpha
+
+        for mv in moves:
+            nb = apply_move_and_flip(b, mv)
+            val, _ = negamax(nb, depth - 1, -beta, -alpha)
+            val = -val
+            if val > best_val:
+                best_val = val
+                best_move = mv
+            alpha = max(alpha, best_val)
+            if alpha >= beta:
+                break
+
+        # Store TT
+        flag = 0
+        if best_val <= orig_alpha:
+            flag = -1
+        elif best_val >= beta:
+            flag = +1
+        TT[tt_key] = (best_val, flag, best_move)
+        return best_val, best_move
+
+    # Root: ensure at least one legal move exists
+    root_moves = gen_moves(board)
+    if not root_moves:
+        # No legal moves; cannot happen in normal LOA, but return a dummy legal-looking move
+        # (Arena should not present this.)
+        return "0,0:0,0"
+
+    # Fallback move: best by local heuristic
+    root_moves.sort(key=lambda mv: move_heuristic(board, mv), reverse=True)
+    best = root_moves[0]
+
+    # Iterative deepening
+    depth = 1
+    try:
+        while depth <= 5:  # practical cap under 1s
+            if time.time() - start > time_limit:
+                break
+            val, mv = negamax(board, depth, -INF, INF)
+            if mv is not None:
+                best = mv
+            depth += 1
+    except TimeoutError:
+        pass
+    except Exception:
+        # Safety: never crash; keep fallback move
+        pass
+
+    fr, fc, tr, tc, _cap = best
+    return f"{fr},{fc}:{tr},{tc}"

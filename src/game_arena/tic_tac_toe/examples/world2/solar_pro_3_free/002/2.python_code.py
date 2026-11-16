@@ -1,0 +1,174 @@
+
+import random
+from math import inf
+
+# Directions for sliding windows (horizontal, vertical, diagonal)
+DIRS = [(0, 1), (1, 0), (1, 1), (1, -1)]
+
+# Maximum search depth (plies) for minimax
+MAX_DEPTH = 3
+
+def copy_board(board):
+    """Return a deep copy of the 4x4 board."""
+    return [row[:] for row in board]
+
+def check_win(board, player):
+    """Return True if player has any 3‑in‑a‑row window (any direction)."""
+    # Horizontal windows: length 3, start at column 0 or 1
+    for r in range(4):
+        for c in range(1):          # c = 0,1
+            if board[r][c] == player and board[r][c + 1] == player and board[r][c + 2] == player:
+                return True
+    # Vertical windows: length 3, start at row 0 or 1
+    for c in range(4):
+        for r in range(1):          # r = 0,1
+            if board[r][c] == player and board[r + 1][c] == player and board[r + 2][c] == player:
+                return True
+    # Diagonal down‑right windows: start (r,c) where r in {0,1} and c in {0,1}
+    for r in range(2):
+        for c in range(2):
+            if board[r][c] == player and board[r + 1][c + 1] == player and board[r + 2][c + 2] == player:
+                return True
+    # Diagonal down‑left windows: start (r,c) where r in {0,1} and c in {2,3}
+    for r in range(2):
+        for c in range(2, 4):
+            if board[r][c] == player and board[r + 1][c - 1] == player and board[r + 2][c - 2] == player:
+                return True
+    return False
+
+def evaluate(board):
+    """Simple heuristic that counts completed 3‑in‑a‑row windows."""
+    score = 0
+    # Helper to score a sliding window of exactly three cells
+    def score_window(winners, losers):
+        if winners == 3:
+            return 2
+        elif losers == 3:
+            return -2
+        elif winners == 2:
+            return 1
+        elif losers == 2:
+            return -1
+        else:
+            return 0
+
+    # Horizontal windows
+    for r in range(4):
+        for c in range(1):          # start at 0 or 1
+            winners = losers = 0
+            for offset in range(3):
+                v = board[r][c + offset]
+                if v == 1:
+                    winners += 1
+                elif v == -1:
+                    losers += 1
+            score += score_window(winners, losers)
+
+    # Vertical windows
+    for c in range(4):
+        for r in range(1):          # start at 0 or 1
+            winners = losers = 0
+            for offset in range(3):
+                v = board[r + offset][c]
+                if v == 1:
+                    winners += 1
+                elif v == -1:
+                    losers += 1
+            score += score_window(winners, losers)
+
+    # Diagonal down‑right windows
+    for r in range(2):
+        for c in range(2):
+            winners = losers = 0
+            for offset in range(3):
+                v = board[r + offset][c + offset]
+                if v == 1:
+                    winners += 1
+                elif v == -1:
+                    losers += 1
+            score += score_window(winners, losers)
+
+    # Diagonal down‑left windows
+    for r in range(2):
+        for c in range(2, 4):
+            winners = losers = 0
+            for offset in range(3):
+                v = board[r + offset][c - offset]
+                if v == 1:
+                    winners += 1
+                elif v == -1:
+                    losers += 1
+            score += score_window(winners, losers)
+
+    return score
+
+def minimax(board, depth, maximizing, alpha, beta, max_depth):
+    """Return (score, best_move) from the perspective of the maximizing player."""
+    # Check for terminal win conditions
+    if check_win(board, 1):
+        return 10, None
+    if check_win(board, -1):
+        return -10, None
+    # Evaluate if no moves left (draw) or max depth reached
+    if depth >= max_depth:
+        return evaluate(board), None
+    # Generate legal moves
+    moves = [(r, c) for r in range(4) for c in range(4) if board[r][c] == 0]
+    if not moves:   # board full – should not happen in live game
+        return evaluate(board), None
+
+    best_score = -inf if maximizing else inf
+    best_move = None
+
+    for r, c in moves:
+        new_board = copy_board(board)
+        new_board[r][c] = 1 if maximizing else -1
+        score, _ = minimax(new_board, depth + 1, not maximizing, alpha, beta, max_depth)
+
+        if maximizing:
+            if score > best_score:
+                best_score = score
+                best_move = (r, c)
+            alpha = max(alpha, best_score)
+        else:
+            if score < best_score:
+                best_score = score
+                best_move = (r, c)
+            beta = min(beta, best_score)
+
+        if alpha >= beta:
+            break  # pruning
+
+    # In case all scores are equal, choose randomly to avoid deterministic patterns
+    if best_move is None:
+        # Randomly pick any legal move if no improvement found (should not occur)
+        best_move = random.choice(moves)
+    return best_score, best_move
+
+def policy(board):
+    """
+    Choose a legal move (row, col) for the current 4x4 Tic‑Tac‑Toe board.
+    The function is guaranteed to return a move that is on an empty cell.
+    """
+    # 1️⃣ Immediate win for me
+    for r, c in [(r, c) for r in range(4) for c in range(4) if board[r][c] == 0]:
+        nb = copy_board(board)
+        nb[r][c] = 1
+        if check_win(nb, 1):
+            return (r, c)
+
+    # 2️⃣ Block opponent's immediate win
+    for r, c in [(r, c) for r in range(4) for c in range(4) if board[r][c] == 0]:
+        nb = copy_board(board)
+        nb[r][c] = -1
+        if check_win(nb, -1):
+            return (r, c)
+
+    # 3️⃣ Mini‑max with depth limit and heuristic evaluation
+    score, move = minimax(board, depth=0, maximizing=True,
+                         alpha=-inf, beta=inf, max_depth=MAX_DEPTH)
+    # In rare cases of tie (all scores equal) we pick a random legal move
+    if random.random() < 0.01:   # small chance to randomize
+        legal = [(r, c) for r in range(4) for c in range(4) if board[r][c] == 0]
+        move = random.choice(legal)
+    return move

@@ -1,0 +1,73 @@
+The strategy for this policy is to implement the optimal solution for Misere Nim. The agent calculates the Nim-sum (bitwise XOR) of all pile sizes.
+1. If the Nim-sum is non-zero, the position is winning. The policy finds a move that makes the Nim-sum zero (standard Nim strategy).
+2. It then applies the Misere condition: if the move would result in a state where every pile has a size of 0 or 1, the policy checks the parity of the remaining piles of size 1.
+   - In Misere Nim, the goal is to leave an odd number of size-1 piles for the opponent.
+   - Standard optimal play leaves a Nim-sum of 0, which implies an even number of size-1 piles in the endgame. The policy adjusts the move (taking one more or one less object) to flip this parity to odd, forcing the opponent to take the last object.
+3. If the Nim-sum is zero, the agent is in a losing position against optimal play. It defaults to taking 1 object from the first available pile to maximize the opponent's chance of making a mistake.
+
+<code>
+import functools
+import operator
+
+def policy(piles: list[int]) -> str:
+    """
+    Calculates the optimal move for Misere Nim (last player to move loses).
+    """
+    # Calculate Nim-sum (XOR of all pile sizes)
+    nim_sum = functools.reduce(operator.xor, piles, 0)
+    
+    # Count piles of size 1 and piles greater than 1 to handle the Misere endgame
+    num_ones = sum(1 for p in piles if p == 1)
+    num_large = sum(1 for p in piles if p > 1)
+    
+    # If Nim-sum is not 0, we can force a win with optimal play
+    if nim_sum != 0:
+        for i, p in enumerate(piles):
+            if p == 0:
+                continue
+            
+            # Calculate the target size for this pile to make Nim-sum 0
+            target = p ^ nim_sum
+            
+            # A valid move must reduce the pile size
+            if target < p:
+                take = p - target
+                
+                # Misere Endgame Exception:
+                # If this move leaves no piles > 1, we are entering the endgame.
+                # Standard Nim strategy aims for Nim-sum 0, which implies an EVEN number
+                # of size-1 piles in the endgame. In Misere, we want an ODD number
+                # of size-1 piles to force the opponent to take the last object.
+                
+                is_last_large_pile = (p > 1) and (num_large == 1)
+                
+                if is_last_large_pile and target <= 1:
+                    # Calculate how many ones will be left
+                    # 'p' is currently large, so it contributes 0 to num_ones.
+                    # If target is 1, it contributes 1. If 0, it contributes 0.
+                    future_ones = num_ones + (1 if target == 1 else 0)
+                    
+                    if future_ones % 2 == 0:
+                        # We are about to leave an even number of 1s. This is losing in Misere.
+                        # We must adjust the move to leave an odd number of 1s.
+                        if target == 1:
+                            # Instead of leaving 1, leave 0 (take 1 more)
+                            take += 1
+                        elif target == 0:
+                            # Instead of leaving 0, leave 1 (take 1 less)
+                            take -= 1
+                
+                return f"{i},{take}"
+    
+    # Fallback for losing positions (Nim-sum is 0) or theoretical safety
+    # Take 1 from the first available pile (prefer taking from large piles to complicate opponent's task)
+    for i, p in enumerate(piles):
+        if p > 1:
+            return f"{i},1"
+    
+    for i, p in enumerate(piles):
+        if p > 0:
+            return f"{i},1"
+            
+    return "0,1"
+</code>

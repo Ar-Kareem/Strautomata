@@ -1,0 +1,160 @@
+The strategy for this policy is a probability-based hunter-target approach.
+
+- In hunt mode, it scores every unknown cell by counting how many valid placements of the remaining ship lengths could include that cell, given current misses and hits.
+- In target mode, if there are known hits, it identifies connected hit clusters and strongly prioritizes extending those clusters in plausible ship directions to finish ships quickly.
+- It also uses parity-style preference and centrality as tie-breakers.
+- To stay robust and always legal, it includes a final fallback that returns the first unknown cell if anything unexpected happens.
+
+<code>
+from collections import deque
+
+SHIP_LENGTHS = [5, 4, 3, 3, 2]
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    n = 10
+
+    def in_bounds(r, c):
+        return 0 <= r < n and 0 <= c < n
+
+    def unknown_cells():
+        for r in range(n):
+            for c in range(n):
+                if board[r][c] == 0:
+                    yield (r, c)
+
+    # Always keep a legal fallback
+    fallback = None
+    for cell in unknown_cells():
+        fallback = cell
+        break
+    if fallback is None:
+        return (0, 0)
+
+    # Find connected components of hits
+    visited = [[False] * n for _ in range(n)]
+    hit_groups = []
+
+    for r in range(n):
+        for c in range(n):
+            if board[r][c] == 1 and not visited[r][c]:
+                q = deque([(r, c)])
+                visited[r][c] = True
+                group = []
+                while q:
+                    x, y = q.popleft()
+                    group.append((x, y))
+                    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                        nx, ny = x + dx, y + dy
+                        if in_bounds(nx, ny) and not visited[nx][ny] and board[nx][ny] == 1:
+                            visited[nx][ny] = True
+                            q.append((nx, ny))
+                hit_groups.append(group)
+
+    # Probability score board
+    scores = [[0.0] * n for _ in range(n)]
+
+    # Global placement scoring:
+    # count valid placements of each ship length consistent with misses and known hits
+    for L in SHIP_LENGTHS:
+        # Horizontal placements
+        for r in range(n):
+            for c in range(n - L + 1):
+                cells = [(r, c + k) for k in range(L)]
+                vals = [board[x][y] for x, y in cells]
+                if -1 in vals:
+                    continue
+                # A valid candidate cannot pass through a known miss.
+                # It may include hits and unknowns.
+                weight = 1.0
+                hit_count = sum(1 for v in vals if v == 1)
+                if hit_count > 0:
+                    weight += 4.0 * hit_count
+                for x, y in cells:
+                    if board[x][y] == 0:
+                        scores[x][y] += weight
+
+        # Vertical placements
+        for r in range(n - L + 1):
+            for c in range(n):
+                cells = [(r + k, c) for k in range(L)]
+                vals = [board[x][y] for x, y in cells]
+                if -1 in vals:
+                    continue
+                weight = 1.0
+                hit_count = sum(1 for v in vals if v == 1)
+                if hit_count > 0:
+                    weight += 4.0 * hit_count
+                for x, y in cells:
+                    if board[x][y] == 0:
+                        scores[x][y] += weight
+
+    # Target mode enhancements around hit groups
+    for group in hit_groups:
+        if not group:
+            continue
+
+        rows = {r for r, _ in group}
+        cols = {c for _, c in group}
+
+        # If oriented horizontally
+        if len(rows) == 1 and len(group) >= 2:
+            r = next(iter(rows))
+            cs = sorted(c for _, c in group)
+            left = cs[0] - 1
+            right = cs[-1] + 1
+            if in_bounds(r, left) and board[r][left] == 0:
+                scores[r][left] += 1000.0 + 20.0 * len(group)
+            if in_bounds(r, right) and board[r][right] == 0:
+                scores[r][right] += 1000.0 + 20.0 * len(group)
+
+        # If oriented vertically
+        elif len(cols) == 1 and len(group) >= 2:
+            c = next(iter(cols))
+            rs = sorted(r for r, _ in group)
+            up = rs[0] - 1
+            down = rs[-1] + 1
+            if in_bounds(up, c) and board[up][c] == 0:
+                scores[up][c] += 1000.0 + 20.0 * len(group)
+            if in_bounds(down, c) and board[down][c] == 0:
+                scores[down][c] += 1000.0 + 20.0 * len(group)
+
+        # Single hit or ambiguous cluster: probe neighbors
+        else:
+            for r, c in group:
+                for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    nr, nc = r + dx, c + dy
+                    if in_bounds(nr, nc) and board[nr][nc] == 0:
+                        scores[nr][nc] += 200.0
+
+    # Tie-break bonuses: parity and center preference
+    # Prefer parity cells especially when no active hits exist
+    has_hits = any(board[r][c] == 1 for r in range(n) for c in range(n))
+    for r in range(n):
+        for c in range(n):
+            if board[r][c] != 0:
+                scores[r][c] = -1e18
+                continue
+
+            center_bonus = 0.1 * (9 - (abs(r - 4.5) + abs(c - 4.5)))
+            scores[r][c] += center_bonus
+
+            if not has_hits:
+                if (r + c) % 2 == 0:
+                    scores[r][c] += 0.5
+
+    # Choose best legal move
+    best = fallback
+    best_score = -1e30
+    for r in range(n):
+        for c in range(n):
+            if board[r][c] == 0 and scores[r][c] > best_score:
+                best_score = scores[r][c]
+                best = (r, c)
+
+    # Final legality guard
+    br, bc = best
+    if 0 <= br < n and 0 <= bc < n and board[br][bc] == 0:
+        return best
+
+    return fallback
+</code>

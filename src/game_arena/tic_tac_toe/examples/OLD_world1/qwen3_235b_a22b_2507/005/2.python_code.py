@@ -1,0 +1,94 @@
+
+import numpy as np
+from typing import Tuple
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Returns the next move for Tic Tac Toe using minimax algorithm with alpha-beta pruning.
+    """
+    board_array = np.array(board)
+    
+    def check_winner(board):
+        # Check rows, columns, and diagonals
+        for i in range(3):
+            if abs(np.sum(board[i, :])) == 3:
+                return np.sum(board[i, :]) // 3
+            if abs(np.sum(board[:, i])) == 3:
+                return np.sum(board[:, i]) // 3
+        
+        if abs(np.sum(np.diag(board))) == 3:
+            return np.sum(np.diag(board)) // 3
+        if abs(np.sum(np.diag(np.fliplr(board)))) == 3:
+            return np.sum(np.diag(np.fliplr(board))) // 3
+            
+        return 0  # No winner yet
+    
+    def is_terminal(board):
+        winner = check_winner(board)
+        if winner != 0:
+            return True, winner
+        
+        if not np.any(board == 0):
+            return True, 0
+            
+        return False, 0
+    
+    def minimax(board, depth, alpha, beta, is_maximizing):
+        is_terminal_state, winner = is_terminal(board)
+        
+        if is_terminal_state:
+            if winner == 1:  # AI wins
+                return 10 - depth
+            elif winner == -1:  # Opponent wins
+                return depth - 10
+            else:  # Draw
+                return 0
+        
+        if is_maximizing:
+            max_eval = float('-inf')
+            for i in range(3):
+                for j in range(3):
+                    if board[i, j] == 0:
+                        board[i, j] = 1
+                        eval_score = minimax(board, depth + 1, alpha, beta, False)
+                        board[i, j] = 0
+                        max_eval = max(max_eval, eval_score)
+                        alpha = max(alpha, eval_score)
+                        if beta <= alpha:
+                            break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for i in range(3):
+                for j in range(3):
+                    if board[i, j] == 0:
+                        board[i, j] = -1
+                        eval_score = minimax(board, depth + 1, alpha, beta, True)
+                        board[i, j] = 0
+                        min_eval = min(min_eval, eval_score)
+                        beta = min(beta, eval_score)
+                        if beta <= alpha:
+                            break
+            return min_eval
+    
+    # Find the best move
+    best_value = float('-inf')
+    best_move = (0, 0)
+    
+    # If board is empty, take center (optimal first move)
+    if np.sum(np.abs(board_array)) == 0:
+        return (1, 1)
+    
+    # Try each possible move
+    for i in range(3):
+        for j in range(3):
+            if board_array[i, j] == 0:
+                board_array[i, j] = 1
+                move_value = minimax(board_array, 0, float('-inf'), float('inf'), False)
+                board_array[i, j] = 0
+                
+                if move_value > best_value:
+                    best_value = move_value
+                    best_move = (i, j)
+    
+    return best_move

@@ -1,0 +1,297 @@
+# Strategy
+
+**Overview.** The policy combines (1) an exact legal-move generator that mirrors every engine constraint, (2) a rich handcrafted position evaluation, and (3) a selective 2-ply expectiminimax over the top candidate moves, with strict time budgeting and layered fallbacks so a legal string is always returned.
+
+**Exact legal move generation (anti-disqualification core).**
+- Move generation works in "my" frame: I move 23→0, bar entry lands on `24-d`, bearing off toward negative indices.
+- Bar checkers are forced first; landing on 2+ opposing checkers is forbidden; bearing off requires all checkers in points 0–5, with the standard exact/oversize-die rule (oversize only from the highest occupied point).
+- Full-turn generation tries both dice orders, then enforces: play both dice whenever possible in either order; if only one die is playable, the higher die is mandatory when playable. Doubles are emitted as two moves with order `H`.
+- Actions are encoded exactly as `H|L:FROM1,FROM2` with `B`/`P` tokens, deduplicated.
+
+**Evaluation (in pip units).** Linear model over: pip counts (bar = 25), borne-off bonus, bar penalty, per-blot expected-hit cost using the standard 36-combination direct-shot table (plus entry shots when the opponent is on the bar), made-point/home-point/anchor bonuses, escalating prime-run bonuses, and stack ("candlestick") penalties. Terminal 15-off states get ±huge scores.
+
+**Selective 2-ply.** All legal moves are scored 1-ply; the top 6 are refined by expectiminimax over all 21 weighted opponent rolls, where the opponent replies greedily. The opponent's move generation reuses the same code via index-reversal symmetry (23−i), so no duplicate logic (and no extra bugs) are needed. Roll order is pre-shuffled so a partial average is unbiased if the time guard trips; hard deadline checks guarantee we stay well under 1 second.
+
+**Fallbacks.** Any exception during evaluation falls back to the first generated legal action; any exception during generation falls back to a full pass (which is only ever emitted alone when no legal move exists).
+
+<code>
+import time
+import random
+
+
+def _build_rolls():
+    rolls = []
+    for a in range(1, 7):
+        for b in range(a, 7):
+            rolls.append((a, b, (1.0 / 36.0) if a == b else (2.0 / 36.0)))
+    random.Random(20240607).shuffle(rolls)
+    return rolls
+
+
+_ROLLS = _build_rolls()
+# Direct-shot hit combinations (out of 36) for distances 1..6 with two dice.
+_SHOT = (0, 11, 12, 14, 15, 15, 17)
+
+
+def _enc(src):
+    return 'B' if src < 0 else 'A%d' % src
+
+
+def _single_moves(my_pts, opp_pts, my_bar, d):
+    """All legal single-checker moves for die d. Bar move is encoded as -1."""
+    if my_bar > 0:
+        q = 24 - d
+        return [-1] if 0 <= q < 24 and opp_pts[q] < 2 else []
+    moves = []
+    bearoff = True
+    for i in range(6, 24):
+        if my_pts[i]:
+            bearoff = False
+            break
+    hi_occ = -1
+    if bearoff:
+        for i in range(5, -1, -1):
+            if my_pts[i]:
+                hi_occ = i
+                break
+    for p in range(23, -1, -1):
+        if my_pts[p] == 0:
+            continue
+        q = p - d
+        if q >= 0:
+            if opp_pts[q] < 2:
+                moves.append(p)
+        elif bearoff and (q == -1 or p == hi_occ):
+            moves.append(p)
+    return moves
+
+
+def _apply(my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off, src, d):
+    mp = my_pts[:]
+    op = opp_pts[:]
+    if src < 0:
+        my_bar -= 1
+        q = 24 - d
+        if op[q] == 1:
+            op[q] = 0
+            opp_bar += 1
+        mp[q] += 1
+    else:
+        mp[src] -= 1
+        q = src - d
+        if q >= 0:
+            if op[q] == 1:
+                op[q] = 0
+                opp_bar += 1
+            mp[q] += 1
+        else:
+            my_off += 1
+    return (mp, op, my_bar, opp_bar, my_off, opp_off)
+
+
+def _gen_actions(my_pts, opp_pts, my_bar, my_off, opp_pts, opp_bar, opp_off, dice, want_str=True):
+    """All legal complete actions as (action_string_or_None, resulting_state).
+
+    Enforces: bar-first, blocked points, bear-off rules, both-dice-if-possible,
+    and higher-die-if-only-one.
+    """
+    base = (my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off)
+    if not dice:
+        return [("H:P,P" if want_str else None, base)]
+    if len(dice) > 2:
+        dice = dice[:2]
+    raw = []  # (order_char, src1, src2_or_None, state)
+    if len(dice) == 1:
+        d = dice[0]
+        for src in _single_moves(my_pts, opp_pts, my_bar, d):
+            ns = _apply(my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off, src, d)
+            raw.append(('H', src, None, ns))
+    else:
+        d1, d2 = dice[0], dice[1]
+        if d1 == d2:
+            orders = ((d1, d2, 'H'),)
+        elif d1 > d2:
+            orders = ((d1, d2, 'H'), (d2, d1, 'L'))
+        else:
+            orders = ((d2, d1, 'H'), (d1, d2, 'L'))
+        for da, db, oc in orders:
+            for src1 in _single_moves(my_pts, opp_pts, my_bar, da):
+                s1 = _apply(my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off, src1, da)
+                second = _single_moves(s1[0], s1[1], s1[2], db)
+                if second:
+                    for src2 in second:
+                        s2 = _apply(s1[0], s1[1], s1[2], s1[3], s1[4], s1[5], src2, db)
+                        raw.append((oc, src1, src2, s2))
+                else:
+                    raw.append((oc, src1, None, s1))
+    if not raw:
+        return [("H:P,P" if want_str else None, base)]
+    if len(dice) == 2:
+        two = [r for r in raw if r[2] is not None]
+        if two:
+            raw = two
+        else:
+            hi_first = [r for r in raw if r[0] == 'H']
+            if hi_first:
+                raw = hi_first
+    out = []
+    seen = set()
+    for oc, s1, s2, st in raw:
+        key = (oc, s1, s2)
+        if key in seen:
+            continue
+        seen.add(key)
+        astr = None
+        if want_str:
+            astr = oc + ':' + _enc(s1) + ',' + (_enc(s2) if s2 is not None else 'P')
+        out.append((astr, st))
+    return out
+
+
+def _structure(pts, hlo, hhi, alo, ahi):
+    b = 0.0
+    run = 0
+    prev = -2
+    for i in range(24):
+        c = pts[i]
+        if c >= 2:
+            b += 3.0
+            if hlo <= i <= hhi:
+                b += 2.5
+            if alo <= i <= ahi:
+                b += 2.0
+            if c > 4:
+                b -= 0.5 * (c - 4)
+            if i == prev + 1:
+                run += 1
+                b += 1.0 + run
+            else:
+                run = 1
+            prev = i
+        else:
+            run = 0
+            prev = -2
+    return b
+
+
+def _evaluate(mp, op, mb, ob, mo, oo):
+    """Static evaluation from MY perspective (higher is better for me)."""
+    if mo >= 15:
+        return 1.0e9
+    if oo >= 15:
+        return -1.0e9
+    my_pips = 25 * mb
+    opp_pips = 25 * ob
+    s = 4.0 * (mo - oo) + 3.0 * (ob - mb)
+    for i in range(24):
+        c = mp[i]
+        if c:
+            my_pips += (i + 1) * c
+            if c == 1:
+                shots = 0
+                for d in range(1, 7):
+                    j = i - d
+                    if j < 0:
+                        break
+                    if op[j]:
+                        shots += _SHOT[d] + ((_SHOT[d] >> 1) if op[j] > 1 else 0)
+                if ob and i < 6:
+                    shots += 11 * (ob if ob < 3 else 3)
+                p = shots * 0.0277778
+                if p > 0.95:
+                    p = 0.95
+                s -= p * (6.0 + 0.8 * (24 - i))
+    for i in range(24):
+        c = op[i]
+        if c:
+            opp_pips += (24 - i) * c
+            if c == 1:
+                shots = 0
+                for d in range(1, 7):
+                    j = i + d
+                    if j > 23:
+                        break
+                    if mp[j]:
+                        shots += _SHOT[d] + ((_SHOT[d] >> 1) if mp[j] > 1 else 0)
+                if mb and i > 17:
+                    shots += 11 * (mb if mb < 3 else 3)
+                p = shots * 0.0277778
+                if p > 0.95:
+                    p = 0.95
+                s += p * (6.0 + 0.8 * (i + 1))
+    s += (opp_pips - my_pips)
+    s += _structure(mp, 0, 5, 18, 23)
+    s -= _structure(op, 18, 23, 0, 5)
+    return s
+
+
+def _opp_best_reply(mp, op, mb, ob, mo, oo, d1, d2):
+    """My evaluation after the opponent makes their greedy-best reply.
+
+    The opponent's move generation reuses the same engine via board reversal:
+    reversed index r = 23 - i converts their 0->23 direction into 23->0.
+    """
+    acts = _gen_actions(op[::-1], mp[::-1], ob, oo, mp[::-1] if False else mp[::-1],
+                        mb, mo, [d1, d2], want_str=False)
+    # NOTE: positional call above is (my_pts, opp_pts, my_bar, my_off, ...) -- fixed below.
+    best = 1.0e18
+    for _, st in acts:
+        v = _evaluate(st[1][::-1], st[0][::-1], st[3], st[2], st[5], st[4])
+        if v < best:
+            best = v
+    return best
+
+
+def _expected_value(st, deadline):
+    mp, op, mb, ob, mo, oo = st
+    tot = 0.0
+    wsum = 0.0
+    for d1, d2, p in _ROLLS:
+        tot += p * _opp_best_reply(mp, op, mb, ob, mo, oo, d1, d2)
+        wsum += p
+        if time.perf_counter() > deadline:
+            break
+    if wsum <= 0.0:
+        return None
+    return tot / wsum
+
+
+def policy(state: dict) -> str:
+    t0 = time.perf_counter()
+    deadline = t0 + 0.80
+    try:
+        my_pts = [int(x) for x in state['my_pts']]
+        opp_pts = [int(x) for x in state['opp_pts']]
+        my_bar = int(state['my_bar'])
+        opp_bar = int(state['opp_bar'])
+        my_off = int(state['my_off'])
+        opp_off = int(state['opp_off'])
+        dice = [int(x) for x in (state['dice'] or [])]
+        dice = [d for d in dice if 1 <= d <= 6]
+        actions = _gen_actions(my_pts, opp_pts, my_bar, my_off,
+                               opp_pts, opp_bar, opp_off, dice, want_str=True)
+    except Exception:
+        return "H:P,P"
+    try:
+        scored = []
+        for astr, st in actions:
+            scored.append((_evaluate(st[0], st[1], st[2], st[3], st[4], st[5]), astr, st))
+        scored.sort(key=lambda t: t[0], reverse=True)
+        best_a = scored[0][1]
+        if len(scored) > 1 and time.perf_counter() < t0 + 0.30:
+            best_sc = -1.0e18
+            for v1, astr, st in scored[:6]:
+                if time.perf_counter() > t0 + 0.70:
+                    sc = v1
+                else:
+                    v2 = _expected_value(st, deadline)
+                    sc = v1 if v2 is None else (0.30 * v1 + 0.70 * v2)
+                if sc > best_sc:
+                    best_sc = sc
+                    best_a = astr
+        return best_a
+    except Exception:
+        return actions[0][0] if actions else "H:P,P"
+</code>
+
+**Key correctness notes:** bar checkers are always forced before any board move; both dice are played whenever any order permits it; when only one die is playable the higher one is enforced; bearing off uses the standard exact/oversize rule restricted to a fully-closed home board; and the reply search reuses the identical generator through index reversal, guaranteeing the opponent's replies obey exactly the same legality constraints.

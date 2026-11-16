@@ -1,0 +1,212 @@
+
+import math
+
+def policy(state: dict) -> str:
+    def pt_to_str(pt):
+        if pt == 'B':
+            return 'B'
+        return f"A{pt}"
+
+    def is_legal_move(from_pt, opp_pts, my_pts):
+        if from_pt == 'B':
+            return True
+        if opp_pts[from_pt] <= 1:
+            return True
+        return False
+
+    def find_all_moves(dice, my_pts, opp_pts, my_bar):
+        if not dice:
+            return []
+        
+        moves = []
+        dice_sorted = sorted(dice)
+        die1, die2 = dice_sorted[0], dice_sorted[-1]
+        
+        # Generate moves with die1 first, then die2
+        moves_die1_first = []
+        # Generate moves with die2 first, then die1
+        moves_die2_first = []
+
+        # Helper to generate possible starting points
+        def possible_starts(die_val, my_pts, opp_pts, my_bar):
+            starts = []
+            if my_bar > 0:
+                dest = 24 - die_val
+                if opp_pts[dest] <= 1:
+                    starts.append('B')
+            else:
+                for pt in range(24):
+                    if my_pts[pt] > 0:
+                        dest = pt - die_val
+                        if dest >= 0 and opp_pts[dest] <= 1:
+                            starts.append(pt)
+                        elif dest < 0:
+                            # Bearing off condition: all checkers in home board
+                            home = True
+                            for i in range(18):
+                                if my_pts[i] > 0:
+                                    home = False
+                                    break
+                            if home:
+                                # Can bear off
+                                starts.append(pt)
+            return starts
+
+        # Try first die
+        starts1 = possible_starts(die1, my_pts, opp_pts, my_bar)
+        for start1 in starts1:
+            # Apply first move
+            temp_my_pts = list(my_pts)
+            temp_my_bar = my_bar
+            if start1 == 'B':
+                temp_my_bar -= 1
+                dest1 = 24 - die1
+                temp_my_pts[dest1] += 1
+            else:
+                temp_my_pts[start1] -= 1
+                dest1 = start1 - die1
+                if dest1 >= 0:
+                    temp_my_pts[dest1] += 1
+                # else bearing off, no need to add
+            
+            # Try second die
+            starts2 = possible_starts(die2, temp_my_pts, opp_pts, temp_my_bar)
+            if starts2:
+                for start2 in starts2:
+                    moves_die1_first.append((die1, die2, start1, start2))
+            else:
+                moves_die1_first.append((die1, die2, start1, 'P'))
+        
+        # Try second die first
+        starts2 = possible_starts(die2, my_pts, opp_pts, my_bar)
+        for start2 in starts2:
+            # Apply first move
+            temp_my_pts = list(my_pts)
+            temp_my_bar = my_bar
+            if start2 == 'B':
+                temp_my_bar -= 1
+                dest2 = 24 - die2
+                temp_my_pts[dest2] += 1
+            else:
+                temp_my_pts[start2] -= 1
+                dest2 = start2 - die2
+                if dest2 >= 0:
+                    temp_my_pts[dest2] += 1
+                # else bearing off
+            
+            # Try first die
+            starts1 = possible_starts(die1, temp_my_pts, opp_pts, temp_my_bar)
+            if starts1:
+                for start1 in starts1:
+                    moves_die2_first.append((die2, die1, start2, start1))
+            else:
+                moves_die2_first.append((die2, die1, start2, 'P'))
+        
+        # Check if both dice can be played
+        both_played_1 = [m for m in moves_die1_first if m[3] != 'P']
+        both_played_2 = [m for m in moves_die2_first if m[3] != 'P']
+        
+        if both_played_1:
+            return both_played_1
+        if both_played_2:
+            return both_played_2
+        if moves_die1_first:
+            return moves_die1_first
+        if moves_die2_first:
+            return moves_die2_first
+        return []
+
+    def score_move(move, my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off):
+        die1, die2, from1, from2 = move[0], move[1], move[2], move[3]
+        score = 0
+        temp_my_pts = list(my_pts)
+        temp_my_bar = my_bar
+        
+        # Apply first move
+        if from1 == 'B':
+            temp_my_bar -= 1
+            dest1 = 24 - die1
+            temp_my_pts[dest1] += 1
+            # Prefer re-entering
+            score += 10
+        else:
+            temp_my_pts[from1] -= 1
+            dest1 = from1 - die1
+            if dest1 >= 0:
+                temp_my_pts[dest1] += 1
+                # Prefer making points
+                if temp_my_pts[dest1] == 2:
+                    score += 20
+                # Prefer moving checkers that are in danger
+                if temp_my_pts[from1] == 1:
+                    score += 5
+            else:
+                # Bearing off
+                score += 15
+        
+        # Apply second move
+        if from2 != 'P':
+            if from2 == 'B':
+                temp_my_bar -= 1
+                dest2 = 24 - die2
+                temp_my_pts[dest2] += 1
+                score += 10
+            else:
+                temp_my_pts[from2] -= 1
+                dest2 = from2 - die2
+                if dest2 >= 0:
+                    temp_my_pts[dest2] += 1
+                    if temp_my_pts[dest2] == 2:
+                        score += 20
+                    if temp_my_pts[from2] == 1:
+                        score += 5
+                else:
+                    score += 15
+        
+        # Prefer moves that don't leave blots
+        for pt in range(24):
+            if temp_my_pts[pt] == 1:
+                score -= 2
+        
+        # Prefer advancing checkers that are far behind
+        for pt in range(18, 24):
+            if temp_my_pts[pt] > 0:
+                score += temp_my_pts[pt] * (24 - pt)
+        
+        return score
+
+    dice = state['dice']
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+
+    if not dice:
+        return "H:P,P"
+    
+    possible_moves = find_all_moves(dice, my_pts, opp_pts, my_bar)
+    if not possible_moves:
+        return "H:P,P"
+    
+    best_move = None
+    best_score = -math.inf
+    for move in possible_moves:
+        score = score_move(move, my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    if best_move is None:
+        # Fallback: just play the first legal move
+        move = possible_moves[0]
+        from1 = pt_to_str(move[2])
+        from2 = pt_to_str(move[3]) if move[3] != 'P' else 'P'
+        order = 'H' if move[0] >= move[1] else 'L'
+        return f"{order}:{from1},{from2}"
+    
+    from1 = pt_to_str(best_move[2])
+    from2 = pt_to_str(best_move[3]) if best_move[3] != 'P' else 'P'
+    order = 'H' if best_move[0] >= best_move[1] else 'L'
+    return f"{order}:{from1},{from2}"

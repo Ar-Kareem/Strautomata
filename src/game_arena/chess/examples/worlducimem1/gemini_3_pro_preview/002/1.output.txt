@@ -1,0 +1,444 @@
+The strategy for this policy is to implement a robust Chess engine within the given constraints. To ensure strict adherence to the legality requirement (as returning an illegal move results in disqualification), the policy uses a conservative move generator that does not attempt castling or en passant, as these require game history or state flags not present in the input. The engine parses the board into a 64-square integer array and uses Iterative Deepening Minimax with Alpha-Beta pruning to search for the best move. The evaluation function considers material balance and positional advantages using Piece-Square Tables (PST). The search is time-controlled, checking the clock periodically to return the best found move within the 1-second limit.
+
+<code>
+import time
+
+def policy(pieces: dict[str, str], to_play: str, memory: dict) -> tuple[str, dict]:
+    
+    # --- 1. Constants & Configuration ---
+    # Board representation: 64 integers (0-63).
+    # Piece encoding: Empty=0, White > 0, Black < 0.
+    # Type: P=1, N=2, B=3, R=4, Q=5, K=6.
+    
+    P_MAP = {'P': 1, 'N': 2, 'B': 3, 'R': 4, 'Q': 5, 'K': 6}
+    
+    # Piece Values for Evaluation
+    VALS = {1: 100, 2: 320, 3: 330, 4: 500, 5: 900, 6: 20000}
+    
+    # Piece-Square Tables (Simplified, favoring center)
+    # Defined for White (index 0=a1 .. 63=h8)
+    # Black will map mirrored indices.
+    
+    # Center weighted table for N, B, Q, K (Safe play)
+    CENTER_PST = [
+        -20,-10,-10,-10,-10,-10,-10,-20,
+        -10,  0,  0,  0,  0,  0,  0,-10,
+        -10,  0,  5, 10, 10,  5,  0,-10,
+        -10,  5,  5, 20, 20,  5,  5,-10,
+        -10,  5,  5, 20, 20,  5,  5,-10,
+        -10,  0,  5, 10, 10,  5,  0,-10,
+        -10,  0,  0,  0,  0,  0,  0,-10,
+        -20,-10,-10,-10,-10,-10,-10,-20
+    ]
+    
+    # Pawn PST (encourage advancement)
+    PAWN_PST = [
+        0,  0,  0,  0,  0,  0,  0,  0,
+        5, 10, 10, -20, -20, 10, 10, 5,
+        5, -5, -10,  0,  0, -10, -5, 5,
+        0,  0,  0, 20, 20,  0,  0,  0,
+        5,  5, 10, 25, 25, 10,  5,  5,
+        10, 10, 20, 30, 30, 20, 10, 10,
+        50, 50, 50, 50, 50, 50, 50, 50,
+        0,  0,  0,  0,  0,  0,  0,  0
+    ]
+
+    # Directions / Offsets
+    N_OFFSETS = [15, 17, 10, 6, -15, -17, -10, -6]
+    K_OFFSETS = [8, -8, 1, -1, 9, 7, -9, -7]
+    DIRS = {
+        'R': [8, -8, 1, -1],
+        'B': [9, 7, -9, -7],
+        'Q': [8, -8, 1, -1, 9, 7, -9, -7]
+    }
+
+    # --- 2. Helper Functions ---
+
+    def parse_board(pieces_dict, to_play_str):
+        board = [0] * 64
+        my_c = 1 if to_play_str == 'white' else -1
+        
+        my_k = -1
+        for sq, code in pieces_dict.items():
+            f = ord(sq[0]) - 97
+            r = int(sq[1]) - 1
+            idx = r * 8 + f
+            
+            c = 1 if code[0] == 'w' else -1
+            pt = P_MAP[code[1]]
+            board[idx] = c * pt
+            
+            if pt == 6 and c == my_c:
+                my_k = idx
+                
+        return board, my_c, my_k
+
+    def to_sq(idx):
+        f = idx % 8
+        r = idx // 8
+        return f"{chr(f + 97)}{r + 1}"
+
+    def is_attacked(board, sq, attacker_c):
+        r, c = divmod(sq, 8)
+        
+        # 1. Pawns
+        # If attacker is White (1), they attack from sq-7 (left-down) and sq-9 (right-down)
+        # If attacker is Black (-1), they attack from sq+7 (right-up) and sq+9 (left-up)
+        pawn_starts = []
+        if attacker_c == 1:
+            if c > 0: pawn_starts.append(sq - 9)
+            if c < 7: pawn_starts.append(sq - 7)
+        else:
+            if c > 0: pawn_starts.append(sq + 7)
+            if c < 7: pawn_starts.append(sq + 9)
+            
+        for start in pawn_starts:
+            if 0 <= start < 64:
+                # Check wrap logic mostly handled by c checks above, 
+                # but ensure adjacent rank/file delta is 1
+                sr, sc = divmod(start, 8)
+                if abs(sr - r) == 1 and abs(sc - c) == 1:
+                    if board[start] == 1 * attacker_c:
+                        return True
+        
+        # 2. Knights
+        for off in N_OFFSETS:
+            tgt = sq + off
+            if 0 <= tgt < 64:
+                tr, tc = divmod(tgt, 8)
+                if abs(tr - r) + abs(tc - c) == 3:
+                    if board[tgt] == 2 * attacker_c:
+                        return True
+                        
+        # 3. King
+        for off in K_OFFSETS:
+            tgt = sq + off
+            if 0 <= tgt < 64:
+                tr, tc = divmod(tgt, 8)
+                if max(abs(tr - r), abs(tc - c)) == 1:
+                    if board[tgt] == 6 * attacker_c:
+                        return True
+
+        # 4. Sliders (B, R, Q)
+        for ptype, offsets in [(4, DIRS['R']), (3, DIRS['B']), (5, DIRS['Q'])]:
+            # Optimization: check R/Q together, B/Q together is slightly faster
+            # But grouping by directions is cleaner.
+            pass
+        
+        # Check Cardinals (R + Q)
+        for d in DIRS['R']:
+            curr = sq
+            while True:
+                curr += d
+                if not (0 <= curr < 64): break
+                cr, cc = divmod(curr, 8)
+                pr, pc = divmod(curr - d, 8)
+                if abs(cr - pr) > 1 or abs(cc - pc) > 1: break
+                
+                p = board[curr]
+                if p != 0:
+                    if p == 4 * attacker_c or p == 5 * attacker_c:
+                        return True
+                    break
+                    
+        # Check Diagonals (B + Q)
+        for d in DIRS['B']:
+            curr = sq
+            while True:
+                curr += d
+                if not (0 <= curr < 64): break
+                cr, cc = divmod(curr, 8)
+                pr, pc = divmod(curr - d, 8)
+                if abs(cr - pr) > 1 or abs(cc - pc) > 1: break
+                
+                p = board[curr]
+                if p != 0:
+                    if p == 3 * attacker_c or p == 5 * attacker_c:
+                        return True
+                    break
+        
+        return False
+
+    def generate_moves(board, color):
+        moves = []
+        # Find King for legality check
+        try:
+            k_val = 6 * color
+            ksq = board.index(k_val)
+        except ValueError:
+            return [] # Should not happen
+            
+        opp = -color
+        
+        for idx in range(64):
+            p = board[idx]
+            if p == 0: continue
+            if (p > 0 and color < 0) or (p < 0 and color > 0): continue
+            
+            ptype = abs(p)
+            r, c = divmod(idx, 8)
+            
+            # -- PAWN --
+            if ptype == 1:
+                direction = 8 if color == 1 else -8
+                start_r = 1 if color == 1 else 6
+                prom_r = 7 if color == 1 else 0
+                
+                # Push 1
+                tgt = idx + direction
+                if 0 <= tgt < 64 and board[tgt] == 0:
+                    if (tgt // 8) == prom_r:
+                        moves.append((idx, tgt, 'q'))
+                        moves.append((idx, tgt, 'n'))
+                    else:
+                        moves.append((idx, tgt, None))
+                        # Push 2
+                        if r == start_r:
+                            tgt2 = idx + direction * 2
+                            if board[tgt2] == 0:
+                                moves.append((idx, tgt2, None))
+                
+                # Capture
+                c_offsets = []
+                if color == 1: # White attacks +7, +9
+                    if c > 0: c_offsets.append(7)
+                    if c < 7: c_offsets.append(9)
+                else:          # Black attacks -9, -7
+                    if c > 0: c_offsets.append(-9)
+                    if c < 7: c_offsets.append(-7)
+                    
+                for off in c_offsets:
+                    tgt = idx + off
+                    if 0 <= tgt < 64:
+                        tp = board[tgt]
+                        if tp != 0 and ((tp > 0 and color < 0) or (tp < 0 and color > 0)):
+                            if (tgt // 8) == prom_r:
+                                moves.append((idx, tgt, 'q'))
+                                moves.append((idx, tgt, 'n'))
+                            else:
+                                moves.append((idx, tgt, None))
+
+            # -- KNIGHT --
+            elif ptype == 2:
+                for off in N_OFFSETS:
+                    tgt = idx + off
+                    if 0 <= tgt < 64:
+                        tr, tc = divmod(tgt, 8)
+                        if abs(tr - r) + abs(tc - c) == 3:
+                            tp = board[tgt]
+                            if tp == 0 or (tp * color < 0):
+                                moves.append((idx, tgt, None))
+                                
+            # -- KING --
+            elif ptype == 6:
+                for off in K_OFFSETS:
+                    tgt = idx + off
+                    if 0 <= tgt < 64:
+                        tr, tc = divmod(tgt, 8)
+                        if max(abs(tr - r), abs(tc - c)) == 1:
+                            tp = board[tgt]
+                            if tp == 0 or (tp * color < 0):
+                                moves.append((idx, tgt, None))
+            
+            # -- SLIDERS --
+            else:
+                s_dirs = []
+                if ptype == 3 or ptype == 5: s_dirs += DIRS['B']
+                if ptype == 4 or ptype == 5: s_dirs += DIRS['R']
+                
+                for d in s_dirs:
+                    curr = idx
+                    while True:
+                        curr += d
+                        if not (0 <= curr < 64): break
+                        cr, cc = divmod(curr, 8)
+                        pr, pc = divmod(curr - d, 8)
+                        if abs(cr - pr) > 1 or abs(cc - pc) > 1: break
+                        
+                        tp = board[curr]
+                        if tp == 0:
+                            moves.append((idx, curr, None))
+                        else:
+                            if tp * color < 0:
+                                moves.append((idx, curr, None))
+                            break
+
+        # Filter Illegal
+        legal = []
+        for mv in moves:
+            s, e, pval = mv
+            moving = board[s]
+            captured = board[e]
+            
+            board[s] = 0
+            board[e] = (5 * color if pval == 'q' else (2 * color if pval == 'n' else moving))
+            
+            check_k_sq = e if abs(moving) == 6 else ksq
+            if not is_attacked(board, check_k_sq, opp):
+                legal.append(mv)
+            
+            board[s] = moving
+            board[e] = captured
+            
+        return legal
+
+    def evaluate(board):
+        score = 0
+        for idx in range(64):
+            p = board[idx]
+            if p == 0: continue
+            
+            ptype = abs(p)
+            pc = 1 if p > 0 else -1
+            
+            # Material
+            mat = VALS[ptype]
+            
+            # Positional
+            pst_val = 0
+            if ptype == 1:
+                # Pawn
+                if pc == 1:
+                    pst_val = PAWN_PST[idx]
+                else:
+                    r, c = divmod(idx, 8)
+                    pst_val = PAWN_PST[(7-r)*8 + c]
+            elif ptype == 6:
+                pst_val = -CENTER_PST[idx] # King safety simplified
+            else:
+                pst_val = CENTER_PST[idx]
+            
+            score += pc * (mat + pst_val)
+        return score
+
+    # --- 3. Search Engine ---
+    
+    start_time = time.time()
+    nodes = 0
+    
+    def alphabeta(board, depth, alpha, beta, is_max, my_c):
+        nonlocal nodes
+        nodes += 1
+        if (nodes & 1023) == 0:
+            if time.time() - start_time > 0.9:
+                return None
+        
+        if depth == 0:
+            return evaluate(board) * my_c
+        
+        turn = my_c if is_max else -my_c
+        
+        moves = generate_moves(board, turn)
+        
+        if not moves:
+            # Mate or Stalemate check
+            kv = 6 * turn
+            try:
+                ksq = board.index(kv)
+                if is_attacked(board, ksq, -turn):
+                    return -100000 - depth # Mate
+            except:
+                pass
+            return 0 # Stalemate
+            
+        # MVV-LVA move ordering (captures first)
+        moves.sort(key=lambda m: 1 if board[m[1]] != 0 else 0, reverse=True)
+        
+        if is_max:
+            val = -float('inf')
+            for mv in moves:
+                s, e, pb = mv
+                pc = board[s]
+                cap = board[e]
+                
+                board[s] = 0
+                board[e] = (5*turn if pb=='q' else (2*turn if pb=='n' else pc))
+                
+                res = alphabeta(board, depth-1, alpha, beta, False, my_c)
+                
+                board[s] = pc
+                board[e] = cap
+                
+                if res is None: return None
+                val = max(val, res)
+                alpha = max(alpha, val)
+                if beta <= alpha: break
+            return val
+        else:
+            val = float('inf')
+            for mv in moves:
+                s, e, pb = mv
+                pc = board[s]
+                cap = board[e]
+                
+                board[s] = 0
+                board[e] = (5*turn if pb=='q' else (2*turn if pb=='n' else pc))
+                
+                res = alphabeta(board, depth-1, alpha, beta, True, my_c)
+                
+                board[s] = pc
+                board[e] = cap
+                
+                if res is None: return None
+                val = min(val, res)
+                beta = min(beta, val)
+                if beta <= alpha: break
+            return val
+
+    # --- 4. Main Execution ---
+    
+    board, my_color, my_king = parse_board(pieces, to_play)
+    
+    # Generate Root Moves
+    root_moves = generate_moves(board, my_color)
+    if not root_moves:
+        return "a1a1", memory # Should verify game over
+    
+    # Sort
+    root_moves.sort(key=lambda m: 1 if board[m[1]] != 0 else 0, reverse=True)
+    
+    def fmt(m):
+        return to_sq(m[0]) + to_sq(m[1]) + (m[2] if m[2] else "")
+    
+    best_move_str = fmt(root_moves[0])
+    
+    # Iterative Deepening
+    for depth in range(1, 5):
+        alpha = -float('inf')
+        beta = float('inf')
+        best_depth_move = None
+        best_val = -float('inf')
+        
+        for mv in root_moves:
+            s, e, pb = mv
+            pc = board[s]
+            cap = board[e]
+            
+            board[s] = 0
+            board[e] = (5*my_color if pb=='q' else (2*my_color if pb=='n' else pc))
+            
+            score = alphabeta(board, depth-1, alpha, beta, False, my_color)
+            
+            board[s] = pc
+            board[e] = cap
+            
+            if score is None: 
+                break # Timeout
+            
+            if score > best_val:
+                best_val = score
+                best_depth_move = mv
+                
+            alpha = max(alpha, score)
+        
+        if score is None:
+            break
+            
+        if best_depth_move:
+            best_move_str = fmt(best_depth_move)
+            # Reorder for next depth
+            root_moves.remove(best_depth_move)
+            root_moves.insert(0, best_depth_move)
+            
+    return best_move_str, memory
+</code>

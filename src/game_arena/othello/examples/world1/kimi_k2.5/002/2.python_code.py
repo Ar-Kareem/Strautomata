@@ -1,0 +1,155 @@
+
+import numpy as np
+import time
+
+# 8 directions: N, NE, E, SE, S, SW, W, NW
+DIRS = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+
+# Positional weights emphasizing corners and stability
+WEIGHTS = np.array([
+    [100, -20,  10,   5,   5,  10, -20, 100],
+    [-20, -50,  -2,  -2,  -2,  -2, -50, -20],
+    [ 10,  -2,   1,   1,   1,   1,  -2,  10],
+    [  5,  -2,   1,   1,   1,   1,  -2,   5],
+    [  5,  -2,   1,   1,   1,   1,  -2,   5],
+    [ 10,  -2,   1,   1,   1,   1,  -2,  10],
+    [-20, -50,  -2,  -2,  -2,  -2, -50, -20],
+    [100, -20,  10,   5,   5,  10, -20, 100]
+], dtype=np.int32)
+
+def get_legal_moves(you, opp):
+    """Return list of (r, c) tuples representing legal moves."""
+    moves = []
+    empty = 1 - (you | opp)
+    for r in range(8):
+        for c in range(8):
+            if empty[r, c]:
+                for dr, dc in DIRS:
+                    i, j = r + dr, c + dc
+                    if 0 <= i < 8 and 0 <= j < 8 and opp[i, j]:
+                        while 0 <= i < 8 and 0 <= j < 8 and opp[i, j]:
+                            i += dr
+                            j += dc
+                        if 0 <= i < 8 and 0 <= j < 8 and you[i, j]:
+                            moves.append((r, c))
+                            break
+    return moves
+
+def apply_move(you, opp, r, c):
+    """Return (new_you, new_opp) after placing a disc at (r, c)."""
+    new_you = you.copy()
+    new_opp = opp.copy()
+    new_you[r, c] = 1
+    
+    for dr, dc in DIRS:
+        to_flip = []
+        i, j = r + dr, c + dc
+        while 0 <= i < 8 and 0 <= j < 8 and opp[i, j]:
+            to_flip.append((i, j))
+            i += dr
+            j += dc
+        if to_flip and 0 <= i < 8 and 0 <= j < 8 and you[i, j]:
+            for fi, fj in to_flip:
+                new_you[fi, fj] = 1
+                new_opp[fi, fj] = 0
+    return new_you, new_opp
+
+def evaluate(you, opp):
+    """Evaluate board from perspective of player 'you'."""
+    # Static positional score
+    score = np.sum(WEIGHTS * you) - np.sum(WEIGHTS * opp)
+    
+    # Mobility difference
+    my_moves = get_legal_moves(you, opp)
+    opp_moves = get_legal_moves(opp, you)
+    
+    # Terminal position check
+    if not my_moves and not opp_moves:
+        disc_diff = np.sum(you) - np.sum(opp)
+        return disc_diff * 100000  # Large value for win/loss
+    
+    score += (len(my_moves) - len(opp_moves)) * 10
+    return score
+
+def negamax(you, opp, depth, alpha, beta):
+    """Alpha-beta search returning score from current player's perspective."""
+    moves = get_legal_moves(you, opp)
+    
+    if depth == 0:
+        return evaluate(you, opp)
+    
+    if not moves:
+        # Check if opponent can move
+        opp_moves = get_legal_moves(opp, you)
+        if not opp_moves:
+            # Game over
+            return (np.sum(you) - np.sum(opp)) * 100000
+        # Pass turn
+        return -negamax(opp, you, depth - 1, -beta, -alpha)
+    
+    # Move ordering: prioritize corners and edges
+    def move_priority(m):
+        r, c = m
+        if (r, c) in [(0,0), (0,7), (7,0), (7,7)]:
+            return 0
+        if r == 0 or r == 7 or c == 0 or c == 7:
+            return 1
+        return 2
+    moves.sort(key=move_priority)
+    
+    value = -1000000
+    for r, c in moves:
+        new_you, new_opp = apply_move(you, opp, r, c)
+        score = -negamax(new_opp, new_you, depth - 1, -beta, -alpha)
+        if score > value:
+            value = score
+        if value > alpha:
+            alpha = value
+        if alpha >= beta:
+            break
+    return value
+
+def policy(you, opponent):
+    """Select the best move using iterative deepening alpha-beta search."""
+    start_time = time.time()
+    moves = get_legal_moves(you, opponent)
+    
+    if not moves:
+        return "pass"
+    if len(moves) == 1:
+        r, c = moves[0]
+        return chr(ord('a') + c) + str(r + 1)
+    
+    # Prioritize moves for initial order
+    def move_priority(m):
+        r, c = m
+        if (r, c) in [(0,0), (0,7), (7,0), (7,7)]:
+            return 0
+        if r == 0 or r == 7 or c == 0 or c == 7:
+            return 1
+        return 2
+    moves.sort(key=move_priority)
+    
+    best_move = moves[0]
+    
+    # Iterative deepening up to depth 6 or time limit
+    for depth in range(1, 7):
+        best_score = -1000000
+        current_best = moves[0]
+        
+        for r, c in moves:
+            new_you, new_opp = apply_move(you, opponent, r, c)
+            score = -negamax(new_opp, new_you, depth - 1, -1000000, 1000000)
+            if score > best_score:
+                best_score = score
+                current_best = (r, c)
+        
+        # Update best move if we completed this depth
+        best_move = current_best
+        
+        # Check time to ensure we stay under 1 second
+        if time.time() - start_time > 0.9:
+            break
+    
+    r, c = best_move
+    return chr(ord('a') + c) + str(r + 1)

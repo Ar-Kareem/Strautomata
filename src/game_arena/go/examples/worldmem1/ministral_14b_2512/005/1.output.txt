@@ -1,0 +1,180 @@
+### Strategy for this Policy
+
+This policy is designed to be a **strong but efficient** Go AI that combines **pattern-based opening moves**, **territory control**, and **basic life-and-death considerations**. The strategy follows these principles:
+
+1. **Opening Phase (First ~20 moves):**
+   - Follow a **predefined opening sequence** (like the "Approximate Japanese Opening" or "Simple Opening") to establish a strong framework.
+   - Use **memory** to track the opening phase and switch to pattern-based play once the opening is complete.
+
+2. **Middle Game:**
+   - **Territory Expansion:** Prefer moves that expand influence (e.g., moves near the center or along the edges).
+   - **Avoid Weak Responses:** Do not play moves that are easily captured or lead to opponent's large territories.
+   - **Basic Life-and-Death:** Avoid creating weak groups (e.g., single stones or 2-stone groups without liberties).
+
+3. **Endgame:**
+   - **Secure Territory:** Play moves that secure existing territories.
+   - **Avoid Overplaying:** Pass when the board is mostly filled or when no clear advantage is gained.
+
+4. **Memory Usage:**
+   - Store the **opening phase status** (e.g., whether the opening is complete).
+   - Track **key points** (e.g., center influence, edge influence) to guide future moves.
+
+5. **Fallback:**
+   - If no strong move is found, play a **safe, neutral move** (e.g., near the center or along the edges).
+
+---
+
+### Python Implementation
+Here’s the policy code:
+
+```python
+import numpy as np
+from collections import defaultdict
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    # Initialize memory if empty
+    if not memory:
+        memory = {
+            'opening_phase': True,
+            'opening_sequence': [
+                (11, 11), (11, 10), (10, 11), (10, 10),  # Center opening
+                (11, 12), (10, 12), (9, 11), (9, 10),    # Expand influence
+                (12, 11), (12, 10), (11, 9), (10, 9),    # Further expansion
+                (13, 11), (13, 10), (12, 9), (11, 8),    # Continue outward
+                (14, 11), (14, 10), (13, 9), (12, 8),    # Edge of opening
+                (15, 11), (15, 10), (14, 9), (13, 8),    # End of opening
+            ],
+            'opening_index': 0,
+            'board': np.zeros((19, 19), dtype=int),  # 1: me, -1: opponent
+            'liberties': defaultdict(int),
+            'group_map': defaultdict(list),
+        }
+
+    # Update board state
+    board = memory['board']
+    board.fill(0)
+    for r, c in me:
+        board[r-1, c-1] = 1
+    for r, c in opponent:
+        board[r-1, c-1] = -1
+
+    # Check if opening phase is complete
+    if memory['opening_phase']:
+        if memory['opening_index'] < len(memory['opening_sequence']):
+            move = memory['opening_sequence'][memory['opening_index']]
+            memory['opening_index'] += 1
+            return move, memory
+        else:
+            memory['opening_phase'] = False
+
+    # If no stones on board, play center
+    if len(me) + len(opponent) == 0:
+        return (11, 11), memory
+
+    # Compute liberties and groups
+    liberties = memory['liberties']
+    group_map = memory['group_map']
+    liberties.clear()
+    group_map.clear()
+    group_id = 0
+
+    # Assign group IDs and count liberties
+    for r in range(19):
+        for c in range(19):
+            if board[r, c] == 1:
+                if (r, c) not in group_map:
+                    group_id += 1
+                    stack = [(r, c)]
+                    group_map[(r, c)] = group_id
+                    liberties[group_id] = 0
+                    while stack:
+                        x, y = stack.pop()
+                        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                            nx, ny = x + dx, y + dy
+                            if 0 <= nx < 19 and 0 <= ny < 19:
+                                if board[nx, ny] == 0:
+                                    liberties[group_id] += 1
+                                elif board[nx, ny] == 1 and (nx, ny) not in group_map:
+                                    group_map[(nx, ny)] = group_id
+                                    stack.append((nx, ny))
+
+    # Compute influence map (simplified)
+    influence = np.zeros((19, 19), dtype=float)
+    for r, c in me:
+        for dr in [-1, 0, 1]:
+            for dc in [-1, 0, 1]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 19 and 0 <= nc < 19:
+                    influence[nr, nc] += 1
+    for r, c in opponent:
+        for dr in [-1, 0, 1]:
+            for dc in [-1, 0, 1]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 19 and 0 <= nc < 19:
+                    influence[nr, nc] -= 0.5
+
+    # Find best move using a simple heuristic
+    best_score = -float('inf')
+    best_move = None
+
+    # Check all empty points
+    for r in range(19):
+        for c in range(19):
+            if board[r, c] == 0:
+                # Score based on influence, liberties, and distance to center
+                score = influence[r, c] * 10
+                score += (19 - max(r, c, 19 - r, 19 - c)) * 0.5  # Prefer center
+                score -= 0.1 * (len(me) + len(opponent))  # Discount late-game moves
+
+                # Avoid moves that create weak groups
+                temp_board = board.copy()
+                temp_board[r, c] = 1
+                temp_liberties = liberties.copy()
+                temp_group_map = group_map.copy()
+                temp_group_id = group_id + 1
+                stack = [(r, c)]
+                temp_group_map[(r, c)] = temp_group_id
+                temp_liberties[temp_group_id] = 0
+                while stack:
+                    x, y = stack.pop()
+                    for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                        nx, ny = x + dx, y + dy
+                        if 0 <= nx < 19 and 0 <= ny < 19:
+                            if temp_board[nx, ny] == 0:
+                                temp_liberties[temp_group_id] += 1
+                            elif temp_board[nx, ny] == 1 and (nx, ny) not in temp_group_map:
+                                temp_group_map[(nx, ny)] = temp_group_id
+                                stack.append((nx, ny))
+
+                if temp_liberties[temp_group_id] <= 1:
+                    score -= 10  # Penalize weak groups
+
+                if score > best_score:
+                    best_score = score
+                    best_move = (r + 1, c + 1)  # Convert to 1-based
+
+    # If no good move found, play a safe move (pass or edge)
+    if best_move is None:
+        # Try to play near opponent's stones
+        for r, c in opponent:
+            for dr in [-1, 0, 1]:
+                for dc in [-1, 0, 1]:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == 0:
+                        return (nr + 1, nc + 1), memory
+        # Fallback: pass
+        return (0, 0), memory
+
+    return best_move, memory
+```
+
+---
+
+### Key Features of the Policy:
+1. **Opening Phase:** Follows a predefined sequence to establish a strong center.
+2. **Influence-Based Play:** Uses a simple influence map to guide moves.
+3. **Life-and-Death Awareness:** Avoids creating weak groups (e.g., single stones).
+4. **Efficiency:** Uses numpy for fast board updates and liberties calculation.
+5. **Fallback Strategy:** If no strong move is found, plays near opponent's stones or passes.
+
+This policy should perform well against weaker AIs and can be further improved with more sophisticated heuristics or machine learning.

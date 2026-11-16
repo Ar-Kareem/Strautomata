@@ -1,0 +1,406 @@
+<section class="entrypoint-grid">
+  <div class="panel panel-primary cr-panel">
+    <div class="panel-head">
+      <div>
+        <h2>Create your own Automata</h2>
+        <p>Write a policy for a game, get a live Elo.</p>
+      </div>
+    </div>
+
+    @if (setupError()) {
+      <div class="cr-error">{{ setupError() }}</div>
+    }
+    @if (runtimeError()) {
+      <div class="cr-error">{{ runtimeError() }}</div>
+    }
+
+    <ol class="cr-steps">
+      <li [class.is-active]="step() === 'edit'" [class.is-done]="step() !== 'edit'">1 · Game and code</li>
+      <li [class.is-active]="step() === 'qualify'" [class.is-done]="step() === 'evaluate'">2 · Qualify vs random</li>
+      <li [class.is-active]="step() === 'evaluate'">3 · Live rating</li>
+    </ol>
+
+    <!-- ============================ step 1: editor ============================ -->
+    @if (step() === 'edit') {
+      <div class="cr-editor">
+        <div class="cr-toolbar">
+          <label class="cr-field" [class.cr-needs-choice]="!gameKey()">
+            <span>Game</span>
+            <select [ngModel]="gameKey() ?? ''" (ngModelChange)="selectGame($event)">
+              <option value="">Choose a game</option>
+              @for (g of games(); track g.id) {
+                <option [value]="g.id">{{ g.label }}</option>
+              }
+            </select>
+          </label>
+          <label class="cr-field">
+            <span>Start from a tournament automaton</span>
+            <select [ngModel]="exampleBot()" (ngModelChange)="loadExample($event)" [disabled]="!game()">
+              <option value="">Blank template</option>
+              @for (o of opponents(); track o.id) {
+                <option [value]="o.id">#{{ o.rank }} {{ botLabel(o.id) }} · {{ formatRating(o.rating) }}</option>
+              }
+            </select>
+          </label>
+          <label class="cr-field cr-field-small">
+            <span>Move time limit (s)</span>
+            <input type="number" min="0.5" step="0.5" [value]="moveTimeout()" (change)="onTimeoutChange($any($event.target).value)" />
+          </label>
+          <label class="cr-field cr-field-small" title="Matches played at the same time, each in its own Python runtime (roughly 150 MB of memory per runtime)">
+            <span>Parallel matches</span>
+            <input type="number" min="1" [max]="maxLanes" step="1" [value]="lanes()" (change)="onLanesChange($any($event.target).value)" />
+          </label>
+          <button type="button" class="ghost-button" (click)="togglePrompt()" [disabled]="!game()">
+            {{ promptOpen() ? 'Hide prompt' : 'Show prompt' }}
+          </button>
+        </div>
+
+        @if (promptOpen()) {
+          <div class="cr-prompt">
+            <div class="cr-prompt-head">The task description the LLMs received for this game</div>
+            @if (promptLoading()) {
+              <div class="cr-muted">Loading prompt from the game engine…</div>
+            } @else {
+              <pre>{{ prompt() }}</pre>
+            }
+          </div>
+        }
+
+        <arena-code-editor [value]="code()" [errorLine]="compileErrorLine()" (valueChange)="setCode($event)"></arena-code-editor>
+
+        @if (compileError()) {
+          <div class="cr-fault">
+            <div class="cr-fault-title">Compile failed</div>
+            @if (compileErrorLine(); as line) {
+              <div class="cr-fault-line">
+                <span class="cr-fault-lineno">line {{ line }}</span>
+                <code>{{ compileErrorSource() ?? '' }}</code>
+              </div>
+            }
+            <pre>{{ compileError() }}</pre>
+          </div>
+        } @else if (compiled(); as ok) {
+          <div class="cr-ok">Compiled. On the initial board your policy returned <code>{{ ok.move }}</code> in {{ formatSecs(ok.secs ?? 0) }}.</div>
+        }
+
+        <div class="cr-actions">
+          <button type="button" class="ghost-button" (click)="compile()" [disabled]="!game() || compiling()">
+            {{ compiling() ? 'Compiling…' : 'Compile' }}
+          </button>
+          <button type="button" class="primary-button" (click)="run()" [disabled]="!compiled() || compiling()">Run</button>
+          <button type="button" class="ghost-button cr-reset" (click)="resetDraft()" [disabled]="isPristine()">Reset</button>
+        </div>
+      </div>
+    }
+
+    <!-- ============================ step 2: qualification ============================ -->
+    @if (step() === 'qualify' || step() === 'evaluate') {
+      <div class="cr-section">
+        <div class="cr-section-head">
+          <h3>
+            @if (qualBusy()) {
+              <span class="cr-spinner cr-head-spinner" aria-label="Running"></span>
+            }
+            Qualification vs random · {{ game()?.label }}
+          </h3>
+          <span class="cr-muted">{{ qualWins() }} won of {{ qualPlayed() }} played</span>
+          @if (poolStatus(); as ps) {
+            <span class="cr-muted cr-pool">{{ ps }}</span>
+          }
+          @if (step() === 'qualify') {
+            <button type="button" class="ghost-button cr-small" (click)="backToEditor()">Back to editor</button>
+          }
+        </div>
+        <div class="cr-qual">
+          @for (row of qualRows(); track row.seed) {
+            <div class="cr-qual-cell" [attr.data-outcome]="row.outcome" [title]="'seed ' + row.seed + ' · you play ' + sideLabel(row.side)">
+              @if (row.outcome === 'running') {
+                <span class="cr-spinner cr-spinner-corner" aria-label="playing"></span>
+              }
+              <span class="cr-qual-seed">seed {{ row.seed }}</span>
+              <span class="cr-qual-side">{{ sideLabel(row.side) }}</span>
+              <span class="cr-qual-result">{{ outcomeLabel(row.outcome) || '·' }}</span>
+              @if (row.result && row.outcome !== 'running') {
+                <span class="cr-qual-meta">{{ row.result.moves }} mv · {{ formatSecs(row.result.secs) }}</span>
+              }
+            </div>
+          }
+        </div>
+
+        @if (qualFault(); as fault) {
+          <div class="cr-fault">
+            <div class="cr-fault-title">
+              @if (qualAllCrashed()) {
+                {{ describeFault(fault) }} · your automaton faulted in every game against random, so the run stopped
+              } @else {
+                {{ describeFault(fault) }} · your automaton faulted in {{ qualFaultCount() }} of {{ qualPlayed() }} games
+              }
+            </div>
+            <pre>{{ fault.traceback || fault.error }}</pre>
+            @if (qualAllCrashed()) {
+              <button type="button" class="ghost-button" (click)="backToEditor()">Back to editor</button>
+            }
+          </div>
+        }
+
+        @if (qualConfirm()) {
+          <div class="cr-confirm">
+            <div class="cr-confirm-title">
+              Your automaton won {{ qualWins() }} of {{ qualPlayed() }} matches against random
+            </div>
+            <p>
+              That is under half, so the rating against the tournament automata will probably sit near the
+              bottom of the table. Take it to the tournament anyway, or go back and improve it first?
+            </p>
+            <div class="cr-confirm-actions">
+              <button type="button" class="primary-button" (click)="proceedToTournament()">Proceed to tournament</button>
+              <button type="button" class="ghost-button" (click)="backToEditor()">Back to editor</button>
+            </div>
+          </div>
+        }
+      </div>
+    }
+
+    <!-- ============================ step 3: live rating ============================ -->
+    @if (step() === 'evaluate') {
+      <div class="cr-section">
+        <div class="cr-section-head">
+          <h3>
+            @if (evalBusy()) {
+              <span class="cr-spinner cr-head-spinner" aria-label="Running"></span>
+            }
+            Live rating against the tournament automata
+          </h3>
+          <span class="cr-muted">{{ lanes() }} parallel</span>
+          @if (poolStatus(); as ps) {
+            <span class="cr-muted cr-pool">{{ ps }}</span>
+          }
+          <div class="cr-controls">
+            @if (evalRunning()) {
+              <button type="button" class="ghost-button cr-small" (click)="togglePause()">{{ paused() ? 'Resume' : 'Pause' }}</button>
+              <button type="button" class="ghost-button cr-small" (click)="stop()">Stop</button>
+            }
+            <button type="button" class="ghost-button cr-small" (click)="backToEditor()">Back to editor</button>
+          </div>
+        </div>
+
+        <div class="cr-rating-row">
+          <div class="cr-rating-card">
+            <span class="cr-rating-label">Estimated rating</span>
+            @if (estimate(); as est) {
+              <span class="cr-rating-value">{{ formatRating(est.rating) }}</span>
+              <span class="cr-rating-ci">95% CI {{ formatRating(est.low) }} – {{ formatRating(est.high) }}</span>
+              @if (projectedRank(); as pr) {
+                <span class="cr-rating-note" title="Tournament rule: rank = 1 + number of automata whose CI lower bound is above your CI upper bound">would rank #{{ pr.rank }} of {{ pr.of }} in the tournament (CI-based, same rule as the leaderboard)</span>
+              }
+            } @else {
+              <span class="cr-rating-value cr-muted">–</span>
+              <span class="cr-rating-ci">waiting for the first result</span>
+            }
+          </div>
+          <div class="cr-stat"><span class="cr-rating-label">Games</span><span class="cr-stat-value">{{ evalStats().played }}</span></div>
+          <div class="cr-stat"><span class="cr-rating-label">Wins</span><span class="cr-stat-value c-win">{{ evalStats().win + evalStats().gift }}</span></div>
+          <div class="cr-stat"><span class="cr-rating-label">Draws</span><span class="cr-stat-value">{{ evalStats().draw }}</span></div>
+          <div class="cr-stat"><span class="cr-rating-label">Losses</span><span class="cr-stat-value c-loss">{{ evalStats().loss + evalStats().fault }}</span></div>
+          <div class="cr-stat"><span class="cr-rating-label">Your faults</span><span class="cr-stat-value" [class.c-warn]="evalStats().fault > 0">{{ evalStats().fault }}</span></div>
+        </div>
+
+        <div class="cr-progress" [title]="evalProgress().done + ' of ' + evalProgress().total">
+          <span class="cr-progress-fill" [style.width.%]="evalProgress().pct"></span>
+          <span class="cr-progress-text">
+            @if (currentRows().length) {
+              playing {{ currentRows().length }} · {{ currentLabel() }}
+            } @else if (paused()) {
+              paused
+            } @else if (evalFinished()) {
+              finished · {{ evalProgress().total }} games
+            } @else {
+              stopped · {{ evalProgress().done }} of {{ evalProgress().total }} games
+            }
+          </span>
+        </div>
+
+        @if (evalRunning()) {
+          <div class="cr-now">
+            <div class="cr-now-head">Now playing</div>
+            @if (currentRows().length) {
+              <div class="cr-now-cards">
+                @for (row of currentRows(); track row.key) {
+                  <div class="cr-now-card">
+                    <span class="cr-spinner"></span>
+                    <div class="cr-now-body">
+                      <div class="cr-now-name">
+                        <model-logo [family]="row.opponent.family" [bot]="row.opponent.id" [size]="14"></model-logo>
+                        {{ botLabel(row.opponent.id) }}
+                      </div>
+                      <div class="cr-now-meta">
+                        #{{ row.opponent.rank }} · {{ formatRating(row.opponent.rating) }} · round {{ row.round + 1 }} · you play {{ sideLabel(row.side) }}
+                      </div>
+                    </div>
+                    <span class="cr-now-clock">{{ elapsedLabel(row) }}</span>
+                  </div>
+                }
+              </div>
+            } @else if (poolStatus(); as ps) {
+              <div class="cr-muted">{{ ps }}</div>
+            } @else if (paused()) {
+              <div class="cr-muted">paused</div>
+            } @else {
+              <div class="cr-muted">waiting for a free runtime…</div>
+            }
+          </div>
+        }
+
+        <div class="cr-heat">
+          <div class="cr-heat-head">
+            <span class="cr-heat-title">All matches</span>
+            <span class="cr-muted">{{ evalProgress().done }} of {{ evalProgress().total }}</span>
+            <div class="cr-heat-legend">
+              @for (item of heatLegend; track item.state) {
+                <span class="cr-heat-key">
+                  <span class="cr-heat-swatch" [attr.data-state]="item.state"></span>
+                  {{ item.label }}
+                </span>
+              }
+            </div>
+          </div>
+          <div class="cr-heat-rounds">
+            @for (group of heatRounds(); track group.round) {
+              <div class="cr-heat-round">
+                <span class="cr-heat-round-label">R{{ group.round + 1 }}</span>
+                <div class="cr-heat-grid">
+                  @for (row of group.rows; track row.key) {
+                    <span
+                      class="cr-heat-cell"
+                      [class.is-pinned]="row.key === pinnedKey()"
+                      [attr.data-state]="heatState(row.outcome)"
+                      [attr.data-outcome]="row.outcome"
+                      role="button"
+                      tabindex="0"
+                      (mouseenter)="showHeatTip(row, $event)"
+                      (mouseleave)="hideHeatTip()"
+                      (click)="toggleHeatPin(row)"
+                      (keydown.enter)="toggleHeatPin(row)"
+                    ></span>
+                  }
+                </div>
+              </div>
+            }
+          </div>
+          @if (pinned(); as pin) {
+            <div class="cr-pin">
+              <div class="cr-pin-head">
+                <div class="cr-pin-title">
+                  <model-logo [family]="pin.opponent.family" [bot]="pin.opponent.id" [size]="14"></model-logo>
+                  <strong>{{ botLabel(pin.opponent.id) }}</strong>
+                  <span class="cr-muted">#{{ pin.opponent.rank }} · {{ formatRating(pin.opponent.rating) }} · round {{ pin.round + 1 }} · you play {{ sideLabel(pin.side) }} · seed {{ pin.seed }}</span>
+                </div>
+                <span class="cr-chip" [attr.data-outcome]="pin.outcome">{{ outcomeLabel(pin.outcome) || 'Not started' }}</span>
+                <button type="button" class="ghost-button cr-small" (click)="unpin()">Unpin ✕</button>
+              </div>
+
+              @if (pin.result; as res) {
+                @if (res.error) {
+                  <div class="cr-fault">
+                    <div class="cr-fault-title">
+                      {{ describeFault(res) }}
+                      @if (pinnedFaultSide() === 'you') {
+                        · your fault
+                      } @else if (pinnedFaultSide() === 'opponent') {
+                        · opponent's fault ({{ botLabel(pin.opponent.id) }})
+                      }
+                      @if (res.moves) {
+                        · at move {{ res.moves + 1 }}
+                      }
+                    </div>
+                    <p>{{ res.error }}</p>
+                    @if (res.traceback) {
+                      <pre>{{ res.traceback }}</pre>
+                    }
+                  </div>
+                }
+              }
+
+              @if (pinnedDetail(); as detail) {
+                <!-- always replayable: these matches were just played by this engine from their seed (the
+                     history flag only covers old tournament runs, e.g. backgammon dice before the RNG fix) -->
+                <matches-replay
+                  [gameId]="game()!.game"
+                  [worldId]="game()!.world"
+                  [gameLabel]="game()!.label"
+                  [detail]="detail"
+                  [labelA]="pinnedLabels()[0]"
+                  [labelB]="pinnedLabels()[1]"
+                  (close)="unpin()"
+                ></matches-replay>
+              } @else if (pin.outcome === 'running') {
+                <div class="cr-muted">Playing… the move list and board appear when the match ends.</div>
+              } @else {
+                <div class="cr-muted">Not started yet.</div>
+              }
+            </div>
+          }
+          @if (heatTip(); as tip) {
+            <div
+              class="cr-heat-tip"
+              [class.is-below]="tip.below"
+              [style.left.px]="tip.x"
+              [style.top.px]="tip.y"
+            >
+              <div class="cr-heat-tip-title">{{ tip.title }}</div>
+              @for (line of tip.lines; track $index) {
+                <div class="cr-heat-tip-line">{{ line }}</div>
+              }
+            </div>
+          }
+        </div>
+
+        <table class="cr-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Opponent</th>
+              <th class="num">Rating</th>
+              @for (r of [].constructor(roundsPlanned()); track $index) {
+                <th class="cen">Round {{ $index + 1 }}</th>
+              }
+            </tr>
+          </thead>
+          <tbody>
+            @for (g of evalByOpponent(); track g.opponent.id) {
+              <tr [class.is-current]="g.running">
+                <td class="num cr-muted">{{ g.opponent.rank }}</td>
+                <td>
+                  <model-logo [family]="g.opponent.family" [bot]="g.opponent.id" [size]="14"></model-logo>
+                  {{ botLabel(g.opponent.id) }}
+                </td>
+                <td class="num">{{ formatRating(g.opponent.rating) }}</td>
+                @for (r of [].constructor(roundsPlanned()); track $index) {
+                  <td class="cen">
+                    @if (g.rounds[$index]; as row) {
+                      <span class="cr-chip" [attr.data-outcome]="row.outcome" [title]="row.result?.error || ('seed ' + row.seed + ' · you play ' + sideLabel(row.side))">
+                        {{ outcomeLabel(row.outcome) || '·' }}
+                      </span>
+                    }
+                  </td>
+                }
+              </tr>
+            }
+          </tbody>
+        </table>
+
+        @if (faults().length) {
+          <div class="cr-fault">
+            <div class="cr-fault-title">Your automaton faulted in {{ faults().length }} game{{ faults().length === 1 ? '' : 's' }}</div>
+            @for (f of faults(); track f.row.key) {
+              <details>
+                <summary>{{ describeFault(f.row.result) }} vs {{ botLabel(f.row.opponent.id) }} · round {{ f.row.round + 1 }} · seed {{ f.row.seed }}</summary>
+                <pre>{{ f.row.result?.traceback || f.error }}</pre>
+              </details>
+            }
+          </div>
+        }
+      </div>
+    }
+  </div>
+</section>

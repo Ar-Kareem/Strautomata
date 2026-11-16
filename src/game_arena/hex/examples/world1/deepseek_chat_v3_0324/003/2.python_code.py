@@ -1,0 +1,181 @@
+
+import heapq
+from collections import deque
+import math
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    BOARD_SIZE = 11
+    all_moves = [(i, j) for i in range(BOARD_SIZE) for j in range(BOARD_SIZE)]
+    empty_cells = [move for move in all_moves if move not in me and move not in opp]
+    
+    # Hex neighbors (excluding two diagonal directions)
+    def get_neighbors(cell):
+        i, j = cell
+        neighbors = [
+            (i-1, j), (i-1, j+1),
+            (i, j-1), (i, j+1),
+            (i+1, j-1), (i+1, j)
+        ]
+        return [(x, y) for x, y in neighbors if 0 <= x < BOARD_SIZE and 0 <= y < BOARD_SIZE]
+    
+    # Check if a move connects to the goal edges
+    def is_winning_move(move, player_stones, player_color):
+        temp_stones = player_stones.copy()
+        temp_stones.append(move)
+        
+        # For black (top-bottom connection)
+        if player_color == 'b':
+            top_edge = set((0, j) for j in range(BOARD_SIZE))
+            bottom_edge = set((BOARD_SIZE-1, j) for j in range(BOARD_SIZE))
+            connected_top = any(stone in top_edge for stone in temp_stones)
+            connected_bottom = any(stone in bottom_edge for stone in temp_stones)
+            if not (connected_top and connected_bottom):
+                return False
+            
+            # BFS to check connection
+            visited = set()
+            queue = deque()
+            
+            # Start from all top edge stones
+            for stone in temp_stones:
+                if stone in top_edge:
+                    queue.append(stone)
+                    visited.add(stone)
+            
+            while queue:
+                current = queue.popleft()
+                if current in bottom_edge:
+                    return True
+                for neighbor in get_neighbors(current):
+                    if neighbor in temp_stones and neighbor not in visited:
+                        visited.add(neighbor)
+                        queue.append(neighbor)
+            return False
+        
+        # For white (left-right connection)
+        else:
+            left_edge = set((i, 0) for i in range(BOARD_SIZE))
+            right_edge = set((i, BOARD_SIZE-1) for i in range(BOARD_SIZE))
+            connected_left = any(stone in left_edge for stone in temp_stones)
+            connected_right = any(stone in right_edge for stone in temp_stones)
+            if not (connected_left and connected_right):
+                return False
+            
+            # BFS to check connection
+            visited = set()
+            queue = deque()
+            
+            # Start from all left edge stones
+            for stone in temp_stones:
+                if stone in left_edge:
+                    queue.append(stone)
+                    visited.add(stone)
+            
+            while queue:
+                current = queue.popleft()
+                if current in right_edge:
+                    return True
+                for neighbor in get_neighbors(current):
+                    if neighbor in temp_stones and neighbor not in visited:
+                        visited.add(neighbor)
+                        queue.append(neighbor)
+            return False
+    
+    # Check for immediate winning move
+    for move in empty_cells:
+        if is_winning_move(move, me, color):
+            return move
+    
+    # Check for opponent's winning move and block it
+    opponent_color = 'w' if color == 'b' else 'b'
+    for move in empty_cells:
+        if is_winning_move(move, opp, opponent_color):
+            return move
+    
+    # Look for bridge patterns (two stones with one empty cell between them)
+    def find_bridge_moves(stones):
+        bridges = set()
+        for i in range(len(stones)):
+            for j in range(i+1, len(stones)):
+                x1, y1 = stones[i]
+                x2, y2 = stones[j]
+                dx = abs(x1 - x2)
+                dy = abs(y1 - y2)
+                
+                # Horizontal bridge
+                if dx == 0 and dy == 2:
+                    bridge_y = (y1 + y2) // 2
+                    bridge = (x1, bridge_y)
+                    if bridge not in me and bridge not in opp:
+                        bridges.add(bridge)
+                
+                # Vertical bridge (NE-SW direction)
+                elif dx == 2 and dy == 0:
+                    bridge_x = (x1 + x2) // 2
+                    bridge = (bridge_x, y1)
+                    if bridge not in me and bridge not in opp:
+                        bridges.add(bridge)
+                
+                # Diagonal bridge (NW-SE direction)
+                elif dx == 1 and dy == 1:
+                    # Check both possible bridge positions
+                    bridge1 = (x1, y2)
+                    bridge2 = (x2, y1)
+                    if bridge1 not in me and bridge1 not in opp:
+                        bridges.add(bridge1)
+                    if bridge2 not in me and bridge2 not in opp:
+                        bridges.add(bridge2)
+        return bridges
+    
+    # Try to complete our bridges
+    our_bridges = find_bridge_moves(me)
+    if our_bridges:
+        return our_bridges.pop()
+    
+    # Try to block opponent's bridges
+    opponent_bridges = find_bridge_moves(opp)
+    if opponent_bridges:
+        return opponent_bridges.pop()
+    
+    # If no bridges, use a weighted evaluation of empty cells
+    def evaluate_move(move):
+        i, j = move
+        score = 0
+        
+        # Prefer center positions
+        center_dist = math.sqrt((i - BOARD_SIZE/2)**2 + (j - BOARD_SIZE/2)**2)
+        score += (BOARD_SIZE - center_dist) * 0.5
+        
+        # Bonus for connecting to our stones
+        our_connections = 0
+        for neighbor in get_neighbors(move):
+            if neighbor in me:
+                our_connections += 1
+        score += our_connections * 2
+        
+        # Bonus for blocking opponent stones
+        opp_connections = 0
+        for neighbor in get_neighbors(move):
+            if neighbor in opp:
+                opp_connections += 1
+        score += opp_connections * 1.5
+        
+        # Bonus for being closer to our goal edges
+        if color == 'b':  # top-bottom
+            edge_dist = min(i, BOARD_SIZE - 1 - i)
+        else:  # left-right
+            edge_dist = min(j, BOARD_SIZE - 1 - j)
+        score += (BOARD_SIZE - edge_dist) * 0.3
+        
+        return score
+    
+    # Select the move with highest evaluation score
+    best_move = empty_cells[0]
+    best_score = -1
+    for move in empty_cells:
+        current_score = evaluate_move(move)
+        if current_score > best_score:
+            best_score = current_score
+            best_move = move
+    
+    return best_move

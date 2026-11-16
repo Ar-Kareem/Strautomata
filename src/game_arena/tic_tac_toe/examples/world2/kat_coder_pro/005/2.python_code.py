@@ -1,0 +1,138 @@
+
+import numpy as np
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """Main policy function that returns the best move using minimax with alpha-beta pruning."""
+    # Convert board to numpy array for easier manipulation
+    board_array = np.array(board)
+    
+    # Find all empty cells
+    empty_cells = []
+    for i in range(4):
+        for j in range(4):
+            if board_array[i, j] == 0:
+                empty_cells.append((i, j))
+    
+    # If no empty cells, return (0, 0) - should not happen in a valid game
+    if not empty_cells:
+        return (0, 0)
+    
+    # If only one empty cell, take it
+    if len(empty_cells) == 1:
+        return empty_cells[0]
+    
+    # Use minimax to find the best move
+    best_move = None
+    best_value = float('-inf')
+    
+    # Explore all possible moves
+    for move in empty_cells:
+        # Make the move
+        board_array[move] = 1
+        
+        # Evaluate the move using minimax
+        move_value = minimax(board_array, 0, float('-inf'), float('inf'), False)
+        
+        # Undo the move
+        board_array[move] = 0
+        
+        # Update best move if this move is better
+        if move_value > best_value:
+            best_value = move_value
+            best_move = move
+    
+    return best_move
+
+def minimax(board: np.ndarray, depth: int, alpha: float, beta: float, is_maximizing: bool) -> float:
+    """Minimax algorithm with alpha-beta pruning to evaluate board states."""
+    # Check for terminal states
+    winner = check_winner(board)
+    if winner == 1:  # AI wins
+        return 1000 - depth  # Prefer faster wins
+    elif winner == -1:  # Opponent wins
+        return -1000 + depth  # Prefer slower losses
+    elif depth == 4 or np.sum(board == 0) == 0:  # Depth limit or board full
+        return evaluate_board(board)
+    
+    if is_maximizing:
+        max_eval = float('-inf')
+        for i in range(4):
+            for j in range(4):
+                if board[i, j] == 0:
+                    board[i, j] = 1  # Make move
+                    eval_score = minimax(board, depth + 1, alpha, beta, False)
+                    board[i, j] = 0  # Undo move
+                    max_eval = max(max_eval, eval_score)
+                    alpha = max(alpha, eval_score)
+                    if beta <= alpha:
+                        break  # Alpha-beta pruning
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for i in range(4):
+            for j in range(4):
+                if board[i, j] == 0:
+                    board[i, j] = -1  # Make move
+                    eval_score = minimax(board, depth + 1, alpha, beta, True)
+                    board[i, j] = 0  # Undo move
+                    min_eval = min(min_eval, eval_score)
+                    beta = min(beta, eval_score)
+                    if beta <= alpha:
+                        break  # Alpha-beta pruning
+        return min_eval
+
+def check_winner(board: np.ndarray) -> int:
+    """Check if there's a winner on the board."""
+    # Check rows, columns, and diagonals for a win
+    for i in range(4):
+        # Check row
+        if abs(np.sum(board[i, :])) == 4:
+            return np.sum(board[i, :]) // 4
+        # Check column
+        if abs(np.sum(board[:, i])) == 4:
+            return np.sum(board[:, i]) // 4
+    
+    # Check diagonals
+    if abs(np.sum(np.diag(board))) == 4:
+        return np.sum(np.diag(board)) // 4
+    if abs(np.sum(np.diag(np.fliplr(board)))) == 4:
+        return np.sum(np.diag(np.fliplr(board))) // 4
+    
+    return 0  # No winner
+
+def evaluate_board(board: np.ndarray) -> float:
+    """Evaluate the board state using a heuristic function."""
+    score = 0
+    
+    # Evaluate rows
+    for row in board:
+        score += evaluate_line(row)
+    
+    # Evaluate columns
+    for col in board.T:
+        score += evaluate_line(col)
+    
+    # Evaluate diagonals
+    score += evaluate_line(np.diag(board))
+    score += evaluate_line(np.diag(np.fliplr(board)))
+    
+    return score
+
+def evaluate_line(line: np.ndarray) -> float:
+    """Evaluate a single line (row, column, or diagonal) for scoring."""
+    score = 0
+    count_ones = np.sum(line == 1)
+    count_neg_ones = np.sum(line == -1)
+    
+    # If both players have pieces in the line, it's blocked
+    if count_ones > 0 and count_neg_ones > 0:
+        return 0
+    
+    # Score based on number of pieces
+    if count_ones > 0:
+        score += count_ones ** 2
+    if count_neg_ones > 0:
+        score -= count_neg_ones ** 2
+    
+    return score

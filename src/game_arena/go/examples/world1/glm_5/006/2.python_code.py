@@ -1,0 +1,187 @@
+
+import random
+from collections import deque
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    # Constants
+    SIZE = 19
+    EMPTY = 0
+    ME = 1
+    OPP = 2
+    
+    # 1. Board Initialization
+    board = [[EMPTY for _ in range(SIZE)] for _ in range(SIZE)]
+    for r, c in me:
+        board[r-1][c-1] = ME
+    for r, c in opponent:
+        board[r-1][c-1] = OPP
+        
+    # Directions
+    dirs = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    
+    # 2. Group Analysis (BFS to find groups and liberties)
+    # group_id_map: maps (r, c) -> group_id
+    # groups: dict mapping group_id -> {'color': ME/OPP, 'stones': set(), 'liberties': set()}
+    group_id_map = {}
+    groups = {}
+    group_id_counter = 0
+    
+    for r in range(SIZE):
+        for c in range(SIZE):
+            if board[r][c] != EMPTY and (r, c) not in group_id_map:
+                color = board[r][c]
+                q = deque([(r, c)])
+                visited = {(r, c)}
+                stones = set()
+                liberties = set()
+                
+                current_gid = group_id_counter
+                
+                while q:
+                    cr, cc = q.popleft()
+                    stones.add((cr, cc))
+                    group_id_map[(cr, cc)] = current_gid
+                    
+                    for dr, dc in dirs:
+                        nr, nc = cr + dr, cc + dc
+                        if 0 <= nr < SIZE and 0 <= nc < SIZE:
+                            if board[nr][nc] == EMPTY:
+                                liberties.add((nr, nc))
+                            elif board[nr][nc] == color and (nr, nc) not in visited:
+                                visited.add((nr, nc))
+                                q.append((nr, nc))
+                
+                groups[current_gid] = {'color': color, 'stones': stones, 'liberties': liberties}
+                group_id_counter += 1
+
+    # 3. Move Evaluation
+    best_score = -float('inf')
+    best_moves = []
+    
+    # Heuristic: Star points for opening
+    star_points = {
+        (3, 3), (3, 9), (3, 15),
+        (9, 3), (9, 9), (9, 15),
+        (15, 3), (15, 9), (15, 15)
+    }
+    
+    total_stones = len(me) + len(opponent)
+    
+    # Iterate all empty points
+    for r in range(SIZE):
+        for c in range(SIZE):
+            if board[r][c] != EMPTY:
+                continue
+            
+            # --- Legality & Capture Check ---
+            # Check neighbors to determine captures and suicide
+            captures_opponent = False
+            captured_stone_count = 0
+            captures_groups = [] # gids of opponent groups captured
+            
+            connects_friendly = False
+            friendly_groups = set() # gids of friendly groups connected to
+            
+            has_empty_neighbor = False
+            
+            for dr, dc in dirs:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < SIZE and 0 <= nc < SIZE:
+                    neighbor_color = board[nr][nc]
+                    if neighbor_color == EMPTY:
+                        has_empty_neighbor = True
+                    elif neighbor_color == OPP:
+                        gid = group_id_map[(nr, nc)]
+                        # If opponent group has exactly 1 liberty (this spot), it's captured
+                        if len(groups[gid]['liberties']) == 1:
+                            captures_opponent = True
+                            captured_stone_count += len(groups[gid]['stones'])
+                            captures_groups.append(gid)
+                    elif neighbor_color == ME:
+                        connects_friendly = True
+                        gid = group_id_map[(nr, nc)]
+                        friendly_groups.add(gid)
+
+            # Suicide Check
+            # It is suicide if:
+            # 1. It doesn't capture any opponent stones.
+            # 2. It has no empty neighbors.
+            # 3. All connected friendly groups have exactly 1 liberty (this move fills it).
+            is_suicide = False
+            if not captures_opponent:
+                if not has_empty_neighbor:
+                    # Check if connected friendly groups can support this stone
+                    # If any connected friendly group has > 1 liberty, it's safe (not suicide)
+                    # Else if no friendly groups, or all have 1 liberty, it is suicide.
+                    supported = False
+                    if friendly_groups:
+                        for gid in friendly_groups:
+                            if len(groups[gid]['liberties']) > 1:
+                                supported = True
+                                break
+                    
+                    if not supported:
+                        is_suicide = True
+            
+            if is_suicide:
+                continue
+            
+            # --- Scoring ---
+            score = 0.0
+            
+            # 1. Capture Priority
+            if captures_opponent:
+                score += 1000.0 * captured_stone_count
+            
+            # 2. Defense Priority (Saving own groups in Atari)
+            # If we connect to a friendly group in Atari (1 lib) and we don't put it in Atari again?
+            # Actually, just extending from Atari is usually good.
+            for gid in friendly_groups:
+                if len(groups[gid]['liberties']) == 1:
+                    # This move saves the group
+                    score += 800.0 * len(groups[gid]['stones'])
+            
+            # 3. Atari Threats (Reducing opponent liberties to 1)
+            # We check if this move creates a new Atari
+            # For each opponent neighbor group that currently has 2 liberties, and we occupy one.
+            for dr, dc in dirs:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < SIZE and 0 <= nc < SIZE and board[nr][nc] == OPP:
+                    gid = group_id_map[(nr, nc)]
+                    if len(groups[gid]['liberties']) == 2 and (r,c) in groups[gid]['liberties']:
+                        score += 50.0 * len(groups[gid]['stones'])
+            
+            # 4. Eye Safety (Penalize filling own eyes)
+            # An eye is an empty spot surrounded by own stones.
+            # Heuristic: If not capturing, and all non-edge neighbors are ME, it's likely an eye.
+            is_eye_candidate = True
+            neighbor_count = 0
+            for dr, dc in dirs:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < SIZE and 0 <= nc < SIZE:
+                    neighbor_count += 1
+                    if board[nr][nc] != ME:
+                        is_eye_candidate = False
+                        break
+            
+            if is_eye_candidate and neighbor_count > 0 and not captures_opponent:
+                score -= 5000.0 # Strong penalty
+            
+            # 5. Opening Heuristics (Star points)
+            if total_stones < 20:
+                if (r, c) in star_points:
+                    score += 50.0
+            
+            # Add small noise to break ties randomly
+            score += random.random()
+            
+            if score > best_score:
+                best_score = score
+                best_moves = [(r + 1, c + 1)] # Convert back to 1-based
+            elif score == best_score:
+                best_moves.append((r + 1, c + 1))
+                
+    if not best_moves:
+        return (0, 0) # Pass
+        
+    return random.choice(best_moves)

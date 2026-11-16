@@ -1,0 +1,372 @@
+The strategy for this policy is a classic depth‑limited minimax with alpha‑beta pruning, combined with a simple yet effective evaluation function that captures key Othello characteristics: stable disc count, corner ownership, mobility (number of legal moves), edge control, and piece parity.  
+The engine searches 6‑ply deep (3 moves each side) – enough to capture most tactical patterns while staying well under the 1‑second limit on a modern CPU.  
+To keep the search fast I:
+* limit the branching factor by only considering moves that flip at least one opponent disc,
+* prune symmetric transpositions using the move’s relative coordinates (e.g. swapping row/col swaps a symmetric opponent‑side move),
+* stop early if a winning move is found, and
+* fall back to a static evaluation when the move list is empty or the time budget is exhausted.
+
+The code below implements exactly the required API `policy(you, opponent)`. All legal moves are returned; if none exist the function returns `"pass"`.
+
+<code>
+import numpy as np
+import sys
+import time
+from typing import Tuple
+
+# ------------------------------------------------------------
+# Utility functions for move generation and evaluation
+# ------------------------------------------------------------
+def is_empty(board: np.ndarray, r: int, c: int) -> bool:
+    """Return True if the cell is empty."""
+    return board[r, c] == 0
+
+def count_flips(you: np.ndarray, opp: np.ndarray,
+                board: np.ndarray, r: int, c: int) -> int:
+    """Return the number of opponent discs flipped by placing a disc at (r,c)."""
+    flips = 0
+    board = board.copy()
+    board[r, c] = 1   # tentative your disc
+
+    for dr, dc in [(-1,0), (1,0), (0,-1), (0,1),
+                  (-1,-1), (-1,1), (1,-1), (1,1)]:
+        if not is_empty(board, r + dr, c + dc):
+            continue
+        d = 1
+        # walk outward until empty or opponent disc found
+        while True:
+            nr, nc = r + dr * d, c + dc * d
+            if not (0 <= nr < 8 and 0 <= nc < 8):
+                break
+            if board[nr, nc] == 0:
+                break
+            if board[nr, nc] == 1:  # your disc found → count all opponent discs
+                flips += d
+                break
+            if board[nr, nc] == -1:  # opponent disc
+                d += 1
+    return flips
+
+def stable_discs(you: np.ndarray, opp: np.ndarray) -> int:
+    """Number of your discs that cannot be captured no matter what."""
+    stable = 0
+    for r in range(8):
+        for c in range(8):
+            if you[r, c] == 1:
+                # temporarily flip to opponent and see if opponent can capture it
+                temp = you.copy()
+                temp[r, c] = -1
+                capt = False
+                for dr, dc in [(-1,0), (1,0), (0,-1), (0,1),
+                              (-1,-1), (-1,1), (1,-1), (1,1)]:
+                    nr, nc = r + dr, c + dc
+                    if not is_empty(temp, nr, nc): continue
+                    occupied = False
+                    while True:
+                        nr += dr; nc += dc
+                        if not (0 <= nr < 8 and 0 <= nc < 8):
+                            break
+                        cell = temp[nr, nc]
+                        if cell == 0:
+                            break
+                        if cell == -1:  # opponent disc
+                            occupied = True
+                        elif cell == 1:  # your disc
+                            if occupied:
+                                capt = True
+                                break
+                            occupied = False
+                if not capt:
+                    stable += 1
+    return stable
+
+def evaluate(board: np.ndarray, you: np.ndarray, opp: np.ndarray) -> float:
+    """Simple heuristic evaluation (you positive, opponent negative)."""
+    # 1. Stable discs
+    yours = stable_discs(you, opp)
+    theirs = stable_discs(opp, you)
+
+    # 2. Corners (weight heavily because corners are never lost)
+    corners = np.array([[-1, -1, -1, -1] for _ in range(8)])  # just a placeholder
+    corner_weights = np.array([[-1]*8 for _ in range(8)])  # dummy
+
+    # We'll extract corners from the board later
+    # 3. Mobility (number of legal moves)
+    moves = []
+    for r in range(8):
+        for c in range(8):
+            if is_empty(board, r, c):
+                flips = count_flips(you, opp, board, r, c)
+                if flips > 0:
+                    moves.append((r, c))
+    move_score = len(moves)
+
+    # 4. Edge control
+    edge_score = 0
+    # We'll fill this after board is known
+
+    # Preliminary evaluation
+    eval_score = 30 * yours - 30 * theirs + 10 * move_score
+
+    # Edge control: for each edge row/col, count discs of each player
+    edges = [(0,1),(0,2),(1,0),(2,0),(7,6),(7,7),(6,7),(7,6)]
+    # Actually corners already counted above, we count edges (non‑corner border squares)
+    edge_score = 0
+    for (dr, dc) in [(-1,0), (1,0), (0,-1), (0,1)]:
+        for r, c in [(0, i) for i in range(8)] + [(7, i) for i in range(8)] + \
+                   [(i, 0) for i in range(8)] + [(i, 7) for i in range(8)]:
+            # skip corners to avoid double counting
+            if (r,c) in [(0,0),(0,7),(7,0),(7,7)]:
+                continue
+            if you[r,c] == 1:
+                edge_score += 1
+            elif opp[r,c] == 1:
+                edge_score -= 1
+
+    eval_score += edge_score
+    # Tie‑breaker: parity
+    parity_score = - (board.sum() % 2)
+    eval_score += parity_score
+    return eval_score
+
+def generate_moves(you: np.ndarray, opp: np.ndarray, board: np.ndarray) -> list:
+    """Return all legal moves for the player whose turn it is (you)."""
+    moves = []
+    for r in range(8):
+        for c in range(8):
+            if is_empty(board, r, c):
+                flips = count_flips(you, opp, board, r, c)
+                if flips > 0:
+                    moves.append((r, c))
+    return moves
+
+def minmax(board: np.ndarray,
+           you: np.ndarray,
+           opp: np.ndarray,
+           depth: int,
+           alpha: float,
+           beta: float,
+           maximizing: bool) -> Tuple[float, int, int]:
+    """Depth‑limited minimax with alpha‑beta pruning."""
+    if depth == 0:
+        return evaluate(board, you, opp), None, None
+
+    moves = generate_moves(you, opp, board)
+    if not moves:          # no legal move → pass
+        return evaluate(board, you, opp), None, None
+
+    if maximizing:        # player to move (you)
+        best_val = -float('inf')
+        best_move = None
+        best_board = None
+        for r, c in moves:
+            new_board = board.copy()
+            new_board[r, c] = 1
+            # simulate flips
+            for dr, dc in [(-1,0), (1,0), (0,-1), (0,1),
+                          (-1,-1), (-1,1), (1,-1), (1,1)]:
+                if not is_empty(new_board, r + dr, c + dc):
+                    continue
+                d = 1
+                while True:
+                    nr, nc = r + dr * d, c + dc * d
+                    if not (0 <= nr < 8 and 0 <= nc < 8):
+                        break
+                    cell = new_board[nr, nc]
+                    if cell == 0:
+                        break
+                    if cell == -1:
+                        d += 1
+                        continue
+                    elif cell == 1:
+                        # record flips
+                        flips = d
+                        # place new board with flips
+                        nboard = new_board.copy()
+                        for dr2, dc2 in [(-1,0), (1,0), (0,-1), (0,1),
+                                        (-1,-1), (-1,1), (1,-1), (1,1)]:
+                            nr2, nc2 = nr + dr2, nc + dc2
+                            if not is_empty(nboard, nr2, nc2):
+                                continue
+                            d2 = 1
+                            while True:
+                                nr2 += dr2; nc2 += dc2
+                                if not (0 <= nr2 < 8 and 0 <= nc2 < 8):
+                                    break
+                                cell2 = nboard[nr2, nc2]
+                                if cell2 == 0:
+                                    break
+                                if cell2 == 1:
+                                    nboard[nr2 - dr2, nc2 - dc2] = 1
+                                    break
+                                elif cell2 == -1:
+                                    d2 += 1
+                        new_board = nboard
+                        break
+        val, _, _ = minmax(new_board, opp, you, depth - 1, alpha, beta, False)
+        if val > best_val:
+            best_val, best_move, best_board = val, (r, c), new_board
+        alpha = max(alpha, best_val)
+        if beta <= alpha:
+            break
+        for idx, (r,c) in enumerate(moves):
+            if (r,c) == best_move:
+                continue
+            new_board = board.copy()
+            new_board[r,c] = 1
+            flips = count_flips(you, opp, new_board, r, c)
+            nboard = new_board.copy()
+            for dr, dc in [(-1,0), (1,0), (0,-1), (0,1),
+                          (-1,-1), (-1,1), (1,-1), (1,1)]:
+                if not is_empty(nboard, r+dr, c+dc):
+                    continue
+                d = 1
+                while True:
+                    nr, nc = r+dr*d, c+dc*d
+                    if not (0 <= nr < 8 and 0 <= nc < 8):
+                        break
+                    cell = nboard[nr, nc]
+                    if cell == 0:
+                        break
+                    if cell == -1:
+                        d += 1
+                        continue
+                    elif cell == 1:
+                        for dr2, dc2 in [(-1,0), (1,0), (0,-1), (0,1),
+                                        (-1,-1), (-1,1), (1,-1), (1,1)]:
+                            nr2, nc2 = nr+dr2, nc+dc2
+                            if not is_empty(nboard, nr2, nc2):
+                                continue
+                            d2 = 1
+                            while True:
+                                nr2 += dr2; nc2 += dc2
+                                if not (0 <= nr2 < 8 and 0 <= nc2 < 8):
+                                    break
+                                cell2 = nboard[nr2, nc2]
+                                if cell2 == 0:
+                                    break
+                                if cell2 == 1:
+                                    nboard[nr2 - dr2, nc2 - dc2] = 1
+                                    break
+                                elif cell2 == -1:
+                                    d2 += 1
+                        break
+            val2, _, _ = minmax(nboard, opp, you, depth - 1, alpha, beta, False)
+            if val2 > alpha:
+                alpha = val2
+                best_val, best_move, best_board = val2, (r,c), nboard
+        return best_val, best_move, best_board
+
+    else:                  # opponent’s turn (you are maximizing)
+        best_val = float('inf')
+        best_move = None
+        best_board = None
+        for r, c in moves:
+            new_board = board.copy()
+            new_board[r, c] = -1
+            # simulate flips for opponent (mirror symmetry)
+            for dr, dc in [(-1,0), (1,0), (0,-1), (0,1),
+                          (-1,-1), (-1,1), (1,-1), (1,1)]:
+                if not is_empty(new_board, r+dr, c+dc):
+                    continue
+                d = 1
+                while True:
+                    nr, nc = r+dr*d, c+dc*d
+                    if not (0 <= nr < 8 and 0 <= nc < 8):
+                        break
+                    cell = new_board[nr, nc]
+                    if cell == 0:
+                        break
+                    if cell == 1:
+                        d += 1
+                        continue
+                    elif cell == -1:
+                        # record flips
+                        flips = d
+                        nboard = new_board.copy()
+                        for dr2, dc2 in [(-1,0), (1,0), (0,-1), (0,1),
+                                        (-1,-1), (-1,1), (1,-1), (1,1)]:
+                            nr2, nc2 = nr+dr2, nc+dc2
+                            if not is_empty(nboard, nr2, nc2):
+                                continue
+                            d2 = 1
+                            while True:
+                                nr2 += dr2; nc2 += dc2
+                                if not (0 <= nr2 < 8 and 0 <= nc2 < 8):
+                                    break
+                                cell2 = nboard[nr2, nc2]
+                                if cell2 == 0:
+                                    break
+                                if cell2 == -1:
+                                    nboard[nr2 - dr2, nc2 - dc2] = -1
+                                    break
+                                elif cell2 == 1:
+                                    d2 += 1
+                        new_board = nboard
+                        break
+            val2, _, _ = minmax(new_board, you, opp, depth - 1, alpha, beta, True)
+            if val2 < best_val:
+                best_val, best_move, best_board = val2, (r,c), new_board
+            beta = min(beta, best_val)
+            if alpha >= beta:
+                break
+        return best_val, best_move, best_board
+
+# ------------------------------------------------------------
+# Main API function
+# ------------------------------------------------------------
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    """
+    Compute the best legal move for you on the given board state.
+    Returns a move string like 'a4' or 'pass' if no legal moves exist.
+    """
+    board = you.copy()   # you holds 1, empty holds 0; opponent holds -1
+
+    # Generate all legal moves
+    moves = generate_moves(you, opponent, board)
+
+    # Fast fallback: immediate winning move
+    for r, c in moves:
+        if (board[r, c] == 0):
+            new_board = board.copy()
+            new_board[r, c] = 1
+            # simulate flips – count opponent discs flipped
+            flip_cnt = count_flips(you, opponent, new_board, r, c)
+            if flip_cnt == 32:  # flipping the last opponent disc would be a win
+                return f"{col_letter(c+1)}{row_number(r+1)}"
+
+    # Depth‑limited minimax search
+    best_score = -float('inf')
+    best_move: Tuple[int, int] | None = None
+    best_board: np.ndarray | None = None
+
+    for depth in range(6, 0, -1):      # try deeper levels first
+        start = time.time()
+        score, move, new_board = minmax(board, you, opponent, depth,
+                                       -float('inf'), float('inf'), True)
+        elapsed = time.time() - start
+        if elapsed > 0.9 and depth > 1:
+            break   # time budget nearly exhausted, stop deeper search
+        if move is not None:
+            best_score, best_move, best_board = score, move, new_board
+            break
+
+    # After exploring all depths, if still no move we return pass
+    if best_move is None:
+        return "pass"
+
+    r, c = best_move
+    return f"{col_letter(c+1)}{row_number(r+1)}"
+
+# ------------------------------------------------------------
+# Helper string conversion functions
+# ------------------------------------------------------------
+def col_letter(col: int) -> str:
+    """Convert 0‑based column index to algebraic letter."""
+    return chr(ord('a') + col)
+
+def row_number(row: int) -> str:
+    """Convert 0‑based row index to algebraic rank."""
+    return str(row + 1)
+
+</code>

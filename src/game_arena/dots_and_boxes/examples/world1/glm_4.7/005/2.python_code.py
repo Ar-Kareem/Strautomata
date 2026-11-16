@@ -1,0 +1,380 @@
+
+import numpy as np
+
+# Bitboard indices
+# Horizontal edges: 5 rows * 5 cols = 25 edges? No, 4 rows of boxes means 5 lines of dots.
+# Edges are between dots. Horizontal edges are at (r, c) for r in 0..4, c in 0..4.
+# Wait, standard 4x4 boxes.
+# Horizontal edges: 4 rows of boxes + 1 top boundary + 1 bottom boundary? No.
+# The array is 5x5.
+# horizontal[row, col] connects (row, col) to (row, col+1).
+# There are 5 rows of horizontal edges, each with 4 segments? No, 5 dots means 4 edges.
+# Let's re-read: "horizontal[row, col] ... (0 = not drawn)".
+# "range 0-4" for row/col in move.
+# If row, col is 0..4, then there are 5x5 possible horizontal edges?
+# A 4x4 grid of boxes has 5x5 dots.
+# Horizontal edges connect dot(r, c) to dot(r, c+1).
+# Valid c: 0..3.
+# The problem says "horizontal... 5x5 numpy arrays".
+# "horizontal[row, col] ... (row, col) ... range 0-4".
+# This implies there are 5x5 potential horizontal locations?
+# But a standard 4x4 grid has 4*5 = 20 horizontal edges.
+# Indices: row 0..3, col 0..4? Or row 0..4, col 0..4?
+# Let's assume the array describes the edges *between* dots.
+# Usually, a 4x4 box grid has 20 horizontal edges and 20 vertical edges.
+# If the array is 5x5, maybe the borders are included but unused or valid?
+# Actually, row 4 is the bottom boundary. col 4 is the right boundary.
+# Edges:
+# H: (r, c) for r in 0..3 (between rows of dots), c in 0..4. Total 4*5 = 20.
+# V: (r, c) for r in 0..4, c in 0..3 (between cols of dots). Total 5*4 = 20.
+# Total 40 edges.
+# The "range 0-4" in "Action / Return Format" likely refers to the indices allowed in the string, which match the array indices.
+# I will map H edges (0..3, 0..4) to bits 0..19.
+# I will map V edges (0..4, 0..3) to bits 20..39.
+
+# Precompute Box to Edges mapping
+# Box at (r, c) 0..3, 0..3
+box_edges = [] # List of tuples (top, bottom, left, right)
+edge_to_boxes = [[] for _ in range(40)]
+
+for r in range(4):
+    for c in range(4):
+        # H edges: 0..19
+        top = r * 5 + c
+        bottom = (r + 1) * 5 + c
+        
+        # V edges: 20..39
+        left = 20 + r * 4 + c
+        right = 20 + r * 4 + (c + 1)
+        
+        box_edges.append((top, bottom, left, right))
+        
+        edge_to_boxes[top].append(r * 4 + c)
+        edge_to_boxes[bottom].append(r * 4 + c)
+        edge_to_boxes[left].append(r * 4 + c)
+        edge_to_boxes[right].append(r * 4 + c)
+
+# Box coordinates from ID
+box_coords = [(r, c) for r in range(4) for c in range(4)]
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    # 1. Parse to Bitboards
+    edges = 0
+    my_cap = 0
+    opp_cap = 0
+    
+    # Horizontal 0-19
+    for r in range(4):
+        for c in range(5):
+            if horizontal[r, c] != 0:
+                edges |= 1 << (r * 5 + c)
+                
+    # Vertical 20-39
+    for r in range(5):
+        for c in range(4):
+            if vertical[r, c] != 0:
+                edges |= 1 << (20 + r * 4 + c)
+                
+    # Capture
+    for r in range(4):
+        for c in range(4):
+            val = capture[r, c]
+            if val == 1:
+                my_cap |= 1 << (r * 4 + c)
+            elif val == -1:
+                opp_cap |= 1 << (r * 4 + c)
+
+    # 2. Solver
+    # We use a cache to speed up recursion
+    from functools import lru_cache
+
+    @lru_cache(maxsize=100000)
+    def solve(state_edges, state_my, state_opp, maximizing, depth):
+        # Terminal state?
+        total_caps = bin(state_my).count('1') + bin(state_opp).count('1')
+        if total_caps == 16:
+            return bin(state_my).count('1') - bin(state_opp).count('1')
+        
+        # Depth limit
+        if depth == 0:
+            # Heuristic: Simple difference + potential
+            # Identify chains available
+            # If maximizing, potential chains are ones I can take.
+            # Actually, just current score is a safe fallback, or look for immediate captures.
+            return bin(state_my).count('1') - bin(state_opp).count('1')
+
+        # Identify Moves
+        legal_moves = []
+        safe_moves = []
+        capture_moves = [] # moves that complete a box
+        
+        for i in range(40):
+            if (state_edges >> i) & 1 == 0:
+                legal_moves.append(i)
+                # Check if this move captures
+                captured = False
+                for b in edge_to_boxes[i]:
+                    if ((state_my >> b) & 1) or ((state_opp >> b) & 1): continue
+                    
+                    t, bo, l, r = box_edges[b]
+                    cnt = ((state_edges>>t)&1) + ((state_edges>>bo)&1) + ((state_edges>>l)&1) + ((state_edges>>r)&1)
+                    if cnt == 3:
+                        captured = True
+                        break
+                
+                if captured:
+                    capture_moves.append(i)
+                else:
+                    safe_moves.append(i)
+
+        # Endgame Logic (No Safe Moves)
+        # If there are no safe moves, the game is in the "Chain Phase".
+        # The optimal play is to take the longest chain.
+        # We can evaluate this state immediately without further recursion.
+        if not safe_moves:
+            # Find all chains of boxes that are "open" (3 sides drawn)
+            # Note: capture_moves are all moves. We need to group them into chains.
+            # Actually, if no safe moves, every legal move completes a box.
+            # We need to find the connected components of capturable boxes.
+            
+            # Re-find capturable boxes state
+            open_boxes = set()
+            for i in legal_moves:
+                 for b in edge_to_boxes[i]:
+                    if ((state_my >> b) & 1) or ((state_opp >> b) & 1): continue
+                    t, bo, l, r = box_edges[b]
+                    cnt = ((state_edges>>t)&1) + ((state_edges>>bo)&1) + ((state_edges>>l)&1) + ((state_edges>>r)&1)
+                    if cnt == 3:
+                        open_boxes.add(b)
+            
+            # Group into chains (BFS)
+            visited = set()
+            chains = []
+            while open_boxes:
+                b = open_boxes.pop()
+                if b in visited: continue
+                # Start chain
+                chain_len = 0
+                queue = [b]
+                visited.add(b)
+                while queue:
+                    curr = queue.pop(0)
+                    chain_len += 1
+                    # Neighbors
+                    r, c = box_coords[curr]
+                    # Check 4 neighbors
+                    neighbors = []
+                    if r > 0: neighbors.append((r-1)*4 + c)
+                    if r < 3: neighbors.append((r+1)*4 + c)
+                    if c > 0: neighbors.append(r*4 + (c-1))
+                    if c < 3: neighbors.append(r*4 + (c+1))
+                    
+                    for n in neighbors:
+                        if n in open_boxes and n not in visited:
+                            # Check if shared edge is drawn
+                            # Edge between curr and n must be drawn for them to be in same chain
+                            # Actually, for them to be in the same chain, they must be linked by a drawn edge.
+                            # Since we are in "no safe moves", all 3-sided boxes are ready.
+                            # But are they connected?
+                            # In a chain, boxes share a full side (edge drawn).
+                            # This edge corresponds to a specific bit.
+                            
+                            # Get shared edge index
+                            # Logic to find shared edge index is a bit verbose, 
+                            # but simplification: if they are neighbors and both are 'open', 
+                            # the shared edge IS drawn (because otherwise one of them wouldn't have 3 sides? 
+                            # No, they could be side-by-side with the vertical edge missing, both having 3 other sides).
+                            
+                            # Correct check:
+                            # Identify edge between curr (r1, c1) and n (r2, c2).
+                            r1, c1 = box_coords[curr]
+                            r2, c2 = box_coords[n]
+                            shared_edge_idx = -1
+                            if r1 == r2: # Horizontal adjacency
+                                # Vertical edge at row r1, col min(c1, c2)
+                                shared_edge_idx = 20 + r1 * 4 + min(c1, c2)
+                            else: # Vertical adjacency
+                                # Horizontal edge at row min(r1, r2), col c1
+                                shared_edge_idx = min(r1, r2) * 5 + c1
+                            
+                            if (state_edges >> shared_edge_idx) & 1:
+                                visited.add(n)
+                                queue.append(n)
+                                # open_boxes.remove(n) # handled by checking visited
+                
+                if chain_len > 0:
+                    chains.append(chain_len)
+            
+            # Greedy Chain Evaluation
+            # Players alternate taking longest chain.
+            # Current player (maximizing) takes max(chains).
+            chains.sort(reverse=True)
+            score_diff = 0
+            turn = 0 # 0 for current player
+            for c_len in chains:
+                if turn == 0:
+                    score_diff += c_len
+                else:
+                    score_diff -= c_len
+                turn = 1 - turn
+            
+            # Add to current score
+            current_score = bin(state_my).count('1') - bin(state_opp).count('1')
+            return current_score + score_diff
+
+        # Standard Minimax with Safe Moves
+        # Prioritize Safe Moves? In midgame, we want to play safe.
+        # We only iterate safe moves here if they exist.
+        # If safe moves exist, we should NOT play capturing moves unless forced?
+        # Usually, yes. Taking a box gives turn to opponent.
+        # If safe moves exist, playing a capturing move is usually suboptimal (shortens your safe run).
+        # But we should check.
+        
+        # To save time, only check safe moves if available.
+        candidates = safe_moves if safe_moves else capture_moves
+        
+        best_val = -100000 if maximizing else 100000
+        
+        # Sort candidates by heuristic to improve alpha-beta
+        # For safe moves: prefer moves that create few new 3-sided boxes.
+        def get_score(m):
+            # Simulate
+            next_e = state_edges | (1 << m)
+            score = 0
+            # How many boxes become 3-sided?
+            for b in edge_to_boxes[m]:
+                if ((state_my>>b)&1) or ((state_opp>>b)&1): continue
+                t, bo, l, r = box_edges[b]
+                cnt = ((next_e>>t)&1) + ((next_e>>bo)&1) + ((next_e>>l)&1) + ((next_e>>r)&1)
+                if cnt == 3:
+                    score += 1 # Creating 3-sided box is bad/risky
+            return score
+
+        candidates.sort(key=get_score)
+
+        for m in candidates:
+            next_e = state_edges | (1 << m)
+            next_my = state_my
+            next_opp = state_opp
+            captured = False
+            
+            for b in edge_to_boxes[m]:
+                if ((next_my>>b)&1) or ((next_opp>>b)&1): continue
+                t, bo, l, r = box_edges[b]
+                if ((next_e>>t)&1) and ((next_e>>bo)&1) and ((next_e>>l)&1) and ((next_e>>r)&1):
+                    if maximizing:
+                        next_my |= 1 << b
+                    else:
+                        next_opp |= 1 << b
+                    captured = True
+            
+            if captured:
+                val = solve(next_e, next_my, next_opp, maximizing, depth - 1)
+            else:
+                val = solve(next_e, next_my, next_opp, not maximizing, depth - 1)
+            
+            if maximizing:
+                if val > best_val:
+                    best_val = val
+            else:
+                if val < best_val:
+                    best_val = val
+                    
+        return best_val
+
+    # 3. Find best move
+    # Search depth
+    remaining_edges = 40 - bin(edges).count('1')
+    depth = min(remaining_edges, 8) # Depth 8 is usually sufficient with chain logic
+
+    legal_moves = []
+    for i in range(40):
+        if (edges >> i) & 1 == 0:
+            legal_moves.append(i)
+            
+    best_move = -1
+    best_val = -100000
+    
+    # We are always the maximizing player (policy is called for us)
+    # We iterate through moves.
+    # Move ordering: Safe moves first, then Capture.
+    # This helps if we break early, but we need to find the absolute best.
+    
+    # Re-categorize for the top level loop
+    safe_moves_top = []
+    capture_moves_top = []
+    
+    for i in legal_moves:
+        captured = False
+        for b in edge_to_boxes[i]:
+            if ((my_cap>>b)&1) or ((opp_cap>>b)&1): continue
+            t, bo, l, r = box_edges[b]
+            cnt = ((edges>>t)&1) + ((edges>>bo)&1) + ((edges>>l)&1) + ((edges>>r)&1)
+            if cnt == 3:
+                captured = True
+                break
+        if captured:
+            capture_moves_top.append(i)
+        else:
+            safe_moves_top.append(i)
+            
+    candidates = safe_moves_top if safe_moves_top else capture_moves_top
+    
+    # Sort candidates (heuristic)
+    def get_score_top(m):
+        next_e = edges | (1 << m)
+        score = 0
+        for b in edge_to_boxes[m]:
+            if ((my_cap>>b)&1) or ((opp_cap>>b)&1): continue
+            t, bo, l, r = box_edges[b]
+            cnt = ((next_e>>t)&1) + ((next_e>>bo)&1) + ((next_e>>l)&1) + ((next_e>>r)&1)
+            if cnt == 3:
+                score += 1
+        return score
+        
+    candidates.sort(key=get_score_top)
+    
+    # In case of ties (or specific equal heuristics), prefer move that keeps options open?
+    # Just take the first one from sorted list if values are equal.
+    
+    # Evaluation loop
+    for m in candidates:
+        next_e = edges | (1 << m)
+        next_my = my_cap
+        next_opp = opp_cap
+        captured = False
+        
+        for b in edge_to_boxes[m]:
+            if ((next_my>>b)&1) or ((next_opp>>b)&1): continue
+            t, bo, l, r = box_edges[b]
+            if ((next_e>>t)&1) and ((next_e>>bo)&1) and ((next_e>>l)&1) and ((next_e>>r)&1):
+                next_my |= 1 << b
+                captured = True
+        
+        if captured:
+            val = solve(next_e, next_my, next_opp, True, depth - 1)
+        else:
+            val = solve(next_e, next_my, next_opp, False, depth - 1)
+            
+        if val > best_val:
+            best_val = val
+            best_move = m
+            # If we found a safe move that guarantees a win or great score, can we stop?
+            # Not strictly, but for speed...
+            if safe_moves_top and val > 5: # Good enough lead?
+                pass 
+
+    # Fallback (should not happen if legal_moves is not empty)
+    if best_move == -1:
+        best_move = legal_moves[0]
+
+    # 4. Convert to string
+    if best_move < 20:
+        r = best_move // 5
+        c = best_move % 5
+        return f"{r},{c},H"
+    else:
+        k = best_move - 20
+        r = k // 4
+        c = k % 4
+        return f"{r},{c},V"

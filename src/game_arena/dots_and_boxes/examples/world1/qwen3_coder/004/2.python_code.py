@@ -1,0 +1,155 @@
+
+import numpy as np
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    # Board is 4x4 boxes, so 5x5 edges
+    # horizontal[i, j] represents the horizontal edge from (i,j) to (i,j+1)
+    # vertical[i, j] represents the vertical edge from (i,j) to (i+1,j)
+    # i in [0,4], j in [0,4] for edges
+
+    # 1. Check for immediate captures (free boxes)
+    # A free box is an unclaimed box with exactly 3 edges filled.
+    # We can identify this by counting existing edges around each box.
+
+    for i in range(4):
+        for j in range(4):
+            if capture[i, j] != 0:
+                continue  # already captured
+            
+            edges = 0
+            # Check edges around box (i,j)
+            if horizontal[i, j] != 0: edges += 1  # top edge
+            if horizontal[i+1, j] != 0: edges += 1  # bottom edge
+            if vertical[i, j] != 0: edges += 1  # left edge
+            if vertical[i, j+1] != 0: edges += 1  # right edge
+
+            if edges == 3:
+                # This is a capturable box. Find the missing edge and capture it.
+                if horizontal[i, j] == 0:
+                    return f"{i},{j},H"
+                if horizontal[i+1, j] == 0:
+                    return f"{i+1},{j},H"
+                if vertical[i, j] == 0:
+                    return f"{i},{j},V"
+                if vertical[i, j+1] == 0:
+                    return f"{i},{j+1},V"
+
+    # 2. If no immediate captures, find a "safe" move that doesn't give the opponent a capture.
+    # A move is "dangerous" if it completes a box, meaning the box had 3 sides before the move.
+    # So to avoid danger, we must not play the fourth side of any box that already has 3.
+
+    # Let's collect all legal moves first.
+    legal_moves = []
+    for i in range(5):
+        for j in range(5):
+            if horizontal[i, j] == 0:
+                legal_moves.append((i, j, 'H'))
+            if vertical[i, j] == 0:
+                legal_moves.append((i, j, 'V'))
+
+    # Now, for each legal move, check if it's safe.
+    # A move is safe if it doesn't complete a box.
+    safe_moves = []
+
+    for move in legal_moves:
+        i, j, d = move
+        completes_box = False
+
+        if d == 'H':
+            # This move fills horizontal[i, j]
+            # Check the box above and below
+            # Box above: (i-1, j)
+            if 0 <= i-1 < 4 and 0 <= j < 4 and capture[i-1, j] == 0:
+                edges = 0
+                if horizontal[i, j] != 0: edges += 1  # this edge (but it's about to be filled)
+                if horizontal[i, j-1] != 0 and j-1 >= 0: edges += 1
+                if horizontal[i, j+1] != 0 and j+1 < 5: edges += 1
+                if vertical[i-1, j] != 0 and i-1 >= 0: edges += 1
+                if vertical[i-1, j+1] != 0 and i-1 >= 0 and j+1 < 5: edges += 1
+                if edges == 3:
+                    completes_box = True
+
+            # Box below: (i, j)
+            if 0 <= i < 4 and 0 <= j < 4 and capture[i, j] == 0 and not completes_box:
+                edges = 0
+                if horizontal[i, j] != 0: edges += 1
+                if horizontal[i, j-1] != 0 and j-1 >= 0: edges += 1
+                if horizontal[i, j+1] != 0 and j+1 < 5: edges += 1
+                if vertical[i, j] != 0: edges += 1
+                if vertical[i, j+1] != 0 and j+1 < 5: edges += 1
+                if edges == 3:
+                    completes_box = True
+
+        else:  # d == 'V'
+            # This move fills vertical[i, j]
+            # Check the box to the left and right
+            # Box to the left: (i, j-1)
+            if 0 <= i < 4 and 0 <= j-1 < 4 and capture[i, j-1] == 0:
+                edges = 0
+                if vertical[i, j] != 0: edges += 1
+                if vertical[i-1, j] != 0 and i-1 >= 0: edges += 1
+                if vertical[i+1, j] != 0 and i+1 < 5: edges += 1
+                if horizontal[i, j-1] != 0 and j-1 >= 0: edges += 1
+                if horizontal[i+1, j-1] != 0 and j-1 >= 0 and i+1 < 5: edges += 1
+                if edges == 3:
+                    completes_box = True
+
+            # Box to the right: (i, j)
+            if 0 <= i < 4 and 0 <= j < 4 and capture[i, j] == 0 and not completes_box:
+                edges = 0
+                if vertical[i, j] != 0: edges += 1
+                if vertical[i-1, j] != 0 and i-1 >= 0: edges += 1
+                if vertical[i+1, j] != 0 and i+1 < 5: edges += 1
+                if horizontal[i, j] != 0: edges += 1
+                if horizontal[i+1, j] != 0 and i+1 < 5: edges += 1
+                if edges == 3:
+                    completes_box = True
+
+        if not completes_box:
+            safe_moves.append(move)
+
+    # If there are safe moves, choose one of them.
+    if safe_moves:
+        # Prefer moves that don't create new two-sided boxes if possible.
+        # Let's count how many boxes would have two sides after this safe move.
+        best_move = safe_moves[0]
+        min_two_sided_boxes = 50  # high number
+
+        for move in safe_moves:
+            i, j, d = move
+            temp_horizontal = horizontal.copy()
+            temp_vertical = vertical.copy()
+
+            if d == 'H':
+                temp_horizontal[i, j] = 1
+            else:
+                temp_vertical[i, j] = 1
+
+            two_sided_count = 0
+            for r in range(4):
+                for c in range(4):
+                    if capture[r, c] != 0:
+                        continue
+                    edges = 0
+                    if temp_horizontal[r, c] != 0: edges += 1
+                    if temp_horizontal[r+1, c] != 0: edges += 1
+                    if temp_vertical[r, c] != 0: edges += 1
+                    if temp_vertical[r, c+1] != 0: edges += 1
+                    if edges == 2:
+                        two_sided_count += 1
+
+            if two_sided_count < min_two_sided_boxes:
+                min_two_sided_boxes = two_sided_count
+                best_move = move
+
+        i, j, d = best_move
+        return f"{i},{j},{d}"
+
+    # If no safe moves are possible, then every remaining move completes at least one box for the opponent.
+    # In that case, just play any legal move.
+    if legal_moves:
+        i, j, d = legal_moves[0]
+        return f"{i},{j},{d}"
+
+    # Fallback (shouldn't happen in a real game)
+    return "0,0,H"

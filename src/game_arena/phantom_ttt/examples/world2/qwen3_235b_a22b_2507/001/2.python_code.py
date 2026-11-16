@@ -1,0 +1,106 @@
+
+import random
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Phantom Tic Tac Toe policy: choose next move under imperfect information.
+    Returns (row, col) for next attempt.
+    """
+    # Helper: check if a move creates a win (assuming all other marks in line are ours)
+    def is_winning_move(r: int, c: int, my_marks: List[Tuple[int, int]]) -> bool:
+        lines = [
+            [(r,0), (r,1), (r,2)],  # row
+            [(0,c), (1,c), (2,c)],  # col
+            [(0,0), (1,1), (2,2)] if r == c else [],
+            [(0,2), (1,1), (2,0)] if r + c == 2 else []
+        ]
+        for line in lines:
+            if not line:
+                continue
+            if (r, c) not in line:
+                continue
+            count = sum(1 for cell in line if cell in my_marks or cell == (r, c))
+            if count == 3:
+                # Check if all other cells in line (except (r,c)) are mine
+                if all(cell == (r, c) or cell in my_marks for cell in line):
+                    return True
+        return False
+
+    # Get list of confirmed own marks
+    my_marks = []
+    for i in range(3):
+        for j in range(3):
+            if board[i][j] == 1:
+                my_marks.append((i, j))
+
+    # Get legal moves: not confirmed as ours
+    legal_moves = []
+    for i in range(3):
+        for j in range(3):
+            if board[i][j] != 1:
+                legal_moves.append((i, j))
+
+    # 1. Try to find a winning move
+    for (r, c) in legal_moves:
+        if is_winning_move(r, c, my_marks):
+            return (r, c)
+
+    # 2. Estimate blocking moves: opponent might be building a line
+    # Since we don't see opponent marks, we assume they could be anywhere not ours
+    # We simulate a few random plausible opponent placements to estimate threat
+    threat_scores = {move: 0 for move in legal_moves}
+    unmarked_cells = [(i, j) for i in range(3) for j in range(3) if (i,j) not in my_marks]
+
+    # Sample 3 plausible opponent configurations
+    for _ in range(3):
+        # Assume opponent has marks in up to len(unmarked_cells) // 2 positions (roughly equal game)
+        opp_count = (len(my_marks) - 1) if len(my_marks) > 0 else 0
+        opp_count = max(0, min(opp_count, len(unmarked_cells)))
+        if len(unmarked_cells) == 0:
+            break
+        sampled_opp = set(random.sample(unmarked_cells, min(opp_count, len(unmarked_cells))))
+
+        # Check if opponent is one move away from winning and we can block
+        for (r, c) in legal_moves:
+            lines = [
+                [(r,0), (r,1), (r,2)],
+                [(0,c), (1,c), (2,c)],
+                [(0,0), (1,1), (2,2)] if r == c else [],
+                [(0,2), (1,1), (2,0)] if r + c == 2 else []
+            ]
+            for line in lines:
+                if not line or (r, c) not in line:
+                    continue
+                opp_in_line = sum(1 for cell in line if cell in sampled_opp and cell != (r,c))
+                open_in_line = sum(1 for cell in line if cell == (r,c) or (cell not in my_marks and cell not in sampled_opp))
+                if opp_in_line == 2 and open_in_line == 1:
+                    threat_scores[(r, c)] += 1
+
+    # Return highest threat block if exists
+    if threat_scores:
+        best_block = max(threat_scores, key=threat_scores.get)
+        if threat_scores[best_block] > 0:
+            return best_block
+
+    # 3. Prefer center, then corners, then edges
+    center = (1, 1)
+    corners = [(0, 0), (0, 2), (2, 0), (2, 2)]
+    edges = [(0, 1), (1, 0), (1, 2), (2, 1)]
+
+    # Return center if available
+    if center in legal_moves:
+        return center
+
+    # Return first available corner
+    for corner in corners:
+        if corner in legal_moves:
+            return corner
+
+    # Return first available edge
+    for edge in edges:
+        if edge in legal_moves:
+            return edge
+
+    # Fallback: return first legal move
+    return legal_moves[0]

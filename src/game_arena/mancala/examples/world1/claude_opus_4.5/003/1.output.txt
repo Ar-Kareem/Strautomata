@@ -1,0 +1,438 @@
+<thinking>
+Let me think about this Kalah game problem. I need to implement a policy that selects a good move.
+
+First, let me understand the game mechanics:
+1. Pick seeds from one of my houses (0-5)
+2. Distribute them counter-clockwise, skipping opponent's store
+3. If last seed lands in my store, I get another turn
+4. If last seed lands in an empty house on my side and opposite house has seeds, I capture both
+
+For a good policy, I should consider:
+1. Moves that give me an extra turn (last seed in my store)
+2. Moves that allow captures
+3. Moves that set up future good positions
+4. Minimax search with alpha-beta pruning for deeper analysis
+
+Let me implement a minimax approach with alpha-beta pruning.
+
+First, I need to simulate the game:
+
+```python
+def simulate_move(you, opponent, move):
+    # Returns (new_you, new_opponent, extra_turn)
+    you = you.copy()
+    opponent = opponent.copy()
+    
+    seeds = you[move]
+    you[move] = 0
+    
+    pos = move + 1
+    side = 0  # 0 = your side, 1 = opponent side
+    
+    while seeds > 0:
+        if side == 0:
+            if pos <= 5:
+                you[pos] += 1
+                seeds -= 1
+                last_pos = pos
+                last_side = 0
+                pos += 1
+            elif pos == 6:
+                you[6] += 1
+                seeds -= 1
+                last_pos = 6
+                last_side = 0
+                pos = 0
+                side = 1
+            else:
+                pos = 0
+                side = 1
+        else:  # opponent side
+            if pos <= 5:
+                opponent[pos] += 1
+                seeds -= 1
+                last_pos = pos
+                last_side = 1
+                pos += 1
+            else:
+                # Skip opponent's store
+                pos = 0
+                side = 0
+    
+    # Check for extra turn
+    extra_turn = (last_side == 0 and last_pos == 6)
+    
+    # Check for capture
+    if last_side == 0 and last_pos <= 5:
+        if you[last_pos] == 1:  # Was empty before (now has 1)
+            opposite = 5 - last_pos
+            if opponent[opposite] > 0:
+                you[6] += you[last_pos] + opponent[opposite]
+                you[last_pos] = 0
+                opponent[opposite] = 0
+    
+    return you, opponent, extra_turn
+```
+
+Wait, I need to be careful. The capture condition says "it was empty before the drop" - so after placing the seed, it should have exactly 1 seed (the one we just placed).
+
+Let me implement minimax with alpha-beta:
+
+```python
+def minimax(you, opponent, depth, alpha, beta, maximizing):
+    # Check if game over
+    if sum(you[:6]) == 0:
+        opponent[6] += sum(opponent[:6])
+        for i in range(6):
+            opponent[i] = 0
+        return you[6] - opponent[6], None
+    if sum(opponent[:6]) == 0:
+        you[6] += sum(you[:6])
+        for i in range(6):
+            you[i] = 0
+        return you[6] - opponent[6], None
+    
+    if depth == 0:
+        return you[6] - opponent[6], None
+    
+    if maximizing:
+        max_eval = float('-inf')
+        best_move = None
+        for move in range(6):
+            if you[move] > 0:
+                new_you, new_opp, extra = simulate_move(you, opponent, move)
+                if extra:
+                    eval, _ = minimax(new_you, new_opp, depth, alpha, beta, True)
+                else:
+                    eval, _ = minimax(new_opp, new_you, depth - 1, alpha, beta, False)
+                if eval > max_eval:
+                    max_eval = eval
+                    best_move = move
+                alpha = max(alpha, eval)
+                if beta <= alpha:
+                    break
+        return max_eval, best_move
+    else:
+        # ...similar for minimizing
+```
+
+Wait, I need to think about this more carefully. When it's the opponent's turn, they become "you" from their perspective. So when calling minimax recursively for opponent's turn, I should swap the roles.
+
+Actually, let me reconsider. Let me use a consistent perspective where "you" always refers to the original player.
+
+Let me rewrite:
+
+```python
+def minimax(you, opponent, depth, alpha, beta, my_turn):
+    # Game over checks
+    if sum(you[:6]) == 0 or sum(opponent[:6]) == 0:
+        # End game scoring
+        final_you = you[6] + sum(you[:6])
+        final_opp = opponent[6] + sum(opponent[:6])
+        return final_you - final_opp, None
+    
+    if depth == 0:
+        return you[6] - opponent[6], None
+    
+    if my_turn:
+        max_eval = float('-inf')
+        best_move = None
+        for move in range(6):
+            if you[move] > 0:
+                new_you, new_opp, extra = simulate_move(you, opponent, move)
+                if extra:
+                    eval, _ = minimax(new_you, new_opp, depth, alpha, beta, True)
+                else:
+                    eval, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, False)
+                if eval > max_eval:
+                    max_eval = eval
+                    best_move = move
+                alpha = max(alpha, eval)
+                if beta <= alpha:
+                    break
+        return max_eval, best_move
+    else:
+        min_eval = float('inf')
+        best_move = None
+        for move in range(6):
+            if opponent[move] > 0:
+                # Opponent makes a move - swap roles for simulation
+                new_opp, new_you, extra = simulate_move(opponent, you, move)
+                if extra:
+                    eval, _ = minimax(new_you, new_opp, depth, alpha, beta, False)
+                else:
+                    eval, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, True)
+                if eval < min_eval:
+                    min_eval = eval
+                    best_move = move
+                beta = min(beta, eval)
+                if beta <= alpha:
+                    break
+        return min_eval, best_move
+```
+
+Let me also add some heuristics to the evaluation function beyond just the store difference.
+
+Actually, let me simplify and test the basic structure first, then optimize.
+
+One important thing: when a side has no moves, we need to handle that. If it's my turn but I have no moves, the game ends. Same for opponent.
+
+Let me also add iterative deepening to use the time budget better.
+
+Here's my refined approach:
+
+```python
+import time
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    start_time = time.time()
+    
+    def simulate(you, opp, move):
+        you = list(you)
+        opp = list(opp)
+        seeds = you[move]
+        you[move] = 0
+        
+        pos = move + 1
+        side = 0  # 0 = my side, 1 = opp side
+        last_side, last_pos = 0, 0
+        
+        while seeds > 0:
+            if side == 0:
+                if pos <= 6:
+                    if pos < 6:
+                        you[pos] += 1
+                        last_side, last_pos = 0, pos
+                    else:
+                        you[6] += 1
+                        last_side, last_pos = 0, 6
+                    seeds -= 1
+                    pos += 1
+                    if pos > 6:
+                        side = 1
+                        pos = 0
+                else:
+                    side = 1
+                    pos = 0
+            else:
+                if pos <= 5:
+                    opp[pos] += 1
+                    last_side, last_pos = 1, pos
+                    seeds -= 1
+                    pos += 1
+                else:
+                    side = 0
+                    pos = 0
+        
+        extra = (last_side == 0 and last_pos == 6)
+        
+        if last_side == 0 and last_pos < 6 and you[last_pos] == 1:
+            opposite = 5 - last_pos
+            if opp[opposite] > 0:
+                you[6] += 1 + opp[opposite]
+                you[last_pos] = 0
+                opp[opposite] = 0
+        
+        return you, opp, extra
+    
+    def evaluate(you, opp):
+        return you[6] - opp[6]
+    
+    def minimax(you, opp, depth, alpha, beta, my_turn):
+        you_empty = sum(you[:6]) == 0
+        opp_empty = sum(opp[:6]) == 0
+        
+        if you_empty or opp_empty:
+            final_you = you[6] + sum(you[:6])
+            final_opp = opp[6] + sum(opp[:6])
+            if final_you > final_opp:
+                return 1000 + final_you - final_opp, None
+            elif final_you < final_opp:
+                return -1000 + final_you - final_opp, None
+            return 0, None
+        
+        if depth == 0:
+            return evaluate(you, opp), None
+        
+        if my_turn:
+            best = float('-inf')
+            best_move = None
+            for m in range(6):
+                if you[m] > 0:
+                    ny, no, extra = simulate(you, opp, m)
+                    if extra:
+                        val, _ = minimax(ny, no, depth, alpha, beta, True)
+                    else:
+                        val, _ = minimax(ny, no, depth - 1, alpha, beta, False)
+                    if val > best:
+                        best = val
+                        best_move = m
+                    alpha = max(alpha, val)
+                    if beta <= alpha:
+                        break
+            return best, best_move
+        else:
+            best = float('inf')
+            best_move = None
+            for m in range(6):
+                if opp[m] > 0:
+                    no, ny, extra = simulate(opp, you, m)
+                    if extra:
+                        val, _ = minimax(ny, no, depth, alpha, beta, False)
+                    else:
+                        val, _ = minimax(ny, no, depth - 1, alpha, beta, True)
+                    if val < best:
+                        best = val
+                        best_move = m
+                    beta = min(beta, val)
+                    if beta <= alpha:
+                        break
+            return best, best_move
+    
+    best_move = None
+    for d in range(1, 20):
+        if time.time() - start_time > 0.8:
+            break
+        _, move = minimax(list(you), list(opponent), d, float('-inf'), float('inf'), True)
+        if move is not None:
+            best_move = move
+    
+    return best_move
+```
+
+This looks reasonable. Let me refine a bit more and add better move ordering for alpha-beta efficiency.
+</thinking>
+
+<code>
+import time
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    start_time = time.time()
+    
+    def simulate(you, opp, move):
+        you = list(you)
+        opp = list(opp)
+        seeds = you[move]
+        you[move] = 0
+        
+        pos = move + 1
+        side = 0  # 0 = my side, 1 = opp side
+        last_side, last_pos = 0, move
+        
+        while seeds > 0:
+            if side == 0:
+                if pos <= 6:
+                    you[pos] += 1
+                    last_side, last_pos = 0, pos
+                    seeds -= 1
+                    pos += 1
+                    if pos > 6:
+                        side = 1
+                        pos = 0
+                else:
+                    side = 1
+                    pos = 0
+            else:
+                if pos <= 5:
+                    opp[pos] += 1
+                    last_side, last_pos = 1, pos
+                    seeds -= 1
+                    pos += 1
+                else:
+                    side = 0
+                    pos = 0
+        
+        extra = (last_side == 0 and last_pos == 6)
+        
+        if last_side == 0 and last_pos < 6 and you[last_pos] == 1:
+            opposite = 5 - last_pos
+            if opp[opposite] > 0:
+                you[6] += 1 + opp[opposite]
+                you[last_pos] = 0
+                opp[opposite] = 0
+        
+        return you, opp, extra
+    
+    def evaluate(you, opp):
+        score = (you[6] - opp[6]) * 10
+        score += sum(you[:6]) - sum(opp[:6])
+        for i in range(6):
+            if you[i] == 6 - i:
+                score += 3
+        return score
+    
+    def get_moves(board):
+        moves = []
+        for m in range(6):
+            if board[m] > 0:
+                if board[m] == 6 - m:
+                    moves.insert(0, m)
+                else:
+                    moves.append(m)
+        return moves
+    
+    def minimax(you, opp, depth, alpha, beta, my_turn):
+        you_empty = all(you[i] == 0 for i in range(6))
+        opp_empty = all(opp[i] == 0 for i in range(6))
+        
+        if you_empty or opp_empty:
+            final_you = you[6] + sum(you[:6])
+            final_opp = opp[6] + sum(opp[:6])
+            diff = final_you - final_opp
+            if diff > 0:
+                return 10000 + diff, None
+            elif diff < 0:
+                return -10000 + diff, None
+            return 0, None
+        
+        if depth == 0:
+            return evaluate(you, opp), None
+        
+        if my_turn:
+            best = float('-inf')
+            best_move = None
+            for m in get_moves(you):
+                ny, no, extra = simulate(you, opp, m)
+                if extra:
+                    val, _ = minimax(ny, no, depth, alpha, beta, True)
+                else:
+                    val, _ = minimax(ny, no, depth - 1, alpha, beta, False)
+                if val > best:
+                    best = val
+                    best_move = m
+                alpha = max(alpha, val)
+                if beta <= alpha:
+                    break
+            return best, best_move
+        else:
+            best = float('inf')
+            best_move = None
+            for m in get_moves(opp):
+                no, ny, extra = simulate(opp, you, m)
+                if extra:
+                    val, _ = minimax(ny, no, depth, alpha, beta, False)
+                else:
+                    val, _ = minimax(ny, no, depth - 1, alpha, beta, True)
+                if val < best:
+                    best = val
+                    best_move = m
+                beta = min(beta, val)
+                if beta <= alpha:
+                    break
+            return best, best_move
+    
+    best_move = None
+    for m in range(6):
+        if you[m] > 0:
+            best_move = m
+            break
+    
+    for d in range(1, 30):
+        if time.time() - start_time > 0.85:
+            break
+        _, move = minimax(list(you), list(opponent), d, float('-inf'), float('inf'), True)
+        if move is not None:
+            best_move = move
+    
+    return best_move
+</code>

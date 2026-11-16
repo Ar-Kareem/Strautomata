@@ -1,0 +1,173 @@
+
+import copy
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    # Constants
+    PLAYER = 1
+    OPPONENT = -1
+    EMPTY = 0
+    BOARD_SIZE = 4
+    
+    def is_winner(board, player):
+        # Check rows
+        for row in board:
+            if all(cell == player for cell in row):
+                return True
+        
+        # Check columns
+        for col in range(BOARD_SIZE):
+            if all(board[row][col] == player for row in range(BOARD_SIZE)):
+                return True
+        
+        # Check diagonals
+        if all(board[i][i] == player for i in range(BOARD_SIZE)):
+            return True
+        if all(board[i][BOARD_SIZE-1-i] == player for i in range(BOARD_SIZE)):
+            return True
+            
+        return False
+    
+    def is_board_full(board):
+        return all(all(cell != EMPTY for cell in row) for row in board)
+    
+    def get_empty_positions(board):
+        positions = []
+        for i in range(BOARD_SIZE):
+            for j in range(BOARD_SIZE):
+                if board[i][j] == EMPTY:
+                    positions.append((i, j))
+        return positions
+    
+    def evaluate_board(board):
+        # Check for win
+        if is_winner(board, PLAYER):
+            return 1000
+        if is_winner(board, OPPONENT):
+            return -1000
+            
+        score = 0
+        
+        # Evaluate rows
+        for row in board:
+            player_count = row.count(PLAYER)
+            opponent_count = row.count(OPPONENT)
+            empty_count = row.count(EMPTY)
+            
+            if player_count > 0 and opponent_count == 0:
+                score += 10 ** player_count
+            elif opponent_count > 0 and player_count == 0:
+                score -= 10 ** opponent_count
+                
+        # Evaluate columns
+        for col in range(BOARD_SIZE):
+            col_cells = [board[row][col] for row in range(BOARD_SIZE)]
+            player_count = col_cells.count(PLAYER)
+            opponent_count = col_cells.count(OPPONENT)
+            empty_count = col_cells.count(EMPTY)
+            
+            if player_count > 0 and opponent_count == 0:
+                score += 10 ** player_count
+            elif opponent_count > 0 and player_count == 0:
+                score -= 10 ** opponent_count
+                
+        # Evaluate diagonals
+        diag1 = [board[i][i] for i in range(BOARD_SIZE)]
+        diag2 = [board[i][BOARD_SIZE-1-i] for i in range(BOARD_SIZE)]
+        
+        for diag in [diag1, diag2]:
+            player_count = diag.count(PLAYER)
+            opponent_count = diag.count(OPPONENT)
+            
+            if player_count > 0 and opponent_count == 0:
+                score += 10 ** player_count
+            elif opponent_count > 0 and player_count == 0:
+                score -= 10 ** opponent_count
+                
+        # Positional scoring (center and corners are valuable)
+        center_positions = [(1,1), (1,2), (2,1), (2,2)]
+        corner_positions = [(0,0), (0,3), (3,0), (3,3)]
+        
+        for pos in center_positions:
+            if board[pos[0]][pos[1]] == PLAYER:
+                score += 2
+            elif board[pos[0]][pos[1]] == OPPONENT:
+                score -= 2
+                
+        for pos in corner_positions:
+            if board[pos[0]][pos[1]] == PLAYER:
+                score += 3
+            elif board[pos[0]][pos[1]] == OPPONENT:
+                score -= 3
+                
+        return score
+    
+    def minimax(board, depth, alpha, beta, maximizing_player):
+        # Terminal conditions
+        if is_winner(board, PLAYER):
+            return 1000 + depth  # Prefer quicker wins
+        if is_winner(board, OPPONENT):
+            return -1000 - depth  # Prefer slower losses
+        if is_board_full(board) or depth == 0:
+            return evaluate_board(board)
+            
+        empty_positions = get_empty_positions(board)
+        
+        if maximizing_player:
+            max_eval = float('-inf')
+            for row, col in empty_positions:
+                board[row][col] = PLAYER
+                eval_score = minimax(board, depth - 1, alpha, beta, False)
+                board[row][col] = EMPTY
+                max_eval = max(max_eval, eval_score)
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for row, col in empty_positions:
+                board[row][col] = OPPONENT
+                eval_score = minimax(board, depth - 1, alpha, beta, True)
+                board[row][col] = EMPTY
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval
+    
+    # First, check for immediate winning move
+    empty_positions = get_empty_positions(board)
+    for row, col in empty_positions:
+        board[row][col] = PLAYER
+        if is_winner(board, PLAYER):
+            board[row][col] = EMPTY
+            return (row, col)
+        board[row][col] = EMPTY
+        
+    # Second, check for opponent's immediate winning move to block
+    for row, col in empty_positions:
+        board[row][col] = OPPONENT
+        if is_winner(board, OPPONENT):
+            board[row][col] = EMPTY
+            return (row, col)
+        board[row][col] = EMPTY
+    
+    # If no immediate moves, use minimax to find best move
+    best_move = None
+    best_score = float('-inf')
+    
+    # Determine search depth based on number of empty positions
+    empty_count = len(empty_positions)
+    depth = min(5, max(1, 6 - (16 - empty_count) // 3))
+    
+    for row, col in empty_positions:
+        board[row][col] = PLAYER
+        score = minimax(board, depth, float('-inf'), float('inf'), False)
+        board[row][col] = EMPTY
+        
+        if score > best_score:
+            best_score = score
+            best_move = (row, col)
+            
+    return best_move if best_move else empty_positions[0]

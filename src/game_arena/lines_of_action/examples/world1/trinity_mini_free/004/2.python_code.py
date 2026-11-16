@@ -1,0 +1,99 @@
+
+import numpy as np
+
+def generate_moves(board):
+    moves = []
+    for i in range(8):
+        for j in range(8):
+            if board[i][j] == 1:
+                for dx, dy in [(0,1), (1,0), (0,-1), (-1,0), (1,1), (1,-1), (-1,1), (-1,-1)]:
+                    steps = 0
+                    current_i, current_j = i + dx, j + dy
+                    pieces_in_line = 1
+                    while 0 <= current_i < 8 and 0 <= current_j < 8:
+                        if board[current_i][current_j] == 1:
+                            pieces_in_line += 1
+                            current_i += dx
+                            current_j += dy
+                            steps += 1
+                        elif board[current_i][current_j] == -1:
+                            break
+                        else:
+                            current_i += dx
+                            current_j += dy
+                            steps += 1
+                    if pieces_in_line <= steps:
+                        target_i, target_j = i + dx * pieces_in_line, j + dy * pieces_in_line
+                        if 0 <= target_i < 8 and 0 <= target_j < 8:
+                            moves.append(f"{i},{j}:{target_i},{target_j}")
+    return moves
+
+def make_move(board, move_str):
+    i, j = move_str.split(':')[0].split(',')
+    i, j = int(i), int(j)
+    target_i, target_j = move_str.split(':')[1].split(',')
+    target_i, target_j = int(target_i), int(target_j)
+    new_board = [row[:] for row in board]
+    new_board[target_i][target_j] = 1
+    new_board[i][j] = 0
+    return new_board
+
+def evaluate(board):
+    visited = [[False] * 8 for _ in range(8)]
+    components = 0
+    for i in range(8):
+        for j in range(8):
+            if board[i][j] == 1 and not visited[i][j]:
+                components += 1
+                stack = [(i, j)]
+                visited[i][j] = True
+                while stack:
+                    x, y = stack.pop()
+                    for dx, dy in [(0,1), (1,0), (0,-1), (-1,0), (1,1), (1,-1), (-1,1), (-1,-1)]:
+                        nx, ny = x + dx, y + dy
+                        if 0 <= nx < 8 and 0 <= ny < 8 and board[nx][ny] == 1 and not visited[nx][ny]:
+                            visited[nx][ny] = True
+                            stack.append((nx, ny))
+    my_pieces = sum(1 for row in board for cell in row if cell == 1)
+    opp_pieces = sum(1 for row in board for cell in row if cell == -1)
+    return my_pieces - opp_pieces - components * 10
+
+def minimax(board, depth, alpha, beta, maximizingPlayer):
+    if depth == 0 or not generate_moves(board):
+        return evaluate(board)
+    if maximizingPlayer:
+        value = -float('inf')
+        moves = generate_moves(board)
+        for move in moves:
+            new_board = make_move(board, move)
+            value = max(value, minimax(new_board, depth - 1, alpha, beta, False))
+            alpha = max(alpha, value)
+            if beta <= alpha:
+                break
+        return value
+    else:
+        value = float('inf')
+        moves = generate_moves(board)
+        for move in moves:
+            new_board = make_move(board, move)
+            value = min(value, minimax(new_board, depth - 1, alpha, beta, True))
+            beta = min(beta, value)
+            if beta <= alpha:
+                break
+        return value
+
+def policy(board):
+    moves = generate_moves(board)
+    if not moves:
+        return "0,0:0,0"
+    best_move = None
+    best_score = -float('inf')
+    alpha = -float('inf')
+    beta = float('inf')
+    for move in moves:
+        new_board = make_move(board, move)
+        score = minimax(new_board, 2, alpha, beta, False)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    return best_move

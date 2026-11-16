@@ -1,0 +1,171 @@
+The strategy for this policy is to prioritize getting off the bar, hitting opponent blots, and bearing off checkers when possible. When bearing off isn't possible, we'll try to consolidate our checkers and avoid leaving blots. We'll use a simple evaluation function to choose between different move orders (high die first or low die first) based on the resulting board state after the potential moves.
+
+```python
+import numpy as np
+
+def policy(state: dict) -> str:
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+    dice = state['dice']
+
+    def is_legal_move(move_str: str, state: dict, dice: list) -> bool:
+        """Dummy check, as the engine will enforce legality."""
+        return True
+
+    def evaluate_state(my_pts, opp_pts, my_bar, opp_off):
+        """A simple evaluation function."""
+        score = 0
+        # Favor bearing off
+        score += my_off * 10
+        # Penalize checkers on the bar
+        score -= my_bar * 50
+        # Penalize blots (single checkers)
+        for pt in range(24):
+            if my_pts[pt] == 1:
+                score -= 5
+            if opp_pts[pt] == 1:
+                score += 5
+        # Encourage spreading checkers
+        score -= sum(x > 1 for x in my_pts) * 2 
+        # Discourage opponent blots in home board
+        for pt in range(18,24):
+            if opp_pts[pt] == 1:
+                 score-=3;
+        return score
+    
+
+    def apply_move(state: dict, move_str: str, dice: list) -> dict:
+        """Applies the move to the state (simplified for evaluation)."""
+        new_state = {k: list(v) if isinstance(v, (list, tuple)) else v for k, v in state.items()}
+        new_state['my_pts'] = list(new_state['my_pts'])
+        new_state['opp_pts'] = list(new_state['opp_pts'])
+
+        moves = move_str.split(':')[1].split(',')
+        from1 = moves[0]
+        from2 = moves[1]
+
+        def execute_move(from_point, die):
+            if from_point == 'P':
+                return
+            
+            if from_point == 'B':
+                origin = 24
+            else:
+                origin = int(from_point[1:])
+            
+            destination = origin - die
+            
+            if origin == 24: #Moving from bar
+                new_state['my_bar'] -= 1
+            else:
+                new_state['my_pts'][origin] -= 1
+
+            if destination < 0:
+                  new_state['my_off'] += 1
+            elif new_state['opp_pts'][destination] > 1:
+                  new_state['my_pts'][destination] += 1
+            elif new_state['opp_pts'][destination] == 1:
+                  new_state['my_pts'][destination] +=1
+                  new_state['opp_pts'][destination] = 0
+                  new_state['opp_bar'] += 1
+            else:
+                 new_state['my_pts'][destination] += 1
+        
+        order = move_str[0]
+        if len(dice) == 2:
+            if order == 'H':
+                execute_move(from1, max(dice))
+                execute_move(from2, min(dice))
+            else:
+                execute_move(from1, min(dice))
+                execute_move(from2, max(dice))
+        elif len(dice) == 1:
+           execute_move(from1, dice[0])
+
+        return new_state
+
+    def generate_moves(my_pts, opp_pts, my_bar, dice):
+      
+      legal_moves = []
+
+      # If on the bar, must move from there first
+      if my_bar > 0:
+           if len(dice) == 2:
+            
+            #Try both orders
+             for order in ['H','L']:
+                  move_str = f'{order}:B,P'
+                  if is_legal_move(move_str, state, dice):
+                      legal_moves.append(move_str)
+                  move_str = f'{order}:P,B'      
+                  if is_legal_move(move_str, state, dice):
+                      legal_moves.append(move_str)    
+             move_str = 'H:B,B'                                                                     
+             if is_legal_move(move_str, state, dice):
+                      legal_moves.append(move_str)
+           elif len(dice)==1:
+                move_str = f'H:B,P'
+                if is_legal_move(move_str,state,dice):
+                    legal_moves.append(move_str)
+
+      else: # If not on the bar
+
+        points_with_checkers = [i for i, count in enumerate(my_pts) if count > 0]
+        if not points_with_checkers and my_bar == 0:
+             return ["H:P,P"]
+       
+        if len(dice) == 2:
+               # Try all combinations if can move from 2 points
+                for p1 in points_with_checkers:
+                    for p2 in points_with_checkers:
+                         for order in ['H','L']:
+                            
+                              move_str = f'{order}:A{p1},A{p2}'
+                              if is_legal_move(move_str, state, dice):
+                                  legal_moves.append(move_str)
+                # Try to move two checkers from the same point
+                for p in points_with_checkers:
+                        for order in ['H', 'L']:
+                           move_str = f'{order}:A{p},A{p}'
+                           if is_legal_move(move_str, state, dice):
+                              legal_moves.append(move_str)
+                if not legal_moves:
+                   return ["H:P,P"]
+
+        elif len(dice) == 1:
+            for p in points_with_checkers:
+               move_str = f'H:A{p},P'
+               if is_legal_move(move_str, state, dice):
+                    legal_moves.append(move_str)
+            move_str = f'H:P,P' 
+            if not legal_moves:
+                   return [move_str]
+      
+      if not legal_moves: #If can't move from any point
+         return ["H:P,P"] #Pass
+      
+      return legal_moves
+    
+
+    legal_moves = generate_moves(my_pts, opp_pts, my_bar, dice)
+    
+    if not legal_moves:
+        return "H:P,P" # No Legal moves.
+
+    best_move = legal_moves[0]
+    best_score = float('-inf')
+
+    for move in legal_moves:
+        new_state = apply_move(state, move, dice)
+        score = evaluate_state(new_state['my_pts'], new_state['opp_pts'], new_state['my_bar'], new_state['my_off'])
+
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return best_move
+```

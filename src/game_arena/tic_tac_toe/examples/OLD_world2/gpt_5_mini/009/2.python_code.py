@@ -1,0 +1,223 @@
+
+import math
+from typing import List, Tuple, Optional
+
+# 4x4 Tic-Tac-Toe policy
+# board: list[list[int]] with 0 empty, 1 = us, -1 = opponent
+# returns (row, col) move in 0..3
+
+# Heuristic weights for lines: 0..4 of our marks
+LINE_WEIGHTS = [0, 10, 100, 1000, 10000]
+
+def check_winner(board: List[List[int]]) -> int:
+    # returns 1 if we win, -1 if opponent wins, 0 otherwise
+    n = 4
+    # rows
+    for r in range(n):
+        s = sum(board[r][c] for c in range(n))
+        if s == n: return 1
+        if s == -n: return -1
+    # cols
+    for c in range(n):
+        s = sum(board[r][c] for r in range(n))
+        if s == n: return 1
+        if s == -n: return -1
+    # diag
+    s = sum(board[i][i] for i in range(n))
+    if s == n: return 1
+    if s == -n: return -1
+    # anti-diag
+    s = sum(board[i][n-1-i] for i in range(n))
+    if s == n: return 1
+    if s == -n: return -1
+    return 0
+
+def empty_cells(board: List[List[int]]) -> List[Tuple[int,int]]:
+    cells = []
+    for r in range(4):
+        for c in range(4):
+            if board[r][c] == 0:
+                cells.append((r,c))
+    return cells
+
+def immediate_winning_move(board: List[List[int]], player: int) -> Optional[Tuple[int,int]]:
+    for (r,c) in empty_cells(board):
+        board[r][c] = player
+        w = check_winner(board)
+        board[r][c] = 0
+        if w == player:
+            return (r,c)
+    return None
+
+def heuristic(board: List[List[int]]) -> int:
+    # Evaluate board from our (1) perspective
+    # For each line (row, col, two diags), if it contains no opponent marks, add weight based on our marks
+    # If it contains no our marks, subtract weight based on opponent marks
+    score = 0
+    n = 4
+    # rows
+    for r in range(n):
+        cnt1 = cntm1 = 0
+        for c in range(n):
+            v = board[r][c]
+            if v == 1: cnt1 += 1
+            elif v == -1: cntm1 += 1
+        if cntm1 == 0:
+            score += LINE_WEIGHTS[cnt1]
+        if cnt1 == 0:
+            score -= LINE_WEIGHTS[cntm1]
+    # cols
+    for c in range(n):
+        cnt1 = cntm1 = 0
+        for r in range(n):
+            v = board[r][c]
+            if v == 1: cnt1 += 1
+            elif v == -1: cntm1 += 1
+        if cntm1 == 0:
+            score += LINE_WEIGHTS[cnt1]
+        if cnt1 == 0:
+            score -= LINE_WEIGHTS[cntm1]
+    # diag
+    cnt1 = cntm1 = 0
+    for i in range(n):
+        v = board[i][i]
+        if v == 1: cnt1 += 1
+        elif v == -1: cntm1 += 1
+    if cntm1 == 0:
+        score += LINE_WEIGHTS[cnt1]
+    if cnt1 == 0:
+        score -= LINE_WEIGHTS[cntm1]
+    # anti-diag
+    cnt1 = cntm1 = 0
+    for i in range(n):
+        v = board[i][n-1-i]
+        if v == 1: cnt1 += 1
+        elif v == -1: cntm1 += 1
+    if cntm1 == 0:
+        score += LINE_WEIGHTS[cnt1]
+    if cnt1 == 0:
+        score -= LINE_WEIGHTS[cntm1]
+    return score
+
+def order_moves(cells: List[Tuple[int,int]]) -> List[Tuple[int,int]]:
+    # prefer center-ish moves first (closer to center of 4x4)
+    def priority(cell):
+        r, c = cell
+        # center at 1.5,1.5
+        return abs(r - 1.5) + abs(c - 1.5)
+    return sorted(cells, key=priority)
+
+# Transposition table
+_tt = {}
+
+def board_key(board: List[List[int]]) -> Tuple[int, ...]:
+    return tuple(x for row in board for x in row)
+
+def negamax(board: List[List[int]], player: int, depth: int, max_depth: int, alpha: int, beta: int) -> Tuple[int, Optional[Tuple[int,int]]]:
+    """
+    Negamax with alpha-beta and simple transposition caching.
+    player: 1 or -1 (current mover)
+    depth: current depth
+    max_depth: search limit
+    Returns (value, best_move) from perspective of player=1 (positive => good for us)
+    """
+    key = (board_key(board), player, max_depth - depth)
+    if key in _tt:
+        return _tt[key]
+
+    winner = check_winner(board)
+    if winner != 0:
+        # terminal
+        if winner == 1:
+            val = 100000 - depth  # prefer quicker wins
+        else:
+            val = -100000 + depth
+        _tt[key] = (val, None)
+        return val, None
+
+    empties = empty_cells(board)
+    if not empties:
+        _tt[key] = (0, None)
+        return 0, None
+
+    if depth >= max_depth:
+        val = heuristic(board)
+        _tt[key] = (val, None)
+        return val, None
+
+    # Immediate tactical checks: if current player can win next, return it quickly
+    win_move = immediate_winning_move(board, player)
+    if win_move is not None:
+        # immediate win: return very large positive if it's us, or negative if opponent (but since player could be -1,
+        # we need value from perspective of us)
+        r, c = win_move
+        board[r][c] = player
+        # evaluate terminal
+        val = 100000 - depth if player == 1 else -100000 + depth
+        board[r][c] = 0
+        _tt[key] = (val, win_move if player == 1 else win_move)
+        return val, win_move
+
+    best_val = -10**9
+    best_move = None
+
+    moves = order_moves(empties)
+
+    for (r,c) in moves:
+        board[r][c] = player
+        val, _ = negamax(board, -player, depth+1, max_depth, -beta, -alpha)
+        if val is None:
+            child_val = 0
+        else:
+            child_val = -val
+        board[r][c] = 0
+
+        if child_val > best_val:
+            best_val = child_val
+            best_move = (r,c)
+        alpha = max(alpha, child_val)
+        if alpha >= beta:
+            break
+
+    _tt[key] = (best_val, best_move)
+    return best_val, best_move
+
+def policy(board: List[List[int]]) -> Tuple[int,int]:
+    # If board already has a winner or no empties, return first empty or (0,0)
+    w = check_winner(board)
+    empties = empty_cells(board)
+    if w != 0 or not empties:
+        return empties[0] if empties else (0,0)
+
+    # First, if we have an immediate winning move, play it.
+    win = immediate_winning_move(board, 1)
+    if win:
+        return win
+
+    # If opponent has immediate winning move, block it.
+    opp_win = immediate_winning_move(board, -1)
+    if opp_win:
+        return opp_win
+
+    # Search depth adaptive to remaining empties
+    rem = len(empties)
+    # If few empties, search deeper; if many, limit depth
+    if rem <= 6:
+        max_depth = rem  # full search
+    elif rem <= 10:
+        max_depth = 6
+    else:
+        max_depth = 4
+
+    # Clear transposition table for this decision to avoid memory growth
+    _tt.clear()
+
+    _, best = negamax(board, 1, 0, max_depth, -10**9, 10**9)
+    if best is not None:
+        return best
+
+    # Fallback: choose center-ish empty
+    ordered = order_moves(empties)
+    return ordered[0]
+
+# For module testing/debugging you could add a simple main, but omitted to satisfy requirement of only defining policy.

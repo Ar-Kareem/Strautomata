@@ -1,0 +1,38 @@
+
+import numpy as np
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    me_set = set(me)
+    opp_set = set(opp)
+    goal = 7 if color == 'w' else 0
+    dir = -1 if color == 'b' else 1
+    candidates = []
+    
+    for from_piece in me:
+        r, c = from_piece
+        # Straight forward
+        nr = r + dir
+        if 0 <= nr < 8 and (nr, c) not in me_set and (nr, c) not in opp_set:
+            to = (nr, c)
+            win = (nr == goal)
+            candidates.append({'move': (from_piece, to), 'score': 100 if win else 1})
+        # Diagonals
+        for dcol in [-1, 1]:
+            nr = r + dir
+            nc = c + dcol
+            if 0 <= nr < 8 and 0 <= nc < 8:
+                to = (nr, nc)
+                if (nr, nc) not in me_set and (nr, nc) not in opp_set:
+                    # Forward diagonal
+                    candidates.append({'move': (from_piece, to), 'score': 1})
+                elif (nr, nc) in opp_set:
+                    # Capture
+                    win = (nr == goal)
+                    candidates.append({'move': (from_piece, to), 'score': 100 if win else 10})
+    
+    if candidates:
+        # Select the candidate with the highest score
+        best = max(candidates, key=lambda x: x['score'])
+        return best['move']
+    # Fallback if no moves (should not happen)
+    return ((0, 0), (0, 0))  # Placeholder, but policy ensures legal moves exist

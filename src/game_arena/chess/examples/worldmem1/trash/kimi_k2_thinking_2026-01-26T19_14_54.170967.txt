@@ -1,0 +1,362 @@
+The strategy combines alpha-beta minimax search with quiescence extension, material evaluation, and positional piece-square scoring. Key components include:
+
+1. **Board Reconstruction**: Build a python-chess board from the piece dictionary, inferring castling rights heuristically
+2. **Immediate Mate Check**: First verify if any legal move delivers checkmate
+3. **Adaptive Search Depth**: Deeper search in endgames (4 ply) vs complex middlegames (2 ply)
+4. **Quiescence Search**: Extend search through capture sequences to avoid horizon effects
+5. **Move Ordering**: MVV-LVA for captures, prioritized promotions and checks for efficient alpha-beta pruning
+6. **Transposition Table**: Cache evaluations between moves to speed up search
+7. **Positional Scoring**: Piece-square tables guide pieces toward optimal squares
+
+The engine balances tactical sharpness with positional understanding within the 1-second time limit.
+
+<code>
+import chess
+import numpy as np
+
+# Configuration
+MAX_TT_SIZE = 100000  # Limit transposition table size
+QUIESCENCE_DEPTH = 8  # Max depth for quiescence search
+
+# Piece values
+PIECE_VALUES = {
+    chess.PAWN: 100,
+    chess.KNIGHT: 320,
+    chess.BISHOP: 330,
+    chess.ROOK: 500,
+    chess.QUEEN: 900,
+    chess.KING: 20000
+}
+
+# Piece-square tables (from White's perspective)
+PAWN_TABLE = np.array([
+    0,  0,  0,  0,  0,  0,  0,  0,
+    50, 50, 50, 50, 50, 50, 50, 50,
+    10, 10, 20, 30, 30, 20, 10, 10,
+    5,  5, 10, 25, 25, 10,  5,  5,
+    0,  0,  0, 20, 20,  0,  0,  0,
+    5, -5,-10,  0,  0,-10, -5,  5,
+    5, 10, 10,-20,-20, 10, 10,  5,
+    0,  0,  0,  0,  0,  0,  0,  0
+])
+
+KNIGHT_TABLE = np.array([
+    -50,-40,-30,-30,-30,-30,-40,-50,
+    -40,-20,  0,  0,  0,  0,-20,-40,
+    -30,  0, 10, 15, 15, 10,  0,-30,
+    -30,  5, 15, 20, 20, 15,  5,-30,
+    -30,  0, 15, 20, 20, 15,  0,-30,
+    -30,  5, 10, 15, 15, 10,  5,-30,
+    -40,-20,  0,  5,  5,  0,-20,-40,
+    -50,-40,-30,-30,-30,-30,-40,-50,
+])
+
+BISHOP_TABLE = np.array([
+    -20,-10,-10,-10,-10,-10,-10,-20,
+    -10,  0,  0,  0,  0,  0,  0,-10,
+    -10,  0,  5, 10, 10,  5,  0,-10,
+    -10,  5,  5, 10, 10,  5,  5,-10,
+    -10,  0, 10, 10, 10, 10,  0,-10,
+    -10, 10, 10, 10, 10, 10, 10,-10,
+    -10,  5,  0,  0,  0,  0,  5,-10,
+    -20,-10,-10,-10,-10,-10,-10,-20,
+])
+
+ROOK_TABLE = np.array([
+    0,  0,  0,  0,  0,  0,  0,  0,
+    5, 10, 10, 10, 10, 10, 10,  5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    0,  0,  0,  5,  5,  0,  0,  0
+])
+
+QUEEN_TABLE = np.array([
+    -20,-10,-10, -5, -5,-10,-10,-20,
+    -10,  0,  0,  0,  0,  0,  0,-10,
+    -10,  0,  5,  5,  5,  5,  0,-10,
+    -5,  0,  5,  5,  5,  5,  0, -5,
+    0,  0,  5,  5,  5,  5,  0, -5,
+    -10,  5,  5,  5,  5,  5,  0,-10,
+    -10,  0,  5,  0,  0,  0,  0,-10,
+    -20,-10,-10, -5, -5,-10,-10,-20,
+])
+
+KING_TABLE = np.array([
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -20,-30,-30,-40,-40,-30,-30,-20,
+    -10,-20,-20,-20,-20,-20,-20,-10,
+    20, 20,  0,  0,  0,  0, 20, 20,
+    20, 30, 10,  0,  0, 10, 30, 20,
+])
+
+def evaluate(board):
+    """Evaluate board position (positive = good for White)"""
+    if board.is_checkmate():
+        return -float('inf') if board.turn == chess.WHITE else float('inf')
+    
+    if board.is_stalemate() or board.is_insufficient_material() or board.can_claim_draw():
+        return 0
+    
+    score = 0
+    
+    # Material and piece-squares
+    for square in chess.SQUARES:
+        piece = board.piece_at(square)
+        if piece:
+            value = PIECE_VALUES[piece.piece_type]
+            
+            rank = chess.square_rank(square)
+            file = chess.square_file(square)
+            sq_index = rank * 8 + file
+            
+            # Get piece-square value
+            if piece.piece_type == chess.PAWN:
+                table_value = PAWN_TABLE[sq_index]
+            elif piece.piece_type == chess.KNIGHT:
+                table_value = KNIGHT_TABLE[sq_index]
+            elif piece.piece_type == chess.BISHOP:
+                table_value = BISHOP_TABLE[sq_index]
+            elif piece.piece_type == chess.ROOK:
+                table_value = ROOK_TABLE[sq_index]
+            elif piece.piece_type == chess.QUEEN:
+                table_value = QUEEN_TABLE[sq_index]
+            else:  # King
+                table_value = KING_TABLE[sq_index]
+            
+            # Flip for black
+            if piece.color == chess.BLACK:
+                table_value = -table_value
+            
+            if piece.color == chess.WHITE:
+                score += value + table_value
+            else:
+                score -= value + table_value
+    
+    # Tempo bonus
+    if board.turn == chess.WHITE:
+        score += 10
+    else:
+        score -= 10
+    
+    return score
+
+def quiescence(board, alpha, beta, depth, memory):
+    """Quiescence search: only captures and checks"""
+    if depth <= 0:
+        return evaluate(board)
+    
+    stand_pat = evaluate(board)
+    
+    if stand_pat >= beta:
+        return beta
+    if alpha < stand_pat:
+        alpha = stand_pat
+    
+    # Generate captures and checks only
+    for move in board.legal_moves:
+        if board.is_capture(move) or board.gives_check(move):
+            memory['nodes'] = memory.get('nodes', 0) + 1
+            
+            board.push(move)
+            score = -quiescence(board, -beta, -alpha, depth-1, memory)
+            board.pop()
+            
+            if score >= beta:
+                return beta
+            if score > alpha:
+                alpha = score
+    
+    return alpha
+
+def alpha_beta(board, depth, alpha, beta, memory):
+    """Alpha-beta search with transposition table"""
+    # Transposition table
+    tt = memory.get('transposition_table', {})
+    key = board.zobrist_hash()
+    
+    if key in tt and tt[key][0] >= depth:
+        return tt[key][1]
+    
+    if depth == 0:
+        return quiescence(board, alpha, beta, QUIESCENCE_DEPTH, memory)
+    
+    # Check extension
+    if board.is_check():
+        depth += 1
+    
+    best_value = -float('inf')
+    moves = list(board.legal_moves)
+    
+    # Move ordering
+    moves.sort(key=lambda m: move_priority(board, m), reverse=True)
+    
+    for move in moves:
+        memory['nodes'] = memory.get('nodes', 0) + 1
+        
+        board.push(move)
+        value = -alpha_beta(board, depth-1, -beta, -alpha, memory)
+        board.pop()
+        
+        if value > best_value:
+            best_value = value
+        
+        if value > alpha:
+            alpha = value
+            if alpha >= beta:
+                break
+    
+    # Store in transposition table with size limit
+    tt[key] = (depth, best_value)
+    if len(tt) > MAX_TT_SIZE:
+        # Clear oldest entries
+        keys = list(tt.keys())
+        for k in keys[:MAX_TT_SIZE//2]:
+            del tt[k]
+    memory['transposition_table'] = tt
+    
+    return best_value
+
+def move_priority(board, move):
+    """Move ordering priority (higher is better)"""
+    score = 0
+    
+    # Captures: MVV-LVA
+    if board.is_capture(move):
+        victim = board.piece_at(move.to_square)
+        aggressor = board.piece_at(move.from_square)
+        if victim and aggressor:
+            score += 1000 + PIECE_VALUES[victim.piece_type] - PIECE_VALUES[aggressor.piece_type]
+    
+    # Promotions
+    if move.promotion:
+        score += 2000 + PIECE_VALUES[move.promotion]
+    
+    # Checks
+    if board.gives_check(move):
+        score += 500
+    
+    return score
+
+def create_board(pieces, to_play):
+    """Create chess.Board from pieces dictionary"""
+    board = chess.Board(empty=True)
+    
+    for square, piece_code in pieces.items():
+        color = chess.WHITE if piece_code[0] == 'w' else chess.BLACK
+        piece_type = {
+            'K': chess.KING,
+            'Q': chess.QUEEN,
+            'R': chess.ROOK,
+            'B': chess.BISHOP,
+            'N': chess.KNIGHT,
+            'P': chess.PAWN
+        }[piece_code[1]]
+        board.set_piece_at(chess.parse_square(square), chess.Piece(piece_type, color))
+    
+    board.turn = chess.WHITE if to_play == 'white' else chess.BLACK
+    
+    # Heuristic castling rights
+    if board.piece_at(chess.E1) == chess.Piece(chess.KING, chess.WHITE):
+        if board.piece_at(chess.H1) == chess.Piece(chess.ROOK, chess.WHITE):
+            board.castling_rights |= chess.BB_H1
+        if board.piece_at(chess.A1) == chess.Piece(chess.ROOK, chess.WHITE):
+            board.castling_rights |= chess.BB_A1
+    
+    if board.piece_at(chess.E8) == chess.Piece(chess.KING, chess.BLACK):
+        if board.piece_at(chess.H8) == chess.Piece(chess.ROOK, chess.BLACK):
+            board.castling_rights |= chess.BB_H8
+        if board.piece_at(chess.A8) == chess.Piece(chess.ROOK, chess.BLACK):
+            board.castling_rights |= chess.BB_A8
+    
+    return board
+
+def policy(pieces, to_play, legal_moves, memory):
+    """
+    Main policy function: selects the strongest legal move
+    
+    Args:
+        pieces: dict mapping squares to piece codes
+        to_play: 'white' or 'black'
+        legal_moves: list of legal SAN moves
+        memory: persistent dict for transposition table
+    
+    Returns:
+        tuple of (move_string, updated_memory)
+    """
+    board = create_board(pieces, to_play)
+    
+    # Initialize memory structures
+    if 'transposition_table' not in memory:
+        memory['transposition_table'] = {}
+    if 'nodes' not in memory:
+        memory['nodes'] = 0
+    
+    # Single move case
+    if len(legal_moves) == 1:
+        return legal_moves[0], memory
+    
+    # Quick mate check: prioritize forced checkmates
+    for move_san in legal_moves:
+        try:
+            move = board.parse_san(move_san)
+            board.push(move)
+            is_mate = board.is_checkmate()
+            board.pop()
+            if is_mate:
+                return move_san, memory
+        except:
+            continue
+    
+    # Determine search depth based on position complexity
+    piece_count = len(pieces)
+    depth = 4 if piece_count <= 8 else 3 if piece_count <= 18 else 2
+    
+    # Map SAN strings to Move objects
+    san_to_move = {}
+    for move_san in legal_moves:
+        try:
+            san_to_move[move_san] = board.parse_san(move_san)
+        except ValueError:
+            # Fallback: search for matching move
+            for m in board.legal_moves:
+                if board.san(m) == move_san:
+                    san_to_move[move_san] = m
+                    break
+    
+    if not san_to_move:
+        return legal_moves[0], memory
+    
+    # Alpha-beta search
+    best_move = None
+    best_score = -float('inf')
+    alpha = -float('inf')
+    beta = float('inf')
+    
+    # Order moves heuristically
+    ordered_moves = sorted(
+        san_to_move.items(),
+        key=lambda x: move_priority(board, x[1]),
+        reverse=True
+    )
+    
+    for move_san, move in ordered_moves:
+        board.push(move)
+        score = -alpha_beta(board, depth-1, -beta, -alpha, memory)
+        board.pop()
+        
+        if score > best_score:
+            best_score = score
+            best_move = move_san
+        
+        if score > alpha:
+            alpha = score
+    
+    # Return best move or fallback
+    return best_move if best_move else legal_moves[0], memory
+</code>

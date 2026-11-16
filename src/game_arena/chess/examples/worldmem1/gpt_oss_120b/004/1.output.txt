@@ -1,0 +1,97 @@
+**Strategy Overview**
+
+The policy evaluates every legal move with a lightweight heuristic that mimics basic chess principles, without requiring a full engine:
+
+1. **Material gain** – If the move captures a piece, its value (P=1, N/B=3, R=5, Q=9) is added to the score.  
+2. **Promotion** – The value of the promoted piece minus the pawn’s value is added.  
+3. **Check / Check‑mate** – `+` adds a modest bonus, `#` (mate) adds a huge bonus.  
+4. **Castling** – Small bonus for improving king safety.  
+5. **Centralisation** – Moving a piece to a central square (`d4, e4, d5, e5, c3, f3, c6, f6`) gets a tiny bonus.  
+6. **Random tie‑breaker** – A tiny random term ensures deterministic choices when scores are equal.
+
+The move with the highest total score is selected.  The policy needs no persistent memory, but the provided `memory` dictionary is returned unchanged so the API contract is satisfied.
+
+```python
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str], memory: dict) -> tuple[str, dict]:
+    """
+    Choose a move from ``legal_moves`` using a fast heuristic.
+
+    Parameters
+    ----------
+    pieces : dict
+        Mapping from square names (e.g. 'e4') to piece codes (e.g. 'wQ').
+    to_play : str
+        Either 'white' or 'black' – the colour whose turn it is.
+    legal_moves : list[str]
+        All legal moves expressed in SAN (e.g. 'Nxe5+', 'e8=Q', 'O-O').
+    memory : dict
+        Arbitrary data that can be kept between calls (unused here).
+
+    Returns
+    -------
+    tuple(str, dict)
+        Chosen move (guaranteed to be in ``legal_moves``) and the (unchanged) memory dict.
+    """
+    import re
+    import random
+
+    # basic piece values – king is 0 because it cannot be captured
+    PIECE_VALUE = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}
+
+    # squares we like to occupy (central and near‑central)
+    CENTRAL_SQUARES = {
+        'd4', 'e4', 'd5', 'e5',
+        'c3', 'f3', 'c6', 'f6'
+    }
+
+    best_move = None
+    best_score = -1e9  # very low start value
+
+    for move in legal_moves:
+        score = 0.0
+
+        # ---- captures -------------------------------------------------------
+        if 'x' in move:
+            # destination square is the first occurrence of a square pattern
+            m = re.search(r'([a-h][1-8])', move)
+            if m:
+                dest = m.group(1)
+                # if a piece sits on the destination square, add its value
+                if dest in pieces:
+                    captured_piece = pieces[dest]
+                    score += PIECE_VALUE.get(captured_piece[1], 0)
+
+        # ---- promotion -------------------------------------------------------
+        if '=' in move:
+            # e.g. "e8=Q" -> promoted piece is the character after '='
+            promo_piece = move.split('=')[1][0]
+            score += PIECE_VALUE.get(promo_piece, 0) - PIECE_VALUE['P']
+
+        # ---- checks and mates -----------------------------------------------
+        if '+' in move:
+            score += 0.5      # modest bonus for delivering check
+        if '#' in move:
+            score += 1000.0   # huge bonus – winning immediately
+
+        # ---- castling --------------------------------------------------------
+        if move in ('O-O', 'O-O-O'):
+            score += 0.2      # safety improvement
+
+        # ---- centralisation --------------------------------------------------
+        m = re.search(r'([a-h][1-8])', move)
+        if m and m.group(1) in CENTRAL_SQUARES:
+            score += 0.1
+
+        # ---- tiny random term to break ties ---------------------------------
+        score += random.random() * 0.01
+
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    # In the (unlikely) case something went wrong, fall back to the first move
+    if best_move is None:
+        best_move = legal_moves[0]
+
+    return best_move, memory
+```

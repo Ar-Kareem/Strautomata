@@ -1,0 +1,179 @@
+
+import math
+
+WIDTH = 7
+HEIGHT = 6
+MAX_DEPTH = 6
+COLUMN_ORDER = [3, 2, 4, 1, 5, 0, 6]
+
+def check_win(bb):
+    """
+    Checks if the bitboard bb contains a connect-4.
+    """
+    # Horizontal
+    m = bb & (bb >> 1) & (bb >> 2) & (bb >> 3)
+    if m: return True
+    # Vertical
+    m = bb & (bb >> 8) & (bb >> 16) & (bb >> 24)
+    if m: return True
+    # Diagonal \
+    m = bb & (bb >> 9) & (bb >> 18) & (bb >> 27)
+    if m: return True
+    # Diagonal /
+    m = bb & (bb >> 7) & (bb >> 14) & (bb >> 21)
+    if m: return True
+    return False
+
+def evaluate(my_bits, opp_bits):
+    """
+    Heuristic evaluation function.
+    Scores based on number of connected pieces and center control.
+    """
+    score = 0
+    
+    # Count connected pairs, triples, etc. using bit shifts
+    # Shifts: 1 (horizontal), 8 (vertical), 7 (diag /), 9 (diag \)
+    for s in [1, 7, 8, 9]:
+        score += (my_bits & (my_bits >> s)).bit_count()
+        score -= (opp_bits & (opp_bits >> s)).bit_count()
+        
+    # Center column preference (Column index 3)
+    center_col_mask = 0
+    for r in range(6):
+        center_col_mask |= (1 << (r + 8*3))
+    score += (my_bits & center_col_mask).bit_count() * 2
+    score -= (opp_bits & center_col_mask).bit_count() * 2
+    
+    return score
+
+def minimax(my_bits, opp_bits, heights, depth, alpha, beta, is_maximizing):
+    """
+    Minimax algorithm with Alpha-Beta pruning.
+    """
+    # Terminal check: Win
+    if is_maximizing:
+        if check_win(my_bits): return 100000 + depth # Prefer faster wins
+    else:
+        if check_win(opp_bits): return -100000 - depth # Prefer slower losses
+        
+    # Check for available moves
+    has_moves = False
+    for c in COLUMN_ORDER:
+        if heights[c] < HEIGHT:
+            has_moves = True
+            break
+            
+    if not has_moves:
+        return 0 # Draw
+        
+    if depth == 0:
+        return evaluate(my_bits, opp_bits)
+
+    if is_maximizing:
+        max_eval = -math.inf
+        for c in COLUMN_ORDER:
+            if heights[c] < HEIGHT:
+                r = heights[c]
+                bit = 1 << (r + 8*c)
+                
+                # Make move
+                my_bits |= bit
+                heights[c] += 1
+                
+                eval_score = minimax(my_bits, opp_bits, heights, depth - 1, alpha, beta, False)
+                
+                # Undo move
+                heights[c] -= 1
+                my_bits ^= bit
+                
+                max_eval = max(max_eval, eval_score)
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+        return max_eval
+    else:
+        min_eval = math.inf
+        for c in COLUMN_ORDER:
+            if heights[c] < HEIGHT:
+                r = heights[c]
+                bit = 1 << (r + 8*c)
+                
+                # Make move
+                opp_bits |= bit
+                heights[c] += 1
+                
+                eval_score = minimax(my_bits, opp_bits, heights, depth - 1, alpha, beta, True)
+                
+                # Undo move
+                heights[c] -= 1
+                opp_bits ^= bit
+                
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+        return min_eval
+
+def policy(board: list[list[int]]) -> int:
+    """
+    Main policy function. Returns the best column for the current player.
+    """
+    # Convert board to bitboards and heights array
+    my_bits = 0
+    opp_bits = 0
+    heights = [0] * WIDTH
+    
+    for c in range(WIDTH):
+        for r in range(HEIGHT - 1, -1, -1):
+            if board[r][c] == 1:
+                bit = 1 << (r + 8*c)
+                my_bits |= bit
+                heights[c] = r + 1
+                break
+            elif board[r][c] == -1:
+                bit = 1 << (r + 8*c)
+                opp_bits |= bit
+                heights[c] = r + 1
+                break
+    
+    # 1. Check for immediate winning move
+    for c in COLUMN_ORDER:
+        if heights[c] < HEIGHT:
+            r = heights[c]
+            bit = 1 << (r + 8*c)
+            if check_win(my_bits | bit):
+                return c
+                
+    # 2. Check for immediate opponent threat and block
+    for c in COLUMN_ORDER:
+        if heights[c] < HEIGHT:
+            r = heights[c]
+            bit = 1 << (r + 8*c)
+            if check_win(opp_bits | bit):
+                return c
+    
+    # 3. Run Minimax search
+    best_score = -math.inf
+    best_col = 3 # Default to center if search fails or gives equal scores
+    
+    for c in COLUMN_ORDER:
+        if heights[c] < HEIGHT:
+            r = heights[c]
+            bit = 1 << (r + 8*c)
+            
+            # Make move
+            my_bits |= bit
+            heights[c] += 1
+            
+            # Search
+            score = minimax(my_bits, opp_bits, heights, MAX_DEPTH - 1, -math.inf, math.inf, False)
+            
+            # Undo move
+            heights[c] -= 1
+            my_bits ^= bit
+            
+            if score > best_score:
+                best_score = score
+                best_col = c
+                
+    return best_col

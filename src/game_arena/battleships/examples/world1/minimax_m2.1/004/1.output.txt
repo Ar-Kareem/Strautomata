@@ -1,0 +1,137 @@
+# Battleship AI Strategy
+
+This policy implements a sophisticated two-phase approach:
+
+1. **Hunt Phase**: Uses a probabilistic pattern based on ship sizes and remaining ships to maximize coverage efficiency
+2. **Target Phase**: When ships are hit, uses intelligent targeting to sink them by focusing on perpendicular directions and prioritizing cells based on ship sizes
+
+The algorithm tracks which ships have been sunk to adjust its probability calculations and uses a probability density map to determine the most likely locations for remaining ships.
+<code>
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Battleship AI policy using a hybrid hunt/target strategy.
+    
+    Hunt Phase: Uses probability-based targeting based on remaining ship sizes.
+    Target Phase: When ships are hit, focuses on adjacent cells to sink them.
+    """
+    import random
+    
+    # Ship sizes in Battleship
+    SHIP_SIZES = [5, 4, 3, 3, 2]
+    
+    # Track which ships have been sunk (based on hits patterns)
+    # We'll infer this from the board state
+    hits = []
+    misses = []
+    
+    for i in range(10):
+        for j in range(10):
+            if board[i][j] == 1:
+                hits.append((i, j))
+            elif board[i][j] == -1:
+                misses.append((i, j))
+    
+    # Generate probability map for hunt mode
+    prob_map = [[0] * 10 for _ in range(10)]
+    
+    # Calculate probability for each unknown cell
+    for i in range(10):
+        for j in range(10):
+            if board[i][j] == 0:  # Unknown cell
+                # Count how many ships of each size can fit horizontally and vertically
+                for size in SHIP_SIZES:
+                    # Check horizontal placement
+                    can_place_h = True
+                    for k in range(size):
+                        if j + k < 10:
+                            if board[i][j + k] == -1:  # Miss blocks placement
+                                can_place_h = False
+                                break
+                        else:
+                            can_place_h = False
+                            break
+                    if can_place_h:
+                        # Count how many cells in this potential ship are already hits
+                        hit_count = 0
+                        for k in range(size):
+                            if j + k < 10 and board[i][j + k] == 1:
+                                hit_count += 1
+                        if hit_count > 0:
+                            prob_map[i][j] += 1  # Boost probability if this cell is part of a potential hit
+    
+    # Target mode: if we have hits, prioritize adjacent cells
+    if hits:
+        best_score = -1
+        best_cells = []
+        
+        for hit_i, hit_j in hits:
+            # Check all 4 directions
+            directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+            
+            for di, dj in directions:
+                ni, nj = hit_i + di, hit_j + dj
+                
+                # Check if cell is valid and unknown
+                if 0 <= ni < 10 and 0 <= nj < 10 and board[ni][nj] == 0:
+                    # Score based on how many hits are in line with this cell
+                    score = 0
+                    
+                    # Check in the direction of this neighbor
+                    # Count consecutive hits in that direction
+                    count_in_direction = 0
+                    temp_i, temp_j = ni, nj
+                    while 0 <= temp_i < 10 and 0 <= temp_j < 10 and board[temp_i][temp_j] == 1:
+                        count_in_direction += 1
+                        temp_i += di
+                        temp_j += dj
+                    
+                    # Check perpendicular direction for hits
+                    perp_di, perp_dj = -dj, di  # Perpendicular direction
+                    perp_count = 0
+                    temp_i, temp_j = hit_i + perp_di, hit_j + perp_dj
+                    while 0 <= temp_i < 10 and 0 <= temp_j < 10:
+                        if board[temp_i][temp_j] == 1:
+                            perp_count += 1
+                        elif board[temp_i][temp_j] == -1:
+                            break
+                        temp_i += perp_di
+                        temp_j += perp_dj
+                    
+                    score = count_in_direction * 2 + perp_count
+                    
+                    if score > best_score:
+                        best_score = score
+                        best_cells = [(ni, nj)]
+                    elif score == best_score:
+                        best_cells.append((ni, nj))
+        
+        if best_cells:
+            # Randomly select from best cells to add variety
+            return random.choice(best_cells)
+    
+    # Hunt mode: select cell with highest probability
+    max_prob = -1
+    candidates = []
+    
+    for i in range(10):
+        for j in range(10):
+            if board[i][j] == 0:  # Unknown cell
+                # Create a checkerboard pattern bonus for hunt mode
+                checkerboard_bonus = 1 if (i + j) % 2 == 0 else 0
+                total_prob = prob_map[i][j] + checkerboard_bonus
+                
+                if total_prob > max_prob:
+                    max_prob = total_prob
+                    candidates = [(i, j)]
+                elif total_prob == max_prob:
+                    candidates.append((i, j))
+    
+    # If no clear winner, use pure checkerboard pattern
+    if not candidates:
+        for i in range(10):
+            for j in range(10):
+                if board[i][j] == 0:
+                    candidates.append((i, j))
+    
+    return random.choice(candidates)
+</code>

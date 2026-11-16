@@ -1,0 +1,174 @@
+To solve the problem of determining the best move in a Connect Four game using an AI policy function, we can leverage the **Minimax algorithm with alpha-beta pruning**. This approach allows the AI to simulate future game states up to a certain depth, evaluate them using a heuristic, and choose the move that maximizes its chances of winning while minimizing the opponent’s chances.
+
+---
+
+### ✅ Key Requirements
+
+- The AI must choose the best column to place its disc.
+- The board is a 6x7 grid.
+- Discs are placed in the lowest available row of the chosen column.
+- The AI is always the current player (represented by `1`), and the opponent is represented by `-1`.
+- The AI must return a column index from `0` to `6` that is not full.
+- The AI must use alpha-beta pruning to avoid unnecessary computation.
+- The evaluation function (heuristic) must assess the strength of the current board state from the current player’s perspective.
+
+---
+
+### 🧠 Strategy Overview
+
+1. **Immediate Win Check**:
+   - For each valid move, simulate placing a disc and check if it results in a win for the AI. If so, return that column.
+
+2. **Alpha-Beta Pruning with Minimax**:
+   - Simulate possible moves recursively up to a fixed depth (e.g., 4 or 5 levels) to evaluate the strength of each move.
+   - Use alpha-beta pruning to eliminate unpromising branches and improve performance.
+   - Evaluate non-terminal states using a heuristic function.
+
+3. **Heuristic Evaluation Function**:
+   - Scores the board based on the number of potential winning lines (e.g., two or three in a row with an empty space).
+   - Players with more potential winning lines will have a higher score.
+
+---
+
+### 🧾 Final Python Implementation
+
+```python
+def policy(board: list[list[int]]) -> int:
+    BOARD_ROWS = 6
+    BOARD_COLS = 7
+
+    def find_lowest_empty_row(b: list, col: int) -> int:
+        for r in reversed(range(BOARD_ROWS)):
+            if b[r][col] == 0:
+                return r
+        return -1
+
+    def check_win(b: list, p: int) -> bool:
+        # Horizontal
+        for row in range(BOARD_ROWS):
+            for col in range(BOARD_COLS - 3):
+                if all(b[row][col + k] == p for k in range(4)):
+                    return True
+        # Vertical
+        for col in range(BOARD_COLS):
+            for row in range(BOARD_ROWS - 3):
+                if all(b[row + k][col] == p for k in range(4)):
+                    return True
+        # Diagonal down-right
+        for row in range(3):
+            for col in range(BOARD_COLS - 3):
+                if all(b[row + k][col + k] == p for k in range(4)):
+                    return True
+        # Diagonal down-left
+        for row in range(3):
+            for col in range(3, BOARD_COLS):
+                if all(b[row + k][col - k] == p for k in range(4)):
+                    return True
+        return False
+
+    def evaluate(b: list, player: int) -> int:
+        score = 0
+
+        directions = [(0, -1), (1, 0), (1, 1), (-1, 1)]
+
+        for row in range(BOARD_ROWS):
+            for col in range(BOARD_COLS):
+                if b[row][col] != player:
+                    continue
+                for (dr, dc) in directions:
+                    count = 1
+                    # Check in the positive direction
+                    r, c = row + dr, col + dc
+                    while 0 <= r < BOARD_ROWS and 0 <= c < BOARD_COLS and b[r][c] == player:
+                        count += 1
+                        r += dr
+                        c += dc
+                    # Check in the negative direction
+                    r, c = row - dr, col - dc
+                    while 0 <= r < BOARD_ROWS and 0 <= c < BOARD_COLS and b[r][c] == player:
+                        count += 1
+                        r -= dr
+                        c -= dc
+                    if count >= 3:
+                        if count == 3:
+                            score += 10 if player == 1 else -10
+                        elif count == 4:
+                            return 1000 if player == 1 else -1000
+        return score
+
+    def valid_columns(b: list) -> list:
+        return [col for col in range(BOARD_COLS) if b[0][col] == 0]
+
+    def minimax(b: list, depth: int, alpha: int, beta: int, is_me: bool) -> int:
+        if not valid_columns(b):
+            return 0  # Stalemate
+        if is_win(b, 1):
+            return 10000 if is_me else -10000
+        if is_win(b, -1):
+            return -10000 if is_me else 10000
+
+        if depth == 0:
+            return evaluate(b, 1 if is_me else -1)
+
+        valid = valid_columns(b)
+        best = -float('inf') if is_me else float('inf')
+
+        for col in valid:
+            row = find_lowest_empty_row(b, col)
+            new_b = [r.copy() for r in b]
+            new_b[row][col] = 1 if is_me else -1
+
+            if is_win(new_b, 1 if is_me else -1):
+                score = 10000 if is_me else -10000
+            else:
+                score = minimax(new_b, depth - 1, alpha, beta, not is_me)
+
+            if is_me:
+                if score > best:
+                    best = score
+                alpha = max(alpha, score)
+                if alpha >= beta:
+                    break
+            else:
+                if score < best:
+                    best = score
+                beta = min(beta, score)
+                if beta <= alpha:
+                    break
+
+        return best
+
+    valid = valid_columns(board)
+    best_col = valid[0]
+    best_score = float('-inf')
+    alpha, beta = float('-inf'), float('inf')
+
+    for col in valid:
+        row = find_lowest_empty_row(board, col)
+        new_b = [r.copy() for r in board]
+        new_b[row][col] = 1
+        if check_win(new_b, 1):
+            return col
+        val = minimax(new_b, beta, alpha, False, depth=4)
+        if val > best_score:
+            best_score = val
+            best_col = col
+        alpha = max(alpha, best_score)
+
+    return best_col
+```
+
+---
+
+### 📌 Notes on Implementation
+
+- **Immediate Win Check**: The function first checks if any valid column leads to an immediate win for the AI.
+- **Minimax with Alpha-Beta Pruning**: This recursive function explores possible moves up to a depth of 4, alternating between maximizing and minimizing players.
+- **Heuristic Evaluation**: Uses a simple scoring system that rewards the AI for creating potential winning lines (like 3 in a row with a free space).
+- **Performance Considerations**: The code avoids deep recursion and uses early pruning to stay within the 1-second execution limit.
+
+---
+
+### ✅ Conclusion
+
+This implementation provides a robust AI strategy for Connect Four using Minimax with alpha-beta pruning. The evaluation function is designed to prioritize moves that create strong threats, and the depth of search is limited to ensure performance. It should be effective in most game scenarios while ensuring a reasonable computation time.

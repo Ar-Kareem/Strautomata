@@ -1,0 +1,235 @@
+
+import numpy as np
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> int:
+    """
+    Connect 4 policy function that uses minimax with alpha-beta pruning to determine the best move.
+    """
+    # Convert to numpy array for easier manipulation
+    grid = np.array(board)
+    rows, cols = grid.shape
+    
+    def is_valid_move(col):
+        return grid[0, col] == 0
+    
+    def get_valid_moves():
+        return [col for col in range(cols) if is_valid_move(col)]
+    
+    def make_move(grid, col, player):
+        # Create a copy of the grid
+        new_grid = grid.copy()
+        # Find the lowest empty row in the column
+        for row in range(rows-1, -1, -1):
+            if new_grid[row, col] == 0:
+                new_grid[row, col] = player
+                return new_grid, row, col
+        return None, None, None
+    
+    def is_winning_move(grid, row, col, player):
+        # Check if the move at (row, col) by player creates a connect 4
+        # Check horizontal
+        count = 0
+        for c in range(max(0, col-3), min(cols, col+4)):
+            if grid[row, c] == player:
+                count += 1
+                if count == 4:
+                    return True
+            else:
+                count = 0
+                
+        # Check vertical
+        count = 0
+        for r in range(max(0, row-3), min(rows, row+4)):
+            if grid[r, col] == player:
+                count += 1
+                if count == 4:
+                    return True
+            else:
+                count = 0
+                
+        # Check diagonal (top-left to bottom-right)
+        count = 0
+        for diff in range(-3, 4):
+            r, c = row + diff, col + diff
+            if 0 <= r < rows and 0 <= c < cols:
+                if grid[r, c] == player:
+                    count += 1
+                    if count == 4:
+                        return True
+                else:
+                    count = 0
+        
+        # Check diagonal (bottom-left to top-right)
+        count = 0
+        for diff in range(-3, 4):
+            r, c = row - diff, col + diff
+            if 0 <= r < rows and 0 <= c < cols:
+                if grid[r, c] == player:
+                    count += 1
+                    if count == 4:
+                        return True
+                else:
+                    count = 0
+                    
+        return False
+    
+    def evaluate_position(grid, player):
+        # Evaluate the board position for the given player
+        score = 0
+        
+        # Check for wins
+        for row in range(rows):
+            for col in range(cols):
+                if grid[row, col] == player:
+                    # Count potential connect 4s
+                    # Check horizontal
+                    if col <= cols - 4:
+                        line = grid[row, col:col+4]
+                        if np.all(line == player):
+                            return float('inf')  # Win
+                        elif np.all(line != -player):
+                            score += np.sum(line == player)
+                    
+                    # Check vertical
+                    if row <= rows - 4:
+                        line = grid[row:row+4, col]
+                        if np.all(line == player):
+                            return float('inf')  # Win
+                        elif np.all(line != -player):
+                            score += np.sum(line == player)
+                    
+                    # Check diagonal (top-left to bottom-right)
+                    if row <= rows - 4 and col <= cols - 4:
+                        line = [grid[row+i, col+i] for i in range(4)]
+                        if all(cell == player for cell in line):
+                            return float('inf')  # Win
+                        elif all(cell != -player for cell in line):
+                            score += sum(cell == player for cell in line)
+                    
+                    # Check diagonal (bottom-left to top-right)
+                    if row >= 3 and col <= cols - 4:
+                        line = [grid[row-i, col+i] for i in range(4)]
+                        if all(cell == player for cell in line):
+                            return float('inf')  # Win
+                        elif all(cell != -player for cell in line):
+                            score += sum(cell == player for cell in line)
+                elif grid[row, col] == -player:
+                    # Penalize opponent's potential
+                    # Check horizontal
+                    if col <= cols - 4:
+                        line = grid[row, col:col+4]
+                        if np.all(line == -player):
+                            return float('-inf')  # Loss
+                        elif np.all(line != player):
+                            score -= np.sum(line == -player)
+                    
+                    # Check vertical
+                    if row <= rows - 4:
+                        line = grid[row:row+4, col]
+                        if np.all(line == -player):
+                            return float('-inf')  # Loss
+                        elif np.all(line != player):
+                            score -= np.sum(line == -player)
+                    
+                    # Check diagonal (top-left to bottom-right)
+                    if row <= rows - 4 and col <= cols - 4:
+                        line = [grid[row+i, col+i] for i in range(4)]
+                        if all(cell == -player for cell in line):
+                            return float('-inf')  # Loss
+                        elif all(cell != player for cell in line):
+                            score -= sum(cell == -player for cell in line)
+                    
+                    # Check diagonal (bottom-left to top-right)
+                    if row >= 3 and col <= cols - 4:
+                        line = [grid[row-i, col+i] for i in range(4)]
+                        if all(cell == -player for cell in line):
+                            return float('-inf')  # Loss
+                        elif all(cell != player for cell in line):
+                            score -= sum(cell == -player for cell in line)
+        
+        # Add center column preference
+        center_col = cols // 2
+        center_count = np.sum(grid[:, center_col] == player)
+        center_count_opp = np.sum(grid[:, center_col] == -player)
+        score += center_count * 3 - center_count_opp * 3
+        
+        return score
+    
+    def minimax(grid, depth, alpha, beta, maximizing_player):
+        # Terminal conditions
+        if depth == 0:
+            return evaluate_position(grid, 1)
+        
+        valid_moves = get_valid_moves()
+        
+        # Check for terminal states
+        for col in valid_moves:
+            # Check if current player wins
+            temp_grid, row, col_pos = make_move(grid, col, 1 if maximizing_player else -1)
+            if row is not None and is_winning_move(temp_grid, row, col_pos, 1 if maximizing_player else -1):
+                if maximizing_player:
+                    return float('inf') if depth == 3 else 1000000 / depth
+                else:
+                    return float('-inf') if depth == 3 else -1000000 / depth
+        
+        if maximizing_player:
+            max_eval = float('-inf')
+            for col in valid_moves:
+                child_grid, row, col_pos = make_move(grid, col, 1)
+                if child_grid is not None:
+                    eval_score = minimax(child_grid, depth - 1, alpha, beta, False)
+                    max_eval = max(max_eval, eval_score)
+                    alpha = max(alpha, eval_score)
+                    if beta <= alpha:
+                        break  # Beta cutoff
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for col in valid_moves:
+                child_grid, row, col_pos = make_move(grid, col, -1)
+                if child_grid is not None:
+                    eval_score = minimax(child_grid, depth - 1, alpha, beta, True)
+                    min_eval = min(min_eval, eval_score)
+                    beta = min(beta, eval_score)
+                    if beta <= alpha:
+                        break  # Alpha cutoff
+            return min_eval
+    
+    # First, check if we can win immediately
+    valid_moves = get_valid_moves()
+    for col in valid_moves:
+        temp_grid, row, col_pos = make_move(grid, col, 1)
+        if temp_grid is not None and is_winning_move(temp_grid, row, col_pos, 1):
+            return col
+    
+    # Then, check if we need to block opponent's winning move
+    for col in valid_moves:
+        temp_grid, row, col_pos = make_move(grid, col, -1)
+        if temp_grid is not None and is_winning_move(temp_grid, row, col_pos, -1):
+            return col
+    
+    # If no immediate win or block, use minimax
+    best_score = float('-inf')
+    best_col = valid_moves[0]  # Default to first valid move
+    
+    # Determine search depth based on remaining moves
+    empty_cells = np.sum(grid == 0)
+    if empty_cells <= 10:
+        depth = 8
+    elif empty_cells <= 15:
+        depth = 7
+    elif empty_cells <= 20:
+        depth = 6
+    else:
+        depth = 5
+    
+    for col in valid_moves:
+        child_grid, row, col_pos = make_move(grid, col, 1)
+        if child_grid is not None:
+            score = minimax(child_grid, depth - 1, float('-inf'), float('inf'), False)
+            if score > best_score:
+                best_score = score
+                best_col = col
+    
+    return best_col

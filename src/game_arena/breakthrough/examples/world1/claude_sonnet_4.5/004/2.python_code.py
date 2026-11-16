@@ -1,0 +1,137 @@
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    import random
+    
+    def get_legal_moves(pieces, opponent_pieces, is_white):
+        moves = []
+        opp_set = set(opponent_pieces)
+        all_pieces = set(pieces) | opp_set
+        
+        for row, col in pieces:
+            # Determine forward direction
+            forward = 1 if is_white else -1
+            new_row = row + forward
+            
+            # Check bounds
+            if new_row < 0 or new_row > 7:
+                continue
+            
+            # Move straight forward (only if empty)
+            if 0 <= new_row <= 7:
+                if (new_row, col) not in all_pieces:
+                    moves.append(((row, col), (new_row, col)))
+            
+            # Move diagonally forward (empty or capture)
+            for dc in [-1, 1]:
+                new_col = col + dc
+                if 0 <= new_col <= 7 and 0 <= new_row <= 7:
+                    target = (new_row, new_col)
+                    if target not in all_pieces or target in opp_set:
+                        moves.append(((row, col), target))
+        
+        return moves
+    
+    def evaluate_position(my_pieces, opp_pieces, is_white):
+        # Material advantage
+        material = len(my_pieces) - len(opp_pieces)
+        
+        # Positional advantage - how far pieces have advanced
+        if is_white:
+            my_advancement = sum(row for row, col in my_pieces)
+            opp_advancement = sum(7 - row for row, col in opp_pieces)
+        else:
+            my_advancement = sum(7 - row for row, col in my_pieces)
+            opp_advancement = sum(row for row, col in opp_pieces)
+        
+        advancement = my_advancement - opp_advancement
+        
+        # Center control bonus
+        center_bonus = sum(1 for row, col in my_pieces if 2 <= col <= 5)
+        center_penalty = sum(1 for row, col in opp_pieces if 2 <= col <= 5)
+        
+        return material * 100 + advancement * 2 + (center_bonus - center_penalty) * 1
+    
+    def minimax(my_pieces, opp_pieces, is_white, depth, alpha, beta, maximizing):
+        # Check win conditions
+        if is_white:
+            if any(row == 7 for row, col in my_pieces):
+                return 10000
+            if any(row == 0 for row, col in opp_pieces):
+                return -10000
+        else:
+            if any(row == 0 for row, col in my_pieces):
+                return 10000
+            if any(row == 7 for row, col in opp_pieces):
+                return -10000
+        
+        if len(my_pieces) == 0:
+            return -10000
+        if len(opp_pieces) == 0:
+            return 10000
+        
+        if depth == 0:
+            return evaluate_position(my_pieces, opp_pieces, is_white)
+        
+        moves = get_legal_moves(my_pieces, opp_pieces, is_white)
+        if not moves:
+            return -10000 if maximizing else 10000
+        
+        if maximizing:
+            max_eval = -float('inf')
+            for move in moves:
+                new_my_pieces = [p for p in my_pieces if p != move[0]]
+                new_my_pieces.append(move[1])
+                new_opp_pieces = [p for p in opp_pieces if p != move[1]]
+                
+                eval_score = minimax(new_opp_pieces, new_my_pieces, not is_white, 
+                                    depth - 1, alpha, beta, False)
+                max_eval = max(max_eval, eval_score)
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for move in moves:
+                new_my_pieces = [p for p in my_pieces if p != move[0]]
+                new_my_pieces.append(move[1])
+                new_opp_pieces = [p for p in opp_pieces if p != move[1]]
+                
+                eval_score = minimax(new_opp_pieces, new_my_pieces, not is_white, 
+                                    depth - 1, alpha, beta, True)
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval
+    
+    is_white = (color == 'w')
+    legal_moves = get_legal_moves(me, opp, is_white)
+    
+    if not legal_moves:
+        # Fallback - should never happen
+        return ((0, 0), (0, 0))
+    
+    # Check for immediate winning moves
+    win_row = 7 if is_white else 0
+    for move in legal_moves:
+        if move[1][0] == win_row:
+            return move
+    
+    # Use minimax to find best move
+    best_move = None
+    best_score = -float('inf')
+    
+    for move in legal_moves:
+        new_my_pieces = [p for p in me if p != move[0]]
+        new_my_pieces.append(move[1])
+        new_opp_pieces = [p for p in opp if p != move[1]]
+        
+        score = minimax(new_opp_pieces, new_my_pieces, not is_white, 
+                       2, -float('inf'), float('inf'), False)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move if best_move else random.choice(legal_moves)

@@ -1,0 +1,94 @@
+The strategy for this policy is to prioritize moves based on the following criteria:
+
+1. **Checkmate:** If a checkmate is available, take it.
+2. **Captures:** Identify and execute advantageous captures (prioritize capturing high-value pieces).  Use a simple piece value system (P=1, N=3, B=3, R=5, Q=9, K=100). Defend pieces if they are threatened.
+3. **King Safety:** Move the king to safer squares or move pieces to defend the king.
+4. **Pawn Promotion:** Prioritize pawn promotions, especially to a queen.
+5. **Simple Heuristics:** If none of the above apply, make a move that develops a piece or improves the position slightly using move ordering.
+6. **Random Legal Move:** If all else fails, make a random legal move.
+
+This policy involves minimal search and relies on a quick evaluation function to make decisions within the time limit.
+
+```python
+import chess
+import random
+
+def evaluate_board(board, to_play):
+    """A simple evaluation function."""
+    piece_values = {
+        chess.PAWN: 1,
+        chess.KNIGHT: 3,
+        chess.BISHOP: 3,
+        chess.ROOK: 5,
+        chess.QUEEN: 9,
+        chess.KING: 100
+    }
+    score = 0
+    for square in chess.SQUARES:
+        piece = board.piece_at(square)
+        if piece:
+            value = piece_values[piece.piece_type]
+            if piece.color == chess.WHITE:
+                score += value
+            else:
+                score -= value
+
+    if to_play == 'black':
+        score *= -1
+
+    return score
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    """
+    Selects a move based on the given game state.
+    """
+    board = chess.Board()
+    board.clear()
+    for square, piece in pieces.items():
+        chess_square = chess.parse_square(square)
+        color = chess.WHITE if piece[0] == 'w' else chess.BLACK
+        piece_type = piece[1]
+        if piece_type == 'K':
+            chess_piece = chess.KING
+        elif piece_type == 'Q':
+            chess_piece = chess.QUEEN
+        elif piece_type == 'R':
+            chess_piece = chess.ROOK
+        elif piece_type == 'B':
+            chess_piece = chess.BISHOP
+        elif piece_type == 'N':
+            chess_piece = chess.KNIGHT
+        elif piece_type == 'P':
+            chess_piece = chess.PAWN
+        board.set_piece_at(chess_square, chess.Piece(chess_piece, color))
+    board.turn = chess.WHITE if to_play == 'white' else chess.BLACK
+
+    legal_moves = [move.uci() for move in board.legal_moves]
+
+    if board.is_checkmate():
+        return legal_moves[0]  # any legal move wins if already checkmate
+
+    best_move = None
+    best_score = -float('inf') if to_play == 'white' else float('inf')
+
+    for move_str in legal_moves:
+        move = chess.Move.from_uci(move_str)
+        board.push(move)
+        score = evaluate_board(board, to_play)  # Evaluate from the perspective of the player making the move.
+        board.pop()
+
+        if to_play == 'white':
+            if score > best_score:
+                best_score = score
+                best_move = move_str
+        else:
+            if score < best_score:
+                best_score = score
+                best_move = move_str
+
+    if best_move:
+        return best_move
+    else:
+        # if no move was found based on evaluation, return random move
+        return random.choice(legal_moves)
+```

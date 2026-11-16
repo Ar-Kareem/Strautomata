@@ -1,0 +1,110 @@
+
+from functools import lru_cache
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Choose the optimal move (row, col) for player 1 on a 3x3 Tic-Tac-Toe board.
+    board: 3x3 list of lists with values 0 (empty), 1 (you), -1 (opponent).
+    Returns a tuple (row, col) with 0-based indices.
+    """
+
+    def winner(bd: List[List[int]]) -> int:
+        # Returns 1 if player 1 wins, -1 if player -1 wins, 0 otherwise
+        lines = []
+        # rows and cols
+        for i in range(3):
+            lines.append((bd[i][0], bd[i][1], bd[i][2]))
+            lines.append((bd[0][i], bd[1][i], bd[2][i]))
+        # diagonals
+        lines.append((bd[0][0], bd[1][1], bd[2][2]))
+        lines.append((bd[0][2], bd[1][1], bd[2][0]))
+        for a, b, c in lines:
+            s = a + b + c
+            if s == 3:
+                return 1
+            if s == -3:
+                return -1
+        return 0
+
+    def legal_moves(bd: List[List[int]]):
+        for r in range(3):
+            for c in range(3):
+                if bd[r][c] == 0:
+                    yield (r, c)
+
+    # convert board to tuple for caching
+    def board_key(bd: List[List[int]]) -> Tuple[int, ...]:
+        return tuple(bd[r][c] for r in range(3) for c in range(3))
+
+    from functools import lru_cache
+
+    @lru_cache(maxsize=None)
+    def minimax(key: Tuple[int, ...], player: int) -> int:
+        # key is flat tuple of 9 ints. player is current player to move (1 or -1).
+        # returns score from perspective of player 1: 1 (win for 1), -1 (loss), 0 draw.
+        # Reconstruct board
+        bd = [list(key[i*3:(i+1)*3]) for i in range(3)]
+        w = winner(bd)
+        if w != 0:
+            return w
+        # check for draw
+        if all(x != 0 for x in key):
+            return 0
+
+        if player == 1:
+            best = -2
+            for r in range(3):
+                for c in range(3):
+                    if bd[r][c] == 0:
+                        bd[r][c] = 1
+                        next_key = board_key(bd)
+                        val = minimax(next_key, -player)
+                        bd[r][c] = 0
+                        if val > best:
+                            best = val
+                            # alpha-beta not explicitly needed here because branching small
+                            if best == 1:
+                                return 1
+            return best
+        else:
+            best = 2
+            for r in range(3):
+                for c in range(3):
+                    if bd[r][c] == 0:
+                        bd[r][c] = -1
+                        next_key = board_key(bd)
+                        val = minimax(next_key, -player)
+                        bd[r][c] = 0
+                        if val < best:
+                            best = val
+                            if best == -1:
+                                return -1
+            return best
+
+    # If board is terminal (win/loss/draw), just return first empty cell or (0,0) if none.
+    w0 = winner(board)
+    empties = [(r, c) for r in range(3) for c in range(3) if board[r][c] == 0]
+    if w0 != 0 or not empties:
+        return empties[0] if empties else (0, 0)
+
+    # Otherwise run minimax to choose best move for player 1
+    current_key = board_key(board)
+    best_move = None
+    best_score = -2
+    # iterate row-major so deterministic; prefer first in ties
+    for r in range(3):
+        for c in range(3):
+            if board[r][c] == 0:
+                board[r][c] = 1
+                next_key = board_key(board)
+                score = minimax(next_key, -1)
+                board[r][c] = 0
+                if score > best_score:
+                    best_score = score
+                    best_move = (r, c)
+                    if best_score == 1:
+                        # can't do better than a guaranteed win
+                        return best_move
+    # If somehow no move found (shouldn't happen), return first empty
+    return best_move if best_move is not None else (empties[0] if empties else (0, 0))

@@ -1,0 +1,42 @@
+
+def card_val(card):
+    if card in ["J", "Q", "K"]:
+        return 10
+    elif card == "A":
+        return 11  # temporary for sum
+    else:
+        return int(card)
+
+def hand_value(hand, target):
+    sum_val = 0
+    num_aces = 0
+    for card in hand:
+        if card == "A":
+            num_aces += 1
+        else:
+            sum_val += card_val(card)
+    sum_val += num_aces  # Aces as 1
+    for _ in range(num_aces):
+        if sum_val + 10 <= target:
+            sum_val += 10
+    return sum_val
+
+def policy(hand, target):
+    current_val = hand_value(hand, target)
+    if current_val > target:
+        return "STAY"  # already busted, though unlikely
+    all_cards = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    used = set(hand)
+    possible_draws = [card for card in all_cards if card not in used]
+    if not possible_draws:
+        return "STAY"
+    scores = []
+    for card in possible_draws:
+        new_hand = hand + [card]
+        new_val = hand_value(new_hand, target)
+        scores.append(new_val if new_val <= target else 0)
+    avg_hit = sum(scores) / len(scores)
+    if avg_hit > current_val:
+        return "HIT"
+    else:
+        return "STAY"

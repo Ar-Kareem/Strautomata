@@ -1,0 +1,26 @@
+
+def policy(board):
+    candidates = []
+    seen = set()
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1:
+                for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 10 and 0 <= nc < 10:
+                        if board[nr][nc] == 0:
+                            if (nr, nc) not in seen:
+                                candidates.append((nr, nc))
+                                seen.add((nr, nc))
+    if candidates:
+        return candidates[0]
+    else:
+        for r in range(10):
+            for c in range(10):
+                if (r + c) % 2 == 0 and board[r][c] == 0:
+                    return (r, c)
+        for r in range(10):
+            for c in range(10):
+                if (r + c) % 2 == 1 and board[r][c] == 0:
+                    return (r, c)
+        return (0, 0)

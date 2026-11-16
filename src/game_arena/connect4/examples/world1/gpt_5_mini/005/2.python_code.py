@@ -1,0 +1,158 @@
+
+from copy import deepcopy
+
+ROWS = 6
+COLS = 7
+PLAYER = 1
+OPP = -1
+
+def is_valid_col(board, col):
+    return board[0][col] == 0
+
+def get_row_for_col(board, col):
+    for r in range(ROWS-1, -1, -1):
+        if board[r][col] == 0:
+            return r
+    return -1
+
+def drop_piece(board, col, player):
+    r = get_row_for_col(board, col)
+    if r == -1:
+        raise ValueError("Column full")
+    nb = [row[:] for row in board]
+    nb[r][col] = player
+    return nb, r
+
+def check_win(board, player):
+    # horizontal
+    for r in range(ROWS):
+        for c in range(COLS-3):
+            if all(board[r][c+i] == player for i in range(4)):
+                return True
+    # vertical
+    for c in range(COLS):
+        for r in range(ROWS-3):
+            if all(board[r+i][c] == player for i in range(4)):
+                return True
+    # diag down-right
+    for r in range(ROWS-3):
+        for c in range(COLS-3):
+            if all(board[r+i][c+i] == player for i in range(4)):
+                return True
+    # diag up-right
+    for r in range(3, ROWS):
+        for c in range(COLS-3):
+            if all(board[r-i][c+i] == player for i in range(4)):
+                return True
+    return False
+
+def count_threes(board, player):
+    # Count windows of length 4 that contain exactly 3 of player's pieces and 1 empty
+    count = 0
+    # horizontal
+    for r in range(ROWS):
+        for c in range(COLS-3):
+            window = [board[r][c+i] for i in range(4)]
+            if window.count(player) == 3 and window.count(0) == 1:
+                count += 1
+    # vertical
+    for c in range(COLS):
+        for r in range(ROWS-3):
+            window = [board[r+i][c] for i in range(4)]
+            if window.count(player) == 3 and window.count(0) == 1:
+                count += 1
+    # diag down-right
+    for r in range(ROWS-3):
+        for c in range(COLS-3):
+            window = [board[r+i][c+i] for i in range(4)]
+            if window.count(player) == 3 and window.count(0) == 1:
+                count += 1
+    # diag up-right
+    for r in range(3, ROWS):
+        for c in range(COLS-3):
+            window = [board[r-i][c+i] for i in range(4)]
+            if window.count(player) == 3 and window.count(0) == 1:
+                count += 1
+    return count
+
+def opponent_winning_moves(board):
+    """Return list of columns where opponent (OPP) would win by playing there now."""
+    wins = []
+    for c in range(COLS):
+        if not is_valid_col(board, c):
+            continue
+        nb, _ = drop_piece(board, c, OPP)
+        if check_win(nb, OPP):
+            wins.append(c)
+    return wins
+
+def evaluate_move(board, col):
+    # Return score for move by PLAYER on column col
+    nb, _ = drop_piece(board, col, PLAYER)
+    if check_win(nb, PLAYER):
+        return float('inf')
+    # if opponent has immediate winning move after this, mark as very bad
+    opp_wins_after = opponent_winning_moves(nb)
+    if opp_wins_after:
+        return -float('inf')
+    # heuristics: center preference, count of 3-in-row potentials
+    center_score = 3 - abs(col - (COLS//2))  # higher for center columns
+    my_threes = count_threes(nb, PLAYER)
+    opp_threes = count_threes(nb, OPP)
+    score = 10 * my_threes - 8 * opp_threes + center_score
+    return score
+
+def policy(board: list[list[int]]) -> int:
+    # Validate board shape minimally
+    if len(board) != ROWS or any(len(row) != COLS for row in board):
+        raise ValueError("Expected a 6x7 board")
+
+    valid_cols = [c for c in range(COLS) if is_valid_col(board, c)]
+    # 1) Immediate winning move
+    for c in valid_cols:
+        nb, _ = drop_piece(board, c, PLAYER)
+        if check_win(nb, PLAYER):
+            return c
+
+    # 2) Block opponent immediate wins (if single threat, block it)
+    opp_threats = opponent_winning_moves(board)
+    if len(opp_threats) == 1:
+        block_col = opp_threats[0]
+        if is_valid_col(board, block_col):
+            return block_col
+    # If multiple threats, no single-block available; continue to other logic.
+
+    # 3) Evaluate each move; avoid moves that allow opponent immediate win
+    best_col = None
+    best_score = -float('inf')
+    safe_moves = []
+    unsafe_moves = []
+    for c in valid_cols:
+        nb, _ = drop_piece(board, c, PLAYER)
+        # if this move creates an immediate opponent win, mark unsafe
+        opp_wins_after = opponent_winning_moves(nb)
+        if opp_wins_after:
+            unsafe_moves.append((c, len(opp_wins_after)))
+            continue
+        # otherwise evaluate
+        sc = evaluate_move(board, c)
+        safe_moves.append((c, sc))
+        if sc > best_score:
+            best_score = sc
+            best_col = c
+
+    if safe_moves:
+        # choose best safe move; tie-breaker by closeness to center
+        candidates = [c for c, sc in safe_moves if sc == best_score]
+        # pick one closest to center
+        candidates.sort(key=lambda x: (abs(x - (COLS//2)), x))
+        return candidates[0]
+
+    # 4) No safe moves: try to minimize number of opponent winning moves after ours
+    if unsafe_moves:
+        unsafe_moves.sort(key=lambda t: (t[1], abs(t[0] - (COLS//2)), t[0]))
+        return unsafe_moves[0][0]
+
+    # 5) Fallback: pick center-most valid column
+    valid_cols.sort(key=lambda x: (abs(x - (COLS//2)), x))
+    return valid_cols[0]

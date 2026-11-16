@@ -1,0 +1,224 @@
+# Pentago Strategy
+
+The strategy for this policy combines several key elements:
+
+1. **Immediate Win Detection**: First priority is to check if any move can win the game immediately
+2. **Opponent Win Blocking**: Second priority is to block opponent wins if they can win next turn
+3. **Strategic Evaluation**: Uses a weighted scoring system that values:
+   - Lines with 4+ pieces (high threat potential)
+   - Lines with 3 pieces and 2 empty (good continuation)
+   - Lines with 2 pieces and 3 empty (potential development)
+4. **Quadrant Control**: Prioritizes center quadrants (0,3) for better line development potential
+5. **Position Priority**: Prefers center positions, then corners, then edges for optimal line formation
+
+The policy evaluates each possible move by simulating the placement and rotation, then scoring the resulting position based on strategic value. This multi-layered approach balances immediate threats with long-term positional advantages.
+
+```python
+import numpy as np
+from itertools import product
+
+def policy(you, opponent) -> str:
+    # Convert inputs to numpy arrays for easier manipulation
+    you_arr = np.array(you, dtype=int)
+    opponent_arr = np.array(opponent, dtype=int)
+    board = you_arr + opponent_arr  # 0=empty, 1=you, 2=opponent
+    
+    # Find all empty positions
+    empty_positions = []
+    for r in range(6):
+        for c in range(6):
+            if board[r][c] == 0:
+                empty_positions.append((r, c))
+    
+    # Get all quadrants for rotation
+    quadrants = [0, 1, 2, 3]
+    directions = ['L', 'R']
+    
+    def get_quadrant_cells(quad):
+        """Return list of (row, col) coordinates for a quadrant"""
+        if quad == 0:  # top-left
+            return [(r, c) for r in range(3) for c in range(3)]
+        elif quad == 1:  # top-right
+            return [(r, c) for r in range(3) for c in range(3, 6)]
+        elif quad == 2:  # bottom-left
+            return [(r, c) for r in range(3, 6) for c in range(3)]
+        elif quad == 3:  # bottom-right
+            return [(r, c) for r in range(3, 6) for c in range(3, 6)]
+        return []
+    
+    def rotate_quadrant(board_copy, quad, direction):
+        """Rotate a quadrant in place"""
+        cells = get_quadrant_cells(quad)
+        if not cells:
+            return board_copy
+        
+        # Extract quadrant values
+        quadrant_vals = [board_copy[r][c] for r, c in cells]
+        
+        # Create 3x3 grid
+        quad_grid = np.array(quadrant_vals).reshape(3, 3)
+        
+        # Rotate
+        if direction == 'L':
+            rotated = np.rot90(quad_grid, k=1)  # 90 deg anticlockwise
+        else:  # 'R'
+            rotated = np.rot90(quad_grid, k=3)  # 90 deg clockwise
+        
+        # Place back
+        for idx, (r, c) in enumerate(cells):
+            board_copy[r][c] = rotated.flat[idx]
+        
+        return board_copy
+    
+    def check_win(board_check, player):
+        """Check if player has 5+ in a row"""
+        # player: 1 for 'you', 2 for opponent
+        directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
+        
+        for r in range(6):
+            for c in range(6):
+                if board_check[r][c] == player:
+                    for dr, dc in directions:
+                        count = 0
+                        for i in range(5):
+                            nr, nc = r + dr * i, c + dc * i
+                            if 0 <= nr < 6 and 0 <= nc < 6 and board_check[nr][nc] == player:
+                                count += 1
+                            else:
+                                break
+                        if count >= 5:
+                            return True
+        return False
+    
+    def count_player_lines(board_check, player):
+        """Count lines of 5+ for player"""
+        if check_win(board_check, player):
+            return float('inf')  # This is a winning position
+        return 0
+    
+    def evaluate_board(board_eval, player):
+        """Evaluate board position for player"""
+        if check_win(board_eval, player):
+            return float('inf')
+        
+        score = 0
+        directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
+        
+        for r in range(6):
+            for c in range(6):
+                if board_eval[r][c] == player:
+                    for dr, dc in directions:
+                        # Count how many pieces in this line
+                        line_len = 0
+                        empty_in_line = 0
+                        for i in range(5):
+                            nr, nc = r + dr * i, c + dc * i
+                            if 0 <= nr < 6 and 0 <= nc < 6:
+                                if board_eval[nr][nc] == player:
+                                    line_len += 1
+                                elif board_eval[nr][nc] == 0:
+                                    empty_in_line += 1
+                                else:
+                                    break  # Blocked by opponent
+                        # Add score based on line length and potential
+                        if line_len >= 4:
+                            score += 10000  # Almost won
+                        elif line_len == 3 and empty_in_line >= 2:
+                            score += 100
+                        elif line_len == 3:
+                            score += 50
+                        elif line_len == 2 and empty_in_line >= 3:
+                            score += 10
+                        elif line_len == 2:
+                            score += 5
+        
+        return score
+    
+    def simulate_move(r, c, quad, direction, player):
+        """Simulate a move and return resulting board"""
+        board_copy = board.copy()
+        board_copy[r][c] = player
+        board_copy = rotate_quadrant(board_copy, quad, direction)
+        return board_copy
+    
+    # Check for immediate win
+    for r, c in empty_positions:
+        for quad in quadrants:
+            for direction in directions:
+                result_board = simulate_move(r, c, quad, direction, 1)
+                if check_win(result_board, 1):
+                    return f"{r+1},{c+1},{quad},{direction}"
+    
+    # Check if opponent can win next turn and block
+    for r, c in empty_positions:
+        for quad in quadrants:
+            for direction in directions:
+                result_board = simulate_move(r, c, quad, direction, 1)
+                # If after my move, opponent cannot win
+                # Actually we need to check if opponent WOULD win next turn if I don't block
+                # Better: check if opponent has an immediate win available
+                can_opponent_win = False
+                for or_, oc in empty_positions:
+                    if (or_, oc) == (r, c):
+                        continue
+                    for oquad in quadrants:
+                        for odir in directions:
+                            opp_board = simulate_move(or_, oc, oquad, odir, 2)
+                            if check_win(opp_board, 2):
+                                can_opponent_win = True
+                                break
+                        if can_opponent_win:
+                            break
+                    if can_opponent_win:
+                        break
+                
+                # If opponent can win, and this move doesn't block them, skip
+                if can_opponent_win:
+                    # Check if this move blocks opponent's win
+                    result_board = simulate_move(r, c, quad, direction, 1)
+                    if check_win(result_board, 2):
+                        # This move doesn't block opponent win
+                        continue
+                
+                # Evaluate this move
+                eval_score = evaluate_board(result_board, 1)
+                
+                # Store best move
+                if eval_score > best_score:
+                    best_score = eval_score
+                    best_move = (r, c, quad, direction)
+    
+    # If no blocking move found, use best evaluated move
+    best_score = -float('inf')
+    best_move = None
+    
+    for r, c in empty_positions:
+        for quad in quadrants:
+            for direction in directions:
+                result_board = simulate_move(r, c, quad, direction, 1)
+                eval_score = evaluate_board(result_board, 1)
+                
+                # Add positional bonus
+                # Center quadrants (0, 3) are more valuable
+                if quad in [0, 3]:
+                    eval_score += 5
+                
+                # Center positions (2,2), (2,3), (3,2), (3,3) are better
+                if r in [2, 3] and c in [2, 3]:
+                    eval_score += 10
+                
+                if eval_score > best_score:
+                    best_score = eval_score
+                    best_move = (r, c, quad, direction)
+    
+    if best_move:
+        r, c, quad, direction = best_move
+        return f"{r+1},{c+1},{quad},{direction}"
+    
+    # Fallback: pick first available move
+    if empty_positions:
+        r, c = empty_positions[0]
+        return f"{r+1},{c+1},0,R"
+    
+    return "1,1,0,R"  # Should never reach here
+```

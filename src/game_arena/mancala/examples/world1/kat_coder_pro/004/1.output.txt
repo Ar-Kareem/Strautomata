@@ -1,0 +1,208 @@
+The strategy for this policy is to use iterative deepening minimax with alpha-beta pruning. The algorithm will explore the game tree to find the best move by evaluating future game states and choosing the move that maximizes the chance of winning. The evaluation function will consider factors like seed difference, number of seeds in the store, and potential captures. The algorithm will continue to deepen the search until the time limit is reached, ensuring optimal play within the constraints.
+
+<code>
+import numpy as np
+from typing import List, Tuple, Optional
+
+def policy(you: List[int], opponent: List[int]) -> int:
+    """
+    Kalah AI policy using iterative deepening minimax with alpha-beta pruning.
+    
+    Args:
+        you: List of 7 integers representing your houses and store
+        opponent: List of 7 integers representing opponent's houses and store
+    
+    Returns:
+        Integer representing the house index (0-5) to play
+    """
+    
+    def make_move(state: List[int], opponent_state: List[int], move: int) -> Tuple[List[int], List[int], bool]:
+        """
+        Execute a move and return the resulting state.
+        
+        Args:
+            state: Current player's state
+            opponent_state: Opponent's state
+            move: House index to play (0-5)
+        
+        Returns:
+            Tuple of (new_state, new_opponent_state, extra_turn)
+        """
+        seeds = state[move]
+        state[move] = 0
+        
+        # Create copies to avoid modifying originals
+        new_state = state[:]
+        new_opponent_state = opponent_state[:]
+        
+        current_pos = move
+        is_player_side = True
+        
+        for _ in range(seeds):
+            current_pos += 1
+            
+            # Switch sides when reaching the end
+            if current_pos == 7:
+                if is_player_side:
+                    # Add to player's store
+                    new_state[6] += 1
+                    # Switch to opponent's side
+                    current_pos = 0
+                    is_player_side = False
+                else:
+                    # Skip opponent's store, go to player's side
+                    current_pos = 0
+                    is_player_side = True
+                    new_state[current_pos] += 1
+            elif current_pos == 6 and not is_player_side:
+                # Skip opponent's store
+                current_pos = 0
+                is_player_side = True
+                new_state[current_pos] += 1
+            else:
+                if is_player_side:
+                    new_state[current_pos] += 1
+                else:
+                    new_opponent_state[current_pos] += 1
+        
+        # Check for capture
+        if is_player_side and current_pos < 6 and new_state[current_pos] == 1:
+            opposite_pos = 5 - current_pos
+            if new_opponent_state[opposite_pos] > 0:
+                # Capture
+                new_state[6] += new_state[current_pos] + new_opponent_state[opposite_pos]
+                new_state[current_pos] = 0
+                new_opponent_state[opposite_pos] = 0
+        
+        # Check for extra turn
+        extra_turn = is_player_side and current_pos == 6
+        
+        return new_state, new_opponent_state, extra_turn
+    
+    def evaluate(state: List[int], opponent_state: List[int]) -> float:
+        """
+        Evaluate the current position.
+        
+        Args:
+            state: Current player's state
+            opponent_state: Opponent's state
+        
+        Returns:
+            Float representing the evaluation score
+        """
+        # Basic evaluation: difference in seeds
+        score = state[6] - opponent_state[6]
+        
+        # Add bonus for seeds in houses that can be captured
+        for i in range(6):
+            if state[i] == 1:
+                opposite = 5 - i
+                if opponent_state[opposite] > 0:
+                    score += opponent_state[opposite] * 0.5
+        
+        # Add bonus for having more seeds in houses
+        score += sum(state[:6]) * 0.1
+        
+        return score
+    
+    def is_game_over(state: List[int], opponent_state: List[int]) -> bool:
+        """Check if the game is over."""
+        return sum(state[:6]) == 0 or sum(opponent_state[:6]) == 0
+    
+    def minimax(state: List[int], opponent_state: List[int], depth: int, alpha: float, beta: float, 
+                maximizing_player: bool, extra_turn: bool) -> Tuple[float, Optional[int]]:
+        """
+        Minimax algorithm with alpha-beta pruning.
+        
+        Args:
+            state: Current player's state
+            opponent_state: Opponent's state
+            depth: Search depth
+            alpha: Alpha value for pruning
+            beta: Beta value for pruning
+            maximizing_player: Whether current player is maximizing
+            extra_turn: Whether current player has an extra turn
+        
+        Returns:
+            Tuple of (score, best_move)
+        """
+        if depth == 0 or is_game_over(state, opponent_state):
+            return evaluate(state, opponent_state), None
+        
+        if maximizing_player:
+            max_eval = float('-inf')
+            best_move = None
+            
+            # Get legal moves
+            legal_moves = [i for i in range(6) if state[i] > 0]
+            
+            # Sort moves to try captures first (move ordering)
+            legal_moves.sort(key=lambda x: -state[x])
+            
+            for move in legal_moves:
+                new_state, new_opponent_state, has_extra_turn = make_move(state[:], opponent_state[:], move)
+                
+                # If we have an extra turn, continue maximizing
+                if has_extra_turn:
+                    eval_score, _ = minimax(new_state, new_opponent_state, depth, alpha, beta, True, True)
+                else:
+                    eval_score, _ = minimax(new_opponent_state, new_state, depth - 1, alpha, beta, False, False)
+                
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_move = move
+                
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            best_move = None
+            
+            # Get legal moves for opponent
+            legal_moves = [i for i in range(6) if opponent_state[i] > 0]
+            
+            # Sort moves to try captures first (move ordering)
+            legal_moves.sort(key=lambda x: -opponent_state[x])
+            
+            for move in legal_moves:
+                new_opponent_state, new_state, has_extra_turn = make_move(opponent_state[:], state[:], move)
+                
+                # If opponent has an extra turn, continue minimizing
+                if has_extra_turn:
+                    eval_score, _ = minimax(new_state, new_opponent_state, depth, alpha, beta, False, True)
+                else:
+                    eval_score, _ = minimax(new_state, new_opponent_state, depth - 1, alpha, beta, True, False)
+                
+                if eval_score < min_eval:
+                    min_eval = eval_score
+                    best_move = move
+                
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            
+            return min_eval, best_move
+    
+    # Find the best move using iterative deepening
+    best_move = None
+    for depth in range(1, 10):  # Try increasing depths
+        try:
+            _, move = minimax(you, opponent, depth, float('-inf'), float('inf'), True, False)
+            if move is not None:
+                best_move = move
+            else:
+                break
+        except:
+            break
+    
+    # Fallback to a random legal move if no good move found
+    if best_move is None:
+        legal_moves = [i for i in range(6) if you[i] > 0]
+        if legal_moves:
+            best_move = legal_moves[0]
+    
+    return best_move
+</code>

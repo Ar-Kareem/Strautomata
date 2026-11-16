@@ -1,0 +1,199 @@
+Here's a Python implementation for the `policy` function that provides a next move for a 3x3x3 3D Tic Tac Toe game using a simple heuristic-based approach. This solution prioritizes moves that create winning conditions or block the opponent's winning conditions, then looks for strategic positions (like corners or centers) before making a random move.
+
+```python
+import numpy as np
+from typing import List, Tuple
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    """
+    Determines the next move for a 3x3x3 3D Tic Tac Toe game.
+
+    Args:
+        board: A 3x3x3 list of lists where:
+            - 0 represents an empty cell
+            - 1 represents the player's cell
+            - -1 represents the opponent's cell
+
+    Returns:
+        A tuple (x, y, z) representing the coordinates of the next move (0-2 for each dimension)
+    """
+    # Convert the input board to a numpy array for easier manipulation
+    board_np = np.array(board)
+
+    # Check if there's a winning move for the player (1)
+    winning_move = find_winning_move(board_np, 1)
+    if winning_move is not None:
+        return winning_move
+
+    # Check if there's a blocking move for the opponent (-1)
+    blocking_move = find_winning_move(board_np, -1)
+    if blocking_move is not None:
+        return blocking_move
+
+    # If no immediate winning/blocking move, prioritize strategic positions
+    # 1. Corners (highest value)
+    # 2. Centers (middle value)
+    # 3. Edges (lowest value)
+    # 4. Random empty position
+
+    # Flatten the board to find all empty positions (0)
+    empty_positions = np.argwhere(board_np == 0)
+
+    # Assign weights to positions based on their strategic value
+    # Corners: (0,0,0), (0,2,2), (2,0,2), (2,2,0), (2,0,0), (0,2,0), (0,0,2), (2,2,2)
+    # Centers: (1,1,1), (1,1,0), (1,1,2), (1,0,1), (1,2,1), (0,1,1), (2,1,1)
+    # Edges: all other positions
+
+    # Define corner and center positions (simplified for readability)
+    corners = [
+        (0, 0, 0), (0, 2, 2), (2, 0, 2), (2, 2, 0),
+        (2, 0, 0), (0, 2, 0), (0, 0, 2), (2, 2, 2)
+    ]
+    centers = [
+        (1, 1, 1), (1, 1, 0), (1, 1, 2),
+        (1, 0, 1), (1, 2, 1), (0, 1, 1),
+        (2, 1, 1), (1, 2, 2), (1, 0, 0),
+        (0, 1, 2), (2, 1, 2), (1, 0, 2),
+        (1, 2, 0), (0, 1, 0), (2, 1, 0),
+        (0, 0, 1), (0, 2, 1), (2, 0, 1),
+        (2, 2, 1), (0, 0, 2), (0, 2, 2),
+        (2, 0, 0), (2, 2, 0)
+    ]
+
+    # Assign weights (corners > centers > edges)
+    weights = np.zeros((3, 3, 3))
+    for x, y, z in corners:
+        weights[x, y, z] = 1.0
+    for x, y, z in centers:
+        weights[x, y, z] = 0.5
+
+    # Find the empty position with the highest weight
+    weighted_empty = empty_positions[weights[empty_positions[:, 0], empty_positions[:, 1], empty_positions[:, 2]].argsort()[::-1]]
+    if len(weighted_empty) > 0:
+        return tuple(weighted_empty[0])
+
+    # If no empty positions (shouldn't happen in a valid game)
+    return (0, 0, 0)
+
+def find_winning_move(board: np.ndarray, player: int) -> Tuple[int, int, int]:
+    """
+    Checks if the player can win in the next move by completing a line in any dimension.
+
+    Args:
+        board: The current board state as a numpy array.
+        player: The player to check for winning moves (1 or -1).
+
+    Returns:
+        A tuple (x, y, z) representing the winning move coordinates, or None if no winning move exists.
+    """
+    # Check all possible lines in the 3D board
+    # There are 3*3*3 + 3*3*3 + 3*3*3 + 3*3*3 (all directions) + 4*3*3 (space diagonals) + 4*3*3 (face diagonals) = 36 + 24 + 24 = 84 lines
+    # But we'll check only the ones that can be completed in one move (i.e., have 2 player's marks and 1 empty)
+
+    # Check rows in each layer (x fixed)
+    for x in range(3):
+        for z in range(3):
+            row = board[x, :, z]
+            empty_indices = np.where(row == 0)[0]
+            if len(empty_indices) == 1:  # Only one empty cell
+                y = empty_indices[0]
+                if np.all(row[np.where(row != 0)] == player):
+                    return (x, y, z)
+
+    # Check columns in each layer (y fixed)
+    for y in range(3):
+        for z in range(3):
+            col = board[:, y, z]
+            empty_indices = np.where(col == 0)[0]
+            if len(empty_indices) == 1:
+                x = empty_indices[0]
+                if np.all(col[np.where(col != 0)] == player):
+                    return (x, y, z)
+
+    # Check layers (z fixed)
+    for z in range(3):
+        layer = board[:, :, z]
+        # Check rows in the layer
+        for x in range(3):
+            row = layer[x, :, :]
+            empty_indices = np.where(row == 0)[0]
+            if len(empty_indices) == 1:  # Only one empty cell
+                y = empty_indices[0]
+                if np.all(row[np.where(row != 0)] == player):
+                    return (x, y, z)
+        # Check columns in the layer
+        for y in range(3):
+            col = layer[:, y, :]
+            empty_indices = np.where(col == 0)[0]
+            if len(empty_indices) == 1:
+                x = empty_indices[0]
+                if np.all(col[np.where(col != 0)] == player):
+                    return (x, y, z)
+        # Check space diagonals in the layer (top-left to bottom-right and top-right to bottom-left)
+        diag1 = layer.diagonal(offset=0, axis1=0, axis2=1)
+        diag2 = np.fliplr(layer).diagonal(offset=0, axis1=0, axis2=1)
+        for diag in [diag1, diag2]:
+            empty_indices = np.where(diag == 0)[0]
+            if len(empty_indices) == 1:
+                offset = empty_indices[0]
+                if np.all(diag[np.where(diag != 0)] == player):
+                    return (offset, offset, z)
+        # Check face diagonals in the layer (top-left to bottom-right and top-right to bottom-left for all faces)
+        # Top-left to bottom-right (for all 4 faces)
+        for i in range(2):
+            for j in range(2):
+                face_diag = layer[i::2, j::2]
+                empty_indices = np.argwhere(face_diag == 0)
+                if len(empty_indices) == 1:
+                    x, y = empty_indices[0]
+                    if np.all(face_diag[np.where(face_diag != 0)] == player):
+                        return (x + i, y + j, z)
+        # Top-right to bottom-left (for all 4 faces)
+        for i in range(2):
+            for j in range(2):
+                face_diag = layer[i::2, (2 - j)::-2]
+                empty_indices = np.argwhere(face_diag == 0)
+                if len(empty_indices) == 1:
+                    x, y = empty_indices[0]
+                    if np.all(face_diag[np.where(face_diag != 0)] == player):
+                        return (x + i, y + (2 - j), z)
+
+    # Check space diagonals (all 4)
+    for i in range(2):
+        for j in range(2):
+            space_diag = board[i::2, j::2, j::2]
+            empty_indices = np.argwhere(space_diag == 0)
+            if len(empty_indices) == 1:
+                x, y, z = empty_indices[0]
+                if np.all(space_diag[np.where(space_diag != 0)] == player):
+                    return (x + i, y + j, z + j)
+        for j in range(2):
+            space_diag = board[i::2, (2 - j)::-2, (2 - j)::-2]
+            empty_indices = np.argwhere(space_diag == 0)
+            if len(empty_indices) == 1:
+                x, y, z = empty_indices[0]
+                if np.all(space_diag[np.where(space_diag != 0)] == player):
+                    return (x + i, y + (2 - j), z + (2 - j))
+
+    return None
+```
+
+### Explanation:
+1. **`policy` function**:
+   - Converts the input board to a NumPy array for easier manipulation.
+   - Checks for winning moves (completing a line in any dimension with `1`).
+   - Checks for blocking moves (completing a line in any dimension with `-1`).
+   - If no immediate winning/blocking move exists, it prioritizes strategic positions (corners > centers > edges) using a weighted approach.
+   - Returns the first available move in the highest-priority category.
+
+2. **`find_winning_move` function**:
+   - Checks all possible lines (rows, columns, layers, space diagonals, and face diagonals) in the 3D board.
+   - For each line, it checks if the player can complete it in the next move (i.e., the line has 2 player's marks and 1 empty cell).
+   - Returns the coordinates of the empty cell that would complete the line, or `None` if no such move exists.
+
+### Strategic Priorities:
+- **Corners**: Highest priority (8 corners in total).
+- **Centers**: Medium priority (12 centers, including layer centers and edge centers).
+- **Edges**: Lowest priority (all other positions).
+
+This approach ensures the AI will always try to win or block the opponent first, then play strategically. If the board is full (unlikely in a valid game), it defaults to `(0, 0, 0)`.

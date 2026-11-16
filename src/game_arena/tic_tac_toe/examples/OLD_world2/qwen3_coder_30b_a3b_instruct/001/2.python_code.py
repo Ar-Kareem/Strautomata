@@ -1,0 +1,102 @@
+
+import numpy as np
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Determines the next move for a 4x4 Tic Tac Toe game using a simple heuristic.
+    
+    The algorithm prioritizes:
+    1. Winning moves
+    2. Blocking opponent wins
+    3. Taking the center if available
+    4. Taking corners
+    5. Taking any available space
+    
+    Args:
+        board: 4x4 list of lists representing the game state
+               0 = empty, 1 = player, -1 = opponent
+        
+    Returns:
+        Tuple of (row, col) for the next move
+    """
+    
+    # Convert to numpy array for easier manipulation
+    board_array = np.array(board)
+    
+    # Check for winning moves (move that gives 4 in a row)
+    for i in range(4):
+        for j in range(4):
+            if board_array[i, j] == 0:  # Empty space
+                # Try placing our mark here
+                board_array[i, j] = 1
+                if check_winner(board_array) == 1:
+                    board_array[i, j] = 0
+                    return (i, j)
+                board_array[i, j] = 0  # Reset
+    
+    # Check for blocking moves (prevent opponent from winning)
+    for i in range(4):
+        for j in range(4):
+            if board_array[i, j] == 0:  # Empty space
+                # Try placing opponent's mark here
+                board_array[i, j] = -1
+                if check_winner(board_array) == -1:
+                    board_array[i, j] = 0
+                    return (i, j)
+                board_array[i, j] = 0  # Reset
+    
+    # If we can't win or block, prioritize center, then corners
+    center_positions = [(1,1), (1,2), (2,1), (2,2)]
+    corner_positions = [(0,0), (0,3), (3,0), (3,3)]
+    edge_positions = [(0,1), (0,2), (1,0), (1,3), (2,0), (2,3), (3,1), (3,2)]
+    
+    # Try center if available
+    for row, col in center_positions:
+        if board_array[row, col] == 0:
+            return (row, col)
+    
+    # Try corners
+    for row, col in corner_positions:
+        if board_array[row, col] == 0:
+            return (row, col)
+    
+    # Try edges
+    for row, col in edge_positions:
+        if board_array[row, col] == 0:
+            return (row, col)
+    
+    # If all else fails, take any available move
+    for i in range(4):
+        for j in range(4):
+            if board_array[i, j] == 0:
+                return (i, j)
+
+def check_winner(board: np.ndarray) -> int:
+    """
+    Check if there's a winner on the board.
+    
+    Returns:
+        1 if player 1 wins, -1 if player -1 wins, 0 if no winner
+    """
+    # Check rows
+    for row in board:
+        if np.all(row == 1):
+            return 1
+        if np.all(row == -1):
+            return -1
+    
+    # Check columns
+    for col in board.T:
+        if np.all(col == 1):
+            return 1
+        if np.all(col == -1):
+            return -1
+    
+    # Check diagonals
+    if np.all(np.diag(board) == 1) or np.all(np.diag(np.fliplr(board)) == 1):
+        return 1
+    if np.all(np.diag(board) == -1) or np.all(np.diag(np.fliplr(board)) == -1):
+        return -1
+    
+    return 0

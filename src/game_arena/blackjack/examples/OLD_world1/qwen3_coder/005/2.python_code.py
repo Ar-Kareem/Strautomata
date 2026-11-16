@@ -1,0 +1,100 @@
+
+import numpy as np
+
+def calculate_hand_value(hand: list[str], target: int) -> int:
+    """Calculate the value of the hand, handling Aces optimally."""
+    # Convert cards to values
+    values = []
+    aces = 0
+    
+    for card in hand:
+        if card.isdigit():
+            values.append(int(card))
+        elif card in ['J', 'Q', 'K']:
+            values.append(10)
+        elif card == 'A':
+            aces += 1
+    
+    # Start with base value without Aces
+    base_value = sum(values)
+    
+    # Handle Aces (try to use 11 for Aces if possible, otherwise 1)
+    total_value = base_value
+    for _ in range(aces):
+        if total_value + 11 <= target:
+            total_value += 11
+        else:
+            total_value += 1
+    
+    return total_value
+
+def policy(hand: list[str], target: int) -> str:
+    """
+    Policy for simplified Blackjack-like game.
+    
+    Strategy:
+    - Calculate current hand value with optimal Ace handling
+    - If current value exceeds target, we've already busted (should not happen)
+    - If current value is close to target (within 2), stay
+    - Otherwise, hit if we're far from target and not risking busting
+    
+    More sophisticated strategy:
+    - Consider how many cards are left in our deck
+    - Estimate the probability of getting a favorable card
+    - Adjust threshold based on how close we are to the target
+    """
+    
+    current_value = calculate_hand_value(hand, target)
+    
+    # If we're already at or above target, we should stay (avoid busting)
+    if current_value >= target:
+        return "STAY"
+    
+    # Calculate how many cards we have left
+    all_cards = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    remaining_cards = [card for card in all_cards if card not in hand]
+    
+    # If no cards left, we must stay
+    if not remaining_cards:
+        return "STAY"
+    
+    # Calculate the distance to target
+    distance_to_target = target - current_value
+    
+    # If we're very close to target, stay (e.g., within 2 points)
+    if distance_to_target <= 2:
+        return "STAY"
+    
+    # Calculate risk: probability of not busting if we hit
+    favorable_cards = 0
+    total_cards = len(remaining_cards)
+    
+    # For each remaining card, check if drawing it would keep us under or at target
+    for card in remaining_cards:
+        test_hand = hand + [card]
+        test_value = calculate_hand_value(test_hand, target)
+        if test_value <= target:
+            favorable_cards += 1
+    
+    # If we have no idea about favorable cards, use a heuristic
+    if total_cards == 0:
+        if distance_to_target > 5:
+            return "HIT"
+        else:
+            return "STAY"
+    
+    # Probability of not busting with the next card
+    probability_safe = favorable_cards / total_cards if total_cards > 0 else 0
+    
+    # If more than 50% chance to improve without busting, hit
+    # But also consider how close we are to the target
+    if probability_safe > 0.5 and current_value < target - 3:
+        return "HIT"
+    elif current_value >= target - 2:
+        return "STAY"
+    else:
+        # Conservative approach when probabilities are unclear
+        return "STAY" if current_value > target / 2 else "HIT"
+    
+    # Default fallback
+    return "STAY"

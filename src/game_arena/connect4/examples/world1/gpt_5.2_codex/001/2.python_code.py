@@ -1,0 +1,148 @@
+
+import math
+import random
+
+ROWS = 6
+COLS = 7
+
+def policy(board: list[list[int]]) -> int:
+    valid_moves = get_valid_moves(board)
+    if not valid_moves:
+        return 0  # fallback, though should never happen
+
+    # 1. Immediate winning move
+    for col in valid_moves:
+        b = make_move(board, col, 1)
+        if is_winning(b, 1):
+            return col
+
+    # 2. Immediate block of opponent winning move
+    for col in valid_moves:
+        b = make_move(board, col, -1)
+        if is_winning(b, -1):
+            return col
+
+    # 3. Minimax with alpha-beta
+    best_score = -math.inf
+    best_col = valid_moves[0]
+
+    # Prefer center columns in move ordering
+    ordered = sorted(valid_moves, key=lambda c: abs(3 - c))
+
+    for col in ordered:
+        b = make_move(board, col, 1)
+        score = minimax(b, depth=4, alpha=-math.inf, beta=math.inf, maximizing=False)
+        if score > best_score:
+            best_score = score
+            best_col = col
+
+    return best_col
+
+def get_valid_moves(board):
+    return [c for c in range(COLS) if board[0][c] == 0]
+
+def make_move(board, col, player):
+    new_board = [row[:] for row in board]
+    for r in range(ROWS-1, -1, -1):
+        if new_board[r][col] == 0:
+            new_board[r][col] = player
+            break
+    return new_board
+
+def is_winning(board, player):
+    # Horizontal
+    for r in range(ROWS):
+        for c in range(COLS-3):
+            if all(board[r][c+i] == player for i in range(4)):
+                return True
+    # Vertical
+    for r in range(ROWS-3):
+        for c in range(COLS):
+            if all(board[r+i][c] == player for i in range(4)):
+                return True
+    # Diagonal down-right
+    for r in range(ROWS-3):
+        for c in range(COLS-3):
+            if all(board[r+i][c+i] == player for i in range(4)):
+                return True
+    # Diagonal up-right
+    for r in range(3, ROWS):
+        for c in range(COLS-3):
+            if all(board[r-i][c+i] == player for i in range(4)):
+                return True
+    return False
+
+def minimax(board, depth, alpha, beta, maximizing):
+    valid_moves = get_valid_moves(board)
+    terminal = is_winning(board, 1) or is_winning(board, -1) or not valid_moves
+    if depth == 0 or terminal:
+        return evaluate(board)
+
+    if maximizing:
+        value = -math.inf
+        ordered = sorted(valid_moves, key=lambda c: abs(3 - c))
+        for col in ordered:
+            child = make_move(board, col, 1)
+            value = max(value, minimax(child, depth-1, alpha, beta, False))
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+        return value
+    else:
+        value = math.inf
+        ordered = sorted(valid_moves, key=lambda c: abs(3 - c))
+        for col in ordered:
+            child = make_move(board, col, -1)
+            value = min(value, minimax(child, depth-1, alpha, beta, True))
+            beta = min(beta, value)
+            if alpha >= beta:
+                break
+        return value
+
+def evaluate(board):
+    if is_winning(board, 1):
+        return 100000
+    if is_winning(board, -1):
+        return -100000
+
+    score = 0
+
+    # Center column preference
+    center_array = [board[r][3] for r in range(ROWS)]
+    score += center_array.count(1) * 6
+    score -= center_array.count(-1) * 6
+
+    # Score all windows of length 4
+    for r in range(ROWS):
+        for c in range(COLS-3):
+            score += evaluate_window([board[r][c+i] for i in range(4)])
+
+    for r in range(ROWS-3):
+        for c in range(COLS):
+            score += evaluate_window([board[r+i][c] for i in range(4)])
+
+    for r in range(ROWS-3):
+        for c in range(COLS-3):
+            score += evaluate_window([board[r+i][c+i] for i in range(4)])
+
+    for r in range(3, ROWS):
+        for c in range(COLS-3):
+            score += evaluate_window([board[r-i][c+i] for i in range(4)])
+
+    return score
+
+def evaluate_window(window):
+    score = 0
+    if window.count(1) == 4:
+        score += 100
+    elif window.count(1) == 3 and window.count(0) == 1:
+        score += 5
+    elif window.count(1) == 2 and window.count(0) == 2:
+        score += 2
+
+    if window.count(-1) == 3 and window.count(0) == 1:
+        score -= 6
+    elif window.count(-1) == 4:
+        score -= 100
+
+    return score

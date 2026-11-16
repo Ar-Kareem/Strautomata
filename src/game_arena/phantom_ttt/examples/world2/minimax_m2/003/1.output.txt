@@ -1,0 +1,213 @@
+**Strategy Overview**
+
+The policy operates under the classic “Phantom Tic‑Tac‑Toe” rules where we only see our own confirmed marks (`1`s) and all other cells are unknown (`0`s).  
+The opponent’s marks are invisible, and an attempted move on an already‑occupied cell fails without any explicit feedback.
+
+The core idea is to **avoid wasted turns** by quickly learning which cells are blocked (occupied by the opponent).  
+We do this by remembering the cell we tried on the previous turn and comparing the board before and after the call:
+
+* If a new `1` appears at the attempted cell → the move succeeded, the cell is empty.  
+* If no new `1` appears → the move failed, the cell is now known to be blocked.
+
+All known‑blocked cells are stored in a global set and are never chosen again.
+
+When a legal (non‑blocked) cell is available the policy selects a move using a simple three‑level heuristic:
+
+1. **Immediate win** – choose any cell that completes a line of three of our marks.  
+2. **Create a two‑in‑a‑row threat** – if no immediate win exists, pick a cell that would leave exactly two of our marks in any line, giving us a future winning opportunity.  
+3. **Extend existing marks** – otherwise pick the unknown cell that belongs to the most rows/columns/diagonals already containing our marks, thereby maximising the number of potential winning lines we can develop.
+
+If none of the above applies (rare), a random legal cell is chosen.
+
+The algorithm also resets its internal state whenever it detects a completely empty board, allowing it to start a new game cleanly.
+
+This combination of **memory of blocked cells**, **immediate win detection**, and **greedy extension of existing lines** makes the policy far more efficient than a naïve random player and gives it a solid chance to out‑compete other policies in the arena.
+
+<code>
+import random
+
+# Global memory that persists across calls within a single game.
+# These variables are reset automatically when a fresh empty board is observed.
+_prev_board = None          # board from the previous turn (list of lists)
+_blocked_cells = set()       # cells known to be occupied by the opponent
+_last_move = None            # the cell we attempted on the previous turn
+
+
+def _reset_state():
+    """Reset all global state – called when a fresh empty board is detected."""
+    global _prev_board, _blocked_cells, _last_move
+    _prev_board = None
+    _blocked_cells.clear()
+    _last_move = None
+
+
+def _copy_board(board):
+    """Return a deep copy of the board (list of lists)."""
+    return [row[:] for row in board]
+
+
+def _all_cells_zero(board):
+    """Check whether the board contains no confirmed marks (all zeros)."""
+    return all(cell == 0 for row in board for cell in row)
+
+
+def _detect_new_marks(prev, cur):
+    """Return a list of coordinates where a new '1' appeared between prev and cur."""
+    new = []
+    for i in range(3):
+        for j in range(3):
+            if cur[i][j] == 1 and (prev is None or prev[i][j] == 0):
+                new.append((i, j))
+    return new
+
+
+def _would_win(board, i, j):
+    """Return True if placing at (i, j) would complete a line of three 1's."""
+    # Gather the lines that contain (i, j)
+    lines = [
+        [(i, 0), (i, 1), (i, 2)],                      # row i
+        [(0, j), (1, j), (2, j)],                      # column j
+    ]
+    if i == j:
+        lines.append([(0, 0), (1, 1), (2, 2)])          # main diagonal
+    if i + j == 2:
+        lines.append([(0, 2), (1, 1), (2, 0)])          # anti‑diagonal
+
+    for line in lines:
+        cnt = sum(board[x][y] for x, y in line)
+        if cnt + 1 == 3:          # adding our mark would give three in a row
+            return True
+    return False
+
+
+def _would_create_two(board, i, j):
+    """Return True if placing at (i, j) would leave exactly two 1's in any line."""
+    lines = [
+        [(i, 0), (i, 1), (i, 2)],
+        [(0, j), (1, j), (2, j)],
+    ]
+    if i == j:
+        lines.append([(0, 0), (1, 1), (2, 2)])
+    if i + j == 2:
+        lines.append([(0, 2), (1, 1), (2, 0)])
+
+    for line in lines:
+        cnt = sum(board[x][y] for x, y in line)
+        if cnt + 1 == 2:          # would leave a line with exactly two marks
+            return True
+    return False
+
+
+def _potential_score(board, i, j):
+    """
+    Compute a heuristic score for placing at (i, j):
+    sum of the number of our existing marks in each line that contains (i, j).
+    Higher score → more lines are being extended / reinforced.
+    """
+    score = 0
+    # row i
+    score += sum(board[i][c] for c in range(3))
+    # column j
+    score += sum(board[r][j] for r in range(3))
+    # main diagonal
+    if i == j:
+        score += sum(board[d][d] for d in range(3))
+    # anti‑diagonal
+    if i + j == 2:
+        score += sum(board[d][2 - d] for d in range(3))
+    return score
+
+
+def policy(board):
+    """
+    Main policy function. Called each turn with the current 3x3 board.
+    Returns a tuple (row, col) of the cell to attempt to mark.
+    """
+    global _prev_board, _blocked_cells, _last_move
+
+    # --------------------------------------------------------------------
+    # 1) Detect a fresh empty board and reset internal state accordingly.
+    # --------------------------------------------------------------------
+    if _all_cells_zero(board):
+        _reset_state()
+        # After resetting, set the previous board to the current (empty) board.
+        _prev_board = _copy_board(board)
+
+    # --------------------------------------------------------------------
+    # 2) Determine whether our last attempt succeeded or failed.
+    # --------------------------------------------------------------------
+    if _prev_board is not None:
+        # Find any new '1's that appeared since the previous turn.
+        new_marks = _detect_new_marks(_prev_board, board)
+
+        if _last_move is not None:
+            if _last_move in new_marks:
+                # Success – the cell is empty; make sure it's not marked as blocked.
+                _blocked_cells.discard(_last_move)
+            else:
+                # Failure – the cell must be occupied by the opponent.
+                _blocked_cells.add(_last_move)
+
+    # Store the current board for the next comparison.
+    _prev_board = _copy_board(board)
+
+    # --------------------------------------------------------------------
+    # 3) Build the list of legal candidate cells (unknown and not blocked).
+    # --------------------------------------------------------------------
+    candidates = [
+        (i, j)
+        for i in range(3)
+        for j in range(3)
+        if board[i][j] == 0 and (i, j) not in _blocked_cells
+    ]
+
+    # If we have no safe cells (all unknown cells are blocked), fall back to
+    # any unknown cell (including blocked ones). This situation is rare and
+    # usually indicates that the opponent has already secured a winning line.
+    if not candidates:
+        candidates = [
+            (i, j)
+            for i in range(3)
+            for j in range(3)
+            if board[i][j] == 0
+        ]
+        if not candidates:
+            # Board is completely full – should not happen in a normal game.
+            return (0, 0)
+
+    # --------------------------------------------------------------------
+    # 4) Heuristic selection (priority order).
+    # --------------------------------------------------------------------
+    # 4.1) Immediate winning move.
+    for cell in candidates:
+        i, j = cell
+        if _would_win(board, i, j):
+            _last_move = cell
+            return cell
+
+    # 4.2) Move that creates a two‑in‑a‑row threat.
+    for cell in candidates:
+        i, j = cell
+        if _would_create_two(board, i, j):
+            _last_move = cell
+            return cell
+
+    # 4.3) Greedy extension of existing marks.
+    best_cell = None
+    best_score = -1
+    for cell in candidates:
+        i, j = cell
+        score = _potential_score(board, i, j)
+        if score > best_score:
+            best_score = score
+            best_cell = cell
+
+    if best_cell is not None:
+        _last_move = best_cell
+        return best_cell
+
+    # 4.4) Fallback: random legal move.
+    chosen = random.choice(candidates)
+    _last_move = chosen
+    return chosen
+</code>

@@ -1,0 +1,149 @@
+<thinking>
+I need to implement a policy for a 4x4 Tic Tac Toe game. This is a two-player zero-sum game, and I'm playing as player 1 (marked as 1). The opponent is player -1.
+
+Since the board is small (4x4), I can use a minimax algorithm with alpha-beta pruning to find the optimal move. The state space is manageable (at most 4^16 positions, but in practice much fewer due to game rules). I'll implement a recursive minimax with depth limited to the remaining empty cells (at most 16 levels, but we can prune early).
+
+The evaluation function will check for:
+- Win for me (return +1000)
+- Win for opponent (return -1000)
+- Otherwise, count potential winning lines (rows, columns, diagonals) with 3 of my markers and 1 empty, or 3 of opponent and 1 empty to encourage blocking or advancing.
+
+However, with 4x4, we need to win by getting 4 in a row (standard rule), so I'll check for 4 in a row for each player.
+
+I'll implement:
+1. A function to check if a player has won.
+2. A minimax function with alpha-beta pruning.
+3. The policy function that calls minimax to choose the best move.
+
+Since the game tree is small, I can search to the end of the game (depth = number of empty cells). I'll use caching for repeated states to speed up computation.
+
+However, considering the 1-second time limit and 4x4 board with up to 16 moves, minimax to full depth is feasible.
+
+Steps:
+- If current state is terminal (win/lose/draw), return evaluation.
+- For current player, try all empty cells, recursively evaluate.
+- Maximize for player 1, minimize for player -1.
+- Use alpha-beta pruning.
+
+I'll also add a simple heuristic for early termination if a win/loss is imminent, but full search is better for small board.
+
+Let me code accordingly.
+</thinking>
+<code>
+import numpy as np
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    # Convert to numpy array for easier manipulation
+    board_np = np.array(board, dtype=int)
+    
+    # Get empty positions
+    empty_positions = np.argwhere(board_np == 0)
+    
+    # If no moves left, return something (though game should be over)
+    if len(empty_positions) == 0:
+        return (0, 0)
+    
+    # If only one move left, take it
+    if len(empty_positions) == 1:
+        return tuple(empty_positions[0])
+    
+    # Find best move using minimax with alpha-beta pruning
+    best_move = None
+    best_value = -float('inf')
+    alpha = -float('inf')
+    beta = float('inf')
+    
+    # Try each empty position
+    for pos in empty_positions:
+        row, col = pos[0], pos[1]
+        # Make move
+        board_np[row, col] = 1
+        
+        # Evaluate this move with minimax (opponent's turn now)
+        value = minimax(board_np, 0, False, alpha, beta)
+        
+        # Undo move
+        board_np[row, col] = 0
+        
+        # Update best move
+        if value > best_value:
+            best_value = value
+            best_move = (row, col)
+            alpha = max(alpha, best_value)
+    
+    return best_move
+
+def minimax(board: np.ndarray, depth: int, is_maximizing: bool, alpha: float, beta: float) -> float:
+    # Check for terminal states
+    player_win = check_win(board, 1)
+    opponent_win = check_win(board, -1)
+    
+    if player_win:
+        return 1000 - depth  # Prefer faster wins
+    if opponent_win:
+        return -1000 + depth  # Prefer slower losses
+    
+    # Check if board is full (draw)
+    if np.count_nonzero(board == 0) == 0:
+        return 0
+    
+    # Get empty positions
+    empty_positions = np.argwhere(board == 0)
+    
+    if is_maximizing:  # Player 1's turn
+        max_eval = -float('inf')
+        for pos in empty_positions:
+            row, col = pos[0], pos[1]
+            board[row, col] = 1
+            eval_score = minimax(board, depth + 1, False, alpha, beta)
+            board[row, col] = 0
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break  # Alpha-beta pruning
+        return max_eval
+    else:  # Player -1's turn
+        min_eval = float('inf')
+        for pos in empty_positions:
+            row, col = pos[0], pos[1]
+            board[row, col] = -1
+            eval_score = minimax(board, depth + 1, True, alpha, beta)
+            board[row, col] = 0
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break  # Alpha-beta pruning
+        return min_eval
+
+def check_win(board: np.ndarray, player: int) -> bool:
+    """
+    Check if the specified player has won (4 in a row)
+    """
+    n = 4
+    # Check rows
+    for i in range(n):
+        for j in range(n - 3):
+            if all(board[i, j+k] == player for k in range(4)):
+                return True
+    
+    # Check columns
+    for j in range(n):
+        for i in range(n - 3):
+            if all(board[i+k, j] == player for k in range(4)):
+                return True
+    
+    # Check main diagonals (top-left to bottom-right)
+    for i in range(n - 3):
+        for j in range(n - 3):
+            if all(board[i+k, j+k] == player for k in range(4)):
+                return True
+    
+    # Check anti-diagonals (top-right to bottom-left)
+    for i in range(n - 3):
+        for j in range(3, n):
+            if all(board[i+k, j-k] == player for k in range(4)):
+                return True
+    
+    return False
+</code>

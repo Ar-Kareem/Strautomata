@@ -1,0 +1,146 @@
+# Strategy
+
+My policy uses minimax search with alpha-beta pruning to evaluate moves. The core strategy is:
+
+1. **Move Generation**: Generate all legal moves by finding queen-like paths for amazon movement and arrow shooting, correctly handling the vacated square rule.
+
+2. **Evaluation Function**: Uses mobility-based evaluation - counting the total number of queen-move squares available to each player. Higher mobility means more options and flexibility. Terminal states (no moves) are heavily penalized/rewarded.
+
+3. **Search**: Depth-2 minimax with alpha-beta pruning. This looks one move ahead for both players, balancing search quality with computation time.
+
+4. **Heuristic Logic**: The mobility difference (my_moves - opponent_moves) captures the key strategic goal in Amazons: restricting opponent movement while maintaining our own. This naturally encourages:
+   - Placing arrows that block opponent amazons
+   - Moving to positions with good escape routes
+   - Avoiding getting trapped
+
+5. **Safety**: Robust fallbacks for edge cases where no legal moves exist.
+
+<code>
+import numpy as np
+
+DIRECTIONS = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+
+def get_queen_moves(board, row, col):
+    moves = []
+    for dr, dc in DIRECTIONS:
+        r, c = row + dr, col + dc
+        while 0 <= r < 6 and 0 <= c < 6 and board[r, c] == 0:
+            moves.append((r, c))
+            r += dr
+            c += dc
+    return moves
+
+def get_arrow_positions(board, from_pos, to_pos):
+    moves = []
+    for dr, dc in DIRECTIONS:
+        r, c = to_pos[0] + dr, to_pos[1] + dc
+        while 0 <= r < 6 and 0 <= c < 6:
+            if (r, c) == from_pos:
+                moves.append((r, c))
+                r += dr
+                c += dc
+            elif board[r, c] != 0:
+                break
+            else:
+                moves.append((r, c))
+                r += dr
+                c += dc
+    return moves
+
+def get_all_moves(board, player):
+    moves = []
+    for r in range(6):
+        for c in range(6):
+            if board[r, c] == player:
+                for to_r, to_c in get_queen_moves(board, r, c):
+                    for arr_r, arr_c in get_arrow_positions(board, (r, c), (to_r, to_c)):
+                        moves.append(((r, c), (to_r, to_c), (arr_r, arr_c)))
+    return moves
+
+def make_move(board, move, player):
+    new_board = board.copy()
+    (fr, fc), (tr, tc), (ar, ac) = move
+    new_board[fr, fc] = 0
+    new_board[tr, tc] = player
+    new_board[ar, ac] = -1
+    return new_board
+
+def count_mobility(board, player):
+    total = 0
+    for r in range(6):
+        for c in range(6):
+            if board[r, c] == player:
+                total += len(get_queen_moves(board, r, c))
+    return total
+
+def evaluate(board):
+    my_mob = count_mobility(board, 1)
+    opp_mob = count_mobility(board, 2)
+    if my_mob == 0:
+        return -10000
+    if opp_mob == 0:
+        return 10000
+    return my_mob - opp_mob
+
+def minimax(board, depth, alpha, beta, maximizing):
+    if depth == 0:
+        return evaluate(board), None
+    
+    player = 1 if maximizing else 2
+    moves = get_all_moves(board, player)
+    
+    if not moves:
+        return (-10000 if maximizing else 10000), None
+    
+    best_move = moves[0]
+    
+    if maximizing:
+        max_eval = -float('inf')
+        for move in moves:
+            new_board = make_move(board, move, player)
+            eval_score, _ = minimax(new_board, depth - 1, alpha, beta, False)
+            if eval_score > max_eval:
+                max_eval = eval_score
+                best_move = move
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval, best_move
+    else:
+        min_eval = float('inf')
+        for move in moves:
+            new_board = make_move(board, move, player)
+            eval_score, _ = minimax(new_board, depth - 1, alpha, beta, True)
+            if eval_score < min_eval:
+                min_eval = eval_score
+                best_move = move
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval, best_move
+
+def format_move(move):
+    (fr, fc), (tr, tc), (ar, ac) = move
+    return f"{fr},{fc}:{tr},{tc}:{ar},{ac}"
+
+def policy(board):
+    board = np.array(board)
+    moves = get_all_moves(board, 1)
+    
+    if not moves:
+        pos = np.argwhere(board == 1)
+        if len(pos) > 0:
+            r, c = int(pos[0][0]), int(pos[0][1])
+            return f"{r},{c}:{r},{c}:{r},{c}"
+        return "0,0:0,0:0,0"
+    
+    if len(moves) == 1:
+        return format_move(moves[0])
+    
+    _, best_move = minimax(board, 2, -float('inf'), float('inf'), True)
+    
+    if best_move is None:
+        best_move = moves[0]
+    
+    return format_move(best_move)
+</code>

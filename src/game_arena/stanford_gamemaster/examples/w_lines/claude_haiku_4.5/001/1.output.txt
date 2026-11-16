@@ -1,0 +1,114 @@
+# Strategy
+
+The game "Lines" is played on a hexagonal board where players alternate placing stones. Victory is determined by achieving majority control (more stones than the opponent) in various lines:
+- Letter lines (a through i)
+- Number lines (1 through 9)
+- Diagonal lines (a5, a6, a7, a8, a9, b9, c9, d9, e9)
+
+**Key Strategic Principles:**
+
+1. **Line Control Maximization**: Prioritize moves that increase our majority count in lines (`line_count` facts). Each line won is worth points in the final score.
+
+2. **Blocking**: When the opponent is close to winning a line (has majority with room for growth), block them by placing a stone in that line to contest it.
+
+3. **Aggressive Line Building**: Focus on lines where we already have stones and can build toward majority. Continuing patterns is more efficient than starting new ones.
+
+4. **Multi-Line Opportunities**: Prefer moves that contribute to multiple lines simultaneously (hexagonal board allows stones to belong to up to 3 different line types).
+
+5. **Available Cells**: Track which cells are occupied by checking for `["cell", letter, number, role]` facts. Only place stones on empty cells.
+
+6. **Early Game**: In early moves, position stones to control central and high-value lines.
+
+The policy will:
+- Evaluate all empty cells
+- Score each cell based on:
+  - How many lines it would contribute to for our role
+  - The current state of those lines (are we building toward majority?)
+  - Defensive value (blocking opponent's majorities)
+  - Multi-line synergy
+- Return the highest-scoring legal move
+
+<code>
+def policy(state: list[list[object]], role: str) -> str:
+    # Parse the state
+    occupied_cells = set()
+    line_counts = {}
+    
+    for fact in state:
+        if fact[0] == "cell":
+            occupied_cells.add((fact[1], fact[2]))
+        elif fact[0] == "line_count":
+            line_id = fact[1]
+            player = fact[2]
+            count = fact[3]
+            line_counts[(line_id, player)] = count
+    
+    # Determine opponent
+    opponent = "blue" if role == "red" else "red"
+    
+    # Generate all possible cells (hexagonal board)
+    letters = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i']
+    numbers = ['1', '2', '3', '4', '5', '6', '7', '8', '9']
+    
+    # Blocked cells (corners of hexagon)
+    blocked = {('a', '1'), ('a', '2'), ('a', '3'), ('a', '4'),
+               ('i', '6'), ('i', '7'), ('i', '8'), ('i', '9')}
+    
+    possible_cells = []
+    for letter in letters:
+        for number in numbers:
+            if (letter, number) not in occupied_cells and (letter, number) not in blocked:
+                possible_cells.append((letter, number))
+    
+    def get_line_ids(letter, number):
+        """Get all line IDs a cell belongs to"""
+        lines = [letter, number]
+        # Diagonal lines
+        if letter == 'a' and number in ['5', '6', '7', '8', '9']:
+            lines.append('a' + number)
+        elif number == '9' and letter in ['a', 'b', 'c', 'd', 'e']:
+            lines.append(letter + '9')
+        return lines
+    
+    def score_cell(letter, number):
+        """Score a cell for placement"""
+        score = 0
+        line_ids = get_line_ids(letter, number)
+        
+        for line_id in line_ids:
+            our_count = line_counts.get((line_id, role), 0)
+            opp_count = line_counts.get((line_id, opponent), 0)
+            
+            # Bonus for building our majority
+            if our_count > opp_count:
+                score += 10 + our_count
+            elif our_count == opp_count:
+                score += 5 + our_count
+            
+            # Bonus for blocking opponent
+            if opp_count > our_count:
+                score += 8 + opp_count
+            
+            # Bonus for starting new lines
+            if our_count == 0 and opp_count == 0:
+                score += 1
+        
+        return score
+    
+    # Find best move
+    best_cell = None
+    best_score = -1
+    
+    for cell in possible_cells:
+        cell_score = score_cell(cell[0], cell[1])
+        if cell_score > best_score:
+            best_score = cell_score
+            best_cell = cell
+    
+    # Fallback to first available cell
+    if best_cell is None and possible_cells:
+        best_cell = possible_cells[0]
+    
+    # Return move in Stanford syntax
+    return f"place({best_cell[0]},{best_cell[1]})"
+</code>

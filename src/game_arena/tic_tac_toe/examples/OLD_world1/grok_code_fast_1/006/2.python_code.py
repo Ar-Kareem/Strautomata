@@ -1,0 +1,48 @@
+
+import random
+
+def policy(board):
+    # Define all possible win lines: rows, columns, diagonals
+    lines = [
+        # Rows
+        [(i, j) for j in range(3)] for i in range(3)
+    ] + [
+        # Columns
+        [(j, i) for j in range(3)] for i in range(3)
+    ] + [
+        # Diagonals
+        [(i, i) for i in range(3)],
+        [(i, 2 - i) for i in range(3)]
+    ]
+    
+    # First, check for a winning move for myself (1)
+    for line in lines:
+        counts = {0: 0, 1: 0, -1: 0}
+        empties = []
+        for r, c in line:
+            val = board[r][c]
+            counts[val] += 1
+            if val == 0:
+                empties.append((r, c))
+        if counts[1] == 2 and counts[0] == 1:
+            return empties[0]
+    
+    # Second, check for a blocking move (prevent opponent -1 from winning)
+    for line in lines:
+        counts = {0: 0, 1: 0, -1: 0}
+        empties = []
+        for r, c in line:
+            val = board[r][c]
+            counts[val] += 1
+            if val == 0:
+                empties.append((r, c))
+        if counts[-1] == 2 and counts[0] == 1:
+            return empties[0]
+    
+    # Third, make a random valid move if no win or block
+    moves = [(i, j) for i in range(3) for j in range(3) if board[i][j] == 0]
+    if moves:
+        return random.choice(moves)
+    else:
+        # Fallback, though board is never full here
+        return (0, 0)

@@ -1,0 +1,329 @@
+The strategy for this policy is to generate all pseudo-legal moves for the current player, filter them to ensure they don't leave the king in check, and then evaluate the resulting positions using a combination of material count and piece-square tables. The move that maximizes the evaluation is chosen. This approach provides a reasonable chess engine that considers both material advantage and positional factors.
+
+Key components of the strategy:
+1. **Board Representation**: Convert the piece dictionary to an 8x8 grid for easier manipulation
+2. **Move Generation**: Generate pseudo-legal moves for all pieces, including pawn promotions
+3. **King Safety Check**: Filter moves by simulating them and checking if the king is under attack
+4. **Position Evaluation**: Use material counts and piece-square tables to evaluate positions
+5. **Best Move Selection**: Choose the move that maximizes the evaluation function
+
+This approach balances simplicity and effectiveness, providing a competitive policy that can make reasonable chess moves within the time constraints.
+<code>
+def policy(pieces: dict[str, str], to_play: str, memory: dict) -> tuple[str, dict]:
+    # Build grid from pieces
+    grid = [[None] * 8 for _ in range(8)]
+    for square, piece in pieces.items():
+        col = ord(square[0]) - ord('a')
+        row = int(square[1]) - 1
+        grid[row][col] = piece
+
+    # Generate all pseudo-legal moves
+    moves = []
+    for from_row in range(8):
+        for from_col in range(8):
+            piece = grid[from_row][from_col]
+            if piece is None:
+                continue
+            color = piece[0]
+            if (to_play == 'white' and color != 'w') or (to_play == 'black' and color != 'b'):
+                continue
+
+            ptype = piece[1]
+            if ptype == 'P':
+                if color == 'w':
+                    # One step forward (non-promotion)
+                    if from_row > 1 and grid[from_row - 1][from_col] is None:
+                        moves.append((from_row, from_col, from_row - 1, from_col, None))
+                    # One step forward (promotion)
+                    if from_row == 1 and grid[from_row - 1][from_col] is None:
+                        moves.append((from_row, from_col, from_row - 1, from_col, 'q'))
+                    # Captures
+                    for dc in [-1, 1]:
+                        to_col = from_col + dc
+                        to_row = from_row - 1
+                        if 0 <= to_col < 8 and to_row >= 0:
+                            if grid[to_row][to_col] is not None and grid[to_row][to_col][0] == 'b':
+                                if to_row == 0:
+                                    moves.append((from_row, from_col, to_row, to_col, 'q'))
+                                else:
+                                    moves.append((from_row, from_col, to_row, to_col, None))
+                else:  # black pawn
+                    if from_row < 6 and grid[from_row + 1][from_col] is None:
+                        moves.append((from_row, from_col, from_row + 1, from_col, None))
+                    if from_row == 6 and grid[from_row + 1][from_col] is None:
+                        moves.append((from_row, from_col, from_row + 1, from_col, 'q'))
+                    for dc in [-1, 1]:
+                        to_col = from_col + dc
+                        to_row = from_row + 1
+                        if 0 <= to_col < 8 and to_row < 8:
+                            if grid[to_row][to_col] is not None and grid[to_row][to_col][0] == 'w':
+                                if to_row == 7:
+                                    moves.append((from_row, from_col, to_row, to_col, 'q'))
+                                else:
+                                    moves.append((from_row, from_col, to_row, to_col, None))
+            else:
+                directions = {
+                    'N': [(-2, -1), (-2, 1), (-1, -2), (-1, 2), (1, -2), (1, 2), (2, -1), (2, 1)],
+                    'B': [(-1, -1), (-1, 1), (1, -1), (1, 1)],
+                    'R': [(-1, 0), (1, 0), (0, -1), (0, 1)],
+                    'Q': [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)],
+                    'K': [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+                }[ptype]
+
+                for dr, dc in directions:
+                    to_row, to_col = from_row + dr, from_col + dc
+                    if 0 <= to_row < 8 and 0 <= to_col < 8:
+                        dest_piece = grid[to_row][to_col]
+                        if dest_piece is None or dest_piece[0] != color:
+                            moves.append((from_row, from_col, to_row, to_col, None))
+                            if ptype in ['B', 'R', 'Q']:
+                                while True:
+                                    to_row += dr
+                                    to_col += dc
+                                    if not (0 <= to_row < 8 and 0 <= to_col < 8):
+                                        break
+                                    dest_piece = grid[to_row][to_col]
+                                    if dest_piece is None:
+                                        moves.append((from_row, from_col, to_row, to_col, None))
+                                    else:
+                                        if dest_piece[0] != color:
+                                            moves.append((from_row, from_col, to_row, to_col, None))
+                                        break
+
+    def is_attacked(grid, target_row, target_col, opponent_color):
+        for i in range(8):
+            for j in range(8):
+                piece = grid[i][j]
+                if piece is None or piece[0] != opponent_color:
+                    continue
+                ptype = piece[1]
+                if ptype == 'P':
+                    if opponent_color == 'w':
+                        if (i - 1, j - 1) == (target_row, target_col) or (i - 1, j + 1) == (target_row, target_col):
+                            return True
+                    else:
+                        if (i + 1, j - 1) == (target_row, target_col) or (i + 1, j + 1) == (target_row, target_col):
+                            return True
+                elif ptype == 'N':
+                    knight_moves = [(-2, -1), (-2, 1), (-1, -2), (-1, 2), (1, -2), (1, 2), (2, -1), (2, 1)]
+                    for dr, dc in knight_moves:
+                        if (i + dr, j + dc) == (target_row, target_col):
+                            return True
+                elif ptype == 'K':
+                    king_moves = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+                    for dr, dc in king_moves:
+                        if (i + dr, j + dc) == (target_row, target_col):
+                            return True
+                elif ptype in ['B', 'R', 'Q']:
+                    directions = []
+                    if ptype == 'B':
+                        directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+                    elif ptype == 'R':
+                        directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+                    else:
+                        directions = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+                    for dr, dc in directions:
+                        ni, nj = i + dr, j + dc
+                        while 0 <= ni < 8 and 0 <= nj < 8:
+                            if (ni, nj) == (target_row, target_col):
+                                return True
+                            if grid[ni][nj] is not None:
+                                break
+                            ni += dr
+                            nj += dc
+        return False
+
+    def evaluate_board(grid):
+        pawn_table_white = [
+            [0, 0, 0, 0, 0, 0, 0, 0],
+            [50, 50, 50, 50, 50, 50, 50, 50],
+            [10, 10, 20, 30, 30, 20, 10, 10],
+            [5, 5, 10, 25, 25, 10, 5, 5],
+            [0, 0, 0, 20, 20, 0, 0, 0],
+            [5, -5, -10, 0, 0, -10, -5, 5],
+            [5, 10, 10, -20, -20, 10, 10, 5],
+            [0, 0, 0, 0, 0, 0, 0, 0]
+        ]
+        pawn_table_black = pawn_table_white[::-1]
+
+        knight_table = [
+            [-50, -40, -30, -30, -30, -30, -40, -50],
+            [-40, -20, 0, 0, 0, 0, -20, -40],
+            [-30, 0, 10, 15, 15, 10, 0, -30],
+            [-30, 5, 15, 20, 20, 15, 5, -30],
+            [-30, 0, 15, 20, 20, 15, 0, -30],
+            [-30, 5, 10, 15, 15, 10, 5, -30],
+            [-40, -20, 0, 5, 5, 0, -20, -40],
+            [-50, -40, -30, -30, -30, -30, -40, -50]
+        ]
+
+        bishop_table = [
+            [-20, -10, -10, -10, -10, -10, -10, -20],
+            [-10, 0, 0, 0, 0, 0, 0, -10],
+            [-10, 0, 5, 10, 10, 5, 0, -10],
+            [-10, 5, 5, 10, 10, 5, 5, -10],
+            [-10, 0, 10, 10, 10, 10, 0, -10],
+            [-10, 10, 10, 10, 10, 10, 10, -10],
+            [-10, 5, 0, 0, 0, 0, 5, -10],
+            [-20, -10, -10, -10, -10, -10, -10, -20]
+        ]
+
+        rook_table = [
+            [0, 0, 0, 0, 0, 0, 0, 0],
+            [5, 10, 10, 10, 10, 10, 10, 5],
+            [-5, 0, 0, 0, 0, 0, 0, -5],
+            [-5, 0, 0, 0, 0, 0, 0, -5],
+            [-5, 0, 0, 0, 0, 0, 0, -5],
+            [-5, 0, 0, 0, 0, 0, 0, -5],
+            [-5, 0, 0, 0, 0, 0, 0, -5],
+            [0, 0, 0, 5, 5, 0, 0, 0]
+        ]
+
+        queen_table = [
+            [-20, -10, -10, -5, -5, -10, -10, -20],
+            [-10, 0, 0, 0, 0, 0, 0, -10],
+            [-10, 0, 5, 5, 5, 5, 0, -10],
+            [-5, 0, 5, 5, 5, 5, 0, -5],
+            [0, 0, 5, 5, 5, 5, 0, -5],
+            [-10, 0, 5, 5, 5, 5, 0, -10],
+            [-10, 0, 0, 0, 0, 0, 0, -10],
+            [-20, -10, -10, -5, -5, -10, -10, -20]
+        ]
+
+        king_table_white = [
+            [-30, -40, -40, -50, -50, -40, -40, -30],
+            [-30, -40, -40, -50, -50, -40, -40, -30],
+            [-30, -40, -40, -50, -50, -40, -40, -30],
+            [-30, -40, -40, -50, -50, -40, -40, -30],
+            [-20, -30, -30, -40, -40, -30, -30, -20],
+            [-10, -20, -20, -20, -20, -20, -20, -10],
+            [20, 20, 0, 0, 0, 0, 20, 20],
+            [20, 30, 10, 0, 0, 10, 30, 20]
+        ]
+        king_table_black = king_table_white[::-1]
+
+        white_material = 0
+        black_material = 0
+        white_position = 0
+        black_position = 0
+
+        for i in range(8):
+            for j in range(8):
+                piece = grid[i][j]
+                if piece is None:
+                    continue
+                color = piece[0]
+                ptype = piece[1]
+
+                if color == 'w':
+                    if ptype == 'P':
+                        white_material += 1
+                        white_position += pawn_table_white[i][j]
+                    elif ptype == 'N':
+                        white_material += 3
+                        white_position += knight_table[i][j]
+                    elif ptype == 'B':
+                        white_material += 3
+                        white_position += bishop_table[i][j]
+                    elif ptype == 'R':
+                        white_material += 5
+                        white_position += rook_table[i][j]
+                    elif ptype == 'Q':
+                        white_material += 9
+                        white_position += queen_table[i][j]
+                    elif ptype == 'K':
+                        white_position += king_table_white[i][j]
+                else:
+                    if ptype == 'P':
+                        black_material += 1
+                        black_position += pawn_table_black[i][j]
+                    elif ptype == 'N':
+                        black_material += 3
+                        black_position += knight_table[i][j]
+                    elif ptype == 'B':
+                        black_material += 3
+                        black_position += bishop_table[i][j]
+                    elif ptype == 'R':
+                        black_material += 5
+                        black_position += rook_table[i][j]
+                    elif ptype == 'Q':
+                        black_material += 9
+                        black_position += queen_table[i][j]
+                    elif ptype == 'K':
+                        black_position += king_table_black[i][j]
+
+        return (white_material + white_position) - (black_material + black_position)
+
+    # Filter legal moves
+    legal_moves = []
+    for move in moves:
+        from_row, from_col, to_row, to_col, promotion_piece = move
+        piece = grid[from_row][from_col]
+        captured = grid[to_row][to_col]
+
+        if promotion_piece:
+            new_piece = color + promotion_piece
+        else:
+            new_piece = piece
+
+        grid[to_row][to_col] = new_piece
+        grid[from_row][from_col] = None
+
+        # Find king
+        king_row, king_col = None, None
+        king_piece = 'wK' if to_play == 'white' else 'bK'
+        for r in range(8):
+            for c in range(8):
+                if grid[r][c] == king_piece:
+                    king_row, king_col = r, c
+                    break
+            if king_row is not None:
+                break
+
+        opponent_color = 'b' if to_play == 'white' else 'w'
+        safe = not is_attacked(grid, king_row, king_col, opponent_color) if king_row is not None else False
+
+        grid[from_row][from_col] = piece
+        grid[to_row][to_col] = captured
+
+        if safe:
+            legal_moves.append(move)
+
+    if not legal_moves:
+        return ('a1a2', {})
+
+    # Evaluate and choose best move
+    best_move = None
+    best_eval = -1000000
+
+    for move in legal_moves:
+        from_row, from_col, to_row, to_col, promotion_piece = move
+        piece = grid[from_row][from_col]
+        captured = grid[to_row][to_col]
+
+        if promotion_piece:
+            new_piece = color + promotion_piece
+        else:
+            new_piece = piece
+
+        grid[to_row][to_col] = new_piece
+        grid[from_row][from_col] = None
+
+        eval_val = evaluate_board(grid)
+
+        grid[from_row][from_col] = piece
+        grid[to_row][to_col] = captured
+
+        if eval_val > best_eval:
+            best_eval = eval_val
+            best_move = move
+
+    from_row, from_col, to_row, to_col, promotion_piece = best_move
+    from_square = chr(from_col + ord('a')) + str(from_row + 1)
+    to_square = chr(to_col + ord('a')) + str(to_row + 1)
+    move_str = from_square + to_square
+    if promotion_piece:
+        move_str += promotion_piece
+
+    return (move_str, {})
+</code>

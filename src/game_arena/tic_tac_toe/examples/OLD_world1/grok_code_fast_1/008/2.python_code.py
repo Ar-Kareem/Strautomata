@@ -1,0 +1,44 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    def check_win(b, player):
+        for i in range(3):
+            if all(b[i][j] == player for j in range(3)):
+                return True
+            if all(b[j][i] == player for j in range(3)):
+                return True
+        if all(b[i][i] == player for i in range(3)):
+            return True
+        if all(b[i][2 - i] == player for i in range(3)):
+            return True
+        return False
+
+    available = [(i, j) for i in range(3) for j in range(3) if board[i][j] == 0]
+
+    # Check if I can win
+    for r, c in available:
+        board[r][c] = 1
+        if check_win(board, 1):
+            board[r][c] = 0
+            return (r, c)
+        board[r][c] = 0
+
+    # Check if I need to block opponent
+    for r, c in available:
+        board[r][c] = -1
+        if check_win(board, -1):
+            board[r][c] = 0
+            return (r, c)
+        board[r][c] = 0
+
+    # Prefer center if available
+    if (1, 1) in available:
+        return (1, 1)
+
+    # Prefer corners
+    corners = [(0, 0), (0, 2), (2, 0), (2, 2)]
+    for r, c in corners:
+        if (r, c) in available:
+            return (r, c)
+
+    # Otherwise, any edge (but since center and corners checked, this will be edges)
+    return available[0]

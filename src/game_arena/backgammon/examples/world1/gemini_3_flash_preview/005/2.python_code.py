@@ -1,0 +1,129 @@
+
+import copy
+
+def policy(state: dict) -> str:
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    dice = state['dice']
+
+    if not dice:
+        return "H:P,P"
+
+    # Helper to check if a point is a blot or owned by opponent
+    def can_land(idx, opp):
+        if idx < 0: return True  # Bearing off
+        return opp[idx] < 2
+
+    def get_legal_moves(curr_my, curr_opp, curr_bar, d_list):
+        if not d_list:
+            return [[]]
+        
+        d = d_list[0]
+        moves = []
+        
+        # Must move from Bar if possible
+        if curr_bar > 0:
+            target = 24 - d
+            if can_land(target, curr_opp):
+                new_my = list(curr_my)
+                new_opp = list(curr_opp)
+                hit = False
+                if new_opp[target] == 1:
+                    new_opp[target] = 0
+                    hit = True
+                new_my[target] += 1
+                
+                sub_moves = get_legal_moves(new_my, new_opp, curr_bar - 1, d_list[1:])
+                for sm in sub_moves:
+                    moves.append(["B"] + sm)
+        else:
+            # Check for bearing off
+            all_in_home = all(curr_my[i] == 0 for i in range(6, 24))
+            
+            for i in range(24):
+                if curr_my[i] > 0:
+                    target = i - d
+                    legal = False
+                    if target >= 0:
+                        if can_land(target, curr_opp):
+                            legal = True
+                    elif all_in_home:
+                        # Bearing off logic: exact or furthest back
+                        if target == -1: legal = True
+                        else:
+                            furthest = max(idx for idx, count in enumerate(curr_my) if count > 0)
+                            if i == furthest: legal = True
+                    
+                    if legal:
+                        new_my = list(curr_my)
+                        new_opp = list(curr_opp)
+                        new_my[i] -= 1
+                        if target >= 0:
+                            if new_opp[target] == 1:
+                                new_opp[target] = 0
+                            new_my[target] += 1
+                        
+                        sub_moves = get_legal_moves(new_my, new_opp, 0, d_list[1:])
+                        for sm in sub_moves:
+                            moves.append([f"A{i}"] + sm)
+                            
+        if not moves:
+            return [["P"] + (["P"] if len(d_list) > 1 else [])]
+        return moves
+
+    def evaluate(move_seq, d_order):
+        # Very simple heuristic: try to minimize blots and maximize home progress
+        score = 0
+        temp_my = list(my_pts)
+        temp_opp = list(opp_pts)
+        temp_bar = my_bar
+        
+        # Simulate local impact
+        for i, start in enumerate(move_seq):
+            if start == "P": continue
+            d = d_order[i]
+            if start == "B":
+                target = 24 - d
+                temp_bar -= 1
+            else:
+                idx = int(start[1:])
+                target = idx - d
+                temp_my[idx] -= 1
+            
+            if target >= 0:
+                if temp_opp[target] == 1: score += 15 # Hitting
+                temp_my[target] += 1
+            else:
+                score += 20 # Bearing off
+        
+        # Penalize blots
+        for i in range(24):
+            if temp_my[i] == 1: score -= 10
+            if temp_my[i] >= 2: score += 2 # Strong points
+            
+        return score
+
+    d1, d2 = (dice[0], dice[1]) if len(dice) == 2 else (dice[0], 0)
+    
+    # Check H order
+    moves_h = get_legal_moves(my_pts, opp_pts, my_bar, [max(d1, d2), min(d1, d2)])
+    # Check L order
+    moves_l = get_legal_moves(my_pts, opp_pts, my_bar, [min(d1, d2), max(d1, d2)])
+    
+    best_score = -9999
+    best_move = "H:P,P"
+    
+    for m in moves_h:
+        s = evaluate(m, [max(d1, d2), min(d1, d2)])
+        if s > best_score:
+            best_score = s
+            best_move = f"H:{m[0]},{m[1] if len(m)>1 else 'P'}"
+            
+    for m in moves_l:
+        s = evaluate(m, [min(d1, d2), max(d1, d2)])
+        if s > best_score:
+            best_score = s
+            best_move = f"L:{m[0]},{m[1] if len(m)>1 else 'P'}"
+            
+    return best_move

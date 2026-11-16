@@ -1,0 +1,400 @@
+The strategy for this policy is a time-bounded alpha-beta search (2-ply by default) with aggressive move pruning. It generates only a strong subset of legal moves by (1) limiting arrow placements to the most “constricting” shots (typically near opponent amazons) and (2) beam-searching the best-looking moves at each node. Positions are evaluated using a fast territory estimate (multi-source BFS in “queen moves” to approximate Voronoi control), plus mobility (number of reachable destination squares), with terminal detection (no legal moves = loss). A small transposition table caches evaluations to save time.
+
+<code>
+import numpy as np
+from collections import deque
+import time
+from typing import List, Tuple, Optional, Dict
+
+# 6x6 Amazons policy with alpha-beta + territory/mobility evaluation and beam pruning.
+
+DIRS = (
+    (-1, 0), (1, 0), (0, -1), (0, 1),
+    (-1, -1), (-1, 1), (1, -1), (1, 1)
+)
+
+WIN_SCORE = 10_000_000
+INF = 10**9
+
+# Tunables (picked for 6x6 speed/strength tradeoff)
+TIME_LIMIT_SEC = 0.95
+
+ROOT_BEAM = 40         # how many candidate moves to fully search at the root
+NODE_BEAM = 24         # how many candidate moves to consider at interior nodes
+ROOT_ARROW_LIMIT = 14  # how many arrow squares to consider per destination at root
+NODE_ARROW_LIMIT = 10  # arrows per destination at interior nodes
+
+MOBILITY_W = 0.35      # weight on mobility difference
+TERRITORY_W = 1.0      # weight on territory difference
+ADJLIB_W = 0.10        # weight on adjacent empty squares difference
+
+
+def inb(r: int, c: int) -> bool:
+    return 0 <= r < 6 and 0 <= c < 6
+
+
+def reachable_squares(blocked: np.ndarray, r: int, c: int) -> List[Tuple[int, int]]:
+    """All empty squares reachable by a queen move from (r,c).
+    'blocked' is True for occupied/blocked squares (amazons and arrows).
+    Note: (r,c) itself may be blocked; that's fine as starting square.
+    """
+    out = []
+    for dr, dc in DIRS:
+        rr, cc = r + dr, c + dc
+        while inb(rr, cc) and not blocked[rr, cc]:
+            out.append((rr, cc))
+            rr += dr
+            cc += dc
+    return out
+
+
+def apply_move(board: np.ndarray, move: Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]], player: int) -> np.ndarray:
+    (fr, fc), (tr, tc), (ar, ac) = move
+    nb = board.copy()
+    nb[fr, fc] = 0
+    nb[tr, tc] = player
+    nb[ar, ac] = -1
+    return nb
+
+
+def positions_of(board: np.ndarray, val: int) -> List[Tuple[int, int]]:
+    pts = np.argwhere(board == val)
+    return [(int(r), int(c)) for r, c in pts]
+
+
+def adjacent_liberties(board: np.ndarray, r: int, c: int) -> int:
+    """Count empty adjacent squares (king neighbors)."""
+    cnt = 0
+    for dr in (-1, 0, 1):
+        for dc in (-1, 0, 1):
+            if dr == 0 and dc == 0:
+                continue
+            rr, cc = r + dr, c + dc
+            if inb(rr, cc) and board[rr, cc] == 0:
+                cnt += 1
+    return cnt
+
+
+def queen_distance_voronoi(board: np.ndarray) -> int:
+    """Territory estimate: multi-source BFS in 'queen-move steps' for each side.
+    Returns (#squares closer to P1) - (#squares closer to P2) over empty squares.
+    """
+    blocked = (board != 0)
+    p1 = positions_of(board, 1)
+    p2 = positions_of(board, 2)
+
+    if not p1 and not p2:
+        return 0
+
+    def multi_source_dist(sources: List[Tuple[int, int]]) -> np.ndarray:
+        dist = np.full((6, 6), INF, dtype=np.int32)
+        q = deque()
+        for (sr, sc) in sources:
+            dist[sr, sc] = 0
+            q.append((sr, sc))
+        while q:
+            r, c = q.popleft()
+            nd = dist[r, c] + 1
+            for dr, dc in DIRS:
+                rr, cc = r + dr, c + dc
+                while inb(rr, cc) and not blocked[rr, cc]:
+                    if nd < dist[rr, cc]:
+                        dist[rr, cc] = nd
+                        q.append((rr, cc))
+                    rr += dr
+                    cc += dc
+        return dist
+
+    d1 = multi_source_dist(p1) if p1 else np.full((6, 6), INF, dtype=np.int32)
+    d2 = multi_source_dist(p2) if p2 else np.full((6, 6), INF, dtype=np.int32)
+
+    terr = 0
+    for r in range(6):
+        for c in range(6):
+            if board[r, c] != 0:
+                continue
+            a, b = int(d1[r, c]), int(d2[r, c])
+            if a < b:
+                terr += 1
+            elif b < a:
+                terr -= 1
+    return terr
+
+
+def step_mobility(board: np.ndarray, player: int) -> int:
+    """Mobility proxy: count reachable destination squares (not full moves with arrows)."""
+    blocked = (board != 0)
+    amazons = positions_of(board, player)
+    total = 0
+    for r, c in amazons:
+        total += len(reachable_squares(blocked, r, c))
+    return total
+
+
+def has_any_legal_move(board: np.ndarray, player: int) -> bool:
+    """Fast existence check (stops early)."""
+    blocked = (board != 0)
+    amazons = positions_of(board, player)
+    for fr, fc in amazons:
+        tos = reachable_squares(blocked, fr, fc)
+        if not tos:
+            continue
+        for tr, tc in tos:
+            # after move: from vacated, to occupied
+            blocked2 = blocked.copy()
+            blocked2[fr, fc] = False
+            blocked2[tr, tc] = True
+            arrows = reachable_squares(blocked2, tr, tc)
+            if arrows:
+                return True
+    return False
+
+
+def arrow_candidates(blocked_after_move: np.ndarray,
+                     to_sq: Tuple[int, int],
+                     opp_amazons: List[Tuple[int, int]],
+                     limit: int) -> List[Tuple[int, int]]:
+    """Pick a good subset of arrow landing squares."""
+    tr, tc = to_sq
+    arrs = reachable_squares(blocked_after_move, tr, tc)
+    if len(arrs) <= limit:
+        return arrs
+
+    # Score arrows: prefer closer to opponent amazons (Chebyshev), and a mild preference for centrality.
+    # Deterministic tie-breaker by coordinates.
+    if opp_amazons:
+        def min_cheb(a: Tuple[int, int]) -> int:
+            ar, ac = a
+            md = 99
+            for orr, occ in opp_amazons:
+                d = max(abs(ar - orr), abs(ac - occ))
+                if d < md:
+                    md = d
+            return md
+    else:
+        def min_cheb(a: Tuple[int, int]) -> int:
+            return 3
+
+    def score(a: Tuple[int, int]) -> Tuple[int, int, int, int]:
+        ar, ac = a
+        md = min_cheb(a)
+        # Higher is better:
+        # - smaller md is better, so use -md
+        # - closer to center (2.5,2.5) is slightly better to cut space
+        center_pen = abs(ar - 2.5) + abs(ac - 2.5)
+        # Use tuple for stable ordering (descending later)
+        return (-md, -int(10 * (6 - center_pen)), -ar, -ac)
+
+    arrs.sort(key=score, reverse=True)
+    return arrs[:limit]
+
+
+def generate_moves(board: np.ndarray,
+                   player: int,
+                   beam: Optional[int],
+                   arrow_limit: int,
+                   order_for_player1: bool = True) -> List[Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]]]:
+    """Generate a (possibly pruned) move list with heuristic ordering."""
+    blocked = (board != 0)
+    my_amazons = positions_of(board, player)
+    opp_amazons = positions_of(board, 3 - player)
+
+    # Create many moves, but keep only best 'beam' using a cheap ordering score.
+    scored_moves = []
+
+    for fr, fc in my_amazons:
+        tos = reachable_squares(blocked, fr, fc)
+        if not tos:
+            continue
+        for tr, tc in tos:
+            blocked2 = blocked.copy()
+            blocked2[fr, fc] = False
+            blocked2[tr, tc] = True
+
+            arrs = arrow_candidates(blocked2, (tr, tc), opp_amazons, arrow_limit)
+            if not arrs:
+                continue
+
+            # Cheap score for ordering:
+            # - encourage moving into/near contested areas (centrality),
+            # - and shooting closer to opponent (handled in arrow_candidates order).
+            move_center_pen = abs(tr - 2.5) + abs(tc - 2.5)
+            move_score_base = -move_center_pen
+
+            # Take best arrows first; we'll add each as a separate move with a slightly reduced score.
+            for k, (ar, ac) in enumerate(arrs):
+                # Prefer earlier arrows from candidate ordering.
+                sc = move_score_base + (0.01 * (len(arrs) - k))
+                scored_moves.append((sc, ((fr, fc), (tr, tc), (ar, ac))))
+
+    if not scored_moves:
+        return []
+
+    # Sort in the direction beneficial for the side at move generation time
+    # (This is just move ordering, not evaluation).
+    reverse = True
+    if not order_for_player1 and player == 2:
+        reverse = False
+    elif not order_for_player1 and player == 1:
+        reverse = False
+
+    scored_moves.sort(key=lambda x: x[0], reverse=reverse)
+
+    if beam is not None and len(scored_moves) > beam:
+        scored_moves = scored_moves[:beam]
+
+    return [m for _, m in scored_moves]
+
+
+def evaluate(board: np.ndarray) -> float:
+    """Evaluation from Player 1 perspective (higher is better for us)."""
+    # Terminal-ish checks:
+    p1_has = has_any_legal_move(board, 1)
+    p2_has = has_any_legal_move(board, 2)
+    if not p1_has and not p2_has:
+        return 0.0
+    if not p1_has:
+        return -WIN_SCORE
+    if not p2_has:
+        return WIN_SCORE
+
+    terr = queen_distance_voronoi(board)
+
+    mob1 = step_mobility(board, 1)
+    mob2 = step_mobility(board, 2)
+
+    # Adjacent liberties (local breathing room)
+    a1 = positions_of(board, 1)
+    a2 = positions_of(board, 2)
+    lib1 = sum(adjacent_liberties(board, r, c) for r, c in a1)
+    lib2 = sum(adjacent_liberties(board, r, c) for r, c in a2)
+
+    return TERRITORY_W * terr + MOBILITY_W * (mob1 - mob2) + ADJLIB_W * (lib1 - lib2)
+
+
+class Searcher:
+    def __init__(self, start_time: float):
+        self.start_time = start_time
+        self.tt: Dict[Tuple[bytes, int, int], float] = {}
+
+    def time_up(self) -> bool:
+        return (time.perf_counter() - self.start_time) >= TIME_LIMIT_SEC
+
+    def alphabeta(self, board: np.ndarray, depth: int, player: int, alpha: float, beta: float) -> float:
+        if self.time_up():
+            return evaluate(board)
+
+        key = (board.tobytes(), player, depth)
+        if key in self.tt:
+            return self.tt[key]
+
+        # Terminal/no-move
+        if not has_any_legal_move(board, player):
+            val = WIN_SCORE if player == 2 else -WIN_SCORE
+            self.tt[key] = val
+            return val
+
+        if depth == 0:
+            val = evaluate(board)
+            self.tt[key] = val
+            return val
+
+        # Generate pruned moves
+        beam = NODE_BEAM
+        arrow_lim = NODE_ARROW_LIMIT
+        moves = generate_moves(board, player, beam=beam, arrow_limit=arrow_lim, order_for_player1=True)
+        if not moves:
+            val = WIN_SCORE if player == 2 else -WIN_SCORE
+            self.tt[key] = val
+            return val
+
+        if player == 1:
+            best = -float("inf")
+            # Order by quick static eval on the child (lightweight ordering).
+            # Only do a small subset to avoid overhead.
+            def order_key(mv):
+                nb = apply_move(board, mv, 1)
+                return evaluate(nb)
+            moves.sort(key=order_key, reverse=True)
+
+            for mv in moves:
+                nb = apply_move(board, mv, 1)
+                val = self.alphabeta(nb, depth - 1, 2, alpha, beta)
+                if val > best:
+                    best = val
+                if best > alpha:
+                    alpha = best
+                if alpha >= beta or self.time_up():
+                    break
+        else:
+            best = float("inf")
+            def order_key(mv):
+                nb = apply_move(board, mv, 2)
+                return evaluate(nb)
+            moves.sort(key=order_key)  # minimizing
+
+            for mv in moves:
+                nb = apply_move(board, mv, 2)
+                val = self.alphabeta(nb, depth - 1, 1, alpha, beta)
+                if val < best:
+                    best = val
+                if best < beta:
+                    beta = best
+                if alpha >= beta or self.time_up():
+                    break
+
+        self.tt[key] = best
+        return best
+
+
+def move_to_str(move: Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]]) -> str:
+    (fr, fc), (tr, tc), (ar, ac) = move
+    return f"{fr},{fc}:{tr},{tc}:{ar},{ac}"
+
+
+def policy(board) -> str:
+    # Defensive conversion
+    b = np.array(board, dtype=np.int8)
+
+    start = time.perf_counter()
+    searcher = Searcher(start_time=start)
+
+    # Generate root candidates (pruned)
+    root_moves = generate_moves(b, player=1, beam=ROOT_BEAM, arrow_limit=ROOT_ARROW_LIMIT, order_for_player1=True)
+
+    # If somehow no moves, return a placeholder (environment normally won't call here).
+    if not root_moves:
+        return "0,0:0,0:0,0"
+
+    # Immediate win check: if any move leaves opponent with no legal moves, play it.
+    for mv in root_moves[:min(len(root_moves), 60)]:
+        nb = apply_move(b, mv, 1)
+        if not has_any_legal_move(nb, 2):
+            return move_to_str(mv)
+
+    # 2-ply alpha-beta (us -> opp), with time check and move ordering by eval(child)
+    def root_order_key(mv):
+        nb = apply_move(b, mv, 1)
+        return evaluate(nb)
+
+    root_moves.sort(key=root_order_key, reverse=True)
+
+    best_mv = root_moves[0]
+    best_val = -float("inf")
+
+    alpha, beta = -float("inf"), float("inf")
+    depth = 2  # default depth; tuned for 6x6 under 1 second with pruning
+
+    for mv in root_moves:
+        if searcher.time_up():
+            break
+        nb = apply_move(b, mv, 1)
+        val = searcher.alphabeta(nb, depth - 1, player=2, alpha=alpha, beta=beta)
+        if val > best_val:
+            best_val = val
+            best_mv = mv
+        if val > alpha:
+            alpha = val
+
+    return move_to_str(best_mv)
+</code>

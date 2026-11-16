@@ -1,0 +1,466 @@
+The strategy for this policy is to (1) generate **only legal Lines of Action moves** by correctly counting the number of pieces on each movement line and enforcing the “no jumping over enemy pieces” rule, then (2) pick strong moves using **iterative-deepening alpha–beta search** with a **transposition table** and **move ordering** (captures and connectivity-improving moves first). The evaluation function strongly rewards creating a single connected group (the win condition), otherwise it prefers fewer connected components, tighter piece clustering, and modest centralization, while also accounting for material and opponent connectivity.
+
+<code>
+import time
+from collections import deque
+from typing import List, Tuple, Optional, Dict
+
+# Lines of Action policy for 8x8.
+# board[r][c] in {0, 1, -1}. You are always the player to move (treated as player=1 at root).
+
+
+Move = Tuple[int, int, int, int]  # fr, fc, tr, tc
+
+
+# 8 directions: N, S, W, E, NW, NE, SW, SE
+DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1),
+        (-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+
+def policy(board) -> str:
+    # Convert to mutable list-of-lists (in case input is numpy array, tuple, etc.)
+    b = [list(row) for row in board]
+
+    # Always return a legal move string; generate moves first.
+    moves = generate_legal_moves(b, player=1)
+    if not moves:
+        # Extremely unlikely in LOA, but required to return something.
+        # (If truly no legal moves exist, any string is illegal; this is best-effort fallback.)
+        return "0,0:0,0"
+
+    # Immediate tactical: if we can win now by connecting all pieces, do it.
+    for mv in moves:
+        cap = apply_move_inplace(b, mv, player=1)
+        if is_connected(b, player=1):
+            undo_move_inplace(b, mv, player=1, captured=cap)
+            return move_to_str(mv)
+        undo_move_inplace(b, mv, player=1, captured=cap)
+
+    # Iterative deepening alpha-beta with TT.
+    thinker = Thinker(time_limit=0.92)  # keep margin under 1s
+    best = thinker.search(b, root_player=1)
+
+    if best is None:
+        # Safety: ensure legal
+        return move_to_str(moves[0])
+    return move_to_str(best)
+
+
+def move_to_str(mv: Move) -> str:
+    fr, fc, tr, tc = mv
+    return f"{fr},{fc}:{tr},{tc}"
+
+
+def in_bounds(r: int, c: int) -> bool:
+    return 0 <= r < 8 and 0 <= c < 8
+
+
+def count_pieces_on_line(board: List[List[int]], r: int, c: int, dr: int, dc: int) -> int:
+    # Count all non-empty squares on the entire line through (r,c) in direction (dr,dc).
+    rr, cc = r, c
+    while in_bounds(rr - dr, cc - dc):
+        rr -= dr
+        cc -= dc
+    cnt = 0
+    while in_bounds(rr, cc):
+        if board[rr][cc] != 0:
+            cnt += 1
+        rr += dr
+        cc += dc
+    return cnt
+
+
+def is_legal_move(board: List[List[int]], mv: Move, player: int) -> bool:
+    fr, fc, tr, tc = mv
+    if not (in_bounds(fr, fc) and in_bounds(tr, tc)):
+        return False
+    if board[fr][fc] != player:
+        return False
+    if board[tr][tc] == player:
+        return False
+
+    dr = tr - fr
+    dc = tc - fc
+    if dr == 0 and dc == 0:
+        return False
+
+    # Must be straight or diagonal
+    sdr = 0 if dr == 0 else (1 if dr > 0 else -1)
+    sdc = 0 if dc == 0 else (1 if dc > 0 else -1)
+
+    if not (sdr == 0 or sdc == 0 or abs(dr) == abs(dc)):
+        return False
+
+    # Must move exactly N squares where N is the number of pieces on the movement line.
+    n_line = count_pieces_on_line(board, fr, fc, sdr, sdc)
+    if fr + sdr * n_line != tr or fc + sdc * n_line != tc:
+        return False
+
+    # Cannot jump over enemy pieces
+    enemy = -player
+    for k in range(1, n_line):
+        rr = fr + sdr * k
+        cc = fc + sdc * k
+        if board[rr][cc] == enemy:
+            return False
+
+    # Landing square: empty or enemy capture
+    if board[tr][tc] == player:
+        return False
+    return True
+
+
+def generate_legal_moves(board: List[List[int]], player: int) -> List[Move]:
+    enemy = -player
+    moves: List[Move] = []
+    for r in range(8):
+        row = board[r]
+        for c in range(8):
+            if row[c] != player:
+                continue
+            for dr, dc in DIRS:
+                n = count_pieces_on_line(board, r, c, dr, dc)
+                tr = r + dr * n
+                tc = c + dc * n
+                if not in_bounds(tr, tc):
+                    continue
+                if board[tr][tc] == player:
+                    continue
+                # Path enemy-block check
+                blocked = False
+                for k in range(1, n):
+                    rr = r + dr * k
+                    cc = c + dc * k
+                    if board[rr][cc] == enemy:
+                        blocked = True
+                        break
+                if blocked:
+                    continue
+                moves.append((r, c, tr, tc))
+    return moves
+
+
+def apply_move_inplace(board: List[List[int]], mv: Move, player: int) -> int:
+    fr, fc, tr, tc = mv
+    captured = board[tr][tc]
+    board[fr][fc] = 0
+    board[tr][tc] = player
+    return captured
+
+
+def undo_move_inplace(board: List[List[int]], mv: Move, player: int, captured: int) -> None:
+    fr, fc, tr, tc = mv
+    board[tr][tc] = captured
+    board[fr][fc] = player
+
+
+def pieces_of(board: List[List[int]], player: int) -> List[Tuple[int, int]]:
+    out = []
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == player:
+                out.append((r, c))
+    return out
+
+
+def connected_components_count(board: List[List[int]], player: int) -> int:
+    pts = pieces_of(board, player)
+    if not pts:
+        return 0
+    seen = set()
+    comps = 0
+    for p in pts:
+        if p in seen:
+            continue
+        comps += 1
+        dq = deque([p])
+        seen.add(p)
+        while dq:
+            r, c = dq.popleft()
+            for dr in (-1, 0, 1):
+                for dc in (-1, 0, 1):
+                    if dr == 0 and dc == 0:
+                        continue
+                    rr, cc = r + dr, c + dc
+                    if in_bounds(rr, cc) and board[rr][cc] == player:
+                        q = (rr, cc)
+                        if q not in seen:
+                            seen.add(q)
+                            dq.append(q)
+    return comps
+
+
+def is_connected(board: List[List[int]], player: int) -> bool:
+    pts = pieces_of(board, player)
+    if len(pts) <= 1:
+        return True
+    start = pts[0]
+    seen = set([start])
+    dq = deque([start])
+    while dq:
+        r, c = dq.popleft()
+        for dr in (-1, 0, 1):
+            for dc in (-1, 0, 1):
+                if dr == 0 and dc == 0:
+                    continue
+                rr, cc = r + dr, c + dc
+                if in_bounds(rr, cc) and board[rr][cc] == player:
+                    q = (rr, cc)
+                    if q not in seen:
+                        seen.add(q)
+                        dq.append(q)
+    return len(seen) == len(pts)
+
+
+def spread_measure(board: List[List[int]], player: int) -> float:
+    pts = pieces_of(board, player)
+    if not pts:
+        return 0.0
+    mr = sum(r for r, _ in pts) / len(pts)
+    mc = sum(c for _, c in pts) / len(pts)
+    s = 0.0
+    for r, c in pts:
+        dr = r - mr
+        dc = c - mc
+        s += dr * dr + dc * dc
+    return s
+
+
+def center_distance(board: List[List[int]], player: int) -> int:
+    # Sum of Manhattan distance to board center-ish (3.5, 3.5)
+    pts = pieces_of(board, player)
+    if not pts:
+        return 0
+    s = 0
+    for r, c in pts:
+        s += abs(2 * r - 7) + abs(2 * c - 7)
+    return s
+
+
+def count_material(board: List[List[int]], player: int) -> int:
+    cnt = 0
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == player:
+                cnt += 1
+    return cnt
+
+
+def evaluate(board: List[List[int]], player: int) -> float:
+    me = player
+    opp = -player
+
+    me_cnt = count_material(board, me)
+    opp_cnt = count_material(board, opp)
+
+    # Terminal connectivity
+    me_conn = is_connected(board, me)
+    opp_conn = is_connected(board, opp)
+    if me_conn and not opp_conn:
+        return 1_000_000.0
+    if opp_conn and not me_conn:
+        return -1_000_000.0
+    if me_conn and opp_conn:
+        # Rare simultaneous (depends on rule set); treat as draw-ish
+        return 0.0
+
+    me_groups = connected_components_count(board, me)
+    opp_groups = connected_components_count(board, opp)
+
+    me_spread = spread_measure(board, me)
+    opp_spread = spread_measure(board, opp)
+
+    me_center = center_distance(board, me)
+    opp_center = center_distance(board, opp)
+
+    # Mobility (expensive but manageable at low depth); weight lightly.
+    me_mob = len(generate_legal_moves(board, me))
+    opp_mob = len(generate_legal_moves(board, opp))
+
+    score = 0.0
+    # Primary: connectivity progress
+    score += (opp_groups - me_groups) * 2200.0
+    # Secondary: clustering
+    score += (opp_spread - me_spread) * 2.0
+    # Slight centralization preference (helps reduce spread options)
+    score += (opp_center - me_center) * 4.0
+    # Mobility
+    score += (me_mob - opp_mob) * 6.0
+    # Material (usually low variance; but capturing matters)
+    score += (me_cnt - opp_cnt) * 700.0
+
+    return score
+
+
+class Thinker:
+    def __init__(self, time_limit: float = 0.92):
+        self.time_limit = time_limit
+        self.t0 = 0.0
+        self.nodes = 0
+        self.tt: Dict[Tuple[Tuple[int, ...], int], Tuple[int, float, int, Optional[Move]]] = {}
+        # TT entry: (depth, value, flag, best_move)
+        # flag: 0 exact, 1 lowerbound, 2 upperbound
+
+    def search(self, board: List[List[int]], root_player: int = 1) -> Optional[Move]:
+        self.t0 = time.perf_counter()
+        self.nodes = 0
+
+        root_moves = generate_legal_moves(board, root_player)
+        if not root_moves:
+            return None
+
+        # Default move: legal
+        best_move = root_moves[0]
+        best_val = -1e18
+
+        # Iterative deepening
+        depth = 1
+        while True:
+            if self._time_up():
+                break
+            try:
+                val, mv = self._negamax_root(board, root_player, depth)
+                if mv is not None:
+                    best_move, best_val = mv, val
+            except TimeoutError:
+                break
+            depth += 1
+            if depth > 6:
+                break
+
+        return best_move
+
+    def _time_up(self) -> bool:
+        return (time.perf_counter() - self.t0) >= self.time_limit
+
+    def _key(self, board: List[List[int]], player: int) -> Tuple[Tuple[int, ...], int]:
+        # Compact immutable key (64 ints). Fast enough for 8x8 and shallow depth.
+        flat = []
+        for r in range(8):
+            flat.extend(board[r])
+        return (tuple(flat), player)
+
+    def _order_moves(self, board: List[List[int]], player: int, moves: List[Move], tt_best: Optional[Move]) -> List[Move]:
+        enemy = -player
+
+        def mv_score(mv: Move) -> float:
+            fr, fc, tr, tc = mv
+            cap = 1 if board[tr][tc] == enemy else 0
+            # Prefer captures and moves that reduce our groups (cheap approximation).
+            # Also prefer moving toward center.
+            center_before = abs(2 * fr - 7) + abs(2 * fc - 7)
+            center_after = abs(2 * tr - 7) + abs(2 * tc - 7)
+            toward_center = center_before - center_after
+            return cap * 1_000_000.0 + toward_center * 10.0
+
+        if tt_best is not None and tt_best in moves:
+            # Put TT move first
+            rest = [m for m in moves if m != tt_best]
+            rest.sort(key=mv_score, reverse=True)
+            return [tt_best] + rest
+
+        moves.sort(key=mv_score, reverse=True)
+        return moves
+
+    def _negamax_root(self, board: List[List[int]], player: int, depth: int) -> Tuple[float, Optional[Move]]:
+        alpha = -1e18
+        beta = 1e18
+        best_move = None
+        best_val = -1e18
+
+        key = self._key(board, player)
+        tt_entry = self.tt.get(key)
+        tt_best = tt_entry[3] if tt_entry is not None else None
+
+        moves = generate_legal_moves(board, player)
+        if not moves:
+            return -1_000_000.0, None
+
+        moves = self._order_moves(board, player, moves, tt_best)
+
+        for mv in moves:
+            if self._time_up():
+                raise TimeoutError
+            captured = apply_move_inplace(board, mv, player)
+            val = -self._negamax(board, -player, depth - 1, -beta, -alpha)
+            undo_move_inplace(board, mv, player, captured)
+
+            if val > best_val:
+                best_val = val
+                best_move = mv
+            if val > alpha:
+                alpha = val
+            if alpha >= beta:
+                break
+
+        return best_val, best_move
+
+    def _negamax(self, board: List[List[int]], player: int, depth: int, alpha: float, beta: float) -> float:
+        self.nodes += 1
+        if (self.nodes & 1023) == 0 and self._time_up():
+            raise TimeoutError
+
+        # Terminal / leaf
+        if depth <= 0:
+            return evaluate(board, player)
+
+        # Quick terminal checks for connectivity
+        # (Doing it here saves search in positions near win.)
+        me_conn = is_connected(board, player)
+        opp_conn = is_connected(board, -player)
+        if me_conn and not opp_conn:
+            return 1_000_000.0
+        if opp_conn and not me_conn:
+            return -1_000_000.0
+
+        key = self._key(board, player)
+        tt_entry = self.tt.get(key)
+        if tt_entry is not None:
+            tt_depth, tt_val, tt_flag, tt_best = tt_entry
+            if tt_depth >= depth:
+                if tt_flag == 0:
+                    return tt_val
+                elif tt_flag == 1:  # lower bound
+                    alpha = max(alpha, tt_val)
+                elif tt_flag == 2:  # upper bound
+                    beta = min(beta, tt_val)
+                if alpha >= beta:
+                    return tt_val
+        else:
+            tt_best = None
+
+        moves = generate_legal_moves(board, player)
+        if not moves:
+            # No legal moves: treat as very bad
+            return -900_000.0
+
+        moves = self._order_moves(board, player, moves, tt_best)
+
+        orig_alpha = alpha
+        best_val = -1e18
+        best_move = None
+
+        for mv in moves:
+            captured = apply_move_inplace(board, mv, player)
+            val = -self._negamax(board, -player, depth - 1, -beta, -alpha)
+            undo_move_inplace(board, mv, player, captured)
+
+            if val > best_val:
+                best_val = val
+                best_move = mv
+            alpha = max(alpha, val)
+            if alpha >= beta:
+                break
+
+        # Store in TT
+        flag = 0
+        if best_val <= orig_alpha:
+            flag = 2  # upperbound
+        elif best_val >= beta:
+            flag = 1  # lowerbound
+        else:
+            flag = 0  # exact
+        self.tt[key] = (depth, best_val, flag, best_move)
+
+        return best_val
+</code>

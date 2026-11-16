@@ -1,0 +1,282 @@
+
+import random
+import time
+from collections import deque
+
+BOARD_SIZE = 19
+
+def policy(me, opponent):
+    start_time = time.time()
+    me_set = set(me)
+    opp_set = set(opponent)
+    occupied = me_set | opp_set
+    
+    def neighbors(r, c):
+        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+            nr, nc = r+dr, c+dc
+            if 1 <= nr <= BOARD_SIZE and 1 <= nc <= BOARD_SIZE:
+                yield nr, nc
+    
+    def get_group_and_liberties(r, c, stone_set):
+        group = set()
+        liberties = set()
+        queue = deque([(r, c)])
+        group.add((r, c))
+        while queue:
+            cr, cc = queue.popleft()
+            for nr, nc in neighbors(cr, cc):
+                if (nr, nc) in stone_set and (nr, nc) not in group:
+                    group.add((nr, nc))
+                    queue.append((nr, nc))
+                elif (nr, nc) not in stone_set and (nr, nc) not in (opp_set if stone_set is me_set else me_set):
+                    liberties.add((nr, nc))
+        return group, liberties
+    
+    def would_be_captured(r, c, my_stones, their_stones):
+        """Check if placing stone at (r,c) for my_stones would result in it being captured."""
+        temp_my = my_stones | {(r, c)}
+        temp_occ = temp_my | their_stones
+        # Check all adjacent groups of ours after placement
+        visited = set()
+        # First check if we capture any opponent groups (then it's not suicide)
+        for nr, nc in neighbors(r, c):
+            if (nr, nc) in their_stones and (nr, nc) not in visited:
+                grp, libs = set(), set()
+                q = deque([(nr, nc)])
+                grp.add((nr, nc))
+                while q:
+                    cr2, cc2 = q.popleft()
+                    for nr2, nc2 in neighbors(cr2, cc2):
+                        if (nr2, nc2) in their_stones and (nr2, nc2) not in grp:
+                            grp.add((nr2, nc2))
+                            q.append((nr2, nc2))
+                        elif (nr2, nc2) not in temp_occ:
+                            libs.add((nr2, nc2))
+                visited |= grp
+                if len(libs) == 0:
+                    return False  # We capture something, so not suicide
+        
+        # Now check our group's liberties
+        grp = set()
+        libs = set()
+        q = deque([(r, c)])
+        grp.add((r, c))
+        while q:
+            cr2, cc2 = q.popleft()
+            for nr2, nc2 in neighbors(cr2, cc2):
+                if (nr2, nc2) in temp_my and (nr2, nc2) not in grp:
+                    grp.add((nr2, nc2))
+                    q.append((nr2, nc2))
+                elif (nr2, nc2) not in temp_occ:
+                    libs.add((nr2, nc2))
+        return len(libs) == 0
+    
+    def captures_opponent(r, c):
+        """Return set of opponent stones captured by playing at (r,c)."""
+        temp_my = me_set | {(r, c)}
+        temp_occ = temp_my | opp_set
+        captured = set()
+        for nr, nc in neighbors(r, c):
+            if (nr, nc) in opp_set:
+                grp = set()
+                libs = set()
+                q = deque([(nr, nc)])
+                grp.add((nr, nc))
+                while q:
+                    cr2, cc2 = q.popleft()
+                    for nr2, nc2 in neighbors(cr2, cc2):
+                        if (nr2, nc2) in opp_set and (nr2, nc2) not in grp:
+                            grp.add((nr2, nc2))
+                            q.append((nr2, nc2))
+                        elif (nr2, nc2) not in temp_occ:
+                            libs.add((nr2, nc2))
+                if len(libs) == 0:
+                    captured |= grp
+        return captured
+    
+    def count_liberties_after_move(r, c, my_stones, their_stones):
+        """Count liberties of our group after placing at (r,c), accounting for captures."""
+        caps = set()
+        temp_my = my_stones | {(r, c)}
+        temp_their = set(their_stones)
+        # Find captures
+        for nr, nc in neighbors(r, c):
+            if (nr, nc) in temp_their:
+                grp = set()
+                libs = set()
+                q = deque([(nr, nc)])
+                grp.add((nr, nc))
+                while q:
+                    cr2, cc2 = q.popleft()
+                    for nr2, nc2 in neighbors(cr2, cc2):
+                        if (nr2, nc2) in temp_their and (nr2, nc2) not in grp:
+                            grp.add((nr2, nc2))
+                            q.append((nr2, nc2))
+                        elif (nr2, nc2) not in (temp_my | temp_their):
+                            libs.add((nr2, nc2))
+                if len(libs) == 0:
+                    caps |= grp
+        temp_their -= caps
+        temp_occ = temp_my | temp_their
+        
+        grp = set()
+        libs = set()
+        q = deque([(r, c)])
+        grp.add((r, c))
+        while q:
+            cr2, cc2 = q.popleft()
+            for nr2, nc2 in neighbors(cr2, cc2):
+                if (nr2, nc2) in temp_my and (nr2, nc2) not in grp:
+                    grp.add((nr2, nc2))
+                    q.append((nr2, nc2))
+                elif (nr2, nc2) not in temp_occ:
+                    libs.add((nr2, nc2))
+        return len(libs)
+    
+    # Generate legal moves
+    def is_legal(r, c):
+        if (r, c) in occupied:
+            return False
+        # Check for suicide
+        if would_be_captured(r, c, me_set, opp_set):
+            return False
+        return True
+    
+    # Score each candidate move
+    def score_move(r, c):
+        score = 0.0
+        
+        # Captures
+        caps = captures_opponent(r, c)
+        score += len(caps) * 50
+        
+        # Liberties of our group after move
+        our_libs = count_liberties_after_move(r, c, me_set, opp_set)
+        score += our_libs * 2
+        
+        # Reduce opponent liberties - check adjacent opponent groups
+        for nr, nc in neighbors(r, c):
+            if (nr, nc) in opp_set:
+                grp, libs = get_group_and_liberties(nr, nc, opp_set)
+                if len(libs) <= 2:
+                    score += (3 - len(libs)) * 15
+        
+        # Save our groups in atari
+        for nr, nc in neighbors(r, c):
+            if (nr, nc) in me_set:
+                grp, libs = get_group_and_liberties(nr, nc, me_set)
+                if len(libs) == 1:
+                    score += len(grp) * 20
+        
+        # Proximity to existing stones (not too close, not too far)
+        min_dist_me = min((abs(r-mr) + abs(c-mc) for mr, mc in me_set), default=20)
+        min_dist_opp = min((abs(r-or_) + abs(c-oc) for or_, oc in opp_set), default=20)
+        
+        if me_set:
+            if 2 <= min_dist_me <= 4:
+                score += 3
+            elif min_dist_me == 1:
+                score += 1
+        
+        if opp_set:
+            if 1 <= min_dist_opp <= 3:
+                score += 2
+        
+        # Prefer star points and strategic positions in opening
+        total_stones = len(me_set) + len(opp_set)
+        if total_stones < 20:
+            star_points = [(4,4),(4,10),(4,16),(10,4),(10,10),(10,16),(16,4),(16,10),(16,16)]
+            if (r, c) in star_points:
+                score += 8
+            # Prefer 3-4 and 4-3 points
+            approach_pts = [(3,4),(4,3),(3,16),(4,17),(16,3),(17,4),(16,17),(17,16),
+                           (3,10),(10,3),(17,10),(10,17)]
+            if (r, c) in approach_pts:
+                score += 5
+            # Edge preference in opening
+            if r in [3,4,5] or r in [15,16,17] or c in [3,4,5] or c in [15,16,17]:
+                score += 1
+        
+        # Avoid playing on first/second line unless tactical
+        if r <= 2 or r >= 18 or c <= 2 or c >= 18:
+            if len(caps) == 0:
+                score -= 5
+        if r == 1 or r == 19 or c == 1 or c == 19:
+            if len(caps) == 0:
+                score -= 5
+        
+        # Self-atari penalty
+        if our_libs == 1 and len(caps) == 0:
+            score -= 30
+        
+        # Slight randomness
+        score += random.random() * 0.5
+        
+        return score
+    
+    # If board is empty, play a corner star point
+    if not me_set and not opp_set:
+        corners = [(4,4),(4,16),(16,4),(16,16)]
+        return random.choice(corners)
+    
+    if not me_set and opp_set:
+        # Play a corner star point that's not adjacent to opponent
+        corners = [(4,4),(4,16),(16,4),(16,16)]
+        random.shuffle(corners)
+        for corner in corners:
+            if corner not in opp_set:
+                return corner
+    
+    # Generate candidates - limit search space for speed
+    candidates = set()
+    
+    # Add all points near existing stones (within distance 3)
+    for sr, sc in (me_set | opp_set):
+        for dr in range(-3, 4):
+            for dc in range(-3, 4):
+                nr, nc = sr + dr, sc + dc
+                if 1 <= nr <= BOARD_SIZE and 1 <= nc <= BOARD_SIZE:
+                    if (nr, nc) not in occupied:
+                        candidates.add((nr, nc))
+    
+    # Add star points
+    for sp in [(4,4),(4,10),(4,16),(10,4),(10,10),(10,16),(16,4),(16,10),(16,16)]:
+        if sp not in occupied:
+            candidates.add(sp)
+    
+    if not candidates:
+        # Add all empty points
+        for r in range(1, BOARD_SIZE+1):
+            for c in range(1, BOARD_SIZE+1):
+                if (r, c) not in occupied:
+                    candidates.add((r, c))
+    
+    if not candidates:
+        return (0, 0)  # Pass
+    
+    # Filter legal moves
+    legal_moves = []
+    for r, c in candidates:
+        if time.time() - start_time > 0.8:
+            break
+        if is_legal(r, c):
+            legal_moves.append((r, c))
+    
+    if not legal_moves:
+        return (0, 0)
+    
+    # Score and rank moves
+    scored = []
+    for r, c in legal_moves:
+        if time.time() - start_time > 0.9:
+            break
+        s = score_move(r, c)
+        scored.append((s, r, c))
+    
+    if not scored:
+        return random.choice(legal_moves)
+    
+    scored.sort(reverse=True)
+    best_score, best_r, best_c = scored[0]
+    
+    return (best_r, best_c)

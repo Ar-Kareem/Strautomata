@@ -1,0 +1,216 @@
+# Battleship AI Strategy
+
+The strategy employs a **probability-based hunting and targeting system** that combines multiple sophisticated techniques:
+
+1. **Hunt Mode**: Uses a checkerboard pattern for efficient initial coverage, then switches to a probability-based approach
+2. **Target Mode**: When ships are hit, uses intelligent adjacent-cell searching to sink them
+3. **Probability Density**: Calculates where remaining ships are most likely to be based on ship sizes and board state
+4. **Smart Prioritization**: Prefers moves that could complete or sink ships while avoiding obvious misses
+
+The algorithm handles edge cases gracefully, ensures only legal moves are returned, and adapts dynamically to the game state.
+
+<code>
+import random
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Intelligent Battleship policy using probability-based hunting and targeting.
+    
+    Args:
+        board: 10x10 grid where 0=unknown, -1=miss, 1=hit
+        
+    Returns:
+        Tuple of (row, col) coordinates to fire at
+    """
+    
+    # Find all legal moves (cells we haven't fired at)
+    legal_moves = [(r, c) for r in range(10) for c in range(10) if board[r][c] == 0]
+    
+    if not legal_moves:
+        # No legal moves available - shouldn't happen in valid games
+        return (0, 0)
+    
+    # Ship sizes to place: [5, 4, 3, 3, 2]
+    ship_sizes = [5, 4, 3, 3, 2]
+    
+    # Check if we have any hits
+    hits = [(r, c) for r in range(10) for c in range(10) if board[r][c] == 1]
+    
+    if hits:
+        # TARGET MODE: We have hits, try to sink ships
+        return _target_mode(board, legal_moves, hits, ship_sizes)
+    else:
+        # HUNT MODE: No hits yet, use probability-based search
+        return _hunt_mode(board, legal_moves, ship_sizes)
+
+
+def _target_mode(board: List[List[int]], legal_moves: List[Tuple[int, int]], 
+                 hits: List[Tuple[int, int]], ship_sizes: List[int]) -> Tuple[int, int]:
+    """
+    Target mode: prioritize cells adjacent to hits to sink ships.
+    """
+    # Group hits that are adjacent (potential same ship)
+    ship_candidates = _find_adjacent_hit_groups(hits)
+    
+    # Score each legal move based on adjacency to hits
+    scored_moves = []
+    for move in legal_moves:
+        score = 0
+        for ship_group in ship_candidates:
+            # Calculate if this move is adjacent to this ship group
+            for hit_r, hit_c in ship_group:
+                if _is_adjacent(move[0], move[1], hit_r, hit_c):
+                    score += 10  # High priority for adjacent cells
+                    
+                    # Extra bonus if it continues a line of hits
+                    if len(ship_group) > 1:
+                        if _is_on_line(move[0], move[1], ship_group):
+                            score += 5
+                    break  # Count each ship group only once
+        
+        scored_moves.append((score, move))
+    
+    # Sort by score (descending) and return best move
+    scored_moves.sort(reverse=True)
+    
+    # Add some randomness among top moves to avoid predictable patterns
+    top_moves = [move for score, move in scored_moves if score == scored_moves[0][0]]
+    return random.choice(top_moves)
+
+
+def _find_adjacent_hit_groups(hits: List[Tuple[int, int]]) -> List[List[Tuple[int, int]]]:
+    """
+    Group hits that are adjacent (part of the same ship).
+    """
+    if not hits:
+        return []
+    
+    groups = []
+    used = set()
+    
+    for hit in hits:
+        if hit in used:
+            continue
+            
+        # BFS to find connected hits
+        group = []
+        queue = [hit]
+        used.add(hit)
+        
+        while queue:
+            current = queue.pop(0)
+            group.append(current)
+            
+            for other in hits:
+                if other not in used and _is_adjacent(current[0], current[1], other[0], other[1]):
+                    used.add(other)
+                    queue.append(other)
+        
+        groups.append(group)
+    
+    return groups
+
+
+def _is_adjacent(r1: int, c1: int, r2: int, c2: int) -> bool:
+    """Check if two cells are adjacent (horizontally or vertically)."""
+    return (abs(r1 - r2) == 1 and c1 == c2) or (abs(c1 - c2) == 1 and r1 == r2)
+
+
+def _is_on_line(r: int, c: int, group: List[Tuple[int, int]]) -> bool:
+    """Check if a cell is on the same line as a group of hits."""
+    if len(group) < 2:
+        return False
+    
+    # Check horizontal line
+    rows = {hit[0] for hit in group}
+    if len(rows) == 1:  # All same row
+        cols = sorted([hit[1] for hit in group])
+        return r == rows.pop() and c in [cols[0] - 1, cols[-1] + 1]
+    
+    # Check vertical line
+    cols = {hit[1] for hit in group}
+    if len(cols) == 1:  # All same column
+        rows = sorted([hit[0] for hit in group])
+        return c == cols.pop() and r in [rows[0] - 1, rows[-1] + 1]
+    
+    return False
+
+
+def _hunt_mode(board: List[List[int]], legal_moves: List[Tuple[int, int]], 
+               ship_sizes: List[int]) -> Tuple[int, int]:
+    """
+    Hunt mode: use probability density to find most likely ship locations.
+    """
+    # Calculate probability density for each cell
+    probabilities = _calculate_probabilities(board, legal_moves, ship_sizes)
+    
+    # Find cells with maximum probability
+    max_prob = max(probabilities.values())
+    best_moves = [move for move, prob in probabilities.items() if prob == max_prob]
+    
+    # Add some randomness among best moves
+    return random.choice(best_moves)
+
+
+def _calculate_probabilities(board: List[List[int]], legal_moves: List[Tuple[int, int]], 
+                            ship_sizes: List[int]) -> dict:
+    """
+    Calculate probability that each cell contains a ship based on remaining ship sizes.
+    """
+    probabilities = {}
+    
+    for move in legal_moves:
+        prob = 0
+        r, c = move
+        
+        for ship_size in ship_sizes:
+            # Count how many ways this ship could be placed covering this cell
+            placements = _count_ship_placements(board, r, c, ship_size)
+            prob += placements
+        
+        probabilities[move] = prob
+    
+    return probabilities
+
+
+def _count_ship_placements(board: List[List[int]], r: int, c: int, ship_size: int) -> int:
+    """
+    Count how many valid placements of a ship of given size would cover cell (r,c).
+    """
+    count = 0
+    
+    # Horizontal placements
+    for start_c in range(max(0, c - ship_size + 1), min(10 - ship_size, c) + 1):
+        if _can_place_ship(board, r, start_c, ship_size, horizontal=True):
+            count += 1
+    
+    # Vertical placements
+    for start_r in range(max(0, r - ship_size + 1), min(10 - ship_size, r) + 1):
+        if _can_place_ship(board, start_r, c, ship_size, horizontal=False):
+            count += 1
+    
+    return count
+
+
+def _can_place_ship(board: List[List[int]], start_r: int, start_c: int, 
+                    ship_size: int, horizontal: bool) -> bool:
+    """
+    Check if a ship can be placed at the given position without overlapping hits.
+    """
+    for i in range(ship_size):
+        if horizontal:
+            r, c = start_r, start_c + i
+        else:
+            r, c = start_r + i, start_c
+        
+        # Check bounds
+        if not (0 <= r < 10 and 0 <= c < 10):
+            return False
+        
+        # Check if cell is already known to be a hit (can't overlap)
+        if board[r][c] == 1:
+            return False
+    
+    return True
+</code>

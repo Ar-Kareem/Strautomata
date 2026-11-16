@@ -1,0 +1,412 @@
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import List, Tuple, Optional, Iterable, Dict
+import math
+
+
+# ----------------------------
+# Helpers: parsing/formatting
+# ----------------------------
+
+def _tok_point(i: int) -> str:
+    return f"A{i}"
+
+
+def _parse_from(tok: str) -> Optional[int]:
+    """Return point index for 'A#' else None for 'B'/'P'."""
+    if tok and tok[0] == "A":
+        try:
+            return int(tok[1:])
+        except Exception:
+            return None
+    return None
+
+
+# ----------------------------
+# Internal position container
+# ----------------------------
+
+@dataclass
+class Pos:
+    my_pts: List[int]
+    opp_pts: List[int]
+    my_bar: int
+    opp_bar: int
+    my_off: int
+    opp_off: int
+
+    @staticmethod
+    def from_state(state: dict) -> "Pos":
+        return Pos(
+            my_pts=list(state["my_pts"]),
+            opp_pts=list(state["opp_pts"]),
+            my_bar=int(state["my_bar"]),
+            opp_bar=int(state["opp_bar"]),
+            my_off=int(state["my_off"]),
+            opp_off=int(state["opp_off"]),
+        )
+
+    def copy(self) -> "Pos":
+        return Pos(
+            my_pts=self.my_pts.copy(),
+            opp_pts=self.opp_pts.copy(),
+            my_bar=self.my_bar,
+            opp_bar=self.opp_bar,
+            my_off=self.my_off,
+            opp_off=self.opp_off,
+        )
+
+
+# ----------------------------
+# Rules: legality and applying moves
+# ----------------------------
+
+def _all_in_home(p: Pos) -> bool:
+    if p.my_bar != 0:
+        return False
+    # Home board is A0..A5
+    for i in range(6, 24):
+        if p.my_pts[i] != 0:
+            return False
+    return True
+
+
+def _can_bear_off(p: Pos, src: int, die: int) -> bool:
+    # Must be in home board and all pieces in home (and none on bar).
+    if src < 0 or src > 5:
+        return False
+    if not _all_in_home(p):
+        return False
+
+    needed = src + 1
+    if die == needed:
+        return True
+    if die < needed:
+        return False
+
+    # Overshoot: allowed only if no checkers on higher points (src+1..5).
+    for j in range(src + 1, 6):
+        if p.my_pts[j] > 0:
+            return False
+    return True
+
+
+def _legal_froms_for_die(p: Pos, die: int) -> List[str]:
+    """All legal FROM tokens for a single die, given current position p."""
+    res: List[str] = []
+    if die < 1 or die > 6:
+        return res
+
+    # Bar priority
+    if p.my_bar > 0:
+        dest = 24 - die  # entering from bar
+        if 0 <= dest <= 23 and p.opp_pts[dest] <= 1:
+            return ["B"]
+        return []
+
+    # Normal moves
+    for src in range(24):
+        if p.my_pts[src] <= 0:
+            continue
+        dest = src - die
+        if dest >= 0:
+            if p.opp_pts[dest] <= 1:
+                res.append(_tok_point(src))
+        else:
+            # Bearing off attempt
+            if _can_bear_off(p, src, die):
+                res.append(_tok_point(src))
+    return res
+
+
+def _apply_single_move(p: Pos, from_tok: str, die: int) -> Tuple[Pos, bool]:
+    """
+    Apply one move if from_tok != 'P'. Returns (new_pos, played_bool).
+    Assumes from_tok is legal for die in position p.
+    """
+    if from_tok == "P":
+        return p, False
+
+    np = p.copy()
+
+    if from_tok == "B":
+        # Enter from bar
+        np.my_bar -= 1
+        dest = 24 - die
+        # blocked already checked
+        if np.opp_pts[dest] == 1:
+            np.opp_pts[dest] = 0
+            np.opp_bar += 1
+        np.my_pts[dest] += 1
+        return np, True
+
+    src = _parse_from(from_tok)
+    if src is None or src < 0 or src > 23:
+        # Should never happen if we generate moves ourselves
+        return p, False
+
+    np.my_pts[src] -= 1
+    dest = src - die
+    if dest >= 0:
+        if np.opp_pts[dest] == 1:
+            np.opp_pts[dest] = 0
+            np.opp_bar += 1
+        np.my_pts[dest] += 1
+    else:
+        # Bear off
+        np.my_off += 1
+    return np, True
+
+
+# ----------------------------
+# Forced-move rules (max dice usage, higher die if only one)
+# ----------------------------
+
+@dataclass(frozen=True)
+class Cand:
+    order: str               # 'H' or 'L'
+    from1: str
+    from2: str
+    used_hi: bool
+    used_lo: bool
+    used_cnt: int
+    final_pos: Pos
+
+
+def _gen_candidates_for_two_dice(pos: Pos, d_hi: int, d_lo: int) -> List[Cand]:
+    """
+    Generate all sequences for both orders, allowing 'P' only when a die is not playable
+    at that step. Then filter by maximum dice used and the "use higher die if only one"
+    rule.
+    """
+    cands: List[Cand] = []
+
+    def rec(p: Pos, dice_order: Tuple[int, int], step: int, seq: List[str], used_hi: bool, used_lo: bool, order_char: str):
+        if step == 2:
+            used_cnt = int(seq[0] != "P") + int(seq[1] != "P")
+            cands.append(Cand(order_char, seq[0], seq[1], used_hi, used_lo, used_cnt, p))
+            return
+
+        die = dice_order[step]
+        legal = _legal_froms_for_die(p, die)
+        if legal:
+            for ft in legal:
+                np, played = _apply_single_move(p, ft, die)
+                nu_hi = used_hi or (played and die == d_hi)
+                nu_lo = used_lo or (played and die == d_lo)
+                rec(np, dice_order, step + 1, seq + [ft], nu_hi, nu_lo, order_char)
+        else:
+            # Must pass this die at this step
+            rec(p, dice_order, step + 1, seq + ["P"], used_hi, used_lo, order_char)
+
+    # Orders: H = hi then lo, L = lo then hi (even if equal, keep deterministic via only H)
+    rec(pos, (d_hi, d_lo), 0, [], False, False, "H")
+    if d_hi != d_lo:
+        rec(pos, (d_lo, d_hi), 0, [], False, False, "L")
+
+    if not cands:
+        return [Cand("H", "P", "P", False, False, 0, pos)]
+
+    # Enforce maximal dice usage
+    max_used = max(c.used_cnt for c in cands)
+    cands = [c for c in cands if c.used_cnt == max_used]
+
+    # If only one die can be played (max_used==1), must play higher if possible
+    if max_used == 1 and d_hi != d_lo:
+        any_uses_hi = any(c.used_hi for c in cands)
+        if any_uses_hi:
+            cands = [c for c in cands if c.used_hi]
+
+    # Safety: ensure always at least one
+    return cands or [Cand("H", "P", "P", False, False, 0, pos)]
+
+
+def _gen_candidates(state: dict) -> List[Cand]:
+    pos = Pos.from_state(state)
+    dice = list(state.get("dice", []))
+
+    if len(dice) == 0:
+        return [Cand("H", "P", "P", False, False, 0, pos)]
+
+    if len(dice) == 1:
+        d = int(dice[0])
+        legal = _legal_froms_for_die(pos, d)
+        if legal:
+            cands: List[Cand] = []
+            for ft in legal:
+                np, _ = _apply_single_move(pos, ft, d)
+                # Treat as "H" with single move in first slot; second is P.
+                cands.append(Cand("H", ft, "P", True, True, 1, np))
+            return cands
+        else:
+            return [Cand("H", "P", "P", False, False, 0, pos)]
+
+    # Two dice
+    d1, d2 = int(dice[0]), int(dice[1])
+    d_hi, d_lo = (d1, d2) if d1 >= d2 else (d2, d1)
+    return _gen_candidates_for_two_dice(pos, d_hi, d_lo)
+
+
+# ----------------------------
+# Evaluation (heuristic)
+# ----------------------------
+
+def _pip_counts(p: Pos) -> Tuple[int, int]:
+    # My movement: 23 -> 0, bear off past -1, distance approx i+1
+    my_pip = sum(p.my_pts[i] * (i + 1) for i in range(24)) + p.my_bar * 25
+    # Opp movement: 0 -> 23, bear off past 24, distance approx (24-i)
+    opp_pip = sum(p.opp_pts[i] * (24 - i) for i in range(24)) + p.opp_bar * 25
+    return my_pip, opp_pip
+
+
+def _contact(p: Pos) -> bool:
+    if p.my_bar > 0 or p.opp_bar > 0:
+        return True
+    my_idxs = [i for i in range(24) if p.my_pts[i] > 0]
+    opp_idxs = [i for i in range(24) if p.opp_pts[i] > 0]
+    if not my_idxs or not opp_idxs:
+        return False
+    my_max = max(my_idxs)         # farthest-back of mine
+    opp_min = min(opp_idxs)       # farthest-back of opponent (toward my side)
+    # If my farthest-back is still beyond/at opponent farthest-back, there is overlap/contact
+    return my_max >= opp_min
+
+
+def _prime_max_len(p: Pos) -> int:
+    best = 0
+    cur = 0
+    for i in range(24):
+        if p.my_pts[i] >= 2:
+            cur += 1
+            best = max(best, cur)
+        else:
+            cur = 0
+    return best
+
+
+def _blot_threat_score(p: Pos) -> float:
+    """
+    Approximate exposure of my blots to being hit next opponent turn.
+    Opponent moves increasing index; to hit blot at point 'pt', they can come from pt-d (d=1..6).
+    """
+    score = 0.0
+    # Precompute which opponent points are occupied
+    opp_occ = [p.opp_pts[i] > 0 for i in range(24)]
+    for pt in range(24):
+        if p.my_pts[pt] != 1:
+            continue
+        threat = 0
+        for d in range(1, 7):
+            src = pt - d
+            if src >= 0 and opp_occ[src]:
+                threat += 1
+        # Extra vulnerability if opponent has men on bar and blot is in my home board (entry shots)
+        if p.opp_bar > 0 and 0 <= pt <= 5:
+            # Opp enters to (die-1); matching die hits.
+            threat += 2
+        # Weight: blots further back (higher pt) are often easier targets / more costly
+        w = 1.0 + pt / 12.0
+        score += threat * w
+    return score
+
+
+def _home_points_made(p: Pos) -> int:
+    return sum(1 for i in range(6) if p.my_pts[i] >= 2)
+
+
+def _outer_points_made(p: Pos) -> int:
+    return sum(1 for i in range(6, 18) if p.my_pts[i] >= 2)
+
+
+def _anchors_in_opp_home(p: Pos) -> int:
+    # Opponent home board (from my absolute indices) is 18..23
+    return sum(1 for i in range(18, 24) if p.my_pts[i] >= 2)
+
+
+def _eval(p: Pos) -> float:
+    my_pip, opp_pip = _pip_counts(p)
+    pip_adv = opp_pip - my_pip  # positive is good (I am ahead in the race)
+
+    is_contact = _contact(p)
+
+    home_made = _home_points_made(p)
+    outer_made = _outer_points_made(p)
+    anchors = _anchors_in_opp_home(p)
+    prime_len = _prime_max_len(p)
+    blot_threat = _blot_threat_score(p)
+
+    # Core scoring
+    score = 0.0
+    score += 1.00 * pip_adv
+    score += 15.0 * (p.my_off - p.opp_off)
+
+    if is_contact:
+        # Tactics / containment
+        score += 22.0 * p.opp_bar
+        score -= 28.0 * p.my_bar
+
+        # Strong home board when opponent on bar is huge
+        score += (5.0 + (3.0 if p.opp_bar > 0 else 0.0)) * home_made
+        score += 7.0 * outer_made
+        score += 6.0 * anchors
+
+        # Primes are valuable in contact
+        score += 1.8 * (prime_len ** 2)
+
+        # Avoid leaving shots
+        score -= 6.5 * blot_threat
+    else:
+        # Racing: prioritize speed/cleanliness
+        score += 2.0 * home_made
+        score += 0.6 * (prime_len ** 2)
+        score -= 1.5 * sum(1 for i in range(24) if p.my_pts[i] == 1)
+        score -= 10.0 * p.my_bar  # bar is disastrous in a race too
+
+    return score
+
+
+# ----------------------------
+# Public API
+# ----------------------------
+
+def policy(state: dict) -> str:
+    """
+    Return a legal move string '<ORDER>:<FROM1>,<FROM2>'.
+    This implementation generates legal candidates internally and picks the best-scoring one.
+    """
+    cands = _gen_candidates(state)
+
+    # Choose argmax by evaluation; stable tiebreakers
+    best: Optional[Cand] = None
+    best_score = -1e100
+
+    for c in cands:
+        sc = _eval(c.final_pos)
+
+        # Small deterministic tiebreakers:
+        # prefer using both dice, then prefer not passing early, then lexicographic
+        tb = 0.0
+        tb += 0.01 * c.used_cnt
+        tb += 0.001 * (1 if c.from1 != "P" else 0)
+        sc2 = sc + tb
+
+        if sc2 > best_score or best is None:
+            best_score = sc2
+            best = c
+        elif abs(sc2 - best_score) < 1e-12:
+            # lexicographic stable
+            cur = f"{c.order}:{c.from1},{c.from2}"
+            prev = f"{best.order}:{best.from1},{best.from2}"
+            if cur < prev:
+                best = c
+
+    if best is None:
+        return "H:P,P"
+
+    # Ensure proper formatting and valid tokens
+    order = best.order if best.order in ("H", "L") else "H"
+    f1 = best.from1 if best.from1 else "P"
+    f2 = best.from2 if best.from2 else "P"
+    return f"{order}:{f1},{f2}"

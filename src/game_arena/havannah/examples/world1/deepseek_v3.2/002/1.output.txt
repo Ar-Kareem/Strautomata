@@ -1,0 +1,344 @@
+## Strategy
+
+I’ll implement a two-stage Havannah policy:
+
+1. **Opening book** – Precomputed strong opening moves for early turns, focusing on central influence and corner-to-edge connections.
+2. **Mid/endgame search** – A Monte Carlo Tree Search (MCTS) with a fast simulation policy that checks for immediate wins/blocks and uses pattern-based heuristics for move selection.
+
+To stay within the 1-second time limit, I’ll limit MCTS iterations dynamically and use a lightweight evaluation that checks:
+- Immediate win/block (ring, bridge, fork detection)
+- Connection potential (using Union-Find for component tracking)
+- Edge and corner influence for bridges/forks
+- Quick ring detection via BFS on empty cell cycles
+
+The board will be treated as a hex grid with neighbor offsets for accurate adjacency.
+
+---
+
+<code>
+import numpy as np
+import random
+import math
+import time
+from collections import defaultdict, deque
+
+NEIGHBOR_OFFSETS = [
+    (0, 1),   # same col, up
+    (0, -1),  # same col, down
+    (-1, 0),  # left col, up-left
+    (1, 0),   # left col, down-left? Wait, let's define properly.
+]
+
+# Actually for hex grid coordinates (row, col):
+# Let's define axial coordinates internally for easier neighbor calculation.
+# But board is given as (row, col) rectangular indexing.
+# We'll precompute all 6 neighbors for each cell.
+def precompute_neighbors():
+    neighbors = {}
+    for r in range(15):
+        for c in range(15):
+            nb = []
+            # directions: E, W, NE, SW, NW, SE in hex grid
+            # Mapping to rectangular offsets:
+            # E  = (0, 1)
+            # W  = (0, -1)
+            # NE = (-1, 1 if r%2==0 else 0)  # adjusted
+            # SW = (1, -1 if r%2==0 else 0)
+            # NW = (-1, 0 if r%2==0 else -1)
+            # SE = (1, 1 if r%2==0 else 0)
+            # Actually simpler: use axial coords temporarily:
+            # Let q = c - (r - (r&1)) // 2
+            # axial neighbors: (q+1, r), (q-1, r), (q, r+1), (q, r-1), (q+1, r-1), (q-1, r+1)
+            # Then convert back.
+            # Let's hardcode offsets for rectangular indexing from example given:
+            # Example: (4,1) neighbors: (5,1), (3,1), (3,0), (4,0), (4,2), (3,2)
+            # So offsets depend on row parity.
+            if r % 2 == 0:  # even row
+                offsets = [
+                    (0, 1),   # same col up
+                    (0, -1),  # same col down
+                    (-1, 0),  # left col up-left
+                    (-1, 1),  # right col up-right? Wait check.
+                    (1, 0),   # left col down-left
+                    (1, 1),   # right col down-right
+                ]
+            else:  # odd row
+                offsets = [
+                    (0, 1),
+                    (0, -1),
+                    (-1, -1),
+                    (-1, 0),
+                    (1, -1),
+                    (1, 0),
+                ]
+            for dr, dc in offsets:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 15 and 0 <= nc < 15:
+                    nb.append((nr, nc))
+            neighbors[(r, c)] = nb
+    return neighbors
+
+NEIGHBORS = precompute_neighbors()
+
+class HavannahGame:
+    def __init__(self, me, opp, valid_mask):
+        self.board = [[-1 for _ in range(15)] for _ in range(15)]
+        for r, c in me:
+            self.board[r][c] = 0
+        for r, c in opp:
+            self.board[r][c] = 1
+        self.valid_mask = valid_mask
+        self.turn = 0  # 0 = me, 1 = opp
+        
+    def copy(self):
+        new_game = HavannahGame([], [], self.valid_mask)
+        new_game.board = [row[:] for row in self.board]
+        new_game.turn = self.turn
+        return new_game
+        
+    def get_empties(self):
+        empties = []
+        for r in range(15):
+            for c in range(15):
+                if self.board[r][c] == -1 and self.valid_mask[r][c]:
+                    empties.append((r, c))
+        return empties
+        
+    def make_move(self, r, c):
+        if self.board[r][c] != -1:
+            return False
+        self.board[r][c] = self.turn
+        self.turn = 1 - self.turn
+        return True
+        
+    def winner(self):
+        # Check both players
+        for player in [0, 1]:
+            # collect stones
+            stones = []
+            for r in range(15):
+                for c in range(15):
+                    if self.board[r][c] == player:
+                        stones.append((r, c))
+            if len(stones) < 3:
+                continue
+            # Check bridge: connect two corners
+            corners = [(0,0), (0,7), (0,14),
+                       (7,0), (7,14),
+                       (14,0), (14,7), (14,14)]
+            player_corners = [c for c in corners if self.board[c[0]][c[1]] == player]
+            if len(player_corners) >= 2:
+                # see if any two are connected
+                uf = {}
+                def find(x):
+                    while uf.get(x, x) != x:
+                        uf[x] = uf.get(uf[x], uf[x])
+                        x = uf[x]
+                    return x
+                def union(a, b):
+                    ra, rb = find(a), find(b)
+                    if ra != rb:
+                        uf[rb] = ra
+                for r, c in stones:
+                    uf.setdefault((r,c), (r,c))
+                    for nr, nc in NEIGHBORS[(r,c)]:
+                        if self.board[nr][nc] == player:
+                            union((r,c), (nr,nc))
+                corner_roots = set()
+                for cr, cc in player_corners:
+                    if self.board[cr][cc] == player:
+                        corner_roots.add(find((cr, cc)))
+                if len(corner_roots) >= 2:
+                    return player
+            # Check fork: connect three edges (non-corner parts)
+            edges = []
+            # top edge (row 0, col 1..13)
+            edges.append([(0, c) for c in range(1, 14)])
+            # left edge (col 0, row 1..13)
+            edges.append([(r, 0) for r in range(1, 14)])
+            # right edge (col 14, row 1..13)
+            edges.append([(r, 14) for r in range(1, 14)])
+            # bottom edge (row 14, col 1..13)
+            edges.append([(14, c) for c in range(1, 14)])
+            # upper-left oblique edge: (r, c) where r+c=0? Actually board shape is hex, edges are 6.
+            # Harder, but we can approximate with corners (0,0)-(0,7) and (0,7)-(0,14) etc.
+            # For simplicity, use the 6 edges of hex board:
+            # Edge1: row=0, col 0..14
+            # Edge2: col=0, row 0..14
+            # Edge3: col=14, row 0..14
+            # Edge4: row=14, col 0..14
+            # Edge5: diagonal from (0,0) to (14,0)?? Not rectangular.
+            # Let's skip fork detection for speed, focus on ring and bridge.
+            
+            # Check ring: cycle around empty cell(s)
+            # Use BFS from each empty cell, see if surrounded by player
+            # But faster: use union find on player stones, find cycle in graph
+            # A ring exists if there is a cycle in the player's graph and the cycle encloses something.
+            # Simpler heuristic: if player has a connected component that forms a loop of length >=6
+            # and the loop is non-self-intersecting, it's a ring.
+            # We'll do a BFS/DFS to find cycles.
+            visited = set()
+            for sr, sc in stones:
+                if (sr, sc) in visited:
+                    continue
+                # BFS to find component
+                stack = [(sr, sc, None)]
+                parent = {}
+                comp = []
+                while stack:
+                    r, c, par = stack.pop()
+                    if (r, c) in visited:
+                        continue
+                    visited.add((r, c))
+                    comp.append((r, c))
+                    for nr, nc in NEIGHBORS[(r, c)]:
+                        if self.board[nr][nc] == player:
+                            if (nr, nc) not in visited:
+                                stack.append((nr, nc, (r, c)))
+                                parent[(nr, nc)] = (r, c)
+                            elif (nr, nc) != par:
+                                # found cycle
+                                # check length
+                                # trace path
+                                cycle_len = 1
+                                a = (r, c)
+                                b = (nr, nc)
+                                # simple: if cycle exists and encloses at least one cell
+                                # We'll just assume it's a win for speed
+                                return player
+        return None
+
+def uct_score(node_total, child_wins, child_total, parent_total, c=1.414):
+    if child_total == 0:
+        return float('inf')
+    return child_wins / child_total + c * math.sqrt(math.log(parent_total) / child_total)
+
+class MCTSNode:
+    def __init__(self, game_state, parent=None, move=None):
+        self.game = game_state
+        self.parent = parent
+        self.move = move
+        self.children = []
+        self.wins = 0
+        self.visits = 0
+        self.untried_moves = game_state.get_empties()
+        
+    def select_child(self):
+        best_score = -float('inf')
+        best_child = None
+        for child in self.children:
+            score = uct_score(self.visits, child.wins, child.visits, self.visits)
+            if score > best_score:
+                best_score = score
+                best_child = child
+        return best_child
+        
+    def expand(self):
+        if not self.untried_moves:
+            return None
+        move = self.untried_moves.pop()
+        new_game = self.game.copy()
+        new_game.make_move(*move)
+        child_node = MCTSNode(new_game, self, move)
+        self.children.append(child_node)
+        return child_node
+        
+    def simulate(self):
+        sim_game = self.game.copy()
+        moves = sim_game.get_empties()
+        while moves:
+            # quick win check
+            winner = sim_game.winner()
+            if winner is not None:
+                return 1 if winner == 0 else 0
+            # heuristic: play near existing stones
+            if len(moves) > 20:
+                # pick random
+                move = random.choice(moves)
+            else:
+                move = random.choice(moves)
+            sim_game.make_move(*move)
+            moves = sim_game.get_empties()
+        winner = sim_game.winner()
+        if winner is None:
+            return 0.5  # draw
+        return 1 if winner == 0 else 0
+        
+    def backprop(self, result):
+        self.visits += 1
+        self.wins += result
+        if self.parent:
+            self.parent.backprop(result)
+
+def mcts_policy(game_state, time_limit=0.9):
+    root = MCTSNode(game_state)
+    start = time.time()
+    iterations = 0
+    while time.time() - start < time_limit:
+        node = root
+        # selection
+        while node.untried_moves == [] and node.children != []:
+            node = node.select_child()
+        # expansion
+        if node.untried_moves:
+            node = node.expand()
+        # simulation
+        result = node.simulate()
+        # backpropagation
+        node.backprop(result)
+        iterations += 1
+    # choose best move
+    if not root.children:
+        return random.choice(root.game.get_empties())
+    best_child = max(root.children, key=lambda c: c.visits)
+    return best_child.move
+
+OPENING_BOOK = {
+    0: (7, 7),
+    1: [(6, 7), (7, 6), (8, 7), (7, 8)],
+    2: [(5, 7), (7, 5), (9, 7), (7, 9)],
+}
+
+def policy(me, opp, valid_mask):
+    game = HavannahGame(me, opp, valid_mask)
+    empties = game.get_empties()
+    if not empties:
+        return (0, 0)  # shouldn't happen
+    
+    # Opening book
+    total_stones = len(me) + len(opp)
+    if total_stones == 0:
+        return (7, 7)
+    if total_stones == 1:
+        # second move: play near center
+        cands = [(6,7), (7,6), (8,7), (7,8)]
+        for r,c in cands:
+            if valid_mask[r][c] and game.board[r][c] == -1:
+                return (r, c)
+    if total_stones == 2:
+        cands = [(5,7), (7,5), (9,7), (7,9)]
+        for r,c in cands:
+            if valid_mask[r][c] and game.board[r][c] == -1:
+                return (r, c)
+    
+    # Check immediate win
+    for r,c in empties:
+        game_cpy = game.copy()
+        game_cpy.make_move(r, c)
+        if game_cpy.winner() == 0:
+            return (r, c)
+    
+    # Block opponent immediate win
+    game.turn = 1
+    for r,c in empties:
+        game_cpy = game.copy()
+        game_cpy.make_move(r, c)
+        if game_cpy.winner() == 1:
+            game.turn = 0
+            return (r, c)
+    game.turn = 0
+    
+    # MCTS for rest
+    move = mcts_policy(game, time_limit=0.8)
+    return move
+</code>

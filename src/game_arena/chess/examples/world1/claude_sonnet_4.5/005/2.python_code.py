@@ -1,0 +1,197 @@
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    import random
+    
+    # Prioritize checkmate moves
+    for move in legal_moves:
+        if '#' in move:
+            return move
+    
+    # Define piece values
+    piece_values = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}
+    
+    # Piece-square tables (simplified, from white's perspective)
+    pawn_table = [
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [5, 5, 5, 5, 5, 5, 5, 5],
+        [1, 1, 2, 3, 3, 2, 1, 1],
+        [0.5, 0.5, 1, 2.5, 2.5, 1, 0.5, 0.5],
+        [0, 0, 0, 2, 2, 0, 0, 0],
+        [0.5, -0.5, -1, 0, 0, -1, -0.5, 0.5],
+        [0.5, 1, 1, -2, -2, 1, 1, 0.5],
+        [0, 0, 0, 0, 0, 0, 0, 0]
+    ]
+    
+    knight_table = [
+        [-5, -4, -3, -3, -3, -3, -4, -5],
+        [-4, -2, 0, 0, 0, 0, -2, -4],
+        [-3, 0, 1, 1.5, 1.5, 1, 0, -3],
+        [-3, 0.5, 1.5, 2, 2, 1.5, 0.5, -3],
+        [-3, 0, 1.5, 2, 2, 1.5, 0, -3],
+        [-3, 0.5, 1, 1.5, 1.5, 1, 0.5, -3],
+        [-4, -2, 0, 0.5, 0.5, 0, -2, -4],
+        [-5, -4, -3, -3, -3, -3, -4, -5]
+    ]
+    
+    def get_position_bonus(piece_type, square, is_white):
+        file_idx = ord(square[0]) - ord('a')
+        rank_idx = int(square[1]) - 1
+        
+        if not is_white:
+            rank_idx = 7 - rank_idx
+        
+        if piece_type == 'P':
+            return pawn_table[rank_idx][file_idx] * 0.1
+        elif piece_type == 'N':
+            return knight_table[rank_idx][file_idx] * 0.1
+        elif piece_type in ['B', 'R', 'Q']:
+            # Center bonus for active pieces
+            center_distance = abs(3.5 - file_idx) + abs(3.5 - rank_idx)
+            return (7 - center_distance) * 0.05
+        return 0
+    
+    def evaluate_position(board_pieces, color):
+        """Evaluate position from perspective of given color"""
+        score = 0
+        my_color = 'w' if color == 'white' else 'b'
+        opp_color = 'b' if my_color == 'w' else 'w'
+        
+        for square, piece in board_pieces.items():
+            piece_color = piece[0]
+            piece_type = piece[1]
+            value = piece_values[piece_type]
+            is_white = piece_color == 'w'
+            
+            position_bonus = get_position_bonus(piece_type, square, is_white)
+            total_value = value + position_bonus
+            
+            if piece_color == my_color:
+                score += total_value
+            else:
+                score -= total_value
+        
+        return score
+    
+    def simulate_move(board_pieces, move):
+        """Simulate a move and return new board state"""
+        new_board = board_pieces.copy()
+        
+        # Parse the move to extract source and destination
+        # This is simplified - handles most common cases
+        move_clean = move.replace('+', '').replace('#', '').replace('x', '')
+        
+        # Handle castling
+        if move_clean == 'O-O':
+            if to_play == 'white':
+                new_board.pop('e1', None)
+                new_board.pop('h1', None)
+                new_board['g1'] = 'wK'
+                new_board['f1'] = 'wR'
+            else:
+                new_board.pop('e8', None)
+                new_board.pop('h8', None)
+                new_board['g8'] = 'bK'
+                new_board['f8'] = 'bR'
+            return new_board
+        elif move_clean == 'O-O-O':
+            if to_play == 'white':
+                new_board.pop('e1', None)
+                new_board.pop('a1', None)
+                new_board['c1'] = 'wK'
+                new_board['d1'] = 'wR'
+            else:
+                new_board.pop('e8', None)
+                new_board.pop('a8', None)
+                new_board['c8'] = 'bK'
+                new_board['d8'] = 'bR'
+            return new_board
+        
+        # Extract destination square (last 2 chars, or before promotion)
+        if '=' in move_clean:
+            dest = move_clean[-3:-1]
+            promotion = move_clean[-1]
+        else:
+            dest = move_clean[-2:]
+        
+        # Find the piece that moves to dest
+        my_color = 'w' if to_play == 'white' else 'b'
+        
+        # Determine piece type from move
+        if move[0].isupper() and move[0] != 'O':
+            piece_type = move[0]
+        else:
+            piece_type = 'P'
+        
+        # Find source square
+        source = None
+        for sq, piece in board_pieces.items():
+            if piece == my_color + piece_type:
+                # Simple check: could this piece move to dest?
+                # For now, just find any matching piece
+                if len(move_clean) > 2 and move_clean[0].islower() and piece_type == 'P':
+                    # Pawn move with file specified
+                    if sq[0] == move_clean[0]:
+                        source = sq
+                        break
+                elif len(move_clean) > 3 and move_clean[0].isupper():
+                    # Disambiguated move
+                    if move_clean[1].isdigit():
+                        if sq[1] == move_clean[1]:
+                            source = sq
+                            break
+                    elif move_clean[1].isalpha():
+                        if sq[0] == move_clean[1]:
+                            source = sq
+                            break
+                else:
+                    source = sq  # Take last matching piece as fallback
+        
+        if source:
+            new_board.pop(source)
+        
+        # Place piece at destination
+        if '=' in move:
+            new_board[dest] = my_color + promotion
+        else:
+            new_board[dest] = my_color + piece_type
+        
+        return new_board
+    
+    # Score each move
+    move_scores = []
+    current_eval = evaluate_position(pieces, to_play)
+    
+    for move in legal_moves:
+        score = 0
+        
+        # Bonus for checks
+        if '+' in move:
+            score += 2
+        
+        # Bonus for captures
+        if 'x' in move:
+            score += 3
+        
+        # Bonus for promotions
+        if '=Q' in move:
+            score += 8
+        elif '=' in move:
+            score += 5
+        
+        # Evaluate resulting position
+        try:
+            new_board = simulate_move(pieces, move)
+            new_eval = evaluate_position(new_board, to_play)
+            score += (new_eval - current_eval) * 10
+        except:
+            # If simulation fails, use basic heuristics
+            pass
+        
+        # Small random factor to break ties
+        score += random.random() * 0.01
+        
+        move_scores.append((move, score))
+    
+    # Return move with highest score
+    move_scores.sort(key=lambda x: x[1], reverse=True)
+    return move_scores[0][0]

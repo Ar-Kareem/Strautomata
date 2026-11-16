@@ -1,0 +1,393 @@
+Pentago Policy
+
+To create a strong Pentago AI, I will employ a search algorithm that evaluates potential moves. Since Pentago is a relatively low-complexity game (branching factor roughly $36 \times 4 \times 2 = 288$), I can evaluate a significant portion of the search tree within the 1-second time limit.
+
+My strategy consists of the following steps:
+1.  **Board Representation**: I will convert the input `you` and `opponent` arrays into a single numerical 6x6 matrix, mapping 'my' marbles to 1 and 'opponent' marbles to -1. This simplifies the logic for rotations and win checks.
+2.  **Rotation Logic**: I need a robust helper function to rotate a 3x3 quadrant of a 6x6 board. It must support both clockwise (R) and counter-clockwise (L) rotations in-place.
+3.  **Evaluation Function**: A heuristic is needed to score board states. I will implement a "pattern matching" system:
+    *   It counts the number of open "4-in-a-row" sequences (which are winning threats).
+    *   It counts open "3-in-a-row" sequences (which are strong threats).
+    *   It sums the number of marbles.
+    *   The score is heavily weighted towards winning immediately (10,000 points), blocking the opponent from winning (9,000 points), and then creating strong threats.
+4.  **Search Algorithm**: I will use a Depth-Limited Minimax algorithm with Alpha-Beta pruning to search for the best move.
+    *   **Max Depth**: Due to the rotation step which effectively changes the board state in a non-local way, I will search depth 0 (immediate outcome) and depth 1 (my turn, then opponent's response).
+    *   **Pruning**: Alpha-Beta pruning will be used to reduce the number of branches evaluated.
+    *   **Time Management**: The loop will check the elapsed time. If it approaches the 1-second limit, it will break and return the best move found so far.
+    *   **Zobrist Hashing / Transposition Table**: To speed up the search, I will use a dictionary to cache evaluated board states (hash table) to avoid re-evaluating identical board configurations.
+
+This approach ensures we make legal moves and plays a reasonably strong game by looking ahead at potential threats and opportunities.
+
+```python
+import time
+import itertools
+import copy
+import random
+
+# Precomputed indices for 6x6 board to speed up loops
+ROWS = range(6)
+COLS = range(6)
+ALL_CELLS = [(r, c) for r in ROWS for c in COLS]
+
+def rotate_quadrant(board, quad, direction):
+    """
+    Rotates a 3x3 quadrant on the 6x6 board.
+    board: 6x6 list of lists (modified in place)
+    quad: 0..3
+    direction: 'L' (counter-clockwise) or 'R' (clockwise)
+    """
+    # Determine top-left coordinate of the 3x3 quadrant
+    if quad == 0: sr, sc = 0, 0
+    elif quad == 1: sr, sc = 0, 3
+    elif quad == 2: sr, sc = 3, 0
+    elif quad == 3: sr, sc = 3, 3
+    
+    # Extract 3x3
+    sub = [[board[sr + i][sc + j] for j in range(3)] for i in range(3)]
+    
+    if direction == 'R':
+        # Clockwise: transpose then reverse rows
+        rotated = [[sub[2 - i][j] for i in range(3)] for j in range(3)]
+    else:
+        # Counter-clockwise: reverse rows then transpose
+        rotated = [[sub[i][2 - j] for i in range(3)] for j in range(3)]
+        
+    # Place back
+    for i in range(3):
+        for j in range(3):
+            board[sr + i][sc + j] = rotated[i][j]
+
+def check_win(board):
+    """
+    Returns 1 if player 1 wins, -1 if player -1 wins, 0 otherwise.
+    Checks for 5+ in a row.
+    """
+    # Check horizontal
+    for r in ROWS:
+        count = 0
+        curr = 0
+        for c in COLS:
+            val = board[r][c]
+            if val != 0 and val == curr:
+                count += 1
+            else:
+                count = 1
+                curr = val
+            if curr != 0 and count >= 5:
+                return curr
+    
+    # Check vertical
+    for c in COLS:
+        count = 0
+        curr = 0
+        for r in ROWS:
+            val = board[r][c]
+            if val != 0 and val == curr:
+                count += 1
+            else:
+                count = 1
+                curr = val
+            if curr != 0 and count >= 5:
+                return curr
+    
+    # Diagonals
+    # We check every starting position for a diagonal of length 5
+    # Top-left to bottom-right
+    for r in range(2): # 0, 1
+        for c in range(2): # 0, 1
+            vals = [board[r+i][c+i] for i in range(5)]
+            if vals[0] != 0 and all(v == vals[0] for v in vals):
+                return vals[0]
+    
+    # Top-right to bottom-left
+    for r in range(2):
+        for c in range(4, 6): # 4, 5
+            vals = [board[r+i][c-i] for i in range(5)]
+            if vals[0] != 0 and all(v == vals[0] for v in vals):
+                return vals[0]
+                
+    return 0
+
+def evaluate(board, my_val):
+    """
+    Heuristic evaluation of the board state.
+    Returns a score relative to my_val (1 or -1).
+    """
+    # Check for immediate win/loss first
+    winner = check_win(board)
+    if winner == my_val: return 100000
+    if winner == -my_val: return -100000
+    
+    score = 0
+    opp_val = -my_val
+    
+    # Helper to count patterns
+    def count_patterns(val, mult):
+        # Patterns: Open 4 (4 with ends open), Closed 4 (3 with one end blocked)
+        # Open 3, Closed 3
+        # We scan sequences of 5 cells
+        cnt = 0
+        
+        # Horizontal
+        for r in ROWS:
+            for c in range(2): 
+                # Window size 5: cols c to c+4
+                window = [board[r][c+i] for i in range(5)]
+                cnt += _score_window(window, val)
+                
+        # Vertical
+        for c in COLS:
+            for r in range(2):
+                window = [board[r+i][c] for i in range(5)]
+                cnt += _score_window(window, val)
+                
+        # Diagonals
+        for r in range(2):
+            for c in range(2):
+                window = [board[r+i][c+i] for i in range(5)]
+                cnt += _score_window(window, val)
+        for r in range(2):
+            for c in range(4, 6):
+                window = [board[r+i][c-i] for i in range(5)]
+                cnt += _score_window(window, val)
+                
+        return cnt * mult
+
+    def _score_window(window, val):
+        # Count occurrences of 'val' in window
+        c = window.count(val)
+        e = window.count(0) # empties
+        o = window.count(-val) # opponent
+        
+        # If opponent is present, it's not a threat for 'val'
+        if o > 0: return 0
+        
+        if c == 5: return 1000 # Should be caught by check_win, but just in case
+        if c == 4 and e == 1: return 100 # Open 4
+        if c == 3 and e == 2: return 10 # Open 3
+        if c == 2 and e == 3: return 1 # Open 2
+        return 0
+
+    # Score patterns
+    # My threats
+    score += count_patterns(my_val, 1)
+    # Opponent threats (we want to block them, so weigh them high)
+    score -= count_patterns(opp_val, 10) 
+    
+    # Material count (minor)
+    # score += (sum(row.count(my_val) for row in board) - sum(row.count(opp_val) for row in board)) * 1
+    
+    return score
+
+def get_all_moves(board, current_player):
+    """
+    Generator yielding (move_str, new_board_state).
+    move_str: "r,c,q,d"
+    new_board_state: deep copy with move applied
+    """
+    empties = [(r, c) for r in ROWS for c in COLS if board[r][c] == 0]
+    
+    # Optimization: if we have a win, don't generate further moves
+    # But we handle this in search
+    
+    for r, c in empties:
+        for q in range(4):
+            for d in ['L', 'R']:
+                # Create new board
+                new_b = [row[:] for row in board]
+                new_b[r][c] = current_player
+                rotate_quadrant(new_b, q, d)
+                yield (f"{r+1},{c+1},{q},{d}"), new_b
+
+def minimax(board, depth, alpha, beta, maximizing_player, my_val, start_time, time_limit, transposition_table):
+    """
+    Minimax with Alpha-Beta pruning and Transposition Table.
+    """
+    # Time check
+    if time.time() - start_time > time_limit:
+        return 0 # Timeout score
+
+    # Check TT
+    # Using a simple hash: tuple of rows
+    state_hash = tuple(tuple(row) for row in board)
+    if state_hash in transposition_table:
+        return transposition_table[state_hash]
+    
+    # Leaf node checks
+    winner = check_win(board)
+    if winner != 0:
+        score = 100000 if winner == my_val else -100000
+        transposition_table[state_hash] = score
+        return score
+    
+    if depth == 0:
+        score = evaluate(board, my_val)
+        transposition_table[state_hash] = score
+        return score
+
+    # Optimization: For the opponent's turn in deeper search, we can limit branching
+    # by prioritizing moves that threaten a win.
+    
+    current_val = my_val if maximizing_player else -my_val
+    
+    # Get moves
+    # We don't need full board generation for depth 1 usually, 
+    # but for strict correctness we iterate.
+    # To speed up, we can just iterate random subset if needed, but let's try full loop with limit.
+    
+    best_score = -float('inf') if maximizing_player else float('inf')
+    
+    # We need to generate moves manually to avoid creating copies immediately
+    # But Python overhead is high. Let's rely on generator.
+    
+    moves = get_all_moves(board, current_val)
+    
+    # List moves to sort them? 
+    # Sorting by immediate heuristic could help alpha-beta.
+    move_list = []
+    for move, new_b in moves:
+        # Simple priority: is this a winning move?
+        # But we already check in recursion.
+        move_list.append((move, new_b))
+        
+        # Time break for move generation if needed
+        if time.time() - start_time > time_limit:
+            break
+
+    # If we want to sort moves for alpha-beta efficiency:
+    # We can run a quick heuristic on them
+    # But generating all moves first is expensive. 
+    # Let's just iterate. 
+    
+    for move, new_b in move_list:
+        val = minimax(new_b, depth - 1, alpha, beta, not maximizing_player, my_val, start_time, time_limit, transposition_table)
+        
+        if maximizing_player:
+            best_score = max(best_score, val)
+            alpha = max(alpha, val)
+        else:
+            best_score = min(best_score, val)
+            beta = min(beta, val)
+            
+        if beta <= alpha:
+            break # Prune
+            
+        # Check time inside loop
+        if time.time() - start_time > time_limit:
+            break
+
+    transposition_table[state_hash] = best_score
+    return best_score
+
+def policy(you, opponent):
+    start_time = time.time()
+    time_limit = 0.9  # Seconds
+    
+    # Convert inputs to 1/-1/0 board
+    # Input is list of lists, or numpy arrays. 
+    # We convert to list of lists for mutability and generic handling.
+    # `you` is 1, `opponent` is -1
+    
+    board = []
+    for r in range(6):
+        row = []
+        for c in range(6):
+            if you[r][c] == 1:
+                row.append(1)
+            elif opponent[r][c] == 1:
+                row.append(-1)
+            else:
+                row.append(0)
+        board.append(row)
+        
+    my_val = 1
+    
+    # 1. Check if I can win immediately
+    # Also check if opponent can win immediately (I must block)
+    best_move = None
+    
+    # Immediate scan (Depth 0 search) for winning/blocking moves
+    # We do this separately to ensure we play winning moves even if time runs out
+    candidates = []
+    for r, c in ALL_CELLS:
+        if board[r][c] == 0:
+            for q in range(4):
+                for d in ['L', 'R']:
+                    new_b = [row[:] for row in board]
+                    new_b[r][c] = 1
+                    rotate_quadrant(new_b, q, d)
+                    w = check_win(new_b)
+                    if w == 1:
+                        return f"{r+1},{c+1},{q},{d}"
+                    
+                    # Check if this blocks opponent win?
+                    # We would need to simulate opponent turn for that.
+                    # Let's rely on the search for blocking.
+                    
+                    # Save for candidate fallback
+                    candidates.append((f"{r+1},{c+1},{q},{d}", new_b))
+    
+    # If no immediate win, run Minimax
+    best_score = -float('inf')
+    best_move_str = None
+    
+    # Transposition table
+    tt = {}
+    
+    # Sort candidates? 
+    # We can try to order moves that look good (placing near marbles)
+    # But let's just iterate, maybe shuffle to avoid patterns
+    random.shuffle(candidates)
+    
+    # Limit search candidates if too many?
+    # There are max 36*8=288 moves. Python can handle 288 nodes at depth 1 usually.
+    # Depth 1 means we play, then opponent plays, then we evaluate.
+    # Actually, let's do Depth 1 (Me -> Opp -> Result).
+    # Time check is inside minimax.
+    
+    for move_str, new_b in candidates:
+        # Depth 1: I am Max. After this move, it's opponent's turn.
+        # We want to maximize the worst-case result (Min from opponent).
+        # But standard minimax assumes I play at depth 1, then evaluate.
+        # Let's use depth 1 (I play, then evaluate) which is greedy but fast.
+        # Or depth 2 (I play, opp plays, I evaluate). 
+        
+        # With time limit, let's try depth 1 first, but optimize evaluation.
+        # Actually, let's do depth 2. Minimax function handles the alternating.
+        # Depth parameter 2 means: I play (root), then depth 1 is Opponent's turn, then depth 0 is Evaluation.
+        
+        # Optimization: If we have many moves, we might run out of time.
+        # We prioritize moves that look promising.
+        
+        # Let's calculate a quick heuristic score
+        eval_score = evaluate(new_b, my_val)
+        
+        # If eval score is very bad, maybe skip? No, must check everything.
+        
+        # Run Minimax from the perspective of the next state
+        # maximizing_player = False (Opponent's turn)
+        score = minimax(new_b, 1, -float('inf'), float('inf'), False, my_val, start_time, time_limit, tt)
+        
+        if score > best_score:
+            best_score = score
+            best_move_str = move_str
+            
+        if time.time() - start_time > time_limit:
+            break
+            
+    # Fallbacks
+    if best_move_str is None:
+        # We didn't finish the loop or no moves considered
+        # Pick first available valid move
+        if not candidates:
+            # Should not happen given problem constraints, but safe fallback
+            # Find first empty, arbitrary rotation
+            for r in range(6):
+                for c in range(6):
+                    if board[r][c] == 0:
+                        return f"{r+1},{c+1},0,R"
+        else:
+            return candidates[0][0]
+            
+    return best_move_str
+```

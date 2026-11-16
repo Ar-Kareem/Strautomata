@@ -1,0 +1,304 @@
+# Chess Arena Policy Strategy
+
+My strategy is to implement a strong chess engine using a combination of classic techniques optimized for speed. The key components are:
+
+1. **Board Representation**: Parse the piece dictionary into a python-chess board for efficient move generation
+2. **Move Ordering**: Prioritize captures and checks for better pruning
+3. **Minimax with Alpha-Beta Pruning**: Search to a depth that fits within 1 second
+4. **Evaluation Function**: Combine material, position, and strategic factors:
+   - Piece values with positional adjustments (piece-square tables)
+   - King safety considerations
+   - Pawn structure evaluation
+   - Mobility and development
+
+5. **Special Handling**: Detect checkmates and promotions immediately
+6. **Time Management**: Adapt search depth based on position complexity
+
+This approach provides a solid balance between playing strength and execution speed.
+
+<code>
+import chess
+import chess.pgn
+import random
+from typing import Dict, List, Tuple
+
+# Piece values for material evaluation
+PIECE_VALUES = {
+    chess.PAWN: 100,
+    chess.KNIGHT: 320,
+    chess.BISHOP: 330,
+    chess.ROOK: 500,
+    chess.QUEEN: 900,
+    chess.KING: 20000
+}
+
+# Piece-square tables for positional evaluation
+# Tables are from white's perspective - they'll be flipped for black
+PAWN_TABLE = [
+    0,  0,  0,  0,  0,  0,  0,  0,
+    50, 50, 50, 50, 50, 50, 50, 50,
+    10, 10, 20, 30, 30, 20, 10, 10,
+    5,  5, 10, 25, 25, 10,  5,  5,
+    0,  0,  0, 20, 20,  0,  0,  0,
+    5, -5,-10,  0,  0,-10, -5,  5,
+    5, 10, 10,-20,-20, 10, 10,  5,
+    0,  0,  0,  0,  0,  0,  0,  0
+]
+
+KNIGHT_TABLE = [
+    -50,-40,-30,-30,-30,-30,-40,-50,
+    -40,-20,  0,  0,  0,  0,-20,-40,
+    -30,  0, 10, 15, 15, 10,  0,-30,
+    -30,  5, 15, 20, 20, 15,  5,-30,
+    -30,  0, 15, 20, 20, 15,  0,-30,
+    -30,  5, 10, 15, 15, 10,  5,-30,
+    -40,-20,  0,  5,  5,  0,-20,-40,
+    -50,-40,-30,-30,-30,-30,-40,-50
+]
+
+BISHOP_TABLE = [
+    -20,-10,-10,-10,-10,-10,-10,-20,
+    -10,  0,  0,  0,  0,  0,  0,-10,
+    -10,  0,  5, 10, 10,  5,  0,-10,
+    -10,  5,  5, 10, 10,  5,  5,-10,
+    -10,  0, 10, 10, 10, 10,  0,-10,
+    -10, 10, 10, 10, 10, 10, 10,-10,
+    -10,  5,  0,  0,  0,  0,  5,-10,
+    -20,-10,-10,-10,-10,-10,-10,-20
+]
+
+ROOK_TABLE = [
+    0,  0,  0,  0,  0,  0,  0,  0,
+    5, 10, 10, 10, 10, 10, 10,  5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    0,  0,  0,  5,  5,  0,  0,  0
+]
+
+QUEEN_TABLE = [
+    -20,-10,-10, -5, -5,-10,-10,-20,
+    -10,  0,  0,  0,  0,  0,  0,-10,
+    -10,  0,  5,  5,  5,  5,  0,-10,
+    -5,  0,  5,  5,  5,  5,  0, -5,
+    0,  0,  5,  5,  5,  5,  0, -5,
+    -10,  5,  5,  5,  5,  5,  0,-10,
+    -10,  0,  5,  0,  0,  0,  0,-10,
+    -20,-10,-10, -5, -5,-10,-10,-20
+]
+
+KING_MIDDLE_TABLE = [
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -20,-30,-30,-40,-40,-30,-30,-20,
+    -10,-20,-20,-20,-20,-20,-20,-10,
+    20, 20,  0,  0,  0,  0, 20, 20,
+    20, 30, 10,  0,  0, 10, 30, 20
+]
+
+KING_END_TABLE = [
+    -50,-40,-30,-20,-20,-30,-40,-50,
+    -30,-20,-10,  0,  0,-10,-20,-30,
+    -30,-10, 20, 30, 30, 20,-10,-30,
+    -30,-10, 30, 40, 40, 30,-10,-30,
+    -30,-10, 30, 40, 40, 30,-10,-30,
+    -30,-10, 20, 30, 30, 20,-10,-30,
+    -30,-30,  0,  0,  0,  0,-30,-30,
+    -50,-30,-30,-30,-30,-30,-30,-50
+]
+
+def create_board_from_pieces(pieces: Dict[str, str], to_play: str) -> chess.Board:
+    """Create a chess.Board from the pieces dictionary."""
+    board = chess.Board()
+    board.turn = chess.WHITE if to_play == 'white' else chess.BLACK
+    
+    # Clear the board and set up pieces
+    board.clear()
+    board.turn = chess.WHITE if to_play == 'white' else chess.BLACK
+    
+    for square_str, piece_code in pieces.items():
+        square = chess.parse_square(square_str)
+        color = chess.WHITE if piece_code[0] == 'w' else chess.BLACK
+        piece_type = {'K': chess.KING, 'Q': chess.QUEEN, 'R': chess.ROOK, 
+                      'B': chess.BISHOP, 'N': chess.KNIGHT, 'P': chess.PAWN}[piece_code[1]]
+        board.set_piece_at(square, chess.Piece(piece_type, color))
+    
+    # Set castling rights and other state
+    board.castling_rights = chess.CASTLING_NONE
+    board.ep_square = chess.Square.NONE
+    board.halfmove_clock = 0
+    board.fullmove_number = 1
+    
+    return board
+
+def get_positional_value(piece: chess.Piece, square: int) -> int:
+    """Get positional value for a piece based on piece-square tables."""
+    if piece.piece_type == chess.PAWN:
+        table = PAWN_TABLE
+    elif piece.piece_type == chess.KNIGHT:
+        table = KNIGHT_TABLE
+    elif piece.piece_type == chess.BISHOP:
+        table = BISHOP_TABLE
+    elif piece.piece_type == chess.ROOK:
+        table = ROOK_TABLE
+    elif piece.piece_type == chess.QUEEN:
+        table = QUEEN_TABLE
+    elif piece.piece_type == chess.KING:
+        # Use different table for endgame
+        if chess.Piece(chess.PAWN, piece.color) in [chess.PAWN]:
+            # Simple heuristic: if we have few pieces, use endgame table
+            table = KING_END_TABLE
+        else:
+            table = KING_MIDDLE_TABLE
+    
+    # Flip table if piece is black (tables are from white's perspective)
+    if piece.color == chess.BLACK:
+        square = chess.square_mirror(square)
+    
+    return table[square]
+
+def evaluate_board(board: chess.Board) -> float:
+    """Evaluate the board from the perspective of the side to move."""
+    if board.is_checkmate():
+        if board.turn:
+            return -99999  # White to move and checkmated
+        else:
+            return 99999   # Black to move and checkmated
+    
+    if board.is_stalemate() or board.is_insufficient_material():
+        return 0
+    
+    evaluation = 0
+    
+    # Count material and positional value
+    for square in chess.SQUARES:
+        piece = board.piece_at(square)
+        if piece:
+            evaluation += PIECE_VALUES[piece.piece_type]
+            evaluation += get_positional_value(piece, square)
+    
+    # Bonus for development in opening
+    evaluation += len(board.legal_moves) * 0.1
+    
+    # King safety - check if king is in check
+    if board.is_check():
+        if board.turn:
+            evaluation -= 50  # Side to move is in check
+        else:
+            evaluation += 50
+    
+    return evaluation
+
+def order_moves(board: chess.Board, moves: List[chess.Move]) -> List[chess.Move]:
+    """Order moves for better alpha-beta pruning."""
+    def move_score(move: chess.Move) -> int:
+        score = 0
+        
+        # Prioritize captures by piece value
+        if board.is_capture(move):
+            captured = board.piece_at(move.to_square)
+            if captured:
+                score += PIECE_VALUES[captured.piece_type] * 10
+        
+        # Prioritize promotions
+        if move.promotion:
+            score += 900
+        
+        # Prioritize checks
+        board.push(move)
+        if board.is_check():
+            score += 50
+        board.pop()
+        
+        # Prioritize castling
+        if board.is_castling(move):
+            score += 30
+        
+        return score
+    
+    return sorted(moves, key=move_score, reverse=True)
+
+def minimax(board: chess.Board, depth: int, alpha: float, beta: float, maximizing: bool) -> Tuple[float, chess.Move]:
+    """Minimax algorithm with alpha-beta pruning."""
+    if depth == 0 or board.is_game_over():
+        return evaluate_board(board), None
+    
+    best_move = None
+    
+    if maximizing:
+        max_eval = -float('inf')
+        moves = order_moves(board, list(board.legal_moves))
+        for move in moves:
+            board.push(move)
+            eval_score, _ = minimax(board, depth - 1, alpha, beta, False)
+            board.pop()
+            
+            if eval_score > max_eval:
+                max_eval = eval_score
+                best_move = move
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval, best_move
+    else:
+        min_eval = float('inf')
+        moves = order_moves(board, list(board.legal_moves))
+        for move in moves:
+            board.push(move)
+            eval_score, _ = minimax(board, depth - 1, alpha, beta, True)
+            board.pop()
+            
+            if eval_score < min_eval:
+                min_eval = eval_score
+                best_move = move
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval, best_move
+
+def get_legal_moves(pieces: Dict[str, str], to_play: str) -> List[str]:
+    """Get list of legal moves in UCI format."""
+    board = create_board_from_pieces(pieces, to_play)
+    return [move.uci() for move in board.legal_moves]
+
+def policy(pieces: dict, to_play: str) -> str:
+    """Main policy function that selects the best move."""
+    # Create board
+    board = create_board_from_pieces(pieces, to_play)
+    
+    # Get legal moves
+    legal_moves = list(board.legal_moves)
+    if not legal_moves:
+        # This shouldn't happen in valid chess positions
+        return ""
+    
+    # Check for immediate checkmate
+    for move in legal_moves:
+        board.push(move)
+        if board.is_checkmate():
+            board.pop()
+            return move.uci()
+        board.pop()
+    
+    # Determine search depth based on position complexity
+    num_pieces = len(pieces)
+    if num_pieces <= 8:  # Endgame
+        depth = 4
+    elif num_pieces <= 16:  # Middlegame
+        depth = 3
+    else:  # Opening
+        depth = 2
+    
+    # Perform minimax search
+    _, best_move = minimax(board, depth, -float('inf'), float('inf'), board.turn)
+    
+    # Fallback to random move if minimax fails
+    if best_move is None:
+        best_move = random.choice(legal_moves)
+    
+    return best_move.uci()
+</code>

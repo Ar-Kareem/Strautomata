@@ -1,0 +1,111 @@
+The strategy for this policy is to use a greedy heuristic with a focus on advancing pieces toward the opponent's home row while maximizing progress and enabling captures when beneficial. The policy evaluates each legal move using a simple but effective evaluation function that prioritizes:
+
+1. Winning moves: moving a piece to the opponent's home row.
+2. Capturing opponent pieces, especially those that are advanced.
+3. Advancing pieces as far as possible toward the opponent's side.
+4. Avoiding unnecessary lateral or backward movement (though not possible in Breakthrough).
+5. Preferring pieces that are already closer to the opponent's home row (promoting a coordinated push).
+
+The policy generates all legal moves, scores them, and returns the highest-scoring one. In case of ties, it prefers captures, then higher advancement (closer to enemy base), and then favors central columns (to promote board control).
+
+<code>
+import numpy as np
+from typing import List, Tuple
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    # Define direction based on color
+    direction = -1 if color == 'b' else 1  # black moves up (row decreases), white moves down (row increases)
+    
+    # Convert opp list to a set for fast lookup
+    opp_set = set(opp)
+    me_set = set(me)
+    
+    # Target home row: 0 for white (opponent is black), 7 for black (opponent is white)
+    target_home_row = 0 if color == 'w' else 7
+    
+    legal_moves = []
+    
+    # Generate all legal moves
+    for r, c in me:
+        # Forward move (straight)
+        nr = r + direction
+        if 0 <= nr <= 7:
+            # Straight forward
+            if (nr, c) not in me_set and (nr, c) not in opp_set:
+                legal_moves.append(((r, c), (nr, c)))
+            # Diagonal left capture
+            if c > 0:
+                if (nr, c-1) in opp_set:
+                    legal_moves.append(((r, c), (nr, c-1)))
+            # Diagonal right capture
+            if c < 7:
+                if (nr, c+1) in opp_set:
+                    legal_moves.append(((r, c), (nr, c+1)))
+            # Diagonal forward (non-capture) - allowed per rules as long as empty
+            if c > 0 and (nr, c-1) not in me_set and (nr, c-1) not in opp_set:
+                legal_moves.append(((r, c), (nr, c-1)))
+            if c < 7 and (nr, c+1) not in me_set and (nr, c+1) not in opp_set:
+                legal_moves.append(((r, c), (nr, c+1)))
+
+    # If no legal moves, we should return something, but per rules there should always be at least one
+    if not legal_moves:
+        # Fallback: return the first piece moving forward if possible, though shouldn't happen
+        for r, c in me:
+            nr = r + direction
+            if 0 <= nr <= 7 and (nr, c) not in me_set and (nr, c) not in opp_set:
+                return ((r, c), (nr, c))
+        # Otherwise, just return a pass-like move (but all moves are mandatory, so force one)
+        return ((me[0][0], me[0][1]), (me[0][0] + direction, me[0][1]))
+
+    # Score moves
+    best_score = -np.inf
+    best_move = legal_moves[0]
+    
+    for move in legal_moves:
+        fr, fc = move[0]
+        tr, tc = move[1]
+        
+        score = 0.0
+        
+        # 1. Win condition: reaching opponent's home row
+        if tr == target_home_row:
+            score += 1000.0  # Highest priority
+        
+        # 2. Capture bonus
+        if (tr, tc) in opp_set:
+            score += 10.0
+        
+        # 3. Progress bonus: how far we've advanced (in direction of opponent)
+        # Distance to opponent's home row: for white, want higher row; for black, lower row
+        # Since direction is fixed, we can use (target - row) or (row - target), but simpler:
+        # We reward moving closer to target_home_row
+        progress = abs(fr - target_home_row) - abs(tr - target_home_row)
+        score += progress * 5.0  # Encourage forward movement
+        
+        # 4. Central control bonus: prefer center columns (c=3,4)
+        col_bonus = 1.0 - abs(tc - 3.5) / 7.0  # normalized to [0,1], higher in center
+        score += col_bonus
+        
+        # 5. Avoid moving away from center unless capturing
+        if (tr, tc) not in opp_set:
+            # Non-capture move: slightly penalize moving to edge
+            score += col_bonus
+        else:
+            # Capture: still value center, but capture is more important
+            score += col_bonus * 0.5
+        
+        # 6. Bonus for supporting pieces: if the target square has friendly support behind it
+        # For example, for white: if there's a friendly piece behind (tr-1, tc)
+        # Not very useful in early game, but can promote stack
+        support_row = tr - direction
+        if 0 <= support_row <= 7:
+            if (support_row, tc) in me_set:
+                score += 0.5  # Minor bonus for stacked support
+        
+        # Update best move
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return best_move
+</code>

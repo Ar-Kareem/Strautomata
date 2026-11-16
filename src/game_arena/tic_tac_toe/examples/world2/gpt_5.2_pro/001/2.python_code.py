@@ -1,0 +1,340 @@
+
+import time
+from typing import List, Tuple, Optional, Dict
+
+# 4x4 Tic-Tac-Toe (connect-4 in a row/col/diag) policy for player "1" (us).
+# board: 0 empty, 1 ours, -1 opponent.
+
+N = 4
+FULL_MASK = (1 << (N * N)) - 1
+MATE = 100000  # large win/loss score
+
+# Precompute winning line masks (4 rows, 4 cols, 2 diags = 10)
+WIN_MASKS = []
+# rows
+for r in range(N):
+    m = 0
+    for c in range(N):
+        m |= 1 << (r * N + c)
+    WIN_MASKS.append(m)
+# cols
+for c in range(N):
+    m = 0
+    for r in range(N):
+        m |= 1 << (r * N + c)
+    WIN_MASKS.append(m)
+# main diag
+m = 0
+for i in range(N):
+    m |= 1 << (i * N + i)
+WIN_MASKS.append(m)
+# anti diag
+m = 0
+for i in range(N):
+    m |= 1 << (i * N + (N - 1 - i))
+WIN_MASKS.append(m)
+
+# Cell weights: prefer central squares (for 4x4, the 2x2 center is best)
+CELL_WEIGHT = [
+    3, 4, 4, 3,
+    4, 6, 6, 4,
+    4, 6, 6, 4,
+    3, 4, 4, 3,
+]
+
+# Line scoring weights by count of marks (only if line is open / uncontested)
+# index is number of marks in that line.
+LINE_W = [0, 2, 12, 70, 20000]
+
+# Time budget
+TIME_LIMIT = 0.95  # seconds
+
+
+def _bits_from_board(board: List[List[int]]) -> Tuple[int, int]:
+    my_bits = 0
+    opp_bits = 0
+    for r in range(N):
+        for c in range(N):
+            v = board[r][c]
+            idx = r * N + c
+            if v == 1:
+                my_bits |= 1 << idx
+            elif v == -1:
+                opp_bits |= 1 << idx
+    return my_bits, opp_bits
+
+
+def _has_win(bits: int) -> bool:
+    for wm in WIN_MASKS:
+        if (bits & wm) == wm:
+            return True
+    return False
+
+
+def _winning_moves(player_bits: int, other_bits: int, empties: int) -> int:
+    """Return bitmask of empty squares that win immediately for player_bits."""
+    wins = 0
+    for wm in WIN_MASKS:
+        if (other_bits & wm) != 0:
+            continue
+        pb = player_bits & wm
+        if pb.bit_count() == 3:
+            missing = wm ^ pb
+            if missing & empties:
+                wins |= missing
+    return wins
+
+
+def _evaluate(my_bits: int, opp_bits: int) -> int:
+    """Heuristic evaluation from perspective of side-to-move (my_bits)."""
+    # Terminal checks should be handled in search; keep eval non-terminal oriented.
+    score = 0
+
+    # Line-based scoring
+    for wm in WIN_MASKS:
+        mb = (my_bits & wm).bit_count()
+        ob = (opp_bits & wm).bit_count()
+        if mb and ob:
+            continue  # contested line -> no direct value
+        if mb:
+            score += LINE_W[mb]
+        elif ob:
+            score -= LINE_W[ob]
+
+    # Positional preference
+    # (light weight so tactics still dominate)
+    m = my_bits
+    while m:
+        lsb = m & -m
+        idx = (lsb.bit_length() - 1)
+        score += CELL_WEIGHT[idx]
+        m ^= lsb
+
+    o = opp_bits
+    while o:
+        lsb = o & -o
+        idx = (lsb.bit_length() - 1)
+        score -= CELL_WEIGHT[idx]
+        o ^= lsb
+
+    return score
+
+
+def _ordered_moves(my_bits: int, opp_bits: int, empties: int) -> List[int]:
+    """Return list of move indices ordered by tactical priority + positional weight."""
+    # Immediate wins
+    win_mask = _winning_moves(my_bits, opp_bits, empties)
+    if win_mask:
+        # If multiple wins, pick best by position (center preference)
+        moves = []
+        m = win_mask
+        while m:
+            lsb = m & -m
+            idx = lsb.bit_length() - 1
+            moves.append(idx)
+            m ^= lsb
+        moves.sort(key=lambda i: CELL_WEIGHT[i], reverse=True)
+        return moves
+
+    # Blocks
+    opp_win_mask = _winning_moves(opp_bits, my_bits, empties)
+    block_set = []
+    if opp_win_mask:
+        m = opp_win_mask
+        while m:
+            lsb = m & -m
+            idx = lsb.bit_length() - 1
+            block_set.append(idx)
+            m ^= lsb
+        # Prefer blocks that also improve our position
+        block_set.sort(key=lambda i: CELL_WEIGHT[i], reverse=True)
+        return block_set
+
+    # Otherwise, all moves ordered by positional preference, then by potential (simple proxy)
+    moves = []
+    m = empties
+    while m:
+        lsb = m & -m
+        idx = lsb.bit_length() - 1
+        moves.append(idx)
+        m ^= lsb
+
+    # Slightly favor moves that create threats (increase our line counts), approximated cheaply
+    def move_key(i: int) -> int:
+        b = 1 << i
+        new_my = my_bits | b
+        threat = 0
+        for wm in WIN_MASKS:
+            if (opp_bits & wm) != 0:
+                continue
+            if (b & wm) == 0:
+                continue
+            cnt = (new_my & wm).bit_count()
+            # reward building towards 3-in-line
+            if cnt == 3:
+                threat += 40
+            elif cnt == 2:
+                threat += 10
+            elif cnt == 1:
+                threat += 2
+        return (threat * 100) + (CELL_WEIGHT[i] * 10)
+
+    moves.sort(key=move_key, reverse=True)
+    return moves
+
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    start = time.perf_counter()
+
+    my_bits, opp_bits = _bits_from_board(board)
+    occupied = my_bits | opp_bits
+    empties = (~occupied) & FULL_MASK
+
+    # Always return a legal move.
+    if empties == 0:
+        return (0, 0)  # should not happen in normal play; still must return a tuple
+
+    # Quick tactical checks at root
+    win_mask = _winning_moves(my_bits, opp_bits, empties)
+    if win_mask:
+        # choose best winning move
+        best_idx = None
+        best_w = -10**9
+        m = win_mask
+        while m:
+            lsb = m & -m
+            idx = lsb.bit_length() - 1
+            w = CELL_WEIGHT[idx]
+            if w > best_w:
+                best_w = w
+                best_idx = idx
+            m ^= lsb
+        r, c = divmod(best_idx, N)
+        return (r, c)
+
+    block_mask = _winning_moves(opp_bits, my_bits, empties)
+    if block_mask:
+        best_idx = None
+        best_w = -10**9
+        m = block_mask
+        while m:
+            lsb = m & -m
+            idx = lsb.bit_length() - 1
+            w = CELL_WEIGHT[idx]
+            if w > best_w:
+                best_w = w
+                best_idx = idx
+            m ^= lsb
+        r, c = divmod(best_idx, N)
+        return (r, c)
+
+    # Negamax with alpha-beta and transposition
+    # State is (my_bits, opp_bits) with "my" to move at that node.
+    tt: Dict[Tuple[int, int, int], Tuple[int, int]] = {}  # (my,opp,depth)->(value,best_idx)
+
+    def negamax(my_b: int, opp_b: int, depth: int, alpha: int, beta: int) -> Tuple[int, Optional[int]]:
+        # Time check
+        if time.perf_counter() - start > TIME_LIMIT:
+            # Signal cutoff by returning a static eval
+            return _evaluate(my_b, opp_b), None
+
+        # If opponent already has a win, current player loses
+        if _has_win(opp_b):
+            return -MATE - depth, None
+
+        occupied2 = my_b | opp_b
+        empt = (~occupied2) & FULL_MASK
+        if empt == 0:
+            return 0, None
+
+        if depth == 0:
+            return _evaluate(my_b, opp_b), None
+
+        key = (my_b, opp_b, depth)
+        if key in tt:
+            return tt[key][0], tt[key][1]
+
+        best_val = -10**18
+        best_move = None
+
+        moves = _ordered_moves(my_b, opp_b, empt)
+
+        for idx in moves:
+            bit = 1 << idx
+            if (empt & bit) == 0:
+                continue  # safety
+
+            new_my = my_b | bit
+
+            # If this move wins immediately, prefer fastest mate
+            if _has_win(new_my):
+                val = MATE + depth
+                if val > best_val:
+                    best_val = val
+                    best_move = idx
+                alpha = max(alpha, best_val)
+                if alpha >= beta:
+                    break
+                continue
+
+            # Recurse: swap roles for negamax
+            child_val, _ = negamax(opp_b, new_my, depth - 1, -beta, -alpha)
+            val = -child_val
+
+            if val > best_val:
+                best_val = val
+                best_move = idx
+            alpha = max(alpha, best_val)
+            if alpha >= beta:
+                break
+
+        # Store
+        tt[key] = (int(best_val), -1 if best_move is None else best_move)
+        return int(best_val), best_move
+
+    # Iterative deepening
+    empty_count = empties.bit_count()
+    best_idx_final = None
+
+    # Reasonable maximum depth; near endgame we can often fully search
+    max_depth = empty_count
+    # If very early game, cap depth slightly for speed; iterative deepening will still find tactics
+    if empty_count >= 13:
+        max_depth = 9
+    elif empty_count >= 11:
+        max_depth = 11
+
+    alpha0, beta0 = -10**18, 10**18
+    for d in range(1, max_depth + 1):
+        if time.perf_counter() - start > TIME_LIMIT:
+            break
+        val, bm = negamax(my_bits, opp_bits, d, alpha0, beta0)
+        if time.perf_counter() - start > TIME_LIMIT:
+            break
+        if bm is not None and bm != -1:
+            best_idx_final = bm
+        # Optional: small aspiration narrowing could be added, but keep stable.
+
+    # Fallback if search didn't provide a move
+    if best_idx_final is None:
+        # Choose best by ordering
+        moves = _ordered_moves(my_bits, opp_bits, empties)
+        if moves:
+            best_idx_final = moves[0]
+        else:
+            # absolute fallback: first empty
+            lsb = empties & -empties
+            best_idx_final = lsb.bit_length() - 1
+
+    # Ensure legality against given board (final safety)
+    r, c = divmod(best_idx_final, N)
+    if 0 <= r < N and 0 <= c < N and board[r][c] == 0:
+        return (r, c)
+
+    # Last-resort: find any legal move
+    for rr in range(N):
+        for cc in range(N):
+            if board[rr][cc] == 0:
+                return (rr, cc)
+
+    return (0, 0)

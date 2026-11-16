@@ -1,0 +1,111 @@
+
+
+The strategy for this policy focuses on safe and aggressive play, prioritizing bar re-entry, building blockades, bearing off efficiently, and hitting opponent blots when opportune. It uses a heuristic to score moves based on safety, progress, and strategic advantage.
+
+<code>
+import numpy as np
+
+def policy(state: dict) -> str:
+    # Simplified assumption: Player's home board is always 0-5 (low indices)
+    HOME_BOARD_LOW = True
+    BOARD_SIZE = 24
+
+    def is_legal_bar_move(die):
+        target = (24 - die) if HOME_BOARD_LOW else (die - 1)
+        return 0 <= target < BOARD_SIZE and state['opp_pts'][target] < 2
+
+    def can_bear_off():
+        if state['my_bar'] > 0:
+            return False
+        on_board = [i for i in range(BOARD_SIZE) if state['my_pts'][i] > 0]
+        return all(0 <= i <= 5 for i in on_board) if HOME_BOARD_LOW else all(18 <= i <= 23 for i in on_board)
+
+    def score_move(move):
+        # Higher score is better
+        score = 0
+        temp_state = {
+            'my_pts': state['my_pts'].copy(),
+            'opp_pts': state['opp_pts'].copy(),
+            'my_bar': state['my_bar'],
+            'opp_bar': state['opp_bar'],
+            'my_off': state['my_off']
+        }
+
+        # Apply move to temp_state
+        # Simplified simulation - just count strategic value
+        for part in move.split(':')[1].split(','):
+            if part == 'B':
+                # Bar move handled separately in scoring
+                score += 2
+            elif part.startswith('A'):
+                pt = int(part[1:])
+                if HOME_BOARD_LOW:
+                    # Moving toward lower indices
+                    if temp_state['my_pts'][pt] > 0:
+                        score += (pt // 4)  # Prefer moving from higher points first
+                else:
+                    score += ((23 - pt) // 4)
+        return score
+
+    dice = sorted(state['dice'], reverse=True)
+    legal_moves = []
+
+    # Generate bar moves if needed
+    if state['my_bar'] > 0:
+        # Must use all dice for re-entry if possible
+        possible_dice = [d for d in dice if is_legal_bar_move(d)]
+        if len(possible_dice) >= 1:
+            # Prefer higher die first
+            die1 = possible_dice[0]
+            die2 = possible_dice[1] if len(possible_dice) > 1 else None
+            
+            # Try H order
+            move_str = f"H:B,B" if die2 is not None else f"H:B,P"
+            legal_moves.append(move_str)
+            
+            if die2 is not None:
+                # Try L order if two dice work
+                legal_moves.append(f"L:B,B")
+        else:
+            return "H:P,P"  # No legal moves
+
+    else:
+        # Generate point moves
+        def can_move_from(src, die):
+            if HOME_BOARD_LOW:
+                dst = src - die
+                if dst < 0:
+                    return can_bear_off()
+                return dst >= 0 and state['opp_pts'][dst] < 2
+            else:
+                dst = src + die
+                if dst >= BOARD_SIZE:
+                    return can_bear_off()
+                return dst < BOARD_SIZE and state['opp_pts'][dst] < 2
+
+        # Check single moves first
+        for die in dice:
+            valid_sources = []
+            for pt in range(BOARD_SIZE):
+                if state['my_pts'][pt] > 0 and can_move_from(pt, die):
+                    valid_sources.append(f"A{pt}")
+            if valid_sources:
+                legal_moves.append(f"H:{valid_sources[0]},P")  # Use highest point for die
+
+        # Check two-dice combinations
+        if len(dice) == 2:
+            for src1 in range(BOARD_SIZE):
+                if state['my_pts'][src1] > 0 and can_move_from(src1, dice[0]):
+                    for src2 in range(BOARD_SIZE):
+                        if src2 != src1 and state['my_pts'][src2] > 0 and can_move_from(src2, dice[1]):
+                            legal_moves.append(f"H:A{src1},A{src2}")
+                            legal_moves.append(f"L:A{src2},A{src1}")
+
+    if not legal_moves:
+        return "H:P,P"
+
+    # Select highest scoring move
+    scores = [score_move(move) for move in legal_moves]
+    best_idx = np.argmax(scores)
+    return legal_moves[best_idx]
+</code>

@@ -1,0 +1,36 @@
+
+def policy(state):
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+    dice = state['dice']
+    
+    # Prioritize moving checkers from the bar
+    if my_bar > 0:
+        sorted_dice = sorted(dice, reverse=True)
+        moves = []
+        for die in sorted_dice:
+            for point in range(24):
+                if opp_pts[point] < 2:  # Valid destination (not blocked)
+                    moves.append(f'B,{point}')
+                    break
+        if moves:
+            return 'H:' + moves[0] if len(moves) == 1 else 'H:' + moves[0] + ',' + moves[1]
+    
+    # Move from highest points if no bar moves available
+    sorted_dice = sorted(dice, reverse=True)
+    moves = []
+    for die in sorted_dice:
+        for point in range(23, -1, -1):
+            if my_pts[point] > 0:  # Valid starting point
+                destination = point + die
+                if destination < 24 and opp_pts[destination] < 2:  # Valid destination
+                    moves.append(f'{point},{destination}')
+                    break
+    if moves:
+        return 'H:' + moves[0] if len(moves) == 1 else 'H:' + moves[0] + ',' + moves[1]
+    
+    return 'H:P,P'  # Pass if no legal moves

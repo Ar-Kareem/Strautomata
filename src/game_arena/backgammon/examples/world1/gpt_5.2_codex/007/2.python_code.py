@@ -1,0 +1,170 @@
+
+import copy
+
+def can_bear_off(state):
+    return state['my_bar'] == 0 and sum(state['my_pts'][6:]) == 0
+
+def possible_moves_for_die(state, die):
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    moves = []
+    if state['my_bar'] > 0:
+        entry = 24 - die
+        if opp_pts[entry] < 2:
+            moves.append('B')
+        return moves
+
+    bearing = can_bear_off(state)
+    for i in range(24):
+        if my_pts[i] <= 0:
+            continue
+        dest = i - die
+        if dest >= 0:
+            if opp_pts[dest] < 2:
+                moves.append(i)
+        else:
+            if bearing:
+                if i == die - 1:
+                    moves.append(i)
+                elif i < die - 1:
+                    # Allow higher die if no checkers on higher points
+                    if all(my_pts[j] == 0 for j in range(i + 1, 6)):
+                        moves.append(i)
+    return moves
+
+def apply_move(state, from_pos, die):
+    new_state = {
+        'my_pts': state['my_pts'][:],
+        'opp_pts': state['opp_pts'][:],
+        'my_bar': state['my_bar'],
+        'opp_bar': state['opp_bar'],
+        'my_off': state['my_off'],
+        'opp_off': state['opp_off'],
+        'dice': state.get('dice', [])
+    }
+    if from_pos == 'B':
+        new_state['my_bar'] -= 1
+        dest = 24 - die
+    else:
+        i = from_pos
+        new_state['my_pts'][i] -= 1
+        dest = i - die
+
+    if dest >= 0:
+        if new_state['opp_pts'][dest] == 1:
+            new_state['opp_pts'][dest] = 0
+            new_state['opp_bar'] += 1
+        new_state['my_pts'][dest] += 1
+    else:
+        new_state['my_off'] += 1
+
+    return new_state
+
+def evaluate(state):
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+
+    pip = sum(i * my_pts[i] for i in range(24)) + my_bar * 24
+    score = -pip
+    score += my_off * 50
+    score -= opp_off * 20
+    score += opp_bar * 15
+    score -= my_bar * 30
+
+    # Bonus for made points
+    made_points = sum(1 for i in range(24) if my_pts[i] >= 2)
+    score += made_points * 2
+
+    return score
+
+def format_from(pos):
+    if pos == 'B':
+        return 'B'
+    elif pos == 'P':
+        return 'P'
+    else:
+        return f"A{pos}"
+
+def policy(state: dict) -> str:
+    dice = state.get('dice', [])
+    if not dice:
+        return "H:P,P"
+
+    # Single die case
+    if len(dice) == 1:
+        d = dice[0]
+        moves = possible_moves_for_die(state, d)
+        if not moves:
+            return "H:P,P"
+        best_move = None
+        best_score = float('-inf')
+        for m in moves:
+            st = apply_move(state, m, d)
+            sc = evaluate(st)
+            if sc > best_score:
+                best_score = sc
+                best_move = m
+        return f"H:{format_from(best_move)},P"
+
+    # Two dice case
+    high = max(dice)
+    low = min(dice)
+
+    sequences = []
+
+    orders = ['H'] if high == low else ['H', 'L']
+    for order in orders:
+        if order == 'H':
+            first, second = high, low
+        else:
+            first, second = low, high
+
+        first_moves = possible_moves_for_die(state, first)
+        for fm in first_moves:
+            st1 = apply_move(state, fm, first)
+            second_moves = possible_moves_for_die(st1, second)
+            for sm in second_moves:
+                st2 = apply_move(st1, sm, second)
+                sequences.append((order, fm, sm, st2))
+
+    if sequences:
+        best = None
+        best_score = float('-inf')
+        for seq in sequences:
+            sc = evaluate(seq[3])
+            if sc > best_score:
+                best_score = sc
+                best = seq
+        order, fm, sm, _ = best
+        return f"{order}:{format_from(fm)},{format_from(sm)}"
+
+    # If cannot play both dice, play one die (higher if possible)
+    moves_high = possible_moves_for_die(state, high)
+    if moves_high:
+        best_move = None
+        best_score = float('-inf')
+        for m in moves_high:
+            st = apply_move(state, m, high)
+            sc = evaluate(st)
+            if sc > best_score:
+                best_score = sc
+                best_move = m
+        return f"H:{format_from(best_move)},P"
+
+    moves_low = possible_moves_for_die(state, low)
+    if moves_low:
+        best_move = None
+        best_score = float('-inf')
+        for m in moves_low:
+            st = apply_move(state, m, low)
+            sc = evaluate(st)
+            if sc > best_score:
+                best_score = sc
+                best_move = m
+        return f"L:{format_from(best_move)},P"
+
+    return "H:P,P"

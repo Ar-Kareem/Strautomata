@@ -1,0 +1,162 @@
+
+import numpy as np
+from typing import List, Tuple, Optional
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Minimax algorithm with alpha-beta pruning to find the optimal move.
+    
+    Args:
+        board: 4x4 list of lists representing the game state
+               0 = empty, 1 = player (us), -1 = opponent
+    
+    Returns:
+        tuple[int, int]: Row and column of the best move
+    """
+    
+    def evaluate_position(board: np.ndarray, depth: int) -> int:
+        """
+        Evaluate the board position using a scoring system.
+        """
+        score = 0
+        
+        # Check rows
+        for row in range(4):
+            row_sum = np.sum(board[row, :])
+            if abs(row_sum) == 3 and 0 in board[row, :]:
+                score += row_sum * 100
+            elif abs(row_sum) == 2 and np.count_nonzero(board[row, :] == 0) == 2:
+                score += row_sum * 10
+            elif abs(row_sum) == 1 and np.count_nonzero(board[row, :] == 0) == 3:
+                score += row_sum
+        
+        # Check columns
+        for col in range(4):
+            col_sum = np.sum(board[:, col])
+            if abs(col_sum) == 3 and 0 in board[:, col]:
+                score += col_sum * 100
+            elif abs(col_sum) == 2 and np.count_nonzero(board[:, col] == 0) == 2:
+                score += col_sum * 10
+            elif abs(col_sum) == 1 and np.count_nonzero(board[:, col] == 0) == 3:
+                score += col_sum
+        
+        # Check diagonals
+        diag1_sum = np.sum(np.diag(board))
+        diag2_sum = np.sum(np.diag(np.fliplr(board)))
+        
+        if abs(diag1_sum) == 3 and 0 in np.diag(board):
+            score += diag1_sum * 100
+        elif abs(diag1_sum) == 2 and np.count_nonzero(np.diag(board) == 0) == 2:
+            score += diag1_sum * 10
+        elif abs(diag1_sum) == 1 and np.count_nonzero(np.diag(board) == 0) == 3:
+            score += diag1_sum
+            
+        if abs(diag2_sum) == 3 and 0 in np.diag(np.fliplr(board)):
+            score += diag2_sum * 100
+        elif abs(diag2_sum) == 2 and np.count_nonzero(np.diag(np.fliplr(board)) == 0) == 2:
+            score += diag2_sum * 10
+        elif abs(diag2_sum) == 1 and np.count_nonzero(np.diag(np.fliplr(board)) == 0) == 3:
+            score += diag2_sum
+        
+        # Add randomness factor to prevent predictable play
+        score += np.random.randint(-5, 6)
+        
+        return score
+    
+    def is_game_over(board: np.ndarray) -> bool:
+        """Check if the game is over (win or draw)."""
+        # Check rows
+        for row in range(4):
+            if abs(np.sum(board[row, :])) == 4:
+                return True
+        
+        # Check columns
+        for col in range(4):
+            if abs(np.sum(board[:, col])) == 4:
+                return True
+        
+        # Check diagonals
+        if abs(np.sum(np.diag(board))) == 4 or abs(np.sum(np.diag(np.fliplr(board)))) == 4:
+            return True
+        
+        # Check for draw
+        if not np.any(board == 0):
+            return True
+        
+        return False
+    
+    def get_legal_moves(board: np.ndarray) -> List[Tuple[int, int]]:
+        """Get all legal moves (empty cells)."""
+        return [(r, c) for r in range(4) for c in range(4) if board[r, c] == 0]
+    
+    def minimax(board: np.ndarray, depth: int, alpha: float, beta: float, 
+                maximizing_player: bool) -> Tuple[int, Optional[Tuple[int, int]]]:
+        """
+        Minimax algorithm with alpha-beta pruning.
+        
+        Returns:
+            tuple: (score, best_move)
+        """
+        if depth == 0 or is_game_over(board):
+            return evaluate_position(board, depth), None
+        
+        if maximizing_player:
+            max_eval = float('-inf')
+            best_move = None
+            
+            for r, c in get_legal_moves(board):
+                board[r, c] = 1  # Make move for maximizing player
+                eval_score, _ = minimax(board, depth - 1, alpha, beta, False)
+                board[r, c] = 0  # Undo move
+                
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_move = (r, c)
+                
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break  # Alpha-beta pruning
+            
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            best_move = None
+            
+            for r, c in get_legal_moves(board):
+                board[r, c] = -1  # Make move for minimizing player
+                eval_score, _ = minimax(board, depth - 1, alpha, beta, True)
+                board[r, c] = 0  # Undo move
+                
+                if eval_score < min_eval:
+                    min_eval = eval_score
+                    best_move = (r, c)
+                
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break  # Alpha-beta pruning
+            
+            return min_eval, best_move
+    
+    # Convert to numpy array for easier manipulation
+    board_array = np.array(board)
+    
+    # Determine search depth based on remaining moves
+    empty_cells = np.sum(board_array == 0)
+    if empty_cells <= 8:
+        depth = 8
+    elif empty_cells <= 12:
+        depth = 6
+    else:
+        depth = 4
+    
+    # Get the best move using minimax
+    _, best_move = minimax(board_array, depth, float('-inf'), float('inf'), True)
+    
+    # If no move found (shouldn't happen in normal play), find first empty cell
+    if best_move is None:
+        for r in range(4):
+            for c in range(4):
+                if board[r][c] == 0:
+                    return r, c
+    
+    return best_move

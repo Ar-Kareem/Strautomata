@@ -1,0 +1,174 @@
+
+import copy
+import math
+from typing import List, Tuple
+
+ROWS = 6
+COLS = 7
+MAX_DEPTH = 5  # plies (half‑moves)
+
+# order columns from the centre outwards – improves pruning
+COLUMN_ORDER = [3, 2, 4, 1, 5, 0, 6]
+
+def policy(board: List[List[int]]) -> int:
+    """Return the best column for the current player (represented by 1)."""
+    player = 1
+    opponent = -1
+
+    valid_cols = [c for c in COLUMN_ORDER if board[0][c] == 0]
+    if not valid_cols:
+        raise ValueError("No legal moves")
+
+    # 1. Immediate winning move?
+    for col in valid_cols:
+        temp = make_move(board, col, player)
+        if check_winner(temp, player):
+            return col
+
+    # 2. Block opponent's winning move?
+    for col in valid_cols:
+        temp = make_move(board, col, opponent)
+        if check_winner(temp, opponent):
+            return col
+
+    # 3. Minimax search
+    best_score = -math.inf
+    best_col = valid_cols[0]
+
+    for col in valid_cols:
+        child = make_move(board, col, player)
+        score = minimax(child, MAX_DEPTH - 1, -math.inf, math.inf, False, player, opponent)
+        if score > best_score:
+            best_score = score
+            best_col = col
+
+    return best_col
+
+
+def make_move(board: List[List[int]], col: int, player: int) -> List[List[int]]:
+    """Return a new board after dropping `player`'s disc into `col`."""
+    new_board = [row[:] for row in board]
+    for row in range(ROWS - 1, -1, -1):
+        if new_board[row][col] == 0:
+            new_board[row][col] = player
+            break
+    return new_board
+
+
+def check_winner(board: List[List[int]], player: int) -> bool:
+    """True if `player` has four in a row."""
+    # horizontal
+    for r in range(ROWS):
+        for c in range(COLS - 3):
+            if all(board[r][c + i] == player for i in range(4)):
+                return True
+    # vertical
+    for c in range(COLS):
+        for r in range(ROWS - 3):
+            if all(board[r + i][c] == player for i in range(4)):
+                return True
+    # positive diagonal
+    for r in range(ROWS - 3):
+        for c in range(COLS - 3):
+            if all(board[r + i][c + i] == player for i in range(4)):
+                return True
+    # negative diagonal
+    for r in range(3, ROWS):
+        for c in range(COLS - 3):
+            if all(board[r - i][c + i] == player for i in range(4)):
+                return True
+    return False
+
+
+def evaluate_window(window: List[int], player: int) -> int:
+    """Score a length‑4 slice."""
+    opponent = -player
+    score = 0
+    count_player = window.count(player)
+    count_opponent = window.count(opponent)
+    count_empty = window.count(0)
+
+    if count_player == 4:
+        score += 100000
+    elif count_player == 3 and count_empty == 1:
+        score += 100
+    elif count_player == 2 and count_empty == 2:
+        score += 10
+
+    if count_opponent == 3 and count_empty == 1:
+        score -= 80  # block opponent
+    elif count_opponent == 2 and count_empty == 2:
+        score -= 8
+
+    return score
+
+
+def heuristic(board: List[List[int]], player: int) -> int:
+    """Simple evaluation based on all possible windows."""
+    opp = -player
+    total = 0
+
+    # centre column preference
+    centre_col = [board[r][COLS // 2] for r in range(ROWS)]
+    total += centre_col.count(player) * 3
+
+    # horizontal windows
+    for r in range(ROWS):
+        for c in range(COLS - 3):
+            window = [board[r][c + i] for i in range(4)]
+            total += evaluate_window(window, player)
+
+    # vertical windows
+    for c in range(COLS):
+        for r in range(ROWS - 3):
+            window = [board[r + i][c] for i in range(4)]
+            total += evaluate_window(window, player)
+
+    # positive diagonal
+    for r in range(ROWS - 3):
+        for c in range(COLS - 3):
+            window = [board[r + i][c + i] for i in range(4)]
+            total += evaluate_window(window, player)
+
+    # negative diagonal
+    for r in range(3, ROWS):
+        for c in range(COLS - 3):
+            window = [board[r - i][c + i] for i in range(4)]
+            total += evaluate_window(window, player)
+
+    return total
+
+
+def minimax(board: List[List[int]], depth: int, alpha: float, beta: float,
+            maximizingPlayer: bool, player: int, opponent: int) -> int:
+    """Alpha‑beta minimax returning a score."""
+    # terminal checks
+    if check_winner(board, player):
+        return 1000000
+    if check_winner(board, opponent):
+        return -1000000
+    if depth == 0 or all(board[0][c] != 0 for c in range(COLS)):
+        return heuristic(board, player)
+
+    valid_cols = [c for c in COLUMN_ORDER if board[0][c] == 0]
+
+    if maximizingPlayer:
+        maxEval = -math.inf
+        for col in valid_cols:
+            child = make_move(board, col, player)
+            eval = minimax(child, depth - 1, alpha, beta, False, player, opponent)
+            maxEval = max(maxEval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break  # prune
+        return maxEval
+    else:
+        minEval = math.inf
+        for col in valid_cols:
+            child = make_move(board, col, opponent)
+            eval = minimax(child, depth - 1, alpha, beta, True, player, opponent)
+            minEval = min(minEval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break  # prune
+        return minEval

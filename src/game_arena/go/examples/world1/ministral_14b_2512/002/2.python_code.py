@@ -1,0 +1,96 @@
+
+import numpy as np
+from collections import defaultdict
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    # Convert positions to a 19x19 board representation (1-based indexing)
+    board = np.zeros((19, 19), dtype=int)
+    for (r, c) in me:
+        board[r-1, c-1] = 1
+    for (r, c) in opponent:
+        board[r-1, c-1] = -1
+
+    # Check if the game is over (no legal moves left)
+    if np.all(board != 0):
+        return (0, 0)  # Pass if board is full
+
+    # Define opening moves (first 10 moves)
+    opening_moves = [
+        (4, 4), (4, 15), (15, 4), (15, 15),  # 4-4 point opening
+        (10, 10), (10, 9), (9, 10), (9, 9),   # Center expansion
+        (1, 1), (1, 19), (19, 1), (19, 19)    # Corner moves
+    ]
+
+    # If it's the first move, play a standard opening
+    if len(me) == 0:
+        return opening_moves[0]
+
+    # If it's the second move, respond to opponent's first move
+    if len(me) == 1 and len(opponent) == 1:
+        opp_move = opponent[0]
+        if opp_move == (4, 4):
+            return (4, 15)  # Standard response to 4-4
+        elif opp_move == (3, 3):
+            return (4, 4)  # Avoid 3-3 point
+        else:
+            return (4, 4)  # Default to center
+
+    # If it's the third move, play a corner or edge
+    if len(me) == 2 and len(opponent) == 2:
+        if opponent[1] == (4, 15):
+            return (15, 4)  # Symmetric response
+        else:
+            return (1, 1)  # Play a corner
+
+    # General strategy: prioritize center, then edges, then corners
+    # Find the best move using a simple heuristic
+    best_move = None
+    best_score = -float('inf')
+
+    # Check all possible moves (19x19 grid)
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if board[r-1, c-1] == 0:  # Empty point
+                # Score based on distance from center (center is better)
+                center_distance = (r - 10)**2 + (c - 10)**2
+                score = -center_distance  # Lower distance = higher score
+
+                # Bonus for liberties (avoid suicide)
+                liberties = count_liberties(board, (r, c))
+                if liberties >= 2:
+                    score += 10  # Prefer moves with liberties
+
+                # Penalize moves that create ko (repeating the same position)
+                if is_ko(board, (r, c)):
+                    score -= 100  # Avoid ko
+
+                # Update best move
+                if score > best_score:
+                    best_score = score
+                    best_move = (r, c)
+
+    # If no good move found, pass
+    if best_move is None:
+        return (0, 0)
+
+    return best_move
+
+def count_liberties(board: np.ndarray, move: tuple[int, int]) -> int:
+    """Count liberties of a stone at `move` (including the move itself)."""
+    r, c = move
+    liberties = 0
+    directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+
+    # Check adjacent empty points
+    for dr, dc in directions:
+        nr, nc = r + dr, c + dc
+        if 1 <= nr <= 19 and 1 <= nc <= 19 and board[nr-1, nc-1] == 0:
+            liberties += 1
+
+    return liberties
+
+def is_ko(board: np.ndarray, move: tuple[int, int]) -> bool:
+    """Check if placing a stone at `move` would create a ko (simplified)."""
+    # This is a simplified check; a full ko check would require tracking the board history.
+    # For this policy, we assume ko is unlikely in early/mid-game.
+    return False

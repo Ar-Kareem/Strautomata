@@ -1,0 +1,219 @@
+
+import random  # Though not used for ties, included for completeness
+
+def square_to_index(square):
+    file = ord(square[0]) - ord('a')
+    rank = int(square[1]) - 1
+    return rank, file  # r: 0-7, c: 0-7
+
+def index_to_square(r, c):
+    return chr(ord('a') + c) + str(r + 1)
+
+def build_board(pieces):
+    board = [[''] * 8 for _ in range(8)]
+    for square, piece in pieces.items():
+        r, c = square_to_index(square)
+        board[r][c] = piece
+    return board
+
+def piece_value(piece_type):
+    return {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}[piece_type]
+
+def evaluate(board, color):
+    score = 0
+    for r in range(8):
+        for c in range(8):
+            piece = board[r][c]
+            if piece:
+                val = piece_value(piece[1])
+                if piece[0] == color:
+                    score += val
+                else:
+                    score -= val
+    return score
+
+def is_under_attack(board, pos, attacker_color):
+    r, c = pos
+    opponent_color = 'b' if attacker_color == 'w' else 'w'
+    # Knight attacks
+    knight_deltas = [(1,2),(1,-2),(-1,2),(-1,-2),(2,1),(2,-1),(-2,1),(-2,-1)]
+    for dr, dc in knight_deltas:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < 8 and 0 <= nc < 8:
+            if board[nr][nc] == attacker_color + 'N':
+                return True
+    # Pawn attacks (white pawns attack up, black attack down)
+    pawn_dir = 1 if attacker_color == 'w' else -1
+    for dc in [-1, 1]:
+        pr, pc = r - pawn_dir, c + dc
+        if 0 <= pr < 8 and 0 <= pc < 8:
+            if board[pr][pc] == attacker_color + 'P':
+                return True
+    # King attacks
+    for dr in [-1, 0, 1]:
+        for dc in [-1, 0, 1]:
+            if dr == 0 and dc == 0:
+                continue
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 8 and 0 <= nc < 8:
+                if board[nr][nc] == attacker_color + 'K':
+                    return True
+    # Sliding piece attacks
+    rook_dirs = [(-1,0),(1,0),(0,-1),(0,1)]
+    bishop_dirs = [(-1,-1),(-1,1),(1,-1),(1,1)]
+    all_dirs = rook_dirs + bishop_dirs
+    for dr, dc in all_dirs:
+        nr, nc = r + dr, c + dc
+        while 0 <= nr < 8 and 0 <= nc < 8:
+            piece = board[nr][nc]
+            if piece:
+                if piece[0] == attacker_color:
+                    piece_type = piece[1]
+                    if piece_type == 'Q' or (piece_type == 'R' and (dr, dc) in rook_dirs) or (piece_type == 'B' and (dr, dc) in bishop_dirs):
+                        return True
+                break
+            nr += dr
+            nc += dc
+    return False
+
+def generate_legal_uci(board, color):
+    moves = []
+    king_pos = None
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == color + 'K':
+                king_pos = (r, c)
+                break
+    for r in range(8):
+        for c in range(8):
+            piece = board[r][c]
+            if piece and piece[0] == color:
+                ptype = piece[1]
+                pmoves = []
+                if ptype == 'K':
+                    for dr in [-1, 0, 1]:
+                        for dc in [-1, 0, 1]:
+                            if dr == 0 and dc == 0:
+                                continue
+                            nr, nc = r + dr, c + dc
+                            if 0 <= nr < 8 and 0 <= nc < 8:
+                                target = board[nr][nc]
+                                if not target or target[0] != color:
+                                    pmoves.append(((r, c), (nr, nc)))
+                elif ptype == 'N':
+                    for dr, dc in [(1,2),(1,-2),(-1,2),(-1,-2),(2,1),(2,-1),(-2,1),(-2,-1)]:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < 8 and 0 <= nc < 8:
+                            target = board[nr][nc]
+                            if not target or target[0] != color:
+                                pmoves.append(((r, c), (nr, nc)))
+                elif ptype == 'P':
+                    dir = 1 if color == 'w' else -1
+                    # Forward moves
+                    nr = r + dir
+                    if 0 <= nr < 8 and not board[nr][c]:
+                        pmoves.append(((r, c), (nr, c)))
+                        # Two steps if starting row
+                        rank_start = 1 if color == 'w' else 6
+                        if r == rank_start:
+                            nr2 = r + 2 * dir
+                            if not board[nr2][c]:
+                                pmoves.append(((r, c), (nr2, c)))
+                    # Captures
+                    for dc in [-1, 1]:
+                        nr, nc = r + dir, c + dc
+                        if 0 <= nr < 8 and 0 <= nc < 8:
+                            target = board[nr][nc]
+                            if target and target[0] != color:
+                                pmoves.append(((r, c), (nr, nc)))
+                elif ptype in 'BRQ':
+                    directions = []
+                    if ptype == 'R':
+                        directions = [(-1,0),(1,0),(0,-1),(0,1)]
+                    elif ptype == 'B':
+                        directions = [(-1,-1),(-1,1),(1,-1),(1,1)]
+                    elif ptype == 'Q':
+                        directions = [(-1,-1),(-1,1),(1,-1),(1,1),(-1,0),(1,0),(0,-1),(0,1)]
+                    for dr, dc in directions:
+                        nr, nc = r + dr, c + dc
+                        while 0 <= nr < 8 and 0 <= nc < 8:
+                            target = board[nr][nc]
+                            if not target:
+                                pmoves.append(((r, c), (nr, nc)))
+                            elif target[0] == color:
+                                break
+                            else:
+                                pmoves.append(((r, c), (nr, nc)))
+                                break
+                            nr += dr
+                            nc += dc
+                for move in pmoves:
+                    (fr, fc), (tr, tc) = move
+                    # Simulate move
+                    piece = board[fr][fc]
+                    captured = board[tr][tc]
+                    board[tr][tc] = piece
+                    board[fr][fc] = ''
+                    # Check if my king safe
+                    if not is_under_attack(board, king_pos, opponent_color):
+                        # Handle promotion
+                        promo = ''
+                        if ptype == 'P':
+                            last_rank = 7 if color == 'w' else 0
+                            if tr == last_rank:
+                                # Simulate promotions
+                                for p in 'qrn':
+                                    board[tr][tc] = color + p.upper()
+                                    fr_s = index_to_square(fr, fc)
+                                    to_s = index_to_square(tr, tc)
+                                    uci = fr_s + to_s + p
+                                    moves.append(uci)
+                                # Reset
+                                board[tr][tc] = piece
+                        else:
+                            fr_s = index_to_square(fr, fc)
+                            to_s = index_to_square(tr, tc)
+                            uci = fr_s + to_s
+                            moves.append(uci)
+                    board[fr][fc] = piece
+                    board[tr][tc] = captured
+    return moves
+
+def policy(pieces, to_play, memory):
+    color = 'w' if to_play == 'white' else 'b'
+    opponent_color = 'b' if color == 'w' else 'w'
+    board = build_board(pieces)
+    legals = generate_legal_uci(board, color)
+    if not legals:
+        # Should not happen if at least one move, but fallback
+        return '0000', memory  # Invalid, but required to return a string
+    best_score = float('-inf')
+    best_move = legals[0]
+    oppos_king_pos = None
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == opponent_color + 'K':
+                oppos_king_pos = (r, c)
+                break
+    for uci in legals:
+        # Simulate
+        from_square = uci[:2]
+        to_square = uci[2:4]
+        promo = uci[4:] if len(uci) > 4 else ''
+        fr = square_to_index(from_square)
+        to = square_to_index(to_square)
+        piece = board[fr[0]][fr[1]]
+        captured = board[to[0]][to[1]]
+        board[to[0]][to[1]] = color + promo.upper() if promo else piece
+        board[fr[0]][fr[1]] = ''
+        # Evaluate
+        score = evaluate(board, color)
+        if oppos_king_pos and is_under_attack(board, oppos_king_pos, color):
+            score += 10  # Check bonus
+        if score > best_score or (score == best_score and uci < best_move):
+            best_score = score
+            best_move = uci
+        # Restore
+        board[fr[0]][fr[1]] = piece
+        board[to[0]][to[1]] = captured
+    return best_move, memory

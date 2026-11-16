@@ -1,0 +1,235 @@
+```python
+from typing import List, Tuple, Dict
+
+def get_lines(n: int) -> List[List[Tuple[int,int,int]]]:
+    """
+    Generate all straight lines of length n in an n x n x n cube.
+    Uses direction vectors in {-1,0,1}^3 except (0,0,0) and picks line starts
+    such that the previous cell in the direction would be out of bounds.
+    """
+    dirs = [(dx,dy,dz) for dx in (-1,0,1) for dy in (-1,0,1) for dz in (-1,0,1)
+            if not (dx==0 and dy==0 and dz==0)]
+    lines = []
+    for x in range(n):
+        for y in range(n):
+            for z in range(n):
+                for dx,dy,dz in dirs:
+                    prev = (x-dx, y-dy, z-dz)
+                    # prev must be out of bounds to be a canonical start
+                    if 0 <= prev[0] < n and 0 <= prev[1] < n and 0 <= prev[2] < n:
+                        continue
+                    # generate line
+                    pts = []
+                    cx,cy,cz = x,y,z
+                    while 0 <= cx < n and 0 <= cy < n and 0 <= cz < n:
+                        pts.append((cx,cy,cz))
+                        cx += dx; cy += dy; cz += dz
+                    if len(pts) == n:
+                        lines.append(pts)
+    # deduplicate (shouldn't be needed, but safe)
+    seen = set()
+    unique = []
+    for ln in lines:
+        key = tuple(ln)
+        if key not in seen:
+            seen.add(key)
+            unique.append(ln)
+    return unique
+
+def board_value(board: List[List[List[int]]], pos: Tuple[int,int,int]) -> int:
+    x,y,z = pos
+    return board[x][y][z]
+
+def in_bounds(n:int, x:int,y:int,z:int) -> bool:
+    return 0 <= x < n and 0 <= y < n and 0 <= z < n
+
+def policy(board: List[List[List[int]]]) -> Tuple[int,int,int]:
+    """
+    Choose an empty cell (x,y,z) for a 3D tic-tac-toe board.
+    board is an n x n x n list of lists with values: 0 empty, 1 self, -1 opponent.
+    Strategy:
+     - immediate winning move
+     - block opponent immediate win
+     - create fork (move that creates >=2 immediate wins)
+     - block opponent fork (occupy a fork cell or create a forcing immediate threat)
+     - take center if available
+     - otherwise score moves by potential lines (favoring moves that are in many "clean" lines and
+       that increase existing partial lines), pick best.
+    """
+    n = len(board)
+    me = 1
+    opp = -1
+
+    # build lines and lines_by_cell
+    lines = get_lines(n)
+    lines_by_cell: Dict[Tuple[int,int,int], List[int]] = {}
+    for i,ln in enumerate(lines):
+        for pos in ln:
+            lines_by_cell.setdefault(pos, []).append(i)
+
+    # Precompute line states: counts of me, opp, empty and list of empty positions
+    line_info = []
+    for ln in lines:
+        me_count = 0
+        opp_count = 0
+        empties = []
+        for (x,y,z) in ln:
+            v = board[x][y][z]
+            if v == me:
+                me_count += 1
+            elif v == opp:
+                opp_count += 1
+            else:
+                empties.append((x,y,z))
+        line_info.append((me_count, opp_count, tuple(empties)))
+
+    # Helper: find empties
+    empties_all = [(x,y,z) for x in range(n) for y in range(n) for z in range(n) if board[x][y][z] == 0]
+    if not empties_all:
+        # no move possible; but return something valid (shouldn't happen in arena)
+        return (0,0,0)
+
+    target_win_count = me * (n-1)  # not directly used; use counts instead
+
+    # 1) Immediate win: any line with me_count == n-1 and one empty
+    for i,(mc,oc,empties) in enumerate(line_info):
+        if mc == n-1 and len(empties) == 1:
+            return empties[0]
+
+    # 2) Block opponent immediate win
+    for i,(mc,oc,empties) in enumerate(line_info):
+        if oc == n-1 and len(empties) == 1:
+            return empties[0]
+
+    # 3) Fork creation: find move(s) that after playing there create >=2 immediate winning lines
+    def count_immediate_wins_after_move(pos, player):
+        x0,y0,z0 = pos
+        # simulate by counting lines containing pos that would have player_count == n-1 after placing
+        cnt = 0
+        for idx in lines_by_cell[pos]:
+            mc,oc,empties = line_info[idx]
+            if player == me:
+                # if opponent already in line, impossible
+                if oc > 0:
+                    continue
+                # after move, me_count increases by 1
+                if mc + 1 == n-1 and len(empties) == 1:
+                    # but empties includes current pos, ensure that's the one empty
+                    # len(empties)==1 and empties[0]==pos indicates after move line will be full except last
+                    cnt += 1
+                # more generally if n>3 we consider immediate threat lines as mc +1 == n-1
+                elif mc + 1 == n-1:
+                    # ensure there is exactly one empty aside from pos
+                    # compute empties after move: original empties without pos
+                    remaining_empties = [p for p in empties if p != pos]
+                    if len(remaining_empties) == 1:
+                        cnt += 1
+            else:
+                # opponent moves
+                if mc > 0:
+                    continue
+                if oc + 1 == n-1:
+                    remaining_empties = [p for p in empties if p != pos]
+                    if len(remaining_empties) == 1:
+                        cnt += 1
+        return cnt
+
+    # try to find fork for me
+    for pos in empties_all:
+        if count_immediate_wins_after_move(pos, me) >= 2:
+            return pos
+
+    # 4) Block opponent fork(s)
+    opponent_forks = [pos for pos in empties_all if count_immediate_wins_after_move(pos, opp) >= 2]
+    if opponent_forks:
+        # If any of the fork cells is available to occupy, do it
+        # (this directly blocks the fork)
+        # Try to choose a fork cell that also maximizes our potential (score tie-break)
+        fork_set = set(opponent_forks)
+        # If only one fork position, take it
+        if len(fork_set) == 1:
+            return opponent_forks[0]
+        # If multiple, try to find move that blocks all forks (rare). Otherwise, try to create immediate threat forcing a block.
+        # Check if there's a move that is in all fork sets (intersection)
+        # Here opponent_forks is list of positions; intersection trivial with set
+        # If there's a cell that is common we take it
+        # (multiple forks rarely share a cell, but safe)
+        # More sophisticated: try to create an immediate threat (line with n-1 me) to force opponent to block
+        # Find any move that creates at least one immediate winning line (we would have played earlier), or at least creates a single immediate threat
+        for pos in empties_all:
+            if pos in fork_set:
+                return pos
+        # try to create a single immediate threat (opponent must block)
+        for pos in empties_all:
+            if count_immediate_wins_after_move(pos, me) >= 1:
+                return pos
+        # otherwise fall through to heuristic scoring
+
+    # 5) Take center if available
+    centers = []
+    if n % 2 == 1:
+        c = n//2
+        centers.append((c,c,c))
+    # For even n there are multiple "central" cells; but typical game is n=3
+    for cpos in centers:
+        if board[cpos[0]][cpos[1]][cpos[2]] == 0:
+            return cpos
+
+    # 6) Heuristic scoring for remaining moves
+    # We compute for each empty cell a score:
+    #   sum(10**me_count for lines containing cell with opp_count==0)
+    #   - sum(10**opp_count for lines containing cell with me_count==0)
+    # This favors moves that extend our lines and block opponent lines.
+    best_score = None
+    best_moves = []
+    for pos in empties_all:
+        my_score = 0
+        opp_score = 0
+        for idx in lines_by_cell[pos]:
+            mc,oc,empties = line_info[idx]
+            # if this line contains opponent and me both, it's dead for both
+            if mc > 0 and oc > 0:
+                continue
+            if oc == 0:
+                # line is still available to me
+                # my_count after playing at pos increases by 1 if pos is currently empty in that line
+                # but we base weight on current mc
+                my_score += 10 ** mc
+            if mc == 0:
+                # line available to opponent
+                opp_score += 10 ** oc
+        score = my_score - opp_score
+        # prefer corners slightly as tie-breaker
+        is_corner = all(p in (0, n-1) for p in pos)
+        if is_corner:
+            score += 0.1
+        # prefer edges less than corners but more than center? We'll not special-case more.
+        if best_score is None or score > best_score:
+            best_score = score
+            best_moves = [pos]
+        elif score == best_score:
+            best_moves.append(pos)
+
+    # tie-break among best moves: prefer corners, then choose one with highest single-line potential (max mc)
+    if not best_moves:
+        # fallback
+        return empties_all[0]
+
+    # prefer corners inside best_moves
+    corners = [p for p in best_moves if all(c in (0,n-1) for c in p)]
+    if corners:
+        return corners[0]
+
+    # otherwise prefer move with largest immediate extension (max mc among lines that are clean)
+    def immediate_potential(pos):
+        best = 0
+        for idx in lines_by_cell[pos]:
+            mc,oc,empties = line_info[idx]
+            if oc == 0:
+                if mc > best:
+                    best = mc
+        return best
+
+    best_moves.sort(key=lambda p: (-immediate_potential(p), p))
+    return best_moves[0]
+```

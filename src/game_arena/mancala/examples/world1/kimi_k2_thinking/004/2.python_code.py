@@ -1,0 +1,184 @@
+
+import time
+
+def policy(you, opponent):
+    legal_moves = [i for i in range(6) if you[i] > 0]
+    if not legal_moves:
+        return 0
+    
+    best_move = legal_moves[0]
+    start_time = time.time()
+    depth = 1
+    
+    while time.time() - start_time < 0.9:
+        try:
+            move = search_best_move(you, opponent, depth)
+            if move is not None:
+                best_move = move
+            depth += 1
+        except:
+            break
+    
+    return best_move
+
+def search_best_move(you, opponent, max_depth):
+    legal_moves = [i for i in range(6) if you[i] > 0]
+    if not legal_moves:
+        return None
+    
+    best_move = legal_moves[0]
+    best_score = float('-inf')
+    alpha = float('-inf')
+    beta = float('inf')
+    
+    ordered_moves = order_moves(you, opponent, legal_moves)
+    
+    for move in ordered_moves:
+        new_you, new_opp, extra = simulate_move(you, opponent, move)
+        if new_you is None:
+            continue
+        
+        if extra:
+            score, _ = alphabeta((new_you, new_opp), max_depth-1, alpha, beta, True)
+        else:
+            score, _ = alphabeta((new_you, new_opp), max_depth-1, alpha, beta, False)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+        
+        alpha = max(alpha, best_score)
+        if alpha >= beta:
+            break
+    
+    return best_move
+
+def alphabeta(state, depth, alpha, beta, is_maximizing):
+    you, opp = state
+    
+    if is_maximizing:
+        legal_moves = [i for i in range(6) if you[i] > 0]
+    else:
+        legal_moves = [i for i in range(6) if opp[i] > 0]
+    
+    if depth <= 0 or not legal_moves:
+        if is_maximizing:
+            return evaluate(you, opp), None
+        else:
+            return -evaluate(opp, you), None
+    
+    if is_maximizing:
+        max_eval = float('-inf')
+        best_move = None
+        
+        for move in order_moves(you, opp, legal_moves):
+            new_you, new_opp, extra = simulate_move(you, opp, move)
+            if new_you is None:
+                continue
+            
+            if extra:
+                eval_score, _ = alphabeta((new_you, new_opp), depth-1, alpha, beta, True)
+            else:
+                eval_score, _ = alphabeta((new_you, new_opp), depth-1, alpha, beta, False)
+            
+            if eval_score > max_eval:
+                max_eval = eval_score
+                best_move = move
+            
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        
+        return max_eval, best_move
+    else:
+        min_eval = float('inf')
+        best_move = None
+        
+        for move in order_moves(opp, you, legal_moves, for_opponent=True):
+            new_opp, new_you, extra = simulate_move(opp, you, move)
+            if new_opp is None:
+                continue
+            
+            if extra:
+                eval_score, _ = alphabeta((new_you, new_opp), depth-1, alpha, beta, False)
+            else:
+                eval_score, _ = alphabeta((new_you, new_opp), depth-1, alpha, beta, True)
+            
+            if eval_score < min_eval:
+                min_eval = eval_score
+                best_move = move
+            
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        
+        return min_eval, best_move
+
+def evaluate(you, opponent):
+    you_houses = sum(you[:6])
+    opp_houses = sum(opponent[:6])
+    
+    if you_houses == 0 or opp_houses == 0:
+        your_score = you[6] + you_houses
+        opp_score = opponent[6] + opp_houses
+        return your_score - opp_score
+    
+    score = you[6] - opponent[6]
+    score += (you_houses - opp_houses) * 0.1
+    
+    for i in range(6):
+        if you[i] == 0 and opponent[5-i] > 0:
+            score -= opponent[5-i] * 0.05
+        if opponent[i] == 0 and you[5-i] > 0:
+            score += you[5-i] * 0.05
+    
+    return score
+
+def simulate_move(you, opponent, move):
+    if you[move] == 0:
+        return None, None, None
+    
+    new_you = you[:]
+    new_opp = opponent[:]
+    
+    seeds = new_you[move]
+    new_you[move] = 0
+    
+    pos = move
+    last_where = None
+    last_index = None
+    
+    while seeds > 0:
+        pos = (pos + 1) % 13
+        
+        if pos <= 5:
+            new_you[pos] += 1
+            last_where = 'your_house'
+            last_index = pos
+            seeds -= 1
+        elif pos == 6:
+            new_you[6] += 1
+            last_where = 'your_store'
+            last_index = 6
+            seeds -= 1
+        else:
+            opp_idx = pos - 7
+            new_opp[opp_idx] += 1
+            last_where = 'opp_house'
+            last_index = opp_idx
+            seeds -= 1
+    
+    extra_turn = (last_where == 'your_store')
+    
+    if last_where == 'your_house' and new_you[last_index] == 1:
+        opp_house = 5 - last_index
+        if new_opp[opp_house] > 0:
+            captured = new_opp[opp_house] + 1
+            new_you[last_index] = 0
+            new_opp[opp_house] = 0
+            new_you[6] += captured
+    
+    return new_you, new_opp, extra_turn
+
+def order_moves(you, opponent, moves, for_opponent=False):
+    return sorted(moves, key=lambda m: you[m] if not for_opponent else opponent[m], reverse=True)

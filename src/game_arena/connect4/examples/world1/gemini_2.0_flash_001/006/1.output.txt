@@ -1,0 +1,162 @@
+The strategy for this policy is to prioritize winning moves, block opponent winning moves, and then make moves that lead to advantageous positions. The policy incorporates a simple evaluation function that scores board states based on the number of potential winning lines for the current player minus the number of potential winning lines for the opponent. It also adds random jitter to break ties and prevent exploitable deterministic behavior. Finally, the policy checks for immediate losing moves and avoids them wherever possible.
+
+```python
+import random
+
+def policy(board: list[list[int]]) -> int:
+    """
+    Chooses the next move in a Connect 4 game based on the given board.
+
+    Args:
+        board: A 6x7 grid representing the Connect 4 board.
+
+    Returns:
+        An integer representing the column index (0-6) for the next move.
+    """
+
+    def is_valid_move(board, col):
+        return board[0][col] == 0
+
+    def get_next_open_row(board, col):
+        for r in range(5, -1, -1):
+            if board[r][col] == 0:
+                return r
+        return -1  # Column is full
+
+    def drop_piece(board, row, col, piece):
+        board[row][col] = piece
+
+    def check_winning_move(board, piece):
+        # Check horizontal
+        for c in range(4):
+            for r in range(6):
+                if board[r][c] == piece and board[r][c+1] == piece and board[r][c+2] == piece and board[r][c+3] == piece:
+                    return True
+
+        # Check vertical
+        for c in range(7):
+            for r in range(3):
+                if board[r][c] == piece and board[r+1][c] == piece and board[r+2][c] == piece and board[r+3][c] == piece:
+                    return True
+
+        # Check positively sloped diagonals
+        for c in range(4):
+            for r in range(3):
+                if board[r][c] == piece and board[r+1][c+1] == piece and board[r+2][c+2] == piece and board[r+3][c+3] == piece:
+                    return True
+
+        # Check negatively sloped diagonals
+        for c in range(4):
+            for r in range(3, 6):
+                if board[r][c] == piece and board[r-1][c+1] == piece and board[r-2][c+2] == piece and board[r-3][c+3] == piece:
+                    return True
+
+        return False
+
+    def evaluate_window(window, piece):
+        score = 0
+        opp_piece = 1 if piece == -1 else -1
+        if window.count(piece) == 4:
+            score += 100
+        elif window.count(piece) == 3 and window.count(0) == 1:
+            score += 5
+        elif window.count(piece) == 2 and window.count(0) == 2:
+            score += 2
+
+        if window.count(opp_piece) == 3 and window.count(0) == 1:
+            score -= 4
+
+        return score
+
+    def score_position(board, piece):
+        score = 0
+
+        ## Score center column
+        center_array = [int(i) for i in [row[3] for row in board]]
+        center_count = center_array.count(piece)
+        score += center_count * 3
+
+        ## Score Horizontal
+        for r in range(6):
+            row_array = [int(i) for i in board[r]]
+            for c in range(4):
+                window = row_array[c:c+4]
+                score += evaluate_window(window, piece)
+
+        ## Score Vertical
+        for c in range(7):
+            col_array = [int(i) for i in [row[c] for row in board]]
+            for r in range(3):
+                window = col_array[r:r+4]
+                score += evaluate_window(window, piece)
+
+        ## Score positively sloped diagonal
+        for r in range(3):
+            for c in range(4):
+                window = [board[r+i][c+i] for i in range(4)]
+                score += evaluate_window(window, piece)
+
+        for r in range(3):
+            for c in range(4):
+                window = [board[r+3-i][c+i] for i in range(4)]
+                score += evaluate_window(window, piece)
+
+        return score
+
+    valid_locations = [col for col in range(7) if is_valid_move(board, col)]
+
+    # Check for winning moves
+    for col in valid_locations:
+        row = get_next_open_row(board, col)
+        temp_board = [row[:] for row in board]  # Create a copy
+        drop_piece(temp_board, row, col, 1)
+        if check_winning_move(temp_board, 1):
+            return col
+
+    # Block opponent winning moves
+    for col in valid_locations:
+        row = get_next_open_row(board, col)
+        temp_board = [row[:] for row in board]  # Create a copy
+        drop_piece(temp_board, row, col, -1)
+        if check_winning_move(temp_board, -1):
+            return col
+
+    # Check for losing moves and avoid them (defensive)
+    avoid_cols = []
+    for col in valid_locations:
+        row = get_next_open_row(board, col)
+        temp_board = [row[:] for row in board]
+        drop_piece(temp_board, row, col, 1)  # Temporarily make our move
+        if check_winning_move(temp_board, 1):  # If it wins for us, prioritize it (already handled, but just in case)
+            continue
+        
+        # Check if opponent wins on their next turn if we play this move
+        opponent_can_win_next = False
+        for opponent_col in [c for c in range(7) if is_valid_move(temp_board, c)]:
+            opponent_row = get_next_open_row(temp_board, opponent_col)
+            temp_board2 = [r[:] for r in temp_board]
+            drop_piece(temp_board2, opponent_row, opponent_col, -1)
+            if check_winning_move(temp_board2, -1):
+                opponent_can_win_next = True
+                break
+        
+        if opponent_can_win_next:
+            avoid_cols.append(col)
+
+
+    # Make a strategic move (evaluation function)
+    best_score = -100000
+    best_col = random.choice(valid_locations) # Initialize just in case
+    for col in valid_locations:
+        if col in avoid_cols:
+            continue
+        row = get_next_open_row(board, col)
+        temp_board = [r[:] for r in board]
+        drop_piece(temp_board, row, col, 1)
+        score = score_position(temp_board, 1) + random.random()*0.1  # add some random jitter
+        if score > best_score:
+            best_score = score
+            best_col = col
+
+    return best_col
+```

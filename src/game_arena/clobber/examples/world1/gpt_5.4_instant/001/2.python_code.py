@@ -1,0 +1,295 @@
+
+import time
+from typing import List, Tuple
+
+ROWS = 5
+COLS = 6
+DIRS = [(-1, 0, 'U'), (0, 1, 'R'), (1, 0, 'D'), (0, -1, 'L')]
+
+# Global deadline used by search
+_DEADLINE = 0.0
+
+
+def _flatten_board(arr) -> int:
+    """
+    Convert a 5x6-ish list/numpy array into a 30-bit bitboard.
+    Bit index = r * COLS + c
+    """
+    bits = 0
+    # Works for list of lists or numpy arrays
+    for r in range(ROWS):
+        row = arr[r]
+        for c in range(COLS):
+            if int(row[c]) != 0:
+                bits |= 1 << (r * COLS + c)
+    return bits
+
+
+def _rc_to_bit(r: int, c: int) -> int:
+    return 1 << (r * COLS + c)
+
+
+def _generate_moves(me: int, opp: int) -> List[Tuple[int, int, str]]:
+    moves = []
+    occupied_me = me
+    while occupied_me:
+        lsb = occupied_me & -occupied_me
+        idx = lsb.bit_length() - 1
+        r, c = divmod(idx, COLS)
+
+        # Up
+        if r > 0:
+            nidx = idx - COLS
+            if (opp >> nidx) & 1:
+                moves.append((r, c, 'U'))
+        # Right
+        if c + 1 < COLS:
+            nidx = idx + 1
+            if (opp >> nidx) & 1:
+                moves.append((r, c, 'R'))
+        # Down
+        if r + 1 < ROWS:
+            nidx = idx + COLS
+            if (opp >> nidx) & 1:
+                moves.append((r, c, 'D'))
+        # Left
+        if c > 0:
+            nidx = idx - 1
+            if (opp >> nidx) & 1:
+                moves.append((r, c, 'L'))
+
+        occupied_me ^= lsb
+    return moves
+
+
+def _apply_move(me: int, opp: int, move: Tuple[int, int, str]) -> Tuple[int, int]:
+    r, c, d = move
+    src = r * COLS + c
+    if d == 'U':
+        dst = src - COLS
+    elif d == 'R':
+        dst = src + 1
+    elif d == 'D':
+        dst = src + COLS
+    else:  # 'L'
+        dst = src - 1
+
+    srcb = 1 << src
+    dstb = 1 << dst
+
+    # Move our piece from src to dst, capturing opp at dst
+    me2 = (me ^ srcb) | dstb
+    opp2 = opp ^ dstb
+    return opp2, me2  # swapped perspective for next player
+
+
+def _move_to_str(move: Tuple[int, int, str]) -> str:
+    return f"{move[0]},{move[1]},{move[2]}"
+
+
+def _count_mobility(me: int, opp: int) -> int:
+    return len(_generate_moves(me, opp))
+
+
+def _adjacency_score(me: int, opp: int) -> int:
+    """
+    Count oriented adjacent me->opp opportunities minus opp->me opportunities.
+    Equivalent to mobility-like local contact, but cheap and slightly richer.
+    """
+    score = 0
+    occupied_me = me
+    while occupied_me:
+        lsb = occupied_me & -occupied_me
+        idx = lsb.bit_length() - 1
+        r, c = divmod(idx, COLS)
+        if r > 0 and ((opp >> (idx - COLS)) & 1):
+            score += 1
+        if r + 1 < ROWS and ((opp >> (idx + COLS)) & 1):
+            score += 1
+        if c > 0 and ((opp >> (idx - 1)) & 1):
+            score += 1
+        if c + 1 < COLS and ((opp >> (idx + 1)) & 1):
+            score += 1
+        occupied_me ^= lsb
+
+    occupied_opp = opp
+    while occupied_opp:
+        lsb = occupied_opp & -occupied_opp
+        idx = lsb.bit_length() - 1
+        r, c = divmod(idx, COLS)
+        if r > 0 and ((me >> (idx - COLS)) & 1):
+            score -= 1
+        if r + 1 < ROWS and ((me >> (idx + COLS)) & 1):
+            score -= 1
+        if c > 0 and ((me >> (idx - 1)) & 1):
+            score -= 1
+        if c + 1 < COLS and ((me >> (idx + 1)) & 1):
+            score -= 1
+        occupied_opp ^= lsb
+
+    return score
+
+
+def _center_score(bits: int) -> int:
+    """
+    Mild preference for occupying central cells.
+    """
+    score = 0
+    occupied = bits
+    while occupied:
+        lsb = occupied & -occupied
+        idx = lsb.bit_length() - 1
+        r, c = divmod(idx, COLS)
+        # center-ish weighting
+        score += 4 - abs(r - 2) - abs(c - 2.5)
+        occupied ^= lsb
+    return int(score * 2)
+
+
+def _evaluate(me: int, opp: int) -> int:
+    my_moves = _generate_moves(me, opp)
+    if not my_moves:
+        return -100000
+    opp_moves = _generate_moves(opp, me)
+    if not opp_moves:
+        return 100000
+
+    my_count = me.bit_count()
+    opp_count = opp.bit_count()
+    mob_diff = len(my_moves) - len(opp_moves)
+    piece_diff = my_count - opp_count
+    adj = _adjacency_score(me, opp)
+    center = _center_score(me) - _center_score(opp)
+
+    # In Clobber, having the move matters a lot; mobility is primary.
+    # Piece parity can matter, but only mildly in general heuristic form.
+    score = (
+        120 * mob_diff
+        + 18 * piece_diff
+        + 20 * adj
+        + 4 * center
+    )
+
+    # Slight bonus when total remaining pieces parity is favorable to side to move.
+    total = my_count + opp_count
+    if total % 2 == 1:
+        score += 7
+    else:
+        score -= 3
+
+    return score
+
+
+def _ordered_moves(me: int, opp: int) -> List[Tuple[int, int, str]]:
+    moves = _generate_moves(me, opp)
+    if len(moves) <= 1:
+        return moves
+
+    scored = []
+    for mv in moves:
+        next_me, next_opp = _apply_move(me, opp, mv)  # swapped perspective
+        # Since perspective is swapped, opponent to move is next_me.
+        opp_mob = _count_mobility(next_me, next_opp)
+        my_reply_mob = _count_mobility(next_opp, next_me)
+
+        r, c, d = mv
+        src_idx = r * COLS + c
+        if d == 'U':
+            dst_idx = src_idx - COLS
+        elif d == 'R':
+            dst_idx = src_idx + 1
+        elif d == 'D':
+            dst_idx = src_idx + COLS
+        else:
+            dst_idx = src_idx - 1
+        dr, dc = divmod(dst_idx, COLS)
+        center_bonus = 4 - abs(dr - 2) - abs(dc - 2.5)
+
+        # Lower opponent mobility is good; higher future own mobility is good.
+        score = -80 * opp_mob + 30 * my_reply_mob + 6 * center_bonus
+        if opp_mob == 0:
+            score += 1000000
+        scored.append((score, mv))
+
+    scored.sort(reverse=True, key=lambda x: x[0])
+    return [mv for _, mv in scored]
+
+
+def _negamax(me: int, opp: int, depth: int, alpha: int, beta: int) -> int:
+    global _DEADLINE
+    if time.perf_counter() >= _DEADLINE:
+        raise TimeoutError
+
+    moves = _ordered_moves(me, opp)
+    if not moves:
+        return -100000 + (10 - depth)
+
+    if depth == 0:
+        return _evaluate(me, opp)
+
+    best = -10**9
+    for mv in moves:
+        nme, nopp = _apply_move(me, opp, mv)
+        val = -_negamax(nme, nopp, depth - 1, -beta, -alpha)
+        if val > best:
+            best = val
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+    return best
+
+
+def policy(you: List[List[int]], opponent: List[List[int]]) -> str:
+    global _DEADLINE
+
+    me = _flatten_board(you)
+    opp = _flatten_board(opponent)
+
+    legal = _ordered_moves(me, opp)
+    if not legal:
+        # Problem statement implies a legal move should exist, but if not,
+        # return a syntactically valid default string.
+        return "0,0,U"
+
+    # Guaranteed legal fallback
+    best_move = legal[0]
+
+    # Immediate tactical win
+    for mv in legal:
+        nme, nopp = _apply_move(me, opp, mv)
+        if not _generate_moves(nme, nopp):
+            return _move_to_str(mv)
+
+    # Time budget with iterative deepening
+    _DEADLINE = time.perf_counter() + 0.92
+
+    try:
+        depth = 1
+        while depth <= 12:
+            current_best = best_move
+            current_best_val = -10**9
+
+            ordered = _ordered_moves(me, opp)
+            alpha = -10**9
+            beta = 10**9
+
+            for mv in ordered:
+                if time.perf_counter() >= _DEADLINE:
+                    raise TimeoutError
+                nme, nopp = _apply_move(me, opp, mv)
+                val = -_negamax(nme, nopp, depth - 1, -beta, -alpha)
+
+                if val > current_best_val:
+                    current_best_val = val
+                    current_best = mv
+                if val > alpha:
+                    alpha = val
+
+            best_move = current_best
+            depth += 1
+
+    except TimeoutError:
+        pass
+
+    return _move_to_str(best_move)

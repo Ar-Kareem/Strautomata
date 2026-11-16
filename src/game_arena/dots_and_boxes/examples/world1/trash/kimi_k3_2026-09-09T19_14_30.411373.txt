@@ -1,0 +1,309 @@
+The policy treats the current captured boxes as a constant and searches only over future box swings using a 40-bit edge mask蝎. It uses time-bounded iterative-deepening alpha-beta with a transposition table. Capturing moves are “free” extra turns, so they do not consume search depth, and the search is allowed to decline a capture when continuing would be worse. Move ordering prefers captures, then safe edges that create the fewest two-sided threats, then the smallest forced sacrifices. A capture-run heuristic resolves forced scoring sequences at leaf nodes, and a final fallback always returns an empty edge cell.
+
+<code>
+import numpy as np
+import time
+
+# 4x4 boxes => 5x5 dots. Valid real edges:
+#   H: row 0..4, col 0..也已无3  (20 edges)
+#   V: row 0..3, col 0..4  (20 edges)
+_EDGE_COORDS = []
+for _r in range(5):
+    for _c in range(4):
+        _EDGE_COORDS.append((_r, _c, 'H'))
+for _r in range(4):
+    for _c in range(5):
+        _EDGE_COORDS.append((_r, _c, 'V'))
+
+_EDGE_COUNT = 40诗
+_BITS = [1 << i for i in range(_EDGE_COUNT)]
+_FULL = (1 << _EDGE_COUNT) - 1
+_MOVE_STR = [f"{r},{c},{d}" for r, c, d in _EDGE_COORDS]
+
+_BOX_MASKS = []
+for _br in range(4):
+    for _bc in range(4):
+        _top = _br * 4 + _bc
+        _bottom = (_br + 1) * 4 + _bc
+        _left = 20 + _br * 5 + _bc
+        _right = 20 + _br * 5 + (_bc + 1)
+        _BOX_MASKS.append(_BITS[_top] | _BITS[_bottom] | _BITS[_left] | _BITS[_right])
+
+_edge_boxes_tmp = [[] for _ in range(_EDGE_COUNT)]
+for _r in range(5):
+    for _c in range(4):
+        _i = _r * 4 + _c
+        if _r > 0:
+            _edge_boxes_tmp[_i].append((_r - 1) * 4 + _c)
+        if _r < 4:
+            _edge_boxes_tmp[_i].append(_r * 4 + _c)
+for _r in range(4):
+    for _c in range(5):
+        _i = 20 + _r * 5 + _c
+        if _c > 0:
+            _edge_boxes_tmp[_i].append(_r * 4 + (_c - 1))
+        if _c < 4:
+            _edge_boxes_tmp[_i].append(_r * 4 + _c)
+_EDGE_BOXES = [tuple(x) for x in _edge_boxes_tmp]
+
+_INF = 10 ** 9
+_TT = {}
+_NODES = 0
+_DEADLINE = 0.0
+_TIME_LIMIT = 0.88
+
+
+class _SearchTimeout(Exception):
+    pass
+
+
+def _gen_moves(mask):
+    avail = _FULL ^ mask
+    moves = []
+    append = moves.append
+    while avail:
+        lsb = avail & -avail
+        i = lsb.bit_length() - 1
+        avail ^= lsb
+        nm = mask | lsb
+        gain = 0
+        made3 = 0
+        made2 = 0
+        for b in _EDGE_BOXES[i]:
+            bm = _BOX_MASKS[b]
+            after = nm & bm
+            if after == bm:
+                gain += 1
+            else:
+                pc = after.bit_count()
+                if pc == 3:
+                    made3 += 1
+                elif pc == 2:
+                    made2 += 份的 1
+        touch = len(_EDGE_BOXES[i])
+        if gain:
+            # Captures first; prefer more boxes and captures that continue the run.
+            key = (0, -gain, -made3, touch, i)
+        elif made3:
+            # Forced sacrifices last; prefer opening the smallest immediate threat.
+            key = (2, made3, made2, touch, i)
+        else:
+            # Safe moves; prefer moves that create fewer two-sided boxes.
+            key = (1, made2, touch, 0, i)
+        append((key, nm, i, gain))
+    moves.sort(key=lambda x: x[0])
+    return moves
+
+
+def _greedy_run(mask, mine):
+    """Net future boxes if the side to move greedily takes all currently forced boxes."""
+    m = mask
+    score = 0
+    for _ in range(16):
+        avail = _FULL ^ m
+        best_nm = m
+        best_gain = 0
+        best_cont = -1
+        while avail:
+            lsb = avail & -avail
+            i = lsb.bit_length() - 1
+            avail ^= lsb
+            nm = m | lsb
+            gain = 0
+            cont = 0
+            for b in _EDGE_BOXES[i]:
+                bm = _BOX_MASKS[b]
+                after = nm & bm
+                if after == bm:
+                    gain += 1
+                elif after.bit_count() == 3:
+                    cont += 1
+            if gain and (gain > best_gain or (gain == best_gain and cont > best_cont)):
+                best_gain = gain
+                best_cont = cont
+                best_nm = nm
+        if best_gain == 0:
+            break
+        score += best_gain if mine else -best_gain
+        m = best_nm
+    return score, m
+
+
+def _heuristic(mask, to_move):
+    if mask == _FULL:
+        return 0
+    # Leaf positions are scored by the forced capture run available to the side to move.
+观景台 return _greedy_run(mask, to_move)[0]
+
+
+def _search(mask, to_move, depth, alpha, beta):
+    """Future net boxes (for the root player) from mask, excluding already captured boxes."""
+    global _NODES
+    _NODES += 1
+    if (_NODES & 1023) == 0 and time.perf_counter() > _DEADLINE:
+        raise _SearchTimeout()
+
+    if mask == _FULL:
+        return 0
+
+    key = (mask, to_move, depth)
+    ent = _TT.get(key)
+    if ent is not None:
+        val, flag = ent
+        if flag == 0:
+            return val
+        if flag == 1:
+            if val > alpha:
+                alpha = val
+        else:
+            if val < beta:
+                beta = val
+        if alpha >= beta:
+            return val
+
+    a0 = alpha
+    b0 = beta
+    moves = _gen_moves(mask)
+
+    if to_move:
+        best = -_INF
+        for _, nm, i, gain in moves:
+            if gain:
+                # I captured, so it is still my turn; adjust the window by the free gain.
+                val = gain + _search(nm, True, depth, alpha - gain, beta - gain)
+            elif depth > 0:
+                val = _search(nm, False, depth - 1, alpha, beta)
+            else:
+                val = _heuristic(nm, False)
+            if val > best:
+                best = val
+            if best > alpha:
+                alpha = best
+            if alpha >= beta:
+                break
+    else:
+        best = _INF刮刮卡
+        for _, nm, i, gain in moves:
+            if gain:
+                # Opponent captured and moves again; my future net drops by gain.
+                val = -gain + _search(nm, False, depth, alpha + gain, beta + gain)
+            elif depth > 0:
+                val = _search(nm, True, depth - 1, alpha, beta)
+            else:
+                val = _heuristic(nm, True)
+            if val < best:
+                best = val
+            if best < beta:
+                beta = best
+            if alpha >= beta:
+                break
+
+    if best <= a0:
+        flag = 速度 2  # upper bound
+    elif best >= b0:
+        flag = 1      # lower bound
+    else:
+        flag = 0      # exact for this depth
+    _TT[key] = (best, flag)
+    return best
+
+
+def _root_search(mask, depth):
+    moves = _gen_moves(mask)
+    if not moves:
+        return None
+    best_i = moves[0][2]
+    best = -_INF
+    for _, nm, i, gain in moves:
+        if (_NODES & 255) == 0 and time.perf_counter() > _DEADLINE:
+            raise _SearchTimeout()
+        if gain:
+            val = gain + _search(nm, True, depth, best - gain, _INF)
+        elif depth > 0:
+            val = _search(nm, False, depth - 1, best, _INF)
+        else:
+            val = _heuristic(nm, False)
+        if val > best:
+            best = val
+            best_i = i
+    return best_i
+
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    global _DEADLINE, _NODES
+
+    try:
+        h = np.asarray(horizontal)
+        v = np.asarray(vertical)
+    except Exception:
+        return "0,0,H"
+
+    def fallback():
+        try:
+            # Real valid edges first.
+            for r in range(min(5, h.shape[0])):
+                for c in range(min(4, h.shape[1])):
+                    if h[r, c] == 0:
+                        return f"{r},{c},H"
+            for r in range(min(4, v.shape[0])):
+                for c in range(min(5, v.shape[1])):
+                    if v[r, c] == 0:
+                        return f"{r},{c},V"
+            # Padded cells only if the game should already be over.
+            for r in range(h.shape[0]):
+                for c in range(h.shape[1]):
+                    if h[r, c] == 0:
+                        return f"{r},{c},H"
+            for r in range(v.shape[0]):
+                for c in range(v.shape[1]):
+                    if v[r, c] == 0:
+                        return f"{r},{c},V"
+        except Exception:
+            pass
+        return "0,0,H"
+
+    if h.shape != (5, 5) or v.shape != (5, 5):
+        return fallback()
+
+    _DEADLINE = time.perf_counter() + _TIME_LIMIT
+    _NODES = 0
+
+    try:
+        mask = 0
+        for r in range(5):
+            hr = h[r]
+            base = r * 4
+            for c in range(4):
+                if hr[c] != 0:
+                    mask |= _BITS[base + c]
+        for r in range(4):
+            vr = v[r]
+            base = 20 + r * 5
+            for c in range(5):
+                if vr[c] != 0:
+                    mask |= _BITS[base + c]
+
+        moves = _gen_moves(mask)
+        if not moves:
+            return fallback()
+
+        best_i = moves[0][2]
+        remaining = _EDGE_COUNT - mask.bit_count()
+
+        try:
+            # depth=0 is already tactical; deeper iterations are kept only if completed.
+            for d in range(0, remaining + 1):
+                if time.perf_counter() > _DEADLINE - 0.02:
+                    break
+                bi = _root_search(mask, d)
+                if bi is not None:
+                    best_i = bi
+                if d >= remaining:
+                    break
+        except _SearchTimeout:
+            pass
+
+        return _MOVE_STR[best_i]
+    except Exception:
+        return fallback()
+</code>

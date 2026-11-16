@@ -1,0 +1,222 @@
+
+import random  
+import math  
+import sys  
+import time  
+
+DIRS = [(0,1), (1,0), (1,-1), (0,-1), (-1,0), (-1,1)]  
+SIZE = 11  
+MAX_ROLLOUT_TIME = 0.95  # seconds  
+
+class UnionFind:  
+    def __init__(self, n):  
+        self.parent = list(range(n))  
+        self.rank = [0]*n  
+    def find(self, x):  
+        while self.parent[x] != x:  
+            self.parent[x] = self.parent[self.parent[x]]  
+            x = self.parent[x]  
+        return x  
+    def union(self, x, y):  
+        rx, ry = self.find(x), self.find(y)  
+        if rx == ry:  
+            return  
+        if self.rank[rx] < self.rank[ry]:  
+            self.parent[rx] = ry  
+        elif self.rank[rx] > self.rank[ry]:  
+            self.parent[ry] = rx  
+        else:  
+            self.parent[ry] = rx  
+            self.rank[rx] += 1  
+
+class HexState:  
+    def __init__(self, me, opp, color):  
+        self.me = set(me)  
+        self.opp = set(opp)  
+        self.turn = 'b' if color == 'b' else 'w'  
+        self.board = {}  
+        for (r,c) in me:  
+            self.board[(r,c)] = 'b' if color == 'b' else 'w'  
+        for (r,c) in opp:  
+            self.board[(r,c)] = 'w' if color == 'b' else 'b'  
+        self.zobrist = {}  
+        self.hash = 0  
+        self.init_zobrist()  
+        self.calc_hash()  
+    
+    def init_zobrist(self):  
+        rng = random.Random(123456)  
+        for r in range(SIZE):  
+            for c in range(SIZE):  
+                self.zobrist[(r,c,0)] = rng.getrandbits(64)  
+                self.zobrist[(r,c,1)] = rng.getrandbits(64)  
+    
+    def calc_hash(self):  
+        h = 0  
+        for (r,c), v in self.board.items():  
+            idx = 0 if v == 'b' else 1  
+            h ^= self.zobrist[(r,c,idx)]  
+        self.hash = h  
+    
+    def empty_cells(self):  
+        res = []  
+        for r in range(SIZE):  
+            for c in range(SIZE):  
+                if (r,c) not in self.board:  
+                    res.append((r,c))  
+        return res  
+    
+    def is_legal(self, r, c):  
+        return 0 <= r < SIZE and 0 <= c < SIZE and (r,c) not in self.board  
+    
+    def make_move(self, r, c):  
+        ns = HexState([], [], 'b')  
+        ns.board = self.board.copy()  
+        ns.board[(r,c)] = self.turn  
+        ns.me = self.me.copy() if self.turn == 'b' else self.opp.copy()  
+        ns.opp = self.opp.copy() if self.turn == 'b' else self.me.copy()  
+        if self.turn == 'b':  
+            ns.me.add((r,c))  
+        else:  
+            ns.opp.add((r,c))  
+        ns.turn = 'w' if self.turn == 'b' else 'b'  
+        ns.zobrist = self.zobrist  
+        ns.hash = self.hash ^ self.zobrist[(r,c, 0 if self.turn == 'b' else 1)]  
+        return ns  
+    
+    def check_win(self, stones, color):  
+        # color 'b' connects top to bottom  
+        # color 'w' connects left to right  
+        uf = UnionFind(SIZE*SIZE + 2)  
+        dummy_top = SIZE*SIZE  
+        dummy_bottom = SIZE*SIZE + 1  
+        dummy_left = SIZE*SIZE  
+        dummy_right = SIZE*SIZE + 1  
+        
+        for (r,c) in stones:  
+            idx = r*SIZE + c  
+            if color == 'b':  
+                if r == 0:  
+                    uf.union(idx, dummy_top)  
+                if r == SIZE-1:  
+                    uf.union(idx, dummy_bottom)  
+            else:  
+                if c == 0:  
+                    uf.union(idx, dummy_left)  
+                if c == SIZE-1:  
+                    uf.union(idx, dummy_right)  
+            for dr, dc in DIRS:  
+                nr, nc = r+dr, c+dc  
+                if 0 <= nr < SIZE and 0 <= nc < SIZE and (nr,nc) in stones:  
+                    nidx = nr*SIZE + nc  
+                    uf.union(idx, nidx)  
+        
+        if color == 'b':  
+            return uf.find(dummy_top) == uf.find(dummy_bottom)  
+        else:  
+            return uf.find(dummy_left) == uf.find(dummy_right)  
+    
+    def winner(self):  
+        if self.check_win([p for p,v in self.board.items() if v == 'b'], 'b'):  
+            return 'b'  
+        if self.check_win([p for p,v in self.board.items() if v == 'w'], 'w'):  
+            return 'w'  
+        return None  
+
+class MCTSNode:  
+    def __init__(self, state, parent=None, move=None):  
+        self.state = state  
+        self.parent = parent  
+        self.move = move  
+        self.children = []  
+        self.visits = 0  
+        self.wins = 0  
+        self.untried_moves = state.empty_cells()  
+        random.shuffle(self.untried_moves)  
+    
+    def uct_select_child(self):  
+        best = None  
+        best_value = -float('inf')  
+        for child in self.children:  
+            if child.visits == 0:  
+                uct = float('inf')  
+            else:  
+                uct = (child.wins / child.visits) + math.sqrt(2*math.log(self.visits)/child.visits)  
+            if uct > best_value:  
+                best_value = uct  
+                best = child  
+        return best  
+    
+    def add_child(self, move):  
+        ns = self.state.make_move(move[0], move[1])  
+        child = MCTSNode(ns, self, move)  
+        self.children.append(child)  
+        self.untried_moves.remove(move)  
+        return child  
+    
+    def update(self, result):  
+        self.visits += 1  
+        self.wins += result  
+
+def random_rollout(state):  
+    board = state.board.copy()  
+    turn = state.turn  
+    moves = [c for c in state.empty_cells()]  
+    random.shuffle(moves)  
+    # bias: prefer moves near existing stones for faster connectivity  
+    if moves and random.random() < 0.7:  
+        all_stones = [p for p in board]  
+        if all_stones:  
+            def dist(p1,p2):  
+                return abs(p1[0]-p2[0]) + abs(p1[1]-p2[1])  
+            moves.sort(key=lambda p: min(dist(p, s) for s in all_stones))  
+    # play random until end  
+    player = turn  
+    for m in moves:  
+        board[m] = player  
+        player = 'b' if player == 'w' else 'w'  
+    # check winner  
+    blacks = [p for p,v in board.items() if v == 'b']  
+    whites = [p for p,v in board.items() if v == 'w']  
+    state_black = HexState([], [], 'b')  
+    state_black.board = board  
+    if state_black.check_win(blacks, 'b'):  
+        return 1 if state.turn == 'b' else 0  
+    else:  
+        return 1 if state.turn == 'w' else 0  
+
+def mcts_policy(state, max_time=MAX_ROLLOUT_TIME):  
+    root = MCTSNode(state)  
+    start = time.time()  
+    while time.time() - start < max_time:  
+        node = root  
+        # selection  
+        while node.untried_moves == [] and node.children != []:  
+            node = node.uct_select_child()  
+        # expansion  
+        if node.untried_moves:  
+            m = random.choice(node.untried_moves)  
+            node = node.add_child(m)  
+        # simulation  
+        res = random_rollout(node.state)  
+        # backpropagation  
+        while node is not None:  
+            node.update(res)  
+            node = node.parent  
+    # choose best move  
+    best_child = max(root.children, key=lambda c: c.visits) if root.children else None  
+    return best_child.move if best_child else random.choice(root.untried_moves)  
+
+def policy(me, opp, color):  
+    state = HexState(me, opp, color)  
+    if not me and not opp:  
+        # first move: play near center  
+        return (SIZE//2, SIZE//2)  
+    move = mcts_policy(state)  
+    return move  
+
+if __name__ == '__main__':  
+    # simple test  
+    me = [(5,5)]  
+    opp = []  
+    print(policy(me, opp, 'b'))  

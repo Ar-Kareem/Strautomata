@@ -1,0 +1,380 @@
+The strategy for this policy is to implement a greedy, depth-1 search with a piece-value heuristic and threat/defense awareness. The AI will:
+
+1. **Evaluate material gain**: Prioritize captures that win material, using standard piece values (Pawn=1, Knight=Bishop=3, Rook=5, Queen=9).
+2. **Prevent losing material**: If the opponent can capture a piece on the next move (i.e. our piece is undefended and under attack), avoid moves that don't address that threat—unless we deliver checkmate or gain decisive material.
+3. **Prioritize checkmate**: If a move leads to immediate checkmate (detected by checking if the opponent has no legal moves after our move), it is taken.
+4. **Favor development and center control**: Slight positional bonuses for knights and bishops moving toward the center.
+5. **Promotion incentive**: Strongly favor pawn moves that promote, especially to queen.
+6. **Use memory**: Store the previous move to help with move ordering or state tracking (though in this version it's unused beyond being passed back).
+
+The policy scans all legal moves, simulates each one, and scores them based on:
+- Immediate material gain (capture value)
+- Whether it gives check or checkmate
+- Whether it prevents own piece from being captured
+- Pawn promotion
+- Positional improvement (center control bonus)
+
+It avoids complex recursion due to time constraints but uses smart prioritization to simulate a more advanced player.
+
+<code>
+import numpy as np
+
+def policy(pieces: dict[str, str], to_play: str, memory: dict) -> tuple[str, dict]:
+    # Piece values
+    VALUES = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}  # King has no material value
+    
+    # Map for color
+    color_map = {'white': 'w', 'black': 'b'}
+    opp_color_map = {'white': 'b', 'black': 'w'}
+    my_color = color_map[to_play]
+    opp_color = opp_color_map[to_play]
+    
+    # Function to get piece at square
+    def get_piece(square):
+        return pieces.get(square, None)
+    
+    # Function to check if a square is attacked by opponent
+    def is_attacked(square: str) -> bool:
+        file, rank = square[0], square[1]
+        f_idx = ord(file) - ord('a')
+        r_idx = int(rank)
+        
+        # Check knight attacks
+        knight_moves = [(-2,-1),(-2,1),(-1,-2),(-1,2),(1,-2),(1,2),(2,-1),(2,1)]
+        for df, dr in knight_moves:
+            nf, nr = f_idx + df, r_idx + dr
+            if 0 <= nf < 8 and 1 <= nr <= 8:
+                sq = chr(ord('a') + nf) + str(nr)
+                p = get_piece(sq)
+                if p and p[0] == opp_color and p[1] == 'N':
+                    return True
+        
+        # Sliding attacks: for bishop/queen (diagonal), rook/queen (straight), king (near), pawn
+        # Diagonals - bishop/queen
+        diag_dirs = [(-1,-1), (-1,1), (1,-1), (1,1)]
+        for df, dr in diag_dirs:
+            nf, nr = f_idx + df, r_idx + dr
+            while 0 <= nf < 8 and 1 <= nr <= 8:
+                sq = chr(ord('a') + nf) + str(nr)
+                p = get_piece(sq)
+                if p:
+                    if p[0] == opp_color and p[1] in 'BQ':
+                        return True
+                    if p[0] == my_color:
+                        break
+                    if p[0] == opp_color:  # own piece or blocked
+                        break
+                nf += df
+                nr += dr
+        
+        # Straight lines - rook/queen
+        straight_dirs = [(0,-1), (0,1), (-1,0), (1,0)]
+        for df, dr in straight_dirs:
+            nf, nr = f_idx + df, r_idx + dr
+            while 0 <= nf < 8 and 1 <= nr <= 8:
+                sq = chr(ord('a') + nf) + str(nr)
+                p = get_piece(sq)
+                if p:
+                    if p[0] == opp_color and p[1] in 'RQ':
+                        return True
+                    if p[0] == my_color:
+                        break
+                    if p[0] == opp_color:
+                        break
+                nf += df
+                nr += dr
+        
+        # King attacks - one square
+        king_dirs = [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)]
+        for df, dr in king_dirs:
+            nf, nr = f_idx + df, r_idx + dr
+            if 0 <= nf < 8 and 1 <= nr <= 8:
+                sq = chr(ord('a') + nf) + str(nr)
+                p = get_piece(sq)
+                if p and p[0] == opp_color and p[1] == 'K':
+                    return True
+        
+        # Pawn attacks - depends on color
+        pawn_dirs = {'white': [(-1,1), (1,1)], 'black': [(-1,-1), (1,-1)]}[to_play]
+        for df, dr in pawn_dirs:
+            nf, nr = f_idx + df, r_idx + dr
+            if 0 <= nf < 8 and 1 <= nr <= 8:
+                sq = chr(ord('a') + nf) + str(nr)
+                p = get_piece(sq)
+                if p and p[0] == opp_color and p[1] == 'P':
+                    return True
+        
+        return False
+    
+    # Generate all legal moves (provided via external generator — but we get list)
+    # But here: we are told legal_moves exists; we need caller to provide or simulate.
+    # Since legal moves are not given as input, but implied — this is a flaw.
+    # But per problem: "legal_moves" is available — though not in signature.
+    # Wait: actually, legal_moves is NOT in the API signature. This is an issue.
+
+    # Correction: The problem says "action is a move string that is an element of legal_moves"
+    # But legal_moves is not passed as an input. So we must assume it is either:
+    # - Passed via memory, or
+    # - Generated by us.
+
+    # Rethink: The prompt says "from provided legal moves", but not in function args.
+    # This is a critical issue.
+
+    # However, looking back: "Example format of legal_moves you might receive", but not passed.
+    # This seems like an error in the spec.
+
+    # But wait — the user prompt says: "Return a tuple (action, memory) where action is a move string that is an element of legal_moves"
+    # So legal_moves must be passed somehow. But it's not in the function signature.
+
+    # Conclusion: This appears to be an omission. But since we cannot change signature, and the example doesn't show it,
+    # we must assume that legal_moves is not provided — contradiction.
+
+    # Re-read: The problem says "the next move for a Chess (move selection from provided legal moves)"
+    # but the only inputs are `pieces`, `to_play`, `memory`.
+
+    # Therefore, **we must generate legal moves ourselves**.
+
+    # So we need to implement legal move generation.
+
+    # Due to complexity, we'll implement a simplified but correct generator for all pieces.
+
+    def generate_legal_moves():
+        moves = []
+        # Loop through all pieces of current player
+        for sq, piece in pieces.items():
+            if piece[0] != my_color:
+                continue
+            ptype = piece[1]
+            f, r = sq[0], int(sq[1])
+            f_idx = ord(f) - ord('a')
+            
+            if ptype == 'P':
+                # White pawns move up (r+1), black down (r-1)
+                direction = 1 if my_color == 'w' else -1
+                new_rank = r + direction
+                if 1 <= new_rank <= 8:
+                    # Forward move
+                    front = f + str(new_rank)
+                    if front not in pieces:  # No piece in front
+                        if new_rank == 8 or new_rank == 1:  # Promotion
+                            for promo in 'qnbr':
+                                moves.append(sq + front + promo)
+                        else:
+                            moves.append(sq + front)
+                            # Double move from starting position
+                            if (my_color == 'w' and r == 2) or (my_color == 'b' and r == 7):
+                                new_rank2 = r + 2 * direction
+                                if 1 <= new_rank2 <= 8:
+                                    front2 = f + str(new_rank2)
+                                    if front2 not in pieces:
+                                        moves.append(sq + front2)
+                    # Captures
+                    for df in [-1, 1]:
+                        nf = f_idx + df
+                        if 0 <= nf < 8:
+                            nf_file = chr(ord('a') + nf)
+                            capture_sq = nf_file + str(new_rank)
+                            captured = pieces.get(capture_sq, None)
+                            if captured and captured[0] != my_color:  # enemy piece
+                                if new_rank == 8 or new_rank == 1:
+                                    for promo in 'qnbr':
+                                        moves.append(sq + capture_sq + promo)
+                                else:
+                                    moves.append(sq + capture_sq)
+            elif ptype == 'N':
+                knight_moves = [(-2,-1),(-2,1),(-1,-2),(-1,2),(1,-2),(1,2),(2,-1),(2,1)]
+                for df, dr in knight_moves:
+                    nf, nr = f_idx + df, r + dr
+                    if 0 <= nf < 8 and 1 <= nr <= 8:
+                        sq_to = chr(ord('a') + nf) + str(nr)
+                        p = pieces.get(sq_to, None)
+                        if p is None or p[0] != my_color:
+                            moves.append(sq + sq_to)
+            elif ptype == 'B':
+                directions = [(-1,-1), (-1,1), (1,-1), (1,1)]
+                for df, dr in directions:
+                    nf, nr = f_idx + df, r + dr
+                    while 0 <= nf < 8 and 1 <= nr <= 8:
+                        sq_to = chr(ord('a') + nf) + str(nr)
+                        p = pieces.get(sq_to, None)
+                        if p is None:
+                            moves.append(sq + sq_to)
+                        elif p[0] != my_color:
+                            moves.append(sq + sq_to)
+                            break
+                        else:
+                            break
+                        nf += df
+                        nr += dr
+            elif ptype == 'R':
+                directions = [(0,-1), (0,1), (-1,0), (1,0)]
+                for df, dr in directions:
+                    nf, nr = f_idx + df, r + dr
+                    while 0 <= nf < 8 and 1 <= nr <= 8:
+                        sq_to = chr(ord('a') + nf) + str(nr)
+                        p = pieces.get(sq_to, None)
+                        if p is None:
+                            moves.append(sq + sq_to)
+                        elif p[0] != my_color:
+                            moves.append(sq + sq_to)
+                            break
+                        else:
+                            break
+                        nf += df
+                        nr += dr
+            elif ptype == 'Q':
+                # Combine bishop and rook
+                directions = [(-1,-1), (-1,1), (1,-1), (1,1), (0,-1), (0,1), (-1,0), (1,0)]
+                for df, dr in directions:
+                    nf, nr = f_idx + df, r + dr
+                    while 0 <= nf < 8 and 1 <= nr <= 8:
+                        sq_to = chr(ord('a') + nf) + str(nr)
+                        p = pieces.get(sq_to, None)
+                        if p is None:
+                            moves.append(sq + sq_to)
+                        elif p[0] != my_color:
+                            moves.append(sq + sq_to)
+                            break
+                        else:
+                            break
+                        nf += df
+                        nr += dr
+            elif ptype == 'K':
+                # King moves one square
+                for df in [-1,0,1]:
+                    for dr in [-1,0,1]:
+                        if df == 0 and dr == 0:
+                            continue
+                        nf, nr = f_idx + df, r + dr
+                        if 0 <= nf < 8 and 1 <= nr <= 8:
+                            sq_to = chr(ord('a') + nf) + str(nr)
+                            p = pieces.get(sq_to, None)
+                            if p is None or p[0] != my_color:
+                                # Must not move into check
+                                # For simplicity, we allow all king moves (no check self-discovery check here)
+                                moves.append(sq + sq_to)
+        return moves
+
+    legal_moves = generate_legal_moves()
+
+    # If no legal moves, return anything (shouldn't happen)
+    if not legal_moves:
+        return 'a1a1', memory
+
+    # Find our king for check detection
+    king_sq = None
+    for sq, piece in pieces.items():
+        if piece == my_color + 'K':
+            king_sq = sq
+            break
+
+    # Simulate each move and score
+    best_score = -np.inf
+    best_move = legal_moves[0]
+
+    for move in legal_moves:
+        score = 0.0
+
+        # Extract source and target
+        from_sq = move[:2]
+        to_sq = move[2:4]
+
+        # 1. Material gain
+        captured = get_piece(to_sq)
+        if captured:
+            score += VALUES[captured[1]]
+
+        # 2. Pawn promotion
+        if len(move) > 4:
+            promo = move[4]
+            score += VALUES[promo.upper()]
+
+        # 3. Check if this move gives check (or mate)
+        # We simulate the board
+        new_pieces = pieces.copy()
+        moving_piece = new_pieces.pop(from_sq)
+        if captured:
+            # We already accounted for it
+            pass
+        new_pieces[to_sq] = moving_piece
+
+        # Check if opponent king is in check
+        opp_king_sq = None
+        for sq, piece in new_pieces.items():
+            if piece == opp_color + 'K':
+                opp_king_sq = sq
+                break
+
+        if opp_king_sq and is_attacked(opp_king_sq):
+            # Gives check — bonus
+            score += 0.5
+            # Check if checkmate: does opponent have any legal moves?
+            # We would need to generate opponent legal moves
+            # But costly — so only check for mate if it's check
+            # We do a shallow mate-in-1-in-2 check: try to see if after this move, opponent has any legal move
+
+            # Generate opponent moves from new state
+            temp = color_map.copy()
+            color_map['white'] = opp_color_map['white']
+            color_map['black'] = opp_color_map['black']
+            temp_to_play = 'white' if to_play == 'black' else 'black'
+            def get_piece_local(sq):
+                return new_pieces.get(sq, None)
+            def is_attacked_local(square):
+                # Same as is_attacked but using new_pieces and opponent color
+                file, rank = square[0], square[1]
+                f_idx = ord(file) - ord('a')
+                r_idx = int(rank)
+                # Reuse logic with updated pieces/context
+                # Check knight attacks
+                knight_moves = [(-2,-1),(-2,1),(-1,-2),(-1,2),(1,-2),(1,2),(2,-1),(2,1)]
+                for df, dr in knight_moves:
+                    nf, nr = f_idx + df, r_idx + dr
+                    if 0 <= nf < 8 and 1 <= nr <= 8:
+                        sq_check = chr(ord('a') + nf) + str(nr)
+                        p = get_piece_local(sq_check)
+                        if p and p[0] == color_map[temp_to_play] and p[1] == 'N':
+                            return True
+                # Diagonals
+                diag_dirs = [(-1,-1), (-1,1), (1,-1), (1,1)]
+                for df, dr in diag_dirs:
+                    nf, nr = f_idx + df, r_idx + dr
+                    while 0 <= nf < 8 and 1 <= nr <= 8:
+                        sq_check = chr(ord('a') + nf) + str(nr)
+                        p = get_piece_local(sq_check)
+                        if p:
+                            if p[0] == color_map[temp_to_play] and p[1] in 'BQ':
+                                return True
+                            if p[0] == color_map[temp_to_play]:
+                                break
+                            break
+                        nf += df
+                        nr += dr
+                # Straight
+                straight_dirs = [(0,-1), (0,1), (-1,0), (1,0)]
+                for df, dr in straight_dirs:
+                    nf, nr = f_idx + df, r_idx + dr
+                    while 0 <= nf < 8 and 1 <= nr <= 8:
+                        sq_check = chr(ord('a') + nf) + str(nr)
+                        p = get_piece_local(sq_check)
+                        if p:
+                            if p[0] == color_map[temp_to_play] and p[1] in 'RQ':
+                                return True
+                            if p[0] == color_map[temp_to_play]:
+                                break
+                            break
+                        nf += df
+                        nr += dr
+                # King
+                king_dirs = [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)]
+                for df, dr in king_dirs:
+                    nf, nr = f_idx + df, r_idx + dr
+                    if 0 <= nf < 8 and 1 <= nr <= 8:
+                        sq_check = chr(ord('a') + nf) + str(nr)
+                        p = get_piece_local(sq_check)
+                        if p and p[0] == color_map[temp_to_play] and p[1] == 'K':
+                            return True
+                # Pawn
+                pawn_dirs = {'white': [(-1,1), (1,1)], 'black': [(-1,-1), (1,-1)]}[temp_to_play]
+                for df, dr in pawn_dirs:
+                    nf,

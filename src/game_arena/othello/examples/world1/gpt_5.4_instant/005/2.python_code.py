@@ -1,0 +1,303 @@
+
+import numpy as np
+
+# Directions: 8-neighborhood
+DIRS = [(-1, -1), (-1, 0), (-1, 1),
+        (0, -1),           (0, 1),
+        (1, -1),  (1, 0),  (1, 1)]
+
+# Classical positional weights for Othello
+PST = np.array([
+    [120, -20,  20,   5,   5,  20, -20, 120],
+    [-20, -40,  -5,  -5,  -5,  -5, -40, -20],
+    [ 20,  -5,  15,   3,   3,  15,  -5,  20],
+    [  5,  -5,   3,   3,   3,   3,  -5,   5],
+    [  5,  -5,   3,   3,   3,   3,  -5,   5],
+    [ 20,  -5,  15,   3,   3,  15,  -5,  20],
+    [-20, -40,  -5,  -5,  -5,  -5, -40, -20],
+    [120, -20,  20,   5,   5,  20, -20, 120],
+], dtype=np.int32)
+
+CORNERS = [(0, 0), (0, 7), (7, 0), (7, 7)]
+X_SQUARES = {
+    (1, 1): (0, 0),
+    (1, 6): (0, 7),
+    (6, 1): (7, 0),
+    (6, 6): (7, 7),
+}
+C_SQUARES = {
+    (0, 1): (0, 0), (1, 0): (0, 0),
+    (0, 6): (0, 7), (1, 7): (0, 7),
+    (6, 0): (7, 0), (7, 1): (7, 0),
+    (6, 7): (7, 7), (7, 6): (7, 7),
+}
+
+INF = 10**9
+
+def inb(r, c):
+    return 0 <= r < 8 and 0 <= c < 8
+
+def move_to_str(move):
+    r, c = move
+    return chr(ord('a') + c) + str(r + 1)
+
+def legal_moves(you, opp):
+    empty = (you | opp) == 0
+    moves = []
+    for r in range(8):
+        for c in range(8):
+            if not empty[r, c]:
+                continue
+            if is_legal_at(you, opp, r, c):
+                moves.append((r, c))
+    return moves
+
+def is_legal_at(you, opp, r, c):
+    if you[r, c] or opp[r, c]:
+        return False
+    for dr, dc in DIRS:
+        rr, cc = r + dr, c + dc
+        found_opp = False
+        while inb(rr, cc) and opp[rr, cc]:
+            found_opp = True
+            rr += dr
+            cc += dc
+        if found_opp and inb(rr, cc) and you[rr, cc]:
+            return True
+    return False
+
+def apply_move(you, opp, move):
+    r, c = move
+    new_you = you.copy()
+    new_opp = opp.copy()
+    new_you[r, c] = 1
+
+    for dr, dc in DIRS:
+        rr, cc = r + dr, c + dc
+        line = []
+        while inb(rr, cc) and new_opp[rr, cc]:
+            line.append((rr, cc))
+            rr += dr
+            cc += dc
+        if line and inb(rr, cc) and new_you[rr, cc]:
+            for fr, fc in line:
+                new_opp[fr, fc] = 0
+                new_you[fr, fc] = 1
+    return new_opp, new_you  # swapped perspective for next player
+
+def terminal(you, opp):
+    if np.count_nonzero((you | opp) == 0) == 0:
+        return True
+    if legal_moves(you, opp):
+        return False
+    if legal_moves(opp, you):
+        return False
+    return True
+
+def final_score(you, opp):
+    return int(np.sum(you) - np.sum(opp))
+
+def frontier_count(board, other):
+    occupied = board | other
+    cnt = 0
+    for r in range(8):
+        for c in range(8):
+            if not board[r, c]:
+                continue
+            for dr, dc in DIRS:
+                rr, cc = r + dr, c + dc
+                if inb(rr, cc) and not occupied[rr, cc]:
+                    cnt += 1
+                    break
+    return cnt
+
+def corner_score(you, opp):
+    y = sum(int(you[r, c]) for r, c in CORNERS)
+    o = sum(int(opp[r, c]) for r, c in CORNERS)
+    return 25 * (y - o)
+
+def dangerous_square_score(you, opp):
+    score = 0
+    occupied = you | opp
+    for sq, corner in X_SQUARES.items():
+        sr, sc = sq
+        cr, cc = corner
+        if not occupied[cr, cc]:
+            if you[sr, sc]:
+                score -= 18
+            elif opp[sr, sc]:
+                score += 18
+    for sq, corner in C_SQUARES.items():
+        sr, sc = sq
+        cr, cc = corner
+        if not occupied[cr, cc]:
+            if you[sr, sc]:
+                score -= 10
+            elif opp[sr, sc]:
+                score += 10
+    return score
+
+def mobility_score(you, opp):
+    mym = len(legal_moves(you, opp))
+    oppm = len(legal_moves(opp, you))
+    return 8 * (mym - oppm)
+
+def positional_score(you, opp):
+    return int(np.sum(PST * you) - np.sum(PST * opp))
+
+def stability_like_edge_score(you, opp):
+    # Lightweight edge/corner extension score
+    score = 0
+    for cr, cc in CORNERS:
+        if you[cr, cc]:
+            score += 30
+            if cr == 0:
+                for c in range(1 if cc == 0 else 6, 8 if cc == 0 else -1, 1 if cc == 0 else -1):
+                    if you[cr, c]:
+                        score += 4
+                    else:
+                        break
+            if cc == 0:
+                for r in range(1 if cr == 0 else 6, 8 if cr == 0 else -1, 1 if cr == 0 else -1):
+                    if you[r, cc]:
+                        score += 4
+                    else:
+                        break
+        elif opp[cr, cc]:
+            score -= 30
+            if cr == 0:
+                for c in range(1 if cc == 0 else 6, 8 if cc == 0 else -1, 1 if cc == 0 else -1):
+                    if opp[cr, c]:
+                        score -= 4
+                    else:
+                        break
+            if cc == 0:
+                for r in range(1 if cr == 0 else 6, 8 if cr == 0 else -1, 1 if cr == 0 else -1):
+                    if opp[r, cc]:
+                        score -= 4
+                    else:
+                        break
+    return score
+
+def evaluate(you, opp):
+    empties = int(np.count_nonzero((you | opp) == 0))
+    disc_diff = int(np.sum(you) - np.sum(opp))
+    frontier = frontier_count(you, opp) - frontier_count(opp, you)
+
+    score = 0
+    score += positional_score(you, opp)
+    score += corner_score(you, opp)
+    score += dangerous_square_score(you, opp)
+    score += mobility_score(you, opp)
+    score += stability_like_edge_score(you, opp)
+    score -= 4 * frontier
+
+    # Disc count matters more late
+    if empties <= 12:
+        score += 12 * disc_diff
+    elif empties <= 20:
+        score += 4 * disc_diff
+    else:
+        score += 1 * disc_diff
+
+    return int(score)
+
+def move_heuristic(you, opp, mv):
+    r, c = mv
+    score = PST[r, c]
+
+    # Strongly prefer corners
+    if (r, c) in CORNERS:
+        score += 10000
+
+    # Avoid X/C if corner empty
+    if (r, c) in X_SQUARES:
+        cr, cc = X_SQUARES[(r, c)]
+        if not (you[cr, cc] or opp[cr, cc]):
+            score -= 300
+    if (r, c) in C_SQUARES:
+        cr, cc = C_SQUARES[(r, c)]
+        if not (you[cr, cc] or opp[cr, cc]):
+            score -= 150
+
+    ny, no = apply_move(you, opp, mv)
+    # ny/no are swapped perspective after move, so opponent to move there
+    opp_mob = len(legal_moves(ny, no))
+    score -= 20 * opp_mob
+
+    # If move grants us corner ownership immediately, already captured via PST, but extra bias is fine
+    my_discs = int(np.sum(no))
+    opp_discs = int(np.sum(ny))
+    score += (my_discs - opp_discs)
+
+    return score
+
+def alphabeta(you, opp, depth, alpha, beta, passed):
+    if depth == 0 or terminal(you, opp):
+        if terminal(you, opp):
+            fs = final_score(you, opp)
+            return fs * 100000
+        return evaluate(you, opp)
+
+    moves = legal_moves(you, opp)
+    if not moves:
+        if passed:
+            fs = final_score(you, opp)
+            return fs * 100000
+        return -alphabeta(opp, you, depth, -beta, -alpha, True)
+
+    moves.sort(key=lambda mv: move_heuristic(you, opp, mv), reverse=True)
+
+    best = -INF
+    for mv in moves:
+        nopp, nyou = apply_move(you, opp, mv)
+        val = -alphabeta(nopp, nyou, depth - 1, -beta, -alpha, False)
+        if val > best:
+            best = val
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+    return best
+
+def choose_depth(empty_count, move_count):
+    if empty_count <= 10:
+        return 10
+    if empty_count <= 14:
+        return 8
+    if empty_count <= 20:
+        return 6
+    if empty_count <= 40:
+        return 4
+    return 3 if move_count <= 8 else 2
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    you = np.asarray(you, dtype=np.uint8)
+    opponent = np.asarray(opponent, dtype=np.uint8)
+
+    moves = legal_moves(you, opponent)
+    if not moves:
+        return "pass"
+    if len(moves) == 1:
+        return move_to_str(moves[0])
+
+    empty_count = int(np.count_nonzero((you | opponent) == 0))
+    depth = choose_depth(empty_count, len(moves))
+
+    moves.sort(key=lambda mv: move_heuristic(you, opponent, mv), reverse=True)
+
+    best_move = moves[0]
+    best_val = -INF
+    alpha = -INF
+    beta = INF
+
+    for mv in moves:
+        nopp, nyou = apply_move(you, opponent, mv)
+        val = -alphabeta(nopp, nyou, depth - 1, -beta, -alpha, False)
+        if val > best_val:
+            best_val = val
+            best_move = mv
+        if val > alpha:
+            alpha = val
+
+    return move_to_str(best_move)

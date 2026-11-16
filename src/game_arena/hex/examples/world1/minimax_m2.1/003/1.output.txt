@@ -1,0 +1,144 @@
+The strategy for this policy focuses on a three-step approach to make intelligent moves in Hex:
+
+1. **Immediate Win Check**: First, check if any empty cell can be played to immediately win the game by connecting the player's two sides. If found, play that move.
+
+2. **Block Opponent Win**: If no immediate win is available, check if the opponent has any winning move on their next turn. If found, block that move by playing the same cell.
+
+3. **Heuristic Evaluation**: If no immediate wins or threats exist, evaluate all empty cells using a heuristic that considers:
+   - Connectivity to existing stones (prefer moves that connect own stones)
+   - Blocking opponent stones
+   - Central board position (more connected hexagons)
+   - Proximity to both goal sides (important for building a path)
+
+The heuristic scores each move based on these factors and selects the highest-scoring move.
+
+```python
+import collections
+
+def get_neighbors(i, j):
+    """Get the neighboring cells of (i, j) on an 11x11 Hex board."""
+    neighbors = []
+    # Same row neighbors
+    if j-1 >= 0:
+        neighbors.append((i, j-1))
+    if j+1 < 11:
+        neighbors.append((i, j+1))
+    # Top row neighbors
+    if i-1 >= 0:
+        neighbors.append((i-1, j))
+        if j+1 < 11:
+            neighbors.append((i-1, j+1))
+    # Bottom row neighbors
+    if i+1 < 11:
+        neighbors.append((i+1, j))
+        if j-1 >= 0:
+            neighbors.append((i+1, j-1))
+    return neighbors
+
+def has_won(board, color):
+    """Check if the given color has won on the board."""
+    visited = set()
+    queue = collections.deque()
+    
+    if color == 'b':
+        # Black wins by connecting top (row 0) to bottom (row 10)
+        for j in range(11):
+            if board[0][j] == color:
+                queue.append((0, j))
+                visited.add((0, j))
+        goals = set((10, j) for j in range(11) if board[10][j] == color)
+    else:
+        # White wins by connecting left (col 0) to right (col 10)
+        for i in range(11):
+            if board[i][0] == color:
+                queue.append((i, 0))
+                visited.add((i, 0))
+        goals = set((i, 10) for i in range(11) if board[i][10] == color)
+    
+    while queue:
+        node = queue.popleft()
+        if node in goals:
+            return True
+        for neighbor in get_neighbors(node[0], node[1]):
+            if board[neighbor[0]][neighbor[1]] == color and neighbor not in visited:
+                visited.add(neighbor)
+                queue.append(neighbor)
+    return False
+
+def policy(me, opp, color):
+    """Determine the next move for Hex on an 11x11 board."""
+    # Create board and determine colors
+    board = [[0] * 11 for _ in range(11)]
+    our_color = color
+    opp_color = 'b' if color == 'w' else 'w'
+    
+    # Place stones on board
+    for (i, j) in me:
+        board[i][j] = our_color
+    for (i, j) in opp:
+        board[i][j] = opp_color
+    
+    # Step 1: Check for immediate winning move
+    for i in range(11):
+        for j in range(11):
+            if board[i][j] == 0:
+                board[i][j] = our_color
+                if has_won(board, our_color):
+                    return (i, j)
+                board[i][j] = 0
+    
+    # Step 2: Check for opponent winning move (must block)
+    for i in range(11):
+        for j in range(11):
+            if board[i][j] == 0:
+                board[i][j] = opp_color
+                if has_won(board, opp_color):
+                    return (i, j)
+                board[i][j] = 0
+    
+    # Step 3: Heuristic evaluation for remaining moves
+    best_move = None
+    best_score = -1
+    
+    for i in range(11):
+        for j in range(11):
+            if board[i][j] == 0:
+                neighbors = get_neighbors(i, j)
+                our_adj = 0
+                opp_adj = 0
+                
+                # Count adjacent stones
+                for (ni, nj) in neighbors:
+                    if board[ni][nj] == our_color:
+                        our_adj += 1
+                    elif board[ni][nj] == opp_color:
+                        opp_adj += 1
+                
+                # Base score from adjacency
+                score = our_adj * 2 + opp_adj * 1
+                
+                # Bonus for connecting multiple own stones
+                if our_adj >= 2:
+                    score += 5
+                
+                # Centrality bonus (center is more valuable)
+                dist_center = abs(i - 5) + abs(j - 5)
+                centrality = 10 - dist_center
+                score += centrality * 0.5
+                
+                # Goal proximity bonus
+                if color == 'b':
+                    # Want to be near both top and bottom
+                    min_dist = min(i, 10 - i)
+                    score += min_dist * 0.5
+                else:
+                    # Want to be near both left and right
+                    min_dist = min(j, 10 - j)
+                    score += min_dist * 0.5
+                
+                if score > best_score:
+                    best_score = score
+                    best_move = (i, j)
+    
+    return best_move
+```

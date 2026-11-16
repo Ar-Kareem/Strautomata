@@ -1,0 +1,97 @@
+
+import numpy as np
+
+def policy(you: list[int], opponent: list[int]) -> str:
+    # Convert to numpy arrays for easier manipulation
+    you_grid = np.array(you).reshape(5, 6)
+    opp_grid = np.array(opponent).reshape(5, 6)
+    
+    # Direction vectors
+    directions = {
+        'U': (-1, 0),
+        'R': (0, 1),
+        'D': (1, 0),
+        'L': (0, -1)
+    }
+    
+    # Centrality weights - higher in center
+    center_weights = np.array([
+        [1, 2, 3, 3, 2, 1],
+        [2, 4, 5, 5, 4, 2],
+        [3, 5, 6, 6, 5, 3],
+        [2, 4, 5, 5, 4, 2],
+        [1, 2, 3, 3, 2, 1]
+    ])
+    
+    # Find all legal moves
+    legal_moves = []
+    
+    for r in range(5):
+        for c in range(6):
+            if you_grid[r, c] == 1:  # Our piece
+                for dir_name, (dr, dc) in directions.items():
+                    nr, nc = r + dr, c + dc
+                    # Check if in bounds
+                    if 0 <= nr < 5 and 0 <= nc < 6:
+                        # Check if opponent piece is there
+                        if opp_grid[nr, nc] == 1:
+                            legal_moves.append((r, c, dir_name, nr, nc))
+    
+    # If no legal moves, this shouldn't happen as we'd have lost
+    if not legal_moves:
+        # Fallback: return first possible move even if illegal (should not occur)
+        for r in range(5):
+            for c in range(6):
+                if you_grid[r, c] == 1:
+                    for dir_name, (dr, dc) in directions.items():
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < 5 and 0 <= nc < 6:
+                            return f"{r},{c},{dir_name}"
+    
+    # Score each move
+    best_score = -1
+    best_move_str = None
+    
+    for r, c, dir_name, nr, nc in legal_moves:
+        score = 0
+        
+        # Add centrality of destination
+        score += center_weights[nr, nc]
+        
+        # Simulate move to evaluate future mobility
+        # Temporarily update board
+        temp_you = you_grid.copy()
+        temp_opp = opp_grid.copy()
+        
+        temp_you[r, c] = 0
+        temp_opp[nr, nc] = 0
+        temp_you[nr, nc] = 1
+        
+        # Count future moves from new position
+        future_moves = 0
+        for fr in range(5):
+            for fc in range(6):
+                if temp_you[fr, fc] == 1:
+                    for dr, dc in directions.values():
+                        nr2, nc2 = fr + dr, fc + dc
+                        if (0 <= nr2 < 5 and 0 <= nc2 < 6 and 
+                            temp_opp[nr2, nc2] == 1):
+                            future_moves += 1
+        
+        # Prefer moves that create more future opportunities
+        score += future_moves * 0.1
+        
+        # Bonus for capturing pieces that are surrounded
+        surrounded_score = 0
+        for dr, dc in directions.values():
+            nr2, nc2 = nr + dr, nc + dc
+            if (0 <= nr2 < 5 and 0 <= nc2 < 6):
+                if temp_opp[nr2, nc2] == 1:
+                    surrounded_score += 1
+        score += surrounded_score * 0.2  # Extra incentive to capture trapped pieces
+        
+        if score > best_score:
+            best_score = score
+            best_move_str = f"{r},{c},{dir_name}"
+    
+    return best_move_str

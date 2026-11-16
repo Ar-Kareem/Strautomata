@@ -1,0 +1,217 @@
+
+import numpy as np
+from collections import deque
+
+def policy(me, opponent):
+    BOARD_SIZE = 19
+    me_set = set(me)
+    opp_set = set(opponent)
+    all_stones = me_set | opp_set
+    
+    def neighbors(r, c):
+        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+            nr, nc = r+dr, c+dc
+            if 1 <= nr <= BOARD_SIZE and 1 <= nc <= BOARD_SIZE:
+                yield nr, nc
+    
+    def get_group(r, c, stone_set):
+        group = set()
+        queue = deque([(r, c)])
+        group.add((r, c))
+        while queue:
+            cr, cc = queue.popleft()
+            for nr, nc in neighbors(cr, cc):
+                if (nr, nc) in stone_set and (nr, nc) not in group:
+                    group.add((nr, nc))
+                    queue.append((nr, nc))
+        return group
+    
+    def get_liberties(group, stone_set_mine, stone_set_opp):
+        libs = set()
+        for r, c in group:
+            for nr, nc in neighbors(r, c):
+                if (nr, nc) not in stone_set_mine and (nr, nc) not in stone_set_opp:
+                    libs.add((nr, nc))
+        return libs
+    
+    # Precompute groups
+    visited_me = set()
+    my_groups = []
+    for s in me_set:
+        if s not in visited_me:
+            g = get_group(s[0], s[1], me_set)
+            visited_me |= g
+            libs = get_liberties(g, me_set, opp_set)
+            my_groups.append((g, libs))
+    
+    visited_opp = set()
+    opp_groups = []
+    for s in opp_set:
+        if s not in visited_opp:
+            g = get_group(s[0], s[1], opp_set)
+            visited_opp |= g
+            libs = get_liberties(g, opp_set, me_set)
+            opp_groups.append((g, libs))
+    
+    def would_capture(r, c):
+        """Check if playing at (r,c) captures any opponent group."""
+        captured = set()
+        for nr, nc in neighbors(r, c):
+            if (nr, nc) in opp_set:
+                for g, libs in opp_groups:
+                    if (nr, nc) in g:
+                        if libs == {(r, c)}:
+                            captured |= g
+                        break
+        return captured
+    
+    def simulate_place(r, c):
+        """Simulate placing a stone, return (is_legal, captured_set)."""
+        if (r, c) in all_stones:
+            return False, set()
+        
+        captured = would_capture(r, c)
+        
+        # Check if own group would have liberties after placement
+        new_me = me_set | {(r, c)}
+        new_opp = opp_set - captured
+        
+        my_group = get_group(r, c, new_me)
+        my_libs = get_liberties(my_group, new_me, new_opp)
+        
+        if len(my_libs) == 0:
+            return False, set()  # suicide
+        
+        return True, captured
+    
+    def is_simple_ko(r, c, captured):
+        """Simple ko detection - if we capture exactly 1 stone and our placed stone has exactly 1 liberty."""
+        if len(captured) != 1:
+            return False
+        # Very rough ko check - skip for now, rely on game engine
+        return False
+    
+    # Score all empty points
+    candidates = []
+    
+    for r in range(1, BOARD_SIZE + 1):
+        for c in range(1, BOARD_SIZE + 1):
+            if (r, c) in all_stones:
+                continue
+            
+            legal, captured = simulate_place(r, c)
+            if not legal:
+                continue
+            
+            score = 0.0
+            
+            # Capture bonus
+            if captured:
+                score += len(captured) * 15.0
+                # Capturing is very valuable
+                # Extra bonus for capturing large groups
+                if len(captured) >= 3:
+                    score += len(captured) * 5.0
+            
+            # Save own groups in atari
+            for g, libs in my_groups:
+                if len(libs) == 1:
+                    lib = next(iter(libs))
+                    if (r, c) == lib:
+                        # Check if saving actually helps (gives more than 1 liberty)
+                        new_me = me_set | {(r, c)}
+                        new_opp = opp_set - captured
+                        new_group = get_group(r, c, new_me)
+                        new_libs = get_liberties(new_group, new_me, new_opp)
+                        if len(new_libs) >= 2:
+                            score += len(g) * 12.0
+                        elif len(new_libs) == 1:
+                            score += len(g) * 2.0  # still in atari, less valuable
+            
+            # Threaten opponent groups (reduce to atari)
+            for g, libs in opp_groups:
+                if (r, c) in libs:
+                    new_lib_count = len(libs) - 1
+                    if new_lib_count == 1:
+                        score += len(g) * 6.0  # put in atari
+                    elif new_lib_count == 2:
+                        score += len(g) * 1.5
+            
+            # Self-atari penalty
+            if not captured:
+                new_me = me_set | {(r, c)}
+                new_opp = opp_set - captured
+                my_new_group = get_group(r, c, new_me)
+                my_new_libs = get_liberties(my_new_group, new_me, new_opp)
+                if len(my_new_libs) == 1:
+                    score -= len(my_new_group) * 8.0
+                elif len(my_new_libs) == 2:
+                    score -= len(my_new_group) * 0.5
+            
+            # Adjacency to own stones (connectedness)
+            adj_me = 0
+            adj_opp = 0
+            adj_empty = 0
+            for nr, nc in neighbors(r, c):
+                if (nr, nc) in me_set:
+                    adj_me += 1
+                elif (nr, nc) in opp_set:
+                    adj_opp += 1
+                else:
+                    adj_empty += 1
+            
+            # Extension from own stones
+            if adj_me >= 1 and adj_empty >= 2:
+                score += 1.5
+            
+            # Contact with opponent
+            if adj_opp >= 1:
+                score += 0.5
+            
+            # Positional value - prefer center-ish and star points early
+            # Edge/corner penalty
+            dist_edge = min(r - 1, BOARD_SIZE - r, c - 1, BOARD_SIZE - c)
+            if dist_edge == 0:
+                score -= 5.0
+            elif dist_edge == 1:
+                score -= 2.0
+            elif dist_edge == 2:
+                score -= 0.5
+            elif dist_edge >= 3:
+                score += 0.5
+            
+            # Star points bonus in opening
+            total_stones = len(me_set) + len(opp_set)
+            star_points = [(4,4),(4,10),(4,16),(10,4),(10,10),(10,16),(16,4),(16,10),(16,16)]
+            if total_stones < 20 and (r, c) in star_points:
+                score += 4.0
+            
+            # 3-4 points and 3-3 points in opening
+            if total_stones < 10:
+                corner_pts = [(4,4),(4,16),(16,4),(16,16),(3,4),(4,3),(3,16),(4,17),(16,3),(17,4),(16,17),(17,16)]
+                if (r, c) in corner_pts:
+                    score += 3.0
+            
+            # Influence: distance to nearest own and opponent stones
+            if me_set:
+                min_dist_me = min(abs(r - sr) + abs(c - sc) for sr, sc in me_set)
+                if 2 <= min_dist_me <= 4:
+                    score += 2.0
+                elif min_dist_me == 1:
+                    score += 0.5
+            
+            if opp_set:
+                min_dist_opp = min(abs(r - sr) + abs(c - sc) for sr, sc in opp_set)
+                if 2 <= min_dist_opp <= 3:
+                    score += 1.0
+            
+            # Small random tiebreaker
+            score += np.random.uniform(0, 0.1)
+            
+            candidates.append((score, r, c))
+    
+    if not candidates:
+        return (0, 0)  # pass
+    
+    candidates.sort(key=lambda x: -x[0])
+    return (candidates[0][1], candidates[0][2])

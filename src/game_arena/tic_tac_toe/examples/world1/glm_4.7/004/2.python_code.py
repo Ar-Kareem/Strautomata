@@ -1,0 +1,128 @@
+
+import sys
+from functools import lru_cache
+
+# Define all possible winning lines (3 rows, 3 columns, 2 diagonals)
+WIN_LINES = [
+    [(0, 0), (0, 1), (0, 2)],
+    [(1, 0), (1, 1), (1, 2)],
+    [(2, 0), (2, 1), (2, 2)],
+    [(0, 0), (1, 0), (2, 0)],
+    [(0, 1), (1, 1), (2, 1)],
+    [(0, 2), (1, 2), (2, 2)],
+    [(0, 0), (1, 1), (2, 2)],
+    [(0, 2), (1, 1), (2, 0)],
+]
+
+def check_winner(board):
+    """Checks the board state for a winner.
+    Returns 1 if Player 1 wins, -1 if Player 2 wins, 0 otherwise."""
+    for line in WIN_LINES:
+        vals = [board[r][c] for r, c in line]
+        if vals[0] != 0 and vals[0] == vals[1] == vals[2]:
+            return vals[0]
+    return 0
+
+@lru_cache(maxsize=None)
+def minimax(board_tuple, is_maximizing):
+    """Recursive Minimax algorithm with caching.
+    
+    Args:
+        board_tuple: A tuple of tuples representing the 3x3 board.
+        is_maximizing: Boolean, True if it's the AI's turn (Player 1).
+        
+    Returns:
+        Score: 1 for AI win, -1 for Opponent win, 0 for draw.
+    """
+    # Check terminal state
+    winner = check_winner(board_tuple)
+    if winner != 0:
+        return winner
+    
+    # Check for draw (board is full)
+    flat_board = [cell for row in board_tuple for cell in row]
+    if 0 not in flat_board:
+        return 0
+
+    if is_maximizing:
+        best_score = -float('inf')
+        # Iterate through all cells to find empty spots
+        for r in range(3):
+            for c in range(3):
+                if board_tuple[r][c] == 0:
+                    # Create new board state
+                    new_board_list = [list(row) for row in board_tuple]
+                    new_board_list[r][c] = 1 # AI's move
+                    new_board_tuple = tuple(tuple(row) for row in new_board_list)
+                    
+                    score = minimax(new_board_tuple, False)
+                    best_score = max(score, best_score)
+        return best_score
+    else:
+        best_score = float('inf')
+        for r in range(3):
+            for c in range(3):
+                if board_tuple[r][c] == 0:
+                    new_board_list = [list(row) for row in board_tuple]
+                    new_board_list[r][c] = -1 # Opponent's move
+                    new_board_tuple = tuple(tuple(row) for row in new_board_list)
+                    
+                    score = minimax(new_board_tuple, True)
+                    best_score = min(score, best_score)
+        return best_score
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Determines the next move for the 3x3 Tic Tac Toe game.
+    1 represents the AI, -1 represents the opponent.
+    """
+    
+    # Identify all legal moves (cells with 0)
+    legal_moves = []
+    for r in range(3):
+        for c in range(3):
+            if board[r][c] == 0:
+                legal_moves.append((r, c))
+                
+    if not legal_moves:
+        # Should not happen in a valid game state, but fallback provided
+        return (0, 0)
+
+    # Optimization: If the board is empty, take the center immediately.
+    # This is the theoretically strongest opening move.
+    if len(legal_moves) == 9:
+        return (1, 1)
+
+    # Convert current board to tuple for caching compatibility
+    current_board_tuple = tuple(tuple(row) for row in board)
+    
+    best_score = -float('inf')
+    best_moves = []
+    
+    # Evaluate each legal move using Minimax
+    for r, c in legal_moves:
+        # Simulate the move
+        new_board_list = [list(row) for row in current_board_tuple]
+        new_board_list[r][c] = 1
+        new_board_tuple = tuple(tuple(row) for row in new_board_list)
+        
+        # Get the score from the resulting state (False because next is opponent)
+        score = minimax(new_board_tuple, False)
+        
+        if score > best_score:
+            best_score = score
+            best_moves = [(r, c)]
+        elif score == best_score:
+            best_moves.append((r, c))
+            
+    # Heuristic: If multiple moves have the same optimal score (e.g., all lead to draw),
+    # prefer Center > Corners > Edges.
+    def position_priority(move):
+        r, c = move
+        if r == 1 and c == 1: return 2  # Center
+        if (r in [0, 2]) and (c in [0, 2]): return 1  # Corners
+        return 0  # Edges
+        
+    best_moves.sort(key=position_priority, reverse=True)
+    
+    return best_moves[0]

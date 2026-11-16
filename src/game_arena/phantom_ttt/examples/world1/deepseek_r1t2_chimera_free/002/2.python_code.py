@@ -1,0 +1,71 @@
+
+def policy(board: list[list[int]], legal_moves: list[int]) -> tuple[int, int]:
+    # Helper function to check if a move is winning
+    def is_winning_move(r: int, c: int) -> bool:
+        # Check row
+        if sum(board[r]) == 2:
+            return True
+        # Check column
+        if sum(row[c] for row in board) == 2:
+            return True
+        # Check main diagonal
+        if r == c and board[0][0] + board[1][1] + board[2][2] == 2:
+            return True
+        # Check anti-diagonal
+        if r + c == 2 and board[0][2] + board[1][1] + board[2][0] == 2:
+            return True
+        return False
+    
+    # Convert legal moves to (r, c) and check for immediate wins
+    candidate_moves = []
+    for move in legal_moves:
+        r, c = move // 3, move % 3
+        if is_winning_move(r, c):
+            return (r, c)
+        candidate_moves.append((r, c))
+    
+    # Score each candidate move
+    best_score = -1
+    best_move = candidate_moves[0]
+    
+    for r, c in candidate_moves:
+        # Position score: center (3), corner (2), edge (1)
+        score = 3 if (r, c) == (1, 1) else \
+                2 if (r, c) in [(0,0), (0,2), (2,0), (2,2)] else 1
+        
+        # Check row
+        row_ones = sum(board[r][j] for j in range(3) if j != c)
+        if row_ones == 1:
+            score += 5
+        elif row_ones == 0:
+            score += 1
+        
+        # Check column
+        col_ones = sum(board[i][c] for i in range(3) if i != r)
+        if col_ones == 1:
+            score += 5
+        elif col_ones == 0:
+            score += 1
+        
+        # Check main diagonal
+        if r == c:
+            diag_ones = sum(board[i][i] for i in range(3) if i != r)
+            if diag_ones == 1:
+                score += 5
+            elif diag_ones == 0:
+                score += 1
+        
+        # Check anti-diagonal
+        if r + c == 2:
+            ad_ones = sum(board[i][2-i] for i in range(3) if not (i == r and (2-i) == c))
+            if ad_ones == 1:
+                score += 5
+            elif ad_ones == 0:
+                score += 1
+        
+        # Update best move
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+    
+    return best_move

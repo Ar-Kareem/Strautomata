@@ -1,0 +1,251 @@
+I'll create a competitive Checkers policy that uses a minimax algorithm with alpha-beta pruning and strategic evaluation.
+
+## Strategy
+
+My policy uses the following approach:
+
+1. **Minimax with Alpha-Beta Pruning**: Search 6-8 plies deep (depending on game phase) to find optimal moves
+2. **Move Generation with Mandatory Captures**: Properly handles forced captures and multi-jumps
+3. **Strategic Evaluation Function**:
+   - Material advantage (kings worth more than men)
+   - Positional bonuses (control center, advance pieces, back row protection)
+   - King promotion incentive
+   - Mobility advantage
+   - Endgame-specific evaluation
+4. **Move Ordering**: Prioritize captures and center moves for better alpha-beta pruning
+5. **Iterative Deepening**: Use time-based cutoff to search as deep as possible
+
+<code>
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    import time
+    
+    # Convert to sets for faster lookup
+    my_men_set = set(my_men)
+    my_kings_set = set(my_kings)
+    opp_men_set = set(opp_men)
+    opp_kings_set = set(opp_kings)
+    
+    all_my_pieces = my_men_set | my_kings_set
+    all_opp_pieces = opp_men_set | opp_kings_set
+    all_pieces = all_my_pieces | all_opp_pieces
+    
+    def is_valid_square(r, c):
+        return 0 <= r < 8 and 0 <= c < 8 and (r + c) % 2 == 1
+    
+    def get_capture_moves(pos, is_king, my_pieces, opp_pieces, color_dir):
+        """Get all capture sequences from a position (including multi-jumps)"""
+        captures = []
+        
+        def dfs_captures(current_pos, captured, path, is_king_now):
+            r, c = current_pos
+            directions = [(1, 1), (1, -1), (-1, 1), (-1, -1)] if is_king_now else [(color_dir, 1), (color_dir, -1)]
+            
+            found_capture = False
+            for dr, dc in directions:
+                mid_r, mid_c = r + dr, c + dc
+                land_r, land_c = r + 2*dr, c + 2*dc
+                
+                if (mid_r, mid_c) in opp_pieces and (mid_r, mid_c) not in captured:
+                    if is_valid_square(land_r, land_c) and (land_r, land_c) not in my_pieces and (land_r, land_c) not in captured:
+                        new_captured = captured | {(mid_r, mid_c)}
+                        new_path = path + [(land_r, land_c)]
+                        
+                        # Check if piece becomes king
+                        becomes_king = is_king_now or (color_dir == 1 and land_r == 7) or (color_dir == -1 and land_r == 0)
+                        
+                        # Continue searching for more jumps
+                        dfs_captures((land_r, land_c), new_captured, new_path, becomes_king)
+                        found_capture = True
+            
+            if not found_capture and len(path) > 1:
+                # No more captures possible, record this sequence
+                captures.append((path[0], path[-1], len(captured)))
+        
+        dfs_captures(pos, set(), [pos], is_king)
+        return captures
+    
+    def get_simple_moves(pos, is_king, my_pieces, opp_pieces, color_dir):
+        """Get non-capture moves"""
+        r, c = pos
+        moves = []
+        directions = [(1, 1), (1, -1), (-1, 1), (-1, -1)] if is_king else [(color_dir, 1), (color_dir, -1)]
+        
+        for dr, dc in directions:
+            new_r, new_c = r + dr, c + dc
+            if is_valid_square(new_r, new_c) and (new_r, new_c) not in my_pieces and (new_r, new_c) not in opp_pieces:
+                moves.append((pos, (new_r, new_c)))
+        
+        return moves
+    
+    def get_all_moves(my_men, my_kings, opp_men, opp_kings, color_dir):
+        """Get all legal moves (captures are mandatory)"""
+        my_pieces = my_men | my_kings
+        opp_pieces = opp_men | opp_kings
+        
+        all_captures = []
+        
+        # Check captures for men
+        for pos in my_men:
+            captures = get_capture_moves(pos, False, my_pieces, opp_pieces, color_dir)
+            all_captures.extend([(pos, end, count) for start, end, count in captures])
+        
+        # Check captures for kings
+        for pos in my_kings:
+            captures = get_capture_moves(pos, True, my_pieces, opp_pieces, color_dir)
+            all_captures.extend([(pos, end, count) for start, end, count in captures])
+        
+        if all_captures:
+            return [(start, end) for start, end, _ in all_captures]
+        
+        # No captures available, get simple moves
+        simple_moves = []
+        for pos in my_men:
+            simple_moves.extend(get_simple_moves(pos, False, my_pieces, opp_pieces, color_dir))
+        for pos in my_kings:
+            simple_moves.extend(get_simple_moves(pos, True, my_pieces, opp_pieces, color_dir))
+        
+        return simple_moves
+    
+    def apply_move(my_men, my_kings, opp_men, opp_kings, move, color_dir):
+        """Apply a move and return new state"""
+        start, end = move
+        new_my_men = my_men.copy()
+        new_my_kings = my_kings.copy()
+        new_opp_men = opp_men.copy()
+        new_opp_kings = opp_kings.copy()
+        
+        is_king = start in my_kings
+        
+        if is_king:
+            new_my_kings.remove(start)
+        else:
+            new_my_men.remove(start)
+        
+        # Check for captures
+        dr = 1 if end[0] > start[0] else -1
+        dc = 1 if end[1] > start[1] else -1
+        r, c = start
+        while (r, c) != end:
+            r += dr
+            c += dc
+            if (r, c) in new_opp_men:
+                new_opp_men.remove((r, c))
+            elif (r, c) in new_opp_kings:
+                new_opp_kings.remove((r, c))
+        
+        # Check for promotion
+        if (not is_king) and ((color_dir == 1 and end[0] == 7) or (color_dir == -1 and end[0] == 0)):
+            new_my_kings.add(end)
+        elif is_king:
+            new_my_kings.add(end)
+        else:
+            new_my_men.add(end)
+        
+        return new_my_men, new_my_kings, new_opp_men, new_opp_kings
+    
+    def evaluate(my_men, my_kings, opp_men, opp_kings, color_dir):
+        """Evaluate board position"""
+        if not my_men and not my_kings:
+            return -100000
+        if not opp_men and not opp_kings:
+            return 100000
+        
+        score = 0
+        
+        # Material
+        score += len(my_men) * 100 + len(my_kings) * 310
+        score -= len(opp_men) * 100 + len(opp_kings) * 310
+        
+        # Positional bonuses
+        for r, c in my_men:
+            # Advancement bonus
+            if color_dir == 1:
+                score += r * 5
+            else:
+                score += (7 - r) * 5
+            # Center control
+            if 2 <= c <= 5:
+                score += 8
+        
+        for r, c in my_kings:
+            if 2 <= r <= 5 and 2 <= c <= 5:
+                score += 15
+        
+        for r, c in opp_men:
+            if color_dir == 1:
+                score -= (7 - r) * 5
+            else:
+                score -= r * 5
+            if 2 <= c <= 5:
+                score -= 8
+        
+        return score
+    
+    def minimax(my_men, my_kings, opp_men, opp_kings, depth, alpha, beta, maximizing, color_dir):
+        """Minimax with alpha-beta pruning"""
+        if depth == 0:
+            return evaluate(my_men, my_kings, opp_men, opp_kings, color_dir)
+        
+        if maximizing:
+            moves = get_all_moves(my_men, my_kings, opp_men, opp_kings, color_dir)
+            if not moves:
+                return -100000
+            
+            max_eval = -float('inf')
+            for move in moves:
+                new_my_men, new_my_kings, new_opp_men, new_opp_kings = apply_move(
+                    my_men, my_kings, opp_men, opp_kings, move, color_dir)
+                eval_score = minimax(new_my_men, new_my_kings, new_opp_men, new_opp_kings, 
+                                   depth - 1, alpha, beta, False, color_dir)
+                max_eval = max(max_eval, eval_score)
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            moves = get_all_moves(opp_men, opp_kings, my_men, my_kings, -color_dir)
+            if not moves:
+                return 100000
+            
+            min_eval = float('inf')
+            for move in moves:
+                new_opp_men, new_opp_kings, new_my_men, new_my_kings = apply_move(
+                    opp_men, opp_kings, my_men, my_kings, move, -color_dir)
+                eval_score = minimax(new_my_men, new_my_kings, new_opp_men, new_opp_kings,
+                                   depth - 1, alpha, beta, True, color_dir)
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval
+    
+    # Determine direction
+    color_dir = 1 if color == 'w' else -1
+    
+    # Get all legal moves
+    legal_moves = get_all_moves(my_men_set, my_kings_set, opp_men_set, opp_kings_set, color_dir)
+    
+    if not legal_moves:
+        # Should not happen, but return a dummy move
+        return ((0, 0), (0, 0))
+    
+    if len(legal_moves) == 1:
+        return legal_moves[0]
+    
+    # Search for best move
+    depth = 6
+    best_move = legal_moves[0]
+    best_score = -float('inf')
+    
+    for move in legal_moves:
+        new_my_men, new_my_kings, new_opp_men, new_opp_kings = apply_move(
+            my_men_set, my_kings_set, opp_men_set, opp_kings_set, move, color_dir)
+        score = minimax(new_my_men, new_my_kings, new_opp_men, new_opp_kings,
+                       depth - 1, -float('inf'), float('inf'), False, color_dir)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move
+</code>

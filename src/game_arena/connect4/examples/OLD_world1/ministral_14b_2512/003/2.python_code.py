@@ -1,0 +1,174 @@
+
+import numpy as np
+from collections import defaultdict
+
+def policy(board: list[list[int]]) -> int:
+    # Convert to numpy array for easier manipulation
+    board = np.array(board, dtype=int)
+    rows, cols = board.shape
+
+    # Check for immediate winning move
+    win_col = find_immediate_win(board, 1)
+    if win_col is not None:
+        return win_col
+
+    # Block opponent's immediate win
+    opponent_win_col = find_immediate_win(board, -1)
+    if opponent_win_col is not None:
+        return opponent_win_col
+
+    # Evaluate all possible moves using pattern recognition
+    scores = evaluate_moves(board)
+    best_col = max(range(cols), key=lambda col: scores[col])
+
+    # If no strategic move found, use a simple heuristic (center preference)
+    if all(s == 0 for s in scores):
+        return cols // 2
+
+    return best_col
+
+def find_immediate_win(board: np.ndarray, player: int) -> int:
+    """Check if the player can win in the next move."""
+    for col in range(board.shape[1]):
+        if board[0, col] != 0:
+            continue  # column is full
+
+        # Simulate dropping the disc
+        row = board.shape[0] - 1
+        while row >= 0 and board[row, col] == 0:
+            row -= 1
+        row += 1
+        board[row, col] = player
+
+        # Check for win
+        if check_win(board, row, col, player):
+            board[row, col] = 0  # undo
+            return col
+
+        board[row, col] = 0  # undo
+    return None
+
+def check_win(board: np.ndarray, row: int, col: int, player: int) -> bool:
+    """Check if the player has won at the given position."""
+    directions = [
+        (0, 1),   # horizontal
+        (1, 0),    # vertical
+        (1, 1),    # diagonal down-right
+        (1, -1)    # diagonal down-left
+    ]
+
+    for dr, dc in directions:
+        count = 1  # the current piece
+
+        # Check in positive direction
+        r, c = row + dr, col + dc
+        while 0 <= r < board.shape[0] and 0 <= c < board.shape[1] and board[r, c] == player:
+            count += 1
+            r += dr
+            c += dc
+
+        # Check in negative direction
+        r, c = row - dr, col - dc
+        while 0 <= r < board.shape[0] and 0 <= c < board.shape[1] and board[r, c] == player:
+            count += 1
+            r -= dr
+            c -= dc
+
+        if count >= 4:
+            return True
+    return False
+
+def evaluate_moves(board: np.ndarray) -> list[int]:
+    """Evaluate all possible moves using pattern recognition."""
+    scores = [0] * board.shape[1]
+
+    for col in range(board.shape[1]):
+        if board[0, col] != 0:
+            continue  # column is full
+
+        # Simulate dropping the disc
+        row = board.shape[0] - 1
+        while row >= 0 and board[row, col] == 0:
+            row -= 1
+        row += 1
+        board[row, col] = 1
+
+        # Evaluate the board state
+        scores[col] = evaluate_position(board, row, col)
+
+        board[row, col] = 0  # undo
+
+    return scores
+
+def evaluate_position(board: np.ndarray, row: int, col: int) -> int:
+    """Evaluate the board position after placing a disc."""
+    score = 0
+
+    # Check for potential winning patterns
+    score += check_pattern(board, row, col, 1, 3) * 100  # three in a row
+    score += check_pattern(board, row, col, 1, 2) * 10   # two in a row
+    score += check_pattern(board, row, col, -1, 3) * -100  # opponent's three in a row
+    score += check_pattern(board, row, col, -1, 2) * -10  # opponent's two in a row
+
+    # Center column preference
+    center_col = board.shape[1] // 2
+    score += (center_col - col) ** 2 * -0.1  # prefer center columns
+
+    # Height preference (higher is better)
+    score += (board.shape[0] - row) * 0.2
+
+    # Potential for future moves
+    score += count_potential_moves(board, 1) * 0.5
+    score -= count_potential_moves(board, -1) * 0.3
+
+    return score
+
+def check_pattern(board: np.ndarray, row: int, col: int, player: int, count: int) -> int:
+    """Check for patterns of 'count' consecutive discs of the given player."""
+    directions = [
+        (0, 1),   # horizontal
+        (1, 0),    # vertical
+        (1, 1),    # diagonal down-right
+        (1, -1)    # diagonal down-left
+    ]
+
+    for dr, dc in directions:
+        # Check in positive direction
+        r, c = row + dr, col + dc
+        consecutive = 1  # the current piece
+        while 0 <= r < board.shape[0] and 0 <= c < board.shape[1] and board[r, c] == player:
+            consecutive += 1
+            r += dr
+            c += dc
+
+        # Check in negative direction
+        r, c = row - dr, col - dc
+        while 0 <= r < board.shape[0] and 0 <= c < board.shape[1] and board[r, c] == player:
+            consecutive += 1
+            r -= dr
+            c -= dc
+
+        if consecutive >= count:
+            return 1
+
+    return 0
+
+def count_potential_moves(board: np.ndarray, player: int) -> int:
+    """Count potential moves that could lead to a win."""
+    count = 0
+    for col in range(board.shape[1]):
+        if board[0, col] != 0:
+            continue  # column is full
+
+        # Simulate dropping the disc
+        row = board.shape[0] - 1
+        while row >= 0 and board[row, col] == 0:
+            row -= 1
+        row += 1
+        board[row, col] = player
+
+        # Check for potential winning patterns
+        count += check_pattern(board, row, col, player, 3)
+
+        board[row, col] = 0  # undo
+    return count

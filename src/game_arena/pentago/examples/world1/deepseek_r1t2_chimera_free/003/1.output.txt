@@ -1,0 +1,133 @@
+
+
+The strategy is to first check for any immediate winning moves. If found, return that move. If no immediate win, check for moves that result in a draw (both players have 5 in a row). If no winning or drawing moves, prioritize moves that do not allow the opponent to have 5 in a row and select the one with the highest adjacency score (to build towards future wins). If all moves let the opponent win, return any legal move.
+
+<code>
+def policy(you, opponent):
+    # Convert input to lists to ensure mutability
+    you = [list(row) for row in you]
+    opponent = [list(row) for row in opponent]
+    
+    # Helper function to check for five in a row
+    def has_five(board):
+        # Check rows
+        for r in range(6):
+            for c in range(2):
+                if all(board[r][c + i] == 1 for i in range(5)):
+                    return True
+        # Check columns
+        for c in range(6):
+            for r in range(2):
+                if all(board[r + i][c] == 1 for i in range(5)):
+                    return True
+        # Check diagonals down-right
+        for r in range(2):
+            for c in range(2):
+                if all(board[r + i][c + i] == 1 for i in range(5)):
+                    return True
+        # Check diagonals down-left
+        for r in range(2):
+            for c in range(4, 6):
+                if all(board[r + i][c - i] == 1 for i in range(5)):
+                    return True
+        return False
+    
+    # Helper function to rotate a quadrant
+    def rotate_quadrant(board, quad, dir):
+        # Determine the quadrant region
+        if quad == 0:
+            row_start, row_end = 0, 3
+            col_start, col_end = 0, 3
+        elif quad == 1:
+            row_start, row_end = 0, 3
+            col_start, col_end = 3, 6
+        elif quad == 2:
+            row_start, row_end = 3, 6
+            col_start, col_end = 0, 3
+        elif quad == 3:
+            row_start, row_end = 3, 6
+            col_start, col_end = 3, 6
+        
+        # Extract the submatrix
+        sub = [board[row_start + i][col_start:col_end] for i in range(3)]
+        
+        # Rotate based on direction
+        if dir == 'R':  # clockwise
+            rotated = list(zip(*sub[::-1]))
+        else:  # anticlockwise
+            rotated = list(zip(*sub))[::-1]
+        
+        # Convert tuples to lists
+        rotated = [list(row) for row in rotated]
+        
+        # Update the board
+        for i in range(3):
+            for j in range(3):
+                board[row_start + i][col_start + j] = rotated[i][j]
+    
+    # Helper to generate move string
+    def create_move(r, c, quad, dir):
+        return f"{r+1},{c+1},{quad},{dir}"
+    
+    # First pass: Check for immediate winning moves
+    for r in range(6):
+        for c in range(6):
+            if you[r][c] == 0 and opponent[r][c] == 0:
+                for quad in range(4):
+                    for dir in ['L', 'R']:
+                        # Simulate move
+                        new_you = [row[:] for row in you]
+                        new_opponent = [row[:] for row in opponent]
+                        new_you[r][c] = 1
+                        rotate_quadrant(new_you, quad, dir)
+                        rotate_quadrant(new_opponent, quad, dir)
+                        my_win = has_five(new_you)
+                        opp_win = has_five(new_opponent)
+                        if my_win and not opp_win:
+                            return create_move(r, c, quad, dir)
+    
+    # Second pass: Check for draws and safe moves
+    draw_moves = []
+    safe_moves = []  # entries: (adjacency_score, r, c, quad, dir)
+    for r in range(6):
+        for c in range(6):
+            if you[r][c] == 0 and opponent[r][c] == 0:
+                for quad in range(4):
+                    for dir in ['L', 'R']:
+                        new_you = [row[:] for row in you]
+                        new_opponent = [row[:] for row in opponent]
+                        new_you[r][c] = 1
+                        rotate_quadrant(new_you, quad, dir)
+                        rotate_quadrant(new_opponent, quad, dir)
+                        my_win = has_five(new_you)
+                        opp_win = has_five(new_opponent)
+                        if my_win and opp_win:
+                            draw_moves.append(create_move(r, c, quad, dir))
+                        if not opp_win:
+                            # Calculate adjacency score
+                            adj = 0
+                            for dr in [-1, 0, 1]:
+                                for dc in [-1, 0, 1]:
+                                    if dr == 0 and dc == 0:
+                                        continue
+                                    nr, nc = r + dr, c + dc
+                                    if 0 <= nr < 6 and 0 <= nc < 6:
+                                        adj += new_you[nr][nc]
+                            safe_moves.append((adj, r, c, quad, dir))
+    
+    # If any draw moves, return one
+    if draw_moves:
+        return draw_moves[0]
+    
+    # Choose best safe move by adjacency score
+    if safe_moves:
+        safe_moves.sort(reverse=True, key=lambda x: x[0])
+        _, r, c, quad, dir = safe_moves[0]
+        return create_move(r, c, quad, dir)
+    
+    # Fallback: return the first legal move (should not reach here if valid input)
+    for r in range(6):
+        for c in range(6):
+            if you[r][c] == 0 and opponent[r][c] == 0:
+                return create_move(r, c, 0, 'L')
+</code>

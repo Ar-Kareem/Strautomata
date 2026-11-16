@@ -1,0 +1,241 @@
+
+import numpy as np
+from collections import deque
+
+def policy(board) -> str:
+    # Convert board to numpy array for easier manipulation
+    board = np.array(board)
+
+    # Find all our pieces and opponent pieces
+    our_pieces = np.argwhere(board == 1)
+    opp_pieces = np.argwhere(board == -1)
+
+    # If we have no pieces (shouldn't happen), return a dummy move
+    if len(our_pieces) == 0:
+        return "0,0:0,0"
+
+    # Generate all possible legal moves
+    legal_moves = []
+    for piece in our_pieces:
+        row, col = piece
+        # Check all 8 directions
+        for dr in [-1, 0, 1]:
+            for dc in [-1, 0, 1]:
+                if dr == 0 and dc == 0:
+                    continue  # Skip no movement
+
+                # Calculate the number of pieces in this line
+                count = 0
+                r, c = row + dr, col + dc
+                while 0 <= r < 8 and 0 <= c < 8:
+                    if board[r][c] != 0:
+                        count += 1
+                    r += dr
+                    c += dc
+
+                # The move distance must equal the count
+                if count == 0:
+                    continue
+
+                # Check possible landing positions
+                r, c = row + dr * count, col + dc * count
+                if 0 <= r < 8 and 0 <= c < 8:
+                    # Check if path is clear (no opponent pieces in between)
+                    path_clear = True
+                    for i in range(1, count):
+                        r_check, c_check = row + dr * i, col + dc * i
+                        if board[r_check][c_check] == -1:
+                            path_clear = False
+                            break
+
+                    if path_clear:
+                        # Check if landing on opponent piece (capture)
+                        if board[r][c] == -1:
+                            legal_moves.append((row, col, r, c, True))  # Capture move
+                        elif board[r][c] == 0:
+                            legal_moves.append((row, col, r, c, False))  # Regular move
+
+    # If no legal moves (shouldn't happen in normal play), return first piece to itself
+    if not legal_moves:
+        return f"{our_pieces[0][0]},{our_pieces[0][1]}:{our_pieces[0][0]},{our_pieces[0][1]}"
+
+    # Evaluate each legal move
+    best_move = None
+    best_score = -float('inf')
+
+    for move in legal_moves:
+        from_row, from_col, to_row, to_col, is_capture = move
+        score = 0
+
+        # 1. Immediate win check - if this move connects all our pieces
+        temp_board = board.copy()
+        temp_board[from_row][from_col] = 0
+        temp_board[to_row][to_col] = 1
+        if is_capture:
+            temp_board[to_row][to_col] = 1  # Replace opponent piece
+
+        if is_connected(temp_board, 1):
+            return f"{from_row},{from_col}:{to_row},{to_col}"
+
+        # 2. Capture priority
+        if is_capture:
+            score += 100
+
+            # Bonus for capturing isolated opponent pieces
+            opp_pos = (to_row, to_col)
+            if is_isolated(temp_board, opp_pos, -1):
+                score += 50
+
+        # 3. Connectivity improvement
+        current_connectivity = count_connected_components(board, 1)
+        new_connectivity = count_connected_components(temp_board, 1)
+        if new_connectivity < current_connectivity:
+            score += (current_connectivity - new_connectivity) * 30
+
+        # 4. Mobility - count possible moves after this move
+        future_moves = count_legal_moves(temp_board)
+        score += future_moves * 5
+
+        # 5. Center control
+        center_distance_before = abs(from_row - 3.5) + abs(from_col - 3.5)
+        center_distance_after = abs(to_row - 3.5) + abs(to_col - 3.5)
+        if center_distance_after < center_distance_before:
+            score += (center_distance_before - center_distance_after) * 2
+
+        # 6. Defensive - avoid leaving pieces exposed
+        if not is_capture and is_exposed(temp_board, (to_row, to_col)):
+            score -= 20
+
+        # Update best move if this is better
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    # Return the best move found
+    from_row, from_col, to_row, to_col, _ = best_move
+    return f"{from_row},{from_col}:{to_row},{to_col}"
+
+def is_connected(board, player):
+    """Check if all player's pieces are connected in a single group."""
+    pieces = np.argwhere(board == player)
+    if len(pieces) == 0:
+        return True
+
+    visited = set()
+    queue = deque([tuple(pieces[0])])
+    visited.add(tuple(pieces[0]))
+
+    directions = [(-1,-1), (-1,0), (-1,1),
+                  (0,-1),           (0,1),
+                  (1,-1),  (1,0),   (1,1)]
+
+    while queue:
+        current = queue.popleft()
+        for dr, dc in directions:
+            neighbor = (current[0] + dr, current[1] + dc)
+            if (0 <= neighbor[0] < 8 and 0 <= neighbor[1] < 8 and
+                tuple(neighbor) in map(tuple, pieces) and
+                tuple(neighbor) not in visited):
+                visited.add(tuple(neighbor))
+                queue.append(neighbor)
+
+    return len(visited) == len(pieces)
+
+def count_connected_components(board, player):
+    """Count the number of connected components for a player."""
+    pieces = np.argwhere(board == player)
+    if len(pieces) == 0:
+        return 0
+
+    visited = set()
+    components = 0
+
+    directions = [(-1,-1), (-1,0), (-1,1),
+                  (0,-1),           (0,1),
+                  (1,-1),  (1,0),   (1,1)]
+
+    for piece in pieces:
+        if tuple(piece) not in visited:
+            components += 1
+            queue = deque([tuple(piece)])
+            visited.add(tuple(piece))
+
+            while queue:
+                current = queue.popleft()
+                for dr, dc in directions:
+                    neighbor = (current[0] + dr, current[1] + dc)
+                    if (0 <= neighbor[0] < 8 and 0 <= neighbor[1] < 8 and
+                        tuple(neighbor) in map(tuple, pieces) and
+                        tuple(neighbor) not in visited):
+                        visited.add(tuple(neighbor))
+                        queue.append(neighbor)
+
+    return components
+
+def is_isolated(board, position, player):
+    """Check if a piece is isolated (no adjacent friendly pieces)."""
+    row, col = position
+    directions = [(-1,-1), (-1,0), (-1,1),
+                  (0,-1),           (0,1),
+                  (1,-1),  (1,0),   (1,1)]
+
+    for dr, dc in directions:
+        r, c = row + dr, col + dc
+        if 0 <= r < 8 and 0 <= c < 8 and board[r][c] == player:
+            return False
+    return True
+
+def is_exposed(board, position):
+    """Check if a position is exposed (adjacent to opponent pieces)."""
+    row, col = position
+    directions = [(-1,-1), (-1,0), (-1,1),
+                  (0,-1),           (0,1),
+                  (1,-1),  (1,0),   (1,1)]
+
+    exposed_count = 0
+    for dr, dc in directions:
+        r, c = row + dr, col + dc
+        if 0 <= r < 8 and 0 <= c < 8 and board[r][c] == -1:
+            exposed_count += 1
+
+    return exposed_count >= 2
+
+def count_legal_moves(board):
+    """Count the number of legal moves available for the current player."""
+    count = 0
+    our_pieces = np.argwhere(board == 1)
+
+    for piece in our_pieces:
+        row, col = piece
+        for dr in [-1, 0, 1]:
+            for dc in [-1, 0, 1]:
+                if dr == 0 and dc == 0:
+                    continue
+
+                # Calculate the number of pieces in this line
+                line_count = 0
+                r, c = row + dr, col + dc
+                while 0 <= r < 8 and 0 <= c < 8:
+                    if board[r][c] != 0:
+                        line_count += 1
+                    r += dr
+                    c += dc
+
+                if line_count == 0:
+                    continue
+
+                # Check possible landing positions
+                r, c = row + dr * line_count, col + dc * line_count
+                if 0 <= r < 8 and 0 <= c < 8:
+                    # Check if path is clear
+                    path_clear = True
+                    for i in range(1, line_count):
+                        r_check, c_check = row + dr * i, col + dc * i
+                        if board[r_check][c_check] == -1:
+                            path_clear = False
+                            break
+
+                    if path_clear and (board[r][c] == 0 or board[r][c] == -1):
+                        count += 1
+
+    return count

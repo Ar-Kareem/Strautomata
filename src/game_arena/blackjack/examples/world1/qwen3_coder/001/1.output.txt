@@ -1,0 +1,109 @@
+<thinking>
+I need to create a Blackjack policy function that decides whether to HIT or STAY based on the current hand and target score.
+
+Key considerations:
+1. Card values: A=11 or 1 (11 if hand <= target, 1 if hand > target), 2-10=face value, J/Q/K=10
+2. If my total exceeds target, I bust and lose
+3. I want to get as close to target as possible without going over
+4. I don't know what the opponent is doing, so I need to make decisions based only on my hand and target
+
+Strategy approach:
+1. Calculate my current hand value (handling Aces properly)
+2. If I'm already over target, I've busted (but policy is called before that check)
+3. If I'm very close to target, I should probably STAY
+4. If I'm far from target, I should HIT
+5. The decision should consider how much room I have to improve vs risk of busting
+
+Let me think about when to HIT vs STAY:
+- If my current total is already >= target, I should STAY (risk of going over)
+- If my total is significantly below target, I should HIT
+- The key is determining the threshold for "significantly below"
+
+A more sophisticated approach would consider:
+- How many cards I have left in my deck
+- What the remaining cards are (but I don't know the order)
+- Probability of busting on the next hit
+
+Since I have a fixed deck order (A,2,3,...,K), I could potentially know exactly what card comes next. But the problem doesn't specify if I know this or if cards are drawn randomly.
+
+Wait - re-reading, it says "you draw the next card from your deck" which suggests deterministic order: A, 2, 3, ..., K.
+
+So if I know the order, I can calculate exactly what the next card will be and what my total would be.
+
+But actually, that's not right either - I don't know how many cards I've already drawn unless I can infer it from my hand.
+
+Let me think differently. A simple but effective strategy:
+- Calculate current hand value
+- If value >= target, STAY (avoid busting)
+- If value is "close enough" to target, STAY
+- Otherwise HIT
+
+How to define "close enough"? Maybe target - current_value < some threshold?
+
+Or I could be more precise:
+- Calculate how much I can safely draw (target - current_value)
+- If the next card is likely to be <= that amount, HIT
+- But I don't know what the next card is in a probabilistic sense
+
+The safest approach is a threshold-based strategy:
+- If current value >= some proportion of target (e.g., 0.8 * target) and I'm close to target, STAY
+- Else HIT
+
+Let me be more precise:
+1. Calculate current hand value (with Aces handled properly)
+2. If current value >= target, STAY (already at/past target)
+3. If current value >= target - small margin, STAY (low room for error)
+4. Else HIT
+
+Actually, let me think about this more carefully:
+- If I'm at exactly target, I should definitely STAY
+- If I'm very close to target (e.g., 1 or 2 points away), the next card might push me over, so I might want to STAY
+- If I'm far from target, I should HIT to get closer
+
+A good rule of thumb might be:
+- STAY if current_value >= target - 2 (conservative) or current_value >= 0.9 * target (more aggressive)
+- Otherwise HIT
+
+Let me go with a simple conservative approach:
+1. If current hand value >= target, STAY
+2. If target - current hand value <= 2, STAY (don't risk going over)
+3. Otherwise HIT
+</thinking>
+
+<code>
+def policy(hand: list[str], target: int) -> str:
+    def calculate_hand_value(hand):
+        # First calculate total without aces
+        total = 0
+        aces = 0
+        
+        for card in hand:
+            if card == "A":
+                aces += 1
+            elif card in ["J", "Q", "K"]:
+                total += 10
+            else:
+                total += int(card)
+        
+        # Add aces optimally
+        for _ in range(aces):
+            if total + 11 <= target:
+                total += 11
+            else:
+                total += 1
+        
+        return total
+    
+    current_value = calculate_hand_value(hand)
+    
+    # If we've already reached or exceeded target, stay
+    if current_value >= target:
+        return "STAY"
+    
+    # If we're within 2 points of target, stay to avoid risk of busting
+    if target - current_value <= 2:
+        return "STAY"
+    
+    # Otherwise, hit to try to get closer to target
+    return "HIT"
+</code>

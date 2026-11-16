@@ -1,0 +1,159 @@
+
+import numpy as np
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Determines the next move for a 4x4 Tic Tac Toe game using minimax with alpha-beta pruning.
+
+    Args:
+        board: A 4x4 list of lists where 0 is empty, 1 is player, -1 is opponent.
+
+    Returns:
+        A tuple (row, col) representing the next move.
+    """
+    # Convert to numpy array for easier manipulation
+    board = np.array(board, dtype=int)
+    player = 1  # We are player 1
+
+    # Find all empty positions
+    empty_positions = [(i, j) for i in range(4) for j in range(4) if board[i, j] == 0]
+
+    # If no empty positions, return any position (shouldn't happen in valid game)
+    if not empty_positions:
+        return (0, 0)
+
+    # Evaluate all possible moves and choose the best one
+    best_move = None
+    best_score = -float('inf')
+
+    for move in empty_positions:
+        row, col = move
+        # Make the move
+        board[row, col] = player
+        # Get the score of this move
+        score = minimax(board, 0, -float('inf'), float('inf'), False)
+        # Undo the move
+        board[row, col] = 0
+
+        # Update best move
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return best_move
+
+def minimax(board: np.ndarray, depth: int, alpha: float, beta: float, is_maximizing: bool) -> int:
+    """
+    Minimax algorithm with alpha-beta pruning to evaluate board positions.
+    """
+    score = evaluate(board)
+
+    # Base cases
+    if score == 10 or score == -10:
+        return score
+
+    if is_maximizing:
+        best_score = -float('inf')
+        for i in range(4):
+            for j in range(4):
+                if board[i, j] == 0:
+                    board[i, j] = 1
+                    score = minimax(board, depth + 1, alpha, beta, False)
+                    board[i, j] = 0
+                    best_score = max(score, best_score)
+                    alpha = max(alpha, score)
+                    if beta <= alpha:
+                        break  # Alpha-beta pruning
+        return best_score
+    else:
+        best_score = float('inf')
+        for i in range(4):
+            for j in range(4):
+                if board[i, j] == 0:
+                    board[i, j] = -1
+                    score = minimax(board, depth + 1, alpha, beta, True)
+                    board[i, j] = 0
+                    best_score = min(score, best_score)
+                    beta = min(beta, score)
+                    if beta <= alpha:
+                        break  # Alpha-beta pruning
+        return best_score
+
+def evaluate(board: np.ndarray) -> int:
+    """
+    Evaluates the current board position and returns a score.
+    Higher scores are better for player 1 (1), lower for player -1 (-1).
+    """
+    # Check rows
+    for row in range(4):
+        if board[row, 0] == board[row, 1] == board[row, 2] == board[row, 3] != 0:
+            return 10 if board[row, 0] == 1 else -10
+
+    # Check columns
+    for col in range(4):
+        if board[0, col] == board[1, col] == board[2, col] == board[3, col] != 0:
+            return 10 if board[0, col] == 1 else -10
+
+    # Check diagonals
+    if board[0, 0] == board[1, 1] == board[2, 2] == board[3, 3] != 0:
+        return 10 if board[0, 0] == 1 else -10
+    if board[0, 3] == board[1, 2] == board[2, 1] == board[3, 0] != 0:
+        return 10 if board[0, 3] == 1 else -10
+
+    # If no winner, evaluate heuristic
+    return heuristic(board)
+
+def heuristic(board: np.ndarray) -> int:
+    """
+    Evaluates the board position using a heuristic function.
+    """
+    score = 0
+
+    # Count potential winning lines for player and opponent
+    for i in range(4):
+        # Rows
+        row = board[i, :]
+        score += evaluate_line(row, 1) * 10
+        score += evaluate_line(row, -1) * -10
+
+        # Columns
+        col = board[:, i]
+        score += evaluate_line(col, 1) * 10
+        score += evaluate_line(col, -1) * -10
+
+    # Diagonals
+    diag1 = [board[i, i] for i in range(4)]
+    score += evaluate_line(diag1, 1) * 10
+    score += evaluate_line(diag1, -1) * -10
+
+    diag2 = [board[i, 3-i] for i in range(4)]
+    score += evaluate_line(diag2, 1) * 10
+    score += evaluate_line(diag2, -1) * -10
+
+    # Center control bonus
+    if board[1, 1] == 1:
+        score += 5
+    elif board[1, 1] == -1:
+        score -= 5
+
+    # Corner control bonus
+    corners = [(0, 0), (0, 3), (3, 0), (3, 3)]
+    for i, j in corners:
+        if board[i, j] == 1:
+            score += 3
+        elif board[i, j] == -1:
+            score -= 3
+
+    return score
+
+def evaluate_line(line: np.ndarray, player: int) -> int:
+    """
+    Evaluates a line (row, column, or diagonal) for potential winning combinations.
+    """
+    count = line.tolist().count(player)
+    if count == 3:
+        return 1  # Two in a row with one empty
+    elif count == 2:
+        return 0.5  # Two in a row
+    return 0

@@ -1,0 +1,253 @@
+The strategy for this policy is based on a heuristic evaluation of the board state with a focus on tactical safety and liberty management. This approach ensures the AI plays valid Go moves within the 1-second time limit while remaining competitive against intermediate opponents.
+
+**Key components of the strategy:**
+
+1.  **State Parsing & Connectivity Analysis**:
+    The policy first converts the input lists of stones into sets for O(1) access. It then performs a flood-fill algorithm (Standard Depth First Search) to identify all connected groups of stones for both players and counts their liberties. This allows the AI to immediately detect critical situations:
+    -   **Own groups in "Atari"** (1 liberty left): These need to be saved.
+    -   **Opponent groups in "Atari"**: These are prime targets for capture.
+
+2.  **Candidate Generation**:
+    Instead of analyzing every empty point on the board (361 points), the AI generates a smart list of candidate moves:
+    -   Liberties of urgent groups (to save or kill).
+    -   Empty points adjacent to existing stones (local shape moves).
+    -   Star points (traditional opening moves like 4-4) to take territory early in the game.
+
+3.  **Monte Carlo / Heuristic Evaluation**:
+    The AI simulates playing each candidate move to determine its outcome. The scoring function prioritizes:
+    -   **Capture**: +1000 points per stone captured.
+    -   **Survival**: +500 points for saving a group in Atari.
+    -   **Contact**: Small bonus for playing near opponent stones (fighting style).
+    -   **Opening Theory**: Bonus for Star points.
+    -   **Constraints**: Moves that result in suicide are filtered out. Moves that recreate the previous board state (Ko) are strictly forbidden using a hash stored in `memory`. Moves on the edge of the board (1st line) are penalized unless they capture.
+
+4.  **Memory Management**:
+    To comply with the Ko rule, the policy stores the hash of the board state resulting from its chosen move in `memory`. In the subsequent turn, it verifies that any candidate move does not recreate this specific hash.
+
+<code>
+import random
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    """
+    A heuristic-based Go policy.
+    Strategies:
+    1. Capture opponent groups with 1 liberty.
+    2. Save own groups with 1 liberty.
+    3. Play contact moves or star points.
+    4. Avoid suicide and Ko.
+    """
+    
+    # Game Board Constants
+    BOARD_SIZE = 19
+    PASS = (0, 0)
+    
+    # 1. Parse Board State
+    # Convert lists to sets for O(1) lookups
+    my_stones = set(me)
+    opp_stones = set(opponent)
+
+    # Helper: Check boundaries
+    def is_on_board(r, c):
+        return 1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE
+
+    # Helper: Get valid neighbors
+    def get_neighbors(r, c):
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if is_on_board(nr, nc):
+                yield nr, nc
+
+    # 2. Group Analysis
+    # Identifies connected groups and uses flood-fill to count liberties.
+    # Returns a list of dicts: {'stones': set((r,c)...), 'libs': set((r,c)...)}
+    def analyze_groups(player_stones, enemy_stones):
+        groups = []
+        visited = set()
+        for s in player_stones:
+            if s in visited:
+                continue
+            
+            # Flood fill to build the group
+            stack = [s]
+            g_stones = set()
+            g_libs = set()
+            visited.add(s)
+            g_stones.add(s)
+            
+            idx = 0
+            while idx < len(stack):
+                curr = stack[idx]
+                idx += 1
+                for nr, nc in get_neighbors(*curr):
+                    if (nr, nc) in player_stones:
+                        if (nr, nc) not in visited:
+                            visited.add((nr, nc))
+                            g_stones.add((nr, nc))
+                            stack.append((nr, nc))
+                    elif (nr, nc) not in enemy_stones:
+                        g_libs.add((nr, nc))
+            groups.append({'stones': g_stones, 'libs': g_libs})
+        return groups
+
+    # Analyze current board situation
+    my_groups = analyze_groups(my_stones, opp_stones)
+    opp_groups = analyze_groups(opp_stones, my_stones)
+
+    # 3. Candidate Generation
+    candidates = set()
+
+    # A. Urgent: Capture stones in Atari (1 liberty)
+    for g in opp_groups:
+        if len(g['libs']) == 1:
+            candidates.update(g['libs'])
+
+    # B. Urgent: Save own stones in Atari
+    for g in my_groups:
+        if len(g['libs']) == 1:
+            candidates.update(g['libs'])
+
+    # C. Shape/Local: Neighbors of all existing stones
+    all_stones = my_stones | opp_stones
+    for r, c in all_stones:
+        for nr, nc in get_neighbors(r, c):
+            if (nr, nc) not in all_stones:
+                candidates.add((nr, nc))
+
+    # D. Opening: Star points (Corners and sides)
+    star_points = [
+        (4, 4), (4, 16), (16, 4), (16, 16),
+        (10, 10), (3, 3), (3, 17), (17, 3), (17, 17)
+    ]
+    for sp in star_points:
+        if sp not in all_stones:
+            candidates.add(sp)
+
+    # Fallback: If board is empty or no local candidates, ensure 4,4 at least
+    if not candidates:
+        candidates.add((4, 4))
+        
+    # 4. Evaluation Loop
+    best_move = PASS
+    best_score = -float('inf')
+    
+    # Calculate initial hash to handle pass scenarios or fallback
+    initial_hash = hash((tuple(sorted(list(my_stones))), tuple(sorted(list(opp_stones)))))
+    best_hash = initial_hash 
+    
+    # Retrieve the hash of the board from OUR previous move to check for Ko
+    prev_hash = memory.get('prev_board_hash')
+    
+    # Shuffle candidates to add variety when scores are equal
+    cand_list = list(candidates)
+    random.shuffle(cand_list)
+
+    for move in cand_list:
+        if move in all_stones: continue # Safety check
+
+        # --- SIMULATION ---
+        
+        # 1. Place the stone
+        sim_me = my_stones.copy()
+        sim_me.add(move)
+        sim_opp = opp_stones.copy()
+        
+        # 2. Check Captures
+        captured_stones = set()
+        
+        # Check neighbors for opponent stones
+        for nr, nc in get_neighbors(*move):
+            if (nr, nc) in sim_opp:
+                # Find which group this stone belongs to
+                # (Optimization: could map stone->group_id, but linear scan ok for 19x19)
+                target_g = None
+                for g in opp_groups:
+                    if (nr, nc) in g['stones']:
+                        target_g = g
+                        break
+                
+                if target_g:
+                    # If we fill the last liberty of that group, it is captured
+                    if len(target_g['libs']) == 1 and move in target_g['libs']:
+                        captured_stones.update(target_g['stones'])
+        
+        sim_opp -= captured_stones
+        capture_count = len(captured_stones)
+
+        # 3. Suicide Check
+        # A move is suicide if the resulting group has 0 liberties.
+        # Exception: allowed if it captured stones (which creates space).
+        # We run a quick BFS from 'move' to check for at least 1 liberty.
+        stack = [move]
+        visited_sim = {move}
+        has_liberty = False
+        
+        idx = 0
+        while idx < len(stack):
+            curr = stack[idx]
+            idx += 1
+            for nr, nc in get_neighbors(*curr):
+                if (nr, nc) not in sim_me and (nr, nc) not in sim_opp:
+                    has_liberty = True
+                    break
+                if (nr, nc) in sim_me and (nr, nc) not in visited_sim:
+                    visited_sim.add((nr, nc))
+                    stack.append((nr, nc))
+            if has_liberty:
+                break
+        
+        if not has_liberty:
+            continue # Illegal suicide move
+
+        # 4. Ko Check
+        # Compare current simulation hash with the forbidden previous hash
+        current_hash = hash((tuple(sorted(list(sim_me))), tuple(sorted(list(sim_opp)))))
+        if prev_hash is not None and current_hash == prev_hash:
+            continue # Forbidden by Ko rule
+
+        # --- SCORING ---
+        score = 0.0
+        
+        # Priority 1: Captures (High value)
+        if capture_count > 0:
+            score += 1000 * (capture_count + 1)
+        
+        # Priority 2: Save Atari (High value)
+        # Check if we played on a liberty of one of our own endangered groups
+        saved_bonus = False
+        for g in my_groups:
+            if len(g['libs']) == 1 and move in g['libs']:
+                score += 800
+                saved_bonus = True
+
+        # Priority 3: Contact / Fighting
+        # Prefer moves next to opponent stones for interaction
+        neighbor_opps = 0
+        for nr, nc in get_neighbors(*move):
+            if (nr, nc) in opp_stones:
+                neighbor_opps += 1
+        score += neighbor_opps * 15
+        
+        # Priority 4: Star points (Good geometry)
+        if move in star_points:
+            score += 10
+            
+        # Priority 5: Avoid 1st line (Edge of chaos)
+        # Unless capturing or saving, playing on the edge is usually bad early game
+        if not capture_count and not saved_bonus:
+             if move[0] == 1 or move[0] == 19 or move[1] == 1 or move[1] == 19:
+                 score -= 50
+        
+        # Tie-breaker: small random noise
+        score += random.random()
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+            best_hash = current_hash
+
+    # Save the hash of the board *after* our move to memory.
+    # Next turn, we check against this to ensure we don't loop back to it.
+    memory['prev_board_hash'] = best_hash
+    
+    return best_move, memory
+</code>

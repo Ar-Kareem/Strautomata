@@ -1,0 +1,130 @@
+```python
+import random
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Choose a move for 4x4 tic-tac-toe (win = 4 in row/col/diag).
+    board: 4x4 list of lists with 0 (empty), 1 (us), -1 (opponent)
+    Returns (row, col)
+    Strategy:
+      - If we can win immediately, play that move.
+      - If opponent can win next, block that move.
+      - Otherwise score each empty cell by potential:
+          * prefer moves that create immediate threats (3-in-line with one empty)
+          * prefer moves that extend our lines without interference
+          * prefer central squares
+      - Tie-break deterministically by smallest (row, col).
+    """
+    N = 4
+    me = 1
+    opp = -1
+
+    # Precompute all winning lines (4 rows, 4 cols, 2 diagonals)
+    lines = []
+    for r in range(N):
+        lines.append([(r, c) for c in range(N)])
+    for c in range(N):
+        lines.append([(r, c) for r in range(N)])
+    lines.append([(i, i) for i in range(N)])            # main diag
+    lines.append([(i, N - 1 - i) for i in range(N)])    # anti diag
+
+    # Helper: check if a player has a win
+    def is_win(bd, player):
+        for line in lines:
+            if all(bd[r][c] == player for (r, c) in line):
+                return True
+        return False
+
+    # Find empties
+    empties = [(r, c) for r in range(N) for c in range(N) if board[r][c] == 0]
+    if not empties:
+        # No valid moves; return something valid (shouldn't happen normally)
+        return (0, 0)
+
+    # 1) Immediate win for us
+    for (r, c) in empties:
+        board[r][c] = me
+        if is_win(board, me):
+            board[r][c] = 0
+            return (r, c)
+        board[r][c] = 0
+
+    # 2) Immediate win for opponent -> block
+    # If multiple blocking moves exist, collect them (we'll choose best among them later).
+    blocking_moves = []
+    for (r, c) in empties:
+        board[r][c] = opp
+        if is_win(board, opp):
+            blocking_moves.append((r, c))
+        board[r][c] = 0
+    if len(blocking_moves) == 1:
+        return blocking_moves[0]
+    elif len(blocking_moves) > 1:
+        # multiple immediate threats: choose the move that is best by our heuristic below
+        candidate_moves = set(blocking_moves)
+    else:
+        candidate_moves = set(empties)
+
+    # Heuristic scoring function
+    center_coords = {(1,1), (1,2), (2,1), (2,2)}
+    def score_move(r, c):
+        # simulate placing our mark at (r,c)
+        s = 0
+        # central preference
+        if (r, c) in center_coords:
+            s += 20
+        # Manhattan distance preference (closer to center better)
+        # compute small bonus inversely proportional to distance
+        center_dist = min(abs(r - 1.5) + abs(c - 1.5), 4)
+        s += int((2.0 - center_dist) * 3)  # small bonus
+
+        threat_count = 0
+        for line in lines:
+            if (r, c) not in line:
+                continue
+            our_count = 0
+            opp_count = 0
+            empty_count = 0
+            for (lr, lc) in line:
+                v = board[lr][lc]
+                if lr == r and lc == c:
+                    v = me  # simulate
+                if v == me:
+                    our_count += 1
+                elif v == opp:
+                    opp_count += 1
+                else:
+                    empty_count += 1
+            if opp_count > 0:
+                # this line is contested; little value
+                continue
+            # lines with more of our marks are exponentially better
+            # weight: 10^(our_count)
+            s += (10 ** our_count)
+            # line that becomes a 3-of-4 for us (i.e., our_count == 3) is a direct threat next move
+            if our_count == 3:
+                threat_count += 1
+
+        # if move creates multiple simultaneous threats ("fork"), it's highly valuable
+        s += threat_count * 1000
+
+        # Small random tie-breaker deterministic via seeded function of r,c to avoid true randomness
+        s += ((r * 4 + c) % 7) * 0  # keep deterministic and don't change order; set multiplier 0
+
+        return s
+
+    # Evaluate candidate moves and pick best
+    best_move = None
+    best_score = None
+    for (r, c) in sorted(candidate_moves):  # deterministic order
+        sc = score_move(r, c)
+        if best_score is None or sc > best_score or (sc == best_score and (r, c) < best_move):
+            best_score = sc
+            best_move = (r, c)
+
+    # Fallback: if for some reason best_move is None, pick first empty
+    if best_move is None:
+        return empties[0]
+    return best_move
+```

@@ -1,0 +1,159 @@
+
+import random
+import numpy as np
+from collections import defaultdict
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Convert to numpy array for easier manipulation
+    board = np.array(board)
+    n = 10
+    
+    # Define ship lengths
+    ship_lengths = [5, 4, 3, 3, 2]
+    
+    # Find all unknown and hit cells
+    unknown_mask = (board == 0)
+    hit_mask = (board == 1)
+    
+    # If we have no hits yet, use a checkerboard pattern to maximize coverage
+    if not np.any(hit_mask):
+        # Use a checkerboard pattern with spacing 2 to cover all parity positions
+        candidates = []
+        for i in range(n):
+            for j in range(n):
+                if unknown_mask[i, j]:
+                    # Prefer cells that are part of a checkerboard pattern
+                    if (i + j) % 2 == 0:
+                        candidates.append((i, j))
+        
+        # If checkerboard candidates exist, choose from them
+        if candidates:
+            return random.choice(candidates)
+        
+        # Fallback: choose any unknown cell
+        unknown_cells = np.argwhere(unknown_mask)
+        return tuple(random.choice(unknown_cells))
+    
+    # Find clusters of hits
+    hit_cells = np.argwhere(hit_mask)
+    if len(hit_cells) == 0:
+        unknown_cells = np.argwhere(unknown_mask)
+        return tuple(random.choice(unknown_cells))
+    
+    # If we have hit cells, try to find the orientation of the ship
+    if len(hit_cells) == 1:
+        # Single hit - try adjacent cells
+        hit_r, hit_c = hit_cells[0]
+        adjacent = [(hit_r-1, hit_c), (hit_r+1, hit_c), (hit_r, hit_c-1), (hit_r, hit_c+1)]
+        valid_adjacent = [(r, c) for r, c in adjacent if 0 <= r < n and 0 <= c < n and unknown_mask[r, c]]
+        
+        if valid_adjacent:
+            # Prefer cells that are aligned with more potential ship placements
+            scores = []
+            for r, c in valid_adjacent:
+                score = 0
+                # Check horizontal alignment potential
+                for length in ship_lengths:
+                    for offset in range(-length+1, length):
+                        c_start = max(0, c - offset)
+                        c_end = min(n-1, c_start + length - 1)
+                        if c_end - c_start + 1 == length and all(unknown_mask[r, k] or (r == hit_r and k == hit_c) for k in range(c_start, c_end+1)):
+                            score += 1
+                # Check vertical alignment potential
+                for length in ship_lengths:
+                    for offset in range(-length+1, length):
+                        r_start = max(0, r - offset)
+                        r_end = min(n-1, r_start + length - 1)
+                        if r_end - r_start + 1 == length and all(unknown_mask[k, c] or (k == hit_r and c == hit_c) for k in range(r_start, r_end+1)):
+                            score += 1
+                scores.append(score)
+            
+            if scores:
+                best_idx = np.argmax(scores)
+                return valid_adjacent[best_idx]
+    
+    elif len(hit_cells) >= 2:
+        # Multiple hits - determine orientation
+        # Check if hits are horizontally or vertically aligned
+        rows = hit_cells[:, 0]
+        cols = hit_cells[:, 1]
+        
+        if len(set(rows)) == 1:  # Horizontal alignment
+            r = rows[0]
+            c_min, c_max = np.min(cols), np.max(cols)
+            # Try extending in both directions
+            candidates = []
+            if c_min > 0 and unknown_mask[r, c_min-1]:
+                candidates.append((r, c_min-1))
+            if c_max < n-1 and unknown_mask[r, c_max+1]:
+                candidates.append((r, c_max+1))
+            
+            if candidates:
+                return random.choice(candidates)
+        
+        elif len(set(cols)) == 1:  # Vertical alignment
+            c = cols[0]
+            r_min, r_max = np.min(rows), np.max(rows)
+            # Try extending in both directions
+            candidates = []
+            if r_min > 0 and unknown_mask[r_min-1, c]:
+                candidates.append((r_min-1, c))
+            if r_max < n-1 and unknown_mask[r_max+1, c]:
+                candidates.append((r_max+1, c))
+            
+            if candidates:
+                return random.choice(candidates)
+    
+    # If we can't determine good adjacent cells, use probability-based targeting
+    # Calculate hit probabilities for each unknown cell based on ship placements
+    probabilities = np.zeros((n, n))
+    
+    for length in ship_lengths:
+        # Horizontal placements
+        for r in range(n):
+            for c_start in range(n - length + 1):
+                # Check if this placement is valid (no misses, consistent with hits)
+                valid = True
+                for k in range(length):
+                    if board[r, c_start + k] == -1:  # Miss
+                        valid = False
+                        break
+                    if board[r, c_start + k] == 1:  # Hit
+                        # This cell must be part of this ship placement
+                        pass
+                
+                if valid:
+                    # Increment probability for each cell in this potential placement
+                    for k in range(length):
+                        if unknown_mask[r, c_start + k]:
+                            probabilities[r, c_start + k] += 1
+        
+        # Vertical placements
+        for c in range(n):
+            for r_start in range(n - length + 1):
+                # Check if this placement is valid
+                valid = True
+                for k in range(length):
+                    if board[r_start + k, c] == -1:  # Miss
+                        valid = False
+                        break
+                    if board[r_start + k, c] == 1:  # Hit
+                        # This cell must be part of this ship placement
+                        pass
+                
+                if valid:
+                    # Increment probability for each cell in this potential placement
+                    for k in range(length):
+                        if unknown_mask[r_start + k, c]:
+                            probabilities[r_start + k, c] += 1
+    
+    # Find unknown cells with highest probability
+    unknown_probabilities = probabilities * unknown_mask
+    if np.max(unknown_probabilities) > 0:
+        max_prob = np.max(unknown_probabilities)
+        candidate_cells = np.argwhere(unknown_probabilities == max_prob)
+        return tuple(random.choice(candidate_cells))
+    
+    # Fallback: choose any unknown cell
+    unknown_cells = np.argwhere(unknown_mask)
+    return tuple(random.choice(unknown_cells))

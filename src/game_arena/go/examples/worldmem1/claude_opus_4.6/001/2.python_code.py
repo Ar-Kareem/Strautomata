@@ -1,0 +1,187 @@
+
+import numpy as np
+from collections import deque
+
+def policy(me, opponent, memory):
+    me_set = set(me)
+    opp_set = set(opponent)
+    occupied = me_set | opp_set
+    board_size = 19
+
+    def neighbors(r, c):
+        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+            nr, nc = r+dr, c+dc
+            if 1 <= nr <= board_size and 1 <= nc <= board_size:
+                yield nr, nc
+
+    def get_group(r, c, stone_set):
+        group = set()
+        queue = deque([(r, c)])
+        group.add((r, c))
+        while queue:
+            cr, cc = queue.popleft()
+            for nr, nc in neighbors(cr, cc):
+                if (nr, nc) in stone_set and (nr, nc) not in group:
+                    group.add((nr, nc))
+                    queue.append((nr, nc))
+        return group
+
+    def get_liberties(group):
+        libs = set()
+        for r, c in group:
+            for nr, nc in neighbors(r, c):
+                if (nr, nc) not in occupied:
+                    libs.add((nr, nc))
+        return libs
+
+    def would_capture(r, c, my_set, their_set):
+        captures = set()
+        for nr, nc in neighbors(r, c):
+            if (nr, nc) in their_set:
+                grp = get_group(nr, nc, their_set)
+                libs = set()
+                for gr, gc in grp:
+                    for nnr, nnc in neighbors(gr, gc):
+                        if (nnr, nnc) not in their_set and (nnr, nnc) != (r, c) and (nnr, nnc) not in my_set:
+                            libs.add((nnr, nnc))
+                if len(libs) == 0:
+                    captures |= grp
+        return captures
+
+    def is_legal(r, c, my_set, their_set):
+        if (r, c) in occupied:
+            return False
+        caps = would_capture(r, c, my_set, their_set)
+        if caps:
+            return True
+        new_my = my_set | {(r, c)}
+        new_occ_local = occupied | {(r, c)}
+        grp = get_group(r, c, new_my)
+        libs = set()
+        for gr, gc in grp:
+            for nr, nc in neighbors(gr, gc):
+                if (nr, nc) not in new_occ_local:
+                    libs.add((nr, nc))
+        return len(libs) > 0
+
+    def is_eye(r, c, my_set):
+        adj = list(neighbors(r, c))
+        if not all((nr, nc) in my_set for nr, nc in adj):
+            return False
+        return True
+
+    # Priority 1: Capture opponent in atari
+    capture_moves = []
+    visited_opp = set()
+    for sr, sc in opp_set:
+        if (sr, sc) in visited_opp:
+            continue
+        grp = get_group(sr, sc, opp_set)
+        visited_opp |= grp
+        libs = get_liberties(grp)
+        if len(libs) == 1:
+            mv = list(libs)[0]
+            if is_legal(mv[0], mv[1], me_set, opp_set):
+                capture_moves.append((mv, len(grp)))
+
+    if capture_moves:
+        capture_moves.sort(key=lambda x: -x[1])
+        return (capture_moves[0][0], memory)
+
+    # Priority 2: Save own groups in atari
+    save_moves = []
+    visited_me = set()
+    for sr, sc in me_set:
+        if (sr, sc) in visited_me:
+            continue
+        grp = get_group(sr, sc, me_set)
+        visited_me |= grp
+        libs = get_liberties(grp)
+        if len(libs) == 1:
+            mv = list(libs)[0]
+            if is_legal(mv[0], mv[1], me_set, opp_set) and not is_eye(mv[0], mv[1], me_set):
+                save_moves.append((mv, len(grp)))
+
+    if save_moves:
+        save_moves.sort(key=lambda x: -x[1])
+        return (save_moves[0][0], memory)
+
+    # Influence map for scoring moves
+    influence = np.zeros((board_size+1, board_size+1), dtype=float)
+    for r, c in me_set:
+        for dr in range(-4, 5):
+            for dc in range(-4, 5):
+                nr, nc = r+dr, c+dc
+                if 1 <= nr <= board_size and 1 <= nc <= board_size:
+                    dist = abs(dr) + abs(dc)
+                    if dist <= 4:
+                        influence[nr][nc] += 1.0 / (1 + dist)
+    for r, c in opp_set:
+        for dr in range(-4, 5):
+            for dc in range(-4, 5):
+                nr, nc = r+dr, c+dc
+                if 1 <= nr <= board_size and 1 <= nc <= board_size:
+                    dist = abs(dr) + abs(dc)
+                    if dist <= 4:
+                        influence[nr][nc] -= 1.0 / (1 + dist)
+
+    # Opening: play star points
+    move_num = len(me) + len(opponent)
+    star_points = [(4,4),(4,16),(16,4),(16,16),(4,10),(16,10),(10,4),(10,16),(10,10)]
+    if move_num < 12:
+        for sp in star_points:
+            if sp not in occupied and is_legal(sp[0], sp[1], me_set, opp_set):
+                return (sp, memory)
+
+    # Score all empty intersections
+    best_score = -1e9
+    best_move = (0, 0)
+    candidates = []
+    
+    # Focus on moves near existing stones
+    near_stones = set()
+    for r, c in occupied:
+        for dr in range(-3, 4):
+            for dc in range(-3, 4):
+                nr, nc = r+dr, c+dc
+                if 1 <= nr <= board_size and 1 <= nc <= board_size and (nr, nc) not in occupied:
+                    near_stones.add((nr, nc))
+    
+    if not near_stones:
+        near_stones = {(r, c) for r in range(1, 20) for c in range(1, 20) if (r, c) not in occupied}
+
+    for r, c in near_stones:
+        if not is_legal(r, c, me_set, opp_set):
+            continue
+        if is_eye(r, c, me_set):
+            continue
+        
+        score = 0.0
+        # Prefer contested areas (where influence is near 0 but slightly negative = opponent territory to invade)
+        score -= abs(influence[r][c]) * 0.5
+        # Bonus for being near opponent stones (attacking)
+        opp_adj = sum(1 for nr, nc in neighbors(r, c) if (nr, nc) in opp_set)
+        my_adj = sum(1 for nr, nc in neighbors(r, c) if (nr, nc) in me_set)
+        score += opp_adj * 0.3
+        score += my_adj * 0.2
+        # Captures
+        caps = would_capture(r, c, me_set, opp_set)
+        score += len(caps) * 5
+        # Prefer center-ish
+        dist_center = abs(r - 10) + abs(c - 10)
+        score -= dist_center * 0.02
+        # Edge penalty
+        if r <= 2 or r >= 18 or c <= 2 or c >= 18:
+            score -= 0.5
+        
+        candidates.append((score, r, c))
+
+    if candidates:
+        candidates.sort(key=lambda x: -x[0])
+        best_move = (candidates[0][1], candidates[0][2])
+    
+    if best_move == (0, 0):
+        # Pass
+        return ((0, 0), memory)
+    
+    return (best_move, memory)

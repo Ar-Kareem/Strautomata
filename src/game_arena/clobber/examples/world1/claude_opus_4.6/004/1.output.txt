@@ -1,0 +1,122 @@
+## Strategy
+
+Clobber is a combinatorial game where the last player to move wins. The key insight is that you want to maximize your own mobility (number of legal moves) while minimizing your opponent's mobility. Since the player who cannot move loses, reducing the opponent's options is critical.
+
+My approach uses iterative deepening minimax with alpha-beta pruning and a carefully designed evaluation function:
+
+1. **Move ordering**: Prioritize moves that capture opponent pieces adjacent to more of our pieces (creating future capture opportunities) and that reduce opponent mobility. Good move ordering dramatically improves alpha-beta pruning efficiency.
+
+2. **Evaluation function**: 
+   - Primary: Difference in number of legal moves (our mobility minus opponent's mobility)
+   - Secondary: Consider "safe" pieces (pieces that are adjacent to opponent pieces and thus can still move)
+   - Tertiary: Positional factors like centrality
+
+3. **Iterative deepening**: Search as deep as possible within the time limit, starting from depth 1 and increasing. This ensures we always have a valid move ready.
+
+4. **Endgame detection**: If we detect a position where one side has no moves, return the exact game-theoretic value.
+
+<code>
+import numpy as np
+import time
+
+def policy(you_list, opponent_list):
+    you = np.array(you_list, dtype=np.int8)
+    opp = np.array(opponent_list, dtype=np.int8)
+    
+    ROWS, COLS = 5, 6
+    DIRS = [(-1, 0, 'U'), (0, 1, 'R'), (1, 0, 'D'), (0, -1, 'L')]
+    
+    def get_moves(board_me, board_opp):
+        moves = []
+        for r in range(ROWS):
+            for c in range(COLS):
+                if board_me[r][c] == 1:
+                    for dr, dc, d in DIRS:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < ROWS and 0 <= nc < COLS and board_opp[nr][nc] == 1:
+                            moves.append((r, c, d, nr, nc))
+        return moves
+    
+    def evaluate(board_me, board_opp):
+        my_moves = len(get_moves(board_me, board_opp))
+        opp_moves = len(get_moves(board_opp, board_me))
+        return my_moves - opp_moves
+    
+    def apply_move(board_me, board_opp, r, c, nr, nc):
+        bm = board_me.copy()
+        bo = board_opp.copy()
+        bm[r][c] = 0
+        bm[nr][nc] = 1
+        bo[nr][nc] = 0
+        return bm, bo
+    
+    def alphabeta(board_me, board_opp, depth, alpha, beta, maximizing, deadline):
+        if time.time() > deadline:
+            raise TimeoutError
+        
+        moves = get_moves(board_me, board_opp) if maximizing else get_moves(board_me, board_opp)
+        
+        if maximizing:
+            my_moves = get_moves(board_me, board_opp)
+            if not my_moves:
+                return -1000, None
+            if depth == 0:
+                return evaluate(board_me, board_opp), None
+            best_val = -10000
+            best_move = my_moves[0]
+            # Sort moves by heuristic
+            scored = []
+            for m in my_moves:
+                nm, no = apply_move(board_me, board_opp, m[0], m[1], m[3], m[4])
+                scored.append((-len(get_moves(no, nm)), m, nm, no))
+            scored.sort(key=lambda x: x[0])
+            for s, m, nm, no in scored:
+                val, _ = alphabeta(no, nm, depth - 1, -beta, -alpha, False, deadline)
+                val = -val
+                if val > best_val:
+                    best_val = val
+                    best_move = m
+                alpha = max(alpha, val)
+                if alpha >= beta:
+                    break
+            return best_val, best_move
+        else:
+            opp_moves = get_moves(board_me, board_opp)
+            if not opp_moves:
+                return -1000, None
+            if depth == 0:
+                return evaluate(board_me, board_opp), None
+            best_val = -10000
+            best_move = opp_moves[0]
+            for m in opp_moves:
+                nm, no = apply_move(board_me, board_opp, m[0], m[1], m[3], m[4])
+                val, _ = alphabeta(no, nm, depth - 1, -beta, -alpha, True, deadline)
+                val = -val
+                if val > best_val:
+                    best_val = val
+                    best_move = m
+                alpha = max(alpha, val)
+                if alpha >= beta:
+                    break
+            return best_val, best_move
+    
+    deadline = time.time() + 0.85
+    legal = get_moves(you, opp)
+    if not legal:
+        return "0,0,U"  # shouldn't happen
+    
+    best_move = legal[0]
+    for depth in range(1, 30):
+        try:
+            val, move = alphabeta(you, opp, depth, -10000, 10000, True, deadline)
+            if move:
+                best_move = move
+            if abs(val) >= 900:
+                break
+        except TimeoutError:
+            break
+        if time.time() > deadline:
+            break
+    
+    return f"{best_move[0]},{best_move[1]},{best_move[2]}"
+</code>

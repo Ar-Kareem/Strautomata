@@ -1,0 +1,223 @@
+
+import copy
+
+def policy(state: dict) -> str:
+    """
+    Return a legal move string for the given state.
+    The function tries to play both dice when possible, preferring the order H (higher die first).
+    It simulates possible start locations for the first die and then for the second die,
+    checking for legality (blocked points, bar re-entry, bearing-off rules).
+    It selects the legal sequence that most reduces a simple pip-count heuristic.
+    """
+    my_pts = list(state.get('my_pts', [0]*24))
+    opp_pts = list(state.get('opp_pts', [0]*24))
+    my_bar = int(state.get('my_bar', 0))
+    opp_bar = int(state.get('opp_bar', 0))
+    my_off = int(state.get('my_off', 0))
+    # dice may be [] or have 1 or 2 ints
+    dice = list(state.get('dice', []))
+    
+    # Helpers to format tokens
+    def tok_from(start):
+        if start == 'B':
+            return 'B'
+        if start == 'P':
+            return 'P'
+        return 'A' + str(int(start))
+    
+    # quick pip estimate: sum(index * count) + my_bar*24
+    def pip_count(pts, bar):
+        s = 0
+        for i, c in enumerate(pts):
+            s += i * c
+        s += bar * 24
+        return s
+
+    # bearing-off allowed only if no checkers outside home (points 6..23)
+    def in_home(pts, bar):
+        if bar > 0:
+            return False
+        for i in range(6, 24):
+            if pts[i] > 0:
+                return False
+        return True
+
+    # simulate a single move starting from 'start' with die d on given board snapshot.
+    # start: 'B' or integer index
+    # Returns new (pts, bar, off, opp_pts_copy, opp_bar_copy) or None if illegal.
+    def simulate_move(pts, bar, off, opp, opp_bar, start, d):
+        pts = pts[:]  # copy
+        opp = opp[:]  # copy
+        bar = int(bar)
+        off = int(off)
+        opp_bar = int(opp_bar)
+        # re-entry from bar
+        if start == 'B':
+            if bar <= 0:
+                return None
+            dest = 24 - d
+            if dest < 0 or dest > 23:
+                return None
+            # blocked by 2+ opponent
+            if opp[dest] >= 2:
+                return None
+            # perform re-entry
+            bar -= 1
+            # hit opponent blot?
+            if opp[dest] == 1:
+                opp[dest] = 0
+                opp_bar += 1
+            pts[dest] += 1
+            return pts, bar, off, opp, opp_bar
+        else:
+            p = int(start)
+            if p < 0 or p > 23:
+                return None
+            if pts[p] <= 0:
+                return None
+            dest = p - d
+            # regular move
+            if dest >= 0:
+                if opp[dest] >= 2:
+                    return None
+                # move checker
+                pts[p] -= 1
+                # hit?
+                if opp[dest] == 1:
+                    opp[dest] = 0
+                    opp_bar += 1
+                pts[dest] += 1
+                return pts, bar, off, opp, opp_bar
+            # bearing off attempt
+            # allowed only if all checkers in home
+            if not in_home(pts, bar):
+                return None
+            # p must be in home (0..5)
+            if p > 5:
+                return None
+            # standard bearing off rule:
+            # if p - d < 0, you may bear off from p only if there is no checker on any point with index > p (within home)
+            # i.e., p is the highest occupied point or there are no checkers on higher points.
+            # Alternatively, if p - d == -k (<0) and there are checkers on higher points, cannot use larger die.
+            # Implement: if p - d < 0:
+            #    allowed only if max_index_with_checker_in_home <= p
+            highest = -1
+            for i in range(0, 6):
+                if pts[i] > 0:
+                    highest = i
+            # Note: highest could be p or less
+            if dest < 0:
+                # if this checker is the highest or equal to highest, allowed to bear off with a larger die
+                if highest <= p:
+                    pts[p] -= 1
+                    off += 1
+                    return pts, bar, off, opp, opp_bar
+                else:
+                    return None
+            # if dest >=0 would have been handled above
+            return None
+
+    # Build candidate starts for a given board snapshot and die d
+    def candidate_starts(pts, bar, opp, d):
+        starts = []
+        # If bar checkers exist then only 'B' can be used as long as any bar remains
+        if bar > 0:
+            starts.append('B')
+            return starts
+        # otherwise any point with checkers is potential start
+        for i in range(23, -1, -1):  # prefer moving far-away first
+            if pts[i] > 0:
+                starts.append(i)
+        return starts
+
+    # If no dice, pass
+    if len(dice) == 0:
+        return "H:P,P"
+
+    # For convenience get high and low die
+    if len(dice) == 1:
+        d_high = dice[0]
+        d_low = dice[0]
+    else:
+        d_high = max(dice)
+        d_low = min(dice)
+
+    # Attempt sequences for an order (first_die, second_die). Returns best (from1, from2, pip_after, legal_flag)
+    def find_best_for_order(first_die, second_die, order_label):
+        best = None  # tuple (from1, from2, pip_after, total_pip_reduction)
+        # initial pip
+        init_pip = pip_count(my_pts, my_bar)
+        # First move candidates
+        starts1 = candidate_starts(my_pts, my_bar, opp_pts, first_die)
+        if len(starts1) == 0:
+            return None
+        for s1 in starts1:
+            res1 = simulate_move(my_pts, my_bar, my_off, opp_pts, opp_bar, s1, first_die)
+            if res1 is None:
+                continue
+            pts1, bar1, off1, opp1, opp_bar1 = res1
+            # Second move: if only one die was rolled (len(dice)==1) then second should be pass
+            if len(dice) <= 1:
+                # compute pip
+                p_after = pip_count(pts1, bar1)
+                reduction = init_pip - p_after
+                # prefer non-pass only if it's allowed; but this is single-die case so second is P
+                cand = (s1, 'P', p_after, reduction)
+                if best is None or cand[3] > best[3]:
+                    best = cand
+                continue
+            # For two-dice case: gather second starts based on updated board
+            starts2 = candidate_starts(pts1, bar1, opp1, second_die)
+            found_second = False
+            for s2 in starts2:
+                res2 = simulate_move(pts1, bar1, off1, opp1, opp_bar1, s2, second_die)
+                if res2 is None:
+                    continue
+                found_second = True
+                pts2, bar2, off2, opp2, opp_bar2 = res2
+                p_after = pip_count(pts2, bar2)
+                reduction = init_pip - p_after
+                cand = (s1, s2, p_after, reduction)
+                if best is None or cand[3] > best[3]:
+                    best = cand
+            # If no legal second move from this first move, then maybe only one die can be played: in that case
+            # second should be 'P'. But per rules, if only one die can be played (after first), that's legal.
+            if not found_second:
+                # mark as playing only first die
+                p_after = pip_count(pts1, bar1)
+                reduction = init_pip - p_after
+                cand = (s1, 'P', p_after, reduction)
+                if best is None or cand[3] > best[3]:
+                    best = cand
+        return best
+
+    # Try both orders and pick best result. Prefer H order when ties.
+    candidates = []
+    # Order H: higher die first
+    cand_H = find_best_for_order(d_high, d_low, 'H')
+    if cand_H is not None:
+        candidates.append(('H', cand_H))
+    # Order L: lower die first (if dice are different)
+    if len(dice) >= 2 and d_low != d_high:
+        cand_L = find_best_for_order(d_low, d_high, 'L')
+        if cand_L is not None:
+            candidates.append(('L', cand_L))
+    # If only one die, we already considered H (since high==low)
+    if not candidates:
+        # No legal two-dice sequences found; check single-die plays or passes.
+        # Try to play either die from any legal start (prefer higher die).
+        # If my_bar>0 we must try re-entry
+        # Try high die single move
+        single_best = find_best_for_order(d_high, None, 'H')
+        if single_best is not None:
+            s1, s2, p_after, reduction = single_best
+            return "H:" + tok_from(s1) + "," + tok_from(s2)
+        # Otherwise no legal moves
+        return "H:P,P"
+
+    # Select the best candidate by reduction, break ties prefer H over L
+    candidates_sorted = sorted(candidates, key=lambda x: ( -x[1][3], 0 if x[0]=='H' else 1 ))
+    best_order, best_data = candidates_sorted[0]
+    s1, s2, p_after, reduction = best_data
+    # Format s2 if None or 'P'
+    return f"{best_order}:{tok_from(s1)},{tok_from(s2)}"

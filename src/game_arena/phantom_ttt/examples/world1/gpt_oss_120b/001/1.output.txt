@@ -1,0 +1,98 @@
+**Strategy Overview**
+
+The policy tries to act like a rational player who only knows its own confirmed marks.  
+1. **Win when possible** – If a line (row, column, or diagonal) already contains two of our marks and the third cell is still unknown, we play that cell immediately.  
+2. **Prefer central and corner positions** – When no immediate win is available, we give a higher base score to the centre (index 4) and the four corners, because they are part of more potential winning lines.  
+3. **Encourage building a line** – Cells that would give us a second mark in a line (i.e., line already has one of our marks) receive an extra bonus.  
+4. **Legal‑move safety** – The chosen cell is always taken from the supplied `legal_moves` list and never from a position already confirmed as ours (`board[r][c] == 1`).  
+
+By scoring every legal move with the above heuristics and picking the highest‑scoring one, the agent aggressively seeks a win while still maintaining a solid positional play that outperforms random or purely defensive opponents.
+
+```python
+import random
+from typing import List, Tuple
+
+def policy(board: List[List[int]], legal_moves: List[int]) -> Tuple[int, int]:
+    """
+    Choose the next move for Phantom Tic‑Tac‑Toe.
+
+    Parameters
+    ----------
+    board : list[list[int]]
+        3×3 board where 1 = our confirmed mark, 0 = unknown / possibly opponent.
+    legal_moves : list[int]
+        Flat indices (0‑8) of cells we are allowed to try this turn.
+
+    Returns
+    -------
+    tuple[int, int]
+        (row, col) of the selected move.
+    """
+    # Pre‑compute which cells are already ours
+    ours = {(r, c) for r in range(3) for c in range(3) if board[r][c] == 1}
+
+    # Helper: all winning lines as lists of (row, col) tuples
+    lines = [
+        [(0, 0), (0, 1), (0, 2)],
+        [(1, 0), (1, 1), (1, 2)],
+        [(2, 0), (2, 1), (2, 2)],
+        [(0, 0), (1, 0), (2, 0)],
+        [(0, 1), (1, 1), (2, 1)],
+        [(0, 2), (1, 2), (2, 2)],
+        [(0, 0), (1, 1), (2, 2)],
+        [(0, 2), (1, 1), (2, 0)],
+    ]
+
+    # 1. Immediate winning move detection
+    for line in lines:
+        ours_in_line = [cell for cell in line if cell in ours]
+        unknown_in_line = [cell for cell in line if cell not in ours]
+        if len(ours_in_line) == 2:
+            # The third cell must be unknown; if it is legal, take it.
+            win_cell = unknown_in_line[0]
+            idx = win_cell[0] * 3 + win_cell[1]
+            if idx in legal_moves:
+                return win_cell
+
+    # 2. Scoring for all legal moves
+    scores = {}
+    for move_idx in legal_moves:
+        r, c = divmod(move_idx, 3)
+        if (r, c) in ours:
+            # Should never happen, but skip just in case
+            continue
+
+        score = 0
+
+        # Base positional bias
+        if (r, c) == (1, 1):          # centre
+            score += 30
+        elif (r, c) in [(0, 0), (0, 2), (2, 0), (2, 2)]:  # corners
+            score += 20
+        else:                         # edges
+            score += 10
+
+        # Contribution from potential lines
+        for line in lines:
+            if (r, c) not in line:
+                continue
+            ours_in_line = sum(1 for cell in line if cell in ours)
+            # More of our marks in the line → higher incentive
+            if ours_in_line == 1:
+                score += 15   # creates a two‑in‑a‑row
+            elif ours_in_line == 0:
+                score += 5    # just part of a fresh line
+
+        scores[(r, c)] = score
+
+    # If for some reason no scores were computed (should not happen), pick random legal
+    if not scores:
+        chosen_idx = random.choice(legal_moves)
+        return divmod(chosen_idx, 3)
+
+    # Choose move with maximum score; break ties randomly
+    max_score = max(scores.values())
+    best_moves = [mv for mv, sc in scores.items() if sc == max_score]
+    chosen_move = random.choice(best_moves)
+    return chosen_move
+```

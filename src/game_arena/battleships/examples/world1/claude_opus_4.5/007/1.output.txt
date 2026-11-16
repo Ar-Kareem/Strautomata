@@ -1,0 +1,226 @@
+<thinking>
+Let me think about a good strategy for Battleship:
+
+1. **Hunt Mode**: When no hits are found, we should search for ships efficiently. A checkerboard pattern is a classic approach since the smallest ship is length 2, so we can skip every other cell.
+
+2. **Target Mode**: When we have hits that aren't part of a sunk ship, we should focus on adjacent cells to find and sink the ship.
+
+3. **Probability-based targeting**: More sophisticated approach - calculate the probability of each cell containing a ship based on possible ship placements.
+
+Let me implement a hybrid approach:
+
+1. First, identify all hits (cells with value 1)
+2. For each hit, check if it's part of a fully sunk ship or still active
+3. If there are active hits (unsunk), target adjacent cells
+4. Otherwise, use probability density to find the best cell to shoot
+
+For tracking unsunk hits:
+- A hit is "unsunk" if we can't determine that the entire ship containing it has been sunk
+- We can try to identify connected hit segments and see if they could be complete ships
+
+Let me simplify the approach:
+1. Find all hits (1s) on the board
+2. For each hit, if there are adjacent unknown cells (0s), prioritize those
+3. If multiple hits are in a line, prioritize extending that line
+4. Otherwise, use a probability-based or checkerboard search pattern
+
+Here's my strategy:
+
+```python
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    import random
+    
+    # Find all hits and unknowns
+    hits = []
+    unknowns = []
+    
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1:
+                hits.append((r, c))
+            elif board[r][c] == 0:
+                unknowns.append((r, c))
+    
+    # If we have hits, try to find adjacent cells to target
+    if hits:
+        # Check for patterns - if we have 2+ hits in a line, continue that line
+        for r, c in hits:
+            # Check horizontal patterns
+            # Check vertical patterns
+            # Prioritize continuing lines
+            pass
+        
+        # Otherwise, target cells adjacent to any hit
+        for r, c in hits:
+            for dr, dc in [(0,1), (0,-1), (1,0), (-1,0)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                    return (nr, nc)
+    
+    # No hits to follow up - use checkerboard pattern
+    # Prioritize cells where ships could fit
+    
+    # Simple checkerboard
+    checkerboard = [(r, c) for r, c in unknowns if (r + c) % 2 == 0]
+    if checkerboard:
+        return random.choice(checkerboard)
+    
+    return random.choice(unknowns)
+```
+
+Let me improve this with better line detection and probability:
+
+Actually, let me implement a more sophisticated probability-based approach:
+
+1. For each remaining ship (we need to track which ships might be sunk), calculate all possible positions
+2. Sum up the probability density for each unknown cell
+3. Pick the cell with highest probability
+
+But tracking sunk ships is tricky without explicit feedback. We can estimate based on contiguous hit segments.
+
+Let me implement a cleaner version:
+</thinking>
+
+<code>
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    import random
+    
+    # Find all hits, misses, and unknowns
+    hits = set()
+    unknowns = set()
+    
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1:
+                hits.add((r, c))
+            elif board[r][c] == 0:
+                unknowns.add((r, c))
+    
+    if not unknowns:
+        return (0, 0)  # Shouldn't happen
+    
+    # TARGET MODE: If we have hits, prioritize adjacent cells intelligently
+    if hits:
+        # Find connected components of hits and their orientations
+        candidates = {}
+        
+        for r, c in hits:
+            # Check if this hit has adjacent hits (to determine direction)
+            has_horizontal = ((r, c-1) in hits or (r, c+1) in hits)
+            has_vertical = ((r-1, c) in hits or (r+1, c) in hits)
+            
+            directions = []
+            if has_horizontal:
+                directions = [(0, 1), (0, -1)]
+            elif has_vertical:
+                directions = [(1, 0), (-1, 0)]
+            else:
+                directions = [(0, 1), (0, -1), (1, 0), (-1, 0)]
+            
+            for dr, dc in directions:
+                nr, nc = r + dr, c + dc
+                if (nr, nc) in unknowns:
+                    # Weight by how many hits are in line
+                    weight = 1
+                    # Count consecutive hits in opposite direction
+                    tr, tc = r - dr, c - dc
+                    while (tr, tc) in hits:
+                        weight += 1
+                        tr -= dr
+                        tc -= dc
+                    candidates[(nr, nc)] = candidates.get((nr, nc), 0) + weight
+        
+        if candidates:
+            # Return the candidate with highest weight
+            best = max(candidates.keys(), key=lambda x: candidates[x])
+            return best
+    
+    # HUNT MODE: Use probability density based on ship placements
+    ships = [5, 4, 3, 3, 2]
+    
+    # Estimate which ships might be sunk based on hit clusters
+    # Simple heuristic: count total hits and subtract likely sunk ships
+    total_hits = len(hits)
+    remaining_ships = ships.copy()
+    
+    # Try to identify sunk ships by finding isolated hit segments
+    # (This is a simplification - we mark segments that could be complete ships)
+    visited = set()
+    segments = []
+    
+    for start in hits:
+        if start in visited:
+            continue
+        # BFS to find connected hit component
+        segment = []
+        queue = [start]
+        while queue:
+            curr = queue.pop(0)
+            if curr in visited:
+                continue
+            visited.add(curr)
+            segment.append(curr)
+            r, c = curr
+            for dr, dc in [(0,1), (0,-1), (1,0), (-1,0)]:
+                nr, nc = r + dr, c + dc
+                if (nr, nc) in hits and (nr, nc) not in visited:
+                    queue.append((nr, nc))
+        segments.append(segment)
+    
+    # Check if segments are "closed" (no adjacent unknowns) - likely sunk
+    for seg in segments:
+        is_closed = True
+        for r, c in seg:
+            for dr, dc in [(0,1), (0,-1), (1,0), (-1,0)]:
+                if (r+dr, c+dc) in unknowns:
+                    is_closed = False
+                    break
+            if not is_closed:
+                break
+        
+        if is_closed and len(seg) in remaining_ships:
+            remaining_ships.remove(len(seg))
+    
+    # Calculate probability density for each unknown cell
+    density = {cell: 0 for cell in unknowns}
+    
+    for ship_len in remaining_ships:
+        # Horizontal placements
+        for r in range(10):
+            for c in range(10 - ship_len + 1):
+                cells = [(r, c + i) for i in range(ship_len)]
+                # Check if placement is valid (no misses, all unknown or hit)
+                valid = all(board[cr][cc] != -1 for cr, cc in cells)
+                if valid and any((cr, cc) in unknowns for cr, cc in cells):
+                    for cr, cc in cells:
+                        if (cr, cc) in unknowns:
+                            density[(cr, cc)] += 1
+        
+        # Vertical placements
+        for r in range(10 - ship_len + 1):
+            for c in range(10):
+                cells = [(r + i, c) for i in range(ship_len)]
+                valid = all(board[cr][cc] != -1 for cr, cc in cells)
+                if valid and any((cr, cc) in unknowns for cr, cc in cells):
+                    for cr, cc in cells:
+                        if (cr, cc) in unknowns:
+                            density[(cr, cc)] += 1
+    
+    if density:
+        # Add slight preference for center and checkerboard pattern
+        for cell in density:
+            r, c = cell
+            # Checkerboard bonus
+            if (r + c) % 2 == 0:
+                density[cell] += 0.5
+            # Center bonus
+            center_dist = abs(r - 4.5) + abs(c - 4.5)
+            density[cell] += (9 - center_dist) * 0.1
+        
+        max_density = max(density.values())
+        best_cells = [cell for cell, d in density.items() if d == max_density]
+        return random.choice(best_cells)
+    
+    # Fallback
+    return random.choice(list(unknowns))
+</code>

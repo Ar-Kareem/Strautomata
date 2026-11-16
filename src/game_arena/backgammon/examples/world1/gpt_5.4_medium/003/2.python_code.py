@@ -1,0 +1,488 @@
+
+from typing import List, Dict, Any, Tuple
+
+
+def policy(state: dict) -> str:
+    s = _copy_state(state)
+    actions = _generate_legal_actions(s)
+
+    if not actions:
+        return "H:P,P"
+
+    root = s
+    best_action = None
+    best_key = None
+
+    for action in actions:
+        st = action["state"]
+        score = _evaluate(st)
+
+        # Immediate tactical bonuses.
+        score += 22.0 * (st["opp_bar"] - root["opp_bar"])
+        score += 18.0 * (st["my_off"] - root["my_off"])
+        score += 3.0 * (_home_made(st["my_pts"]) - _home_made(root["my_pts"]))
+
+        lead_nonpass = 1 if action["starts"][0] != "P" else 0
+        action_str = _action_to_string(action)
+        key = (
+            score,
+            lead_nonpass,
+            action["count"],
+            -_pip_my(st),
+            action_str,
+        )
+
+        if best_key is None or key > best_key:
+            best_key = key
+            best_action = action
+
+    if best_action is None:
+        return "H:P,P"
+    return _action_to_string(best_action)
+
+
+# ----------------------------
+# Core move generation
+# ----------------------------
+
+def _copy_state(state: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "my_pts": list(state["my_pts"]),
+        "opp_pts": list(state["opp_pts"]),
+        "my_bar": int(state["my_bar"]),
+        "opp_bar": int(state["opp_bar"]),
+        "my_off": int(state["my_off"]),
+        "opp_off": int(state["opp_off"]),
+        "dice": list(state["dice"]),
+    }
+
+
+def _token(start) -> str:
+    if start == "B":
+        return "B"
+    if start == "P":
+        return "P"
+    return f"A{start}"
+
+
+def _action_to_string(action: Dict[str, Any]) -> str:
+    return f"{action['order']}:{action['starts'][0]},{action['starts'][1]}"
+
+
+def _generate_legal_actions(state: Dict[str, Any]) -> List[Dict[str, Any]]:
+    dice = list(state["dice"])
+    n = len(dice)
+
+    if n == 0:
+        return [{
+            "order": "H",
+            "starts": ["P", "P"],
+            "state": state,
+            "count": 0,
+            "single_uses_high": False,
+        }]
+
+    if n == 1:
+        d = dice[0]
+        starts = _legal_starts(state, d)
+        if not starts:
+            return [{
+                "order": "H",
+                "starts": ["P", "P"],
+                "state": state,
+                "count": 0,
+                "single_uses_high": False,
+            }]
+        out = []
+        seen = set()
+        for st in starts:
+            tok = _token(st)
+            if tok in seen:
+                continue
+            seen.add(tok)
+            st2 = _apply_move(state, st, d)
+            out.append({
+                "order": "H",
+                "starts": [tok, "P"],
+                "state": st2,
+                "count": 1,
+                "single_uses_high": True,
+            })
+        return _dedup_actions(out)
+
+    # Two dice.
+    a, b = dice[0], dice[1]
+    high, low = (a, b) if a >= b else (b, a)
+
+    results = []
+    _gen_for_order(state, "H", [high, low], [], results)
+
+    if high != low:
+        _gen_for_order(state, "L", [low, high], [], results)
+
+    if not results:
+        return [{
+            "order": "H",
+            "starts": ["P", "P"],
+            "state": state,
+            "count": 0,
+            "single_uses_high": False,
+        }]
+
+    max_count = max(r["count"] for r in results)
+    cand = [r for r in results if r["count"] == max_count]
+
+    # If only one die can be played, must play the higher die when possible.
+    if max_count == 1 and high != low:
+        if any(r["single_uses_high"] for r in cand):
+            cand = [r for r in cand if r["single_uses_high"]]
+
+    # Prefer canonical "move first, then pass" single-die representations when available.
+    if max_count == 1:
+        first_nonpass = [r for r in cand if r["starts"][0] != "P"]
+        if first_nonpass:
+            cand = first_nonpass
+
+    return _dedup_actions(cand)
+
+
+def _gen_for_order(state: Dict[str, Any], order: str, dice_seq: List[int],
+                   starts_so_far: List[str], out: List[Dict[str, Any]]) -> None:
+    idx = len(starts_so_far)
+    if idx == len(dice_seq):
+        starts = list(starts_so_far)
+        while len(starts) < 2:
+            starts.append("P")
+        count = (starts[0] != "P") + (starts[1] != "P")
+        if count == 1:
+            if order == "H":
+                single_uses_high = (starts[0] != "P")
+            else:
+                single_uses_high = (starts[1] != "P")
+        else:
+            single_uses_high = False
+
+        out.append({
+            "order": order,
+            "starts": starts,
+            "state": state,
+            "count": count,
+            "single_uses_high": single_uses_high,
+        })
+        return
+
+    die = dice_seq[idx]
+    moves = _legal_starts(state, die)
+
+    if not moves:
+        _gen_for_order(state, order, dice_seq, starts_so_far + ["P"], out)
+        return
+
+    seen = set()
+    for mv in moves:
+        tok = _token(mv)
+        if tok in seen:
+            continue
+        seen.add(tok)
+        st2 = _apply_move(state, mv, die)
+        _gen_for_order(st2, order, dice_seq, starts_so_far + [tok], out)
+
+
+def _dedup_actions(actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    seen = set()
+    out = []
+    for a in actions:
+        s = _action_to_string(a)
+        if s not in seen:
+            seen.add(s)
+            out.append(a)
+    return out
+
+
+# ----------------------------
+# Legality helpers
+# ----------------------------
+
+def _all_in_home(state: Dict[str, Any]) -> bool:
+    if state["my_bar"] > 0:
+        return False
+    pts = state["my_pts"]
+    for i in range(6, 24):
+        if pts[i] > 0:
+            return False
+    return True
+
+
+def _legal_starts(state: Dict[str, Any], die: int) -> List[Any]:
+    my_pts = state["my_pts"]
+    opp_pts = state["opp_pts"]
+
+    # Must enter from bar first.
+    if state["my_bar"] > 0:
+        dest = 24 - die
+        if 0 <= dest < 24 and opp_pts[dest] < 2:
+            return ["B"]
+        return []
+
+    out = []
+    all_home = _all_in_home(state)
+
+    for i in range(24):
+        if my_pts[i] <= 0:
+            continue
+
+        dest = i - die
+        if dest >= 0:
+            if opp_pts[dest] < 2:
+                out.append(i)
+        else:
+            # Bearing off.
+            if not all_home:
+                continue
+            # Exact bear off.
+            if i == die - 1:
+                out.append(i)
+            # Oversized die: only if no checker on higher points.
+            elif i < die - 1:
+                higher_exists = False
+                for j in range(i + 1, 6):
+                    if my_pts[j] > 0:
+                        higher_exists = True
+                        break
+                if not higher_exists:
+                    out.append(i)
+
+    return out
+
+
+def _apply_move(state: Dict[str, Any], start, die: int) -> Dict[str, Any]:
+    st = {
+        "my_pts": state["my_pts"][:],
+        "opp_pts": state["opp_pts"][:],
+        "my_bar": state["my_bar"],
+        "opp_bar": state["opp_bar"],
+        "my_off": state["my_off"],
+        "opp_off": state["opp_off"],
+        "dice": state["dice"],
+    }
+
+    if start == "B":
+        st["my_bar"] -= 1
+        dest = 24 - die
+        if st["opp_pts"][dest] == 1:
+            st["opp_pts"][dest] = 0
+            st["opp_bar"] += 1
+        st["my_pts"][dest] += 1
+        return st
+
+    src = int(start)
+    st["my_pts"][src] -= 1
+    dest = src - die
+
+    if dest >= 0:
+        if st["opp_pts"][dest] == 1:
+            st["opp_pts"][dest] = 0
+            st["opp_bar"] += 1
+        st["my_pts"][dest] += 1
+    else:
+        st["my_off"] += 1
+
+    return st
+
+
+# ----------------------------
+# Evaluation
+# ----------------------------
+
+def _pip_my(state: Dict[str, Any]) -> int:
+    pts = state["my_pts"]
+    total = 25 * state["my_bar"]
+    for i, c in enumerate(pts):
+        if c:
+            total += c * (i + 1)
+    return total
+
+
+def _pip_opp(state: Dict[str, Any]) -> int:
+    pts = state["opp_pts"]
+    total = 25 * state["opp_bar"]
+    for i, c in enumerate(pts):
+        if c:
+            total += c * (24 - i)
+    return total
+
+
+def _home_made(my_pts: List[int]) -> int:
+    return sum(1 for i in range(6) if my_pts[i] >= 2)
+
+
+def _opp_home_made(opp_pts: List[int]) -> int:
+    return sum(1 for i in range(18, 24) if opp_pts[i] >= 2)
+
+
+def _made_points(pts: List[int]) -> int:
+    return sum(1 for x in pts if x >= 2)
+
+
+def _blot_count(pts: List[int]) -> int:
+    return sum(1 for x in pts if x == 1)
+
+
+def _stack_penalty(pts: List[int]) -> float:
+    p = 0.0
+    for c in pts:
+        if c > 2:
+            extra = c - 2
+            p += extra * extra
+    return p
+
+
+def _prime_strength(pts: List[int]) -> float:
+    total = 0.0
+    run = 0
+    best = 0
+    for c in pts:
+        if c >= 2:
+            run += 1
+        else:
+            if run >= 2:
+                total += run * run
+            if run > best:
+                best = run
+            run = 0
+    if run >= 2:
+        total += run * run
+    if run > best:
+        best = run
+    total += 2.0 * best
+    return total
+
+
+def _has_contact(state: Dict[str, Any]) -> bool:
+    if state["my_bar"] > 0 or state["opp_bar"] > 0:
+        return True
+
+    my_max = -1
+    for i in range(23, -1, -1):
+        if state["my_pts"][i] > 0:
+            my_max = i
+            break
+
+    opp_min = 24
+    for i in range(24):
+        if state["opp_pts"][i] > 0:
+            opp_min = i
+            break
+
+    return my_max > opp_min
+
+
+def _direct_shots_against_my_blots(state: Dict[str, Any]) -> int:
+    my_pts = state["my_pts"]
+    opp_pts = state["opp_pts"]
+    opp_bar = state["opp_bar"]
+
+    total = 0
+    for p in range(24):
+        if my_pts[p] != 1:
+            continue
+        shots = 0
+        for d in range(1, 7):
+            can_hit = False
+            if opp_bar > 0 and p == d - 1:
+                can_hit = True
+            src = p - d
+            if src >= 0 and opp_pts[src] > 0:
+                can_hit = True
+            if can_hit:
+                shots += 1
+        total += shots
+    return total
+
+
+def _direct_shots_against_opp_blots(state: Dict[str, Any]) -> int:
+    my_pts = state["my_pts"]
+    opp_pts = state["opp_pts"]
+    my_bar = state["my_bar"]
+
+    total = 0
+    for p in range(24):
+        if opp_pts[p] != 1:
+            continue
+        shots = 0
+        for d in range(1, 7):
+            can_hit = False
+            if my_bar > 0 and p == 24 - d:
+                can_hit = True
+            src = p + d
+            if src < 24 and my_pts[src] > 0:
+                can_hit = True
+            if can_hit:
+                shots += 1
+        total += shots
+    return total
+
+
+def _home_wastage_my(my_pts: List[int]) -> float:
+    w = 0.0
+    for i in range(6):
+        if my_pts[i] > 2:
+            w += (my_pts[i] - 2) * (i + 1)
+    return w
+
+
+def _home_wastage_opp(opp_pts: List[int]) -> float:
+    w = 0.0
+    for i in range(18, 24):
+        if opp_pts[i] > 2:
+            w += (opp_pts[i] - 2) * (24 - i)
+    return w
+
+
+def _evaluate(state: Dict[str, Any]) -> float:
+    my_pts = state["my_pts"]
+    opp_pts = state["opp_pts"]
+
+    my_pip = _pip_my(state)
+    opp_pip = _pip_opp(state)
+
+    my_home = _home_made(my_pts)
+    opp_home = _opp_home_made(opp_pts)
+
+    score = 0.0
+
+    # Race / progress.
+    score += 130.0 * (state["my_off"] - state["opp_off"])
+    score += 40.0 * (state["opp_bar"] - state["my_bar"])
+    score += 1.25 * (opp_pip - my_pip)
+
+    # Structure.
+    score += 4.0 * (_made_points(my_pts) - _made_points(opp_pts))
+    score += 7.0 * (my_home - opp_home)
+    score += 2.5 * (_prime_strength(my_pts) - _prime_strength(opp_pts))
+    score -= 1.4 * _stack_penalty(my_pts)
+    score += 1.4 * _stack_penalty(opp_pts)
+
+    contact = _has_contact(state)
+
+    if contact:
+        score -= 6.0 * _blot_count(my_pts)
+        score += 4.0 * _blot_count(opp_pts)
+        score -= 3.0 * _direct_shots_against_my_blots(state)
+        score += 2.0 * _direct_shots_against_opp_blots(state)
+
+        my_anchors = sum(1 for i in range(18, 24) if my_pts[i] >= 2)
+        opp_anchors = sum(1 for i in range(0, 6) if opp_pts[i] >= 2)
+        score += 2.5 * (my_anchors - opp_anchors)
+    else:
+        score -= 0.8 * _blot_count(my_pts)
+        score += 0.3 * _blot_count(opp_pts)
+        score -= 0.7 * _home_wastage_my(my_pts)
+        score += 0.7 * _home_wastage_opp(opp_pts)
+
+    if state["opp_bar"] > 0:
+        score += 4.0 * my_home
+    if state["my_bar"] > 0:
+        score -= 4.0 * opp_home
+
+    return score

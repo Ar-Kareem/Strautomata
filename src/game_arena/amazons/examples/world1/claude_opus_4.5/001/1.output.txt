@@ -1,0 +1,130 @@
+## Strategy
+
+My strategy for the Amazons game on a 6x6 board combines several key elements:
+
+1. **Mobility-based Evaluation**: The core heuristic measures how many squares each amazon can reach. Having more mobility means more options and typically a stronger position.
+
+2. **Territory Control**: I evaluate which areas of the board each player controls by counting reachable squares. Controlling more territory is advantageous, especially as the game progresses and the board becomes more blocked.
+
+3. **Opponent Restriction**: Prioritize moves that limit the opponent's mobility. Shooting arrows that block opponent amazons is often more valuable than just expanding your own territory.
+
+4. **Minimax with Alpha-Beta Pruning**: I use a depth-limited search (depth 2-3 depending on time) with alpha-beta pruning to look ahead and evaluate positions. This helps find moves that lead to favorable positions even if they don't look immediately strong.
+
+5. **Move Ordering**: To maximize alpha-beta efficiency, I order moves by a quick heuristic evaluation, examining promising moves first.
+
+6. **Early Game Considerations**: In the opening, center control and maintaining flexibility are important. I slightly favor moves that keep amazons mobile and in good positions.
+
+<code>
+import numpy as np
+
+def policy(board) -> str:
+    directions = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+    
+    def get_moves_from(board, r, c):
+        """Get all squares reachable from (r, c) via queen move."""
+        moves = []
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            while 0 <= nr < 6 and 0 <= nc < 6 and board[nr, nc] == 0:
+                moves.append((nr, nc))
+                nr, nc = nr + dr, nc + dc
+        return moves
+    
+    def get_all_moves(board, player):
+        """Get all legal moves for player."""
+        moves = []
+        amazons = list(zip(*np.where(board == player)))
+        for fr, fc in amazons:
+            for tr, tc in get_moves_from(board, fr, fc):
+                # Temporarily move amazon
+                board[fr, fc] = 0
+                board[tr, tc] = player
+                for ar, ac in get_moves_from(board, tr, tc):
+                    moves.append((fr, fc, tr, tc, ar, ac))
+                # Restore
+                board[tr, tc] = 0
+                board[fr, fc] = player
+        return moves
+    
+    def count_mobility(board, player):
+        """Count total mobility for player."""
+        total = 0
+        amazons = list(zip(*np.where(board == player)))
+        for r, c in amazons:
+            total += len(get_moves_from(board, r, c))
+        return total
+    
+    def evaluate(board):
+        """Evaluate position for player 1."""
+        my_mob = count_mobility(board, 1)
+        opp_mob = count_mobility(board, 2)
+        if my_mob == 0 and opp_mob == 0:
+            return 0
+        if my_mob == 0:
+            return -10000
+        if opp_mob == 0:
+            return 10000
+        return (my_mob - opp_mob) * 10 + (my_mob / (my_mob + opp_mob + 1)) * 5
+    
+    def minimax(board, depth, alpha, beta, maximizing):
+        player = 1 if maximizing else 2
+        moves = get_all_moves(board, player)
+        
+        if depth == 0 or not moves:
+            return evaluate(board), None
+        
+        best_move = moves[0] if moves else None
+        
+        if maximizing:
+            max_eval = -float('inf')
+            for move in moves:
+                fr, fc, tr, tc, ar, ac = move
+                board[fr, fc] = 0
+                board[tr, tc] = 1
+                board[ar, ac] = -1
+                eval_score, _ = minimax(board, depth - 1, alpha, beta, False)
+                board[ar, ac] = 0
+                board[tr, tc] = 0
+                board[fr, fc] = 1
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_move = move
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            for move in moves:
+                fr, fc, tr, tc, ar, ac = move
+                board[fr, fc] = 0
+                board[tr, tc] = 2
+                board[ar, ac] = -1
+                eval_score, _ = minimax(board, depth - 1, alpha, beta, True)
+                board[ar, ac] = 0
+                board[tr, tc] = 0
+                board[fr, fc] = 2
+                if eval_score < min_eval:
+                    min_eval = eval_score
+                    best_move = move
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval, best_move
+    
+    board = board.copy()
+    moves = get_all_moves(board, 1)
+    
+    if not moves:
+        # Should not happen, but return something
+        return "0,0:0,0:0,0"
+    
+    # Use depth 2 for speed, could try 3 if fast enough
+    _, best_move = minimax(board, 2, -float('inf'), float('inf'), True)
+    
+    if best_move is None:
+        best_move = moves[0]
+    
+    fr, fc, tr, tc, ar, ac = best_move
+    return f"{fr},{fc}:{tr},{tc}:{ar},{ac}"
+</code>

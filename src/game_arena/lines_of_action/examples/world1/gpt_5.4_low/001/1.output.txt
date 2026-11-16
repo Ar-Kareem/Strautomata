@@ -1,0 +1,384 @@
+The strategy for this policy is:
+
+- Generate all legal Lines of Action moves exactly according to the rules.
+- Use a fast alpha-beta negamax search with iterative deepening so it plays tactically when time allows but still always returns a legal move.
+- Strongly prioritize:
+  - immediate wins,
+  - avoiding moves that allow an immediate opponent win,
+  - reducing the number of connected components of our pieces,
+  - increasing the size of our largest connected group,
+  - centralization and tighter piece formation,
+  - mobility.
+- Always keep a legal fallback move, so the policy never fails to return a valid move string.
+
+<code>
+import time
+from collections import deque
+
+DIRS = [
+    (-1, -1), (-1, 0), (-1, 1),
+    (0, -1),           (0, 1),
+    (1, -1),  (1, 0),  (1, 1)
+]
+
+WIN_SCORE = 10**9
+
+
+def policy(board) -> str:
+    start = time.perf_counter()
+    deadline = start + 0.92  # leave a little safety margin
+
+    try:
+        moves = generate_legal_moves(board, 1)
+        if not moves:
+            # Should not normally happen in valid LOA positions,
+            # but return a syntactically valid fallback if needed.
+            return "0,0:0,0"
+
+        # Fast fallback: first legal move
+        best_move = moves[0]
+
+        # Immediate winning move check
+        ordered = order_moves(board, moves, 1)
+        for mv in ordered:
+            nb = apply_move(board, mv)
+            if terminal_value(nb, -1) == -WIN_SCORE:
+                return move_to_str(mv)
+
+        # Avoid moves that allow an immediate opponent win if possible
+        safe_moves = []
+        for mv in ordered:
+            nb = apply_move(board, mv)
+            opp_moves = generate_legal_moves(nb, -1)
+            opp_can_win = False
+            for omv in opp_moves:
+                nnb = apply_move(nb, omv)
+                if terminal_value(nnb, 1) == -WIN_SCORE:
+                    opp_can_win = True
+                    break
+            if not opp_can_win:
+                safe_moves.append(mv)
+        if safe_moves:
+            ordered = safe_moves
+            best_move = ordered[0]
+
+        # Iterative deepening negamax
+        best_score = -10**18
+        tt = {}
+
+        max_depth = 4
+        if len(ordered) <= 8:
+            max_depth = 5
+        elif len(ordered) >= 25:
+            max_depth = 3
+
+        for depth in range(1, max_depth + 1):
+            if time.perf_counter() >= deadline:
+                break
+
+            current_best_move = best_move
+            current_best_score = -10**18
+
+            alpha = -10**18
+            beta = 10**18
+
+            root_moves = order_moves(board, ordered, 1)
+
+            for mv in root_moves:
+                if time.perf_counter() >= deadline:
+                    raise TimeoutError
+
+                nb = apply_move(board, mv)
+                score = -negamax(nb, -1, depth - 1, -beta, -alpha, deadline, tt)
+
+                if score > current_best_score:
+                    current_best_score = score
+                    current_best_move = mv
+                if score > alpha:
+                    alpha = score
+
+            best_move = current_best_move
+            best_score = current_best_score
+
+            # If we found a forced win, no need to search deeper
+            if best_score >= WIN_SCORE // 2:
+                break
+
+        return move_to_str(best_move)
+
+    except Exception:
+        # Absolute safety fallback
+        moves = generate_legal_moves(board, 1)
+        if moves:
+            return move_to_str(moves[0])
+        return "0,0:0,0"
+
+
+def in_bounds(r, c):
+    return 0 <= r < 8 and 0 <= c < 8
+
+
+def move_to_str(mv):
+    r1, c1, r2, c2 = mv
+    return f"{r1},{c1}:{r2},{c2}"
+
+
+def apply_move(board, mv):
+    r1, c1, r2, c2 = mv
+    player = board[r1][c1]
+    nb = [row[:] for row in board]
+    nb[r1][c1] = 0
+    nb[r2][c2] = player
+    return nb
+
+
+def line_count(board, r, c, dr, dc):
+    cnt = 1
+    rr, cc = r + dr, c + dc
+    while in_bounds(rr, cc):
+        if board[rr][cc] != 0:
+            cnt += 1
+        rr += dr
+        cc += dc
+    rr, cc = r - dr, c - dc
+    while in_bounds(rr, cc):
+        if board[rr][cc] != 0:
+            cnt += 1
+        rr -= dr
+        cc -= dc
+    return cnt
+
+
+def generate_legal_moves(board, player):
+    moves = []
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] != player:
+                continue
+            for dr, dc in DIRS:
+                dist = line_count(board, r, c, dr, dc)
+                tr = r + dr * dist
+                tc = c + dc * dist
+                if not in_bounds(tr, tc):
+                    continue
+                if board[tr][tc] == player:
+                    continue
+
+                blocked = False
+                # May jump own pieces, but not enemy pieces, before destination
+                for step in range(1, dist):
+                    rr = r + dr * step
+                    cc = c + dc * step
+                    if board[rr][cc] == -player:
+                        blocked = True
+                        break
+                if blocked:
+                    continue
+
+                moves.append((r, c, tr, tc))
+    return moves
+
+
+def connected(board, player):
+    pieces = []
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == player:
+                pieces.append((r, c))
+    if not pieces:
+        return False
+    seen = set([pieces[0]])
+    dq = deque([pieces[0]])
+    while dq:
+        r, c = dq.popleft()
+        for dr, dc in DIRS:
+            rr, cc = r + dr, c + dc
+            if in_bounds(rr, cc) and board[rr][cc] == player and (rr, cc) not in seen:
+                seen.add((rr, cc))
+                dq.append((rr, cc))
+    return len(seen) == len(pieces)
+
+
+def components_info(board, player):
+    visited = [[False] * 8 for _ in range(8)]
+    comps = 0
+    largest = 0
+    pieces = []
+
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == player:
+                pieces.append((r, c))
+
+    for r, c in pieces:
+        if visited[r][c]:
+            continue
+        comps += 1
+        size = 0
+        dq = deque([(r, c)])
+        visited[r][c] = True
+        while dq:
+            rr, cc = dq.popleft()
+            size += 1
+            for dr, dc in DIRS:
+                nr, nc = rr + dr, cc + dc
+                if in_bounds(nr, nc) and not visited[nr][nc] and board[nr][nc] == player:
+                    visited[nr][nc] = True
+                    dq.append((nr, nc))
+        if size > largest:
+            largest = size
+
+    return comps, largest, pieces
+
+
+def spread_measure(pieces):
+    if not pieces:
+        return 0.0
+    n = len(pieces)
+    ar = sum(r for r, _ in pieces) / n
+    ac = sum(c for _, c in pieces) / n
+    # lower is better
+    return sum(max(abs(r - ar), abs(c - ac)) for r, c in pieces)
+
+
+def centralization_measure(pieces):
+    # higher is better
+    return sum(7 - (abs(2 * r - 7) + abs(2 * c - 7)) / 2.0 for r, c in pieces)
+
+
+def terminal_value(board, player_to_move):
+    me_conn = connected(board, player_to_move)
+    opp_conn = connected(board, -player_to_move)
+
+    if opp_conn:
+        # If both are connected, the previous mover wins.
+        # Since it's player_to_move now, previous mover is opponent.
+        return -WIN_SCORE
+    if me_conn:
+        return WIN_SCORE
+
+    my_moves = generate_legal_moves(board, player_to_move)
+    if not my_moves:
+        return -WIN_SCORE
+    return None
+
+
+def evaluate(board, player):
+    tv = terminal_value(board, player)
+    if tv is not None:
+        return tv
+
+    my_comps, my_largest, my_pieces = components_info(board, player)
+    op_comps, op_largest, op_pieces = components_info(board, -player)
+
+    my_spread = spread_measure(my_pieces)
+    op_spread = spread_measure(op_pieces)
+
+    my_center = centralization_measure(my_pieces)
+    op_center = centralization_measure(op_pieces)
+
+    my_mob = len(generate_legal_moves(board, player))
+    op_mob = len(generate_legal_moves(board, -player))
+
+    piece_diff = len(my_pieces) - len(op_pieces)
+
+    score = 0
+    score += 1500 * (op_comps - my_comps)
+    score += 220 * (my_largest - op_largest)
+    score += 18 * (op_spread - my_spread)
+    score += 8 * (my_center - op_center)
+    score += 5 * (my_mob - op_mob)
+    score += 35 * piece_diff
+
+    # Bonus if our centroid is closer to board center than opponent's
+    if my_pieces:
+        mr = sum(r for r, _ in my_pieces) / len(my_pieces)
+        mc = sum(c for _, c in my_pieces) / len(my_pieces)
+        my_centroid_dist = abs(mr - 3.5) + abs(mc - 3.5)
+    else:
+        my_centroid_dist = 100
+
+    if op_pieces:
+        orr = sum(r for r, _ in op_pieces) / len(op_pieces)
+        oc = sum(c for _, c in op_pieces) / len(op_pieces)
+        op_centroid_dist = abs(orr - 3.5) + abs(oc - 3.5)
+    else:
+        op_centroid_dist = 100
+
+    score += 12 * (op_centroid_dist - my_centroid_dist)
+
+    return score
+
+
+def quick_move_score(board, mv, player):
+    r1, c1, r2, c2 = mv
+    score = 0
+
+    # Captures are usually strong
+    if board[r2][c2] == -player:
+        score += 500
+
+    # Prefer moving toward center
+    before_center = abs(r1 - 3.5) + abs(c1 - 3.5)
+    after_center = abs(r2 - 3.5) + abs(c2 - 3.5)
+    score += 20 * (before_center - after_center)
+
+    # Prefer reducing own components
+    before_comps, _, _ = components_info(board, player)
+    nb = apply_move(board, mv)
+    after_comps, _, _ = components_info(nb, player)
+    score += 200 * (before_comps - after_comps)
+
+    # Immediate win
+    tv = terminal_value(nb, -player)
+    if tv == -WIN_SCORE:
+        score += 10**7
+
+    return score
+
+
+def order_moves(board, moves, player):
+    return sorted(moves, key=lambda mv: quick_move_score(board, mv, player), reverse=True)
+
+
+def board_key(board):
+    return tuple(x for row in board for x in row)
+
+
+def negamax(board, player, depth, alpha, beta, deadline, tt):
+    if time.perf_counter() >= deadline:
+        raise TimeoutError
+
+    tv = terminal_value(board, player)
+    if tv is not None:
+        return tv
+
+    if depth == 0:
+        return evaluate(board, player)
+
+    key = (player, depth, board_key(board))
+    if key in tt:
+        return tt[key]
+
+    moves = generate_legal_moves(board, player)
+    if not moves:
+        return -WIN_SCORE
+
+    moves = order_moves(board, moves, player)
+
+    best = -10**18
+    for mv in moves:
+        if time.perf_counter() >= deadline:
+            raise TimeoutError
+        nb = apply_move(board, mv)
+        score = -negamax(nb, -player, depth - 1, -beta, -alpha, deadline, tt)
+        if score > best:
+            best = score
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+
+    tt[key] = best
+    return best
+</code>

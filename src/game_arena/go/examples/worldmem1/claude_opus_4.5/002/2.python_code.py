@@ -1,0 +1,128 @@
+
+import random
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    me_set = set(me)
+    opp_set = set(opponent)
+    all_stones = me_set | opp_set
+    
+    def neighbors(r, c):
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if 1 <= nr <= 19 and 1 <= nc <= 19:
+                yield (nr, nc)
+    
+    def get_group(start, stones_set):
+        group = set()
+        stack = [start]
+        while stack:
+            pos = stack.pop()
+            if pos in group:
+                continue
+            if pos in stones_set:
+                group.add(pos)
+                for n in neighbors(*pos):
+                    if n not in group:
+                        stack.append(n)
+        return group
+    
+    def get_liberties(group, me_s, opp_s):
+        libs = set()
+        for pos in group:
+            for n in neighbors(*pos):
+                if n not in me_s and n not in opp_s:
+                    libs.add(n)
+        return libs
+    
+    def is_suicide(move, me_s, opp_s):
+        new_me = me_s | {move}
+        new_opp = set(opp_s)
+        # Check if we capture anything
+        for n in neighbors(*move):
+            if n in new_opp:
+                grp = get_group(n, new_opp)
+                libs = get_liberties(grp, new_me, new_opp)
+                if not libs:
+                    new_opp -= grp
+        # Check our liberties
+        my_grp = get_group(move, new_me)
+        my_libs = get_liberties(my_grp, new_me, new_opp)
+        return len(my_libs) == 0
+    
+    def is_legal(move):
+        if move in all_stones:
+            return False
+        if is_suicide(move, me_set, opp_set):
+            return False
+        return True
+    
+    # Priority 1: Capture opponent stones in atari
+    for opp_stone in opp_set:
+        grp = get_group(opp_stone, opp_set)
+        libs = get_liberties(grp, me_set, opp_set)
+        if len(libs) == 1:
+            capture_move = list(libs)[0]
+            if is_legal(capture_move):
+                return (capture_move, memory)
+    
+    # Priority 2: Save own groups in atari
+    for my_stone in me_set:
+        grp = get_group(my_stone, me_set)
+        libs = get_liberties(grp, me_set, opp_set)
+        if len(libs) == 1:
+            # Try to extend
+            escape = list(libs)[0]
+            if is_legal(escape):
+                return (escape, memory)
+    
+    # Score all empty positions
+    star_points = [(4,4), (4,10), (4,16), (10,4), (10,10), (10,16), (16,4), (16,10), (16,16)]
+    
+    best_moves = []
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if (r, c) in all_stones:
+                continue
+            if not is_legal((r, c)):
+                continue
+            
+            score = 0
+            # Prefer center regions
+            dist_edge = min(r-1, 19-r, c-1, 19-c)
+            score += dist_edge * 0.5
+            
+            # Star points bonus in opening
+            if len(all_stones) < 30 and (r, c) in star_points:
+                score += 15
+            
+            # Proximity to own stones (good for connection)
+            for ms in me_set:
+                d = abs(ms[0] - r) + abs(ms[1] - c)
+                if 2 <= d <= 4:
+                    score += 3
+                elif d == 1:
+                    score += 1
+            
+            # Not too close to opponent in opening
+            for os in opp_set:
+                d = abs(os[0] - r) + abs(os[1] - c)
+                if d <= 2:
+                    score -= 2
+                elif d <= 4:
+                    score += 1  # Approaching is ok
+            
+            # Count liberties of the move
+            libs_count = sum(1 for n in neighbors(r, c) if n not in all_stones and n != (r,c))
+            score += libs_count * 2
+            
+            best_moves.append((score, r, c))
+    
+    if best_moves:
+        best_moves.sort(reverse=True)
+        # Add some randomness among top moves
+        top_n = min(5, len(best_moves))
+        choice = random.choice(best_moves[:top_n])
+        return ((choice[1], choice[2]), memory)
+    
+    # Pass if no legal moves
+    return ((0, 0), memory)

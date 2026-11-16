@@ -1,0 +1,431 @@
+The strategy for this policy is:
+
+- Use **iterative deepening alpha-beta search** so it can spend most of the time budget searching but still always have a move ready.
+- Model Kalah accurately, including **extra turns**, **captures**, and **end-of-game collection**.
+- Use **move ordering** that prioritizes strong tactical ideas:
+  - extra-turn moves,
+  - immediate captures,
+  - moves with good heuristic child positions,
+  - previously best / transposition-table moves.
+- Use a **transposition table** to avoid re-solving the same positions.
+- Use an **exact endgame solver** when few seeds remain.
+- Use a Kalah-specific heuristic emphasizing:
+  - store difference,
+  - seeds remaining on each side,
+  - extra-turn opportunities,
+  - immediate capture potential,
+  - house-position quality.
+- Always keep a legal fallback move, so it will always return a valid integer move.
+
+<code>
+import time
+
+INF = 10**18
+EXACT = 0
+LOWER = 1
+UPPER = 2
+EXACT_THRESHOLD = 12
+
+# Precomputed sowing cycles for each move.
+# Positions are encoded as (side, idx) where side 0 = you, 1 = opponent.
+CYCLES = []
+for m in range(6):
+    seq = []
+    for j in range(m + 1, 6):
+        seq.append((0, j))
+    seq.append((0, 6))  # own store
+    for j in range(6):
+        seq.append((1, j))
+    for j in range(0, m + 1):
+        seq.append((0, j))
+    CYCLES.append(tuple(seq))
+
+TT = {}
+EXACT_CACHE = {}
+DEADLINE = 0.0
+NODES = 0
+
+
+class Timeout(Exception):
+    pass
+
+
+def house_sum(a):
+    return a[0] + a[1] + a[2] + a[3] + a[4] + a[5]
+
+
+def maybe_timeout():
+    global NODES
+    NODES += 1
+    if (NODES & 255) == 0 and time.perf_counter() >= DEADLINE:
+        raise Timeout
+
+
+def terminal_value(you, opp):
+    ys = house_sum(you)
+    os = house_sum(opp)
+    if ys == 0 or os == 0:
+        return ((you[6] + ys) - (opp[6] + os)) * 1000
+    return None
+
+
+def bonus_moves(side):
+    c = 0
+    # Move from pit i gets an extra turn iff last seed lands in own store.
+    # Distance from pit i to own store is (6 - i) in the 13-position cycle.
+    for i in range(6):
+        s = side[i]
+        if s and (s % 13) == (6 - i):
+            c += 1
+    return c
+
+
+def best_capture(side, other):
+    best = 0
+    for m in range(6):
+        s = side[m]
+        if s == 0:
+            continue
+        # Immediate capture is only possible if the landing house has not already
+        # received a seed earlier in the same sowing. That can only happen for s <= 13.
+        if s > 13:
+            continue
+
+        dist_store = 6 - m
+        # Determine where the last seed lands.
+        if s <= 5 - m:
+            j = m + s  # own house to the right
+        elif s == dist_store:
+            continue  # own store, no capture
+        elif s <= 12 - m:
+            continue  # opponent house, no capture
+        else:
+            j = s - (13 - m)  # wrapped own house 0..m
+
+        # House must be empty before the final drop.
+        # If j == m, the original pit was emptied before sowing, so that's okay.
+        if (j == m or side[j] == 0) and other[5 - j] > 0:
+            gain = other[5 - j] + 1
+            if gain > best:
+                best = gain
+    return best
+
+
+def static_eval(you, opp):
+    ys = house_sum(you)
+    os = house_sum(opp)
+    rem = ys + os
+
+    store_diff = you[6] - opp[6]
+    seed_diff = ys - os
+    bonus_diff = bonus_moves(you) - bonus_moves(opp)
+    cap_diff = best_capture(you, opp) - best_capture(opp, you)
+    mobility_diff = (
+        (1 if you[0] else 0) + (1 if you[1] else 0) + (1 if you[2] else 0) +
+        (1 if you[3] else 0) + (1 if you[4] else 0) + (1 if you[5] else 0)
+        -
+        ((1 if opp[0] else 0) + (1 if opp[1] else 0) + (1 if opp[2] else 0) +
+         (1 if opp[3] else 0) + (1 if opp[4] else 0) + (1 if opp[5] else 0))
+    )
+    pos_diff = (
+        1 * you[0] + 2 * you[1] + 3 * you[2] + 4 * you[3] + 5 * you[4] + 6 * you[5]
+        -
+        (1 * opp[0] + 2 * opp[1] + 3 * opp[2] + 4 * opp[3] + 5 * opp[4] + 6 * opp[5])
+    )
+
+    if rem <= 14:
+        store_w, seed_w, bonus_w, cap_w, pos_w, mob_w = 220, 18, 40, 26, 3, 4
+    elif rem <= 28:
+        store_w, seed_w, bonus_w, cap_w, pos_w, mob_w = 170, 11, 32, 20, 2, 3
+    else:
+        store_w, seed_w, bonus_w, cap_w, pos_w, mob_w = 145, 8, 28, 16, 1, 2
+
+    return (
+        store_w * store_diff
+        + seed_w * seed_diff
+        + bonus_w * bonus_diff
+        + cap_w * cap_diff
+        + pos_w * pos_diff
+        + mob_w * mobility_diff
+    )
+
+
+def apply_move(you, opp, move):
+    y = list(you)
+    o = list(opp)
+
+    seeds = y[move]
+    y[move] = 0
+    cycle = CYCLES[move]
+
+    q, r = divmod(seeds, 13)
+
+    if q:
+        for side, idx in cycle:
+            if side == 0:
+                y[idx] += q
+            else:
+                o[idx] += q
+
+    if r:
+        for k in range(r):
+            side, idx = cycle[k]
+            if side == 0:
+                y[idx] += 1
+            else:
+                o[idx] += 1
+        last_side, last_idx = cycle[r - 1]
+    else:
+        last_side, last_idx = cycle[-1]
+
+    extra = (last_side == 0 and last_idx == 6)
+
+    # Capture
+    if last_side == 0 and last_idx < 6 and y[last_idx] == 1 and o[5 - last_idx] > 0:
+        y[6] += y[last_idx] + o[5 - last_idx]
+        y[last_idx] = 0
+        o[5 - last_idx] = 0
+
+    # Game end collection
+    ys = house_sum(y)
+    os = house_sum(o)
+    if ys == 0 or os == 0:
+        if ys:
+            y[6] += ys
+            y[0] = y[1] = y[2] = y[3] = y[4] = y[5] = 0
+        if os:
+            o[6] += os
+            o[0] = o[1] = o[2] = o[3] = o[4] = o[5] = 0
+        extra = False
+
+    return tuple(y), tuple(o), extra
+
+
+def ordered_children(you, opp, preferred_move=None):
+    children = []
+    base_store = you[6]
+
+    for m in range(6):
+        if you[m] == 0:
+            continue
+
+        ny, no, extra = apply_move(you, opp, m)
+        term = terminal_value(ny, no)
+
+        if term is not None:
+            est = term
+        else:
+            if extra:
+                est = static_eval(ny, no)
+            else:
+                est = -static_eval(no, ny)
+
+        # Tactical ordering bonuses
+        if extra:
+            est += 150
+        est += 20 * (ny[6] - base_store)
+
+        if preferred_move is not None and m == preferred_move:
+            est += 10**9
+
+        children.append((est, m, ny, no, extra, term))
+
+    children.sort(reverse=True)
+    return children
+
+
+def exact_value(you, opp):
+    maybe_timeout()
+
+    term = terminal_value(you, opp)
+    if term is not None:
+        return term
+
+    key = (you, opp)
+    cached = EXACT_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    children = ordered_children(you, opp, None)
+
+    best = -INF
+    for _, _, ny, no, extra, child_term in children:
+        if child_term is not None:
+            val = child_term
+        elif extra:
+            val = exact_value(ny, no)
+        else:
+            val = -exact_value(no, ny)
+
+        if val > best:
+            best = val
+
+    EXACT_CACHE[key] = best
+    return best
+
+
+def search(you, opp, depth, alpha, beta):
+    maybe_timeout()
+
+    term = terminal_value(you, opp)
+    if term is not None:
+        return term
+
+    rem = house_sum(you) + house_sum(opp)
+    if depth <= 0:
+        if rem <= EXACT_THRESHOLD:
+            return exact_value(you, opp)
+        return static_eval(you, opp)
+
+    key = (you, opp)
+    alpha_orig = alpha
+    beta_orig = beta
+
+    entry = TT.get(key)
+    tt_move = None
+    if entry is not None:
+        e_depth, e_val, e_flag, e_move = entry
+        tt_move = e_move
+        if e_depth >= depth:
+            if e_flag == EXACT:
+                return e_val
+            if e_flag == LOWER:
+                if e_val > alpha:
+                    alpha = e_val
+            else:  # UPPER
+                if e_val < beta:
+                    beta = e_val
+            if alpha >= beta:
+                return e_val
+
+    children = ordered_children(you, opp, tt_move)
+
+    best = -INF
+    best_move = children[0][1]
+
+    for _, m, ny, no, extra, child_term in children:
+        if child_term is not None:
+            val = child_term
+        elif extra:
+            val = search(ny, no, depth - 1, alpha, beta)
+        else:
+            val = -search(no, ny, depth - 1, -beta, -alpha)
+
+        if val > best:
+            best = val
+            best_move = m
+
+        if val > alpha:
+            alpha = val
+        if alpha >= beta:
+            break
+
+    if best <= alpha_orig:
+        flag = UPPER
+    elif best >= beta_orig:
+        flag = LOWER
+    else:
+        flag = EXACT
+
+    TT[key] = (depth, best, flag, best_move)
+    return best
+
+
+def root_search(you, opp, depth, preferred_move):
+    maybe_timeout()
+
+    children = ordered_children(you, opp, preferred_move)
+
+    alpha = -INF
+    beta = INF
+    best = -INF
+    best_move = children[0][1]
+
+    for _, m, ny, no, extra, child_term in children:
+        if child_term is not None:
+            val = child_term
+        elif extra:
+            val = search(ny, no, depth - 1, alpha, beta)
+        else:
+            val = -search(no, ny, depth - 1, -beta, -alpha)
+
+        if val > best:
+            best = val
+            best_move = m
+
+        if val > alpha:
+            alpha = val
+
+    TT[(you, opp)] = (depth, best, EXACT, best_move)
+    return best, best_move
+
+
+def exact_root(you, opp, preferred_move):
+    children = ordered_children(you, opp, preferred_move)
+
+    best = -INF
+    best_move = children[0][1]
+
+    for _, m, ny, no, extra, child_term in children:
+        if child_term is not None:
+            val = child_term
+        elif extra:
+            val = exact_value(ny, no)
+        else:
+            val = -exact_value(no, ny)
+
+        if val > best:
+            best = val
+            best_move = m
+
+    return best, best_move
+
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    global TT, EXACT_CACHE, DEADLINE, NODES
+
+    y = tuple(int(v) for v in you)
+    o = tuple(int(v) for v in opponent)
+
+    legal = [i for i in range(6) if y[i] > 0]
+    # Guaranteed by prompt, but keep safety anyway.
+    if not legal:
+        return 0
+    if len(legal) == 1:
+        return legal[0]
+
+    # Always keep a legal fallback.
+    fallback = legal[0]
+
+    # Initialize search state.
+    TT = {}
+    EXACT_CACHE = {}
+    NODES = 0
+    DEADLINE = time.perf_counter() + 0.93
+
+    # Heuristic fallback better than first legal move.
+    try:
+        ordered = ordered_children(y, o, None)
+        best_move = ordered[0][1] if ordered else fallback
+    except Exception:
+        best_move = fallback
+
+    try:
+        rem = house_sum(y) + house_sum(o)
+
+        # Solve small endgames exactly.
+        if rem <= EXACT_THRESHOLD:
+            _, best_move = exact_root(y, o, best_move)
+            return best_move
+
+        depth = 1
+        while True:
+            _, move = root_search(y, o, depth, best_move)
+            best_move = move
+            depth += 1
+
+    except Timeout:
+        return best_move
+    except Exception:
+        return best_move
+</code>

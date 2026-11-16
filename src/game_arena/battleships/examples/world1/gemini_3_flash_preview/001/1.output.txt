@@ -1,0 +1,86 @@
+<thinking>
+To implement an effective Battleship targeting policy, I will use a "Hunt-and-Target" strategy.
+
+1.  **Targeting Mode**: If there are hit cells (`1`) on the board that are not yet surrounded by misses or edge boundaries, the policy focuses on those. It identifies all hits, looks at their neighbors (North, South, East, West), and prioritizes firing at neighbors of hits to finish sinking a ship. This is optimized by looking for "lines" of hits to determine ship orientation.
+2.  **Hunt Mode (Parity)**: If no hits are available (or all current hits are isolated/exhausted), the policy switches to a hunting mode. Instead of random firing, it uses a "checkerboard" or parity-based approach. Since the smallest ship has a length of 2, we only need to fire on cells where `(row + col) % 2 == 0` (or 1) to eventually hit every ship, reducing the search space.
+3.  **Density Preference (Probability-lite)**: Within the parity strategy, it prefers cells that have more unknown neighbors to maximize the chance of discovering a ship.
+4.  **Safety**: The code ensures it never returns a coordinate already fired upon (-1 or 1).
+</thinking>
+
+<code>import random
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Battleship AI policy.
+    0: Unknown, -1: Miss, 1: Hit.
+    Grid: 10x10.
+    """
+    size = 10
+    hits = []
+    for r in range(size):
+        for c in range(size):
+            if board[r][c] == 1:
+                hits.append((r, c))
+
+    # Target Mode: If there's at least one hit, try to sink the ship
+    target_candidates = []
+    if hits:
+        for r, c in hits:
+            # Check neighbors
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < size and 0 <= nc < size and board[nr][nc] == 0:
+                    # Heuristic: Check if this neighbor continues a line of hits
+                    weight = 1
+                    # Look in the opposite direction
+                    pr, pc = r - dr, c - dc
+                    if 0 <= pr < size and 0 <= pc < size and board[pr][pc] == 1:
+                        weight += 2 # Higher priority for following a line
+                    
+                    target_candidates.append((weight, (nr, nc)))
+        
+        if target_candidates:
+            # Sort by weight descending
+            target_candidates.sort(key=lambda x: x[0], reverse=True)
+            # Return the best candidate (or random if weights equal)
+            best_weight = target_candidates[0][0]
+            top_choices = [pos for w, pos in target_candidates if w == best_weight]
+            return random.choice(top_choices)
+
+    # Hunt Mode: Fire at unknown squares using parity (checkerboard)
+    # Since the smallest ship is size 2, checking every other square is efficient.
+    parity_cells = []
+    other_cells = []
+    
+    for r in range(size):
+        for c in range(size):
+            if board[r][c] == 0:
+                # Use parity to narrow search
+                if (r + c) % 2 == 0:
+                    parity_cells.append((r, c))
+                else:
+                    other_cells.append((r, c))
+
+    # Prefer cells in the parity group
+    hunt_pool = parity_cells if parity_cells else other_cells
+    
+    # Simple density heuristic: favor cells with more unknown neighbors
+    best_hunt_cell = None
+    max_neighbors = -1
+    
+    # Shuffle to avoid predictable patterns
+    random.shuffle(hunt_pool)
+    
+    for r, c in hunt_pool:
+        unknown_neighbors = 0
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < size and 0 <= nc < size and board[nr][nc] == 0:
+                unknown_neighbors += 1
+        
+        if unknown_neighbors > max_neighbors:
+            max_neighbors = unknown_neighbors
+            best_hunt_cell = (r, c)
+            
+    return best_hunt_cell if best_hunt_cell else random.choice(hunt_pool)
+</code>

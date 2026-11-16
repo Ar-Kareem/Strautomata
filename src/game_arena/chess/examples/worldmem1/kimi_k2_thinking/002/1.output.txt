@@ -1,0 +1,272 @@
+My strategy combines immediate tactical evaluation with positional heuristics. The policy performs a 1-ply search evaluating each legal move using material balance and piece-square tables, then applies strategic heuristics for different game phases. Key priorities are: forced checkmates, captures, checks, development in the opening, and king safety. The evaluation is fast enough for 1-second execution while providing strong positional understanding.
+
+<code>
+import copy
+import random
+
+# Piece values with slight bishop premium
+PIECE_VALUES = {'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 10000}
+
+# Piece-square tables for positional evaluation
+PIECE_SQUARES = {
+    'P': [
+        [0,  0,  0,  0,  0,  0,  0,  0],
+        [50, 50, 50, 50, 50, 50, 50, 50],
+        [10, 10, 20, 30, 30, 20, 10, 10],
+        [5,  5, 10, 25, 25, 10,  5,  5],
+        [0,  0,  0, 20, 20,  0,  0,  0],
+        [5, -5,-10,  0,  0,-10, -5,  5],
+        [5, 10, 10,-20,-20, 10, 10,  5],
+        [0,  0,  0,  0,  0,  0,  0,  0]
+    ],
+    'N': [
+        [-50,-40,-30,-30,-30,-30,-40,-50],
+        [-40,-20,  0,  0,  0,  0,-20,-40],
+        [-30,  0, 10, 15, 15, 10,  0,-30],
+        [-30,  5, 15, 20, 20, 15,  5,-30],
+        [-30,  0, 15, 20, 20, 15,  0,-30],
+        [-30,  5, 10, 15, 15, 10,  5,-30],
+        [-40,-20,  0,  5,  5,  0,-20,-40],
+        [-50,-40,-30,-30,-30,-30,-40,-50],
+    ],
+    'B': [
+        [-20,-10,-10,-10,-10,-10,-10,-20],
+        [-10,  0,  0,  0,  0,  0,  0,-10],
+        [-10,  0,  5, 10, 10,  5,  0,-10],
+        [-10,  5,  5, 10, 10,  5,  5,-10],
+        [-10,  0, 10, 10, 10, 10,  0,-10],
+        [-10, 10, 10, 10, 10, 10, 10,-10],
+        [-10,  5,  0,  0,  0,  0,  5,-10],
+        [-20,-10,-10,-10,-10,-10,-10,-20],
+    ],
+    'R': [
+        [0,  0,  0,  0,  0,  0,  0,  0],
+        [5, 10, 10, 10, 10, 10, 10,  5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [0,  0,  0,  5,  5,  0,  0,  0]
+    ],
+    'Q': [
+        [-20,-10,-10,  5,  5,-10,-10,-20],
+        [-10,  0,  0,  0,  0,  0,  0,-10],
+        [-10,  0,  5,  5,  5,  5,  0,-10],
+        [5,  0,  5,  5,  5,  5,  0,  5],
+        [0,  0,  5,  5,  5,  5,  0,  0],
+        [-10,  5,  5,  5,  5,  5,  5,-10],
+        [-10,  0,  5,  0,  0,  5,  0,-10],
+        [-20,-10,-10,  5,  5,-10,-10,-20]
+    ],
+    'K': [
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-20,-30,-30,-40,-40,-30,-30,-20],
+        [-10,-20,-20,-20,-20,-20,-20,-10],
+        [20, 20,  0,  0,  0,  0, 20, 20],
+        [20, 30, 10,  0,  0, 10, 30, 20]
+    ]
+}
+
+def square_to_coords(square):
+    """Convert algebraic notation to (file, rank) coordinates"""
+    return ord(square[0]) - ord('a'), int(square[1]) - 1
+
+def parse_move(move_str, board, color):
+    """
+    Parse move string into coordinates.
+    Returns (from_file, from_rank, to_file, to_rank, promotion_piece)
+    """
+    # Castling
+    if move_str.startswith('O-O-O'):
+        rank = 0 if color == 'w' else 7
+        return (4, rank, 2, rank, None)
+    if move_str.startswith('O-O'):
+        rank = 0 if color == 'w' else 7
+        return (4, rank, 6, rank, None)
+    
+    # Remove check/mate symbols
+    move = move_str.replace('+', '').replace('#', '')
+    
+    # Handle promotion
+    promotion = None
+    if '=' in move:
+        move, promo = move.split('=')
+        promotion = promo[0]
+    
+    # Remove capture symbol for parsing
+    move_clean = move.replace('x', '')
+    
+    # Destination square (always last 2 chars)
+    to_sq = move_clean[-2:]
+    to_file, to_rank = square_to_coords(to_sq)
+    
+    # Determine piece type and source description
+    if move[0].isupper():
+        piece_type = move[0]
+        from_desc = move_clean[1:-2] if len(move_clean) > 2 else ''
+    else:
+        piece_type = 'P'
+        from_desc = move_clean[:-2] if len(move_clean) > 2 else ''
+    
+    # Find all possible source squares for this piece
+    possible_sources = []
+    for f in range(8):
+        for r in range(8):
+            piece = board[r][f]
+            if piece and piece[0] == color and piece[1] == piece_type:
+                possible_sources.append((f, r))
+    
+    # Disambiguate using file/rank if needed
+    if from_desc:
+        if len(from_desc) == 1:
+            if from_desc.isdigit():
+                # Rank specified
+                sources = [s for s in possible_sources if s[1] == int(from_desc)-1]
+            else:
+                # File specified
+                sources = [s for s in possible_sources if s[0] == ord(from_desc)-ord('a')]
+        else:
+            # Full square specified
+            f = ord(from_desc[0]) - ord('a')
+            r = int(from_desc[1]) - 1
+            sources = [(f, r)]
+    else:
+        sources = possible_sources
+    
+    # Return first valid source (should be only one)
+    from_file, from_rank = sources[0] if sources else (to_file, to_rank-1 if color == 'w' else to_rank+1)
+    return (from_file, from_rank, to_file, to_rank, promotion)
+
+def apply_move(board, move_str, color):
+    """
+    Apply a move to the board and return a new board state.
+    Handles normal moves, captures, promotions, and castling.
+    """
+    from_f, from_r, to_f, to_r, promotion = parse_move(move_str, board, color)
+    
+    # Deep copy
+    new_board = [row[:] for row in board]
+    
+    # Move the piece
+    piece = new_board[from_r][from_f]
+    new_board[to_r][to_f] = piece
+    new_board[from_r][from_f] = None
+    
+    # Handle promotion
+    if promotion:
+        new_board[to_r][to_f] = color + promotion
+    
+    return new_board
+
+def evaluate(board, to_play):
+    """
+    Evaluate board position using material and piece-square tables.
+    Higher scores favor to_play.
+    """
+    score = 0
+    
+    # Determine game phase
+    piece_count = sum(1 for row in board for p in row if p)
+    is_endgame = piece_count < 12
+    
+    for r in range(8):
+        for f in range(8):
+            piece = board[r][f]
+            if piece:
+                color = piece[0]
+                ptype = piece[1]
+                
+                # Base material value
+                value = PIECE_VALUES[ptype]
+                
+                # Positional bonus
+                if ptype != 'K':
+                    # Use piece-square table
+                    table = PIECE_SQUARES[ptype]
+                    bonus = table[r][f] if color == 'w' else table[7-r][f]
+                    value += bonus
+                elif is_endgame:
+                    # King centralization in endgame
+                    king_bonus = [0, 0, 5, 10, 10, 5, 0, 0]
+                    bonus = king_bonus[r] + king_bonus[f]
+                    value += bonus
+                
+                # Add to score
+                if color == 'w':
+                    score += value
+                else:
+                    score -= value
+    
+    # Return from perspective of player to move
+    return score if to_play == 'white' else -score
+
+def policy(pieces, to_play, legal_moves, memory):
+    """
+    Main policy: performs 1-ply search with heuristic evaluation.
+    Prioritizes: checkmate > checks > captures > development > king safety.
+    """
+    # Build board representation
+    board = [[None for _ in range(8)] for _ in range(8)]
+    for sq, piece in pieces.items():
+        f, r = square_to_coords(sq)
+        board[r][f] = piece
+    
+    color = 'w' if to_play == 'white' else 'b'
+    
+    # Always choose checkmate if available
+    for move in legal_moves:
+        if move.endswith('#'):
+            return move, memory
+    
+    # Shuffle for non-deterministic play
+    moves = legal_moves[:]
+    random.shuffle(moves)
+    
+    # Determine game phase
+    piece_count = sum(1 for row in board for p in row if p)
+    is_opening = piece_count > 26
+    
+    best_move = moves[0]
+    best_score = -float('inf')
+    
+    # Evaluate each legal move
+    for move in moves:
+        # Apply move
+        new_board = apply_move(board, move, color)
+        
+        # Base evaluation
+        score = evaluate(new_board, to_play)
+        
+        # Tactical heuristics
+        if 'x' in move:
+            score += 50  # Reward captures
+        
+        if move.endswith('+'):
+            score += 40  # Reward checks
+        
+        # Positional heuristics (opening)
+        if is_opening:
+            if move.startswith('K') and len(move) < 4:
+                score -= 80  # Penalize early king moves
+            
+            if move.startswith('N') or move.startswith('B'):
+                score += 20  # Reward development
+            
+            if move.startswith('Q') and len(move) < 4:
+                score -= 30  # Penalize early queen moves
+            
+            # Strong bonus for castling
+            if move.startswith('O-O'):
+                score += 100
+        
+        # Update best move
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move, memory
+</code>

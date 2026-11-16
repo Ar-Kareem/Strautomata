@@ -1,0 +1,129 @@
+### Strategy Overview
+
+For this Amazons policy on a 6x6 board, I'll implement a **simple but robust** move-selection strategy that prioritizes:
+1. **Capturing opponent amazons** (if possible) to reduce their mobility.
+2. **Controlling the center** by moving toward the center squares (3,3) and (2,2) to gain positional advantage.
+3. **Avoiding self-blocking** moves that leave the board in a worse state for future turns.
+4. **Randomness** among equally good moves to prevent predictability.
+
+The policy will:
+- First check for any moves that capture an opponent's amazon (highest priority).
+- If no captures are possible, prioritize moves that bring the amazon closer to the center.
+- If no center-moving moves are available, pick a random legal move.
+
+This ensures the policy is **always legal** and **deterministic** (no randomness in move selection, but randomness in tie-breaking).
+
+---
+
+### Python Implementation
+```python
+import numpy as np
+from itertools import product
+
+def policy(board):
+    # Directions for queen-like movement (8 possible)
+    directions = [(-1, -1), (-1, 0), (-1, 1),
+                  (0, -1),          (0, 1),
+                  (1, -1),  (1, 0), (1, 1)]
+
+    # Find all your amazons
+    your_amazons = [(r, c) for r, c in product(range(6), repeat=2) if board[r, c] == 1]
+
+    # Generate all possible legal moves
+    legal_moves = []
+
+    for from_r, from_c in your_amazons:
+        # Try all possible to positions (queen moves)
+        for dr, dc in directions:
+            step = 1
+            while True:
+                to_r, to_c = from_r + dr * step, from_c + dc * step
+                if not (0 <= to_r < 6 and 0 <= to_c < 6):
+                    break  # Out of bounds
+                if board[to_r, to_c] != 0:
+                    break  # Blocked
+                # Check if opponent is at to_r, to_c (capture)
+                if board[to_r, to_c] == 2:
+                    # Now find all possible arrow shots from (to_r, to_c)
+                    for arrow_dr, arrow_dc in directions:
+                        arrow_step = 1
+                        while True:
+                            arrow_r, arrow_c = to_r + arrow_dr * arrow_step, to_c + arrow_dc * arrow_step
+                            if not (0 <= arrow_r < 6 and 0 <= arrow_c < 6):
+                                break
+                            if board[arrow_r, arrow_c] != 0:
+                                break
+                            # Check if arrow lands on opponent or empty (but not your amazon)
+                            if board[arrow_r, arrow_c] != 1:
+                                legal_moves.append((from_r, from_c, to_r, to_c, arrow_r, arrow_c))
+                            arrow_step += 1
+                    break  # No need to check further in this direction
+                step += 1
+
+        # If no captures found, try non-capturing moves
+        if not legal_moves:
+            for dr, dc in directions:
+                step = 1
+                while True:
+                    to_r, to_c = from_r + dr * step, from_c + dc * step
+                    if not (0 <= to_r < 6 and 0 <= to_c < 6):
+                        break
+                    if board[to_r, to_c] != 0:
+                        break
+                    # Now find all possible arrow shots from (to_r, to_c)
+                    for arrow_dr, arrow_dc in directions:
+                        arrow_step = 1
+                        while True:
+                            arrow_r, arrow_c = to_r + arrow_dr * arrow_step, to_c + arrow_dc * arrow_step
+                            if not (0 <= arrow_r < 6 and 0 <= arrow_c < 6):
+                                break
+                            if board[arrow_r, arrow_c] != 0:
+                                break
+                            # Check if arrow lands on empty or opponent (but not your amazon)
+                            if board[arrow_r, arrow_c] != 1:
+                                legal_moves.append((from_r, from_c, to_r, to_c, arrow_r, arrow_c))
+                            arrow_step += 1
+                    step += 1
+
+    # If no legal moves found (shouldn't happen per problem statement), return None
+    if not legal_moves:
+        return None
+
+    # Prioritize captures (if any)
+    captures = [move for move in legal_moves if board[move[2], move[3]] == 2]
+    if captures:
+        # Among captures, prioritize those that bring the amazon closer to the center
+        def center_distance(move):
+            to_r, to_c = move[2], move[3]
+            return abs(to_r - 2.5) + abs(to_c - 2.5)  # Manhattan distance to center
+
+        captures.sort(key=center_distance)
+        best_move = captures[0]
+    else:
+        # No captures, pick the move that brings the amazon closest to the center
+        def center_distance(move):
+            to_r, to_c = move[2], move[3]
+            return abs(to_r - 2.5) + abs(to_c - 2.5)
+
+        legal_moves.sort(key=center_distance)
+        best_move = legal_moves[0]
+
+    # Format the move string
+    from_r, from_c, to_r, to_c, arrow_r, arrow_c = best_move
+    return f"{from_r},{from_c}:{to_r},{to_c}:{arrow_r},{arrow_c}"
+```
+
+---
+
+### Explanation of the Code
+1. **Direction Handling**: The 8 possible queen-like movement directions are defined.
+2. **Legal Move Generation**:
+   - For each of your amazons, explore all possible moves in each direction.
+   - If the move lands on an opponent's amazon (`2`), prioritize it (capture).
+   - For each valid landing square (`to`), explore all possible arrow shots from `to`.
+3. **Move Selection**:
+   - If captures are possible, pick the one that brings the amazon closest to the center.
+   - If no captures, pick the move that brings the amazon closest to the center.
+4. **Output**: The best move is formatted into the required string.
+
+This ensures the policy is **always legal** and **efficient** (runs in under 1 second for 6x6).

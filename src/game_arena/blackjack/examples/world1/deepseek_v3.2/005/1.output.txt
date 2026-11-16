@@ -1,0 +1,266 @@
+<thinking>
+We need to implement a policy for a simplified Blackjack-like game with a target score T between 10 and 30. The policy must decide whether to HIT or STAY based on the current hand and target.
+
+Key points:
+- Each player has their own deck of 13 distinct cards (one of each rank).
+- Card values: 2-10 as face value, J/Q/K = 10, A = 11 if the hand value <= T, else 1.
+- Goal: get as close as possible to T without busting (sum > T).
+- The opponent is playing independently with their own deck.
+
+We want to maximize the probability of winning against an opponent using the same optimal strategy. We can model this as a symmetric game and compute the Nash equilibrium policy via value iteration.
+
+Approach:
+1. Precompute the optimal policy for each T using dynamic programming and value iteration.
+2. The state is represented by a bitmask of drawn cards (13 bits).
+3. Compute the hand total from the mask and T.
+4. Value iteration: iteratively compute the opponent's outcome distribution D under the current policy, then compute the value function V(mask) as the maximum of staying (win probability given current total) and the expected value of hitting (drawing a random remaining card).
+5. The policy converges when the action (HIT/STAY) for each state stabilizes.
+
+Implementation details:
+- Use a global cache to store the optimal policy for each T.
+- In `policy(hand, target)`, compute the mask from the hand and look up the action from the precomputed policy.
+- The DP uses recursion with memoization for efficiency.
+
+The algorithm:
+- For a given T, initialize a policy (e.g., hit if total < T-5).
+- Iterate:
+   a. Compute the opponent's outcome distribution D under the current policy.
+   b. Compute the value function V for all states using D.
+   c. Update the policy to be greedy with respect to V.
+   d. Stop when the policy no longer changes.
+- Store the final policy (action for each mask).
+
+We'll implement helper functions to convert between cards and indices, compute hand total from a mask, etc.
+
+The code will be structured as follows:
+- Global dictionary `_policy_cache` to store policies for each T.
+- Function `compute_optimal_policy(T)` that returns a policy object.
+- Class `OptimalPolicy` that holds the action table for a given T.
+- In `policy(hand, target)`, if T is not in cache, compute it, then compute mask and total from hand, and return the action.
+
+We need to handle the Ace value dynamically based on the current total and T.
+
+We'll use standard Python libraries, no external dependencies.
+
+Now, let's write the code.
+</thinking>
+
+<code>
+import functools
+from typing import List
+
+# Global cache for policies: target -> OptimalPolicy instance
+_policy_cache = {}
+
+# Card definitions
+CARD_LIST = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+CARD_INDEX = {card: i for i, card in enumerate(CARD_LIST)}
+N_CARDS = 13
+FULL_MASK = (1 << N_CARDS) - 1
+
+# Precompute card values (for non-Ace cards)
+CARD_VALUES = [0] * N_CARDS
+for i in range(1, N_CARDS):
+    if i <= 9:          # "2" to "10"
+        CARD_VALUES[i] = i + 1
+    else:               # "J", "Q", "K"
+        CARD_VALUES[i] = 10
+
+def compute_total(mask: int, target: int) -> int:
+    """
+    Compute the hand total for a given mask of drawn cards and target T.
+    Assumes mask corresponds to a valid hand (total <= target).
+    """
+    has_ace = (mask & 1) != 0
+    sum_non_ace = 0
+    for i in range(1, N_CARDS):
+        if (mask >> i) & 1:
+            sum_non_ace += CARD_VALUES[i]
+    if has_ace:
+        if sum_non_ace + 11 <= target:
+            return sum_non_ace + 11
+        else:
+            return sum_non_ace + 1
+    else:
+        return sum_non_ace
+
+def mask_from_hand(hand: List[str]) -> int:
+    """Convert a list of card strings to a bitmask."""
+    mask = 0
+    for card in hand:
+        mask |= 1 << CARD_INDEX[card]
+    return mask
+
+class OptimalPolicy:
+    """
+    Precomputed optimal policy for a specific target T.
+    Uses value iteration to find a symmetric Nash equilibrium.
+    """
+    def __init__(self, T: int):
+        self.T = T
+        self.action_table = [False] * (1 << N_CARDS)  # False = STAY, True = HIT
+        
+        # Precompute popcount and list of set bits for each mask
+        self.popcount = [0] * (1 << N_CARDS)
+        self.bits = [[] for _ in range(1 << N_CARDS)]
+        for m in range(1 << N_CARDS):
+            self.popcount[m] = bin(m).count("1")
+            for i in range(N_CARDS):
+                if (m >> i) & 1:
+                    self.bits[m].append(i)
+        
+        # Precompute total for each mask (if <= T, else None)
+        self.total_cache = [None] * (1 << N_CARDS)
+        self.valid_mask = [False] * (1 << N_CARDS)
+        for m in range(1 << N_CARDS):
+            total = compute_total(m, T)
+            if total <= T:
+                self.total_cache[m] = total
+                self.valid_mask[m] = True
+        
+        # Initial policy: hit if total < T - 5 (heuristic)
+        for m in range(1 << N_CARDS):
+            if self.valid_mask[m]:
+                if self.total_cache[m] < T - 5:
+                    self.action_table[m] = True
+                else:
+                    self.action_table[m] = False
+            else:
+                self.action_table[m] = False
+        
+        # Value iteration
+        self._value_iteration()
+    
+    def _compute_opponent_distribution(self, action):
+        """
+        Compute the opponent's outcome distribution D under the given action table.
+        D is a list of length T+2, where D[T+1] is the probability of bust.
+        """
+        T = self.T
+        # Use memoization for distribution recursion
+        @functools.lru_cache(maxsize=None)
+        def get_F(mask):
+            if not self.valid_mask[mask]:
+                # Should not happen, but return bust if called
+                dist = [0.0] * (T + 2)
+                dist[T + 1] = 1.0
+                return tuple(dist)
+            if not action[mask]:  # STAY
+                dist = [0.0] * (T + 2)
+                t = self.total_cache[mask]
+                dist[t] = 1.0
+                return tuple(dist)
+            else:  # HIT
+                dist = [0.0] * (T + 2)
+                remaining = FULL_MASK ^ mask
+                bits = self.bits[remaining]
+                n = len(bits)
+                if n == 0:
+                    # No cards left, must stay
+                    t = self.total_cache[mask]
+                    dist[t] = 1.0
+                    return tuple(dist)
+                for c in bits:
+                    new_mask = mask | (1 << c)
+                    new_total = compute_total(new_mask, T)
+                    if new_total > T:
+                        dist[T + 1] += 1.0 / n
+                    else:
+                        sub_dist = get_F(new_mask)
+                        for i in range(T + 2):
+                            dist[i] += sub_dist[i] / n
+                return tuple(dist)
+        
+        D = get_F(0)  # start from empty hand
+        get_F.cache_clear()
+        return list(D)
+    
+    def _value_iteration(self, max_iter=20, tol=1e-12):
+        """
+        Perform value iteration to find the optimal policy.
+        """
+        T = self.T
+        action = self.action_table[:]  # copy
+        for _ in range(max_iter):
+            # Step 1: Compute opponent distribution D under current action
+            D = self._compute_opponent_distribution(action)
+            D_bust = D[T + 1]
+            
+            # Step 2: Compute value function V and new action
+            V = [0.0] * (1 << N_CARDS)
+            new_action = [False] * (1 << N_CARDS)
+            
+            # Process masks in descending order of popcount (fewer remaining cards first)
+            masks_by_popcount = list(range(1 << N_CARDS))
+            masks_by_popcount.sort(key=lambda m: self.popcount[m], reverse=True)
+            
+            for mask in masks_by_popcount:
+                if not self.valid_mask[mask]:
+                    V[mask] = 0.0
+                    new_action[mask] = False
+                    continue
+                
+                total = self.total_cache[mask]
+                # Win probability if we stay
+                W = D_bust + sum(D[y] for y in range(total)) + 0.5 * D[total]
+                
+                # Expected value if we hit
+                remaining = FULL_MASK ^ mask
+                bits = self.bits[remaining]
+                n = len(bits)
+                if n == 0:
+                    E_hit = -1.0  # cannot hit
+                else:
+                    E_hit = 0.0
+                    for c in bits:
+                        new_mask = mask | (1 << c)
+                        new_total = compute_total(new_mask, T)
+                        if new_total > T:
+                            E_hit += (0.5 * D_bust) / n
+                        else:
+                            E_hit += V[new_mask] / n
+                
+                if E_hit > W + tol:
+                    new_action[mask] = True
+                    V[mask] = E_hit
+                else:
+                    new_action[mask] = False
+                    V[mask] = W
+            
+            # Check convergence
+            if all(new_action[m] == action[m] for m in range(1 << N_CARDS) if self.valid_mask[m]):
+                break
+            action = new_action[:]
+        
+        self.action_table = action[:]
+    
+    def get_action(self, mask: int) -> str:
+        """Return "HIT" or "STAY" for the given mask."""
+        return "HIT" if self.action_table[mask] else "STAY"
+
+def compute_optimal_policy(T: int) -> OptimalPolicy:
+    """Compute and cache the optimal policy for target T."""
+    if T not in _policy_cache:
+        _policy_cache[T] = OptimalPolicy(T)
+    return _policy_cache[T]
+
+def policy(hand: List[str], target: int) -> str:
+    """
+    The main policy function required by the game.
+    Given the current hand and target T, return "HIT" or "STAY".
+    """
+    # Get the optimal policy for this target (compute if not cached)
+    opt_policy = compute_optimal_policy(target)
+    
+    # Compute mask from hand
+    mask = mask_from_hand(hand)
+    
+    # Safety check: if the hand is already bust, the game should have ended.
+    # But just in case, we stay to avoid further damage.
+    total = compute_total(mask, target)
+    if total > target:
+        return "STAY"
+    
+    # Look up the optimal action
+    return opt_policy.get_action(mask)
+</code>

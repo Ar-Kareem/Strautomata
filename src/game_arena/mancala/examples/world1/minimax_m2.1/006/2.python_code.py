@@ -1,0 +1,187 @@
+
+import random
+import sys
+
+# Search depth – 7 plies gives a strong level of play while staying within the 1‑second limit
+MAX_DEPTH = 7
+
+# ----------------------------------------------------------------------
+# Board utilities
+# ----------------------------------------------------------------------
+def make_move(board, move):
+    """
+    Simulate a move on a copy of the board.
+    board : list of length 14
+        0‑5 : our houses, 6 : our store,
+        7‑12 : opponent houses, 13 : opponent store
+    move : int, index of the house to sow from (0‑5 for us, 7‑12 for opponent)
+    Returns (new_board, extra_turn, terminal)
+    """
+    board = board[:]               # work on a copy
+    seeds = board[move]
+    board[move] = 0
+
+    pos = move
+    while seeds > 0:
+        pos = (pos + 1) % 14
+        if pos == 13:               # opponent's store – skip it
+            continue
+        board[pos] += 1
+        seeds -= 1
+
+    # capture rule (only for our houses)
+    if 0 <= pos <= 5:
+        if board[pos] == 1 and board[12 - pos] > 0:
+            captured = board[pos] + board[12 - pos]
+            board[6] += captured
+            board[pos] = 0
+            board[12 - pos] = 0
+
+    # extra turn if we landed in our own store
+    extra = (pos == 6)
+
+    # terminal position ? (one side empty)
+    if sum(board[0:6]) == 0 or sum(board[7:13]) == 0:
+        remaining_you = sum(board[0:6])
+        remaining_opp = sum(board[7:13])
+        board[6] += remaining_you
+        board[13] += remaining_opp
+        board[0:6] = [0] * 6
+        board[7:13] = [0] * 6
+        extra = False          # game over – no extra turn
+        terminal = True
+    else:
+        terminal = False
+
+    return board, extra, terminal
+
+def legal_moves(board, is_my_turn):
+    """Return list of indices of houses that contain seeds."""
+    if is_my_turn:
+        return [i for i in range(6) if board[i] > 0]
+    else:
+        return [i for i in range(7, 13) if board[i] > 0]
+
+def evaluate(board):
+    """
+    Static evaluation of a non‑terminal position.
+    The store difference is weighted heavily; house values increase with proximity to the store.
+    """
+    # store difference – the most important factor
+    score = (board[6] - board[13]) * 100
+    # positional values for houses (1..6)
+    for i in range(6):
+        score += board[i] * (i + 1)          # our houses
+        score -= board[7 + i] * (i + 1)      # opponent houses
+    return score
+
+def order_moves(board, is_my_turn):
+    """
+    Sort moves to improve alpha‑beta pruning.
+    For our turn we try the best‑looking moves first; for the opponent the worst‑looking first.
+    """
+    moves = legal_moves(board, is_my_turn)
+    if not moves:
+        return moves
+
+    def move_key(m):
+        b, _, _ = make_move(board, m)
+        return evaluate(b)
+
+    if is_my_turn:
+        moves.sort(key=move_key, reverse=True)   # highest score first
+    else:
+        moves.sort(key=move_key, reverse=False)  # lowest score first
+    return moves
+
+# ----------------------------------------------------------------------
+# Minimax with alpha‑beta pruning
+# ----------------------------------------------------------------------
+def minimax(board, depth, alpha, beta, is_my_turn):
+    # terminal check
+    if sum(board[0:6]) == 0 or sum(board[7:13]) == 0:
+        return board[6] - board[13]
+
+    if depth == 0:
+        return evaluate(board)
+
+    moves = order_moves(board, is_my_turn)
+    if not moves:                     # should not happen except at terminal
+        return board[6] - board[13]
+
+    if is_my_turn:                    # maximise
+        max_eval = -float('inf')
+        for move in moves:
+            new_board, extra, term = make_move(board, move)
+            if term:
+                eval_score = new_board[6] - new_board[13]
+            else:
+                # extra == True  → we keep the turn; otherwise opponent moves
+                eval_score = minimax(new_board, depth - 1, alpha, beta, extra)
+
+            if eval_score > max_eval:
+                max_eval = eval_score
+            if max_eval > alpha:
+                alpha = max_eval
+            if beta <= alpha:
+                break
+        return max_eval
+    else:                             # opponent – minimise
+        min_eval = float('inf')
+        for move in moves:
+            new_board, extra, term = make_move(board, move)
+            if term:
+                eval_score = new_board[6] - new_board[13]
+            else:
+                eval_score = minimax(new_board, depth - 1, alpha, beta, extra)
+
+            if eval_score < min_eval:
+                min_eval = eval_score
+            if min_eval < beta:
+                beta = min_eval
+            if beta <= alpha:
+                break
+        return min_eval
+
+# ----------------------------------------------------------------------
+# Policy entry point
+# ----------------------------------------------------------------------
+def policy(you: list[int], opponent: list[int]) -> int:
+    """
+    Choose the best move for the current player.
+    you and opponent are length‑7 lists (houses + store).
+    """
+    # combine the two halves into a single 14‑element board
+    board = you + opponent          # indices 0‑5 our houses, 6 our store,
+                                    # 7‑12 opponent houses, 13 opponent store
+
+    # legal moves for us
+    moves = [i for i in range(6) if board[i] > 0]
+    if not moves:
+        return 0                    # should never happen
+    if len(moves) == 1:
+        return moves[0]
+
+    # order moves to improve the root search
+    moves = order_moves(board, True)
+
+    best_move = moves[0]
+    best_value = -float('inf')
+
+    for move in moves:
+        new_board, extra, term = make_move(board, move)
+        if term:
+            value = new_board[6] - new_board[13]
+        else:
+            # after our move, next player is opponent unless we earned an extra turn
+            value = minimax(new_board, MAX_DEPTH - 1, -float('inf'), float('inf'), extra)
+
+        if value > best_value:
+            best_value = value
+            best_move = move
+        elif value == best_value:
+            # break ties randomly to avoid deterministic loops
+            if random.random() < 0.5:
+                best_move = move
+
+    return best_move

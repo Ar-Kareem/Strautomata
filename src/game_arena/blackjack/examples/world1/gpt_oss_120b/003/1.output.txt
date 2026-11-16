@@ -1,0 +1,144 @@
+<thinking>
+The game is a simplified version of Blackjack where the target score T is between 10 and 30.  
+The only information available to the policy is the current hand and the target.  
+We must decide whether to **HIT** (draw another card from our private 13‑card deck) or **STAY** (stop drawing).
+
+A full optimal solution would require solving a tiny Markov‑decision process (≈ 2¹³ states) and iterating to a fixed point because the opponent follows the same optimal policy.  
+That is possible, but the competition only asks for a working policy.  
+A simple, fast, deterministic heuristic that works well in practice is:
+
+1. **Compute the hand value** using the “soft‑Ace” rule:  
+   - Count every Ace as 11, then downgrade Aces to 1 (subtract 10) while the total exceeds T.
+   - If the total finally exceeds T, the hand is bust.
+
+2. **Determine the remaining cards** in our private deck (the full set minus the cards already in the hand).
+
+3. **Estimate the bust probability** if we hit once:  
+   For each remaining card, add it to the hand, recompute the hand value, and count how many lead to a bust.  
+   `bust_prob = bust_count / remaining_cards`.
+
+4. **Decision logic** (deterministic):  
+   - If the hand is already bust or exactly T → **STAY** (we cannot improve).  
+   - If the hand is within 1 point of T (i.e. `total >= T‑1`) → **STAY** (the chance of improving is tiny).  
+   - Otherwise, if `bust_prob > 0.5` → **STAY** (too risky to risk a bust).  
+   - In all other cases → **HIT**.
+
+The thresholds (`T‑1` for “close enough” and `0.5` for “too risky”) keep the policy simple, fast (O(13) work per call), and deterministic, which satisfies the execution‑time constraint.
+
+Now I provide the required Python source code implementing this policy.
+</thinking>
+
+<code>
+#!/usr/bin/env python3
+"""
+Policy for a simplified Blackjack-like game.
+
+The function `policy(hand, target)` returns "HIT" or "STAY" based on a
+deterministic, fast heuristic described in the accompanying commentary.
+"""
+
+from typing import List
+
+# Full 13‑card deck (one copy of each rank)
+FULL_DECK = [
+    "A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"
+]
+
+# Fixed numeric values (Aces are handled specially)
+CARD_VALUE = {
+    "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7,
+    "8": 8, "9": 9, "10": 10,
+    "J": 10, "Q": 10, "K": 10,
+    "A": 11   # initially count as 11; later adjusted per target
+}
+
+
+def hand_value(hand: List[str], target: int) -> int:
+    """
+    Compute the best hand total according to the game rules:
+    - Count all Aces as 11.
+    - While total > target and there is at least one Ace counted as 11,
+      downgrade one Ace from 11 to 1 (subtract 10).
+    Returns the final total (may be > target → bust).
+    """
+    total = 0
+    ace_as_eleven = 0
+    for card in hand:
+        val = CARD_VALUE[card]
+        total += val
+        if card == "A":
+            ace_as_eleven += 1
+
+    # Downgrade Aces while we are over the target
+    while total > target and ace_as_eleven > 0:
+        total -= 10          # turn one Ace from 11 to 1
+        ace_as_eleven -= 1
+    return total
+
+
+def remaining_deck(hand: List[str]) -> List[str]:
+    """
+    Return a list of cards still available in our private deck.
+    Each rank appears at most once; remove the cards already in `hand`.
+    """
+    remaining = FULL_DECK.copy()
+    for card in hand:
+        if card in remaining:
+            remaining.remove(card)
+    return remaining
+
+
+def bust_probability_if_hit(hand: List[str], target: int) -> float:
+    """
+    Estimate the probability of busting if we draw one more card from the
+    remaining deck.  The probability is exact because we enumerate all
+    possible remaining cards (maximum 13).
+    """
+    remaining = remaining_deck(hand)
+    if not remaining:   # No cards left – cannot hit
+        return 1.0
+
+    busts = 0
+    for card in remaining:
+        new_hand = hand + [card]
+        new_total = hand_value(new_hand, target)
+        if new_total > target:
+            busts += 1
+    return busts / len(remaining)
+
+
+def policy(hand: List[str], target: int) -> str:
+    """
+    Decide whether to HIT or STAY.
+
+    Heuristic:
+    1. Compute current hand total (soft Ace handling).
+    2. If total >= target -> STAY (cannot improve, and at target we already win).
+    3. If total >= target - 1 -> STAY (very close to target).
+    4. Compute bust probability for a single hit.
+       - If bust probability > 0.5 -> STAY (too risky).
+       - Otherwise -> HIT.
+    """
+    total = hand_value(hand, target)
+
+    # Already bust or exactly at target – staying is the only sensible action
+    if total > target or total == target:
+        return "STAY"
+
+    # Very close to target: prefer staying
+    if total >= target - 1:
+        return "STAY"
+
+    # Estimate bust risk on the next draw
+    bust_prob = bust_probability_if_hit(hand, target)
+
+    # If the bust risk is more than 50%, stay; otherwise hit
+    if bust_prob > 0.5:
+        return "STAY"
+    else:
+        return "HIT"
+
+
+# The module exposes only `policy`; everything else is internal.
+__all__ = ["policy"]
+</code>

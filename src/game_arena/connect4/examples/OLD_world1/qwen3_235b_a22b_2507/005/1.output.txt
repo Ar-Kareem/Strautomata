@@ -1,0 +1,200 @@
+```python
+import numpy as np
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> int:
+    """
+    Connect 4 targeting policy using Minimax with alpha-beta pruning and heuristic evaluation.
+    Prioritizes winning moves, blocks opponent wins, and evaluates board positions.
+    """
+    # Convert to numpy array for easier manipulation
+    grid = np.array(board)
+    ROWS, COLS = 6, 7
+    
+    def is_valid_move(col):
+        return grid[0, col] == 0  # Top row empty means column isn't full
+    
+    def get_next_row(col):
+        # Find the lowest empty row in the given column
+        for row in range(ROWS - 1, -1, -1):
+            if grid[row, col] == 0:
+                return row
+        return -1
+    
+    def make_move(col, player):
+        row = get_next_row(col)
+        if row != -1:
+            grid[row, col] = player
+            return row
+        return -1
+    
+    def undo_move(col):
+        for row in range(ROWS):
+            if grid[row, col] != 0:
+                grid[row, col] = 0
+                break
+    
+    def check_win(player):
+        # Check horizontal
+        for row in range(ROWS):
+            for col in range(COLS - 3):
+                if all(grid[row, col + i] == player for i in range(4)):
+                    return True
+        
+        # Check vertical
+        for row in range(ROWS - 3):
+            for col in range(COLS):
+                if all(grid[row + i, col] == player for i in range(4)):
+                    return True
+        
+        # Check diagonal (bottom-left to top-right)
+        for row in range(3, ROWS):
+            for col in range(COLS - 3):
+                if all(grid[row - i, col + i] == player for i in range(4)):
+                    return True
+        
+        # Check diagonal (top-left to bottom-right)
+        for row in range(ROWS - 3):
+            for col in range(COLS - 3):
+                if all(grid[row + i, col + i] == player for i in range(4)):
+                    return True
+        
+        return False
+    
+    def evaluate_window(window, player):
+        """Evaluate a 4-cell window for scoring"""
+        score = 0
+        opp_player = -player
+        
+        player_count = np.sum(window == player)
+        opp_count = np.sum(window == opp_player)
+        empty_count = np.sum(window == 0)
+        
+        if player_count == 4:
+            score += 1000
+        elif player_count == 3 and empty_count == 1:
+            score += 100
+        elif player_count == 2 and empty_count == 2:
+            score += 10
+        elif player_count == 1 and empty_count == 3:
+            score += 1
+            
+        if opp_count == 3 and empty_count == 1:
+            score -= 90  # Block opponent's winning move
+        elif opp_count == 2 and empty_count == 2:
+            score -= 8
+            
+        return score
+    
+    def score_position():
+        """Evaluate the entire board position"""
+        score = 0
+        center_col = 3
+        
+        # Score center column
+        center_array = grid[:, center_col]
+        center_count = np.sum(center_array == 1)
+        score += center_count * 6
+        
+        # Score horizontal
+        for row in range(ROWS):
+            for col in range(COLS - 3):
+                window = grid[row, col:col + 4]
+                score += evaluate_window(window, 1)  # Our pieces
+        
+        # Score vertical
+        for col in range(COLS):
+            for row in range(ROWS - 3):
+                window = grid[row:row + 4, col]
+                score += evaluate_window(window, 1)
+        
+        # Score diagonal (bottom-left to top-right)
+        for row in range(3, ROWS):
+            for col in range(COLS - 3):
+                window = np.array([grid[row - i, col + i] for i in range(4)])
+                score += evaluate_window(window, 1)
+        
+        # Score diagonal (top-left to bottom-right)
+        for row in range(ROWS - 3):
+            for col in range(COLS - 3):
+                window = np.array([grid[row + i, col + i] for i in range(4)])
+                score += evaluate_window(window, 1)
+                
+        return score
+    
+    def minimax(depth, alpha, beta, maximizing_player):
+        """Minimax algorithm with alpha-beta pruning"""
+        if depth == 0:
+            return score_position()
+        
+        # Check if game is over
+        if check_win(1):
+            return 10000
+        if check_win(-1):
+            return -10000
+        
+        valid_moves = [col for col in range(COLS) if is_valid_move(col)]
+        if not valid_moves:
+            return 0  # Tie game
+        
+        if maximizing_player:
+            max_eval = float('-inf')
+            for col in valid_moves:
+                row = make_move(col, 1)
+                eval_score = minimax(depth - 1, alpha, beta, False)
+                undo_move(col)
+                
+                max_eval = max(max_eval, eval_score)
+                alpha = max(alpha, eval_score)
+                
+                if beta <= alpha:
+                    break  # Alpha-beta pruning
+            
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for col in valid_moves:
+                row = make_move(col, -1)
+                eval_score = minimax(depth - 1, alpha, beta, True)
+                undo_move(col)
+                
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                
+                if beta <= alpha:
+                    break  # Alpha-beta pruning
+            
+            return min_eval
+    
+    # First check if we can win in one move
+    valid_moves = [col for col in range(COLS) if is_valid_move(col)]
+    for col in valid_moves:
+        row = make_move(col, 1)
+        if check_win(1):
+            undo_move(col)
+            return col
+        undo_move(col)
+    
+    # Then check if we need to block opponent's winning move
+    for col in valid_moves:
+        row = make_move(col, -1)
+        if check_win(-1):
+            undo_move(col)
+            return col
+        undo_move(col)
+    
+    # If no immediate win or block, use minimax with depth 5 for decent lookahead
+    best_score = float('-inf')
+    best_col = valid_moves[0]  # Default to first valid move
+    
+    for col in valid_moves:
+        row = make_move(col, 1)
+        score = minimax(5, float('-inf'), float('inf'), False)
+        undo_move(col)
+        
+        if score > best_score:
+            best_score = score
+            best_col = col
+    
+    return best_col
+```

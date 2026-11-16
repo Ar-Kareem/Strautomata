@@ -1,0 +1,149 @@
+The strategy for this policy is a greedy best-first search that prioritizes winning moves, advancement on the goal board, captures of opponent pieces, and general forward progress.
+
+Key observations about the game:
+- Three independent 3×8 boards (a, b, c) with knights that only move forward
+- White aims for row 8 on board 'a'; Black aims for row 1 on board 'c'
+- Within a turn, a player moves on each unplayed board (marked by "played" facts) or chooses to "tick" to end their sequence
+- Knight moves are forward-only L-shapes: ±(1,2) or ±(2,1) rows forward
+
+The policy:
+1. Parses the state to identify which boards are still available (not in "played" set) and piece positions
+2. Generates all legal forward knight moves for unplayed boards
+3. Scores moves by:
+   - Immediate win (reach goal row on goal board): return immediately
+   - Goal board proximity: strongly prefers moves closer to the target row
+   - Captures: bonuses for taking opponent pieces, especially on the goal board
+   - Advancement: favors moving 2 rows over 1 row
+4. Returns "tick" if no legal moves exist
+
+<code>
+def policy(state: list[list[object]], role: str) -> str:
+    # Mapping for columns
+    col_to_idx = {'a': 0, 'b': 1, 'c': 2}
+    idx_to_col = {0: 'a', 1: 'b', 2: 'c'}
+    
+    # Parse state
+    played = set()
+    my_pieces = {}  # board -> [(col, row), ...]
+    opponent_pieces = {}  # board -> set((col, row))
+    all_pieces = {}  # board -> set((col, row))
+    
+    for fact in state:
+        if not fact:
+            continue
+        pred = fact[0]
+        if pred == "played" and len(fact) > 1:
+            played.add(fact[1])
+        elif pred == "cell" and len(fact) == 5:
+            board, col, row_str, owner = fact[1], fact[2], fact[3], fact[4]
+            row = int(row_str)
+            if board not in all_pieces:
+                all_pieces[board] = set()
+            all_pieces[board].add((col, row))
+            
+            if owner == role:
+                if board not in my_pieces:
+                    my_pieces[board] = []
+                my_pieces[board].append((col, row))
+            else:
+                if board not in opponent_pieces:
+                    opponent_pieces[board] = set()
+                opponent_pieces[board].add((col, row))
+    
+    # Goal and movement rules
+    if role == "white":
+        goal_board = "a"
+        goal_row = 8
+        # Forward is increasing row: (col_delta, row_delta)
+        deltas = [(1, 2), (2, 1), (-1, 2), (-2, 1)]
+    else:
+        goal_board = "c"
+        goal_row = 1
+        # Forward is decreasing row
+        deltas = [(1, -2), (2, -1), (-1, -2), (-2, -1)]
+    
+    best_move = None
+    best_score = -float('inf')
+    
+    # Check each unplayed board
+    for board in ["a", "b", "c"]:
+        if board in played:
+            continue
+        if board not in my_pieces:
+            continue
+            
+        board_pieces = my_pieces[board]
+        opp_set = opponent_pieces.get(board, set())
+        
+        for col, row in board_pieces:
+            col_idx = col_to_idx[col]
+            for dc, dr in deltas:
+                new_col_idx = col_idx + dc
+                new_row = row + dr
+                
+                # Bounds check: columns a-c, rows 1-8
+                if not (0 <= new_col_idx <= 2):
+                    continue
+                if not (1 <= new_row <= 8):
+                    continue
+                    
+                new_col = idx_to_col[new_col_idx]
+                
+                # Check if target occupied by own piece
+                if (new_col, new_row) in [(c, r) for c, r in board_pieces]:
+                    continue
+                
+                is_capture = (new_col, new_row) in opp_set
+                
+                # Check for immediate win
+                if board == goal_board and new_row == goal_row:
+                    return f"move({board},{col},{row},{new_col},{new_row})"
+                
+                # Score the move
+                score = 0
+                
+                # Goal board priority
+                if board == goal_board:
+                    score += 10000
+                    # Distance to goal: lower is better
+                    if role == "white":
+                        dist = goal_row - new_row
+                    else:
+                        dist = new_row - goal_row
+                    score -= dist * 1000
+                else:
+                    # Secondary boards: prefer board b (center), then adjacent to goal
+                    if role == "white":
+                        if board == "b":
+                            score += 100
+                    else:
+                        if board == "b":
+                            score += 100
+                
+                # Capture bonus (especially on goal board)
+                if is_capture:
+                    score += 500
+                    if board == goal_board:
+                        score += 1000
+                
+                # Advancement magnitude (prefer jumping 2 rows over 1)
+                advance = abs(dr)
+                score += advance * 50
+                
+                # Progress toward goal on any board
+                if role == "white":
+                    progress = new_row
+                else:
+                    progress = 9 - new_row  # Higher is better (closer to 1)
+                score += progress * 10
+                
+                if score > best_score:
+                    best_score = score
+                    best_move = (board, col, row, new_col, new_row)
+    
+    if best_move:
+        board, fc, fr, tc, tr = best_move
+        return f"move({board},{fc},{fr},{tc},{tr})"
+    else:
+        return "tick"
+</code>

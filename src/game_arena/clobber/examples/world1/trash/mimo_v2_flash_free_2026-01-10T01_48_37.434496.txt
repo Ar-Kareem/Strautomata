@@ -1,0 +1,184 @@
+My strategy is to implement a minimax search with alpha-beta pruning to evaluate future positions. Since the board is small (30 cells) and the game is deterministic with perfect information, we can search deeply into the game tree.
+
+I will also implement a transposition table (cache) to avoid re-evaluating positions, which will significantly speed up the search. The evaluation function will prioritize capturing opponent pieces and maintaining safe positions. I will use iterative deepening to manage the time limit, ensuring I always return a move even if I can't finish a full search.
+
+```python
+import sys
+
+# Increase recursion limit to handle deep searches if necessary
+sys.setrecursionlimit(20000)
+
+def policy(you: list[list[int]], opponent: list[list[int]]) -> str:
+    # Convert lists to tuples of tuples for hashing
+    board_you = tuple(tuple(row) for row in you)
+    board_opp = tuple(tuple(row) for row in opponent)
+    
+    # Transposition table
+    cache = {}
+    
+    # Move directions and vectors
+    # 0: U (-1, 0), 1: R (0, 1), 2: D (1, 0), 3: L (0, -1)
+    # Directions mapped to output chars
+    dir_map = {0: 'U', 1: 'R', 2: 'D', 3: 'L'}
+    dr = [-1, 0, 1, 0]
+    dc = [0, 1, 0, -1]
+
+    def get_all_moves(board_y, board_o, is_me):
+        """Generate all legal moves for the current player."""
+        moves = []
+        # Check all cells
+        for r in range(5):
+            for c in range(6):
+                # Identify active piece for current turn
+                if (is_me and board_y[r][c] == 1) or (not is_me and board_o[r][c] == 1):
+                    for d in range(4):
+                        nr, nc = r + dr[d], c + dc[d]
+                        # Bounds check
+                        if 0 <= nr < 5 and 0 <= nc < 6:
+                            # Check if destination has opponent
+                            if is_me:
+                                if board_o[nr][nc] == 1:
+                                    moves.append((r, c, d, nr, nc))
+                            else:
+                                if board_y[nr][nc] == 1:
+                                    moves.append((r, c, d, nr, nc))
+        return moves
+
+    def evaluate(board_y, board_o, is_me):
+        """Static evaluation of the board."""
+        # Count pieces
+        my_count = sum(sum(row) for row in board_y)
+        opp_count = sum(sum(row) for row in board_o)
+        
+        # Mobility
+        my_moves = len(get_all_moves(board_y, board_o, True))
+        opp_moves = len(get_all_moves(board_y, board_o, False))
+        
+        score = (my_count - opp_count) * 10 + (my_moves - opp_moves)
+        
+        # Aggressive bonus for winning
+        if opp_count == 0:
+            return 10000
+        if my_count == 0:
+            return -10000
+            
+        return score
+
+    def minimax(board_y, board_o, depth, alpha, beta, maximizingPlayer):
+        """Minimax with alpha-beta pruning."""
+        # Terminal conditions
+        moves = get_all_moves(board_y, board_o, maximizingPlayer)
+        
+        if not moves:
+            # No moves: current player loses
+            return 10000 if not maximizingPlayer else -10000 # Note: if Max has no moves, Max loses (-), if Min has no moves, Min loses (+)
+
+        if depth == 0:
+            return evaluate(board_y, board_o, maximizingPlayer)
+
+        # Check cache
+        # We must include depth in key to respect depth limits in iterative deepening, 
+        # or just rely on depth reducing. Simple hash:
+        state_key = (board_y, board_o, depth, maximizingPlayer)
+        if state_key in cache:
+            return cache[state_key]
+
+        if maximizingPlayer:
+            max_eval = -float('inf')
+            for move in moves:
+                r, c, d, nr, nc = move
+                # Apply move
+                # Start empty, dest occupied by me
+                new_y = [list(row) for row in board_y]
+                new_o = [list(row) for row in board_o]
+                
+                new_y[r][c] = 0
+                new_o[nr][nc] = 0 # Remove opponent
+                new_y[nr][nc] = 1 # Move me
+                
+                eval_val = minimax(tuple(map(tuple, new_y)), tuple(map(tuple, new_o)), depth-1, alpha, beta, False)
+                max_eval = max(max_eval, eval_val)
+                alpha = max(alpha, eval_val)
+                if beta <= alpha:
+                    break
+            cache[state_key] = max_eval
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for move in moves:
+                r, c, d, nr, nc = move
+                # Apply move (Opponent moves)
+                new_y = [list(row) for row in board_y]
+                new_o = [list(row) for row in board_o]
+                
+                new_o[r][c] = 0
+                new_y[nr][nc] = 0 # Remove mine
+                new_o[nr][nc] = 1 # Move opp
+                
+                eval_val = minimax(tuple(map(tuple, new_y)), tuple(map(tuple, new_o)), depth-1, alpha, beta, True)
+                min_eval = min(min_eval, eval_val)
+                beta = min(beta, eval_val)
+                if beta <= alpha:
+                    break
+            cache[state_key] = min_eval
+            return min_eval
+
+    # Iterative Deepening
+    best_move = None
+    # Time limit safety: 0.9 seconds
+    import time
+    start_time = time.time()
+    
+    # Initial moves to pick if loop breaks immediately
+    my_moves = get_all_moves(board_you, board_opp, True)
+    if not my_moves:
+        # Should not happen based on prompt, but fallback
+        return "0,0,U" # Invalid fallback
+    
+    best_move = my_moves[0]
+    
+    # Max depth set reasonably high, loop will break on time
+    # Start with depth 1, then 3, 5...
+    # Use iterative deepening logic
+    max_depth = 20 
+    
+    for depth in range(1, max_depth + 1):
+        current_best_move = None
+        best_val = -float('inf')
+        
+        # Order moves? Simple: capture moves first could help pruning.
+        # Let's run the minimax loop for this depth
+        
+        # Sort moves to prioritize captures (heuristic for better alpha-beta pruning)
+        # Capture if destination has opponent. All moves here are captures by definition of game rules!
+        # So all moves are equal initially. 
+        
+        for move in my_moves:
+            r, c, d, nr, nc = move
+            # Apply move
+            new_y = [list(row) for row in board_you]
+            new_o = [list(row) for row in board_opp]
+            
+            new_y[r][c] = 0
+            new_o[nr][nc] = 0
+            new_y[nr][nc] = 1
+            
+            eval_val = minimax(tuple(map(tuple, new_y)), tuple(map(tuple, new_o)), depth-1, -float('inf'), float('inf'), False)
+            
+            if eval_val > best_val:
+                best_val = eval_val
+                current_best_move = move
+            
+            if time.time() - start_time > 0.9:
+                break
+        
+        if current_best_move:
+            best_move = current_best_move
+            
+        if time.time() - start_time > 0.9:
+            break
+
+    # Return the best move found
+    r, c, d, nr, nc = best_move
+    return f"{r},{c},{dir_map[d]}"
+```

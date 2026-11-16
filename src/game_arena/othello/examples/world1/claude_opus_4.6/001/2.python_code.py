@@ -1,0 +1,191 @@
+
+import numpy as np
+import time
+
+DIRECTIONS = [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)]
+
+WEIGHTS = np.array([
+    [100, -20,  10,   5,   5,  10, -20, 100],
+    [-20, -50,  -2,  -2,  -2,  -2, -50, -20],
+    [ 10,  -2,   1,   1,   1,   1,  -2,  10],
+    [  5,  -2,   1,   0,   0,   1,  -2,   5],
+    [  5,  -2,   1,   0,   0,   1,  -2,   5],
+    [ 10,  -2,   1,   1,   1,   1,  -2,  10],
+    [-20, -50,  -2,  -2,  -2,  -2, -50, -20],
+    [100, -20,  10,   5,   5,  10, -20, 100],
+], dtype=np.float64)
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    start_time = time.time()
+    time_limit = 0.90
+
+    def get_legal_moves(me, opp):
+        moves = []
+        for r in range(8):
+            for c in range(8):
+                if me[r][c] or opp[r][c]:
+                    continue
+                if is_valid_move(me, opp, r, c):
+                    moves.append((r, c))
+        return moves
+
+    def is_valid_move(me, opp, r, c):
+        for dr, dc in DIRECTIONS:
+            nr, nc = r + dr, c + dc
+            found = False
+            while 0 <= nr < 8 and 0 <= nc < 8 and opp[nr][nc]:
+                nr += dr
+                nc += dc
+                found = True
+            if found and 0 <= nr < 8 and 0 <= nc < 8 and me[nr][nc]:
+                return True
+        return False
+
+    def make_move(me, opp, r, c):
+        new_me = me.copy()
+        new_opp = opp.copy()
+        new_me[r][c] = 1
+        for dr, dc in DIRECTIONS:
+            nr, nc = r + dr, c + dc
+            to_flip = []
+            while 0 <= nr < 8 and 0 <= nc < 8 and new_opp[nr][nc]:
+                to_flip.append((nr, nc))
+                nr += dr
+                nc += dc
+            if to_flip and 0 <= nr < 8 and 0 <= nc < 8 and new_me[nr][nc]:
+                for fr, fc in to_flip:
+                    new_me[fr][fc] = 1
+                    new_opp[fr][fc] = 0
+        return new_me, new_opp
+
+    def evaluate(me, opp):
+        my_count = np.sum(me)
+        opp_count = np.sum(opp)
+        empty = 64 - my_count - opp_count
+
+        if empty == 0 or (not get_legal_moves(me, opp) and not get_legal_moves(opp, me)):
+            diff = my_count - opp_count
+            if diff > 0:
+                return 10000 + diff
+            elif diff < 0:
+                return -10000 + diff
+            else:
+                return 0
+
+        # Positional
+        pos_score = np.sum(WEIGHTS * me) - np.sum(WEIGHTS * opp)
+
+        # Mobility
+        my_moves = len(get_legal_moves(me, opp))
+        opp_moves = len(get_legal_moves(opp, me))
+        if my_moves + opp_moves > 0:
+            mob_score = 100.0 * (my_moves - opp_moves) / (my_moves + opp_moves + 1)
+        else:
+            mob_score = 0
+
+        # Parity (more important late game)
+        parity = 100.0 * (my_count - opp_count) / (my_count + opp_count + 1)
+
+        # Frontier
+        my_frontier = 0
+        opp_frontier = 0
+        for r in range(8):
+            for c in range(8):
+                if me[r][c] or opp[r][c]:
+                    is_me = me[r][c]
+                    for dr, dc in DIRECTIONS:
+                        nr, nc = r+dr, c+dc
+                        if 0 <= nr < 8 and 0 <= nc < 8 and not me[nr][nc] and not opp[nr][nc]:
+                            if is_me:
+                                my_frontier += 1
+                            else:
+                                opp_frontier += 1
+                            break
+
+        if my_frontier + opp_frontier > 0:
+            front_score = -100.0 * (my_frontier - opp_frontier) / (my_frontier + opp_frontier + 1)
+        else:
+            front_score = 0
+
+        # Corner occupancy
+        corners = [(0,0),(0,7),(7,0),(7,7)]
+        my_corners = sum(1 for r,c in corners if me[r][c])
+        opp_corners = sum(1 for r,c in corners if opp[r][c])
+        corner_score = 250 * (my_corners - opp_corners)
+
+        phase = empty / 64.0  # 1.0 = early, 0.0 = late
+        w_pos = 10 * phase
+        w_mob = 8 * phase + 2
+        w_par = 5 * (1 - phase)
+        w_front = 5 * phase
+        w_corner = 15
+
+        return w_pos * pos_score / 100.0 + w_mob * mob_score / 100.0 + w_par * parity / 100.0 + w_front * front_score / 100.0 + w_corner * corner_score / 250.0 + corner_score
+
+    def move_order_key(move, me, opp):
+        r, c = move
+        return -WEIGHTS[r][c]
+
+    def alphabeta(me, opp, depth, alpha, beta, maximizing):
+        if time.time() - start_time > time_limit:
+            raise TimeoutError
+
+        moves = get_legal_moves(me, opp)
+        opp_moves_exist = bool(get_legal_moves(opp, me))
+
+        if depth == 0:
+            return evaluate(me, opp)
+
+        if not moves and not opp_moves_exist:
+            return evaluate(me, opp)
+
+        if not moves:
+            # pass
+            return -alphabeta(opp, me, depth - 1, -beta, -alpha, not maximizing)
+
+        moves.sort(key=lambda m: move_order_key(m, me, opp))
+
+        best = -float('inf')
+        for r, c in moves:
+            new_me, new_opp = make_move(me, opp, r, c)
+            score = -alphabeta(new_opp, new_me, depth - 1, -beta, -alpha, not maximizing)
+            if score > best:
+                best = score
+            if best > alpha:
+                alpha = best
+            if alpha >= beta:
+                break
+        return best
+
+    legal_moves = get_legal_moves(you, opponent)
+    if not legal_moves:
+        return "pass"
+
+    if len(legal_moves) == 1:
+        r, c = legal_moves[0]
+        return chr(ord('a') + c) + str(r + 1)
+
+    best_move = legal_moves[0]
+    legal_moves.sort(key=lambda m: move_order_key(m, you, opponent))
+
+    empty_count = 64 - np.sum(you) - np.sum(opponent)
+    max_depth = min(20, empty_count) if empty_count <= 12 else 10
+
+    for depth in range(1, max_depth + 1):
+        if time.time() - start_time > time_limit * 0.7:
+            break
+        try:
+            best_score = -float('inf')
+            current_best = legal_moves[0]
+            for r, c in legal_moves:
+                new_me, new_opp = make_move(you, opponent, r, c)
+                score = -alphabeta(new_opp, new_me, depth - 1, -float('inf'), -best_score, False)
+                if score > best_score:
+                    best_score = score
+                    current_best = (r, c)
+            best_move = current_best
+        except TimeoutError:
+            break
+
+    r, c = best_move
+    return chr(ord('a') + c) + str(r + 1)

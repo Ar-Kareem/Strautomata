@@ -1,0 +1,234 @@
+
+import numpy as np
+
+# Piece values
+PIECE_VALUES = {
+    'P': 100,   # Pawn
+    'N': 320,   # Knight
+    'B': 330,   # Bishop
+    'R': 500,   # Rook
+    'Q': 900,   # Queen
+    'K': 20000  # King (large value to avoid losing it)
+}
+
+# Positional bonuses for pieces (simplified)
+# More advanced engines would use sophisticated piece-square tables
+PAWN_BONUSES = [
+    [0,  0,  0,  0,  0,  0,  0,  0],
+    [50, 50, 50, 50, 50, 50, 50, 50],
+    [10, 10, 20, 30, 30, 20, 10, 10],
+    [5,  5, 10, 25, 25, 10,  5,  5],
+    [0,  0,  0, 20, 20,  0,  0,  0],
+    [5, -5,-10, 15, 15,-10, -5,  5],
+    [5, 10, 10,-20,-20, 10, 10,  5],
+    [0,  0,  0,  0,  0,  0,  0,  0]
+]
+
+def square_to_coords(square):
+    """Convert algebraic notation to (rank, file) coordinates"""
+    file = ord(square[0]) - ord('a')
+    rank = int(square[1]) - 1
+    return rank, file
+
+def coords_to_square(rank, file):
+    """Convert (rank, file) coordinates to algebraic notation"""
+    return chr(ord('a') + file) + str(rank + 1)
+
+def get_piece_color(piece):
+    """Get the color of a piece ('w' or 'b')"""
+    return piece[0]
+
+def get_piece_type(piece):
+    """Get the type of a piece ('K', 'Q', 'R', 'B', 'N', 'P')"""
+    return piece[1]
+
+def is_white_piece(piece):
+    """Check if a piece is white"""
+    return piece[0] == 'w'
+
+def is_black_piece(piece):
+    """Check if a piece is black"""
+    return piece[0] == 'b'
+
+def evaluate_position(pieces, to_play):
+    """Evaluate the current board position"""
+    score = 0
+    
+    # Material evaluation
+    for square, piece in pieces.items():
+        piece_type = get_piece_type(piece)
+        value = PIECE_VALUES[piece_type]
+        
+        if is_white_piece(piece):
+            score += value
+        else:
+            score -= value
+            
+    # Positional bonuses
+    for square, piece in pieces.items():
+        rank, file = square_to_coords(square)
+        piece_type = get_piece_type(piece)
+        
+        # Adjust rank for black pieces (flip the board)
+        if is_black_piece(piece):
+            eval_rank = 7 - rank
+        else:
+            eval_rank = rank
+            
+        # Add pawn positional bonus
+        if piece_type == 'P':
+            if is_white_piece(piece):
+                score += PAWN_BONUSES[rank][file]
+            else:
+                score -= PAWN_BONUSES[7-rank][file]
+                
+        # King safety (closer to edge is safer in endgame)
+        if piece_type == 'K':
+            distance_from_center = max(abs(rank - 3.5), abs(file - 3.5))
+            if is_white_piece(piece):
+                score += distance_from_center * 5
+            else:
+                score -= distance_from_center * 5
+                
+    # Adjust for side to move
+    if to_play == 'white':
+        return score
+    else:
+        return -score
+
+def make_move_on_board(pieces, move):
+    """Apply a move to the board and return the new board state"""
+    new_pieces = pieces.copy()
+    
+    # Parse move
+    from_square = move[:2]
+    to_square = move[2:4]
+    
+    # Move the piece
+    if from_square in new_pieces:
+        piece = new_pieces[from_square]
+        del new_pieces[from_square]
+        new_pieces[to_square] = piece
+        
+        # Handle pawn promotion
+        if len(move) > 4:
+            promoted_piece = move[4].upper()
+            if is_white_piece(piece):
+                new_pieces[to_square] = 'w' + promoted_piece
+            else:
+                new_pieces[to_square] = 'b' + promoted_piece
+                
+    return new_pieces
+
+def is_in_check(pieces, to_play):
+    """Check if the king of the player to move is in check"""
+    # This is a simplified version - in a real engine this would be more complex
+    return False
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    """Select the best move based on a simple evaluation function"""
+    # Generate all legal moves (in a real implementation, this would come from the game engine)
+    # For now, we'll assume legal_moves is passed implicitly or generated here
+    
+    # In a real competition setting, legal_moves would be provided as input
+    # But since it's not specified in the API, we need to generate them
+    
+    # For simplicity in this example, let's create a basic move generator
+    
+    def generate_legal_moves(pieces, to_play):
+        # This is a very simplified move generator - in reality this would be much more complex
+        # Just for demonstration, we'll return some sample moves if none are provided
+        moves = []
+        
+        # Generate all possible moves (this is a placeholder)
+        for square, piece in pieces.items():
+            if (to_play == 'white' and is_white_piece(piece)) or \
+               (to_play == 'black' and is_black_piece(piece)):
+                # Add some basic moves for each piece
+                piece_type = get_piece_type(piece)
+                rank, file = square_to_coords(square)
+                
+                # Simplified move generation
+                if piece_type == 'P':
+                    # Pawn moves
+                    direction = 1 if to_play == 'white' else -1
+                    # Move forward
+                    new_rank = rank + direction
+                    if 0 <= new_rank <= 7:
+                        new_square = coords_to_square(new_rank, file)
+                        if new_square not in pieces:
+                            # Regular move
+                            moves.append(square + new_square)
+                            # Double move from starting position
+                            if (to_play == 'white' and rank == 1) or (to_play == 'black' and rank == 6):
+                                new_rank2 = rank + 2*direction
+                                new_square2 = coords_to_square(new_rank2, file)
+                                if new_square2 not in pieces:
+                                    moves.append(square + new_square2)
+                    # Captures
+                    for df in [-1, 1]:
+                        new_file = file + df
+                        if 0 <= new_file <= 7:
+                            new_rank = rank + direction
+                            if 0 <= new_rank <= 7:
+                                new_square = coords_to_square(new_rank, new_file)
+                                if new_square in pieces and \
+                                   ((to_play == 'white' and is_black_piece(pieces[new_square])) or \
+                                    (to_play == 'black' and is_white_piece(pieces[new_square]))):
+                                    moves.append(square + new_square)
+                elif piece_type == 'N':
+                    # Knight moves
+                    knight_moves = [(-2, -1), (-2, 1), (-1, -2), (-1, 2), (1, -2), (1, 2), (2, -1), (2, 1)]
+                    for dr, df in knight_moves:
+                        new_rank, new_file = rank + dr, file + df
+                        if 0 <= new_rank <= 7 and 0 <= new_file <= 7:
+                            new_square = coords_to_square(new_rank, new_file)
+                            if new_square not in pieces or \
+                               ((to_play == 'white' and is_black_piece(pieces[new_square])) or \
+                                (to_play == 'black' and is_white_piece(pieces[new_square]))):
+                                moves.append(square + new_square)
+                # Add other pieces as needed...
+        
+        # Filter to ensure we only return valid moves (4 or 5 characters)
+        return [move for move in moves if len(move) in [4, 5]]
+    
+    # In the actual competition setting, legal_moves would be provided
+    # For now, we'll generate them
+    legal_moves = generate_legal_moves(pieces, to_play)
+    
+    # If no legal moves, return a default move (should not happen in valid games)
+    if not legal_moves:
+        return "e1e1"  # This should never be legal, but just in case
+    
+    # Check for immediate tactical moves
+    best_move = None
+    best_score = -float('inf')
+    
+    # Evaluate each legal move
+    for move in legal_moves:
+        # Apply the move to get the new board state
+        new_pieces = make_move_on_board(pieces, move)
+        
+        # Evaluate the resulting position
+        score = evaluate_position(new_pieces, to_play)
+        
+        # Bonus for captures
+        captured_piece = pieces.get(move[2:4])
+        if captured_piece:
+            piece_type = get_piece_type(captured_piece)
+            score += PIECE_VALUES[piece_type] * 0.5  # Bonus for capturing pieces
+            
+        # Bonus for pawn promotions
+        if len(move) > 4:
+            score += PIECE_VALUES[move[4].upper()] * 0.7  # Bonus for promoting
+            
+        # Prefer moves that develop pieces
+        if move[0] in ['a', 'b', 'g', 'h'] and move[2:4] not in ['a1', 'a8', 'h1', 'h8']:
+            score += 10  # Small bonus for developing from the edge
+            
+        if score > best_score:
+            best_score = score
+            best_move = move
+            
+    # Return the best move found, or the first legal move if something went wrong
+    return best_move if best_move else legal_moves[0]

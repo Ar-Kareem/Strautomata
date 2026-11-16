@@ -1,0 +1,68 @@
+
+import numpy as np
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """Determine the next move for Tic Tac Toe using a simple AI strategy."""
+
+    # Convert the board to a numpy array for easier manipulation
+    board_array = np.array(board)
+    
+    # Check if we can win in the next move
+    for i in range(3):
+        for j in range(3):
+            if board_array[i, j] == 0:
+                board_array[i, j] = 1
+                if check_win(board_array, 1):
+                    board_array[i, j] = 0  # Undo the change
+                    return (i, j)
+                board_array[i, j] = 0  # Undo the change
+    
+    # Check if the opponent can win in the next move and block them
+    for i in range(3):
+        for j in range(3):
+            if board_array[i, j] == 0:
+                board_array[i, j] = -1
+                if check_win(board_array, -1):
+                    board_array[i, j] = 0  # Undo the change
+                    return (i, j)
+                board_array[i, j] = 0  # Undo the change
+    
+    # Choose the center if it's available
+    if board_array[1, 1] == 0:
+        return (1, 1)
+    
+    # Choose a corner if available
+    corners = [(0, 0), (0, 2), (2, 0), (2, 2)]
+    for i, j in corners:
+        if board_array[i, j] == 0:
+            return (i, j)
+    
+    # Choose any remaining empty cell
+    for i in range(3):
+        for j in range(3):
+            if board_array[i, j] == 0:
+                return (i, j)
+    
+    # As a fallback, return the first empty cell (shouldn't happen if the game isn't over)
+    for i in range(3):
+        for j in range(3):
+            if board_array[i, j] == 0:
+                return (i, j)
+    return (0, 0)  # Default return (shouldn't reach here for a valid game state)
+
+def check_win(board, player):
+    """Check if the given player has a winning line on the board."""
+    # Check rows
+    for i in range(3):
+        if np.all(board[i, :] == player):
+            return True
+    # Check columns
+    for j in range(3):
+        if np.all(board[:, j] == player):
+            return True
+    # Check diagonals
+    if np.all(np.diag(board) == player):
+        return True
+    if np.all(np.diag(np.fliplr(board)) == player):
+        return True
+    return False

@@ -1,0 +1,160 @@
+<thinking>
+We are to implement a targeting policy for a Battleship game on a 10x10 grid.
+ The policy function receives a board (10x10) where:
+   0: unknown
+   -1: miss
+   1: hit
+
+ Steps:
+ 1. If there are no hits, we use a checkerboard pattern to choose the next target (to maximize coverage).
+ 2. If there are hits, we try to extend the ship by:
+    - For each hit, check in the four directions (up, down, left, right) for consecutive hits.
+    - For each direction, we extend until we hit a non-hit or the board edge, and then propose the next cell in that direction as a candidate.
+    - We store the candidate and the chain length (number of consecutive hits we saw in that direction). 
+    - We prioritize candidates that come from longer chains (to extend the same ship we are working on).
+ 3. If we have candidates from the hits, we choose the candidate with the longest chain. If there are ties, we choose lexicographically smallest.
+ 4. If we don't have candidates, we fall back to the checkerboard pattern.
+
+ Precomputation: 
+   We precompute a list of all cells in the board in checkerboard order (even parity first, then odd parity).
+
+ Note: We must avoid revisiting cells (only choose cells that are 0).
+
+ Implementation:
+
+   PATTERN = []
+   for i in range(10):
+       for j in range(10):
+           if (i+j) % 2 == 0:
+               PATTERN.append((i,j))
+   for i in range(10):
+       for j in range(10):
+           if (i+j) % 2 == 1:
+               PATTERN.append((i,j))
+
+ Then in the function:
+
+   if no hits:
+        for (i,j) in PATTERN:
+            if board[i][j] == 0:
+                return (i,j)
+        # If no cell in pattern is 0, then we look anywhere for 0
+        for i in range(10):
+            for j in range(10):
+                if board[i][j] == 0:
+                    return (i,j)
+        # If still not found, return (0,0) arbitrarily (should not happen)
+
+   Else (if we have hits):
+        candidate_dict = {}
+        directions = [(-1,0), (1,0), (0,-1), (0,1)]
+
+        for each hit (i,j) in the board:
+            for each direction (dx,dy) in directions:
+                # Start from (i,j) and move in (dx,dy) until we hit a non-hit or out of board
+                chain_length = 0
+                while the next cell in the direction is within the board and is a hit (1):
+                    chain_length += 1
+                    move to the next cell
+                # Now, the next cell after the chain is the candidate
+                nx = i + dx * (chain_length+1)
+                ny = j + dy * (chain_length+1)
+                if (nx,ny) is within the board and board[nx][ny] is 0:
+                    if we haven't seen (nx,ny) in candidate_dict:
+                        candidate_dict[(nx,ny)] = chain_length
+                    else:
+                        candidate_dict[(nx,ny)] = max(candidate_dict[(nx,ny)], chain_length)
+
+        if candidate_dict:
+            # Sort candidates by chain_length descending, then by candidate lex order
+            sorted_candidates = sorted(candidate_dict.items(), key=lambda x: (-x[1], x[0]))
+            return sorted_candidates[0][0]
+        else:
+            # No candidates from hits, use pattern
+            for (i,j) in PATTERN:
+                if board[i][j] == 0:
+                    return (i,j)
+            # fallback: same as above
+            for i in range(10):
+                for j in range(10):
+                    if board[i][j] == 0:
+                        return (i,j)
+            return (0,0)   # shouldn't happen
+
+ Let's code accordingly.
+</thinking>
+
+<code>
+# Precomputed pattern: all cells in checkerboard order (even parity first, then odd parity)
+PATTERN = []
+for i in range(10):
+    for j in range(10):
+        if (i + j) % 2 == 0:
+            PATTERN.append((i, j))
+for i in range(10):
+    for j in range(10):
+        if (i + j) % 2 == 1:
+            PATTERN.append((i, j))
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Find all hit cells
+    hits = []
+    for i in range(10):
+        for j in range(10):
+            if board[i][j] == 1:
+                hits.append((i, j))
+    
+    # If there are no hits, use the checkerboard pattern
+    if not hits:
+        for (i, j) in PATTERN:
+            if board[i][j] == 0:
+                return (i, j)
+        # If no cell in pattern is 0, scan the entire board
+        for i in range(10):
+            for j in range(10):
+                if board[i][j] == 0:
+                    return (i, j)
+        # Should not happen, but return (0,0) arbitrarily if no unknown cell is found
+        return (0, 0)
+    
+    # Otherwise, we have hits. Try to extend from hits.
+    candidate_dict = {}
+    directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    
+    for (i, j) in hits:
+        for (dx, dy) in directions:
+            x, y = i, j
+            chain_length = 0
+            # Move in the direction until we hit a non-hit or go out of bounds
+            while 0 <= x + dx * (chain_length + 1) < 10 and 0 <= y + dy * (chain_length + 1) < 10 and board[x + dx * (chain_length + 1)][y + dy * (chain_length + 1)] == 1:
+                chain_length += 1
+            
+            # Calculate the candidate cell after the chain
+            nx = x + dx * (chain_length + 1)
+            ny = y + dy * (chain_length + 1)
+            
+            # If the candidate is within bounds and is unknown, consider it
+            if 0 <= nx < 10 and 0 <= ny < 10 and board[nx][ny] == 0:
+                if (nx, ny) not in candidate_dict:
+                    candidate_dict[(nx, ny)] = chain_length
+                else:
+                    candidate_dict[(nx, ny)] = max(candidate_dict[(nx, ny)], chain_length)
+    
+    # If we found candidates, choose the one from the longest chain
+    if candidate_dict:
+        # Sort by chain_length descending, then by candidate lex order
+        sorted_candidates = sorted(candidate_dict.items(), key=lambda x: (-x[1], x[0]))
+        return sorted_candidates[0][0]
+    
+    # If no candidates from hits, fall back to the pattern
+    for (i, j) in PATTERN:
+        if board[i][j] == 0:
+            return (i, j)
+    # Fallback: scan the entire board
+    for i in range(10):
+        for j in range(10):
+            if board[i][j] == 0:
+                return (i, j)
+    # Should not happen
+    return (0, 0)
+</code>

@@ -1,0 +1,48 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Helper function to check if the current board is a win for the given player
+    def is_won(player):
+        # Check rows
+        for row in board:
+            if row[0] == row[1] == row[2] == player:
+                return True
+        # Check columns
+        for col in range(3):
+            if board[0][col] == board[1][col] == board[2][col] == player:
+                return True
+        # Check diagonals
+        if board[0][0] == board[1][1] == board[2][2] == player:
+            return True
+        if board[0][2] == board[1][1] == board[2][0] == player:
+            return True
+        return False
+
+    # Priority order for move selection: center, corners, edges
+    priority_order = [(1, 1), (0, 0), (0, 2), (2, 0), (2, 2),
+                      (0, 1), (1, 0), (1, 2), (2, 1)]
+
+    # Check if any move results in a win for the current player
+    for r, c in priority_order:
+        if board[r][c] == 0:
+            board[r][c] = 1  # Temporarily place the player's mark
+            if is_won(1):
+                board[r][c] = 0  # Restore the cell
+                return (r, c)
+            board[r][c] = 0  # Undo the move
+
+    # Check if the opponent can win in their next move and block them
+    for r, c in priority_order:
+        if board[r][c] == 0:
+            board[r][c] = -1  # Temporarily place opponent's mark
+            if is_won(-1):
+                board[r][c] = 0  # Restore the cell
+                return (r, c)
+            board[r][c] = 0  # Undo the move
+
+    # If no immediate win or block, select the first available move in priority order
+    for r, c in priority_order:
+        if board[r][c] == 0:
+            return (r, c)
+
+    # This line is a safeguard and should never be reached if the board is valid
+    return (0, 0)

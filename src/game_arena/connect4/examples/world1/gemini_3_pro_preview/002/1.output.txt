@@ -1,0 +1,242 @@
+<code>
+import time
+import random
+from typing import List
+
+def policy(board: List[List[int]]) -> int:
+    """
+    Connect 4 targeting policy.
+    Implements a time-limited Iterative Deepening Negamax search with Alpha-Beta pruning
+    and bitboard representation for efficient state/win checking.
+    """
+    
+    # -------------------------------------------------------------------------
+    # Constants
+    # -------------------------------------------------------------------------
+    ROWS = 6
+    COLS = 7
+    # Time limit buffer. 1.0s allowed, stop safely at 0.95s.
+    TIME_LIMIT = 0.95 
+    
+    # -------------------------------------------------------------------------
+    # Setup
+    # -------------------------------------------------------------------------
+    start_time = time.time()
+    
+    # -------------------------------------------------------------------------
+    # Bitboard Logic
+    # -------------------------------------------------------------------------
+    def parse_board(b):
+        """
+        Convert board to bitboards.
+        Returns (position, mask) where:
+        - position: 1s for current player's pieces
+        - mask: 1s for any occupied cell
+        Encoding: Row-major bottom-up per column. 
+        Sentinel row logic handled by spacing (7 bits per col).
+        """
+        position = 0
+        mask = 0
+        for c in range(COLS):
+            for r in range(ROWS):
+                # Input: Row 0 is top, Row 5 is bottom.
+                # Bitboard: Index 0 is bottom (Row 5), Index 5 is top (Row 0).
+                val = b[r][c]
+                if val != 0:
+                    # Map (r, c) to bit index
+                    # Col c starts at bit c*7.
+                    # Row 5 (bottom) is offset +0, Row 0 (top) is offset +5.
+                    bit = c * 7 + (5 - r)
+                    mask |= (1 << bit)
+                    if val == 1:
+                        position |= (1 << bit)
+        return position, mask
+
+    def connected_four(pos):
+        """Check if the position bitmask contains 4 connected pieces."""
+        # Horizontal
+        m = pos & (pos >> 7)
+        if m & (m >> 14): return True
+        # Diagonal \ (down-right)
+        m = pos & (pos >> 6)
+        if m & (m >> 12): return True
+        # Diagonal / (up-right)
+        m = pos & (pos >> 8)
+        if m & (m >> 16): return True
+        # Vertical
+        m = pos & (pos >> 1)
+        if m & (m >> 2): return True
+        return False
+
+    # -------------------------------------------------------------------------
+    # Evaluation
+    # -------------------------------------------------------------------------
+    def evaluate(pos, mask):
+        """
+        Heuristic score from the perspective of the player owning 'pos'.
+        Score = Weighted(pos) - Weighted(opponent)
+        Weights favor center columns.
+        """
+        opp = mask ^ pos
+        score = 0
+        
+        # Center Column (Col 3) - Bits 21-26
+        # Weight: 5
+        c3 = (pos >> 21) & 0x3F
+        c3_o = (opp >> 21) & 0x3F
+        score += bin(c3).count('1') * 5
+        score -= bin(c3_o).count('1') * 5
+        
+        # Flanking Center (Cols 2, 4)
+        # Weight: 3
+        c2 = (pos >> 14) & 0x3F
+        c4 = (pos >> 28) & 0x3F
+        count_24 = bin(c2).count('1') + bin(c4).count('1')
+        
+        c2_o = (opp >> 14) & 0x3F
+        c4_o = (opp >> 28) & 0x3F
+        count_24_o = bin(c2_o).count('1') + bin(c4_o).count('1')
+        
+        score += count_24 * 3
+        score -= count_24_o * 3
+        
+        # Outer-Mid (Cols 1, 5)
+        # Weight: 2
+        c1 = (pos >> 7) & 0x3F
+        c5 = (pos >> 35) & 0x3F
+        count_15 = bin(c1).count('1') + bin(c5).count('1')
+        
+        c1_o = (opp >> 7) & 0x3F
+        c5_o = (opp >> 35) & 0x3F
+        count_15_o = bin(c1_o).count('1') + bin(c5_o).count('1')
+        
+        score += count_15 * 2
+        score -= count_15_o * 2
+        
+        return score
+
+    # -------------------------------------------------------------------------
+    # Search
+    # -------------------------------------------------------------------------
+    class TimeoutException(Exception): pass
+    
+    WIN_SCORE = 10000
+
+    def negamax(pos, mask, depth, alpha, beta):
+        """
+        Negamax with alpha-beta pruning.
+        Returns score from perspective of player 'pos'.
+        """
+        if (time.time() - start_time) > TIME_LIMIT:
+            raise TimeoutException()
+
+        if depth == 0:
+            return evaluate(pos, mask)
+
+        # Generate moves (Center outward order for better pruning)
+        possible_moves = []
+        # Column order: 3 (center), 2, 4, 1, 5, 0, 6
+        for c in [3, 2, 4, 1, 5, 0, 6]:
+            # Check if column is not full (bit 5 of col specific offset 0-5)
+            # Global bit index for top of col C is C*7 + 5
+            if (mask & (1 << (c * 7 + 5))) == 0:
+                # Calculate move bit: XOR of (mask + LSB_of_col) and mask
+                # (mask + (1 << (c*7))) sets the bit at the lowest 0 in that column sequence
+                move = (mask + (1 << (c * 7))) ^ mask
+                
+                # Check for immediate win
+                if connected_four(pos | move):
+                    # Prefer winning sooner (add depth to score)
+                    return WIN_SCORE + depth
+                
+                possible_moves.append(move)
+
+        if not possible_moves:
+            return 0 # Draw
+
+        best = -999999
+        
+        for move in possible_moves:
+            # Recurse: Swap roles. New pos is opponent (mask ^ pos). New mask includes move.
+            val = -negamax(mask ^ pos, mask | move, depth - 1, -beta, -alpha)
+            
+            best = max(best, val)
+            alpha = max(alpha, val)
+            if alpha >= beta:
+                break
+        
+        return best
+
+    # -------------------------------------------------------------------------
+    # Main Execution
+    # -------------------------------------------------------------------------
+    
+    # Parse board
+    my_pos, global_mask = parse_board(board)
+    opp_pos = global_mask ^ my_pos
+    
+    # Identify valid columns and precompute move bits
+    valid_cols = []
+    move_map = {}
+    col_priority = [3, 2, 4, 1, 5, 0, 6]
+    
+    for c in col_priority:
+        # Check if top row is empty
+        if (global_mask & (1 << (c * 7 + 5))) == 0:
+            valid_cols.append(c)
+            move_map[c] = (global_mask + (1 << (c * 7))) ^ global_mask
+
+    # If no valid moves, return 0 (game over condition, though arena shouldn't call)
+    if not valid_cols:
+        return 0
+        
+    # 1. Immediate Win Check
+    # If we can win in 1 move, do it.
+    for c in valid_cols:
+        if connected_four(my_pos | move_map[c]):
+            return c
+
+    # 2. Block Immediate Loss
+    # If opponent can win in 1 move, we must block.
+    # Note: If there are two threats, we lose, but we pick the first block.
+    for c in valid_cols:
+        if connected_four(opp_pos | move_map[c]):
+            return c
+
+    # 3. Iterative Deepening Search
+    best_move = valid_cols[0]
+    
+    try:
+        # Depth 1 corresponds to looking at opponent's immediate response (2-ply effective in minimax terms usually)
+        # We start shallow and go deep.
+        for depth in range(1, 43):
+            best_move_this_depth = best_move
+            max_val = -999999
+            alpha = -999999
+            beta = 999999
+            
+            for c in valid_cols:
+                move = move_map[c]
+                
+                # Root call:
+                # We make 'move'. New state is (opp_pos, global_mask | move).
+                # We want to maximize the negative of opponent's score.
+                val = -negamax(opp_pos, global_mask | move, depth, -beta, -alpha)
+                
+                if val > max_val:
+                    max_val = val
+                    best_move_this_depth = c
+                
+                alpha = max(alpha, val)
+            
+            best_move = best_move_this_depth
+            
+            # If we found a forced win calculation, we can stop early
+            if max_val > 5000:
+                break
+                
+    except TimeoutException:
+        pass
+        
+    return best_move
+</code>

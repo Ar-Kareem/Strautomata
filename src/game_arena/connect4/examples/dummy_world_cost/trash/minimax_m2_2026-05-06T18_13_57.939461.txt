@@ -1,0 +1,206 @@
+The policy uses a depth‑limited minimax algorithm with alpha‑beta pruning.  
+It checks first for an immediate winning move, then tries to block a forced win for the opponent.  
+If neither exists it evaluates all legal columns using a static heuristic (counts of 4‑cell windows plus a centre‑column preference) and a 5‑ply lookahead (the root move plus fourply search).  
+Move ordering based on the static score speeds up pruning.
+
+<code>
+import numpy as np
+import sys
+sys.setrecursionlimit(10000)
+
+# ----------------------------------------------------------------------
+# Helper functions
+# ----------------------------------------------------------------------
+def get_valid_locations(board):
+    """Return list of columns that are not full (top cell is empty)."""
+    return [c for c in range(7) if board[0, c] == 0]
+
+def drop_piece(board, col, piece):
+    """Return a new board with `piece` (1 or -1) placed in column `col`."""
+    temp = board.copy()
+    for r in range(5, -1, -1):
+        if temp[r, col] == 0:
+            temp[r, col] = piece
+            return temp
+    return temp  # column full – should not happen for valid columns
+
+def is_winner(board, piece):
+    """Check if `piece` has a four‑in‑a‑row on the board."""
+    # Horizontal
+    for r in range(6):
+        for c in range(7 - 3):
+            if (board[r, c] == piece and board[r, c + 1] == piece and
+                board[r, c + 2] == piece and board[r, c + 3] == piece):
+                return True
+    # Vertical
+    for c in range(7):
+        for r in range(6 - 3):
+            if (board[r, c] == piece and board[r + 1, c] == piece and
+                board[r + 2, c] == piece and board[r + 3, c] == piece):
+                return True
+    # Positive diagonal (down‑right)
+    for r in range(6 - 3):
+        for c in range(7 - 3):
+            if (board[r, c] == piece and board[r + 1, c + 1] == piece and
+                board[r + 2, c + 2] == piece and board[r + 3, c + 3] == piece):
+                return True
+    # Negative diagonal (up‑right)
+    for r in range(3, 6):
+        for c in range(7 - 3):
+            if (board[r, c] == piece and board[r - 1, c + 1] == piece and
+                board[r - 2, c + 2] == piece and board[r - 3, c + 3] == piece):
+                return True
+    return False
+
+def is_terminal(board):
+    """True if the game is over (win or board full)."""
+    return is_winner(board, 1) or is_winner(board, -1) or not (board == 0).any()
+
+def evaluate_window(window):
+    """Score a 4‑cell window for the AI (piece = 1)."""
+    count_ai = sum(1 for x in window if x == 1)
+    count_opp = sum(1 for x in window if x == -1)
+    empty = 4 - count_ai - count_opp
+    if count_ai == 4:
+        return 100
+    elif count_ai == 3 and empty == 1:
+        return 5
+    elif count_ai == 2 and empty == 2:
+        return 2
+    elif count_opp == 3 and empty == 1:
+        return -4
+    elif count_opp == 4:
+        return -100
+    return 0
+
+def score_position(board, piece):
+    """Static evaluation of the board from the perspective of the AI (piece=1)."""
+    score = 0
+    # Preference for centre columns
+    col_weights = [2, 3, 4, 5, 4, 3, 2]
+    for r in range(6):
+        for c in range(7):
+            if board[r, c] == 1:
+                score += col_weights[c]
+            elif board[r, c] == -1:
+                score -= col_weights[c]
+
+    # Horizontal windows
+    for r in range(6):
+        for c in range(7 - 3):
+            score += evaluate_window(board[r, c:c + 4])
+    # Vertical windows
+    for c in range(7):
+        for r in range(6 - 3):
+            score += evaluate_window(board[r:r + 4, c])
+    # Positive diagonal
+    for r in range(6 - 3):
+        for c in range(7 - 3):
+            score += evaluate_window([board[r + i, c + i] for i in range(4)])
+    # Negative diagonal
+    for r in range(3, 6):
+        for c in range(7 - 3):
+            score += evaluate_window([board[r - i, c + i] for i in range(4)])
+    return score
+
+def is_opponent_winning_move(board):
+    """Return True if the opponent (-1) can win on the given board in one move."""
+    for col in get_valid_locations(board):
+        if is_winner(drop_piece(board, col, -1), -1):
+            return True
+    return False
+
+# ----------------------------------------------------------------------
+# Minimax with alpha‑beta pruning
+# ----------------------------------------------------------------------
+def minimax(board, depth, alpha, beta, maximizing):
+    """Return the minimax score for the current player (AI = 1)."""
+    valid = get_valid_locations(board)
+
+    if depth == 0 or is_terminal(board):
+        if is_winner(board, 1):
+            return 1000000
+        if is_winner(board, -1):
+            return -1000000
+        return score_position(board, 1)
+
+    if maximizing:
+        value = -float('inf')
+        # Order moves by static score (highest first) for better pruning
+        moves = []
+        for col in valid:
+            temp = drop_piece(board, col, 1)
+            moves.append((score_position(temp, 1), col))
+        moves.sort(reverse=True, key=lambda x: x[0])
+        for _, col in moves:
+            temp = drop_piece(board, col, 1)
+            value = max(value, minimax(temp, depth - 1, alpha, beta, False))
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+        return value
+    else:
+        value = float('inf")
+        # Order moves by the negated static score (lowest AI score first)
+        moves = []
+        for col in valid:
+            temp = drop_piece(board, col, -1)
+            moves.append((-score_position(temp, 1), col))
+        moves.sort(reverse=True, key=lambda x: x[0])
+        for _, col in moves:
+            temp = drop_piece(board, col, -1)
+            value = min(value, minimax(temp, depth - 1, alpha, beta, True))
+            beta = min(beta, value)
+            if alpha >= beta:
+                break
+        return value
+
+# ----------------------------------------------------------------------
+# Main policy
+# ----------------------------------------------------------------------
+def policy(board):
+    """Return the column (0‑6) where the AI drops its piece."""
+    # Convert to NumPy for fast indexing
+    board_arr = np.array(board, dtype=np.int8)
+
+    # No moves – should not happen, but guard against it
+    valid = get_valid_locations(board_arr)
+    if not valid:
+        return 0
+
+    # 1) Immediate win
+    for col in valid:
+        if is_winner(drop_piece(board_arr, col, 1), 1):
+            return col
+
+    # 2) Block opponent's immediate win
+    safe_columns = []
+    for col in valid:
+        temp = drop_piece(board_arr, col, 1)
+        if not is_opponent_winning_move(temp):
+            safe_columns.append((col, score_position(temp, 1)))
+
+    # If we have at least one safe move, search deeper among them
+    if safe_columns:
+        best_col = None
+        best_val = -float('inf')
+        for col, _ in safe_columns:
+            temp = drop_piece(board_arr, col, 1)
+            val = minimax(temp, 4, -float('inf'), float('inf'), False)  # 4‑ply after our move
+            if val > best_val:
+                best_val = val
+                best_col = col
+        if best_col is not None:
+            return best_col
+
+    # 3) Fallback – search all legal columns
+    best_col = None
+    best_val = -float('inf')
+    for col in valid:
+        temp = drop_piece(board_arr, col, 1)
+        val = minimax(temp, 4, -float('inf'), float('inf'), False)
+        if val > best_val:
+            best_val = val
+            best_col = col
+    return best_col
+</code>

@@ -1,0 +1,136 @@
+The strategy employs a **shortest-path heuristic** using Dijkstra's algorithm. For both players, it calculates the minimum number of stones required to complete a connecting path between their two sides, treating empty cells as cost 1, friendly stones as cost 0, and opponent stones as impassable.
+
+For every legal empty cell, the policy simulates:
+1. **My move**: measuring how much the path length for me decreases.
+2. **Opponent’s move**: measuring how much the path length for the opponent would decrease (i.e., the damage of not blocking that cell).
+
+The algorithm prioritizes:
+* **Immediate wins**: any move that reduces my path cost to 0.
+* **Forced blocks**: any move that would give the opponent a win (path cost 0) if left unplayed.
+* **Best heuristic**: maximizing `(my_path_reduction + opponent_path_extension)`.
+
+Tie‑breakers favor cells adjacent to my existing stones (to build strong connections) and cells closer to the center (for central influence). This runs comfortably within the 1‑second limit for an 11×11 board (≈ 200 Dijkstra runs).
+
+<code>
+import heapq
+from typing import List, Tuple, Set
+
+BOARD_SIZE = 11
+INF = 10**9
+
+# Precompute the six neighbors for each hex cell.
+# Neighbors are the 8‑connected cells except (i-1,j-1) and (i+1,j+1).
+_NEIGHBORS = {}
+for r in range(BOARD_SIZE):
+    for c in range(BOARD_SIZE):
+        neighs = []
+        for dr, dc in [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE:
+                neighs.append((nr, nc))
+        _NEIGHBORS[(r, c)] = neighs
+
+
+def _shortest_path(me_set: Set[Tuple[int, int]], opp_set: Set[Tuple[int, int]], color: str) -> int:
+    """
+    Returns the minimum number of empty cells (cost 1) that `color` must occupy
+    to connect their two sides. 0 means already connected, INF means blocked.
+    """
+    dist = [[INF] * BOARD_SIZE for _ in range(BOARD_SIZE)]
+    heap = []
+
+    if color == 'b':  # Black: top (row 0) to bottom (row 10)
+        for c in range(BOARD_SIZE):
+            if (0, c) in opp_set:
+                continue
+            cost = 0 if (0, c) in me_set else 1
+            dist[0][c] = cost
+            heapq.heappush(heap, (cost, 0, c))
+        target_check = lambda r, c: r == BOARD_SIZE - 1
+    else:  # White: left (col 0) to right (col 10)
+        for r in range(BOARD_SIZE):
+            if (r, 0) in opp_set:
+                continue
+            cost = 0 if (r, 0) in me_set else 1
+            dist[r][0] = cost
+            heapq.heappush(heap, (cost, r, 0))
+        target_check = lambda r, c: c == BOARD_SIZE - 1
+
+    while heap:
+        d, r, c = heapq.heappop(heap)
+        if d != dist[r][c]:
+            continue
+        if target_check(r, c):
+            return d
+        for nr, nc in _NEIGHBORS[(r, c)]:
+            if (nr, nc) in opp_set:
+                continue
+            nd = d + (0 if (nr, nc) in me_set else 1)
+            if nd < dist[nr][nc]:
+                dist[nr][nc] = nd
+                heapq.heappush(heap, (nd, nr, nc))
+    return INF
+
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[int, int]:
+    me_set: Set[Tuple[int, int]] = set(me)
+    opp_set: Set[Tuple[int, int]] = set(opp)
+    opp_color = 'w' if color == 'b' else 'b'
+
+    # Opening: take the center or a neighbor if free.
+    if not me_set:
+        center = BOARD_SIZE // 2
+        if (center, center) not in opp_set:
+            return (center, center)
+        for nr, nc in _NEIGHBORS[(center, center)]:
+            if (nr, nc) not in opp_set:
+                return (nr, nc)
+
+    # Current shortest path lengths.
+    my_cost = _shortest_path(me_set, opp_set, color)
+    opp_cost = _shortest_path(opp_set, me_set, opp_color)
+
+    best_move: Tuple[int, int] = (0, 0)  # fallback
+    best_score = -INF
+
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if (r, c) in me_set or (r, c) in opp_set:
+                continue
+
+            # Simulate playing here for me.
+            me_set.add((r, c))
+            new_my_cost = _shortest_path(me_set, opp_set, color)
+
+            # Immediate win.
+            if new_my_cost == 0:
+                return (r, c)
+
+            # Simulate opponent playing here (blocking analysis).
+            me_set.remove((r, c))
+            opp_set.add((r, c))
+            new_opp_cost = _shortest_path(opp_set, me_set, opp_color)
+            opp_set.remove((r, c))
+
+            # Forced block: this cell is a winning move for opponent.
+            if new_opp_cost == 0:
+                score = 1000.0
+            else:
+                my_improvement = my_cost - new_my_cost
+                opp_damage = new_opp_cost - opp_cost
+                score = my_improvement + opp_damage
+
+                # Connectivity bonus: prefer cells touching my stones.
+                conn = sum(1 for nr, nc in _NEIGHBORS[(r, c)] if (nr, nc) in me_set)
+                score += conn * 0.01
+
+                # Positional bonus: slight preference for center.
+                manhattan = abs(r - BOARD_SIZE // 2) + abs(c - BOARD_SIZE // 2)
+                score -= manhattan * 0.001
+
+            if score > best_score:
+                best_score = score
+                best_move = (r, c)
+
+    return best_move
+</code>

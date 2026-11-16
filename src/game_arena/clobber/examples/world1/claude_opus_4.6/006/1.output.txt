@@ -1,0 +1,125 @@
+## Strategy
+
+Clobber is a combinatorial game where the player who cannot move loses. The key insight is that each move captures an opponent's piece, reducing their options. I need to:
+
+1. **Maximize my mobility** while **minimizing opponent's mobility** - choose moves that leave me with the most future moves while reducing the opponent's options.
+2. **Use minimax with alpha-beta pruning** to search the game tree as deeply as possible within the time limit.
+3. **Evaluate positions** based on the difference in available moves (my moves minus opponent's moves after they'd play), piece counts near opponent pieces (active pieces), and connectivity.
+
+The evaluation function considers:
+- Number of legal moves available to each player
+- Pieces that are "active" (adjacent to at least one opponent piece) vs "dead" (surrounded only by friendly or empty)
+- Preferring to isolate opponent pieces
+
+I use iterative deepening to maximize search depth within the time constraint.
+
+<code>
+import numpy as np
+import time
+
+def policy(you_list, opponent_list):
+    you = np.array(you_list, dtype=np.int8)
+    opp = np.array(opponent_list, dtype=np.int8)
+    
+    DIRS = [(-1, 0, 'U'), (0, 1, 'R'), (1, 0, 'D'), (0, -1, 'L')]
+    ROWS, COLS = 5, 6
+    
+    def get_moves(board_me, board_them):
+        moves = []
+        for r in range(ROWS):
+            for c in range(COLS):
+                if board_me[r][c] == 1:
+                    for dr, dc, d in DIRS:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < ROWS and 0 <= nc < COLS and board_them[nr][nc] == 1:
+                            moves.append((r, c, nr, nc, d))
+        return moves
+    
+    def evaluate(board_me, board_them):
+        my_moves = len(get_moves(board_me, board_them))
+        their_moves = len(get_moves(board_them, board_me))
+        if my_moves == 0:
+            return -10000
+        if their_moves == 0:
+            return 10000
+        return (my_moves - their_moves) * 10 + my_moves
+    
+    def apply_move(board_me, board_them, move):
+        r, c, nr, nc, d = move
+        bm = board_me.copy()
+        bt = board_them.copy()
+        bm[r][c] = 0
+        bm[nr][nc] = 1
+        bt[nr][nc] = 0
+        return bm, bt
+    
+    start_time = time.time()
+    time_limit = 0.85
+    
+    def alphabeta(board_me, board_them, depth, alpha, beta, maximizing):
+        if time.time() - start_time > time_limit:
+            return evaluate(board_me, board_them) if maximizing else -evaluate(board_them, board_me)
+        
+        if maximizing:
+            moves = get_moves(board_me, board_them)
+            if not moves:
+                return -10000
+            if depth == 0:
+                return evaluate(board_me, board_them)
+            best = -100000
+            for move in moves:
+                nbm, nbt = apply_move(board_me, board_them, move)
+                val = alphabeta(nbt, nbm, depth - 1, alpha, beta, False)
+                best = max(best, val)
+                alpha = max(alpha, val)
+                if alpha >= beta:
+                    break
+            return best
+        else:
+            moves = get_moves(board_me, board_them)
+            if not moves:
+                return 10000
+            if depth == 0:
+                return -evaluate(board_me, board_them)
+            best = 100000
+            for move in moves:
+                nbm, nbt = apply_move(board_me, board_them, move)
+                val = alphabeta(nbt, nbm, depth - 1, alpha, beta, True)
+                best = min(best, val)
+                beta = min(beta, val)
+                if alpha >= beta:
+                    break
+            return best
+    
+    moves = get_moves(you, opp)
+    if not moves:
+        # Should not happen per rules, but safety
+        return "0,0,U"
+    
+    best_move = moves[0]
+    best_val = -100001
+    
+    for max_depth in range(1, 30):
+        if time.time() - start_time > time_limit * 0.7:
+            break
+        current_best_move = moves[0]
+        current_best_val = -100001
+        for move in moves:
+            nbm, nbt = apply_move(you, opp, move)
+            val = alphabeta(nbt, nbm, max_depth - 1, -100001, 100001, False)
+            if val > current_best_val:
+                current_best_val = val
+                current_best_move = move
+            if time.time() - start_time > time_limit:
+                break
+        if time.time() - start_time <= time_limit:
+            best_move = current_best_move
+            best_val = current_best_val
+        else:
+            if current_best_val > best_val:
+                best_move = current_best_move
+            break
+    
+    r, c, nr, nc, d = best_move
+    return f"{r},{c},{d}"
+</code>

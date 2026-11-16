@@ -1,0 +1,155 @@
+
+from __future__ import annotations
+
+from functools import lru_cache
+from typing import List, Tuple, Optional
+
+Board = List[List[int]]
+Move = Tuple[int, int]
+
+WIN_LINES = [
+    # rows
+    [(0, 0), (0, 1), (0, 2)],
+    [(1, 0), (1, 1), (1, 2)],
+    [(2, 0), (2, 1), (2, 2)],
+    # cols
+    [(0, 0), (1, 0), (2, 0)],
+    [(0, 1), (1, 1), (2, 1)],
+    [(0, 2), (1, 2), (2, 2)],
+    # diagonals
+    [(0, 0), (1, 1), (2, 2)],
+    [(0, 2), (1, 1), (2, 0)],
+]
+
+PREFERRED_ORDER: List[Move] = [
+    (1, 1),  # center
+    (0, 0), (0, 2), (2, 0), (2, 2),  # corners
+    (0, 1), (1, 0), (1, 2), (2, 1),  # edges
+]
+
+
+def _flatten(board: Board) -> Tuple[int, ...]:
+    return (board[0][0], board[0][1], board[0][2],
+            board[1][0], board[1][1], board[1][2],
+            board[2][0], board[2][1], board[2][2])
+
+
+def _unflatten(cells: Tuple[int, ...]) -> Board:
+    return [list(cells[0:3]), list(cells[3:6]), list(cells[6:9])]
+
+
+def _winner(board: Board) -> int:
+    """Return 1 if player 1 has won, -1 if player -1 has won, else 0."""
+    for line in WIN_LINES:
+        s = board[line[0][0]][line[0][1]] + board[line[1][0]][line[1][1]] + board[line[2][0]][line[2][1]]
+        if s == 3:
+            return 1
+        if s == -3:
+            return -1
+    return 0
+
+
+def _empties(board: Board) -> List[Move]:
+    moves: List[Move] = []
+    for r in range(3):
+        for c in range(3):
+            if board[r][c] == 0:
+                moves.append((r, c))
+    return moves
+
+
+def _first_immediate_win(board: Board, player: int) -> Optional[Move]:
+    """If player can win in one move, return that move, else None."""
+    for (r, c) in _empties(board):
+        board[r][c] = player
+        if _winner(board) == player:
+            board[r][c] = 0
+            return (r, c)
+        board[r][c] = 0
+    return None
+
+
+def _ordered_moves(board: Board) -> List[Move]:
+    empties = set(_empties(board))
+    return [m for m in PREFERRED_ORDER if m in empties]
+
+
+@lru_cache(maxsize=None)
+def _minimax(cells: Tuple[int, ...], player_to_move: int, depth: int, alpha: int, beta: int) -> Tuple[int, Optional[Move]]:
+    """
+    Returns (score, best_move) where score is from player 1's perspective:
+    + (10-depth) for a 1 win, - (10-depth) for a -1 win, 0 for draw.
+    """
+    board = _unflatten(cells)
+    w = _winner(board)
+    if w != 0:
+        return (w * (10 - depth), None)
+
+    moves = _ordered_moves(board)
+    if not moves:
+        return (0, None)
+
+    if player_to_move == 1:
+        best_score = -10_000
+        best_move: Optional[Move] = None
+        for (r, c) in moves:
+            board[r][c] = 1
+            child_cells = _flatten(board)
+            board[r][c] = 0
+
+            score, _ = _minimax(child_cells, -1, depth + 1, alpha, beta)
+            if score > best_score:
+                best_score, best_move = score, (r, c)
+            alpha = max(alpha, best_score)
+            if alpha >= beta:
+                break
+        return best_score, best_move
+    else:
+        best_score = 10_000
+        best_move = None
+        for (r, c) in moves:
+            board[r][c] = -1
+            child_cells = _flatten(board)
+            board[r][c] = 0
+
+            score, _ = _minimax(child_cells, 1, depth + 1, alpha, beta)
+            if score < best_score:
+                best_score, best_move = score, (r, c)
+            beta = min(beta, best_score)
+            if alpha >= beta:
+                break
+        return best_score, best_move
+
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Safety: find any legal move if needed.
+    legal = _ordered_moves(board)
+    if not legal:
+        # If no move exists, return something in range (shouldn't be called in terminal state).
+        return (0, 0)
+
+    # 1) Win immediately if possible.
+    win_now = _first_immediate_win(board, 1)
+    if win_now is not None:
+        return win_now
+
+    # 2) Block opponent's immediate win if needed.
+    block = _first_immediate_win(board, -1)
+    if block is not None:
+        return block
+
+    # 3) Full minimax for perfect play.
+    cells = _flatten(board)
+
+    # We assume it's our turn; if the arena ever calls us in an odd state, still choose for player 1.
+    score, best_move = _minimax(cells, 1, 0, -10_000, 10_000)
+
+    if best_move is None:
+        # Fallback to any legal move.
+        return legal[0]
+
+    r, c = best_move
+    # Ensure legality (paranoia).
+    if 0 <= r < 3 and 0 <= c < 3 and board[r][c] == 0:
+        return (r, c)
+    return legal[0]

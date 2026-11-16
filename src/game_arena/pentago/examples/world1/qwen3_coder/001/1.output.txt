@@ -1,0 +1,195 @@
+<code>
+import numpy as np
+import random
+from collections import deque
+
+def policy(you, opponent) -> str:
+    # Convert to numpy arrays for easier handling
+    you_board = np.array(you)
+    opponent_board = np.array(opponent)
+    
+    # Find all empty cells
+    empty_cells = []
+    for r in range(6):
+        for c in range(6):
+            if you_board[r][c] == 0 and opponent_board[r][c] == 0:
+                empty_cells.append((r, c))
+    
+    # If there are no empty cells, return a default (should not happen per problem statement)
+    if not empty_cells:
+        return "1,1,0,L"
+    
+    # Check if we can win immediately
+    for r, c in empty_cells:
+        # Try placing our marble here
+        temp_you = you_board.copy()
+        temp_you[r][c] = 1
+        
+        # Check all possible rotations to see if we can win
+        for quad in range(4):
+            for direction in ['L', 'R']:
+                # Simulate the rotation
+                new_you, new_opponent = rotate_quadrant(temp_you, opponent_board, quad, direction)
+                if check_win(new_you):
+                    # Return 1-indexed coordinates
+                    return f"{r+1},{c+1},{quad},{direction}"
+    
+    # Check if opponent can win immediately and block them
+    for r, c in empty_cells:
+        # Try placing opponent marble here (to simulate their potential move)
+        temp_opponent = opponent_board.copy()
+        temp_opponent[r][c] = 1
+        
+        # Check all possible rotations to see if opponent can win
+        for quad in range(4):
+            for direction in ['L', 'R']:
+                # Simulate the rotation
+                new_you, new_opponent = rotate_quadrant(you_board, temp_opponent, quad, direction)
+                if check_win(new_opponent):
+                    # Block this move by doing it ourselves
+                    return f"{r+1},{c+1},{quad},{direction}"
+    
+    # If no immediate win or block, use a heuristic approach
+    # Prefer center positions
+    center_positions = [(2,2), (2,3), (3,2), (3,3)]
+    preferred_cells = [cell for cell in center_positions if cell in empty_cells]
+    
+    if preferred_cells:
+        # Pick a preferred cell
+        r, c = random.choice(preferred_cells)
+    else:
+        # Pick any empty cell
+        r, c = random.choice(empty_cells)
+    
+    # For the rotation, try to improve our position or avoid helping the opponent
+    quad = 0
+    direction = 'R'
+    
+    # Simple heuristic: rotate a quadrant that has our pieces but not too many opponent pieces
+    best_quad = 0
+    best_score = -float('inf')
+    
+    for q in range(4):
+        score = evaluate_quadrant(you_board, opponent_board, q)
+        if score > best_score:
+            best_score = score
+            best_quad = q
+    
+    # Return 1-indexed coordinates
+    return f"{r+1},{c+1},{best_quad},R"
+
+def rotate_quadrant(you, opponent, quad, direction):
+    # Define quadrant boundaries
+    if quad == 0:
+        r_start, r_end = 0, 3
+        c_start, c_end = 0, 3
+    elif quad == 1:
+        r_start, r_end = 0, 3
+        c_start, c_end = 3, 6
+    elif quad == 2:
+        r_start, r_end = 3, 6
+        c_start, c_end = 0, 3
+    else:  # quad == 3
+        r_start, r_end = 3, 6
+        c_start, c_end = 3, 6
+    
+    # Extract the quadrant
+    you_quad = you[r_start:r_end, c_start:c_end].copy()
+    opponent_quad = opponent[r_start:r_end, c_start:c_end].copy()
+    
+    # Rotate the quadrants
+    if direction == 'R':
+        you_rotated = np.rot90(you_quad, k=-1)
+        opponent_rotated = np.rot90(opponent_quad, k=-1)
+    else:  # direction == 'L'
+        you_rotated = np.rot90(you_quad, k=1)
+        opponent_rotated = np.rot90(opponent_quad, k=1)
+    
+    # Create new boards with the rotated quadrants
+    new_you = you.copy()
+    new_opponent = opponent.copy()
+    
+    new_you[r_start:r_end, c_start:c_end] = you_rotated
+    new_opponent[r_start:r_end, c_start:c_end] = opponent_rotated
+    
+    return new_you, new_opponent
+
+def check_win(board):
+    # Check rows
+    for r in range(6):
+        count = 0
+        for c in range(6):
+            if board[r][c] == 1:
+                count += 1
+                if count >= 5:
+                    return True
+            else:
+                count = 0
+    
+    # Check columns
+    for c in range(6):
+        count = 0
+        for r in range(6):
+            if board[r][c] == 1:
+                count += 1
+                if count >= 5:
+                    return True
+            else:
+                count = 0
+    
+    # Check diagonals (top-left to bottom-right)
+    for start in range(-1, 2):  # Starting positions for diagonals
+        count = 0
+        for i in range(6):
+            r = i
+            c = i + start
+            if 0 <= r < 6 and 0 <= c < 6:
+                if board[r][c] == 1:
+                    count += 1
+                    if count >= 5:
+                        return True
+                else:
+                    count = 0
+            else:
+                count = 0
+    
+    # Check diagonals (top-right to bottom-left)
+    for start in range(4, 7):  # Starting positions for diagonals
+        count = 0
+        for i in range(6):
+            r = i
+            c = start - i
+            if 0 <= r < 6 and 0 <= c < 6:
+                if board[r][c] == 1:
+                    count += 1
+                    if count >= 5:
+                        return True
+                else:
+                    count = 0
+            else:
+                count = 0
+    
+    return False
+
+def evaluate_quadrant(you, opponent, quad):
+    # Define quadrant boundaries
+    if quad == 0:
+        r_start, r_end = 0, 3
+        c_start, c_end = 0, 3
+    elif quad == 1:
+        r_start, r_end = 0, 3
+        c_start, c_end = 3, 6
+    elif quad == 2:
+        r_start, r_end = 3, 6
+        c_start, c_end = 0, 3
+    else:  # quad == 3
+        r_start, r_end = 3, 6
+        c_start, c_end = 3, 6
+    
+    # Count our pieces and opponent pieces in the quadrant
+    our_count = np.sum(you[r_start:r_end, c_start:c_end])
+    opponent_count = np.sum(opponent[r_start:r_end, c_start:c_end])
+    
+    # Prefer quadrants with our pieces but fewer opponent pieces
+    return our_count - opponent_count
+</code>

@@ -1,0 +1,681 @@
+<thinking>
+I need to implement a policy for Kalah (Mancala). The goal is to choose a good move from my houses (0-5) when it's my turn. The rules are standard: sow seeds counter-clockwise, skipping opponent's store, with extra moves and capture rules.
+
+Key considerations:
+1. The move must be legal (you[i] > 0).
+2. The game ends when one player has no seeds in their houses.
+3. I want to maximize my store count.
+
+Basic strategies for Kalah:
+- Extra moves are powerful - if I can land in my store, I get another turn.
+- Captures are valuable - I can steal seeds from opponent.
+- Avoid giving opponent good moves.
+- Consider endgame scenarios.
+
+I should implement a search algorithm like Minimax with alpha-beta pruning to evaluate moves. However, given the 1 second time limit, I need to balance depth vs. time.
+
+Board representation: I have two lists of 7 ints each.
+
+I need to simulate a move to evaluate its outcome. Let me think about the move simulation:
+
+Steps to simulate a move:
+1. Pick seeds from house i (0-5).
+2. Distribute seeds starting from i+1, then my store, opponent's houses, etc., skipping opponent's store.
+3. Check if last seed landed in:
+   - My store: extra move
+   - My empty house: capture if opposite has seeds
+4. Apply capture if applicable.
+
+After the move, if I get an extra move, I need to consider that I can move again.
+
+For evaluation, I could use a simple heuristic:
+- My store count minus opponent's store count
+- Plus some weight for seeds in my houses (since they can be captured)
+- Minus some weight for seeds in opponent's houses (since they can capture)
+
+But to properly evaluate, I should search ahead several moves.
+
+Given the time limit, I could implement a depth-limited minimax with alpha-beta. The branching factor is at most 6 (houses with seeds), but with extra moves it could be more complex.
+
+Actually, with extra moves, if I get an extra move, I should continue from that position. So in the search tree, extra moves don't increase depth but allow me to make multiple moves in a row.
+
+I should also consider that after a move, it might be opponent's turn (unless I got extra move).
+
+Let me plan:
+1. Implement a function to simulate a move and return the resulting state (you, opponent) and whether I get another move.
+2. Implement an evaluation function.
+3. Implement minimax with alpha-beta pruning that handles extra moves properly.
+
+Depth: Given 1 second, I could try depth 8-10 maybe? But with alpha-beta and good move ordering, I might go deeper.
+
+Move ordering: I should try moves that give extra moves first, then captures, etc.
+
+Edge cases: Game might end during simulation. If one player has no seeds in houses, game ends and remaining seeds go to that player's store.
+
+Implementation details:
+
+Simulate move:
+- Input: you, opponent, move i (0-5)
+- Output: new_you, new_opponent, extra_move (bool)
+
+Algorithm:
+1. seeds = you[i]; you[i] = 0
+2. current_player = 'me'; current_house = i+1
+3. while seeds > 0:
+   - if current_player == 'me':
+        if current_house == 6:  # my store
+            you[6] += 1
+            seeds -= 1
+            last_was_store = True if seeds == 0 else False
+            current_house = 0
+            current_player = 'opponent' if seeds > 0 else 'me'  # continue with same player for next seed?
+        elif current_house < 6:  # my houses
+            you[current_house] += 1
+            seeds -= 1
+            last_house = current_house if seeds == 0 else None
+            current_house += 1
+        else:  # current_house > 6, switch to opponent
+            current_player = 'opponent'
+            current_house = 0
+   - else:  # opponent
+        if current_house == 6:  # opponent's store, skip
+            current_house = 0
+            current_player = 'me'
+        elif current_house < 6:  # opponent's houses
+            opponent[current_house] += 1
+            seeds -= 1
+            last_house = None  # opponent house
+            current_house += 1
+        else:  # should not happen
+            pass
+
+Actually, the sowing goes: my houses i+1 to 5, then my store, then opponent's houses 0-5, then back to my houses 0-5, etc.
+
+Simpler: I can simulate by iterating through positions in order:
+positions = [
+    (you, i+1), (you, i+2), ..., (you, 5),
+    (you, 6),  # store
+    (opponent, 0), (opponent, 1), ..., (opponent, 5),
+    (you, 0), (you, 1), ..., (you, 5),
+    (you, 6),  # store again
+    ... repeating
+]
+
+But skip opponent[6] always.
+
+Let me write a helper function:
+def simulate_move(you, opponent, move):
+    you_copy = you.copy()
+    opponent_copy = opponent.copy()
+    
+    seeds = you_copy[move]
+    you_copy[move] = 0
+    
+    pos = move + 1
+    player = 'me'
+    
+    last_house = None
+    last_player = None
+    last_was_store = False
+    
+    while seeds > 0:
+        if player == 'me':
+            if pos == 6:  # my store
+                you_copy[6] += 1
+                seeds -= 1
+                if seeds == 0:
+                    last_was_store = True
+                    last_player = 'me'
+                    last_house = 6
+                pos = 0
+                player = 'opponent'
+            elif pos < 6:  # my house
+                you_copy[pos] += 1
+                seeds -= 1
+                if seeds == 0:
+                    last_was_store = False
+                    last_player = 'me'
+                    last_house = pos
+                pos += 1
+            else:  # pos > 6, should not happen
+                pos = 0
+                player = 'opponent'
+        else:  # opponent
+            if pos == 6:  # opponent's store, skip
+                pos = 0
+                player = 'me'
+                continue
+            elif pos < 6:  # opponent's house
+                opponent_copy[pos] += 1
+                seeds -= 1
+                if seeds == 0:
+                    last_was_store = False
+                    last_player = 'opponent'
+                    last_house = pos
+                pos += 1
+            else:  # pos > 6, should not happen
+                pos = 0
+                player = 'me'
+    
+    # Check for capture
+    captured = False
+    if last_player == 'me' and not last_was_store and last_house < 6:
+        if you_copy[last_house] == 1:  # was empty before the drop
+            opposite = 5 - last_house
+            if opponent_copy[opposite] > 0:
+                # Capture
+                you_copy[6] += you_copy[last_house] + opponent_copy[opposite]
+                you_copy[last_house] = 0
+                opponent_copy[opposite] = 0
+                captured = True
+    
+    extra_move = last_was_store
+    
+    return you_copy, opponent_copy, extra_move
+
+Now for evaluation function:
+def evaluate(you, opponent):
+    # Simple: store difference plus some value for houses
+    store_diff = you[6] - opponent[6]
+    house_value = sum(you[0:6]) - sum(opponent[0:6]) * 0.5
+    return store_diff + house_value * 0.1
+
+For minimax, I need to handle extra moves: if I get an extra move, it's still my turn, so I should continue searching with the same player to move.
+
+Also, I need to check for game end: if all my houses are empty or all opponent houses are empty.
+
+Let me implement minimax with alpha-beta:
+def minimax(you, opponent, depth, alpha, beta, maximizing_player, max_depth):
+    # Check if game ended
+    if sum(you[0:6]) == 0 or sum(opponent[0:6]) == 0:
+        # Game over, move all remaining seeds to stores
+        you_final = you.copy()
+        opponent_final = opponent.copy()
+        you_final[6] += sum(you_final[0:6])
+        opponent_final[6] += sum(opponent_final[0:6])
+        for i in range(6):
+            you_final[i] = 0
+            opponent_final[i] = 0
+        return evaluate(you_final, opponent_final), None
+    
+    if depth >= max_depth:
+        return evaluate(you, opponent), None
+    
+    if maximizing_player:
+        best_value = -float('inf')
+        best_move = None
+        legal_moves = [i for i in range(6) if you[i] > 0]
+        
+        # Move ordering: try extra moves first, then captures, then others
+        # For now, just try all
+        for move in legal_moves:
+            new_you, new_opponent, extra_move = simulate_move(you, opponent, move)
+            
+            if extra_move:
+                # Still my turn
+                value, _ = minimax(new_you, new_opponent, depth, alpha, beta, True, max_depth)
+            else:
+                # Opponent's turn
+                value, _ = minimax(new_you, new_opponent, depth+1, alpha, beta, False, max_depth)
+            
+            if value > best_value:
+                best_value = value
+                best_move = move
+            
+            alpha = max(alpha, best_value)
+            if beta <= alpha:
+                break
+        
+        return best_value, best_move
+    else:
+        # Minimizing player (opponent)
+        best_value = float('inf')
+        best_move = None
+        legal_moves = [i for i in range(6) if opponent[i] > 0]
+        
+        for move in legal_moves:
+            # Simulate opponent's move - need to swap perspective
+            new_opponent, new_you, extra_move = simulate_move(opponent, you, move)
+            
+            if extra_move:
+                # Opponent gets extra move, still their turn
+                value, _ = minimax(new_you, new_opponent, depth+1, alpha, beta, False, max_depth)
+            else:
+                # My turn
+                value, _ = minimax(new_you, new_opponent, depth+1, alpha, beta, True, max_depth)
+            
+            if value < best_value:
+                best_value = value
+                best_move = move
+            
+            beta = min(beta, best_value)
+            if beta <= alpha:
+                break
+        
+        return best_value, best_move
+
+In the policy function, I'll call minimax with depth 0 and return the best move.
+
+Given the time limit, I need to choose an appropriate max_depth. Let me start with depth 8 and see.
+
+I should also consider iterative deepening: start with depth 1, then 2, etc., until time runs out, and use the best move found.
+
+I'll implement iterative deepening with a time limit check.
+
+But note: The policy function might be called many times, so I need to be efficient.
+
+Alternatively, I could use a simpler heuristic for choosing moves without full search, but I think minimax with reasonable depth should work within 1 second.
+
+Let me implement with iterative deepening and a simple timeout.
+
+I'll create a global variable to track start time and check if time is up.
+
+Actually, the policy function is called once per move, so I have up to 1 second for each call.
+
+I'll implement:
+def policy(you, opponent):
+    start_time = time.time()
+    best_move = None
+    max_depth = 1
+    
+    while True:
+        try:
+            value, move = minimax(you, opponent, 0, -float('inf'), float('inf'), True, max_depth)
+            if move is not None:
+                best_move = move
+        except TimeoutError:
+            break
+        
+        max_depth += 1
+        if time.time() - start_time > 0.9:  # leave 0.1 second margin
+            break
+    
+    if best_move is None:
+        # Fallback: choose first legal move
+        for i in range(6):
+            if you[i] > 0:
+                best_move = i
+                break
+    
+    return best_move
+
+But I need to actually implement the timeout check within minimax. I can check time at each node or after each move evaluation.
+
+Let me modify minimax to check time at the beginning.
+
+Actually, I'll use a global or nonlocal variable for time limit.
+
+Given the constraints, I'll implement without iterative deepening first, with a fixed depth that should complete within 1 second.
+
+Let me test in my mind: Branching factor ~6, depth 8 gives 6^8 = 1.6 million nodes. With alpha-beta and good pruning, maybe 100k-500k nodes. Each node simulation is O(seeds) but seeds max is 48 total? Actually each house can have many seeds, but simulation is still fast.
+
+I think depth 10-12 might be possible.
+
+I'll implement with depth 12 fixed.
+
+But I should also add move ordering to improve pruning:
+- First try moves that give extra moves
+- Then moves that capture
+- Then others
+
+Let me implement that.
+
+Also, I can add some heuristic evaluation improvements:
+- Give higher weight to extra moves and captures in evaluation.
+
+Actually, the evaluation function should reflect the game state value. My current evaluation is simple.
+
+I'll proceed with this plan.
+
+One more thing: The simulate_move function I wrote might have bugs. Let me think about the sowing order again.
+
+From the problem: "place them in order as: 1. you[i+1] through you[5] 2. you[6] (your store) 3. opponent[0] through opponent[5] 4. you[0] through you[5] ..."
+
+So after opponent[5], it goes back to you[0], not skipping my store? Actually it says "repeating as needed", so after opponent[5], next is you[0], then you[1], ..., you[5], you[6], opponent[0], etc.
+
+And it skips opponent[6] always.
+
+My simulation should follow this pattern.
+
+Let me rewrite simulate_move more clearly:
+
+def simulate_move(you, opponent, move):
+    you_copy = you.copy()
+    opponent_copy = opponent.copy()
+    
+    seeds = you_copy[move]
+    you_copy[move] = 0
+    
+    # Start sowing from next house
+    index = move + 1
+    is_my_side = True
+    
+    last_house_index = None
+    last_was_my_side = None
+    last_was_store = False
+    
+    while seeds > 0:
+        if is_my_side:
+            if index == 6:  # my store
+                you_copy[6] += 1
+                seeds -= 1
+                if seeds == 0:
+                    last_was_store = True
+                    last_was_my_side = True
+                    last_house_index = 6
+                index = 0
+                is_my_side = False  # after my store, go to opponent side
+            else:  # my house 0-5
+                you_copy[index] += 1
+                seeds -= 1
+                if seeds == 0:
+                    last_was_store = False
+                    last_was_my_side = True
+                    last_house_index = index
+                index += 1
+                if index == 7:  # wrap to opponent after my house 5
+                    index = 0
+                    is_my_side = False
+        else:  # opponent side
+            if index == 6:  # opponent store, skip
+                index = 0
+                is_my_side = True
+                continue
+            else:  # opponent house 0-5
+                opponent_copy[index] += 1
+                seeds -= 1
+                if seeds == 0:
+                    last_was_store = False
+                    last_was_my_side = False
+                    last_house_index = index
+                index += 1
+                if index == 7:  # wrap to my side after opponent house 5
+                    index = 0
+                    is_my_side = True
+    
+    # Check capture
+    if last_was_my_side and not last_was_store and last_house_index < 6:
+        if you_copy[last_house_index] == 1:  # was empty before drop
+            opposite = 5 - last_house_index
+            if opponent_copy[opposite] > 0:
+                you_copy[6] += you_copy[last_house_index] + opponent_copy[opposite]
+                you_copy[last_house_index] = 0
+                opponent_copy[opposite] = 0
+    
+    extra_move = last_was_store
+    
+    return you_copy, opponent_copy, extra_move
+
+This should be correct.
+
+Now for minimax, I need to handle when it's opponent's turn. In my minimax, when it's opponent's turn (minimizing player), I need to simulate opponent's moves. But my simulate_move function is from perspective of the player making the move. So for opponent's move, I should call simulate_move with swapped arguments.
+
+Let me adjust the minimax accordingly.
+
+I think my implementation is getting complex. Given the time, I'll implement a simpler but effective approach.
+
+Actually, for a competition, I should aim for a strong player. Let me implement the full minimax with alpha-beta and iterative deepening.
+
+I'll write the complete code now.
+</thinking>
+
+<code>
+import time
+import math
+
+def simulate_move(you, opponent, move):
+    """
+    Simulate a move from house 'move' (0-5) for the player with 'you' state.
+    Returns (new_you, new_opponent, extra_move).
+    """
+    you_copy = you.copy()
+    opponent_copy = opponent.copy()
+    
+    seeds = you_copy[move]
+    you_copy[move] = 0
+    
+    # Start sowing from the next house
+    index = move + 1
+    is_my_side = True
+    
+    last_house_index = None
+    last_was_my_side = None
+    last_was_store = False
+    
+    while seeds > 0:
+        if is_my_side:
+            if index == 6:  # my store
+                you_copy[6] += 1
+                seeds -= 1
+                if seeds == 0:
+                    last_was_store = True
+                    last_was_my_side = True
+                    last_house_index = 6
+                index = 0
+                is_my_side = False  # after store, go to opponent side
+            else:  # my house 0-5
+                you_copy[index] += 1
+                seeds -= 1
+                if seeds == 0:
+                    last_was_store = False
+                    last_was_my_side = True
+                    last_house_index = index
+                index += 1
+                if index == 7:  # wrap to opponent after house 5
+                    index = 0
+                    is_my_side = False
+        else:  # opponent side
+            if index == 6:  # opponent store, skip
+                index = 0
+                is_my_side = True
+                continue
+            else:  # opponent house 0-5
+                opponent_copy[index] += 1
+                seeds -= 1
+                if seeds == 0:
+                    last_was_store = False
+                    last_was_my_side = False
+                    last_house_index = index
+                index += 1
+                if index == 7:  # wrap to my side after house 5
+                    index = 0
+                    is_my_side = True
+    
+    # Check for capture
+    if last_was_my_side and not last_was_store and last_house_index < 6:
+        if you_copy[last_house_index] == 1:  # was empty before the drop
+            opposite = 5 - last_house_index
+            if opponent_copy[opposite] > 0:
+                # Capture both the last seed and the opposite seeds
+                you_copy[6] += you_copy[last_house_index] + opponent_copy[opposite]
+                you_copy[last_house_index] = 0
+                opponent_copy[opposite] = 0
+    
+    extra_move = last_was_store
+    return you_copy, opponent_copy, extra_move
+
+def evaluate(you, opponent):
+    """
+    Evaluate the state from the perspective of the player whose turn it is.
+    Positive values are good for the current player.
+    """
+    # Store difference is most important
+    store_diff = you[6] - opponent[6]
+    
+    # Seeds in houses: mine are potential future stores, opponent's are potential captures
+    my_houses = sum(you[0:6])
+    opp_houses = sum(opponent[0:6])
+    
+    # Heuristic: having more seeds in houses is good, but opponent's seeds are a threat
+    house_value = my_houses - opp_houses * 0.7
+    
+    # Bonus for having potential extra moves (houses with enough seeds to reach store)
+    extra_move_potential = 0
+    for i in range(6):
+        if you[i] > 0 and (you[i] == 6 - i or you[i] % 13 == (6 - i) % 13):
+            extra_move_potential += 0.5
+    
+    # Bonus for capture opportunities
+    capture_potential = 0
+    for i in range(6):
+        if you[i] == 0 and opponent[5 - i] > 0:
+            # This house is empty, opponent has seeds opposite
+            # Check if any of my houses can land here
+            for j in range(6):
+                if you[j] > 0:
+                    distance = (j - i) % 12  # simplified
+                    if you[j] == distance or (you[j] > distance and (you[j] - distance) % 12 == 0):
+                        capture_potential += 0.3 * opponent[5 - i]
+                        break
+    
+    return store_diff + house_value * 0.1 + extra_move_potential + capture_potential
+
+def game_over(you, opponent):
+    """Check if the game has ended."""
+    return sum(you[0:6]) == 0 or sum(opponent[0:6]) == 0
+
+def finalize_game(you, opponent):
+    """Move all remaining seeds to stores and return final state."""
+    you_final = you.copy()
+    opponent_final = opponent.copy()
+    you_final[6] += sum(you_final[0:6])
+    opponent_final[6] += sum(opponent_final[0:6])
+    for i in range(6):
+        you_final[i] = 0
+        opponent_final[i] = 0
+    return you_final, opponent_final
+
+def minimax(you, opponent, depth, alpha, beta, maximizing_player, max_depth, start_time, time_limit):
+    """
+    Minimax with alpha-beta pruning.
+    Returns (value, best_move) for the current player.
+    """
+    # Time check
+    if time.time() - start_time > time_limit:
+        raise TimeoutError()
+    
+    # Check if game ended
+    if game_over(you, opponent):
+        you_final, opponent_final = finalize_game(you, opponent)
+        return evaluate(you_final, opponent_final), None
+    
+    if depth >= max_depth:
+        return evaluate(you, opponent), None
+    
+    if maximizing_player:
+        best_value = -math.inf
+        best_move = None
+        
+        # Get legal moves
+        legal_moves = [i for i in range(6) if you[i] > 0]
+        
+        # Move ordering: try extra moves first, then captures
+        def move_score(move):
+            you_test, opp_test, extra = simulate_move(you, opponent, move)
+            score = 0
+            if extra:
+                score += 100
+            # Check if capture happens
+            if extra:
+                # Already accounted
+                pass
+            else:
+                # Simple capture check (not perfect but fast)
+                last_pos = (move + you[move]) % 12
+                if last_pos < 6 and you_test[last_pos] == 1 and opp_test[5 - last_pos] > 0:
+                    score += 50
+            return score
+        
+        legal_moves.sort(key=move_score, reverse=True)
+        
+        for move in legal_moves:
+            new_you, new_opponent, extra_move = simulate_move(you, opponent, move)
+            
+            if extra_move:
+                # Still my turn
+                value, _ = minimax(new_you, new_opponent, depth, alpha, beta, True, max_depth, start_time, time_limit)
+            else:
+                # Opponent's turn
+                value, _ = minimax(new_you, new_opponent, depth + 1, alpha, beta, False, max_depth, start_time, time_limit)
+            
+            if value > best_value:
+                best_value = value
+                best_move = move
+            
+            alpha = max(alpha, best_value)
+            if beta <= alpha:
+                break
+        
+        return best_value, best_move
+    else:
+        # Minimizing player (opponent)
+        best_value = math.inf
+        best_move = None
+        
+        # Get opponent's legal moves
+        legal_moves = [i for i in range(6) if opponent[i] > 0]
+        
+        # Move ordering for opponent (we want to explore bad moves for us first)
+        def move_score_opp(move):
+            opp_test, you_test, extra = simulate_move(opponent, you, move)
+            score = 0
+            if extra:
+                score -= 100  # opponent extra move is bad for us
+            return score
+        
+        legal_moves.sort(key=move_score_opp)
+        
+        for move in legal_moves:
+            # Simulate opponent's move (swap perspective)
+            new_opponent, new_you, extra_move = simulate_move(opponent, you, move)
+            
+            if extra_move:
+                # Opponent gets another move
+                value, _ = minimax(new_you, new_opponent, depth + 1, alpha, beta, False, max_depth, start_time, time_limit)
+            else:
+                # My turn
+                value, _ = minimax(new_you, new_opponent, depth + 1, alpha, beta, True, max_depth, start_time, time_limit)
+            
+            if value < best_value:
+                best_value = value
+                best_move = move
+            
+            beta = min(beta, best_value)
+            if beta <= alpha:
+                break
+        
+        return best_value, best_move
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    """
+    Policy function that returns a move (0-5) for the current player.
+    Uses iterative deepening minimax with alpha-beta pruning.
+    """
+    start_time = time.time()
+    time_limit = 0.95  # seconds, leave some margin
+    
+    best_move = None
+    max_depth = 1
+    
+    # Iterative deepening
+    while True:
+        try:
+            value, move = minimax(you, opponent, 0, -math.inf, math.inf, True, max_depth, start_time, time_limit)
+            if move is not None:
+                best_move = move
+        except TimeoutError:
+            break
+        
+        max_depth += 1
+        if time.time() - start_time > time_limit:
+            break
+    
+    # Fallback: choose first legal move if something went wrong
+    if best_move is None:
+        for i in range(6):
+            if you[i] > 0:
+                best_move = i
+                break
+    
+    return best_move
+</code>

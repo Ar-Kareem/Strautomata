@@ -1,0 +1,130 @@
+
+from typing import List, Tuple, Optional
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Choose the next move for player 1 on a 3x3 tic-tac-toe board.
+    board: 3x3 list of lists with values {1: us, -1: opponent, 0: empty}
+    Returns (row, col) with 0<=row,col<=2.
+    Uses minimax with simple depth-based scoring to prefer faster wins/slower losses.
+    """
+
+    def check_winner(b: List[List[int]]) -> int:
+        # returns 1 if player 1 wins, -1 if opponent wins, 0 otherwise
+        lines = []
+        # rows and cols
+        for i in range(3):
+            lines.append(b[i][0] + b[i][1] + b[i][2])
+            lines.append(b[0][i] + b[1][i] + b[2][i])
+        # diagonals
+        lines.append(b[0][0] + b[1][1] + b[2][2])
+        lines.append(b[0][2] + b[1][1] + b[2][0])
+        if 3 in lines:
+            return 1
+        if -3 in lines:
+            return -1
+        return 0
+
+    def empty_cells(b: List[List[int]]):
+        for i in range(3):
+            for j in range(3):
+                if b[i][j] == 0:
+                    yield (i, j)
+
+    # Count to infer whose turn; default we expect it's our turn (1).
+    c1 = sum(1 for i in range(3) for j in range(3) if board[i][j] == 1)
+    c_1 = sum(1 for i in range(3) for j in range(3) if board[i][j] == -1)
+    # If counts equal -> it's player 1's turn (we play next). If we are already ahead by 1,
+    # it's opponent's turn; in that case we'll still compute the best move for us assuming
+    # we can pick when we get the turn. But here we assume it's our turn normally.
+    # For safety enforce player param:
+    player_to_move = 1 if c1 <= c_1 else -1
+
+    # Minimax with depth-based scoring
+    def minimax(b: List[List[int]], player: int, depth: int) -> Tuple[Optional[Tuple[int, int]], int]:
+        winner = check_winner(b)
+        if winner == 1:
+            return None, 10 - depth  # prefer quicker wins
+        if winner == -1:
+            return None, depth - 10  # prefer to delay losses
+        empties = list(empty_cells(b))
+        if not empties:
+            return None, 0  # draw
+
+        if player == 1:
+            best_score = -10_000
+            best_move = None
+            for (i, j) in empties:
+                b[i][j] = 1
+                _, score = minimax(b, -1, depth + 1)
+                b[i][j] = 0
+                if score > best_score:
+                    best_score = score
+                    best_move = (i, j)
+                    # immediate win shortcut
+                    if best_score == 10 - (depth + 1):
+                        break
+            return best_move, best_score
+        else:
+            best_score = 10_000
+            best_move = None
+            for (i, j) in empties:
+                b[i][j] = -1
+                _, score = minimax(b, 1, depth + 1)
+                b[i][j] = 0
+                if score < best_score:
+                    best_score = score
+                    best_move = (i, j)
+                    # immediate loss for us (opponent win) shortcut
+                    if best_score == (depth + 1) - 10:
+                        break
+            return best_move, best_score
+
+    # If board is already terminal, return any empty or (0,0)
+    if check_winner(board) != 0:
+        for i in range(3):
+            for j in range(3):
+                if board[i][j] == 0:
+                    return (i, j)
+        return (0, 0)
+
+    # If it's not our turn, simulate opponent move first to produce a board where it's our turn.
+    # But simplest: run minimax assuming current player_to_move, then pick the move for player 1.
+    move, _ = minimax(board, player_to_move, 0)
+
+    # If the minimax returned a move for opponent (player_to_move == -1), we need to interpret:
+    # minimax returns the best move for whoever is to move; we want our move. So if player_to_move == -1,
+    # apply the opponent's best move then run minimax again (our turn).
+    if player_to_move == -1:
+        # if opponent has no move returned, fall back to any empty
+        if move is None:
+            for i in range(3):
+                for j in range(3):
+                    if board[i][j] == 0:
+                        return (i, j)
+            return (0, 0)
+        # simulate opponent move
+        oi, oj = move
+        board[oi][oj] = -1
+        # now it's our turn; compute best move
+        our_move, _ = minimax(board, 1, 0)
+        board[oi][oj] = 0
+        if our_move is not None:
+            return our_move
+        # fallback
+        for i in range(3):
+            for j in range(3):
+                if board[i][j] == 0:
+                    return (i, j)
+        return (0, 0)
+
+    # player_to_move == 1: move is our move
+    if move is not None:
+        return move
+
+    # fallback to first empty
+    for i in range(3):
+        for j in range(3):
+            if board[i][j] == 0:
+                return (i, j)
+    return (0, 0)

@@ -1,0 +1,181 @@
+
+import numpy as np
+from collections import deque
+from typing import List, Tuple, Set
+
+def get_neighbors(r: int, c: int, size: int) -> List[Tuple[int, int]]:
+    """Return 6 hex neighbors for cell (r, c)"""
+    return [
+        (r-1, c), (r+1, c),
+        (r-1, c-1), (r, c-1),
+        (r, c+1), (r-1, c+1)
+    ]
+
+def get_valid_neighbors(r: int, c: int, valid_mask) -> List[Tuple[int, int]]:
+    """Return valid on-board neighbors"""
+    size = len(valid_mask)
+    neighbors = []
+    for nr, nc in get_neighbors(r, c, size):
+        if 0 <= nr < size and 0 <= nc < size and valid_mask[nr][nc]:
+            neighbors.append((nr, nc))
+    return neighbors
+
+def find_component(start: Tuple[int, int], stone_set: Set[Tuple[int, int]], valid_mask) -> Set[Tuple[int, int]]:
+    """BFS to find connected stones"""
+    component = set()
+    queue = deque([start])
+    
+    while queue:
+        pos = queue.popleft()
+        if pos in component or pos not in stone_set:
+            continue
+        component.add(pos)
+        for nb in get_valid_neighbors(pos[0], pos[1], valid_mask):
+            if nb in stone_set and nb not in component:
+                queue.append(nb)
+    return component
+
+def group_edge_cells(edge_cells: List[Tuple[int, int]], valid_mask) -> List[Set[Tuple[int, int]]]:
+    """Group edge cells into contiguous edge segments"""
+    if not edge_cells:
+        return []
+    
+    edge_set = set(edge_cells)
+    visited = set()
+    groups = []
+    
+    for cell in edge_cells:
+        if cell in visited:
+            continue
+        group = set()
+        queue = deque([cell])
+        while queue:
+            pos = queue.popleft()
+            if pos in visited or pos not in edge_set:
+                continue
+            visited.add(pos)
+            group.add(pos)
+            for nb in get_valid_neighbors(pos[0], pos[1], valid_mask):
+                if nb in edge_set and nb not in visited:
+                    queue.append(nb)
+        groups.append(group)
+    return groups
+
+def find_corners_and_edge_groups(valid_mask) -> Tuple[List[Tuple[int, int]], List[Set[Tuple[int, int]]]]:
+    """Identify corners (min neighbors) and edge groups"""
+    size = len(valid_mask)
+    neighbor_count = {}
+    
+    for r in range(size):
+        for c in range(size):
+            if valid_mask[r][c]:
+                neighbor_count[(r, c)] = len(get_valid_neighbors(r, c, valid_mask))
+    
+    if not neighbor_count:
+        return [], []
+    
+    min_count = min(neighbor_count.values())
+    corners = [pos for pos, cnt in neighbor_count.items() if cnt == min_count]
+    edge_cells = [pos for pos, cnt in neighbor_count.items() 
+                  if min_count < cnt < 6 and pos not in corners]
+    edge_groups = group_edge_cells(edge_cells, valid_mask)
+    
+    return corners, edge_groups
+
+def has_ring(stone_set: Set[Tuple[int, int]], valid_mask) -> bool:
+    """Check for ring - cell enclosed by stones"""
+    size = len(valid_mask)
+    for r in range(size):
+        for c in range(size):
+            if valid_mask[r][c] and (r, c) not in stone_set:
+                nbs = get_valid_neighbors(r, c, valid_mask)
+                if len(nbs) >= 3 and all(nb in stone_set for nb in nbs):
+                    return True
+    return False
+
+def check_win(stones: List[Tuple[int, int]], valid_mask, corners: List[Tuple[int, int]], edge_groups: List[Set[Tuple[int, int]]]) -> bool:
+    """Check if stones achieve bridge, fork, or ring win"""
+    if len(stones) < 2:
+        return False
+    
+    stone_set = set(stones)
+    visited = set()
+    
+    for s in stones:
+        if s in visited:
+            continue
+        component = find_component(s, stone_set, valid_mask)
+        visited.update(component)
+        
+        if sum(1 for c in corners if c in component) >= 2:
+            return True
+        
+        connected_groups = sum(1 for group in edge_groups if any(cell in component for cell in group))
+        if connected_groups >= 3:
+            return True
+    
+    return has_ring(stone_set, valid_mask)
+
+def score_move(move: Tuple[int, int], me_set: Set[Tuple[int, int]], opp_set: Set[Tuple[int, int]], 
+               valid_mask, corners: List[Tuple[int, int]], edge_groups: List[Set[Tuple[int, int]]]) -> int:
+    """Evaluate move quality"""
+    size = len(valid_mask)
+    center = size // 2
+    score = 0
+    
+    dist = abs(move[0] - center) + abs(move[1] - center)
+    score -= dist
+    
+    nbs = get_valid_neighbors(move[0], move[1], valid_mask)
+    own_nbs = sum(1 for n in nbs if n in me_set)
+    opp_nbs = sum(1 for n in nbs if n in opp_set)
+    
+    score += own_nbs * 20
+    score += opp_nbs * 10
+    
+    if move in corners:
+        score += 30
+    else:
+        for group in edge_groups:
+            if move in group:
+                score += 15
+                break
+    
+    if own_nbs >= 2:
+        score += 25
+    
+    return score
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], valid_mask) -> Tuple[int, int]:
+    """Main policy function"""
+    size = len(valid_mask)
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    moves = []
+    for r in range(size):
+        for c in range(size):
+            if valid_mask[r][c] and (r, c) not in me_set and (r, c) not in opp_set:
+                moves.append((r, c))
+    
+    if not moves:
+        return (size // 2, size // 2)
+    
+    center = (size // 2, size // 2)
+    if not me and not opp and center in moves:
+        return center
+    
+    corners, edge_groups = find_corners_and_edge_groups(valid_mask)
+    
+    for m in moves:
+        if check_win(me + [m], valid_mask, corners, edge_groups):
+            return m
+    
+    for m in moves:
+        if check_win(opp + [m], valid_mask, corners, edge_groups):
+            return m
+    
+    scored = [(score_move(m, me_set, opp_set, valid_mask, corners, edge_groups), m) for m in moves]
+    scored.sort(reverse=True, key=lambda x: x[0])
+    
+    return scored[0][1]

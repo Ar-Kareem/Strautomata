@@ -1,0 +1,314 @@
+
+import time
+import math
+
+BOARD_N = 8
+DIRS8 = [(-1, -1), (-1, 0), (-1, 1),
+         (0, -1),          (0, 1),
+         (1, -1),  (1, 0), (1, 1)]
+
+INF = 10**18
+
+
+def inb(r, c):
+    return 0 <= r < 8 and 0 <= c < 8
+
+
+def move_to_str(m):
+    fr, fc, tr, tc = m
+    return f"{fr},{fc}:{tr},{tc}"
+
+
+def clone_board(board):
+    return [row[:] for row in board]
+
+
+def apply_move(board, move):
+    fr, fc, tr, tc = move
+    nb = [row[:] for row in board]
+    nb[tr][tc] = nb[fr][fc]
+    nb[fr][fc] = 0
+    return nb
+
+
+def swap_perspective(board):
+    # After our move, opponent to move becomes "current player".
+    return [[-x for x in row] for row in board]
+
+
+def pieces_of(board, side=1):
+    out = []
+    for r in range(8):
+        row = board[r]
+        for c in range(8):
+            if row[c] == side:
+                out.append((r, c))
+    return out
+
+
+def count_components(board, side=1):
+    pcs = pieces_of(board, side)
+    if not pcs:
+        return 0, 0
+    s = set(pcs)
+    seen = set()
+    comps = 0
+    largest = 0
+    for p in pcs:
+        if p in seen:
+            continue
+        comps += 1
+        stack = [p]
+        seen.add(p)
+        size = 0
+        while stack:
+            r, c = stack.pop()
+            size += 1
+            for dr, dc in DIRS8:
+                nr, nc = r + dr, c + dc
+                if (nr, nc) in s and (nr, nc) not in seen:
+                    seen.add((nr, nc))
+                    stack.append((nr, nc))
+        if size > largest:
+            largest = size
+    return comps, largest
+
+
+def is_connected(board, side=1):
+    count = sum(1 for r in range(8) for c in range(8) if board[r][c] == side)
+    if count <= 1:
+        return True
+    comps, _ = count_components(board, side)
+    return comps == 1
+
+
+def line_count(board, r, c, dr, dc):
+    # Count all pieces on the full line through (r,c) in direction (dr,dc)
+    cnt = 1  # includes current square if occupied; caller only uses on own piece
+    nr, nc = r + dr, c + dc
+    while inb(nr, nc):
+        if board[nr][nc] != 0:
+            cnt += 1
+        nr += dr
+        nc += dc
+    nr, nc = r - dr, c - dc
+    while inb(nr, nc):
+        if board[nr][nc] != 0:
+            cnt += 1
+        nr -= dr
+        nc -= dc
+    return cnt
+
+
+def generate_legal_moves(board):
+    moves = []
+    my_pieces = pieces_of(board, 1)
+    for r, c in my_pieces:
+        for dr, dc in DIRS8:
+            dist = line_count(board, r, c, dr, dc)
+            tr, tc = r + dr * dist, c + dc * dist
+            if not inb(tr, tc):
+                continue
+            # Can't land on own piece
+            if board[tr][tc] == 1:
+                continue
+            # Path squares excluding destination cannot contain enemy pieces
+            legal = True
+            nr, nc = r + dr, c + dc
+            while (nr, nc) != (tr, tc):
+                if board[nr][nc] == -1:
+                    legal = False
+                    break
+                nr += dr
+                nc += dc
+            if not legal:
+                continue
+            # Destination may be empty or enemy
+            moves.append((r, c, tr, tc))
+    return moves
+
+
+def centrality_score(pieces):
+    # Larger is better
+    s = 0.0
+    for r, c in pieces:
+        s -= abs(r - 3.5) + abs(c - 3.5)
+    return s
+
+
+def spread_score(pieces):
+    if not pieces:
+        return 0.0
+    rs = [r for r, _ in pieces]
+    cs = [c for _, c in pieces]
+    # tighter bounding box better
+    area = (max(rs) - min(rs) + 1) * (max(cs) - min(cs) + 1)
+    return -area
+
+
+def pairwise_closeness(pieces):
+    # Negative total Chebyshev distance; tighter is better
+    n = len(pieces)
+    if n <= 1:
+        return 0.0
+    total = 0
+    for i in range(n):
+        r1, c1 = pieces[i]
+        for j in range(i + 1, n):
+            r2, c2 = pieces[j]
+            total -= max(abs(r1 - r2), abs(c1 - c2))
+    return total
+
+
+def evaluate(board):
+    # From current player's perspective (=1)
+    my_connected = is_connected(board, 1)
+    opp_connected = is_connected(board, -1)
+    if my_connected and opp_connected:
+        # In LOA if both connected after your move, mover wins because game ends immediately.
+        # But in static eval, make current side favorable.
+        return 1000000
+    if my_connected:
+        return 1000000
+    if opp_connected:
+        return -1000000
+
+    my_p = pieces_of(board, 1)
+    op_p = pieces_of(board, -1)
+
+    my_comp, my_largest = count_components(board, 1)
+    op_comp, op_largest = count_components(board, -1)
+
+    my_mob = len(generate_legal_moves(board))
+    op_mob = len(generate_legal_moves(swap_perspective(board)))
+
+    score = 0.0
+    score += 1200 * (op_comp - my_comp)
+    score += 180 * (my_largest - op_largest)
+    score += 25 * (len(my_p) - len(op_p))
+    score += 10 * (my_mob - op_mob)
+    score += 8 * (centrality_score(my_p) - centrality_score(op_p))
+    score += 6 * (spread_score(my_p) - spread_score(op_p))
+    score += 1.5 * (pairwise_closeness(my_p) - pairwise_closeness(op_p))
+    return score
+
+
+def immediate_winning_moves(board, moves):
+    wins = []
+    for m in moves:
+        nb = apply_move(board, m)
+        if is_connected(nb, 1):
+            wins.append(m)
+    return wins
+
+
+def move_order_key(board, move):
+    fr, fc, tr, tc = move
+    capture = 1 if board[tr][tc] == -1 else 0
+    nb = apply_move(board, move)
+    my_comp, my_largest = count_components(nb, 1)
+    center_gain = -(abs(tr - 3.5) + abs(tc - 3.5))
+    return (
+        capture,
+        -my_comp,
+        my_largest,
+        center_gain,
+    )
+
+
+def alphabeta(board, depth, alpha, beta, end_time):
+    if time.perf_counter() >= end_time:
+        raise TimeoutError
+
+    if depth == 0:
+        return evaluate(board), None
+
+    moves = generate_legal_moves(board)
+    if not moves:
+        return evaluate(board), None
+
+    wins = immediate_winning_moves(board, moves)
+    if wins:
+        return 999999, wins[0]
+
+    # Order moves
+    moves.sort(key=lambda m: move_order_key(board, m), reverse=True)
+
+    best_move = moves[0]
+    best_val = -INF
+
+    for m in moves:
+        if time.perf_counter() >= end_time:
+            raise TimeoutError
+        child = swap_perspective(apply_move(board, m))
+        val, _ = alphabeta(child, depth - 1, -beta, -alpha, end_time)
+        val = -val
+        if val > best_val:
+            best_val = val
+            best_move = m
+        if best_val > alpha:
+            alpha = best_val
+        if alpha >= beta:
+            break
+    return best_val, best_move
+
+
+def choose_safe_move(board, moves):
+    # Prefer immediate wins; otherwise avoid giving opponent immediate win.
+    wins = immediate_winning_moves(board, moves)
+    if wins:
+        wins.sort(key=lambda m: move_order_key(board, m), reverse=True)
+        return wins[0]
+
+    safe = []
+    for m in moves:
+        nb = swap_perspective(apply_move(board, m))
+        opp_moves = generate_legal_moves(nb)
+        opp_wins = immediate_winning_moves(nb, opp_moves)
+        if not opp_wins:
+            safe.append(m)
+
+    pool = safe if safe else moves
+    pool.sort(key=lambda m: move_order_key(board, m), reverse=True)
+    return pool[0]
+
+
+def policy(board) -> str:
+    try:
+        legal = generate_legal_moves(board)
+        if legal:
+            fallback = legal[0]
+        else:
+            # Should not normally happen, but ensure valid string format.
+            return "0,0:0,0"
+
+        # Quick tactical choice first
+        best = choose_safe_move(board, legal)
+
+        start = time.perf_counter()
+        end_time = start + 0.92
+
+        # Iterative deepening
+        depth = 1
+        current_best = best
+        while True:
+            try:
+                val, mv = alphabeta(board, depth, -INF, INF, end_time)
+                if mv is not None:
+                    current_best = mv
+                depth += 1
+                if depth > 4:
+                    break
+            except TimeoutError:
+                break
+
+        return move_to_str(current_best)
+    except Exception:
+        # Absolute safety fallback: return first legal move if possible
+        try:
+            legal = generate_legal_moves(board)
+            if legal:
+                return move_to_str(legal[0])
+        except Exception:
+            pass
+        return "0,0:0,0"

@@ -1,0 +1,89 @@
+
+import random
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    SIZE = 19
+    occupied = set(me) | set(opponent)
+    me_set = set(me)
+    opp_set = set(opponent)
+
+    def get_neighbors(r, c):
+        neighbors = []
+        if r > 1: neighbors.append((r - 1, c))
+        if r < SIZE: neighbors.append((r + 1, c))
+        if c > 1: neighbors.append((r, c - 1))
+        if c < SIZE: neighbors.append((r, c + 1))
+        return neighbors
+
+    def get_liberties(coords, stones_dict):
+        # stones_dict: set of coordinates belonging to the same player
+        group = set()
+        stack = [coords]
+        liberties = set()
+        visited = set()
+        
+        while stack:
+            curr = stack.pop()
+            if curr in visited: continue
+            visited.add(curr)
+            group.add(curr)
+            for n in get_neighbors(*curr):
+                if n not in occupied:
+                    liberties.add(n)
+                elif n in stones_dict and n not in visited:
+                    stack.append(n)
+        return group, liberties
+
+    # 1. Capture/Defend Logic (Simple Atari Check)
+    all_groups = []
+    # Check for opponent groups in atari
+    checked_opp = set()
+    for stone in opp_set:
+        if stone not in checked_opp:
+            group, libs = get_liberties(stone, opp_set)
+            checked_opp.update(group)
+            if len(libs) == 1:
+                move = list(libs)[0]
+                return move
+
+    # Check for our groups in atari
+    checked_me = set()
+    for stone in me_set:
+        if stone not in checked_me:
+            group, libs = get_liberties(stone, me_set)
+            checked_me.update(group)
+            if len(libs) == 1:
+                move = list(libs)[0]
+                if move not in occupied: return move
+
+    # 2. Strategic Opening (Star Points)
+    star_points = [(4, 4), (4, 16), (16, 4), (16, 16), (4, 10), (10, 4), (10, 16), (16, 10), (10, 10)]
+    for pt in star_points:
+        if pt not in occupied:
+            return pt
+
+    # 3. Proximity play (Build near own stones)
+    for stone in me:
+        for n in get_neighbors(*stone):
+            if n not in occupied:
+                # Basic legality check (not suicide)
+                _, libs = get_liberties(n, me_set | {n})
+                if libs:
+                    return n
+
+    # 4. Fallback: Search for any legal empty spot
+    possible_moves = [(r, c) for r in range(1, SIZE + 1) for c in range(1, SIZE + 1) if (r, c) not in occupied]
+    random.shuffle(possible_moves)
+    for move in possible_moves:
+        # Check if move is suicide
+        _, libs = get_liberties(move, me_set | {move})
+        if libs:
+            return move
+        # Check if it captures something (legal even if 0 personal liberties)
+        for n in get_neighbors(*move):
+            if n in opp_set:
+                _, opp_libs = get_liberties(n, opp_set)
+                if len(opp_libs) == 1 and move in opp_libs:
+                    return move
+
+    return (0, 0)

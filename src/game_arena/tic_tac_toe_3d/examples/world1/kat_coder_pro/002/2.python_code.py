@@ -1,0 +1,121 @@
+
+import numpy as np
+from collections import defaultdict
+import random
+
+def policy(board):
+    # Convert to numpy array for easier manipulation
+    board_np = np.array(board)
+    
+    # Find all empty cells
+    empty_cells = []
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board_np[i, j, k] == 0:
+                    empty_cells.append((i, j, k))
+    
+    if not empty_cells:
+        # If no empty cells, return a random position (shouldn't happen in valid games)
+        return (0, 0, 0)
+    
+    # Define all possible winning lines (27 lines total)
+    winning_lines = []
+    
+    # 9 lines in x-direction (fixed y, z)
+    for y in range(3):
+        for z in range(3):
+            winning_lines.append([(x, y, z) for x in range(3)])
+    
+    # 9 lines in y-direction (fixed x, z)
+    for x in range(3):
+        for z in range(3):
+            winning_lines.append([(x, y, z) for y in range(3)])
+    
+    # 9 lines in z-direction (fixed x, y)
+    for x in range(3):
+        for y in range(3):
+            winning_lines.append([(x, y, z) for z in range(3)])
+    
+    # 4 main diagonals
+    winning_lines.append([(0, 0, 0), (1, 1, 1), (2, 2, 2)])
+    winning_lines.append([(2, 0, 0), (1, 1, 1), (0, 2, 2)])
+    winning_lines.append([(0, 2, 0), (1, 1, 1), (2, 0, 2)])
+    winning_lines.append([(0, 0, 2), (1, 1, 1), (2, 2, 0)])
+    
+    # 6 face diagonals
+    for z in range(3):
+        winning_lines.append([(0, 0, z), (1, 1, z), (2, 2, z)])
+        winning_lines.append([(2, 0, z), (1, 1, z), (0, 2, z)])
+    
+    for y in range(3):
+        winning_lines.append([(0, y, 0), (1, y, 1), (2, y, 2)])
+        winning_lines.append([(2, y, 0), (1, y, 1), (0, y, 2)])
+    
+    for x in range(3):
+        winning_lines.append([(x, 0, 0), (x, 1, 1), (x, 2, 2)])
+        winning_lines.append([(x, 2, 0), (x, 1, 1), (x, 0, 2)])
+    
+    # Helper to evaluate a line
+    def evaluate_line(line):
+        values = [board_np[pos] for pos in line]
+        my_count = values.count(1)
+        opp_count = values.count(-1)
+        empty_count = values.count(0)
+        
+        if opp_count == 0:
+            # No opponent pieces in this line
+            if my_count == 2 and empty_count == 1:
+                return 1000  # Win next move
+            elif my_count == 1:
+                return 10   # Good line to continue
+            else:
+                return 1    # Empty line
+        elif my_count == 0:
+            # No my pieces in this line
+            if opp_count == 2 and empty_count == 1:
+                return 500  # Block opponent win
+            elif opp_count == 1:
+                return 5    # Line to watch
+            else:
+                return 0    # Empty line
+        else:
+            return 0  # Mixed line, not useful
+    
+    # Helper to get empty cells in a line
+    def get_empty_in_line(line):
+        return [pos for pos in line if board_np[pos] == 0]
+    
+    # Prioritize moves
+    best_score = -1
+    best_moves = []
+    
+    for move in empty_cells:
+        score = 0
+        
+        # Check all lines that include this move
+        for line in winning_lines:
+            if move in line:
+                line_score = evaluate_line(line)
+                score += line_score
+        
+        if score > best_score:
+            best_score = score
+            best_moves = [move]
+        elif score == best_score:
+            best_moves.append(move)
+    
+    # If multiple moves have same score, prefer center
+    if len(best_moves) > 1:
+        center_moves = [m for m in best_moves if m == (1, 1, 1)]
+        if center_moves:
+            return center_moves[0]
+        
+        # Prefer center of faces
+        face_centers = [(1, 1, 0), (1, 1, 2), (1, 0, 1), (1, 2, 1), (0, 1, 1), (2, 1, 1)]
+        center_face_moves = [m for m in best_moves if m in face_centers]
+        if center_face_moves:
+            return random.choice(center_face_moves)
+    
+    return random.choice(best_moves)
+

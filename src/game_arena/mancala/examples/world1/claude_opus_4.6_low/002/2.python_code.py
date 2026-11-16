@@ -1,0 +1,85 @@
+
+def policy(you, opponent):
+    def simulate(you, opp, move):
+        y = you[:]
+        o = opp[:]
+        seeds = y[move]
+        y[move] = 0
+        pos = move + 1
+        board = y[:6] + [y[6]] + o[:6]  # 0-5: your houses, 6: your store, 7-12: opp houses
+        while seeds:
+            if pos == 13:
+                pos = 0
+            board[pos] += 1
+            seeds -= 1
+            pos += 1
+        last = pos - 1
+        new_you = board[:6] + [board[6]]
+        new_opp = o[:6] + [o[6]]
+        for i in range(6):
+            new_opp[i] = board[7 + i]
+        extra = (last == 6)
+        if 0 <= last <= 5 and board[last] == 1 and new_opp[5 - last] > 0:
+            new_you[6] += new_you[last] + new_opp[5 - last]
+            new_you[last] = 0
+            new_opp[5 - last] = 0
+        return new_you, new_opp, extra
+
+    def game_over(y, o):
+        return all(x == 0 for x in y[:6]) or all(x == 0 for x in o[:6])
+
+    def finalize(y, o):
+        y = y[:]
+        o = o[:]
+        y[6] += sum(y[:6])
+        o[6] += sum(o[:6])
+        return y[6] - o[6]
+
+    def minimax(y, o, depth, alpha, beta, maximizing):
+        if game_over(y, o):
+            return finalize(y, o), -1
+        if depth == 0:
+            return y[6] - o[6], -1
+        if maximizing:
+            best = -999
+            best_move = -1
+            for m in range(6):
+                if y[m] == 0:
+                    continue
+                ny, no, extra = simulate(y, o, m)
+                if extra:
+                    val, _ = minimax(ny, no, depth - 1, alpha, beta, True)
+                else:
+                    val, _ = minimax(no, ny, depth - 1, alpha, beta, False)
+                if val > best:
+                    best = val
+                    best_move = m
+                alpha = max(alpha, best)
+                if alpha >= beta:
+                    break
+            return best, best_move
+        else:
+            best = 999
+            best_move = -1
+            for m in range(6):
+                if y[m] == 0:
+                    continue
+                ny, no, extra = simulate(y, o, m)
+                if extra:
+                    val, _ = minimax(ny, no, depth - 1, alpha, beta, False)
+                else:
+                    val, _ = minimax(no, ny, depth - 1, alpha, beta, True)
+                if val < best:
+                    best = val
+                    best_move = m
+                beta = min(beta, best)
+                if alpha >= beta:
+                    break
+            return best, best_move
+
+    _, move = minimax(you, opponent, 10, -999, 999, True)
+    if move == -1 or you[move] == 0:
+        for i in range(6):
+            if you[i] > 0:
+                return i
+    return move

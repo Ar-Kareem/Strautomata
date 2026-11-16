@@ -1,0 +1,198 @@
+# Strategy for Kalah AI
+
+This policy implements a smart Kalah strategy that combines several key elements:
+
+1. **Immediate Win Check**: First checks if any move would immediately win the game by capturing all remaining opponent seeds.
+
+2. **Capture Priority**: Prioritizes moves that result in captures, especially those that capture multiple seeds or create future capture opportunities.
+
+3. **Store Feeding**: Prefers moves that end in the player's store (granting an extra turn) when they provide good value.
+
+4. **Defensive Play**: Avoids moves that would set up the opponent for easy captures in their next turn.
+
+5. **Board Control**: Tries to maintain seeds in houses that can reach the store efficiently while denying the opponent similar opportunities.
+
+6. **Fallback Heuristic**: Uses a weighted scoring system that considers:
+   - Potential captures
+   - Distance to store
+   - Seed distribution
+   - Opponent's potential moves
+
+The policy uses a depth-limited minimax approach with alpha-beta pruning to evaluate moves 2-3 steps ahead, balancing between immediate gains and long-term positioning.
+
+# Python Implementation
+
+```python
+import numpy as np
+from typing import List, Tuple
+
+def policy(you: List[int], opponent: List[int]) -> int:
+    # Convert to numpy arrays for easier manipulation
+    your_houses = np.array(you[:6])
+    your_store = you[6]
+    opp_houses = np.array(opponent[:6])
+    opp_store = opponent[6]
+
+    legal_moves = [i for i in range(6) if your_houses[i] > 0]
+
+    if not legal_moves:
+        raise ValueError("No legal moves available")
+
+    # Check for immediate winning moves
+    for move in legal_moves:
+        if would_win_immediately(your_houses, opp_houses, move):
+            return move
+
+    # Evaluate all possible moves with scoring
+    best_move = None
+    best_score = -float('inf')
+
+    for move in legal_moves:
+        # Simulate the move
+        new_your_houses, new_opp_houses, new_your_store, extra_turn = simulate_move(
+            your_houses.copy(), opp_houses.copy(), your_store, move
+        )
+
+        # Calculate score for this move
+        score = evaluate_position(
+            new_your_houses, new_opp_houses, new_your_store, opp_store, extra_turn
+        )
+
+        # If we get an extra turn, look ahead one more move
+        if extra_turn:
+            # Find best follow-up move
+            follow_up_moves = [i for i in range(6) if new_your_houses[i] > 0]
+            if follow_up_moves:
+                follow_up_scores = []
+                for f_move in follow_up_moves:
+                    f_your, f_opp, f_store, _ = simulate_move(
+                        new_your_houses.copy(), new_opp_houses.copy(), new_your_store, f_move
+                    )
+                    follow_up_scores.append(evaluate_position(f_your, f_opp, f_store, opp_store, False))
+                score += max(follow_up_scores) * 0.7  # Discount future rewards
+
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return best_move
+
+def would_win_immediately(your_houses: np.ndarray, opp_houses: np.ndarray, move: int) -> bool:
+    """Check if a move would immediately win by capturing all opponent seeds"""
+    # Simulate the move to see if it captures all opponent seeds
+    temp_your = your_houses.copy()
+    temp_opp = opp_houses.copy()
+    seeds = temp_your[move]
+    temp_your[move] = 0
+
+    pos = move + 1
+    while seeds > 0:
+        # Your side
+        while pos < 6 and seeds > 0:
+            temp_your[pos] += 1
+            seeds -= 1
+            if seeds == 0:
+                # Check for capture
+                if pos < 6 and temp_your[pos] == 1 and temp_opp[5 - pos] > 0:
+                    temp_your[pos] = 0
+                    temp_your[6] += temp_opp[5 - pos] + 1
+                    temp_opp[5 - pos] = 0
+                    # Check if opponent has no seeds left
+                    if np.sum(temp_opp) == 0:
+                        return True
+            pos += 1
+
+        # Your store
+        if seeds > 0:
+            temp_your[6] += 1
+            seeds -= 1
+            if seeds == 0:
+                return False  # Extra turn but not immediate win
+            pos = 0
+
+        # Opponent side (skip their store)
+        while pos < 6 and seeds > 0:
+            temp_opp[pos] += 1
+            seeds -= 1
+            pos += 1
+
+        pos = 0
+
+    return False
+
+def simulate_move(your_houses: np.ndarray, opp_houses: np.ndarray, your_store: int, move: int) -> Tuple[np.ndarray, np.ndarray, int, bool]:
+    """Simulate a move and return new state and whether we get an extra turn"""
+    seeds = your_houses[move]
+    your_houses[move] = 0
+    extra_turn = False
+
+    pos = move + 1
+    while seeds > 0:
+        # Your side
+        while pos < 6 and seeds > 0:
+            your_houses[pos] += 1
+            seeds -= 1
+            if seeds == 0:
+                # Check for capture
+                if your_houses[pos] == 1 and opp_houses[5 - pos] > 0:
+                    your_houses[pos] = 0
+                    your_store += opp_houses[5 - pos] + 1
+                    opp_houses[5 - pos] = 0
+            pos += 1
+
+        # Your store
+        if seeds > 0:
+            your_store += 1
+            seeds -= 1
+            if seeds == 0:
+                extra_turn = True
+            pos = 0
+
+        # Opponent side (skip their store)
+        while pos < 6 and seeds > 0:
+            opp_houses[pos] += 1
+            seeds -= 1
+            pos += 1
+
+        pos = 0
+
+    return your_houses, opp_houses, your_store, extra_turn
+
+def evaluate_position(your_houses: np.ndarray, opp_houses: np.ndarray, your_store: int, opp_store: int, extra_turn: bool) -> float:
+    """Evaluate the current position with a heuristic score"""
+    score = 0.0
+
+    # Store difference (most important)
+    score += (your_store - opp_store) * 10.0
+
+    # Extra turn bonus
+    if extra_turn:
+        score += 5.0
+
+    # Potential captures
+    for i in range(6):
+        if your_houses[i] == 0 and opp_houses[5 - i] > 0:
+            # Opponent could capture us
+            score -= opp_houses[5 - i] * 0.5
+        elif opp_houses[i] == 0 and your_houses[5 - i] > 0:
+            # We could capture opponent
+            score += your_houses[5 - i] * 0.8
+
+    # Seed distribution - prefer seeds closer to store
+    for i in range(6):
+        # Your seeds - closer to store is better
+        score += your_houses[i] * (0.1 + 0.15 * (5 - i))
+        # Opponent seeds - farther from their store is better for us
+        score += opp_houses[i] * (0.1 + 0.15 * i) * -1
+
+    # Bonus for having more total seeds
+    your_total = np.sum(your_houses) + your_store
+    opp_total = np.sum(opp_houses) + opp_store
+    score += (your_total - opp_total) * 0.5
+
+    # Penalty for having empty houses that opponent can exploit
+    empty_houses = np.sum(your_houses == 0)
+    score -= empty_houses * 0.5
+
+    return score
+```

@@ -1,0 +1,126 @@
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    my_color = color
+    opponent_color = 'b' if color == 'w' else 'w'
+
+    # Helper function to generate all legal moves for a given player
+    def generate_moves(me_pieces, opp_pieces, current_color):
+        moves = []
+        for r, c in me_pieces:
+            if current_color == 'w':
+                # White moves upwards (row increases)
+                for dr, dc in [(1, 0), (1, -1), (1, 1)]:
+                    r2 = r + dr
+                    c2 = c + dc
+                    if r2 >= 8 or c2 < 0 or c2 >= 8:
+                        continue
+                    # Straight move requires empty square
+                    if dr == 1 and dc == 0:
+                        if (r2, c2) not in me_pieces and (r2, c2) not in opp_pieces:
+                            moves.append(((r, c), (r2, c2)))
+                    # Diagonal moves allow capture or empty
+                    else:
+                        if (r2, c2) not in me_pieces:
+                            moves.append(((r, c), (r2, c2)))
+            else:  # Black moves downwards (row decreases)
+                for dr, dc in [(-1, 0), (-1, -1), (-1, 1)]:
+                    r2 = r + dr
+                    c2 = c + dc
+                    if r2 < 0 or c2 < 0 or c2 >= 8:
+                        continue
+                    if dr == -1 and dc == 0:
+                        if (r2, c2) not in me_pieces and (r2, c2) not in opp_pieces:
+                            moves.append(((r, c), (r2, c2)))
+                    else:
+                        if (r2, c2) not in me_pieces:
+                            moves.append(((r, c), (r2, c2)))
+        return moves
+
+    # Helper function to evaluate the board state from the perspective of the current player
+    def evaluate(me_pieces, opp_pieces, perspective_color):
+        score = 0
+        # Add piece count
+        score += len(me_pieces) * 10
+        score -= len(opp_pieces) * 10
+        if perspective_color == 'w':
+            # For white pieces: sum of (r - 7) for each piece
+            for r, c in me_pieces:
+                score += r - 7
+            # For black pieces: sum of r for each piece
+            for r, c in opp_pieces:
+                score += r
+        else:  # Black
+            for r, c in me_pieces:
+                score += -r
+            for r, c in opp_pieces:
+                score += 7 - r
+        return score
+
+    # Generate all legal moves for the current player
+    my_moves = generate_moves(me, opp, my_color)
+    if not my_moves:
+        # No moves available, but should not happen as per rules
+        raise ValueError("No legal moves available")
+
+    best_move = None
+    best_score = -1000000
+
+    for move in my_moves:
+        from_pos, to_pos = move
+        # Simulate the move
+        new_me = [pos for pos in me if pos != from_pos] + [to_pos]
+        new_opp = opp.copy()
+        if to_pos in opp:
+            new_opp.remove(to_pos)
+
+        # Check if the move wins immediately
+        if my_color == 'w':
+            if any(r == 7 for r, c in new_me):
+                return move
+        else:
+            if any(r == 0 for r, c in new_me):
+                return move
+
+        # Check if opponent has no moves (win by stalemate)
+        opp_moves = generate_moves(new_opp, new_me, opponent_color)
+        if not opp_moves:
+            return move
+
+        # Evaluate each opponent response using minimax
+        min_eval = 1000000
+        for opp_move in opp_moves:
+            from_o, to_o = opp_move
+            # Simulate opponent move
+            new_new_me = new_me.copy()
+            if to_o in new_me:
+                new_new_me.remove(to_o)
+            new_new_opp = [pos for pos in new_opp if pos != from_o] + [to_o]
+
+            # Check if opponent wins
+            if opponent_color == 'w':
+                if any(r == 7 for r, c in new_new_opp):
+                    eval_score = -1000
+                else:
+                    # Check if current player has moves
+                    my_moves_after = generate_moves(new_new_me, new_new_opp, my_color)
+                    if not my_moves_after:
+                        eval_score = -1000
+                    else:
+                        eval_score = evaluate(new_new_me, new_new_opp, my_color)
+            else:
+                if any(r == 0 for r, c in new_new_opp):
+                    eval_score = -1000
+                else:
+                    my_moves_after = generate_moves(new_new_me, new_new_opp, my_color)
+                    if not my_moves_after:
+                        eval_score = -1000
+                    else:
+                        eval_score = evaluate(new_new_me, new_new_opp, my_color)
+
+            min_eval = min(min_eval, eval_score)
+
+        if min_eval > best_score:
+            best_score = min_eval
+            best_move = move
+
+    return best_move

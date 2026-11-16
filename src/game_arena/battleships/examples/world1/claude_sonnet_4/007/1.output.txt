@@ -1,0 +1,283 @@
+<thinking>
+I need to design a Battleship targeting policy that efficiently finds and sinks ships on a 10x10 grid. Let me think through the strategy:
+
+1. **Initial Search Phase**: When I have no hits, I should use a systematic search pattern to maximize the chance of finding ships. A checkerboard pattern with spacing 2 is common since the smallest ship is length 2.
+
+2. **Hunt Mode**: Once I get a hit, I need to explore adjacent cells to find the direction of the ship.
+
+3. **Target Mode**: Once I know the direction of a ship, I should continue firing along that line until I sink it.
+
+4. **Ship Tracking**: I need to keep track of which ships I've sunk to know what I'm still looking for.
+
+Key considerations:
+- Ships are lengths 5, 4, 3, 3, 2
+- Ships don't overlap and are in straight lines
+- I need to avoid shooting at cells I've already targeted (0 means unshot)
+- When I get a hit, I should systematically check all 4 directions
+- When I find the orientation, I should shoot along that line until I hit water or sink the ship
+
+Strategy:
+1. Start with a systematic search pattern (every other cell in a checkerboard)
+2. When I get a hit, switch to hunt mode - check all 4 adjacent cells
+3. When I get 2+ hits in a line, switch to target mode - continue along that line
+4. After sinking a ship, return to search mode
+5. Use probability-based targeting for remaining cells if needed
+
+Let me implement this:
+
+```python
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Find all unknown cells (value 0)
+    unknown = [(r, c) for r in range(10) for c in range(10) if board[r][c] == 0]
+    
+    # Find all hit cells (value 1) 
+    hits = [(r, c) for r in range(10) for c in range(10) if board[r][c] == 1]
+    
+    # If we have hits, try to extend them
+    if hits:
+        # Look for adjacent unknown cells to hits
+        for r, c in hits:
+            for dr, dc in [(0,1), (0,-1), (1,0), (-1,0)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                    return (nr, nc)
+    
+    # No immediate targets, use systematic search
+    # Try checkerboard pattern first
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0 and (r + c) % 2 == 0:
+                return (r, c)
+    
+    # Fall back to any unknown cell
+    return unknown[0]
+```
+
+Wait, this is too simple. I need a more sophisticated approach. Let me think about this more carefully:
+
+1. I should prioritize extending existing hit sequences
+2. I should look for ship orientations more intelligently  
+3. I should use a better search pattern initially
+
+Let me improve this:
+
+```python
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Find hits that aren't part of sunk ships
+    unsunk_hits = []
+    hits = [(r, c) for r in range(10) for c in range(10) if board[r][c] == 1]
+    
+    # Try to find ship orientations and extend them
+    for r, c in hits:
+        # Check if this hit is part of a line that can be extended
+        for dr, dc in [(0,1), (0,-1), (1,0), (-1,0)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                # This hit has an adjacent unknown cell
+                unsunk_hits.append((r, c))
+                break
+    
+    # Priority 1: Extend known ship orientations
+    ship_lines = find_ship_lines(board)
+    for line in ship_lines:
+        extensions = get_line_extensions(line, board)
+        if extensions:
+            return extensions[0]
+    
+    # Priority 2: Hunt around isolated hits
+    for r, c in unsunk_hits:
+        for dr, dc in [(0,1), (0,-1), (1,0), (-1,0)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                return (nr, nc)
+    
+    # Priority 3: Systematic search
+    unknown = [(r, c) for r in range(10) for c in range(10) if board[r][c] == 0]
+    
+    # Use checkerboard pattern with density 2 (since smallest ship is length 2)
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0 and (r + c) % 2 == 0:
+                return (r, c)
+    
+    # Fill in remaining cells
+    return unknown[0] if unknown else (0, 0)
+
+def find_ship_lines(board):
+    # Find sequences of hits that form lines
+    lines = []
+    visited = set()
+    
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1 and (r, c) not in visited:
+                # Try to extend in each direction
+                for dr, dc in [(0,1), (1,0)]:  # Right and down only to avoid duplicates
+                    line = [(r, c)]
+                    nr, nc = r + dr, c + dc
+                    while 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 1:
+                        line.append((nr, nc))
+                        nr, nc = nr + dr, nc + dc
+                    
+                    if len(line) > 1:
+                        lines.append(line)
+                        visited.update(line)
+                        break
+                else:
+                    visited.add((r, c))
+    
+    return lines
+
+def get_line_extensions(line, board):
+    # Get possible extensions for a line of hits
+    extensions = []
+    if len(line) < 2:
+        return extensions
+    
+    # Determine direction
+    r1, c1 = line[0]
+    r2, c2 = line[1] 
+    dr, dc = r2 - r1, c2 - c1
+    
+    # Check both ends
+    start_r, start_c = line[0][0] - dr, line[0][1] - dc
+    end_r, end_c = line[-1][0] + dr, line[-1][1] + dc
+    
+    for nr, nc in [(start_r, start_c), (end_r, end_c)]:
+        if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+            extensions.append((nr, nc))
+    
+    return extensions
+```
+
+Actually, this is getting overly complex. Let me simplify but keep the key strategic elements:
+</thinking>
+
+<code>
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Find all unknown cells
+    unknown = [(r, c) for r in range(10) for c in range(10) if board[r][c] == 0]
+    
+    if not unknown:
+        return (0, 0)  # Should not happen in normal gameplay
+    
+    # Find all hit cells that might be part of unsunk ships
+    hits = [(r, c) for r in range(10) for c in range(10) if board[r][c] == 1]
+    
+    # Priority 1: Extend existing ship lines
+    ship_lines = find_ship_lines(board)
+    for line in ship_lines:
+        extensions = get_line_extensions(line, board)
+        if extensions:
+            return extensions[0]
+    
+    # Priority 2: Hunt around isolated hits
+    for r, c in hits:
+        # Check if this hit has unknown neighbors (indicating unsunk ship)
+        has_unknown_neighbor = False
+        for dr, dc in [(0,1), (0,-1), (1,0), (-1,0)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                has_unknown_neighbor = True
+                break
+        
+        if has_unknown_neighbor:
+            # Target adjacent unknown cells
+            for dr, dc in [(0,1), (0,-1), (1,0), (-1,0)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                    return (nr, nc)
+    
+    # Priority 3: Systematic search using checkerboard pattern
+    # This ensures we hit any ship of length 2 or more
+    for spacing in [2, 1]:  # Try spacing 2 first, then fill in
+        for offset in range(spacing):
+            for r in range(10):
+                for c in range(10):
+                    if board[r][c] == 0 and (r + c) % spacing == offset:
+                        return (r, c)
+    
+    # Fallback - should not reach here
+    return unknown[0]
+
+
+def find_ship_lines(board):
+    """Find sequences of 2 or more consecutive hits"""
+    lines = []
+    visited = set()
+    
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1 and (r, c) not in visited:
+                # Check horizontal line
+                line = [(r, c)]
+                for dc in [1, -1]:
+                    nc = c + dc
+                    while 0 <= nc < 10 and board[r][nc] == 1:
+                        if dc == 1:
+                            line.append((r, nc))
+                        else:
+                            line.insert(0, (r, nc))
+                        nc += dc
+                
+                if len(line) > 1:
+                    lines.append(line)
+                    visited.update(line)
+                    continue
+                
+                # Check vertical line
+                line = [(r, c)]
+                for dr in [1, -1]:
+                    nr = r + dr
+                    while 0 <= nr < 10 and board[nr][c] == 1:
+                        if dr == 1:
+                            line.append((nr, c))
+                        else:
+                            line.insert(0, (nr, c))
+                        nr += dr
+                
+                if len(line) > 1:
+                    lines.append(line)
+                    visited.update(line)
+                else:
+                    visited.add((r, c))
+    
+    return lines
+
+
+def get_line_extensions(line, board):
+    """Get valid extensions for a line of hits"""
+    if len(line) < 2:
+        return []
+    
+    extensions = []
+    
+    # Determine if line is horizontal or vertical
+    if line[0][0] == line[1][0]:  # Horizontal
+        r = line[0][0]
+        min_c = min(pos[1] for pos in line)
+        max_c = max(pos[1] for pos in line)
+        
+        # Check left extension
+        if min_c > 0 and board[r][min_c - 1] == 0:
+            extensions.append((r, min_c - 1))
+        
+        # Check right extension  
+        if max_c < 9 and board[r][max_c + 1] == 0:
+            extensions.append((r, max_c + 1))
+            
+    else:  # Vertical
+        c = line[0][1]
+        min_r = min(pos[0] for pos in line)
+        max_r = max(pos[0] for pos in line)
+        
+        # Check up extension
+        if min_r > 0 and board[min_r - 1][c] == 0:
+            extensions.append((min_r - 1, c))
+        
+        # Check down extension
+        if max_r < 9 and board[max_r + 1][c] == 0:
+            extensions.append((max_r + 1, c))
+    
+    return extensions
+</code>

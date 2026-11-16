@@ -1,0 +1,162 @@
+To solve the problem, we need to create a policy function that will decide the best column to drop a disc in a Connect 4 game. The goal is to maximize the chance of winning while minimizing the chance of losing. This involves checking for immediate wins, blocking the opponent's winning moves, and using a heuristic to evaluate the board state.
+
+### Approach
+1. **Immediate Win Check**: First, check if there is any column where dropping a discresults in an immediate win for the AI.
+2. **Block Opponent's Win**: If no immediate win is found, check if the opponent can win in their next turn by making a move. If so, block that move.
+3. **Heuristic Evaluation**: If no immediate threats are found, evaluate the board state using a heuristic that considers potential future moves and the control of central columns.
+
+### Solution Code
+```python
+def policy(board: list[list[int]]) -> int:
+    def has_win(p):
+        # Check horizontal
+        for r in range(6):
+            for c in range(4):
+                if board[r][c] == p and board[r][c+1] == p and board[r][c+2] == p and board[r][c+3] == p:
+                    return True
+        # Check vertical
+        for c in range(7):
+            for r in range(3):
+                if board[r][c] == p and board[r+1][c] == p and board[r+2][c] == p and board[r+3][c] == p:
+                    return True
+        # Check diagonal down-right
+        for r in range(3):
+            for c in range(4):
+                if board[r][c] == p and board[r+1][c+1] == p and board[r+2][c+2] == p and board[r+3][c+3] == p:
+                    return True
+        # Check diagonal down-left
+        for r in range(3):
+            for c in range(3,7):
+                if board[r][c] == p and board[r+1][c-1] == p and board[r+2][c-2] == p and board[r+3][c-3] == p:
+                    return True
+        return False
+
+    available = [c for c in range(7) if board[5][c] == 0]
+    if not available:
+        return -1  # This case should not occur as per problem statement
+
+    # Check for immediate win
+    for c in available:
+        new_b = [row.copy() for row in board]
+        row = 5
+        while row >= 0 and new_b[row][c] != 0:
+            row -= 1
+        if row >= 0:
+            new_col = row
+            new_b[row][c] = 1
+            if has_win(new_b, 1):
+                return c
+
+    # Check for blocking opponent's immediate win
+    blocking_col = None
+    for c in available:
+        new_b = [row.copy() for row in board]
+        row = 5
+        while row >= 0 and new_b[row][c] != 0:
+            row -= 1
+        if row < 0:
+            continue
+        new_b[row][c] = 1
+        # Check if opponent can win in their next move
+        op_available = [co for co in range(7) if new_b[5][co] == 0]
+        for oc in op_available:
+            op_b = [row.copy() for row in new_b]
+            row_o = 5
+            while row_o >= 0 and op_b[row_o][oc] != 0:
+                row_o -= 1
+            if row_o >= 0:
+                op_b[row_o][oc] = -1
+                if has_win(op_b, -1):
+                    blocking_col = c
+                    break
+        if blocking_col is not None:
+            break
+
+    if blocking_col is not None:
+        return blocking_col
+
+    # Heuristic evaluation based on potential threats and center control
+    def evaluate(b):
+        score = 0
+        # Check horizontal lines
+        for r in range(6):
+            for c in range(4):
+                a, m, e = (0,0,0)
+                for i in range(4):
+                    val = b[r][c+i]
+                    if val == 1:
+                        a += 1
+                    elif val == -1:
+                        m += 1
+                score += (10 if a == 3 else 5 if a == 2 else 0) * 10
+                score -= (10 if m == 3 else 5 if m == 2 else 0) * 10
+
+        # Check vertical lines
+        for c in range(7):
+            for r in range(3):
+                a, m, e = (0,0,0)
+                for i in range(4):
+                    val = b[r+i][c]
+                    if val == 1:
+                        a += 1
+                    elif val == -1:
+                        m += 1
+                score += (10 if a == 3 else 5 if a == 2 else 0) * 10
+                score -= (10 if m == 3 else 5 if m == 2 else 0) * 10
+
+        # Check diagonal down-right
+        for r in range(3):
+            for c in range(4):
+                a, m, e = (0,0,0)
+                for i in range(4):
+                    val = b[r+i][c+i]
+                    if val == 1:
+                        a += 1
+                    elif val == -1:
+                        m += 1
+                score += (10 if a == 3 else 5 if a == 2 else 0) * 10
+                score -= (10 if m == 3 else 5 if m == 2 else 0) * 10
+
+        # Check diagonal down-left
+        for r in range(3):
+            for c in range(3,7):
+                a, m, e = (0,0,0)
+                for i in range(4):
+                    val = b[r+i][c-i]
+                    if val == 1:
+                        a += 1
+                    elif val == -1:
+                        m += 1
+                score += (10 if a == 3 else 5 if a == 2 else 0) * 10
+                score -= (10 if m == 3 else 5 if m == 2 else 0) * 10
+
+        # Center column bonus
+        ai_center = sum(b[r][c] == 1 for r in range(6) for c in [2,3,4])
+        opp_center = sum(b[r][c] == -1 for r in range(6) for c in [2,3,4])
+        score += ai_center * 100 - opp_center * 100
+
+        return score
+
+    best_col = available[0]
+    best_score = -float('inf')
+    for c in available:
+        new_b = [row.copy() for row in board]
+        row = 5
+        while row >= 0 and new_b[row][c] != 0:
+            row -= 1
+        if row >= 0:
+            new_b[row][c] = 1
+            score = evaluate(new_b)
+            if score > best_score:
+                best_score = score
+                best_col = c
+
+    return best_col
+```
+
+### Explanation
+1. **Immediate Win Check**: The AI checks each available column to see if placing a disc there results in a win.
+2. **Blocking Moves**: If no immediate win is found, the AI checks if any move allows the opponent to win next turn and blocks it.
+3. **Heuristic Evaluation**: If no immediate threats are found, the AI evaluates each move using a heuristic that counts potential winning lines and centers the bonus on controlling the central columns, which are strategically important in Connect 4.
+
+This approach ensures that the AI can both block and create opportunities while considering potential future moves, making it a robust and efficient policy for a Connect 4 game.

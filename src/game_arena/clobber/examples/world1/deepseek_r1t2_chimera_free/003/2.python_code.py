@@ -1,0 +1,71 @@
+
+import numpy as np
+
+def policy(you: list[list[int]], opponent: list[list[int]]) -> str:
+    def get_legal_moves(y, o):
+        moves = []
+        for r in range(5):
+            for c in range(6):
+                if y[r][c] == 1:
+                    if r > 0 and o[r-1][c] == 1:
+                        moves.append((r, c, 'U'))
+                    if r < 4 and o[r+1][c] == 1:
+                        moves.append((r, c, 'D'))
+                    if c > 0 and o[r][c-1] == 1:
+                        moves.append((r, c, 'L'))
+                    if c < 5 and o[r][c+1] == 1:
+                        moves.append((r, c, 'R'))
+        return moves
+
+    def apply_move(y, o, move):
+        r, c, d = move
+        new_y = [row.copy() for row in y]
+        new_o = [row.copy() for row in o]
+        new_y[r][c] = 0
+        if d == 'U':
+            new_y[r-1][c] = 1
+            new_o[r-1][c] = 0
+        elif d == 'D':
+            new_y[r+1][c] = 1
+            new_o[r+1][c] = 0
+        elif d == 'L':
+            new_y[r][c-1] = 1
+            new_o[r][c-1] = 0
+        elif d == 'R':
+            new_y[r][c+1] = 1
+            new_o[r][c+1] = 0
+        return new_y, new_o
+
+    def count_mobility(y_arr, o_arr):
+        count = 0
+        for r in range(5):
+            for c in range(6):
+                if y_arr[r][c] == 1:
+                    if r > 0 and o_arr[r-1][c] == 1:
+                        count += 1
+                    if r < 4 and o_arr[r+1][c] == 1:
+                        count += 1
+                    if c > 0 and o_arr[r][c-1] == 1:
+                        count += 1
+                    if c < 5 and o_arr[r][c+1] == 1:
+                        count += 1
+        return count
+
+    legal_moves = get_legal_moves(you, opponent)
+    if not legal_moves:
+        return '0,0,U'  # Fallback (shouldn't occur as per problem constraints)
+
+    best_score = (-float('inf'), -float('inf'))
+    best_move = legal_moves[0]
+    
+    for move in legal_moves:
+        new_you, new_opp = apply_move(you, opponent, move)
+        opp_mob = count_mobility(new_opp, new_you)
+        my_mob = count_mobility(new_you, new_opp)
+        score = (-opp_mob, my_mob)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    r, c, d = best_move
+    return f"{r},{c},{d}"

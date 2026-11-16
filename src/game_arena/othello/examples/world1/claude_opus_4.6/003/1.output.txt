@@ -1,0 +1,220 @@
+## Strategy
+
+My strategy implements a minimax search with alpha-beta pruning and iterative deepening to find the best move within the time constraint. The evaluation function combines several heuristic components:
+
+1. **Corner control**: Corners are extremely valuable as they can never be flipped. Heavy weight on corners.
+2. **Edge stability**: Pieces on edges adjacent to owned corners are stable.
+3. **Mobility**: Having more legal moves than the opponent is advantageous, especially in the midgame.
+4. **Disc difference**: Weighted more heavily in the endgame.
+5. **Positional weights**: A static position value table that penalizes X-squares and C-squares (adjacent to corners) and rewards corners and edges.
+6. **Frontier discs**: Discs adjacent to empty squares are vulnerable; fewer frontier discs is better.
+
+The search uses iterative deepening to progressively search deeper, with move ordering based on previous iterations to improve alpha-beta pruning efficiency. Near the endgame (few empty squares), it searches to completion for perfect play.
+
+<code>
+import numpy as np
+import time
+
+DIRECTIONS = [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)]
+
+POSITION_WEIGHTS = np.array([
+    [100, -20,  10,   5,   5,  10, -20, 100],
+    [-20, -50,  -2,  -2,  -2,  -2, -50, -20],
+    [ 10,  -2,   1,   1,   1,   1,  -2,  10],
+    [  5,  -2,   1,   0,   0,   1,  -2,   5],
+    [  5,  -2,   1,   0,   0,   1,  -2,   5],
+    [ 10,  -2,   1,   1,   1,   1,  -2,  10],
+    [-20, -50,  -2,  -2,  -2,  -2, -50, -20],
+    [100, -20,  10,   5,   5,  10, -20, 100],
+])
+
+def get_legal_moves(me, opp):
+    moves = []
+    for r in range(8):
+        for c in range(8):
+            if me[r][c] or opp[r][c]:
+                continue
+            if _is_legal(me, opp, r, c):
+                moves.append((r, c))
+    return moves
+
+def _is_legal(me, opp, r, c):
+    for dr, dc in DIRECTIONS:
+        nr, nc = r + dr, c + dc
+        found = False
+        while 0 <= nr < 8 and 0 <= nc < 8 and opp[nr][nc]:
+            nr += dr
+            nc += dc
+            found = True
+        if found and 0 <= nr < 8 and 0 <= nc < 8 and me[nr][nc]:
+            return True
+    return False
+
+def make_move(me, opp, r, c):
+    new_me = me.copy()
+    new_opp = opp.copy()
+    new_me[r][c] = 1
+    for dr, dc in DIRECTIONS:
+        nr, nc = r + dr, c + dc
+        to_flip = []
+        while 0 <= nr < 8 and 0 <= nc < 8 and opp[nr][nc]:
+            to_flip.append((nr, nc))
+            nr += dr
+            nc += dc
+        if to_flip and 0 <= nr < 8 and 0 <= nc < 8 and me[nr][nc]:
+            for fr, fc in to_flip:
+                new_me[fr][fc] = 1
+                new_opp[fr][fc] = 0
+    return new_me, new_opp
+
+def evaluate(me, opp):
+    my_count = int(np.sum(me))
+    opp_count = int(np.sum(opp))
+    empty = 64 - my_count - opp_count
+    
+    # Disc difference
+    if my_count + opp_count > 0:
+        disc_diff = 100.0 * (my_count - opp_count) / (my_count + opp_count)
+    else:
+        disc_diff = 0
+    
+    # Positional
+    pos_score = float(np.sum(me * POSITION_WEIGHTS) - np.sum(opp * POSITION_WEIGHTS))
+    
+    # Mobility
+    my_moves = len(get_legal_moves(me, opp))
+    opp_moves = len(get_legal_moves(opp, me))
+    if my_moves + opp_moves > 0:
+        mob_score = 100.0 * (my_moves - opp_moves) / (my_moves + opp_moves)
+    else:
+        mob_score = 0
+    
+    # Corner occupancy
+    corners = [(0,0),(0,7),(7,0),(7,7)]
+    my_corners = sum(me[r][c] for r,c in corners)
+    opp_corners = sum(opp[r][c] for r,c in corners)
+    corner_score = 25.0 * (my_corners - opp_corners)
+    
+    # Frontier discs
+    my_frontier = 0
+    opp_frontier = 0
+    for r in range(8):
+        for c in range(8):
+            if me[r][c] or opp[r][c]:
+                for dr, dc in DIRECTIONS:
+                    nr, nc = r+dr, c+dc
+                    if 0<=nr<8 and 0<=nc<8 and not me[nr][nc] and not opp[nr][nc]:
+                        if me[r][c]:
+                            my_frontier += 1
+                        else:
+                            opp_frontier += 1
+                        break
+    if my_frontier + opp_frontier > 0:
+        frontier_score = -100.0 * (my_frontier - opp_frontier) / (my_frontier + opp_frontier)
+    else:
+        frontier_score = 0
+    
+    # Weight adjustments based on game phase
+    if empty > 40:  # early
+        return pos_score * 1.5 + mob_score * 2.0 + corner_score * 5.0 + frontier_score * 1.5 + disc_diff * 0.5
+    elif empty > 12:  # mid
+        return pos_score * 1.0 + mob_score * 1.5 + corner_score * 5.0 + frontier_score * 1.0 + disc_diff * 1.0
+    else:  # late
+        return pos_score * 0.5 + mob_score * 0.5 + corner_score * 3.0 + frontier_score * 0.5 + disc_diff * 3.0
+
+def alphabeta(me, opp, depth, alpha, beta, maximizing, deadline):
+    if time.time() > deadline:
+        raise TimeoutError
+    
+    if depth == 0:
+        return evaluate(me, opp), None
+    
+    if maximizing:
+        moves = get_legal_moves(me, opp)
+        if not moves:
+            opp_moves = get_legal_moves(opp, me)
+            if not opp_moves:
+                # Game over
+                diff = int(np.sum(me)) - int(np.sum(opp))
+                if diff > 0:
+                    return 10000 + diff, None
+                elif diff < 0:
+                    return -10000 + diff, None
+                else:
+                    return 0, None
+            val, _ = alphabeta(me, opp, depth - 1, alpha, beta, False, deadline)
+            return val, None
+        
+        # Move ordering: corners first, then by position weight
+        moves.sort(key=lambda m: -POSITION_WEIGHTS[m[0]][m[1]])
+        
+        best_val = -float('inf')
+        best_move = moves[0]
+        for r, c in moves:
+            new_me, new_opp = make_move(me, opp, r, c)
+            val, _ = alphabeta(new_me, new_opp, depth - 1, alpha, beta, False, deadline)
+            if val > best_val:
+                best_val = val
+                best_move = (r, c)
+            alpha = max(alpha, val)
+            if alpha >= beta:
+                break
+        return best_val, best_move
+    else:
+        moves = get_legal_moves(opp, me)
+        if not moves:
+            my_moves = get_legal_moves(me, opp)
+            if not my_moves:
+                diff = int(np.sum(me)) - int(np.sum(opp))
+                if diff > 0:
+                    return 10000 + diff, None
+                elif diff < 0:
+                    return -10000 + diff, None
+                else:
+                    return 0, None
+            val, _ = alphabeta(me, opp, depth - 1, alpha, beta, True, deadline)
+            return val, None
+        
+        moves.sort(key=lambda m: POSITION_WEIGHTS[m[0]][m[1]])
+        
+        best_val = float('inf')
+        best_move = moves[0]
+        for r, c in moves:
+            new_opp, new_me = make_move(opp, me, r, c)
+            val, _ = alphabeta(new_me, new_opp, depth - 1, alpha, beta, True, deadline)
+            if val < best_val:
+                best_val = val
+                best_move = (r, c)
+            beta = min(beta, val)
+            if alpha >= beta:
+                break
+        return best_val, best_move
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    moves = get_legal_moves(you, opponent)
+    if not moves:
+        return "pass"
+    
+    deadline = time.time() + 0.85
+    empty = 64 - int(np.sum(you)) - int(np.sum(opponent))
+    
+    best_move = moves[0]
+    
+    # If endgame with few empties, search deep
+    max_possible_depth = min(empty, 20)
+    
+    try:
+        for depth in range(1, max_possible_depth + 1):
+            if time.time() > deadline - 0.05:
+                break
+            val, move = alphabeta(you, opponent, depth, -float('inf'), float('inf'), True, deadline - 0.03)
+            if move is not None:
+                best_move = move
+    except TimeoutError:
+        pass
+    
+    r, c = best_move
+    col_letter = chr(ord('a') + c)
+    row_number = str(r + 1)
+    return col_letter + row_number
+</code>

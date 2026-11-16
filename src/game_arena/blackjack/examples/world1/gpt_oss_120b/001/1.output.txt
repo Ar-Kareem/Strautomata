@@ -1,0 +1,121 @@
+<thinking>
+The policy must decide whether to HIT or STAY given the current hand and the target score T.  
+The deck consists of one copy of each rank, so we can compute the exact probability of busting on the next draw by looking at the cards that remain.
+
+Key steps:
+1. **Card values** – map each rank to its numeric value, treating “A” specially.
+2. **Hand total** – compute the best total for the hand under the target (count Aces as 11, downgrade them to 1 while the total is above T).  
+   If after downgrading all Aces the total is still > T, the hand is bust.
+3. **Bust probability** – for every card not yet in the hand, simulate drawing it, recompute the hand total and check if it busts. The proportion of busting draws is the bust probability.
+4. **Decision rule** –  
+   * If we already hit the target → STAY.  
+   * If there are no cards left → STAY.  
+   * If the bust probability is very low (≤ 0.2) → HIT (safe draw).  
+   * Otherwise hit when we are far enough from the target and the chance of busting is modest (bust < 0.35 and current total ≤ T‑2).  
+   * In all other cases → STAY.
+
+The thresholds (0.2 and 0.35) are simple heuristics that work well for the limited 13‑card deck and targets in the range 10‑30.  
+The implementation is straightforward, uses only the Python standard library, runs in O(13) per call, and fits comfortably within the 1‑second limit.
+
+Now the complete Python source follows.
+</thinking>
+
+<code>
+# policy.py
+from typing import List
+
+# Fixed order of ranks in the deck
+RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+# Base values for non‑Ace cards
+BASE_VALUES = {
+    "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7,
+    "8": 8, "9": 9, "10": 10,
+    "J": 10, "Q": 10, "K": 10
+}
+
+def best_hand_total(hand: List[str], target: int) -> int:
+    """
+    Returns the highest possible hand total that does not exceed `target`.
+    If every possible total exceeds `target`, returns the minimal total (i.e., bust).
+    """
+    total = 0
+    ace_count = 0
+    for card in hand:
+        if card == "A":
+            ace_count += 1
+            total += 11
+        else:
+            total += BASE_VALUES[card]
+
+    # Downgrade Aces from 11 to 1 while we are over the target
+    while total > target and ace_count > 0:
+        total -= 10   # 11 -> 1
+        ace_count -= 1
+    return total
+
+def is_bust(hand: List[str], target: int) -> bool:
+    """True if the hand is inevitably over the target after optimal Ace handling."""
+    return best_hand_total(hand, target) > target
+
+def bust_probability(hand: List[str], target: int) -> float:
+    """
+    Computes the probability that drawing one more card from the remaining deck
+    will cause a bust.
+    """
+    remaining = [r for r in RANKS if r not in hand]
+    if not remaining:
+        return 1.0  # No cards left → can't draw, treat as certain bust for safety
+
+    busts = 0
+    for card in remaining:
+        new_hand = hand + [card]
+        if is_bust(new_hand, target):
+            busts += 1
+    return busts / len(remaining)
+
+def policy(hand: List[str], target: int) -> str:
+    """
+    Decide whether to HIT (draw another card) or STAY (stop drawing).
+
+    Parameters
+    ----------
+    hand : list[str]
+        Current cards in our hand.
+    target : int
+        The target score we want to approach without exceeding.
+
+    Returns
+    -------
+    str
+        Either "HIT" or "STAY".
+    """
+    # Current best total
+    current_total = best_hand_total(hand, target)
+
+    # If we have already hit the target exactly, stay.
+    if current_total == target:
+        return "STAY"
+
+    # If we have no cards left to draw, we must stay.
+    if len(hand) == len(RANKS):
+        return "STAY"
+
+    # Compute bust probability for the next draw
+    p_bust = bust_probability(hand, target)
+
+    # Heuristic thresholds
+    SAFE_BUST_THRESHOLD = 0.20   # almost sure safe draw
+    MODERATE_BUST_THRESHOLD = 0.35
+    DISTANCE_FROM_TARGET = 2    # how far we are willing to be from target before staying
+
+    # Very safe to hit
+    if p_bust <= SAFE_BUST_THRESHOLD:
+        return "HIT"
+
+    # If we are still considerably below the target and the bust risk is moderate, hit
+    if p_bust < MODERATE_BUST_THRESHOLD and current_total <= target - DISTANCE_FROM_TARGET:
+        return "HIT"
+
+    # Otherwise stay
+    return "STAY"
+</code>

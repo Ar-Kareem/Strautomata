@@ -1,0 +1,92 @@
+The strategy for this policy is based on the optimal play for **Misere Nim** (where the player who takes the last object loses).
+
+The game is analyzed based on the number of "large" piles (piles with more than 1 object):
+
+1.  **Normal Play (2 or more large piles):**
+    If there are two or more piles with size > 1, the strategy follows the standard **Nim-sum** (XOR sum) logic.
+    - If the current Nim-sum is non-zero, we find a move that results in a standard Nim-sum of 0. This is always a winning move in this phase because it is impossible to transition immediately to a state with zero large piles (endgame) from a state with two or more large piles.
+    - If the Nim-sum is already zero, the position is losing against a perfect opponent. We play a heuristic move (removing 1 from the largest pile) to prolong the game and hope for an opponent mistake.
+
+2.  **Transition to Endgame (Exactly 1 large pile):**
+    If there is exactly one pile with size > 1, the next move will inevitably leave only piles of size 0 or 1.
+    - In Misere Nim, an endgame position (all 0s and 1s) is losing for the player to move if there is an **odd** number of 1s, and winning if there is an **even** number.
+    - Therefore, when reducing the last large pile, we choose to leave either 0 or 1 object in that pile such that the total count of piles with size 1 becomes **odd** for the opponent (forcing them to lose).
+    - If the count of *other* piles (size 1) is even, we reduce the large pile to 1 (making total 1s odd).
+    - If the count of *other* piles is odd, we reduce the large pile to 0 (leaving total 1s odd).
+
+3.  **Endgame (0 large piles):**
+    If all piles are 0 or 1, we simply take 1 from any available pile. This toggles the parity of the pile count, which is the only available move type.
+
+<code>
+import functools
+import operator
+
+def policy(piles: list[int]) -> str:
+    """
+    Determines the optimal move for Misere Nim (4 piles).
+    Returns a string 'pile_index,take_amount'.
+    """
+    # 1. Calculate the Nim-sum (XOR sum) of the piles
+    nim_sum = functools.reduce(operator.xor, piles, 0)
+    
+    # 2. Identify "large" piles (indices of piles with > 1 object)
+    large_piles_indices = [i for i, x in enumerate(piles) if x > 1]
+    count_large = len(large_piles_indices)
+    
+    # 3. Strategy Logic for Misere Play
+    
+    if count_large == 0:
+        # ENDGAME: All piles are size 0 or 1.
+        # We must simply take from a pile of size 1.
+        # (Optimal play is automatic here: if we have a winning state [even 1s],
+        # taking 1 leaves odd 1s for opponent).
+        for i, p in enumerate(piles):
+            if p == 1:
+                return f"{i},1"
+    
+    elif count_large == 1:
+        # TRANSITION: Exactly one pile > 1.
+        # We control the parity of 1s entering the endgame.
+        # We want to leave an ODD number of 1s for the opponent to face.
+        idx = large_piles_indices[0]
+        
+        # Count existing 1s (excluding the large pile)
+        num_ones = sum(1 for p in piles if p == 1)
+        
+        if num_ones % 2 == 0:
+            # If even ones exist, we add 1 more '1' (reduce large pile to 1) 
+            # to make the total count Odd.
+            target_size = 1
+        else:
+            # If odd ones exist, we add 0 '1's (reduce large pile to 0) 
+            # to keep the total count Odd.
+            target_size = 0
+            
+        take = piles[idx] - target_size
+        return f"{idx},{take}"
+        
+    else:
+        # NORMAL PLAY: 2 or more large piles.
+        # Use Standard Nim strategy (target Nim-sum 0).
+        if nim_sum != 0:
+            # Winning position: make a move that results in nim_sum 0.
+            for i, p in enumerate(piles):
+                target = p ^ nim_sum
+                if target < p:
+                    # We found the pile to reduce
+                    take = p - target
+                    return f"{i},{take}"
+        else:
+            # Losing position (nim_sum is 0).
+            # Make a move to complicate the game (take 1 from largest pile).
+            max_p = -1
+            best_i = 0
+            for i, p in enumerate(piles):
+                if p > max_p:
+                    max_p = p
+                    best_i = i
+            return f"{best_i},1"
+
+    # Fallback (should not occur with valid positive piles)
+    return "0,1"
+</code>

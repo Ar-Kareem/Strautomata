@@ -1,0 +1,173 @@
+```python
+import numpy as np
+
+# Global cache to store the policy for a given target T
+# Keys: target (int), Values: policy_dict {mask (int): "HIT" or "STAY"}
+POLICY_CACHE = {}
+
+# Card attributes
+RANK_TO_INDEX = {
+    "A": 0, "2": 1, "3": 2, "4": 3, "5": 4, "6": 5, "7": 6, "8": 7, "9": 8,
+    "10": 9, "J": 10, "Q": 11, "K": 12
+}
+# Base values (A=1)
+BASE_VALUES = np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 10, 10], dtype=np.int32)
+
+# Precompute bit counts and children relationships to speed up DP
+# This runs once on module load
+MASKS_BY_LAYER = [[] for _ in range(14)]
+CHILDREN_MASKS = [[] for _ in range(1 << 13)]
+SCORE_BASES = np.zeros(1 << 13, dtype=np.int32)
+HAS_ACE = np.zeros(1 << 13, dtype=bool)
+
+for m in range(1 << 13):
+    bc = bin(m).count('1')
+    MASKS_BY_LAYER[bc].append(m)
+    
+    # Calculate base score and Ace presence
+    val = 0
+    ace = False
+    for i in range(13):
+        if (m >> i) & 1:
+            val += BASE_VALUES[i]
+            if i == 0: ace = True
+    SCORE_BASES[m] = val
+    HAS_ACE[m] = ace
+    
+    # Identify children (adding one card)
+    # Only need this for layers < 13
+    if bc < 13:
+        for i in range(13):
+            if not ((m >> i) & 1):
+                CHILDREN_MASKS[m].append(m | (1 << i))
+
+# Flatten the order for DP: layer 12 down to 0
+DP_ORDER = []
+for k in range(12, -1, -1):
+    DP_ORDER.extend(MASKS_BY_LAYER[k])
+
+def get_score(mask, target):
+    """
+    Returns the integer score of the hand.
+    If score > target, returns target + 1 (representing Bust).
+    """
+    s = SCORE_BASES[mask]
+    if HAS_ACE[mask] and s + 10 <= target:
+        s += 10
+    if s > target:
+        return target + 1
+    return s
+
+def solve_for_target(target):
+    # Constants
+    BUST_IDX = target + 1
+    # State space size
+    NUM_STATES = 1 << 13
+    
+    # Arrays to store Value and Distribution for each state
+    # dists[m, s] is prob of finishing with score s given state m
+    vals = np.zeros(NUM_STATES, dtype=np.float32)
+    dists = np.zeros((NUM_STATES, BUST_IDX + 1), dtype=np.float32)
+    
+    # Initialize Opponent Distribution
+    # Start with a guess: Uniform over valid scores [1, T] + some Bust prob
+    opp_dist = np.full(BUST_IDX + 1, 1.0 / (BUST_IDX + 1), dtype=np.float32)
+    
+    # Policy map to return
+    policy_map = {}
+    
+    # Iterative Best Response with Damping
+    # 6 iterations is usually enough for 1s limit and convergence
+    loops = 6
+    alpha = 0.5
+    
+    for _ in range(loops):
+        # Pre-calculate opponent-dependent utility terms
+        # Expectation of payoff given final my_score s
+        # Payoff = +1 if My > Opp or OppBust
+        #          -1 if My < Opp (unless I bust)
+        
+        final_utils = np.zeros(BUST_IDX + 1, dtype=np.float32)
+        
+        prob_opp_bust = opp_dist[BUST_IDX]
+        
+        for s in range(BUST_IDX): # 0 to T
+            # Prob Opponent ends with score < s (valid)
+            p_lower = np.sum(opp_dist[:s])
+            # Prob Opponent ends with score > s (valid)
+            p_higher = np.sum(opp_dist[s+1:BUST_IDX])
+            
+            # Payoff formula
+            final_utils[s] = 1.0 * prob_opp_bust + 1.0 * p_lower - 1.0 * p_higher
+
+        # Utility of Busting (s > T)
+        # 0 * P(Opp Bust) + (-1) * P(Opp Valid)
+        p_opp_valid = np.sum(opp_dist[:BUST_IDX])
+        util_bust = -1.0 * p_opp_valid
+        final_utils[BUST_IDX] = util_bust
+        
+        # Bottom-up DP (starting from nearly full hands backwards)
+        for m in DP_ORDER:
+            # 1. Evaluate STAY
+            s = get_score(m, target)
+            u_stay = final_utils[s]
+            
+            # Distribution if STAY: one-hot at s
+            d_stay = np.zeros(BUST_IDX + 1, dtype=np.float32)
+            d_stay[s] = 1.0
+            
+            # 2. Evaluate HIT
+            # Can hit if not busted and children exist
+            children = CHILDREN_MASKS[m]
+            
+            best_action = "STAY"
+            best_val = u_stay
+            best_dist = d_stay
+            
+            if s != BUST_IDX and children:
+                # Average value of children
+                c_indices = children
+                
+                v_hits = vals[c_indices]
+                ev_hit = np.mean(v_hits)
+                
+                # Check if hitting gives better EV
+                if ev_hit > u_stay + 1e-7: 
+                    best_action = "HIT"
+                    best_val = ev_hit
+                    # Average distribution of children
+                    d_hits = dists[c_indices]
+                    best_dist = np.sum(d_hits, axis=0) * (1.0 / len(c_indices))
+
+            vals[m] = best_val
+            dists[m] = best_dist
+            policy_map[m] = best_action
+
+        # Update opponent distribution for next iteration
+        # Assume opponent plays symmetrically
+        root_dist = dists[0] # Mask 0 is empty hand
+        opp_dist = alpha * root_dist + (1.0 - alpha) * opp_dist
+
+    return policy_map
+
+def policy(hand: list[str], target: int) -> str:
+    # Check if we have computed the policy for this target
+    if target not in POLICY_CACHE:
+        POLICY_CACHE[target] = solve_for_target(target)
+    
+    # Parse hand to bitmask
+    mask = 0
+    for card in hand:
+        idx = RANK_TO_INDEX[card]
+        if (mask >> idx) & 1:
+            pass # Should only happen if input violates distinctness
+        mask |= (1 << idx)
+    
+    # If we are already busted (score > T), return STAY (terminal)
+    s = get_score(mask, target)
+    if s > target:
+        return "STAY"
+        
+    # Retrieve optimal action
+    return POLICY_CACHE[target].get(mask, "STAY")
+```

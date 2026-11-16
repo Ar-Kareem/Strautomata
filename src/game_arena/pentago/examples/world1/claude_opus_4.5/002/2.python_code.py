@@ -1,0 +1,108 @@
+
+import numpy as np
+
+def policy(you, opponent) -> str:
+    you = np.array(you, dtype=np.int8)
+    opponent = np.array(opponent, dtype=np.int8)
+    
+    def get_empty_cells(y, o):
+        empty = []
+        for r in range(6):
+            for c in range(6):
+                if y[r][c] == 0 and o[r][c] == 0:
+                    empty.append((r, c))
+        return empty
+    
+    def rotate_quad(board, quad, direction):
+        b = board.copy()
+        r0 = 0 if quad < 2 else 3
+        c0 = 0 if quad % 2 == 0 else 3
+        sub = b[r0:r0+3, c0:c0+3].copy()
+        if direction == 'L':
+            sub = np.rot90(sub, 1)
+        else:
+            sub = np.rot90(sub, -1)
+        b[r0:r0+3, c0:c0+3] = sub
+        return b
+    
+    def check_win(board):
+        for r in range(6):
+            for c in range(2):
+                if np.all(board[r, c:c+5] == 1):
+                    return True
+        for c in range(6):
+            for r in range(2):
+                if np.all(board[r:r+5, c] == 1):
+                    return True
+        for r in range(2):
+            for c in range(2):
+                if all(board[r+i, c+i] == 1 for i in range(5)):
+                    return True
+                if all(board[r+i, c+4-i] == 1 for i in range(5)):
+                    return True
+        return False
+    
+    def evaluate(y, o):
+        score = 0
+        lines = []
+        for r in range(6):
+            for c in range(2):
+                lines.append([(r, c+i) for i in range(5)])
+        for c in range(6):
+            for r in range(2):
+                lines.append([(r+i, c) for i in range(5)])
+        for r in range(2):
+            for c in range(2):
+                lines.append([(r+i, c+i) for i in range(5)])
+                lines.append([(r+i, c+4-i) for i in range(5)])
+        
+        for line in lines:
+            yc = sum(y[r][c] for r, c in line)
+            oc = sum(o[r][c] for r, c in line)
+            if oc == 0 and yc > 0:
+                score += [0, 1, 10, 100, 1000, 10000][yc]
+            if yc == 0 and oc > 0:
+                score -= [0, 1, 10, 100, 1000, 10000][oc]
+        return score
+    
+    def apply_move(y, o, r, c, quad, d):
+        ny = y.copy()
+        no = o.copy()
+        ny[r][c] = 1
+        ny = rotate_quad(ny, quad, d)
+        no = rotate_quad(no, quad, d)
+        return ny, no
+    
+    empty = get_empty_cells(you, opponent)
+    rotations = [(q, d) for q in range(4) for d in ['L', 'R']]
+    
+    best_move = None
+    best_score = float('-inf')
+    
+    for (r, c) in empty:
+        for (quad, d) in rotations:
+            ny, no = apply_move(you, opponent, r, c, quad, d)
+            
+            we_win = check_win(ny)
+            they_win = check_win(no)
+            
+            if we_win and not they_win:
+                return f"{r+1},{c+1},{quad},{d}"
+            
+            if we_win and they_win:
+                score = 5000
+            elif they_win:
+                score = -100000
+            else:
+                score = evaluate(ny, no)
+            
+            if score > best_score:
+                best_score = score
+                best_move = (r, c, quad, d)
+    
+    if best_move is None:
+        r, c = empty[0]
+        best_move = (r, c, 0, 'L')
+    
+    r, c, quad, d = best_move
+    return f"{r+1},{c+1},{quad},{d}"

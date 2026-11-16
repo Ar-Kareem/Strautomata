@@ -1,0 +1,484 @@
+The game of Pentago requires balancing immediate threats, creating winning opportunities, and controlling the board state. The complexity of the game (perfect information, zero-sum, finite) suggests using a game tree search. Given the 1-second time limit and the branching factor (roughly 36 empty cells * 4 quadrants * 2 directions = ~288), we can perform a limited depth search.
+
+We will implement a Minimax algorithm with Alpha-Beta pruning. To stay within the time limit and avoid deep recursion overhead, we will use an iterative deepening approach (IDDFS) or a fixed-depth search limited by time.
+
+**Strategy:**
+1.  **Representation**: Map the 6x6 board to a compact integer representation (e.g., two 36-bit bitboards) to allow efficient move generation and evaluation. Map (row, col) to 0..35.
+2.  **Move Generation**: Iterate through all empty cells, quadrants 0-3, and directions L/R. Apply the move virtually.
+3.  **Evaluation**: Use a heuristic function:
+    *   Win/Loss/Draw detection is paramount.
+    *   Weights for 2-in-a-row, 3-in-a-row, 4-in-a-row (threats).
+    *   Square bonuses (center control).
+    *   We must account for the rotation phase. A 3-in-a-row that can rotate to a 5-in-a-row is a winning threat.
+4.  **Search**:
+    *   Perform a depth-limited search (depth 2 or 3).
+    *   At depth 0 (leaf node), evaluate the state heuristically.
+    *   At odd depths, check for immediate wins (forced moves).
+5.  **Time Management**: The loop checks elapsed time frequently to abort the search if approaching the 1-second limit, returning the best move found so far.
+
+**Heuristics details**:
+*   Winning move: Score = `INF`.
+*   Blocking opponent win: High score.
+*   Center squares (14, 15, 20, 21) have higher value.
+*   4-in-a-row (threat): High value.
+
+**Rotation**:
+When placing a piece, we must also decide where to rotate. A rotation can move a friendly piece into a winning position or block an opponent. The search tree must include the rotation choice.
+
+```python
+import sys
+import time
+
+# Constants for bitboard representation
+EMPTY = 0
+YOU = 1
+OPP = 2
+
+# Board dimensions
+ROWS, COLS = 6, 6
+SIZE = ROWS * COLS
+
+# Time limit buffer
+TIME_LIMIT = 0.90 
+START_TIME = 0.0
+
+# Precomputed indices for bitboards
+# Map (r, c) to bit index 0..35
+def rc_to_bit(r, c):
+    return r * 6 + c
+
+# Precompute lines (lists of bit indices) for win checks
+# Rows, Cols, Diagonals
+LINES = []
+# Rows
+for r in range(6):
+    for c in range(2): # Start positions for length 5
+        LINES.append([r*6+c+i for i in range(5)])
+# Cols
+for c in range(6):
+    for r in range(2):
+        LINES.append([(r+i)*6+c for i in range(5)])
+# Diagonals (\)
+for r in range(2):
+    for c in range(2):
+        LINES.append([(r+i)*6 + c + i for i in range(5)])
+# Diagonals (/)
+for r in range(4): # 2,3,4,5
+    for c in range(2):
+        LINES.append([(r-i)*6 + c + i for i in range(5)])
+
+# Precompute Quadrant info
+# Quad 0: rows 0-2, cols 0-2 (Indices 0-8, 6-14, 12-20 -> 0..8, 9..17, 18..26)
+# Actually easier to map quad 0->0..8, quad 1->9..17, quad 2->18..26, quad 3->27..35
+QUAD_BITS = [
+    [0,1,2,6,7,8,12,13,14],          # Quad 0 (0-2, 0-2) -> Wait, mapping is row-major.
+    [3,4,5,9,10,11,15,16,17],        # Quad 1 (0-2, 3-5)
+    [18,19,20,24,25,26,30,31,32],    # Quad 2 (3-5, 0-2)
+    [21,22,23,27,28,29,33,34,35]     # Quad 3 (3-5, 3-5)
+]
+
+# Let's use a simpler coordinate mapping for rotation.
+# 0..35 mapping: r*6 + c.
+# Quad 0 (r=0..2, c=0..2) -> indices 0,1,2,6,7,8,12,13,14. (Correct)
+# Quad 1 (r=0..2, c=3..5) -> indices 3,4,5,9,10,11,15,16,17. (Correct)
+# Quad 2 (r=3..5, c=0..2) -> indices 18,19,20,24,25,26,30,31,32. (Correct)
+# Quad 3 (r=3..5, c=3..5) -> indices 21,22,23,27,28,29,33,34,35. (Correct)
+
+# Quad rotation mappings (Flat indices within the quadrant)
+# 0 1 2    6 3 0    8 7 6
+# 3 4 5 -> 7 4 1 -> 5 4 3
+# 6 7 8    8 5 2    2 1 0 (L) ... no, let's stick to standard rotation logic.
+# Standard rotation of 3x3 matrix:
+# Clockwise: (i, j) -> (j, 2-i)
+# Anti-clockwise: (i, j) -> (2-j, i)
+# Map local (i, j) 0..2 to bit index.
+
+QUAD_LOCAL_COORDS = [(0,0),(0,1),(0,2),
+                     (1,0),(1,1),(1,2),
+                     (2,0),(2,1),(2,2)]
+
+# Map local index (0-8) to global bit index for each quad
+QUAD_TO_GLOBAL = []
+for q in range(4):
+    base_r = (q // 2) * 3
+    base_c = (q % 2) * 3
+    q_indices = []
+    for lr, lc in QUAD_LOCAL_COORDS:
+        q_indices.append( (base_r+lr)*6 + (base_c+lc) )
+    QUAD_TO_GLOBAL.append(q_indices)
+
+# Precompute rotation transforms
+# R: (lr, lc) -> (lc, 2-lr) -> local index
+# L: (lr, lc) -> (2-lc, lr) -> local index
+def get_rot_map(dir_char):
+    mapping = []
+    for idx, (lr, lc) in enumerate(QUAD_LOCAL_COORDS):
+        if dir_char == 'R':
+            nlr, nlc = lc, 2 - lr
+        else: # 'L'
+            nlr, nlc = 2 - lc, lr
+        new_idx = nlr * 3 + nlc
+        mapping.append(new_idx)
+    return mapping
+
+ROT_MAP_R = get_rot_map('R')
+ROT_MAP_L = get_rot_map('L')
+
+# Precompute Square Values (Heuristic center control)
+SQUARE_SCORES = [
+    0, 0, 0, 0, 0, 0,
+    0, 1, 1, 1, 1, 0,
+    0, 1, 2, 2, 1, 0,
+    0, 1, 2, 2, 1, 0,
+    0, 1, 1, 1, 1, 0,
+    0, 0, 0, 0, 0, 0
+]
+
+class PentagoState:
+    def __init__(self, you_bits=0, opp_bits=0, turn=0):
+        self.you = you_bits
+        self.opp = opp_bits
+        self.turn = turn
+
+    def is_empty(self, idx):
+        return not ((self.you >> idx) & 1) and not ((self.opp >> idx) & 1)
+
+    def count_bits(self, x):
+        return bin(x).count('1')
+
+    def has_won(self, bits):
+        if bits == 0: return False
+        # Optimization: Check population count first? No, need geometry.
+        # Check lines
+        for line in LINES:
+            # Check if all 5 bits are set in `bits`
+            # (bits >> i) & 1 for all i in line
+            # Use bit mask
+            mask = 0
+            for i in line:
+                mask |= (1 << i)
+            if (bits & mask) == mask:
+                return True
+        return False
+
+    def evaluate(self):
+        # Returns score (positive for you, negative for opp)
+        # Terminal states
+        you_won = self.has_won(self.you)
+        opp_won = self.has_won(self.opp)
+        
+        if you_won and opp_won: return 0
+        if you_won: return 100000
+        if opp_won: return -100000
+
+        # Heuristics
+        score = 0
+        
+        # 1. Square values
+        # We can iterate bits, but precomputed values are faster if we use bitwise tricks.
+        # For simplicity in Python, simple loop over 36 is fine.
+        y_count = 0
+        o_count = 0
+        for i in range(36):
+            if (self.you >> i) & 1:
+                score += SQUARE_SCORES[i]
+                y_count += 1
+            elif (self.opp >> i) & 1:
+                score -= SQUARE_SCORES[i]
+                o_count += 1
+        
+        # 2. Line threats (Counters: 2, 3, 4)
+        # Precomputing all 64 possible bitmasks for 5-in-a-row is too big (5^10 combos?).
+        # Iterate LINES again
+        for line in LINES:
+            yc = 0
+            oc = 0
+            for i in line:
+                if (self.you >> i) & 1: yc += 1
+                elif (self.opp >> i) & 1: oc += 1
+            
+            if yc > 0 and oc == 0:
+                if yc == 4: score += 1000  # Threat of 5
+                elif yc == 3: score += 100
+                elif yc == 2: score += 10
+            elif oc > 0 and yc == 0:
+                if oc == 4: score -= 1000 # Threat of 5 (blocking need)
+                elif oc == 3: score -= 100
+                elif oc == 2: score -= 10
+        
+        return score
+
+    def apply_move(self, move_idx, quad, dir_char):
+        # Returns new state (PentagoState)
+        # 1. Place stone
+        next_you = self.you
+        next_opp = self.opp
+        
+        # If it's my turn, I place 'you'. Wait, apply_move is generic?
+        # In minimax, we alternate. We need to know who moves.
+        # Let's make apply_move take a player flag.
+        # Actually, let's keep the state class simple and handle logic in search.
+        
+        # Let's create a method that returns a new state given placement by 'player'
+        # But here we just implement the bit manipulation.
+        # We will construct the new state in the search function.
+        pass
+
+# Global helper to apply move for the current player of the state
+def generate_next_state(state, move_idx, quad, dir_char):
+    # Who is moving?
+    # If turn is even (0, 2, 4...), it's YOU. If odd, OPP.
+    is_you_move = (state.turn % 2 == 0)
+    
+    next_you = state.you
+    next_opp = state.opp
+    
+    # Place stone
+    if is_you_move:
+        if not state.is_empty(move_idx): return None # Invalid
+        next_you |= (1 << move_idx)
+    else:
+        if not state.is_empty(move_idx): return None
+        next_opp |= (1 << move_idx)
+        
+    # Rotate
+    if dir_char == 'R':
+        mapping = ROT_MAP_R
+    else:
+        mapping = ROT_MAP_L
+        
+    q_indices = QUAD_TO_GLOBAL[quad]
+    
+    # Extract bits from quadrant for both players
+    you_q_bits = 0
+    opp_q_bits = 0
+    
+    for i, global_idx in enumerate(q_indices):
+        if (next_you >> global_idx) & 1:
+            you_q_bits |= (1 << i)
+        if (next_opp >> global_idx) & 1:
+            opp_q_bits |= (1 << i)
+            
+    # Clear quadrant
+    mask_clear = 0
+    for idx in q_indices:
+        mask_clear |= (1 << idx)
+    next_you &= ~mask_clear
+    next_opp &= ~mask_clear
+    
+    # Place back rotated
+    for i, global_idx in enumerate(q_indices):
+        if (you_q_bits >> mapping[i]) & 1:
+            next_you |= (1 << global_idx)
+        if (opp_q_bits >> mapping[i]) & 1:
+            next_opp |= (1 << global_idx)
+            
+    return PentagoState(next_you, next_opp, state.turn + 1)
+
+# Optimization: Move ordering
+# We want to check moves that might lead to wins or block threats first.
+# Simple heuristic: place near center or existing pieces.
+# But for simplicity, we can just iterate.
+# However, we should prioritize moves that create immediate threats.
+
+def get_ordered_moves(state):
+    # Returns list of (move_idx, quad, dir_char)
+    moves = []
+    is_you = (state.turn % 2 == 0)
+    my_bits = state.you if is_you else state.opp
+    
+    # Iterate all empty cells
+    for r in range(6):
+        for c in range(6):
+            idx = r * 6 + c
+            if state.is_empty(idx):
+                # Heuristic: prefer center
+                # We'll generate all and sort later, or just use a simple priority queue.
+                # Let's generate and sort by "centrality" or "potential".
+                # Since we have limited time, we can just generate and maybe shuffle.
+                # But better: sort by the placement score.
+                score = SQUARE_SCORES[idx]
+                
+                # Check if this placement completes a line (before rotation, but after rotation matters more)
+                # This is hard to do without applying rotation.
+                # Let's stick to standard order, but randomize or sort by center.
+                # We will use a list and sort by index distance to center to encourage branching to interesting areas.
+                
+                for q in range(4):
+                    for d in ['L', 'R']:
+                        moves.append((idx, q, d))
+    
+    # Sort moves to try best ones first (simple sort by centrality)
+    # Center index is 16.5 approx.
+    moves.sort(key=lambda m: abs((m[0]//6)-2.5) + abs((m[0]%6)-2.5))
+    
+    return moves
+
+# Main Search Logic
+def search(state, depth, alpha, beta):
+    # Time check
+    if time.time() - START_TIME > TIME_LIMIT:
+        return None, 0 # Timeout signal
+    
+    # Terminal check
+    # Note: We check terminal state AFTER move application in parent.
+    # So here we check if previous move caused win?
+    # No, minimax usually checks state at start of recursion.
+    # But we apply move to get here.
+    # Actually, in our recursion, we generate child, then call search on child.
+    # If child has won, we return value immediately.
+    
+    # Check win for previous player
+    prev_player_bits = state.you if state.turn % 2 == 1 else state.opp
+    # Wait, if state.turn is 1, it means You moved. So check You win.
+    # If state.turn is 2, Opp moved. Check Opp win.
+    
+    # We need to check if the state itself is terminal.
+    # But we evaluate the state *before* making a move in Minimax (usually).
+    # Let's do:
+    # 1. Generate move
+    # 2. Apply -> NewState
+    # 3. If NewState is terminal, return score
+    # 4. Else recurse
+    
+    # To support this in `search`, `search` should receive the state *after* the move?
+    # Let's define `search` to evaluate the value of `state` for the player who just moved (state.turn-1).
+    # OR, easier: Minimax standard.
+    # `search` takes `state` (whose turn is `state.turn`).
+    # Base case: if depth == 0 or state is terminal.
+    
+    # Check terminal conditions
+    # We need to check win for the player who just moved (state.turn - 1).
+    # But we don't store "who just moved".
+    # Let's check both.
+    if state.has_won(state.you):
+        return None, 100000 + (depth * 10) # Prefer faster wins
+    if state.has_won(state.opp):
+        return None, -100000 - (depth * 10)
+        
+    # Check draw (board full)
+    if state.turn == 36: # 36 moves max
+        return None, 0
+        
+    if depth == 0:
+        return None, state.evaluate() * (1 if state.turn % 2 == 0 else -1) # Negamax flip? No, standard evaluation is You - Opp.
+        # Evaluation is You - Opp.
+        # If it's YOUR turn, maximize.
+        # If it's OPP turn, minimize.
+        # We will use Max/Min logic below.
+        
+    # Determine player
+    is_maximizing = (state.turn % 2 == 0) # You
+    
+    moves = get_ordered_moves(state)
+    best_move = moves[0] if moves else None
+    
+    if is_maximizing:
+        max_eval = -float('inf')
+        for m in moves:
+            child = generate_next_state(state, m[0], m[1], m[2])
+            if child is None: continue
+            
+            # Check if this move wins immediately (Pruning)
+            if child.has_won(state.you):
+                return m, 100000
+            
+            _, eval_val = search(child, depth - 1, alpha, beta)
+            if eval_val is None: return best_move, max_eval # Timeout
+            
+            if eval_val > max_eval:
+                max_eval = eval_val
+                best_move = m
+            alpha = max(alpha, eval_val)
+            if beta <= alpha:
+                break
+        return best_move, max_eval
+    else:
+        min_eval = float('inf')
+        for m in moves:
+            child = generate_next_state(state, m[0], m[1], m[2])
+            if child is None: continue
+            
+            if child.has_won(state.opp):
+                return m, -100000
+                
+            _, eval_val = search(child, depth - 1, alpha, beta)
+            if eval_val is None: return best_move, min_eval
+            
+            if eval_val < min_eval:
+                min_eval = eval_val
+                best_move = m
+            beta = min(beta, eval_val)
+            if beta <= alpha:
+                break
+        return best_move, min_eval
+
+def policy(you, opponent):
+    global START_TIME
+    START_TIME = time.time()
+    
+    # Parse inputs
+    # `you` and `opponent` are lists of lists or arrays with 0/1
+    # We need to convert to bitboards
+    you_bits = 0
+    opp_bits = 0
+    
+    for r in range(6):
+        for c in range(6):
+            # Handle both list of lists and numpy arrays
+            try:
+                val_y = you[r][c]
+                val_o = opponent[r][c]
+            except:
+                # Fallback if 1-indexed or different structure? 
+                # Prompt says "arrays (or array-like objects)".
+                # Assuming standard indexing.
+                pass
+            
+            if val_y == 1:
+                you_bits |= (1 << (r*6+c))
+            elif val_o == 1:
+                opp_bits |= (1 << (r*6+c))
+                
+    turn_count = bin(you_bits | opp_bits).count('1')
+    state = PentagoState(you_bits, opp_bits, turn_count)
+    
+    # Iterative Deepening or Fixed Depth
+    # Given 1 sec, let's try depth 3. 288^3 is huge, but Alpha-Beta reduces it drastically.
+    # Also, we sort moves.
+    # Start with depth 1 (brute force), then depth 2, 3...
+    best_move = None
+    
+    # Fallback move (random legal)
+    moves = get_ordered_moves(state)
+    if moves:
+        best_move = moves[0]
+        
+    # Depth loop
+    # We limit max depth to 3 or 4 depending on complexity.
+    # At the start, branching factor is high. At end, lower.
+    max_depth = 3
+    if turn_count < 4: max_depth = 2 # Early game, faster search
+    
+    for depth in range(1, max_depth + 1):
+        if time.time() - START_TIME > TIME_LIMIT * 0.5: # Reserve time for higher depth?
+            break
+            
+        try:
+            m, val = search(state, depth, -float('inf'), float('inf'))
+            if m is not None:
+                best_move = m
+        except RecursionError:
+            break
+        except:
+            break # Fallback to previous best
+            
+    # Format output
+    r, c = best_move[0] // 6, best_move[0] % 6
+    q = best_move[1]
+    d = best_move[2]
+    
+    # 1-indexed rows/cols
+    return f"{r+1},{c+1},{q},{d}"
+
+```

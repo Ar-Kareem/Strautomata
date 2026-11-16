@@ -1,0 +1,461 @@
+The strategy for this policy is a fast tactical searcher. It represents the board as two 36-bit bitboards, applies moves (place + quadrant rotation) using precomputed rotation maps, and checks wins using precomputed 5-in-a-row masks. Each turn it:
+1) immediately plays any move that wins outright (and avoids moves that turn a win into a draw when possible),
+2) otherwise runs an iterative-deepening negamax + alpha-beta search (typically to depth 3 within the time limit),
+3) uses strong move ordering by prioritizing “critical” cells (completing/ blocking 4-in-5 threats) plus a heuristic shortlist, to keep branching small while still finding key tactics.
+
+<code>
+import time
+from typing import Iterable, List, Tuple, Dict
+
+# Pentago policy: place one marble then rotate one quadrant.
+# Board is 6x6, quadrants are 3x3: 0 TL, 1 TR, 2 BL, 3 BR.
+
+FULL_MASK = (1 << 36) - 1
+MATE = 10**9
+
+# Tunables (kept conservative for 1s budget)
+TIME_LIMIT = 0.95  # seconds
+MAX_DEPTH = 3
+
+# Candidate move sizing (cells, not full moves; each cell expands to 8 rotations)
+ROOT_CELLS = 14
+NODE_CELLS = 8
+
+# Evaluation weights for open 5-length segments
+LINE_W = [0, 2, 12, 60, 450, 200000]  # index = count in segment
+
+# A simple centrality positional table
+POS_W = [
+    0, 1, 2, 2, 1, 0,
+    1, 2, 3, 3, 2, 1,
+    2, 3, 4, 4, 3, 2,
+    2, 3, 4, 4, 3, 2,
+    1, 2, 3, 3, 2, 1,
+    0, 1, 2, 2, 1, 0,
+]
+
+
+def _idx(r: int, c: int) -> int:
+    return r * 6 + c
+
+
+def _bit(i: int) -> int:
+    return 1 << i
+
+
+def _to_bitboard(arr) -> int:
+    bb = 0
+    for r in range(6):
+        row = arr[r]
+        for c in range(6):
+            if row[c]:
+                bb |= _bit(_idx(r, c))
+    return bb
+
+
+def _pop_lsb(x: int) -> Tuple[int, int]:
+    """Return (lsb_index, x_without_lsb). Assumes x != 0."""
+    lsb = x & -x
+    i = lsb.bit_length() - 1
+    return i, x ^ lsb
+
+
+def _precompute_win_masks() -> List[int]:
+    masks = []
+    directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
+    for dr, dc in directions:
+        for r in range(6):
+            for c in range(6):
+                rr = r + (5 - 1) * dr
+                cc = c + (5 - 1) * dc
+                if 0 <= rr < 6 and 0 <= cc < 6:
+                    m = 0
+                    for k in range(5):
+                        m |= _bit(_idx(r + k * dr, c + k * dc))
+                    masks.append(m)
+    # Should be 32 for 6x6 with length-5 segments
+    return masks
+
+
+WIN_MASKS = _precompute_win_masks()
+
+
+def _has_five(bb: int) -> bool:
+    for m in WIN_MASKS:
+        if (bb & m) == m:
+            return True
+    return False
+
+
+def _precompute_quadrant_rotation():
+    # For each quadrant and direction, precompute mapping old_idx -> new_idx
+    # dir 0 = L (anticlockwise), dir 1 = R (clockwise)
+    origins = [(0, 0), (0, 3), (3, 0), (3, 3)]
+    rot_maps = [[None, None] for _ in range(4)]
+    quad_masks = [0, 0, 0, 0]
+
+    for q, (r0, c0) in enumerate(origins):
+        cells = []
+        for i in range(3):
+            for j in range(3):
+                gi = _idx(r0 + i, c0 + j)
+                cells.append((i, j, gi))
+                quad_masks[q] |= _bit(gi)
+
+        # Build mapping lists aligned: old_indices[k] -> new_indices[k]
+        old_L, new_L = [], []
+        old_R, new_R = [], []
+
+        for (i, j, gi) in cells:
+            # L: (i, j) -> (2-j, i)
+            niL, njL = (2 - j), i
+            giL = _idx(r0 + niL, c0 + njL)
+            old_L.append(gi); new_L.append(giL)
+
+            # R: (i, j) -> (j, 2-i)
+            niR, njR = j, (2 - i)
+            giR = _idx(r0 + niR, c0 + njR)
+            old_R.append(gi); new_R.append(giR)
+
+        rot_maps[q][0] = (old_L, new_L)
+        rot_maps[q][1] = (old_R, new_R)
+
+    return rot_maps, quad_masks
+
+
+ROT_MAPS, QUAD_MASKS = _precompute_quadrant_rotation()
+
+
+def _rotate_bits(bb: int, q: int, d: int) -> int:
+    """Rotate quadrant q in direction d (0=L,1=R) for a single bitboard."""
+    mask = QUAD_MASKS[q]
+    if (bb & mask) == 0:
+        return bb  # nothing to do
+    old_list, new_list = ROT_MAPS[q][d]
+    moved = 0
+    for o, n in zip(old_list, new_list):
+        if (bb >> o) & 1:
+            moved |= (1 << n)
+    return (bb & ~mask) | moved
+
+
+def _apply_move(cur: int, opp: int, idx_cell: int, quad: int, d: int) -> Tuple[int, int]:
+    """Apply move for current player: place at idx_cell, rotate quad,dir.
+    Returns (new_cur, new_opp).
+    """
+    b = 1 << idx_cell
+    cur2 = cur | b
+    opp2 = opp
+    cur2 = _rotate_bits(cur2, quad, d)
+    opp2 = _rotate_bits(opp2, quad, d)
+    return cur2, opp2
+
+
+def _positional_sum(bb: int) -> int:
+    s = 0
+    x = bb
+    while x:
+        i, x = _pop_lsb(x)
+        s += POS_W[i]
+    return s
+
+
+def _eval(cur: int, opp: int) -> int:
+    """Static evaluation from perspective of 'cur' (player to move at this node)."""
+    # Terminal (should normally be handled above, but keep safe)
+    cur_win = _has_five(cur)
+    opp_win = _has_five(opp)
+    if cur_win and opp_win:
+        return 0
+    if cur_win:
+        return MATE
+    if opp_win:
+        return -MATE
+
+    score = 0
+    for m in WIN_MASKS:
+        a = (cur & m).bit_count()
+        b = (opp & m).bit_count()
+        if a and b:
+            continue
+        if a:
+            score += LINE_W[a]
+        elif b:
+            score -= LINE_W[b]
+
+    score += 3 * (_positional_sum(cur) - _positional_sum(opp))
+    return score
+
+
+def _critical_cells(cur: int, opp: int, occupied: int) -> List[int]:
+    """Cells that complete a 4-in-5 for either side in some 5-mask segment."""
+    cells = set()
+    for m in WIN_MASKS:
+        a = (cur & m).bit_count()
+        b = (opp & m).bit_count()
+        if a and b:
+            continue
+        if a == 4 and b == 0:
+            empt = m & ~occupied
+            x = empt
+            while x:
+                i, x = _pop_lsb(x)
+                cells.add(i)
+        elif b == 4 and a == 0:
+            empt = m & ~occupied
+            x = empt
+            while x:
+                i, x = _pop_lsb(x)
+                cells.add(i)
+    return list(cells)
+
+
+def _cell_heuristic(cur: int, opp: int, i: int) -> int:
+    """Cheap placement heuristic ignoring rotation choice."""
+    # Favor center + locally aligned lines (in 5-length masks that include i)
+    b = 1 << i
+    sc = 6 * POS_W[i]
+    for m in WIN_MASKS:
+        if m & b:
+            a = (cur & m).bit_count()
+            o = (opp & m).bit_count()
+            if a and o:
+                continue
+            # Encourage growing our open segments, and blocking theirs.
+            if a and not o:
+                sc += 4 * a
+            elif o and not a:
+                sc += 3 * o
+    return sc
+
+
+def _candidate_cells(cur: int, opp: int, occupied: int, is_root: bool) -> List[int]:
+    """Select a small set of cells to expand (each cell -> 8 rotations)."""
+    empties_mask = (~occupied) & FULL_MASK
+    empties = []
+    x = empties_mask
+    while x:
+        i, x = _pop_lsb(x)
+        empties.append(i)
+
+    if not empties:
+        return []
+
+    # If board is sparse or near end, broaden selection
+    if len(empties) <= 10:
+        return empties
+
+    crit = _critical_cells(cur, opp, occupied)
+    crit_set = set(crit)
+
+    limit = ROOT_CELLS if is_root else NODE_CELLS
+
+    # Score all empties cheaply and take top-K, plus all critical ones.
+    scored = [( _cell_heuristic(cur, opp, i), i) for i in empties]
+    scored.sort(reverse=True)
+
+    chosen = []
+    for _, i in scored:
+        if i in crit_set:
+            continue
+        chosen.append(i)
+        if len(chosen) >= limit:
+            break
+
+    # Merge, keeping deterministic order: critical first (sorted), then heuristics.
+    crit_sorted = sorted(crit)
+    result = crit_sorted + chosen
+
+    # If still too small (rare), pad a little
+    if len(result) < min(limit, len(empties)):
+        used = set(result)
+        for _, i in scored:
+            if i not in used:
+                result.append(i)
+                used.add(i)
+                if len(result) >= min(limit, len(empties)):
+                    break
+
+    return result
+
+
+class _Timeout(Exception):
+    pass
+
+
+def _negamax(cur: int, opp: int, depth: int, alpha: int, beta: int,
+             start: float, tt: Dict[Tuple[int, int, int], int]) -> int:
+    if time.perf_counter() - start > TIME_LIMIT:
+        raise _Timeout
+
+    # Terminal checks (note: both-win = draw)
+    cur_win = _has_five(cur)
+    opp_win = _has_five(opp)
+    if cur_win and opp_win:
+        return 0
+    if opp_win:
+        return -MATE + (MAX_DEPTH - depth)
+    if cur_win:
+        return MATE - (MAX_DEPTH - depth)
+
+    occupied = cur | opp
+    if occupied == FULL_MASK:
+        return 0
+
+    if depth == 0:
+        return _eval(cur, opp)
+
+    key = (cur, opp, depth)
+    if key in tt:
+        return tt[key]
+
+    # Generate candidate moves (cell shortlist + all 8 rotations)
+    cells = _candidate_cells(cur, opp, occupied, is_root=False)
+    best = -10**18
+
+    # Small ordering: try all rotations but prefer those that immediately win
+    for i in cells:
+        # skip if not empty (shouldn't happen)
+        if (occupied >> i) & 1:
+            continue
+        for quad in range(4):
+            for d in (0, 1):
+                ncur, nopp = _apply_move(cur, opp, i, quad, d)
+
+                # After we move, roles swap for negamax
+                val = -_negamax(nopp, ncur, depth - 1, -beta, -alpha, start, tt)
+                if val > best:
+                    best = val
+                if best > alpha:
+                    alpha = best
+                if alpha >= beta:
+                    tt[key] = best
+                    return best
+
+    tt[key] = best
+    return best
+
+
+def _format_move(i: int, quad: int, d: int) -> str:
+    r = i // 6 + 1
+    c = i % 6 + 1
+    dd = "L" if d == 0 else "R"
+    return f"{r},{c},{quad},{dd}"
+
+
+def policy(you, opponent) -> str:
+    start = time.perf_counter()
+
+    cur = _to_bitboard(you)
+    opp = _to_bitboard(opponent)
+    occupied = cur | opp
+
+    # Always have a legal fallback
+    empties_mask = (~occupied) & FULL_MASK
+    # Assume at least one empty exists as stated.
+    first_i, _ = _pop_lsb(empties_mask)
+    fallback = (first_i, 0, 0)  # cell, quad, dir(L)
+
+    # 1) Immediate outright win finder (prefer non-draw wins)
+    best_draw_win = None
+    x = empties_mask
+    while x:
+        i, x = _pop_lsb(x)
+        for quad in range(4):
+            for d in (0, 1):
+                ncur, nopp = _apply_move(cur, opp, i, quad, d)
+                cw = _has_five(ncur)
+                ow = _has_five(nopp)
+                if cw and not ow:
+                    return _format_move(i, quad, d)
+                if cw and ow and best_draw_win is None:
+                    best_draw_win = (i, quad, d)
+
+    # If only winning moves are draw-wins, keep as strong fallback
+    if best_draw_win is not None:
+        fallback = best_draw_win
+
+    # 2) Iterative deepening alpha-beta (negamax)
+    best_move = fallback
+    best_score = -10**18
+
+    # Root move generation with a slightly larger shortlist
+    root_cells = _candidate_cells(cur, opp, occupied, is_root=True)
+    root_moves: List[Tuple[int, int, int]] = []
+    for i in root_cells:
+        if ((occupied >> i) & 1) != 0:
+            continue
+        for quad in range(4):
+            for d in (0, 1):
+                root_moves.append((i, quad, d))
+
+    # Ensure at least one legal move
+    if not root_moves:
+        return _format_move(*best_move)
+
+    # Root ordering: quick static lookahead after move
+    scored_root = []
+    for (i, quad, d) in root_moves:
+        ncur, nopp = _apply_move(cur, opp, i, quad, d)
+        # prefer immediate win; otherwise use eval
+        cw = _has_five(ncur)
+        ow = _has_five(nopp)
+        if cw and not ow:
+            h = MATE
+        elif cw and ow:
+            h = 0
+        elif ow and not cw:
+            h = -MATE
+        else:
+            h = _eval(ncur, nopp)
+        scored_root.append((h, i, quad, d))
+    scored_root.sort(reverse=True)
+
+    try:
+        for depth in range(1, MAX_DEPTH + 1):
+            if time.perf_counter() - start > TIME_LIMIT:
+                break
+            tt: Dict[Tuple[int, int, int], int] = {}
+
+            alpha = -10**18
+            beta = 10**18
+            local_best = None
+            local_best_score = -10**18
+
+            for _, i, quad, d in scored_root:
+                if time.perf_counter() - start > TIME_LIMIT:
+                    raise _Timeout
+
+                ncur, nopp = _apply_move(cur, opp, i, quad, d)
+
+                # If move already ends game, score directly
+                cw = _has_five(ncur)
+                ow = _has_five(nopp)
+                if cw and not ow:
+                    val = MATE
+                elif cw and ow:
+                    val = 0
+                elif ow and not cw:
+                    val = -MATE
+                else:
+                    val = -_negamax(nopp, ncur, depth - 1, -beta, -alpha, start, tt)
+
+                if val > local_best_score:
+                    local_best_score = val
+                    local_best = (i, quad, d)
+                if val > alpha:
+                    alpha = val
+
+            if local_best is not None:
+                best_move = local_best
+                best_score = local_best_score
+
+            # If we found a forced win, no need to deepen
+            if best_score >= MATE // 2:
+                break
+
+    except _Timeout:
+        pass
+
+    return _format_move(*best_move)
+</code>

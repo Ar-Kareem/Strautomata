@@ -1,0 +1,257 @@
+
+from typing import List, Tuple, Dict
+import math
+
+def policy(state: dict) -> str:
+    # ---------- Helpers ----------
+    def clone_state(s: dict) -> dict:
+        return {
+            'my_pts': s['my_pts'][:],
+            'opp_pts': s['opp_pts'][:],
+            'my_bar': s['my_bar'],
+            'opp_bar': s['opp_bar'],
+            'my_off': s['my_off'],
+            'opp_off': s['opp_off'],
+            'dice': s['dice'][:],
+        }
+
+    def all_in_home(s: dict) -> bool:
+        return s['my_bar'] == 0 and sum(s['my_pts'][6:]) == 0
+
+    def apply_from(s: dict, frm, die: int):
+        ns = clone_state(s)
+
+        if frm == 'B':
+            if ns['my_bar'] <= 0:
+                return None
+            dest = 24 - die
+            if dest < 0 or dest > 23:
+                return None
+            if ns['opp_pts'][dest] >= 2:
+                return None
+            ns['my_bar'] -= 1
+            if ns['opp_pts'][dest] == 1:
+                ns['opp_pts'][dest] = 0
+                ns['opp_bar'] += 1
+            ns['my_pts'][dest] += 1
+            return ns
+
+        p = frm
+        if p < 0 or p > 23 or ns['my_pts'][p] <= 0:
+            return None
+
+        dest = p - die
+        if dest >= 0:
+            if ns['opp_pts'][dest] >= 2:
+                return None
+            ns['my_pts'][p] -= 1
+            if ns['opp_pts'][dest] == 1:
+                ns['opp_pts'][dest] = 0
+                ns['opp_bar'] += 1
+            ns['my_pts'][dest] += 1
+            return ns
+
+        # Bearing off
+        if not all_in_home(ns):
+            return None
+
+        # Exact bear off
+        if p == die - 1:
+            ns['my_pts'][p] -= 1
+            ns['my_off'] += 1
+            return ns
+
+        # Oversized bear off: allowed only from highest occupied point
+        if p < die - 1:
+            if sum(ns['my_pts'][p + 1:6]) == 0:
+                ns['my_pts'][p] -= 1
+                ns['my_off'] += 1
+                return ns
+
+        return None
+
+    def legal_single_moves(s: dict, die: int) -> List[Tuple[str, dict]]:
+        moves = []
+
+        if s['my_bar'] > 0:
+            ns = apply_from(s, 'B', die)
+            if ns is not None:
+                moves.append(('B', ns))
+            return moves
+
+        for p in range(24):
+            if s['my_pts'][p] <= 0:
+                continue
+            ns = apply_from(s, p, die)
+            if ns is not None:
+                moves.append((f"A{p}", ns))
+
+        return moves
+
+    def pip_count_my(s: dict) -> int:
+        return sum((i + 1) * n for i, n in enumerate(s['my_pts'])) + 25 * s['my_bar']
+
+    def pip_count_opp(s: dict) -> int:
+        return sum((24 - i) * n for i, n in enumerate(s['opp_pts'])) + 25 * s['opp_bar']
+
+    def longest_prime(pts: List[int]) -> int:
+        best = cur = 0
+        for n in pts:
+            if n >= 2:
+                cur += 1
+                if cur > best:
+                    best = cur
+            else:
+                cur = 0
+        return best
+
+    def blot_vuln_my(s: dict) -> float:
+        # Approximate number of direct hitters against our blots next turn
+        v = 0.0
+        for p, n in enumerate(s['my_pts']):
+            if n != 1:
+                continue
+            hits = 0
+            for d in range(1, 7):
+                src = p - d
+                if 0 <= src < 24 and s['opp_pts'][src] > 0:
+                    hits += 1
+            # Opponent can also hit from bar into our outer board (18..23)
+            if 18 <= p <= 23:
+                d = 24 - p
+                if 1 <= d <= 6 and s['opp_bar'] > 0:
+                    hits += 1
+            v += hits
+        return v
+
+    def blot_vuln_opp(s: dict) -> float:
+        # Approximate number of direct hitters we have against opponent blots
+        v = 0.0
+        for p, n in enumerate(s['opp_pts']):
+            if n != 1:
+                continue
+            hits = 0
+            for d in range(1, 7):
+                src = p + d
+                if 0 <= src < 24 and s['my_pts'][src] > 0:
+                    hits += 1
+            # We can hit from bar into points 18..23 only
+            if 18 <= p <= 23:
+                d = 24 - p
+                if 1 <= d <= 6 and s['my_bar'] > 0:
+                    hits += 1
+            v += hits
+        return v
+
+    def evaluate(s: dict) -> float:
+        score = 0.0
+
+        # Race / progress
+        score += 120.0 * s['my_off']
+        score -= 120.0 * s['opp_off']
+        score += 18.0 * s['opp_bar']
+        score -= 20.0 * s['my_bar']
+        score -= 1.0 * (pip_count_my(s) - pip_count_opp(s))
+
+        # Structure
+        my_made = sum(1 for n in s['my_pts'] if n >= 2)
+        opp_made = sum(1 for n in s['opp_pts'] if n >= 2)
+        score += 2.0 * my_made
+        score -= 2.0 * opp_made
+
+        my_home_made = sum(1 for i in range(6) if s['my_pts'][i] >= 2)
+        opp_home_made = sum(1 for i in range(18, 24) if s['opp_pts'][i] >= 2)
+        score += 4.0 * my_home_made
+        score -= 4.0 * opp_home_made
+
+        my_anchors = sum(1 for i in range(18, 24) if s['my_pts'][i] >= 2)
+        opp_anchors = sum(1 for i in range(0, 6) if s['opp_pts'][i] >= 2)
+        score += 2.5 * my_anchors
+        score -= 2.5 * opp_anchors
+
+        score += 3.0 * longest_prime(s['my_pts'])
+        score -= 3.0 * longest_prime(s['opp_pts'])
+
+        # Blots
+        my_blots = sum(1 for n in s['my_pts'] if n == 1)
+        opp_blots = sum(1 for n in s['opp_pts'] if n == 1)
+        score -= 1.5 * my_blots
+        score += 1.0 * opp_blots
+
+        score -= 1.2 * blot_vuln_my(s)
+        score += 1.0 * blot_vuln_opp(s)
+
+        return score
+
+    def encode(order_char: str, from1: str, from2: str) -> str:
+        return f"{order_char}:{from1},{from2}"
+
+    # ---------- Main move generation ----------
+    dice = state.get('dice', [])
+    if not dice:
+        return "H:P,P"
+
+    # Single-die turn
+    if len(dice) == 1:
+        d = dice[0]
+        moves = legal_single_moves(state, d)
+        if not moves:
+            return "H:P,P"
+        best_score = -1e100
+        best_move = "H:P,P"
+        for f1, s1 in moves:
+            mv = encode("H", f1, "P")
+            sc = evaluate(s1)
+            if sc > best_score or (sc == best_score and mv < best_move):
+                best_score = sc
+                best_move = mv
+        return best_move
+
+    # Two dice
+    d_a, d_b = dice[0], dice[1]
+    hi, lo = (d_a, d_b) if d_a >= d_b else (d_b, d_a)
+
+    order_specs = [("H", [hi, lo])]
+    if hi != lo:
+        order_specs.append(("L", [lo, hi]))
+
+    sequences = []
+    # each entry: (used_count, first_die_used, move_string, resulting_state)
+
+    for order_char, ds in order_specs:
+        first_die, second_die = ds[0], ds[1]
+        first_moves = legal_single_moves(state, first_die)
+
+        if not first_moves:
+            sequences.append((0, None, encode(order_char, "P", "P"), state))
+            continue
+
+        for f1, s1 in first_moves:
+            second_moves = legal_single_moves(s1, second_die)
+            if second_moves:
+                for f2, s2 in second_moves:
+                    sequences.append((2, first_die, encode(order_char, f1, f2), s2))
+            else:
+                sequences.append((1, first_die, encode(order_char, f1, "P"), s1))
+
+    # Enforce play-both-dice rule
+    max_used = max(x[0] for x in sequences) if sequences else 0
+    candidates = [x for x in sequences if x[0] == max_used]
+
+    # If only one die can be played, must play higher die when possible
+    if max_used == 1 and hi != lo:
+        if any(x[1] == hi for x in candidates):
+            candidates = [x for x in candidates if x[1] == hi]
+
+    if not candidates:
+        return "H:P,P"
+
+    best_score = -1e100
+    best_move = None
+    for used, die_used, mv, sfin in candidates:
+        sc = evaluate(sfin)
+        if sc > best_score or (sc == best_score and (best_move is None or mv < best_move)):
+            best_score = sc
+            best_move = mv
+
+    return best_move if best_move is not None else "H:P,P"

@@ -1,0 +1,198 @@
+### Thinking Process
+
+The goal is to implement a move-selection policy for Pentago that always returns a legal move. Pentago is a complex game with both placement and rotation components, so the policy needs to consider both aspects. Here's the approach I'll take:
+
+1. **Legal Move Generation**:
+   - First, generate all possible legal moves. A legal move consists of:
+     - Placing a marble in any empty cell (1-6, 1-6).
+     - Choosing a quadrant (0-3) and a rotation direction (L or R).
+   - Ensure that the placement and rotation are valid (e.g., the quadrant exists, the rotation direction is valid).
+
+2. **Move Evaluation**:
+   - For each legal move, simulate the move (placement + rotation) and check if it results in a win for the current player.
+   - If no immediate win is possible, prioritize moves that block the opponent from winning on their next turn.
+   - If neither wins are possible, choose a move that maximizes some heuristic (e.g., center control, symmetry, or randomness).
+
+3. **Heuristics**:
+   - **Immediate Win**: If a move leads to a win, choose it.
+   - **Block Opponent**: If the opponent can win on their next turn, block them.
+   - **Center Control**: Prefer placing marbles in the center (rows 3-4, cols 3-4) as they are more versatile.
+   - **Randomness**: If no clear strategy, choose a random legal move.
+
+4. **Implementation**:
+   - Use helper functions to:
+     - Check if a move is legal.
+     - Simulate the move (placement + rotation).
+     - Check for a win after the move.
+   - Iterate through all possible moves, evaluate them, and pick the best one.
+
+### Key Challenges
+- **Rotation Simulation**: Correctly rotating a 3x3 quadrant (both players' marbles) in the specified direction.
+- **Win Check**: Efficiently checking for 5-in-a-row after the move (horizontal, vertical, diagonal).
+- **Performance**: The policy must run within 1 second, so brute-forcing all moves is feasible (6*6*4*2 = 288 possible moves per turn).
+
+### Solution Code
+```python
+import numpy as np
+
+def policy(you, opponent) -> str:
+    # Convert inputs to numpy arrays for easier manipulation
+    you_board = np.array(you)
+    opponent_board = np.array(opponent)
+
+    # Generate all possible legal moves
+    legal_moves = []
+    for row in range(1, 7):
+        for col in range(1, 7):
+            if you_board[row-1, col-1] == 0 and opponent_board[row-1, col-1] == 0:
+                for quad in range(4):
+                    for direction in ['L', 'R']:
+                        legal_moves.append((row, col, quad, direction))
+
+    # Evaluate each move
+    best_move = None
+    best_score = -float('inf')
+
+    for move in legal_moves:
+        row, col, quad, direction = move
+        # Simulate the move
+        new_you = you_board.copy()
+        new_opponent = opponent_board.copy()
+
+        # Place the marble
+        new_you[row-1, col-1] = 1
+
+        # Rotate the quadrant
+        new_you, new_opponent = rotate_quadrant(new_you, new_opponent, quad, direction)
+
+        # Check if this move results in a win
+        if check_win(new_you, new_opponent):
+            return f"{row},{col},{quad},{direction}"
+
+    # If no immediate win, try to block opponent's potential wins
+    for move in legal_moves:
+        row, col, quad, direction = move
+        new_you = you_board.copy()
+        new_opponent = opponent_board.copy()
+
+        # Place the marble
+        new_you[row-1, col-1] = 1
+
+        # Rotate the quadrant
+        new_you, new_opponent = rotate_quadrant(new_you, new_opponent, quad, direction)
+
+        # Check if opponent can win on their next turn
+        if not check_win(new_you, new_opponent):
+            # Simulate opponent's turn (they will try to win)
+            opponent_wins = False
+            for opp_row in range(1, 7):
+                for opp_col in range(1, 7):
+                    if new_opponent[opp_row-1, opp_col-1] == 0 and new_you[opp_row-1, opp_col-1] == 0:
+                        for opp_quad in range(4):
+                            for opp_dir in ['L', 'R']:
+                                temp_you = new_you.copy()
+                                temp_opponent = new_opponent.copy()
+                                temp_opponent[opp_row-1, opp_col-1] = 1
+                                temp_you, temp_opponent = rotate_quadrant(temp_you, temp_opponent, opp_quad, opp_dir)
+                                if check_win(temp_you, temp_opponent):
+                                    opponent_wins = True
+                                    break
+                            if opponent_wins:
+                                break
+                        if opponent_wins:
+                            break
+                    if opponent_wins:
+                        break
+                if opponent_wins:
+                    break
+            if not opponent_wins:
+                # This move doesn't allow opponent to win, so it's a good candidate
+                return f"{row},{col},{quad},{direction}"
+
+    # If no immediate win or block, choose a move that maximizes some heuristic (e.g., center control)
+    # Prefer moves that place in the center (rows 3-4, cols 3-4)
+    center_moves = [move for move in legal_moves if 3 <= move[0] <= 4 and 3 <= move[1] <= 4]
+    if center_moves:
+        return f"{center_moves[0][0]},{center_moves[0][1]},{center_moves[0][2]},{center_moves[0][3]}"
+
+    # Fallback: choose a random legal move
+    import random
+    return f"{random.choice(legal_moves)[0]},{random.choice(legal_moves)[1]},{random.choice(legal_moves)[2]},{random.choice(legal_moves)[3]}"
+
+def rotate_quadrant(you_board, opponent_board, quad, direction):
+    # Extract the quadrant
+    if quad == 0:  # top-left
+        rows = slice(0, 3)
+        cols = slice(0, 3)
+    elif quad == 1:  # top-right
+        rows = slice(0, 3)
+        cols = slice(3, 6)
+    elif quad == 2:  # bottom-left
+        rows = slice(3, 6)
+        cols = slice(0, 3)
+    else:  # bottom-right
+        rows = slice(3, 6)
+        cols = slice(3, 6)
+
+    quadrant_you = you_board[rows, cols]
+    quadrant_opponent = opponent_board[rows, cols]
+
+    if direction == 'L':
+        # Rotate 90 degrees anticlockwise
+        rotated_you = np.rot90(quadrant_you, k=1)
+        rotated_opponent = np.rot90(quadrant_opponent, k=1)
+    else:  # 'R'
+        # Rotate 90 degrees clockwise
+        rotated_you = np.rot90(quadrant_you, k=-1)
+        rotated_opponent = np.rot90(quadrant_opponent, k=-1)
+
+    # Place the rotated quadrant back
+    you_board[rows, cols] = rotated_you
+    opponent_board[rows, cols] = rotated_opponent
+
+    return you_board, opponent_board
+
+def check_win(you_board, opponent_board):
+    # Check horizontal lines
+    for row in range(6):
+        for col in range(2):
+            if you_board[row, col] + you_board[row, col+1] + you_board[row, col+2] + you_board[row, col+3] + you_board[row, col+4] >= 5:
+                return True
+            if opponent_board[row, col] + opponent_board[row, col+1] + opponent_board[row, col+2] + opponent_board[row, col+3] + opponent_board[row, col+4] >= 5:
+                return True
+
+    # Check vertical lines
+    for row in range(2):
+        for col in range(6):
+            if you_board[row, col] + you_board[row+1, col] + you_board[row+2, col] + you_board[row+3, col] + you_board[row+4, col] >= 5:
+                return True
+            if opponent_board[row, col] + opponent_board[row+1, col] + opponent_board[row+2, col] + opponent_board[row+3, col] + opponent_board[row+4, col] >= 5:
+                return True
+
+    # Check diagonal lines (top-left to bottom-right)
+    for row in range(2):
+        for col in range(2):
+            if you_board[row, col] + you_board[row+1, col+1] + you_board[row+2, col+2] + you_board[row+3, col+3] + you_board[row+4, col+4] >= 5:
+                return True
+            if opponent_board[row, col] + opponent_board[row+1, col+1] + opponent_board[row+2, col+2] + opponent_board[row+3, col+3] + opponent_board[row+4, col+4] >= 5:
+                return True
+
+    # Check diagonal lines (top-right to bottom-left)
+    for row in range(2):
+        for col in range(4, 6):
+            if you_board[row, col] + you_board[row+1, col-1] + you_board[row+2, col-2] + you_board[row+3, col-3] + you_board[row+4, col-4] >= 5:
+                return True
+            if opponent_board[row, col] + opponent_board[row+1, col-1] + opponent_board[row+2, col-2] + opponent_board[row+3, col-3] + opponent_board[row+4, col-4] >= 5:
+                return True
+
+    return False
+```
+
+### Explanation
+1. **Legal Move Generation**: The code first generates all possible legal moves by iterating over all empty cells and all possible quadrant rotations.
+2. **Immediate Win Check**: For each move, it simulates the placement and rotation, then checks if the move results in a win for the current player. If so, it returns that move immediately.
+3. **Block Opponent**: If no immediate win is found, the code checks if the opponent can win on their next turn. If so, it blocks the opponent by choosing a move that prevents their win.
+4. **Center Control**: If no immediate win or block is found, the code prefers moves that place marbles in the center of the board (rows 3-4, cols 3-4) for better strategic control.
+5. **Fallback**: If no clear strategy is found, the code randomly selects a legal move.
+
+This approach ensures that the policy always returns a legal move while prioritizing winning strategies and blocking the opponent.

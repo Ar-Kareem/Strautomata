@@ -1,0 +1,154 @@
+The strategy for this policy is to prioritize winning moves, block opponent's winning moves, and then focus on creating strong offensive positions while maintaining defensive stability. The policy will:
+
+1. **Check for immediate wins**: If placing a marble in any empty cell creates a 5-in-a-row for the player, choose that move.
+2. **Block opponent's wins**: If the opponent has a potential 5-in-a-row that can be blocked by placing a marble, choose that move.
+3. **Evaluate offensive opportunities**: Use a scoring system to evaluate the best positions to place marbles, prioritizing positions that create multiple threats or extend existing lines.
+4. **Evaluate defensive stability**: Ensure that the move does not leave the player vulnerable to immediate counterattacks.
+5. **Choose rotations wisely**: After placing a marble, choose a quadrant rotation that either:
+   - Completes a 5-in-a-row for the player.
+   - Disrupts the opponent's potential lines.
+   - Creates new offensive opportunities.
+
+The policy will use a combination of heuristic evaluation and lookahead to make informed decisions within the time constraints.
+
+<code>
+import numpy as np
+
+def policy(you, opponent):
+    # Convert inputs to numpy arrays for easier manipulation
+    you = np.array(you)
+    opponent = np.array(opponent)
+    board = you - opponent  # 1 for you, -1 for opponent, 0 for empty
+
+    # Directions for checking lines (horizontal, vertical, diagonal, anti-diagonal)
+    directions = [
+        (0, 1),   # horizontal
+        (1, 0),   # vertical
+        (1, 1),   # diagonal
+        (1, -1)   # anti-diagonal
+    ]
+
+    def is_win(board, player):
+        """Check if the player has a 5-in-a-row."""
+        for r in range(6):
+            for c in range(6):
+                if board[r][c] != player:
+                    continue
+                for dr, dc in directions:
+                    count = 1
+                    for step in [1, -1]:
+                        nr, nc = r + dr * step, c + dc * step
+                        while 0 <= nr < 6 and 0 <= nc < 6 and board[nr][nc] == player:
+                            count += 1
+                            nr += dr * step
+                            nc += dc * step
+                    if count >= 5:
+                        return True
+        return False
+
+    def get_quadrant(r, c):
+        """Get the quadrant index for a given (r, c)."""
+        if r < 3:
+            if c < 3:
+                return 0
+            else:
+                return 1
+        else:
+            if c < 3:
+                return 2
+            else:
+                return 3
+
+    def rotate_quadrant(board, quad, dir):
+        """Rotate a quadrant and return the new board."""
+        board = np.array(board)
+        if quad == 0:
+            sub = board[:3, :3]
+        elif quad == 1:
+            sub = board[:3, 3:6]
+        elif quad == 2:
+            sub = board[3:6, :3]
+        elif quad == 3:
+            sub = board[3:6, 3:6]
+
+        if dir == 'L':
+            rotated_sub = np.rot90(sub, k=1)
+        else:  # 'R'
+            rotated_sub = np.rot90(sub, k=-1)
+
+        if quad == 0:
+            board[:3, :3] = rotated_sub
+        elif quad == 1:
+            board[:3, 3:6] = rotated_sub
+        elif quad == 2:
+            board[3:6, :3] = rotated_sub
+        elif quad == 3:
+            board[3:6, 3:6] = rotated_sub
+
+        return board
+
+    def evaluate_move(r, c, quad, dir):
+        """Evaluate a move by placing a marble and rotating a quadrant."""
+        new_board = np.copy(board)
+        new_board[r][c] = 1  # Place your marble
+
+        # Rotate the quadrant
+        new_board = rotate_quadrant(new_board, quad, dir)
+
+        # Check if this move wins
+        if is_win(new_board, 1):
+            return float('inf')
+
+        # Check if opponent can win after this move
+        if is_win(new_board, -1):
+            return -float('inf')
+
+        # Heuristic evaluation (simplified for time constraints)
+        score = 0
+        for dr, dc in directions:
+            # Check lines through (r, c)
+            for step in [1, -1]:
+                nr, nc = r + dr * step, c + dc * step
+                line = []
+                while 0 <= nr < 6 and 0 <= nc < 6:
+                    line.append(new_board[nr][nc])
+                    nr += dr * step
+                    nc += dc * step
+                # Count consecutive marbles
+                max_consecutive = 1
+                current = 1
+                for i in range(1, len(line)):
+                    if line[i] == line[i-1] and line[i] != 0:
+                        current += 1
+                        max_consecutive = max(max_consecutive, current)
+                    else:
+                        current = 1
+                if line[0] == 1:  # Your line
+                    score += max_consecutive ** 2
+                elif line[0] == -1:  # Opponent's line
+                    score -= max_consecutive ** 2
+        return score
+
+    # Generate all possible moves
+    moves = []
+    for r in range(6):
+        for c in range(6):
+            if board[r][c] == 0:  # Empty cell
+                quad = get_quadrant(r, c)
+                for dir in ['L', 'R']:
+                    moves.append((r, c, quad, dir))
+
+    # Evaluate all moves
+    best_move = None
+    best_score = -float('inf')
+    for move in moves:
+        r, c, quad, dir = move
+        score = evaluate_move(r, c, quad, dir)
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    # Convert to 1-indexed and format the move
+    r, c, quad, dir = best_move
+    return f"{r+1},{c+1},{quad},{dir}"
+</code>

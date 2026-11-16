@@ -1,0 +1,134 @@
+The strategy for this policy is to always make a legal move while prioritizing captures when available. If multiple capture moves exist, it chooses the one that maximizes the value of the captured piece (preferring to capture kings over men) and considers promotion bonuses for own men reaching the opposite end. For non-capturing moves, it prefers moves that promote own men to kings, and if no promotions are available, it favors moves that advance pieces closer to the promotion row (using a small positional bonus).
+
+```python
+def policy(my_men, my_kings, opp_men, opp_kings, color) -> tuple[tuple[int, int], tuple[int, int]]:
+    # Create sets for occupied squares and opponent squares
+    occupied = set(my_men) | set(my_kings) | set(opp_men) | set(opp_kings)
+    opp_set = set(opp_men) | set(opp_kings)
+    
+    capturing_moves = []
+    non_capturing_moves = []
+    
+    # Process men
+    for piece in my_men:
+        r, c = piece
+        if color == 'b':
+            directions = [(-1, -1), (-1, 1)]
+        else:
+            directions = [(1, -1), (1, 1)]
+        for dr, dc in directions:
+            # Non-capture move
+            r2, c2 = r+dr, c+dc
+            if 0<=r2<8 and 0<=c2<8 and (r2, c2) not in occupied:
+                non_capturing_moves.append(((r, c), (r2, c2)))
+            # Capture move
+            r3, c3 = r+2*dr, c+2*dc
+            if 0<=r3<8 and 0<=c3<8:
+                if (r2, c2) in opp_set and (r3, c3) not in occupied:
+                    capturing_moves.append(((r, c), (r3, c3)))
+    
+    # Process kings
+    for piece in my_kings:
+        r, c = piece
+        directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+        for dr, dc in directions:
+            r2, c2 = r+dr, c+dc
+            if 0<=r2<8 and 0<=c2<8 and (r2, c2) not in occupied:
+                non_capturing_moves.append(((r, c), (r2, c2)))
+            r3, c3 = r+2*dr, c+2*dc
+            if 0<=r3<8 and 0<=c3<8:
+                if (r2, c2) in opp_set and (r3, c3) not in occupied:
+                    capturing_moves.append(((r, c), (r3, c3)))
+    
+    # If there are capturing moves, choose the best one
+    if capturing_moves:
+        best_move = None
+        best_score = -1e9
+        for move in capturing_moves:
+            (r1, c1), (r2, c2) = move
+            mid_r = (r1 + r2) // 2
+            mid_c = (c1 + c2) // 2
+            if (mid_r, mid_c) in opp_men:
+                captured_value = 10
+            elif (mid_r, mid_c) in opp_kings:
+                captured_value = 20
+            else:
+                captured_value = 0
+                
+            promotion_bonus = 0
+            if (r1, c1) in my_men:
+                if (color == 'b' and r2 == 0) or (color == 'w' and r2 == 7):
+                    promotion_bonus = 10
+                    
+            candidate_score = captured_value + promotion_bonus
+            if candidate_score > best_score:
+                best_score = candidate_score
+                best_move = move
+        return best_move
+    
+    # No captures: choose non-capturing move
+    if non_capturing_moves:
+        best_move = None
+        best_score = -1e9
+        for move in non_capturing_moves:
+            (r1, c1), (r2, c2) = move
+            promotion_bonus = 0
+            if (r1, c1) in my_men:
+                if (color == 'b' and r2 == 0) or (color == 'w' and r2 == 7):
+                    promotion_bonus = 10
+                    
+            if promotion_bonus == 0:
+                if color == 'b':
+                    positional_bonus = (7 - r2) * 0.1
+                else:
+                    positional_bonus = r2 * 0.1
+                candidate_score = promotion_bonus + positional_bonus
+            else:
+                candidate_score = promotion_bonus
+                
+            if candidate_score > best_score:
+                best_score = candidate_score
+                best_move = move
+        return best_move
+    
+    # Fallback: try to find any legal move
+    candidate = None
+    for piece in my_men + my_kings:
+        r, c = piece
+        if piece in my_men:
+            if color == 'b':
+                directions = [(-1, -1), (-1, 1)]
+            else:
+                directions = [(1, -1), (1, 1)]
+        else:
+            directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+            
+        for dr, dc in directions:
+            r2, c2 = r+dr, c+dc
+            if 0<=r2<8 and 0<=c2<8 and (r2, c2) not in occupied:
+                candidate = ((r, c), (r2, c2))
+                break
+        if candidate:
+            break
+            
+    if candidate:
+        return candidate
+        
+    for piece in my_men + my_kings:
+        r, c = piece
+        if piece in my_men:
+            if color == 'b':
+                directions = [(-1, -1), (-1, 1)]
+            else:
+                directions = [(1, -1), (1, 1)]
+        else:
+            directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+        for dr, dc in directions:
+            r3, c3 = r+2*dr, c+2*dc
+            if 0<=r3<8 and 0<=c3<8:
+                r2, c2 = r+dr, c+dc
+                if (r2, c2) in opp_set and (r3, c3) not in occupied:
+                    return ((r, c), (r3, c3))
+                    
+    return ((0,0), (0,1))
+```

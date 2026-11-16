@@ -1,0 +1,144 @@
+```python
+from typing import List, Tuple
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    """
+    Choose a move for an n x n x n Tic-Tac-Toe board.
+    Board is indexed board[x][y][z] with values 0 (empty), 1 (us), -1 (opp).
+    Returns a tuple (x, y, z) for an empty cell.
+    Strategy:
+      1. If we have a winning move, play it.
+      2. If opponent has a winning move next, block it.
+      3. Play center if available (for odd n).
+      4. Choose an empty cell that participates in the most "potential" lines
+         (lines that contain no opponent stones), breaking ties by closeness to center.
+    """
+    n = len(board)
+    # Helper to check in-bounds and read cell
+    def cell(coord):
+        x, y, z = coord
+        return board[x][y][z]
+
+    # Generate all winning lines as lists of (x,y,z) coordinates
+    lines = []
+    seen = set()
+
+    # Axis-aligned lines
+    for y in range(n):
+        for z in range(n):
+            line = tuple((x, y, z) for x in range(n))
+            if line not in seen:
+                lines.append(line); seen.add(line)
+    for x in range(n):
+        for z in range(n):
+            line = tuple((x, y, z) for y in range(n))
+            if line not in seen:
+                lines.append(line); seen.add(line)
+    for x in range(n):
+        for y in range(n):
+            line = tuple((x, y, z) for z in range(n))
+            if line not in seen:
+                lines.append(line); seen.add(line)
+
+    # Diagonals in planes
+    # xy planes at each z
+    for z in range(n):
+        d1 = tuple((i, i, z) for i in range(n))
+        d2 = tuple((i, n-1-i, z) for i in range(n))
+        if d1 not in seen:
+            lines.append(d1); seen.add(d1)
+        if d2 not in seen:
+            lines.append(d2); seen.add(d2)
+    # xz planes at each y
+    for y in range(n):
+        d1 = tuple((i, y, i) for i in range(n))
+        d2 = tuple((i, y, n-1-i) for i in range(n))
+        if d1 not in seen:
+            lines.append(d1); seen.add(d1)
+        if d2 not in seen:
+            lines.append(d2); seen.add(d2)
+    # yz planes at each x
+    for x in range(n):
+        d1 = tuple((x, i, i) for i in range(n))
+        d2 = tuple((x, i, n-1-i) for i in range(n))
+        if d1 not in seen:
+            lines.append(d1); seen.add(d1)
+        if d2 not in seen:
+            lines.append(d2); seen.add(d2)
+
+    # Space diagonals (4)
+    sd1 = tuple((i, i, i) for i in range(n))
+    sd2 = tuple((i, i, n-1-i) for i in range(n))
+    sd3 = tuple((i, n-1-i, i) for i in range(n))
+    sd4 = tuple((n-1-i, i, i) for i in range(n))
+    for sd in (sd1, sd2, sd3, sd4):
+        if sd not in seen:
+            lines.append(sd); seen.add(sd)
+
+    # Find all empty cells
+    empties = [(x, y, z) for x in range(n) for y in range(n) for z in range(n) if board[x][y][z] == 0]
+    if not empties:
+        # No legal move; return a default (shouldn't happen in normal play)
+        return (0, 0, 0)
+
+    # 1) Winning move for us (1)
+    for line in lines:
+        vals = [cell(c) for c in line]
+        if vals.count(1) == n - 1 and vals.count(0) == 1:
+            # play the empty spot
+            idx = vals.index(0)
+            return line[idx]
+
+    # 2) Block opponent (-1)
+    for line in lines:
+        vals = [cell(c) for c in line]
+        if vals.count(-1) == n - 1 and vals.count(0) == 1:
+            idx = vals.index(0)
+            return line[idx]
+
+    # 3) Play center if available (for odd n)
+    if n % 2 == 1:
+        center = (n // 2, n // 2, n // 2)
+        if board[center[0]][center[1]][center[2]] == 0:
+            return center
+
+    # 4) Heuristic: prefer empties that are part of many potential lines
+    # Potential line = line that contains no opponent (-1)
+    # Score each empty by number of potential lines it's on, tie-break by closeness to center
+    center_coords = ((n - 1) / 2.0, (n - 1) / 2.0, (n - 1) / 2.0)
+    def dist_to_center(c):
+        return abs(c[0] - center_coords[0]) + abs(c[1] - center_coords[1]) + abs(c[2] - center_coords[2])
+
+    # Precompute lines through each cell
+    lines_through = {c: [] for c in empties}
+    for line in lines:
+        vals = [cell(c) for c in line]
+        if -1 in vals:
+            continue  # not a potential line for us
+        # potential for us
+        for c in line:
+            if c in lines_through:
+                lines_through[c].append(line)
+
+    # Score empties
+    best = None
+    best_score = -1e9
+    for c in empties:
+        potential_lines = len(lines_through.get(c, []))
+        # also reward if the line has our stones already (closer to building)
+        extra = 0.0
+        for line in lines_through.get(c, []):
+            vals = [cell(cc) for cc in line]
+            extra += vals.count(1) * 0.2  # small bonus for lines where we already have stones
+        # distance penalty
+        score = potential_lines + extra - 0.01 * dist_to_center(c)
+        if score > best_score:
+            best_score = score
+            best = c
+
+    if best is not None:
+        return best
+
+    # Fallback: return first empty
+    return empties[0]
+```

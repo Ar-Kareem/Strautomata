@@ -1,0 +1,179 @@
+<thinking>
+Let me think about an effective Battleship targeting strategy:
+
+1. **Initial Phase (Hunting)**: When we haven't found any ships yet, we should use a checkerboard pattern to maximize coverage. Since the smallest ship is length 2, we can skip every other cell in a checkerboard pattern.
+
+2. **Target Phase**: Once we find a hit, we should explore adjacent cells to find the direction of the ship.
+
+3. **Destroy Phase**: Once we know the direction, we should continue firing along that line until the ship is sunk.
+
+Key strategies:
+- Use probability density based on remaining ships
+- When we get a hit, immediately explore orthogonal neighbors
+- Track "streaks" of hits to continue firing in the same direction
+- Prioritize cells that could contain longer ships
+
+Let me implement a sophisticated policy:
+
+1. First, identify all hits on the board
+2. Check if there are any unsunk ships (hits that don't form complete ships yet)
+3. If there are isolated hits or partial ships, target adjacent cells
+4. If hunting mode, use a smart probability-based approach
+
+The approach:
+- Maintain a list of "target" cells (adjacent to hits but not yet fired)
+- If targets exist, fire at the most promising one
+- Otherwise, use a probability density map based on where ships could still fit
+- Use checkerboard pattern as a tiebreaker for equal probabilities
+
+Let me code this:
+
+```python
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    import random
+    
+    # Find all hits and misses
+    hits = []
+    unknown = []
+    
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1:
+                hits.append((r, c))
+            elif board[r][c] == 0:
+                unknown.append((r, c))
+    
+    # If we have hits, prioritize targeting around them
+    if hits:
+        targets = []
+        for r, c in hits:
+            # Check all 4 directions
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                    targets.append((nr, nc))
+        
+        if targets:
+            # Prioritize targets that are in line with multiple hits
+            target_scores = {}
+            for r, c in targets:
+                score = 0
+                # Check if this continues a line of hits
+                for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                    consecutive = 0
+                    nr, nc = r + dr, c + dc
+                    while 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 1:
+                        consecutive += 1
+                        nr += dr
+                        nc += dc
+                    score += consecutive * consecutive  # Square to heavily prioritize continuing lines
+                target_scores[(r, c)] = score
+            
+            # Pick the highest scoring target
+            best_target = max(targets, key=lambda t: target_scores[t])
+            return best_target
+    
+    # Hunting mode - use probability density
+    # Calculate probability for each unknown cell
+    ship_lengths = [5, 4, 3, 3, 2]
+    
+    # Simple heuristic: checkerboard pattern with parity
+    # This ensures we can detect all ships (smallest is length 2)
+    checkerboard_cells = [(r, c) for r, c in unknown if (r + c) % 2 == 0]
+    
+    if checkerboard_cells:
+        return random.choice(checkerboard_cells)
+    
+    # Fallback to any unknown cell
+    return random.choice(unknown) if unknown else (0, 0)
+```
+
+Wait, I can improve this. Let me think more carefully about the strategy:
+
+1. **Target mode**: When we have hits, we need to intelligently explore
+   - If we have a single isolated hit, check all 4 directions
+   - If we have 2+ hits in a line, continue in both directions of that line
+   
+2. **Hunt mode**: Use a smart probability-based approach
+   - Calculate where each remaining ship could fit
+   - Use checkerboard for efficiency
+
+Let me refine:
+</thinking>
+
+<code>
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    import random
+    
+    # Find all hits and unknown cells
+    hits = set()
+    unknown = set()
+    
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1:
+                hits.add((r, c))
+            elif board[r][c] == 0:
+                unknown.add((r, c))
+    
+    # Target mode: if we have hits, focus around them
+    if hits:
+        targets = {}  # maps position to priority score
+        
+        for r, c in hits:
+            # Check if this hit is part of a line
+            for dr, dc in [(0, 1), (1, 0)]:  # right and down
+                line_hits = [(r, c)]
+                
+                # Extend forward
+                nr, nc = r + dr, c + dc
+                while 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 1:
+                    line_hits.append((nr, nc))
+                    nr += dr
+                    nc += dc
+                
+                # Extend backward
+                nr, nc = r - dr, c - dc
+                while 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 1:
+                    line_hits.append((nr, nc))
+                    nr -= dr
+                    nc -= dc
+                
+                # If we have a line of 2+ hits, prioritize endpoints
+                if len(line_hits) >= 2:
+                    line_hits.sort()
+                    min_r, min_c = line_hits[0]
+                    max_r, max_c = line_hits[-1]
+                    
+                    # Check endpoints
+                    for nr, nc in [(min_r - dr, min_c - dc), (max_r + dr, max_c + dc)]:
+                        if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                            score = len(line_hits) * 10  # High priority for continuing lines
+                            targets[(nr, nc)] = max(targets.get((nr, nc), 0), score)
+        
+        # Add orthogonal neighbors of isolated hits (lower priority)
+        for r, c in hits:
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                    if (nr, nc) not in targets:
+                        targets[(nr, nc)] = 1
+        
+        if targets:
+            best_target = max(targets.keys(), key=lambda pos: targets[pos])
+            return best_target
+    
+    # Hunt mode: use checkerboard pattern for efficiency
+    # Checkerboard ensures we hit all ships (smallest is length 2)
+    checkerboard = [(r, c) for r, c in unknown if (r + c) % 2 == 0]
+    
+    if checkerboard:
+        return random.choice(checkerboard)
+    
+    # Fallback: any unknown cell
+    if unknown:
+        return random.choice(list(unknown))
+    
+    # Should never reach here in valid game
+    return (0, 0)
+</code>

@@ -1,0 +1,175 @@
+The strategy for this policy is based on a Dijkstra shortest-path heuristic. Hex is a connection game, and the core metric for winning is the minimum number of stones required to bridge the two opposing sides. This policy treats the board as a weighted graph where:
+- Occupied cells by the player have a cost of 0.
+- Empty cells have a cost of 1.
+- Occupied cells by the opponent have an infinite cost (blocking the path).
+
+For every possible legal move, the policy simulates placing a stone and calculates the shortest path length for both itself and the opponent using Dijkstra's algorithm.
+- The **Player's Shortest Path** (`my_dist`) represents how close the player is to winning.
+- The **Opponent's Shortest Path** (`opp_dist`) represents how close the opponent is to winning (and thus, how urgent it is to block).
+
+The policy selects the move that maximizes the score `(opp_dist - my_dist)`. This effectively balances advancing one's own connection while blocking the opponent's. If a move results in an immediate win (`my_dist == 0`), it is returned instantly. This approach is computationally efficient, allowing it to scan the entire board deeply within the 1-second limit, and is robust against both random and naive greedy opponents.
+
+<code>
+import heapq
+import math
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    """
+    Determines the next move for a game of Hex on an 11x11 board.
+    Uses a Dijkstra-based shortest path heuristic to evaluate moves.
+    """
+    
+    BOARD_SIZE = 11
+    
+    # Initialize board representation
+    # 0 = Empty, 1 = Me, 2 = Opponent
+    board = [[0] * BOARD_SIZE for _ in range(BOARD_SIZE)]
+    for r, c in me:
+        board[r][c] = 1
+    for r, c in opp:
+        board[r][c] = 2
+
+    # Helper to get valid hexagonal neighbors
+    def get_neighbors(r, c):
+        # Neighbors are: (r-1, c), (r-1, c+1), (r, c-1), (r, c+1), (r+1, c-1), (r+1, c)
+        # Based on the prompt's rule: all 8 neighbors except (r-1, c-1) and (r+1, c+1)
+        neighbors = [
+            (r - 1, c), (r - 1, c + 1),
+            (r, c - 1), (r, c + 1),
+            (r + 1, c - 1), (r + 1, c)
+        ]
+        valid = []
+        for nr, nc in neighbors:
+            if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE:
+                valid.append((nr, nc))
+        return valid
+
+    # Dijkstra's algorithm to find shortest path cost for a specific player
+    def get_shortest_path(board_state, player_id):
+        """
+        Calculates the minimum number of empty cells required to connect 
+        the player's two opposing sides.
+        player_id: 1 for Me, 2 for Opponent.
+        """
+        # Determine source and target sides based on player color
+        # 'b' (Black) connects Top (row 0) to Bottom (row 10)
+        # 'w' (White) connects Left (col 0) to Right (col 10)
+        
+        # We need the actual color of the player_id to determine direction
+        current_color = color if player_id == 1 else ('w' if color == 'b' else 'b')
+        
+        sources = []
+        targets = set()
+        
+        if current_color == 'b':
+            # Top to Bottom
+            for c in range(BOARD_SIZE):
+                sources.append((0, c))
+                targets.add((BOARD_SIZE - 1, c))
+        else:
+            # Left to Right
+            for r in range(BOARD_SIZE):
+                sources.append((r, 0))
+                targets.add((r, BOARD_SIZE - 1))
+                
+        # Dijkstra
+        # dist[r][c] stores the minimum cost to reach (r, c)
+        INF = math.inf
+        dist = [[INF] * BOARD_SIZE for _ in range(BOARD_SIZE)]
+        pq = []
+        
+        for r, c in sources:
+            # Cost to enter a cell:
+            # If own stone: 0
+            # If empty: 1
+            # If opponent stone: INF (impassable)
+            if board_state[r][c] == player_id:
+                cost = 0
+            elif board_state[r][c] == 0:
+                cost = 1
+            else:
+                continue # Blocked by opponent at source edge
+            
+            dist[r][c] = cost
+            heapq.heappush(pq, (cost, r, c))
+            
+        while pq:
+            d, r, c = heapq.heappop(pq)
+            
+            if d > dist[r][c]:
+                continue
+            
+            if (r, c) in targets:
+                return d
+            
+            for nr, nc in get_neighbors(r, c):
+                cell_content = board_state[nr][nc]
+                
+                # Check if blocked by opponent
+                if cell_content == (3 - player_id):
+                    continue
+                
+                new_cost = d
+                if cell_content == 0:
+                    new_cost += 1
+                
+                if new_cost < dist[nr][nc]:
+                    dist[nr][nc] = new_cost
+                    heapq.heappush(pq, (new_cost, nr, nc))
+                    
+        return INF # No path exists (blocked)
+
+    best_move = None
+    best_score = -math.inf
+    
+    # Iterate through all empty cells to find the best move
+    # This is O(N * E log V), very fast for 11x11
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if board[r][c] == 0:
+                # Simulate move
+                board[r][c] = 1
+                
+                # 1. Calculate My distance (Goal: Minimize)
+                my_dist = get_shortest_path(board, 1)
+                
+                # Immediate win check
+                if my_dist == 0:
+                    return (r, c)
+                
+                # 2. Calculate Opponent distance (Goal: Maximize or Block)
+                opp_dist = get_shortest_path(board, 2)
+                
+                # Score = (Opponent Distance) - (My Distance)
+                # We want to be as close as possible (low my_dist)
+                # And opponent as far as possible (high opp_dist)
+                score = opp_dist - my_dist
+                
+                # Tie-breaking:
+                # If scores are equal, prefer the move closer to the center (5,5)
+                # This is a general heuristic for Hex opening/strategy
+                if score > best_score:
+                    best_score = score
+                    best_move = (r, c)
+                elif score == best_score:
+                    if best_move is not None:
+                        curr_center_dist = abs(r - 5) + abs(c - 5)
+                        best_center_dist = abs(best_move[0] - 5) + abs(best_move[1] - 5)
+                        if curr_center_dist < best_center_dist:
+                            best_move = (r, c)
+                
+                # Undo move
+                board[r][c] = 0
+
+    # Fallback: Should theoretically never happen if game not over, 
+    # but pick center if empty or random valid if logic fails (e.g. full board?)
+    if best_move is None:
+        if board[5][5] == 0: return (5, 5)
+        # Search for any empty spot
+        for r in range(BOARD_SIZE):
+            for c in range(BOARD_SIZE):
+                if board[r][c] == 0:
+                    return (r, c)
+
+    return best_move
+</code>

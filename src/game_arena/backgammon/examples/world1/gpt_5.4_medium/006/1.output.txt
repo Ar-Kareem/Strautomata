@@ -1,0 +1,392 @@
+The strategy for this policy is to first generate all legal moves exactly, including bar entry, hits, bearing off, die-order constraints, and forced-use rules. It then scores each resulting position with a fast heuristic:
+
+- strongly reward bearing off and putting the opponent on the bar
+- prefer lower pip count in races
+- in contact positions, value made points, home-board strength, primes, anchors, and escaped checkers
+- penalize blots, especially blots directly hittable next turn
+- slightly penalize over-stacked points
+
+This gives a solid 1-ply tactical/backgammon-aware policy while still guaranteeing a legal move string on every turn.
+
+<code>
+from typing import List, Dict, Tuple, Union
+
+Src = Union[int, str]
+
+
+def policy(state: dict) -> str:
+    board = _board_from_state(state)
+    candidates = _generate_candidates(board, state.get("dice", []))
+    if not candidates:
+        return "H:P,P"
+
+    best_action = "H:P,P"
+    best_score = None
+
+    for action, result_board in candidates:
+        score = _evaluate(result_board)
+        if best_score is None or score > best_score or (score == best_score and action < best_action):
+            best_score = score
+            best_action = action
+
+    return best_action
+
+
+def _board_from_state(state: dict) -> Dict:
+    return {
+        "my_pts": list(state["my_pts"]),
+        "opp_pts": list(state["opp_pts"]),
+        "my_bar": int(state["my_bar"]),
+        "opp_bar": int(state["opp_bar"]),
+        "my_off": int(state["my_off"]),
+        "opp_off": int(state["opp_off"]),
+    }
+
+
+def _clone_board(board: Dict) -> Dict:
+    return {
+        "my_pts": board["my_pts"][:],
+        "opp_pts": board["opp_pts"][:],
+        "my_bar": board["my_bar"],
+        "opp_bar": board["opp_bar"],
+        "my_off": board["my_off"],
+        "opp_off": board["opp_off"],
+    }
+
+
+def _src_token(src: Src) -> str:
+    if src == "B":
+        return "B"
+    if src == "P":
+        return "P"
+    return f"A{src}"
+
+
+def _all_in_home(board: Dict) -> bool:
+    return board["my_bar"] == 0 and sum(board["my_pts"][6:]) == 0
+
+
+def _legal_sources_for_die(board: Dict, die: int) -> List[Src]:
+    my_pts = board["my_pts"]
+    opp_pts = board["opp_pts"]
+
+    if board["my_bar"] > 0:
+        dest = 24 - die
+        if 0 <= dest < 24 and opp_pts[dest] < 2:
+            return ["B"]
+        return []
+
+    home = _all_in_home(board)
+    sources: List[Src] = []
+
+    for src in range(24):
+        if my_pts[src] <= 0:
+            continue
+
+        dest = src - die
+        if dest >= 0:
+            if opp_pts[dest] < 2:
+                sources.append(src)
+        else:
+            if not home or src > 5:
+                continue
+            if src + 1 == die:
+                sources.append(src)
+            elif src + 1 < die:
+                higher_exists = False
+                for j in range(src + 1, 6):
+                    if my_pts[j] > 0:
+                        higher_exists = True
+                        break
+                if not higher_exists:
+                    sources.append(src)
+
+    return sources
+
+
+def _apply_move(board: Dict, die: int, src: Src) -> Dict:
+    b = _clone_board(board)
+    my_pts = b["my_pts"]
+    opp_pts = b["opp_pts"]
+
+    if src == "B":
+        b["my_bar"] -= 1
+        dest = 24 - die
+        if opp_pts[dest] == 1:
+            opp_pts[dest] = 0
+            b["opp_bar"] += 1
+        my_pts[dest] += 1
+        return b
+
+    s = int(src)
+    my_pts[s] -= 1
+    dest = s - die
+
+    if dest >= 0:
+        if opp_pts[dest] == 1:
+            opp_pts[dest] = 0
+            b["opp_bar"] += 1
+        my_pts[dest] += 1
+    else:
+        b["my_off"] += 1
+
+    return b
+
+
+def _generate_candidates(board: Dict, dice: List[int]) -> List[Tuple[str, Dict]]:
+    if not dice:
+        return [("H:P,P", _clone_board(board))]
+
+    if len(dice) == 1:
+        die = dice[0]
+        sources = _legal_sources_for_die(board, die)
+        if not sources:
+            return [("H:P,P", _clone_board(board))]
+        out = []
+        seen = set()
+        for s in sources:
+            b = _apply_move(board, die, s)
+            action = f"H:{_src_token(s)},P"
+            if action not in seen:
+                seen.add(action)
+                out.append((action, b))
+        return out
+
+    d1, d2 = dice[0], dice[1]
+    hi = max(d1, d2)
+    lo = min(d1, d2)
+
+    orders = [("H", [hi, lo])]
+    if hi != lo:
+        orders.append(("L", [lo, hi]))
+
+    records = []
+
+    for order_char, ds in orders:
+        first_sources = _legal_sources_for_die(board, ds[0])
+        if not first_sources:
+            continue
+
+        for s1 in first_sources:
+            b1 = _apply_move(board, ds[0], s1)
+            second_sources = _legal_sources_for_die(b1, ds[1])
+
+            if second_sources:
+                for s2 in second_sources:
+                    b2 = _apply_move(b1, ds[1], s2)
+                    action = f"{order_char}:{_src_token(s1)},{_src_token(s2)}"
+                    records.append({
+                        "action": action,
+                        "board": b2,
+                        "used": 2,
+                        "uses_high": True,
+                    })
+            else:
+                action = f"{order_char}:{_src_token(s1)},P"
+                records.append({
+                    "action": action,
+                    "board": b1,
+                    "used": 1,
+                    "uses_high": (order_char == "H"),
+                })
+
+    if not records:
+        return [("H:P,P", _clone_board(board))]
+
+    max_used = max(r["used"] for r in records)
+    records = [r for r in records if r["used"] == max_used]
+
+    if max_used == 1 and hi != lo:
+        if any(r["uses_high"] for r in records):
+            records = [r for r in records if r["uses_high"]]
+
+    dedup = {}
+    for r in records:
+        dedup[r["action"]] = r["board"]
+
+    if not dedup:
+        return [("H:P,P", _clone_board(board))]
+
+    return sorted(dedup.items(), key=lambda x: x[0])
+
+
+def _pip_counts(board: Dict) -> Tuple[int, int]:
+    my_pip = 25 * board["my_bar"]
+    opp_pip = 25 * board["opp_bar"]
+
+    for i in range(24):
+        my_pip += (i + 1) * board["my_pts"][i]
+        opp_pip += (24 - i) * board["opp_pts"][i]
+
+    return my_pip, opp_pip
+
+
+def _made_points(pts: List[int]) -> int:
+    return sum(1 for x in pts if x >= 2)
+
+
+def _home_made_points_my(pts: List[int]) -> int:
+    return sum(1 for i in range(6) if pts[i] >= 2)
+
+
+def _home_made_points_opp(pts: List[int]) -> int:
+    return sum(1 for i in range(18, 24) if pts[i] >= 2)
+
+
+def _anchors_my(pts: List[int]) -> int:
+    return sum(1 for i in range(18, 24) if pts[i] >= 2)
+
+
+def _anchors_opp(pts: List[int]) -> int:
+    return sum(1 for i in range(6) if pts[i] >= 2)
+
+
+def _prime_len(pts: List[int]) -> int:
+    best = 0
+    cur = 0
+    for x in pts:
+        if x >= 2:
+            cur += 1
+            if cur > best:
+                best = cur
+        else:
+            cur = 0
+    return best
+
+
+def _blots(pts: List[int]) -> int:
+    return sum(1 for x in pts if x == 1)
+
+
+def _stack_penalty(pts: List[int]) -> int:
+    return sum(max(0, x - 3) for x in pts)
+
+
+def _backmost_my(pts: List[int]) -> int:
+    for i in range(23, -1, -1):
+        if pts[i] > 0:
+            return i
+    return -1
+
+
+def _backmost_opp(pts: List[int]) -> int:
+    for i in range(24):
+        if pts[i] > 0:
+            return i
+    return 24
+
+
+def _my_exposure(board: Dict) -> int:
+    my_pts = board["my_pts"]
+    opp_pts = board["opp_pts"]
+    opp_bar = board["opp_bar"]
+    exposure = 0
+
+    for i in range(24):
+        if my_pts[i] != 1:
+            continue
+        shots = 0
+        for d in range(1, 7):
+            hit = False
+            j = i - d
+            if 0 <= j < 24 and opp_pts[j] > 0:
+                hit = True
+            if opp_bar > 0 and i == d - 1:
+                hit = True
+            if hit:
+                shots += 1
+        exposure += shots
+
+    return exposure
+
+
+def _opp_exposure(board: Dict) -> int:
+    my_pts = board["my_pts"]
+    opp_pts = board["opp_pts"]
+    my_bar = board["my_bar"]
+    exposure = 0
+
+    for i in range(24):
+        if opp_pts[i] != 1:
+            continue
+        shots = 0
+        for d in range(1, 7):
+            hit = False
+            j = i + d
+            if 0 <= j < 24 and my_pts[j] > 0:
+                hit = True
+            if my_bar > 0 and i == 24 - d:
+                hit = True
+            if hit:
+                shots += 1
+        exposure += shots
+
+    return exposure
+
+
+def _evaluate(board: Dict) -> float:
+    my_pts = board["my_pts"]
+    opp_pts = board["opp_pts"]
+
+    my_pip, opp_pip = _pip_counts(board)
+    pip_diff = opp_pip - my_pip
+
+    my_made = _made_points(my_pts)
+    opp_made = _made_points(opp_pts)
+
+    my_home_made = _home_made_points_my(my_pts)
+    opp_home_made = _home_made_points_opp(opp_pts)
+
+    my_prime = _prime_len(my_pts)
+    opp_prime = _prime_len(opp_pts)
+
+    my_blots = _blots(my_pts)
+    opp_blots = _blots(opp_pts)
+
+    my_stack = _stack_penalty(my_pts)
+    opp_stack = _stack_penalty(opp_pts)
+
+    my_back = _backmost_my(my_pts)
+    opp_back = _backmost_opp(opp_pts)
+    contact = my_back > opp_back
+
+    my_anchors = _anchors_my(my_pts)
+    opp_anchors = _anchors_opp(opp_pts)
+
+    my_exp = _my_exposure(board)
+    opp_exp = _opp_exposure(board)
+
+    score = 0.0
+
+    if contact:
+        my_escaped = sum(my_pts[i] for i in range(opp_back))
+        opp_escaped = sum(opp_pts[i] for i in range(my_back + 1, 24))
+
+        score += 140.0 * (board["my_off"] - board["opp_off"])
+        score += 55.0 * (board["opp_bar"] - board["my_bar"])
+        score += 1.10 * pip_diff
+
+        score += 8.0 * (my_made - opp_made)
+        score += 12.0 * (my_home_made - opp_home_made)
+        score += 6.0 * (my_prime - opp_prime)
+        score += 4.0 * (my_anchors - opp_anchors)
+        score += 1.5 * (my_escaped - opp_escaped)
+
+        score -= 7.0 * my_blots
+        score += 4.0 * opp_blots
+        score -= 2.5 * my_exp
+        score += 1.5 * opp_exp
+
+        score -= 1.5 * my_stack
+        score += 0.5 * opp_stack
+    else:
+        score += 190.0 * (board["my_off"] - board["opp_off"])
+        score += 25.0 * (board["opp_bar"] - board["my_bar"])
+        score += 2.20 * pip_diff
+
+        score -= 0.8 * my_stack
+        score += 0.3 * opp_stack
+        score += 2.0 * (my_home_made - opp_home_made)
+
+    return score
+</code>

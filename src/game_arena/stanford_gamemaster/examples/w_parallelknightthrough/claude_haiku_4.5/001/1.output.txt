@@ -1,0 +1,138 @@
+# Strategy
+
+Looking at this game, I need to understand the key mechanics:
+
+1. **Game Structure**: Three 3x8 boards (a, b, c). White pieces start on rows 1-2, black pieces on rows 7-8.
+2. **Winning Condition**: White wins by reaching row 8 on board 'a'; Black wins by reaching row 1 on board 'c'.
+3. **Movement**: Knights move forward only (like chess knights but forward-only). From position (x, y), valid moves are to positions 2 rows forward and 1 column left/right.
+4. **Parallel Action**: All three boards play simultaneously - players can issue moves for any piece, then "tick" to execute all moves in parallel.
+
+## Key Observations:
+
+1. **State Pattern**: When `["played", board]` facts exist, it means that board's player has already committed a move. When all three boards have played, the next action should be "tick" to execute.
+
+2. **Move Format**: `move(board, col, row, new_col, new_row)` - moves a piece from one position to another.
+
+3. **Valid Knight Moves Forward Only**:
+   - From (col, row): can move to (col±1, row+2) for white (increasing rows) or (col±1, row-2) for black (decreasing rows)
+   - Must stay within columns a, b, c and rows 1-8
+
+4. **Strategy**:
+   - **Aggressive**: Push pieces forward systematically toward the goal
+   - **Blocking**: Move pieces to block opponent's progress
+   - **Coordination**: Use parallel moves effectively across all three boards
+   - **Prioritization**: Focus on pieces that are closest to the goal
+
+5. **Action Selection Logic**:
+   - If not all boards have played, select a good move and play it
+   - If all boards have played (all have "played" facts), issue "tick"
+   - Prioritize moving pieces closest to the goal
+   - Among equal pieces, prefer advancing along board progression (a→b→c for white, c→b→a for black)
+
+<code>
+def policy(state: list[list[object]], role: str) -> str:
+    # Parse the state
+    cells = {}  # (board, col, row) -> color
+    played = set()  # boards that have already played
+    
+    for prop in state:
+        if prop[0] == "cell":
+            board, col, row, color = prop[1], prop[2], int(prop[3]), prop[4]
+            cells[(board, col, row)] = color
+        elif prop[0] == "played":
+            played.add(prop[1])
+    
+    # Check if all boards have played
+    all_boards_played = len(played) == 3
+    
+    if all_boards_played:
+        return "tick"
+    
+    # Find all pieces of our role
+    our_pieces = []
+    for (board, col, row), color in cells.items():
+        if color == role:
+            our_pieces.append((board, col, row))
+    
+    # Generate legal moves for each piece
+    best_move = None
+    best_score = -float('inf')
+    
+    for board, col, row in our_pieces:
+        # Skip if this board already played
+        if board in played:
+            continue
+        
+        # Generate valid forward knight moves
+        valid_moves = []
+        
+        if role == "white":
+            # White moves forward (increasing row)
+            target_row = row + 2
+            for target_col in ["a", "b", "c"]:
+                if target_col == col or (col == "a" and target_col == "b") or (col == "b" and target_col in ["a", "c"]) or (col == "c" and target_col == "b"):
+                    # Knight move pattern: 2 forward, 1 left/right
+                    if target_col in ["a", "b", "c"] and 1 <= target_row <= 8:
+                        # Check if target is empty
+                        if (board, target_col, target_row) not in cells:
+                            valid_moves.append((board, col, row, target_col, target_row))
+        else:  # black
+            # Black moves backward (decreasing row)
+            target_row = row - 2
+            for target_col in ["a", "b", "c"]:
+                if target_col == col or (col == "a" and target_col == "b") or (col == "b" and target_col in ["a", "c"]) or (col == "c" and target_col == "b"):
+                    if target_col in ["a", "b", "c"] and 1 <= target_row <= 8:
+                        # Check if target is empty
+                        if (board, target_col, target_row) not in cells:
+                            valid_moves.append((board, col, row, target_col, target_row))
+        
+        # Score each move
+        for move in valid_moves:
+            b, c1, r1, c2, r2 = move
+            
+            # Distance to goal
+            if role == "white":
+                progress = r2  # Want to reach row 8 on board a
+                board_progress = {"a": 3, "b": 2, "c": 1}[b]
+                score = progress * 100 + board_progress * 10
+            else:  # black
+                progress = 9 - r2  # Want to reach row 1 on board c
+                board_progress = {"c": 3, "b": 2, "a": 1}[b]
+                score = progress * 100 + board_progress * 10
+            
+            if score > best_score:
+                best_score = score
+                best_move = move
+    
+    # If no good move found, just find any legal move
+    if best_move is None:
+        for board, col, row in our_pieces:
+            if board in played:
+                continue
+            
+            # Try all possible moves
+            if role == "white":
+                for target_row in range(row + 1, 9):
+                    for target_col in ["a", "b", "c"]:
+                        if (board, target_col, target_row) not in cells:
+                            if abs(ord(col) - ord(target_col)) == 1 and target_row - row == 2:
+                                best_move = (board, col, row, target_col, target_row)
+                                break
+            else:
+                for target_row in range(1, row):
+                    for target_col in ["a", "b", "c"]:
+                        if (board, target_col, target_row) not in cells:
+                            if abs(ord(col) - ord(target_col)) == 1 and row - target_row == 2:
+                                best_move = (board, col, row, target_col, target_row)
+                                break
+            
+            if best_move:
+                break
+    
+    if best_move:
+        b, c1, r1, c2, r2 = best_move
+        return f"move({b},{c1},{r1},{c2},{r2})"
+    
+    # Fallback: return tick if somehow no move available
+    return "tick"
+</code>

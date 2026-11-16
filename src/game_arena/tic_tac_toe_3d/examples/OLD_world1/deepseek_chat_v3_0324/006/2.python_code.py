@@ -1,0 +1,186 @@
+
+import numpy as np
+from itertools import product
+from collections import defaultdict
+from copy import deepcopy
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    """Determine the optimal move for 3D Tic Tac Toe using minimax with alpha-beta pruning."""
+    n = len(board)
+    game = TicTacToe3D(n)
+    game.board = np.array(board)
+    depth = len(game.get_empty_cells())
+    
+    # Get all possible moves
+    empty_cells = game.get_empty_cells()
+    
+    # If center is available, take it first (good heuristic for 3D games)
+    center = n // 2
+    if (center, center, center) in empty_cells:
+        return (center, center, center)
+    
+    # Otherwise run minimax
+    best_move, _ = game.minimax(True, float('-inf'), float('inf'), depth)
+    return best_move
+
+class TicTacToe3D:
+    def __init__(self, size=3):
+        self.size = size
+        self.board = np.zeros((size, size, size), dtype=int)
+        
+    def get_empty_cells(self):
+        """Return list of empty cell coordinates as tuples"""
+        empty = []
+        for i, j, k in product(range(self.size), repeat=3):
+            if self.board[i, j, k] == 0:
+                empty.append((i, j, k))
+        return empty
+    
+    def is_terminal(self):
+        """Check if the game is over (win or draw)"""
+        return self.check_winner() != 0 or len(self.get_empty_cells()) == 0
+    
+    def check_winner(self):
+        """Return 1 if player 1 wins, -1 if player 2 wins, 0 otherwise"""
+        size = self.size
+        board = self.board
+        
+        # Check all possible straight lines (x, y, z directions)
+        for i in range(size):
+            for j in range(size):
+                # Check x-axis lines (rows)
+                if abs(sum(board[i, j, :])) == size:
+                    return board[i, j, 0]
+                # Check y-axis lines (columns)
+                if abs(sum(board[i, :, j])) == size:
+                    return board[i, 0, j]
+                # Check z-axis lines (towers)
+                if abs(sum(board[:, i, j])) == size:
+                    return board[0, i, j]
+        
+        # Check 3D diagonals (4 space diagonals)
+        diag1 = abs(sum(board[i, i, i] for i in range(size)))
+        diag2 = abs(sum(board[i, i, size-1-i] for i in range(size)))
+        diag3 = abs(sum(board[i, size-1-i, i] for i in range(size)))
+        diag4 = abs(sum(board[size-1-i, i, i] for i in range(size)))
+        
+        if max(diag1, diag2, diag3, diag4) == size:
+            x = (diag1, diag2, diag3, diag4).index(size)
+            if x == 0: return board[0, 0, 0]
+            elif x == 1: return board[0, 0, size-1]
+            elif x == 2: return board[0, size-1, 0]
+            elif x == 3: return board[size-1, 0, 0]
+        
+        # Check face diagonals (2D diagonals on each face)
+        for layer in range(size):
+            # Check diagonals on each x-y plane
+            d1 = abs(sum(board[layer, i, i] for i in range(size)))
+            d2 = abs(sum(board[layer, i, size-1-i] for i in range(size)))
+            if d1 == size: return board[layer, 0, 0]
+            if d2 == size: return board[layer, 0, size-1]
+            
+            # Check diagonals on each x-z plane
+            d1 = abs(sum(board[i, layer, i] for i in range(size)))
+            d2 = abs(sum(board[i, layer, size-1-i] for i in range(size)))
+            if d1 == size: return board[0, layer, 0]
+            if d2 == size: return board[0, layer, size-1]
+            
+            # Check diagonals on each y-z plane
+            d1 = abs(sum(board[i, i, layer] for i in range(size)))
+            d2 = abs(sum(board[i, size-1-i, layer] for i in range(size)))
+            if d1 == size: return board[0, 0, layer]
+            if d2 == size: return board[0, size-1, layer]
+        
+        return 0
+    
+    def minimax(self, is_max_turn, alpha, beta, depth):
+        """Minimax algorithm with alpha-beta pruning"""
+        if depth == 0 or self.is_terminal():
+            score = self.evaluate()
+            return None, score
+        
+        best_move = None
+        if is_max_turn:
+            max_eval = float('-inf')
+            for move in self.get_empty_cells():
+                # Make the move
+                self.board[move] = 1
+                _, current_eval = self.minimax(False, alpha, beta, depth-1)
+                # Undo the move
+                self.board[move] = 0
+                
+                if current_eval > max_eval:
+                    max_eval = current_eval
+                    best_move = move
+                    alpha = max(alpha, current_eval)
+                    if beta <= alpha:
+                        break
+            return best_move, max_eval
+        else:
+            min_eval = float('inf')
+            for move in self.get_empty_cells():
+                # Make the move
+                self.board[move] = -1
+                _, current_eval = self.minimax(True, alpha, beta, depth-1)
+                # Undo the move
+                self.board[move] = 0
+                
+                if current_eval < min_eval:
+                    min_eval = current_eval
+                    best_move = move
+                    beta = min(beta, current_eval)
+                    if beta <= alpha:
+                        break
+            return best_move, min_eval
+    
+    def evaluate(self):
+        """Evaluation function for the minimax algorithm"""
+        winner = self.check_winner()
+        if winner != 0:
+            return winner * float('inf')
+        
+        score = 0
+        size = self.size
+        
+        # Define all possible lines (3D)
+        lines = []
+        
+        # Add all straight lines
+        for i in range(size):
+            for j in range(size):
+                # X-axis lines (rows)
+                lines.append(self.board[i, j, :])
+                # Y-axis lines (columns)
+                lines.append(self.board[i, :, j])
+                # Z-axis lines (towers)
+                lines.append(self.board[:, i, j])
+        
+        # Add 3D diagonals (4 space diagonals)
+        lines.append(np.array([self.board[i, i, i] for i in range(size)]))
+        lines.append(np.array([self.board[i, i, size-1-i] for i in range(size)]))
+        lines.append(np.array([self.board[i, size-1-i, i] for i in range(size)]))
+        lines.append(np.array([self.board[size-1-i, i, i] for i in range(size)]))
+        
+        # Add face diagonals (2D diagonals on each face)
+        for layer in range(size):
+            # X-Y plane diagonals
+            lines.append(np.array([self.board[layer, i, i] for i in range(size)]))
+            lines.append(np.array([self.board[layer, i, size-1-i] for i in range(size)]))
+            # X-Z plane diagonals
+            lines.append(np.array([self.board[i, layer, i] for i in range(size)]))
+            lines.append(np.array([self.board[i, layer, size-1-i] for i in range(size)]))
+            # Y-Z plane diagonals
+            lines.append(np.array([self.board[i, i, layer] for i in range(size)]))
+            lines.append(np.array([self.board[i, size-1-i, layer] for i in range(size)]))
+        
+        # Evaluate each possible line
+        for line in lines:
+            max_count = sum(1 for cell in line if cell == 1)
+            min_count = sum(1 for cell in line if cell == -1)
+            
+            if max_count > 0 and min_count == 0:
+                score += 10 ** max_count
+            elif min_count > 0 and max_count == 0:
+                score -= 10 ** min_count
+        
+        return score

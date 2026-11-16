@@ -1,0 +1,281 @@
+## Strategy
+
+My strategy implements a minimax search with alpha-beta pruning to look several moves ahead. Key components:
+
+1. **Move Generation**: Properly generates all legal moves including multi-jump captures. Captures are mandatory per checkers rules.
+
+2. **Evaluation Function**: Uses multiple heuristics:
+   - Material advantage (kings worth more than men)
+   - Positional bonuses (center control, advancement toward promotion)
+   - Back row defense bonus
+   - King mobility
+   - Piece safety considerations
+
+3. **Alpha-Beta Search**: Searches to a reasonable depth (typically 6-8 plies) within the time constraint, with iterative deepening to use time efficiently.
+
+4. **Capture Chain Detection**: Properly handles multi-jump sequences, which are critical in checkers.
+
+<code>
+import time
+from copy import deepcopy
+
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    start_time = time.time()
+    
+    my_men = set(map(tuple, my_men))
+    my_kings = set(map(tuple, my_kings))
+    opp_men = set(map(tuple, opp_men))
+    opp_kings = set(map(tuple, opp_kings))
+    
+    # State: (my_men, my_kings, opp_men, opp_kings, is_my_turn)
+    # We always think from "my" perspective
+    
+    def get_all_pieces(men, kings):
+        return men | kings
+    
+    def get_jumps(pos, men, kings, o_men, o_kings, is_king, piece_color):
+        """Get all jump sequences from a position."""
+        r, c = pos
+        all_occ = men | kings | o_men | o_kings
+        if is_king:
+            dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+        else:
+            if piece_color == 'w':
+                dirs = [(1, -1), (1, 1)]
+            else:
+                dirs = [(-1, -1), (-1, 1)]
+            # Kings can move all directions
+            if is_king:
+                dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+        
+        jumps = []
+        for dr, dc in dirs:
+            mr, mc = r + dr, c + dc
+            lr, lc = r + 2*dr, c + 2*dc
+            if 0 <= lr <= 7 and 0 <= lc <= 7:
+                if (mr, mc) in o_men or (mr, mc) in o_kings:
+                    if (lr, lc) not in all_occ:
+                        # Make the jump
+                        new_men = set(men)
+                        new_kings = set(kings)
+                        new_o_men = set(o_men)
+                        new_o_kings = set(o_kings)
+                        
+                        # Remove captured piece
+                        new_o_men.discard((mr, mc))
+                        new_o_kings.discard((mr, mc))
+                        
+                        # Move piece
+                        was_king = is_king
+                        new_is_king = is_king
+                        if (r, c) in new_men:
+                            new_men.discard((r, c))
+                            # Check promotion
+                            if (piece_color == 'w' and lr == 7) or (piece_color == 'b' and lr == 0):
+                                new_kings.add((lr, lc))
+                                new_is_king = True
+                            else:
+                                new_men.add((lr, lc))
+                        else:
+                            new_kings.discard((r, c))
+                            new_kings.add((lr, lc))
+                        
+                        # If promoted, stop jumping (standard checkers rule)
+                        if not was_king and new_is_king:
+                            jumps.append(((lr, lc), new_men, new_kings, new_o_men, new_o_kings))
+                        else:
+                            # Try further jumps
+                            further = get_jumps((lr, lc), new_men, new_kings, new_o_men, new_o_kings, new_is_king, piece_color)
+                            if further:
+                                jumps.extend(further)
+                            else:
+                                jumps.append(((lr, lc), new_men, new_kings, new_o_men, new_o_kings))
+        return jumps
+    
+    def get_moves(men, kings, o_men, o_kings, piece_color):
+        """Get all legal moves. Returns list of (from, to, new_state)."""
+        all_pieces = men | kings
+        all_occ = all_pieces | o_men | o_kings
+        
+        # Check for jumps first (mandatory)
+        jump_moves = []
+        for p in list(men):
+            js = get_jumps(p, men, kings, o_men, o_kings, False, piece_color)
+            for (dest, nm, nk, nom, nok) in js:
+                jump_moves.append((p, dest, nm, nk, nom, nok))
+        for p in list(kings):
+            js = get_jumps(p, men, kings, o_men, o_kings, True, piece_color)
+            for (dest, nm, nk, nom, nok) in js:
+                jump_moves.append((p, dest, nm, nk, nom, nok))
+        
+        if jump_moves:
+            return jump_moves
+        
+        # Simple moves
+        simple_moves = []
+        for p in list(men):
+            r, c = p
+            if piece_color == 'w':
+                dirs = [(1, -1), (1, 1)]
+            else:
+                dirs = [(-1, -1), (-1, 1)]
+            for dr, dc in dirs:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr <= 7 and 0 <= nc <= 7 and (nr, nc) not in all_occ:
+                    nm = set(men)
+                    nk = set(kings)
+                    nm.discard(p)
+                    if (piece_color == 'w' and nr == 7) or (piece_color == 'b' and nr == 0):
+                        nk.add((nr, nc))
+                    else:
+                        nm.add((nr, nc))
+                    simple_moves.append((p, (nr, nc), nm, nk, set(o_men), set(o_kings)))
+        
+        for p in list(kings):
+            r, c = p
+            dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+            for dr, dc in dirs:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr <= 7 and 0 <= nc <= 7 and (nr, nc) not in all_occ:
+                    nm = set(men)
+                    nk = set(kings)
+                    nk.discard(p)
+                    nk.add((nr, nc))
+                    simple_moves.append((p, (nr, nc), nm, nk, set(o_men), set(o_kings)))
+        
+        return simple_moves
+    
+    def evaluate(men, kings, o_men, o_kings, col):
+        """Evaluate position from 'my' perspective."""
+        if len(men) == 0 and len(kings) == 0:
+            return -10000
+        if len(o_men) == 0 and len(o_kings) == 0:
+            return 10000
+        
+        man_val = 100
+        king_val = 170
+        
+        score = len(men) * man_val + len(kings) * king_val
+        score -= len(o_men) * man_val + len(o_kings) * king_val
+        
+        # Positional bonuses
+        for r, c in men:
+            # Advancement
+            if col == 'w':
+                score += r * 5
+            else:
+                score += (7 - r) * 5
+            # Center control
+            if 2 <= c <= 5 and 2 <= r <= 5:
+                score += 3
+            # Back row (defense)
+            if col == 'w' and r == 0:
+                score += 4
+            elif col == 'b' and r == 7:
+                score += 4
+        
+        for r, c in kings:
+            if 2 <= c <= 5 and 2 <= r <= 5:
+                score += 8
+        
+        for r, c in o_men:
+            opp_col = 'b' if col == 'w' else 'w'
+            if opp_col == 'w':
+                score -= r * 5
+            else:
+                score -= (7 - r) * 5
+            if 2 <= c <= 5 and 2 <= r <= 5:
+                score -= 3
+        
+        for r, c in o_kings:
+            if 2 <= c <= 5 and 2 <= r <= 5:
+                score -= 8
+        
+        return score
+    
+    opp_color = 'b' if color == 'w' else 'w'
+    
+    def minimax(men, kings, o_men, o_kings, depth, alpha, beta, maximizing, col):
+        if time.time() - start_time > 0.85:
+            return evaluate(men, kings, o_men, o_kings, color) if col == color else -evaluate(o_men, o_kings, men, kings, color)
+        
+        if depth == 0:
+            if col == color:
+                return evaluate(men, kings, o_men, o_kings, color)
+            else:
+                return -evaluate(o_men, o_kings, men, kings, color)
+        
+        moves = get_moves(men, kings, o_men, o_kings, col)
+        
+        if not moves:
+            # Current player loses
+            if col == color:
+                return -10000
+            else:
+                return 10000
+        
+        next_col = 'b' if col == 'w' else 'w'
+        
+        if col == color:
+            # Maximizing for 'me'
+            max_eval = -100000
+            for _, _, nm, nk, nom, nok in moves:
+                # Next turn: opponent moves with nom, nok as their pieces and nm, nk as opp
+                val = minimax(nom, nok, nm, nk, depth - 1, alpha, beta, False, next_col)
+                max_eval = max(max_eval, val)
+                alpha = max(alpha, val)
+                if beta <= alpha:
+                    break
+                if time.time() - start_time > 0.85:
+                    break
+            return max_eval
+        else:
+            # Minimizing (opponent's turn)
+            min_eval = 100000
+            for _, _, nm, nk, nom, nok in moves:
+                val = minimax(nom, nok, nm, nk, depth - 1, alpha, beta, True, next_col)
+                min_eval = min(min_eval, val)
+                beta = min(beta, val)
+                if beta <= alpha:
+                    break
+                if time.time() - start_time > 0.85:
+                    break
+            return min_eval
+    
+    # Get my legal moves
+    moves = get_moves(my_men, my_kings, opp_men, opp_kings, color)
+    
+    if not moves:
+        # Should not happen if game is valid, but return something
+        for p in list(my_men) + list(my_kings):
+            return (p, p)
+    
+    if len(moves) == 1:
+        return (moves[0][0], moves[0][1])
+    
+    # Iterative deepening
+    best_move = (moves[0][0], moves[0][1])
+    next_col = 'b' if color == 'w' else 'w'
+    
+    for depth in range(1, 20):
+        if time.time() - start_time > 0.7:
+            break
+        
+        best_val = -100000
+        current_best = best_move
+        
+        for frm, to, nm, nk, nom, nok in moves:
+            if time.time() - start_time > 0.8:
+                break
+            val = minimax(nom, nok, nm, nk, depth - 1, -100000, 100000, False, next_col)
+            if val > best_val:
+                best_val = val
+                current_best = (frm, to)
+        
+        best_move = current_best
+        
+        if best_val >= 9000 or best_val <= -9000:
+            break
+    
+    return best_move
+</code>

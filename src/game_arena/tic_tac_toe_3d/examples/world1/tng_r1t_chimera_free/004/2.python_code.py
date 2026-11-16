@@ -1,0 +1,123 @@
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    # Generate all possible winning lines in 3D Tic Tac Toe
+    all_lines = []
+
+    # Axis-aligned lines
+    # X-axis (vary x)
+    for y in range(3):
+        for z in range(3):
+            line = [(x, y, z) for x in range(3)]
+            all_lines.append(line)
+    # Y-axis (vary y)
+    for x in range(3):
+        for z in range(3):
+            line = [(x, y, z) for y in range(3)]
+            all_lines.append(line)
+    # Z-axis (vary z)
+    for x in range(3):
+        for y in range(3):
+            line = [(x, y, z) for z in range(3)]
+            all_lines.append(line)
+
+    # Diagonals in x-y planes (face diagonals)
+    for z in range(3):
+        # \
+        line = [(x, x, z) for x in range(3)]
+        all_lines.append(line)
+        # /
+        line = [(x, 2 - x, z) for x in range(3)]
+        all_lines.append(line)
+
+    # Diagonals in y-z planes (face diagonals)
+    for x in range(3):
+        # \
+        line = [(x, y, y) for y in range(3)]
+        all_lines.append(line)
+        # /
+        line = [(x, y, 2 - y) for y in range(3)]
+        all_lines.append(line)
+
+    # Diagonals in x-z planes (face diagonals)
+    for y in range(3):
+        # \
+        line = [(x, y, x) for x in range(3)]
+        all_lines.append(line)
+        # /
+        line = [(x, y, 2 - x) for x in range(3)]
+        all_lines.append(line)
+
+    # Space diagonals
+    all_lines.append([(0, 0, 0), (1, 1, 1), (2, 2, 2)])
+    all_lines.append([(0, 0, 2), (1, 1, 1), (2, 2, 0)])
+    all_lines.append([(0, 2, 0), (1, 1, 1), (2, 0, 2)])
+    all_lines.append([(0, 2, 2), (1, 1, 1), (2, 0, 0)])
+
+    # First, check for immediate win
+    for line in all_lines:
+        count_me = 0
+        empty = None
+        for (x, y, z) in line:
+            if board[x][y][z] == 1:
+                count_me += 1
+            elif board[x][y][z] == 0:
+                empty = (x, y, z)
+            else:
+                count_me = -1
+                break
+        if count_me == 2 and empty is not None:
+            return empty
+
+    # Then, check for opponent's immediate threat
+    for line in all_lines:
+        count_opp = 0
+        empty = None
+        for (x, y, z) in line:
+            if board[x][y][z] == -1:
+                count_opp += 1
+            elif board[x][y][z] == 0:
+                if empty is None:
+                    empty = (x, y, z)
+                else:
+                    empty = None
+                    break
+            else:
+                count_opp = -1
+                break
+        if count_opp == 2 and empty is not None:
+            return empty
+
+    # If no immediate win or threat, select best move based on heuristic
+    best_score = -1
+    best_move = None
+    empty_cells = [(i, j, k) for i in range(3) for j in range(3) for k in range(3) if board[i][j][k] == 0]
+    for (i, j, k) in empty_cells:
+        score = 0
+        # Bonus for center
+        if (i, j, k) == (1, 1, 1):
+            score += 20
+        # Check all lines that include this cell
+        for line in all_lines:
+            if (i, j, k) not in line:
+                continue
+            my_count = 0
+            opp_count = 0
+            for (x, y, z) in line:
+                if board[x][y][z] == 1:
+                    my_count += 1
+                elif board[x][y][z] == -1:
+                    opp_count += 1
+            if opp_count > 0:
+                continue
+            if my_count == 2:
+                score += 100
+            elif my_count == 1:
+                score += 10
+            else:
+                score += 1
+        # Prefer center when scores are equal
+        if score > best_score or (score == best_score and (i, j, k) == (1, 1, 1)):
+            best_score = score
+            best_move = (i, j, k)
+
+    return best_move if best_move else empty_cells[0]

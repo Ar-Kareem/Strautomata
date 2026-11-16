@@ -1,0 +1,137 @@
+# Strategy
+
+This is a Hex game on a 7x7 board where:
+- **Red** wins by connecting upper-left to lower-right
+- **Black** wins by connecting upper-right to lower-left
+
+Key observations from the game:
+1. Pieces are placed on hexagonal cells with coordinates (column letter a-g, row 1-7)
+2. A `connected` fact tracks which pieces form a connected group
+3. Winning requires building a connected path across the board
+
+My strategy uses a **greedy approach with path prioritization**:
+
+1. **Find your connected components**: Identify all pieces of my color and their connectivity
+2. **Scoring heuristic**: Prioritize moves that:
+   - **Block opponent's winning path**: If opponent is close to winning, block them
+   - **Extend my connection**: Place pieces adjacent to my existing connected groups
+   - **Progress toward goal**: Move in the direction of my winning sides
+   - **Center positions**: Prefer central positions that provide more connectivity options
+
+3. **Direction-based scoring**:
+   - For **Red**: Prefer moves that go toward lower-right (increasing row and column)
+   - For **Black**: Prefer moves that go toward lower-left (increasing row, decreasing column)
+
+4. **Fallback**: If no strategic move is obvious, place on empty cells that provide good connectivity potential
+
+<code>
+def policy(state: list[list[object]], role: str) -> str:
+    # Parse the board state
+    board = {}  # (col, row) -> color
+    connected_groups = {}  # owner_id -> list of (col, row)
+    my_connections = {}  # owner_id -> list of (col, row) for my color
+    opponent_connections = {}  # owner_id -> list of (col, row) for opponent
+    
+    opponent_role = "black" if role == "red" else "red"
+    
+    for fact in state:
+        if fact[0] == "cell":
+            col, row, color = fact[1], int(fact[2]), fact[3]
+            board[(col, row)] = color
+        elif fact[0] == "connected":
+            owner_id = int(fact[1])
+            col, row = fact[2], int(fact[3])
+            if owner_id not in connected_groups:
+                connected_groups[owner_id] = []
+            connected_groups[owner_id].append((col, row))
+    
+    # Organize connected groups by role
+    for fact in state:
+        if fact[0] == "owner":
+            owner_id, color = int(fact[1]), fact[2]
+            if owner_id in connected_groups:
+                if color == role:
+                    my_connections[owner_id] = set(connected_groups[owner_id])
+                else:
+                    opponent_connections[owner_id] = set(connected_groups[owner_id])
+    
+    # Get all empty cells
+    empty_cells = []
+    for col in "abcdefg":
+        for row in range(1, 8):
+            if (col, row) not in board:
+                empty_cells.append((col, row))
+    
+    def get_neighbors(col, row):
+        """Get hexagonal neighbors"""
+        col_idx = ord(col) - ord('a')
+        neighbors = []
+        
+        # Hexagonal neighbors depend on column parity
+        if col_idx % 2 == 0:  # even columns (a, c, e, g)
+            deltas = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1)]
+        else:  # odd columns (b, d, f)
+            deltas = [(-1, 0), (1, 0), (0, -1), (0, 1), (1, -1), (1, 1)]
+        
+        for dc, dr in deltas:
+            new_col_idx = col_idx + dc
+            new_row = row + dr
+            if 0 <= new_col_idx < 7 and 1 <= new_row <= 7:
+                neighbors.append((chr(ord('a') + new_col_idx), new_row))
+        
+        return neighbors
+    
+    def score_move(col, row):
+        """Score a potential move"""
+        score = 0
+        
+        # Check if move connects to my pieces
+        neighbors = get_neighbors(col, row)
+        my_neighbor_count = 0
+        for nc, nr in neighbors:
+            if (nc, nr) in board and board[(nc, nr)] == role:
+                my_neighbor_count += 1
+                score += 10
+        
+        # Check if move blocks opponent
+        opponent_neighbor_count = 0
+        for nc, nr in neighbors:
+            if (nc, nr) in board and board[(nc, nr)] == opponent_role:
+                opponent_neighbor_count += 1
+                score += 5
+        
+        # Prefer positions based on goal direction
+        if role == "red":
+            # Red wants to go to lower-right (g, 7)
+            col_progress = (ord(col) - ord('a')) / 6.0
+            row_progress = (row - 1) / 6.0
+            score += (col_progress + row_progress) * 2
+        else:  # black
+            # Black wants to go to lower-left (a, 7)
+            col_progress = (ord('g') - ord(col)) / 6.0
+            row_progress = (row - 1) / 6.0
+            score += (col_progress + row_progress) * 2
+        
+        # Prefer central positions
+        center_col = abs((ord(col) - ord('a')) - 3) / 3.0
+        center_row = abs(row - 4) / 3.0
+        score += (1 - max(center_col, center_row)) * 1.5
+        
+        return score
+    
+    # Score all empty cells
+    best_move = None
+    best_score = -float('inf')
+    
+    for col, row in empty_cells:
+        score = score_move(col, row)
+        if score > best_score:
+            best_score = score
+            best_move = (col, row)
+    
+    # Default to first empty cell if somehow no moves found
+    if best_move is None:
+        best_move = empty_cells[0] if empty_cells else ("a", 1)
+    
+    return f"place({best_move[0]},{best_move[1]})"
+</code>

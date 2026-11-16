@@ -1,0 +1,162 @@
+## Strategy
+
+My policy implements a probability density approach combined with hunt/target modes:
+
+1. **Target Mode**: When there are hits (`1`) on the board that are adjacent to unknown cells (`0`), I prioritize those cells. I look for lines of consecutive hits and extend them, or explore orthogonal directions from isolated hits.
+
+2. **Hunt Mode (Probability Density)**: When there's no immediate target, I compute a probability density map. For each remaining ship length that hasn't been fully sunk, I count how many valid placements pass through each unknown cell. This gives a heat map of where ships are most likely to be. I also apply a checkerboard parity optimization since the smallest ship has length 2.
+
+3. **Ship Tracking**: I identify connected components of hits to determine which ships have been sunk (a connected line of hits surrounded by misses/edges on both ends). This lets me know which ship lengths remain.
+
+4. **Targeting Priority**: For cells adjacent to hits, I score them higher if they extend a line of existing hits. I also consider the probability density to break ties.
+
+<code>
+import numpy as np
+from collections import deque
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    b = np.array(board)
+    
+    # Find connected components of hits to determine sunk ships
+    visited = np.zeros((10, 10), dtype=bool)
+    sunk_lengths = []
+    unsunk_hits = []
+    
+    def get_hit_component(r, c):
+        comp = [(r, c)]
+        queue = deque([(r, c)])
+        visited[r][c] = True
+        while queue:
+            cr, cc = queue.popleft()
+            for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                nr, nc = cr+dr, cc+dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and not visited[nr][nc] and b[nr][nc] == 1:
+                    visited[nr][nc] = True
+                    comp.append((nr, nc))
+                    queue.append((nr, nc))
+        return comp
+    
+    all_components = []
+    for r in range(10):
+        for c in range(10):
+            if b[r][c] == 1 and not visited[r][c]:
+                comp = get_hit_component(r, c)
+                all_components.append(comp)
+    
+    for comp in all_components:
+        if len(comp) == 1:
+            r, c = comp[0]
+            has_unknown_neighbor = any(
+                0 <= r+dr < 10 and 0 <= c+dc < 10 and b[r+dr][c+dc] == 0
+                for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]
+            )
+            if not has_unknown_neighbor:
+                sunk_lengths.append(1)
+            else:
+                unsunk_hits.extend(comp)
+        else:
+            rows = sorted(set(p[0] for p in comp))
+            cols = sorted(set(p[1] for p in comp))
+            is_line = (len(rows) == 1 or len(cols) == 1)
+            if is_line and len(rows) == 1:
+                # horizontal line
+                min_c, max_c = min(cols), max(cols)
+                if max_c - min_c + 1 == len(comp):
+                    # Check if both ends are blocked
+                    r0 = rows[0]
+                    left_blocked = (min_c == 0 or b[r0][min_c-1] == -1)
+                    right_blocked = (max_c == 9 or b[r0][max_c+1] == -1)
+                    if left_blocked and right_blocked:
+                        sunk_lengths.append(len(comp))
+                    else:
+                        unsunk_hits.extend(comp)
+                else:
+                    unsunk_hits.extend(comp)
+            elif is_line and len(cols) == 1:
+                min_r, max_r = min(rows), max(rows)
+                if max_r - min_r + 1 == len(comp):
+                    c0 = cols[0]
+                    top_blocked = (min_r == 0 or b[min_r-1][c0] == -1)
+                    bot_blocked = (max_r == 9 or b[max_r+1][c0] == -1)
+                    if top_blocked and bot_blocked:
+                        sunk_lengths.append(len(comp))
+                    else:
+                        unsunk_hits.extend(comp)
+                else:
+                    unsunk_hits.extend(comp)
+            else:
+                unsunk_hits.extend(comp)
+    
+    ship_lengths = [5, 4, 3, 3, 2]
+    remaining_ships = list(ship_lengths)
+    sunk_sorted = sorted(sunk_lengths, reverse=True)
+    for s in sunk_sorted:
+        if s in remaining_ships:
+            remaining_ships.remove(s)
+    
+    # Probability density map
+    density = np.zeros((10, 10), dtype=float)
+    for length in remaining_ships:
+        for r in range(10):
+            for c in range(10 - length + 1):
+                cells = [(r, c+i) for i in range(length)]
+                if all(b[cr][cc] in (0, 1) for cr, cc in cells):
+                    has_hit = any(b[cr][cc] == 1 for cr, cc in cells)
+                    weight = 10.0 if has_hit else 1.0
+                    for cr, cc in cells:
+                        if b[cr][cc] == 0:
+                            density[cr][cc] += weight
+        for r in range(10 - length + 1):
+            for c in range(10):
+                cells = [(r+i, c) for i in range(length)]
+                if all(b[cr][cc] in (0, 1) for cr, cc in cells):
+                    has_hit = any(b[cr][cc] == 1 for cr, cc in cells)
+                    weight = 10.0 if has_hit else 1.0
+                    for cr, cc in cells:
+                        if b[cr][cc] == 0:
+                            density[cr][cc] += weight
+    
+    # Mask already fired cells
+    for r in range(10):
+        for c in range(10):
+            if b[r][c] != 0:
+                density[r][c] = -1
+    
+    # If we have unsunk hits, heavily prioritize neighbors
+    if unsunk_hits:
+        best_score = -1
+        best_cell = None
+        for r in range(10):
+            for c in range(10):
+                if b[r][c] == 0 and density[r][c] > best_score:
+                    best_score = density[r][c]
+                    best_cell = (r, c)
+        if best_cell and best_score > 0:
+            return best_cell
+    
+    # Hunt mode: pick highest density with checkerboard preference
+    best_score = -1
+    best_cell = None
+    min_ship = min(remaining_ships) if remaining_ships else 2
+    for r in range(10):
+        for c in range(10):
+            if b[r][c] == 0:
+                score = density[r][c]
+                # Checkerboard bonus
+                if (r + c) % min_ship == 0:
+                    score += 0.1
+                if score > best_score:
+                    best_score = score
+                    best_cell = (r, c)
+    
+    if best_cell:
+        return best_cell
+    
+    # Fallback: pick any unknown cell
+    for r in range(10):
+        for c in range(10):
+            if b[r][c] == 0:
+                return (r, c)
+    
+    return (0, 0)
+</code>

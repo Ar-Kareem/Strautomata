@@ -1,0 +1,53 @@
+
+import numpy as np
+from collections import deque
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    board = np.array(board)
+    hits = np.argwhere(board == 1)
+    
+    # If there are hits, try to sink the ship
+    if len(hits) > 0:
+        # Check adjacent cells for each hit
+        for (r, c) in hits:
+            # Check four possible directions
+            for dr, dc in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and board[nr, nc] == 0:
+                    return (nr, nc)
+    
+    # If no hits to follow up on, use probability targeting
+    # Create a probability grid favoring cells that could be part of longer ships
+    prob_grid = np.zeros((10, 10))
+    
+    # For each possible ship configuration
+    ship_lengths = [5, 4, 3, 3, 2]
+    
+    for length in ship_lengths:
+        # Horizontal placements
+        for r in range(10):
+            for c in range(10 - length + 1):
+                if np.all(board[r, c:c+length] == 0):
+                    prob_grid[r, c:c+length] += 1
+        
+        # Vertical placements
+        for r in range(10 - length + 1):
+            for c in range(10):
+                if np.all(board[r:r+length, c] == 0):
+                    prob_grid[r:r+length, c] += 1
+    
+    # Zero out already shot cells
+    prob_grid[board != 0] = 0
+    
+    # If no valid moves left (shouldn't happen in valid game)
+    if np.max(prob_grid) == 0:
+        # Fallback: find first available cell
+        available = np.argwhere(board == 0)
+        if len(available) > 0:
+            return tuple(available[0])
+        return (0, 0)  # should never reach here
+    
+    # Find the cell with maximum probability
+    max_prob = np.max(prob_grid)
+    candidates = np.argwhere(prob_grid == max_prob)
+    return tuple(candidates[0])

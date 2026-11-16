@@ -1,0 +1,228 @@
+
+import numpy as np
+import random
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> int:
+    # Convert to numpy array for easier manipulation
+    board_np = np.array(board)
+    
+    # Define constants
+    ROWS, COLS = 6, 7
+    EMPTY = 0
+    PLAYER = 1
+    OPPONENT = -1
+    WINNING_LENGTH = 4
+    
+    # Check if a move leads to immediate win
+    def check_win(board_state, player, col):
+        # Make the move
+        row = get_next_open_row(board_state, col)
+        if row is None:
+            return False
+        board_state[row][col] = player
+        
+        # Check for win
+        win = is_winning_move(board_state, player, row, col)
+        
+        # Undo the move
+        board_state[row][col] = EMPTY
+        return win
+    
+    # Get the next open row in a column
+    def get_next_open_row(board_state, col):
+        for r in range(ROWS-1, -1, -1):
+            if board_state[r][col] == EMPTY:
+                return r
+        return None
+    
+    # Check if the last move was a winning move
+    def is_winning_move(board_state, player, row, col):
+        # Check horizontally
+        def check_horizontal():
+            count = 1
+            # Check right
+            c = col + 1
+            while c < COLS and board_state[row][c] == player:
+                count += 1
+                c += 1
+            # Check left
+            c = col - 1
+            while c >= 0 and board_state[row][c] == player:
+                count += 1
+                c -= 1
+            return count >= WINNING_LENGTH
+        
+        # Check vertically
+        def check_vertical():
+            count = 1
+            # Check down
+            r = row + 1
+            while r < ROWS and board_state[r][col] == player:
+                count += 1
+                r += 1
+            return count >= WINNING_LENGTH
+        
+        # Check diagonally (top-left to bottom-right)
+        def check_diagonal1():
+            count = 1
+            # Check down-right
+            r, c = row + 1, col + 1
+            while r < ROWS and c < COLS and board_state[r][c] == player:
+                count += 1
+                r += 1
+                c += 1
+            # Check up-left
+            r, c = row - 1, col - 1
+            while r >= 0 and c >= 0 and board_state[r][c] == player:
+                count += 1
+                r -= 1
+                c -= 1
+            return count >= WINNING_LENGTH
+        
+        # Check diagonally (top-right to bottom-left)
+        def check_diagonal2():
+            count = 1
+            # Check down-left
+            r, c = row + 1, col - 1
+            while r < ROWS and c >= 0 and board_state[r][c] == player:
+                count += 1
+                r += 1
+                c -= 1
+            # Check up-right
+            r, c = row - 1, col + 1
+            while r >= 0 and c < COLS and board_state[r][c] == player:
+                count += 1
+                r -= 1
+                c += 1
+            return count >= WINNING_LENGTH
+        
+        return check_horizontal() or check_vertical() or check_diagonal1() or check_diagonal2()
+    
+    # Get valid moves
+    def get_valid_moves(board_state):
+        return [c for c in range(COLS) if board_state[0][c] == EMPTY]
+    
+    # Evaluate board state
+    def evaluate_window(window, player):
+        score = 0
+        opponent = OPPONENT if player == PLAYER else PLAYER
+        
+        if window.count(player) == 4:
+            score += 100
+        elif window.count(player) == 3 and window.count(EMPTY) == 1:
+            score += 5
+        elif window.count(player) == 2 and window.count(EMPTY) == 2:
+            score += 2
+            
+        if window.count(opponent) == 3 and window.count(EMPTY) == 1:
+            score -= 4
+            
+        return score
+    
+    def score_position(board_state, player):
+        score = 0
+        
+        # Score center column
+        center_array = [int(i) for i in list(board_state[:, COLS//2])]
+        center_count = center_array.count(player)
+        score += center_count * 3
+        
+        # Score horizontal
+        for r in range(ROWS):
+            row_array = [int(i) for i in list(board_state[r,:])]
+            for c in range(COLS-3):
+                window = row_array[c:c+WINNING_LENGTH]
+                score += evaluate_window(window, player)
+        
+        # Score vertical
+        for c in range(COLS):
+            col_array = [int(i) for i in list(board_state[:,c])]
+            for r in range(ROWS-3):
+                window = col_array[r:r+WINNING_LENGTH]
+                score += evaluate_window(window, player)
+        
+        # Score diagonal positive slope
+        for r in range(ROWS-3):
+            for c in range(COLS-3):
+                window = [board_state[r+i][c+i] for i in range(WINNING_LENGTH)]
+                score += evaluate_window(window, player)
+                
+        # Score diagonal negative slope
+        for r in range(ROWS-3):
+            for c in range(COLS-3):
+                window = [board_state[r+3-i][c+i] for i in range(WINNING_LENGTH)]
+                score += evaluate_window(window, player)
+                
+        return score
+    
+    # Minimax with alpha-beta pruning
+    def minimax(board_state, depth, alpha, beta, maximizing_player):
+        valid_moves = get_valid_moves(board_state)
+        is_terminal = len(valid_moves) == 0 or check_win(board_state, PLAYER, 0) or check_win(board_state, OPPONENT, 0)
+        
+        if depth == 0 or is_terminal:
+            if is_terminal:
+                if check_win(board_state, PLAYER, 0):
+                    return (None, 100000000000000)
+                elif check_win(board_state, OPPONENT, 0):
+                    return (None, -10000000000000)
+                else: # Game over, no more valid moves
+                    return (None, 0)
+            else: # Depth is zero
+                return (None, score_position(board_state, PLAYER))
+        
+        if maximizing_player:
+            value = -np.inf
+            column = random.choice(valid_moves)
+            for col in valid_moves:
+                row = get_next_open_row(board_state, col)
+                if row is not None:
+                    board_copy = board_state.copy()
+                    board_copy[row][col] = PLAYER
+                    new_score = minimax(board_copy, depth-1, alpha, beta, False)[1]
+                    if new_score > value:
+                        value = new_score
+                        column = col
+                    alpha = max(alpha, value)
+                    if alpha >= beta:
+                        break
+            return column, value
+        else: # Minimizing player
+            value = np.inf
+            column = random.choice(valid_moves)
+            for col in valid_moves:
+                row = get_next_open_row(board_state, col)
+                if row is not None:
+                    board_copy = board_state.copy()
+                    board_copy[row][col] = OPPONENT
+                    new_score = minimax(board_copy, depth-1, alpha, beta, True)[1]
+                    if new_score < value:
+                        value = new_score
+                        column = col
+                    beta = min(beta, value)
+                    if alpha >= beta:
+                        break
+            return column, value
+    
+    # Check for immediate winning move
+    valid_moves = get_valid_moves(board_np)
+    
+    # Check if we can win immediately
+    for col in valid_moves:
+        if check_win(board_np, PLAYER, col):
+            return col
+    
+    # Check if opponent can win immediately and block
+    for col in valid_moves:
+        if check_win(board_np, OPPONENT, col):
+            return col
+    
+    # Use minimax for deeper strategy
+    col, minimax_score = minimax(board_np, 4, -np.inf, np.inf, True)
+    
+    # If minimax didn't return a valid column, choose randomly from valid moves
+    if col is None or col not in valid_moves:
+        return random.choice(valid_moves)
+    
+    return col

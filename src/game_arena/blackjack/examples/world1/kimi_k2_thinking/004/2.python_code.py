@@ -1,0 +1,73 @@
+
+def hand_value(hand, target):
+    """Calculate optimal hand value with dynamic ace valuation."""
+    total = 0
+    aces = 0
+    
+    for card in hand:
+        if card == 'A':
+            aces += 1
+        elif card in {'J', 'Q', 'K'}:
+            total += 10
+        else:
+            total += int(card)
+    
+    total += aces * 11
+    
+    # Reduce aces from 11 to 1 while busting
+    while total > target and aces > 0:
+        total -= 10
+        aces -= 1
+    
+    return total
+
+def policy(hand, target):
+    """
+    Optimal HIT/STAY policy for target-based card game.
+    
+    Strategy:
+    1. If hand value >= target: STAY (already bust or perfect)
+    2. If value < 50% target: HIT (need to build score)
+    3. If value >= target-4: STAY (close enough, don't risk)
+    4. Otherwise: HIT if bust probability < dynamic threshold
+    
+    The dynamic threshold decreases from ~0.55 to ~0.25 as hand value
+    approaches target, becoming more risk-averse.
+    """
+    cur = hand_value(hand, target)
+    
+    # Phase 1: Already at target or busted
+    if cur >= target:
+        return "STAY"
+    
+    # Phase 2: Early game, need more points
+    if cur < target * 0.5:
+        return "HIT"
+    
+    # Phase 3: Late game, close to target
+    if cur >= target - 4:
+        return "STAY"
+    
+    # Phase 4: Mid game - calculate exact bust risk
+    # Determine remaining cards in deck (each rank appears once)
+    all_cards = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    remaining = [c for c in all_cards if c not in hand]
+    
+    if not remaining:
+        return "STAY"
+    
+    # Count bust cards
+    bust = sum(1 for c in remaining if hand_value(hand + [c], target) > target)
+    p_bust = bust / len(remaining)
+    
+    # Dynamic threshold based on progress toward target
+    progress = cur / target
+    threshold = 0.55 - progress * 0.3  # ranges from ~0.55 to ~0.25
+    
+    # With few cards left, slightly more aggressive
+    if len(remaining) <= 3:
+        threshold += 0.1
+    
+    threshold = max(0.2, min(0.6, threshold))
+    
+    return "HIT" if p_bust < threshold else "STAY"

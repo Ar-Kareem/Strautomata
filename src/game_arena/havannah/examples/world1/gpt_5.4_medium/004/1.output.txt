@@ -1,0 +1,444 @@
+The strategy for this policy is:
+
+1. Infer the hex-grid neighbor geometry directly from `valid_mask`, so it works with the arena’s board embedding.
+2. Detect wins exactly for:
+   - bridge: connected component touches 2 corners,
+   - fork: connected component touches 3 edges,
+   - ring: opponent/empty cells become enclosed away from the boundary.
+3. Play priorities:
+   - take an immediate winning move if one exists,
+   - otherwise block any immediate opponent winning move,
+   - otherwise use a connection-focused heuristic:
+     - merge my components,
+     - increase touched corners/edges,
+     - contest strong opponent components,
+     - prefer central/high-mobility cells early.
+4. Among strong candidate moves, prefer ones that create multiple immediate winning threats for the following turn.
+
+<code>
+from collections import deque
+
+_CACHE = {}
+
+
+def _mask_key(valid_mask):
+    return tuple(tuple(bool(x) for x in row) for row in valid_mask)
+
+
+def _build_geom(valid_mask):
+    key = _mask_key(valid_mask)
+    if key in _CACHE:
+        return _CACHE[key]
+
+    n = len(valid_mask)
+    valid_cells = [(r, c) for r in range(n) for c in range(n) if valid_mask[r][c]]
+    valid_set = set(valid_cells)
+
+    # Two possible hex embeddings in an NxN array.
+    orientations = [
+        [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, 1)],
+        [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, 1), (1, -1)],
+    ]
+
+    best = None
+    best_score = None
+
+    for dirs in orientations:
+        nbrs = {}
+        degree = {}
+        deg3 = deg2 = deg6 = 0
+        total_deg = 0
+
+        for cell in valid_cells:
+            r, c = cell
+            lst = []
+            for dr, dc in dirs:
+                nb = (r + dr, c + dc)
+                if nb in valid_set:
+                    lst.append(nb)
+            nbrs[cell] = tuple(lst)
+            d = len(lst)
+            degree[cell] = d
+            total_deg += d
+            if d == 3:
+                deg3 += 1
+            if d == 2:
+                deg2 += 1
+            if d == 6:
+                deg6 += 1
+
+        # Prefer the orientation that looks like a proper hex board:
+        # six degree-3 corners, no degree-2 corners, many degree-6 interiors.
+        score = (
+            1 if deg3 == 6 else 0,
+            -deg2,
+            deg3,
+            deg6,
+            total_deg,
+        )
+        if best is None or score > best_score:
+            best = (dirs, nbrs, degree)
+            best_score = score
+
+    dirs, nbrs, degree = best
+
+    boundary = [cell for cell in valid_cells if degree[cell] < 6]
+    boundary_set = set(boundary)
+    corners = [cell for cell in valid_cells if degree[cell] == 3]
+    corner_set = set(corners)
+
+    # Boundary cycle order.
+    bnei = {cell: [nb for nb in nbrs[cell] if nb in boundary_set] for cell in boundary}
+
+    def traverse(start, first):
+        cycle = [start]
+        prev = start
+        cur = first
+        limit = len(boundary) + 2
+        while True:
+            if cur == start:
+                break
+            cycle.append(cur)
+            nbs = bnei[cur]
+            if not nbs:
+                return None
+            if len(nbs) == 1:
+                nxt = nbs[0]
+            else:
+                nxt = nbs[0] if nbs[0] != prev else nbs[1]
+            prev, cur = cur, nxt
+            if len(cycle) > limit:
+                return None
+        return cycle
+
+    cycle = None
+    if corners:
+        start = min(corners)
+        for first in sorted(bnei[start]):
+            cyc = traverse(start, first)
+            if cyc is not None and len(cyc) == len(boundary):
+                cycle = cyc
+                break
+    if cycle is None:
+        cycle = sorted(boundary)
+
+    corner_indices = [i for i, cell in enumerate(cycle) if cell in corner_set]
+    ordered_corners = [cycle[i] for i in corner_indices]
+
+    # Fallback if something went odd; still keep policy legal.
+    if len(ordered_corners) != 6:
+        ordered_corners = sorted(corners)[:6]
+
+    corner_of = {cell: i for i, cell in enumerate(ordered_corners)}
+    edge_of = {}
+
+    if len(corner_indices) == 6:
+        L = len(cycle)
+        for i in range(6):
+            a = corner_indices[i]
+            b = corner_indices[(i + 1) % 6]
+            j = (a + 1) % L
+            while j != b:
+                cell = cycle[j]
+                if cell not in corner_set:
+                    edge_of[cell] = i
+                j = (j + 1) % L
+
+    cr = sum(r for r, _ in valid_cells) / len(valid_cells)
+    cc = sum(c for _, c in valid_cells) / len(valid_cells)
+    center_cell = min(valid_cells, key=lambda x: (x[0] - cr) ** 2 + (x[1] - cc) ** 2)
+
+    geom = {
+        "valid_cells": valid_cells,
+        "valid_set": valid_set,
+        "nbrs": nbrs,
+        "degree": degree,
+        "boundary": boundary,
+        "boundary_set": boundary_set,
+        "corners": ordered_corners,
+        "corner_of": corner_of,
+        "edge_of": edge_of,
+        "center": (cr, cc),
+        "center_cell": center_cell,
+    }
+    _CACHE[key] = geom
+    return geom
+
+
+def _build_components(stones_set, geom):
+    nbrs = geom["nbrs"]
+    corner_of = geom["corner_of"]
+    edge_of = geom["edge_of"]
+
+    comp_of = {}
+    comps = []
+
+    for s in stones_set:
+        if s in comp_of:
+            continue
+        cid = len(comps)
+        stack = [s]
+        comp_of[s] = cid
+        size = 0
+        corners = set()
+        edges = set()
+
+        while stack:
+            x = stack.pop()
+            size += 1
+            ci = corner_of.get(x)
+            if ci is not None:
+                corners.add(ci)
+            ei = edge_of.get(x)
+            if ei is not None:
+                edges.add(ei)
+            for nb in nbrs[x]:
+                if nb in stones_set and nb not in comp_of:
+                    comp_of[nb] = cid
+                    stack.append(nb)
+
+        comps.append({"size": size, "corners": corners, "edges": edges})
+
+    return comp_of, comps
+
+
+def _has_ring_after(stones_set, move, geom):
+    # Ring detection by enclosure:
+    # if some non-player cell is not reachable from the boundary through non-player cells,
+    # then player stones form a ring around it.
+    nbrs = geom["nbrs"]
+    boundary = geom["boundary"]
+    valid_cells = geom["valid_cells"]
+
+    seen = set()
+    dq = deque()
+
+    for cell in boundary:
+        if cell != move and cell not in stones_set:
+            seen.add(cell)
+            dq.append(cell)
+
+    while dq:
+        x = dq.popleft()
+        for nb in nbrs[x]:
+            if nb != move and nb not in stones_set and nb not in seen:
+                seen.add(nb)
+                dq.append(nb)
+
+    for cell in valid_cells:
+        if cell != move and cell not in stones_set and cell not in seen:
+            return True
+    return False
+
+
+def _wins_after(stones_set, move, geom):
+    nbrs = geom["nbrs"]
+    corner_of = geom["corner_of"]
+    edge_of = geom["edge_of"]
+
+    # Component containing the new stone.
+    seen = {move}
+    stack = [move]
+    corners = set()
+    edges = set()
+
+    while stack:
+        x = stack.pop()
+        ci = corner_of.get(x)
+        if ci is not None:
+            corners.add(ci)
+        ei = edge_of.get(x)
+        if ei is not None:
+            edges.add(ei)
+
+        for nb in nbrs[x]:
+            if nb not in seen and (nb == move or nb in stones_set):
+                seen.add(nb)
+                stack.append(nb)
+
+    if len(corners) >= 2:
+        return True
+    if len(edges) >= 3:
+        return True
+    if _has_ring_after(stones_set, move, geom):
+        return True
+    return False
+
+
+def _quick_score(move, me_set, opp_set, my_comp_of, my_comps, opp_comp_of, opp_comps, geom, turn):
+    nbrs = geom["nbrs"][move]
+    degree = geom["degree"][move]
+    corner_of = geom["corner_of"]
+    edge_of = geom["edge_of"]
+    cr, cc = geom["center"]
+
+    my_adj = 0
+    opp_adj = 0
+    my_nei_comps = set()
+    opp_nei_comps = set()
+
+    for nb in nbrs:
+        if nb in me_set:
+            my_adj += 1
+            my_nei_comps.add(my_comp_of[nb])
+        elif nb in opp_set:
+            opp_adj += 1
+            opp_nei_comps.add(opp_comp_of[nb])
+
+    my_corners = set()
+    my_edges = set()
+    ci = corner_of.get(move)
+    if ci is not None:
+        my_corners.add(ci)
+    ei = edge_of.get(move)
+    if ei is not None:
+        my_edges.add(ei)
+    merged_size = 1
+    for cid in my_nei_comps:
+        comp = my_comps[cid]
+        merged_size += comp["size"]
+        my_corners |= comp["corners"]
+        my_edges |= comp["edges"]
+
+    opp_corners = set()
+    opp_edges = set()
+    ci2 = corner_of.get(move)
+    if ci2 is not None:
+        opp_corners.add(ci2)
+    ei2 = edge_of.get(move)
+    if ei2 is not None:
+        opp_edges.add(ei2)
+    for cid in opp_nei_comps:
+        comp = opp_comps[cid]
+        opp_corners |= comp["corners"]
+        opp_edges |= comp["edges"]
+
+    # Centrality is more important early.
+    dist2 = (move[0] - cr) ** 2 + (move[1] - cc) ** 2
+    early = max(0.0, 18.0 - turn) / 18.0
+
+    score = 0.0
+
+    # Build my structure.
+    score += 28.0 * len(my_nei_comps)
+    score += 8.0 * my_adj
+    score += 2.2 * merged_size
+    score += 62.0 * len(my_corners)
+    score += 36.0 * len(my_edges)
+
+    if len(my_edges) == 2:
+        score += 42.0
+    if len(my_corners) == 1 and len(my_edges) >= 2:
+        score += 30.0
+    if len(my_corners) == 1:
+        score += 10.0
+
+    # Contest opponent's plans.
+    score += 16.0 * len(opp_nei_comps)
+    score += 5.0 * opp_adj
+    score += 22.0 * len(opp_corners)
+    score += 13.0 * len(opp_edges)
+
+    # Shape / mobility / opening.
+    score += 2.0 * degree
+    score -= early * 0.85 * dist2
+
+    if turn < 10 and my_adj == 0 and degree < 6:
+        score -= 4.0
+
+    # Slight preference for flexible interior unless tactically important.
+    if degree == 6:
+        score += 2.0
+
+    return score
+
+
+def _future_win_count(move, me_set, opp_set, legal_moves, geom, limit=6):
+    new_me = set(me_set)
+    new_me.add(move)
+    cnt = 0
+    for m2 in legal_moves:
+        if m2 == move or m2 in opp_set:
+            continue
+        if _wins_after(new_me, m2, geom):
+            cnt += 1
+            if cnt >= limit:
+                break
+    return cnt
+
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    geom = _build_geom(valid_mask)
+
+    me_set = set(tuple(x) for x in me)
+    opp_set = set(tuple(x) for x in opp)
+    occupied = me_set | opp_set
+
+    legal = [cell for cell in geom["valid_cells"] if cell not in occupied]
+    if not legal:
+        # Should never happen in a valid call, but keep a legal-ish fallback.
+        return geom["center_cell"]
+
+    turn = len(me_set) + len(opp_set)
+
+    # Strong opening.
+    if turn == 0 and geom["center_cell"] in legal:
+        return geom["center_cell"]
+
+    my_comp_of, my_comps = _build_components(me_set, geom)
+    opp_comp_of, opp_comps = _build_components(opp_set, geom)
+
+    # 1) Take a win immediately.
+    my_wins = [m for m in legal if _wins_after(me_set, m, geom)]
+    if my_wins:
+        return max(
+            my_wins,
+            key=lambda m: (
+                _quick_score(m, me_set, opp_set, my_comp_of, my_comps, opp_comp_of, opp_comps, geom, turn),
+                -((m[0] - geom["center"][0]) ** 2 + (m[1] - geom["center"][1]) ** 2),
+                -m[0],
+                -m[1],
+            ),
+        )
+
+    # 2) Block opponent's immediate win if needed.
+    opp_wins = [m for m in legal if _wins_after(opp_set, m, geom)]
+    if opp_wins:
+        return max(
+            opp_wins,
+            key=lambda m: (
+                _quick_score(m, me_set, opp_set, my_comp_of, my_comps, opp_comp_of, opp_comps, geom, turn),
+                _future_win_count(m, me_set, opp_set, legal, geom, limit=4),
+                -((m[0] - geom["center"][0]) ** 2 + (m[1] - geom["center"][1]) ** 2),
+                -m[0],
+                -m[1],
+            ),
+        )
+
+    # 3) Normal play: heuristic + threat creation.
+    scored = sorted(
+        legal,
+        key=lambda m: _quick_score(m, me_set, opp_set, my_comp_of, my_comps, opp_comp_of, opp_comps, geom, turn),
+        reverse=True,
+    )
+
+    top_k = 10 if len(scored) > 10 else len(scored)
+    candidates = scored[:top_k]
+
+    best_move = candidates[0]
+    best_score = -10**18
+
+    for m in candidates:
+        s = _quick_score(m, me_set, opp_set, my_comp_of, my_comps, opp_comp_of, opp_comps, geom, turn)
+        fw = _future_win_count(m, me_set, opp_set, legal, geom, limit=6)
+        s += 220.0 * fw
+
+        # Mild tie-break toward center.
+        s -= 0.01 * ((m[0] - geom["center"][0]) ** 2 + (m[1] - geom["center"][1]) ** 2)
+
+        if s > best_score:
+            best_score = s
+            best_move = m
+
+    return best_move
+</code>

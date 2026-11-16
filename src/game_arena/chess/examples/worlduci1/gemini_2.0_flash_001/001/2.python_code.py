@@ -1,0 +1,98 @@
+
+import numpy as np
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    """
+    Chooses the best move from the list of legal moves based on a simple evaluation function.
+    """
+
+    def get_legal_moves(board: dict[str, str], to_play: str) -> list[str]:
+        """Dummy legal moves function as this is evaluated on the arena"""
+        # Replace this function with a proper legal move generator for stronger play
+
+        all_moves = []
+        for start_square, piece in board.items():
+            if (to_play == 'white' and piece[0] == 'w') or (to_play == 'black' and piece[0] == 'b'):
+                file = start_square[0]
+                rank = int(start_square[1])
+
+                # Example movements
+                possible_moves = []
+                if to_play == 'white':
+                    possible_moves.append(chr(ord(file)+1)+str(rank+1) if ord(file) < ord('h') and rank < 8 else None)
+                    possible_moves.append(chr(ord(file)-1)+str(rank+1) if ord(file) > ord('a') and rank < 8 else None)
+                else:
+                     possible_moves.append(chr(ord(file)+1)+str(rank-1) if ord(file) < ord('h') and rank > 1 else None)
+                     possible_moves.append(chr(ord(file)-1)+str(rank-1) if ord(file) > ord('a') and rank > 1 else None)
+                
+                for end_square in possible_moves:
+                    if end_square and len(end_square) == 2:
+                        all_moves.append(start_square + end_square)
+        return all_moves
+    
+    legal_moves = get_legal_moves(pieces, to_play)
+
+
+
+    def evaluate_board(board: dict[str, str], to_play: str) -> float:
+        """
+        A simple evaluation function that considers material advantage.
+        """
+        material_values = {
+            'P': 1,
+            'N': 3,
+            'B': 3,
+            'R': 5,
+            'Q': 9,
+            'K': 0  # King has no material value
+        }
+        score = 0
+        for square, piece in board.items():
+            if piece[0] == 'w':
+                score += material_values.get(piece[1], 0)
+            else:
+                score -= material_values.get(piece[1], 0)
+
+        if to_play == 'black':
+            score = -score
+        return score
+
+    def apply_move(board: dict[str, str], move: str) -> dict[str, str]:
+         """Applies the move to the local borad and returns it"""
+         start_square = move[:2]
+         end_square = move[2:4]
+         promotion = None
+         if len(move) == 5:
+            promotion = move[4]
+         
+         new_board = board.copy()
+         piece = new_board[start_square]
+         del new_board[start_square]
+         
+         #Handle captures by simple deleting the piece at the target square
+         if end_square in new_board:
+              del new_board[end_square]
+         
+         new_board[end_square] = piece
+
+         return new_board
+
+    best_move = None
+    best_score = -np.inf if to_play == 'white' else np.inf
+
+    for move in legal_moves:
+        new_board = apply_move(pieces, move)
+        score = evaluate_board(new_board, to_play)
+
+        if to_play == 'white':
+            if score > best_score:
+                best_score = score
+                best_move = move
+        else:
+            if score < best_score:
+                best_score = score
+                best_move = move
+
+    if best_move is None:
+        return legal_moves[0]  # Return a legal move if no better move is found
+    return best_move

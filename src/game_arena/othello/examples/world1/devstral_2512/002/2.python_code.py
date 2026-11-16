@@ -1,0 +1,196 @@
+
+import numpy as np
+from typing import List, Tuple
+
+# Directions for checking flips (8 possible directions)
+DIRECTIONS = [(-1,-1), (-1,0), (-1,1),
+              (0,-1),          (0,1),
+              (1,-1),  (1,0),  (1,1)]
+
+# Corner positions and their adjacent squares (to avoid giving opponent corners)
+CORNERS = [(0,0), (0,7), (7,0), (7,7)]
+CORNER_ADJACENT = [(0,1), (1,0), (1,1), (0,6), (1,6), (1,7),
+                   (6,0), (6,1), (7,1), (6,6), (6,7), (7,6)]
+
+# Edge positions (for frontier calculation)
+EDGES = [(0,c) for c in range(8)] + [(7,c) for c in range(8)] + \
+        [(r,0) for r in range(1,7)] + [(r,7) for r in range(1,7)]
+
+def is_valid_move(board: np.ndarray, player: np.ndarray, opponent: np.ndarray, move: Tuple[int, int]) -> bool:
+    """Check if a move is valid (flips at least one opponent disc)"""
+    r, c = move
+    if player[r][c] or opponent[r][c]:
+        return False
+
+    for dr, dc in DIRECTIONS:
+        x, y = r + dr, c + dc
+        flipped = []
+        while 0 <= x < 8 and 0 <= y < 8 and opponent[x][y]:
+            flipped.append((x, y))
+            x += dr
+            y += dc
+        if len(flipped) > 0 and 0 <= x < 8 and 0 <= y < 8 and player[x][y]:
+            return True
+    return False
+
+def get_legal_moves(board: np.ndarray, player: np.ndarray, opponent: np.ndarray) -> List[Tuple[int, int]]:
+    """Get all legal moves for the current player"""
+    moves = []
+    for r in range(8):
+        for c in range(8):
+            if is_valid_move(board, player, opponent, (r, c)):
+                moves.append((r, c))
+    return moves
+
+def make_move(board: np.ndarray, player: np.ndarray, opponent: np.ndarray, move: Tuple[int, int]) -> Tuple[np.ndarray, np.ndarray]:
+    """Execute a move and return new board state"""
+    r, c = move
+    new_player = player.copy()
+    new_opponent = opponent.copy()
+    new_player[r][c] = 1
+
+    for dr, dc in DIRECTIONS:
+        x, y = r + dr, c + dc
+        flipped = []
+        while 0 <= x < 8 and 0 <= y < 8 and new_opponent[x][y]:
+            flipped.append((x, y))
+            x += dr
+            y += dc
+        if len(flipped) > 0 and 0 <= x < 8 and 0 <= y < 8 and new_player[x][y]:
+            for fx, fy in flipped:
+                new_player[fx][fy] = 1
+                new_opponent[fx][fy] = 0
+    return new_player, new_opponent
+
+def evaluate_board(player: np.ndarray, opponent: np.ndarray) -> float:
+    """Evaluate the board position with multiple factors"""
+    # Count discs
+    player_count = np.sum(player)
+    opponent_count = np.sum(opponent)
+    disc_diff = (player_count - opponent_count) * 0.1
+
+    # Corner control (very important)
+    corner_score = 0
+    for r, c in CORNERS:
+        if player[r][c]:
+            corner_score += 10
+        elif opponent[r][c]:
+            corner_score -= 10
+
+    # Corner adjacency (bad to have opponent near corners)
+    corner_adj_score = 0
+    for r, c in CORNER_ADJACENT:
+        if opponent[r][c]:
+            corner_adj_score -= 3
+
+    # Mobility (number of legal moves)
+    player_moves = len(get_legal_moves(None, player, opponent))
+    opponent_moves = len(get_legal_moves(None, opponent, player))
+    mobility = (player_moves - opponent_moves) * 0.5
+
+    # Frontier discs (discs that can be flipped)
+    frontier_score = 0
+    for r in range(8):
+        for c in range(8):
+            if player[r][c]:
+                for dr, dc in DIRECTIONS:
+                    x, y = r + dr, c + dc
+                    if 0 <= x < 8 and 0 <= y < 8 and not player[x][y] and not opponent[x][y]:
+                        frontier_score -= 0.5
+                        break
+
+    # Stability (center control is more stable)
+    stability = 0
+    for r in range(8):
+        for c in range(8):
+            if player[r][c]:
+                # Center squares are more stable
+                dist_to_center = max(abs(r - 3.5), abs(c - 3.5))
+                stability += (3.5 - dist_to_center) * 0.1
+            elif opponent[r][c]:
+                dist_to_center = max(abs(r - 3.5), abs(c - 3.5))
+                stability -= (3.5 - dist_to_center) * 0.1
+
+    total = disc_diff + corner_score + corner_adj_score + mobility + frontier_score + stability
+    return total
+
+def minimax(player: np.ndarray, opponent: np.ndarray, depth: int, alpha: float, beta: float, maximizing: bool) -> float:
+    """Minimax with alpha-beta pruning"""
+    if depth == 0:
+        return evaluate_board(player, opponent)
+
+    legal_moves = get_legal_moves(None, player, opponent)
+    if not legal_moves:
+        # If no moves, pass turn
+        if maximizing:
+            return minimax(opponent, player, depth - 1, alpha, beta, False)
+        else:
+            return minimax(opponent, player, depth - 1, alpha, beta, True)
+
+    if maximizing:
+        max_eval = -float('inf')
+        for move in legal_moves:
+            new_player, new_opponent = make_move(None, player, opponent, move)
+            eval = minimax(new_opponent, new_player, depth - 1, alpha, beta, False)
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for move in legal_moves:
+            new_player, new_opponent = make_move(None, opponent, player, move)
+            eval = minimax(new_player, new_opponent, depth - 1, alpha, beta, True)
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    """Main policy function that returns the best move"""
+    legal_moves = get_legal_moves(None, you, opponent)
+
+    if not legal_moves:
+        return "pass"
+
+    # If only one move, take it
+    if len(legal_moves) == 1:
+        r, c = legal_moves[0]
+        return f"{chr(97 + c)}{r + 1}"
+
+    # Determine game phase (opening, midgame, endgame)
+    total_discs = np.sum(you) + np.sum(opponent)
+    if total_discs < 20:
+        depth = 3  # Opening - look deeper
+    elif total_discs < 50:
+        depth = 3  # Midgame
+    else:
+        depth = 4  # Endgame - look deepest
+
+    best_move = None
+    best_score = -float('inf')
+
+    # First check if we can take a corner
+    corner_moves = [move for move in legal_moves if move in CORNERS]
+    if corner_moves:
+        # Take the corner move (they're all good)
+        r, c = corner_moves[0]
+        return f"{chr(97 + c)}{r + 1}"
+
+    # Evaluate all moves with minimax
+    for move in legal_moves:
+        new_you, new_opponent = make_move(None, you, opponent, move)
+        score = minimax(new_you, new_opponent, depth, -float('inf'), float('inf'), False)
+
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    # If no move found (shouldn't happen), take first legal move
+    if best_move is None:
+        best_move = legal_moves[0]
+
+    r, c = best_move
+    return f"{chr(97 + c)}{r + 1}"

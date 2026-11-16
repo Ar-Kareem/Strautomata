@@ -1,0 +1,241 @@
+
+import time
+from typing import List, Tuple
+
+WIN_SCORE = 10**9
+TIME_LIMIT = 0.92
+
+LINES = []
+for r in range(4):
+    LINES.append([(r, c) for c in range(4)])
+for c in range(4):
+    LINES.append([(r, c) for r in range(4)])
+LINES.append([(i, i) for i in range(4)])
+LINES.append([(i, 3 - i) for i in range(4)])
+
+POS_WEIGHTS = [
+    [3, 4, 4, 3],
+    [4, 6, 6, 4],
+    [4, 6, 6, 4],
+    [3, 4, 4, 3],
+]
+
+LINE_WEIGHTS = [0, 2, 12, 90, WIN_SCORE]
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    start = time.perf_counter()
+
+    empties = [(r, c) for r in range(4) for c in range(4) if board[r][c] == 0]
+    if not empties:
+        return (0, 0)
+
+    for mv in ordered_moves(board, empties, 1):
+        r, c = mv
+        board[r][c] = 1
+        if winner(board) == 1:
+            board[r][c] = 0
+            return mv
+        board[r][c] = 0
+
+    if len(empties) == 1:
+        return empties[0]
+
+    best_move = ordered_moves(board, empties, 1)[0]
+    trans = {}
+
+    max_depth = len(empties)
+    if len(empties) >= 11:
+        depth_sequence = [2, 3, 4, 5, 6]
+    elif len(empties) >= 8:
+        depth_sequence = [2, 3, 4, 5, 6, 7, 8]
+    else:
+        depth_sequence = list(range(2, max_depth + 1))
+
+    for depth in depth_sequence:
+        if time.perf_counter() - start > TIME_LIMIT:
+            break
+        completed, move = search_root(board, depth, start, trans)
+        if completed and move is not None:
+            best_move = move
+        else:
+            break
+
+    r, c = best_move
+    if 0 <= r < 4 and 0 <= c < 4 and board[r][c] == 0:
+        return best_move
+
+    for mv in empties:
+        return mv
+    return (0, 0)
+
+
+def board_key(board: List[List[int]]):
+    return tuple(tuple(row) for row in board)
+
+
+def winner(board: List[List[int]]) -> int:
+    for line in LINES:
+        s = 0
+        for r, c in line:
+            s += board[r][c]
+        if s == 4:
+            return 1
+        if s == -4:
+            return -1
+    return 0
+
+
+def evaluate(board: List[List[int]]) -> int:
+    w = winner(board)
+    if w == 1:
+        return WIN_SCORE
+    if w == -1:
+        return -WIN_SCORE
+
+    score = 0
+
+    for line in LINES:
+        my_count = 0
+        opp_count = 0
+        for r, c in line:
+            v = board[r][c]
+            if v == 1:
+                my_count += 1
+            elif v == -1:
+                opp_count += 1
+
+        if my_count and opp_count:
+            continue
+        if my_count:
+            score += LINE_WEIGHTS[my_count]
+        elif opp_count:
+            score -= LINE_WEIGHTS[opp_count]
+
+    for r in range(4):
+        for c in range(4):
+            if board[r][c] == 1:
+                score += POS_WEIGHTS[r][c]
+            elif board[r][c] == -1:
+                score -= POS_WEIGHTS[r][c]
+
+    return score
+
+
+def ordered_moves(board: List[List[int]], moves: List[Tuple[int, int]], player: int):
+    opp = -player
+    opp_wins_now = set()
+    for r, c in moves:
+        board[r][c] = opp
+        if winner(board) == opp:
+            opp_wins_now.add((r, c))
+        board[r][c] = 0
+
+    scored = []
+    for r, c in moves:
+        s = POS_WEIGHTS[r][c]
+
+        board[r][c] = player
+        if winner(board) == player:
+            s += 10**8
+        else:
+            immediate_threats = 0
+            for rr, cc in moves:
+                if (rr, cc) == (r, c):
+                    continue
+                board[rr][cc] = player
+                if winner(board) == player:
+                    immediate_threats += 1
+                board[rr][cc] = 0
+            s += immediate_threats * 200
+        board[r][c] = 0
+
+        if (r, c) in opp_wins_now:
+            s += 50000
+
+        scored.append((s, (r, c)))
+
+    scored.sort(reverse=True)
+    return [mv for _, mv in scored]
+
+
+def search_root(board: List[List[int]], depth: int, start: float, trans: dict):
+    moves = [(r, c) for r in range(4) for c in range(4) if board[r][c] == 0]
+    moves = ordered_moves(board, moves, 1)
+
+    best_score = -10**18
+    best_move = None
+    alpha = -10**18
+    beta = 10**18
+
+    for r, c in moves:
+        if time.perf_counter() - start > TIME_LIMIT:
+            return False, best_move
+        board[r][c] = 1
+        score, completed = alphabeta(board, depth - 1, alpha, beta, -1, start, trans)
+        board[r][c] = 0
+        if not completed:
+            return False, best_move
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+        if best_score > alpha:
+            alpha = best_score
+
+    return True, best_move
+
+
+def alphabeta(board: List[List[int]], depth: int, alpha: int, beta: int, player: int, start: float, trans: dict):
+    if time.perf_counter() - start > TIME_LIMIT:
+        return 0, False
+
+    w = winner(board)
+    if w != 0:
+        return (WIN_SCORE if w == 1 else -WIN_SCORE), True
+
+    moves = [(r, c) for r in range(4) for c in range(4) if board[r][c] == 0]
+    if not moves:
+        return 0, True
+    if depth == 0:
+        return evaluate(board), True
+
+    key = (board_key(board), depth, player)
+    if key in trans:
+        return trans[key], True
+
+    moves = ordered_moves(board, moves, player)
+
+    if player == 1:
+        value = -10**18
+        for r, c in moves:
+            if time.perf_counter() - start > TIME_LIMIT:
+                return 0, False
+            board[r][c] = 1
+            score, completed = alphabeta(board, depth - 1, alpha, beta, -1, start, trans)
+            board[r][c] = 0
+            if not completed:
+                return 0, False
+            if score > value:
+                value = score
+            if value > alpha:
+                alpha = value
+            if alpha >= beta:
+                break
+    else:
+        value = 10**18
+        for r, c in moves:
+            if time.perf_counter() - start > TIME_LIMIT:
+                return 0, False
+            board[r][c] = -1
+            score, completed = alphabeta(board, depth - 1, alpha, beta, 1, start, trans)
+            board[r][c] = 0
+            if not completed:
+                return 0, False
+            if score < value:
+                value = score
+            if value < beta:
+                beta = value
+            if alpha >= beta:
+                break
+
+    trans[key] = value
+    return value, True

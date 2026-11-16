@@ -1,0 +1,146 @@
+
+import numpy as np
+
+def policy(pieces, to_play, memory):
+    # Piece values for material evaluation
+    PIECE_VALUES = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 1000}
+    
+    # Initialize evaluation parameters
+    king_safety_weight = 0.5
+    material_weight = 0.3
+    mobility_weight = 0.2
+    
+    # Helper function to evaluate king safety
+    def evaluate_king_safety(pieces, king_pos):
+        king_color = king_pos[0]
+        king_square = king_pos[1:]
+        # Check if king is in check
+        in_check = False
+        for square, piece in pieces.items():
+            if piece[0] != king_color and is_attacking(square, king_square, pieces):
+                in_check = True
+                break
+        # Calculate safety score (higher = safer)
+        safety_score = 0
+        # Count defenders
+        defenders = 0
+        for square, piece in pieces.items():
+            if piece[0] == king_color and is_defending(square, king_square, pieces):
+                defenders += 1
+        # Distance to center (higher = safer)
+        center = {'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4, 'f': 3, 'g': 2, 'h': 1}
+        king_file = center[king_square[0]]
+        safety_score += (4 - abs(king_file - 3.5)) * 2
+        # Add defender bonus
+        safety_score += defenders * 2
+        return safety_score if not in_check else -safety_score
+    
+    # Helper function to check if piece attacks target
+    def is_attacking(attacker, target, pieces):
+        attacker_color = pieces[attacker][0]
+        target_color = pieces[target][0]
+        if attacker_color == target_color:
+            return False
+        piece_type = pieces[attacker][1]
+        # Handle different piece types
+        if piece_type == 'N':
+            # Knight moves in L-shape
+            knight_moves = [(-2, -1), (-2, 1), (-1, -2), (-1, 2),
+                            (1, -2), (1, 2), (2, -1), (2, 1)]
+            return any(abs(attacker[0] - target[0]) == abs(move[0]) and 
+                      abs(attacker[1] - target[1]) == abs(move[1]) for move in knight_moves)
+        elif piece_type == 'B':
+            # Bishop moves diagonally
+            return abs(attacker[0] - target[0]) == abs(attacker[1] - target[1])
+        elif piece_type == 'R':
+            # Rook moves horizontally/vertically
+            return attacker[0] == target[0] or attacker[1] == target[1]
+        elif piece_type == 'Q':
+            # Queen combines rook and bishop moves
+            return is_attacking(attacker, target, pieces) or is_attacking(attacker, target, pieces)
+        elif piece_type == 'K':
+            # King moves one square in any direction
+            return abs(attacker[0] - target[0]) <= 1 and abs(attacker[1] - target[1]) <= 1
+        return False
+    
+    # Helper function to check if piece defends target
+    def is_defending(defender, target, pieces):
+        defender_color = pieces[defender][0]
+        target_color = pieces[target][0]
+        if defender_color != target_color:
+            return False
+        piece_type = pieces[defender][1]
+        # Check if defender attacks the target square
+        return is_attacking(defender, target, pieces)
+    
+    # Helper function to evaluate piece activity
+    def evaluate_piece_activity(square, piece, pieces, to_play):
+        piece_type = piece[1]
+        # Pawn promotion handling
+        if piece_type == 'P' and (square[1] == '8' or square[1] == '1'):
+            return 10  # Promote to queen for activity bonus
+        # Count legal moves for this piece
+        moves = generate_legal_moves(square, piece, pieces, to_play)
+        return len(moves)
+    
+    # Main evaluation function
+    def evaluate_move(move, pieces, to_play):
+        # Extract move components
+        from_square, to_square = move[0], move[2]
+        # Save original piece
+        captured_piece = pieces.get(to_square, None)
+        # Apply move to temporary board
+        temp_pieces = pieces.copy()
+        temp_pieces[to_square] = temp_pieces[from_square]
+        del temp_pieces[from_square]
+        # Evaluate material change
+        material_change = 0
+        if captured_piece:
+            material_change = PIECE_VALUES[captured_piece[1]]
+        # Evaluate king safety
+        king_pos = next(square for square, piece in temp_pieces.items() if piece[0] == to_play and piece[1] == 'K')
+        safety_score = evaluate_king_safety(temp_pieces, king_pos)
+        # Evaluate piece activity
+        activity_score = 0
+        for square, piece in temp_pieces.items():
+            if piece[0] == to_play:
+                activity_score += evaluate_piece_activity(square, piece, temp_pieces, to_play)
+        # Calculate total evaluation score
+        return (material_change * material_weight +
+                safety_score * king_safety_weight +
+                activity_score * mobility_weight)
+    
+    # Generate all legal moves
+    legal_moves = generate_legal_moves('all', None, pieces, to_play)
+    
+    # Filter out moves that leave king in check
+    safe_moves = []
+    for move in legal_moves:
+        # Apply move to temporary board
+        temp_pieces = pieces.copy()
+        from_square, to_square = move[0], move[2]
+        captured_piece = temp_pieces.get(to_square, None)
+        temp_pieces[to_square] = temp_pieces[from_square]
+        del temp_pieces[from_square]
+        # Check if king is in check
+        king_pos = next(square for square, piece in temp_pieces.items() if piece[0] == to_play and piece[1] == 'K')
+        if not is_attacking(king_pos, king_pos, temp_pieces):
+            safe_moves.append(move)
+    
+    # Evaluate all safe moves
+    best_move = None
+    best_score = -float('inf')
+    for move in safe_moves:
+        score = evaluate_move(move, pieces, to_play)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    # Return the best move found
+    return best_move, memory
+
+# Move generation functions (simplified for brevity)
+def generate_legal_moves(move_type, move, pieces, to_play):
+    # This is a simplified version - full implementation would be more complex
+    # For demonstration purposes only
+    return ['e2e4', 'e7e5', 'd2d4', 'd7d5', 'c2c4', 'c7c5']

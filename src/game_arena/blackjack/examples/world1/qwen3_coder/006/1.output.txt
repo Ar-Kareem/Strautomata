@@ -1,0 +1,145 @@
+<thinking>
+I need to implement a policy function for a simplified Blackjack-like game. Let me break down the key elements:
+
+1. **Card values**: 2-10 have face value, J/Q/K = 10, A = 11 or 1 (11 if hand <= target, 1 if hand > target)
+2. **Goal**: Get as close to target T as possible without going over
+3. **Actions**: HIT (draw) or STAY (stop)
+4. **Win condition**: Closer to target than opponent, or opponent busts while you don't
+
+Let me think about when to HIT vs STAY:
+
+- If current hand value > target: we've already busted (shouldn't happen when policy is called)
+- If current hand value = target: probably should STAY (can't improve, only risk busting)
+- If current hand value < target: need to decide whether to risk drawing
+
+The key insight is estimating the probability of improving vs busting with the next card:
+
+1. Calculate current hand value
+2. For each remaining card in deck:
+   - Calculate what new hand value would be
+   - Determine if it busts or not
+   - Calculate expected outcome
+
+But I don't know which cards I've already drawn. However, I can:
+- Count how many cards I have = number of cards drawn
+- Assume remaining cards in deck are those not in hand (since I have my own deck)
+
+Wait, I need to be more careful. Let me re-read...
+
+My deck has 13 cards (one of each rank). Each time I HIT, I draw from my deck. The hand list shows me what cards I currently have. So the remaining cards in my deck are those not in my hand.
+
+Strategy considerations:
+1. If current value >= target: definitely STAY (we bust if we go over)
+2. If current value is very low compared to target: probably HIT
+3. Need to assess risk vs reward of drawing next card
+
+Risk assessment:
+- For each possible remaining card, determine if drawing it would bust me
+- Count safe cards vs busting cards
+- If many safe cards, might HIT
+- If many busting cards, might STAY
+
+But I should also consider the expected improvement vs risk of each possible card.
+
+Let me think of a simpler but effective approach:
+- Calculate current hand value
+- If we're already at or very close to target, STAY
+- Otherwise, estimate probability of busting with next draw
+- If bust probability is low, HIT; if high, STAY
+
+A basic threshold approach might work well:
+- HIT if current value <= target - threshold
+- STAY if current value > target - threshold
+- The threshold should depend on how likely the next card is to bust us
+
+Actually, let's take a more principled approach:
+1. Calculate current hand total
+2. Determine which cards remain in our deck (not in hand)
+3. For each remaining card, calculate new total if drawn
+4. Count how many card draws would bust us vs not bust
+5. If bust probability is high, STAY; else HIT
+
+But let's start with a threshold policy and refine:
+- Maybe HIT if hand_value <= target - 6 or something similar
+- This accounts for the fact that max card value is 11 (A), so being 11 away from target means we can't bust yet
+
+Actually, let me implement the principled approach:
+1. Calculate current hand value using proper Ace logic
+2. Find remaining cards in deck
+3. Calculate probability of busting with next draw  
+4. Use that to make decision
+
+For the Ace logic, when calculating our current hand value:
+- If treating A as 11 puts us over target, treat A as 1
+- Otherwise, treat A as 11
+
+So I should calculate hand value optimally.
+
+Let me write the policy function:
+</thinking>
+
+<code>
+def policy(hand: list[str], target: int) -> str:
+    # All possible cards in a suit
+    all_cards = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    
+    # Calculate current hand value with proper Ace handling
+    def calculate_hand_value(cards):
+        # First count non-Aces
+        total = 0
+        ace_count = 0
+        
+        for card in cards:
+            if card == "A":
+                ace_count += 1
+            elif card in ["J", "Q", "K"]:
+                total += 10
+            else:  # 2-10
+                total += int(card)
+        
+        # Handle Aces optimally (11 if possible, 1 if would bust)
+        for _ in range(ace_count):
+            if total + 11 <= target:
+                total += 11
+            else:
+                total += 1
+                
+        return total
+    
+    current_value = calculate_hand_value(hand)
+    
+    # If we've already reached or exceeded target, should probably stay
+    if current_value >= target:
+        return "STAY"
+    
+    # Find remaining cards in our deck (cards not in our hand)
+    hand_set = set(hand)
+    remaining_cards = [card for card in all_cards if card not in hand_set]
+    
+    # If no cards left, must stay
+    if not remaining_cards:
+        return "STAY"
+    
+    # Calculate possible outcomes from drawing each remaining card
+    safe_draws = 0
+    total_draws = len(remaining_cards)
+    
+    for card in remaining_cards:
+        # Calculate what our new hand value would be with this card
+        new_hand = hand + [card]
+        new_value = calculate_hand_value(new_hand)
+        
+        # If we don't bust, this is a safe draw
+        if new_value <= target:
+            safe_draws += 1
+    
+    # Calculate probability of not busting
+    safe_probability = safe_draws / total_draws
+    
+    # If we have a high probability of not busting, hit
+    # If we have a low probability, stay to protect our current position
+    if safe_probability > 0.5:
+        return "HIT"
+    else:
+        return "STAY"
+</code>

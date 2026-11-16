@@ -1,0 +1,172 @@
+<code>
+import random
+import numpy as np
+from typing import List, Tuple
+
+# Heuristic weights for evaluating board positions
+CENTER_WEIGHT = 1
+THREE_IN_A_ROW_WEIGHT = 100
+TWO_IN_A_ROW_WEIGHT = 10
+OPPONENT_THREE_WEIGHT = -500
+OPPONENT_TWO_WEIGHT = -50
+WINNING_WEIGHT = 100000
+LOSING_WEIGHT = -100000
+
+def count_pattern(board: np.ndarray, player: int, length: int) -> int:
+    """Count occurrences of exactly 'length' consecutive discs for 'player'."""
+    count = 0
+    rows, cols = board.shape
+    
+    # Horizontal patterns
+    for r in range(rows):
+        for c in range(cols - 3):
+            window = board[r, c:c+4]
+            if np.sum(window == player) == length and np.sum(window == 0) == 4 - length:
+                count += 1
+    
+    # Vertical patterns
+    for r in range(rows - 3):
+        for c in range(cols):
+            window = board[r:r+4, c]
+            if np.sum(window == player) == length and np.sum(window == 0) == 4 - length:
+                count += 1
+    
+    # Diagonal (positive slope) patterns
+    for r in range(rows - 3):
+        for c in range(cols - 3):
+            window = [board[r+i, c+i] for i in range(4)]
+            if sum(1 for x in window if x == player) == length and sum(1 for x in window if x == 0) == 4 - length:
+                count += 1
+    
+    # Diagonal (negative slope) patterns
+    for r in range(3, rows):
+        for c in range(cols - 3):
+            window = [board[r-i, c+i] for i in range(4)]
+            if sum(1 for x in window if x == player) == length and sum(1 for x in window if x == 0) == 4 - length:
+                count += 1
+    
+    return count
+
+def evaluate_board(board: np.ndarray, current_player: int) -> int:
+    """Evaluate the board state for the current player."""
+    score = 0
+    
+    # Center column control
+    center_col = board[:, 3]
+    score += np.sum(center_col == current_player) * CENTER_WEIGHT
+    
+    # Pattern scoring
+    opp_player = -current_player
+    
+    # Current player patterns
+    score += count_pattern(board, current_player, 4) * WINNING_WEIGHT
+    score += count_pattern(board, current_player, 3) * THREE_IN_A_ROW_WEIGHT
+    score += count_pattern(board, current_player, 2) * TWO_IN_A_ROW_WEIGHT
+    
+    # Opponent patterns
+    score += count_pattern(board, opp_player, 4) * LOSING_WEIGHT
+    score += count_pattern(board, opp_player, 3) * OPPONENT_THREE_WEIGHT
+    score += count_pattern(board, opp_player, 2) * OPPONENT_TWO_WEIGHT
+    
+    return score
+
+def get_valid_moves(board: np.ndarray) -> List[int]:
+    """Get list of valid column indices."""
+    return [c for c in range(board.shape[1]) if board[0, c] == 0]
+
+def is_winner(board: np.ndarray, player: int) -> bool:
+    """Check if player has won."""
+    return count_pattern(board, player, 4) > 0
+
+def drop_disc(board: np.ndarray, col: int, player: int) -> int:
+    """Place disc in column and return row index."""
+    for r in range(board.shape[0] - 1, -1, -1):
+        if board[r, col] == 0:
+            board[r, col] = player
+            return r
+    return -1  # Should not happen if valid move
+
+def minimax(board: np.ndarray, depth: int, alpha: float, beta: float, maximizing_player: bool, player: int) -> int:
+    """Minimax algorithm with alpha-beta pruning."""
+    opp_player = -player
+    
+    if depth == 0 or is_winner(board, player) or is_winner(board, opp_player):
+        return evaluate_board(board, player)
+    
+    valid_moves = get_valid_moves(board)
+    if not valid_moves:
+        return 0
+    
+    if maximizing_player:
+        max_eval = float('-inf')
+        for col in valid_moves:
+            row = drop_disc(board, col, player)
+            eval_score = minimax(board, depth - 1, alpha, beta, False, opp_player)
+            board[row, col] = 0  # Undo move
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for col in valid_moves:
+            row = drop_disc(board, col, opp_player)
+            eval_score = minimax(board, depth - 1, alpha, beta, True, player)
+            board[row, col] = 0  # Undo move
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def policy(board: List[List[int]]) -> int:
+    """Main policy function."""
+    # Convert to numpy array
+    board_np = np.array(board, dtype=int)
+    
+    # Get valid moves
+    valid_moves = get_valid_moves(board_np)
+    
+    # If no valid moves, return 0 (shouldn't happen in valid game)
+    if not valid_moves:
+        return 0
+    
+    # If only one valid move, return it
+    if len(valid_moves) == 1:
+        return valid_moves[0]
+    
+    # Check for immediate winning move
+    current_player = 1  # You are always the current player
+    for col in valid_moves:
+        row = drop_disc(board_np, col, current_player)
+        if is_winner(board_np, current_player):
+            board_np[row, col] = 0  # Undo move
+            return col
+        board_np[row, col] = 0  # Undo move
+    
+    # Check for blocking opponent's winning move
+    opp_player = -current_player
+    for col in valid_moves:
+        row = drop_disc(board_np, col, opp_player)
+        if is_winner(board_np, opp_player):
+            board_np[row, col] = 0  # Undo move
+            return col
+        board_np[row, col] = 0  # Undo move
+    
+    # Use minimax for deeper search with depth limit
+    best_move = valid_moves[0]
+    best_score = float('-inf')
+    
+    # Depth 4 for reasonable performance
+    for col in valid_moves:
+        row = drop_disc(board_np, col, current_player)
+        score = minimax(board_np, 4, float('-inf'), float('inf'), False, opp_player)
+        board_np[row, col] = 0  # Undo move
+        
+        if score > best_score:
+            best_score = score
+            best_move = col
+    
+    return best_move
+</code>

@@ -1,0 +1,115 @@
+```python
+import sys
+sys.setrecursionlimit(10000)
+
+def heuristic(you_t, opp_t):
+    sdiff = you_t[6] - opp_t[6]
+    yw = sum(you_t[i] * (i + 1) for i in range(6))
+    ow = sum(opp_t[i] * (i + 1) for i in range(6))
+    wdiff = yw - ow
+    my_mob = sum(1 for i in range(6) if you_t[i] > 0)
+    o_mob = sum(1 for i in range(6) if opp_t[i] > 0)
+    mdiff = my_mob - o_mob
+    return sdiff + 0.2 * wdiff / 6.0 + 1.0 * mdiff
+
+def apply_move(you: tuple, opp: tuple, pit: int, player_is_you: bool):
+    y = list(you)
+    o = list(opp)
+    orig_y = list(you)
+    orig_o = list(opp)
+    last_cpos = -1
+    if player_is_you:
+        seeds = y[pit]
+        if seeds == 0:
+            return None, None, None
+        y[pit] = 0
+        current_pos = pit + 1
+        for _ in range(seeds):
+            cpos = current_pos % 13
+            if cpos <= 6:
+                y[cpos] += 1
+            else:
+                o[cpos - 7] += 1
+            last_cpos = cpos
+            current_pos += 1
+        if 0 <= last_cpos <= 5:
+            j = last_cpos
+            if orig_y[j] == 0 and y[j] == 1 and o[5 - j] > 0:
+                y[6] += y[j] + o[5 - j]
+                y[j] = 0
+                o[5 - j] = 0
+    else:
+        seeds = o[pit]
+        if seeds == 0:
+            return None, None, None
+        o[pit] = 0
+        current_pos = pit + 1
+        for _ in range(seeds):
+            cpos = current_pos % 13
+            if cpos <= 6:
+                o[cpos] += 1
+            else:
+                y[cpos - 7] += 1
+            last_cpos = cpos
+            current_pos += 1
+        if 0 <= last_cpos <= 5:
+            j = last_cpos
+            if orig_o[j] == 0 and o[j] == 1 and y[5 - j] > 0:
+                o[6] += o[j] + y[5 - j]
+                o[j] = 0
+                y[5 - j] = 0
+    extra = (last_cpos == 6)
+    next_is_you = player_is_you if extra else not player_is_you
+    return tuple(y), tuple(o), next_is_you
+
+def minimax(state, to_move_is_you: bool, depth: int, alpha, beta):
+    you_t, opp_t = state
+    y_pitsum = sum(you_t[:6])
+    o_pitsum = sum(opp_t[:6])
+    if y_pitsum == 0 and to_move_is_you:
+        return you_t[6] - (opp_t[6] + o_pitsum)
+    if o_pitsum == 0 and not to_move_is_you:
+        return (you_t[6] + y_pitsum) - opp_t[6]
+    if depth == 0:
+        return heuristic(you_t, opp_t)
+    if to_move_is_you:
+        legal = [i for i in range(6) if you_t[i] > 0]
+        legal.sort(reverse=True)
+        val = float('-inf')
+        for i in legal:
+            nyou, nopp, nturn = apply_move(you_t, opp_t, i, True)
+            score = minimax((nyou, nopp), nturn, depth - 1, alpha, beta)
+            val = max(val, score)
+            alpha = max(alpha, val)
+            if alpha >= beta:
+                break
+        return val
+    else:
+        legal = [i for i in range(6) if opp_t[i] > 0]
+        legal.sort(reverse=True)
+        val = float('inf')
+        for i in legal:
+            nyou, nopp, nturn = apply_move(you_t, opp_t, i, False)
+            score = minimax((nyou, nopp), nturn, depth - 1, alpha, beta)
+            val = min(val, score)
+            beta = min(beta, val)
+            if alpha >= beta:
+                break
+        return val
+
+def policy(you: list[int], opp: list[int]) -> int:
+    legal = [i for i in range(6) if you[i] > 0]
+    legal.sort(reverse=True)
+    best_score = float('-inf')
+    best_i = legal[0]
+    DEPTH = 8
+    you_t = tuple(you)
+    opp_t = tuple(opp)
+    for i in legal:
+        nyou, nopp, nturn = apply_move(you_t, opp_t, i, True)
+        score = minimax((nyou, nopp), nturn, DEPTH - 1, float('-inf'), float('inf'))
+        if score > best_score:
+            best_score = score
+            best_i = i
+    return best_i
+```

@@ -1,0 +1,185 @@
+
+import numpy as np
+
+def policy(board) -> str:
+    """
+    Returns the best move for the current player (amazons marked as 1).
+    """
+    legal_moves = get_all_legal_moves(board, 1)
+    
+    if not legal_moves:
+        # Fallback: return any syntactically valid move (should not happen in valid game)
+        return "0,0:0,0:0,0"
+    
+    # Use minimax with alpha-beta pruning
+    best_move = None
+    best_score = float('-inf')
+    alpha = float('-inf')
+    beta = float('inf')
+    
+    # Order moves by a quick heuristic for better pruning
+    ordered_moves = order_moves(board, legal_moves, 1)
+    
+    for move in ordered_moves[:min(len(ordered_moves), 40)]:  # Limit search for time
+        new_board = apply_move(board, move, 1)
+        score = minimax(new_board, 2, False, alpha, beta, 2)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+        
+        alpha = max(alpha, score)
+    
+    if best_move is None:
+        best_move = legal_moves[0]
+    
+    return format_move(best_move)
+
+def minimax(board, depth, is_maximizing, alpha, beta, max_depth):
+    """Minimax with alpha-beta pruning."""
+    if depth == 0:
+        return evaluate_board(board)
+    
+    player = 1 if is_maximizing else 2
+    moves = get_all_legal_moves(board, player)
+    
+    if not moves:
+        # No legal moves means this player loses
+        return float('-inf') if is_maximizing else float('inf')
+    
+    if is_maximizing:
+        max_eval = float('-inf')
+        for move in moves[:min(len(moves), 15)]:  # Limit branching
+            new_board = apply_move(board, move, player)
+            eval_score = minimax(new_board, depth - 1, False, alpha, beta, max_depth)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for move in moves[:min(len(moves), 15)]:
+            new_board = apply_move(board, move, player)
+            eval_score = minimax(new_board, depth - 1, True, alpha, beta, max_depth)
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def evaluate_board(board):
+    """Evaluate board position."""
+    my_moves = len(get_all_legal_moves(board, 1))
+    opp_moves = len(get_all_legal_moves(board, 2))
+    
+    if my_moves == 0:
+        return -10000
+    if opp_moves == 0:
+        return 10000
+    
+    # Mobility difference
+    mobility_score = (my_moves - opp_moves) * 10
+    
+    # Territory control
+    my_territory = count_territory(board, 1)
+    opp_territory = count_territory(board, 2)
+    territory_score = (my_territory - opp_territory) * 2
+    
+    # Central position bonus
+    center_score = centrality_score(board, 1) - centrality_score(board, 2)
+    
+    return mobility_score + territory_score + center_score
+
+def count_territory(board, player):
+    """Count accessible squares using flood fill."""
+    territory = 0
+    amazons = np.argwhere(board == player)
+    visited = set()
+    
+    for amazon in amazons:
+        stack = [(amazon[0], amazon[1])]
+        while stack:
+            r, c = stack.pop()
+            if (r, c) in visited:
+                continue
+            visited.add((r, c))
+            territory += 1
+            
+            for dr, dc in [(0,1), (0,-1), (1,0), (-1,0), (1,1), (1,-1), (-1,1), (-1,-1)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 6 and 0 <= nc < 6 and (nr, nc) not in visited:
+                    if board[nr, nc] == 0 or board[nr, nc] == player:
+                        stack.append((nr, nc))
+    
+    return territory
+
+def centrality_score(board, player):
+    """Reward central positions."""
+    amazons = np.argwhere(board == player)
+    score = 0
+    for r, c in amazons:
+        dist_to_center = abs(r - 2.5) + abs(c - 2.5)
+        score += (5 - dist_to_center)
+    return score
+
+def order_moves(board, moves, player):
+    """Order moves by quick heuristic."""
+    scored_moves = []
+    for move in moves:
+        new_board = apply_move(board, move, player)
+        quick_score = len(get_moves_from(new_board, move[1][0], move[1][1]))
+        scored_moves.append((quick_score, move))
+    scored_moves.sort(reverse=True)
+    return [move for _, move in scored_moves]
+
+def get_all_legal_moves(board, player):
+    """Get all legal moves for the player."""
+    amazons = np.argwhere(board == player)
+    all_moves = []
+    
+    for amazon in amazons:
+        from_pos = (amazon[0], amazon[1])
+        destinations = get_moves_from(board, from_pos[0], from_pos[1])
+        
+        for to_pos in destinations:
+            temp_board = board.copy()
+            temp_board[from_pos] = 0
+            temp_board[to_pos] = player
+            
+            arrow_positions = get_moves_from(temp_board, to_pos[0], to_pos[1])
+            
+            for arrow_pos in arrow_positions:
+                all_moves.append((from_pos, to_pos, arrow_pos))
+    
+    return all_moves
+
+def get_moves_from(board, row, col):
+    """Get all positions reachable from (row, col) in queen-like moves."""
+    moves = []
+    directions = [(0,1), (0,-1), (1,0), (-1,0), (1,1), (1,-1), (-1,1), (-1,-1)]
+    
+    for dr, dc in directions:
+        for dist in range(1, 6):
+            nr, nc = row + dr * dist, col + dc * dist
+            if not (0 <= nr < 6 and 0 <= nc < 6):
+                break
+            if board[nr, nc] != 0:
+                break
+            moves.append((nr, nc))
+    
+    return moves
+
+def apply_move(board, move, player):
+    """Apply a move and return new board."""
+    new_board = board.copy()
+    from_pos, to_pos, arrow_pos = move
+    new_board[from_pos] = 0
+    new_board[to_pos] = player
+    new_board[arrow_pos] = -1
+    return new_board
+
+def format_move(move):
+    """Format move tuple as string."""
+    from_pos, to_pos, arrow_pos = move
+    return f"{from_pos[0]},{from_pos[1]}:{to_pos[0]},{to_pos[1]}:{arrow_pos[0]},{arrow_pos[1]}"

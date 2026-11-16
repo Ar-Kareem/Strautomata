@@ -1,0 +1,71 @@
+
+import copy
+
+def is_winner(board, player):
+    # Check rows, columns, and 2 diagonals for 4 in a row
+    for i in range(4):
+        if all(board[i][j] == player for j in range(4)):  # row
+            return True
+        if all(board[j][i] == player for j in range(4)):  # column
+            return True
+    if all(board[i][i] == player for i in range(4)):  # main diagonal
+        return True
+    if all(board[i][3-i] == player for i in range(4)):  # anti-diagonal
+        return True
+    return False
+
+def is_full(board):
+    return all(cell != 0 for row in board for cell in row)
+
+def evaluate(board):
+    if is_winner(board, 1):
+        return 1000
+    if is_winner(board, -1):
+        return -1000
+    return 0  # draw or undecided
+
+def minimax(board, depth, is_maximizing, alpha=-float('inf'), beta=float('inf')):
+    score = evaluate(board)
+    if score != 0 or is_full(board):
+        return score
+    
+    if is_maximizing:
+        max_eval = -float('inf')
+        for i in range(4):
+            for j in range(4):
+                if board[i][j] == 0:
+                    board[i][j] = 1
+                    eval = minimax(board, depth + 1, False, alpha, beta)
+                    board[i][j] = 0
+                    max_eval = max(max_eval, eval)
+                    alpha = max(alpha, eval)
+                    if beta <= alpha:
+                        break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for i in range(4):
+            for j in range(4):
+                if board[i][j] == 0:
+                    board[i][j] = -1
+                    eval = minimax(board, depth + 1, True, alpha, beta)
+                    board[i][j] = 0
+                    min_eval = min(min_eval, eval)
+                    beta = min(beta, eval)
+                    if beta <= alpha:
+                        break
+        return min_eval
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    best_val = -float('inf')
+    best_move = None
+    for i in range(4):
+        for j in range(4):
+            if board[i][j] == 0:
+                board_copy = copy.deepcopy(board)
+                board_copy[i][j] = 1
+                move_val = minimax(board_copy, 0, False)
+                if move_val > best_val:
+                    best_val = move_val
+                    best_move = (i, j)
+    return best_move

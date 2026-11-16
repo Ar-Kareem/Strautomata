@@ -1,0 +1,66 @@
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    best_move = -1
+    best_score = -float('inf')
+
+    for move in range(6):
+        if you[move] == 0:
+            continue
+
+        # Simulate the move
+        you_copy = you.copy()
+        opp_copy = opponent.copy()
+        seeds = you_copy[move]
+        you_copy[move] = 0
+        current_player = 0
+        pos = move + 1
+        last_pos = None
+
+        for _ in range(seeds):
+            if current_player == 0:
+                if pos < 6:
+                    you_copy[pos] += 1
+                    last_pos = (0, pos)
+                    pos += 1
+                else:
+                    you_copy[6] += 1
+                    last_pos = (0, 6)
+                    current_player = 1
+                    pos = 0
+            else:
+                if pos < 6:
+                    opp_copy[pos] += 1
+                    last_pos = (1, pos)
+                    pos += 1
+                else:
+                    current_player = 0
+                    pos = 0
+
+        # Calculate gains
+        store_gain = you_copy[6] - you[6]
+        extra_move = False
+        capture_gain = 0
+
+        if last_pos[0] == 0 and last_pos[1] == 6:
+            extra_move = True
+        elif last_pos[0] == 0 and last_pos[1] < 6:
+            j = last_pos[1]
+            if you[j] == 0 and you_copy[j] == 1:
+                opp_house = 5 - j
+                if opp_copy[opp_house] > 0:
+                    capture_gain = 1 + opp_copy[opp_house]
+
+        # Determine score
+        if extra_move:
+            score = 1000 + store_gain
+        elif capture_gain > 0:
+            score = 500 + store_gain + capture_gain
+        else:
+            score = store_gain
+
+        # Update best move
+        if score > best_score or (score == best_score and move > best_move):
+            best_score = score
+            best_move = move
+
+    return best_move

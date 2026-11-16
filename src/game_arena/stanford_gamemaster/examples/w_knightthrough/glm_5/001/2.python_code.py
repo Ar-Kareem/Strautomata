@@ -1,0 +1,132 @@
+
+def policy(state, role):
+    # Parse board
+    board = {}
+    for prop in state:
+        if prop[0] == "cell":
+            col, row, player = prop[1], int(prop[2]), prop[3]
+            board[(col, row)] = player
+    
+    opponent = "black" if role == "white" else "white"
+    cols = "abcdefgh"
+    
+    def get_deltas(player):
+        if player == "white":
+            return [(1, 2), (-1, 2), (2, 1), (-2, 1)]
+        else:
+            return [(1, -2), (-1, -2), (2, -1), (-2, -1)]
+    
+    def get_goal(player):
+        return 8 if player == "white" else 1
+    
+    def get_moves(player, board_state):
+        moves = []
+        deltas = get_deltas(player)
+        for (col, row), p in board_state.items():
+            if p != player:
+                continue
+            col_idx = cols.index(col)
+            for dc, dr in deltas:
+                new_col_idx = col_idx + dc
+                new_row = row + dr
+                if 0 <= new_col_idx < 8 and 1 <= new_row <= 8:
+                    new_col = cols[new_col_idx]
+                    new_pos = (new_col, new_row)
+                    if new_pos not in board_state or board_state[new_pos] != player:
+                        moves.append((col, row, new_col, new_row))
+        return moves
+    
+    def apply_move(board_state, move, player):
+        new_board = dict(board_state)
+        from_col, from_row, to_col, to_row = move
+        del new_board[(from_col, from_row)]
+        new_board[(to_col, to_row)] = player
+        return new_board
+    
+    def evaluate(board_state):
+        for (col, row), player in board_state.items():
+            if player == "white" and row == 8:
+                return 100000 if role == "white" else -100000
+            if player == "black" and row == 1:
+                return 100000 if role == "black" else -100000
+        score = 0
+        for (col, row), player in board_state.items():
+            if player == "white":
+                value = row * 10
+                if row == 7: value += 5000
+                elif row == 6: value += 500
+                score += value if role == "white" else -value
+            else:
+                value = (9 - row) * 10
+                if row == 2: value += 5000
+                elif row == 3: value += 500
+                score += value if role == "black" else -value
+        return score
+    
+    def order_moves(moves, board_state, player):
+        def move_score(move):
+            from_col, from_row, to_col, to_row = move
+            goal = get_goal(player)
+            if to_row == goal:
+                return 100000
+            if (to_col, to_row) in board_state:
+                captured = board_state[(to_col, to_row)]
+                if captured != player:
+                    if captured == "white":
+                        return 5000 + (8 - to_row) * 100
+                    else:
+                        return 5000 + to_row * 100
+            if player == "white":
+                return to_row * 10
+            else:
+                return (9 - to_row) * 10
+        return sorted(moves, key=move_score, reverse=True)
+    
+    def minimax(board_state, depth, alpha, beta, maximizing):
+        current_player = role if maximizing else opponent
+        for (col, row), player in board_state.items():
+            if (player == "white" and row == 8) or (player == "black" and row == 1):
+                return evaluate(board_state), None
+        if depth == 0:
+            return evaluate(board_state), None
+        moves = get_moves(current_player, board_state)
+        if not moves:
+            return evaluate(board_state), None
+        moves = order_moves(moves, board_state, current_player)
+        best_move = moves[0]
+        if maximizing:
+            max_eval = float('-inf')
+            for move in moves:
+                new_board = apply_move(board_state, move, current_player)
+                eval_score, _ = minimax(new_board, depth - 1, alpha, beta, False)
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_move = move
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            for move in moves:
+                new_board = apply_move(board_state, move, current_player)
+                eval_score, _ = minimax(new_board, depth - 1, alpha, beta, True)
+                if eval_score < min_eval:
+                    min_eval = eval_score
+                    best_move = move
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval, best_move
+    
+    legal_moves = get_moves(role, board)
+    if not legal_moves:
+        return "move(a,1,b,3)"
+    
+    my_goal = get_goal(role)
+    for move in legal_moves:
+        if move[3] == my_goal:
+            return f"move({move[0]},{move[1]},{move[2]},{move[3]})"
+    
+    _, best_move = minimax(board, 3, float('-inf'), float('inf'), True)
+    return f"move({best_move[0]},{best_move[1]},{best_move[2]},{best_move[3]})"

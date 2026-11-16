@@ -1,0 +1,286 @@
+
+import time
+
+def policy(board) -> str:
+    """
+    Determines the next move for the Lines of Action game.
+    Args:
+        board: 8x8 grid of ints (1 for self, -1 for opponent, 0 for empty).
+    Returns:
+        Move string in format 'r1,c1:r2,c2'.
+    """
+    # Ensure board is in a standard format (list of lists) for performance consistency
+    # (Handling checks in case input is numpy array or similar)
+    if hasattr(board, 'tolist'):
+        board_data = board.tolist()
+    else:
+        board_data = [row[:] for row in board]
+        
+    ai = LOABot(board_data)
+    return ai.find_best_move()
+
+class LOABot:
+    def __init__(self, board):
+        self.board = board
+        self.me = 1
+        self.opp = -1
+        self.start_time = 0
+        self.time_limit = 0.95  # 1 second strict limit
+        self.nodes = 0
+        self.check_interval = 250   # Check time every N nodes
+
+    def find_best_move(self):
+        self.start_time = time.time()
+        
+        # Initial legal moves
+        moves = self.generate_moves(self.board, self.me)
+        if not moves:
+            # No legal moves available (blocked), effectively a pass/loss.
+            # Return a dummy string to meet API requirements.
+            return "0,0:0,0"
+            
+        best_move = moves[0]
+        
+        # Iterative Deepening
+        # We start at depth 1 and go deeper.
+        # Given 1s, we can usually reach depth 3 or 4.
+        for depth in range(1, 20):
+            try:
+                score, move = self.minimax(self.board, depth, -float('inf'), float('inf'), True)
+                if move:
+                    best_move = move
+                
+                # If we found a forced win, execute it
+                if score > 90000:
+                    break
+                    
+                # Time management check
+                if time.time() - self.start_time > self.time_limit * 0.8:
+                    break
+            except TimeoutError:
+                break
+                
+        # Format the move
+        (r1, c1), (r2, c2) = best_move
+        return f"{r1},{c1}:{r2},{c2}"
+
+    def minimax(self, board, depth, alpha, beta, maximizing_player):
+        # Periodically check for timeout
+        self.nodes += 1
+        if self.nodes % self.check_interval == 0:
+            if time.time() - self.start_time > self.time_limit:
+                raise TimeoutError
+
+        # Check for connectivity (Terminal state)
+        # We check both players. Connectivity implies win.
+        me_connected = self.is_connected(board, self.me)
+        if me_connected:
+            return 100000, None
+        
+        opp_connected = self.is_connected(board, self.opp)
+        if opp_connected:
+            return -100000, None
+            
+        if depth == 0:
+            return self.evaluate(board), None
+
+        player = self.me if maximizing_player else self.opp
+        moves = self.generate_moves(board, player)
+        
+        if not moves:
+            # If current player has pieces but no moves, it's usually considered a loss or bad state
+            return (-100000 if maximizing_player else 100000), None
+
+        # Optimization: Sort moves? Captures/Central moves first could help pruning.
+        # For this implementation, we rely on basic ordering.
+
+        best_move = moves[0]
+        
+        if maximizing_player:
+            max_eval = -float('inf')
+            for move in moves:
+                new_board = self.apply_move(board, move)
+                eval_val, _ = self.minimax(new_board, depth - 1, alpha, beta, False)
+                
+                if eval_val > max_eval:
+                    max_eval = eval_val
+                    best_move = move
+                alpha = max(alpha, eval_val)
+                if beta <= alpha:
+                    break
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            for move in moves:
+                new_board = self.apply_move(board, move)
+                eval_val, _ = self.minimax(new_board, depth - 1, alpha, beta, True)
+                
+                if eval_val < min_eval:
+                    min_eval = eval_val
+                    best_move = move
+                beta = min(beta, eval_val)
+                if beta <= alpha:
+                    break
+            return min_eval, best_move
+
+    def evaluate(self, board):
+        """
+        Heuristic Evaluation:
+        We want to minimize the 'Moment of Inertia' (scattering) of our pieces.
+        Higher Score = Better for Me.
+        """
+        me_pieces = []
+        opp_pieces = []
+        for r in range(8):
+            for c in range(8):
+                piece = board[r][c]
+                if piece == self.me:
+                    me_pieces.append((r, c))
+                elif piece == self.opp:
+                    opp_pieces.append((r, c))
+        
+        # Calculate Concentration Score (Negative Inertia)
+        # We want our pieces dense, opp pieces scattered.
+        score_me = self.calculate_concentration(me_pieces)
+        score_opp = self.calculate_concentration(opp_pieces)
+        
+        # We want to minimize our inertia (so Maximize -Inertia)
+        # We want to maximize opp inertia (so Maximize Inertia)
+        # Wait: Logic is Score = My_Badness vs Opp_Badness.
+        # If score is "Goodness", then Goodness = -MyInertia + OppInertia
+        
+        return -score_me + score_opp
+
+    def calculate_concentration(self, pieces):
+        if not pieces: return 0
+        n = len(pieces)
+        
+        # Center of Mass
+        sum_r = sum(p[0] for p in pieces)
+        sum_c = sum(p[1] for p in pieces)
+        com_r = sum_r / n
+        com_c = sum_c / n
+        
+        # Inertia: Sum of squared distances to COM
+        inertia = 0
+        for r, c in pieces:
+            inertia += (r - com_r)**2 + (c - com_c)**2
+            
+        # Centralization: Penalty for being far from center of board (3.5, 3.5)
+        central_penalty = 0
+        for r, c in pieces:
+            central_penalty += abs(r - 3.5) + abs(c - 3.5)
+            
+        return inertia + (0.5 * central_penalty)
+
+    def is_connected(self, board, player):
+        """ Returns True if all pieces of 'player' are connected using BFS. """
+        pieces = []
+        for r in range(8):
+            for c in range(8):
+                if board[r][c] == player:
+                    pieces.append((r, c))
+        
+        if len(pieces) <= 1:
+            return True
+            
+        start = pieces[0]
+        visited = {start}
+        queue = [start]
+        count = 0
+        
+        while queue:
+            r, c = queue.pop(0)
+            count += 1
+            
+            # Check 8 neighbors
+            for dr in [-1, 0, 1]:
+                for dc in [-1, 0, 1]:
+                    if dr == 0 and dc == 0: continue
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 8 and 0 <= nc < 8:
+                        if board[nr][nc] == player and (nr, nc) not in visited:
+                            visited.add((nr, nc))
+                            queue.append((nr, nc))
+                            
+        return count == len(pieces)
+
+    def generate_moves(self, board, player):
+        moves = []
+        # Directions: (d_row, d_col)
+        # Horizontal, Vertical, Diagonal 1, Diagonal 2
+        # We need to scan in 4 axes, but movement is in 8 directions.
+        directions = [
+            (0, 1), (0, -1),   # Horizontal
+            (1, 0), (-1, 0),   # Vertical
+            (1, 1), (-1, -1),  # Diag 1 (\)
+            (1, -1), (-1, 1)   # Diag 2 (/)
+        ]
+        
+        pieces = []
+        for r in range(8):
+            for c in range(8):
+                if board[r][c] == player:
+                    pieces.append((r, c))
+                    
+        for r, c in pieces:
+            for dr, dc in directions:
+                # 1. Count pieces on the Line of Action
+                # The line is defined by the direction vector (extended both ways)
+                count = 1 # Self
+                
+                # Scan Positive Direction
+                cr, cc = r + dr, c + dc
+                while 0 <= cr < 8 and 0 <= cc < 8:
+                    if board[cr][cc] != 0:
+                        count += 1
+                    cr += dr
+                    cc += dc
+                    
+                # Scan Negative Direction
+                cr, cc = r - dr, c - dc
+                while 0 <= cr < 8 and 0 <= cc < 8:
+                    if board[cr][cc] != 0:
+                        count += 1
+                    cr -= dr
+                    cc -= dc
+                
+                # 2. Distance to move is 'count'
+                dist = count
+                
+                # 3. Determine target cell
+                tr = r + dist * dr
+                tc = c + dist * dc
+                
+                if 0 <= tr < 8 and 0 <= tc < 8:
+                    target_cell = board[tr][tc]
+                    
+                    # Cannot land on own piece
+                    if target_cell == player:
+                        continue
+                        
+                    # 4. Check path for blocking enemies
+                    # Can jump over own pieces, cannot jump over enemies.
+                    # Landing on enemy (capture) is handled by target_cell check.
+                    blocked = False
+                    for step in range(1, dist):
+                        ir = r + step * dr
+                        ic = c + step * dc
+                        # If intermediate square has enemy, move is blocked
+                        if board[ir][ic] == -player:
+                            blocked = True
+                            break
+                    
+                    if not blocked:
+                        moves.append(((r, c), (tr, tc)))
+                        
+        return moves
+
+    def apply_move(self, board, move):
+        (r1, c1), (r2, c2) = move
+        # Create a copy
+        new_board = [row[:] for row in board]
+        # Move piece
+        new_board[r2][c2] = new_board[r1][c1]
+        new_board[r1][c1] = 0
+        return new_board

@@ -1,0 +1,171 @@
+
+import random
+from typing import List, Tuple, Optional
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    # Check for winning move
+    move = find_winning_move(board, 1)
+    if move:
+        return move
+    
+    # Check for blocking move
+    move = find_winning_move(board, -1)
+    if move:
+        return move
+    
+    # Use minimax for strategic play
+    _, move = minimax(board, 3, True, float('-inf'), float('inf'))
+    if move:
+        return move
+    
+    # Fallback to random valid move
+    for i in range(4):
+        for j in range(4):
+            if board[i][j] == 0:
+                return (i, j)
+    
+    # Should never reach here, but just in case
+    return (0, 0)
+
+def find_winning_move(board: List[List[int]], player: int) -> Optional[Tuple[int, int]]:
+    """Find a move that results in a win for the given player."""
+    for i in range(4):
+        for j in range(4):
+            if board[i][j] == 0:
+                # Try this move
+                board[i][j] = player
+                if check_winner(board) == player:
+                    board[i][j] = 0  # Reset
+                    return (i, j)
+                board[i][j] = 0  # Reset
+    return None
+
+def check_winner(board: List[List[int]]) -> int:
+    """Check if there's a winner on the board."""
+    # Check rows
+    for i in range(4):
+        if board[i][0] == board[i][1] == board[i][2] == board[i][3] != 0:
+            return board[i][0]
+    
+    # Check columns
+    for j in range(4):
+        if board[0][j] == board[1][j] == board[2][j] == board[3][j] != 0:
+            return board[0][j]
+    
+    # Check diagonals
+    if board[0][0] == board[1][1] == board[2][2] == board[3][3] != 0:
+        return board[0][0]
+    if board[0][3] == board[1][2] == board[2][1] == board[3][0] != 0:
+        return board[0][3]
+    
+    return 0
+
+def evaluate_board(board: List[List[int]]) -> int:
+    """Evaluate the board position."""
+    winner = check_winner(board)
+    if winner == 1:
+        return 1000
+    elif winner == -1:
+        return -1000
+    
+    # Heuristic: count potential lines
+    score = 0
+    
+    # Check rows
+    for i in range(4):
+        player_count = sum(1 for cell in board[i] if cell == 1)
+        opponent_count = sum(1 for cell in board[i] if cell == -1)
+        empty_count = sum(1 for cell in board[i] if cell == 0)
+        
+        if empty_count > 0:
+            if player_count > 0 and opponent_count == 0:
+                score += 10 ** player_count
+            elif opponent_count > 0 and player_count == 0:
+                score -= 10 ** opponent_count
+    
+    # Check columns
+    for j in range(4):
+        player_count = sum(1 for i in range(4) if board[i][j] == 1)
+        opponent_count = sum(1 for i in range(4) if board[i][j] == -1)
+        empty_count = sum(1 for i in range(4) if board[i][j] == 0)
+        
+        if empty_count > 0:
+            if player_count > 0 and opponent_count == 0:
+                score += 10 ** player_count
+            elif opponent_count > 0 and player_count == 0:
+                score -= 10 ** opponent_count
+    
+    # Check diagonals
+    diagonals = [
+        [(0,0), (1,1), (2,2), (3,3)],
+        [(0,3), (1,2), (2,1), (3,0)]
+    ]
+    
+    for diagonal in diagonals:
+        player_count = sum(1 for i, j in diagonal if board[i][j] == 1)
+        opponent_count = sum(1 for i, j in diagonal if board[i][j] == -1)
+        empty_count = sum(1 for i, j in diagonal if board[i][j] == 0)
+        
+        if empty_count > 0:
+            if player_count > 0 and opponent_count == 0:
+                score += 10 ** player_count
+            elif opponent_count > 0 and player_count == 0:
+                score -= 10 ** opponent_count
+    
+    return score
+
+def minimax(board: List[List[int]], depth: int, is_maximizing: bool, alpha: float, beta: float) -> Tuple[int, Optional[Tuple[int, int]]]:
+    """Minimax with alpha-beta pruning."""
+    winner = check_winner(board)
+    if winner == 1:
+        return 1000 + depth, None
+    elif winner == -1:
+        return -1000 - depth, None
+    elif depth == 0:
+        return evaluate_board(board), None
+    
+    # Check if board is full
+    is_full = all(board[i][j] != 0 for i in range(4) for j in range(4))
+    if is_full:
+        return 0, None
+    
+    best_move = None
+    
+    if is_maximizing:
+        max_eval = float('-inf')
+        for i in range(4):
+            for j in range(4):
+                if board[i][j] == 0:
+                    board[i][j] = 1
+                    eval_score, _ = minimax(board, depth - 1, False, alpha, beta)
+                    board[i][j] = 0
+                    
+                    if eval_score > max_eval:
+                        max_eval = eval_score
+                        best_move = (i, j)
+                    
+                    alpha = max(alpha, eval_score)
+                    if beta <= alpha:
+                        break
+            if beta <= alpha:
+                break
+        return max_eval, best_move
+    else:
+        min_eval = float('inf')
+        for i in range(4):
+            for j in range(4):
+                if board[i][j] == 0:
+                    board[i][j] = -1
+                    eval_score, _ = minimax(board, depth - 1, True, alpha, beta)
+                    board[i][j] = 0
+                    
+                    if eval_score < min_eval:
+                        min_eval = eval_score
+                        best_move = (i, j)
+                    
+                    beta = min(beta, eval_score)
+                    if beta <= alpha:
+                        break
+            if beta <= alpha:
+                break
+        return min_eval, best_move

@@ -1,0 +1,171 @@
+
+import numpy as np
+from collections import deque
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    board_size = 8
+    directions = [(-1, -1), (-1, 0), (-1, 1),
+                  (0, -1),          (0, 1),
+                  (1, -1),  (1, 0),  (1, 1)]
+
+    def is_legal_move(board_my, board_opp, r, c):
+        if board_my[r][c] or board_opp[r][c]:
+            return []
+        flips = []
+        for dr, dc in directions:
+            tr, tc = r + dr, c + dc
+            temp_flip = []
+            while 0 <= tr < board_size and 0 <= tc < board_size and board_opp[tr][tc]:
+                temp_flip.append((tr, tc))
+                tr += dr
+                tc += dc
+            if (0 <= tr < board_size and 0 <= tc < board_size and
+                board_my[tr][tc] and temp_flip):
+                flips.extend(temp_flip)
+        return flips
+
+    def all_legal_moves(board_my, board_opp):
+        moves = []
+        for r in range(board_size):
+            for c in range(board_size):
+                if not board_my[r][c] and not board_opp[r][c]:
+                    flips = is_legal_move(board_my, board_opp, r, c)
+                    if flips:
+                        moves.append((r, c, flips))
+        return moves
+
+    def make_move(board_my, board_opp, r, c, flips):
+        new_my = board_my.copy()
+        new_opp = board_opp.copy()
+        new_my[r][c] = 1
+        for fr, fc in flips:
+            new_my[fr][fc] = 1
+            new_opp[fr][fc] = 0
+        return new_my, new_opp
+
+    def coin_parity(board_my, board_opp):
+        my_coins = np.sum(board_my)
+        opp_coins = np.sum(board_opp)
+        if my_coins + opp_coins == 0:
+            return 0
+        return 100 * (my_coins - opp_coins) / (my_coins + opp_coins)
+
+    def mobility(board_my, board_opp):
+        my_moves = len(all_legal_moves(board_my, board_opp))
+        opp_moves = len(all_legal_moves(board_opp, board_my))
+        if my_moves + opp_moves == 0:
+            return 0
+        return 100 * (my_moves - opp_moves) / (my_moves + opp_moves)
+
+    def corner_value(board_my, board_opp):
+        corners = [(0,0),(0,7),(7,0),(7,7)]
+        my_corners = sum(board_my[r][c] for r,c in corners)
+        opp_corners = sum(board_opp[r][c] for r,c in corners)
+        if my_corners + opp_corners == 0:
+            return 0
+        return 100 * (my_corners - opp_corners) / (my_corners + opp_corners)
+
+    def stability_heuristic(board_my, board_opp):
+        # simple edge and near-corner control
+        edge_pos = [(0,j) for j in range(8)] + [(7,j) for j in range(8)] + \
+                   [(i,0) for i in range(8)] + [(i,7) for i in range(8)]
+        edge_set = set(edge_pos)
+        my_edge = sum(board_my[r][c] for r,c in edge_set)
+        opp_edge = sum(board_opp[r][c] for r,c in edge_set)
+        if my_edge + opp_edge == 0:
+            return 0
+        return 100 * (my_edge - opp_edge) / (my_edge + opp_edge)
+
+    def evaluate(board_my, board_opp, phase):
+        # phase: 0=opening, 1=midgame, 2=endgame
+        total_discs = np.sum(board_my) + np.sum(board_opp)
+        if phase == 0:  # opening
+            weights = [10, 80, 100, 30]  # coin, mobility, corner, stability
+        elif phase == 1:  # midgame
+            weights = [20, 70, 100, 40]
+        else:  # endgame
+            weights = [100, 10, 100, 20]
+        score = (weights[0] * coin_parity(board_my, board_opp) +
+                 weights[1] * mobility(board_my, board_opp) +
+                 weights[2] * corner_value(board_my, board_opp) +
+                 weights[3] * stability_heuristic(board_my, board_opp))
+        return score
+
+    def minimax(board_my, board_opp, depth, alpha, beta, maximizing, phase):
+        if depth == 0:
+            return evaluate(board_my, board_opp, phase)
+        moves = all_legal_moves(board_my, board_opp)
+        if not moves:
+            # pass
+            opp_moves = all_legal_moves(board_opp, board_my)
+            if not opp_moves:
+                # terminal
+                return coin_parity(board_my, board_opp) * 1000
+            else:
+                # only opponent moves
+                val = minimax(board_opp, board_my, depth-1, -beta, -alpha, not maximizing, phase)
+                return -val
+        if maximizing:
+            value = -float('inf')
+            for r, c, flips in moves:
+                new_my, new_opp = make_move(board_my, board_opp, r, c, flips)
+                val = minimax(new_my, new_opp, depth-1, alpha, beta, False, phase)
+                value = max(value, val)
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break
+            return value
+        else:
+            value = float('inf')
+            for r, c, flips in moves:
+                new_my, new_opp = make_move(board_my, board_opp, r, c, flips)
+                val = minimax(new_my, new_opp, depth-1, alpha, beta, True, phase)
+                value = min(value, val)
+                beta = min(beta, value)
+                if alpha >= beta:
+                    break
+            return value
+
+    # Opening book: strong responses to empty board or common starts
+    total_discs = np.sum(you) + np.sum(opponent)
+    if total_discs <= 8:
+        # Try to play center edges or known good opening
+        moves = all_legal_moves(you, opponent)
+        preferred = [(3,3),(3,4),(4,3),(4,4),  # center 4x4
+                     (2,3),(2,4),(3,2),(3,5),(4,2),(4,5),(5,3),(5,4)]
+        for r,c,_ in moves:
+            if (r,c) in preferred:
+                return f"{chr(ord('a')+c)}{r+1}"
+
+    # Determine game phase
+    total_discs = np.sum(you) + np.sum(opponent)
+    if total_discs < 20:
+        phase = 0
+        search_depth = 5
+    elif total_discs < 50:
+        phase = 1
+        search_depth = 5
+    else:
+        phase = 2
+        search_depth = 7
+
+    legal_moves = all_legal_moves(you, opponent)
+    if not legal_moves:
+        return "pass"
+
+    best_move = None
+    best_val = -float('inf')
+    for r, c, flips in legal_moves:
+        new_my, new_opp = make_move(you, opponent, r, c, flips)
+        val = minimax(new_my, new_opp, search_depth-1, -float('inf'), float('inf'), False, phase)
+        if val > best_val:
+            best_val = val
+            best_move = (r, c)
+
+    if best_move is None:
+        # fallback: first legal move
+        r, c, _ = legal_moves[0]
+        return f"{chr(ord('a')+c)}{r+1}"
+
+    br, bc = best_move
+    return f"{chr(ord('a')+bc)}{br+1}"

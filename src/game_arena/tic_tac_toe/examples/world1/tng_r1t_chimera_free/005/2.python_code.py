@@ -1,0 +1,62 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    def is_win(b, player):
+        # Check rows, columns, and diagonals for a win
+        for row in b:
+            if row.count(player) == 3:
+                return True
+        for col in range(3):
+            if all(b[row][col] == player for row in range(3)):
+                return True
+        if b[0][0] == b[1][1] == b[2][2] == player:
+            return True
+        if b[0][2] == b[1][1] == b[2][0] == player:
+            return True
+        return False
+
+    empty = [(i, j) for i in range(3) for j in range(3) if board[i][j] == 0]
+    if not empty:
+        return (0, 0)  # Game over scenario
+
+    # Check for immediate winning move
+    for i, j in empty:
+        board[i][j] = 1
+        if is_win(board, 1):
+            board[i][j] = 0
+            return (i, j)
+        board[i][j] = 0
+
+    # Block opponent's immediate winning move
+    for i, j in empty:
+        board[i][j] = -1
+        if is_win(board, -1):
+            board[i][j] = 0
+            return (i, j)
+        board[i][j] = 0
+
+    # Prioritize center
+    if board[1][1] == 0:
+        return (1, 1)
+
+    corners = [(0, 0), (0, 2), (2, 0), (2, 2)]
+    opposite = {(0,0): (2,2), (0,2): (2,0), (2,0): (0,2), (2,2): (0,0)}
+    
+    # Take corner opposite to an opponent's occupied corner
+    opponent_corners = [(i, j) for i, j in corners if board[i][j] == -1]
+    for i, j in opponent_corners:
+        opp_i, opp_j = opposite[(i, j)]
+        if board[opp_i][opp_j] == 0:
+            return (opp_i, opp_j)
+
+    # Take any available corner
+    for i, j in corners:
+        if board[i][j] == 0:
+            return (i, j)
+
+    # Take any remaining edge
+    edges = [(0, 1), (1, 0), (1, 2), (2, 1)]
+    for i, j in edges:
+        if board[i][j] == 0:
+            return (i, j)
+
+    return empty[0]  # Fallback

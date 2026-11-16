@@ -1,0 +1,183 @@
+
+import numpy as np
+from typing import List, Tuple, Set
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], valid_mask) -> Tuple[int, int]:
+    N = len(valid_mask)
+    
+    # Get hexagonal neighbors
+    def get_neighbors(r, c):
+        neighbors = [
+            (r-1, c), (r+1, c),      # same column
+            (r, c-1), (r, c+1),      # left and right
+            (r-1, c+1), (r+1, c-1)   # diagonals
+        ]
+        return [(nr, nc) for nr, nc in neighbors if 0 <= nr < N and 0 <= nc < N and valid_mask[nr][nc]]
+    
+    # Check if position is on edge or corner
+    def get_board_features(r, c):
+        edges = set()
+        is_corner = False
+        
+        # For 15x15 Havannah board
+        # Top edge
+        if r == 0:
+            edges.add(0)
+            if c == 0 or c == 14:
+                is_corner = True
+        # Bottom edge
+        if r == 14:
+            edges.add(3)
+            if c == 0 or c == 14:
+                is_corner = True
+        # Top-left edge
+        if c == 0 and r < 7:
+            edges.add(5)
+        # Top-right edge
+        if c == 14 and r < 7:
+            edges.add(1)
+        # Bottom-left edge
+        if c == 0 and r > 7:
+            edges.add(4)
+        # Bottom-right edge
+        if c == 14 and r > 7:
+            edges.add(2)
+        
+        return edges, is_corner
+    
+    # Union-Find for connectivity
+    class UnionFind:
+        def __init__(self, positions):
+            self.parent = {pos: pos for pos in positions}
+            self.edges = {pos: set() for pos in positions}
+            self.corners = {pos: False for pos in positions}
+            
+            for pos in positions:
+                e, c = get_board_features(pos[0], pos[1])
+                self.edges[pos] = e
+                self.corners[pos] = c
+        
+        def find(self, x):
+            if self.parent[x] != x:
+                self.parent[x] = self.find(self.parent[x])
+            return self.parent[x]
+        
+        def union(self, x, y):
+            px, py = self.find(x), self.find(y)
+            if px != py:
+                self.parent[py] = px
+                self.edges[px] |= self.edges[py]
+                self.corners[px] |= self.corners[py]
+        
+        def get_component_edges(self, pos):
+            root = self.find(pos)
+            return self.edges[root]
+        
+        def is_component_corner(self, pos):
+            root = self.find(pos)
+            return self.corners[root]
+    
+    # Build connectivity for a player
+    def build_connectivity(positions):
+        if not positions:
+            return None
+        uf = UnionFind(positions)
+        pos_set = set(positions)
+        
+        for pos in positions:
+            for neighbor in get_neighbors(pos[0], pos[1]):
+                if neighbor in pos_set:
+                    uf.union(pos, neighbor)
+        return uf
+    
+    # Evaluate position
+    def evaluate_move(pos, player_stones, opp_stones):
+        score = 0
+        r, c = pos
+        
+        # Add position to player stones temporarily
+        new_stones = player_stones + [pos]
+        uf = build_connectivity(new_stones)
+        
+        if uf:
+            edges = uf.get_component_edges(pos)
+            num_edges = len(edges)
+            
+            # Reward connecting to multiple edges (fork potential)
+            if num_edges >= 3:
+                score += 10000  # Winning move!
+            elif num_edges == 2:
+                score += 500
+            elif num_edges == 1:
+                score += 100
+            
+            # Bridge potential (corners)
+            if uf.is_component_corner(pos):
+                score += 300
+        
+        # Central control
+        center = N // 2
+        dist_from_center = abs(r - center) + abs(c - center)
+        score += max(0, 15 - dist_from_center) * 10
+        
+        # Connectivity bonus
+        player_set = set(player_stones)
+        neighbor_count = sum(1 for n in get_neighbors(r, c) if n in player_set)
+        score += neighbor_count * 50
+        
+        return score
+    
+    # Check for immediate winning/blocking moves
+    def find_critical_moves(positions, is_opponent=False):
+        critical = []
+        for r in range(N):
+            for c in range(N):
+                if valid_mask[r][c] and (r, c) not in set(me + opp):
+                    test_stones = positions + [(r, c)]
+                    uf = build_connectivity(test_stones)
+                    if uf:
+                        edges = uf.get_component_edges((r, c))
+                        if len(edges) >= 3:
+                            critical.append(((r, c), 100000 if not is_opponent else 50000))
+        return critical
+    
+    # First move: play center
+    if not me and not opp:
+        return (7, 7)
+    
+    # Find winning moves
+    winning_moves = find_critical_moves(me, False)
+    if winning_moves:
+        return winning_moves[0][0]
+    
+    # Block opponent winning moves
+    blocking_moves = find_critical_moves(opp, True)
+    if blocking_moves:
+        return blocking_moves[0][0]
+    
+    # Evaluate all valid moves
+    best_move = None
+    best_score = -float('inf')
+    
+    occupied = set(me + opp)
+    
+    for r in range(N):
+        for c in range(N):
+            if valid_mask[r][c] and (r, c) not in occupied:
+                score = evaluate_move((r, c), me, opp)
+                # Add some blocking value
+                opp_score = evaluate_move((r, c), opp, me) * 0.3
+                total_score = score + opp_score
+                
+                if total_score > best_score:
+                    best_score = total_score
+                    best_move = (r, c)
+    
+    # Fallback: return any valid move
+    if best_move is None:
+        for r in range(N):
+            for c in range(N):
+                if valid_mask[r][c] and (r, c) not in occupied:
+                    return (r, c)
+    
+    return best_move

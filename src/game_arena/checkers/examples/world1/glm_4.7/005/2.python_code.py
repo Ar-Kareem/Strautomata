@@ -1,0 +1,331 @@
+
+import random
+import sys
+
+# Increase recursion limit just in case, though depth is low
+sys.setrecursionlimit(2000)
+
+# Piece Constants
+EMPTY = 0
+MY_MAN = 1
+MY_KING = 2
+OPP_MAN = -1
+OPP_KING = -2
+
+# Directions
+# (row_delta, col_delta)
+DIRS_WHITE = [(1, -1), (1, 1)]  # Up
+DIRS_BLACK = [(-1, -1), (-1, 1)]  # Down
+DIRS_KING = [(-1, -1), (-1, 1), (1, -1), (1, 1)]  # All diagonal
+
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    """
+    Main policy function. Returns the best move ((r1,c1), (r2,c2)).
+    """
+    # 1. Initialize Board
+    # 8x8 grid. 0=Empty, 1=My Man, 2=My King, -1=Opp Man, -2=Opp King
+    board = [[0 for _ in range(8)] for _ in range(8)]
+    
+    for r, c in my_men:
+        board[r][c] = MY_MAN
+    for r, c in my_kings:
+        board[r][c] = MY_KING
+    for r, c in opp_men:
+        board[r][c] = OPP_MAN
+    for r, c in opp_kings:
+        board[r][c] = OPP_KING
+        
+    # 2. Get all legal moves for the current state
+    # Move format: ((from_r, from_c), (to_r, to_c), [captured_squares])
+    legal_moves = get_legal_moves(board, color, is_me=True)
+    
+    if not legal_moves:
+        # No moves available (Game Over or Stuck). Return dummy move to avoid error.
+        return ((0,0), (0,0))
+    
+    # 3. Minimax Search
+    best_move = None
+    best_val = -float('inf')
+    alpha = -float('inf')
+    beta = float('inf')
+    
+    # Simple move ordering: prioritize captures (already done in get_legal_moves partially)
+    # and promotions
+    def sort_key(m):
+        to_r = m[1][0]
+        is_promo = (board[m[0][0]][m[0][1]] == MY_MAN) and ((color == 'w' and to_r == 7) or (color == 'b' and to_r == 0))
+        return len(m[2]) * 100 + (10 if is_promo else 0)
+        
+    legal_moves.sort(key=sort_key, reverse=True)
+    
+    for move in legal_moves:
+        # Apply move
+        undo_info = apply_move(board, move, color, is_me=True)
+        
+        val = minimax(board, 2, alpha, beta, False, color)
+        
+        # Undo move
+        undo_move(board, undo_info, color, is_me=True)
+        
+        if val > best_val:
+            best_val = val
+            best_move = move
+        
+        alpha = max(alpha, val)
+        
+    # 4. Return standard format move
+    return (best_move[0], best_move[1])
+
+def minimax(board, depth, alpha, beta, is_maximizing, original_color):
+    if depth == 0:
+        return evaluate(board, original_color)
+    
+    current_turn_color = original_color if is_maximizing else ('b' if original_color == 'w' else 'w')
+    moves = get_legal_moves(board, current_turn_color, is_me=is_maximizing)
+    
+    if not moves:
+        # No moves means loss for the player who cannot move
+        return -10000 if is_maximizing else 10000
+    
+    if is_maximizing:
+        max_eval = -float('inf')
+        for move in moves:
+            undo_info = apply_move(board, move, original_color, is_me=True)
+            eval_val = minimax(board, depth - 1, alpha, beta, False, original_color)
+            undo_move(board, undo_info, original_color, is_me=True)
+            max_eval = max(max_eval, eval_val)
+            alpha = max(alpha, eval_val)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for move in moves:
+            undo_info = apply_move(board, move, original_color, is_me=False)
+            eval_val = minimax(board, depth - 1, alpha, beta, True, original_color)
+            undo_move(board, undo_info, original_color, is_me=False)
+            min_eval = min(min_eval, eval_val)
+            beta = min(beta, eval_val)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def evaluate(board, original_color):
+    score = 0
+    my_man_val = 100
+    my_king_val = 300
+    
+    for r in range(8):
+        for c in range(8):
+            piece = board[r][c]
+            if piece == EMPTY:
+                continue
+                
+            if piece == MY_MAN:
+                score += my_man_val
+                # Advancement bonus
+                if original_color == 'w':
+                    score += r * 5
+                else:
+                    score += (7 - r) * 5
+                # Center bonus
+                if 3 <= c <= 4:
+                    score += 10
+                # Edge penalty
+                if c == 0 or c == 7:
+                    score -= 5
+                    
+            elif piece == MY_KING:
+                score += my_king_val
+                if 3 <= c <= 4: score += 10
+                
+            elif piece == OPP_MAN:
+                score -= my_man_val
+                # Advancement penalty (Opponent advancing)
+                if original_color == 'w': # Opp is Black (moving down)
+                    score -= (7 - r) * 5
+                else: # Opp is White (moving up)
+                    score -= r * 5
+                if 3 <= c <= 4: score -= 10
+                if c == 0 or c == 7: score += 5 # Opponent on edge is good for me
+                
+            elif piece == OPP_KING:
+                score -= my_king_val
+                if 3 <= c <= 4: score -= 10
+                
+    return score
+
+def get_legal_moves(board, color, is_me):
+    """
+    Returns a list of legal moves for the player defined by 'is_me' and 'color'.
+    color refers to the 'policy' owner's color (to determine absolute directions).
+    is_me=True -> We are moving. is_me=False -> Opponent is moving.
+    """
+    moves = []
+    jumps = []
+    
+    # Identify piece IDs and directions based on perspective
+    if is_me:
+        my_piece_ids = [MY_MAN, MY_KING]
+        if color == 'w':
+            forward_dirs = DIRS_WHITE
+        else:
+            forward_dirs = DIRS_BLACK
+    else:
+        my_piece_ids = [OPP_MAN, OPP_KING]
+        # Opponent's forward direction is opposite of 'color'
+        if color == 'w':
+            forward_dirs = DIRS_BLACK
+        else:
+            forward_dirs = DIRS_WHITE
+            
+    # Scan board for pieces
+    for r in range(8):
+        for c in range(8):
+            piece = board[r][c]
+            if piece in my_piece_ids:
+                is_king = (abs(piece) == 2)
+                
+                # 1. Check Captures (Recursive for multi-jumps)
+                piece_jumps = get_piece_jumps(board, r, c, piece, forward_dirs, is_king)
+                if piece_jumps:
+                    jumps.extend(piece_jumps)
+                    
+    if jumps:
+        return jumps # Mandatory jumps override regular moves
+    
+    # 2. Check Regular Moves (if no jumps)
+    for r in range(8):
+        for c in range(8):
+            piece = board[r][c]
+            if piece in my_piece_ids:
+                is_king = (abs(piece) == 2)
+                dirs = DIRS_KING if is_king else forward_dirs
+                
+                for dr, dc in dirs:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 8 and 0 <= nc < 8 and board[nr][nc] == EMPTY:
+                        moves.append(((r, c), (nr, nc), []))
+                        
+    return moves
+
+def get_piece_jumps(board, r, c, piece, forward_dirs, is_king):
+    """
+    Recursively finds all jump sequences for a piece at (r,c).
+    Returns list of moves: [((r1,c1), (r_end, c_end), [captured_squares])]
+    """
+    jump_moves = []
+    all_dirs = DIRS_KING if is_king else forward_dirs
+    
+    def find_recursive(curr_r, curr_c, captured_list):
+        found_next = False
+        # Check all 4 directions for jumps (Kings can jump any way, Men can jump forward)
+        # Note: Men can jump forward only.
+        dirs_to_check = all_dirs
+        
+        for dr, dc in dirs_to_check:
+            mid_r, mid_c = curr_r + dr, curr_c + dc
+            land_r, land_c = curr_r + 2*dr, curr_c + 2*dc
+            
+            if 0 <= land_r < 8 and 0 <= land_c < 8:
+                target = board[mid_r][mid_c]
+                landing = board[land_r][land_c]
+                
+                # Check if target is opponent and landing is empty
+                # Piece IDs: MY(1,2), OPP(-1,-2)
+                is_opp = False
+                if piece > 0: # I am MY
+                    if target == OPP_MAN or target == OPP_KING: is_opp = True
+                else: # I am OPP
+                    if target == MY_MAN or target == MY_KING: is_opp = True
+                
+                if is_opp and landing == EMPTY:
+                    # Check if we already captured this piece in this sequence
+                    if (mid_r, mid_c) not in captured_list:
+                        found_next = True
+                        # Apply jump temporarily to recurse
+                        saved_mid = board[mid_r][mid_c]
+                        saved_curr = board[curr_r][curr_c]
+                        
+                        board[mid_r][mid_c] = EMPTY
+                        board[curr_r][curr_c] = EMPTY
+                        board[land_r][land_c] = piece
+                        
+                        find_recursive(land_r, land_c, captured_list + [(mid_r, mid_c)])
+                        
+                        # Backtrack
+                        board[curr_r][curr_c] = saved_curr
+                        board[mid_r][mid_c] = saved_mid
+                        board[land_r][land_c] = EMPTY
+        
+        if not found_next:
+            # End of a jump chain
+            # Return the full move
+            # Start is original (r,c), End is (curr_r, curr_c)
+            jump_moves.append(((r, c), (curr_r, curr_c), captured_list))
+
+    find_recursive(r, c, [])
+    return jump_moves
+
+def apply_move(board, move, original_color, is_me):
+    """
+    Applies move to board. Returns undo_info.
+    move: ((fr,fc), (tr,tc), captured_list)
+    """
+    (fr, fc), (tr, tc), captured = move
+    piece = board[fr][fc]
+    
+    undo_info = {
+        'from': (fr, fc),
+        'to': (tr, tc),
+        'piece': piece,
+        'captured': [],
+        'promoted': False
+    }
+    
+    # Handle Captures
+    for cr, cc in captured:
+        undo_info['captured'].append((cr, cc, board[cr][cc]))
+        board[cr][cc] = EMPTY
+        
+    # Move Piece
+    board[fr][fc] = EMPTY
+    
+    # Handle Promotion
+    # My promotion: 'w'->7, 'b'->0
+    # Opp promotion: if original 'w', opp is 'b'->0. If original 'b', opp is 'w'->7.
+    
+    is_promotion = False
+    if piece == MY_MAN:
+        if is_me:
+            if (original_color == 'w' and tr == 7) or (original_color == 'b' and tr == 0):
+                piece = MY_KING
+                is_promotion = True
+        else:
+            # This case shouldn't happen as logic separates IDs, but for completeness:
+            pass 
+    
+    elif piece == OPP_MAN:
+        if not is_me:
+             if (original_color == 'w' and tr == 0) or (original_color == 'b' and tr == 7):
+                piece = OPP_KING
+                is_promotion = True
+                
+    board[tr][tc] = piece
+    undo_info['promoted'] = is_promotion
+    return undo_info
+
+def undo_move(board, undo_info, original_color, is_me):
+    fr, fc = undo_info['from']
+    tr, tc = undo_info['to']
+    
+    # Remove from destination
+    board[tr][tc] = EMPTY
+    
+    # Restore to source (handle demotion if promoted)
+    piece = undo_info['piece']
+    board[fr][fc] = piece
+    
+    # Restore Captures
+    for cr, cc, p in undo_info['captured']:
+        board[cr][cc] = p

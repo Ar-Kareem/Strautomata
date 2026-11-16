@@ -1,0 +1,257 @@
+
+import numpy as np
+import time
+from collections import deque
+
+def policy(board) -> str:
+    board = np.array(board)
+    start_time = time.time()
+    time_limit = 0.85  # Leave some margin
+
+    def get_pieces(bd, player):
+        return list(zip(*np.where(bd == player)))
+
+    def is_connected(bd, player):
+        pieces = get_pieces(bd, player)
+        if len(pieces) <= 1:
+            return True
+        visited = set()
+        q = deque([pieces[0]])
+        visited.add(pieces[0])
+        while q:
+            r, c = q.popleft()
+            for dr in [-1, 0, 1]:
+                for dc in [-1, 0, 1]:
+                    if dr == 0 and dc == 0:
+                        continue
+                    nr, nc = r + dr, c + dc
+                    if (nr, nc) in visited:
+                        continue
+                    if 0 <= nr < 8 and 0 <= nc < 8 and bd[nr][nc] == player:
+                        visited.add((nr, nc))
+                        q.append((nr, nc))
+        return len(visited) == len(pieces)
+
+    def largest_component_size(bd, player):
+        pieces = set(get_pieces(bd, player))
+        if not pieces:
+            return 0
+        visited = set()
+        max_size = 0
+        for p in pieces:
+            if p in visited:
+                continue
+            q = deque([p])
+            visited.add(p)
+            size = 0
+            while q:
+                r, c = q.popleft()
+                size += 1
+                for dr in [-1, 0, 1]:
+                    for dc in [-1, 0, 1]:
+                        if dr == 0 and dc == 0:
+                            continue
+                        nr, nc = r + dr, c + dc
+                        if (nr, nc) in pieces and (nr, nc) not in visited:
+                            visited.add((nr, nc))
+                            q.append((nr, nc))
+            max_size = max(max_size, size)
+        return max_size
+
+    def get_legal_moves(bd, player):
+        moves = []
+        pieces = get_pieces(bd, player)
+        opponent = -player
+        for r, c in pieces:
+            for dr, dc in [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)]:
+                # Count pieces in this line
+                if dr == 0 and dc == 0:
+                    continue
+                # Count all pieces along entire line through (r,c)
+                count = 0
+                if dr == 0:
+                    # horizontal
+                    for cc in range(8):
+                        if bd[r][cc] != 0:
+                            count += 1
+                elif dc == 0:
+                    # vertical
+                    for rr in range(8):
+                        if bd[rr][c] != 0:
+                            count += 1
+                else:
+                    # diagonal
+                    # Go to one end
+                    sr, sc = r, c
+                    while 0 <= sr - dr < 8 and 0 <= sc - dc < 8:
+                        sr -= dr
+                        sc -= dc
+                    while 0 <= sr < 8 and 0 <= sc < 8:
+                        if bd[sr][sc] != 0:
+                            count += 1
+                        sr += dr
+                        sc += dc
+
+                dist = count
+                nr, nc = r + dr * dist, c + dc * dist
+                if not (0 <= nr < 8 and 0 <= nc < 8):
+                    continue
+                # Check path: can't jump over opponent pieces
+                blocked = False
+                for step in range(1, dist):
+                    mr, mc = r + dr * step, c + dc * step
+                    if bd[mr][mc] == opponent:
+                        blocked = True
+                        break
+                if blocked:
+                    continue
+                # Can't land on own piece
+                if bd[nr][nc] == player:
+                    continue
+                moves.append((r, c, nr, nc))
+        return moves
+
+    def evaluate(bd, player):
+        my_pieces = get_pieces(bd, player)
+        opp_pieces = get_pieces(bd, -player)
+
+        if len(my_pieces) <= 1:
+            return 100000
+        if len(opp_pieces) <= 1:
+            return -100000
+
+        if is_connected(bd, player):
+            return 100000
+        if is_connected(bd, -player):
+            return -100000
+
+        my_count = len(my_pieces)
+        opp_count = len(opp_pieces)
+
+        # Largest connected component
+        my_lcc = largest_component_size(bd, player)
+        opp_lcc = largest_component_size(bd, -player)
+
+        my_connectivity = my_lcc / my_count
+        opp_connectivity = opp_lcc / opp_count
+
+        # Center of mass spread (lower is better for us)
+        my_rows = [p[0] for p in my_pieces]
+        my_cols = [p[1] for p in my_pieces]
+        my_cr, my_cc = np.mean(my_rows), np.mean(my_cols)
+        my_spread = sum((r - my_cr)**2 + (c - my_cc)**2 for r, c in my_pieces)
+
+        opp_rows = [p[0] for p in opp_pieces]
+        opp_cols = [p[1] for p in opp_pieces]
+        opp_cr, opp_cc = np.mean(opp_rows), np.mean(opp_cols)
+        opp_spread = sum((r - opp_cr)**2 + (c - opp_cc)**2 for r, c in opp_pieces)
+
+        # Adjacency count
+        my_adj = 0
+        for r, c in my_pieces:
+            for dr in [-1, 0, 1]:
+                for dc in [-1, 0, 1]:
+                    if dr == 0 and dc == 0:
+                        continue
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 8 and 0 <= nc < 8 and bd[nr][nc] == player:
+                        my_adj += 1
+
+        opp_adj = 0
+        for r, c in opp_pieces:
+            for dr in [-1, 0, 1]:
+                for dc in [-1, 0, 1]:
+                    if dr == 0 and dc == 0:
+                        continue
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 8 and 0 <= nc < 8 and bd[nr][nc] == -player:
+                        opp_adj += 1
+
+        score = 0
+        score += 500 * (my_connectivity - opp_connectivity)
+        score += 20 * (my_adj - opp_adj)
+        score -= 8 * (my_spread - opp_spread)
+        # Fewer pieces can be easier to connect but also risky
+        score += 5 * (opp_count - my_count) if my_count > 2 else -50 * (opp_count - my_count)
+
+        return score
+
+    def make_move(bd, move, player):
+        new_bd = bd.copy()
+        r, c, nr, nc = move
+        new_bd[r][c] = 0
+        new_bd[nr][nc] = player
+        return new_bd
+
+    def alphabeta(bd, depth, alpha, beta, maximizing, player):
+        if time.time() - start_time > time_limit:
+            return evaluate(bd, player), None
+
+        current = player if maximizing else -player
+        moves = get_legal_moves(bd, current)
+
+        if not moves or depth == 0:
+            return evaluate(bd, player), None
+
+        best_move = moves[0]
+        if maximizing:
+            value = -float('inf')
+            for move in moves:
+                new_bd = make_move(bd, move, current)
+                v, _ = alphabeta(new_bd, depth - 1, alpha, beta, False, player)
+                if v > value:
+                    value = v
+                    best_move = move
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break
+                if time.time() - start_time > time_limit:
+                    break
+            return value, best_move
+        else:
+            value = float('inf')
+            for move in moves:
+                new_bd = make_move(bd, move, current)
+                v, _ = alphabeta(new_bd, depth - 1, alpha, beta, True, player)
+                if v < value:
+                    value = v
+                    best_move = move
+                beta = min(beta, value)
+                if alpha >= beta:
+                    break
+                if time.time() - start_time > time_limit:
+                    break
+            return value, best_move
+
+    player = 1
+    moves = get_legal_moves(board, player)
+    if not moves:
+        # Should not happen but safety
+        return "0,0:0,0"
+
+    # Quick check for immediate wins
+    for move in moves:
+        new_bd = make_move(board, move, player)
+        if is_connected(new_bd, player):
+            return f"{move[0]},{move[1]}:{move[2]},{move[3]}"
+
+    # Sort moves by quick evaluation for better pruning
+    def move_score(m):
+        new_bd = make_move(board, m, player)
+        return evaluate(new_bd, player)
+
+    moves_sorted = sorted(moves, key=move_score, reverse=True)
+
+    # Monkey-patch get_legal_moves to use sorted order isn't needed;
+    # just do iterative deepening
+    best_move = moves_sorted[0]
+    for depth in range(1, 10):
+        if time.time() - start_time > time_limit:
+            break
+        val, move = alphabeta(board, depth, -float('inf'), float('inf'), True, player)
+        if move is not None:
+            best_move = move
+        if abs(val) >= 90000:
+            break
+
+    return f"{best_move[0]},{best_move[1]}:{best_move[2]},{best_move[3]}"

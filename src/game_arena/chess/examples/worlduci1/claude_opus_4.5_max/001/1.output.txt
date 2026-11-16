@@ -1,0 +1,165 @@
+# Strategy
+
+My chess policy uses a minimax search with alpha-beta pruning to evaluate positions. The key components are:
+
+1. **Move Generation**: Complete pseudo-legal move generator for all piece types (pawns with promotions, knights, bishops, rooks, queens, kings), then filter to legal moves by checking if king is left in check.
+
+2. **Attack Detection**: Efficient square-by-square attack checking for all piece types to determine checks.
+
+3. **Evaluation Function**: Material-based evaluation using standard piece values (P=100, N=320, B=330, R=500, Q=900, K=20000), plus a small positional bonus for center control.
+
+4. **Search**: Minimax with alpha-beta pruning at depth 3. Move ordering prioritizes captures (sorted by victim value) to maximize pruning efficiency.
+
+5. **Checkmate/Stalemate Handling**: Properly detects checkmate (returns ±99999) and stalemate (returns 0).
+
+The policy should play reasonable chess by:
+- Avoiding obvious blunders (through lookahead)
+- Capturing material when advantageous
+- Preferring central positions
+- Finding basic tactics within 3 plies
+
+<code>
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    PIECE_VALUES = {'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000}
+    my_color = 'w' if to_play == 'white' else 'b'
+    opp_color = 'b' if my_color == 'w' else 'w'
+    
+    def sq_to_coords(sq): return ord(sq[0]) - ord('a'), int(sq[1]) - 1
+    def coords_to_sq(f, r): return chr(ord('a') + f) + str(r + 1)
+    def is_valid(f, r): return 0 <= f < 8 and 0 <= r < 8
+    def piece_at(board, f, r): return board.get(coords_to_sq(f, r)) if is_valid(f, r) else None
+    
+    def is_attacked(board, sq, by_color):
+        f, r = sq_to_coords(sq)
+        for df, dr in [(-2,-1),(-2,1),(-1,-2),(-1,2),(1,-2),(1,2),(2,-1),(2,1)]:
+            if piece_at(board, f+df, r+dr) == by_color + 'N': return True
+        pawn_dir = -1 if by_color == 'w' else 1
+        for df in [-1, 1]:
+            if piece_at(board, f+df, r+pawn_dir) == by_color + 'P': return True
+        for df in [-1, 0, 1]:
+            for dr in [-1, 0, 1]:
+                if (df or dr) and piece_at(board, f+df, r+dr) == by_color + 'K': return True
+        for df, dr in [(-1,-1), (-1,1), (1,-1), (1,1)]:
+            nf, nr = f + df, r + dr
+            while is_valid(nf, nr):
+                p = piece_at(board, nf, nr)
+                if p:
+                    if p[0] == by_color and p[1] in 'BQ': return True
+                    break
+                nf, nr = nf + df, nr + dr
+        for df, dr in [(-1,0), (1,0), (0,-1), (0,1)]:
+            nf, nr = f + df, r + dr
+            while is_valid(nf, nr):
+                p = piece_at(board, nf, nr)
+                if p:
+                    if p[0] == by_color and p[1] in 'RQ': return True
+                    break
+                nf, nr = nf + df, nr + dr
+        return False
+    
+    def find_king(board, color):
+        for sq, piece in board.items():
+            if piece == color + 'K': return sq
+        return None
+    
+    def in_check(board, color):
+        king_sq = find_king(board, color)
+        return king_sq is None or is_attacked(board, king_sq, 'b' if color == 'w' else 'w')
+    
+    def generate_moves(board, color):
+        moves = []
+        d = 1 if color == 'w' else -1
+        sr, pr = (1, 7) if color == 'w' else (6, 0)
+        for sq, piece in board.items():
+            if piece[0] != color: continue
+            pt, (f, r) = piece[1], sq_to_coords(sq)
+            if pt == 'P':
+                nr = r + d
+                if is_valid(f, nr) and not piece_at(board, f, nr):
+                    if nr == pr:
+                        for pm in 'qrbn': moves.append((sq, coords_to_sq(f, nr), pm))
+                    else:
+                        moves.append((sq, coords_to_sq(f, nr), None))
+                        if r == sr and not piece_at(board, f, r + 2*d):
+                            moves.append((sq, coords_to_sq(f, r + 2*d), None))
+                for df in [-1, 1]:
+                    t = piece_at(board, f+df, r+d)
+                    if t and t[0] != color:
+                        if r+d == pr:
+                            for pm in 'qrbn': moves.append((sq, coords_to_sq(f+df, r+d), pm))
+                        else: moves.append((sq, coords_to_sq(f+df, r+d), None))
+            elif pt == 'N':
+                for df, dr in [(-2,-1),(-2,1),(-1,-2),(-1,2),(1,-2),(1,2),(2,-1),(2,1)]:
+                    if is_valid(f+df, r+dr):
+                        t = piece_at(board, f+df, r+dr)
+                        if not t or t[0] != color: moves.append((sq, coords_to_sq(f+df, r+dr), None))
+            elif pt in 'BRQ':
+                dirs = ([(-1,-1),(-1,1),(1,-1),(1,1)] if pt in 'BQ' else []) + ([(-1,0),(1,0),(0,-1),(0,1)] if pt in 'RQ' else [])
+                for df, dr in dirs:
+                    nf, nr = f+df, r+dr
+                    while is_valid(nf, nr):
+                        t = piece_at(board, nf, nr)
+                        if not t: moves.append((sq, coords_to_sq(nf, nr), None))
+                        else:
+                            if t[0] != color: moves.append((sq, coords_to_sq(nf, nr), None))
+                            break
+                        nf, nr = nf+df, nr+dr
+            elif pt == 'K':
+                for df in [-1,0,1]:
+                    for dr in [-1,0,1]:
+                        if (df or dr) and is_valid(f+df, r+dr):
+                            t = piece_at(board, f+df, r+dr)
+                            if not t or t[0] != color: moves.append((sq, coords_to_sq(f+df, r+dr), None))
+        return moves
+    
+    def make_move(board, move):
+        b = dict(board)
+        p = b.pop(move[0])
+        b[move[1]] = p[0] + move[2].upper() if move[2] else p
+        return b
+    
+    def get_legal_moves(board, color):
+        return [m for m in generate_moves(board, color) if not in_check(make_move(board, m), color)]
+    
+    def move_to_uci(m): return m[0] + m[1] + (m[2] if m[2] else '')
+    
+    def evaluate(board):
+        score = 0
+        for sq, p in board.items():
+            v = PIECE_VALUES[p[1]]
+            score += v if p[0] == my_color else -v
+            f, r = sq_to_coords(sq)
+            if 2 <= f <= 5 and 2 <= r <= 5:
+                score += 5 if p[0] == my_color else -5
+        return score
+    
+    def minimax(board, depth, alpha, beta, is_max):
+        color = my_color if is_max else opp_color
+        if depth == 0: return evaluate(board), None
+        legal = get_legal_moves(board, color)
+        if not legal:
+            return (-99999 if is_max else 99999) if in_check(board, color) else 0, None
+        legal.sort(key=lambda m: PIECE_VALUES[board[m[1]][1]] if m[1] in board else 0, reverse=True)
+        best = legal[0]
+        if is_max:
+            val = float('-inf')
+            for m in legal:
+                v, _ = minimax(make_move(board, m), depth-1, alpha, beta, False)
+                if v > val: val, best = v, m
+                alpha = max(alpha, v)
+                if beta <= alpha: break
+        else:
+            val = float('inf')
+            for m in legal:
+                v, _ = minimax(make_move(board, m), depth-1, alpha, beta, True)
+                if v < val: val, best = v, m
+                beta = min(beta, v)
+                if beta <= alpha: break
+        return val, best
+    
+    legal = get_legal_moves(pieces, my_color)
+    if not legal: return "0000"
+    if len(legal) == 1: return move_to_uci(legal[0])
+    _, best = minimax(pieces, 3, float('-inf'), float('inf'), True)
+    return move_to_uci(best) if best else move_to_uci(legal[0])
+</code>

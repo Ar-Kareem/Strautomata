@@ -1,0 +1,297 @@
+
+import numpy as np
+from collections import defaultdict
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    # Convert to sets for fast lookup
+    my_stones = set(me)
+    opp_stones = set(opponent)
+    all_stones = my_stones | opp_stones
+
+    # Initialize memory if empty
+    if 'ko_point' not in memory:
+        memory['ko_point'] = None
+    if 'last_move' not in memory:
+        memory['last_move'] = None
+    if 'round' not in memory:
+        memory['round'] = 0
+    memory['round'] += 1
+
+    # Precompute neighbors and board bounds
+    def is_valid(r, c):
+        return 1 <= r <= 19 and 1 <= c <= 19
+
+    def get_neighbors(r, c):
+        return [(r+dr, c+dc) for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)] if is_valid(r+dr, c+dc)]
+
+    # Find all liberty counts for groups
+    def get_group_liberties(stones):
+        group = set()
+        queue = [list(stones)[0]]
+        visited = set()
+        liberties = set()
+        
+        while queue:
+            r, c = queue.pop(0)
+            if (r, c) in visited:
+                continue
+            visited.add((r, c))
+            group.add((r, c))
+            
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) in all_stones and (nr, nc) not in visited:
+                    if (nr, nc) in stones:
+                        queue.append((nr, nc))
+                elif (nr, nc) not in all_stones:
+                    liberties.add((nr, nc))
+        
+        return group, liberties
+
+    # Look for immediate capture moves
+    for opp_r, opp_c in opp_stones:
+        neighbors = get_neighbors(opp_r, opp_c)
+        empties = [n for n in neighbors if n not in all_stones]
+        if len(empties) == 1:
+            # Only one liberty - capture!
+            move = empties[0]
+            # Check if this move is not suicidal
+            my_after = my_stones | {move}
+            # Check if move creates a group with no liberties
+            # We only need to worry about liberties of the group we're forming
+            group, liberties = get_group_liberties({move})
+            # But also check if the move captures - we can always capture if liberties are 1
+            # Since we're capturing an opponent group, we're safe if it's a capture
+            # Search for opponent groups adjacent to this move that may be captured
+            opp_groups_captured = []
+            for n in neighbors:
+                if n in opp_stones:
+                    # Find the entire group containing n
+                    group_set = set()
+                    queue = [n]
+                    visited = set()
+                    while queue:
+                        r, c = queue.pop(0)
+                        if (r, c) in visited:
+                            continue
+                        visited.add((r, c))
+                        group_set.add((r, c))
+                        for nr, nc in get_neighbors(r, c):
+                            if (nr, nc) in opp_stones and (nr, nc) not in visited:
+                                queue.append((nr, nc))
+                    # Count liberties of this opponent group without the move point
+                    opp_liberties = set()
+                    for gr, gc in group_set:
+                        for nr, nc in get_neighbors(gr, gc):
+                            if (nr, nc) not in my_after and (nr, nc) not in opp_stones:
+                                opp_liberties.add((nr, nc))
+                    # If this group has only one liberty and that liberty is the move point
+                    if len(opp_liberties) == 1 and move in opp_liberties:
+                        # Valid capture
+                        return move, memory
+
+            # If we get here, the move might be suicidal - skip
+            group, liberties = get_group_liberties({move})
+            if len(liberties) > 0:  # not suicidal
+                if move != memory['ko_point']:
+                    return move, memory
+
+    # Check for moves that capture multiple opponent groups
+    potential_capture_moves = []
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if (r, c) in all_stones:
+                continue
+            # Simulate making move here
+            test_stones = my_stones | {(r, c)}
+            captured = set()
+            
+            # Check all opponent stones adjacent to (r,c)
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) in opp_stones:
+                    # Find the group containing this stone
+                    group_set = set()
+                    queue = [(nr, nc)]
+                    visited = set()
+                    while queue:
+                        gr, gc = queue.pop(0)
+                        if (gr, gc) in visited:
+                            continue
+                        visited.add((gr, gc))
+                        group_set.add((gr, gc))
+                        for ngr, ngc in get_neighbors(gr, gc):
+                            if (ngr, ngc) in opp_stones and (ngr, ngc) not in visited:
+                                queue.append((ngr, ngc))
+                    
+                    # Count liberties of this group without (r,c)
+                    liberties = set()
+                    for gr, gc in group_set:
+                        for nr, nc in get_neighbors(gr, gc):
+                            if (nr, nc) not in test_stones:
+                                liberties.add((nr, nc))
+                    
+                    if len(liberties) == 0:
+                        captured.update(group_set)
+            
+            # If we capture at least one stone, this is a candidate
+            if len(captured) > 0:
+                # Check if move is suicidal
+                group, liberties = get_group_liberties({(r, c)})
+                if len(liberties) > 0:
+                    potential_capture_moves.append((r, c, len(captured)))
+    
+    # Pick best capture move (most stones captured)
+    if potential_capture_moves:
+        best_capture = max(potential_capture_moves, key=lambda x: x[2])
+        move = best_capture[0], best_capture[1]
+        if move != memory['ko_point']:
+            return move, memory
+
+    # Find all empty points within 2 spaces of any stone
+    candidate_moves = set()
+    for r, c in my_stones | opp_stones:
+        for dr, dc in [(-2,0), (-1,0), (0,-2), (0,-1), (0,1), (0,2), (1,0), (2,0),
+                      (-1,-1), (-1,1), (1,-1), (1,1), (-2,-1), (-2,1), (-1,-2), (-1,2),
+                      (1,-2), (1,2), (2,-1), (2,1)]:
+            nr, nc = r + dr, c + dc
+            if is_valid(nr, nc) and (nr, nc) not in all_stones:
+                candidate_moves.add((nr, nc))
+    
+    # If no candidates, consider all empty points (rare)
+    if len(candidate_moves) == 0:
+        for r in range(1, 20):
+            for c in range(1, 20):
+                if (r, c) not in all_stones:
+                    candidate_moves.add((r, c))
+
+    # Evaluate candidate moves
+    move_scores = []
+    for r, c in candidate_moves:
+        # Check if move creates a group with no liberties (suicide)
+        test_stones = my_stones | {(r, c)}
+        group, liberties = get_group_liberties({(r, c)})
+        if len(liberties) == 0:
+            # Check if we are capturing in this move
+            is_capture = False
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) in opp_stones:
+                    opp_group = set()
+                    queue = [(nr, nc)]
+                    visited = set()
+                    while queue:
+                        gr, gc = queue.pop(0)
+                        if (gr, gc) in visited:
+                            continue
+                        visited.add((gr, gc))
+                        opp_group.add((gr, gc))
+                        for ngr, ngc in get_neighbors(gr, gc):
+                            if (ngr, ngc) in opp_stones and (ngr, ngc) not in visited:
+                                queue.append((ngr, ngc))
+                    
+                    opp_liberties = set()
+                    for gr, gc in opp_group:
+                        for nr, nc in get_neighbors(gr, gc):
+                            if (nr, nc) not in test_stones:
+                                opp_liberties.add((nr, nc))
+                    
+                    if len(opp_liberties) == 0:
+                        is_capture = True
+                        break
+            if not is_capture:
+                continue  # Suicide move without capture - invalid
+
+        score = 0
+
+        # Base score: corner > edge > center
+        if r in [1, 19] and c in [1, 19]:
+            score += 10
+        elif r in [1, 19] or c in [1, 19]:
+            score += 7
+        else:
+            score += 3
+
+        # Count liberties after move
+        group, liberties = get_group_liberties({(r, c)})
+        score += len(liberties) * 2
+
+        # Check for connection to own stones
+        connected = 0
+        for nr, nc in get_neighbors(r, c):
+            if (nr, nc) in my_stones:
+                connected += 1
+        score += connected * 4
+
+        # Check for surrounding opponent stones (influence)
+        surrounded_opp = 0
+        for nr, nc in get_neighbors(r, c):
+            if (nr, nc) in opp_stones:
+                surrounded_opp += 1
+        score += surrounded_opp * 1.5
+
+        # Check if move threatens to capture opponent group
+        for nr, nc in get_neighbors(r, c):
+            if (nr, nc) in opp_stones:
+                opp_group = set()
+                queue = [(nr, nc)]
+                visited = set()
+                while queue:
+                    gr, gc = queue.pop(0)
+                    if (gr, gc) in visited:
+                        continue
+                    visited.add((gr, gc))
+                    opp_group.add((gr, gc))
+                    for ngr, ngc in get_neighbors(gr, gc):
+                        if (ngr, ngc) in opp_stones and (ngr, ngc) not in visited:
+                            queue.append((ngr, ngc))
+                
+                opp_liberties = set()
+                for gr, gc in opp_group:
+                    for ngr, ngc in get_neighbors(gr, gc):
+                        if (ngr, ngc) not in test_stones:
+                            opp_liberties.add((ngr, ngc))
+                
+                if len(opp_liberties) == 1:
+                    score += 15  # Big threat
+                elif len(opp_liberties) == 2:
+                    score += 8   # Moderate threat
+
+        # Avoid playing near opponent’s strong groups
+        for nr, nc in get_neighbors(r, c):
+            if (nr, nc) in opp_stones:
+                opp_group = set()
+                queue = [(nr, nc)]
+                visited = set()
+                while queue:
+                    gr, gc = queue.pop(0)
+                    if (gr, gc) in visited:
+                        continue
+                    visited.add((gr, gc))
+                    opp_group.add((gr, gc))
+                    for ngr, ngc in get_neighbors(gr, gc):
+                        if (ngr, ngc) in opp_stones and (ngr, ngc) not in visited:
+                            queue.append((ngr, ngc))
+                opp_liberties = set()
+                for gr, gc in opp_group:
+                    for ngr, ngc in get_neighbors(gr, gc):
+                        if (ngr, ngc) not in opp_stones and (ngr, ngc) not in test_stones:
+                            opp_liberties.add((ngr, ngc))
+                if len(opp_liberties) >= 4:
+                    score -= 4  # Avoid playing too close to large, safe groups
+
+        # Avoid ko points
+        if (r, c) == memory['ko_point']:
+            score = -100000
+
+        move_scores.append((score, (r, c)))
+
+    # Sort by score (descending)
+    move_scores.sort(reverse=True, key=lambda x: x[0])
+
+    # If we have candidate moves, pick the best one
+    if move_scores:
+        best_move = move_scores[0][1]
+        # Check if best move is legal (should be)
+        if best_move != memory['ko_point']:
+            return best_move, memory
+
+    # Fallback: Pass if no good move
+    return (0, 0), memory

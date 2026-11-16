@@ -1,0 +1,116 @@
+
+import numpy as np
+
+def policy(board: list[list[int]]) -> int:
+    # Convert board to numpy for easier manipulation
+    board = np.array(board, dtype=int)
+    ROWS, COLS = 6, 7
+
+    def is_valid_move(col):
+        return board[0][col] == 0
+
+    def drop_piece(board, col, piece):
+        board_copy = board.copy()
+        for r in range(ROWS-1, -1, -1):
+            if board_copy[r][col] == 0:
+                board_copy[r][col] = piece
+                return board_copy
+
+    def check_win(board, piece):
+        # Check horizontal
+        for r in range(ROWS):
+            for c in range(COLS-3):
+                if all(board[r][c+i] == piece for i in range(4)):
+                    return True
+        # Check vertical
+        for r in range(ROWS-3):
+            for c in range(COLS):
+                if all(board[r+i][c] == piece for i in range(4)):
+                    return True
+        # Check diagonals
+        for r in range(ROWS-3):
+            for c in range(COLS-3):
+                if all(board[r+i][c+i] == piece for i in range(4)):
+                    return True
+                if all(board[r+i][c+3-i] == piece for i in range(4)):
+                    return True
+        return False
+
+    def heuristic(board):
+        score = 0
+        # Evaluate windows of 4 cells
+        for r in range(ROWS):
+            for c in range(COLS-3):
+                window = [board[r][c+i] for i in range(4)]
+                score += evaluate_window(window)
+        for r in range(ROWS-3):
+            for c in range(COLS):
+                window = [board[r+i][c] for i in range(4)]
+                score += evaluate_window(window)
+        for r in range(ROWS-3):
+            for c in range(COLS-3):
+                window = [board[r+i][c+i] for i in range(4)]
+                score += evaluate_window(window)
+                window = [board[r+i][c+3-i] for i in range(4)]
+                score += evaluate_window(window)
+        return score
+
+    def evaluate_window(window):
+        score = 0
+        if window.count(1) == 4:
+            return 1000
+        elif window.count(1) == 3 and window.count(0) == 1:
+            score += 10
+        elif window.count(1) == 2 and window.count(0) == 2:
+            score += 2
+        if window.count(-1) == 3 and window.count(0) == 1:
+            score -= 80  # Stronger block to prevent immediate loss
+        return score
+
+    def minimax(board, depth, alpha, beta, maximizing):
+        valid_moves = [c for c in range(COLS) if is_valid_move(c)]
+        is_terminal = not valid_moves or check_win(board, 1) or check_win(board, -1)
+        if depth == 0 or is_terminal:
+            if check_win(board, 1):
+                return None, 10000 - depth
+            elif check_win(board, -1):
+                return None, -10000 + depth
+            else:
+                return None, heuristic(board)
+        
+        move_order = [3,4,2,5,1,6,0]  # Prioritize center
+        ordered_moves = [m for m in move_order if m in valid_moves] + [m for m in valid_moves if m not in move_order]
+        
+        if maximizing:
+            max_eval = -np.inf
+            best_col = ordered_moves[0]
+            for col in ordered_moves:
+                temp_board = drop_piece(board, col, 1)
+                eval_score = minimax(temp_board, depth-1, alpha, beta, False)[1]
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_col = col
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return best_col, max_eval
+        else:
+            min_eval = np.inf
+            best_col = ordered_moves[0]
+            for col in ordered_moves:
+                temp_board = drop_piece(board, col, -1)
+                eval_score = minimax(temp_board, depth-1, alpha, beta, True)[1]
+                if eval_score < min_eval:
+                    min_eval = eval_score
+                    best_col = col
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return best_col, min_eval
+
+    valid_moves = [c for c in range(COLS) if is_valid_move(c)]
+    if not valid_moves:
+        return 0  # Fallback, though board should not be full if game is ongoing
+
+    best_col, _ = minimax(board, 5, -np.inf, np.inf, True)
+    return best_col

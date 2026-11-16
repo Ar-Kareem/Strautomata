@@ -1,0 +1,92 @@
+The strategy for this policy is to play Hex by prioritizing three key steps. First, it checks if there is an immediate move that wins the game; if so, it plays that move. Second, it identifies and blocks any moves that would allow the opponent to win on their next turn. Finally, if neither condition is met, it selects a move based on a heuristic that favors positions with more adjacent stones and central locations, which are critical for creating connections between the player's sides.
+
+<code>
+import sys
+from collections import deque
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    me_set = set(me)
+    opp_set = set(opp)
+    legal_moves = [(r, c) for r in range(11) for c in range(11) if (r, c) not in me_set and (r, c) not in opp_set]
+    if not legal_moves:
+        return (0, 0)  # Should not happen as per problem statement
+    
+    def get_adjacent(r, c):
+        deltas = [(0, -1), (0, 1), (-1, 0), (-1, 1), (1, 0), (1, -1)]
+        neighbors = []
+        for dr, dc in deltas:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 11 and 0 <= nc < 11:
+                neighbors.append((nr, nc))
+        return neighbors
+    
+    def is_win(stones, current_color):
+        stones_set = set(stones)
+        if current_color == 'b':
+            start_nodes = [(r, c) for (r, c) in stones_set if r == 0]
+            if not start_nodes:
+                return False
+            visited = set()
+            q = deque(start_nodes)
+            visited.update(start_nodes)
+            while q:
+                r, c = q.popleft()
+                if r == 10:
+                    return True
+                for nr, nc in get_adjacent(r, c):
+                    if (nr, nc) in stones_set and (nr, nc) not in visited:
+                        visited.add((nr, nc))
+                        q.append((nr, nc))
+            return False
+        elif current_color == 'w':
+            start_nodes = [(r, c) for (r, c) in stones_set if c == 0]
+            if not start_nodes:
+                return False
+            visited = set()
+            q = deque(start_nodes)
+            visited.update(start_nodes)
+            while q:
+                r, c = q.popleft()
+                if c == 10:
+                    return True
+                for nr, nc in get_adjacent(r, c):
+                    if (nr, nc) in stones_set and (nr, nc) not in visited:
+                        visited.add((nr, nc))
+                        q.append((nr, nc))
+            return False
+        return False
+    
+    def check_win_after_adding(move_candidate, current_stones, current_color):
+        new_stones = current_stones.copy()
+        new_stones.add(move_candidate)
+        return is_win(new_stones, current_color)
+    
+    # Step 1: Immediate win
+    for move in legal_moves:
+        if check_win_after_adding(move, me_set, color):
+            return move
+    
+    # Step 2: Block opponent's immediate win
+    opponent_color = 'w' if color == 'b' else 'b'
+    for move in legal_moves:
+        new_opp = opp_set.copy()
+        new_opp.add(move)
+        if is_win(new_opp, opponent_color):
+            return move
+    
+    # Step 3: Heuristic selection
+    def heuristic_score(move):
+        r, c = move
+        adjacent_own = 0
+        for nr, nc in get_adjacent(r, c):
+            if (nr, nc) in me_set:
+                adjacent_own += 1
+        if color == 'b':
+            pos_bonus = 10 - abs(r - 5)
+        else:
+            pos_bonus = 10 - abs(c - 5)
+        return adjacent_own * 2 + pos_bonus
+    
+    legal_moves.sort(key=lambda move: heuristic_score(move), reverse=True)
+    return legal_moves[0]
+</code>

@@ -1,0 +1,344 @@
+
+from __future__ import annotations
+
+from typing import List, Tuple, Set, Optional
+
+Move = Tuple[Tuple[int, int], Tuple[int, int]]
+
+
+BOARD_SIZE = 8
+INF = 10**9
+
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Move:
+    """
+    Return a legal move for Breakthrough.
+    me: current player's piece coordinates
+    opp: opponent's piece coordinates
+    color: 'w' moves upward (+1 row), 'b' moves downward (-1 row)
+    """
+    me_set = set(me)
+    opp_set = set(opp)
+
+    legal = generate_moves(me_set, opp_set, color)
+    if not legal:
+        # Should not happen in normal Breakthrough states, but always return something legal-looking.
+        # Since disqualification is for illegal move strings, we still try to be robust:
+        # if no legal moves, fabricate no-op impossible fallback from first piece if available.
+        if me:
+            p = me[0]
+            return (p, p)
+        return ((0, 0), (0, 0))
+
+    # 1) Immediate winning move
+    goal = 7 if color == 'w' else 0
+    winning = [mv for mv in legal if mv[1][0] == goal]
+    if winning:
+        return best_ordered_move(winning, me_set, opp_set, color)
+
+    # 2) If any move prevents opponent immediate win, prioritize among those.
+    safe_moves = []
+    for mv in ordered_moves(legal, me_set, opp_set, color):
+        nme, nopp = apply_move(me_set, opp_set, mv)
+        if not opponent_has_immediate_win(nopp, nme, opposite(color)):
+            safe_moves.append(mv)
+
+    candidate_moves = safe_moves if safe_moves else ordered_moves(legal, me_set, opp_set, color)
+
+    # 3) Search
+    # Depth chosen for speed/reliability under 1 second.
+    # Typically 3 plies, with 4 plies in lower-branch states.
+    depth = 4 if len(candidate_moves) <= 12 and (len(me_set) + len(opp_set)) <= 20 else 3
+
+    best_mv = candidate_moves[0]
+    best_val = -INF
+    alpha, beta = -INF, INF
+
+    for mv in candidate_moves:
+        nme, nopp = apply_move(me_set, opp_set, mv)
+        val = -negamax(
+            nopp, nme, opposite(color),
+            depth - 1, -beta, -alpha,
+            root_color=color
+        )
+        # Slight bonus for deterministic tie-breaking already in ordering
+        if val > best_val:
+            best_val = val
+            best_mv = mv
+        if val > alpha:
+            alpha = val
+
+    return best_mv
+
+
+def opposite(color: str) -> str:
+    return 'b' if color == 'w' else 'w'
+
+
+def in_bounds(r: int, c: int) -> bool:
+    return 0 <= r < BOARD_SIZE and 0 <= c < BOARD_SIZE
+
+
+def generate_moves(me: Set[Tuple[int, int]], opp: Set[Tuple[int, int]], color: str) -> List[Move]:
+    direction = 1 if color == 'w' else -1
+    occ = me | opp
+    moves: List[Move] = []
+
+    for r, c in me:
+        nr = r + direction
+        if not (0 <= nr < BOARD_SIZE):
+            continue
+
+        # forward
+        if (nr, c) not in occ:
+            moves.append(((r, c), (nr, c)))
+
+        # diagonals: move if empty or capture if opponent
+        nc = c - 1
+        if nc >= 0:
+            if (nr, nc) not in me:
+                if (nr, nc) not in occ or (nr, nc) in opp:
+                    moves.append(((r, c), (nr, nc)))
+
+        nc = c + 1
+        if nc < BOARD_SIZE:
+            if (nr, nc) not in me:
+                if (nr, nc) not in occ or (nr, nc) in opp:
+                    moves.append(((r, c), (nr, nc)))
+
+    return moves
+
+
+def apply_move(me: Set[Tuple[int, int]], opp: Set[Tuple[int, int]], mv: Move) -> Tuple[Set[Tuple[int, int]], Set[Tuple[int, int]]]:
+    src, dst = mv
+    nme = set(me)
+    nopp = set(opp)
+    if src in nme:
+        nme.remove(src)
+    nme.add(dst)
+    if dst in nopp:
+        nopp.remove(dst)
+    return nme, nopp
+
+
+def is_win_for_side(me: Set[Tuple[int, int]], opp: Set[Tuple[int, int]], color: str) -> bool:
+    if not opp:
+        return True
+    goal = 7 if color == 'w' else 0
+    for r, _ in me:
+        if r == goal:
+            return True
+    return False
+
+
+def opponent_has_immediate_win(opp_me: Set[Tuple[int, int]], opp_opp: Set[Tuple[int, int]], opp_color: str) -> bool:
+    # "opp_me" are the opponent-to-move pieces in this perspective
+    goal = 7 if opp_color == 'w' else 0
+    for mv in generate_moves(opp_me, opp_opp, opp_color):
+        if mv[1][0] == goal:
+            return True
+        nme, nopp = apply_move(opp_me, opp_opp, mv)
+        if not nopp:
+            return True
+    return False
+
+
+def ordered_moves(moves: List[Move], me: Set[Tuple[int, int]], opp: Set[Tuple[int, int]], color: str) -> List[Move]:
+    direction = 1 if color == 'w' else -1
+    goal = 7 if color == 'w' else 0
+
+    def score(mv: Move):
+        (r1, c1), (r2, c2) = mv
+        capture = 1 if (r2, c2) in opp else 0
+        promote = 1 if r2 == goal else 0
+        central = -abs(c2 - 3.5)
+        advancement = direction * (r2 - r1) + (r2 if color == 'w' else (7 - r2))
+        diag = 1 if c1 != c2 else 0
+
+        # Prefer moves that create immediate threats / passed lanes
+        threat = 0
+        if one_step_to_goal((r2, c2), color):
+            threat += 4
+        if is_passed_pawn((r2, c2), opp, color):
+            threat += 3
+
+        # Mild preference for captures and central diagonals, but promotion dominates.
+        return (promote * 1000 + capture * 100 + threat * 20 + advancement * 5 + diag * 2 + central)
+
+    return sorted(moves, key=score, reverse=True)
+
+
+def best_ordered_move(moves: List[Move], me: Set[Tuple[int, int]], opp: Set[Tuple[int, int]], color: str) -> Move:
+    return ordered_moves(moves, me, opp, color)[0]
+
+
+def one_step_to_goal(p: Tuple[int, int], color: str) -> bool:
+    r, _ = p
+    return (r == 6) if color == 'w' else (r == 1)
+
+
+def is_passed_pawn(p: Tuple[int, int], opp: Set[Tuple[int, int]], color: str) -> bool:
+    """
+    Heuristic: no enemy piece ahead in same/adjacent files.
+    """
+    r, c = p
+    if color == 'w':
+        rows = range(r + 1, 8)
+    else:
+        rows = range(r - 1, -1, -1)
+
+    files = [x for x in (c - 1, c, c + 1) if 0 <= x < 8]
+    for rr in rows:
+        for cc in files:
+            if (rr, cc) in opp:
+                return False
+    return True
+
+
+def protected_by_friend(p: Tuple[int, int], me: Set[Tuple[int, int]], color: str) -> bool:
+    r, c = p
+    back = -1 if color == 'w' else 1
+    rr = r + back
+    return ((rr, c - 1) in me) or ((rr, c + 1) in me)
+
+
+def attacked_by_enemy(p: Tuple[int, int], opp: Set[Tuple[int, int]], opp_color: str) -> bool:
+    r, c = p
+    # Enemy attacks from one row behind relative to enemy movement.
+    back = -1 if opp_color == 'w' else 1
+    rr = r + back
+    return ((rr, c - 1) in opp) or ((rr, c + 1) in opp)
+
+
+def evaluate(me: Set[Tuple[int, int]], opp: Set[Tuple[int, int]], color: str, root_color: str) -> int:
+    """
+    Static evaluation from perspective of side 'color' to move, but returned in root frame.
+    """
+    if is_win_for_side(me, opp, color):
+        return 500000
+    if is_win_for_side(opp, me, opposite(color)):
+        return -500000
+
+    # Features from current side's perspective
+    my_score = material_and_structure(me, opp, color)
+    op_score = material_and_structure(opp, me, opposite(color))
+
+    val = my_score - op_score
+
+    # Mobility
+    my_moves = len(generate_moves(me, opp, color))
+    op_moves = len(generate_moves(opp, me, opposite(color)))
+    val += 3 * (my_moves - op_moves)
+
+    # Immediate win threats
+    my_threats = count_immediate_promotion_moves(me, opp, color)
+    op_threats = count_immediate_promotion_moves(opp, me, opposite(color))
+    val += 120 * my_threats - 150 * op_threats
+
+    # Convert to root player's perspective if needed
+    return val if color == root_color else -val
+
+
+def material_and_structure(me: Set[Tuple[int, int]], opp: Set[Tuple[int, int]], color: str) -> int:
+    direction = 1 if color == 'w' else -1
+    score = 120 * len(me)
+
+    for r, c in me:
+        # Advancement
+        advance = r if color == 'w' else (7 - r)
+        score += 18 * advance
+
+        # Centrality
+        score += int(6 - 2 * abs(c - 3.5))
+
+        # Passed pawn / runner
+        if is_passed_pawn((r, c), opp, color):
+            score += 28 + 8 * advance
+
+        # Near promotion
+        if one_step_to_goal((r, c), color):
+            score += 70
+
+        # Protection
+        if protected_by_friend((r, c), me, color):
+            score += 10
+
+        # Vulnerability
+        if attacked_by_enemy((r, c), opp, opposite(color)):
+            score -= 12
+
+        # Edge slightly discouraged unless advanced
+        if c == 0 or c == 7:
+            score -= 4
+
+        # Diagonal lane availability
+        nr = r + direction
+        if 0 <= nr < 8:
+            free_diag = 0
+            for nc in (c - 1, c + 1):
+                if 0 <= nc < 8 and (nr, nc) not in me:
+                    free_diag += 1
+            score += 3 * free_diag
+
+    return score
+
+
+def count_immediate_promotion_moves(me: Set[Tuple[int, int]], opp: Set[Tuple[int, int]], color: str) -> int:
+    goal = 7 if color == 'w' else 0
+    cnt = 0
+    for mv in generate_moves(me, opp, color):
+        if mv[1][0] == goal:
+            cnt += 1
+    return cnt
+
+
+def negamax(
+    me: Set[Tuple[int, int]],
+    opp: Set[Tuple[int, int]],
+    color: str,
+    depth: int,
+    alpha: int,
+    beta: int,
+    root_color: str
+) -> int:
+    # Terminal checks
+    if is_win_for_side(me, opp, color):
+        return 500000 + depth
+    if is_win_for_side(opp, me, opposite(color)):
+        return -500000 - depth
+
+    legal = generate_moves(me, opp, color)
+    if not legal:
+        # In standard breakthrough there should always be a winner eventually,
+        # but if no moves occur, treat as losing.
+        return -400000
+
+    if depth <= 0:
+        return evaluate(me, opp, color, root_color)
+
+    moves = ordered_moves(legal, me, opp, color)
+
+    # Small selective pruning: if there are many moves, focus on top candidates
+    if len(moves) > 18:
+        moves = moves[:18]
+    elif len(moves) > 14 and depth >= 3:
+        moves = moves[:16]
+
+    best = -INF
+    for mv in moves:
+        nme, nopp = apply_move(me, opp, mv)
+
+        # Fast terminal handling
+        if is_win_for_side(nme, nopp, color):
+            val = 500000 + depth
+        else:
+            val = -negamax(nopp, nme, opposite(color), depth - 1, -beta, -alpha, root_color)
+
+        if val > best:
+            best = val
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+
+    return best

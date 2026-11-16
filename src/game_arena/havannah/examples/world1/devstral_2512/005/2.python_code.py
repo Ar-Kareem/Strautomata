@@ -1,0 +1,220 @@
+
+import numpy as np
+from collections import deque
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    # Convert to sets for faster lookups
+    me_set = set(me)
+    opp_set = set(opp)
+    board_size = len(valid_mask)
+
+    # Directions for hexagonal neighbors
+    directions = [
+        (0, 1), (0, -1),  # same column
+        (-1, 0), (1, 0),   # left column
+        (-1, 1), (1, -1)   # right column
+    ]
+
+    # Check if a move completes a win
+    def is_winning_move(player_stones, move):
+        new_stones = player_stones + [move]
+        return check_win(new_stones)
+
+    # Check if current stones form a win
+    def check_win(stones):
+        if len(stones) < 5:  # Minimum stones needed for any win
+            return False
+
+        # Check for ring
+        if check_ring(stones):
+            return True
+
+        # Check for bridge
+        if check_bridge(stones):
+            return True
+
+        # Check for fork
+        if check_fork(stones):
+            return True
+
+        return False
+
+    # Check for ring formation
+    def check_ring(stones):
+        visited = set()
+        for stone in stones:
+            if stone not in visited:
+                # BFS to find cycles
+                queue = deque([(stone, stone)])
+                path = {stone: None}
+                found = False
+
+                while queue and not found:
+                    current, start = queue.popleft()
+                    if current in visited:
+                        continue
+                    visited.add(current)
+
+                    for dr, dc in directions:
+                        r, c = current[0] + dr, current[1] + dc
+                        if (r, c) in stones and (r, c) not in path:
+                            path[(r, c)] = current
+                            queue.append(((r, c), start))
+                        elif (r, c) in path and (r, c) != start:
+                            # Found a cycle
+                            found = True
+                            break
+
+                if found:
+                    return True
+        return False
+
+    # Check for bridge (connecting two corners)
+    def check_bridge(stones):
+        corners = [(0, 0), (0, board_size-1), (board_size-1, 0), (board_size-1, board_size-1)]
+        corner_connections = {corner: False for corner in corners}
+
+        for corner in corners:
+            if corner in stones:
+                corner_connections[corner] = True
+
+        # If we have at least two corners, check if they're connected
+        connected_corners = [c for c in corners if corner_connections[c]]
+        if len(connected_corners) >= 2:
+            # Check connectivity between corners
+            visited = set()
+            for corner in connected_corners:
+                if corner not in visited:
+                    queue = deque([corner])
+                    visited.add(corner)
+                    connected = {corner}
+
+                    while queue:
+                        current = queue.popleft()
+                        for dr, dc in directions:
+                            r, c = current[0] + dr, current[1] + dc
+                            if (r, c) in stones and (r, c) not in visited:
+                                visited.add((r, c))
+                                connected.add((r, c))
+                                queue.append((r, c))
+
+                    # Check if we've connected to another corner
+                    for other_corner in connected_corners:
+                        if other_corner != corner and other_corner in connected:
+                            return True
+        return False
+
+    # Check for fork (connecting three edges)
+    def check_fork(stones):
+        # Define edges (excluding corners)
+        top_edge = [(0, c) for c in range(1, board_size-1)]
+        bottom_edge = [(board_size-1, c) for c in range(1, board_size-1)]
+        left_edge = [(r, 0) for r in range(1, board_size-1)]
+        right_edge = [(r, board_size-1) for r in range(1, board_size-1)]
+        edges = [top_edge, bottom_edge, left_edge, right_edge]
+
+        edge_connections = 0
+        visited = set()
+
+        for edge in edges:
+            for cell in edge:
+                if cell in stones and cell not in visited:
+                    # BFS to see if this edge connects to others
+                    queue = deque([cell])
+                    visited.add(cell)
+                    connected_edges = set()
+
+                    while queue:
+                        current = queue.popleft()
+                        for dr, dc in directions:
+                            r, c = current[0] + dr, current[1] + dc
+                            if (r, c) in stones and (r, c) not in visited:
+                                visited.add((r, c))
+                                queue.append((r, c))
+                                # Check if this connects to any edge
+                                for e in edges:
+                                    if (r, c) in e:
+                                        connected_edges.add(e)
+
+                    if len(connected_edges) >= 3:
+                        return True
+                    edge_connections += len(connected_edges)
+
+        return edge_connections >= 3
+
+    # Find all valid moves
+    valid_moves = []
+    for r in range(board_size):
+        for c in range(board_size):
+            if valid_mask[r][c] and (r, c) not in me_set and (r, c) not in opp_set:
+                valid_moves.append((r, c))
+
+    # First check if we can win immediately
+    for move in valid_moves:
+        if is_winning_move(me, move):
+            return move
+
+    # Then check if opponent can win and block
+    for move in valid_moves:
+        if is_winning_move(opp, move):
+            return move
+
+    # If no immediate win/block, evaluate moves strategically
+    best_move = None
+    best_score = -float('inf')
+
+    for move in valid_moves:
+        score = evaluate_move(move, me, opp, valid_mask)
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return best_move
+
+def evaluate_move(move, me, opp, valid_mask):
+    board_size = len(valid_mask)
+    r, c = move
+
+    # Base score
+    score = 0
+
+    # Directions for hexagonal neighbors
+    directions = [
+        (0, 1), (0, -1),  # same column
+        (-1, 0), (1, 0),   # left column
+        (-1, 1), (1, -1)   # right column
+    ]
+
+    # Check proximity to corners (good for bridge)
+    corners = [(0, 0), (0, board_size-1), (board_size-1, 0), (board_size-1, board_size-1)]
+    for corner in corners:
+        dist = abs(r - corner[0]) + abs(c - corner[1])
+        score += 10 / (dist + 1)  # Closer to corners is better
+
+    # Check proximity to edges (good for fork)
+    edge_dist = min(r, board_size-1 - r, c, board_size-1 - c)
+    score += 5 / (edge_dist + 1)  # Closer to edges is better
+
+    # Check if move connects to existing stones
+    me_set = set(me)
+    connected = 0
+    for dr, dc in directions:
+        nr, nc = r + dr, c + dc
+        if (nr, nc) in me_set:
+            connected += 1
+    score += connected * 10  # More connections is better
+
+    # Check if move blocks opponent connections
+    opp_set = set(opp)
+    blocked = 0
+    for dr, dc in directions:
+        nr, nc = r + dr, c + dc
+        if (nr, nc) in opp_set:
+            blocked += 1
+    score += blocked * 5  # Blocking opponent is good
+
+    # Check if move is in center (good for ring)
+    center_dist = abs(r - board_size/2) + abs(c - board_size/2)
+    score += 3 / (center_dist + 1)  # Closer to center is better
+
+    return score

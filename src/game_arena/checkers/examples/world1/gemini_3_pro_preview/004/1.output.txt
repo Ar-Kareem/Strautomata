@@ -1,0 +1,264 @@
+The strategy for this policy is to use a **Minimax algorithm with Alpha-Beta pruning**, searching to a depth of 4 plies. This depth is chosen to balance lookahead capability with the 1-second Python execution constraint. The policy strictly adheres to **Checkers rules**, including **mandatory captures**: if a capture is available, non-capturing moves are pruned immediately.
+
+The state is represented internally as an 8x8 grid where positive integers represent the agent's pieces and negative integers represent the opponent's pieces. Move generation identifies full jump chains (DFS) to evaluate the eventual outcome of a turn, but returns the **atomic next step** `((from, to))` as required by the API. The evaluation function prioritizes material (Kings heavily weighted), encourages advancement (to promote), and rewards controlling the center of the board.
+
+<code>
+import math
+import random
+
+def policy(my_men, my_kings, opp_men, opp_kings, color) -> tuple[tuple[int, int], tuple[int, int]]:
+    # --- Constants & Configuration ---
+    EMPTY = 0
+    MAN = 1
+    KING = 2
+    
+    # Internal representation: Positive = My pieces, Negative = Opponent pieces
+    ME = 1
+    OPP = -1
+    
+    # Board dimensions
+    SIZE = 8
+    
+    # Checkers Direction logic:
+    # 'w' (White) moves from row 0 to 7 (indices increase).
+    # 'b' (Black) moves from row 7 to 0 (indices decrease).
+    # Men capture strictly in forward direction (Standard US Checkers assumption).
+    forward = 1 if color == 'w' else -1
+    promotion_row = 7 if color == 'w' else 0
+
+    # --- Board Initialization ---
+    board = [[0] * SIZE for _ in range(SIZE)]
+    for r, c in my_men: board[r][c] = ME * MAN
+    for r, c in my_kings: board[r][c] = ME * KING
+    for r, c in opp_men: board[r][c] = OPP * MAN
+    for r, c in opp_kings: board[r][c] = OPP * KING
+
+    # --- Helper Functions ---
+
+    def on_board(r, c):
+        return 0 <= r < SIZE and 0 <= c < SIZE
+
+    def get_jumps(board_state, r, c, piece):
+        """
+        Generates all valid jump sequences for a piece.
+        Returns a list of dicts containing the final board state after the sequence
+        and the FIRST step of that sequence (to return to the API).
+        """
+        jumps = []
+        is_king = abs(piece) == KING
+        
+        # Determine valid capture directions
+        if is_king:
+            dirs = [(1, -1), (1, 1), (-1, -1), (-1, 1)]
+        else:
+            # Men capture forward only
+            dirs = [(forward, -1), (forward, 1)]
+            
+        # Stack for DFS: (curr_r, curr_c, board_snapshot, first_move_in_chain, pieces_eaten_set)
+        # Note: 'first_move_in_chain' tracks the immediate move to return for the API.
+        stack = [(r, c, [row[:] for row in board_state], None, set())]
+        
+        while stack:
+            curr_r, curr_c, curr_bd, first_step, eaten = stack.pop()
+            
+            chain_extended = False
+            
+            for dr, dc in dirs:
+                mid_r, mid_c = curr_r + dr, curr_c + dc
+                land_r, land_c = curr_r + 2*dr, curr_c + 2*dc
+                
+                if on_board(land_r, land_c):
+                    mid_p = curr_bd[mid_r][mid_c]
+                    land_p = curr_bd[land_r][land_c]
+                    
+                    # Check for enemy mid piece and empty landing
+                    # Enemy check: signs must be different
+                    if mid_p != 0 and (mid_p > 0) != (piece > 0) and land_p == 0:
+                        # Prevent cycling/illegal jumps over same piece
+                        if (mid_r, mid_c) in eaten:
+                            continue
+                            
+                        chain_extended = True
+                        
+                        # Apply Jump
+                        next_bd = [row[:] for row in curr_bd]
+                        next_bd[curr_r][curr_c] = 0
+                        next_bd[mid_r][mid_c] = 0
+                        next_bd[land_r][land_c] = piece
+                        
+                        # Determine API move (only if this is the start of the chain)
+                        next_first = first_step if first_step else ((r, c), (land_r, land_c))
+                        
+                        # Check Promotion (Standard Rule: Promotion ends turn)
+                        promoted = False
+                        if not is_king and land_r == promotion_row:
+                            next_bd[land_r][land_c] = (KING if piece > 0 else -KING)
+                            promoted = True
+                        
+                        if promoted:
+                            jumps.append({
+                                'final_board': next_bd,
+                                'move': next_first
+                            })
+                        else:
+                            # Continue search
+                            stack.append((land_r, land_c, next_bd, next_first, eaten | {(mid_r, mid_c)}))
+            
+            # If no further extension is possible, and we have jumped at least once, record the move
+            if not chain_extended and first_step is not None:
+                jumps.append({
+                    'final_board': curr_bd,
+                    'move': first_step
+                })
+                
+        return jumps
+
+    def get_slides(board_state, r, c, piece):
+        """ Generates non-capturing moves (slides). """
+        slides = []
+        is_king = abs(piece) == KING
+        
+        if is_king:
+            dirs = [(1, -1), (1, 1), (-1, -1), (-1, 1)]
+        else:
+            dirs = [(forward, -1), (forward, 1)]
+            
+        for dr, dc in dirs:
+            nr, nc = r + dr, c + dc
+            if on_board(nr, nc) and board_state[nr][nc] == 0:
+                next_bd = [row[:] for row in board_state]
+                next_bd[r][c] = 0
+                next_bd[nr][nc] = piece
+                
+                # Check Promotion
+                if not is_king and nr == promotion_row:
+                    next_bd[nr][nc] = (KING if piece > 0 else -KING)
+                
+                slides.append({
+                    'final_board': next_bd,
+                    'move': ((r, c), (nr, nc))
+                })
+        return slides
+
+    def get_legal_moves(board_state, player_sign):
+        """ 
+        Returns all legal moves. 
+        Enforces mandatory capture: if jumps exist, only jumps are returned.
+        """
+        pieces = []
+        for r in range(SIZE):
+            for c in range(SIZE):
+                p = board_state[r][c]
+                if p != 0 and (p > 0) == (player_sign > 0):
+                    pieces.append((r, c, p))
+        
+        # 1. Check Jumps (Mandatory)
+        all_jumps = []
+        for r, c, p in pieces:
+            all_jumps.extend(get_jumps(board_state, r, c, p))
+        
+        if all_jumps:
+            return all_jumps
+            
+        # 2. Check Slides (Only if no jumps)
+        all_slides = []
+        for r, c, p in pieces:
+            all_slides.extend(get_slides(board_state, r, c, p))
+            
+        return all_slides
+
+    def evaluate(board_state):
+        """ Heuristic evaluation relative to ME (positive score = good for ME). """
+        score = 0
+        for r in range(SIZE):
+            for c in range(SIZE):
+                p = board_state[r][c]
+                if p == 0: continue
+                
+                val = 0
+                if abs(p) == MAN:
+                    val = 100
+                    # Positional Bonuses
+                    # Center control
+                    if 2 <= r <= 5 and 2 <= c <= 5: val += 5
+                    # Advancement (encourage promotion)
+                    dist = r if p > 0 else (7 - r) # Distance from start side
+                    # If p > 0 (Me/White), I want r to be 7.
+                    # If p < 0 (Opp/Black), they want r to be 0.
+                    # Correcting logic: White moves +1. Black moves -1.
+                    if p > 0: # White/Me
+                        val += r * 2 # More valuable closer to row 7
+                    else: # Black/Opp
+                        val += (7 - r) * 2 # More valuable closer to row 0
+                else:
+                    # King Value
+                    val = 300
+                
+                if p > 0: score += val
+                else: score -= val
+        return score
+
+    def minimax(board_state, depth, alpha, beta, is_maximizing):
+        if depth == 0:
+            return evaluate(board_state)
+        
+        player = ME if is_maximizing else OPP
+        moves = get_legal_moves(board_state, player)
+        
+        if not moves:
+            # No moves available implies loss for that player
+            return -100000 if is_maximizing else 100000
+        
+        if is_maximizing:
+            max_eval = -float('inf')
+            for m in moves:
+                eval_val = minimax(m['final_board'], depth - 1, alpha, beta, False)
+                if eval_val > max_eval:
+                    max_eval = eval_val
+                alpha = max(alpha, eval_val)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for m in moves:
+                eval_val = minimax(m['final_board'], depth - 1, alpha, beta, True)
+                if eval_val < min_eval:
+                    min_eval = eval_val
+                beta = min(beta, eval_val)
+                if beta <= alpha:
+                    break
+            return min_eval
+
+    # --- Main Execution ---
+    possible_moves = get_legal_moves(board, ME)
+    
+    if not possible_moves:
+        # Should not happen in a valid game state, return safe dummy
+        return ((0,0), (0,0))
+    
+    # Simple Optimization: If only 1 forced move, take it immediately
+    if len(possible_moves) == 1:
+        return possible_moves[0]['move']
+    
+    # Search Parameters
+    SEARCH_DEPTH = 4  # Depth 4 is generally safe for Python in 1s
+    best_move = possible_moves[0]['move']
+    best_score = -float('inf')
+    
+    alpha = -float('inf')
+    beta = float('inf')
+    
+    for m in possible_moves:
+        score = minimax(m['final_board'], SEARCH_DEPTH - 1, alpha, beta, False)
+        
+        # Tie-breaking with small random noise could be added, 
+        # but stable search is usually preferred.
+        if score > best_score:
+            best_score = score
+            best_move = m['move']
+        
+        alpha = max(alpha, score)
+        
+    return best_move
+</code>

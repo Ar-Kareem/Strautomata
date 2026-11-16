@@ -1,0 +1,104 @@
+
+import sys
+
+# Global cache for memoization of board states
+_cache = {}
+
+def _check_winner(board):
+    """Check if there is a winner on the board.
+    Returns 1 if player 1 wins, -1 if player -1 wins, 0 if draw, None if game not over."""
+    # Check rows
+    for i in range(3):
+        if board[i][0] == board[i][1] == board[i][2] != 0:
+            return board[i][0]
+    # Check columns
+    for j in range(3):
+        if board[0][j] == board[1][j] == board[2][j] != 0:
+            return board[0][j]
+    # Check diagonals
+    if board[0][0] == board[1][1] == board[2][2] != 0:
+        return board[0][0]
+    if board[0][2] == board[1][1] == board[2][0] != 0:
+        return board[0][2]
+    # Check for draw
+    if all(board[i][j] != 0 for i in range(3) for j in range(3)):
+        return 0
+    return None
+
+def _get_score(board, player):
+    """Get the score from the perspective of player 1 for the given board state and player to move.
+    Score: 1 if player 1 wins, -1 if player -1 wins, 0 if draw."""
+    # Convert board to a tuple of tuples for hashing
+    board_tuple = tuple(tuple(row) for row in board)
+    key = (board_tuple, player)
+    
+    if key in _cache:
+        return _cache[key]
+    
+    winner = _check_winner(board)
+    if winner is not None:
+        if winner == 1:
+            score = 1
+        elif winner == -1:
+            score = -1
+        else:
+            score = 0
+        _cache[key] = score
+        return score
+    
+    # Get all empty cells
+    empty_cells = []
+    for i in range(3):
+        for j in range(3):
+            if board[i][j] == 0:
+                empty_cells.append((i, j))
+    
+    if player == 1:
+        # My turn: maximize score
+        best_score = -2  # Worse than loss
+        for move in empty_cells:
+            new_board = [list(row) for row in board]
+            new_board[move[0]][move[1]] = 1
+            score = _get_score(new_board, -1)
+            if score > best_score:
+                best_score = score
+            if best_score == 1:
+                break  # No need to check other moves
+        _cache[key] = best_score
+        return best_score
+    else:
+        # Opponent's turn: minimize my score
+        best_score = 2  # Worse than win for me
+        for move in empty_cells:
+            new_board = [list(row) for row in board]
+            new_board[move[0]][move[1]] = -1
+            score = _get_score(new_board, 1)
+            if score < best_score:
+                best_score = score
+            if best_score == -1:
+                break
+        _cache[key] = best_score
+        return best_score
+
+def policy(board):
+    """Return the best move (row, col) for the current board state where it is player 1's turn."""
+    # Since it's my turn, player=1
+    empty_cells = []
+    for i in range(3):
+        for j in range(3):
+            if board[i][j] == 0:
+                empty_cells.append((i, j))
+    
+    best_move = None
+    best_score = -2
+    for move in empty_cells:
+        new_board = [list(row) for row in board]
+        new_board[move[0]][move[1]] = 1
+        score = _get_score(new_board, -1)
+        if score > best_score:
+            best_score = score
+            best_move = move
+        if best_score == 1:
+            break  # No need to check other moves
+    
+    return best_move

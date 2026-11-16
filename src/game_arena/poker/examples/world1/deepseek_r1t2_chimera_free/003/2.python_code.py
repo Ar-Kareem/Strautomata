@@ -1,0 +1,139 @@
+
+import math
+
+def calculate_hand_strength(private_card, public_cards):
+    # Combine all cards
+    all_cards = public_cards + [private_card]
+    if len(all_cards) < 5:
+        max_rank = max(card['rank'] for card in all_cards) if all_cards else 0
+        return 10 + max_rank  # High card only
+    
+    rank_counts = {}
+    suit_counts = {}
+    for card in all_cards:
+        r = card['rank']
+        s = card['suit']
+        rank_counts[r] = rank_counts.get(r, 0) + 1
+        suit_counts[s] = suit_counts.get(s, 0) + 1
+    
+    # Flush detection
+    flush_suit = None
+    flush_cards = []
+    for suit, count in suit_counts.items():
+        if count >= 5:
+            flush_suit = suit
+            flush_cards = [card['rank'] for card in all_cards if card['suit'] == suit]
+            break
+    flush_ranks = sorted(flush_cards, reverse=True) if flush_suit else []
+    
+    # Straight detection
+    ranks = sorted(set(card['rank'] for card in all_cards), reverse=True)
+    straight_high = None
+    ace_low_ranks = [1 if rank == 14 else rank for rank in ranks]
+    ace_low_ranks_sorted = sorted(set(ace_low_ranks), reverse=True)
+    
+    # Check for normal straight
+    for i in range(len(ranks) - 4):
+        if ranks[i] - ranks[i+4] == 4:
+            straight_high = ranks[i]
+            break
+    # Check Ace-low straight (A-2-3-4-5)
+    if not straight_high and 14 in ranks:
+        for i in range(len(ace_low_ranks_sorted) - 4):
+            if ace_low_ranks_sorted[i] - ace_low_ranks_sorted[i+4] == 4:
+                straight_high = 5  # Highest card is 5
+                break
+    
+    # Straight flush detection
+    straight_flush_high = None
+    if flush_suit:
+        flush_ranks_set = sorted(set(flush_ranks), reverse=True)
+        for i in range(len(flush_ranks_set) - 4):
+            if flush_ranks_set[i] - flush_ranks_set[i+4] == 4:
+                straight_flush_high = flush_ranks_set[i]
+                break
+        if not straight_flush_high and 14 in flush_ranks:
+            ace_low_flush = [1 if r == 14 else r for r in flush_ranks_set]
+            ace_low_flush_sorted = sorted(ace_low_flush, reverse=True)
+            for i in range(len(ace_low_flush_sorted) - 4):
+                if ace_low_flush_sorted[i] - ace_low_flush_sorted[i+4] == 4:
+                    straight_flush_high = 5
+                    break
+    
+    # Hand ranking
+    pairs = [r for r, count in rank_counts.items() if count >= 2]
+    triples = [r for r, count in rank_counts.items() if count >= 3]
+    quads = [r for r, count in rank_counts.items() if count >= 4]
+    full_house = (len(triples) >= 1 and len(pairs) >= 2) or len(triples) >= 2
+    
+    # Assign strength scores
+    if straight_flush_high:
+        return 100 if straight_flush_high == 14 else 90 + straight_flush_high
+    elif quads:
+        return 80 + max(quads)
+    elif full_house:
+        top_triple = max(triples)
+        pairs_excluding_triple = [p for p in pairs if p != top_triple and p not in triples]
+        top_pair = max(pairs_excluding_triple) if pairs_excluding_triple else max(pairs)
+        return 70 + top_triple + 0.01 * top_pair
+    elif flush_suit:
+        return 60 + max(flush_ranks)
+    elif straight_high:
+        return 50 + straight_high
+    elif triples:
+        return 40 + max(triples)
+    elif len(pairs) >= 2:
+        sorted_pairs = sorted(pairs, reverse=True)
+        return 30 + sorted_pairs[0] + 0.01 * sorted_pairs[1]
+    elif pairs:
+        return 20 + max(pairs)
+    else:
+        return 10 + max(rank_counts.keys(), default=0)
+
+def policy(state):
+    private_card = state['private_cards'][0]
+    public_cards = state['public_cards']
+    pot = state['pot']
+    to_call = state['to_call']
+    allowed = state['allowed_actions']
+    
+    # Pre-flop decision
+    if not public_cards:
+        rank = private_card['rank']
+        if rank >= 10:
+            if 'raise' in allowed:
+                return 'raise'
+            elif 'call' in allowed:
+                return 'call'
+        else:
+            if to_call > 0:
+                if rank >= 7 and 'call' in allowed:
+                    return 'call'
+                elif 'fold' in allowed:
+                    return 'fold'
+        return 'call'  # Default if no action matched (e.g., check)
+    
+    # Post-flop decision
+    strength = calculate_hand_strength(private_card, public_cards)
+    equity = (strength - 10) / 90.0  # Convert strength to 0-1 equity
+    
+    pot_after_call = pot + to_call
+    pot_odds = to_call / pot_after_call if to_call > 0 else 0.0
+    aggression_threshold = 0.1  # Equity buffer to favor raises
+    
+    if 'all-in' in allowed and equity >= 0.8:
+        return 'all-in'
+    elif equity > pot_odds + aggression_threshold:
+        if 'raise' in allowed:
+            return 'raise'
+        elif 'call' in allowed:
+            return 'call'
+    elif equity >= pot_odds - aggression_threshold and 'call' in allowed:
+        return 'call'
+    
+    # Fallback to fold if equity is poor
+    if 'fold' in allowed:
+        return 'fold'
+    elif 'call' in allowed:
+        return 'call'
+    return allowed[0]  # Ensures legal move

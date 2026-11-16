@@ -1,0 +1,223 @@
+
+import sys
+import random
+import copy
+
+# Constants
+EMPTY = 0
+MY_PIECE = 1
+OPP_PIECE = -1
+
+# 8 Directions: (dr, dc)
+DIRECTIONS = [
+    (-1, -1), (-1, 0), (-1, 1),
+    (0, -1),           (0, 1),
+    (1, -1),  (1, 0),  (1, 1)
+]
+
+def get_pieces(board, player):
+    """Returns a list of (r, c) for all pieces belonging to player."""
+    return [(r, c) for r in range(8) for c in range(8) if board[r][c] == player]
+
+def count_line_pieces(board, r, c, dr, dc):
+    """
+    Counts the total number of pieces on the line defined by (r,c) and direction (dr,dc).
+    Includes the piece at (r,c) itself.
+    """
+    count = 1 # Count self
+    
+    # Count forward
+    nr, nc = r + dr, c + dc
+    while 0 <= nr < 8 and 0 <= nc < 8:
+        if board[nr][nc] != EMPTY:
+            count += 1
+        nr += dr
+        nc += dc
+        
+    # Count backward
+    nr, nc = r - dr, c - dc
+    while 0 <= nr < 8 and 0 <= nc < 8:
+        if board[nr][nc] != EMPTY:
+            count += 1
+        nr -= dr
+        nc -= dc
+        
+    return count
+
+def get_legal_moves(board, player):
+    """Generates all legal moves for the given player."""
+    moves = []
+    pieces = get_pieces(board, player)
+    opponent = -player
+    
+    for r, c in pieces:
+        for dr, dc in DIRECTIONS:
+            dist = count_line_pieces(board, r, c, dr, dc)
+            tr, tc = r + dr * dist, c + dc * dist
+            
+            # Boundary check
+            if not (0 <= tr < 8 and 0 <= tc < 8):
+                continue
+            
+            # Cannot land on own piece
+            if board[tr][tc] == player:
+                continue
+            
+            # Path check: Cannot jump over opponent pieces
+            # Check intermediate squares
+            blocked = False
+            curr_r, curr_c = r + dr, c + dc
+            while curr_r != tr or curr_c != tc:
+                if board[curr_r][curr_c] == opponent:
+                    blocked = True
+                    break
+                curr_r += dr
+                curr_c += dc
+            
+            if not blocked:
+                moves.append((r, c, tr, tc))
+                
+    return moves
+
+def evaluate_state(board):
+    """
+    Evaluates the board state.
+    Positive score is good for Player 1 (MY_PIECE).
+    Heuristic:
+    1. Connected Components (Primary): Fewer is better.
+    2. Compactness (Secondary): Sum of distances between pieces. Smaller is better.
+    3. Piece Count (Tertiary): More pieces is better.
+    """
+    
+    def analyze(player):
+        # Returns (num_components, sum_pairwise_distances, count)
+        pieces = get_pieces(board, player)
+        if not pieces:
+            return 100, 0, 0 # No pieces left means lost (or effectively 0 components depending on rule, but treat as bad)
+            
+        num_pieces = len(pieces)
+        
+        # Union-Find or BFS to find components
+        visited = set()
+        components = 0
+        pieces_list = pieces # list of tuples
+        
+        # Component counting
+        for r, c in pieces_list:
+            if (r, c) not in visited:
+                components += 1
+                # BFS
+                queue = [(r, c)]
+                visited.add((r, c))
+                while queue:
+                    cr, cc = queue.pop(0)
+                    for ddr, ddc in DIRECTIONS:
+                        nr, nc = cr + ddr, cc + ddc
+                        if 0 <= nr < 8 and 0 <= nc < 8:
+                            if board[nr][nc] == player and (nr, nc) not in visited:
+                                visited.add((nr, nc))
+                                queue.append((nr, nc))
+        
+        # Calculate sum of Manhattan distances
+        dist_sum = 0
+        for i in range(num_pieces):
+            for j in range(i + 1, num_pieces):
+                r1, c1 = pieces_list[i]
+                r2, c2 = pieces_list[j]
+                dist_sum += abs(r1 - r2) + abs(c1 - c2)
+                
+        return components, dist_sum, num_pieces
+
+    my_comp, my_dist, my_cnt = analyze(MY_PIECE)
+    opp_comp, opp_dist, opp_cnt = analyze(OPP_PIECE)
+    
+    # Win/Loss detection
+    if my_comp == 1: return 100000
+    if opp_comp == 1: return -100000
+    if my_cnt == 0: return -100000
+    
+    # Heuristic weighting
+    # We want to minimize our components and maximize opponent's components
+    # We want to minimize our distances (tighten cluster)
+    score = (opp_comp - my_comp) * 100
+    score += (opp_dist - my_dist) * 2
+    score += (my_cnt - opp_cnt) * 10
+    
+    return score
+
+def apply_move(board, move, player):
+    """Returns a new board state with the move applied."""
+    fr, fc, tr, tc = move
+    new_board = [row[:] for row in board]
+    new_board[tr][tc] = player
+    new_board[fr][fc] = EMPTY
+    return new_board
+
+def minimax(board, depth, alpha, beta, maximizing_player):
+    """Minimax with Alpha-Beta pruning."""
+    if depth == 0:
+        return evaluate_state(board), None
+    
+    current_player = MY_PIECE if maximizing_player else OPP_PIECE
+    legal_moves = get_legal_moves(board, current_player)
+    
+    if not legal_moves:
+        return evaluate_state(board), None
+
+    # Shuffle moves to add variety if scores are equal
+    random.shuffle(legal_moves)
+    
+    best_move = legal_moves[0]
+
+    if maximizing_player:
+        max_eval = -float('inf')
+        for move in legal_moves:
+            new_board = apply_move(board, move, current_player)
+            eval_score, _ = minimax(new_board, depth - 1, alpha, beta, False)
+            if eval_score > max_eval:
+                max_eval = eval_score
+                best_move = move
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval, best_move
+    else:
+        min_eval = float('inf')
+        for move in legal_moves:
+            new_board = apply_move(board, move, current_player)
+            eval_score, _ = minimax(new_board, depth - 1, alpha, beta, True)
+            if eval_score < min_eval:
+                min_eval = eval_score
+                best_move = move
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval, best_move
+
+def policy(board):
+    """
+    Main entry point. Returns the next move as a string "from_r,from_c:to_r,to_c".
+    """
+    # Handle potential numpy input or list input
+    if hasattr(board, 'tolist'):
+        current_board = board.tolist()
+    else:
+        current_board = [list(row) for row in board]
+        
+    # Execute search
+    # Depth 3 is a good balance of speed and foresight for Python in 1s
+    _, best_move = minimax(current_board, 3, -float('inf'), float('inf'), True)
+    
+    # Fallback if search fails or no moves found (should not happen in valid game states)
+    if best_move is None:
+        moves = get_legal_moves(current_board, MY_PIECE)
+        if moves:
+            best_move = random.choice(moves)
+        else:
+            # Emergency fallback (pass-like behavior or invalid move to avoid crash)
+            # But strictly we must return a legal string. 
+            # If no moves, we can't. But assuming valid state.
+            return "0,0:1,1" # Should not be reached
+            
+    fr, fc, tr, tc = best_move
+    return f"{fr},{fc}:{tr},{tc}"

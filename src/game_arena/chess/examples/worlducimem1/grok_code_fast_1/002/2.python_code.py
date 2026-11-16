@@ -1,0 +1,219 @@
+
+import random
+import time
+
+# Piece values for evaluation (material + promo bonus)
+PIECE_VALUES = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 100}
+
+DIRECTIONS = {
+    'R': [(-1, 0), (1, 0), (0, -1), (0, 1)],
+    'B': [(-1, -1), (-1, 1), (1, -1), (1, 1)],
+    'Q': [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)],
+    'K': [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)],
+    'N': [(-2, -1), (-2, 1), (-1, -2), (-1, 2), (1, -2), (1, 2), (2, -1), (2, 1)],
+}
+
+PROMO_RANK = {'w': 7, 'b': 0}
+
+# Convert board to 8x8 list
+def create_board(pieces):
+    board = [[''] * 8 for _ in range(8)]
+    for sq, piece in pieces.items():
+        r, c = int(sq[1]) - 1, ord(sq[0]) - ord('a')
+        board[r][c] = piece
+    return board
+
+# UCIs
+def square_to_str(r, c):
+    return chr(c + ord('a')) + str(r + 1)
+
+def str_to_square(sq):
+    return int(sq[1]) - 1, ord(sq[0]) - ord('a')
+
+def move_to_uci(from_sq, to_sq, promo=''):
+    return square_to_str(*from_sq) + square_to_str(*to_sq) + promo.lower()
+
+# Generate all possible pseudo-legal moves for the current player
+def get_pseudo_moves(board, color):
+    moves = []
+    for r in range(8):
+        for c in range(8):
+            piece = board[r][c]
+            if piece and piece[0] == color:
+                piece_type = piece[1]
+                fr = (r, c)
+                if piece_type == 'P':
+                    dr = 1 if color == 'w' else -1
+                    pr = r + dr
+                    # Forward
+                    if 0 <= pr < 8 and not board[pr][c]:
+                        if pr == PROMO_RANK[color]:
+                            for pt in 'qnrb':
+                                moves.append(move_to_uci(fr, (pr, c), pt))
+                        else:
+                            moves.append(move_to_uci(fr, (pr, c)))
+                        # Two steps
+                        if (color == 'w' and r == 1) or (color == 'b' and r == 6):
+                            pr2 = r + 2 * dr
+                            if 0 <= pr2 < 8 and not board[pr2][c]:
+                                moves.append(move_to_uci(fr, (pr2, c)))
+                    # Captures
+                    for dc in [-1, 1]:
+                        pc = c + dc
+                        prc = r + dr
+                        if 0 <= pc < 8 and 0 <= prc < 8 and board[prc][pc] and board[prc][pc][0] != color:
+                            if prc == PROMO_RANK[color]:
+                                for pt in 'qnrb':
+                                    moves.append(move_to_uci(fr, (prc, pc), pt))
+                            else:
+                                moves.append(move_to_uci(fr, (prc, pc)))
+                elif piece_type in 'RNBQK':
+                    for drr, dcc in DIRECTIONS[piece_type]:
+                        nr, nc = r + drr, c + dcc
+                        if piece_type in 'N':
+                            # Knights jump once
+                            if 0 <= nr < 8 and 0 <= nc < 8 and (not board[nr][nc] or board[nr][nc][0] != color):
+                                moves.append(move_to_uci(fr, (nr, nc)))
+                        else:
+                            # Sliding pieces
+                            while 0 <= nr < 8 and 0 <= nc < 8:
+                                if board[nr][nc]:
+                                    if board[nr][nc][0] == color:
+                                        break
+                                    moves.append(move_to_uci(fr, (nr, nc)))
+                                    break
+                                moves.append(move_to_uci(fr, (nr, nc)))
+                                nr, nc = nr + drr, nc + dcc
+                # Castling (simple, assuming rook positions)
+                if piece_type == 'K' and ((color == 'w' and r == 0) or (color == 'b' and r == 7)):
+                    ks_r, ks_c = r, 6 if 'kingside' else 2
+                    if all(not board[r][i] for i in range(c+1, ks_c)) and not is_attack(board, (r, ks_c), color):
+                        moves.append(move_to_uci(fr, (ks_r, ks_c)))
+                    qs_r, qs_c = r, 2 if 'queenside' else 6
+                    if all(not board[r][i] for i in range(qs_c+1, c)):
+                        moves.append(move_to_uci(fr, (qs_r, qs_c)))
+    return moves
+
+# Check if square is attacked by enemy
+def is_attack(board, sq, color):
+    enemy = 'b' if color == 'w' else 'w'
+    r, c = sq
+    for drr, dcc in DIRECTIONS['Q']:  # Check sliding
+        nr, nc = r + drr, c + dcc
+        while 0 <= nr < 8 and 0 <= nc < 8:
+            if board[nr][nc]:
+                if board[nr][nc][0] == enemy and board[nr][nc][1] in 'RQ' + ('B' if abs(drr) == abs(dcc) else ''):
+                    return True
+                break
+            nr, nc = nr + drr, nc + dcc
+    for drr, dcc in DIRECTIONS['N']:  # Knights
+        nr, nc = r + drr, c + dcc
+        if 0 <= nr < 8 and 0 <= nc < 8 and board[nr][nc] == enemy + 'N':
+            return True
+    for drr in [-1, 1]:  # Pawns
+        for dcc in [-1, 1]:
+            nr, nc = r - drr, c + dcc  # Enemy pawn attacks opposite
+            if 0 <= nr < 8 and 0 <= nc < 8 and board[nr][nc] == enemy + 'P':
+                if (enemy == 'w' and nr < r) or (enemy == 'b' and nr > r):
+                    return True
+    return False
+
+# Simulate a move on the board
+def apply_move(board, uci):
+    board = [row[:] for row in board]
+    fr, to = str_to_square(uci[:2]), str_to_square(uci[2:])
+    piece = board[fr[0]][fr[1]]
+    promo = uci[3] if len(uci) > 4 else ''
+    pc = piece[0] + promo.upper() if promo else piece
+    board[fr[0]][fr[1]] = '!'
+    board[to[0]][to[1]] = pc
+    return board
+
+# Filter legal moves by checking if king is in check after move
+def get_legal_moves(board, color, pseudo_moves):
+    king_sq = next((r, c) for r in range(8) for c in range(8) if board[r][c] == color + 'K')
+    legal = []
+    for move in pseudo_moves:
+        new_board = apply_move(board, move)
+        if not is_check(new_board, color):
+            legal.append(move)
+    return legal
+
+# Is the current player in check?
+def is_check(board, color):
+    king_sq = next((r, c) for r in range(8) for c in range(8) if board[r][c] == color + 'K')
+    return is_attack(board, king_sq, color)
+
+# Simple evaluation based on material
+def evaluate(board, color):
+    score = 0
+    for r in range(8):
+        for c in range(8):
+            p = board[r][c]
+            if p:
+                val = PIECE_VALUES[p[1]]
+                if p[0] == color:
+                    score += val
+                else:
+                    score -= val
+    return score
+
+# Minimax with alpha-beta
+def minimax(board, depth, max_depth, alpha, beta, is_max, color, start_time):
+    if time.time() - start_time > 0.9:  # Time limit
+        return evaluate(board, color if is_max else ('b' if color == 'w' else 'w'))
+    if depth == 0:
+        return evaluate(board, color if is_max else ('b' if color == 'w' else 'w'))
+    pseudo = get_pseudo_moves(board, color if is_max else ('b' if color == 'w' else 'w'))
+    legal = get_legal_moves(board, color if is_max else ('b' if color == 'w' else 'w'), pseudo)
+    if not legal:
+        if is_check(board, color if is_max else ('b' if color == 'w' else 'w')):
+            return 1000 if not is_max else -1000  # Checkmate
+        else:
+            return 0  # Stalemate
+    if is_max:
+        max_eval = -float('inf')
+        for move in legal:
+            new_board = apply_move(board, move)
+            eval = minimax(new_board, depth-1, max_depth, alpha, beta, False, 'b' if color == 'w' else 'w', start_time)
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for move in legal:
+            new_board = apply_move(board, move)
+            eval = minimax(new_board, depth-1, max_depth, alpha, beta, True, color, start_time)
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break
+        return min_eval
+
+# Select the best move using minimax
+def best_move(board, color, memory):
+    start_time = time.time()
+    pseudo = get_pseudo_moves(board, color)
+    legal = get_legal_moves(board, color, pseudo)
+    if not legal:
+        return random.choice(pseudo) if pseudo else 'e1e1'  # Fallback, shouldn't happen
+    # Iterate deepening
+    best = random.choice(legal)
+    for depth in range(1, 5):
+        scores = {}
+        for move in legal:
+            new_board = apply_move(board, move)
+            scores[move] = minimax(new_board, depth, depth, -float('inf'), float('inf'), False, 'b' if color == 'w' else 'w', start_time)
+        # Get max score moves
+        max_score = max(scores.values())
+        best_cands = [m for m, s in scores.items() if s == max_score]
+        best = random.choice(best_cands)
+    return best, memory
+
+def policy(pieces, to_play, memory):
+    color = 'w' if to_play == 'white' else 'b'
+    board = create_board(pieces)
+    move, memory = best_move(board, color, memory)
+    return move, memory

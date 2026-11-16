@@ -1,0 +1,147 @@
+The strategy for this policy is to prioritize:
+1. Checkmate: Look for immediate checkmates.
+2. Captures: Prioritize captures with higher-value pieces capturing lower-value pieces.
+3. Checks: Look for checks that significantly restrict the opponent's king.
+4. King Safety: Improve king safety by moving the king to safer squares or defending around the king.
+5. Development: Develop pieces to more active squares, especially knights and bishops.
+6. Pawn Structure: Improve pawn structure and control of the center of the board.
+7. Avoid Blunders: Address any immediate threats to our pieces.
+
+This policy uses a simplified evaluation function based on material value and attempts to apply minimax principles with a shallow search depth to choose the best move within the time constraint. Due to the potential number of legal moves available in each turn, the shallow search depth prevents the program from timing out.
+
+```python
+import chess
+import random
+
+def evaluate_board(board, to_play):
+    """A very simple evaluation function.  Positive values favor white."""
+    piece_values = {
+        chess.PAWN: 1,
+        chess.KNIGHT: 3,
+        chess.BISHOP: 3,
+        chess.ROOK: 5,
+        chess.QUEEN: 9,
+        chess.KING: 0  # King safety is more important than material value for the king
+    }
+
+    score = 0
+    for square in chess.SQUARES:
+        piece = board.piece_at(square)
+        if piece:
+            color_mult = 1 if piece.color == chess.WHITE else -1
+            score += color_mult * piece_values[piece.piece_type]
+
+    # Add a bonus for having more space (number of available moves)
+
+    # Add a small bonus for controlling the center squares
+    center_squares = [chess.D4, chess.E4, chess.D5, chess.E5]
+    for square in center_squares:
+        if board.piece_at(square):
+            if board.piece_at(square).color == chess.WHITE:
+                score += 0.1
+            else:
+                score -= 0.1
+    
+    # Add bonus/penalty based on who's turn it is
+    if board.turn == chess.WHITE:
+        score += 0.05
+    else:
+        score -= 0.05
+
+    return score
+
+def minimax(board, depth, maximizing_player, to_play):
+    if depth == 0 or board.is_game_over():
+        return evaluate_board(board, to_play), None
+
+    legal_moves = list(board.legal_moves) # Convert iterator to list
+
+    if maximizing_player:
+        max_eval = float('-inf')
+        best_move = None
+        for move in legal_moves:
+            board.push(move)
+            eval, _ = minimax(board, depth - 1, False, to_play)
+            board.pop()
+            if eval > max_eval:
+                max_eval = eval
+                best_move = move
+        return max_eval, best_move
+    else:
+        min_eval = float('inf')
+        best_move = None
+        for move in legal_moves:
+            board.push(move)
+            eval, _ = minimax(board, depth - 1, True, to_play)
+            board.pop()
+            if eval < min_eval:
+                min_eval = eval
+                best_move = move
+        return min_eval, best_move
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    """
+    Chooses a move based on the current board state and the player to play.
+    """
+    board = chess.Board()
+    board.clear()
+    for square, piece in pieces.items():
+        square_index = chess.SQUARE_NAMES.index(square)
+        piece_type = piece[1]
+        color = piece[0]
+        piece_symbol = piece[0].lower() + piece[1]
+
+        if piece_type == 'K':
+            piece_type_chess = chess.KING
+        elif piece_type == 'Q':
+            piece_type_chess = chess.QUEEN
+        elif piece_type == 'R':
+            piece_type_chess = chess.ROOK
+        elif piece_type == 'B':
+            piece_type_chess = chess.BISHOP
+        elif piece_type == 'N':
+            piece_type_chess = chess.KNIGHT
+        elif piece_type == 'P':
+            piece_type_chess = chess.PAWN
+        else:
+            raise ValueError(f"Invalid piece type: {piece_type}")
+
+        if color == 'w':
+            piece_obj = chess.Piece(piece_type_chess, chess.WHITE)
+        elif color == 'b':
+            piece_obj = chess.Piece(piece_type_chess, chess.BLACK)
+        else:
+            raise ValueError(f"Invalid color: {color}")
+
+        board.set_piece_at(square_index, piece_obj)
+
+    if to_play == 'white':
+        board.turn = chess.WHITE
+    else:
+        board.turn = chess.BLACK
+    board.fullmove_number = 1
+
+    # 1. Check for immediate checkmates
+    for move in board.legal_moves:
+        board.push(move)
+        if board.is_checkmate():
+            board.pop()
+            return move.uci()
+        board.pop()
+
+    # 2. Use minimax to find the best move
+    maximizing_player = (to_play == 'white')
+    _, best_move = minimax(board, 2, maximizing_player, to_play) # increase search depth if time allows.
+
+    if best_move:
+        return best_move.uci()
+    else:
+        #If no best move found through search, return a random legal move to avoid disqualification.
+        legal_moves = list(board.legal_moves) # Convert iterator to list
+        if legal_moves:
+            return random.choice(legal_moves).uci()
+        else:
+            # Should not happen in a valid chess position, but return a null move if no legal moves exist.
+            return "a2a3" #Or any other valid move, if possible from initial state
+
+```

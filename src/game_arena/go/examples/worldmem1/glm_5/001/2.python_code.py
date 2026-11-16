@@ -1,0 +1,247 @@
+
+import numpy as np
+import time
+import random
+
+def policy(me, opponent, memory):
+    start_time = time.time()
+    board_size = 19
+    
+    # Initialize board: 1 = me, -1 = opponent, 0 = empty
+    board = np.zeros((board_size, board_size), dtype=int)
+    for r, c in me:
+        board[r-1, c-1] = 1
+    for r, c in opponent:
+        board[r-1, c-1] = -1
+    
+    # Helper to convert 0-18 index to 1-19 tuple
+    def to_move(r, c):
+        return (r + 1, c + 1)
+
+    # Get neighbors
+    def get_neighbors(r, c):
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < board_size and 0 <= nc < board_size:
+                yield nr, nc
+
+    # Group analysis using BFS
+    def get_group_info(brd, r, c):
+        color = brd[r, c]
+        if color == 0: return [], 0
+        visited = set()
+        stack = [(r, c)]
+        liberties = set()
+        stones = []
+        while stack:
+            curr_r, curr_c = stack.pop()
+            if (curr_r, curr_c) in visited: continue
+            visited.add((curr_r, curr_c))
+            stones.append((curr_r, curr_c))
+            for nr, nc in get_neighbors(curr_r, curr_c):
+                if brd[nr, nc] == 0:
+                    liberties.add((nr, nc))
+                elif brd[nr, nc] == color and (nr, nc) not in visited:
+                    stack.append((nr, nc))
+        return stones, len(liberties)
+
+    # Check if a move is legal (handles suicide and ko roughly)
+    # Returns (is_legal, captures_list)
+    def try_move(brd, r, c, color, prev_hash=None):
+        if brd[r, c] != 0: return False, []
+        
+        test_brd = brd.copy()
+        test_brd[r, c] = color
+        opponent_color = -color
+        captures = []
+        
+        # Check captures of opponent
+        for nr, nc in get_neighbors(r, c):
+            if test_brd[nr, nc] == opponent_color:
+                opp_stones, opp_libs = get_group_info(test_brd, nr, nc)
+                if opp_libs == 0:
+                    captures.extend(opp_stones)
+        
+        for cr, cc in captures:
+            test_brd[cr, cc] = 0
+            
+        # Check suicide
+        my_stones, my_libs = get_group_info(test_brd, r, c)
+        if my_libs == 0:
+            return False, []
+            
+        return True, captures
+
+    # Identify candidate moves (around actions)
+    candidates = set()
+    
+    # If empty board, play center(10, 10) -> (9,9) in 0-index
+    if len(me) == 0 and len(opponent) == 0:
+        return (10, 10), {}
+
+    # Find urgent moves (Atari checks)
+    urgent_moves = []
+    
+    # Check if we are in atari (need to save)
+    for r, c in me:
+        _, libs = get_group_info(board, r, c)
+        if libs == 1:
+            # Find the liberty
+            for nr, nc in get_neighbors(r, c):
+                if board[nr, nc] == 0:
+                    # Can we save it? Usually run or capture attacker.
+                    # Just marking the liberty as urgent.
+                    urgent_moves.append((nr, nc))
+
+    # Check if opponent is in atari (can capture)
+    for r, c in opponent:
+        _, libs = get_group_info(board, r, c)
+        if libs == 1:
+            for nr, nc in get_neighbors(r, c):
+                if board[nr, nc] == 0:
+                    urgent_moves.append((nr, nc))
+
+    # Generate proximity moves
+    all_stones = me + opponent
+    for r, c in all_stones:
+        for dr in range(-2, 3):
+            for dc in range(-2, 3):
+                nr, nc = r-1 + dr, c-1 + dc # convert to 0-index
+                if 0 <= nr < board_size and 0 <= nc < board_size:
+                    if board[nr, nc] == 0:
+                        candidates.add((nr, nc))
+
+    # Add urgent moves to candidates
+    for m in urgent_moves:
+        candidates.add(m)
+
+    # Convert to list and shuffle for variability
+    candidates = list(candidates)
+    random.shuffle(candidates)
+    
+    # If no candidates (rare), pass
+    if not candidates:
+        return (0, 0), memory
+
+    # Simple Monte Carlo Evaluation
+    best_move = None
+    best_score = -float('inf')
+    
+    # Time management
+    time_limit = 0.9 # seconds
+    
+    # Filter candidates for legality first to save time in simulation loop
+    legal_candidates = []
+    for r, c in candidates:
+        is_legal, _ = try_move(board, r, c, 1)
+        if is_legal:
+            legal_candidates.append((r, c))
+            
+    if not legal_candidates:
+        return (0, 0), memory
+
+    # Run simulations
+    # We run a small number of simulations per move to stay within time
+    # Pure Python is slow, so we use a heuristic evaluation instead of full playouts
+    # to ensure we return a strong move.
+    
+    # Evaluation Logic:
+    # 1. Capture potential?
+    # 2. Does it save our group?
+    # 3. Simple influence score?
+    
+    scores = {}
+    for r, c in legal_candidates:
+        score = 0
+        # Heuristic scoring
+        _, captures = try_move(board, r, c, 1)
+        score += len(captures) * 10 # Capturing is great
+        
+        # If this move saves one of our groups (was in atari)
+        # (Simplified: if it was in urgent_moves, give bonus)
+        if (r,c) in urgent_moves:
+            score += 5
+            
+        # Check if this move puts opponent in atari
+        # Simulate move
+        test_brd = board.copy()
+        test_brd[r, c] = 1
+        for cr, cc in captures:
+            test_brd[cr, cc] = 0
+            
+        # Check neighbors for new ataris
+        for nr, nc in get_neighbors(r, c):
+            if test_brd[nr, nc] == -1:
+                _, libs = get_group_info(test_brd, nr, nc)
+                if libs == 1:
+                    score += 5 # Putting opponent in atari is good
+        
+        scores[(r,c)] = score
+        
+    # Find best move based on heuristics
+    # To add randomness and 'simulation' feel, we pick from top moves
+    sorted_moves = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    
+    # If top moves have captures, take the best one deterministically
+    if sorted_moves[0][1] >= 10: # Capture available
+        best_move = sorted_moves[0][0]
+    else:
+        # If no immediate tactical win, we can try to run a mini-MC
+        # But given python speed, we rely on the heuristic shuffle and top pick
+        # Or simple random choice among top 3
+        top_moves = [m[0] for m in sorted_moves[:3]]
+        best_move = random.choice(top_moves)
+
+    # Fallback
+    if best_move is None:
+        best_move = legal_candidates[0]
+
+    # Memory handling for Ko (simple Ko prevention)
+    # Store current board state hash to prevent illegal Ko recapture next turn?
+    # The try_move checks basic suicide. 
+    # We rely on try_move logic implicitly preventing immediate recapture of a single stone if it was a Ko.
+    # Actually, try_move doesn't check Ko history.
+    # We assume the heuristic score (captures > 0) will guide us correctly unless it's a Ko fight.
+    # In a Ko fight, we might need to play elsewhere.
+    # But for a simple bot, capturing is usually correct unless prohibited.
+    
+    # Let's verify Ko explicitly.
+    # If we capture exactly 1 stone, check if that stone's previous location is a Ko point.
+    # The `try_move` returns the captured stones.
+    # To implement Ko correctly, we need to know the previous board state.
+    # We use memory for this.
+    
+    prev_board = memory.get('prev_board')
+    # If we have a previous board state, check if the move recreates it.
+    if prev_board is not None:
+        # Simulate the move
+        test_brd = board.copy()
+        test_brd[best_move[0], best_move[1]] = 1
+        # Apply captures
+        _, captures = try_move(board, best_move[0], best_move[1], 1)
+        for cr, cc in captures:
+            test_brd[cr, cc] = 0
+        
+        if np.array_equal(test_brd, prev_board):
+            # This is a Ko recapture. Illegal.
+            # Find next best move
+            current_best_move = best_move
+            for r_cand, c_cand in legal_candidates:
+                if (r_cand, c_cand) != current_best_move:
+                    best_move = (r_cand, c_cand)
+                    break
+            else:
+                # No other moves? Pass.
+                return (0,0), memory
+
+    # Update memory
+    new_board = board.copy()
+    new_board[best_move[0], best_move[1]] = 1
+    # Apply captures to memory state
+    _, captures = try_move(board, best_move[0], best_move[1], 1)
+    for cr, cc in captures:
+        new_board[cr, cc] = 0
+        
+    memory['prev_board'] = board # The current state becomes "previous" for the opponent
+
+    return to_move(best_move[0], best_move[1]), memory

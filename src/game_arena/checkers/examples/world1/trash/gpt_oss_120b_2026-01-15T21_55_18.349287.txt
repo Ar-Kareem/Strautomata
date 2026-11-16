@@ -1,0 +1,192 @@
+**Strategy Overview**
+
+The policy follows the official rules of English‑checkers:
+
+1. **Mandatory captures** – if any capture is available the policy must choose a capturing move.
+2. **Longest capture chain** – among all possible capture sequences the policy selects the one that removes the most opponent pieces.  
+   (If several sequences have the same length, a simple safety heuristic is used.)
+3. **Safety heuristic** – a destination square that can be taken by the opponent on the next turn is avoided when possible.
+4. **Promotion priority** – when liz a non‑capturing move is required, men are moved forward toward the king row; kings may move in any diagonal direction.
+5. **Simple move ordering** – if several ordinary moves are equally good the first safe one is taken.
+
+The implementation builds a complete board representation, enumerates every legal capture sequence for each of our pieces (men and kings) with a depth‑first search, and finally picks the best move according to the rules above.  The function returns a tuple `((from_row, from_col), (to_row, to_col))` that represents the start square and the final landing square after the whole (possibly multi‑jump) move.
+
+```python
+<code>
+import random
+from typing import List, Tuple, Set, Dict
+
+# ----------------------------------------------------------------------
+# Helper utilities
+# ----------------------------------------------------------------------
+def in_bounds(r: int, c: int) -> bool:
+    return 0 <= r < 8 and 0 <= c < 8
+
+def is_dark(r: int, c: int) -> bool:
+    # playable squares are the dark ones; on a standard board (0,0) is dark
+    return (r + c) % 2 == 1
+
+def opponent(color: str) -> str:
+    return 'w' if color == 'b' else 'b'
+
+# ----------------------------------------------------------------------
+# Core policy
+# ----------------------------------------------------------------------
+def policy(
+    my_men: List[Tuple[int, int]],
+    my_kings: List[Tuple[int, int]],
+    opp_men: List[Tuple[int, int]],
+    opp_kings: List[Tuple[int, int]],
+    color: str,
+) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    """
+    Returns a legal move for the player indicated by `color`.
+    The move respects mandatory captures and tries to maximise the
+    number of captured pieces.
+    """
+
+    # --------------------------------------------------------------
+    # Build board representation
+    # --------------------------------------------------------------
+    # board[(r,c)] = ('my'/'opp', 'man'/'king')
+    board: Dict[Tuple[int, int], Tuple[str, str]] = {}
+    for sq in my_men:
+        board[sq] = ('my', 'man')
+    for sq in my_kings:
+        board[sq] = ('my', 'king')
+    for sq in opp_men:
+        board[sq] = ('opp', 'man')
+    for sq in opp_kings:
+        board[sq] = ('opp', 'king')
+
+    # --------------------------------------------------------------
+    # Directions
+    # --------------------------------------------------------------
+    # (dr, dc) pairs for the four diagonals
+    ALL_DIRS = [(-1, -1), (-1, +1), (+1, -1), (+1, +1)]
+
+    # men move direction depends on colour
+    if color == 'b':      # black moves downwards (row decreasing)
+        MAN_FWD = [(-1, -1), (-1, +1)]
+        PROMOTION_ROW = 0
+    else:                # white moves upwards (row increasing)
+        MAN_FWD = [(+1, -1), (+1, +1)]
+        PROMOTION_ROW = 7
+
+    # --------------------------------------------------------------
+    # Capture sequence generation (depth‑first search)
+    # --------------------------------------------------------------
+    def generate_captures(
+        start: Tuple[int, int],
+        piece_type: str,
+        board_state: Dict[Tuple[int, int], Tuple[str, str]],
+        visited: Set[Tuple[int, int]],
+    ) -> List[List[Tuple[int, int]]]:
+        """
+        Returns a list of capture paths.  Each path is a list of squares
+        visited, beginning with `start`.  The path length is #captures+1.
+        """
+        r, c = start
+        captures: List[List[Tuple[int, int]]] = []
+
+        # Choose directions we are allowed to jump
+        dirs = ALL_DIRS if piece_type == 'king' else MAN_FWD
+
+        any_jump = False
+        for dr, dc in dirs:
+            mid_r, mid_c = r + dr, c + dc          # square with opponent piece
+            landing_r, landing_c = r + 2 * dr, c + 2 * dc   # square after jump
+
+            if not (in_bounds(mid_r, mid_c) and in_bounds(landing_r, landing_c)):
+                continue
+            if not is_dark(landing_r, landing_c):
+                continue
+            if (mid_r, mid_c) not in board_state:
+                continue
+            owner, _ = board_state[(mid_r, mid_c)]
+            if owner != 'opp':
+                continue
+            if (landing_r, landing_c) in board_state:
+                continue
+            if (mid_r, mid_c) in visited:
+                # a piece cannot be captured twice in the same turn
+                continue
+
+            any_jump = True
+            # Simulate the jump
+            new_board = board_state.copy()
+            # remove captured piece
+            del new_board[(mid_r, mid_c)]
+            # move<x> our piece
+            del new_board[(r, c)]
+            # possibly promote after landing
+            next_type = piece_type
+            if piece_type == 'man' and landing_r == PROMOTION_ROW:
+                next_type = 'king'
+            new_board[(landing_r, landing_c)] = ('my', next_type)
+
+            # recurse
+            sub_paths = generate_captures(
+                (landing_r, landing_c),
+                next_type,
+                new_board,
+                visited | {(mid_r, mid_c)},
+            )
+            for p in sub_paths:
+                captures.append([start] + p)
+
+        if not any_jump:
+            # no further jumps – path ends here (just the start square)
+            captures.append([start])
+
+        return captures
+
+    # --------------------------------------------------------------
+    # Find all legal captures for every piece
+    # --------------------------------------------------------------
+    all_capture_moves: List[Tuple[Tuple[int, int], Tuple[int, int], int]] = []  # (src,dst,captures)
+    forনা_src, piece in board.items():
+        owner, ptype = piece
+        if owner != 'my':
+            continue
+        paths = generate_captures(না_src, ptype, board, set())
+        for path in paths:
+            # a path of length 1 means no capture – ignore for capture list
+            if len(path) == 1:
+                continue
+            captures = len(path) - 1
+            all_capture_moves.append((path[0], path[-1], captures))
+
+    # --------------------------------------------------------------
+    # If captures exist – pick the best one
+    # --------------------------------------------------------------
+    if all_capture_moves:
+        # 1) maximal number of captured pieces
+        max_capt = max(m[2] for m in all_capture_moves)
+        best = [m for m in all_capture_moves if m[2] == max_capt]
+
+        # 2) safety heuristic – avoid landing on a square that can be taken
+        def is_unsafe(square: Tuple[int, int], board_state: Dict[Tuple[int, int], Tuple[str, str]]) -> bool:
+            """Return True if opponent could capture a piece placed on `square`
+            on their next turn."""
+            sr, sc = square
+            opp_dirs = ALL_DIRS  # opponent can capture backwards as king; men only forward but we'll be conservative
+            for dr, dc in opp_dirs:
+                # opponent piece must be adjacent on the opposite side of the landing square
+                opp_r, opp_c = sr + dr, sc + dc          # opponent piece location
+                beyond_r, beyond_c = sr - dr, sc - dc   # square behind our piece (must be empty)
+                if not (in_bounds(opp_r, opp_c) and in_bounds(beyond_r, beyond_c)):
+                    continue
+                if not is_dark(beyond_r, beyond_c):
+                    continue
+                if (opp_r, opp_c) not in board_state:
+                    continue
+                oowner, otype = board_state[(opp_r, opp_c)]
+                if oowner != 'opp':
+                    continue
+                # opponent must be able to capture in that direction
+                # men capture only forward; we conservatively allow king capture always
+                if otype == 'man':
+ مقام
+
+```

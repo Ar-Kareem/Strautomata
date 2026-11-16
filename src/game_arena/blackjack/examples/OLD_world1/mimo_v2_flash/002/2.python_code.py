@@ -1,0 +1,604 @@
+
+import sys
+
+def policy(hand: list[str], target: int) -> str:
+    # Define card values map
+    card_values = {
+        '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9, '10': 10,
+        'J': 10, 'Q': 10, 'K': 10, 'A': 11  # Initial value, handled dynamically
+    }
+    
+    # Determine current hand value and soft status
+    # We calculate 'A' as 11 initially. If sum > target, we check if we can reduce it by 10s (converting A from 11 to 1).
+    def get_hand_info(hand_list):
+        val = 0
+        aces = 0
+        for card in hand_list:
+            if card == 'A':
+                val += 11
+                aces += 1
+            else:
+                val += card_values[card]
+        
+        # Adjust for Aces if bust
+        # Maximize value without busting
+        # If val > target, we want to reduce it. Each Ace can reduce value by 10 (11 -> 1).
+        reductions = 0
+        while val > target and reductions < aces:
+            val -= 10
+            reductions += 1
+        
+        return val, (aces - reductions) > 0
+
+    current_val, is_soft = get_hand_info(hand)
+    
+    # If we busted (logic handles it, but just in case)
+    if current_val > target:
+        return "STAY" # Game over essentially, but we must return something
+
+    # If we hit exactly target, we stay (perfect score)
+    if current_val == target:
+        return "STAY"
+
+    # Calculate Remaining Deck
+    # Standard deck: A, 2-10, J, Q, K (13 cards)
+    full_deck = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K']
+    deck_count = {card: 1 for card in full_deck}
+    for card in hand:
+        deck_count[card] -= 1
+    
+    remaining_cards = []
+    for card, count in deck_count.items():
+        if count > 0:
+            remaining_cards.extend([card] * count)
+            
+    num_remaining = len(remaining_cards)
+    
+    # Split cards into Hard and Soft Aces scenarios
+    # A 'Hard' card is one that doesn't count as 11 to prevent bust (or has no A)
+    # A 'Soft' card is an Ace that counts as 11
+    
+    # We need to estimate the opponent's likely strategy or potential outcome.
+    # However, in a heads-up zero-sum game, we only need to beat the opponent.
+    # The opponent's policy is unknown to us. 
+    # BUT, in a standard Blackjack-like game with a fixed target, the "optimal" strategy for a single player
+    # is usually to hit until a certain threshold.
+    # Since we don't know the opponent's policy, we assume the opponent is playing optimally as well.
+    # Or, we can play a "Risk-Averse" strategy that maximizes P(Win) - P(Lose).
+    # Since we can't know what the opponent holds or will do, we should play against the *Deck*.
+    # We want to maximize EV of being > opponent.
+    # Actually, the problem doesn't give us opponent info.
+    # Therefore, we must assume the opponent is playing a standard policy.
+    # Given this is a generic test, we will assume the opponent plays to reach `target` optimally.
+    # We will calculate our probability of busting vs improving our score.
+    
+    # Let's calculate the value of hitting vs staying.
+    # "Value" here is a heuristic: 
+    # - We want to be closer to target.
+    # - We want to minimize bust probability.
+    # - We want to maximize P(getting closer).
+    
+    # Let's implement a Monte Carlo simulation or a recursive probability calculation
+    # given the small deck size (max 13 cards), we can do this deterministically.
+    
+    # However, we don't know opponent's hand. 
+    # BUT, we know the game rules. 
+    # If we stay, our score is S. We win if Opponent BUSTS or (Opponent Score < S).
+    # Since we don't know Opponent Score, we must assume we are playing against an "average" opponent.
+    # A common heuristic in such blind games is to play to maximize your own equity.
+    # Let's just play a "Push" strategy: hit if we are below target, stay if we are above.
+    # Wait, if we are below target, hitting is always better *unless* we bust.
+    # If we bust, we lose immediately.
+    # So we calculate Expected Value of Hitting vs Staying.
+    
+    # EV(Stay) = P(Opponent BUSTS) + P(Opponent Score < Current_Score)
+    # Since we don't know opponent's hand, we assume they play optimally. 
+    # If they play optimally, they will stay when they have a "good" hand.
+    # There is a known "dominant" strategy for this kind of game: 
+    # If your hand is < Target, you should generally hit unless the risk of busting is extremely high.
+    # The risk of busting is high when (Target - Current_Val) is small.
+    
+    # Let's compute the exact probability of improving vs busting.
+    
+    bust_count = 0
+    improve_count = 0
+    worse_count = 0 # Scores that are valid but lower
+    
+    # We need to handle Aces carefully.
+    # For the simulation, we simulate drawing a card and computing the resulting BEST value.
+    
+    # Optimization: Pre-calculate loop
+    for card in remaining_cards:
+        # Simulate draw
+        sim_hand = hand + [card]
+        val, soft = get_hand_info(sim_hand)
+        
+        if val > target:
+            bust_count += 1
+        elif val > current_val:
+            improve_count += 1
+        else:
+            worse_count += 1
+            
+    # Probabilities
+    p_bust = bust_count / num_remaining
+    p_improve = improve_count / num_remaining
+    p_worse = worse_count / num_remaining
+    
+    # Decision Logic
+    # If we hit, we get:
+    # - Immediate loss with P(p_bust)
+    # - Improved position with P(p_improve)
+    # - Worse position with P(p_worse)
+    
+    # If we stay, we survive. 
+    # Now we need to estimate "Win Probability" from a given score.
+    # Since we don't know opponent's hand, we assume they follow a similar logic (threshold).
+    # A standard threshold for this game is: 
+    # Stay if (Target - Current_Score) <= 4. 
+    # Why? Because hitting on a 4-gap has a high risk of busting with high cards.
+    # Actually, let's look at the distribution of cards: 
+    # 2-10, J, Q, K (10 values), A (1 or 11).
+    # Average card value is roughly 7.
+    # Hitting when (Target - Score) is small is dangerous.
+    
+    # Let's use a more robust decision:
+    # We should HIT if Expected Value(HIT) > Expected Value(STAY).
+    # But EV depends on opponent.
+    
+    # Let's assume the opponent stays if they reach a "Safety Threshold".
+    # A common strategy is to stay at Target - 2 or Target - 1.
+    # Or if they are soft 18+ type hands.
+    
+    # Let's try to find a threshold where P(Bust) is too high.
+    # Bust Probability depends on cards > (Target - Current).
+    # Let K = Target - Current.
+    # Cards that bust: any card > K.
+    # But Ace is tricky. If Current is soft (Ace counts as 11), hitting Ace usually doesn't bust immediately (it becomes 1).
+    # If Current is hard, hitting Ace adds 11.
+    
+    # Let's define a simple robust policy based on the "Gap".
+    # If Gap is large (>= 5): We should definitely HIT. Bust risk is low relative to gain.
+    # If Gap is small (<= 2): We should probably STAY. Bust risk is high.
+    # If Gap is medium (3-4): Calculate exact bust risk.
+    
+    gap = target - current_val
+    
+    # If we are soft (Ace counts as 11), we are safer.
+    # If we are hard, we are more fragile.
+    
+    # Exact Bust Risk Heuristic:
+    # Count number of cards that cause a bust.
+    # We already calculated bust_count.
+    
+    # If we are strictly maximizing immediate win probability against a "random" or "average" opponent:
+    # If we bust, we lose (EV = -1).
+    # If we stay:
+    #   We rely on opponent's failure or lower score.
+    #   Since we don't know opponent, we assume we are "ahead" if we are closer to target.
+    #   Actually, if we stay at X, we win against any opponent hand Y where Y < X or Y > T.
+    #   We lose if X < Y <= T.
+    #   In a 13-card deck game, distribution is uniform.
+    #   However, opponent might hit or stay.
+    
+    # Let's use a standard "Beat the Dealer" strategy adapted for variable target.
+    # The optimal move is to hit if the probability of improving without busting outweighs the risk.
+    # AND if the potential improvement puts us in a "winning" position.
+    
+    # Given the constraints (1 second, standard lib), a deterministic check is best.
+    
+    # CRITICAL INSIGHT:
+    # Since we don't know opponent's hand, we can't play a Nash Equilibrium strategy easily.
+    # However, we can play a strategy that maximizes our chances of NOT BUSTING while getting close to T.
+    # Let's calculate "Bust Probability".
+    # High Cards (10, J, Q, K) are 4/13 of the deck. A is 1/13.
+    
+    # Heuristic:
+    # Stay if Gap < 0 (impossible in logic above, but safety)
+    # Stay if Gap == 0 (perfect)
+    # Stay if Gap == 1 and Bust Probability > 50%
+    # Stay if Gap == 2 and Bust Probability > 40%
+    # Hit otherwise.
+    
+    # Let's refine the bust probability check.
+    # We need to account for Aces.
+    # If we have a Hard hand (no Ace or Ace is 1):
+    #   Bust if Drawn_Value > Gap.
+    # If we have a Soft hand (Ace is 11):
+    #   If we draw a card, Ace might become 1.
+    #   Actually, if we have a soft hand, we are much safer.
+    
+    # Let's calculate specific Bust Risk:
+    bust_risk = bust_count / num_remaining
+    
+    # If we are soft, bust risk is artificially low because Ace converts.
+    # But our simulation already accounted for that because `get_hand_info` adjusts value.
+    
+    # Decision Thresholds:
+    # If gap >= 5: Always Hit (Bust risk is manageable for the gain)
+    # If gap <= 0: Stay (Can't get better)
+    # If gap == 1:
+    #   If bust_risk > 0.3: Stay
+    #   Else: Hit
+    # If gap == 2:
+    #   If bust_risk > 0.5: Stay
+    #   Else: Hit
+    # If gap == 3:
+    #   If bust_risk > 0.7: Stay
+    #   Else: Hit
+    # If gap == 4:
+    #   If bust_risk > 0.8: Stay
+    #   Else: Hit
+    
+    # Wait, let's look at the deck.
+    # Deck: [2,3,4,5,6,7,8,9,10,10,10,10,11(A)].
+    # Average value ~ 7.2.
+    # If gap is 4, drawing a 10 (4 cards) busts. Drawing A (1 card) is 11 -> bust. (5 bust cards).
+    # That's 5/13 = ~38% bust chance.
+    # 38% bust is high. If we stay, we might lose to opponent getting closer, but we don't bust.
+    # In Blackjack, dealer usually hits on soft 17. 
+    # Here, "Dealer" is opponent. 
+    
+    # Let's look at a simple "Risk-Averse" strategy.
+    # Hitting is only good if we expect to be closer to T *after the hit*.
+    # If we hit and bust, we lose 100%.
+    # If we stay, we win if opponent busts or is lower.
+    # If we stay at Score S (S < T), opponent will likely hit if their score is low.
+    # But we don't know their score.
+    
+    # Let's assume the opponent plays "Optimally" in the sense of maximizing their own probability of reaching T or getting close.
+    # A common optimal policy for this specific game (Variable Target, 13 card deck) is:
+    # Calculate the "Gap".
+    # If Gap <= 0: STAY
+    # If Gap > 0:
+    #   Calculate probability of drawing a card that doesn't bust (improves or stays safe).
+    #   Actually, let's just use a dynamic threshold.
+    
+    # Let's do a more robust check: 
+    # We will HIT if the expected value of the hand AFTER hitting is better than staying.
+    # But we need a utility function.
+    # Utility(Target - Score). Let's say U(x) = 1 if x=0, 0.5 if x=1, 0 if x=2... dropping off.
+    # Or simply: We want to maximize Score without busting.
+    
+    # Let's look at the specific card distribution.
+    # 13 cards.
+    # Bust cards for Gap = 1: 10, J, Q, K, A (5 cards). 5/13 = 38%.
+    # Bust cards for Gap = 2: 9, 10, J, Q, K, A (6 cards). 6/13 = 46%.
+    # Bust cards for Gap = 3: 8, 9, 10, J, Q, K, A (7 cards). 7/13 = 53%.
+    # Bust cards for Gap = 4: 7, 8, 9, 10, J, Q, K, A (8 cards). 8/13 = 61%.
+    # Bust cards for Gap = 5: 6, 7, 8, 9, 10, J, Q, K, A (9 cards). 9/13 = 69%.
+    # Bust cards for Gap = 6: 5, 6, 7, 8, 9, 10, J, Q, K, A (10 cards). 10/13 = 76%.
+    # Bust cards for Gap = 7: 4, 5, 6, 7, 8, 9, 10, J, Q, K, A (11 cards). 11/13 = 84%.
+    # Bust cards for Gap = 8: 3, 4, 5, 6, 7, 8, 9, 10, J, Q, K, A (12 cards). 12/13 = 92%.
+    # Bust cards for Gap = 9: 2, 3, 4, 5, 6, 7, 8, 9, 10, J, Q, K, A (13 cards). 13/13 = 100%.
+    
+    # Notice: If Gap <= 0, we are at or over target (handled).
+    # If Gap = 1, Bust risk is 38%.
+    # If we stay, what happens?
+    # We are at Target-1.
+    # Opponent might be at Target-1. If they hit, they have 38% bust. If they don't bust, they likely reach Target or Bust.
+    # If they reach Target, we lose (unless we bust).
+    # If they bust, we win.
+    # If they stay at Target-1, we draw.
+    # If they are lower, we win.
+    # So staying at Target-1 gives us a chance to win if opponent is worse.
+    # Hitting at Target-1: 
+    #   38% bust (Loss).
+    #   ~62% chance to improve (Win against anyone not at Target or Bust).
+    #   Specifically, if we draw 2..8 (values 2-8), we reach Target-1+val.
+    #   If we draw a small card, we might still be lower than an optimal opponent.
+    #   Wait, if we draw a small card, say 2, we are at Target-1.
+    #   Actually, if we hit Target-1 with a 2, we are at Target+1 (over). Wait.
+    #   Target - Current = 1.
+    #   If I draw 2, Score = Target - 1 + 2 = Target + 1. Bust.
+    #   Wait, let's recalculate Bust.
+    #   Target = 20. Current = 19. Gap = 1.
+    #   Draw 2 => 21 > 20 (Bust).
+    #   Draw A => 19 + 11 = 30 > 20 (Bust) or 19 + 1 = 20 (Win).
+    #   So Ace is tricky. 
+    #   If we have no Aces in hand:
+    #     Draw A: 19 + 11 = 30 (Bust). 
+    #     So A is a bust card for Hard 19.
+    #   If we have an Ace (value 11):
+    #     Current = 19 (Ace 11 + 8). 
+    #     Draw A: New Ace becomes 1. Total 20 (11+8+1=20). Safe.
+    #     So Soft hands are safer.
+    
+    #   Let's refine the simulation result:
+    #   `bust_count` already handles Aces correctly by calling `get_hand_info`.
+    #   So we should use the calculated `bust_risk`.
+    
+    #   We should also consider "Improvement".
+    #   If we hit and don't bust, do we necessarily improve?
+    #   If we are Soft 19 (A,8), target 20.
+    #   Draw 2 -> 21 (Bust).
+    #   Draw A -> 20 (Improve).
+    #   Draw 3 -> 22 (Bust).
+    #   Actually, any card >= 2 causes a bust if Gap is 1 and hand is Hard.
+    #   If hand is Soft, Ace converts.
+    
+    #   So, let's calculate the expected utility.
+    #   Utility of staying:
+    #     Win if Opponent BUSTS or Opponent < Score.
+    #   Utility of hitting:
+    #     -1 if Bust.
+    #     +1 if we get a card that puts us at Target (or close) without busting.
+    
+    #   Given the opponent is unknown, we assume they play a similar strategy.
+    #   Let's look at the specific case: Gap = 1.
+    #   Bust Risk is often > 30%.
+    #   With Bust Risk > 30%, it is risky to hit.
+    #   However, if we stay at 19 (Target 20), opponent will likely hit if they are 19 or lower.
+    #   If opponent hits 19, they have ~30% bust (win for us) and ~70% chance to win (reach 20+).
+    #   So staying at 19 is actually weak.
+    #   But hitting 19 is risky.
+    #   What if Gap is 2? Target 20, Score 18.
+    #   Bust Risk: Cards > 2. (3,4,5,6,7,8,9,10,J,Q,K,A) -> 11 cards. 11/13 = 84% bust?
+    #   Wait, Ace is special.
+    #   If Hard 18: Draw A = 29 (Bust). 
+    #   So indeed, Bust Risk for Gap 2 is very high.
+    #   So we should definitely stay if Gap <= 2 (unless we are soft?).
+    
+    #   Let's formalize the policy:
+    #   If Gap < 0: Error/Stay.
+    #   If Gap == 0: Stay.
+    #   If Gap == 1:
+    #     If Soft: Draw Ace -> 20 (Safe). Draw 2..8 -> Bust. Draw 9 -> Bust. Draw 10 -> Bust.
+    #     Actually, if Soft 19 (A,8): Draw 2 -> 21 (Bust). Draw A -> 20 (Safe). 
+    #     So Soft 19 is just as risky as Hard 19 for most cards.
+    #     So for Gap 1, Bust Risk is high.
+    #     STAY.
+    
+    #   If Gap > 4:
+    #     Hitting is safer because many cards don't bust.
+    #     HIT.
+    
+    #   Gap = 3 or 4:
+    #     These are the "Grey Area".
+    #     Gap 3 (Target 20, Score 17): Bust on 4+ (4,5,6,7,8,9,10,J,Q,K,A). 10 cards? 
+    #     Wait, 13 cards.
+    #     Safe: 2, 3. (2 cards). 2/13 = 15% safe.
+    #     Bust: 11/13 = 85%.
+    #     So Gap 3 is almost always a Bust.
+    #     Wait, let's check Gap 4 (Score 16): Safe: 2, 3, 4? No, 4 makes 20.
+    #     16 + 4 = 20. Safe. 16 + 3 = 19. Safe. 16 + 2 = 18. Safe.
+    #     Safe: 2, 3, 4. (3 cards). Bust: 10/13.
+    #     So even Gap 4 has high bust risk.
+    #     Gap 5 (Score 15): Safe: 2,3,4,5 (4 cards). Bust: 9/13.
+    #     Gap 6 (Score 14): Safe: 2,3,4,5,6 (5 cards). Bust: 8/13.
+    #     Gap 7 (Score 13): Safe: 2,3,4,5,6,7 (6 cards). Bust: 7/13.
+    #     Gap 8 (Score 12): Safe: 2,3,4,5,6,7,8 (7 cards). Bust: 6/13.
+    #     Gap 9 (Score 11): Safe: 2,3,4,5,6,7,8,9 (8 cards). Bust: 5/13.
+    #     Gap 10 (Score 10): Safe: 2..9,10 (9 cards). Bust: 4/13.
+    #     Gap 11 (Score 9): Safe: 2..9,10,10... (10 cards?). Bust: 3/13.
+    
+    #     So generally:
+    #     If Gap <= 2: Stay (Bust risk > 45%).
+    #     If Gap >= 5: Hit (Bust risk < 70%, but potential gain is huge).
+    #     What about Gap 3, 4?
+    #     Gap 3: 85% Bust.
+    #     Gap 4: 77% Bust.
+    #     These are very high risks. 
+    #     However, if we stay at Gap 3 or 4, we are likely losing to an opponent who will hit and likely bust or get closer.
+    #     If opponent hits, they bust often.
+    #     If we stay, we win if they bust.
+    #     If we hit, we bust often.
+    #     So staying preserves the "Win by Opponent Bust" equity.
+    #     Hitting destroys that equity (by busting ourselves).
+    #     So for Gap <= 4, we should probably STAY.
+    
+    #     Wait, check Gap 5.
+    #     Gap 5 (Score 15, Target 20). Bust Risk 9/13 = 69%.
+    #     Gap 6 (Score 14). Bust Risk 8/13 = 61%.
+    #     Gap 7 (Score 13). Bust Risk 7/13 = 53%.
+    #     Gap 8 (Score 12). Bust Risk 6/13 = 46%.
+    #     Gap 9 (Score 11). Bust Risk 5/13 = 38%.
+    #     Gap 10 (Score 10). Bust Risk 4/13 = 30%.
+    
+    #     Let's calculate "Expected Value" of hitting vs staying against an optimal opponent.
+    #     If we stay at S (S < T), we win if Opponent BUSTS or Opponent < S.
+    #     Since Opponent plays optimally, they will likely hit until they are close to T.
+    #     If we stay low (e.g. 10), Opponent will likely hit and get closer (e.g. 18).
+    #     So staying low is bad.
+    #     We must hit to get close to T.
+    
+    #     So we need to balance "Getting Close" vs "Busting".
+    #     We should hit if:
+    #     (Prob_Improvement * Value_of_Improvement) > (Prob_Bust * 1) (where Bust = -1).
+    #     Value of Improvement is usually high if we are far from T.
+    #     Value of Improvement drops as we get close.
+    
+    #     Let's set a dynamic threshold based on Bust Risk.
+    #     If Bust Risk > 0.5: STAY.
+    #     If Bust Risk <= 0.5: HIT.
+    
+    #     Let's check the gaps:
+    #     Gap 1: 38% Bust -> HIT?
+    #     Gap 2: 46% Bust -> HIT?
+    #     Gap 3: 53% Bust -> STAY?
+    #     Gap 4: 61% Bust -> STAY.
+    #     Gap 5: 69% Bust -> STAY.
+    #     Gap 6: 61% Bust -> STAY.
+    #     Wait, Gap 6 Risk was 8/13 (61%). 
+    #     Gap 7: 53% Bust -> STAY.
+    #     Gap 8: 46% Bust -> HIT?
+    #     Gap 9: 38% Bust -> HIT?
+    
+    #     This threshold fluctuates. 
+    #     The problem is that "Value of Improvement" is non-linear.
+    #     Hitting from 10 to 12 is not worth much (Opponent will get 18+).
+    #     Hitting from 18 to 20 is worth a lot (Opponent might bust at 19).
+    
+    #     So, maybe we should use a "Target Score" heuristic.
+    #     A standard strategy for "Target X" games is to stop when you are within a "Safety Zone".
+    #     Safety Zone usually depends on the deck.
+    #     With 10s and Aces, the risk is significant.
+    
+    #     Let's consider the opponent's perspective.
+    #     Opponent wants to beat us.
+    #     If we stay at S, Opponent wins if they get S+1 to T.
+    #     So we want S to be as high as possible.
+    #     Therefore, we should hit until the risk of busting outweighs the benefit of getting higher.
+    
+    #     Let's refine the logic:
+    #     If Gap > 4: HIT. (We are far enough that bust risk is acceptable or we lose anyway).
+    #     If Gap <= 4: STAY.
+    #     Why 4? 
+    #     At Gap 4, Bust Risk is 61%. 
+    #     At Gap 5, Bust Risk is 69%. 
+    #     Actually, the risk increases as Gap decreases? 
+    #     No, Bust Risk increases as Gap *decreases* (you are closer to target, less room for error).
+    #     So if Gap is large (e.g. 10), Bust Risk is low (30%).
+    #     If Gap is small (e.g. 1), Bust Risk is medium (38%).
+    #     Wait, previously I calculated: 
+    #     Gap 1: Bust on >1 (cards 2-K, A is tricky). 5 bust cards? 
+    #     Let's re-verify Bust Risk vs Gap for a standard hand (no aces).
+    #     Gap g. Safe cards are <= g. Bust cards are > g.
+    #     Cards > g: 
+    #     If g=1: >1 are 2,3,4,5,6,7,8,9,10,J,Q,K (11 cards) + A (11) -> 12 cards? No A is 11 (bust).
+    #     Deck: 2,3,4,5,6,7,8,9,10,10,10,10,A.
+    #     Total 13 cards.
+    #     g=1: >1: 2,3,4,5,6,7,8,9,10,10,10,10,A. All 13 cards? 
+    #     Wait. 2 is > 1. So yes, any card except A (which is 1) causes bust? No A is 11.
+    #     Actually, for a Hard hand, A is 11.
+    #     So if g=1 (Target 20, Score 19), any card > 1 is a bust. That's every card.
+    #     So Bust Risk = 100% for Hard 19.
+    #     If we have an Ace (Soft 19): 11+8.
+    #     g=1.
+    #     Draw A: 11+8+1 = 20. Safe.
+    #     Draw 2: 11+8+2 = 21. Bust.
+    #     So Soft 19 has 1 safe card (A) out of 13 (but we used one A? No, hand is 1 A, 1 8. Deck has 1 A left?).
+    #     This is getting complicated.
+    
+    #     Let's go back to the calculated `bust_risk`.
+    #     We have `bust_risk` from the simulation.
+    #     Let's calculate `improve_risk` (getting closer but not busting).
+    #     Actually, we just need a decision boundary.
+    
+    #     Heuristic 1: 
+    #     If `bust_risk` > 0.5: STAY.
+    #     If `bust_risk` <= 0.5: HIT.
+    
+    #     Let's test this against standard logic.
+    #     Case: Target 20, Hand 19 (Gap 1).
+    #     Bust Risk (Hard) = 1.0 -> STAY.
+    #     Case: Target 20, Hand 18 (Gap 2).
+    #     Bust Risk (Hard) = 1.0 (Cards >2 are all bust, except A which is 11). -> STAY.
+    #     Case: Target 20, Hand 17 (Gap 3).
+    #     Bust Risk (Hard) = 1.0 -> STAY.
+    #     Case: Target 20, Hand 16 (Gap 4).
+    #     Bust Risk (Hard) = 1.0 -> STAY.
+    #     Case: Target 20, Hand 15 (Gap 5).
+    #     Bust Risk (Hard) = 1.0 -> STAY.
+    
+    #     Wait, this logic is flawed for hard hands.
+    #     A "Hard" hand means NO ACE (or Ace counts as 1).
+    #     If I have 19 (K,9), Target 20.
+    #     Draw 2 -> 21 (Bust).
+    #     Draw A -> 30 (Bust).
+    #     So yes, Hard 19 is 100% Bust.
+    
+    #     What about Soft 19 (A,8), Target 20.
+    #     Draw A -> 20 (Safe).
+    #     Draw 2 -> 21 (Bust).
+    #     So Bust Risk = 12/13.
+    
+    #     So for Gap <= 4, Bust Risk is >= 10/13 (76%) even for Soft hands.
+    #     For Gap <= 4, we should STAY.
+    
+    #     What about Gap > 4?
+    #     Gap 5 (Score 15, Target 20). Hard 15.
+    #     Draw 2 (Safe), 3 (Safe), 4 (Safe), 5 (Safe), 6 (Bust), 7 (Bust)...
+    #     Safe: 2,3,4,5 (4 cards). Bust: 9 cards.
+    #     Bust Risk = 9/13 = 69%. > 0.5. STAY.
+    
+    #     Gap 6 (Score 14). Hard 14.
+    #     Safe: 2,3,4,5,6 (5 cards). Bust: 8 cards. 61%. STAY.
+    
+    #     Gap 7 (Score 13). Hard 13.
+    #     Safe: 2,3,4,5,6,7 (6 cards). Bust: 7 cards. 53%. STAY.
+    
+    #     Gap 8 (Score 12). Hard 12.
+    #     Safe: 2,3,4,5,6,7,8 (7 cards). Bust: 6 cards. 46%. HIT.
+    
+    #     Gap 9 (Score 11). Hard 11.
+    #     Safe: 2,3,4,5,6,7,8,9 (8 cards). Bust: 5 cards. 38%. HIT.
+    
+    #     Gap 10 (Score 10). Hard 10.
+    #     Safe: 2,3,4,5,6,7,8,9,10 (9 cards). Bust: 4 cards. 30%. HIT.
+    
+    #     So the threshold is around Gap 8.
+    #     If Gap >= 8, HIT.
+    #     If Gap < 8, STAY.
+    
+    #     Wait, what if we have a Soft hand?
+    #     Soft 13 (A,2), Target 20. Gap 7.
+    #     Hard 13 has 53% Bust.
+    #     Soft 13: 
+    #       Draw A -> 14 (A,2,A = 1+2+1 = 4? No. A,2 = 13. Draw A = 14 or 24).
+    #       Logic: A,2 = 13. Draw A = 14 (A,2,A counts as 1,2,1 or 11,2,1).
+    #       Actually, `get_hand_info` handles this.
+    #       Let's simulate Soft 13, Target 20.
+    #       Draw 2..7 -> Safe (improves).
+    #       Draw 8 -> 21 (Bust).
+    #       Draw 9 -> 22 (Bust).
+    #       Draw 10 -> 23 (Bust).
+    #       Draw A -> 14 (Safe).
+    #       So Safe cards: A,2,3,4,5,6,7. (7 cards). Bust: 6 cards. 46%.
+    #       Soft 13 has 46% bust risk.
+    #       Hard 13 had 53%.
+    #       So soft hands are slightly safer.
+    #       Does this change the threshold?
+    #       Gap 7: Soft 13 (46%) < 50%. Our rule "Hit if Bust Risk <= 50%" would Hit.
+    #       But is it good to hit Soft 13?
+    #       If we stay at 13, we lose against anyone getting 14+.
+    #       If we hit, 46% chance to win (by not busting and improving).
+    #       So yes, hitting is better.
+    
+    #       However, the previous "Gap >= 8" rule was derived for Hard hands.
+    #       For Soft hands, the threshold can be lower (since Bust Risk is lower).
+    #       But calculating exact risk is what we did in the loop.
+    
+    #       So we will use the calculated `bust_risk`.
+    #       Threshold: 
+    #       If bust_risk > 0.5: STAY.
+    #       Else: HIT.
+    
+    #       Edge Case: What if we have 0% bust risk (impossible unless we are at target)?
+    #       If we are at Target, we STAY.
+    
+    #       Let's double check the Gap 1 Hard case (19 vs 20).
+    #       Bust Risk = 1.0. STAY. Correct.
+    #       Gap 2 Hard (18 vs 20). Bust Risk = 1.0. STAY. Correct.
+    #       Gap 8 Hard (12 vs 20). Bust Risk ~46%. HIT. Correct.
+    
+    #       One more consideration:
+    #       The game ends when we STAY.
+    #       If we STAY, we wait for opponent.
+    #       If opponent is still drawing, they might bust or improve.
+    #       If we are at 12 (Gap 8), and we STAY, opponent will likely hit if they are < 12.
+    #       If they are < 12, they will likely hit and maybe bust or get higher than 12.
+    #       If they get higher than 12, we lose.
+    #       So we need to get higher.
+    #       Hitting is the only way.
+    
+    #       Final Algorithm:
+    #       1. Calculate Current Value (handling Aces).
+    #       2. If Value == Target: STAY.
+    #       3. If Value > Target: STAY (Bust already happened in previous turn, or handled by game logic).
+    #       4. Calculate Bust Risk using simulation of remaining deck.
+    #       5. If Bust Risk > 0.5: STAY.
+    #       6. Else: HIT.
+    
+    #       Wait, what if Bust Risk is low, but we are very close?
+    #       If Bust Risk is low, we are likely far from target (Gap is large).
+    #       If Bust Risk is high, we are close.
+    #       This logic holds.
+    
+    #       Optimization:
+    #       The simulation loop runs at most 13 times. It's fast.
+    
+    if bust_risk > 0.5:
+        return "STAY"
+    else:
+        return "HIT"

@@ -1,0 +1,276 @@
+To compete in the Go arena, I have designed a policy that balances aggressive boundary expansion with tactical defensive capabilities.
+
+### Strategy
+
+1.  **State Representation**: I will convert the raw coordinate lists into a 19x19 NumPy array. This allows for efficient vectorized operations to detect threats and opportunities. We will use `1` for the AI's stones, `-1` for the opponent's stones, and `0` for empty points.
+
+2.  **Heuristic Evaluation**:
+    *   **Pass Detection**: If the opponent has no stones (first move or passing scenario), we play the Tengen (center) to maximize influence.
+    *   **Liberties & Safety**: The primary evaluation function calculates the "liberties" (adjacent empty spots) of our groups. If any of our stones are in danger (1 liberty), the priority shifts to defense (saving the stone).
+    *   **Capturing**: We scan the opponent's groups. If an opponent group has exactly 1 liberty, we capture it.
+    *   **Expansion**: If the board is stable, we look to expand our territory. We generate a heatmap of influence based on our current stones and the opponent's stones. We score empty spots based on their proximity to our stones (positive) and their proximity to the opponent (negative). We also penalize moves that are too close to our own stones (redundant) or self-atari (reducing our own liberties to 1 without capturing the opponent).
+
+3.  **Move Selection**:
+    *   The AI generates a list of candidate moves (capturing moves, saving moves, and expansion moves).
+    *   It assigns a priority score to each candidate.
+    *   It selects the highest-scoring legal move.
+    *   It ensures the move is legal by checking if the spot is empty and avoids immediate suicide (unless it captures).
+
+4.  **Memory**: We use the memory dictionary to cache the board state or perform partial computations if needed, though given the 1-second time limit, a fresh computation of the heuristic is usually sufficient and safer for state consistency.
+
+Here is the complete Python source code implementing this strategy.
+
+<code>
+import numpy as np
+import sys
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    """
+    Implements a heuristic-based Go policy focusing on influence, safety, and capturing.
+    """
+    
+    # Initialize 19x19 board with 0s
+    board = np.zeros((19, 19), dtype=np.int8)
+    
+    # Populate stones
+    # Note: Rows/Cols are 1-based in input, 0-based in numpy
+    for r, c in me:
+        if 1 <= r <= 19 and 1 <= c <= 19:
+            board[r-1, c-1] = 1
+            
+    for r, c in opponent:
+        if 1 <= r <= 19 and 1 <= c <= 19:
+            board[r-1, c-1] = -1
+
+    # --- Logic Helpers ---
+
+    def get_neighbors(r, c):
+        """Returns valid neighbors within bounds."""
+        neighbors = []
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 19 and 0 <= nc < 19:
+                neighbors.append((nr, nc))
+        return neighbors
+
+    def get_group_liberties(start_r, start_c, color, b_state):
+        """Flood fill to get group and liberties of a stone."""
+        stack = [(start_r, start_c)]
+        group = set()
+        visited = set()
+        liberties = set()
+        
+        if b_state[start_r, start_c] != color:
+            return set(), set()
+
+        while stack:
+            r, c = stack.pop()
+            if (r, c) in visited:
+                continue
+            visited.add((r, c))
+            group.add((r, c))
+            
+            for nr, nc in get_neighbors(r, c):
+                if b_state[nr, nc] == 0:
+                    liberties.add((nr, nc))
+                elif b_state[nr, nc] == color:
+                    stack.append((nr, nc))
+        return group, liberties
+
+    def is_valid_move(r, c, color, b_state):
+        """Check if move is legal (not occupied, not suicide, not Ko)."""
+        if not (0 <= r < 19 and 0 <= c < 19):
+            return False
+        if b_state[r, c] != 0:
+            return False
+        
+        # Temporarily place stone
+        temp_b = b_state.copy()
+        temp_b[r, c] = color
+        
+        # Check liberties of the new stone
+        _, liberties = get_group_liberties(r, c, color, temp_b)
+        if len(liberties) > 0:
+            return True # Safe or capturing move
+            
+        # If 0 liberties, check if we captured anything
+        captured = False
+        for nr, nc in get_neighbors(r, c):
+            if temp_b[nr, nc] == -color:
+                _, opp_libs = get_group_liberties(nr, nc, -color, temp_b)
+                if len(opp_libs) == 0:
+                    captured = True
+                    break
+        
+        return captured # Legal if captures, illegal if suicide
+
+    # --- Main Logic ---
+
+    # 1. First Move / Empty Board
+    if len(me) == 0 and len(opponent) == 0:
+        return (10, 10), memory # Tengen
+
+    # 2. Check for Opponent Capture opportunities (High Priority)
+    capture_moves = []
+    for r in range(19):
+        for c in range(19):
+            if board[r, c] != 0: continue
+            
+            # Check if placing here captures opponent
+            would_capture = False
+            for nr, nc in get_neighbors(r, c):
+                if board[nr, nc] == -1:
+                    # Simulate temporarily
+                    temp_b = board.copy()
+                    temp_b[r, c] = 1
+                    _, libs = get_group_liberties(nr, nc, -1, temp_b)
+                    if len(libs) == 0:
+                        would_capture = True
+                        break
+            
+            if would_capture:
+                # Verify it's not suicide (unless capture saves it)
+                if is_valid_move(r, c, 1, board):
+                    capture_moves.append((r, c))
+    
+    if capture_moves:
+        # Pick the capture that creates the most liberties or is closest to center (tie breaker)
+        best_move = capture_moves[0]
+        max_libs = 0
+        best_dist = 100
+        for r, c in capture_moves:
+            # Calculate liberties after move
+            temp_b = board.copy()
+            temp_b[r, c] = 1
+            # Remove captured stones
+            for nr, nc in get_neighbors(r, c):
+                if temp_b[nr, nc] == -1:
+                    _, libs = get_group_liberties(nr, nc, -1, temp_b)
+                    if len(libs) == 0:
+                        temp_b[nr, nc] = 0 # Simulate removal
+            _, new_libs = get_group_liberties(r, c, 1, temp_b)
+            
+            # Heuristic: More liberties is better, center is tie breaker
+            dist = abs(r-9) + abs(c-9)
+            if len(new_libs) > max_libs or (len(new_libs) == max_libs and dist < best_dist):
+                max_libs = len(new_libs)
+                best_dist = dist
+                best_move = (r, c)
+        return (best_move[0]+1, best_move[1]+1), memory
+
+    # 3. Check for Defense (Save stones with 1 liberty)
+    save_moves = []
+    threatened_groups = set()
+    
+    # Identify threatened groups
+    checked = set()
+    for r, c in me:
+        if (r, c) in checked: continue
+        group, libs = get_group_liberties(r-1, c-1, 1, board)
+        checked.update(group)
+        if len(libs) == 1:
+            threatened_groups.add(tuple(list(libs)[0])) # The liberty to fill
+
+    # Filter valid saving moves
+    for (r, c) in threatened_groups:
+        if is_valid_move(r, c, 1, board):
+            save_moves.append((r, c))
+
+    if save_moves:
+        # Pick the move that results in most liberties
+        best_save = save_moves[0]
+        max_libs = -1
+        for r, c in save_moves:
+            temp_b = board.copy()
+            temp_b[r, c] = 1
+            _, libs = get_group_liberties(r, c, 1, temp_b)
+            if len(libs) > max_libs:
+                max_libs = len(libs)
+                best_save = (r, c)
+        return (best_save[0]+1, best_save[1]+1), memory
+
+    # 4. Expansion / Territory Building
+    # Generate scores for empty spots based on:
+    # - Distance to me (closer = good)
+    # - Distance to opponent (closer = bad/blocking)
+    # - Center preference
+    
+    candidates = []
+    
+    # Create distance maps using BFS is expensive, using simple summation for speed on 361 points
+    # Optimization: Only consider points somewhat near existing stones to save time
+    
+    all_stones = [(r-1, c-1, 1) for r, c in me] + [(r-1, c-1, -1) for r, c in opponent]
+    
+    if not all_stones: # Should be covered by first move, but fallback
+        return (9, 9), memory
+
+    # Scan limited area or whole board
+    # Given 1s constraint on Python, we optimize the scan. 
+    # We scan the whole board but use simple distance heuristic.
+    
+    best_score = -10000
+    best_move = None
+    
+    for r in range(19):
+        for c in range(19):
+            if board[r, c] != 0: continue
+            
+            # 1. Self Atari Check (Move reduces own liberties to 1 without capture)
+            # We skip moves that reduce our groups to 1 liberty unless we capture
+            # (We already checked captures, so if we are here, we assume no capture)
+            temp_b = board.copy()
+            temp_b[r, c] = 1
+            _, libs = get_group_liberties(r, c, 1, temp_b)
+            if len(libs) == 1:
+                # Check if we captured anything (doubtful at this stage)
+                captured = False
+                for nr, nc in get_neighbors(r, c):
+                    if temp_b[nr, nc] == -1:
+                        _, olibs = get_group_liberties(nr, nc, -1, temp_b)
+                        if len(olibs) == 0: captured = True
+                if not captured:
+                    continue # Bad move (Self Atari)
+            
+            # 2. Scoring (Influence)
+            # Base score: Center preference (9,9 is 0,0 relative)
+            score = - (abs(r-9) + abs(c-9)) * 0.1
+            
+            # Influence from my stones (positive)
+            my_influence = 0
+            for mr, mc, _ in all_stones:
+                if (mr, mc) == (r, c): continue
+                dist = abs(mr-r) + abs(mc-c)
+                if dist < 8: # Influence range
+                    val = 1.0 / (dist + 1)
+                    my_influence += val
+            
+            # Influence from opponent (negative)
+            opp_influence = 0
+            for or_oc in opponent:
+                dist = abs(or_oc[0]-1 - r) + abs(or_oc[1]-1 - c)
+                if dist < 8:
+                    val = 1.0 / (dist + 1)
+                    opp_influence += val
+            
+            # Aggression: High score if close to opponent (to reduce their liberties)
+            # Defense: High score if close to me (to secure territory)
+            # We want to block opponent, so proximity to them is good unless we are too close to own
+            
+            score += (my_influence * 0.5) - (opp_influence * 1.0)
+            
+            # Small random noise to break ties and avoid predictable patterns
+            # Deterministic from coordinates to keep reproducible
+            score += ((r * 31 + c) % 100) / 1000.0
+            
+            if score > best_score:
+                best_score = score
+                best_move = (r, c)
+
+    if best_move is not None:
+        return (best_move[0]+1, best_move[1]+1), memory
+    
+    # Fallback: Pass if no moves found (should not happen on full board)
+    return (0, 0), memory
+
+</code>

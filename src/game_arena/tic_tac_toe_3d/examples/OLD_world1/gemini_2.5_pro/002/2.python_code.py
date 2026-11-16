@@ -1,0 +1,232 @@
+
+import math
+import random
+
+# --- Constants ---
+MY_PLAYER = 1
+OPPONENT = -1
+EMPTY = 0
+BOARD_SIZE = 3
+
+
+def _calculate_winning_lines() -> list[list[tuple[int, int, int]]]:
+    """
+    Computes and returns all 49 possible winning lines in a 3x3x3 grid.
+    A line is a list of 3 (p, r, c) coordinate tuples.
+    """
+    lines = []
+
+    # 1. Axis-parallel lines (3 directions * 3x3 plane = 27 lines)
+    for i in range(BOARD_SIZE):
+        for j in range(BOARD_SIZE):
+            # Lines along Z-axis (varying c) for a given (p, r)
+            lines.append([(i, j, k) for k in range(BOARD_SIZE)])
+            # Lines along Y-axis (varying r) for a given (p, c)
+            lines.append([(i, k, j) for k in range(BOARD_SIZE)])
+            # Lines along X-axis (varying p) for a given (r, c)
+            lines.append([(k, i, j) for k in range(BOARD_SIZE)])
+
+    # 2. Planar diagonals (2 diagonals per plane * 3 planes * 3 axes = 18 lines)
+    for i in range(BOARD_SIZE):
+        # Diagonals on planes where p is constant (XY planes)
+        lines.append([(i, k, k) for k in range(BOARD_SIZE)])
+        lines.append([(i, k, 2 - k) for k in range(BOARD_SIZE)])
+        
+        # Diagonals on planes where r is constant (XZ planes)
+        lines.append([(k, i, k) for k in range(BOARD_SIZE)])
+        lines.append([(k, i, 2 - k) for k in range(BOARD_SIZE)])
+
+        # Diagonals on planes where c is constant (YZ planes)
+        lines.append([(k, k, i) for k in range(BOARD_SIZE)])
+        lines.append([(k, 2 - k, i) for k in range(BOARD_SIZE)])
+
+    # 3. Four main space diagonals
+    lines.append([(k, k, k) for k in range(BOARD_SIZE)])
+    lines.append([(k, k, 2 - k) for k in range(BOARD_SIZE)])
+    lines.append([(k, 2 - k, k) for k in range(BOARD_SIZE)])
+    lines.append([(2 - k, k, k) for k in range(BOARD_SIZE)])
+    
+    return lines
+
+# --- Global State ---
+# Pre-compute winning lines when the module is loaded.
+WINNING_LINES = _calculate_winning_lines()
+# Transposition table for minimax results (memoization). Cleared for each new move.
+memo = {}
+
+
+def _get_empty_cells(board: list[list[list[int]]]) -> list[tuple[int, int, int]]:
+    """Returns a list of all empty cells (p, r, c) on the board."""
+    empty = []
+    for p in range(BOARD_SIZE):
+        for r in range(BOARD_SIZE):
+            for c in range(BOARD_SIZE):
+                if board[p][r][c] == EMPTY:
+                    empty.append((p, r, c))
+    return empty
+
+def _check_terminal_state(board: list[list[list[int]]]) -> None:
+    """
+    Checks if the game has ended.
+    Returns a tuple: (winner, score).
+    - winner is MY_PLAYER, OPPONENT, or EMPTY (for a draw). None if not terminal.
+    - score is a large value for win/loss, 0 for draw/ongoing.
+    """
+    for line in WINNING_LINES:
+        p1, r1, c1 = line[0]
+        p2, r2, c2 = line[1]
+        p3, r3, c3 = line[2]
+        
+        line_sum = board[p1][r1][c1] + board[p2][r2][c2] + board[p3][r3][c3]
+        if line_sum == 3 * MY_PLAYER:
+            return MY_PLAYER, 1000000
+        if line_sum == 3 * OPPONENT:
+            return OPPONENT, -1000000
+    
+    if not any(EMPTY in row for plane in board for row in plane):
+        return EMPTY, 0  # Draw
+    
+    return None, 0  # Game not over
+
+def _evaluate_board(board: list[list[list[int]]]) -> int:
+    """
+    Heuristic evaluation of a non-terminal board state.
+    Positive score is good for me, negative is good for opponent.
+    Scores based on the number of potential winning lines.
+    """
+    score = 0
+    for line in WINNING_LINES:
+        my_pieces = 0
+        opp_pieces = 0
+        for p, r, c in line:
+            if board[p][r][c] == MY_PLAYER:
+                my_pieces += 1
+            elif board[p][r][c] == OPPONENT:
+                opp_pieces += 1
+
+        if my_pieces > 0 and opp_pieces == 0:
+            # My potential line: +1 for 1 piece, +10 for 2 pieces.
+            score += 10**(my_pieces - 1)
+        elif opp_pieces > 0 and my_pieces == 0:
+            # Opponent's potential line: -1 for 1 piece, -10 for 2 pieces.
+            score -= 10**(opp_pieces - 1)
+            
+    return score
+
+def _minimax_alpha_beta(board: list[list[list[int]]], depth: int, alpha: float, beta: float, is_maximizing: bool) -> int:
+    """
+    Minimax algorithm with alpha-beta pruning to find the best score.
+    """
+    board_tuple = tuple(tuple(tuple(row) for row in plane) for plane in board)
+    if (board_tuple, depth, is_maximizing) in memo:
+        return memo[(board_tuple, depth, is_maximizing)]
+
+    winner, score = _check_terminal_state(board)
+    if winner is not None:
+        # Adjust score by depth to prefer faster wins
+        return score - depth if score > 0 else score + depth
+
+    if depth == 0:
+        return _evaluate_board(board)
+
+    empty_cells = _get_empty_cells(board)
+    
+    if is_maximizing:
+        max_eval = -math.inf
+        for p, r, c in empty_cells:
+            board[p][r][c] = MY_PLAYER
+            eval = _minimax_alpha_beta(board, depth - 1, alpha, beta, False)
+            board[p][r][c] = EMPTY  # Backtrack
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break
+        memo[(board_tuple, depth, is_maximizing)] = max_eval
+        return max_eval
+    else:  # Minimizing
+        min_eval = math.inf
+        for p, r, c in empty_cells:
+            board[p][r][c] = OPPONENT
+            eval = _minimax_alpha_beta(board, depth - 1, alpha, beta, True)
+            board[p][r][c] = EMPTY  # Backtrack
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break
+        memo[(board_tuple, depth, is_maximizing)] = min_eval
+        return min_eval
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    """
+    Determines the best next move for the AI player (1).
+    Args:
+        board: The 3x3x3 game board.
+    Returns:
+        A tuple (p, r, c) representing the chosen move.
+    """
+    global memo
+    memo.clear()
+
+    empty_cells = _get_empty_cells(board)
+    
+    # --- Opening Book ---
+    # If the board is empty, take the center cube.
+    if len(empty_cells) == BOARD_SIZE**3:
+        return (1, 1, 1)
+
+    # --- Endgame Heuristics (1-ply lookahead) ---
+    # 1. If I can win on the next move, take it.
+    for p, r, c in empty_cells:
+        board[p][r][c] = MY_PLAYER
+        winner, _ = _check_terminal_state(board)
+        board[p][r][c] = EMPTY
+        if winner == MY_PLAYER:
+            return (p, r, c)
+
+    # 2. If the opponent can win on their next move, block them.
+    opponent_wins = []
+    for p, r, c in empty_cells:
+        board[p][r][c] = OPPONENT
+        winner, _ = _check_terminal_state(board)
+        board[p][r][c] = EMPTY
+        if winner == OPPONENT:
+            opponent_wins.append((p, r, c))
+    
+    if len(opponent_wins) == 1:
+        return opponent_wins[0]
+    if len(opponent_wins) > 1:
+        # A fork exists; loss is likely. Block one of the threats.
+        # Minimax will find the best blocking move, but this is a fail-safe.
+        return opponent_wins[0]
+
+    # --- Minimax Search ---
+    best_move = None
+    best_score = -math.inf
+    
+    # Dynamic search depth based on game phase
+    if len(empty_cells) > 15:
+        depth = 3
+    elif len(empty_cells) > 8:
+        depth = 4
+    else:
+        depth = 5 # Deeper search for the endgame
+
+    # Shuffle moves to break ties randomly, making the AI less predictable
+    random.shuffle(empty_cells)
+
+    for p, r, c in empty_cells:
+        board[p][r][c] = MY_PLAYER
+        # We are the maximizing player; the next turn is for the minimizing opponent.
+        score = _minimax_alpha_beta(board, depth, -math.inf, math.inf, False)
+        board[p][r][c] = EMPTY  # Backtrack
+
+        if score > best_score:
+            best_score = score
+            best_move = (p, r, c)
+
+    # If all moves lead to a certain loss, best_move might not be set.
+    # In that case, pick any valid move.
+    if best_move is None:
+        return empty_cells[0]
+        
+    return best_move

@@ -1,0 +1,106 @@
+<thinking>
+To create an effective policy for this simplified Blackjack-like game, we need to consider several key aspects:
+
+1. **Card Value Calculation**: The value of 'A' is dynamic (11 or 1) based on whether the current hand value is <= target or not. Other cards have fixed values.
+
+2. **Bust Avoidance**: The primary goal is to avoid busting (exceeding the target). We should aim to get as close as possible to the target without going over.
+
+3. **Optimal Stopping**: We need a strategy to decide when to HIT (take another card) and when to STAY (stop). This should consider:
+   - Current hand value
+   - Remaining cards in the deck that could help/harm
+   - The target value
+
+4. **Probability Considerations**: Since we know our own deck (all 13 cards initially), we can calculate the probability of improving our hand with the next card.
+
+5. **Ace Handling**: Special logic is needed for Aces since their value can change dynamically.
+
+The strategy I'll implement:
+1. Calculate the current hand value, treating Aces as 11 initially, then adjusting if needed.
+2. If the hand value is already at or above the target, always STAY (since hitting would risk busting).
+3. If below target, consider the possible outcomes of hitting:
+   - Calculate the expected value of hitting based on remaining cards
+   - Hit if the expected improvement outweighs the risk of busting
+4. Special case: If we have an Ace that could be converted to 1 to avoid busting, we might be more aggressive.
+
+The implementation will:
+- First calculate the current hand value properly
+- Then make a decision based on whether we're below/at/above target
+- For below target cases, use a simple threshold-based approach to decide whether to hit
+</thinking>
+
+<code>
+import numpy as np
+
+def calculate_hand_value(hand: list[str], target: int) -> int:
+    """Calculate the current value of the hand, adjusting Aces as needed."""
+    value = 0
+    num_aces = 0
+    
+    # First pass: count all cards except Aces
+    for card in hand:
+        if card == 'A':
+            num_aces += 1
+        elif card in ['J', 'Q', 'K']:
+            value += 10
+        else:  # number cards
+            value += int(card)
+    
+    # Handle Aces
+    for _ in range(num_aces):
+        # Add 11 if it won't make us exceed target (when possible)
+        if value + 11 <= target:
+            value += 11
+        else:
+            value += 1
+    
+    return value
+
+def policy(hand: list[str], target: int) -> str:
+    # All possible cards in the deck
+    full_deck = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K']
+    
+    # Calculate remaining cards in our deck
+    remaining_cards = [card for card in full_deck if card not in hand]
+    
+    current_value = calculate_hand_value(hand, target)
+    
+    # If we're at or above target, stay
+    if current_value >= target:
+        return "STAY"
+    
+    # Calculate possible outcomes if we hit
+    possible_values = []
+    for card in remaining_cards:
+        if card == 'A':
+            # Try both possibilities for Ace
+            if current_value + 11 <= target:
+                possible_values.append(current_value + 11)
+            else:
+                possible_values.append(current_value + 1)
+        elif card in ['J', 'Q', 'K']:
+            possible_values.append(current_value + 10)
+        else:
+            possible_values.append(current_value + int(card))
+    
+    # Calculate bust probability
+    bust_prob = sum(1 for v in possible_values if v > target) / len(possible_values) if remaining_cards else 0
+    
+    # Calculate average improvement
+    if possible_values:
+        avg_improvement = np.mean([min(v, target) for v in possible_values]) - current_value
+    else:
+        avg_improvement = 0
+    
+    # Decision making
+    if current_value <= target - 5:
+        # If we're far below target, be aggressive
+        return "HIT"
+    elif current_value <= target - 3 and bust_prob < 0.5:
+        # Moderate case
+        return "HIT"
+    elif avg_improvement > 0 and bust_prob < 0.3:
+        # Small positive expected value with low bust chance
+        return "HIT"
+    else:
+        return "STAY"
+</code>

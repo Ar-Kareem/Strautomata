@@ -1,0 +1,261 @@
+
+import numpy as np
+import random
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> int:
+    # Convert board to numpy array for easier manipulation
+    board_np = np.array(board)
+    
+    # Constants
+    ROWS, COLS = 6, 7
+    EMPTY = 0
+    PLAYER = 1
+    OPPONENT = -1
+    WIN_SCORE = 1000000
+    INFINITY = float('inf')
+    
+    # Check if a move leads to immediate win
+    def check_win(board, player, col):
+        # Make a temporary move
+        temp_board = board.copy()
+        for row in range(ROWS-1, -1, -1):
+            if temp_board[row][col] == EMPTY:
+                temp_board[row][col] = player
+                break
+        else:
+            return False  # Column is full
+        
+        # Check for win
+        return is_winning_board(temp_board, player, row, col)
+    
+    # Check if there's a winning board state
+    def is_winning_board(board, player, last_row, last_col):
+        # Check horizontal
+        count = 1
+        # Check right
+        for c in range(last_col + 1, min(COLS, last_col + 4)):
+            if board[last_row][c] == player:
+                count += 1
+            else:
+                break
+        # Check left
+        for c in range(last_col - 1, max(-1, last_col - 4), -1):
+            if board[last_row][c] == player:
+                count += 1
+            else:
+                break
+        if count >= 4:
+            return True
+            
+        # Check vertical
+        count = 1
+        # Check down
+        for r in range(last_row + 1, min(ROWS, last_row + 4)):
+            if board[r][last_col] == player:
+                count += 1
+            else:
+                break
+        if count >= 4:
+            return True
+            
+        # Check diagonal (top-left to bottom-right)
+        count = 1
+        # Check down-right
+        r, c = last_row + 1, last_col + 1
+        while r < ROWS and c < COLS and board[r][c] == player:
+            count += 1
+            r += 1
+            c += 1
+        # Check up-left
+        r, c = last_row - 1, last_col - 1
+        while r >= 0 and c >= 0 and board[r][c] == player:
+            count += 1
+            r -= 1
+            c -= 1
+        if count >= 4:
+            return True
+            
+        # Check diagonal (top-right to bottom-left)
+        count = 1
+        # Check down-left
+        r, c = last_row + 1, last_col - 1
+        while r < ROWS and c >= 0 and board[r][c] == player:
+            count += 1
+            r += 1
+            c -= 1
+        # Check up-right
+        r, c = last_row - 1, last_col + 1
+        while r >= 0 and c < COLS and board[r][c] == player:
+            count += 1
+            r -= 1
+            c += 1
+        if count >= 4:
+            return True
+            
+        return False
+    
+    # Evaluate a board position
+    def evaluate_board(board):
+        score = 0
+        
+        # Score center column preference
+        center_col = COLS // 2
+        center_count = sum(1 for row in range(ROWS) if board[row][center_col] == PLAYER)
+        score += center_count * 3
+        
+        # Score horizontal positions
+        for r in range(ROWS):
+            row_array = [board[r][c] for c in range(COLS)]
+            for c in range(COLS - 3):
+                window = row_array[c:c+4]
+                score += evaluate_window(window)
+        
+        # Score vertical positions
+        for c in range(COLS):
+            col_array = [board[r][c] for r in range(ROWS)]
+            for r in range(ROWS - 3):
+                window = col_array[r:r+4]
+                score += evaluate_window(window)
+        
+        # Score positive diagonal positions
+        for r in range(ROWS - 3):
+            for c in range(COLS - 3):
+                window = [board[r+i][c+i] for i in range(4)]
+                score += evaluate_window(window)
+        
+        # Score negative diagonal positions
+        for r in range(ROWS - 3):
+            for c in range(COLS - 3):
+                window = [board[r+3-i][c+i] for i in range(4)]
+                score += evaluate_window(window)
+        
+        return score
+    
+    # Evaluate a window of 4 positions
+    def evaluate_window(window):
+        score = 0
+        player_count = window.count(PLAYER)
+        opponent_count = window.count(OPPONENT)
+        empty_count = window.count(EMPTY)
+        
+        if player_count == 4:
+            score += 100
+        elif player_count == 3 and empty_count == 1:
+            score += 5
+        elif player_count == 2 and empty_count == 2:
+            score += 2
+            
+        if opponent_count == 3 and empty_count == 1:
+            score -= 4
+            
+        return score
+    
+    # Get valid columns
+    def get_valid_columns(board):
+        return [c for c in range(COLS) if board[0][c] == EMPTY]
+    
+    # Minimax with alpha-beta pruning
+    def minimax(board, depth, alpha, beta, maximizing_player):
+        valid_columns = get_valid_columns(board)
+        is_terminal = len(valid_columns) == 0 or is_winning_board_state(board)
+        
+        if depth == 0 or is_terminal:
+            if is_terminal:
+                if is_winning_board_state(board, PLAYER):
+                    return (None, WIN_SCORE)
+                elif is_winning_board_state(board, OPPONENT):
+                    return (None, -WIN_SCORE)
+                else:  # Game is over, no more valid moves
+                    return (None, 0)
+            else:  # Depth is zero
+                return (None, evaluate_board(board))
+        
+        if maximizing_player:
+            value = -INFINITY
+            column = random.choice(valid_columns)
+            for col in valid_columns:
+                temp_board = board.copy()
+                # Drop the disc
+                for r in range(ROWS-1, -1, -1):
+                    if temp_board[r][col] == EMPTY:
+                        temp_board[r][col] = PLAYER
+                        break
+                new_score = minimax(temp_board, depth-1, alpha, beta, False)[1]
+                if new_score > value:
+                    value = new_score
+                    column = col
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break
+            return column, value
+        
+        else:  # Minimizing player
+            value = INFINITY
+            column = random.choice(valid_columns)
+            for col in valid_columns:
+                temp_board = board.copy()
+                # Drop the disc
+                for r in range(ROWS-1, -1, -1):
+                    if temp_board[r][col] == EMPTY:
+                        temp_board[r][col] = OPPONENT
+                        break
+                new_score = minimax(temp_board, depth-1, alpha, beta, True)[1]
+                if new_score < value:
+                    value = new_score
+                    column = col
+                beta = min(beta, value)
+                if alpha >= beta:
+                    break
+            return column, value
+    
+    # Check if there's a winning board state
+    def is_winning_board_state(board, player=None):
+        if player is None:
+            return is_winning_board_state(board, PLAYER) or is_winning_board_state(board, OPPONENT)
+        
+        # Check horizontal locations for win
+        for c in range(COLS-3):
+            for r in range(ROWS):
+                if board[r][c] == player and board[r][c+1] == player and board[r][c+2] == player and board[r][c+3] == player:
+                    return True
+
+        # Check vertical locations for win
+        for c in range(COLS):
+            for r in range(ROWS-3):
+                if board[r][c] == player and board[r+1][c] == player and board[r+2][c] == player and board[r+3][c] == player:
+                    return True
+
+        # Check positively sloped diagonals
+        for c in range(COLS-3):
+            for r in range(ROWS-3):
+                if board[r][c] == player and board[r+1][c+1] == player and board[r+2][c+2] == player and board[r+3][c+3] == player:
+                    return True
+
+        # Check negatively sloped diagonals
+        for c in range(COLS-3):
+            for r in range(3, ROWS):
+                if board[r][c] == player and board[r-1][c+1] == player and board[r-2][c+2] == player and board[r-3][c+3] == player:
+                    return True
+                    
+        return False
+    
+    # First check if we can win immediately
+    valid_columns = get_valid_columns(board_np)
+    for col in valid_columns:
+        if check_win(board_np, PLAYER, col):
+            return col
+    
+    # Then check if opponent can win immediately and block
+    for col in valid_columns:
+        if check_win(board_np, OPPONENT, col):
+            return col
+    
+    # Use minimax for deeper search
+    if len(valid_columns) > 0:
+        col, _ = minimax(board_np, 4, -INFINITY, INFINITY, True)
+        if col is not None and col in valid_columns:
+            return col
+    
+    # Fallback to random valid column
+    return random.choice(valid_columns) if valid_columns else 0

@@ -1,0 +1,225 @@
+
+import time
+from typing import List, Tuple
+
+# 4x4 Tic-Tac-Toe policy
+# board: list[list[int]] with 0 empty, 1 (you), -1 (opponent)
+# returns (row, col) in 0..3
+
+# Precompute winning line bitmasks for 4x4 (rows, cols, two diagonals)
+LINES = []
+# rows
+for r in range(4):
+    mask = 0
+    for c in range(4):
+        mask |= 1 << (r * 4 + c)
+    LINES.append(mask)
+# cols
+for c in range(4):
+    mask = 0
+    for r in range(4):
+        mask |= 1 << (r * 4 + c)
+    LINES.append(mask)
+# main diagonal
+mask = 0
+for i in range(4):
+    mask |= 1 << (i * 4 + i)
+LINES.append(mask)
+# anti-diagonal
+mask = 0
+for i in range(4):
+    mask |= 1 << (i * 4 + (3 - i))
+LINES.append(mask)
+
+ALL_MASK = (1 << 16) - 1
+
+# heuristic weights by count of marks in a line (0..4)
+# strong weight for 4 (win)
+WEIGHTS = [0, 10, 100, 1000, 100000]
+
+# Transposition table entry
+class TTEntry:
+    __slots__ = ("value", "depth")
+    def __init__(self, value, depth):
+        self.value = value
+        self.depth = depth
+
+def board_to_bitboards(board: List[List[int]]) -> Tuple[int, int]:
+    my = 0
+    opp = 0
+    for r in range(4):
+        for c in range(4):
+            v = board[r][c]
+            idx = r * 4 + c
+            if v == 1:
+                my |= 1 << idx
+            elif v == -1:
+                opp |= 1 << idx
+    return my, opp
+
+def check_win(bits: int) -> bool:
+    for mask in LINES:
+        if (bits & mask) == mask:
+            return True
+    return False
+
+def evaluate(my_bits: int, opp_bits: int) -> int:
+    # positive if good for current player (my_bits)
+    score = 0
+    for mask in LINES:
+        my_count = bin(my_bits & mask).count("1")
+        opp_count = bin(opp_bits & mask).count("1")
+        if my_count > 0 and opp_count > 0:
+            continue  # contested line = 0
+        if my_count > 0:
+            score += WEIGHTS[my_count]
+        elif opp_count > 0:
+            score -= WEIGHTS[opp_count]
+    return score
+
+# Globals for search time control and transposition
+TIME_LIMIT = 0.95  # seconds
+START_TIME = 0.0
+TT = {}
+
+def time_exceeded() -> bool:
+    return (time.time() - START_TIME) > TIME_LIMIT
+
+def negamax(my_bits: int, opp_bits: int, depth: int, alpha: int, beta: int) -> int:
+    # Return evaluation from perspective of 'my_bits' player
+    # Terminal checks
+    if check_win(opp_bits):
+        return -1000000  # opponent has just won
+    occupied = my_bits | opp_bits
+    if occupied == ALL_MASK:
+        return 0  # draw
+
+    # Transposition lookup
+    key = (my_bits, opp_bits)
+    if key in TT:
+        ent = TT[key]
+        if ent.depth >= depth:
+            return ent.value
+
+    if depth == 0 or time_exceeded():
+        val = evaluate(my_bits, opp_bits)
+        TT[key] = TTEntry(val, depth)
+        return val
+
+    # Generate moves: empty cells
+    empties = ~occupied & ALL_MASK
+    # Try immediate winning move first
+    move_list = []
+    m = empties
+    while m:
+        lsb = m & -m
+        idx = (lsb.bit_length() - 1)
+        move_list.append(idx)
+        m -= lsb
+
+    # Order moves: prefer moves that create win or maximize heuristic
+    scored_moves = []
+    for idx in move_list:
+        new_my = my_bits | (1 << idx)
+        if check_win(new_my):
+            # immediate win: very good
+            scored_moves.append((1000000, idx))
+        else:
+            # score by heuristic after making the move
+            sc = evaluate(new_my, opp_bits)
+            scored_moves.append((sc, idx))
+    scored_moves.sort(reverse=True, key=lambda x: x[0])
+    best_val = -10**9
+
+    for _, idx in scored_moves:
+        # play move
+        new_my = my_bits | (1 << idx)
+        # recurse with sides swapped; note negation of result
+        val = -negamax(opp_bits, new_my, depth - 1, -beta, -alpha)
+        if time_exceeded():
+            break
+        if val > best_val:
+            best_val = val
+        if val > alpha:
+            alpha = val
+        if alpha >= beta:
+            break
+
+    TT[key] = TTEntry(best_val, depth)
+    return best_val
+
+def find_best_move(my_bits: int, opp_bits: int, max_depth: int = 8) -> int:
+    # Return index (0..15) of chosen move
+    global TT
+    TT = {}
+    occupied = my_bits | opp_bits
+    empties = ~occupied & ALL_MASK
+    moves = []
+    m = empties
+    while m:
+        lsb = m & -m
+        idx = (lsb.bit_length() - 1)
+        moves.append(idx)
+        m -= lsb
+
+    # Immediate win?
+    for idx in moves:
+        if check_win(my_bits | (1 << idx)):
+            return idx
+    # Immediate block?
+    for idx in moves:
+        if check_win(opp_bits | (1 << idx)):
+            return idx
+
+    best_move = moves[0] if moves else 0
+    best_value = -10**9
+    # Iterative deepening
+    depth_limit = min(max_depth, len(moves))
+    for depth in range(1, depth_limit + 1):
+        if time_exceeded():
+            break
+        current_best = None
+        current_best_val = -10**9
+        # move ordering: try moves with higher immediate heuristic first
+        scored = []
+        for idx in moves:
+            new_my = my_bits | (1 << idx)
+            sc = evaluate(new_my, opp_bits)
+            scored.append((sc, idx))
+        scored.sort(reverse=True)
+        for _, idx in scored:
+            if time_exceeded():
+                break
+            new_my = my_bits | (1 << idx)
+            val = -negamax(opp_bits, new_my, depth - 1, -10**9, 10**9)
+            if time_exceeded():
+                break
+            if val > current_best_val or current_best is None:
+                current_best_val = val
+                current_best = idx
+        if not time_exceeded() and current_best is not None:
+            best_move = current_best
+            best_value = current_best_val
+    return best_move
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Choose the next move for 4x4 tic-tac-toe.
+    """
+    global START_TIME
+    START_TIME = time.time()
+    my_bits, opp_bits = board_to_bitboards(board)
+    # If board empty, play a good opening move: corner (0,0) or center (1,1)
+    if my_bits == 0 and opp_bits == 0:
+        return (1, 1)  # choose center-ish
+
+    idx = find_best_move(my_bits, opp_bits, max_depth=8)
+    r = idx // 4
+    c = idx % 4
+    return (r, c)
+
+# For direct testing if run as script.
+if __name__ == "__main__":
+    # simple test: empty board
+    b = [[0]*4 for _ in range(4)]
+    print(policy(b))

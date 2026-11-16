@@ -1,0 +1,134 @@
+
+import math
+from typing import List, Tuple
+
+def policy(you: List[int], opponent: List[int]) -> int:
+    # Simple heuristic policy for Kalah
+    
+    # First, check for immediate winning moves (extra turn)
+    for i in range(6):
+        if you[i] > 0:
+            # Simulate move to see if it gives an extra turn
+            next_state = simulate_move(you.copy(), opponent.copy(), i)
+            # If I get another move, take it (greedy approach)
+            # This is a simplification; ideally we'd look ahead
+            
+            # Check for captures
+            pass  # Will implement capture logic below
+    
+    # Strategy: Look for moves that give extra turns or captures
+    best_move = -1
+    best_value = -math.inf
+    
+    for i in range(6):
+        if you[i] > 0:
+            # Simulate the move
+            new_you, new_opponent = simulate_move(you.copy(), opponent.copy(), i)
+            
+            # Evaluate the position
+            value = evaluate_position(new_you, new_opponent, you[6], opponent[6])
+            
+            # Bonus for extra turn (last seed in store)
+            if gives_extra_turn(you, i):
+                value += 3  # Bonus for extra turn
+            
+            # Bonus for captures
+            captured = calculate_captures(you, opponent, i)
+            value += captured * 2
+            
+            if value > best_value:
+                best_value = value
+                best_move = i
+    
+    # Fallback to first legal move if something went wrong
+    if best_move == -1:
+        for i in range(6):
+            if you[i] > 0:
+                return i
+    
+    return best_move
+
+def gives_extra_turn(you: List[int], move: int) -> bool:
+    """Check if a move gives an extra turn"""
+    seeds = you[move]
+    # Last seed lands at position (move + seeds) % 13
+    # But we need to account for the fact that opponent's store is skipped
+    # Positions: you[0]...you[5], you[6], opponent[0]...opponent[5] -> 13 positions
+    # But opponent[6] is skipped, so it's actually a cycle of 13 positions
+    landing_pos = move + seeds
+    # Normalize to cycle of 13 positions (you[0] to opponent[5], skipping opponent[6])
+    # you[0]=0, ..., you[5]=5, you[6]=6, opponent[0]=7, ..., opponent[5]=12
+    landing_pos = landing_pos % 13
+    return landing_pos == 6  # Lands in your store
+
+def calculate_captures(you: List[int], opponent: List[int], move: int) -> int:
+    """Calculate how many seeds would be captured with this move"""
+    seeds = you[move]
+    landing_pos = move + seeds
+    landing_pos = landing_pos % 13
+    
+    # Check if landing position is in your houses (0-5)
+    if 0 <= landing_pos <= 5:
+        # Check if house was empty before (will be 1 after drop)
+        if you[landing_pos] == 0:
+            # Check if opposite house has seeds
+            opposite_pos = 5 - landing_pos
+            return opponent[opposite_pos]
+    return 0
+
+def simulate_move(you: List[int], opponent: List[int], move: int) -> Tuple[List[int], List[int]]:
+    """Simulate a move and return the new state"""
+    if you[move] == 0:
+        return you, opponent  # Illegal move
+    
+    seeds = you[move]
+    you[move] = 0
+    
+    # Distribute seeds
+    pos = move + 1
+    for _ in range(seeds):
+        # Convert pos to actual board position
+        if pos <= 5:
+            you[pos] += 1
+        elif pos == 6:
+            you[6] += 1
+        elif pos <= 12:
+            opponent[pos - 7] += 1
+        else:
+            # Wrap around to your houses again
+            you[pos - 13] += 1
+        pos += 1
+        if pos > 12:
+            pos = 0  # Wrap around
+    
+    # Check for capture
+    last_pos = (move + seeds) % 13
+    if 0 <= last_pos <= 5:  # Landed in your house
+        if you[last_pos] == 1:  # House was empty before drop (now has 1)
+            opposite_pos = 5 - last_pos
+            if opponent[opposite_pos] > 0:  # Opposite house has seeds
+                # Capture
+                captured = opponent[opposite_pos] + 1  # +1 for the seed that landed there
+                you[6] += captured
+                you[last_pos] = 0
+                opponent[opposite_pos] = 0
+    
+    return you, opponent
+
+def evaluate_position(you: List[int], opponent: List[int], old_your_store: int, old_opp_store: int) -> float:
+    """Simple evaluation function"""
+    # Store difference
+    store_diff = you[6] - old_your_store - (opponent[6] - old_opp_store)
+    
+    # Seed difference in houses
+    my_seeds = sum(you[:6])
+    opp_seeds = sum(opponent[:6])
+    seed_diff = my_seeds - opp_seeds
+    
+    # Positional value - seeds closer to store are better
+    positional = 0
+    for i in range(6):
+        positional += you[i] * (i + 1)  # More weight to seeds closer to store
+        positional -= opponent[i] * (6 - i)  # More weight to opponent's seeds farther from their store
+    
+    return store_diff * 2 + seed_diff * 0.5 + positional * 0.1

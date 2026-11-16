@@ -1,0 +1,252 @@
+
+import numpy as np
+from typing import List, Tuple, Optional
+import time
+
+# Directions for movement: horizontal, vertical, diagonal
+DIRECTIONS = [
+    (0, 1),   # right
+    (1, 0),   # down  
+    (0, -1),  # left
+    (-1, 0),  # up
+    (1, 1),   # down-right
+    (1, -1),  # down-left
+    (-1, 1),  # up-right
+    (-1, -1)  # up-left
+]
+
+def get_legal_moves(board: np.ndarray, player: int) -> List[str]:
+    """Generate all legal moves for the given player."""
+    moves = []
+    rows, cols = board.shape
+    
+    for r in range(rows):
+        for c in range(cols):
+            if board[r, c] == player:
+                # Count pieces in each direction to determine move distance
+                for dr, dc in DIRECTIONS:
+                    # Count pieces in this direction
+                    count = 0
+                    nr, nc = r, c
+                    while 0 <= nr < rows and 0 <= nc < cols:
+                        if board[nr, nc] != 0:
+                            count += 1
+                        nr += dr
+                        nc += dc
+                    
+                    if count == 0:
+                        continue
+                    
+                    # Try to move 'count' squares in this direction
+                    target_r = r + dr * count
+                    target_c = c + dc * count
+                    
+                    # Check if target is on board
+                    if 0 <= target_r < rows and 0 <= target_c < cols:
+                        # Check path is clear (can jump over friendly but not enemy)
+                        if is_path_clear(board, r, c, target_r, target_c, dr, dc, player):
+                            moves.append(f"{r},{c}:{target_r},{target_c}")
+    
+    return moves
+
+def is_path_clear(board: np.ndarray, start_r: int, start_c: int, 
+                  end_r: int, end_c: int, dr: int, dc: int, player: int) -> bool:
+    """Check if path from start to end is clear of enemy pieces."""
+    current_r, current_c = start_r + dr, start_c + dc
+    
+    while (current_r, current_c) != (end_r, end_c):
+        if 0 <= current_r < 8 and 0 <= current_c < 8:
+            if board[current_r, current_c] == -player:  # Enemy piece blocking
+                return False
+        else:
+            return False  # Off board
+        
+        current_r += dr
+        current_c += dc
+    
+    # Check final position - can capture enemy or be empty
+    if 0 <= end_r < 8 and 0 <= end_c < 8:
+        return board[end_r, end_c] != player  # Can't land on own piece
+    
+    return False
+
+def make_move(board: np.ndarray, move_str: str) -> np.ndarray:
+    """Apply move to board and return new board."""
+    board_copy = board.copy()
+    from_pos, to_pos = move_str.split(':')
+    from_r, from_c = map(int, from_pos.split(','))
+    to_r, to_c = map(int, to_pos.split(','))
+    
+    # Move piece
+    piece = board_copy[from_r, from_c]
+    board_copy[from_r, from_c] = 0
+    board_copy[to_r, to_c] = piece
+    
+    return board_copy
+
+def get_connectivity_score(board: np.ndarray, player: int) -> float:
+    """Calculate connectivity score for player."""
+    visited = np.zeros((8, 8), dtype=bool)
+    groups = []
+    
+    def flood_fill(r: int, c: int, group: List[Tuple[int, int]]):
+        if (r < 0 or r >= 8 or c < 0 or c >= 8 or 
+            visited[r, c] or board[r, c] != player):
+            return
+        
+        visited[r, c] = True
+        group.append((r, c))
+        
+        for dr, dc in DIRECTIONS:
+            flood_fill(r + dr, c + dc, group)
+    
+    # Find all connected groups
+    for r in range(8):
+        for c in range(8):
+            if board[r, c] == player and not visited[r, c]:
+                group = []
+                flood_fill(r, c, group)
+                groups.append(group)
+    
+    if len(groups) == 0:
+        return -1000.0  # No pieces left
+    if len(groups) == 1:
+        return 1000.0   # Fully connected - winning position
+    
+    # Score based on largest group size and number of groups
+    largest_group = max(groups, key=len)
+    total_pieces = sum(len(group) for group in groups)
+    
+    # Prefer larger groups and fewer groups
+    group_penalty = (len(groups) - 1) * 50
+    size_bonus = len(largest_group) * 5
+    
+    return size_bonus - group_penalty
+
+def evaluate_board(board: np.ndarray, player: int) -> float:
+    """Evaluate board position for player."""
+    # Connectivity is primary factor
+    connectivity = get_connectivity_score(board, player)
+    if abs(connectivity) >= 1000:
+        return connectivity
+    
+    opponent_connectivity = get_connectivity_score(board, -player)
+    
+    # Mobility - count legal moves
+    my_moves = len(get_legal_moves(board, player))
+    opponent_moves = len(get_legal_moves(board, -player))
+    mobility = my_moves - opponent_moves * 0.8
+    
+    # Piece count
+    my_pieces = np.sum(board == player)
+    opponent_pieces = np.sum(board == -player)
+    material = my_pieces - opponent_pieces
+    
+    # Positional bonus for center control
+    center_bonus = 0
+    for r in range(8):
+        for c in range(8):
+            if board[r, c] == player:
+                # Distance to center
+                dist = abs(r - 3.5) + abs(c - 3.5)
+                center_bonus += max(0, 3 - dist)
+    
+    # Combine factors
+    score = (connectivity * 2.0 + 
+             mobility * 0.5 + 
+             material * 1.0 + 
+             center_bonus * 0.3 -
+             opponent_connectivity * 1.5)
+    
+    return score
+
+def minimax(board: np.ndarray, depth: int, alpha: float, beta: float, 
+           maximizing: bool, player: int, start_time: float, time_limit: float = 0.9) -> Tuple[float, Optional[str]]:
+    """Minimax with alpha-beta pruning and time limit."""
+    if time.time() - start_time > time_limit:
+        return evaluate_board(board, player), None
+    
+    if depth == 0:
+        return evaluate_board(board, player), None
+    
+    moves = get_legal_moves(board, player if maximizing else -player)
+    
+    if not moves:
+        # No moves available - check if this is a win/loss
+        connectivity = get_connectivity_score(board, player)
+        if abs(connectivity) >= 1000:
+            return connectivity, None
+        return -100 if maximizing else 100, None
+    
+    best_move = None
+    
+    if maximizing:
+        max_eval = float('-inf')
+        for move in moves:
+            new_board = make_move(board, move)
+            eval_score, _ = minimax(new_board, depth - 1, alpha, beta, False, player, start_time, time_limit)
+            
+            if eval_score > max_eval:
+                max_eval = eval_score
+                best_move = move
+            
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        
+        return max_eval, best_move
+    else:
+        min_eval = float('inf')
+        for move in moves:
+            new_board = make_move(board, move)
+            eval_score, _ = minimax(new_board, depth - 1, alpha, beta, True, player, start_time, time_limit)
+            
+            if eval_score < min_eval:
+                min_eval = eval_score
+                best_move = move
+            
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        
+        return min_eval, best_move
+
+def policy(board) -> str:
+    """Main policy function - choose best move using iterative deepening."""
+    board_array = np.array(board)
+    player = 1  # Always the current player to move
+    
+    # Get all legal moves first
+    legal_moves = get_legal_moves(board_array, player)
+    
+    if not legal_moves:
+        # Fallback - return a random valid move format (shouldn't happen in normal play)
+        for r in range(8):
+            for c in range(8):
+                if board_array[r, c] == player:
+                    return f"{r},{c}:{r},{c}"
+        return "0,0:0,0"
+    
+    # Immediate win check
+    for move in legal_moves:
+        new_board = make_move(board_array, move)
+        if get_connectivity_score(new_board, player) >= 1000:
+            return move
+    
+    # Iterative deepening within time limit
+    start_time = time.time()
+    best_move = legal_moves[0]  # Default to first move
+    
+    for depth in range(1, 10):  # Search up to depth 9
+        if time.time() - start_time > 0.85:  # Leave some buffer
+            break
+            
+        try:
+            score, move = minimax(board_array, depth, float('-inf'), float('inf'), 
+                                True, player, start_time, 0.9)
+            if move:
+                best_move = move
+        except:
+            break
+    
+    return best_move

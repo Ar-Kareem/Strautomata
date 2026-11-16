@@ -1,0 +1,528 @@
+<thinking>
+Alright, I need to create a smart policy for the game Lines of Action on an 8x8 board. The goal is to connect all my pieces into a single contiguous group while following the movement rules. Here's how I'll approach this:
+
+### Understanding the Game Mechanics
+1. **Movement Rules**: A piece moves horizontally, vertically, or diagonally by a number of squares equal to the total number of pieces (both players) in that line (row, column, or diagonal). For example, if there are 3 pieces in a row, the piece must move 3 squares in that row.
+2. **Jumping**: Pieces can jump over friendly pieces but cannot jump over enemy pieces.
+3. **Capturing**: A piece can land on and capture an enemy piece, removing it from the board.
+4. **Objective**: Connect all your pieces into a single contiguous group (8-directionally connected).
+
+### Policy Design
+To create a strong policy, I need to consider:
+1. **Legal Moves**: First, generate all legal moves from the current board state.
+2. **Evaluation Function**: Score each legal move based on how it contributes to the goal of connecting all my pieces. This could involve:
+   - Increasing the number of connected components (but we want to reduce this to 1).
+   - Capturing opponent pieces (since fewer opponent pieces mean less obstruction).
+   - Moving towards the center or strategic positions.
+   - Ensuring that the move doesn't leave my pieces in a vulnerable position.
+3. **Heuristics**: Use heuristics to prioritize moves that:
+   - Reduce the number of connected components of my pieces.
+   - Capture opponent pieces.
+   - Move towards the center or other strategic positions.
+   - Avoid moves that leave my pieces isolated or vulnerable.
+
+### Implementation Steps
+1. **Generate Legal Moves**: For each of my pieces, determine all possible moves based on the rules.
+   - For each direction (8 possible), calculate the number of pieces in that line (including the piece itself).
+   - The piece must move exactly that many squares in that direction.
+   - Check if the path is clear (no enemy pieces to jump over).
+   - Ensure the landing position is valid (within bounds, not occupied by a friendly piece unless jumping over it).
+2. **Evaluate Moves**: For each legal move, evaluate how it affects the board state.
+   - After making the move, check if the number of connected components of my pieces decreases.
+   - Check if any opponent pieces are captured.
+   - Consider the position of the moved piece (e.g., central positions are often better).
+3. **Select Best Move**: Choose the move with the highest evaluation score.
+
+### Optimizations
+- Use BFS or DFS to check connectivity after each move.
+- Precompute the number of pieces in each line (row, column, diagonal) to speed up legal move generation.
+- Use memoization or caching to avoid redundant calculations.
+
+### Example Evaluation Function
+- **Connectivity Bonus**: If the move reduces the number of connected components, give a high score.
+- **Capture Bonus**: If the move captures an opponent piece, give a high score.
+- **Central Control**: Prefer moves that bring pieces closer to the center.
+- **Threat Reduction**: Avoid moves that leave my pieces vulnerable to future captures.
+
+### Edge Cases
+- If no legal moves are possible, the game might be over (but the problem states we always have a legal move).
+- Handle cases where multiple moves have the same score by choosing randomly or based on secondary criteria.
+
+### Implementation
+I'll use numpy for efficient board operations and BFS for connectivity checks. The policy will:
+1. Generate all legal moves.
+2. For each move, simulate it, evaluate the new board state, and score the move.
+3. Select the move with the highest score.
+
+Here's the plan for the code:
+1. Define helper functions to generate legal moves.
+2. Define a function to evaluate a board state.
+3. Define the main `policy` function that combines these to select the best move.
+
+### Code Structure
+```python
+import numpy as np
+from collections import deque
+
+def policy(board):
+    # Convert the board to a numpy array for easier manipulation
+    board = np.array(board)
+    my_pieces = np.where(board == 1)
+    opponent_pieces = np.where(board == -1)
+
+    # Generate all legal moves
+    legal_moves = []
+    for (i, j) in zip(my_pieces[0], my_pieces[1]):
+        moves = generate_legal_moves(board, i, j)
+        legal_moves.extend(moves)
+
+    if not legal_moves:
+        # Shouldn't happen per problem statement
+        return "0,0:0,0"
+
+    # Evaluate each legal move
+    best_move = None
+    best_score = -float('inf')
+
+    for move in legal_moves:
+        new_board = make_move(board, move)
+        score = evaluate_board(new_board)
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return best_move
+
+def generate_legal_moves(board, i, j):
+    moves = []
+    directions = [(-1, -1), (-1, 0), (-1, 1),
+                  (0, -1),          (0, 1),
+                  (1, -1),  (1, 0), (1, 1)]
+    for di, dj in directions:
+        # Calculate the number of pieces in the line (row, column, or diagonal)
+        # For diagonal, we need to consider the line in the direction (di, dj)
+        line_pieces = count_pieces_in_line(board, i, j, di, dj)
+        if line_pieces == 0:
+            continue  # No pieces in line, can't move
+
+        # The piece must move exactly line_pieces squares in this direction
+        ni, nj = i + di * line_pieces, j + dj * line_pieces
+        if not (0 <= ni < 8 and 0 <= nj < 8):
+            continue  # Out of bounds
+
+        # Check if the path is clear (no enemy pieces to jump over)
+        if not is_path_clear(board, i, j, di, dj, line_pieces):
+            continue
+
+        # Check if the landing position is valid
+        if board[ni, nj] == 1:
+            # Can't land on friendly piece unless jumping over it
+            # But jumping over friendly is allowed, but landing on is not unless capturing
+            if board[ni, nj] == 1:
+                continue  # Can't land on friendly unless capturing (but capturing is landing on opponent)
+        # If landing on opponent, it's a capture
+        moves.append(f"{i},{j}:{ni},{nj}")
+
+    return moves
+
+def count_pieces_in_line(board, i, j, di, dj):
+    count = 0
+    # Check in both directions along the line
+    for step in range(1, 8):
+        ni, nj = i + di * step, j + dj * step
+        if 0 <= ni < 8 and 0 <= nj < 8:
+            if board[ni, nj] != 0:
+                count += 1
+        else:
+            break
+
+    for step in range(1, 8):
+        ni, nj = i - di * step, j - dj * step
+        if 0 <= ni < 8 and 0 <= nj < 8:
+            if board[ni, nj] != 0:
+                count += 1
+        else:
+            break
+
+    # Include the piece itself
+    count += 1
+    return count
+
+def is_path_clear(board, i, j, di, dj, distance):
+    # Check if there are any enemy pieces in the path
+    for step in range(1, distance):
+        ni, nj = i + di * step, j + dj * step
+        if 0 <= ni < 8 and 0 <= nj < 8:
+            if board[ni, nj] == -1:
+                return False  # Can't jump over enemy
+    return True
+
+def make_move(board, move_str):
+    # Parse the move
+    from_part, to_part = move_str.split(':')
+    from_row, from_col = map(int, from_part.split(','))
+    to_row, to_col = map(int, to_part.split(','))
+
+    new_board = board.copy()
+    # Remove the piece from the original position
+    new_board[from_row, from_col] = 0
+    # Place the piece at the new position
+    new_board[to_row, to_col] = 1
+    # If landing on opponent, remove it
+    if board[to_row, to_col] == -1:
+        pass  # Already handled by placing our piece
+    return new_board
+
+def evaluate_board(board):
+    # Count the number of connected components of my pieces
+    my_pieces = np.where(board == 1)
+    if len(my_pieces[0]) == 0:
+        return 0  # No pieces left
+
+    visited = set()
+    components = 0
+    for i, j in zip(my_pieces[0], my_pieces[1]):
+        if (i, j) not in visited:
+            components += 1
+            bfs(board, i, j, visited)
+
+    # The goal is to have 1 component, so fewer components is better
+    connectivity_score = -components
+
+    # Count opponent pieces (fewer is better)
+    opponent_pieces = np.sum(board == -1)
+    opponent_score = -opponent_pieces
+
+    # Central control: prefer pieces closer to the center
+    center_score = 0
+    for i, j in zip(my_pieces[0], my_pieces[1]):
+        center_score += -(abs(i - 3.5) + abs(j - 3.5))  # Center is at (3.5, 3.5)
+
+    # Combine scores (weights can be adjusted)
+    total_score = connectivity_score * 10 + opponent_score * 5 + center_score * 2
+    return total_score
+
+def bfs(board, i, j, visited):
+    queue = deque()
+    queue.append((i, j))
+    visited.add((i, j))
+    directions = [(-1, -1), (-1, 0), (-1, 1),
+                  (0, -1),          (0, 1),
+                  (1, -1),  (1, 0), (1, 1)]
+
+    while queue:
+        x, y = queue.popleft()
+        for dx, dy in directions:
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < 8 and 0 <= ny < 8:
+                if board[nx, ny] == 1 and (nx, ny) not in visited:
+                    visited.add((nx, ny))
+                    queue.append((nx, ny))
+```
+
+### Refinements
+1. **Legal Moves Generation**: The current `generate_legal_moves` might miss some edge cases, especially for diagonals. Need to ensure that the line count includes all pieces in the line (row, column, or diagonal) and that the move is exactly that many squares.
+2. **Evaluation Function**: The current evaluation is simple. Could add more heuristics like:
+   - Threat to opponent's pieces (if a move blocks opponent's potential moves).
+   - Potential to create multiple threats.
+3. **Performance**: The BFS for connectivity might be slow for large boards, but since the board is 8x8, it's manageable.
+
+### Final Code
+Here's the complete implementation with some refinements:
+
+```python
+import numpy as np
+from collections import deque
+
+def policy(board):
+    board = np.array(board)
+    my_pieces = np.where(board == 1)
+    if len(my_pieces[0]) == 0:
+        return "0,0:0,0"  # Shouldn't happen per problem statement
+
+    legal_moves = []
+    for (i, j) in zip(my_pieces[0], my_pieces[1]):
+        moves = generate_legal_moves(board, i, j)
+        legal_moves.extend(moves)
+
+    if not legal_moves:
+        return "0,0:0,0"  # Shouldn't happen per problem statement
+
+    best_move = None
+    best_score = -float('inf')
+
+    for move in legal_moves:
+        new_board = make_move(board, move)
+        score = evaluate_board(new_board)
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return best_move
+
+def generate_legal_moves(board, i, j):
+    moves = []
+    directions = [(-1, -1), (-1, 0), (-1, 1),
+                  (0, -1),          (0, 1),
+                  (1, -1),  (1, 0), (1, 1)]
+
+    for di, dj in directions:
+        # Count pieces in the line (including the piece itself)
+        line_pieces = count_pieces_in_line(board, i, j, di, dj)
+        if line_pieces == 0:
+            continue
+
+        # The piece must move exactly line_pieces squares in this direction
+        ni, nj = i + di * line_pieces, j + dj * line_pieces
+        if not (0 <= ni < 8 and 0 <= nj < 8):
+            continue
+
+        # Check if the path is clear (no enemy pieces to jump over)
+        if not is_path_clear(board, i, j, di, dj, line_pieces):
+            continue
+
+        # Check if landing on friendly piece (unless capturing opponent)
+        if board[ni, nj] == 1:
+            continue  # Can't land on friendly unless capturing (but capturing is landing on opponent)
+
+        moves.append(f"{i},{j}:{ni},{nj}")
+
+    return moves
+
+def count_pieces_in_line(board, i, j, di, dj):
+    count = 0
+    # Check in both directions along the line
+    for step in range(8):
+        ni, nj = i + di * step, j + dj * step
+        if 0 <= ni < 8 and 0 <= nj < 8:
+            if board[ni, nj] != 0:
+                count += 1
+        else:
+            break
+
+    for step in range(1, 8):
+        ni, nj = i - di * step, j - dj * step
+        if 0 <= ni < 8 and 0 <= nj < 8:
+            if board[ni, nj] != 0:
+                count += 1
+        else:
+            break
+
+    # Include the piece itself
+    count += 1
+    return count
+
+def is_path_clear(board, i, j, di, dj, distance):
+    for step in range(1, distance):
+        ni, nj = i + di * step, j + dj * step
+        if 0 <= ni < 8 and 0 <= nj < 8:
+            if board[ni, nj] == -1:
+                return False  # Can't jump over enemy
+    return True
+
+def make_move(board, move_str):
+    from_part, to_part = move_str.split(':')
+    from_row, from_col = map(int, from_part.split(','))
+    to_row, to_col = map(int, to_part.split(','))
+
+    new_board = board.copy()
+    new_board[from_row, from_col] = 0
+    new_board[to_row, to_col] = 1
+    return new_board
+
+def evaluate_board(board):
+    my_pieces = np.where(board == 1)
+    if len(my_pieces[0]) == 0:
+        return 0
+
+    visited = set()
+    components = 0
+    for i, j in zip(my_pieces[0], my_pieces[1]):
+        if (i, j) not in visited:
+            components += 1
+            bfs(board, i, j, visited)
+
+    connectivity_score = -components
+
+    opponent_pieces = np.sum(board == -1)
+    opponent_score = -opponent_pieces
+
+    center_score = 0
+    for i, j in zip(my_pieces[0], my_pieces[1]):
+        center_score += -(abs(i - 3.5) + abs(j - 3.5))
+
+    # Additional heuristic: prefer moves that capture
+    # But this is already somewhat covered by opponent_score
+
+    # Combine scores
+    total_score = connectivity_score * 10 + opponent_score * 5 + center_score * 2
+    return total_score
+
+def bfs(board, i, j, visited):
+    queue = deque()
+    queue.append((i, j))
+    visited.add((i, j))
+    directions = [(-1, -1), (-1, 0), (-1, 1),
+                  (0, -1),          (0, 1),
+                  (1, -1),  (1, 0), (1, 1)]
+
+    while queue:
+        x, y = queue.popleft()
+        for dx, dy in directions:
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < 8 and 0 <= ny < 8:
+                if board[nx, ny] == 1 and (nx, ny) not in visited:
+                    visited.add((nx, ny))
+                    queue.append((nx, ny))
+```
+
+### Further Improvements
+1. **Move Ordering**: Instead of evaluating all moves, prioritize moves that capture or reduce components first.
+2. **Lookahead**: Use a simple lookahead (e.g., evaluate the opponent's best response) to anticipate future moves.
+3. **Opening Moves**: Have specific strategies for early-game positions (e.g., controlling the center).
+4. **Endgame**: Special handling when close to winning (e.g., when only one component is left).
+
+However, given the time constraints, the current implementation should be a strong baseline. The evaluation function prioritizes connectivity, capturing opponent pieces, and central control, which are key to winning in Lines of Action.
+</thinking>
+
+<code>
+import numpy as np
+from collections import deque
+
+def policy(board):
+    board = np.array(board)
+    my_pieces = np.where(board == 1)
+    if len(my_pieces[0]) == 0:
+        return "0,0:0,0"  # Shouldn't happen per problem statement
+
+    legal_moves = []
+    for (i, j) in zip(my_pieces[0], my_pieces[1]):
+        moves = generate_legal_moves(board, i, j)
+        legal_moves.extend(moves)
+
+    if not legal_moves:
+        return "0,0:0,0"  # Shouldn't happen per problem statement
+
+    best_move = None
+    best_score = -float('inf')
+
+    for move in legal_moves:
+        new_board = make_move(board, move)
+        score = evaluate_board(new_board)
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return best_move
+
+def generate_legal_moves(board, i, j):
+    moves = []
+    directions = [(-1, -1), (-1, 0), (-1, 1),
+                  (0, -1),          (0, 1),
+                  (1, -1),  (1, 0), (1, 1)]
+
+    for di, dj in directions:
+        # Count pieces in the line (including the piece itself)
+        line_pieces = count_pieces_in_line(board, i, j, di, dj)
+        if line_pieces == 0:
+            continue
+
+        # The piece must move exactly line_pieces squares in this direction
+        ni, nj = i + di * line_pieces, j + dj * line_pieces
+        if not (0 <= ni < 8 and 0 <= nj < 8):
+            continue
+
+        # Check if the path is clear (no enemy pieces to jump over)
+        if not is_path_clear(board, i, j, di, dj, line_pieces):
+            continue
+
+        # Check if landing on friendly piece (unless capturing opponent)
+        if board[ni, nj] == 1:
+            continue  # Can't land on friendly unless capturing (but capturing is landing on opponent)
+
+        moves.append(f"{i},{j}:{ni},{nj}")
+
+    return moves
+
+def count_pieces_in_line(board, i, j, di, dj):
+    count = 0
+    # Check in both directions along the line
+    for step in range(8):
+        ni, nj = i + di * step, j + dj * step
+        if 0 <= ni < 8 and 0 <= nj < 8:
+            if board[ni, nj] != 0:
+                count += 1
+        else:
+            break
+
+    for step in range(1, 8):
+        ni, nj = i - di * step, j - dj * step
+        if 0 <= ni < 8 and 0 <= nj < 8:
+            if board[ni, nj] != 0:
+                count += 1
+        else:
+            break
+
+    # Include the piece itself
+    count += 1
+    return count
+
+def is_path_clear(board, i, j, di, dj, distance):
+    for step in range(1, distance):
+        ni, nj = i + di * step, j + dj * step
+        if 0 <= ni < 8 and 0 <= nj < 8:
+            if board[ni, nj] == -1:
+                return False  # Can't jump over enemy
+    return True
+
+def make_move(board, move_str):
+    from_part, to_part = move_str.split(':')
+    from_row, from_col = map(int, from_part.split(','))
+    to_row, to_col = map(int, to_part.split(','))
+
+    new_board = board.copy()
+    new_board[from_row, from_col] = 0
+    new_board[to_row, to_col] = 1
+    return new_board
+
+def evaluate_board(board):
+    my_pieces = np.where(board == 1)
+    if len(my_pieces[0]) == 0:
+        return 0
+
+    visited = set()
+    components = 0
+    for i, j in zip(my_pieces[0], my_pieces[1]):
+        if (i, j) not in visited:
+            components += 1
+            bfs(board, i, j, visited)
+
+    connectivity_score = -components
+
+    opponent_pieces = np.sum(board == -1)
+    opponent_score = -opponent_pieces
+
+    center_score = 0
+    for i, j in zip(my_pieces[0], my_pieces[1]):
+        center_score += -(abs(i - 3.5) + abs(j - 3.5))
+
+    total_score = connectivity_score * 10 + opponent_score * 5 + center_score * 2
+    return total_score
+
+def bfs(board, i, j, visited):
+    queue = deque()
+    queue.append((i, j))
+    visited.add((i, j))
+    directions = [(-1, -1), (-1, 0), (-1, 1),
+                  (0, -1),          (0, 1),
+                  (1, -1),  (1, 0), (1, 1)]
+
+    while queue:
+        x, y = queue.popleft()
+        for dx, dy in directions:
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < 8 and 0 <= ny < 8:
+                if board[nx, ny] == 1 and (nx, ny) not in visited:
+                    visited.add((nx, ny))
+                    queue.append((nx, ny))
+</code>

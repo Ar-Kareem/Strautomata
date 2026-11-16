@@ -1,0 +1,214 @@
+
+def policy(board) -> str:
+    """
+    Main policy function for Lines of Action.
+    Returns best move in format "from_row,from_col:to_row,to_col"
+    """
+    # Convert numpy array to list if needed
+    if hasattr(board, 'tolist'):
+        board = board.tolist()
+    
+    # Generate all legal moves for player 1
+    legal_moves = get_legal_moves(board, 1)
+    
+    # Fallback if no legal moves (should not happen)
+    if not legal_moves:
+        for r in range(8):
+            for c in range(8):
+                if board[r][c] == 1:
+                    return f"{r},{c}:{r},{c}"
+        return "0,0:0,0"
+    
+    # Check for immediate winning moves
+    for move in legal_moves:
+        new_board = apply_move(board, move, 1)
+        if count_groups(new_board, 1) == 1:
+            (fr, fc), (tr, tc) = move
+            return f"{fr},{fc}:{tr},{tc}"
+    
+    # Evaluate all moves and select best
+    best_move = legal_moves[0]
+    best_score = -float('inf')
+    
+    for move in legal_moves:
+        new_board = apply_move(board, move, 1)
+        score = evaluate_with_lookahead(new_board)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    (fr, fc), (tr, tc) = best_move
+    return f"{fr},{fc}:{tr},{tc}"
+
+
+def get_legal_moves(board, player):
+    """Generate all legal moves for given player"""
+    moves = []
+    directions = [
+        (-1, -1), (-1, 0), (-1, 1),
+        (0, -1),           (0, 1),
+        (1, -1),  (1, 0),  (1, 1)
+    ]
+    
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] != player:
+                continue
+            
+            for dr, dc in directions:
+                # Count pieces in line of movement
+                count = count_pieces_in_line(board, r, c, dr, dc)
+                if count == 0:
+                    continue
+                
+                # Target position is count steps in direction
+                target_r = r + dr * count
+                target_c = c + dc * count
+                
+                # Check if target is on board
+                if 0 <= target_r < 8 and 0 <= target_c < 8:
+                    # Check if path is clear (no enemy pieces blocking)
+                    if is_path_clear(board, r, c, target_r, target_c, dr, dc, player):
+                        # Can't land on own piece (but can land on enemy to capture)
+                        if board[target_r][target_c] != player:
+                            moves.append(((r, c), (target_r, target_c)))
+    
+    return moves
+
+
+def count_pieces_in_line(board, r, c, dr, dc):
+    """Count all pieces (both players) in the line of movement"""
+    count = 0
+    
+    if dr == 0:  # Horizontal movement
+        for col in range(8):
+            if board[r][col] != 0:
+                count += 1
+    elif dc == 0:  # Vertical movement
+        for row in range(8):
+            if board[row][c] != 0:
+                count += 1
+    else:  # Diagonal movement
+        # Find start of diagonal
+        start_r, start_c = r, c
+        while True:
+            next_r = start_r - dr
+            next_c = start_c - dc
+            if 0 <= next_r < 8 and 0 <= next_c < 8:
+                start_r = next_r
+                start_c = next_c
+            else:
+                break
+        
+        # Count pieces along diagonal
+        curr_r, curr_c = start_r, start_c
+        while 0 <= curr_r < 8 and 0 <= curr_c < 8:
+            if board[curr_r][curr_c] != 0:
+                count += 1
+            curr_r += dr
+            curr_c += dc
+    
+    return count
+
+
+def is_path_clear(board, r, c, target_r, target_c, dr, dc, player):
+    """Check if path from (r,c) to (target_r,target_c) has no enemy pieces"""
+    enemy = -player
+    curr_r = r + dr
+    curr_c = c + dc
+    
+    while (curr_r, curr_c) != (target_r, target_c):
+        if board[curr_r][curr_c] == enemy:
+            return False
+        curr_r += dr
+        curr_c += dc
+    
+    return True
+
+
+def apply_move(board, move, player):
+    """Create new board with move applied"""
+    (fr, fc), (tr, tc) = move
+    new_board = [row[:] for row in board]
+    new_board[fr][fc] = 0
+    new_board[tr][tc] = player
+    return new_board
+
+
+def evaluate_with_lookahead(board):
+    """
+    Evaluate position after our move by checking if opponent can win.
+    Returns high score if we won, low score if opponent can win, else heuristic score.
+    """
+    # Check if we won
+    if count_groups(board, 1) == 1:
+        return 1000000
+    
+    # Check if opponent can win on next move
+    opp_moves = get_legal_moves(board, -1)
+    for opp_move in opp_moves:
+        opp_board = apply_move(board, opp_move, -1)
+        if count_groups(opp_board, -1) == 1:
+            # Opponent can win - avoid this position
+            return -1000000
+    
+    # Otherwise use heuristic evaluation
+    return evaluate_position(board, 1)
+
+
+def evaluate_position(board, player):
+    """Heuristic evaluation of board position for player"""
+    my_groups = count_groups(board, player)
+    opp_groups = count_groups(board, -player)
+    
+    # Primary: minimize our groups (goal is 1), maximize opponent groups
+    score = -my_groups * 10000 + opp_groups * 5000
+    
+    # Secondary: compactness (smaller bounding box is better)
+    my_positions = []
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == player:
+                my_positions.append((r, c))
+    
+    if my_positions:
+        min_r = min(r for r, c in my_positions)
+        max_r = max(r for r, c in my_positions)
+        min_c = min(c for r, c in my_positions)
+        max_c = max(c for r, c in my_positions)
+        
+        area = (max_r - min_r + 1) * (max_c - min_c + 1)
+        score -= area * 10
+    
+    return score
+
+
+def count_groups(board, player):
+    """Count number of connected components for player using BFS"""
+    visited = [[False] * 8 for _ in range(8)]
+    groups = 0
+    
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == player and not visited[r][c]:
+                groups += 1
+                # BFS to mark all connected pieces
+                queue = [(r, c)]
+                visited[r][c] = True
+                
+                while queue:
+                    curr_r, curr_c = queue.pop(0)
+                    # Check all 8 directions for connectivity
+                    for dr in [-1, 0, 1]:
+                        for dc in [-1, 0, 1]:
+                            if dr == 0 and dc == 0:
+                                continue
+                            nr, nc = curr_r + dr, curr_c + dc
+                            if (0 <= nr < 8 and 0 <= nc < 8 and 
+                                board[nr][nc] == player and 
+                                not visited[nr][nc]):
+                                visited[nr][nc] = True
+                                queue.append((nr, nc))
+    
+    return groups

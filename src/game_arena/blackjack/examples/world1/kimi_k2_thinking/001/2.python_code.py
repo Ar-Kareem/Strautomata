@@ -1,0 +1,46 @@
+
+def policy(hand, target):
+    full_deck = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    
+    def hand_value(hand, target):
+        total = 0
+        aces = 0
+        for card in hand:
+            if card == 'A':
+                aces += 1
+                total += 11
+            elif card in ['J', 'Q', 'K']:
+                total += 10
+            else:
+                total += int(card)
+        while total > target and aces > 0:
+            total -= 10
+            aces -= 1
+        return total
+
+    current_value = hand_value(hand, target)
+    if current_value > target:
+        return "STAY"
+    
+    remaining_cards = [card for card in full_deck if card not in hand]
+    if not remaining_cards:
+        return "STAY"
+    
+    bust_count = 0
+    for card in remaining_cards:
+        new_hand = hand + [card]
+        new_value = hand_value(new_hand, target)
+        if new_value > target:
+            bust_count += 1
+            
+    bust_probability = bust_count / len(remaining_cards)
+    
+    if current_value >= target - 4:
+        return "STAY"
+    elif current_value < target * 0.5:
+        return "HIT"
+    else:
+        if bust_probability < 0.3:
+            return "HIT"
+        else:
+            return "STAY"

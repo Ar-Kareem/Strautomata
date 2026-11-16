@@ -1,0 +1,99 @@
+
+import random
+
+# Persistent global state between calls
+_hits: set[tuple[int, int]] = set()
+_misses: set[tuple[int, int]] = set()
+
+# Orthogonal neighbour offsets
+DIRS = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+
+def _update_known(board: list[list[int]]) -> None:
+    """Refresh the set of hit and miss cells from the current board view."""
+    global _hits, _misses
+    hits = set()
+    misses = set()
+    for r in range(10):
+        for c in range(10):
+            val = board[r][c]
+            if val == 1:
+                hits.add((r, c))
+            elif val == -1:
+                misses.add((r, c))
+    _hits = hits
+    _misses = misses
+
+def _adjacent_hit_count(cell: tuple[int, int]) -> int:
+    """Count orthogonal neighbours that are hits."""
+    r, c = cell
+    cnt = 0
+    for dr, dc in DIRS:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < 10 and 0 <= nc < 10 and (nr, nc) in _hits:
+            cnt += 1
+    return cnt
+
+def _compute_unknown_components(board: list[list[int]]) -> tuple[list[tuple[int, int]], dict[tuple[int, int], int], dict[int, int]]:
+    """
+    Returns:
+        - list of unknown cells (board == 0)
+        - mapping each unknown cell to a component id
+        - mapping component id to component size
+    """
+    unknown = [(r, c) for r in range(10) for c in range(10) if board[r][c] == 0]
+    visited = set()
+    comp_id: dict[tuple[int, int], int] = {}
+    comp_sizes: dict[int, int] = {}
+    id_counter = 0
+    for cell in unknown:
+        if cell in visited:
+            continue
+        q = [cell]
+        visited.add(cell)
+        comp_id[cell] = id_counter
+        size = 1
+        while q:
+            cur = q.pop()
+            for dr, dc in DIRS:
+                nr, nc = cur[0] + dr, cur[1] + dc
+                nxt = (nr, nc)
+                if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0 and nxt not in visited:
+                    visited.add(nxt)
+                    q.append(nxt)
+                    comp_id[nxt] = comp_id[cur]   # same component id
+                    size += 1
+        comp_sizes[id_counter] = size
+        id_counter += 1
+    return unknown, comp_id, comp_sizes
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Return a legal move (row, col) in the range 0‑9.
+    The move must be on a cell that is still unknown (board[row][col] == 0).
+    """
+    global _hits, _misses
+    _update_known(board)
+
+    # If the opponent’s board is fully known (no legal moves), we cannot be called.
+    # The arena will stop the game at that point.
+    # Compute connected components of the still‑unknown cells.
+    unknown, comp_id, comp_sizes = _compute_unknown_components(board)
+    if not unknown:
+        # Fallback: the centre cell (should never be required)
+        return (4, 4)
+
+    centre = (4, 4)
+    centre_dist = lambda cell: abs(cell[0] - centre[0]) + abs(cell[1] - centre[1])
+
+    candidates: list[tuple[tuple[int, int], int]] = []
+    for cell in unknown:
+        adj = _adjacent_hit_count(cell)
+        comp = comp_sizes.get(comp_id[cell], 0)
+        dist = centre_dist(cell)
+        # Weight: 5 points per adjacent hit (makes adjacency very attractive)
+        score = comp + 5 * adj - dist
+        candidates.append((cell, score))
+
+    # Select the best scoring cell; tie‑breaking via randomness adds unpredictability.
+    best_cell = max(candidates, key=lambda x: x[1])[0]
+    return tuple(best_cell)

@@ -1,0 +1,274 @@
+
+from heapq import heappush, heappop
+
+N = 11
+DIRS = [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, 0), (1, -1)]
+
+
+def neighbors(r, c):
+    for dr, dc in DIRS:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < N and 0 <= nc < N:
+            yield nr, nc
+
+
+def occupied_sets(me, opp):
+    return set(me), set(opp)
+
+
+def empty_cells(me_set, opp_set):
+    occ = me_set | opp_set
+    return [(r, c) for r in range(N) for c in range(N) if (r, c) not in occ]
+
+
+def has_connection(stones, color):
+    stones = set(stones)
+    stack = []
+    seen = set()
+
+    if color == 'b':
+        for c in range(N):
+            if (0, c) in stones:
+                stack.append((0, c))
+                seen.add((0, c))
+        target_row = N - 1
+        while stack:
+            r, c = stack.pop()
+            if r == target_row:
+                return True
+            for nb in neighbors(r, c):
+                if nb in stones and nb not in seen:
+                    seen.add(nb)
+                    stack.append(nb)
+    else:
+        for r in range(N):
+            if (r, 0) in stones:
+                stack.append((r, 0))
+                seen.add((r, 0))
+        target_col = N - 1
+        while stack:
+            r, c = stack.pop()
+            if c == target_col:
+                return True
+            for nb in neighbors(r, c):
+                if nb in stones and nb not in seen:
+                    seen.add(nb)
+                    stack.append(nb)
+    return False
+
+
+def immediate_winning_moves(player_stones, opp_stones, color):
+    pset = set(player_stones)
+    oset = set(opp_stones)
+    wins = []
+    for r in range(N):
+        for c in range(N):
+            if (r, c) in pset or (r, c) in oset:
+                continue
+            pset.add((r, c))
+            if has_connection(pset, color):
+                wins.append((r, c))
+            pset.remove((r, c))
+    return wins
+
+
+def shortest_path_cost(my_set, opp_set, color):
+    INF = 10**9
+    dist = [[INF] * N for _ in range(N)]
+    pq = []
+
+    def cell_cost(r, c):
+        if (r, c) in opp_set:
+            return None
+        return 0 if (r, c) in my_set else 1
+
+    if color == 'b':
+        for c in range(N):
+            cc = cell_cost(0, c)
+            if cc is not None:
+                dist[0][c] = cc
+                heappush(pq, (cc, 0, c))
+        is_target = lambda r, c: r == N - 1
+    else:
+        for r in range(N):
+            cc = cell_cost(r, 0)
+            if cc is not None:
+                dist[r][0] = cc
+                heappush(pq, (cc, r, 0))
+        is_target = lambda r, c: c == N - 1
+
+    best = INF
+    while pq:
+        d, r, c = heappop(pq)
+        if d != dist[r][c]:
+            continue
+        if d >= best:
+            continue
+        if is_target(r, c):
+            best = d
+            continue
+        for nr, nc in neighbors(r, c):
+            cc = cell_cost(nr, nc)
+            if cc is None:
+                continue
+            nd = d + cc
+            if nd < dist[nr][nc]:
+                dist[nr][nc] = nd
+                heappush(pq, (nd, nr, nc))
+    return best
+
+
+def centrality(r, c):
+    center = (N - 1) / 2.0
+    return -((r - center) ** 2 + (c - center) ** 2)
+
+
+def side_progress(r, c, color):
+    if color == 'b':
+        return -abs(r - (N - 1) / 2.0) + min(r, N - 1 - r) * 0.2
+    else:
+        return -abs(c - (N - 1) / 2.0) + min(c, N - 1 - c) * 0.2
+
+
+def friendly_adjacency(move, my_set):
+    r, c = move
+    cnt = 0
+    for nb in neighbors(r, c):
+        if nb in my_set:
+            cnt += 1
+    return cnt
+
+
+def enemy_adjacency(move, opp_set):
+    r, c = move
+    cnt = 0
+    for nb in neighbors(r, c):
+        if nb in opp_set:
+            cnt += 1
+    return cnt
+
+
+def bridge_score(move, my_set, opp_set):
+    r, c = move
+    score = 0.0
+
+    # Simple two-step support motifs on the axial-like embedding used here.
+    patterns = [
+        [((r - 1, c), (r, c - 1)), ((r - 1, c), (r - 1, c + 1))],
+        [((r, c + 1), (r - 1, c + 1)), ((r + 1, c), (r, c + 1))],
+        [((r + 1, c - 1), (r + 1, c)), ((r, c - 1), (r + 1, c - 1))],
+    ]
+
+    for group in patterns:
+        for a, b in group:
+            ar, ac = a
+            br, bc = b
+            if 0 <= ar < N and 0 <= ac < N and 0 <= br < N and 0 <= bc < N:
+                ain = a in my_set
+                bin = b in my_set
+                aopp = a in opp_set
+                bopp = b in opp_set
+                if ain and bin:
+                    score += 1.5
+                elif ain != bin and not (aopp or bopp):
+                    score += 0.5
+    return score
+
+
+def evaluate_move(move, me_set, opp_set, color, base_my_cost, base_opp_cost):
+    r, c = move
+    my2 = set(me_set)
+    my2.add(move)
+
+    my_cost = shortest_path_cost(my2, opp_set, color)
+    opp_color = 'w' if color == 'b' else 'b'
+    opp_cost = shortest_path_cost(opp_set, my2, opp_color)
+
+    improve_me = base_my_cost - my_cost
+    worsen_opp = opp_cost - base_opp_cost
+
+    score = 0.0
+    score += 20.0 * improve_me
+    score += 12.0 * worsen_opp
+    score += 2.5 * friendly_adjacency(move, me_set)
+    score += 1.0 * enemy_adjacency(move, opp_set)
+    score += 1.8 * bridge_score(move, me_set, opp_set)
+    score += 0.25 * centrality(r, c)
+    score += 0.6 * side_progress(r, c, color)
+
+    # Prefer touching own borders relevant to color.
+    if color == 'b':
+        if r == 0 or r == N - 1:
+            score += 1.2
+    else:
+        if c == 0 or c == N - 1:
+            score += 1.2
+
+    return score
+
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    me_set, opp_set = occupied_sets(me, opp)
+    empties = empty_cells(me_set, opp_set)
+
+    # Safety: always return a legal move.
+    if not empties:
+        return (0, 0)
+
+    # Strong opening: center or near-center if available.
+    if not me and not opp:
+        for mv in [(5, 5), (5, 4), (4, 5), (6, 5), (5, 6)]:
+            if mv not in me_set and mv not in opp_set:
+                return mv
+
+    # 1) Win immediately if possible.
+    wins = immediate_winning_moves(me_set, opp_set, color)
+    if wins:
+        wins.sort(key=lambda mv: (abs(mv[0] - 5) + abs(mv[1] - 5), mv))
+        return wins[0]
+
+    # 2) Block opponent immediate win if needed.
+    opp_color = 'w' if color == 'b' else 'b'
+    opp_wins = immediate_winning_moves(opp_set, me_set, opp_color)
+    if opp_wins:
+        opp_wins.sort(key=lambda mv: (abs(mv[0] - 5) + abs(mv[1] - 5), mv))
+        for mv in opp_wins:
+            if mv in empties:
+                return mv
+
+    # 3) Positional evaluation by shortest-path impact.
+    base_my_cost = shortest_path_cost(me_set, opp_set, color)
+    base_opp_cost = shortest_path_cost(opp_set, me_set, opp_color)
+
+    best_move = empties[0]
+    best_score = -10**18
+
+    candidate_moves = empties
+
+    # Mild pruning in early game for speed: focus near existing stones and center.
+    if len(empties) > 50 and (me_set or opp_set):
+        interesting = []
+        frontier = set()
+        for s in me_set | opp_set:
+            frontier.add(s)
+            for nb in neighbors(*s):
+                frontier.add(nb)
+                for nb2 in neighbors(*nb):
+                    frontier.add(nb2)
+        for mv in empties:
+            if mv in frontier or abs(mv[0] - 5) + abs(mv[1] - 5) <= 4:
+                interesting.append(mv)
+        if interesting:
+            candidate_moves = interesting
+
+    for mv in candidate_moves:
+        sc = evaluate_move(mv, me_set, opp_set, color, base_my_cost, base_opp_cost)
+        if sc > best_score or (sc == best_score and mv < best_move):
+            best_score = sc
+            best_move = mv
+
+    if best_move in empties:
+        return best_move
+
+    # Final safety fallback.
+    return empties[0]

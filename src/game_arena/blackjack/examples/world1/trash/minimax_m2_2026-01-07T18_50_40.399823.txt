@@ -1,0 +1,170 @@
+<thinking>
+We need to produce a complete Python file that implements a policy function for a simplified Blackjack‑like game.  
+The policy receives the current hand (list of card strings) and the target score (int). It must return “HIT” if it should draw another card, otherwise “STAY”.  
+
+Key points:
+
+* 13‑card deck per player, each rank appears exactly once.
+* Card values: “2”‑“10” → face value; J,Q,K → 10; A → 11 unless it would make the hand exceed the target, then it counts as 1.
+* If a player’s total > target the player busts and loses (unless the opponent also busts → draw).
+* If nobody busts, the player whose total is closer to the target wins.
+
+Because we have no information about the opponent’s hand or strategy we can only make decisions based on the knowledge of our own deck.  
+The natural optimisation problem is an optimal‑stopping one: at each state we may stop (stay) or draw a random unknown card from the remaining cards.  
+We assign a utility to a final hand of –distance = -(target – hand_value).  A bust is a very bad outcome; we model it as –(target + 1) (slightly worse than the worst non‑busting outcome).
+
+Dynamic programming over all possible subsets of the 13‑card deck (≤ 2¹³ = 8192 states per target) gives the exact optimal expected utility for every reachable hand.  The DP recurrence is
+
+```
+V(hand) = max(  –(target – hand_value(hand)),
+                (1/|remaining|) * Σ_{c∈remaining} V(hand∪{c})  (c bust → –(target+1)) )
+```
+
+The policy simply compares the “stay” utility with the expected utility of a hit; it chooses “HIT” iff the latter is larger.
+
+The implementation:
+
+* `FULL_DECK` – list of the 13 possible cards.
+* `CARD_VALUE` – mapping from rank to its base value.
+* `hand_value(hand, target)` – computes the hand value with Ace flexibility.
+* `best_value(hand, target)` – memoised DP described above.
+* `policy(hand, target)` – performs the comparison and returns the correct action.
+
+All work is done in O(number of states × 13) ≈ 5·10⁴ operations per target, which easily fits the 1 s limit. The memoisation guarantees that subsequent calls reuse the pre‑computed values, so the algorithm is fast in practice.
+
+Now write the code.
+</thinking>
+
+<code>
+from typing import List, Tuple
+from functools import lru_cache
+
+# ----------------------------------------------------------------------
+# Constants describing the game
+# ----------------------------------------------------------------------
+FULL_DECK: List[str] = [
+    "A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"
+]
+
+# Card values – Ace is 11 initially, J/Q/K are 10
+CARD_VALUE: dict[str, int] = {
+    "A": 11,
+    "2": 2, "3": 3, "4": 4, "5": 5,
+    "6": 6, "7": 7, "8": 8, "9": 9, "10": 10,
+    "J": 10, "Q": 10, "K": 10
+}
+
+
+# ----------------------------------------------------------------------
+# Helper: hand value with Ace‑adjustment
+# ----------------------------------------------------------------------
+def hand_value(hand: List[str] | Tuple[str, ...], target: int) -> int:
+    """
+    Return the value of `hand` for the given target.
+    Aces count as 11 unless that would exceed the target,
+    in which case they are counted as 1 (by subtracting 10 per Ace as needed).
+    """
+    total = sum(CARD_VALUE[card] for card in hand)
+    aces = hand.count("A")
+    while total > target and aces > 0:
+        total -= 10      # turn one Ace from 11 into 1
+        aces -= 1
+    return total
+
+
+# ----------------------------------------------------------------------
+# DP: optimal expected utility for a given hand and target
+# ----------------------------------------------------------------------
+@lru_cache(maxsize=None)
+def best_value(hand: Tuple[str, ...], target: int) -> float:
+    """
+    Compute the optimal expected utility for the player starting from `hand`
+    when the target score is `target`.
+
+    Utility = -(target - hand_value)  (0 when exactly at the target)
+    A bust is modelled as utility -(target + 1), i.e. just worse than the
+    worst non‑busting outcome.
+    """
+    cur_sum = hand_value(hand, target)
+
+    # Immediate bust – cannot do any better than the bust utility
+    if cur_sum > target:
+        return -(target + 1)
+
+    # Utility if we stop right now (negative distance to target)
+    stay_val = -(target - cur_sum)
+
+    # Cards that have not been drawn yet
+    remaining = [c for c in FULL_DECK if c not in hand]
+    if not remaining:
+        return stay_val
+
+    bust_ut = -(target + 1)      # utility for a bust
+
+    # Expected utility of drawing one more card (average over all possibilities)
+    total = 0.0
+    for c in remaining:
+        new_hand = hand + (c,)
+        new_sum = hand_value(new_hand, target)
+        if new_sum > target:                # drawing this card would bust
+            total += bust_ut
+        else:
+            total += best_value(new_hand, target)
+
+    expected_hit = total / len(remaining)
+
+    # Choose the better of staying and hitting
+    return max(stay_val, expected_hit)
+
+
+# ----------------------------------------------------------------------
+# Public policy function called by the game engine
+# ----------------------------------------------------------------------
+def policy(hand: List[str], target: int) -> str:
+    """
+    Decide whether to HIT or STAY.
+
+    Parameters
+    ----------
+    hand : List[str]
+        The cards currently held by the player.
+    target : int
+        The target score for this game (10 ≤ target ≤ 30).
+
+    Returns
+    -------
+    str
+        Either "HIT" or "STAY".
+    """
+    # Normalise hand for caching – use a sorted tuple
+    hand_tuple = tuple(sorted(hand))
+
+    cur_sum = hand_value(hand_tuple, target)
+
+    # If we are already busted the game would have ended; return STAY for safety
+    if cur_sum > target:
+        return "STAY"
+
+    stay_val = -(target - cur_sum)
+
+    # Remaining cards in our own deck
+    remaining = [c for c in FULL_DECK if c not in hand_tuple]
+    if not remaining:
+        return "STAY"
+
+    # Expected utility of hitting one more card
+    bust_ut = -(target + 1)
+    hit_sum = 0.0
+    for c in remaining:
+        new_hand = hand_tuple + (c,)
+        new_sum = hand_value(new_hand, target)
+        if new_sum > target:
+            hit_sum += bust_ut
+        else:
+            hit_sum += best_value(new_hand, target)
+
+    expected_hit = hit_sum / len(remaining)
+
+    # Choose the action with the larger expected utility
+    return "HIT" if expected_hit > stay_val else "STAY"
+</code>

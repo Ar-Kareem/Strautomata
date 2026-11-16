@@ -1,0 +1,127 @@
+## Strategy
+
+My Go policy will use a combination of strategic principles:
+
+1. **Opening Strategy**: Prioritize corner positions (star points and 3-4 points), then edges, focusing on key strategic points.
+
+2. **Capture Detection**: Identify opponent groups with only one liberty and capture them immediately.
+
+3. **Self-Preservation**: Avoid moves that would put my own groups in atari (one liberty) unless necessary, and save groups that are in atari.
+
+4. **Territory and Influence**: Evaluate moves based on:
+   - Proximity to existing stones (for connection/influence)
+   - Control of key areas
+   - Blocking opponent expansion
+
+5. **Pattern Recognition**: Simple patterns for common situations like:
+   - Extending from existing stones
+   - Blocking opponent approaches
+   - Creating/preventing eyes
+
+6. **Legal Move Validation**: Ensure all moves are legal (not occupied, not suicide unless capturing).
+
+7. **Monte Carlo Element**: For complex positions, use light random playouts to evaluate candidate moves within time constraints.
+
+The policy prioritizes:
+1. Capturing opponent stones in atari
+2. Saving own stones in atari
+3. Strategic opening moves
+4. Moves that maximize influence while limiting opponent territory
+
+<code>
+import random
+from collections import deque
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    me_set = set(me)
+    opp_set = set(opponent)
+    occupied = me_set | opp_set
+    
+    def neighbors(r, c):
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if 1 <= nr <= 19 and 1 <= nc <= 19:
+                yield nr, nc
+    
+    def get_group(r, c, stones_set):
+        group = set()
+        liberties = set()
+        stack = [(r, c)]
+        while stack:
+            cr, cc = stack.pop()
+            if (cr, cc) in group:
+                continue
+            group.add((cr, cc))
+            for nr, nc in neighbors(cr, cc):
+                if (nr, nc) in stones_set and (nr, nc) not in group:
+                    stack.append((nr, nc))
+                elif (nr, nc) not in occupied:
+                    liberties.add((nr, nc))
+        return group, liberties
+    
+    def would_capture(r, c, my_stones, opp_stones):
+        captures = []
+        for nr, nc in neighbors(r, c):
+            if (nr, nc) in opp_stones:
+                grp, libs = get_group(nr, nc, opp_stones)
+                new_libs = libs - {(r, c)}
+                if len(new_libs) == 0:
+                    captures.extend(grp)
+        return captures
+    
+    def is_legal(r, c, my_set, opp_set):
+        if (r, c) in my_set or (r, c) in opp_set:
+            return False
+        captures = would_capture(r, c, my_set, opp_set)
+        if captures:
+            return True
+        test_my = my_set | {(r, c)}
+        test_occ = test_my | opp_set
+        grp, libs = get_group(r, c, test_my)
+        return len(libs) > 0
+    
+    # Check for captures
+    for (or_, oc) in opp_set:
+        grp, libs = get_group(or_, oc, opp_set)
+        if len(libs) == 1:
+            lib = list(libs)[0]
+            if is_legal(lib[0], lib[1], me_set, opp_set):
+                return lib
+    
+    # Save own groups in atari
+    for (mr, mc) in me_set:
+        grp, libs = get_group(mr, mc, me_set)
+        if len(libs) == 1:
+            lib = list(libs)[0]
+            if is_legal(lib[0], lib[1], me_set, opp_set):
+                return lib
+    
+    # Strategic points
+    star_points = [(4, 4), (4, 10), (4, 16), (10, 4), (10, 10), (10, 16), (16, 4), (16, 10), (16, 16)]
+    corners = [(3, 3), (3, 17), (17, 3), (17, 17), (4, 3), (3, 4), (4, 17), (3, 16), (17, 4), (16, 3), (17, 16), (16, 17)]
+    
+    for pt in star_points + corners:
+        if is_legal(pt[0], pt[1], me_set, opp_set):
+            return pt
+    
+    # Extend from existing stones
+    candidates = []
+    for (mr, mc) in me_set:
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1), (-2, 0), (2, 0), (0, -2), (0, 2)]:
+            nr, nc = mr + dr, mc + dc
+            if 1 <= nr <= 19 and 1 <= nc <= 19:
+                if is_legal(nr, nc, me_set, opp_set):
+                    candidates.append((nr, nc))
+    
+    if candidates:
+        return random.choice(candidates)
+    
+    # Find any legal move
+    all_moves = [(r, c) for r in range(1, 20) for c in range(1, 20)]
+    random.shuffle(all_moves)
+    for move in all_moves:
+        if is_legal(move[0], move[1], me_set, opp_set):
+            return move
+    
+    return (0, 0)
+</code>

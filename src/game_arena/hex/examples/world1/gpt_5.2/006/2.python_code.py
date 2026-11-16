@@ -1,0 +1,296 @@
+
+from __future__ import annotations
+
+from collections import deque
+from typing import List, Tuple
+
+
+N = 11
+SIZE = N * N
+INF = 10**9
+
+# Precompute masks, neighbors, sides for speed.
+MASKS = [1 << i for i in range(SIZE)]
+NEIGHBORS: List[List[int]] = [[] for _ in range(SIZE)]
+
+
+def _idx(r: int, c: int) -> int:
+    return r * N + c
+
+
+def _rc(i: int) -> Tuple[int, int]:
+    return divmod(i, N)
+
+
+# Neighbor rule: all 8 grid neighbors except (i-1,j-1) and (i+1,j+1)
+# Equivalent axial-like neighbors:
+# (r, c-1), (r, c+1), (r-1, c), (r-1, c+1), (r+1, c), (r+1, c-1)
+for r in range(N):
+    for c in range(N):
+        i = _idx(r, c)
+        cand = [
+            (r, c - 1),
+            (r, c + 1),
+            (r - 1, c),
+            (r - 1, c + 1),
+            (r + 1, c),
+            (r + 1, c - 1),
+        ]
+        for rr, cc in cand:
+            if 0 <= rr < N and 0 <= cc < N:
+                NEIGHBORS[i].append(_idx(rr, cc))
+
+SIDES_1 = {
+    "b": [_idx(0, c) for c in range(N)],     # top
+    "w": [_idx(r, 0) for r in range(N)],     # left
+}
+SIDES_2_SET = {
+    "b": set(_idx(N - 1, c) for c in range(N)),  # bottom
+    "w": set(_idx(r, N - 1) for r in range(N)),  # right
+}
+
+CENTER_R, CENTER_C = 5, 5
+
+
+def _other(color: str) -> str:
+    return "w" if color == "b" else "b"
+
+
+def _bits(moves: List[Tuple[int, int]]) -> int:
+    b = 0
+    for r, c in moves:
+        if 0 <= r < N and 0 <= c < N:
+            b |= MASKS[_idx(r, c)]
+    return b
+
+
+def _is_empty(i: int, me_bits: int, opp_bits: int) -> bool:
+    return ((me_bits | opp_bits) >> i) & 1 == 0
+
+
+def _weight_cell(i: int, me_bits: int, opp_bits: int) -> int:
+    # 0 for own, 1 for empty, INF for opponent (blocked)
+    if (me_bits >> i) & 1:
+        return 0
+    if (opp_bits >> i) & 1:
+        return INF
+    return 1
+
+
+# Memo for shortest path costs for specific states (small ints as keys).
+_cost_memo: dict[tuple[int, int, str], int] = {}
+
+
+def shortest_connection_cost(me_bits: int, opp_bits: int, color: str) -> int:
+    """
+    0-1 BFS on the hex grid with weights:
+      own stone = 0, empty = 1, opponent = blocked.
+    Returns minimal number of empty cells needed to connect the two sides.
+    """
+    key = (me_bits, opp_bits, color)
+    if key in _cost_memo:
+        return _cost_memo[key]
+
+    targets = SIDES_2_SET[color]
+    dist = [INF] * SIZE
+    dq = deque()
+
+    # Multi-source init from side 1
+    for s in SIDES_1[color]:
+        w = _weight_cell(s, me_bits, opp_bits)
+        if w >= INF:
+            continue
+        if w < dist[s]:
+            dist[s] = w
+            if w == 0:
+                dq.appendleft(s)
+            else:
+                dq.append(s)
+
+    best = INF
+    while dq:
+        u = dq.popleft()
+        du = dist[u]
+        if du >= best:
+            continue
+        if u in targets:
+            best = du
+            break  # 0-1 BFS pops in nondecreasing dist order
+
+        for v in NEIGHBORS[u]:
+            w = _weight_cell(v, me_bits, opp_bits)
+            if w >= INF:
+                continue
+            nd = du + w
+            if nd < dist[v]:
+                dist[v] = nd
+                if w == 0:
+                    dq.appendleft(v)
+                else:
+                    dq.append(v)
+
+    _cost_memo[key] = best
+    return best
+
+
+def _adj_counts(i: int, me_bits: int, opp_bits: int) -> tuple[int, int]:
+    am = ao = 0
+    for v in NEIGHBORS[i]:
+        if (me_bits >> v) & 1:
+            am += 1
+        elif (opp_bits >> v) & 1:
+            ao += 1
+    return am, ao
+
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    me_bits = _bits(me)
+    opp_bits = _bits(opp)
+    occ = me_bits | opp_bits
+
+    # Collect empties
+    empties = [i for i in range(SIZE) if ((occ >> i) & 1) == 0]
+    if not empties:
+        # Should not happen in a normal game; return something in bounds.
+        return (0, 0)
+
+    # Opening: center if available and board empty-ish
+    if me_bits == 0 and opp_bits == 0:
+        return (CENTER_R, CENTER_C)
+    center_idx = _idx(CENTER_R, CENTER_C)
+    if ((occ >> center_idx) & 1) == 0 and len(me) + len(opp) <= 1:
+        return (CENTER_R, CENTER_C)
+
+    opp_color = _other(color)
+
+    # 1) Immediate win if any
+    for i in empties:
+        me2 = me_bits | MASKS[i]
+        if shortest_connection_cost(me2, opp_bits, color) == 0:
+            return _rc(i)
+
+    # 2) Must-block: if opponent has an immediate win next, occupy one winning cell.
+    opp_winning_cells = []
+    for i in empties:
+        opp2 = opp_bits | MASKS[i]
+        if shortest_connection_cost(opp2, me_bits, opp_color) == 0:
+            opp_winning_cells.append(i)
+
+    if opp_winning_cells:
+        # Block with the winning cell that best improves our own position.
+        best_i = opp_winning_cells[0]
+        best_score = -INF
+        for i in opp_winning_cells:
+            me2 = me_bits | MASKS[i]
+            myc = shortest_connection_cost(me2, opp_bits, color)
+            oppc = shortest_connection_cost(opp_bits, me2, opp_color)
+            am, ao = _adj_counts(i, me_bits, opp_bits)
+            r, c = _rc(i)
+            center_pen = abs(r - CENTER_R) + abs(c - CENTER_C)
+            score = (oppc - myc) * 100 + am * 3 - ao * 2 - center_pen
+            if score > best_score:
+                best_score = score
+                best_i = i
+        return _rc(best_i)
+
+    # Heuristic ranking for candidate move selection
+    # Compute baseline costs once
+    base_my = shortest_connection_cost(me_bits, opp_bits, color)
+    base_opp = shortest_connection_cost(opp_bits, me_bits, opp_color)
+
+    ranked = []
+    for i in empties:
+        me2 = me_bits | MASKS[i]
+        myc = shortest_connection_cost(me2, opp_bits, color)
+        oppc = shortest_connection_cost(opp_bits, me2, opp_color)
+        am, ao = _adj_counts(i, me_bits, opp_bits)
+        r, c = _rc(i)
+        center_pen = abs(r - CENTER_R) + abs(c - CENTER_C)
+
+        # Favor reducing our distance and increasing opponent's, plus local connectivity.
+        # Also slightly prefer centrality early.
+        score = 0
+        score += (oppc - myc) * 200
+        score += (base_my - myc) * 40
+        score += (oppc - base_opp) * 20
+        score += am * 6 - ao * 3
+        score -= center_pen
+
+        # Mild side-awareness: encourage touching our goal edges.
+        if color == "b":
+            if r == 0 or r == N - 1:
+                score += 2
+        else:
+            if c == 0 or c == N - 1:
+                score += 2
+
+        ranked.append((score, i, myc, oppc))
+
+    ranked.sort(reverse=True, key=lambda t: (t[0], -t[1]))
+
+    # Candidate set size: larger late game
+    if len(empties) <= 35:
+        K = min(len(ranked), 60)
+    else:
+        K = min(len(ranked), 24)
+    candidates = ranked[:K]
+
+    # 2-ply minimax on candidates: opponent replies to minimize their own connection cost (tie-break: harm us).
+    best_move = candidates[0][1]
+    best_val = -10**18
+
+    # Limit opponent reply search except in late game
+    reply_limit = 20 if len(empties) > 40 else 80
+
+    for score0, m, myc0, oppc0 in candidates:
+        me2 = me_bits | MASKS[m]
+        # Opponent replies among empties excluding m
+        # Rank opponent replies by their resulting connection cost.
+        reply_rank = []
+        for o in empties:
+            if o == m:
+                continue
+            opp2 = opp_bits | MASKS[o]
+            oppc = shortest_connection_cost(opp2, me2, opp_color)
+            reply_rank.append((oppc, o))
+            # If opponent can win immediately after this move, we can short-circuit as very bad.
+            if oppc == 0:
+                reply_rank = [(0, o)]
+                break
+
+        reply_rank.sort(key=lambda t: (t[0], t[1]))
+        reply_considered = reply_rank[: min(reply_limit, len(reply_rank))]
+
+        # Ensure we don't miss any immediate-win replies (already handled by early break),
+        # but if there were multiple 0-cost replies, keep at least one (enough to mark as bad).
+        min_reply_value = 10**18
+        for oppc, o in reply_considered:
+            opp2 = opp_bits | MASKS[o]
+            myc = shortest_connection_cost(me2, opp2, color)
+            # Opponent prefers to minimize their cost; tie-break to increase ours.
+            reply_value = oppc * 1000 + myc
+            if reply_value < min_reply_value:
+                min_reply_value = reply_value
+                if oppc == 0:
+                    break
+
+        # Our value: prefer good immediate heuristic and avoid lines where opponent gets very low cost.
+        am, ao = _adj_counts(m, me_bits, opp_bits)
+        r, c = _rc(m)
+        center_pen = abs(r - CENTER_R) + abs(c - CENTER_C)
+
+        val = 0
+        val += (oppc0 - myc0) * 500
+        val += am * 10 - ao * 4
+        val -= center_pen
+        val -= min_reply_value * 5  # penalize opponent best reply
+
+        if val > best_val:
+            best_val = val
+            best_move = m
+
+    # Safety: ensure legal
+    if not _is_empty(best_move, me_bits, opp_bits):
+        # Fallback: first empty
+        best_move = empties[0]
+    return _rc(best_move)

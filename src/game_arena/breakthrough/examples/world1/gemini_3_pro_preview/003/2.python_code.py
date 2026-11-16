@@ -1,0 +1,324 @@
+
+import time
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    
+    # --- Constants & Configuration ---
+    TIME_LIMIT = 0.95  # Seconds
+    start_time = time.time()
+    
+    # Board Constants
+    FULL_MASK = 0xFFFFFFFFFFFFFFFF
+    COL_A = 0x0101010101010101
+    COL_H = 0x8080808080808080
+    NOT_A = FULL_MASK ^ COL_A
+    NOT_H = FULL_MASK ^ COL_H
+    
+    # White Wins on Row 7 (Index 56-63)
+    # Black Wins on Row 0 (Index 0-7)
+    ROW_0 = 0x00000000000000FF
+    ROW_7 = 0xFF00000000000000
+    
+    # Evaluation Weights
+    # Progressive value for rows 0 through 7
+    # Dramatic increase at the end to prioritize winning/blocking wins
+    ROW_VALS = [5, 10, 20, 40, 80, 150, 400, 10000]
+    VAL_SAFE = 5
+    
+    # --- Helper Functions ---
+
+    def to_bb(pieces):
+        """Convert list of (row, col) to 64-bit integer."""
+        bb = 0
+        for r, c in pieces:
+            bb |= 1 << (r * 8 + c)
+        return bb
+
+    def bit_to_coord(idx):
+        """Convert bit index 0-63 to ((r, c))."""
+        # Note: idx is power of 2 here? No, idx is integer index.
+        # Wait, the caller passes the bit mask?
+        # Let's handle bit index conversion.
+        return (idx // 8, idx % 8)
+    
+    # --- Move Generation ---
+    # Returns list of tuples: (src_bit_mask, dst_bit_mask, is_capture, is_winning)
+    
+    def generate_moves(my_bb, opp_bb, is_white):
+        moves = []
+        occ = my_bb | opp_bb
+        
+        # Generator Helpers using Bitwise ops
+        # We extract set bits efficiently
+        
+        if is_white:
+            # 1. Forward Pushes (+8)
+            # Valid if target is empty
+            targets = (my_bb << 8) & ~occ
+            
+            # Extract moves
+            t_temp = targets
+            while t_temp:
+                dst = t_temp & -t_temp # Extract LSB
+                t_temp ^= dst
+                src = dst >> 8
+                is_win = bool(dst & ROW_7)
+                moves.append((src, dst, False, is_win))
+            
+            # 2. Capture Left (+7) -> Row+1, Col-1
+            # Valid if target is Opponent. Source must NOT be Col A.
+            # (Src & Reciever) logic: (Src & NotA) << 7
+            targets = ((my_bb & NOT_A) << 7) & opp_bb
+            t_temp = targets
+            while t_temp:
+                dst = t_temp & -t_temp
+                t_temp ^= dst
+                src = dst >> 7
+                is_win = bool(dst & ROW_7)
+                moves.append((src, dst, True, is_win))
+
+            # 3. Capture Right (+9) -> Row+1, Col+1
+            # Valid if target is Opponent. Source must NOT be Col H.
+            targets = ((my_bb & NOT_H) << 9) & opp_bb
+            t_temp = targets
+            while t_temp:
+                dst = t_temp & -t_temp
+                t_temp ^= dst
+                src = dst >> 9
+                is_win = bool(dst & ROW_7)
+                moves.append((src, dst, True, is_win))
+                
+        else: # Black
+            # 1. Forward Pushes (-8)
+            targets = (my_bb >> 8) & ~occ
+            t_temp = targets
+            while t_temp:
+                dst = t_temp & -t_temp
+                t_temp ^= dst
+                src = dst << 8
+                is_win = bool(dst & ROW_0)
+                moves.append((src, dst, False, is_win))
+                
+            # 2. Capture Left (-9) -> Row-1, Col-1 (Relative to board, it's down-left)
+            # Source (Row, Col) -> Dest (Row-1, Col-1). 
+            # Check wrap: Source cannot be on Col A.
+            targets = ((my_bb & NOT_A) >> 9) & opp_bb
+            t_temp = targets
+            while t_temp:
+                dst = t_temp & -t_temp
+                t_temp ^= dst
+                src = dst << 9
+                is_win = bool(dst & ROW_0)
+                moves.append((src, dst, True, is_win))
+                
+            # 3. Capture Right (-7) -> Row-1, Col+1
+            # Source cannot be on Col H.
+            targets = ((my_bb & NOT_H) >> 7) & opp_bb
+            t_temp = targets
+            while t_temp:
+                dst = t_temp & -t_temp
+                t_temp ^= dst
+                src = dst << 7
+                is_win = bool(dst & ROW_0)
+                moves.append((src, dst, True, is_win))
+                
+        return moves
+
+    # --- Evaluation ---
+    
+    def evaluate(my_bb, opp_bb, i_am_white):
+        # Score from perspective of 'me' (color at root)
+        
+        # Identify White and Black sets
+        w_bb = my_bb if i_am_white else opp_bb
+        b_bb = opp_bb if i_am_white else my_bb
+        
+        # 1. Row Progression & Material
+        w_score = 0
+        b_score = 0
+        
+        # We can iterate rows to count bits
+        # White
+        for r in range(8):
+            # Mask for row r
+            row_mask = 0xFF << (r * 8)
+            # White pieces on this row
+            w_row = w_bb & row_mask
+            if w_row:
+                w_score += bin(w_row).count('1') * ROW_VALS[r]
+            
+            # Black pieces on this row (Goal is row 0)
+            # Use inverse index for value
+            b_row = b_bb & row_mask
+            if b_row:
+                b_score += bin(b_row).count('1') * ROW_VALS[7 - r]
+        
+        # 2. Attack / Defense Connectivity
+        # Bonus for pieces that are defended (can be recaptured)
+        w_def_mask = ((w_bb & NOT_A) << 7) | ((w_bb & NOT_H) << 9)
+        w_safe_cnt = bin(w_bb & w_def_mask).count('1')
+        w_score += w_safe_cnt * VAL_SAFE
+        
+        b_def_mask = ((b_bb & NOT_A) >> 9) | ((b_bb & NOT_H) >> 7)
+        b_safe_cnt = bin(b_bb & b_def_mask).count('1')
+        b_score += b_safe_cnt * VAL_SAFE
+        
+        score = w_score - b_score
+        return score if i_am_white else -score
+
+    # --- Search Engine ---
+    
+    class TimeoutError(Exception): pass
+    
+    # Memoize bit length to index if needed, but .bit_length() is fast
+    def bit_to_int(b):
+        return b.bit_length() - 1
+
+    def alphabeta(depth, alpha, beta, m_bb, o_bb, maximizing):
+        if time.time() - start_time > TIME_LIMIT:
+            raise TimeoutError
+            
+        # Win Condition Checks (Terminal Nodes)
+        # Check if the player who Last Moved won
+        # If maximizing is True, Opponent just moved. Did Opponent win?
+        # Determine active color for check
+        i_am_p1 = (color == 'w')
+        
+        if maximizing:
+            # My turn. Opponent (Min) just moved.
+            if i_am_p1: # I am White, Opp is Black
+                if o_bb & ROW_0: return -1000000 
+                if o_bb == 0: return 1000000 # I win (moves ago)
+                if m_bb == 0: return -1000000 # I lost
+            else: # I am Black, Opp is White
+                if o_bb & ROW_7: return -1000000
+                if o_bb == 0: return 1000000
+                if m_bb == 0: return -1000000
+        else:
+            # Opponent turn. I (Max) just moved.
+            if i_am_p1: # I am White
+                if m_bb & ROW_7: return 1000000
+                if o_bb == 0: return 1000000
+            else: # I am Black
+                if m_bb & ROW_0: return 1000000
+                if o_bb == 0: return 1000000
+
+        if depth == 0:
+            return evaluate(m_bb, o_bb, color == 'w')
+        
+        # Generate Moves
+        is_p1_turn = (color == 'w') if maximizing else (color != 'w')
+        curr_bb = m_bb if maximizing else o_bb
+        other_bb = o_bb if maximizing else m_bb
+        
+        moves = generate_moves(curr_bb, other_bb, is_p1_turn)
+        
+        if not moves:
+            # No moves available is a loss for the current player
+            return -1000000 if maximizing else 1000000
+            
+        # Move Ordering Heuristic
+        # Sort by: Win > Capture > Forward Progress
+        def move_score(mv):
+            # mv: (src, dst, cap, win)
+            s = 0
+            if mv[3]: s += 100000 # Winning move
+            elif mv[2]: s += 1000 # Capture
+            # Advancement
+            idx = bit_to_int(mv[1])
+            if is_p1_turn: s += (idx // 8) # White wants higher rows
+            else: s += (7 - (idx // 8))    # Black wants lower rows
+            return s
+            
+        moves.sort(key=move_score, reverse=True)
+        
+        if maximizing:
+            max_eval = -float('inf')
+            for src, dst, _, _ in moves:
+                # Apply move
+                new_m = (m_bb ^ src) | dst
+                new_o = o_bb & ~dst # Remove captured if any
+                val = alphabeta(depth - 1, alpha, beta, new_m, new_o, False)
+                max_eval = max(max_eval, val)
+                alpha = max(alpha, val)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for src, dst, _, _ in moves:
+                new_o = (o_bb ^ src) | dst
+                new_m = m_bb & ~dst
+                val = alphabeta(depth - 1, alpha, beta, new_m, new_o, True)
+                min_eval = min(min_eval, val)
+                beta = min(beta, val)
+                if beta <= alpha:
+                    break
+            return min_eval
+
+    # --- Main Driver ---
+    
+    my_bb = to_bb(me)
+    opp_bb = to_bb(opp)
+    
+    # 1. Generate root moves
+    root_moves = generate_moves(my_bb, opp_bb, color == 'w')
+    if not root_moves:
+        return ((0,0), (0,0)) # Loss state, return anything valid if possible or fail
+    
+    # Sort root moves
+    def root_sort_key(mv):
+        s = 0
+        if mv[3]: s += 100000
+        elif mv[2]: s += 1000
+        idx = bit_to_int(mv[1])
+        if color == 'w': s += (idx // 8)
+        else: s += (7 - (idx // 8))
+        return s
+        
+    root_moves.sort(key=root_sort_key, reverse=True)
+    
+    # Check immediate win
+    if root_moves[0][3]:
+        s, d, _, _ = root_moves[0]
+        return (bit_to_coord(bit_to_int(s)), bit_to_coord(bit_to_int(d)))
+        
+    best_move = root_moves[0]
+    
+    # Iterative Deepening
+    for depth in range(1, 20): # Max depth 20 unlikely to be reached
+        try:
+            alpha = -float('inf')
+            beta = float('inf')
+            best_val_d = -float('inf')
+            best_move_d = None
+            
+            for mv in root_moves:
+                src, dst, _, _ = mv
+                new_me = (my_bb ^ src) | dst
+                new_opp = opp_bb & ~dst
+                
+                val = alphabeta(depth, alpha, beta, new_me, new_opp, False)
+                
+                if val > best_val_d:
+                    best_val_d = val
+                    best_move_d = mv
+                
+                # Alpha update necessary to prune subsequent root moves?
+                # Technically yes, but simplest ID implies just finding max
+                alpha = max(alpha, val)
+                
+                # Time check inside loop
+                if time.time() - start_time > TIME_LIMIT:
+                    raise TimeoutError
+
+            if best_move_d:
+                best_move = best_move_d
+                
+        except TimeoutError:
+            break
+            
+    # Decode best move
+    s_bit, d_bit, _, _ = best_move
+    return (bit_to_coord(bit_to_int(s_bit)), bit_to_coord(bit_to_int(d_bit)))
+

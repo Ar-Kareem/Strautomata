@@ -1,0 +1,101 @@
+```python
+import random
+from typing import List, Tuple, Set
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    # Find all unfired positions
+    unfired = [(r, c) for r in range(10) for c in range(10) if board[r][c] == 0]
+    
+    # Find all hits that are not part of a sunk ship
+    hits = [(r, c) for r in range(10) for c in range(10) if board[r][c] == 1]
+    
+    # Priority 1: Target adjacent to existing hits (hunt mode)
+    for hit_r, hit_c in hits:
+        # Check if this hit is part of a line of hits
+        adjacent_targets = []
+        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nr, nc = hit_r + dr, hit_c + dc
+            if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                adjacent_targets.append((nr, nc))
+        
+        if adjacent_targets:
+            # If we have multiple hits in a line, prioritize extending the line
+            line_targets = []
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                # Check if there's a line of hits in this direction
+                line_length = 0
+                r, c = hit_r + dr, hit_c + dc
+                while 0 <= r < 10 and 0 <= c < 10 and board[r][c] == 1:
+                    line_length += 1
+                    r, c = r + dr, c + dc
+                
+                # If we found a line, target the end of it
+                if line_length > 0 and 0 <= r < 10 and 0 <= c < 10 and board[r][c] == 0:
+                    line_targets.append((r, c))
+            
+            if line_targets:
+                return random.choice(line_targets)
+            else:
+                return random.choice(adjacent_targets)
+    
+    # Priority 2: Smart probability-based targeting
+    # Calculate probability for each unfired cell based on possible ship placements
+    ship_lengths = [5, 4, 3, 3, 2]
+    
+    # Count how many ships we've likely sunk
+    hit_count = len(hits)
+    total_ship_cells = sum(ship_lengths)
+    
+    # Use checkerboard pattern early in the game when we have few hits
+    if hit_count < 3:
+        # Prefer checkerboard pattern (black squares)
+        checkerboard = [(r, c) for r, c in unfired if (r + c) % 2 == 0]
+        if checkerboard:
+            return random.choice(checkerboard)
+    
+    # Advanced probability calculation
+    cell_probability = {}
+    
+    for r, c in unfired:
+        probability = 0
+        
+        # For each remaining ship length
+        for ship_len in ship_lengths:
+            # Try horizontal placement
+            for start_c in range(max(0, c - ship_len + 1), min(10 - ship_len + 1, c + 1)):
+                if can_place_ship(board, r, start_c, ship_len, horizontal=True):
+                    probability += 1
+            
+            # Try vertical placement
+            for start_r in range(max(0, r - ship_len + 1), min(10 - ship_len + 1, r + 1)):
+                if can_place_ship(board, start_r, c, ship_len, horizontal=False):
+                    probability += 1
+        
+        cell_probability[(r, c)] = probability
+    
+    if cell_probability:
+        # Find cells with maximum probability
+        max_prob = max(cell_probability.values())
+        best_cells = [pos for pos, prob in cell_probability.items() if prob == max_prob]
+        return random.choice(best_cells)
+    
+    # Fallback: random unfired cell
+    return random.choice(unfired)
+
+def can_place_ship(board: List[List[int]], start_r: int, start_c: int, length: int, horizontal: bool) -> bool:
+    """Check if a ship of given length can be placed at the specified position"""
+    if horizontal:
+        if start_c + length > 10:
+            return False
+        for c in range(start_c, start_c + length):
+            if board[start_r][c] == -1:  # Can't place on a miss
+                return False
+    else:
+        if start_r + length > 10:
+            return False
+        for r in range(start_r, start_r + length):
+            if board[r][start_c] == -1:  # Can't place on a miss
+                return False
+    
+    return True
+```

@@ -1,0 +1,248 @@
+The strategy for this policy is a greedy *capture‑first* heuristic that:
+
+1. **Builds a fast Union‑Find map** for both players to identify connected groups.  
+2. **Scans every empty point** on the 19 × 19 board and checks whether playing there would be illegal (i.e., a suicide move).  
+3. **Prioritises captures**: a move is legal only if it captures at least one opponent group whose sole liberty is the move point.  
+4. **Merges all our adjacent groups** with the new stone and removes captured opponent stones to compute the resulting liberties.  
+5. **Scores each legal move** as  
+
+   \[
+   \text{score} = 1000 \times (\text{# captured stones}) + (\text{# liberties after move}) - \text{distance to centre}
+   \]
+
+   – capturing heavily (the 1000 multiplier) and staying close to the centre are rewarded;  
+   – the number of liberties after the move is penalised less (so a move that gives many liberties is still preferred).  
+
+6. **Selects the highest‑scoring move**.  
+7. **Falls back to a pass** `(0,0)` only when the board is full or when every empty point is illegal.
+
+All calculations are performed within the 1 second limit because the board size is tiny (≤ 361 points) and Union‑Find runs in near‑linear time.
+
+<code>
+from typing import List, Tuple
+import itertools
+
+# Union‑Find implementation
+class UnionFind:
+    def __init__(self):
+        self.parent = {}
+    def add(self, x):
+        if x not in self.parent:
+            self.parent[x] = x
+    def find(self, x):
+        while self.parent[x] != x:
+            self.parent[x] = self.parent[self.parent[x]]
+            x = self.parent[x]
+        return x
+    def union(self, x, y):
+        px = self.find(x)
+        py = self.find(y)
+        if px != py:
+            self.parent[py] = px
+
+
+def policy(me: List[Tuple[int, int]], opponent: List[Tuple[int, int]]) -> Tuple[int, int]:
+    """Return the best legal move as a (row, col) tuple. Use (0,0) for pass."""
+    if not me and not opponent:
+        # Empty board – play the centre.
+        return (10, 10)
+
+    # Board utilities
+    board = {(r, c) for r in range(1, 20) for c in range(1, 20)}
+    # 8 possible moves from a point
+    dirs = [(-1, -1), (-1, 0), (-1, 1),
+            (0, -1),          (0, 1),
+            (1, -1),  (1, 0), (1, 1)]
+
+    # --- 1. Build structures for opponent groups ---
+    opp_set = set(opponent)
+    uf_opp = UnionFind()
+    for s in opp_set:
+        uf_opp.add(s)
+
+    # union adjacent opponent stones
+    for s in opp_set:
+        for dr, dc in dirs:
+            nb = (s[0] + dr, s[1] + dc)
+            if nb in opp_set and uf_opp.find(nb) not in uf_opp.find(s):
+                uf_opp.union(s, nb)
+
+    # map stone → group root
+    opp_group_of = {}
+    for s in opp_set:
+        opp_group_of[s] = uf_opp.find(s)
+
+    # groups and their liberties (before move, candidate counted as empty)
+    opp_groups = {}
+    opp_libs = {}
+    empty = board - set(me) - opp_set          # all empties on the board
+    for root, stones in itertools.groupby(sorted(opp_set), key=opp_group_of.get):
+        stones = {p for p in opp_set if opp_group_of[p] == root}
+        lib = set()
+        for s in stones:
+            for dr, dc in dirs:
+                nb = (s[0] + dr, s[1] + dc)
+                if nb in empty:
+                    lib.add(nb)
+        opp_groups[root] = stones
+        opp_libs[root] = lib
+
+    # map of group id → stone set (used later to remove captured stones)
+    group_to_stones = opp_groups
+
+    # --- 2. Build structures for our groups (needed for merging) ---
+    me_set = set(me)
+    uf_me = UnionFind()
+    for s in me_set:
+        uf_me.add(s)
+    for s in me_set:
+        for dr, dc in dirs:
+            nb = (s[0] + dr, s[1] + dc)
+            if nb in me_set and uf_me.find(nb) not in uf_me.find(s):
+                uf_me.union(s, nb)
+
+    me_group_of = {}
+    for s in me_set:
+        me_group_of[s] = uf_me.find(s)
+
+    # groups of our stones
+    my_groups = {}
+    for root, stones in itertools.groupby(sorted(me_set), key=me_group_of.get):
+        stones = {p for p in me_set if me_group_of[p] == root}
+        my_groups[root] = stones
+
+    # --- 3. Scan all empty points for candidate moves ---
+    empty_candidates = board - me_set - opp_set
+    if not empty_candidates:
+        # board full → pass
+        return (0, 0)
+
+    # Helper to test a move
+    def is_legal(move: Tuple[int, int]) -> bool:
+        r, c = move
+        # check emptiness
+        if (r, c) in me_set or (r, c) in opp_set:
+            return False
+
+        # Determine opponent groups that would be captured
+        captured_groups = set()
+        captured_stones = set()
+        # we need to compute liberties of those groups INCLUDING the candidate point
+        # (candidate is still empty when checking)
+        cand_lib = {(r + dr, c + dc) for dr, dc in dirs if (r + dr, c + dc) in empty}
+        # neighbour opponent stones
+        cand_nbs = [(r + dr, c + dc) for dr, dc in dirs if (r + dr, c + dc) in opp_set]
+
+        for nb in cand_nbs:
+            grp_id = opp_group_of[nb]
+            libs = opp_libs.get(grp_id, set())
+            # A group is captured iff its only liberty is the move point
+            if libs == { (r, c) } or libs == {cand_lib} ? (can't directly compare) Actually check:
+            if libs == { (r, c) }:
+                captured_groups.add(grp_id)
+                captured_stones.update(group_to_stones[grp_id])
+
+        # Build new board after the move
+        me_new = me_set | {(r, c)}
+        opp_new = opp_set - captured_stones
+
+        # Compute liberties of our merged group
+        # Find which of our groups touch the move point
+        adjacent_my_roots = set()
+        for s in me_set:
+            if any(rv == r and cv == c or abs(rv - r) <= 1 and abs(cv - c) <= 1 for (rv, cv) in [(s[0], s[1])]):
+                # more efficiently:
+                # for dr, dc in dirs:
+                #    nb = (s[0]+dr, s[1]+dc)
+                #    if nb == (r,c):
+                pass
+        # Actually simpler: adjacency:
+        adj_me_stones = [s for s in me_set if any((s[0]+dr, s[1]+dc) == (r,c) for dr,dc in dirs)]
+
+        # union all adjacent groups
+        merged_stones = set()
+        for s in adj_me_stones:
+            merged_stones.update(my_groups[me_group_of[s]])
+        merged_stones.add((r, c))
+
+        # empty set after move
+        empty_new = board - me_new - opp_new
+
+        # compute liberties
+        libs_after = set()
+        for s in merged_stones:
+            for dr, dc in dirs:
+                nb = (s[0] + dr, s[1] + dc)
+                if nb in empty_new:
+                    libs_after.add(nb)
+
+        # Move is illegal if the resulting group has zero liberties
+        return libs_after
+
+    # Evaluate candidates (score = captures * 1000 + liberties - centre distance)
+    centre = (10, 10)
+    best_move: Tuple[int, int] = (0, 0)
+    best_score = -float('inf')
+    capture_counts = []
+
+    for move in empty_candidates:
+        # Determine captured opponent groups
+        captured_groups = set()
+        captured_stones = set()
+        cand_libs = set()
+        for dr, dc in dirs:
+            nb = (move[0] + dr, move[1] + dc)
+            if nb in empty:
+                cand_libs.add(nb)
+            if nb in opp_set:
+                grp_id = opp_group_of[nb]
+                libs = opp_libs.get(grp_id, set())
+                if libs == {move}:
+                    captured_groups.add(grp_id)
+                    captured_stones.update(group_to_stones[grp_id])
+
+        # Legal test
+        if not is_legal(move):
+            continue
+
+        # Compute score
+        # liberties after move
+        me_new = me_set | {move}
+        opp_new = opp_set - captured_stones
+        empty_new = board - me_new - opp_new
+
+        # Determine merged group stones
+        adj_me = [s for s in me_set if any(s[0]+dr == move[0] and s[1]+dc == move[1] for dr, dc in dirs)]
+        merged = set()
+        for s in adj_me:
+            root = me_group_of[s]
+            merged.update(my_groups[root])
+        merged.add(move)
+
+        libs_after = set()
+        for s in merged:
+            for dr, dc in dirs:
+                nb = (s[0] + dr, s[1] + dc)
+                if nb in empty_new:
+                    libs_after.add(nb)
+
+        capture_cnt = sum(len(stones) for grp_id in captured_groups for stones in group_to_stones.values() if opp_group_of[stones][0]==grp_id)
+        # but easier: capture_cnt = sum(len(group_to_stones[g]) for g in captured_groups)
+        capture_cnt = sum(len(group_to_stones[g]) for g in captured_groups)
+        score = capture_cnt * 1000 + len(libs_after) - (abs(move[0] - centre[0]) + abs(move[1] - centre[1]))
+
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    # If no legal move found (unlikely), pass
+    if best_move == (0, 0):
+        return (0, 0)
+    return best_move
+
+
+# Example: a simple deterministic call if you run this module as script
+if __name__ == "__main__":
+    # dummy board
+    print(policy([(10,10)], [(10,9), (10,11), (9,10), (11,10)]))
+</code>

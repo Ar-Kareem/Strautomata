@@ -1,0 +1,212 @@
+```python
+def policy(board: list[list[int]]) -> int:
+    """
+    Determines the best column to drop a disc into for Connect 4.
+    The board is a 6x7 grid.
+    Encoding: 0 (empty), 1 (current player), -1 (opponent).
+    Returns an integer column index (0-6).
+    """
+
+    # -----------------------------
+    # Constants & Config
+    # -----------------------------
+    ROWS = 6
+    COLS = 7
+    # Bitboard height includes a sentinel row to prevent diagonal wrap-around
+    HEIGHT = ROWS + 1 
+    
+    # Heuristic weights
+    W_CENTER = 6
+    W_LINE2 = 2
+    W_LINE3 = 5
+
+    # -----------------------------
+    # State Parsing
+    # -----------------------------
+    # Maps board 2D array to 64-bit integer bitboards
+    # Layout: Column-major, bottom-to-top per column.
+    
+    position = 0 # Bitboard for 'me' (current player)
+    mask = 0     # Bitboard for all occupied cells
+    move_count = 0
+    
+    for c in range(COLS):
+        for r in range(ROWS):
+            val = board[r][c]
+            if val != 0:
+                move_count += 1
+                # Board[0] is top, Board[5] is bottom.
+                # In bitboard, LSB of a column is the bottom row.
+                bit_idx = c * HEIGHT + (5 - r)
+                mask |= (1 << bit_idx)
+                if val == 1:
+                    position |= (1 << bit_idx)
+
+    # Opponent pieces are the difference between mask and my position
+    opp_position = mask ^ position
+
+    # -----------------------------
+    # Search Helpers
+    # -----------------------------
+    
+    # Returns True if 'p' has 4 connected bits vertically, horizontally, or diagonally
+    def connected_four(p):
+        # Horizontal (shift 7)
+        m = p & (p >> 7)
+        if m & (m >> 14): return True
+        # Diagonal \ (shift 6)
+        m = p & (p >> 6)
+        if m & (m >> 12): return True
+        # Diagonal / (shift 8)
+        m = p & (p >> 8)
+        if m & (m >> 16): return True
+        # Vertical (shift 1)
+        m = p & (p >> 1)
+        if m & (m >> 2): return True
+        return False
+
+    # Returns new (position, mask) after dropping a piece in col
+    def make_move(p, m, col):
+        # Calculate the bit to set: lowest 0 bit in the column
+        # Note: (m + (1<<base)) logic finds the first zero bit in a contiguous block of 1s
+        head = 1 << (col * HEIGHT)
+        new_m = m | (m + head)
+        move_bit = new_m ^ m
+        new_p = p | move_bit
+        return new_p, new_m
+
+    # Counts set bits in integer n
+    def count_bits(n):
+        return bin(n).count('1')
+
+    # Heuristic evaluation of a position
+    def evaluate(p):
+        score = 0
+        
+        # 1. Center Control
+        # Col 3 is bits 21..26
+        center_col = (p >> (3 * HEIGHT)) & 0x3F
+        score += count_bits(center_col) * W_CENTER
+        
+        # 2. connected structures (2s and 3s)
+        # Horizontal
+        h2 = p & (p >> 7)
+        h3 = h2 & (p >> 14)
+        score += count_bits(h2) * W_LINE2 + count_bits(h3) * W_LINE3
+        
+        # Diagonals / Vertical
+        d1_2 = p & (p >> 6)
+        d1_3 = d1_2 & (p >> 12)
+        score += count_bits(d1_2) * W_LINE2 + count_bits(d1_3) * W_LINE3
+        
+        d2_2 = p & (p >> 8)
+        d2_3 = d2_2 & (p >> 16)
+        score += count_bits(d2_2) * W_LINE2 + count_bits(d2_3) * W_LINE3
+        
+        v2 = p & (p >> 1)
+        v3 = v2 & (p >> 2)
+        score += count_bits(v2) * W_LINE2 + count_bits(v3) * W_LINE3
+        
+        return score
+
+    # Transposition Table
+    tt = {}
+
+    # Move ordering: center out
+    col_order = [3, 2, 4, 1, 5, 0, 6]
+
+    # Negamax logic with Alpha-Beta pruning
+    def negamax(p, o_p, m, depth, alpha, beta):
+        # Cache Lookup
+        key = (p, m)
+        if key in tt:
+            entry_depth, entry_val = tt[key]
+            if entry_depth >= depth:
+                return entry_val
+        
+        # Check if previous move wins is handled by the caller or immediate checks.
+        # But inside recursion, we check terminal states.
+        
+        # Max moves 42
+        if move_count + (MAX_DEPTH - depth) >= 42:
+            return 0 # Draw potential (simplified)
+
+        if depth == 0:
+            return evaluate(p) - evaluate(o_p)
+
+        # Generate legal moves
+        possible_cols = [c for c in col_order if not (m & (1 << (c * HEIGHT + 5)))]
+        
+        if not possible_cols:
+            return 0
+
+        best_val = -float('inf')
+        
+        for c in possible_cols:
+            new_p, new_m = make_move(p, m, c)
+            
+            # Check instant win
+            if connected_four(new_p):
+                val = 100000 + depth # Prefer faster wins
+            else:
+                # Recurse: Swap roles. 
+                # Opponent 'o_p' becomes current player. 'new_p' becomes opponent.
+                val = -negamax(o_p, new_p, new_m, depth - 1, -beta, -alpha)
+            
+            if val > best_val:
+                best_val = val
+            
+            alpha = max(alpha, val)
+            if alpha >= beta:
+                break
+        
+        tt[key] = (depth, best_val)
+        return best_val
+
+    # -----------------------------
+    # Strategy Execution
+    # -----------------------------
+
+    # Valid moves
+    valid_moves = [c for c in col_order if not (mask & (1 << (c * HEIGHT + 5)))]
+    if not valid_moves: return 0
+
+    # 1. Immediate Win Check
+    for c in valid_moves:
+        new_p, _ = make_move(position, mask, c)
+        if connected_four(new_p):
+            return c
+
+    # 2. Immediate Block Check
+    for c in valid_moves:
+        opp_new_p, _ = make_move(opp_position, mask, c)
+        if connected_four(opp_new_p):
+            return c
+
+    # 3. Deep Search
+    # Adjust depth based on game phase to stay within time
+    MAX_DEPTH = 6
+    if move_count > 12: MAX_DEPTH = 7
+    if move_count > 28: MAX_DEPTH = 9
+
+    best_col = valid_moves[0]
+    best_score = -float('inf')
+    
+    alpha = -float('inf')
+    beta = float('inf')
+
+    # Root Negamax Call
+    for c in valid_moves:
+        new_p, new_m = make_move(position, mask, c)
+        
+        # Assuming we passed immediate checks, no instant win here.
+        score = -negamax(opp_position, new_p, new_m, MAX_DEPTH - 1, -beta, -alpha)
+        
+        if score > best_score:
+            best_score = score
+            best_col = c
+        
+        alpha = max(alpha, score)
+
+    return best_col
+```

@@ -1,0 +1,167 @@
+```python
+import numpy as np
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> int:
+    """
+    Connect 4 targeting policy using minimax with alpha-beta pruning.
+    """
+    # Convert to numpy array for easier manipulation
+    grid = np.array(board)
+    rows, cols = grid.shape
+    
+    def is_valid_move(col):
+        return grid[0, col] == 0
+    
+    def get_valid_moves():
+        return [col for col in range(cols) if is_valid_move(col)]
+    
+    def make_move(grid, col, player):
+        # Create a copy and place the disc
+        new_grid = grid.copy()
+        for row in range(rows - 1, -1, -1):
+            if new_grid[row, col] == 0:
+                new_grid[row, col] = player
+                return new_grid, (row, col)
+        return grid, None
+    
+    def is_winning_move(grid, row, col, player):
+        # Check if placing a disc at (row, col) creates a connect 4
+        directions = [
+            (1, 0),  # horizontal
+            (0, 1),  # vertical
+            (1, 1),  # diagonal /
+            (-1, 1)  # diagonal \
+        ]
+        
+        for dr, dc in directions:
+            count = 1  # Count the newly placed disc
+            
+            # Check in positive direction
+            r, c = row + dr, col + dc
+            while 0 <= r < rows and 0 <= c < cols and grid[r, c] == player:
+                count += 1
+                r, c = r + dr, c + dc
+            
+            # Check in negative direction
+            r, c = row - dr, col - dc
+            while 0 <= r < rows and 0 <= c < cols and grid[r, c] == player:
+                count += 1
+                r, c = r - dr, c - dc
+            
+            if count >= 4:
+                return True
+        return False
+    
+    def evaluate_position(grid, last_move=None):
+        """
+        Heuristic evaluation function
+        """
+        if last_move is None:
+            return 0
+            
+        row, col = last_move
+        player = grid[row, col]
+        
+        # If this move wins, return a high score
+        if is_winning_move(grid, row, col, player):
+            return 1000000 if player == 1 else -1000000
+            
+        score = 0
+        
+        # Evaluate potential connect 4 opportunities
+        directions = [(1, 0), (0, 1), (1, 1), (1, -1)]
+        
+        for dr, dc in directions:
+            for i in range(-3, 1):
+                count = 0
+                empty = 0
+                valid = True
+                
+                for j in range(4):
+                    r, c = row + i*dr + j*dr, col + i*dc + j*dc
+                    if not (0 <= r < rows and 0 <= c < cols):
+                        valid = False
+                        break
+                        
+                    if grid[r, c] == player:
+                        count += 1
+                    elif grid[r, c] == 0:
+                        empty += 1
+                    else:
+                        valid = False
+                        break
+                        
+                if valid and count > 0 and empty + count == 4:
+                    # Add score based on how many pieces are in place
+                    if player == 1:
+                        score += count ** 3
+                    else:
+                        score -= count ** 3
+                        
+        return score
+    
+    def minimax(grid, depth, alpha, beta, maximizing_player, last_move=None):
+        if depth == 0:
+            return evaluate_position(grid, last_move)
+            
+        valid_moves = get_valid_moves()
+        if not valid_moves:
+            return 0  # Draw
+            
+        if maximizing_player:
+            max_eval = float('-inf')
+            for col in valid_moves:
+                new_grid, pos = make_move(grid, col, 1)
+                if pos is None:
+                    continue
+                eval_score = minimax(new_grid, depth - 1, alpha, beta, False, pos)
+                max_eval = max(max_eval, eval_score)
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for col in valid_moves:
+                new_grid, pos = make_move(grid, col, -1)
+                if pos is None:
+                    continue
+                eval_score = minimax(new_grid, depth - 1, alpha, beta, True, pos)
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval
+    
+    # First, check if we can win immediately
+    valid_moves = get_valid_moves()
+    for col in valid_moves:
+        grid_copy, pos = make_move(grid, col, 1)
+        if pos and is_winning_move(grid_copy, pos[0], pos[1], 1):
+            return col
+    
+    # Check if opponent can win next move - block them
+    for col in valid_moves:
+        grid_copy, pos = make_move(grid, col, -1)
+        if pos and is_winning_move(grid_copy, pos[0], pos[1], -1):
+            return col
+    
+    # Use minimax to determine best move
+    best_col = valid_moves[0]  # fallback
+    best_value = float('-inf')
+    
+    # Adjust depth based on available time
+    depth = 5  # Good balance of strength and speed
+    
+    for col in valid_moves:
+        grid_copy, pos = make_move(grid, col, 1)
+        if pos is None:
+            continue
+        value = minimax(grid_copy, depth - 1, float('-inf'), float('inf'), False, pos)
+        if value > best_value:
+            best_value = value
+            best_col = col
+    
+    return best_col
+```

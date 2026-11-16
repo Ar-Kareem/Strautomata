@@ -1,0 +1,107 @@
+
+
+The strategy for this policy is to prioritize immediate captures and saving its own groups, followed by a positional strategy favoring corners and edges. It first identifies moves that capture opponent stones in atari (single liberty) and chooses the largest capture. If no captures are available, it saves its own groups in atari. Otherwise, it selects moves in corners or edges while connecting to existing stones for territorial expansion.
+
+<code>
+import numpy as np
+from collections import deque
+
+def create_board(me, opponent):
+    board = [[None for _ in range(19)] for _ in range(19)]
+    for r, c in me:
+        board[r-1][c-1] = 'me'
+    for r, c in opponent:
+        board[r-1][c-1] = 'opponent'
+    return board
+
+def find_all_groups(board, color):
+    groups = []
+    visited = set()
+    for r in range(19):
+        for c in range(19):
+            if board[r][c] == color and (r, c) not in visited:
+                group = {'stones': set(), 'liberties': set()}
+                queue = deque([(r, c)])
+                visited.add((r, c))
+                while queue:
+                    cr, cc = queue.popleft()
+                    group['stones'].add((cr+1, cc+1))
+                    for dr, dc in [(1,0), (-1,0), (0,1), (0,-1)]:
+                        nr, nc = cr + dr, cc + dc
+                        if 0 <= nr < 19 and 0 <= nc < 19:
+                            if board[nr][nc] == color and (nr, nc) not in visited:
+                                visited.add((nr, nc))
+                                queue.append((nr, nc))
+                            elif board[nr][nc] is None:
+                                group['liberties'].add((nr+1, nc+1))
+                groups.append(group)
+    return groups
+
+def policy(me, opponent):
+    me_set = set(me)
+    opponent_set = set(opponent)
+    occupied = me_set.union(opponent_set)
+    empty_points = [(r, c) for r in range(1, 20) for c in range(1, 20) if (r, c) not in occupied]
+    if not empty_points:
+        return (0, 0)
+    
+    board = create_board(me, opponent)
+
+    def find_groups_and_liberties(color):
+        return find_all_groups(board, color)
+
+    my_groups = find_groups_and_liberties('me')
+    opponent_groups = find_groups_and_liberties('opponent')
+
+    # Capture: Opponent groups with 1 liberty
+    capture_moves = []
+    for group in opponent_groups:
+        liberties = group['liberties']
+        if len(liberties) == 1:
+            lib = liberties.pop()
+            if lib in empty_points:
+                size = len(group['stones'])
+                capture_moves.append((lib[0], lib[1], size))
+    
+    if capture_moves:
+        capture_moves.sort(key=lambda x: x[2], reverse=True)
+        return (capture_moves[0][0], capture_moves[0][1])
+
+    # Save: My groups with 1 liberty
+    save_moves = []
+    for group in my_groups:
+        liberties = group['liberties']
+        if len(liberties) == 1:
+            lib = liberties.pop()
+            if lib in empty_points:
+                size = len(group['stones'])
+                save_moves.append((lib[0], lib[1], size))
+    
+    if save_moves:
+        save_moves.sort(key=lambda x: x[2], reverse=True)
+        return (save_moves[0][0], save_moves[0][1])
+
+    # Positional strategy
+    base_scores = {}
+    for (r, c) in empty_points:
+        # Distance to nearest corner (Chebyshev)
+        d_corner = min(min(r-1, 19-r), min(c-1, 19-c))
+        corner_score = 10 - d_corner
+        
+        # Distance to edges (prefer sides)
+        edge_dist = min(r-1, 19-r, c-1, 19-c)
+        edge_score = 10 - edge_dist if edge_dist < 5 else 0
+        
+        # Bonus for adjacent friendly stones
+        adj_bonus = 0
+        for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+            nr, nc = r + dr, c + dc
+            if (nr, nc) in me_set:
+                adj_bonus += 5
+        
+        total = corner_score + edge_score + adj_bonus
+        base_scores[(r, c)] = total
+
+    best_move = max(empty_points, key=lambda p: base_scores[p])
+    return best_move
+</code>

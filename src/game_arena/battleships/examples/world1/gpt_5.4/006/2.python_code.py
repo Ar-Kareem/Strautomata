@@ -1,0 +1,334 @@
+
+from collections import deque
+
+SHIP_LENGTHS = [5, 4, 3, 3, 2]
+N = 10
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Defensive fallback: ensure legal move no matter what.
+    legal = [(r, c) for r in range(N) for c in range(N) if board[r][c] == 0]
+    if not legal:
+        return (0, 0)
+
+    hits = {(r, c) for r in range(N) for c in range(N) if board[r][c] == 1}
+    misses = {(r, c) for r in range(N) for c in range(N) if board[r][c] == -1}
+
+    clusters = _hit_clusters(board)
+    unresolved, resolved = _classify_clusters(board, clusters)
+
+    # Infer remaining ship lengths from resolved clusters.
+    remaining_lengths = SHIP_LENGTHS.copy()
+    for cl in resolved:
+        L = len(cl)
+        if L in remaining_lengths:
+            remaining_lengths.remove(L)
+
+    if not remaining_lengths:
+        remaining_lengths = [2]
+
+    unresolved_hits = set()
+    for cl in unresolved:
+        unresolved_hits.update(cl)
+
+    # Build probability heatmap from all legal placements of remaining ships
+    # that are consistent with misses and unresolved hits.
+    score = [[0.0 for _ in range(N)] for _ in range(N)]
+
+    # Strong local target bonuses around unresolved hit clusters.
+    _add_target_scores(board, unresolved, remaining_lengths, score)
+
+    # Global placement counting.
+    _add_placement_scores(board, unresolved_hits, remaining_lengths, score)
+
+    # Mild checkerboard/parity bias while hunting for larger ships.
+    if any(L > 2 for L in remaining_lengths):
+        _add_parity_bias(board, score, remaining_lengths)
+
+    # Prefer cells adjacent to unresolved hits a bit, even if not on a perfect line.
+    for r, c in unresolved_hits:
+        for nr, nc in _neighbors(r, c):
+            if board[nr][nc] == 0:
+                score[nr][nc] += 2.5
+
+    # Choose highest-scoring legal move, with deterministic tie-break favoring centrality.
+    best = None
+    best_val = None
+    for r, c in legal:
+        val = score[r][c] + _centrality_bonus(r, c)
+        if best is None or val > best_val:
+            best = (r, c)
+            best_val = val
+
+    if best is not None and board[best[0]][best[1]] == 0:
+        return best
+
+    return legal[0]
+
+
+def _neighbors(r, c):
+    if r > 0:
+        yield (r - 1, c)
+    if r < N - 1:
+        yield (r + 1, c)
+    if c > 0:
+        yield (r, c - 1)
+    if c < N - 1:
+        yield (r, c + 1)
+
+
+def _hit_clusters(board):
+    seen = [[False] * N for _ in range(N)]
+    clusters = []
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 1 and not seen[r][c]:
+                q = deque([(r, c)])
+                seen[r][c] = True
+                comp = []
+                while q:
+                    x, y = q.popleft()
+                    comp.append((x, y))
+                    for nx, ny in _neighbors(x, y):
+                        if board[nx][ny] == 1 and not seen[nx][ny]:
+                            seen[nx][ny] = True
+                            q.append((nx, ny))
+                clusters.append(comp)
+    return clusters
+
+
+def _cluster_orientation(cluster):
+    rows = {r for r, _ in cluster}
+    cols = {c for _, c in cluster}
+    if len(rows) == 1 and len(cluster) >= 2:
+        return "H"
+    if len(cols) == 1 and len(cluster) >= 2:
+        return "V"
+    return "U"
+
+
+def _classify_clusters(board, clusters):
+    unresolved = []
+    resolved = []
+
+    for cluster in clusters:
+        if _cluster_can_belong_to_some_remaining_ship_shape(board, cluster):
+            unresolved.append(cluster)
+        else:
+            resolved.append(cluster)
+
+    return unresolved, resolved
+
+
+def _cluster_can_belong_to_some_remaining_ship_shape(board, cluster):
+    # If any legal ship placement of any standard length can include exactly this connected
+    # hit cluster and no extra outside hits, treat as unresolved.
+    cells = set(cluster)
+    orient = _cluster_orientation(cluster)
+
+    for L in SHIP_LENGTHS:
+        if L < len(cluster):
+            continue
+
+        if orient in ("H", "U"):
+            row = cluster[0][0]
+            cols = [c for _, c in cluster]
+            minc, maxc = min(cols), max(cols)
+            for start in range(max(0, maxc - L + 1), min(minc, N - L) + 1):
+                seg = {(row, c) for c in range(start, start + L)}
+                if cells.issubset(seg) and _placement_respects_board(board, seg):
+                    # Ensure every hit in seg belongs to this cluster only.
+                    if _seg_contains_only_cluster_hits(board, seg, cells):
+                        return True
+
+        if orient in ("V", "U"):
+            col = cluster[0][1]
+            rows = [r for r, _ in cluster]
+            minr, maxr = min(rows), max(rows)
+            for start in range(max(0, maxr - L + 1), min(minr, N - L) + 1):
+                seg = {(r, col) for r in range(start, start + L)}
+                if cells.issubset(seg) and _placement_respects_board(board, seg):
+                    if _seg_contains_only_cluster_hits(board, seg, cells):
+                        return True
+
+    return False
+
+
+def _placement_respects_board(board, seg):
+    for r, c in seg:
+        if board[r][c] == -1:
+            return False
+    return True
+
+
+def _seg_contains_only_cluster_hits(board, seg, cluster_cells):
+    for r, c in seg:
+        if board[r][c] == 1 and (r, c) not in cluster_cells:
+            return False
+    return True
+
+
+def _add_target_scores(board, unresolved_clusters, remaining_lengths, score):
+    for cluster in unresolved_clusters:
+        cells = set(cluster)
+        orient = _cluster_orientation(cluster)
+
+        if orient == "H":
+            row = cluster[0][0]
+            cols = sorted(c for _, c in cluster)
+            left = cols[0] - 1
+            right = cols[-1] + 1
+
+            if left >= 0 and board[row][left] == 0:
+                score[row][left] += 100.0
+                score[row][left] += _fit_count_for_extension(board, cells, "H", row, left, remaining_lengths)
+            if right < N and board[row][right] == 0:
+                score[row][right] += 100.0
+                score[row][right] += _fit_count_for_extension(board, cells, "H", row, right, remaining_lengths)
+
+        elif orient == "V":
+            col = cluster[0][1]
+            rows = sorted(r for r, _ in cluster)
+            up = rows[0] - 1
+            down = rows[-1] + 1
+
+            if up >= 0 and board[up][col] == 0:
+                score[up][col] += 100.0
+                score[up][col] += _fit_count_for_extension(board, cells, "V", up, col, remaining_lengths)
+            if down < N and board[down][col] == 0:
+                score[down][col] += 100.0
+                score[down][col] += _fit_count_for_extension(board, cells, "V", down, col, remaining_lengths)
+
+        else:
+            # Single hit: prioritize orthogonal neighbors, weighted by placement support.
+            r, c = cluster[0]
+            for nr, nc in _neighbors(r, c):
+                if board[nr][nc] == 0:
+                    score[nr][nc] += 40.0
+                    score[nr][nc] += _single_hit_neighbor_fit(board, r, c, nr, nc, remaining_lengths)
+
+
+def _fit_count_for_extension(board, cluster_cells, orient, r, c, remaining_lengths):
+    val = 0.0
+    all_hits = {(i, j) for i in range(N) for j in range(N) if board[i][j] == 1}
+    if orient == "H":
+        row = r
+        cluster_cols = [y for x, y in cluster_cells]
+        minc, maxc = min(cluster_cols), max(cluster_cols)
+        for L in remaining_lengths:
+            if L < len(cluster_cells):
+                continue
+            for start in range(max(0, maxc - L + 1), min(minc, N - L) + 1):
+                seg = {(row, y) for y in range(start, start + L)}
+                if cluster_cells.issubset(seg) and (r, c) in seg:
+                    if all(board[row][y] != -1 for y in range(start, start + L)):
+                        ok = True
+                        for x, y in seg:
+                            if board[x][y] == 1 and (x, y) not in cluster_cells:
+                                ok = False
+                                break
+                        if ok:
+                            val += 6.0
+    else:
+        col = c
+        cluster_rows = [x for x, y in cluster_cells]
+        minr, maxr = min(cluster_rows), max(cluster_rows)
+        for L in remaining_lengths:
+            if L < len(cluster_cells):
+                continue
+            for start in range(max(0, maxr - L + 1), min(minr, N - L) + 1):
+                seg = {(x, col) for x in range(start, start + L)}
+                if cluster_cells.issubset(seg) and (r, c) in seg:
+                    if all(board[x][col] != -1 for x in range(start, start + L)):
+                        ok = True
+                        for x, y in seg:
+                            if board[x][y] == 1 and (x, y) not in cluster_cells:
+                                ok = False
+                                break
+                        if ok:
+                            val += 6.0
+    return val
+
+
+def _single_hit_neighbor_fit(board, hr, hc, nr, nc, remaining_lengths):
+    val = 0.0
+    if hr == nr:
+        row = hr
+        for L in remaining_lengths:
+            for start in range(max(0, min(hc, nc) - L + 1), min(min(hc, nc), N - L) + 1):
+                seg = {(row, c) for c in range(start, start + L)}
+                if (hr, hc) in seg and (nr, nc) in seg and _placement_respects_board(board, seg):
+                    ok = True
+                    for r, c in seg:
+                        if board[r][c] == 1 and (r, c) != (hr, hc):
+                            ok = False
+                            break
+                    if ok:
+                        val += 4.0
+    if hc == nc:
+        col = hc
+        for L in remaining_lengths:
+            for start in range(max(0, min(hr, nr) - L + 1), min(min(hr, nr), N - L) + 1):
+                seg = {(r, col) for r in range(start, start + L)}
+                if (hr, hc) in seg and (nr, nc) in seg and _placement_respects_board(board, seg):
+                    ok = True
+                    for r, c in seg:
+                        if board[r][c] == 1 and (r, c) != (hr, hc):
+                            ok = False
+                            break
+                    if ok:
+                        val += 4.0
+    return val
+
+
+def _add_placement_scores(board, unresolved_hits, remaining_lengths, score):
+    for L in remaining_lengths:
+        # Horizontal placements
+        for r in range(N):
+            for start in range(N - L + 1):
+                seg = [(r, c) for c in range(start, start + L)]
+                if not _placement_valid_global(board, seg, unresolved_hits):
+                    continue
+                weight = 1.0 + 0.15 * len([1 for x, y in seg if (x, y) in unresolved_hits])
+                for x, y in seg:
+                    if board[x][y] == 0:
+                        score[x][y] += weight
+
+        # Vertical placements
+        for c in range(N):
+            for start in range(N - L + 1):
+                seg = [(r, c) for r in range(start, start + L)]
+                if not _placement_valid_global(board, seg, unresolved_hits):
+                    continue
+                weight = 1.0 + 0.15 * len([1 for x, y in seg if (x, y) in unresolved_hits])
+                for x, y in seg:
+                    if board[x][y] == 0:
+                        score[x][y] += weight
+
+
+def _placement_valid_global(board, seg, unresolved_hits):
+    segset = set(seg)
+    for r, c in seg:
+        if board[r][c] == -1:
+            return False
+    # Any unresolved hit that lies on this line segment is allowed; hits elsewhere are irrelevant.
+    # But if the segment contains a resolved/sunk hit, it should not be reused.
+    for r, c in seg:
+        if board[r][c] == 1 and (r, c) not in unresolved_hits:
+            return False
+    # If there are unresolved hits on the same row/col contiguous line, placements covering them are fine.
+    return True
+
+
+def _add_parity_bias(board, score, remaining_lengths):
+    parity_mod = 2 if max(remaining_lengths) >= 4 else 1
+    if parity_mod == 1:
+        return
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 0 and (r + c) % 2 == 0:
+                score[r][c] += 0.6
+
+
+def _centrality_bonus(r, c):
+    # Mild deterministic tie-break toward center.
+    return -0.01 * ((r - 4.5) ** 2 + (c - 4.5) ** 2)

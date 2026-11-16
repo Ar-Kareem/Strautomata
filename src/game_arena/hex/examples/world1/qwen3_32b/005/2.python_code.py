@@ -1,0 +1,90 @@
+
+from collections import deque
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    def get_neighbors(cell):
+        r, c = cell
+        neighbors = [
+            (r - 1, c),
+            (r - 1, c + 1),
+            (r, c - 1),
+            (r, c + 1),
+            (r + 1, c - 1),
+            (r + 1, c)
+        ]
+        valid = []
+        for nr, nc in neighbors:
+            if 0 <= nr < 11 and 0 <= nc < 11:
+                valid.append((nr, nc))
+        return valid
+
+    def is_winning(stones, color):
+        stones_set = set(stones)
+        visited = set()
+        if color == 'b':
+            starts = [cell for cell in stones if cell[0] == 0]
+            if not starts:
+                return False
+            for s in starts:
+                visited.add(s)
+            queue = deque(starts)
+            while queue:
+                current = queue.popleft()
+                if current[0] == 10:
+                    return True
+                for neighbor in get_neighbors(current):
+                    if neighbor in stones_set and neighbor not in visited:
+                        visited.add(neighbor)
+                        queue.append(neighbor)
+            return False
+        else:
+            starts = [cell for cell in stones if cell[1] == 0]
+            if not starts:
+                return False
+            for s in starts:
+                visited.add(s)
+            queue = deque(starts)
+            while queue:
+                current = queue.popleft()
+                if current[1] == 10:
+                    return True
+                for neighbor in get_neighbors(current):
+                    if neighbor in stones_set and neighbor not in visited:
+                        visited.add(neighbor)
+                        queue.append(neighbor)
+            return False
+
+    all_cells = [(r, c) for r in range(11) for c in range(11)]
+    occupied = set(me) | set(opp)
+    empty = [cell for cell in all_cells if cell not in occupied]
+
+    for move in empty:
+        if is_winning(me + [move], color):
+            return move
+
+    opponent_color = 'w' if color == 'b' else 'b'
+    for move in empty:
+        if is_winning(opp + [move], opponent_color):
+            return move
+
+    me_set = set(me)
+    best_score = -1
+    best_moves = []
+    for move in empty:
+        adj_score = 0
+        for neighbor in get_neighbors(move):
+            if neighbor in me_set:
+                adj_score += 1
+        proximity = 10 if ((color == 'b' and (move[0] == 0 or move[0] == 10)) or (color == 'w' and (move[1] == 0 or move[1] == 10))) else 0
+        score = adj_score + proximity
+        if score > best_score:
+            best_score = score
+            best_moves = [move]
+        elif score == best_score:
+            best_moves.append(move)
+
+    def get_adj_score(m):
+        return sum(1 for n in get_neighbors(m) if n in me_set)
+
+    best_moves.sort(key=lambda m: (get_adj_score(m), -m[0] - m[1]))
+    return best_moves[0]

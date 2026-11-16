@@ -1,0 +1,204 @@
+<thinking>
+I need to create a policy function for a simplified blackjack game. Let me break down the key elements:
+
+1. I have a 13-card deck with one of each card: A, 2-10, J, Q, K
+2. The target T is between 10-30 and is provided
+3. Card values: 2-10 are face value, J/Q/K=10, A=11 or 1 (whichever keeps me ≤ T)
+4. Goal: Get as close to target as possible without going over
+5. Actions: HIT (draw) or STAY (stop)
+
+My strategy should consider:
+- Current hand value
+- How close I am to the target
+- Risk of busting
+- Cards remaining in my deck
+
+Let me think about when to HIT vs STAY:
+- If I'm significantly below target and low risk of busting, HIT
+- If I'm close to target, STAY
+- If I'm already over target, I've already lost (but policy still gets called)
+
+For calculating hand value:
+- Sum all cards treating A as 11 first
+- If total > target, convert A's to 1 until ≤ target or no more Aces
+
+For decision making:
+- Calculate current hand value properly handling aces
+- Estimate probability of success with another card
+- Consider remaining cards in my deck and their values
+
+Actually, I don't know which cards I've already drawn, so I can't know exactly what's left in my deck. Let me reconsider...
+
+Since I don't know what cards are left, I'll base my decision purely on:
+1. Current hand value
+2. Distance to target
+3. Risk analysis based on possible remaining cards
+
+But wait, I should be more careful. Let me re-read...
+
+I have my own 13-card deck separate from opponent - this means I have all 13 cards and draw from them sequentially? Or I draw randomly from remaining cards?
+
+The problem says "you draw the next card from your deck" - this suggests it's sequential/deterministic. But that also means if I knew the order, I could calculate exactly.
+
+I think the most reasonable assumption is that I draw randomly from remaining cards in my deck, and I don't know what order they'll come in.
+
+Actually, let me re-read more carefully: "At the start of a game, a target score T is chosen at random and fixed for the entire game. You will receive this target as an argument."
+
+So in each call to policy:
+- I get my current hand
+- I get the target T
+- I return HIT or STAY
+
+I don't know which cards I've already drawn - that makes sense.
+
+So my approach:
+1. Calculate current hand value (carefully handling aces)
+2. If already over target, I should STAY (but I already lost anyway)
+3. If significantly below target, HIT to improve
+4. If close to target, STAY to avoid risk of going over
+
+But how do I define "significantly below" vs "close to"?
+
+I think I should:
+- If hand value > target: STAY (already busted)
+- If hand value = target: STAY (perfect!)
+- If hand value is quite close to target: STAY (risk averse)
+- If hand value is far from target: HIT (need to improve)
+
+Let's define "close" as being within a threshold. What threshold makes sense?
+
+Maybe the threshold should depend on target value:
+- For higher targets, I can afford to be less conservative
+- For lower targets, I need to be more careful
+
+Actually, let me think of this more systematically. Since I don't know what cards remain, and assuming they're drawn randomly from my remaining deck, I should:
+
+1. Calculate my current hand total (aces handled properly)
+2. Estimate probability of safely drawing another card
+3. Compare that risk vs potential benefit
+
+But without knowing what's left in deck, I can't calculate that exactly. 
+
+Let me think of a simpler heuristic:
+- Always HIT when far from target
+- Only HIT when it's relatively safe, STAY otherwise
+
+What's relatively safe? If my current total + minimum possible card (1) doesn't bust me, it might be safe.
+
+Actually, since Ace can be 1 or 11, minimum card value is 1. So if current_total + 1 <= target, drawing might be okay.
+
+But even that isn't quite right because:
+- I might draw higher cards that push me over
+- The ace handling makes things complex
+
+Let me try this approach:
+1. Calculate hand value with optimal ace handling (all 11s if possible)
+2. If value > target: STAY (but already lost)
+3. If value = target: STAY
+4. If I'm within some "safe" margin of target: STAY
+5. Otherwise: HIT
+
+What's the "safe" margin? That's the key insight.
+
+I could say: 
+- If current_value >= target - 2: STAY (don't risk going over with minimum draw of 1/Ace=1)
+- Else: HIT
+
+But let me think of expected value. 
+
+If I'm at value V now:
+- If I HIT, I might get 2-10,J,Q,K(10),A(1/11)
+- The risk depends on how likely I am to exceed target
+
+But I don't know what cards remain.
+
+What if I assume uniform distribution over the 13 ranks not yet drawn?
+
+Even that's complicated because I don't know which cards are drawn.
+
+Let me simplify极大地 and go with: if I'm close enough to target, play conservatively. Otherwise, I need to improve.
+
+My final heuristic policy:
+- Calculate current hand value optimally (all aces=11 until would bust then 1)
+- If current value > target: STAY (already busted technically)
+- If current value == target: STAY (perfect!)
+- If target - current_value <= safe_margin: STAY (protect current good position)  
+- Else: HIT (try to improve)
+
+For safe_margin: let's start with 3. If I'm within 3 of target, stay conservative.
+
+But actually, safe margin should probably depend on target and how valuable additional points are. If T=11 and I have 10, I should probably still HIT because missing by 1 is better than missing by more.
+
+Actually no, if T=11 and I have 10 and I HIT, I might get:
+- A,2,3,4,5,6,7,8,9,10,J,Q,K
+- Values: 11,2,3,4,5,6,7,8,9,10,10,10,10
+- If I get A(11): total = 21 (bust) 
+- If I get 2: total = 12 (bust)  
+- If I get 3+: bust
+So if T=11 and I have 10, I should STAY definitely.
+
+Wait, let me double-check card values:
+- A = 11 or 1 (whichever keeps hand ≤ T)  
+- 2-10 = face value
+- J,Q,K = 10
+
+So in example T=11, hand=[10]:
+- Current_value = 10
+- If I draw A: new_total = 10+11 = 21 > 11 → so A would be 1 → total = 10+1 = 11 (perfect)
+- If I draw 2: new_total = 12 > 11 → bust  
+So with T=11, hand=[10], drawing A is great, drawing 2+ is bad.
+
+So even being "close" it matters which specific cards can help vs hurt.
+
+This is too complex for exact calculation. Let me stick to a simple heuristic-based policy:
+
+policy:
+1. Calculate best possible hand value (aces=11 when helpful)
+2. If value ≥ target: STAY  
+3. If target - value > threshold: HIT
+4. Else: STAY
+
+Let me set threshold to 4 to start and see.
+
+Actually let me code this and then think of refinements:
+</thinking>
+
+<code>
+def policy(hand: list[str], target: int) -> str:
+    # Calculate current hand value with optimal ace handling
+    def calculate_hand_value(hand_cards):
+        # Count aces and sum other cards
+        aces_count = 0
+        total = 0
+        
+        for card in hand_cards:
+            if card == "A":
+                aces_count += 1
+            elif card in ["J", "Q", "K"]:
+                total += 10
+            else:  # 2-10
+                total += int(card)
+        
+        # Add aces as 11 if possible, otherwise as 1
+        for _ in range(aces_count):
+            if total + 11 <= target:
+                total += 11
+            else:
+                total += 1
+        
+        return total
+    
+    current_value = calculate_hand_value(hand)
+    
+    # If we've already busted or reached/beat target, stay
+    if current_value >= target:
+        return "STAY"
+    
+    # If we're close to target, play conservatively
+    # Threshold of 3: if we're within 3 points of target, stay
+    if target - current_value <= 3:
+        return "STAY"
+    
+    # Otherwise, try to improve our hand
+    return "HIT"
+</code>

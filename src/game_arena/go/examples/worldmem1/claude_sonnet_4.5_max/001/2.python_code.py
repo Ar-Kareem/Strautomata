@@ -1,0 +1,234 @@
+
+import random
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    BOARD_SIZE = 19
+    
+    my_stones = set(me)
+    opp_stones = set(opponent)
+    all_stones = my_stones | opp_stones
+    
+    prev_state = memory.get('prev_state', None)
+    
+    def neighbors(pos):
+        """Get all valid neighbors of a position"""
+        r, c = pos
+        for dr, dc in [(0,1), (0,-1), (1,0), (-1,0)]:
+            nr, nc = r + dr, c + dc
+            if 1 <= nr <= BOARD_SIZE and 1 <= nc <= BOARD_SIZE:
+                yield (nr, nc)
+    
+    def get_group(pos, stones):
+        """Find all connected stones in the same group"""
+        if pos not in stones:
+            return set()
+        group = {pos}
+        stack = [pos]
+        while stack:
+            curr = stack.pop()
+            for nb in neighbors(curr):
+                if nb in stones and nb not in group:
+                    group.add(nb)
+                    stack.append(nb)
+        return group
+    
+    def count_liberties(group, occupied):
+        """Count liberties (empty adjacent points) of a group"""
+        libs = set()
+        for stone in group:
+            for nb in neighbors(stone):
+                if nb not in occupied:
+                    libs.add(nb)
+        return len(libs)
+    
+    def simulate_move(pos):
+        """Simulate placing a stone and return resulting positions"""
+        temp_my = my_stones | {pos}
+        temp_all = temp_my | opp_stones
+        
+        # Check for captures
+        captured = set()
+        for nb in neighbors(pos):
+            if nb in opp_stones:
+                grp = get_group(nb, opp_stones)
+                if count_liberties(grp, temp_all) == 0:
+                    captured |= grp
+        
+        temp_opp = opp_stones - captured
+        return temp_my, temp_opp
+    
+    def is_legal(pos):
+        """Check if a move is legal"""
+        if pos in all_stones:
+            return False
+        
+        temp_my, temp_opp = simulate_move(pos)
+        temp_all = temp_my | temp_opp
+        
+        # Suicide rule: can't place a stone with no liberties
+        my_grp = get_group(pos, temp_my)
+        if count_liberties(my_grp, temp_all) == 0:
+            return False
+        
+        # Ko rule: can't recreate previous board state
+        if prev_state is not None:
+            if (frozenset(temp_my), frozenset(temp_opp)) == prev_state:
+                return False
+        
+        return True
+    
+    # Priority 1: Handle urgent situations (atari)
+    urgent_moves = []
+    
+    # Save our groups that are in atari (1 liberty)
+    checked_groups = set()
+    for stone in my_stones:
+        if stone not in checked_groups:
+            grp = get_group(stone, my_stones)
+            checked_groups |= grp
+            if count_liberties(grp, all_stones) == 1:
+                # Find the one liberty
+                for s in grp:
+                    for nb in neighbors(s):
+                        if nb not in all_stones and is_legal(nb):
+                            urgent_moves.append((nb, 100 + len(grp) * 5))
+                            break
+                    else:
+                        continue
+                    break
+    
+    # Capture opponent groups in atari
+    checked_groups = set()
+    for stone in opp_stones:
+        if stone not in checked_groups:
+            grp = get_group(stone, opp_stones)
+            checked_groups |= grp
+            if count_liberties(grp, all_stones) == 1:
+                # Find the one liberty
+                for s in grp:
+                    for nb in neighbors(s):
+                        if nb not in all_stones and is_legal(nb):
+                            urgent_moves.append((nb, 90 + len(grp) * 10))
+                            break
+                    else:
+                        continue
+                    break
+    
+    if urgent_moves:
+        urgent_moves.sort(key=lambda x: x[1], reverse=True)
+        best_move = urgent_moves[0][0]
+        new_memory = {'prev_state': (frozenset(my_stones), frozenset(opp_stones))}
+        return (best_move, new_memory)
+    
+    # Priority 2: Opening moves on good points
+    if len(all_stones) < 8:
+        opening_points = [(4,4), (4,16), (16,4), (16,16)]
+        for pos in opening_points:
+            if pos not in all_stones and is_legal(pos):
+                new_memory = {'prev_state': (frozenset(my_stones), frozenset(opp_stones))}
+                return (pos, new_memory)
+    
+    # Priority 3: Evaluate candidate moves
+    candidates = set()
+    
+    # Add all points adjacent to existing stones
+    for stone in all_stones:
+        for nb in neighbors(stone):
+            if nb not in all_stones:
+                candidates.add(nb)
+    
+    # Add strategic points if not enough candidates
+    if len(candidates) < 30:
+        strategic_points = [
+            (4,4), (4,10), (4,16), (10,4), (10,10), (10,16), 
+            (16,4), (16,10), (16,16), (3,3), (3,17), (17,3), (17,17)
+        ]
+        for pos in strategic_points:
+            if pos not in all_stones:
+                candidates.add(pos)
+    
+    def evaluate_move(pos):
+        """Score a candidate move"""
+        if not is_legal(pos):
+            return -1000
+        
+        score = 0
+        temp_my, temp_opp = simulate_move(pos)
+        temp_all = temp_my | temp_opp
+        
+        # Reward captures
+        captures = len(opp_stones) - len(temp_opp)
+        score += captures * 50
+        
+        # Reward threatening opponent groups
+        for nb in neighbors(pos):
+            if nb in opp_stones:
+                grp = get_group(nb, opp_stones)
+                libs = count_liberties(grp, temp_all)
+                if libs == 1:
+                    score += 30 + len(grp) * 3
+                elif libs == 2:
+                    score += 10 + len(grp)
+        
+        # Reward connecting to weak friendly groups
+        seen_groups = set()
+        for nb in neighbors(pos):
+            if nb in my_stones:
+                grp = get_group(nb, my_stones)
+                grp_id = frozenset(grp)
+                if grp_id not in seen_groups:
+                    seen_groups.add(grp_id)
+                    libs = count_liberties(grp, all_stones)
+                    if libs <= 2:
+                        score += 20
+        
+        # Reward good shape (liberties of new group)
+        new_grp = get_group(pos, temp_my)
+        new_libs = count_liberties(new_grp, temp_all)
+        score += min(new_libs, 10)
+        
+        # Position value (corners and sides in opening)
+        r, c = pos
+        if len(all_stones) < 50:
+            edge_dist = min(r-1, c-1, BOARD_SIZE-r, BOARD_SIZE-c)
+            if edge_dist <= 3:
+                score += 12 - edge_dist * 2
+        
+        # Connectivity (prefer some connection but not overcrowding)
+        adjacent_friendly = sum(1 for nb in neighbors(pos) if nb in my_stones)
+        if adjacent_friendly == 1:
+            score += 5
+        elif adjacent_friendly == 2:
+            score += 7
+        elif adjacent_friendly >= 3:
+            score += 3
+        
+        # Random tiebreaker for diversity
+        score += random.random()
+        
+        return score
+    
+    # Find best candidate
+    best_move = None
+    best_score = -float('inf')
+    
+    for candidate in candidates:
+        score = evaluate_move(candidate)
+        if score > best_score:
+            best_score = score
+            best_move = candidate
+    
+    if best_move and best_score > -1000:
+        new_memory = {'prev_state': (frozenset(my_stones), frozenset(opp_stones))}
+        return (best_move, new_memory)
+    
+    # Fallback: find any legal move
+    for r in range(1, BOARD_SIZE + 1):
+        for c in range(1, BOARD_SIZE + 1):
+            pos = (r, c)
+            if is_legal(pos):
+                new_memory = {'prev_state': (frozenset(my_stones), frozenset(opp_stones))}
+                return (pos, new_memory)
+    
+    # No legal moves available, pass
+    return ((0, 0), memory)

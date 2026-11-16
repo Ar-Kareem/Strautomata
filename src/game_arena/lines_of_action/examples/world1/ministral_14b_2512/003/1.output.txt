@@ -1,0 +1,558 @@
+<thinking>
+Alright, I need to create a smart policy for the game Lines of Action on an 8x8 board. The goal is to connect all my pieces into a single contiguous group while following the movement rules. Here's how I'll approach this:
+
+### Understanding the Game Mechanics
+1. **Movement Rules**: A piece moves horizontally, vertically, or diagonally. The distance it moves is equal to the number of pieces (both players) in that line (row, column, or diagonal).
+2. **Jumping**: Pieces can jump over friendly pieces but cannot jump over enemy pieces.
+3. **Capturing**: A piece can land on and capture an enemy piece, removing it from the board.
+4. **Objective**: Connect all your pieces into a single contiguous group (8-directionally connected).
+
+### Key Observations
+- **Legal Moves**: For each of my pieces, I need to determine all possible legal moves based on the current board state.
+- **Contiguity**: The primary goal is to maximize the contiguity of my pieces. This means I should prioritize moves that connect isolated groups of my pieces.
+- **Capturing**: Capturing enemy pieces can help in reducing their contiguity and potentially blocking their moves.
+- **Board Evaluation**: I need a way to evaluate the board state to decide which move is best. This could involve:
+  - Counting the number of contiguous groups of my pieces.
+  - Evaluating the potential to connect groups.
+  - Considering the opponent's pieces and their potential threats.
+
+### Approach to Implement the Policy
+1. **Generate Legal Moves**: For each of my pieces, generate all possible moves that are legal according to the game rules.
+2. **Evaluate Moves**: For each legal move, evaluate how it affects the board state, particularly focusing on:
+   - Reducing the number of contiguous groups of my pieces.
+   - Capturing enemy pieces.
+   - Blocking the opponent's potential moves.
+3. **Select Best Move**: Choose the move that maximizes the benefit based on the evaluation criteria.
+
+### Implementation Steps
+1. **Parse the Board**: Understand the current state of the board.
+2. **Find My Pieces**: Identify all positions of my pieces (1s).
+3. **Generate Legal Moves**: For each of my pieces, determine all possible moves:
+   - For each direction (8 possible), calculate the number of pieces in that line.
+   - Ensure the move is valid (no jumping over enemy pieces, etc.).
+4. **Evaluate Moves**: For each legal move, simulate the move and evaluate the new board state.
+   - Calculate the number of contiguous groups of my pieces after the move.
+   - Check if the move captures an enemy piece.
+   - Consider the opponent's potential moves after my move.
+5. **Select Best Move**: Choose the move that leads to the best evaluation (e.g., minimizes the number of contiguous groups, maximizes captures, etc.).
+
+### Potential Evaluation Metrics
+- **Contiguity**: The primary goal is to have all pieces in one contiguous group. So, prioritize moves that reduce the number of groups.
+- **Captures**: Capturing enemy pieces is beneficial as it reduces their contiguity and potential threats.
+- **Opponent's Moves**: After my move, the opponent might have fewer options, which is also beneficial.
+
+### Optimizations
+- **Early Termination**: If a move results in all my pieces being contiguous, choose that move immediately.
+- **Heuristics**: Use simple heuristics to quickly evaluate moves without full simulation if possible.
+
+### Example Code Structure
+```python
+import numpy as np
+from collections import deque
+
+def policy(board):
+    # Convert board to numpy array for easier manipulation
+    board = np.array(board)
+
+    # Find all my pieces
+    my_pieces = np.argwhere(board == 1)
+
+    # Generate all legal moves
+    legal_moves = []
+    for piece in my_pieces:
+        from_row, from_col = piece
+        # For each direction, calculate possible moves
+        directions = [(-1, -1), (-1, 0), (-1, 1),
+                      (0, -1),          (0, 1),
+                      (1, -1),  (1, 0), (1, 1)]
+        for dr, dc in directions:
+            # Calculate the number of pieces in the line
+            # This is a simplified approach; actual implementation needs to count pieces in the line
+            # For now, assume we have a function to get legal moves
+            moves = get_legal_moves(board, from_row, from_col, dr, dc)
+            legal_moves.extend(moves)
+
+    # Remove duplicates and filter out invalid moves
+    legal_moves = list(set(legal_moves))
+
+    # Evaluate each legal move
+    best_move = None
+    best_score = -float('inf')
+
+    for move in legal_moves:
+        # Simulate the move
+        new_board = board.copy()
+        from_row, from_col, to_row, to_col = parse_move(move)
+        new_board[from_row, from_col] = 0
+        new_board[to_row, to_col] = 1
+
+        # Evaluate the new board state
+        score = evaluate_board(new_board)
+
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return best_move
+
+def get_legal_moves(board, from_row, from_col, dr, dc):
+    # This function needs to be implemented to return all legal moves in the given direction
+    # For now, return a dummy move
+    return ["0,1:2,3"]
+
+def evaluate_board(board):
+    # This function evaluates the board state
+    # For now, return a dummy score
+    return 0
+
+def parse_move(move_str):
+    # Parse the move string into coordinates
+    from_part, to_part = move_str.split(':')
+    from_row, from_col = map(int, from_part.split(','))
+    to_row, to_col = map(int, to_part.split(','))
+    return from_row, from_col, to_row, to_col
+```
+
+### Refining the Approach
+The above is a basic structure. To make it effective, I need to:
+1. **Implement `get_legal_moves`**: For each piece and direction, calculate the number of pieces in the line and determine valid moves.
+2. **Implement `evaluate_board`**: This should consider:
+   - Number of contiguous groups of my pieces.
+   - Number of enemy pieces captured.
+   - Potential to block opponent's moves.
+3. **Optimize Evaluation**: Use BFS or other methods to count contiguous groups efficiently.
+
+### Implementing `get_legal_moves`
+For a given piece at (r, c) and direction (dr, dc), the number of pieces in the line is the count of pieces (1 or -1) in that line. The piece must move exactly that many squares.
+
+Steps:
+1. Traverse the line in both directions from (r, c) until the edge of the board or an empty cell.
+2. Count the number of pieces (both players) in that line.
+3. Determine all possible landing positions that are exactly `count` squares away, ensuring no jumps over enemy pieces.
+
+### Implementing `evaluate_board`
+1. **Contiguity**: Use BFS to count the number of contiguous groups of my pieces (1s).
+2. **Captures**: If the move captures an enemy piece, add a bonus to the score.
+3. **Opponent's Moves**: Optionally, simulate the opponent's possible moves after my move to see if they can improve their contiguity.
+
+### Final Implementation
+Here's a more detailed implementation:
+
+```python
+import numpy as np
+from collections import deque
+
+def policy(board):
+    board = np.array(board)
+    my_pieces = np.argwhere(board == 1)
+
+    legal_moves = []
+    for piece in my_pieces:
+        from_row, from_col = piece
+        directions = [(-1, -1), (-1, 0), (-1, 1),
+                      (0, -1),          (0, 1),
+                      (1, -1),  (1, 0), (1, 1)]
+        for dr, dc in directions:
+            moves = get_legal_moves(board, from_row, from_col, dr, dc)
+            legal_moves.extend(moves)
+
+    legal_moves = list(set(legal_moves))
+
+    best_move = None
+    best_score = -float('inf')
+
+    for move in legal_moves:
+        new_board = board.copy()
+        from_row, from_col, to_row, to_col = parse_move(move)
+        new_board[from_row, from_col] = 0
+        new_board[to_row, to_col] = 1
+        score = evaluate_board(new_board)
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    # If no legal moves found (shouldn't happen per problem statement)
+    if not best_move:
+        return "0,0:0,0"  # fallback, though problem says always legal move exists
+
+    return best_move
+
+def get_legal_moves(board, from_row, from_col, dr, dc):
+    moves = []
+    n = board.shape[0]
+    count = 0
+    # Count pieces in the line in both directions
+    # First, count in the positive direction
+    r, c = from_row + dr, from_col + dc
+    while 0 <= r < n and 0 <= c < n and board[r, c] != 0:
+        count += 1
+        r += dr
+        c += dc
+    # Then, count in the negative direction
+    r, c = from_row - dr, from_col - dc
+    while 0 <= r < n and 0 <= c < n and board[r, c] != 0:
+        count += 1
+        r -= dr
+        c -= dc
+    # Now, count includes the piece itself, so subtract 1
+    count -= 1
+
+    # Now, find all possible landing positions
+    # We need to move exactly 'count' squares in the direction (dr, dc)
+    # Also, cannot jump over enemy pieces
+    # So, for each step in the direction, check if we can land after 'count' steps
+    # without jumping over enemy pieces
+
+    # Check in the positive direction
+    r, c = from_row, from_col
+    for step in range(1, count + 1):
+        r += dr
+        c += dc
+        if not (0 <= r < n and 0 <= c < n):
+            break
+        # Check if there's an enemy piece in the path
+        # The path is from (from_row, from_col) to (r, c)
+        # We need to ensure no enemy pieces are in between
+        path_clear = True
+        for i in range(1, step):
+            check_r, check_c = from_row + i * dr, from_col + i * dc
+            if 0 <= check_r < n and 0 <= check_c < n:
+                if board[check_r, check_c] == -1:
+                    path_clear = False
+                    break
+        if path_clear:
+            # Check if landing on enemy (capture)
+            if board[r, c] == -1:
+                moves.append(f"{from_row},{from_col}:{r},{c}")
+            # Or landing on empty
+            elif board[r, c] == 0:
+                moves.append(f"{from_row},{from_col}:{r},{c}")
+
+    # Check in the negative direction
+    r, c = from_row, from_col
+    for step in range(1, count + 1):
+        r -= dr
+        c -= dc
+        if not (0 <= r < n and 0 <= c < n):
+            break
+        # Check if there's an enemy piece in the path
+        path_clear = True
+        for i in range(1, step):
+            check_r, check_c = from_row - i * dr, from_col - i * dc
+            if 0 <= check_r < n and 0 <= check_c < n:
+                if board[check_r, check_c] == -1:
+                    path_clear = False
+                    break
+        if path_clear:
+            # Check if landing on enemy (capture)
+            if board[r, c] == -1:
+                moves.append(f"{from_row},{from_col}:{r},{c}")
+            # Or landing on empty
+            elif board[r, c] == 0:
+                moves.append(f"{from_row},{from_col}:{r},{c}")
+
+    return moves
+
+def evaluate_board(board):
+    # Count the number of contiguous groups of my pieces
+    visited = np.zeros_like(board, dtype=bool)
+    groups = 0
+    for r in range(8):
+        for c in range(8):
+            if board[r, c] == 1 and not visited[r, c]:
+                groups += 1
+                # BFS to mark all connected pieces
+                queue = deque([(r, c)])
+                visited[r, c] = True
+                while queue:
+                    x, y = queue.popleft()
+                    for dx in [-1, 0, 1]:
+                        for dy in [-1, 0, 1]:
+                            if dx == 0 and dy == 0:
+                                continue
+                            nx, ny = x + dx, y + dy
+                            if 0 <= nx < 8 and 0 <= ny < 8:
+                                if board[nx, ny] == 1 and not visited[nx, ny]:
+                                    visited[nx, ny] = True
+                                    queue.append((nx, ny))
+    # Score is inversely proportional to the number of groups
+    score = -groups
+    # Bonus for capturing enemy pieces (but this is handled in move generation)
+    return score
+
+def parse_move(move_str):
+    from_part, to_part = move_str.split(':')
+    from_row, from_col = map(int, from_part.split(','))
+    to_row, to_col = map(int, to_part.split(','))
+    return from_row, from_col, to_row, to_col
+```
+
+### Further Refinements
+1. **Prioritize Captures**: If a move captures an enemy piece, give it a higher score.
+2. **Opponent's Contiguity**: After my move, check how many contiguous groups the opponent has and penalize moves that allow them to improve their contiguity.
+3. **Move Diversity**: Ensure that the policy doesn't get stuck in local optima by occasionally choosing moves that don't immediately improve contiguity but might lead to better positions later.
+
+### Final Code
+Here's the complete implementation with the above refinements:
+
+```python
+import numpy as np
+from collections import deque
+
+def policy(board):
+    board = np.array(board)
+    my_pieces = np.argwhere(board == 1)
+
+    legal_moves = []
+    for piece in my_pieces:
+        from_row, from_col = piece
+        directions = [(-1, -1), (-1, 0), (-1, 1),
+                      (0, -1),          (0, 1),
+                      (1, -1),  (1, 0), (1, 1)]
+        for dr, dc in directions:
+            moves = get_legal_moves(board, from_row, from_col, dr, dc)
+            legal_moves.extend(moves)
+
+    legal_moves = list(set(legal_moves))
+
+    best_move = None
+    best_score = -float('inf')
+
+    for move in legal_moves:
+        new_board = board.copy()
+        from_row, from_col, to_row, to_col = parse_move(move)
+        new_board[from_row, from_col] = 0
+        new_board[to_row, to_col] = 1
+        score = evaluate_board(new_board)
+        # Bonus for capturing
+        if new_board[to_row, to_col] == 1 and board[to_row, to_col] == -1:
+            score += 10  # High bonus for captures
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return best_move
+
+def get_legal_moves(board, from_row, from_col, dr, dc):
+    moves = []
+    n = board.shape[0]
+    count = 0
+    # Count pieces in the line in both directions
+    r, c = from_row + dr, from_col + dc
+    while 0 <= r < n and 0 <= c < n and board[r, c] != 0:
+        count += 1
+        r += dr
+        c += dc
+    r, c = from_row - dr, from_col - dc
+    while 0 <= r < n and 0 <= c < n and board[r, c] != 0:
+        count += 1
+        r -= dr
+        c -= dc
+    count -= 1  # Subtract the piece itself
+
+    # Check in the positive direction
+    r, c = from_row, from_col
+    for step in range(1, count + 1):
+        r += dr
+        c += dc
+        if not (0 <= r < n and 0 <= c < n):
+            break
+        # Check path for enemy pieces
+        path_clear = True
+        for i in range(1, step):
+            check_r, check_c = from_row + i * dr, from_col + i * dc
+            if 0 <= check_r < n and 0 <= check_c < n:
+                if board[check_r, check_c] == -1:
+                    path_clear = False
+                    break
+        if path_clear:
+            if board[r, c] == -1 or board[r, c] == 0:
+                moves.append(f"{from_row},{from_col}:{r},{c}")
+
+    # Check in the negative direction
+    r, c = from_row, from_col
+    for step in range(1, count + 1):
+        r -= dr
+        c -= dc
+        if not (0 <= r < n and 0 <= c < n):
+            break
+        # Check path for enemy pieces
+        path_clear = True
+        for i in range(1, step):
+            check_r, check_c = from_row - i * dr, from_col - i * dc
+            if 0 <= check_r < n and 0 <= check_c < n:
+                if board[check_r, check_c] == -1:
+                    path_clear = False
+                    break
+        if path_clear:
+            if board[r, c] == -1 or board[r, c] == 0:
+                moves.append(f"{from_row},{from_col}:{r},{c}")
+
+    return moves
+
+def evaluate_board(board):
+    # Count contiguous groups of my pieces
+    visited = np.zeros_like(board, dtype=bool)
+    groups = 0
+    for r in range(8):
+        for c in range(8):
+            if board[r, c] == 1 and not visited[r, c]:
+                groups += 1
+                queue = deque([(r, c)])
+                visited[r, c] = True
+                while queue:
+                    x, y = queue.popleft()
+                    for dx in [-1, 0, 1]:
+                        for dy in [-1, 0, 1]:
+                            if dx == 0 and dy == 0:
+                                continue
+                            nx, ny = x + dx, y + dy
+                            if 0 <= nx < 8 and 0 <= ny < 8:
+                                if board[nx, ny] == 1 and not visited[nx, ny]:
+                                    visited[nx, ny] = True
+                                    queue.append((nx, ny))
+    # Score is inversely proportional to the number of groups
+    score = -groups
+    return score
+
+def parse_move(move_str):
+    from_part, to_part = move_str.split(':')
+    from_row, from_col = map(int, from_part.split(','))
+    to_row, to_col = map(int, to_part.split(','))
+    return from_row, from_col, to_row, to_col
+```
+
+### Explanation
+1. **Legal Moves Generation**: For each piece and direction, count the number of pieces in the line and determine valid moves that don't jump over enemy pieces.
+2. **Evaluation**: The score is based on reducing the number of contiguous groups of my pieces. Captures are given a high bonus.
+3. **Move Selection**: The move with the highest score is selected.
+
+This policy should perform well in connecting pieces and capturing enemy pieces, which are key to winning the game.
+</thinking>
+
+<code>
+import numpy as np
+from collections import deque
+
+def policy(board):
+    board = np.array(board)
+    my_pieces = np.argwhere(board == 1)
+
+    legal_moves = []
+    for piece in my_pieces:
+        from_row, from_col = piece
+        directions = [(-1, -1), (-1, 0), (-1, 1),
+                      (0, -1),          (0, 1),
+                      (1, -1),  (1, 0), (1, 1)]
+        for dr, dc in directions:
+            moves = get_legal_moves(board, from_row, from_col, dr, dc)
+            legal_moves.extend(moves)
+
+    legal_moves = list(set(legal_moves))
+
+    best_move = None
+    best_score = -float('inf')
+
+    for move in legal_moves:
+        new_board = board.copy()
+        from_row, from_col, to_row, to_col = parse_move(move)
+        new_board[from_row, from_col] = 0
+        new_board[to_row, to_col] = 1
+        score = evaluate_board(new_board)
+        # Bonus for capturing
+        if board[to_row, to_col] == -1:
+            score += 10  # High bonus for captures
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return best_move
+
+def get_legal_moves(board, from_row, from_col, dr, dc):
+    moves = []
+    n = board.shape[0]
+    count = 0
+    # Count pieces in the line in both directions
+    r, c = from_row + dr, from_col + dc
+    while 0 <= r < n and 0 <= c < n and board[r, c] != 0:
+        count += 1
+        r += dr
+        c += dc
+    r, c = from_row - dr, from_col - dc
+    while 0 <= r < n and 0 <= c < n and board[r, c] != 0:
+        count += 1
+        r -= dr
+        c -= dc
+    count -= 1  # Subtract the piece itself
+
+    # Check in the positive direction
+    r, c = from_row, from_col
+    for step in range(1, count + 1):
+        r += dr
+        c += dc
+        if not (0 <= r < n and 0 <= c < n):
+            break
+        # Check path for enemy pieces
+        path_clear = True
+        for i in range(1, step):
+            check_r, check_c = from_row + i * dr, from_col + i * dc
+            if 0 <= check_r < n and 0 <= check_c < n:
+                if board[check_r, check_c] == -1:
+                    path_clear = False
+                    break
+        if path_clear:
+            if board[r, c] == -1 or board[r, c] == 0:
+                moves.append(f"{from_row},{from_col}:{r},{c}")
+
+    # Check in the negative direction
+    r, c = from_row, from_col
+    for step in range(1, count + 1):
+        r -= dr
+        c -= dc
+        if not (0 <= r < n and 0 <= c < n):
+            break
+        # Check path for enemy pieces
+        path_clear = True
+        for i in range(1, step):
+            check_r, check_c = from_row - i * dr, from_col - i * dc
+            if 0 <= check_r < n and 0 <= check_c < n:
+                if board[check_r, check_c] == -1:
+                    path_clear = False
+                    break
+        if path_clear:
+            if board[r, c] == -1 or board[r, c] == 0:
+                moves.append(f"{from_row},{from_col}:{r},{c}")
+
+    return moves
+
+def evaluate_board(board):
+    # Count contiguous groups of my pieces
+    visited = np.zeros_like(board, dtype=bool)
+    groups = 0
+    for r in range(8):
+        for c in range(8):
+            if board[r, c] == 1 and not visited[r, c]:
+                groups += 1
+                queue = deque([(r, c)])
+                visited[r, c] = True
+                while queue:
+                    x, y = queue.popleft()
+                    for dx in [-1, 0, 1]:
+                        for dy in [-1, 0, 1]:
+                            if dx == 0 and dy == 0:
+                                continue
+                            nx, ny = x + dx, y + dy
+                            if 0 <= nx < 8 and 0 <= ny < 8:
+                                if board[nx, ny] == 1 and not visited[nx, ny]:
+                                    visited[nx, ny] = True
+                                    queue.append((nx, ny))
+    # Score is inversely proportional to the number of groups
+    score = -groups
+    return score
+
+def parse_move(move_str):
+    from_part, to_part = move_str.split(':')
+    from_row, from_col = map(int, from_part.split(','))
+    to_row, to_col = map(int, to_part.split(','))
+    return from_row, from_col, to_row, to_col
+</code>

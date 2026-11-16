@@ -1,0 +1,68 @@
+
+import math
+
+# Define all possible winning lines (rows, columns, main diagonal, anti-diagonal)
+LINES = (
+    # Rows
+    [(i, 0), (i, 1), (i, 2), (i, 3)] for i in range(4)
+] + [
+    # Columns
+    [(0, j), (1, j), (2, j), (3, j)] for j in range(4)
+] + [
+    # Main diagonal
+    [(0, 0), (1, 1), (2, 2), (3, 3)],
+    # Anti-diagonal
+    [(0, 3), (1, 2), (2, 1), (3, 0)],
+]
+
+def has_won(board, player):
+    return any(all(board[r][c] == player for r, c in line) for line in LINES)
+
+def available_moves(board):
+    return [(r, c) for r in range(4) for c in range(4) if board[r][c] == 0]
+
+def minimax(board, depth, is_maximizing, alpha=-math.inf, beta=math.inf):
+    if has_won(board, 1):
+        return 1
+    if has_won(board, -1):
+        return -1
+    moves = available_moves(board)
+    if depth == 0 or not moves:
+        return 0
+    if is_maximizing:
+        max_eval = -math.inf
+        for r, c in moves:
+            board[r][c] = 1
+            eval = minimax(board, depth - 1, False, alpha, beta)
+            board[r][c] = 0
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = math.inf
+        for r, c in moves:
+            board[r][c] = -1
+            eval = minimax(board, depth - 1, True, alpha, beta)
+            board[r][c] = 0
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def policy(board):
+    moves = available_moves(board)
+    if not moves:
+        return (0, 0)  # Though unlikely if called when game not finished
+    best_move = None
+    best_score = -math.inf
+    for r, c in moves:
+        board[r][c] = 1
+        score = minimax(board, 4, False)
+        board[r][c] = 0
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+    return best_move

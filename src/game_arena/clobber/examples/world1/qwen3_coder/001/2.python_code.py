@@ -1,0 +1,76 @@
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    import numpy as np
+    
+    # Convert to numpy arrays for easier manipulation
+    you_board = np.array(you).reshape(5, 6)
+    opponent_board = np.array(opponent).reshape(5, 6)
+    
+    # Define directions: up, right, down, left
+    directions = [(-1, 0, 'U'), (0, 1, 'R'), (1, 0, 'D'), (0, -1, 'L')]
+    
+    # Find all legal moves
+    legal_moves = []
+    
+    # Iterate through all positions on the board
+    for row in range(5):
+        for col in range(6):
+            # Check if I have a piece at this position
+            if you_board[row][col] == 1:
+                # Try all four directions
+                for dr, dc, direction in directions:
+                    new_row, new_col = row + dr, col + dc
+                    
+                    # Check if the new position is within bounds
+                    if 0 <= new_row < 5 and 0 <= new_col < 6:
+                        # Check if the new position has an opponent piece
+                        if opponent_board[new_row][new_col] == 1:
+                            # This is a legal move
+                            legal_moves.append((row, col, direction))
+    
+    # If we have legal moves, choose one
+    if legal_moves:
+        # Simple strategy: choose a move that maximizes future mobility
+        best_move = None
+        best_score = -float('inf')
+        
+        for row, col, direction in legal_moves:
+            # Calculate new position after move
+            dr_map = {'U': -1, 'R': 0, 'D': 1, 'L': 0}
+            dc_map = {'U': 0, 'R': 1, 'D': 0, 'L': -1}
+            new_row = row + dr_map[direction]
+            new_col = col + dc_map[direction]
+            
+            # Calculate score based on future mobility
+            score = 0
+            
+            # Count how many adjacent squares will be available after the move
+            for dr, dc, _ in directions:
+                adj_row, adj_col = new_row + dr, new_col + dc
+                if 0 <= adj_row < 5 and 0 <= adj_col < 6:
+                    # Prefer moves that lead to positions with more adjacent opponent pieces
+                    if opponent_board[adj_row][adj_col] == 1:
+                        score += 2
+                    # Also consider empty squares for future moves
+                    elif you_board[adj_row][adj_col] == 0 and opponent_board[adj_row][adj_col] == 0:
+                        score += 1
+            
+            # Prefer center positions (they tend to be more flexible)
+            center_score = -(abs(new_row - 2) + abs(new_col - 2.5))
+            score += center_score * 0.5
+            
+            if score > best_score:
+                best_score = score
+                best_move = (row, col, direction)
+        
+        # If we found a best move, use it
+        if best_move:
+            return f"{best_move[0]},{best_move[1]},{best_move[2]}"
+        
+        # Fallback: return first legal move
+        row, col, direction = legal_moves[0]
+        return f"{row},{col},{direction}"
+    
+    # This should never happen according to the problem statement
+    # but just in case, return a default move
+    return "0,0,R"

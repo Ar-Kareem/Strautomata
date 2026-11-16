@@ -1,0 +1,285 @@
+
+#!/usr/bin/env python3
+import time
+import math
+from typing import List, Tuple, Dict, Optional
+
+Move = Tuple[Tuple[int, int], Tuple[int, int]]
+BoardDict = Dict[Tuple[int, int], int]  # 0 empty, 1 my man, 2 my king, -1 opp man, -2 opp king
+
+def policy(my_men: List[Tuple[int, int]],
+           my_kings: List[Tuple[int, int]],
+           opp_men: List[Tuple[int, int]],
+           opp_kings: List[Tuple[int, int]],
+           color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+
+    start_time = time.time()
+    TIME_LIMIT = 0.90  # seconds
+
+    # Build board dict
+    board: BoardDict = {}
+    for r in range(8):
+        for c in range(8):
+            board[(r, c)] = 0
+    for (r, c) in my_men:
+        board[(r, c)] = 1
+    for (r, c) in my_kings:
+        board[(r, c)] = 2
+    for (r, c) in opp_men:
+        board[(r, c)] = -1
+    for (r, c) in opp_kings:
+        board[(r, c)] = -2
+
+    my_sign = 1
+    opp_sign = -1
+    is_black = (color == 'b')
+    # movement forward direction for men
+    forward_dirs = [(-1, -1), (-1, 1)] if is_black else [(1, -1), (1, 1)]
+    # capture directions: allow captures in all 4 diagonals (men can capture backward as well).
+    # Many checkers variants differ; allowing captures in all directions is more general and avoids missing legal captures.
+    diag_dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+    def in_bounds(r, c):
+        return 0 <= r < 8 and 0 <= c < 8
+
+    def copy_board(b: BoardDict) -> BoardDict:
+        return dict(b)
+
+    def piece_at(b: BoardDict, pos):
+        return b.get(pos, 0)
+
+    def is_opponent_piece(val):
+        return val < 0
+
+    def is_my_piece(val):
+        return val > 0
+
+    def promote_row_for_color(colr: str) -> int:
+        return 0 if colr == 'b' else 7
+
+    PROM_ROW = promote_row_for_color(color)
+
+    # Generate capture sequences for a piece at pos. Return list of tuples: (final_pos, captured_list, promoted_flag)
+    def gen_captures_from(b: BoardDict, pos: Tuple[int, int], piece_is_king: bool, colr: str) -> List[Tuple[Tuple[int, int], List[Tuple[int, int]], bool]]:
+        results = []
+
+        def dfs(board_state: BoardDict, r, c, king, captured_so_far: List[Tuple[int, int]], visited_states=set()):
+            found_any = False
+            # Determine possible capture directions. For kings all diag_dirs, for men allow all diag_dirs for capture (safer).
+            dirs = diag_dirs  # allowing men to capture both forward and backward
+            for dr, dc in dirs:
+                mid_r, mid_c = r + dr, c + dc
+                land_r, land_c = r + 2*dr, c + 2*dc
+                if not (in_bounds(mid_r, mid_c) and in_bounds(land_r, land_c)):
+                    continue
+                mid_val = board_state[(mid_r, mid_c)]
+                land_val = board_state[(land_r, land_c)]
+                if mid_val < 0 and land_val == 0:  # opponent piece to capture
+                    # simulate
+                    new_board = dict(board_state)
+                    new_board[(r, c)] = 0
+                    new_board[(mid_r, mid_c)] = 0
+                    # tentatively place piece at landing
+                    promoted = king
+                    # if man and landing row is promotion row -> promote and stop further captures
+                    if not king:
+                        if land_r == PROM_ROW:
+                            promoted = True
+                            new_board[(land_r, land_c)] = 2 if promoted else 1
+                            # Add sequence and do not continue capturing after promotion (promotion ends jump)
+                            results.append(((land_r, land_c), captured_so_far + [(mid_r, mid_c)], True))
+                            found = True
+                            found_any = True
+                            continue
+                    new_board[(land_r, land_c)] = 2 if promoted else 1
+                    # Continue search recursively
+                    prev_len = len(results)
+                    dfs(new_board, land_r, land_c, promoted, captured_so_far + [(mid_r, mid_c)])
+                    if len(results) == prev_len:
+                        # No further captures from here -> record this sequence
+                        results.append(((land_r, land_c), captured_so_far + [(mid_r, mid_c)], promoted))
+                        found_any = True
+
+            return found_any
+
+        r0, c0 = pos
+        dfs(b, r0, c0, piece_is_king, [])
+        return results
+
+    # Generate all legal moves (captures prioritized). Each move represented as (from, to, captured_list, promoted_flag)
+    def generate_all_moves(b: BoardDict, colr: str) -> List[Tuple[Tuple[int, int], Tuple[int, int], List[Tuple[int, int]], bool]]:
+        moves = []
+        captures_any = []
+        for (r, c), val in b.items():
+            if val == 0:
+                continue
+            if (colr == 'b' and val > 0) or (colr == 'w' and val > 0):
+                is_king = (val == 2)
+                # captures
+                caps = gen_captures_from(b, (r, c), is_king, colr)
+                for (final_pos, captured_list, promoted_flag) in caps:
+                    captures_any.append(((r, c), final_pos, captured_list, promoted_flag))
+        if captures_any:
+            return captures_any
+        # else simple moves
+        simple_moves = []
+        for (r, c), val in b.items():
+            if val == 0:
+                continue
+            if (colr == 'b' and val > 0) or (colr == 'w' and val > 0):
+                is_king = (val == 2)
+                dirs = diag_dirs if is_king else forward_dirs
+                for dr, dc in dirs:
+                    nr, nc = r + dr, c + dc
+                    if in_bounds(nr, nc) and b[(nr, nc)] == 0:
+                        promoted = False
+                        if not is_king and nr == PROM_ROW:
+                            promoted = True
+                        simple_moves.append(((r, c), (nr, nc), [], promoted))
+        return simple_moves
+
+    # Apply move to board and return new board. Move is (from,to,captured_list,promoted_flag)
+    def apply_move(b: BoardDict, move):
+        (fr, fc), (tr, tc), captured, promoted = move
+        newb = dict(b)
+        val = newb[(fr, fc)]
+        newb[(fr, fc)] = 0
+        # remove captured pieces
+        for cap in captured:
+            newb[cap] = 0
+        # place moved piece
+        if val == 2:
+            newb[(tr, tc)] = 2
+        else:
+            # if promoted or reached promotion row, make king
+            if promoted or (tr == PROM_ROW):
+                newb[(tr, tc)] = 2
+            else:
+                newb[(tr, tc)] = 1
+        return newb
+
+    # Static evaluation: positive is good for 'color'
+    def evaluate(b: BoardDict) -> float:
+        my_count = 0.0
+        opp_count = 0.0
+        my_moves = 0
+        opp_moves = 0
+        for (r, c), val in b.items():
+            if val == 1:
+                # man
+                # value + positional advancement (closer to promotion)
+                if color == 'w':
+                    advance = r / 7.0
+                else:
+                    advance = (7 - r) / 7.0
+                my_count += 1.0 + 0.1 * advance
+            elif val == 2:
+                my_count += 1.6
+            elif val == -1:
+                if color == 'w':
+                    advance = (7 - r) / 7.0
+                else:
+                    advance = r / 7.0
+                opp_count += 1.0 + 0.1 * advance
+            elif val == -2:
+                opp_count += 1.6
+        # mobility (small factor)
+        my_moves = len(generate_all_moves(b, color))
+        opp_color = 'b' if color == 'w' else 'w'
+        opp_moves = len(generate_all_moves(b, opp_color))
+        mobility = 0.05 * (my_moves - opp_moves)
+        return (my_count - opp_count) + mobility
+
+    # Minimax with alpha-beta and time cutoff
+    MAX_DEPTH = 6
+
+    def minimax(b: BoardDict, depth: int, alpha: float, beta: float, maximizing: bool, cur_color: str) -> Tuple[float, Optional[Tuple[Tuple[int, int], Tuple[int, int], List[Tuple[int, int]], bool]]]:
+        # Time cutoff
+        if time.time() - start_time > TIME_LIMIT:
+            return evaluate(b), None
+        # generate moves
+        moves = generate_all_moves(b, cur_color)
+        if depth == 0 or not moves:
+            return evaluate(b), None
+        best_move = None
+        if maximizing:
+            value = -1e9
+            # try capture moves first (they will be returned first by generation)
+            # sort moves heuristically: captures first, longer capture lists first
+            moves.sort(key=lambda m: (0 if m[2] else 1, -len(m[2]), (m[0][0], m[0][1], m[1][0], m[1][1])))
+            for mv in moves:
+                nb = apply_move(b, mv)
+                next_color = 'b' if cur_color == 'w' else 'w'
+                score, _ = minimax(nb, depth - 1, alpha, beta, False, next_color)
+                if score > value:
+                    value = score
+                    best_move = mv
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break
+                if time.time() - start_time > TIME_LIMIT:
+                    break
+            return value, best_move
+        else:
+            value = 1e9
+            moves.sort(key=lambda m: (0 if m[2] else 1, -len(m[2])))
+            for mv in moves:
+                nb = apply_move(b, mv)
+                next_color = 'b' if cur_color == 'w' else 'w'
+                score, _ = minimax(nb, depth - 1, alpha, beta, True, next_color)
+                if score < value:
+                    value = score
+                    best_move = mv
+                beta = min(beta, value)
+                if alpha >= beta:
+                    break
+                if time.time() - start_time > TIME_LIMIT:
+                    break
+            return value, best_move
+
+    # Root: generate moves and use minimax to pick best
+    root_moves = generate_all_moves(board, color)
+    if not root_moves:
+        # No moves (shouldn't happen in normal game), but return a dummy move: choose any piece and try to move somewhere legal
+        # Find any my piece, attempt to move to any adjacent empty square
+        for (r, c), val in board.items():
+            if val > 0:
+                dirs = diag_dirs if val == 2 else forward_dirs
+                for dr, dc in dirs:
+                    nr, nc = r + dr, c + dc
+                    if in_bounds(nr, nc) and board[(nr, nc)] == 0:
+                        return ((r, c), (nr, nc))
+        # fallback pick first my piece staying in place (shouldn't be legal but we must return something)
+        if my_men:
+            return (my_men[0], my_men[0])
+        if my_kings:
+            return (my_kings[0], my_kings[0])
+        return ((0, 1), (0, 1))
+
+    # If only one move, return it immediately
+    if len(root_moves) == 1:
+        mv = root_moves[0]
+        return (mv[0], mv[1])
+
+    # Try iterative deepening respecting time
+    best_overall_move = None
+    best_overall_score = -1e9
+    depth = 1
+    while depth <= MAX_DEPTH and (time.time() - start_time) < TIME_LIMIT:
+        score, best_mv = minimax(board, depth, -1e9, 1e9, True, color)
+        if best_mv is not None:
+            best_overall_move = best_mv
+            best_overall_score = score
+        depth += 1
+
+    # If search yielded nothing (due to time), pick a reasonable move: prefer captures with most captures, else any move
+    if best_overall_move is None:
+        # pick best by heuristics
+        root_moves.sort(key=lambda m: (len(m[2]), -m[0][0], -m[0][1]), reverse=True)
+        chosen = root_moves[0]
+    else:
+        chosen = best_overall_move
+
+    return (chosen[0], chosen[1])
+
+# End of file

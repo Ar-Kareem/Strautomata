@@ -1,0 +1,220 @@
+<thinking>
+I need to create a policy function for 4x4 Tic Tac Toe. Let me think through this:
+
+1. **Game Rules**: 4x4 board, need 4 in a row/column/diagonal to win
+2. **Strategy**: 
+   - First check if I can win immediately
+   - Then check if opponent can win and block them
+   - Otherwise use minimax or some heuristic evaluation
+   - Since I have 1 second, I can probably do a shallow minimax search
+
+3. **Implementation Approach**:
+   - Check for immediate wins (try all empty positions)
+   - Check for immediate threats (opponent about to win)
+   - If neither, use a basic evaluation function with some look-ahead
+
+Let me implement a solution:
+- First try immediate win moves
+- Block immediate losses  
+- Otherwise do a shallow minimax (2-3 ply) to pick a good move
+- If all else fails, pick center areas or empty spot
+
+Actually, let me think about the evaluation function:
+- Count potential lines (rows/cols/diagonals) I can complete
+- Count opponent's potential lines to block
+- Prefer center positions (more flexibility)
+- Win conditions: 4 in a row/column/diagonal
+
+For efficiency, I'll do:
+1. Immediate win check
+2. Immediate block check
+3. Simple heuristic if no immediate moves
+</thinking>
+
+<code>
+import copy
+from typing import List, Tuple, Optional
+
+def check_winner(board: List[List[int]]) -> Optional[int]:
+    """Check if there's a winner. Returns 1 for player, -1 for opponent, 0 for tie, None for no winner."""
+    # Check rows
+    for row in board:
+        if abs(sum(row)) == 4 and abs(sum(row)) != 0:
+            if sum(row) == 4:
+                return 1
+            elif sum(row) == -4:
+                return -1
+    
+    # Check columns
+    for col in range(4):
+        col_sum = sum(board[row][col] for row in range(4))
+        if abs(col_sum) == 4:
+            if col_sum == 4:
+                return 1
+            elif col_sum == -4:
+                return -1
+    
+    # Check diagonals
+    diag1_sum = sum(board[i][i] for i in range(4))
+    if abs(diag1_sum) == 4:
+        if diag1_sum == 4:
+            return 1
+        elif diag1_sum == -4:
+            return -1
+            
+    diag2_sum = sum(board[i][3-i] for i in range(4))
+    if abs(diag2_sum) == 4:
+        if diag2_sum == 4:
+            return 1
+        elif diag2_sum == -4:
+            return -1
+    
+    # Check for tie (board full)
+    if all(board[i][j] != 0 for i in range(4) for j in range(4)):
+        return 0
+    
+    return None
+
+def get_empty_positions(board: List[List[int]]) -> List[Tuple[int, int]]:
+    """Get all empty positions on the board."""
+    empty = []
+    for i in range(4):
+        for j in range(4):
+            if board[i][j] == 0:
+                empty.append((i, j))
+    return empty
+
+def evaluate_position(board: List[List[int]], player: int) -> int:
+    """Evaluate board position for a player."""
+    score = 0
+    
+    # Check rows
+    for row in board:
+        player_count = sum(1 for cell in row if cell == player)
+        opponent_count = sum(1 for cell in row if cell == -player)
+        empty_count = sum(1 for cell in row if cell == 0)
+        
+        if opponent_count == 0 and player_count > 0:
+            score += 10 ** player_count
+        elif player_count == 0 and opponent_count > 0:
+            score -= 10 ** opponent_count
+    
+    # Check columns
+    for col in range(4):
+        col_cells = [board[row][col] for row in range(4)]
+        player_count = sum(1 for cell in col_cells if cell == player)
+        opponent_count = sum(1 for cell in col_cells if cell == -player)
+        empty_count = sum(1 for cell in col_cells if cell == 0)
+        
+        if opponent_count == 0 and player_count > 0:
+            score += 10 ** player_count
+        elif player_count == 0 and opponent_count > 0:
+            score -= 10 ** opponent_count
+    
+    # Check diagonals
+    diag1 = [board[i][i] for i in range(4)]
+    diag2 = [board[i][3-i] for i in range(4)]
+    
+    for diag in [diag1, diag2]:
+        player_count = sum(1 for cell in diag if cell == player)
+        opponent_count = sum(1 for cell in diag if cell == -player)
+        
+        if opponent_count == 0 and player_count > 0:
+            score += 10 ** player_count
+        elif player_count == 0 and opponent_count > 0:
+            score -= 10 ** opponent_count
+    
+    return score
+
+def minimax(board: List[List[int]], depth: int, is_maximizing: bool, alpha: int, beta: int) -> int:
+    """Minimax algorithm with alpha-beta pruning."""
+    winner = check_winner(board)
+    if winner is not None:
+        if winner == 1:  # Player wins
+            return 10000
+        elif winner == -1:  # Opponent wins
+            return -10000
+        else:  # Tie
+            return 0
+    
+    if depth == 0:
+        return evaluate_position(board, 1)
+    
+    empty_positions = get_empty_positions(board)
+    if not empty_positions:
+        return 0
+    
+    if is_maximizing:
+        max_eval = -float('inf')
+        for i, j in empty_positions:
+            board[i][j] = 1
+            eval_score = minimax(board, depth - 1, False, alpha, beta)
+            board[i][j] = 0
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for i, j in empty_positions:
+            board[i][j] = -1
+            eval_score = minimax(board, depth - 1, True, alpha, beta)
+            board[i][j] = 0
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """Main policy function to determine the next move."""
+    empty_positions = get_empty_positions(board)
+    
+    if not empty_positions:
+        # Should not happen, but return (0,0) as default
+        return (0, 0)
+    
+    # Check for immediate win
+    for i, j in empty_positions:
+        board[i][j] = 1
+        if check_winner(board) == 1:
+            board[i][j] = 0
+            return (i, j)
+        board[i][j] = 0
+    
+    # Check for immediate threat (opponent win)
+    for i, j in empty_positions:
+        board[i][j] = -1
+        if check_winner(board) == -1:
+            board[i][j] = 0
+            return (i, j)
+        board[i][j] = 0
+    
+    # Use minimax for deeper strategy (limited depth for speed)
+    best_move = empty_positions[0]
+    best_score = -float('inf')
+    
+    # Try a shallow search first to stay within time limits
+    depth = 3 if len(empty_positions) < 10 else 2
+    depth = max(1, depth)
+    
+    for i, j in empty_positions:
+        board[i][j] = 1
+        score = minimax(board, depth, False, -float('inf'), float('inf'))
+        board[i][j] = 0
+        
+        if score > best_score:
+            best_score = score
+            best_move = (i, j)
+    
+    # Fallback to center preference if all scores are equal
+    if best_score == -float('inf'):
+        # Prefer center positions
+        center_preferences = [(1,1), (1,2), (2,1), (2,2), (0,0), (0,3), (3,0), (3,3)]
+        for pos in center_preferences:
+            if pos in empty_positions:
+                return pos
+    
+    return best_move
+</code>

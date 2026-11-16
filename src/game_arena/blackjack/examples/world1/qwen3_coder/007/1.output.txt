@@ -1,0 +1,188 @@
+<thinking>
+I need to create a policy function for a simplified Blackjack-like game. Let me break down the key elements:
+
+1. **Game Rules Understanding**:
+   - Target T is between 10-30
+   - Cards: A(1/11), 2-10(face value), J/Q/K(10)
+   - A is 11 if hand ≤ T, otherwise 1
+   - Bust if > T
+   - Win if closer to T than opponent (or opponent busts)
+
+2. **Strategy Considerations**:
+   - Need to calculate current hand value with Aces handled properly
+   - Assess risk of hitting vs staying
+   - Consider how close we are to target
+   - Think about what cards are left in our deck
+
+3. **Hand Evaluation**:
+   - Calculate hand value with optimal Aces (11 when beneficial, 1 when necessary)
+   - Determine which cards we've already used to know what's left
+
+4. **Decision Logic**:
+   - If current value > target: impossible (but shouldn't happen since we'd have busted)
+   - If current value = target: probably should STAY
+   - If current value < target: need to decide whether to HIT or STAY
+
+5. **Risk Assessment**:
+   - How much room do we have before busting?
+   - What cards are left that could help us?
+   - What's the probability of improving our position with a hit?
+
+6. **Optimal Strategy**:
+   - If we're very close to target, STAY (low risk high reward)
+   - If we're far from target, we might need to HIT
+   - Consider the "distance to go" vs risk of busting
+
+Let me think about a few scenarios:
+- If I'm at T-1, hitting could either get me to T (good) or bust (if next card > 1)
+- If I'm at T-10, I have more room to hit
+
+I should consider:
+1. Current hand value
+2. Distance to target
+3. Risk of busting based on remaining cards
+4. Position relative to target
+
+A simple but effective approach:
+- If current value >= target: STAY (we've reached/exceeded target)
+- If current value is close enough to target: STAY (avoid busting)
+- Otherwise: HIT
+
+But I should be more sophisticated about "close enough". Let me think about how much room I have before likely busting.
+
+Actually, let me think more carefully about the ace handling:
+- Aces should be counted as 11 if that keeps the total <= T, otherwise as 1
+- So I need to calculate the best possible value of the current hand
+
+My approach:
+1. Calculate current hand's best value
+2. If we've reached/exceeded target, STAY
+3. If we're "close enough" to target to be safe, STAY
+4. Otherwise, HIT
+
+"Closeness" should consider:
+- How much gap there is to target
+- What cards remain that could cause a bust
+- Risk tolerance
+
+Let me implement a policy that:
+- Calculates hand value optimally with aces
+- Uses a threshold-based approach for deciding when to stop
+- Considers how much we can safely draw
+
+A reasonable heuristic: if we're within a certain distance of the target where the risk of hitting is high, we should stay. 
+</thinking>
+
+<code>
+def policy(hand: list[str], target: int) -> str:
+    # All possible cards in a suit
+    all_cards = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    
+    def calculate_hand_value(cards):
+        """Calculate the best possible value of a hand with proper Ace handling"""
+        # First count non-Ace cards
+        value = 0
+        ace_count = 0
+        
+        for card in cards:
+            if card == "A":
+                ace_count += 1
+            elif card in ["J", "Q", "K"]:
+                value += 10
+            else:  # 2-10
+                value += int(card)
+        
+        # Handle aces optimally - try 11 first, fall back to 1 if needed
+        for _ in range(ace_count):
+            if value + 11 <= target:
+                value += 11
+            else:
+                value += 1
+                
+        return value
+    
+    # Calculate current hand value
+    current_value = calculate_hand_value(hand)
+    
+    # If we've already reached or exceeded target, stay
+    if current_value >= target:
+        return "STAY"
+    
+    # Calculate how many cards we've drawn
+    cards_drawn = len(hand)
+    
+    # Cards we haven't drawn yet
+    drawn_cards = set(hand)
+    remaining_cards = [card for card in all_cards if card not in drawn_cards]
+    
+    # If no cards left to draw, we must stay
+    if not remaining_cards:
+        return "STAY"
+    
+    # Calculate the gap to target
+    gap = target - current_value
+    
+    # Simple strategy based on gap and risk
+    # If gap is small, be more conservative
+    if gap <= 3:
+        # Very close to target, be conservative
+        # Only hit if there's very low risk of busting
+        safe_cards = 0
+        for card in remaining_cards:
+            if card == "A":
+                card_value = 1  # Conservative estimate
+            elif card in ["J", "Q", "K"]:
+                card_value = 10
+            else:
+                card_value = int(card)
+            
+            # Check if this card would bust us
+            if card_value <= gap:
+                safe_cards += 1
+        
+        # If less than 30% of remaining cards are safe, stay
+        if safe_cards / len(remaining_cards) < 0.3:
+            return "STAY"
+        else:
+            return "HIT"
+    elif gap <= 7:
+        # Moderately close, calculate some risk
+        safe_cards = 0
+        for card in remaining_cards:
+            if card == "A":
+                card_value = 1  # Conservative
+            elif card in ["J", "Q", "K"]:
+                card_value = 10
+            else:
+                card_value = int(card)
+            
+            if card_value <= gap:
+                safe_cards += 1
+        
+        # If less than 50% of cards are safe, stay
+        if safe_cards / len(remaining_cards) < 0.5:
+            return "STAY"
+        else:
+            return "HIT"
+    else:
+        # Far from target, be more aggressive
+        # But still check if there are any really dangerous cards
+        very_dangerous = 0
+        for card in remaining_cards:
+            if card == "A":
+                card_value = 11  # If we're far, we can probably handle an 11
+            elif card in ["J", "Q", "K"]:
+                card_value = 10
+            else:
+                card_value = int(card)
+            
+            # Check if this card would be very dangerous (close to busting)
+            if current_value + card_value > target:
+                very_dangerous += 1
+        
+        # If more than 80% of cards are very dangerous, stay
+        if very_dangerous / len(remaining_cards) > 0.8:
+            return "STAY"
+        else:
+            return "HIT"
+</code>

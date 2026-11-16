@@ -1,0 +1,153 @@
+The strategy uses a depth‑limited minimax search with alpha‑beta pruning.  
+At each node the engine simulates a legal Kalah move (including the “extra turn” rule and stone capture) and recurses.  
+The search is performed with iterative deepening: the engine tries depth 1, 2, 3… until a time limit (≈ 0.95 s) is reached, keeping the best move from the last fully searched depth.  
+This guarantees a legal move is always returned while using the available compute to look as far ahead as possible.  
+
+The evaluation function for non‑terminal positions is a weighted linear combination of  
+* the store difference (dominant term), and  
+* the total number of seeds still on each side.  
+Moves are ordered by trying houses closer to the store first (indices 5→0), which tends to produce cut‑offs earlier.  
+
+Terminal positions are detected when the player to move has no seeds left; the final score is computed by moving the remaining seeds to the appropriate store and returning the exact point difference.
+
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    import time
+    start = time.time()
+    TIME_LIMIT = 0.95
+
+    # ----- helpers -------------------------------------------------
+    def simulate(active, inactive, move):
+        """Simulate a move for the player 'active'. Returns (new_active, new_inactive, extra_turn)."""
+        seeds = active[move]
+        # copy boards
+        new_active = active[:]
+        new_inactive = inactive[:]
+        new_active[move] = 0
+        pos = move + 1
+        extra = False
+        last_pos = None
+        last_side = None
+
+        while seeds:
+            if pos == 13:          # skip opponent's store
+                pos = 0
+            if pos == 6:           # own store
+                new_active[6] += 1
+                seeds -= 1
+                if seeds == 0:
+                    extra = True
+                    break
+            elif pos < 6:          # own house
+                new_active[pos] += 1
+                seeds -= 1
+                if seeds == 0:
+                    last_pos = pos
+                    last_side = 'active'
+            else:                  # opponent houses (7..12)
+                idx = pos - 7
+                new_inactive[idx] += 1
+                seeds -= 1
+                if seeds == 0:
+                    last_pos = idx
+                    last_side = 'inactive'
+            pos += 1
+
+        # capture rule
+        if not extra and last_side == 'active':
+            if new_active[last_pos] == 1 and new_inactive[5 - last_pos] > 0:
+                new_active[6] += new_active[last_pos] + new_inactive[5 - last_pos]
+                new_active[last_pos] = 0
+                new_inactive[5 - last_pos] = 0
+        return new_active, new_inactive, extra
+
+    def is_terminal(my_side, opp_side, my_turn):
+        """Return True if the player to move has no legal moves."""
+        if my_turn:
+            return all(v == 0 for v in my_side[:6])
+        else:
+            return all(v == 0 for v in opp_side[:6])
+
+    def evaluate(my_side, opp_side):
+        """Static evaluation from the root player's perspective."""
+        return (my_side[6] - opp_side[6]) * 100 + (sum(my_side[:6]) - sum(opp_side[:6])) * 5
+
+    # ----- iterative deepening search ----------------------------
+    legal_moves = [i for i in range(6) if you[i] > 0]
+    if not legal_moves:
+        return 0
+    if len(legal_moves) == 1:
+        return legal_moves[0]
+
+    best_move = legal_moves[0]   # fallback
+    max_depth = 0
+
+    # try increasing depths until time runs out
+    for depth in range(1, 20):
+        max_depth = depth
+        current_best = [None]    # container so the inner function can write to it
+
+        # recursive alpha‑beta search
+        def search(my_side, opp_side, my_turn, d, alpha, beta):
+            # terminal detection
+            if is_terminal(my_side, opp_side, my_turn):
+                if my_turn:      # I have no move -> opponent captures
+                    my_score = my_side[6]
+                    opp_score = opp_side[6] + sum(opp_side[:6])
+                else:            # opponent has no move -> I capture
+                    my_score = my_side[6] + sum(my_side[:6])
+                    opp_score = opp_side[6]
+                return my_score - opp_score
+
+            if d == 0:
+                return evaluate(my_side, opp_side)
+
+            if my_turn:
+                value = -10**9
+                # try houses closer to the store first (5..0)
+                for move in range(5, -1, -1):
+                    if my_side[move] == 0:
+                        continue
+                    new_my, new_opp, extra = simulate(my_side, opp_side, move)
+                    nxt_turn = True if extra else False
+                    v = search(new_my, new_opp, nxt_turn, d - 1, alpha, beta)
+                    if v > value:
+                        value = v
+                        if d == max_depth:
+                            current_best[0] = move
+                    alpha = max(alpha, v)
+                    if alpha >= beta:
+                        break
+                return value
+            else:
+                value = 10**9
+                for move in range(5, -1, -1):
+                    if opp_side[move] == 0:
+                        continue
+                    new_opp, new_my, extra = simulate(opp_side, my_side, move)
+                    nxt_turn = False if extra else True
+                    v = search(new_my, new_opp, nxt_turn, d - 1, alpha, beta)
+                    if v < value:
+                        value = v
+                    beta = min(beta, v)
+                    if beta <= alpha:
+                        break
+                return value
+
+        # run search for this depth
+        search(you, opponent, True, depth, -10**9, 10**9)
+
+        if current_best[0] is not None:
+            best_move = current_best[0]
+
+        # time check
+        if time.time() - start > TIME_LIMIT:
+            break
+
+    # safety: ensure the chosen move is legal
+    if you[best_move] == 0:
+        for m in range(6):
+            if you[m] > 0:
+                return m
+    return best_move
+```

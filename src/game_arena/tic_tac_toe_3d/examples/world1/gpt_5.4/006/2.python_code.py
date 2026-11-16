@@ -1,0 +1,280 @@
+
+from typing import List, Tuple, Dict
+
+# 3x3x3 Tic Tac Toe policy
+# board[i][j][k] in {-1, 0, 1}
+# returns (i, j, k) for player 1
+
+# Precompute all cells
+CELLS = [(i, j, k) for i in range(3) for j in range(3) for k in range(3)]
+
+def _generate_winning_lines():
+    lines = []
+
+    # Axis-aligned lines
+    for j in range(3):
+        for k in range(3):
+            lines.append([(i, j, k) for i in range(3)])  # vary i
+    for i in range(3):
+        for k in range(3):
+            lines.append([(i, j, k) for j in range(3)])  # vary j
+    for i in range(3):
+        for j in range(3):
+            lines.append([(i, j, k) for k in range(3)])  # vary k
+
+    # Diagonals on planes with fixed i
+    for i in range(3):
+        lines.append([(i, d, d) for d in range(3)])
+        lines.append([(i, d, 2 - d) for d in range(3)])
+
+    # Diagonals on planes with fixed j
+    for j in range(3):
+        lines.append([(d, j, d) for d in range(3)])
+        lines.append([(d, j, 2 - d) for d in range(3)])
+
+    # Diagonals on planes with fixed k
+    for k in range(3):
+        lines.append([(d, d, k) for d in range(3)])
+        lines.append([(d, 2 - d, k) for d in range(3)])
+
+    # 4 space diagonals
+    lines.append([(d, d, d) for d in range(3)])
+    lines.append([(d, d, 2 - d) for d in range(3)])
+    lines.append([(d, 2 - d, d) for d in range(3)])
+    lines.append([(d, 2 - d, 2 - d) for d in range(3)])
+
+    return lines
+
+LINES = _generate_winning_lines()
+
+# For each cell, which winning lines contain it
+CELL_TO_LINES = {cell: [] for cell in CELLS}
+for idx, line in enumerate(LINES):
+    for cell in line:
+        CELL_TO_LINES[cell].append(idx)
+
+# Static preference: center > corners > others
+def _cell_priority(cell):
+    i, j, k = cell
+    c = (i == 1) + (j == 1) + (k == 1)
+    # c=3 center, c=0 corners, c=1/2 other cells
+    if c == 3:
+        return 100
+    if c == 0:
+        return 70
+    if c == 2:
+        return 50
+    return 40
+
+STATIC_ORDER = sorted(CELLS, key=_cell_priority, reverse=True)
+
+def _flatten(board):
+    return tuple(board[i][j][k] for i in range(3) for j in range(3) for k in range(3))
+
+def _legal_moves(board):
+    return [(i, j, k) for (i, j, k) in STATIC_ORDER if board[i][j][k] == 0]
+
+def _winner(board):
+    for line in LINES:
+        s = 0
+        for i, j, k in line:
+            s += board[i][j][k]
+        if s == 3:
+            return 1
+        if s == -3:
+            return -1
+    return 0
+
+def _is_full(board):
+    for i, j, k in CELLS:
+        if board[i][j][k] == 0:
+            return False
+    return True
+
+def _immediate_winning_moves(board, player):
+    wins = []
+    for move in _legal_moves(board):
+        i, j, k = move
+        board[i][j][k] = player
+        if _winner(board) == player:
+            wins.append(move)
+        board[i][j][k] = 0
+    return wins
+
+def _line_score(count_self, count_opp):
+    if count_self > 0 and count_opp > 0:
+        return 0
+    if count_self == 3:
+        return 100000
+    if count_opp == 3:
+        return -100000
+    if count_self == 2 and count_opp == 0:
+        return 120
+    if count_self == 1 and count_opp == 0:
+        return 12
+    if count_opp == 2 and count_self == 0:
+        return -150
+    if count_opp == 1 and count_self == 0:
+        return -10
+    return 0
+
+def _evaluate(board):
+    w = _winner(board)
+    if w == 1:
+        return 1000000
+    if w == -1:
+        return -1000000
+
+    score = 0
+    for line in LINES:
+        c1 = 0
+        c2 = 0
+        for i, j, k in line:
+            v = board[i][j][k]
+            if v == 1:
+                c1 += 1
+            elif v == -1:
+                c2 += 1
+        score += _line_score(c1, c2)
+
+    # positional bonus
+    for cell in CELLS:
+        i, j, k = cell
+        v = board[i][j][k]
+        if v != 0:
+            bonus = _cell_priority(cell)
+            score += bonus if v == 1 else -bonus
+
+    return score
+
+def _ordered_moves(board, player):
+    moves = _legal_moves(board)
+    scored = []
+
+    opp = -player
+    opp_wins_now = set(_immediate_winning_moves(board, opp))
+
+    for move in moves:
+        i, j, k = move
+        bonus = _cell_priority(move)
+
+        # Winning move now
+        board[i][j][k] = player
+        if _winner(board) == player:
+            board[i][j][k] = 0
+            scored.append((10**9, move))
+            continue
+
+        # Count threats created
+        my_threats = len(_immediate_winning_moves(board, player))
+        opp_threats_after = len(_immediate_winning_moves(board, opp))
+        board[i][j][k] = 0
+
+        if move in opp_wins_now:
+            bonus += 50000  # blocking immediate loss
+
+        bonus += 3000 * my_threats
+        bonus -= 2000 * opp_threats_after
+
+        scored.append((bonus, move))
+
+    scored.sort(reverse=True)
+    return [m for _, m in scored]
+
+TT: Dict[Tuple[Tuple[int, ...], int, int], int] = {}
+
+def _negamax(board, player, depth, alpha, beta):
+    # score from perspective of 'player' to move
+    key = (_flatten(board), player, depth)
+    if key in TT:
+        return TT[key]
+
+    w = _winner(board)
+    if w != 0:
+        val = player * (1000000 if w == 1 else -1000000)
+        TT[key] = val
+        return val
+
+    if _is_full(board):
+        TT[key] = 0
+        return 0
+
+    if depth == 0:
+        val = player * _evaluate(board)
+        TT[key] = val
+        return val
+
+    best = -10**9
+    moves = _ordered_moves(board, player)
+
+    for i, j, k in moves:
+        board[i][j][k] = player
+        val = -_negamax(board, -player, depth - 1, -beta, -alpha)
+        board[i][j][k] = 0
+
+        if val > best:
+            best = val
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+
+    TT[key] = best
+    return best
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    # Defensive legality fallback
+    legal = _legal_moves(board)
+    if not legal:
+        return (0, 0, 0)
+
+    # 1. Immediate win
+    wins = _immediate_winning_moves(board, 1)
+    if wins:
+        return sorted(wins, key=_cell_priority, reverse=True)[0]
+
+    # 2. Immediate block
+    opp_wins = _immediate_winning_moves(board, -1)
+    if opp_wins:
+        blockers = [m for m in legal if m in set(opp_wins)]
+        if blockers:
+            return sorted(blockers, key=_cell_priority, reverse=True)[0]
+
+    empties = len(legal)
+
+    # Search depth by game stage
+    # Deeper later in the game when branching factor is smaller.
+    if empties >= 20:
+        depth = 4
+    elif empties >= 14:
+        depth = 5
+    elif empties >= 10:
+        depth = 6
+    elif empties >= 7:
+        depth = 7
+    else:
+        depth = empties  # solve near the end
+
+    best_move = legal[0]
+    best_val = -10**9
+    alpha = -10**9
+    beta = 10**9
+
+    for move in _ordered_moves(board, 1):
+        i, j, k = move
+        board[i][j][k] = 1
+        val = -_negamax(board, -1, depth - 1, -beta, -alpha)
+        board[i][j][k] = 0
+
+        if val > best_val:
+            best_val = val
+            best_move = move
+        if val > alpha:
+            alpha = val
+
+    # Final legality guarantee
+    i, j, k = best_move
+    if 0 <= i < 3 and 0 <= j < 3 and 0 <= k < 3 and board[i][j][k] == 0:
+        return best_move
+
+    return legal[0]

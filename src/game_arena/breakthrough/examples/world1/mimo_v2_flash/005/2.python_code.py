@@ -1,0 +1,161 @@
+
+import random
+from typing import List, Tuple
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    """
+    A smart breakthrough policy that evaluates moves based on immediate capture opportunities,
+    threat reduction, and advancement toward the opponent's home row.
+    """
+    # Convert lists to sets for O(1) lookup
+    my_pieces = set(me)
+    opp_pieces = set(opp)
+    occupied = my_pieces | opp_pieces
+    
+    # Determine movement direction and home row
+    if color == 'b':  # Black moves down (toward row 0)
+        direction = -1
+        target_row = 0
+    else:  # White moves up (toward row 7)
+        direction = 1
+        target_row = 7
+    
+    # Generate all legal moves and score them
+    legal_moves = []
+    
+    for (r, c) in my_pieces:
+        # Calculate potential moves
+        moves = []
+        
+        # Forward move (straight)
+        forward_r = r + direction
+        if 0 <= forward_r < 8 and (forward_r, c) not in occupied:
+            moves.append((forward_r, c))
+        
+        # Diagonal captures (left and right)
+        for dc in [-1, 1]:
+            diag_r = r + direction
+            diag_c = c + dc
+            if 0 <= diag_r < 8 and 0 <= diag_c < 8:
+                if (diag_r, diag_c) in opp_pieces:  # Capture opponent
+                    moves.append((diag_r, diag_c))
+                elif (diag_r, diag_c) not in occupied:  # Empty diagonal
+                    moves.append((diag_r, diag_c))
+        
+        # Evaluate each move
+        for to_pos in moves:
+            move_score = 0
+            
+            # Check if this move wins immediately
+            if to_pos[0] == target_row:
+                # Prioritize moves that reach the opponent's home row
+                move_score += 1000
+            
+            # Check for capture opportunities
+            if to_pos in opp_pieces:
+                move_score += 500  # Capture is valuable
+                
+                # Bonus: capturing a piece that is threatening our pieces
+                # Count how many of our pieces this opponent piece can capture next
+                opp_r, opp_c = to_pos
+                threat_count = 0
+                for my_r, my_c in my_pieces:
+                    if (my_r, my_c) == (r, c):  # Don't count the piece being moved
+                        continue
+                    if abs(my_r - opp_r) == 1 and abs(my_c - opp_c) == 1:
+                        # This opponent piece could capture our piece diagonally
+                        # Check if our piece can't capture back (blocked)
+                        back_captured = False
+                        for orow, ocol in opp_pieces:
+                            if (orow, ocol) == to_pos:
+                                continue
+                            if abs(om_r - my_r) == 1 and abs(om_c - my_c) == 1:
+                                back_captured = True
+                                break
+                        if not back_captured:
+                            threat_count += 1
+                move_score += threat_count * 10
+            
+            # Reward advancement toward opponent's home row
+            if color == 'b':  # Black moving to row 0
+                dist = r - to_pos[0]  # Positive when moving forward
+            else:  # White moving to row 7
+                dist = to_pos[0] - r  # Positive when moving forward
+            move_score += dist * 5
+            
+            # Check if this move puts our piece in a vulnerable position
+            # (i.e., can be captured by opponent pieces)
+            is_vulnerable = False
+            for opp_r, opp_c in opp_pieces:
+                if abs(opp_r - to_pos[0]) == 1 and abs(opp_c - to_pos[1]) == 1:
+                    # Opponent piece can capture this move
+                    is_vulnerable = True
+                    break
+            
+            # Penalize vulnerability (unless we're capturing or reaching home row)
+            if is_vulnerable and to_pos[0] != target_row and to_pos not in opp_pieces:
+                move_score -= 20
+            
+            # Bonus: if moving forward, check if we can be captured
+            # and if we can capture back, reduce penalty
+            if is_vulnerable and to_pos not in opp_pieces:
+                can_retaliate = False
+                for my_r, my_c in my_pieces:
+                    if (my_r, my_c) == (r, c):
+                        continue
+                    if abs(my_r - to_pos[0]) == 1 and abs(my_c - to_pos[1]) == 1:
+                        # Our other piece can capture the attacker
+                        can_retaliate = True
+                        break
+                if can_retaliate:
+                    move_score += 10  # Reduce penalty if we can retaliate
+            
+            # Bonus: protect pieces that are close to promotion
+            for my_r, my_c in my_pieces:
+                if (my_r, my_c) == (r, c):
+                    continue
+                # Check if our piece is close to promotion
+                if color == 'b':
+                    if my_r == 1 and r == 2:  # Moving piece is in front of piece at row 1
+                        # This is protective positioning
+                        move_score += 5
+                else:
+                    if my_r == 6 and r == 5:
+                        move_score += 5
+            
+            # Avoid moving pieces that have better prospects
+            # Check if this piece has other good moves
+            other_moves_score = 0
+            for other_to in moves:
+                if other_to == to_pos:
+                    continue
+                if other_to[0] == target_row:
+                    other_moves_score += 1000
+                if other_to in opp_pieces:
+                    other_moves_score += 500
+            
+            # If this piece has better moves, don't move it elsewhere
+            if other_moves_score > move_score:
+                move_score -= 10
+            
+            legal_moves.append(((r, c), to_pos, move_score))
+    
+    if not legal_moves:
+        # No legal moves available (shouldn't happen in Breakthrough)
+        # Return a random move (though this case shouldn't occur)
+        return random.choice(me), random.choice(me)
+    
+    # Sort moves by score and return the best one
+    legal_moves.sort(key=lambda x: x[2], reverse=True)
+    
+    # Handle ties by random selection among top scores
+    best_score = legal_moves[0][2]
+    best_moves = [m for m in legal_moves if m[2] == best_score]
+    
+    if len(best_moves) > 1:
+        # Add a small random factor to break ties
+        chosen = random.choice(best_moves)
+    else:
+        chosen = best_moves[0]
+    
+    return (chosen[0], chosen[1])

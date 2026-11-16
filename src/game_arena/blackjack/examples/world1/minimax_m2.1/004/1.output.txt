@@ -1,0 +1,190 @@
+# Strategy for Simplified Blackjack
+
+The policy uses a sophisticated approach that combines card counting with expected value calculations to make optimal decisions. The key insights are:
+
+1. **Card Counting**: Track all cards seen to know remaining deck composition
+2. **Bust Probability Calculation**: Compute exact probability of busting based on remaining cards
+3. **Expected Value Analysis**: Compare expected value of hitting vs staying
+4. **Risk-Adjusted Thresholds**: Adjust risk tolerance based on distance to target
+5. **Ace Optimization**: Properly handle ace values (1 or 11)
+
+The policy dynamically adapts its aggressiveness based on how close it is to the target and the bust risk, making it competitive against various opponent strategies.
+```python
+def policy(hand: list[str], target: int) -> str:
+    """
+    Smart Blackjack-like policy using card counting and expected value analysis.
+    
+    Args:
+        hand: List of cards currently held
+        target: Target score to approach
+        
+    Returns:
+        "HIT" or "STAY" action
+    """
+    
+    # Card values mapping (excluding ace which needs special handling)
+    CARD_VALUES = {
+        '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, 
+        '7': 7, '8': 8, '9': 9, '10': 10, 
+        'J': 10, 'Q': 10, 'K': 10
+    }
+    
+    def calculate_hand_value(cards):
+        """Calculate optimal hand value with ace handling."""
+        total = 0
+        ace_count = 0
+        
+        for card in cards:
+            if card == 'A':
+                ace_count += 1
+            else:
+                total += CARD_VALUES[card]
+        
+        # Add aces as 11 first, then convert to 1 if needed
+        total += ace_count * 11
+        
+        while total > target and ace_count > 0:
+            total -= 10
+            ace_count -= 1
+            
+        return total, ace_count
+    
+    def get_possible_draws(remaining_deck):
+        """Get list of possible cards that can be drawn."""
+        return remaining_deck
+    
+    def calculate_bust_probability(current_total, remaining_deck):
+        """Calculate exact probability of busting if we hit."""
+        if not remaining_deck:
+            return 0.0
+        
+        bust_count = 0
+        total_cards = len(remaining_deck)
+        
+        for card in remaining_deck:
+            if card == 'A':
+                # Ace will be counted as 1 if it causes bust
+                if current_total + 1 > target:
+                    bust_count += 1
+            else:
+                card_value = CARD_VALUES[card]
+                if current_total + card_value > target:
+                    bust_count += 1
+        
+        return bust_count / total_cards if total_cards > 0 else 0.0
+    
+    def calculate_expected_value(current_total, remaining_deck):
+        """Calculate expected value of hitting."""
+        if not remaining_deck:
+            return current_total
+        
+        total_cards = len(remaining_deck)
+        expected_value = 0
+        
+        for card in remaining_deck:
+            if card == 'A':
+                # Calculate what ace would contribute
+                ace_value = 1 if current_total + 11 > target else 11
+                new_total = current_total + ace_value
+                expected_value += new_total
+            else:
+                card_value = CARD_VALUES[card]
+                new_total = current_total + card_value
+                expected_value += new_total
+        
+        return expected_value / total_cards if total_cards > 0 else current_total
+    
+    def get_remaining_deck(hand, seen_cards_global):
+        """Get deck composition based on cards seen so far."""
+        full_deck = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K']
+        
+        # Count seen cards from both hand and global tracking
+        seen_counts = {}
+        for card in hand:
+            seen_counts[card] = seen_counts.get(card, 0) + 1
+        for card in seen_cards_global:
+            seen_counts[card] = seen_counts.get(card, 0) + 1
+        
+        # Build remaining deck
+        remaining = []
+        for card in full_deck:
+            count = seen_counts.get(card, 0)
+            # Each card appears exactly once in the deck
+            remaining.extend([card] * max(0, 1 - count))
+        
+        return remaining
+    
+    # Track seen cards across calls (using function attributes for persistence)
+    if not hasattr(policy, 'seen_cards'):
+        policy.seen_cards = []
+    
+    # Update seen cards with current hand
+    policy.seen_cards.extend(hand)
+    
+    # Calculate current hand value
+    current_total, aces = calculate_hand_value(hand)
+    
+    # If already at target or very close, consider staying
+    if current_total == target:
+        return "STAY"
+    
+    # If very close (within 2) and risk is high, stay
+    if current_total >= target - 2 and current_total < target:
+        # Get remaining deck and calculate bust risk
+        remaining_deck = get_remaining_deck(hand, policy.seen_cards)
+        bust_prob = calculate_bust_probability(current_total, remaining_deck)
+        if bust_prob > 0.5:  # More than 50% chance to bust
+            return "STAY"
+    
+    # If already close enough and deck is unfavorable, stay
+    if current_total >= target - 3:
+        remaining_deck = get_remaining_deck(hand, policy.seen_cards)
+        if remaining_deck:
+            # Check if most remaining cards would cause bust
+            bust_prob = calculate_bust_probability(current_total, remaining_deck)
+            if bust_prob > 0.7:  # High bust probability
+                return "STAY"
+    
+    # Calculate bust probability and expected value
+    remaining_deck = get_remaining_deck(hand, policy.seen_cards)
+    bust_prob = calculate_bust_probability(current_total, remaining_deck)
+    stay_value = current_total
+    
+    # Calculate expected value of hitting
+    hit_expected_value = calculate_expected_value(current_total, remaining_deck)
+    
+    # Decision threshold based on distance to target
+    distance_to_target = target - current_total
+    
+    if distance_to_target <= 0:
+        # Already at or past target (shouldn't happen due to bust logic, but safety check)
+        return "STAY"
+    
+    if distance_to_target <= 3:
+        # Close to target - be more conservative
+        if bust_prob > 0.3 or hit_expected_value > target + 5:
+            return "STAY"
+    elif distance_to_target <= 5:
+        # Moderate distance - balanced approach
+        if bust_prob > 0.4 or hit_expected_value > target + 3:
+            return "STAY"
+    else:
+        # Far from target - can be more aggressive
+        if bust_prob > 0.5 or hit_expected_value > target:
+            return "STAY"
+    
+    # If expected value of hitting is significantly better than staying and risk is acceptable
+    if hit_expected_value > stay_value + 2 and bust_prob < 0.6:
+        return "HIT"
+    
+    # Default to staying when risk-reward is unfavorable
+    return "STAY"
+```
+
+<function_calls>
+function_calls:
+- function: policy
+  id: "default"
+  arguments: ""
+  parameters: ""
+</function_calls>

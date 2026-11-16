@@ -1,0 +1,409 @@
+The strategy for this policy is:
+
+1. Always play a legal move, with a fast heuristic fallback ready immediately.
+2. Handle forced tactics first:
+   - take an immediate win,
+   - block an immediate opponent win,
+   - create a double threat (fork) if possible,
+   - block an opponent fork when necessary.
+3. If no forced tactic exists, run iterative-deepening alpha-beta negamax with:
+   - move ordering,
+   - a transposition table,
+   - a line-based heuristic that values open rows/columns/diagonals.
+4. Use a strict time budget so the function reliably returns in time.
+
+<code>
+import time
+from typing import List, Tuple
+
+# 4x4 Tic-Tac-Toe: win by getting 4 in a row.
+
+LINES = [
+    (0, 1, 2, 3),
+    (4, 5, 6, 7),
+    (8, 9, 10, 11),
+    (12, 13, 14, 15),
+    (0, 4, 8, 12),
+    (1, 5, 9, 13),
+    (2, 6, 10, 14),
+    (3, 7, 11, 15),
+    (0, 5, 10, 15),
+    (3, 6, 9, 12),
+]
+
+CELL_TO_LINES = [[] for _ in range(16)]
+for line in LINES:
+    for idx in line:
+        CELL_TO_LINES[idx].append(line)
+
+CORNERS = {0, 3, 12, 15}
+POS_WEIGHTS = []
+for i in range(16):
+    w = 3 * len(CELL_TO_LINES[i])
+    if i in CORNERS:
+        w += 1
+    POS_WEIGHTS.append(w)
+
+WIN_SCORE = 1_000_000
+INF = 10**18
+
+# Static evaluation weights for open lines
+MY_LINE_WEIGHTS = [0, 2, 12, 90, WIN_SCORE]
+OPP_LINE_WEIGHTS = [0, 2, 14, 100, WIN_SCORE]
+
+# Move ordering weights
+OFFENSE_ORDER = [0, 3, 15, 120, 100000]
+DEFENSE_ORDER = [0, 1, 12, 150, 0]
+
+EXACT = 0
+LOWER = 1
+UPPER = 2
+
+TT = {}
+DEADLINE = 0.0
+NODE_COUNTER = 0
+
+
+class TimeoutSearch(Exception):
+    pass
+
+
+def flat_board(board: List[List[int]]) -> List[int]:
+    out = []
+    for r in range(4):
+        row = board[r]
+        for c in range(4):
+            v = row[c]
+            if v not in (-1, 0, 1):
+                v = 0
+            out.append(v)
+    return out
+
+
+def idx_to_rc(idx: int) -> Tuple[int, int]:
+    return (idx // 4, idx % 4)
+
+
+def legal_moves(flat: List[int]) -> List[int]:
+    return [i for i, v in enumerate(flat) if v == 0]
+
+
+def check_winner(flat: List[int]) -> int:
+    for a, b, c, d in LINES:
+        s = flat[a] + flat[b] + flat[c] + flat[d]
+        if s == 4:
+            return 1
+        if s == -4:
+            return -1
+    return 0
+
+
+def is_winning_move(flat: List[int], move: int, player: int) -> bool:
+    # move is assumed empty
+    for line in CELL_TO_LINES[move]:
+        pcount = 0
+        ocount = 0
+        for pos in line:
+            v = flat[pos]
+            if v == player:
+                pcount += 1
+            elif v == -player:
+                ocount += 1
+        if ocount == 0 and pcount == 3:
+            return True
+    return False
+
+
+def immediate_wins(flat: List[int], player: int) -> List[int]:
+    wins = []
+    for m in legal_moves(flat):
+        if is_winning_move(flat, m, player):
+            wins.append(m)
+    return wins
+
+
+def move_priority(flat: List[int], move: int, player: int, tt_move=None, force_block_set=None) -> int:
+    score = POS_WEIGHTS[move]
+
+    if tt_move is not None and move == tt_move:
+        score += 150000
+    if force_block_set is not None and move in force_block_set:
+        score += 120000
+
+    for line in CELL_TO_LINES[move]:
+        pcount = 0
+        ocount = 0
+        for pos in line:
+            v = flat[pos]
+            if v == player:
+                pcount += 1
+            elif v == -player:
+                ocount += 1
+
+        # Blocking an opponent-only line
+        if pcount == 0 and ocount > 0:
+            score += DEFENSE_ORDER[ocount]
+
+        # Extending our own open line
+        if ocount == 0:
+            after = pcount + 1
+            score += OFFENSE_ORDER[after]
+
+    return score
+
+
+def order_moves(flat: List[int], moves: List[int], player: int, tt_move=None) -> List[int]:
+    return sorted(
+        moves,
+        key=lambda m: move_priority(flat, m, player, tt_move=tt_move),
+        reverse=True,
+    )
+
+
+def static_eval(flat: List[int], player: int) -> int:
+    winner = check_winner(flat)
+    if winner != 0:
+        return WIN_SCORE if winner == player else -WIN_SCORE
+
+    score = 0
+    for a, b, c, d in LINES:
+        vals = (flat[a], flat[b], flat[c], flat[d])
+        c1 = vals.count(1)
+        c2 = vals.count(-1)
+        if c1 and c2:
+            continue
+        if c1:
+            score += MY_LINE_WEIGHTS[c1]
+        elif c2:
+            score -= OPP_LINE_WEIGHTS[c2]
+
+    # Mild positional bonus
+    for i, v in enumerate(flat):
+        if v == 1:
+            score += POS_WEIGHTS[i]
+        elif v == -1:
+            score -= POS_WEIGHTS[i]
+
+    return score * player
+
+
+def double_threat_moves(flat: List[int], player: int) -> List[int]:
+    result = []
+    moves = legal_moves(flat)
+    for m in moves:
+        flat[m] = player
+        wins = immediate_wins(flat, player)
+        flat[m] = 0
+        if len(wins) >= 2:
+            result.append(m)
+    return result
+
+
+def choose_best_heuristic(flat: List[int], moves: List[int], player: int, force_block_set=None) -> int:
+    best = moves[0]
+    best_score = -INF
+    for m in moves:
+        s = move_priority(flat, m, player, force_block_set=force_block_set)
+        if s > best_score:
+            best_score = s
+            best = m
+    return best
+
+
+def time_check():
+    global NODE_COUNTER
+    NODE_COUNTER += 1
+    if (NODE_COUNTER & 1023) == 0 and time.perf_counter() >= DEADLINE:
+        raise TimeoutSearch
+
+
+def negamax(flat: List[int], player: int, depth: int, alpha: int, beta: int) -> int:
+    time_check()
+
+    winner = check_winner(flat)
+    if winner != 0:
+        return (WIN_SCORE + depth) if winner == player else (-WIN_SCORE - depth)
+
+    moves = legal_moves(flat)
+    if not moves:
+        return 0
+    if depth == 0:
+        return static_eval(flat, player)
+
+    key = (tuple(flat), player)
+    entry = TT.get(key)
+    tt_move = None
+    alpha_orig = alpha
+    beta_orig = beta
+
+    if entry is not None:
+        entry_depth, entry_flag, entry_score, entry_best = entry
+        tt_move = entry_best
+        if entry_depth >= depth:
+            if entry_flag == EXACT:
+                return entry_score
+            elif entry_flag == LOWER:
+                alpha = max(alpha, entry_score)
+            else:
+                beta = min(beta, entry_score)
+            if alpha >= beta:
+                return entry_score
+
+    ordered = order_moves(flat, moves, player, tt_move=tt_move)
+
+    best_score = -INF
+    best_move = ordered[0]
+
+    for m in ordered:
+        flat[m] = player
+        score = -negamax(flat, -player, depth - 1, -beta, -alpha)
+        flat[m] = 0
+
+        if score > best_score:
+            best_score = score
+            best_move = m
+        if score > alpha:
+            alpha = score
+        if alpha >= beta:
+            break
+
+    flag = EXACT
+    if best_score <= alpha_orig:
+        flag = UPPER
+    elif best_score >= beta_orig:
+        flag = LOWER
+
+    TT[key] = (depth, flag, best_score, best_move)
+    return best_score
+
+
+def search_root(flat: List[int], depth: int) -> Tuple[int, int]:
+    moves = legal_moves(flat)
+    if not moves:
+        return 0, -1
+
+    key = (tuple(flat), 1)
+    tt_move = TT[key][3] if key in TT else None
+    ordered = order_moves(flat, moves, 1, tt_move=tt_move)
+
+    best_score = -INF
+    best_move = ordered[0]
+    alpha = -INF
+    beta = INF
+
+    for m in ordered:
+        time_check()
+        flat[m] = 1
+        score = -negamax(flat, -1, depth - 1, -beta, -alpha)
+        flat[m] = 0
+
+        if score > best_score:
+            best_score = score
+            best_move = m
+        if score > alpha:
+            alpha = score
+
+    return best_score, best_move
+
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    global TT, DEADLINE, NODE_COUNTER
+
+    flat = flat_board(board)
+    moves = legal_moves(flat)
+
+    # Absolute fallback if the input is somehow terminal/full.
+    if not moves:
+        return (0, 0)
+
+    # Fast legal fallback ready immediately.
+    fallback = choose_best_heuristic(flat, moves, 1)
+
+    # Time budget with margin.
+    DEADLINE = time.perf_counter() + 0.92
+    NODE_COUNTER = 0
+    TT = {}
+
+    # 1) Immediate win
+    my_wins = immediate_wins(flat, 1)
+    if my_wins:
+        return idx_to_rc(choose_best_heuristic(flat, my_wins, 1))
+
+    # 2) Immediate block
+    opp_wins = immediate_wins(flat, -1)
+    if opp_wins:
+        safe_blocks = []
+        for m in moves:
+            flat[m] = 1
+            future_opp_wins = immediate_wins(flat, -1)
+            flat[m] = 0
+            if not future_opp_wins:
+                safe_blocks.append(m)
+        if safe_blocks:
+            return idx_to_rc(choose_best_heuristic(flat, safe_blocks, 1, force_block_set=set(opp_wins)))
+        forced_blocks = [m for m in moves if m in set(opp_wins)]
+        if forced_blocks:
+            return idx_to_rc(choose_best_heuristic(flat, forced_blocks, 1, force_block_set=set(opp_wins)))
+        return idx_to_rc(fallback)
+
+    # 3) Create a fork if possible
+    my_forks = double_threat_moves(flat, 1)
+    if my_forks:
+        safe_forks = []
+        for m in my_forks:
+            flat[m] = 1
+            if not immediate_wins(flat, -1):
+                safe_forks.append(m)
+            flat[m] = 0
+        if safe_forks:
+            return idx_to_rc(choose_best_heuristic(flat, safe_forks, 1))
+        return idx_to_rc(choose_best_heuristic(flat, my_forks, 1))
+
+    # 4) Block opponent fork if necessary
+    opp_forks = double_threat_moves(flat, -1)
+    if opp_forks:
+        safe_defenses = []
+        for m in moves:
+            flat[m] = 1
+            future_opp_forks = double_threat_moves(flat, -1)
+            future_opp_wins = immediate_wins(flat, -1)
+            flat[m] = 0
+            if not future_opp_forks and not future_opp_wins:
+                safe_defenses.append(m)
+        if safe_defenses:
+            return idx_to_rc(choose_best_heuristic(flat, safe_defenses, 1))
+        fork_blocks = [m for m in moves if m in set(opp_forks)]
+        if fork_blocks:
+            return idx_to_rc(choose_best_heuristic(flat, fork_blocks, 1))
+
+    # 5) Iterative deepening alpha-beta
+    best_move = fallback
+    best_score = -INF
+
+    try:
+        depth = 1
+        max_depth = len(moves)
+        while depth <= max_depth:
+            score, move = search_root(flat, depth)
+            if move != -1:
+                best_move = move
+                best_score = score
+            # If we found a forced win, no need to search deeper.
+            if best_score >= WIN_SCORE // 2:
+                break
+            depth += 1
+    except TimeoutSearch:
+        pass
+    except Exception:
+        # Never fail to return a legal move.
+        pass
+
+    if flat[best_move] != 0:
+        # Safety net.
+        for m in moves:
+            if flat[m] == 0:
+                best_move = m
+                break
+
+    return idx_to_rc(best_move)
+</code>

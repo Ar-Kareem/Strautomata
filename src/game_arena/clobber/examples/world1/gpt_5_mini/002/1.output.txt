@@ -1,0 +1,134 @@
+I'll pick a simple, fast, and deterministic legal-move selector: enumerate all legal captures, simulate each, and choose one that minimizes the number of legal moves available to the opponent after the capture. Break ties by maximizing our next legal moves, and finally by a deterministic ordering (row, col, direction). This should always produce a legal move and prefers moves that reduce the opponent's options.
+
+<code>
+# Clobber move policy
+# policy(you, opponent) -> 'row,col,dir'
+# Accepts nested lists, flat lists of length 30, or numpy arrays.
+
+from typing import List, Tuple, Sequence
+
+DIRS = [('U', -1, 0), ('R', 0, 1), ('D', 1, 0), ('L', 0, -1)]
+ROWS = 5
+COLS = 6
+
+def _to_grid(arr: Sequence[int]) -> List[List[int]]:
+    # Convert input to 5x6 grid of ints
+    # Accept numpy arrays, flat lists of length 30, or nested lists of shape [5][6].
+    try:
+        # handle numpy arrays or objects with shape
+        shape = getattr(arr, 'shape', None)
+        if shape is not None:
+            # flatten then reshape
+            flat = list(arr.flatten())
+        else:
+            # if nested list
+            if len(arr) == ROWS and all(hasattr(row, '__len__') and len(row) == COLS for row in arr):
+                # already nested 5x6
+                return [ [int(arr[r][c]) for c in range(COLS)] for r in range(ROWS) ]
+            # if flat list
+            flat = list(arr)
+        if len(flat) != ROWS * COLS:
+            # fallback: try to coerce elements to ints and then reshape if possible
+            raise ValueError
+        grid = []
+        for r in range(ROWS):
+            row = []
+            for c in range(COLS):
+                row.append(int(flat[r * COLS + c]))
+            grid.append(row)
+        return grid
+    except Exception:
+        # robust fallback: create empty board
+        return [[0]*COLS for _ in range(ROWS)]
+
+def _legal_moves_for(you_g: List[List[int]], opp_g: List[List[int]]) -> List[Tuple[int,int,str]]:
+    moves = []
+    for r in range(ROWS):
+        for c in range(COLS):
+            if you_g[r][c] != 1:
+                continue
+            for dname, dr, dc in DIRS:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < ROWS and 0 <= nc < COLS:
+                    if opp_g[nr][nc] == 1:
+                        moves.append((r, c, dname))
+    return moves
+
+def _apply_move(you_g: List[List[int]], opp_g: List[List[int]], move: Tuple[int,int,str]):
+    r, c, dname = move
+    # copy grids
+    you2 = [row[:] for row in you_g]
+    opp2 = [row[:] for row in opp_g]
+    # compute destination
+    dr = dc = 0
+    for name, ddr, ddc in DIRS:
+        if name == dname:
+            dr, dc = ddr, ddc
+            break
+    nr, nc = r + dr, c + dc
+    # perform capture: opponent piece removed, our piece moves
+    opp2[nr][nc] = 0
+    you2[r][c] = 0
+    you2[nr][nc] = 1
+    return you2, opp2
+
+def _count_legal(you_g: List[List[int]], opp_g: List[List[int]]) -> int:
+    # count number of legal moves for 'you' capturing 'opp'
+    cnt = 0
+    for r in range(ROWS):
+        for c in range(COLS):
+            if you_g[r][c] != 1:
+                continue
+            # check neighbors
+            # unroll loop for speed
+            if r-1 >= 0 and opp_g[r-1][c] == 1:
+                cnt += 1
+            if c+1 < COLS and opp_g[r][c+1] == 1:
+                cnt += 1
+            if r+1 < ROWS and opp_g[r+1][c] == 1:
+                cnt += 1
+            if c-1 >= 0 and opp_g[r][c-1] == 1:
+                cnt += 1
+    return cnt
+
+def policy(you: Sequence[int], opponent: Sequence[int]) -> str:
+    """
+    Return a legal move 'row,col,dir'.
+    """
+    you_g = _to_grid(you)
+    opp_g = _to_grid(opponent)
+
+    moves = _legal_moves_for(you_g, opp_g)
+    if not moves:
+        # According to the problem, this should not happen. But to be safe, return any safe fallback.
+        # Find any of our pieces that has neighbor opponent and return first found (shouldn't be needed).
+        for r in range(ROWS):
+            for c in range(COLS):
+                if you_g[r][c] != 1:
+                    continue
+                for dname, dr, dc in DIRS:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < ROWS and 0 <= nc < COLS and opp_g[nr][nc] == 1:
+                        return f"{r},{c},{dname}"
+        # As an absolute last resort (shouldn't occur), return a fixed valid string (0,0,U) might be illegal.
+        return "0,0,U"
+
+    # Evaluate moves: prefer moves that minimize opponent's legal moves after our move.
+    best = None
+    # direction order mapping for deterministic tie-breaking
+    dir_index = {d[0]: i for i, d in enumerate(DIRS)}
+    for mv in moves:
+        you2, opp2 = _apply_move(you_g, opp_g, mv)
+        # opponent to move next: count opponent's legal moves (they are the 'you' relative to their pieces)
+        opp_moves_after = _count_legal(opp2, you2)
+        # also compute our legal moves after (for tie-breaker)
+        our_moves_after = _count_legal(you2, opp2)
+        r, c, dname = mv
+        key = (opp_moves_after, -our_moves_after, r, c, dir_index[dname])
+        if best is None or key < best[0]:
+            best = (key, mv)
+
+    chosen = best[1]
+    r, c, dname = chosen
+    return f"{r},{c},{dname}"
+</code>

@@ -1,0 +1,353 @@
+The strategy for this policy uses minimax search with alpha-beta pruning at depth 3 to find the best move. It employs piece-square evaluation tables that reward good piece placement (e.g., central pawns, knights in active positions). The search prioritizes capture moves through move ordering for better alpha-beta pruning efficiency. The bot first checks for immediate checkmate, then uses the evaluation function which combines material values with positional bonuses. To add variety and avoid predictability, moves with equal scores are randomly selected with 30% probability.
+
+<code>
+import random
+
+PIECE_VALUES = {'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000}
+
+PAWN_TABLE = [
+    [0,  0,  0,  0,  0,  0,  0,  0],
+    [50, 50, 50, 50, 50, 50, 50, 50],
+    [10, 10, 20, 30, 30, 20, 10, 10],
+    [5,  5, 10, 25, 25, 10,  5,  5],
+    [0,  0,  0, 20, 20,  0,  0,  0],
+    [5, -5,-10,  0,  0,-10, -5,  5],
+    [5, 10, 10,-20,-20, 10, 10,  5],
+    [0,  0,  0,  0,  0,  0,  0,  0]
+]
+
+KNIGHT_TABLE = [
+    [-50,-40,-30,-30,-30,-30,-40,-50],
+    [-40,-20,  0,  0,  0,  0,-20,-40],
+    [-30,  0, 10, 15, 15, 10,  0,-30],
+    [-30,  5, 15, 20, 20, 15,  5,-30],
+    [-30,  0, 15, 20, 20, 15,  0,-30],
+    [-30,  5, 10, 15, 15, 10,  5,-30],
+    [-40,-20,  0,  5,  5,  0,-20,-40],
+    [-50,-40,-30,-30,-30,-30,-40,-50]
+]
+
+BISHOP_TABLE = [
+    [-20,-10,-10,-10,-10,-10,-10,-20],
+    [-10,  0,  0,  0,  0,  0,  0,-10],
+    [-10,  0,  5, 10, 10,  5,  0,-10],
+    [-10,  5,  5, 10, 10,  5,  5,-10],
+    [-10,  0, 10, 10, 10, 10,  0,-10],
+    [-10, 10, 10, 10, 10, 10, 10,-10],
+    [-10,  5,  0,  0,  0,  0,  5,-10],
+    [-20,-10,-10,-10,-10,-10,-10,-20]
+]
+
+ROOK_TABLE = [
+    [0,  0,  0,  0,  0,  0,  0,  0],
+    [5, 10, 10, 10, 10, 10, 10,  5],
+    [-5,  0,  0,  0,  0,  0,  0, -5],
+    [-5,  0,  0,  0,  0,  0,  0, -5],
+    [-5,  0,  0,  0,  0,  0,  0, -5],
+    [-5,  0,  0,  0,  0,  0,  0, -5],
+    [-5,  0,  0,  0,  0,  0,  0, -5],
+    [0,  0,  0,  5,  5,  0,  0,  0]
+]
+
+QUEEN_TABLE = [
+    [-20,-10,-10, -5, -5,-10,-10,-20],
+    [-10,  0,  0,  0,  0,  0,  0,-10],
+    [-10,  0,  5,  5,  5,  5,  0,-10],
+    [-5,  0,  5,  5,  5,  5,  0, -5],
+    [0,  0,  5,  5,  5,  5,  0, -5],
+    [-10,  5,  5,  5,  5,  5,  0,-10],
+    [-10,  0,  5,  0,  0,  0,  0,-10],
+    [-20,-10,-10, -5, -5,-10,-10,-20]
+]
+
+KING_TABLE = [
+    [-30,-40,-40,-50,-50,-40,-40,-30],
+    [-30,-40,-40,-50,-50,-40,-40,-30],
+    [-30,-40,-40,-50,-50,-40,-40,-30],
+    [-30,-40,-40,-50,-50,-40,-40,-30],
+    [-20,-30,-30,-40,-40,-30,-30,-20],
+    [-10,-20,-20,-20,-20,-20,-20,-10],
+    [20, 20,  0,  0,  0,  0, 20, 20],
+    [20, 30, 10,  0,  0, 10, 30, 20]
+]
+
+def square_to_coords(square):
+    return 8 - int(square[1]), ord(square[0]) - ord('a')
+
+def coords_to_square(rank, file):
+    return chr(file + ord('a')) + str(8 - rank)
+
+def get_piece_at(board, rank, file):
+    if 0 <= rank < 8 and 0 <= file < 8:
+        return board.get(coords_to_square(rank, file))
+    return None
+
+def find_king(board, color):
+    for sq, p in board.items():
+        if p == color + 'K':
+            return sq
+    return None
+
+def is_square_attacked(board, square, attacker):
+    r, f = square_to_coords(square)
+    pd = 1 if attacker == 'w' else -1
+    
+    for df in [-1, 1]:
+        if get_piece_at(board, r + pd, f + df) == attacker + 'P':
+            return True
+    
+    for dr, df in [(-2,-1), (-2,1), (-1,-2), (-1,2), (1,-2), (1,2), (2,-1), (2,1)]:
+        if get_piece_at(board, r + dr, f + df) == attacker + 'N':
+            return True
+    
+    for dr in [-1, 0, 1]:
+        for df in [-1, 0, 1]:
+            if dr == 0 and df == 0:
+                continue
+            if get_piece_at(board, r + dr, f + df) == attacker + 'K':
+                return True
+    
+    for dr, df in [(-1,-1), (-1,1), (1,-1), (1,1)]:
+        for i in range(1, 8):
+            nr, nf = r + dr*i, f + df*i
+            if not (0 <= nr < 8 and 0 <= nf < 8):
+                break
+            p = get_piece_at(board, nr, nf)
+            if p:
+                if p[0] == attacker and p[1] in 'BQ':
+                    return True
+                break
+    
+    for dr, df in [(-1,0), (1,0), (0,-1), (0,1)]:
+        for i in range(1, 8):
+            nr, nf = r + dr*i, f + df*i
+            if not (0 <= nr < 8 and 0 <= nf < 8):
+                break
+            p = get_piece_at(board, nr, nf)
+            if p:
+                if p[0] == attacker and p[1] in 'RQ':
+                    return True
+                break
+    
+    return False
+
+def is_in_check(board, color):
+    ks = find_king(board, color)
+    if not ks:
+        return False
+    opp = 'b' if color == 'w' else 'w'
+    return is_square_attacked(board, ks, opp)
+
+def generate_pseudo_moves(board, color):
+    moves = []
+    pd = -1 if color == 'w' else 1
+    sr = 6 if color == 'w' else 1
+    pr = 0 if color == 'w' else 7
+    opp = 'b' if color == 'w' else 'w'
+    
+    for sq, pc in board.items():
+        if pc[0] != color:
+            continue
+        
+        pt = pc[1]
+        r, f = square_to_coords(sq)
+        
+        if pt == 'P':
+            nr = r + pd
+            if 0 <= nr < 8:
+                ns = coords_to_square(nr, f)
+                if get_piece_at(board, nr, f) is None:
+                    if nr == pr:
+                        for promo in 'qrbn':
+                            moves.append(sq + ns + promo)
+                    else:
+                        moves.append(sq + ns)
+                    if r == sr and get_piece_at(board, r + 2*pd, f) is None:
+                        moves.append(sq + coords_to_square(r + 2*pd, f))
+            
+            for df in [-1, 1]:
+                nr, nf = r + pd, f + df
+                if 0 <= nr < 8 and 0 <= nf < 8:
+                    tgt = get_piece_at(board, nr, nf)
+                    if tgt and tgt[0] == opp:
+                        ns = coords_to_square(nr, nf)
+                        if nr == pr:
+                            for promo in 'qrbn':
+                                moves.append(sq + ns + promo)
+                        else:
+                            moves.append(sq + ns)
+        
+        elif pt == 'N':
+            for dr, df in [(-2,-1), (-2,1), (-1,-2), (-1,2), (1,-2), (1,2), (2,-1), (2,1)]:
+                nr, nf = r + dr, f + df
+                if 0 <= nr < 8 and 0 <= nf < 8:
+                    tgt = get_piece_at(board, nr, nf)
+                    if tgt is None or tgt[0] != color:
+                        moves.append(sq + coords_to_square(nr, nf))
+        
+        elif pt in 'BRQ':
+            dirs = []
+            if pt in 'BQ':
+                dirs.extend([(-1,-1), (-1,1), (1,-1), (1,1)])
+            if pt in 'RQ':
+                dirs.extend([(-1,0), (1,0), (0,-1), (0,1)])
+            
+            for dr, df in dirs:
+                for i in range(1, 8):
+                    nr, nf = r + dr*i, f + df*i
+                    if not (0 <= nr < 8 and 0 <= nf < 8):
+                        break
+                    tgt = get_piece_at(board, nr, nf)
+                    if tgt is None:
+                        moves.append(sq + coords_to_square(nr, nf))
+                    else:
+                        if tgt[0] != color:
+                            moves.append(sq + coords_to_square(nr, nf))
+                        break
+        
+        elif pt == 'K':
+            for dr in [-1, 0, 1]:
+                for df in [-1, 0, 1]:
+                    if dr == 0 and df == 0:
+                        continue
+                    nr, nf = r + dr, f + df
+                    if 0 <= nr < 8 and 0 <= nf < 8:
+                        tgt = get_piece_at(board, nr, nf)
+                        if tgt is None or tgt[0] != color:
+                            moves.append(sq + coords_to_square(nr, nf))
+    
+    return moves
+
+def get_legal_moves(board, color):
+    legal = []
+    for move in generate_pseudo_moves(board, color):
+        nb = dict(board)
+        fs, ts = move[:2], move[2:4]
+        p = nb[fs]
+        if len(move) == 4:
+            del nb[fs]
+            nb[ts] = p
+        else:
+            del nb[fs]
+            nb[ts] = p[0] + move[4].upper()
+        if not is_in_check(nb, color):
+            legal.append(move)
+    return legal
+
+def evaluate(board, color):
+    score = 0
+    tables = {'P': PAWN_TABLE, 'N': KNIGHT_TABLE, 'B': BISHOP_TABLE, 
+              'R': ROOK_TABLE, 'Q': QUEEN_TABLE, 'K': KING_TABLE}
+    for sq, pc in board.items():
+        c, pt = pc[0], pc[1]
+        r, f = square_to_coords(sq)
+        val = PIECE_VALUES[pt]
+        table = tables.get(pt)
+        pos = table[r][f] if table and c == 'w' else (table[7-r][f] if table else 0) if c == 'b' else 0
+        if c == color:
+            score += val + pos
+        else:
+            score -= val + pos
+    return score
+
+def minimax(board, color, depth, alpha, beta, maximizing):
+    if depth == 0:
+        return evaluate(board, color)
+    
+    cur_c = color if maximizing else ('b' if color == 'w' else 'w')
+    moves = get_legal_moves(board, cur_c)
+    
+    if not moves:
+        if is_in_check(board, cur_c):
+            return -100000 + depth if maximizing else 100000 - depth
+        return 0
+    
+    if maximizing:
+        best = float('-inf')
+        for m in moves:
+            nb = dict(board)
+            fs, ts = m[:2], m[2:4]
+            p = nb[fs]
+            if len(m) == 4:
+                del nb[fs]
+                nb[ts] = p
+            else:
+                del nb[fs]
+                nb[ts] = p[0] + m[4].upper()
+            val = minimax(nb, color, depth - 1, alpha, beta, False)
+            best = max(best, val)
+            alpha = max(alpha, val)
+            if beta <= alpha:
+                break
+        return best
+    else:
+        best = float('inf')
+        for m in moves:
+            nb = dict(board)
+            fs, ts = m[:2], m[2:4]
+            p = nb[fs]
+            if len(m) == 4:
+                del nb[fs]
+                nb[ts] = p
+            else:
+                del nb[fs]
+                nb[ts] = p[0] + m[4].upper()
+            val = minimax(nb, color, depth - 1, alpha, beta, True)
+            best = min(best, val)
+            beta = min(beta, val)
+            if beta <= alpha:
+                break
+        return best
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    color = 'w' if to_play == 'white' else 'b'
+    moves = get_legal_moves(pieces, color)
+    
+    if not moves:
+        pseudo = generate_pseudo_moves(pieces, color)
+        return pseudo[0] if pseudo else 'e2e4'
+    
+    def mv_score(m):
+        tgt = pieces.get(m[2:4])
+        return PIECE_VALUES[tgt[1]] if tgt else 0
+    
+    moves.sort(key=mv_score, reverse=True)
+    
+    for m in moves:
+        nb = dict(pieces)
+        fs, ts = m[:2], m[2:4]
+        p = nb[fs]
+        if len(m) == 4:
+            del nb[fs]
+            nb[ts] = p
+        else:
+            del nb[fs]
+            nb[ts] = p[0] + m[4].upper()
+        opp = 'b' if color == 'w' else 'w'
+        opp_moves = get_legal_moves(nb, opp)
+        if not opp_moves and is_in_check(nb, opp):
+            return m
+    
+    depth = 3
+    best_move = moves[0]
+    best_score = float('-inf')
+    
+    for m in moves:
+        nb = dict(pieces)
+        fs, ts = m[:2], m[2:4]
+        p = nb[fs]
+        if len(m) == 4:
+            del nb[fs]
+            nb[ts] = p
+        else:
+            del nb[fs]
+            nb[ts] = p[0] + m[4].upper()
+        score = minimax(nb, color, depth - 1, float('-inf'), float('inf'), False)
+        if score > best_score:
+            best_score = score
+            best_move = m
+        elif score == best_score and random.random() < 0.3:
+            best_move = m
+    
+    return best_move
+</code>

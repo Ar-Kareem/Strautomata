@@ -1,0 +1,262 @@
+
+import numpy as np
+from collections import defaultdict
+
+# Precompute piece values (in pawn units)
+PIECE_VALUES = {
+    'wP': 1, 'bP': 1,
+    'wN': 3, 'bN': 3,
+    'wB': 3, 'bB': 3,
+    'wR': 5, 'bR': 5,
+    'wQ': 9, 'bQ': 9,
+    'wK': 0, 'bK': 0  # King has no material value
+}
+
+# Center control squares (d4, d5, e4, e5)
+CENTER_SQUARES = {'d4', 'd5', 'e4', 'e5'}
+
+# Directions for sliding pieces (rook, bishop, queen)
+ROOK_DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+BISHOP_DIRS = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+QUEEN_DIRS = ROOK_DIRS + BISHOP_DIRS
+KNIGHT_DELTAS = [(-2, -1), (-2, 1), (-1, -2), (-1, 2),
+                 (1, -2), (1, 2), (2, -1), (2, 1)]
+
+# Parse algebraic square to (file, rank) indices (0-7)
+def square_to_indices(square):
+    file = ord(square[0]) - ord('a')
+    rank = int(square[1]) - 1
+    return (file, rank)
+
+# Parse (file, rank) indices to algebraic square
+def indices_to_square(file, rank):
+    return chr(ord('a') + file) + str(rank + 1)
+
+# Check if a square is in the center
+def is_center_square(square):
+    file, rank = square_to_indices(square)
+    return (file in {3, 4} and rank in {3, 4})
+
+# Evaluate material balance (our score - opponent's score)
+def evaluate_material(pieces, to_play):
+    score = 0
+    opponent = 'b' if to_play == 'white' else 'w'
+    for piece in pieces.values():
+        if piece[0] == to_play:
+            score += PIECE_VALUES[piece]
+        else:
+            score -= PIECE_VALUES[piece]
+    return score
+
+# Check if a move captures a piece
+def is_capture(move, pieces):
+    from_sq, to_sq = move[:2], move[2:]
+    return to_sq in pieces
+
+# Get the captured piece (if any)
+def get_captured_piece(move, pieces):
+    to_sq = move[2:]
+    return pieces.get(to_sq, None)
+
+# Get the moving piece
+def get_moving_piece(move, pieces):
+    from_sq = move[:2]
+    return pieces.get(from_sq, None)
+
+# Check if a move is a promotion
+def is_promotion(move):
+    return len(move) == 5 and move[3] in {'r', 'b', 'n', 'q'}
+
+# Get promotion piece value
+def get_promotion_value(move):
+    promo_piece = move[3]
+    return PIECE_VALUES[f'wQ' if promo_piece == 'q' else f'wR' if promo_piece == 'r' else f'wB' if promo_piece == 'b' else f'wN']
+
+# Check if a move gives check (simplified)
+def gives_check(move, pieces, to_play):
+    # TODO: Implement full check detection (for now, assume no checks)
+    return False
+
+# Check if a move is a castling move
+def is_castling(move):
+    return len(move) == 4 and move[0] in {'e', 'E'} and move[2] in {'g', 'c', 'G', 'C'}
+
+# Evaluate king safety (simplified: avoid moving king into attack)
+def evaluate_king_safety(move, pieces, to_play):
+    king_sq = None
+    for sq, piece in pieces.items():
+        if piece[1] == 'K' and piece[0] == to_play:
+            king_sq = sq
+            break
+    if not king_sq:
+        return 0
+
+    from_sq = move[:2]
+    if from_sq == king_sq:
+        to_sq = move[2:]
+        # Check if to_sq is attacked by opponent (simplified)
+        opponent = 'b' if to_play == 'white' else 'w'
+        # TODO: Implement full attack detection (for now, assume safe)
+        return 0
+    return 0
+
+# Evaluate mobility (number of legal moves for each piece)
+def evaluate_mobility(move, pieces, to_play, legal_moves):
+    # TODO: Implement mobility evaluation (for now, ignore)
+    return 0
+
+# Evaluate pawn structure (avoid weakening pawns)
+def evaluate_pawn_structure(move, pieces, to_play):
+    from_sq, to_sq = move[:2], move[2:]
+    if move[0] == 'P':  # Pawn move
+        # Avoid moving pawns that create weaknesses (e.g., isolated/doubled pawns)
+        # TODO: Implement pawn structure checks
+        return 0
+    return 0
+
+# Evaluate center control
+def evaluate_center_control(move, pieces, to_play):
+    from_sq, to_sq = move[:2], move[2:]
+    if is_center_square(to_sq):
+        return 1  # Prefer moving to center
+    elif is_center_square(from_sq):
+        return -1  # Avoid leaving center
+    return 0
+
+# Score a move based on material, tactics, and positional factors
+def score_move(move, pieces, to_play, legal_moves):
+    score = 0
+    is_capturing = is_capture(move, pieces)
+    captured_piece = get_captured_piece(move, pieces)
+    moving_piece = get_moving_piece(move, pieces)
+
+    # Material gain/loss
+    if is_capturing:
+        score += PIECE_VALUES[captured_piece]
+    if is_promotion(move):
+        score += get_promotion_value(move)
+
+    # King safety (avoid moving king into danger)
+    score += evaluate_king_safety(move, pieces, to_play)
+
+    # Center control
+    score += evaluate_center_control(move, pieces, to_play)
+
+    # Mobility (simplified)
+    score += evaluate_mobility(move, pieces, to_play, legal_moves)
+
+    # Pawn structure (simplified)
+    score += evaluate_pawn_structure(move, pieces, to_play)
+
+    return score
+
+# Check if a move is a checkmate (simplified: assume no checks)
+def is_checkmate(move, pieces, to_play, legal_moves):
+    # TODO: Implement full checkmate detection (for now, assume no checkmates)
+    return False
+
+# Main policy function
+def policy(pieces, to_play):
+    # Get all legal moves (assume legal_moves is provided externally)
+    # In a real implementation, you'd generate legal_moves from the board state.
+    # For this example, we assume legal_moves is passed as an argument.
+    # Since the problem doesn't provide legal_moves, we'll simulate it by:
+    # 1. Finding all possible moves for each piece.
+    # 2. Filtering for legal moves (simplified).
+    # Note: In practice, you'd use a chess library or implement move generation.
+
+    # For this example, we'll assume legal_moves is provided as a global or passed in.
+    # Since the problem doesn't specify how to get legal_moves, we'll proceed with a simplified approach.
+    # In a real competition, you'd need to generate legal_moves from the board state.
+
+    # Since the problem says "legal_moves" is provided, we'll assume it's passed in.
+    # But since the API doesn't include it, we'll simulate it by generating moves.
+    # This is a placeholder; in reality, you'd need to implement move generation.
+
+    # Placeholder: Assume legal_moves is provided (but since it's not in the API, we'll generate moves).
+    # For the sake of this example, we'll proceed with a simplified approach.
+    # In practice, you'd need to implement move generation or use a chess library.
+
+    # Since the problem is about selecting from legal_moves, we'll assume legal_moves is given.
+    # But since it's not in the API, we'll simulate it by generating moves for pawns and knights (simplified).
+    # This is not a complete solution but illustrates the idea.
+
+    # For this example, we'll hardcode a few moves to simulate legal_moves.
+    # In reality, you'd generate all legal moves from the board state.
+    legal_moves = []
+    for from_sq, piece in pieces.items():
+        if piece[0] == to_play:
+            if piece[1] == 'P':  # Pawn moves
+                file, rank = square_to_indices(from_sq)
+                # Forward move
+                new_rank = rank + (1 if to_play == 'white' else -1)
+                if 0 <= new_rank < 8:
+                    to_sq = indices_to_square(file, new_rank)
+                    legal_moves.append(from_sq + to_sq)
+                # Captures
+                for delta in [-1, 1]:
+                    new_file = file + delta
+                    if 0 <= new_file < 8:
+                        to_sq = indices_to_square(new_file, new_rank)
+                        legal_moves.append(from_sq + to_sq)
+            elif piece[1] == 'N':  # Knight moves
+                for df, dr in KNIGHT_DELTAS:
+                    new_file, new_rank = file + df, rank + dr
+                    if 0 <= new_file < 8 and 0 <= new_rank < 8:
+                        to_sq = indices_to_square(new_file, new_rank)
+                        legal_moves.append(from_sq + to_sq)
+            elif piece[1] == 'K':  # King moves
+                for df, dr in [(-1, -1), (-1, 0), (-1, 1),
+                               (0, -1),          (0, 1),
+                               (1, -1),  (1, 0), (1, 1)]:
+                    new_file, new_rank = file + df, rank + dr
+                    if 0 <= new_file < 8 and 0 <= new_rank < 8:
+                        to_sq = indices_to_square(new_file, new_rank)
+                        legal_moves.append(from_sq + to_sq)
+            elif piece[1] == 'R':  # Rook moves (simplified)
+                for df, dr in ROOK_DIRS:
+                    new_file, new_rank = file + df, rank + dr
+                    while 0 <= new_file < 8 and 0 <= new_rank < 8:
+                        to_sq = indices_to_square(new_file, new_rank)
+                        legal_moves.append(from_sq + to_sq)
+                        new_file += df
+                        new_rank += dr
+            elif piece[1] == 'B':  # Bishop moves (simplified)
+                for df, dr in BISHOP_DIRS:
+                    new_file, new_rank = file + df, rank + dr
+                    while 0 <= new_file < 8 and 0 <= new_rank < 8:
+                        to_sq = indices_to_square(new_file, new_rank)
+                        legal_moves.append(from_sq + to_sq)
+                        new_file += df
+                        new_rank += dr
+            elif piece[1] == 'Q':  # Queen moves (simplified)
+                for df, dr in QUEEN_DIRS:
+                    new_file, new_rank = file + df, rank + dr
+                    while 0 <= new_file < 8 and 0 <= new_rank < 8:
+                        to_sq = indices_to_square(new_file, new_rank)
+                        legal_moves.append(from_sq + to_sq)
+                        new_file += df
+                        new_rank += dr
+
+    # Filter out illegal moves (e.g., moving into check, blocking check)
+    # For simplicity, we'll assume all generated moves are legal.
+    # In practice, you'd need to validate moves against the board state.
+
+    # Score all legal moves
+    scored_moves = []
+    for move in legal_moves:
+        score = score_move(move, pieces, to_play, legal_moves)
+        scored_moves.append((score, move))
+
+    # Sort moves by score (descending)
+    scored_moves.sort(reverse=True, key=lambda x: x[0])
+
+    # Select the best move
+    best_move = scored_moves[0][1] if scored_moves else 'a1a2'  # Fallback
+
+    # Check for checkmate (simplified)
+    if is_checkmate(best_move, pieces, to_play, legal_moves):
+        return best_move
+
+    # Return the best move
+    return best_move

@@ -1,0 +1,261 @@
+
+import copy
+
+# Piece values for evaluation (from White's perspective)
+PIECE_VALUES = {
+    'K': 200,
+    'Q': 9,
+    'R': 5,
+    'B': 3,
+    'N': 3,
+    'P': 1,
+}
+
+# Directions for sliding pieces
+DIRS_ORTH = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+DIRS_DIAG = [(1, 1), (1, -1), (-1, 1), (-1, -1)]
+DIRS_KNIGHT = [(2, 1), (1, 2), (-1, 2), (-2, 1),
+               (-2, -1), (-1, -2), (1, -2), (2, -1)]
+
+def square_to_coords(sq: str):
+    """'e4' -> (4,3) where x=file a‑h, y=rank 1‑8"""
+    return ord(sq[0]) - ord('a'), int(sq[1]) - 1
+
+def coords_to_square(x: int, y: int):
+    return chr(ord('a') + x) + str(y + 1)
+
+def build_board(pieces):
+    """8x8 list of piece codes or None."""
+    board = [[None for _ in range(8)] for _ in range(8)]
+    for sq, code in pieces.items():
+        x, y = square_to_coords(sq)
+        board[y][x] = code
+    return board
+
+def find_king(board, color):
+    target = f'{color[0]}K'   # 'wK' or 'bK'
+    for y in range(8):
+        for x in range(8):
+            if board[y][x] == target:
+                return x, y
+    return None  # should never happen in legal positions
+
+def inside(x, y):
+    return 0 <= x < 8 and 0 <= y < 8
+
+def square_attacked(board, x, y, attacker_color):
+    """Return True if square (x,y) is attacked by attacker_color."""
+    opp = attacker_color[0]  # 'w' or 'b'
+    # Pawn attacks
+    pawn_dir = 1 if opp == 'w' else -1
+    for dx in (-1, 1):
+        nx, ny = x + dx, y + pawn_dir
+        if inside(nx, ny):
+            if board[ny][nx] == f'{opp}P':
+                return True
+    # Knight attacks
+    for dx, dy in DIRS_KNIGHT:
+        nx, ny = x + dx, y + dy
+        if inside(nx, ny) and board[ny][nx] == f'{opp}N':
+            return True
+    # Sliding pieces
+    # Bishops / Queens (diagonals)
+    for dx, dy in DIRS_DIAG:
+        nx, ny = x + dx, y + dy
+        while inside(nx, ny):
+            piece = board[ny][nx]
+            if piece:
+                if piece[0] == opp and piece[1] in ('B', 'Q'):
+                    return True
+                break
+            nx += dx
+            ny += dy
+    # Rooks / Queens (orthogonal)
+    for dx, dy in DIRS_ORTH:
+        nx, ny = x + dx, y + dy
+        while inside(nx, ny):
+            piece = board[ny][nx]
+            if piece:
+                if piece[0] == opp and piece[1] in ('R', 'Q'):
+                    return True
+                break
+            nx += dx
+            ny += dy
+    # King attacks (adjacent squares)
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            if dx == dy == 0:
+                continue
+            nx, ny = x + dx, y + dy
+            if inside(nx, ny) and board[ny][nx] == f'{opp}K':
+                return True
+    return False
+
+def king_in_check(board, color):
+    king_pos = find_king(board, color)
+    if not king_pos:
+        return True
+    return square_attacked(board, king_pos[0], king_pos[1], 'black' if color == 'white' else 'white')
+
+def generate_moves(board, to_play):
+    moves = []
+    color_char = 'w' if to_play == 'white' else 'b'
+    opponent = 'black' if to_play == 'white' else 'white'
+    for y in range(8):
+        for x in range(8):
+            piece = board[y][x]
+            if not piece or piece[0] != color_char:
+                continue
+            p_type = piece[1]
+            if p_type == 'P':
+                dir_y = 1 if color_char == 'w' else -1
+                start_rank = 1 if color_char == 'w' else 6
+                promotion_rank = 7 if color_char == 'w' else 0
+                # Single forward
+                ny = y + dir_y
+                if inside(x, ny) and board[ny][x] is None:
+                    if ny == promotion_rank:
+                        for promo in 'qrbn':
+                            moves.append((x, y, x, ny, promo))
+                    else:
+                        moves.append((x, y, x, ny, None))
+                    # Double forward from start
+                    if y == start_rank:
+                        ny2 = y + 2 * dir_y
+                        if board[ny2][x] is None:
+                            moves.append((x, y, x, ny2, None))
+                # Captures
+                for dx in (-1, 1):
+                    nx = x + dx
+                    ny = y + dir_y
+                    if inside(nx, ny):
+                        target = board[ny][nx]
+                        if target and target[0] != color_char:
+                            if ny == promotion_rank:
+                                for promo in 'qrbn':
+                                    moves.append((x, y, nx, ny, promo))
+                            else:
+                                moves.append((x, y, nx, ny, None))
+            elif p_type == 'N':
+                for dx, dy in DIRS_KNIGHT:
+                    nx, ny = x + dx, y + dy
+                    if inside(nx, ny):
+                        target = board[ny][nx]
+                        if not target or target[0] != color_char:
+                            moves.append((x, y, nx, ny, None))
+            elif p_type == 'B':
+                for dx, dy in DIRS_DIAG:
+                    nx, ny = x + dx, y + dy
+                    while inside(nx, ny):
+                        target = board[ny][nx]
+                        if not target:
+                            moves.append((x, y, nx, ny, None))
+                        else:
+                            if target[0] != color_char:
+                                moves.append((x, y, nx, ny, None))
+                            break
+                        nx += dx
+                        ny += dy
+            elif p_type == 'R':
+                for dx, dy in DIRS_ORTH:
+                    nx, ny = x + dx, y + dy
+                    while inside(nx, ny):
+                        target = board[ny][nx]
+                        if not target:
+                            moves.append((x, y, nx, ny, None))
+                        else:
+                            if target[0] != color_char:
+                                moves.append((x, y, nx, ny, None))
+                            break
+                        nx += dx
+                        ny += dy
+            elif p_type == 'Q':
+                for dx, dy in DIRS_DIAG + DIRS_ORTH:
+                    nx, ny = x + dx, y + dy
+                    while inside(nx, ny):
+                        target = board[ny][nx]
+                        if not target:
+                            moves.append((x, y, nx, ny, None))
+                        else:
+                            if target[0] != color_char:
+                                moves.append((x, y, nx, ny, None))
+                            break
+                        nx += dx
+                        ny += dy
+            elif p_type == 'K':
+                for dx in (-1, 0, 1):
+                    for dy in (-1, 0, 1):
+                        if dx == dy == 0:
+                            continue
+                        nx, ny = x + dx, y + dy
+                        if inside(nx, ny):
+                            target = board[ny][nx]
+                            if not target or target[0] != color_char:
+                                # Move must not place king into check
+                                moves.append((x, y, nx, ny, None))
+                # Castling is ignored (treated as illegal) – the king move will be filtered out by check test.
+    return moves
+
+def make_uci(move):
+    fx, fy, tx, ty, promo = move
+    u = coords_to_square(fx, fy) + coords_to_square(tx, ty)
+    if promo:
+        u += promo
+    return u
+
+def apply_move(board, move):
+    """Return a new board with move applied."""
+    new_board = copy.deepcopy(board)
+    fx, fy, tx, ty, promo = move
+    piece = new_board[fy][fx]
+    new_board[fy][fx] = None
+    if promo:
+        # replace pawn with promoted piece, keep color
+        piece = piece[0] + promo.upper()
+    new_board[ty][tx] = piece
+    return new_board
+
+def evaluate(board):
+    """Simple material evaluation from White's perspective."""
+    total = 0
+    for y in range(8):
+        for x in range(8):
+            piece = board[y][x]
+            if piece:
+                val = PIECE_VALUES[piece[1]]
+                if piece[0] == 'w':
+                    total += val
+                else:
+                    total -= val
+    return total
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    board = build_board(pieces)
+    pseudo_moves = generate_moves(board, to_play)
+    legal_moves = []
+    best_score = None
+    best_move = None
+
+    for mv in pseudo_moves:
+        new_board = apply_move(board, mv)
+        if king_in_check(new_board, to_play):
+            continue  # illegal, own king left in check
+        legal_moves.append(mv)
+        score = evaluate(new_board)
+        if to_play == 'white':
+            if best_score is None or score > best_score:
+                best_score = score
+                best_move = mv
+        else:
+            if best_score is None or score < best_score:
+                best_score = score
+                best_move = mv
+
+    # Fallback: if no legal moves (should not happen), pick first pseudo move
+    if best_move is None:
+        if pseudo_moves:
+            best_move = pseudo_moves[0]
+        else:
+            return '0000'  # no move possible; placeholder
+
+    return make_uci(best_move)

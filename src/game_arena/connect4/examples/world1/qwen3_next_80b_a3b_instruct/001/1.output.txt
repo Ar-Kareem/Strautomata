@@ -1,0 +1,176 @@
+<thinking>
+I need to implement a policy for Connect 4 that chooses a column to drop a disc in a way that maximizes the chance of winning or blocking the opponent.
+
+Given the 6x7 grid and the need to win by getting 4 in a row (horizontally, vertically, or diagonally), I'll implement a simple but effective strategy:
+
+1. First, check if I can win immediately by dropping a disc in any column. If so, return that column.
+2. If not, check if the opponent can win on their next move, and block them.
+3. If neither, prioritize the center column (column 3) as it offers the most potential winning lines.
+4. Then fall back to a simple heuristic: prefer columns that allow for more potential connections (e.g., where I already have discs nearby).
+5. Avoid columns that are full.
+
+For efficiency and clarity, I'll use numpy for easier board manipulation and detection of potential wins.
+
+I'll implement helper functions to:
+- Check if a move results in an immediate win for me.
+- Check if a move would block the opponent's immediate win.
+- Score each column based on how many potential 3-in-a-row segments I can form in that column (a basic heuristic for board position value).
+
+However, since the problem asks for a single function and we have 1 second of execution time, I'll keep the logic efficient and avoid deep search (which would be too slow). A simple lookahead of only 1 move is sufficient for this context.
+
+I'll use the board as a list of lists, so I'll convert it to a numpy array for easier indexing, but convert back if needed. Alternatively, I can work directly with lists since the board is small.
+
+I'll proceed with list-based operations for no dependency concerns (though numpy is allowed). But since numpy is allowed and will make code cleaner, I'll use it.
+
+Let's implement:
+- `can_win(board, player)` → returns column index if player can win immediately, else None
+- For each column, simulate dropping a disc and check for 4-in-a-row using a helper function `check_winner_after_move`.
+
+I'll check for wins in horizontal, vertical, and both diagonal directions.
+</thinking>
+<code>
+import numpy as np
+
+def policy(board: list[list[int]]) -> int:
+    # Convert board to numpy array for easier manipulation
+    board_np = np.array(board, dtype=int)
+    
+    # Get available columns (non-full)
+    available_cols = [col for col in range(7) if board_np[0][col] == 0]
+    
+    if not available_cols:
+        return 3  # fallback, though the game shouldn't reach here
+    
+    # First, try to win immediately
+    for col in available_cols:
+        if _would_win(board_np, col, 1):
+            return col
+    
+    # Second, block opponent's immediate win
+    for col in available_cols:
+        if _would_win(board_np, col, -1):
+            return col
+    
+    # Third, prefer center column (optimal for control)
+    if 3 in available_cols:
+        return 3
+    
+    # Fourth, score remaining columns based on potential (simple heuristic)
+    # Score = number of friendly discs in the column below the drop point (potential for vertical stacking)
+    # or count of potential 3-in-a-row segments we can form
+    best_col = available_cols[0]
+    best_score = -1
+    
+    for col in available_cols:
+        score = _evaluate_column(board_np, col, 1)
+        if score > best_score:
+            best_score = score
+            best_col = col
+    
+    return best_col
+
+
+def _would_win(board, col, player):
+    """Check if placing a disc in this column for this player would result in an immediate win."""
+    # Find the lowest empty row in this column
+    for row in range(5, -1, -1):
+        if board[row][col] == 0:
+            # Temporarily place the disc
+            board[row][col] = player
+            won = _check_win_at(board, row, col, player)
+            # Undo the move
+            board[row][col] = 0
+            return won
+    return False
+
+
+def _check_win_at(board, row, col, player):
+    """Check if placing a disc at (row, col) creates a win for player."""
+    directions = [
+        (0, 1),   # horizontal
+        (1, 0),   # vertical
+        (1, 1),   # diagonal down-right
+        (1, -1)   # diagonal down-left
+    ]
+    
+    for dr, dc in directions:
+        count = 1  # count the current disc
+        
+        # Check in positive direction
+        r, c = row + dr, col + dc
+        while 0 <= r < 6 and 0 <= c < 7 and board[r][c] == player:
+            count += 1
+            r += dr
+            c += dc
+        
+        # Check in negative direction
+        r, c = row - dr, col - dc
+        while 0 <= r < 6 and 0 <= c < 7 and board[r][c] == player:
+            count += 1
+            r -= dr
+            c -= dc
+        
+        if count >= 4:
+            return True
+    
+    return False
+
+
+def _evaluate_column(board, col, player):
+    """Simple heuristic: score a column based on potential for forming sequences."""
+    # Find lowest empty row in column
+    row = 0
+    for r in range(5, -1, -1):
+        if board[r][col] == 0:
+            row = r
+            break
+    
+    # If column is full, shouldn't happen due to available_cols
+    if row == 0 and board[0][col] != 0:
+        return -1000  # invalid
+    
+    # Score factors:
+    # 1. Vertical potential: number of consecutive own discs below
+    vertical = 0
+    for r in range(row + 1, 6):
+        if board[r][col] == player:
+            vertical += 1
+        else:
+            break
+    
+    # 2. Horizontal potential: count friendly discs in the row
+    horizontal = 0
+    for c in range(max(0, col - 3), min(7, col + 4)):
+        if c == col:
+            continue
+        if board[row][c] == player:
+            horizontal += 1
+        elif board[row][c] != 0:  # opponent disc
+            horizontal = 0  # break continuity
+            break  # can't extend through opponent
+    
+    # 3. Diagonal down-right
+    diag_dr = 0
+    r, c = row + 1, col + 1
+    while r < 6 and c < 7 and board[r][c] == player:
+        diag_dr += 1
+        r += 1
+        c += 1
+    
+    # 4. Diagonal down-left
+    diag_dl = 0
+    r, c = row + 1, col - 1
+    while r < 6 and c >= 0 and board[r][c] == player:
+        diag_dl += 1
+        r += 1
+        c -= 1
+    
+    # Weighted score
+    score = vertical * 2 + horizontal * 1 + diag_dr * 1 + diag_dl * 1
+    
+    # Prefer center columns
+    center_weight = 1 if col == 3 else (0.8 if col in [2,4] else 0.6 if col in [1,5] else 0.4)
+    score *= center_weight
+    
+    return score
+</code>

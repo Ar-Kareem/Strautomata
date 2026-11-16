@@ -1,0 +1,265 @@
+<thinking>
+I will implement a Kalah move policy using a minimax search with alpha-beta pruning. The simulator handles sowing, captures, extra moves, and endgame collection. The search depth is measured in "turns" (a turn may include extra moves) so extra moves don't decrease the remaining depth. The evaluation is a simple linear heuristic emphasizing store difference and remaining seeds in houses. If the search fails for any reason the policy returns the first legal house with seeds.
+
+I'll output the Python source with the required policy(you, opponent) function.
+</thinking>
+<code>
+#!/usr/bin/env python3
+from typing import List, Tuple, Optional
+import math
+import sys
+
+def policy(you: List[int], opponent: List[int]) -> int:
+    """
+    Choose a legal move index 0..5 where you[i] > 0.
+    Uses minimax with alpha-beta pruning. Depth measured in turns (opponent moves).
+    """
+    # Defensive copy
+    you0 = list(you)
+    opp0 = list(opponent)
+
+    legal = [i for i in range(6) if you0[i] > 0]
+    if not legal:
+        # Should not happen per contract, but return something safe
+        return 0
+
+    # Search parameters
+    MAX_TURNS = 6  # number of opponent turns to look ahead
+    # For very small boards / trivial states we might attempt more, but keep small for speed.
+
+    # Run minimax
+    best_score = -10**9
+    best_move = legal[0]
+
+    alpha = -10**9
+    beta = 10**9
+
+    for move in order_moves(you0, opp0, legal):
+        new_you, new_opp, extra, game_over = apply_move(you0, opp0, move)
+        if game_over:
+            score = final_score(new_you, new_opp)
+        else:
+            # If extra move, same player's turn; depth stays the same.
+            if extra:
+                score = minimax(new_you, new_opp, True, MAX_TURNS, alpha, beta)
+            else:
+                score = minimax(new_you, new_opp, False, MAX_TURNS - 1, alpha, beta)
+        if score > best_score:
+            best_score = score
+            best_move = move
+        alpha = max(alpha, best_score)
+        if alpha >= beta:
+            break
+
+    return int(best_move)
+
+# -------------------
+# Helper functions
+# -------------------
+
+def order_moves(you: List[int], opp: List[int], moves: List[int]) -> List[int]:
+    """
+    Simple move ordering: prefer moves that give extra turn or immediate capture.
+    """
+    scored = []
+    for m in moves:
+        new_you, new_opp, extra, game_over = apply_move(you, opp, m)
+        score = 0
+        if game_over:
+            score += 100000
+        if extra:
+            score += 1000
+        # capture heuristic: check if store increased
+        score += new_you[6] - you[6]
+        # also prefer moves that increase house seeds difference
+        score += (sum(new_you[:6]) - sum(new_opp[:6])) - (sum(you[:6]) - sum(opp[:6]))
+        scored.append((score, m))
+    scored.sort(reverse=True)
+    return [m for _, m in scored]
+
+def minimax(you: List[int], opp: List[int], your_turn: bool, turns_left: int, alpha: int, beta: int) -> int:
+    """
+    Minimax with alpha-beta.
+    you, opp: current board, perspective always "us" is the root player.
+    your_turn: boolean, True if it's our move, False if opponent's move.
+    turns_left: how many opponent turns left to search (when turns_left < 0 stop).
+    Returns evaluation from root player's perspective (higher is better for root).
+    """
+    # Terminal checks
+    if game_over_state(you, opp):
+        return final_score(you, opp)
+    if turns_left < 0:
+        return evaluate(you, opp)
+
+    if your_turn:
+        value = -10**9
+        moves = [i for i in range(6) if you[i] > 0]
+        if not moves:
+            # No legal moves: should be terminal; but handle gracefully
+            return final_score(you, opp)
+        # Move ordering
+        moves = order_moves(you, opp, moves)
+        for m in moves:
+            new_you, new_opp, extra, game_over = apply_move(you, opp, m)
+            if game_over:
+                v = final_score(new_you, new_opp)
+            else:
+                if extra:
+                    v = minimax(new_you, new_opp, True, turns_left, alpha, beta)
+                else:
+                    v = minimax(new_you, new_opp, False, turns_left - 1, alpha, beta)
+            if v > value:
+                value = v
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+        return value
+    else:
+        # Opponent's turn: minimize
+        value = 10**9
+        moves = [i for i in range(6) if opp[i] > 0]
+        if not moves:
+            return final_score(you, opp)
+        # For opponent, we can create mirrored ordering by evaluating from their immediate perspective
+        opp_moves = order_moves(opp, you, moves)  # note: order_moves expects (you, opp) where first arg is moving side
+        for m in opp_moves:
+            # When simulating opponent move, swap perspectives: treat opp as "you" in apply_move, then swap back
+            new_opp, new_you, extra, game_over = apply_move(opp, you, m)
+            if game_over:
+                v = final_score(new_you, new_opp)
+            else:
+                if extra:
+                    # Opponent gets extra move -> still opponent's turn
+                    v = minimax(new_you, new_opp, False, turns_left, alpha, beta)
+                else:
+                    # Turn passes back to us: decrease turns_left
+                    v = minimax(new_you, new_opp, True, turns_left - 1, alpha, beta)
+            if v < value:
+                value = v
+            beta = min(beta, value)
+            if alpha >= beta:
+                break
+        return value
+
+# Board utilities
+
+def game_over_state(you: List[int], opp: List[int]) -> bool:
+    return all(seeds == 0 for seeds in you[:6]) or all(seeds == 0 for seeds in opp[:6])
+
+def final_score(you: List[int], opp: List[int]) -> int:
+    """
+    Return an integer score from root player's perspective: positive is good.
+    Ensure final collection of remaining seeds is counted properly (should be if game_over_state True).
+    """
+    # If game not over, we shouldn't call final_score, but handle gracefully by returning eval.
+    if not game_over_state(you, opp):
+        return evaluate(you, opp)
+    # If one side empty, collect remaining seeds
+    you_c = you[:]
+    opp_c = opp[:]
+    if all(seeds == 0 for seeds in you_c[:6]):
+        # Opponent takes remaining
+        opp_c[6] += sum(opp_c[:6])
+        for i in range(6):
+            opp_c[i] = 0
+    elif all(seeds == 0 for seeds in opp_c[:6]):
+        you_c[6] += sum(you_c[:6])
+        for i in range(6):
+            you_c[i] = 0
+    # Score: prefer higher store difference
+    return (you_c[6] - opp_c[6]) * 1000  + (sum(you_c[:6]) - sum(opp_c[:6])) * 10
+
+def evaluate(you: List[int], opp: List[int]) -> int:
+    """
+    Heuristic evaluation of non-terminal positions. Positive is good for root player.
+    """
+    score = (you[6] - opp[6]) * 1000
+    # also value remaining seeds on our side vs opponent
+    score += (sum(you[:6]) - sum(opp[:6])) * 10
+    # mobility: number of legal moves
+    score += (sum(1 for i in range(6) if you[i] > 0) - sum(1 for i in range(6) if opp[i] > 0)) * 3
+    return score
+
+def apply_move(you: List[int], opp: List[int], house: int) -> Tuple[List[int], List[int], bool, bool]:
+    """
+    Apply moving from you[house]. Return (new_you, new_opp, extra_move, game_over).
+    The function treats 'you' as the side to move and 'opp' as opponent.
+    """
+    # Work on copies
+    you_c = you[:]  # len 7
+    opp_c = opp[:]
+    seeds = you_c[house]
+    if seeds == 0:
+        # Illegal; return unchanged
+        return you_c, opp_c, False, game_over_state(you_c, opp_c)
+    you_c[house] = 0
+
+    # We'll use a 14-position board mapping:
+    # pos 0..5 -> your houses 0..5
+    # pos 6 -> your store
+    # pos 7..12 -> opponent houses 0..5 (pos 7 -> opp[0], pos 12 -> opp[5])
+    # pos 13 -> opponent store (skip when sowing)
+    pos = house  # starting position
+    # Keep copy of original you houses to check capture condition "was empty before drop"
+    orig_you_houses = you[:6]
+
+    last_pos = None
+    while seeds > 0:
+        pos = (pos + 1) % 14
+        if pos == 13:
+            # skip opponent store
+            continue
+        # Place seed
+        if 0 <= pos <= 5:
+            you_c[pos] += 1
+        elif pos == 6:
+            you_c[6] += 1
+        else:  # 7..12
+            opp_c[pos - 7] += 1
+        seeds -= 1
+        last_pos = pos
+
+    # Determine extra move
+    extra = (last_pos == 6)
+
+    # Determine capture:
+    if 0 <= last_pos <= 5:
+        # last landed in our house index = last_pos
+        house_idx = last_pos
+        # It must have been empty before the drop (i.e., value before placing last seed was 0).
+        # After placing last seed, the value there should be 1 if it was empty prior to last seed.
+        if you_c[house_idx] == 1 and orig_you_houses[house_idx] == 0:
+            # Opposite house index:
+            opp_idx = 5 - house_idx
+            if opp_c[opp_idx] > 0:
+                # Capture: move both into our store
+                captured = opp_c[opp_idx] + you_c[house_idx]
+                you_c[6] += captured
+                you_c[house_idx] = 0
+                opp_c[opp_idx] = 0
+
+    # Check endgame: if one side's houses are all zero, collect remaining seeds into other store
+    if all(x == 0 for x in you_c[:6]) or all(x == 0 for x in opp_c[:6]):
+        # Game ends: collect
+        if all(x == 0 for x in you_c[:6]):
+            opp_c[6] += sum(opp_c[:6])
+            for i in range(6):
+                opp_c[i] = 0
+        else:
+            you_c[6] += sum(you_c[:6])
+            for i in range(6):
+                you_c[i] = 0
+        return you_c, opp_c, extra, True
+
+    return you_c, opp_c, extra, False
+
+# If run as module, keep policy available
+if __name__ == "__main__":
+    # Simple interactive test: read two lines with 7 ints each and print chosen move
+    data = sys.stdin.read().strip().split()
+    if len(data) >= 14:
+        you = list(map(int, data[:7]))
+        opp = list(map(int, data[7:14]))
+        print(policy(you, opp))
+    else:
+        print("No input")

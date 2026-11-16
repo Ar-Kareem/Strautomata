@@ -1,0 +1,161 @@
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    """
+    Kalah move selection policy using minimax with alpha-beta pruning.
+    """
+    
+    def simulate_move(you_state, opp_state, move):
+        """Simulate a move and return new state and whether we get extra turn."""
+        you = you_state[:]
+        opp = opp_state[:]
+        
+        seeds = you[move]
+        you[move] = 0
+        pos = move
+        is_you_side = True
+        
+        while seeds > 0:
+            pos += 1
+            
+            if is_you_side:
+                if pos <= 5:
+                    you[pos] += 1
+                    seeds -= 1
+                elif pos == 6:
+                    you[6] += 1
+                    seeds -= 1
+                else:
+                    is_you_side = False
+                    pos = -1
+            else:
+                if pos <= 5:
+                    opp[pos] += 1
+                    seeds -= 1
+                else:
+                    is_you_side = True
+                    pos = -1
+        
+        extra_turn = False
+        if is_you_side and pos == 6:
+            extra_turn = True
+        elif is_you_side and 0 <= pos <= 5 and you[pos] == 1 and opp[5 - pos] > 0:
+            # Capture
+            you[6] += you[pos] + opp[5 - pos]
+            you[pos] = 0
+            opp[5 - pos] = 0
+        
+        return you, opp, extra_turn
+    
+    def is_terminal(you_state, opp_state):
+        """Check if game is over."""
+        return sum(you_state[:6]) == 0 or sum(opp_state[:6]) == 0
+    
+    def evaluate(you_state, opp_state):
+        """Evaluate board state from perspective of current player."""
+        you_total = you_state[6]
+        opp_total = opp_state[6]
+        
+        if is_terminal(you_state, opp_state):
+            you_final = you_total + sum(you_state[:6])
+            opp_final = opp_total + sum(opp_state[:6])
+            if you_final > opp_final:
+                return 10000
+            elif you_final < opp_final:
+                return -10000
+            else:
+                return 0
+        
+        # Heuristic: store difference + potential captures + mobility
+        score = you_total - opp_total
+        
+        # Bonus for seeds close to store (higher index houses)
+        for i in range(6):
+            score += you_state[i] * (i + 1) * 0.1
+            score -= opp_state[i] * (i + 1) * 0.1
+        
+        return score
+    
+    def minimax(you_state, opp_state, depth, alpha, beta, maximizing):
+        """Minimax with alpha-beta pruning."""
+        if depth == 0 or is_terminal(you_state, opp_state):
+            return evaluate(you_state, opp_state), None
+        
+        legal_moves = [i for i in range(6) if you_state[i] > 0]
+        if not legal_moves:
+            you_final = you_state[:]
+            opp_final = opp_state[:]
+            you_final[6] += sum(you_final[:6])
+            opp_final[6] += sum(opp_final[:6])
+            for i in range(6):
+                you_final[i] = 0
+                opp_final[i] = 0
+            return evaluate(you_final, opp_final), None
+        
+        if maximizing:
+            max_eval = float('-inf')
+            best_move = legal_moves[0]
+            for move in legal_moves:
+                new_you, new_opp, extra = simulate_move(you_state, opp_state, move)
+                
+                if extra:
+                    # Extra turn - continue as maximizing player
+                    eval_score, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, True)
+                else:
+                    # Opponent's turn
+                    eval_score, _ = minimax(new_opp, new_you, depth - 1, alpha, beta, False)
+                    eval_score = -eval_score  # Negate because we swapped perspectives
+                
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_move = move
+                
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            best_move = legal_moves[0]
+            for move in legal_moves:
+                new_you, new_opp, extra = simulate_move(you_state, opp_state, move)
+                
+                if extra:
+                    # Extra turn for minimizing player
+                    eval_score, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, False)
+                else:
+                    # Back to maximizing player
+                    eval_score, _ = minimax(new_opp, new_you, depth - 1, alpha, beta, True)
+                    eval_score = -eval_score
+                
+                if eval_score < min_eval:
+                    min_eval = eval_score
+                    best_move = move
+                
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            
+            return min_eval, best_move
+    
+    # Quick check for winning moves
+    for move in range(6):
+        if you[move] > 0:
+            new_you, new_opp, _ = simulate_move(you, opponent, move)
+            if is_terminal(new_you, new_opp):
+                you_final = new_you[6] + sum(new_you[:6])
+                opp_final = new_opp[6] + sum(new_opp[:6])
+                if you_final > opp_final:
+                    return move
+    
+    # Use minimax with depth 8
+    _, best = minimax(you, opponent, 8, float('-inf'), float('inf'), True)
+    
+    # Fallback to first legal move
+    if best is None:
+        for i in range(6):
+            if you[i] > 0:
+                return i
+    
+    return best
+```

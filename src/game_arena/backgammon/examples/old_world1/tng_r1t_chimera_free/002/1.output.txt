@@ -1,0 +1,171 @@
+
+
+The policy prioritizes re-entering checkers from the bar first, then bearing off when possible, and otherwise makes safe moves to hit opponent blots and build points. It evaluates possible moves based on safety, hitting potential, and strategic positioning.
+
+<code>
+def policy(state: dict) -> str:
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    dice = state['dice']
+    
+    def get_move_order(dice_order, moves):
+        from1, from2 = moves
+        die_order = 'H' if dice_order == 'high' else 'L'
+        return f"{die_order}:{from1},{from2}"
+    
+    # Handle re-entry from bar
+    if my_bar > 0:
+        possible = []
+        sorted_dice = sorted(dice, reverse=True)
+        for order in ['high', 'low']:
+            if len(dice) == 1 and order == 'low':
+                continue
+            if order == 'high':
+                d1, d2 = (sorted_dice[0], sorted_dice[1]) if len(dice) > 1 else (sorted_dice[0], None)
+            else:
+                d1, d2 = (sorted_dice[1], sorted_dice[0]) if len(dice) > 1 else (sorted_dice[0], None)
+            entry_point = 24 - d1
+            if 0 <= entry_point < 24 and opp_pts[entry_point] <= 1:
+                from1 = 'B'
+                if d2 is None:
+                    possible.append((get_move_order(order, (from1, 'P')), 0))
+                    continue
+                # Second move from entry_point
+                dest = entry_point - d2
+                if dest >= 0 and opp_pts[dest] <= 1:
+                    from2 = f"A{entry_point}"
+                    possible.append((get_move_order(order, (from1, from2)), dest))
+                else:
+                    possible.append((get_move_order(order, (from1, 'P')), 0))
+        if possible:
+            possible.sort(key=lambda x: -x[1])
+            return possible[0][0]
+        else:
+            return "H:P,P"
+    
+    # Check if bearing off is allowed (all checkers in home board)
+    non_home = sum(my_pts[:18]) + my_bar
+    if non_home == 0:
+        # Bearing off logic
+        best_score = -1
+        best_move = "H:P,P"
+        sorted_dice = sorted(dice, reverse=True)
+        for order in ['high', 'low']:
+            if len(dice) == 1 and order == 'low':
+                continue
+            if order == 'high':
+                d1, d2 = (sorted_dice[0], sorted_dice[1]) if len(dice) > 1 else (sorted_dice[0], None)
+            else:
+                d1, d2 = (sorted_dice[1], sorted_dice[0]) if len(dice) > 1 else (sorted_dice[0], None)
+            from1, score1 = 'P', 0
+            for p in range(23, 17, -1):
+                if my_pts[p] > 0:
+                    if p + 1 == d1:
+                        from1 = f"A{p}"
+                        score1 = p
+                        break
+                    elif p + 1 > d1 and all(my_pts[p2] == 0 for p2 in range(p+1, 24)):
+                        from1 = f"A{p}"
+                        score1 = p
+                        break
+            from2, score2 = 'P', 0
+            if d2 is not None:
+                for p in range(23, 17, -1):
+                    if my_pts[p] > 0 and f"A{p}" != from1:
+                        if p + 1 == d2:
+                            from2 = f"A{p}"
+                            score2 = p
+                            break
+                        elif p + 1 > d2 and all(my_pts[p2] == 0 for p2 in range(p+1, 24)):
+                            from2 = f"A{p}"
+                            score2 = p
+                            break
+            total_score = score1 + score2
+            move = get_move_order(order, (from1, from2))
+            if total_score > best_score:
+                best_score = total_score
+                best_move = move
+        return best_move
+    
+    # Regular moves: prioritize hitting and safety
+    best_score = -float('inf')
+    best_move = "H:P,P"
+    sorted_dice = sorted(dice, reverse=True)
+    for order in ['high', 'low']:
+        if len(dice) == 1 and order == 'low':
+            continue
+        if order == 'high':
+            d1, d2 = (sorted_dice[0], sorted_dice[1]) if len(dice) > 1 else (sorted_dice[0], None)
+        else:
+            d1, d2 = (sorted_dice[1], sorted_dice[0]) if len(dice) > 1 else (sorted_dice[0], None)
+        # First move with d1
+        first_candidates = []
+        for p in range(24):
+            if my_pts[p] > 0:
+                dest = p - d1
+                if dest >= 0 and opp_pts[dest] <= 1:
+                    score = 0
+                    # Hitting bonus
+                    if opp_pts[dest] == 1:
+                        score += 10
+                    # Building on existing points
+                    if my_pts[dest] + 1 >= 2:
+                        score += 5
+                    # Safety: don't leave blots
+                    if my_pts[p] == 1:
+                        score -= 3
+                    else:
+                        score += 1
+                    first_candidates.append((score, p, dest))
+        if not first_candidates:
+            continue
+        first_candidates.sort(reverse=True, key=lambda x: x[0])
+        best_first = first_candidates[0]
+        from1 = f"A{best_first[1]}"
+        # Second move with d2
+        if d2 is None:
+            move = get_move_order(order, (from1, 'P'))
+            if best_first[0] > best_score:
+                best_score = best_first[0]
+                best_move = move
+            continue
+        second_candidates = []
+        # Option 1: move from first move's destination
+        new_dest = best_first[2] - d2
+        if new_dest >=0 and opp_pts[new_dest] <=1:
+            score = 0
+            if opp_pts[new_dest] ==1:
+                score +=10
+            if my_pts[new_dest] >=1:
+                score +=5
+            second_candidates.append((score, best_first[2], new_dest))
+        # Option 2: move from another point
+        for p in range(24):
+            if my_pts[p] >0 and p != best_first[1]:
+                dest = p -d2
+                if dest >=0 and opp_pts[dest] <=1:
+                    score =0
+                    if opp_pts[dest] ==1:
+                        score +=10
+                    if my_pts[dest] >=1:
+                        score +=5
+                    if my_pts[p] ==1:
+                        score -=3
+                    else:
+                        score +=1
+                    second_candidates.append((score, p, dest))
+        if second_candidates:
+            second_candidates.sort(reverse=True, key=lambda x: x[0])
+            best_second = second_candidates[0]
+            from2 = f"A{best_second[1]}"
+            total_score = best_first[0] + best_second[0]
+        else:
+            from2 = 'P'
+            total_score = best_first[0]
+        move = get_move_order(order, (from1, from2))
+        if total_score > best_score:
+            best_score = total_score
+            best_move = move
+    return best_move
+</code>

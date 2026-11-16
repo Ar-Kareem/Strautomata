@@ -1,0 +1,127 @@
+Strategy:
+The policy focuses on early central control and connectivity while opportunistically seeking wins. It first checks if any move immediately completes a winning bridge or fork. If no winning move exists, it selects a heuristic-driven move prioritizing:
+1. Proximity to the board center for flexibility
+2. Connection to existing friendly stones
+3. Edge and corner presence for fork/bridge potential
+4. Blocking opponent expansions
+
+The heuristic balances strategic positioning with immediate tactical advantages, allowing flexible adaptation between offence and defence without expensive lookahead.
+
+<code>
+import math
+from collections import deque
+
+NEIGHBOR_DELTAS = [ (-1,0), (-1,1), (0,1), (1,0), (1,-1), (0,-1) ]
+CORNERS = {(0,0), (0,14), (7,14), (14,14), (14,0), (7,0)}
+
+def get_edges(cell):
+    r, c = cell
+    edges = set()
+    if r == 0:  # Top edge
+        edges.add(0)
+    if c == 14 and r <= 7:  # Right-top edge
+        edges.add(1)
+    if c == 14 and r >= 7:  # Right-bottom edge
+        edges.add(2)
+    if r == 14:  # Bottom edge
+        edges.add(3)
+    if c == 0 and r >= 7:  # Left-bottom edge
+        edges.add(4)
+    if c == 0 and r <= 7:  # Left-top edge
+        edges.add(5)
+    return edges
+
+def is_bridge(new_stones):
+    stones_set = set(new_stones)
+    visited = set()
+    for corner in CORNERS:
+        if corner not in stones_set or corner in visited:
+            continue
+        queue = deque([corner])
+        component = {corner}
+        visited.add(corner)
+        while queue:
+            r, c = queue.popleft()
+            for dr, dc in NEIGHBOR_DELTAS:
+                nr, nc = r + dr, c + dc
+                neighbor = (nr, nc)
+                if 0 <= nr < 15 and 0 <= nc < 15 and neighbor in stones_set and neighbor not in visited:
+                    visited.add(neighbor)
+                    queue.append(neighbor)
+                    component.add(neighbor)
+        if len(component & CORNERS) >= 2:
+            return True
+    return False
+
+def is_fork(new_stones):
+    stones_set = set(new_stones)
+    visited = set()
+    for stone in stones_set:
+        if stone in visited:
+            continue
+        queue = deque([stone])
+        component = {stone}
+        visited.add(stone)
+        edges = set()
+        while queue:
+            r, c = queue.popleft()
+            edges |= get_edges((r, c))
+            for dr, dc in NEIGHBOR_DELTAS:
+                nr, nc = r + dr, c + dc
+                neighbor = (nr, nc)
+                if 0 <= nr < 15 and 0 <= nc < 15 and neighbor in stones_set and neighbor not in visited:
+                    visited.add(neighbor)
+                    queue.append(neighbor)
+                    component.add(neighbor)
+        if len(edges) >= 3:
+            return True
+    return False
+
+def heuristic(move, my_stones, opp_stones):
+    r, c = move
+    score = 0
+    dist = math.sqrt((r - 7)**2 + (c - 7)**2)
+    score += 14.14 - dist  # Center bonus (max ~14.14)
+    
+    for dr, dc in NEIGHBOR_DELTAS:
+        nr, nc = r + dr, c + dc
+        neighbor = (nr, nc)
+        if neighbor in my_stones:
+            score += 5  # Connection bonus
+        if neighbor in opp_stones:
+            score += 2  # Blocking bonus
+    
+    edges = get_edges((r, c))
+    score += 3 * len(edges)
+    if (r, c) in CORNERS:
+        score += 5
+    
+    return score
+
+def policy(me, opp, valid_mask):
+    my_stones = set(me)
+    opp_stones = set(opp)
+    all_stones = my_stones | opp_stones
+    moves = []
+    for r in range(15):
+        for c in range(15):
+            if valid_mask[r][c] and (r, c) not in all_stones:
+                moves.append((r, c))
+    
+    # Check for immediate win
+    for move in moves:
+        new_me = me + [move]
+        if is_bridge(new_me) or is_fork(new_me):
+            return move
+    
+    # Heuristic selection
+    best_move = moves[0]
+    best_score = -float('inf')
+    for move in moves:
+        current_score = heuristic(move, my_stones, opp_stones)
+        if current_score > best_score:
+            best_score = current_score
+            best_move = move
+    
+    return best_move
+</code>

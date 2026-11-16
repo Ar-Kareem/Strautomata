@@ -1,0 +1,348 @@
+The strategy for this policy is a fast tactical alpha-beta search with a strong safety-first evaluation tailored to Breakthrough. It always generates only legal moves, prioritizes immediate wins, blocks immediate losses when possible, values protected passers and advancement, and penalizes pieces that can be captured. Move ordering prefers winning moves, captures, threats, and progress so the search goes deeper within the time limit. A guaranteed-legal fallback is included to avoid disqualification.
+
+<code>
+from __future__ import annotations
+
+from typing import List, Tuple, Dict
+
+Move = Tuple[Tuple[int, int], Tuple[int, int]]
+
+BOARD_SIZE = 8
+INF = 10**12
+
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Move:
+    me_t = tuple(sorted(me))
+    opp_t = tuple(sorted(opp))
+    legal = generate_moves(me_t, opp_t, color)
+    if not legal:
+        # Should not happen in normal Breakthrough positions, but return something legal-looking if needed.
+        # Arena requires a legal move; if no legal move exists, pick a dummy from available piece shape.
+        if me_t:
+            p = me_t[0]
+            dr = 1 if color == 'w' else -1
+            q = (max(0, min(7, p[0] + dr)), p[1])
+            return (p, q)
+        return ((0, 0), (0, 0))
+
+    # Immediate win
+    for mv in legal:
+        nme, nopp = apply_move(me_t, opp_t, mv)
+        if is_win_state(nme, nopp, color):
+            return mv
+
+    # If only one move, return immediately
+    if len(legal) == 1:
+        return legal[0]
+
+    # Search depth adapts to game phase
+    total_pieces = len(me_t) + len(opp_t)
+    if total_pieces >= 24:
+        depth = 4
+    elif total_pieces >= 14:
+        depth = 5
+    else:
+        depth = 6
+
+    # Root move ordering
+    legal = order_moves(me_t, opp_t, color, legal)
+
+    best_move = legal[0]
+    best_score = -INF
+    alpha = -INF
+    beta = INF
+
+    # Root search
+    for mv in legal:
+        nme, nopp = apply_move(me_t, opp_t, mv)
+        if is_win_state(nme, nopp, color):
+            return mv
+        score = -alphabeta(nopp, nme, opponent(color), depth - 1, -beta, -alpha)
+        if score > best_score:
+            best_score = score
+            best_move = mv
+        if score > alpha:
+            alpha = score
+
+    return best_move
+
+
+def opponent(color: str) -> str:
+    return 'b' if color == 'w' else 'w'
+
+
+def forward_dir(color: str) -> int:
+    return 1 if color == 'w' else -1
+
+
+def goal_row(color: str) -> int:
+    return 7 if color == 'w' else 0
+
+
+def inside(r: int, c: int) -> bool:
+    return 0 <= r < 8 and 0 <= c < 8
+
+
+def is_win_state(me: Tuple[Tuple[int, int], ...], opp: Tuple[Tuple[int, int], ...], color: str) -> bool:
+    if not opp:
+        return True
+    g = goal_row(color)
+    for r, _ in me:
+        if r == g:
+            return True
+    return False
+
+
+def generate_moves(me: Tuple[Tuple[int, int], ...], opp: Tuple[Tuple[int, int], ...], color: str) -> List[Move]:
+    occ_me = set(me)
+    occ_opp = set(opp)
+    occ = occ_me | occ_opp
+    dr = forward_dir(color)
+    moves: List[Move] = []
+
+    for r, c in me:
+        nr = r + dr
+        if not (0 <= nr < 8):
+            continue
+
+        # Straight forward only to empty
+        if (nr, c) not in occ:
+            moves.append(((r, c), (nr, c)))
+
+        # Diagonal forward left/right: may move if empty, may capture if opp present
+        nc = c - 1
+        if nc >= 0:
+            if (nr, nc) not in occ_me:
+                # empty or opponent are both legal on diagonal
+                moves.append(((r, c), (nr, nc)))
+
+        nc = c + 1
+        if nc < 8:
+            if (nr, nc) not in occ_me:
+                moves.append(((r, c), (nr, nc)))
+
+    return moves
+
+
+def apply_move(
+    me: Tuple[Tuple[int, int], ...],
+    opp: Tuple[Tuple[int, int], ...],
+    mv: Move,
+) -> Tuple[Tuple[Tuple[int, int], ...], Tuple[Tuple[int, int], ...]]:
+    src, dst = mv
+    me_list = list(me)
+    idx = me_list.index(src)
+    me_list[idx] = dst
+
+    opp_set = set(opp)
+    if dst in opp_set:
+        opp_set.remove(dst)
+
+    return tuple(sorted(me_list)), tuple(sorted(opp_set))
+
+
+def threatened(pos: Tuple[int, int], opp: Tuple[Tuple[int, int], ...], opp_color: str) -> bool:
+    r, c = pos
+    # Opponent captures by moving forward diagonally onto pos
+    dr = forward_dir(opp_color)
+    sr = r - dr
+    if 0 <= sr < 8:
+        if c - 1 >= 0 and (sr, c - 1) in set(opp):
+            return True
+        if c + 1 < 8 and (sr, c + 1) in set(opp):
+            return True
+    return False
+
+
+def supported(pos: Tuple[int, int], me: Tuple[Tuple[int, int], ...], color: str) -> bool:
+    r, c = pos
+    dr = forward_dir(color)
+    br = r - dr
+    me_set = set(me)
+    if 0 <= br < 8:
+        if c - 1 >= 0 and (br, c - 1) in me_set:
+            return True
+        if c + 1 < 8 and (br, c + 1) in me_set:
+            return True
+    return False
+
+
+def clear_path_bonus(pos: Tuple[int, int], opp: Tuple[Tuple[int, int], ...], color: str) -> int:
+    r, c = pos
+    opp_set = set(opp)
+    steps = 0
+    rr = r + forward_dir(color)
+    while 0 <= rr < 8:
+        blocked = False
+        for cc in (c - 1, c, c + 1):
+            if 0 <= cc < 8 and (rr, cc) in opp_set:
+                blocked = True
+                break
+        if blocked:
+            break
+        steps += 1
+        rr += forward_dir(color)
+    return steps
+
+
+def immediate_wins_available(me: Tuple[Tuple[int, int], ...], opp: Tuple[Tuple[int, int], ...], color: str) -> int:
+    wins = 0
+    for mv in generate_moves(me, opp, color):
+        nme, nopp = apply_move(me, opp, mv)
+        if is_win_state(nme, nopp, color):
+            wins += 1
+    return wins
+
+
+def evaluate(me: Tuple[Tuple[int, int], ...], opp: Tuple[Tuple[int, int], ...], color: str) -> int:
+    if is_win_state(me, opp, color):
+        return 900000000
+    if is_win_state(opp, me, opponent(color)):
+        return -900000000
+
+    me_set = set(me)
+    opp_set = set(opp)
+
+    score = 0
+
+    # Material
+    score += 1200 * (len(me) - len(opp))
+
+    # Advancement and promotion pressure
+    g_me = goal_row(color)
+    g_opp = goal_row(opponent(color))
+
+    me_adv = 0
+    opp_adv = 0
+
+    for p in me:
+        r, c = p
+        progress = r if color == 'w' else (7 - r)
+        dist = abs(g_me - r)
+        me_adv += 90 * progress
+        me_adv += 25 * (7 - dist)
+
+        if r == g_me - forward_dir(color):
+            score += 4000  # on penultimate row
+        if supported(p, me, color):
+            score += 180
+        if threatened(p, opp, opponent(color)):
+            score -= 260
+        else:
+            score += 80
+        score += 70 * clear_path_bonus(p, opp, color)
+
+        # central files slightly preferred
+        score += 18 * (3 - abs(3.5 - c))
+
+    for p in opp:
+        r, c = p
+        progress = r if opponent(color) == 'w' else (7 - r)
+        dist = abs(g_opp - r)
+        opp_adv += 90 * progress
+        opp_adv += 25 * (7 - dist)
+
+        if r == g_opp - forward_dir(opponent(color)):
+            score -= 4000
+        if supported(p, opp, opponent(color)):
+            score -= 180
+        if threatened(p, me, color):
+            score += 260
+        else:
+            score -= 80
+        score -= 70 * clear_path_bonus(p, me, opponent(color))
+        score -= 18 * (3 - abs(3.5 - c))
+
+    score += me_adv - opp_adv
+
+    # Immediate tactical threats
+    my_wins = immediate_wins_available(me, opp, color)
+    opp_wins = immediate_wins_available(opp, me, opponent(color))
+    score += 15000 * my_wins
+    score -= 18000 * opp_wins
+
+    # Mobility
+    score += 25 * (len(generate_moves(me, opp, color)) - len(generate_moves(opp, me, opponent(color))))
+
+    return int(score)
+
+
+def move_priority(me: Tuple[Tuple[int, int], ...], opp: Tuple[Tuple[int, int], ...], color: str, mv: Move) -> int:
+    src, dst = mv
+    sr, sc = src
+    dr, dc = dst
+    score = 0
+
+    # Winning move first
+    if dr == goal_row(color):
+        score += 1_000_000
+
+    # Capture
+    if dst in set(opp):
+        score += 50_000
+
+    # Advancement
+    prog = (dr - sr) if color == 'w' else (sr - dr)
+    score += 10_000 * prog
+
+    # Centrality
+    score -= int(100 * abs(3.5 - dc))
+
+    # Safety/support after move
+    nme, nopp = apply_move(me, opp, mv)
+    if supported(dst, nme, color):
+        score += 1200
+    if threatened(dst, nopp, opponent(color)):
+        score -= 1600
+
+    # Create immediate win threat
+    if immediate_wins_available(nme, nopp, color) > 0:
+        score += 5000
+
+    # Avoid allowing immediate opponent win
+    if immediate_wins_available(nopp, nme, opponent(color)) > 0:
+        score -= 8000
+
+    return score
+
+
+def order_moves(me: Tuple[Tuple[int, int], ...], opp: Tuple[Tuple[int, int], ...], color: str, moves: List[Move]) -> List[Move]:
+    return sorted(moves, key=lambda mv: move_priority(me, opp, color, mv), reverse=True)
+
+
+def alphabeta(
+    me: Tuple[Tuple[int, int], ...],
+    opp: Tuple[Tuple[int, int], ...],
+    color: str,
+    depth: int,
+    alpha: int,
+    beta: int,
+) -> int:
+    if is_win_state(me, opp, color):
+        return 900000000 + depth
+    if is_win_state(opp, me, opponent(color)):
+        return -900000000 - depth
+    if depth <= 0:
+        return evaluate(me, opp, color)
+
+    moves = generate_moves(me, opp, color)
+    if not moves:
+        # No legal move is effectively losing in practical terms for this arena.
+        return -800000000
+
+    moves = order_moves(me, opp, color, moves)
+
+    best = -INF
+    for mv in moves:
+        nme, nopp = apply_move(me, opp, mv)
+        if is_win_state(nme, nopp, color):
+            return 900000000 + depth
+        score = -alphabeta(nopp, nme, opponent(color), depth - 1, -beta, -alpha)
+        if score > best:
+            best = score
+        if score > alpha:
+            alpha = score
+        if alpha >= beta:
+            break
+    return best
+</code>

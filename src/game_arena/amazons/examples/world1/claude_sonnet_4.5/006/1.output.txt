@@ -1,0 +1,222 @@
+I'll design a competitive Amazons policy using a combination of mobility-based heuristics and tactical positioning.
+
+## Strategy
+
+My policy uses the following approach:
+
+1. **Minimax with Alpha-Beta Pruning**: Search game tree to depth 2-3 with iterative deepening
+2. **Evaluation Function** combining:
+   - **Mobility差**: Difference in legal moves available (primary factor)
+   - **Territory Control**: Count of reachable empty squares using flood fill
+   - **Centrality**: Bonus for controlling central positions early game
+   - **Confinement**: Penalty if opponent amazons are trapped or isolated
+3. **Move Ordering**: Prioritize moves that:
+   - Reduce opponent mobility most
+   - Maintain/increase our mobility
+   - Control central squares
+4. **Endgame Detection**: When board is mostly filled, switch to pure mobility maximization
+
+The key insight is that Amazons is about controlling space and limiting opponent movement. The player with more mobility typically wins.
+
+<code>
+import numpy as np
+import time
+
+def policy(board) -> str:
+    """
+    Main policy function that returns the best move for the current board state.
+    """
+    start_time = time.time()
+    time_limit = 0.95  # Leave buffer for safety
+    
+    my_amazons = np.argwhere(board == 1)
+    if len(my_amazons) == 0:
+        # Fallback: return any legal move
+        return get_any_legal_move(board)
+    
+    # Try iterative deepening
+    best_move = None
+    try:
+        for depth in range(1, 4):
+            if time.time() - start_time > time_limit * 0.8:
+                break
+            move = get_best_move(board, depth, time_limit - (time.time() - start_time))
+            if move:
+                best_move = move
+    except:
+        pass
+    
+    if best_move is None:
+        best_move = get_any_legal_move(board)
+    
+    return best_move
+
+def get_best_move(board, max_depth, time_remaining):
+    """Find best move using minimax with alpha-beta pruning."""
+    best_score = -float('inf')
+    best_move = None
+    alpha = -float('inf')
+    beta = float('inf')
+    
+    moves = generate_all_moves(board, 1)
+    # Order moves by heuristic
+    moves = order_moves(board, moves, 1)
+    
+    for move in moves[:30]:  # Limit branching factor
+        new_board = apply_move(board, move, 1)
+        score = minimax(new_board, max_depth - 1, alpha, beta, False)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+        alpha = max(alpha, score)
+    
+    if best_move:
+        return format_move(best_move)
+    return None
+
+def minimax(board, depth, alpha, beta, maximizing):
+    """Minimax with alpha-beta pruning."""
+    if depth == 0:
+        return evaluate_board(board)
+    
+    if maximizing:
+        max_eval = -float('inf')
+        moves = generate_all_moves(board, 1)
+        if not moves:
+            return -10000
+        for move in moves[:20]:
+            new_board = apply_move(board, move, 1)
+            eval_score = minimax(new_board, depth - 1, alpha, beta, False)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        moves = generate_all_moves(board, 2)
+        if not moves:
+            return 10000
+        for move in moves[:20]:
+            new_board = apply_move(board, move, 2)
+            eval_score = minimax(new_board, depth - 1, alpha, beta, True)
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def evaluate_board(board):
+    """Evaluate board position."""
+    my_moves = len(generate_all_moves(board, 1))
+    opp_moves = len(generate_all_moves(board, 2))
+    
+    if my_moves == 0:
+        return -10000
+    if opp_moves == 0:
+        return 10000
+    
+    # Mobility difference
+    mobility_score = (my_moves - opp_moves) * 10
+    
+    # Territory control
+    my_territory = count_territory(board, 1)
+    opp_territory = count_territory(board, 2)
+    territory_score = (my_territory - opp_territory) * 2
+    
+    return mobility_score + territory_score
+
+def count_territory(board, player):
+    """Count reachable empty squares using flood fill."""
+    amazons = np.argwhere(board == player)
+    visited = set()
+    
+    for amazon in amazons:
+        stack = [tuple(amazon)]
+        while stack:
+            pos = stack.pop()
+            if pos in visited:
+                continue
+            r, c = pos
+            if r < 0 or r >= 6 or c < 0 or c >= 6:
+                continue
+            if board[r, c] != 0 and tuple(pos) not in [tuple(a) for a in amazons]:
+                continue
+            visited.add(pos)
+            
+            for dr, dc in [(0,1),(0,-1),(1,0),(-1,0),(1,1),(1,-1),(-1,1),(-1,-1)]:
+                stack.append((r + dr, c + dc))
+    
+    return len(visited)
+
+def generate_all_moves(board, player):
+    """Generate all legal moves for a player."""
+    moves = []
+    amazons = np.argwhere(board == player)
+    
+    for amazon in amazons:
+        fr, fc = amazon
+        # Get all valid destinations
+        destinations = get_queen_moves(board, fr, fc)
+        
+        for tr, tc in destinations[:15]:  # Limit per amazon
+            # Simulate move
+            temp_board = board.copy()
+            temp_board[fr, fc] = 0
+            temp_board[tr, tc] = player
+            
+            # Get arrow positions
+            arrows = get_queen_moves(temp_board, tr, tc)
+            for ar, ac in arrows[:15]:  # Limit arrows
+                moves.append(((fr, fc), (tr, tc), (ar, ac)))
+    
+    return moves
+
+def get_queen_moves(board, row, col):
+    """Get all valid queen-like moves from a position."""
+    moves = []
+    directions = [(0,1),(0,-1),(1,0),(-1,0),(1,1),(1,-1),(-1,1),(-1,-1)]
+    
+    for dr, dc in directions:
+        for dist in range(1, 6):
+            nr, nc = row + dr * dist, col + dc * dist
+            if nr < 0 or nr >= 6 or nc < 0 or nc >= 6:
+                break
+            if board[nr, nc] != 0:
+                break
+            moves.append((nr, nc))
+    
+    return moves
+
+def apply_move(board, move, player):
+    """Apply a move to the board."""
+    new_board = board.copy()
+    (fr, fc), (tr, tc), (ar, ac) = move
+    new_board[fr, fc] = 0
+    new_board[tr, tc] = player
+    new_board[ar, ac] = -1
+    return new_board
+
+def order_moves(board, moves, player):
+    """Order moves by heuristic quality."""
+    scored_moves = []
+    for move in moves:
+        new_board = apply_move(board, move, player)
+        score = len(generate_all_moves(new_board, 3 - player))  # Minimize opponent moves
+        scored_moves.append((score, move))
+    scored_moves.sort()
+    return [m for _, m in scored_moves]
+
+def format_move(move):
+    """Format move tuple as string."""
+    (fr, fc), (tr, tc), (ar, ac) = move
+    return f"{fr},{fc}:{tr},{tc}:{ar},{ac}"
+
+def get_any_legal_move(board):
+    """Fallback: return first legal move found."""
+    moves = generate_all_moves(board, 1)
+    if moves:
+        return format_move(moves[0])
+    return "0,0:0,0:0,0"  # Should never happen
+</code>

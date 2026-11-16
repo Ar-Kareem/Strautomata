@@ -1,0 +1,144 @@
+
+import random
+from typing import List, Tuple
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    # Convert lists to sets for faster lookup
+    my_pieces = set(me)
+    opp_pieces = set(opp)
+    
+    # Determine movement direction
+    direction = 1 if color == 'b' else -1
+    
+    # Generate all legal moves
+    moves = []
+    capture_moves = []
+    
+    for r, c in me:
+        # Forward move
+        new_r = r + direction
+        if 0 <= new_r <= 7:
+            # Straight forward
+            if (new_r, c) not in my_pieces and (new_r, c) not in opp_pieces:
+                moves.append(((r, c), (new_r, c)))
+            
+            # Diagonal left
+            new_c = c - 1
+            if 0 <= new_c <= 7:
+                if (new_r, new_c) in opp_pieces:
+                    capture_moves.append(((r, c), (new_r, new_c)))
+                elif (new_r, new_c) not in my_pieces and (new_r, new_c) not in opp_pieces:
+                    moves.append(((r, c), (new_r, new_c)))
+            
+            # Diagonal right
+            new_c = c + 1
+            if 0 <= new_c <= 7:
+                if (new_r, new_c) in opp_pieces:
+                    capture_moves.append(((r, c), (new_r, new_c)))
+                elif (new_r, new_c) not in my_pieces and (new_r, new_c) not in opp_pieces:
+                    moves.append(((r, c), (new_r, new_c)))
+    
+    # If we have capture moves, consider them first
+    if capture_moves:
+        # Evaluate capture moves
+        best_captures = []
+        max_advantage = -1000
+        
+        for move in capture_moves:
+            fr, fc = move[0]
+            tr, tc = move[1]
+            
+            # Heuristic: value of captured piece based on its advancement
+            captured_value = 0
+            if color == 'b':  # We're black, going down
+                captured_value = tc - 3.5  # Center preference
+            else:  # We're white, going up
+                captured_value = 3.5 - tc  # Center preference
+            
+            # Add some randomness to avoid predictable play
+            advantage = captured_value + random.uniform(-0.5, 0.5)
+            
+            if advantage > max_advantage:
+                max_advantage = advantage
+                best_captures = [move]
+            elif abs(advantage - max_advantage) < 0.1:
+                best_captures.append(move)
+        
+        if best_captures:
+            return random.choice(best_captures)
+    
+    # For non-capture moves, use a more sophisticated evaluation
+    if moves:
+        best_moves = []
+        best_score = -1000
+        
+        for move in moves:
+            fr, fc = move[0]
+            tr, tc = move[1]
+            
+            # Scoring components:
+            # 1. Advancement toward opponent's home row
+            advancement = 0
+            if color == 'b':
+                advancement = tr - fr
+                # Bonus for getting close to promotion
+                if tr >= 6:
+                    advancement += 2
+            else:
+                advancement = fr - tr
+                # Bonus for getting close to promotion
+                if tr <= 1:
+                    advancement += 2
+            
+            # 2. Position control (center control is valuable)
+            center_preference = 3.5 - abs(tc - 3.5)
+            
+            # 3. Avoid isolating pieces
+            isolation_penalty = 0
+            neighbors_before = 0
+            neighbors_after = 0
+            
+            # Count neighbors before move
+            for dr in [-1, 0, 1]:
+                for dc in [-1, 0, 1]:
+                    if dr == 0 and dc == 0:
+                        continue
+                    nr, nc = fr + dr, fc + dc
+                    if 0 <= nr <= 7 and 0 <= nc <= 7 and (nr, nc) in my_pieces:
+                        neighbors_before += 1
+                        
+            # Count neighbors after move
+            for dr in [-1, 0, 1]:
+                for dc in [-1, 0, 1]:
+                    if dr == 0 and dc == 0:
+                        continue
+                    nr, nc = tr + dr, tc + dc
+                    if 0 <= nr <= 7 and 0 <= nc <= 7 and (nr, nc) in my_pieces:
+                        neighbors_after += 1
+            
+            # Penalty for losing connections
+            if neighbors_before > neighbors_after:
+                isolation_penalty = -0.5
+                
+            score = advancement + center_preference*0.3 + isolation_penalty
+            
+            # Add small random factor to break ties
+            score += random.uniform(-0.1, 0.1)
+            
+            if score > best_score:
+                best_score = score
+                best_moves = [move]
+            elif abs(score - best_score) < 0.1:
+                best_moves.append(move)
+        
+        if best_moves:
+            return random.choice(best_moves)
+    
+    # Fallback: return any valid move
+    if moves:
+        return random.choice(moves)
+    elif capture_moves:
+        return random.choice(capture_moves)
+    
+    # Should never happen if called with legal position
+    raise Exception("No legal moves found")

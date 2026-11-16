@@ -1,0 +1,164 @@
+
+from __future__ import annotations
+
+from functools import lru_cache
+from typing import List, Tuple, Optional
+
+Move = Tuple[int, int]
+Board = List[List[int]]  # 3x3, 0 empty, 1 us, -1 opponent
+
+
+WIN_LINES = [
+    # rows
+    [(0, 0), (0, 1), (0, 2)],
+    [(1, 0), (1, 1), (1, 2)],
+    [(2, 0), (2, 1), (2, 2)],
+    # cols
+    [(0, 0), (1, 0), (2, 0)],
+    [(0, 1), (1, 1), (2, 1)],
+    [(0, 2), (1, 2), (2, 2)],
+    # diagonals
+    [(0, 0), (1, 1), (2, 2)],
+    [(0, 2), (1, 1), (2, 0)],
+]
+
+
+def _winner(b: Tuple[Tuple[int, ...], ...]) -> int:
+    """Return 1 if us won, -1 if opponent won, 0 otherwise."""
+    for line in WIN_LINES:
+        s = b[line[0][0]][line[0][1]] + b[line[1][0]][line[1][1]] + b[line[2][0]][line[2][1]]
+        if s == 3:
+            return 1
+        if s == -3:
+            return -1
+    return 0
+
+
+def _empties(b: Tuple[Tuple[int, ...], ...]) -> Tuple[Move, ...]:
+    moves = []
+    for r in range(3):
+        for c in range(3):
+            if b[r][c] == 0:
+                moves.append((r, c))
+    return tuple(moves)
+
+
+def _move_order(moves: Tuple[Move, ...]) -> Tuple[Move, ...]:
+    """Strong ordering: center, corners, edges (helps alpha-beta and typical play)."""
+    center = [(1, 1)]
+    corners = [(0, 0), (0, 2), (2, 0), (2, 2)]
+    edges = [(0, 1), (1, 0), (1, 2), (2, 1)]
+    ordered = []
+    s = set(moves)
+    for m in center + corners + edges:
+        if m in s:
+            ordered.append(m)
+    # In case anything odd happens, append remaining (shouldn't in 3x3)
+    for m in moves:
+        if m not in ordered:
+            ordered.append(m)
+    return tuple(ordered)
+
+
+def _apply(b: Tuple[Tuple[int, ...], ...], move: Move, player: int) -> Tuple[Tuple[int, ...], ...]:
+    r, c = move
+    row = list(b[r])
+    row[c] = player
+    nb = [list(bi) for bi in b]
+    nb[r] = row
+    return tuple(tuple(x) for x in nb)
+
+
+def _find_immediate_win(b: Tuple[Tuple[int, ...], ...], player: int) -> Optional[Move]:
+    for (r, c) in _empties(b):
+        nb = _apply(b, (r, c), player)
+        if _winner(nb) == player:
+            return (r, c)
+    return None
+
+
+@lru_cache(maxsize=None)
+def _negamax(
+    b: Tuple[Tuple[int, ...], ...],
+    player: int,
+    depth: int,
+    alpha: int,
+    beta: int
+) -> int:
+    """
+    Negamax with alpha-beta.
+    Returns score from perspective of 'player' to move on board b.
+    Scores are depth-sensitive: prefer faster wins / slower losses.
+    """
+    w = _winner(b)
+    if w != 0:
+        # If someone already won before current move, it's a loss for current player if w == -player
+        # Convert to current player's perspective.
+        if w == player:
+            return 10 - depth
+        else:
+            return depth - 10
+
+    moves = _empties(b)
+    if not moves:
+        return 0  # draw
+
+    best = -10_000
+    for mv in _move_order(moves):
+        nb = _apply(b, mv, player)
+        val = -_negamax(nb, -player, depth + 1, -beta, -alpha)
+        if val > best:
+            best = val
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+    return best
+
+
+def policy(board: Board) -> Move:
+    """
+    Return a legal move (row, col) for the given 3x3 tic-tac-toe board.
+    0 empty, 1 us, -1 opponent.
+    """
+    # Convert to hashable tuple form
+    b = tuple(tuple(int(x) for x in row) for row in board)
+
+    moves = _empties(b)
+    if not moves:
+        # No legal moves exist; arena should not query here. Return a fixed coordinate as last resort.
+        return (0, 0)
+
+    # Fast path: take center if board is empty (excellent opening)
+    if len(moves) == 9 and b[1][1] == 0:
+        return (1, 1)
+
+    # 1) Immediate win
+    win_mv = _find_immediate_win(b, player=1)
+    if win_mv is not None:
+        return win_mv
+
+    # 2) Immediate block
+    block_mv = _find_immediate_win(b, player=-1)
+    if block_mv is not None and b[block_mv[0]][block_mv[1]] == 0:
+        return block_mv
+
+    # 3) Minimax (perfect play)
+    best_mv = None
+    best_val = -10_000
+    alpha, beta = -10_000, 10_000
+
+    for mv in _move_order(moves):
+        nb = _apply(b, mv, 1)
+        val = -_negamax(nb, -1, 1, -beta, -alpha)
+        if val > best_val:
+            best_val = val
+            best_mv = mv
+        if val > alpha:
+            alpha = val
+
+    # Safety: ensure legal
+    if best_mv is None or b[best_mv[0]][best_mv[1]] != 0:
+        # Fallback to first legal move
+        return moves[0]
+    return best_mv

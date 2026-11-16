@@ -1,0 +1,108 @@
+
+import copy
+
+def simulate_move(player, opponent, move_index):
+    new_player = player.copy()
+    new_opponent = opponent.copy()
+    seeds = new_player[move_index]
+    if seeds == 0:
+        return None, None, False, 0
+    
+    new_player[move_index] = 0
+    current_side = 'player'
+    pos = move_index + 1
+    extra_move = False
+    last_pos = (None, -1)
+    captures = 0
+
+    for _ in range(seeds):
+        if current_side == 'player':
+            if pos < 6:
+                new_player[pos] += 1
+                last_pos = ('player', pos)
+                pos += 1
+            elif pos == 6:
+                new_player[6] += 1
+                last_pos = ('player', 6)
+                extra_move = (_ == seeds - 1)  # last seed
+                pos = 0
+                current_side = 'opponent'
+            else:  # pos > 6
+                current_side = 'opponent'
+                pos = 0
+        else:  # opponent's side
+            if pos < 6:
+                new_opponent[pos] += 1
+                last_pos = ('opponent', pos)
+                pos += 1
+            elif pos == 6:  # skip opponent's store
+                pos = 0
+                current_side = 'player'
+            else:  # pos > 6
+                current_side = 'player'
+                pos = 0
+    
+    # Check for capture
+    if last_pos[0] == 'player' and 0 <= last_pos[1] < 6 and new_player[last_pos[1]] == 1:
+        opp_index = 5 - last_pos[1]
+        if new_opponent[opp_index] > 0:
+            captures = new_player[last_pos[1]] + new_opponent[opp_index]
+            new_player[6] += captures
+            new_player[last_pos[1]] = 0
+            new_opponent[opp_index] = 0
+    
+    return new_player, new_opponent, extra_move, captures
+
+def evaluate_state(player, opponent):
+    store_diff = player[6] - opponent[6]
+    your_houses = sum(player[0:6])
+    opp_houses = sum(opponent[0:6])
+    return store_diff * 100 + your_houses - opp_houses * 2
+
+def policy(you, opponent):
+    valid_moves = [i for i in range(6) if you[i] > 0]
+    if not valid_moves:
+        return -1  # should not occur per problem constraints
+    
+    best_score = -float('inf')
+    best_move = valid_moves[0]
+
+    for move in valid_moves:
+        new_you, new_opponent, extra_move, captures = simulate_move(you, opponent, move)
+        if new_you is None:
+            continue
+        
+        current_score = evaluate_state(new_you, new_opponent) + captures * 20
+        
+        if extra_move:
+            max_follow_score = -float('inf')
+            follow_moves = [i for i in range(6) if new_you[i] > 0]
+            if follow_moves:
+                for follow_move in follow_moves:
+                    f_you, f_opponent, f_extra, f_capt = simulate_move(new_you, new_opponent, follow_move)
+                    follow_score = evaluate_state(f_you, f_opponent) + f_capt * 20
+                    if f_extra:
+                        follow_score += 50  # bonus for consecutive extra moves
+                    max_follow_score = max(max_follow_score, follow_score)
+                current_score += max_follow_score
+        else:
+            min_opp_score = float('inf')
+            opp_moves = [i for i in range(6) if new_opponent[i] > 0]
+            if not opp_moves:  # game ends
+                end_you = new_you.copy()
+                end_you[6] += sum(end_you[0:6])
+                end_opp = [0] * 7
+                end_opp[6] = new_opponent[6] + sum(new_opponent[0:6])
+                min_opp_score = evaluate_state(end_you, end_opp)
+            else:
+                for opp_move in opp_moves:
+                    opp_you, opp_opponent, _, opp_capt = simulate_move(new_opponent, new_you, opp_move)
+                    opp_score = evaluate_state(opp_opponent, opp_you) + opp_capt * 20
+                    min_opp_score = min(min_opp_score, opp_score)
+            current_score = min_opp_score  # opponent's best response
+        
+        if current_score > best_score:
+            best_score = current_score
+            best_move = move
+    
+    return best_move

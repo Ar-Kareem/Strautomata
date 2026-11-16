@@ -1,0 +1,267 @@
+
+import random
+import hashlib
+
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    # Validation: ensure inputs are consistent
+    if not isinstance(my_men, list) or not isinstance(my_kings, list) or \
+       not isinstance(opp_men, list) or not isinstance(opp_kings, list):
+        raise ValueError("Input pieces must be lists of tuples.")
+    
+    # Generate all legal moves
+    moves = generate_all_legal_moves(my_men, my_kings, opp_men, opp_kings, color)
+    
+    if not moves:
+        return None  # No legal moves available (should not happen in valid game state)
+    
+    # Determine if any moves are captures
+    captures = [m for m in moves if is_capture_move(m)]
+    
+    if captures:
+        # Prioritize captures; use simple heuristic to pick the best capture
+        best_capture = select_best_capture(captures, opp_men, opp_kings, color)
+        return best_capture
+    else:
+        # Choose a non-capture move using a heuristic
+        best_move = select_best_non_capture(moves, my_men, my_kings, color)
+        return best_move
+
+def is_valid_square(r, c):
+    return 0 <= r <= 7 and 0 <= c <= 7
+
+def is_dark_square(r, c):
+    return (r + c) % 2 == 1
+
+def is_empty_square(r, c, my_men, my_kings, opp_men, opp_kings):
+    for piece_list in [my_men, my_kings, opp_men, opp_kings]:
+        if (r, c) in piece_list:
+            return False
+    return True
+
+def get_opponent_pieces(color):
+    if color == 'b':
+        return 'w'
+    elif color == 'w':
+        return 'b'
+    else:
+        raise ValueError("Invalid color")
+
+def get_direction(color):
+    if color == 'b':
+        return -1  # Black moves up (decreasing row)
+    elif color == 'w':
+        return 1   # White moves down (increasing row)
+    else:
+        raise ValueError("Invalid color")
+
+def generate_all_legal_moves(my_men, my_kings, opp_men, opp_kings, color):
+    moves = []
+    
+    # Combine all my pieces for iteration
+    all_my_pieces = my_men + my_kings
+    
+    # Generate moves for each piece
+    for piece in all_my_pieces:
+        r, c = piece
+        # Determine if it's a king
+        is_king = piece in my_kings
+        
+        # Generate basic moves (non-captures)
+        basic_moves = generate_basic_moves(r, c, is_king, color, my_men, my_kings, opp_men, opp_kings)
+        moves.extend(basic_moves)
+        
+        # Generate capture moves
+        # Capture moves require recursion for multiple jumps
+        captures_from_piece = generate_capture_moves_recursive(r, c, is_king, color, my_men, my_kings, opp_men, opp_kings, set(), [])
+        moves.extend(captures_from_piece)
+    
+    return moves
+
+def generate_basic_moves(r, c, is_king, color, my_men, my_kings, opp_men, opp_kings):
+    moves = []
+    direction = get_direction(color)
+    
+    # Directions to move
+    # For kings, we check all 4 diagonal directions
+    # For regular pieces, we check only forward directions
+    if is_king:
+        directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+    else:
+        directions = [(direction, -1), (direction, 1)]
+    
+    for dr, dc in directions:
+        nr, nc = r + dr, c + dc
+        if is_valid_square(nr, nc) and is_dark_square(nr, nc) and is_empty_square(nr, nc, my_men, my_kings, opp_men, opp_kings):
+            # Check if this move would result in promotion
+            is_promotion = (not is_king) and (nr == 0 if color == 'b' else nr == 7)
+            move = ((r, c), (nr, nc), "promotion" if is_promotion else "move")
+            moves.append(move)
+    
+    return moves
+
+def generate_capture_moves_recursive(r, c, is_king, color, my_men, my_kings, opp_men, opp_kings, visited_states, current_path):
+    moves = []
+    
+    # Create a state key for this position to detect loops
+    # Using a hash instead of a deep copy for performance
+    state_key = hash_state((r, c), my_men, my_kings, opp_men, opp_kings)
+    
+    if state_key in visited_states:
+        return moves  # Prevent infinite loops
+    
+    visited_states.add(state_key)
+    
+    # Directions to capture
+    # For kings, we check all 4 diagonal directions
+    # For regular pieces, we check only forward directions
+    if is_king:
+        directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+    else:
+        directions = [(get_direction(color), -1), (get_direction(color), 1)]
+    
+    for dr, dc in directions:
+        # Check if there's an opponent piece to jump over
+        mid_r, mid_c = r + dr, c + dc
+        end_r, end_c = r + 2*dr, c + 2*dc
+        
+        if not (is_valid_square(mid_r, mid_c) and is_valid_square(end_r, end_c)):
+            continue
+        
+        if not is_dark_square(end_r, end_c):
+            continue
+        
+        # Check if the intermediate square has an opponent piece
+        is_opponent_men = (mid_r, mid_c) in opp_men
+        is_opponent_king = (mid_r, mid_c) in opp_kings
+        
+        # Check if the landing square is empty
+        is_landing_empty = is_empty_square(end_r, end_c, my_men, my_kings, opp_men, opp_kings)
+        
+        if (is_opponent_men or is_opponent_king) and is_landing_empty:
+            # Perform the capture
+            # Create new state without the captured piece
+            new_opp_men = opp_men[:] if not is_opponent_men else [p for p in opp_men if p != (mid_r, mid_c)]
+            new_opp_kings = opp_kings[:] if not is_opponent_king else [p for p in opp_kings if p != (mid_r, mid_c)]
+            
+            # Update the piece position
+            new_r, new_c = end_r, end_c
+            
+            # Check for promotion
+            is_promotion = (not is_king) and (new_r == 0 if color == 'b' else new_r == 7)
+            
+            if is_promotion:
+                # The piece becomes a king
+                new_is_king = True
+            else:
+                new_is_king = is_king
+            
+            # Create the move
+            move = ((r, c), (new_r, new_c), "promotion" if is_promotion else "capture")
+            new_path = current_path + [move]
+            
+            # Check for further captures from the new position
+            further_captures = generate_capture_moves_recursive(new_r, new_c, new_is_king, color, my_men, my_kings, new_opp_men, new_opp_kings, visited_states.copy(), new_path)
+            
+            if further_captures:
+                moves.extend(further_captures)
+            else:
+                # This is the end of the capture sequence
+                moves.append(tuple(new_path))
+    
+    # Remove the state from visited_states when backtracking?
+    # No, we keep it to prevent infinite loops in this specific recursive path
+    
+    return moves
+
+def hash_state(pos, my_men, my_kings, opp_men, opp_kings):
+    # Create a tuple representation of the state
+    state_tuple = (pos, tuple(sorted(my_men)), tuple(sorted(my_kings)), tuple(sorted(opp_men)), tuple(sorted(opp_kings)))
+    return hashlib.md5(str(state_tuple).encode()).hexdigest()
+
+def is_capture_move(move):
+    # A move is a capture if any element in the sequence has type "capture" or "promotion"
+    if isinstance(move, list) or isinstance(move, tuple):
+        for step in move:
+            if len(step) > 2 and step[2] in ["capture", "promotion"]:
+                return True
+    return False
+
+def select_best_capture(captures, opp_men, opp_kings, color):
+    # Heuristic: prefer captures that result in more material loss for the opponent
+    # Also prefer captures that promote to king
+    
+    best_score = -1
+    best_move = None
+    
+    for capture in captures:
+        score = 0
+        
+        # Count captured pieces
+        # If it's a sequence, count all captures in the sequence
+        if isinstance(capture, list) or isinstance(capture, tuple):
+            for step in capture:
+                if len(step) > 2 and step[2] in ["capture", "promotion"]:
+                    # Check if the landing square resulted in a capture
+                    # We need to infer this from the move
+                    # A simpler approach: just count the number of steps that are captures
+                    score += 1
+        else:
+            # Single capture move
+            score += 1
+        
+        # Prefer promotions
+        if isinstance(capture, list) or isinstance(capture, tuple):
+            for step in capture:
+                if len(step) > 2 and step[2] == "promotion":
+                    score += 10  # High priority for promotion
+        
+        if score > best_score:
+            best_score = score
+            best_move = capture
+    
+    # Return the first step of the best capture sequence if it's a sequence
+    if isinstance(best_move, list) or isinstance(best_move, tuple):
+        return best_move[0][:2]  # Return (from, to)
+    else:
+        return best_move[:2]  # Return (from, to)
+
+def select_best_non_capture(moves, my_men, my_kings, color):
+    # Heuristic: prefer moves that advance pieces towards promotion
+    # Prefer kings over men for movement
+    # Prefer central control
+    
+    best_score = -999999
+    best_move = None
+    
+    for move in moves:
+        score = 0
+        from_pos, to_pos, move_type = move
+        
+        # Identify the piece being moved
+        is_king = from_pos in my_kings
+        
+        # Reward moving towards promotion
+        if not is_king:
+            if color == 'b':
+                # Black wants to move to lower rows
+                score += (from_pos[0] - to_pos[0]) * 10
+            else:
+                # White wants to move to higher rows
+                score += (to_pos[0] - from_pos[0]) * 10
+        
+        # Prefer kings
+        if is_king:
+            score += 5
+        
+        # Prefer central control
+        # Central squares are (3,3), (3,4), (4,3), (4,4)
+        central_squares = [(3,3), (3,4), (4,3), (4,4)]
+        if to_pos in central_squares:
+            score += 3
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move[:2]  # Return (from, to)
+

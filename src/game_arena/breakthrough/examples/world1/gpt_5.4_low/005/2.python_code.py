@@ -1,0 +1,332 @@
+
+from functools import lru_cache
+
+INF = 10**9
+
+def other(color: str) -> str:
+    return 'b' if color == 'w' else 'w'
+
+def goal_row(color: str) -> int:
+    return 7 if color == 'w' else 0
+
+def step_dir(color: str) -> int:
+    return 1 if color == 'w' else -1
+
+def advancement(piece, color: str) -> int:
+    r, _ = piece
+    return r if color == 'w' else 7 - r
+
+def in_bounds(r: int, c: int) -> bool:
+    return 0 <= r < 8 and 0 <= c < 8
+
+@lru_cache(maxsize=None)
+def generate_moves_cached(me_t, opp_t, color: str):
+    me = set(me_t)
+    opp = set(opp_t)
+    occ = me | opp
+    dr = step_dir(color)
+    moves = []
+
+    for r, c in me_t:
+        nr = r + dr
+        if not (0 <= nr < 8):
+            continue
+
+        # straight forward only if empty
+        if (nr, c) not in occ:
+            moves.append(((r, c), (nr, c)))
+
+        # diagonal forward: empty or capture opponent, but not onto own piece
+        nc = c - 1
+        if nc >= 0 and (nr, nc) not in me:
+            moves.append(((r, c), (nr, nc)))
+        nc = c + 1
+        if nc < 8 and (nr, nc) not in me:
+            moves.append(((r, c), (nr, nc)))
+
+    return tuple(moves)
+
+def is_terminal_state(me_t, opp_t, color: str) -> int | None:
+    """
+    Returns:
+      +INF if side-to-move already has a winning state,
+      -INF if side-to-move already has a losing state,
+      None otherwise.
+    """
+    oc = other(color)
+    my_goal = goal_row(color)
+    opp_goal = goal_row(oc)
+
+    if not opp_t:
+        return INF
+    if not me_t:
+        return -INF
+
+    for r, _ in me_t:
+        if r == my_goal:
+            return INF
+    for r, _ in opp_t:
+        if r == opp_goal:
+            return -INF
+    return None
+
+def make_move(me_t, opp_t, move):
+    frm, to = move
+    me = list(me_t)
+    opp = list(opp_t)
+
+    # move piece
+    idx = me.index(frm)
+    me[idx] = to
+
+    # capture if opponent present on destination
+    try:
+        j = opp.index(to)
+        opp.pop(j)
+    except ValueError:
+        pass
+
+    me.sort()
+    opp.sort()
+    return tuple(me), tuple(opp)
+
+def count_immediate_wins(me_t, opp_t, color: str) -> int:
+    g = goal_row(color)
+    cnt = 0
+    for mv in generate_moves_cached(me_t, opp_t, color):
+        _, to = mv
+        if to[0] == g:
+            cnt += 1
+    return cnt
+
+def is_passed(piece, opp_t, color: str) -> bool:
+    r, c = piece
+    if color == 'w':
+        for orow, ocol in opp_t:
+            if orow > r and abs(ocol - c) <= 1:
+                return False
+    else:
+        for orow, ocol in opp_t:
+            if orow < r and abs(ocol - c) <= 1:
+                return False
+    return True
+
+def support_count(me_t, color: str) -> int:
+    me = set(me_t)
+    cnt = 0
+    dr = -1 if color == 'w' else 1  # supporting piece sits one row behind
+    for r, c in me_t:
+        rr = r + dr
+        if 0 <= rr < 8:
+            if (rr, c - 1) in me:
+                cnt += 1
+            if (rr, c + 1) in me:
+                cnt += 1
+    return cnt
+
+def capture_pressure(me_t, opp_t, color: str) -> int:
+    opp = set(opp_t)
+    dr = step_dir(color)
+    cnt = 0
+    for r, c in me_t:
+        nr = r + dr
+        if 0 <= nr < 8:
+            if c - 1 >= 0 and (nr, c - 1) in opp:
+                cnt += 1
+            if c + 1 < 8 and (nr, c + 1) in opp:
+                cnt += 1
+    return cnt
+
+@lru_cache(maxsize=None)
+def evaluate_state(me_t, opp_t, color: str) -> int:
+    term = is_terminal_state(me_t, opp_t, color)
+    if term is not None:
+        return term
+
+    oc = other(color)
+
+    my_n = len(me_t)
+    opp_n = len(opp_t)
+
+    my_adv = [advancement(p, color) for p in me_t]
+    opp_adv = [advancement(p, oc) for p in opp_t]
+
+    my_sum_adv = sum(my_adv)
+    opp_sum_adv = sum(opp_adv)
+
+    my_max_adv = max(my_adv) if my_adv else 0
+    opp_max_adv = max(opp_adv) if opp_adv else 0
+
+    # closeness to promotion: sharply reward advanced runners
+    runner_table = [0, 2, 5, 10, 18, 30, 50, 200]
+    my_runner = sum(runner_table[a] for a in my_adv)
+    opp_runner = sum(runner_table[a] for a in opp_adv)
+
+    # passed pawns
+    my_passed = 0
+    for p in me_t:
+        if is_passed(p, opp_t, color):
+            my_passed += 1 + advancement(p, color)
+    opp_passed = 0
+    for p in opp_t:
+        if is_passed(p, me_t, oc):
+            opp_passed += 1 + advancement(p, oc)
+
+    # mobility
+    my_moves = len(generate_moves_cached(me_t, opp_t, color))
+    opp_moves = len(generate_moves_cached(opp_t, me_t, oc))
+
+    # capture pressure
+    my_cap = capture_pressure(me_t, opp_t, color)
+    opp_cap = capture_pressure(opp_t, me_t, oc)
+
+    # center control
+    my_center = 0
+    for _, c in me_t:
+        my_center += 3 - abs(c - 3.5)
+    opp_center = 0
+    for _, c in opp_t:
+        opp_center += 3 - abs(c - 3.5)
+
+    # support
+    my_support = support_count(me_t, color)
+    opp_support = support_count(opp_t, oc)
+
+    # immediate threats
+    my_immediate_wins = count_immediate_wins(me_t, opp_t, color)
+    opp_immediate_wins = count_immediate_wins(opp_t, me_t, oc)
+
+    score = 0
+    score += 130 * (my_n - opp_n)
+    score += 14 * (my_sum_adv - opp_sum_adv)
+    score += 30 * (my_max_adv - opp_max_adv)
+    score += 20 * (my_runner - opp_runner)
+    score += 22 * (my_passed - opp_passed)
+    score += 3 * (my_moves - opp_moves)
+    score += 14 * (my_cap - opp_cap)
+    score += int(4 * (my_center - opp_center))
+    score += 5 * (my_support - opp_support)
+    score += 250 * (my_immediate_wins - opp_immediate_wins)
+
+    return int(score)
+
+def move_order_key(move, me_t, opp_t, color: str):
+    frm, to = move
+    tr, tc = to
+    fr, fc = frm
+    oc = other(color)
+    score = 0
+
+    # immediate promotion
+    if tr == goal_row(color):
+        score += 1_000_000
+
+    # capture
+    if to in set(opp_t):
+        score += 20_000
+
+    # advancement
+    score += 500 * (advancement(to, color) - advancement(frm, color))
+
+    # centralization
+    score += int(30 * (3 - abs(tc - 3.5)))
+
+    # passed pawn creation / preservation
+    new_me, new_opp = make_move(me_t, opp_t, move)
+    if is_passed(to, new_opp, color):
+        score += 400
+
+    # discourage allowing opponent immediate win
+    opp_wins = count_immediate_wins(new_opp, new_me, oc)
+    score -= 50_000 * opp_wins
+
+    return score
+
+def ordered_moves(me_t, opp_t, color: str):
+    moves = list(generate_moves_cached(me_t, opp_t, color))
+    moves.sort(key=lambda mv: move_order_key(mv, me_t, opp_t, color), reverse=True)
+    return moves
+
+def negamax(me_t, opp_t, color: str, depth: int, alpha: int, beta: int) -> int:
+    term = is_terminal_state(me_t, opp_t, color)
+    if term is not None:
+        return term
+    if depth == 0:
+        return evaluate_state(me_t, opp_t, color)
+
+    moves = ordered_moves(me_t, opp_t, color)
+    if not moves:
+        # In standard breakthrough this should not happen in nonterminal positions,
+        # but keep a safe fallback.
+        return -INF + 1
+
+    best = -INF
+    oc = other(color)
+
+    for mv in moves:
+        new_me, new_opp = make_move(me_t, opp_t, mv)
+        val = -negamax(new_opp, new_me, oc, depth - 1, -beta, -alpha)
+        if val > best:
+            best = val
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+
+    return best
+
+def choose_depth(me_t, opp_t):
+    total = len(me_t) + len(opp_t)
+    if total <= 8:
+        return 5
+    if total <= 14:
+        return 4
+    return 3
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    me_t = tuple(sorted(me))
+    opp_t = tuple(sorted(opp))
+
+    moves = list(generate_moves_cached(me_t, opp_t, color))
+    if not moves:
+        # Should not happen, but return something safe-looking if arena ever feeds one.
+        # Try to avoid crashing.
+        if me:
+            p = me[0]
+            return (p, p)
+        return ((0, 0), (0, 0))
+
+    # Always keep a guaranteed legal fallback
+    legal_fallback = moves[0]
+
+    # 1) Immediate winning move
+    g = goal_row(color)
+    for mv in moves:
+        _, to = mv
+        if to[0] == g:
+            return mv
+
+    # 2) Search
+    depth = choose_depth(me_t, opp_t)
+    oc = other(color)
+
+    best_move = legal_fallback
+    best_score = -INF
+
+    for mv in ordered_moves(me_t, opp_t, color):
+        new_me, new_opp = make_move(me_t, opp_t, mv)
+
+        # If move itself creates terminal win, play it
+        term = is_terminal_state(new_me, new_opp, color)
+        if term == INF:
+            return mv
+
+        score = -negamax(new_opp, new_me, oc, depth - 1, -INF, INF)
+
+        # Deterministic tie-breaker by ordering score
+        if score > best_score:
+            best_score = score
+            best_move = mv
+
+    # Ensure legality
+    return best_move

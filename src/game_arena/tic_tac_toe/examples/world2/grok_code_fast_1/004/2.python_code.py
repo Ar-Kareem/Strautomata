@@ -1,0 +1,71 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    def is_winner(b, player):
+        # Check rows for 4 in a row
+        for row in b:
+            for i in range(4 - 3):
+                if all(cell == player for cell in row[i:i+4]):
+                    return True
+        # Check columns for 4 in a row
+        for col in range(4):
+            column = [b[r][col] for r in range(4)]
+            for i in range(4 - 3):
+                if all(cell == player for cell in column[i:i+4]):
+                    return True
+        # Check main diagonals (top-left to bottom-right)
+        for start_row in range(4 - 3):
+            for start_col in range(4 - 3):
+                if all(b[start_row + i][start_col + i] == player for i in range(4)):
+                    return True
+        # Check anti-diagonals (top-right to bottom-left)
+        for start_row in range(4 - 3):
+            for start_col in range(3, 4):
+                if all(b[start_row + i][start_col - i] == player for i in range(4)):
+                    return True
+        return False
+
+    def is_full(b):
+        return all(cell != 0 for row in b for cell in row)
+
+    def score(b, depth):
+        if is_winner(b, 1):
+            return 1 + (10 - depth)  # Favor quicker wins
+        elif is_winner(b, -1):
+            return -1 - (10 - depth)  # Penalize losses, especially quick ones
+        elif is_full(b):
+            return 0
+        return None
+
+    def minimax(b, depth, maximizing, alpha, beta):
+        s = score(b, depth)
+        if s is not None:
+            return s, None
+
+        best_score = float('-inf') if maximizing else float('inf')
+        best_move = None
+
+        for r in range(4):
+            for c in range(4):
+                if b[r][c] == 0:
+                    new_board = [row[:] for row in b]
+                    player = 1 if maximizing else -1
+                    new_board[r][c] = player
+                    result, _ = minimax(new_board, depth + 1, not maximizing, alpha, beta)
+                    if maximizing:
+                        if result > best_score:
+                            best_score = result
+                            best_move = (r, c)
+                        alpha = max(alpha, best_score)
+                        if beta <= alpha:
+                            break
+                    else:
+                        if result < best_score:
+                            best_score = result
+                            best_move = (r, c)
+                        beta = min(beta, best_score)
+                        if beta <= alpha:
+                            break
+        return best_score, best_move
+
+    _, move = minimax(board, 0, True, float('-inf'), float('inf'))
+    return move

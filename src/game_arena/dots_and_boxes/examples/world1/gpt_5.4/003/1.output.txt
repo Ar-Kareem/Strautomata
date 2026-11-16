@@ -1,0 +1,208 @@
+The strategy for this policy is a strong heuristic Dots-and-Boxes policy for the 4x4 board:
+
+1. Always return a legal move.
+2. First, take any move that immediately captures boxes.
+3. Otherwise, avoid “unsafe” moves that create a 3-sided box for the opponent.
+4. Among safe moves, prefer ones that minimize future risk, especially on edges touching boxes with few sides already filled.
+5. If no safe move exists, use a short chain-aware evaluation:
+   - simulate the forced captures that the opponent would get,
+   - prefer moves that give away the smallest total chain.
+6. As a final fallback, return the first legal move.
+
+This is not a full game-tree solver, but it is fast, legal, and substantially stronger than naive greedy or random policies.
+
+<code>
+import numpy as np
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    N = 4  # 4x4 boxes, arrays are 5x5
+
+    def legal_moves(h, v):
+        moves = []
+        for r in range(5):
+            for c in range(5):
+                if h[r, c] == 0:
+                    moves.append((r, c, 'H'))
+                if v[r, c] == 0:
+                    moves.append((r, c, 'V'))
+        return moves
+
+    def adjacent_boxes(move):
+        r, c, d = move
+        boxes = []
+        if d == 'H':
+            if r > 0 and c < N:
+                boxes.append((r - 1, c))
+            if r < N and c < N:
+                boxes.append((r, c))
+        else:  # 'V'
+            if c > 0 and r < N:
+                boxes.append((r, c - 1))
+            if c < N and r < N:
+                boxes.append((r, c))
+        return boxes
+
+    def box_edges(b):
+        br, bc = b
+        return [
+            ('H', br, bc),
+            ('H', br + 1, bc),
+            ('V', br, bc),
+            ('V', br, bc + 1),
+        ]
+
+    def edge_filled(h, v, edge):
+        d, r, c = edge
+        return h[r, c] != 0 if d == 'H' else v[r, c] != 0
+
+    def box_side_count(h, v, b):
+        cnt = 0
+        for e in box_edges(b):
+            if edge_filled(h, v, e):
+                cnt += 1
+        return cnt
+
+    def apply_move(h, v, cap, move, player=1):
+        h2 = h.copy()
+        v2 = v.copy()
+        cap2 = cap.copy()
+        r, c, d = move
+        if d == 'H':
+            h2[r, c] = player
+        else:
+            v2[r, c] = player
+
+        gained = 0
+        for b in adjacent_boxes(move):
+            br, bc = b
+            if cap2[br, bc] == 0 and box_side_count(h2, v2, b) == 4:
+                cap2[br, bc] = player
+                gained += 1
+        return h2, v2, cap2, gained
+
+    def immediate_captures(h, v, cap, move):
+        h2, v2, cap2, gained = apply_move(h, v, cap, move, 1)
+        return gained
+
+    def creates_third_side(h, v, cap, move):
+        # Unsafe if after the move any adjacent unclaimed box has exactly 3 sides.
+        h2, v2, cap2, gained = apply_move(h, v, cap, move, 1)
+        if gained > 0:
+            return False
+        for b in adjacent_boxes(move):
+            br, bc = b
+            if cap2[br, bc] == 0 and box_side_count(h2, v2, b) == 3:
+                return True
+        return False
+
+    def count_boxes_with_three(h, v, cap):
+        total = 0
+        for r in range(N):
+            for c in range(N):
+                if cap[r, c] == 0 and box_side_count(h, v, (r, c)) == 3:
+                    total += 1
+        return total
+
+    def forced_capture_count(h, v, cap):
+        # Simulate a player taking all immediately available boxes until none remain.
+        total = 0
+        while True:
+            found = None
+            for mv in legal_moves(h, v):
+                if immediate_captures(h, v, cap, mv) > 0:
+                    found = mv
+                    break
+            if found is None:
+                break
+            h, v, cap, gained = apply_move(h, v, cap, found, 1)
+            total += gained
+        return total
+
+    def move_risk_score(h, v, cap, move):
+        # Lower is better.
+        h2, v2, cap2, gained = apply_move(h, v, cap, move, 1)
+
+        if gained > 0:
+            # Reward captures, but also continue if they expose future chains.
+            future_threes = count_boxes_with_three(h2, v2, cap2)
+            return -1000 - 50 * gained + future_threes
+
+        score = 0
+
+        # Strong penalty for creating any 3-sided adjacent box.
+        for b in adjacent_boxes(move):
+            br, bc = b
+            if cap2[br, bc] == 0:
+                sides = box_side_count(h2, v2, b)
+                if sides == 3:
+                    score += 100
+                elif sides == 2:
+                    score += 8
+                elif sides == 1:
+                    score += 2
+
+        # Prefer moves adjacent to "quiet" boxes before the move.
+        for b in adjacent_boxes(move):
+            br, bc = b
+            if cap[br, bc] == 0:
+                score += box_side_count(h, v, b)
+
+        # Slight preference for perimeter in early/mid game.
+        r, c, d = move
+        if d == 'H':
+            if r == 0 or r == N:
+                score -= 1
+        else:
+            if c == 0 or c == N:
+                score -= 1
+
+        # Global penalty if this creates many 3-sided boxes.
+        score += 20 * count_boxes_with_three(h2, v2, cap2)
+        return score
+
+    def opponent_chain_loss_if_played(h, v, cap, move):
+        # If no safe moves exist, estimate how many boxes the opponent can force-capture.
+        h2, v2, cap2, gained = apply_move(h, v, cap, move, 1)
+        # If we captured, continue greedily ourselves first.
+        while True:
+            caps = [mv for mv in legal_moves(h2, v2) if immediate_captures(h2, v2, cap2, mv) > 0]
+            if not caps:
+                break
+            best = max(caps, key=lambda mv: immediate_captures(h2, v2, cap2, mv))
+            h2, v2, cap2, _ = apply_move(h2, v2, cap2, best, 1)
+
+        # Now estimate opponent's forced run of captures.
+        return forced_capture_count(h2, v2, cap2)
+
+    moves = legal_moves(horizontal, vertical)
+    if not moves:
+        return "0,0,H"  # Should never happen in a valid nonterminal state.
+
+    # 1. Take immediate captures, preferring larger gains and lower future risk.
+    capturing = [mv for mv in moves if immediate_captures(horizontal, vertical, capture, mv) > 0]
+    if capturing:
+        best = max(
+            capturing,
+            key=lambda mv: (
+                immediate_captures(horizontal, vertical, capture, mv),
+                -move_risk_score(horizontal, vertical, capture, mv)
+            )
+        )
+        return f"{best[0]},{best[1]},{best[2]}"
+
+    # 2. Safe moves that do not create a 3-sided box.
+    safe = [mv for mv in moves if not creates_third_side(horizontal, vertical, capture, mv)]
+    if safe:
+        best = min(safe, key=lambda mv: move_risk_score(horizontal, vertical, capture, mv))
+        return f"{best[0]},{best[1]},{best[2]}"
+
+    # 3. No safe moves: minimize opponent's likely chain gain, then risk score.
+    best = min(
+        moves,
+        key=lambda mv: (
+            opponent_chain_loss_if_played(horizontal, vertical, capture, mv),
+            move_risk_score(horizontal, vertical, capture, mv)
+        )
+    )
+    return f"{best[0]},{best[1]},{best[2]}"
+</code>

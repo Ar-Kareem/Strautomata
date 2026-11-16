@@ -1,0 +1,176 @@
+## Strategy
+
+My strategy is to implement a minimax search with alpha-beta pruning, using a heuristic evaluation function based on mobility (number of legal moves available to each player). The key ideas:
+
+1. **Mobility-based evaluation**: Count the number of moves available to each player. The player with more moves has an advantage. This is the most important heuristic in Amazons.
+
+2. **Territory estimation**: Use a BFS/flood-fill to estimate how many squares each player can reach first, giving a territorial control score.
+
+3. **Iterative deepening**: Search as deep as possible within the time limit, starting with depth 2 and increasing.
+
+4. **Move ordering**: Prioritize moves that restrict opponent mobility to improve alpha-beta pruning efficiency.
+
+5. **Early termination**: If only one legal move exists, play it immediately.
+
+<code>
+import numpy as np
+from collections import deque
+import time
+
+DIRECTIONS = [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)]
+
+def policy(board):
+    board = np.array(board, dtype=int)
+    
+    my_pieces = list(zip(*np.where(board == 1)))
+    
+    moves = get_all_moves(board, 1)
+    
+    if not moves:
+        # Should not happen, but return something
+        return "0,0:0,0:0,0"
+    
+    if len(moves) == 1:
+        m = moves[0]
+        return f"{m[0]},{m[1]}:{m[2]},{m[3]}:{m[4]},{m[5]}"
+    
+    start_time = time.time()
+    best_move = moves[0]
+    
+    # Iterative deepening
+    for depth in range(1, 10):
+        if time.time() - start_time > 0.7:
+            break
+        try:
+            score, move = minimax(board, depth, True, float('-inf'), float('inf'), start_time)
+            if move is not None:
+                best_move = move
+        except TimeoutError:
+            break
+    
+    m = best_move
+    return f"{m[0]},{m[1]}:{m[2]},{m[3]}:{m[4]},{m[5]}"
+
+def minimax(board, depth, maximizing, alpha, beta, start_time):
+    if time.time() - start_time > 0.75:
+        raise TimeoutError()
+    
+    player = 1 if maximizing else 2
+    opponent = 2 if maximizing else 1
+    
+    moves = get_all_moves(board, player)
+    
+    if not moves:
+        return (-10000 if maximizing else 10000), None
+    
+    if depth == 0:
+        return evaluate(board), None
+    
+    # Move ordering: evaluate each move quickly
+    if depth >= 2:
+        scored_moves = []
+        for m in moves:
+            b2 = apply_move(board, m)
+            s = evaluate(b2)
+            scored_moves.append((s, m))
+        scored_moves.sort(key=lambda x: x[0], reverse=maximizing)
+        moves = [m for s, m in scored_moves]
+    
+    best_move = moves[0]
+    if maximizing:
+        max_eval = float('-inf')
+        for m in moves:
+            b2 = apply_move(board, m)
+            ev, _ = minimax(b2, depth - 1, False, alpha, beta, start_time)
+            if ev > max_eval:
+                max_eval = ev
+                best_move = m
+            alpha = max(alpha, ev)
+            if beta <= alpha:
+                break
+        return max_eval, best_move
+    else:
+        min_eval = float('inf')
+        for m in moves:
+            b2 = apply_move(board, m)
+            ev, _ = minimax(b2, depth - 1, True, alpha, beta, start_time)
+            if ev < min_eval:
+                min_eval = ev
+                best_move = m
+            beta = min(beta, ev)
+            if beta <= alpha:
+                break
+        return min_eval, best_move
+
+def evaluate(board):
+    my_moves = len(get_all_moves(board, 1))
+    opp_moves = len(get_all_moves(board, 2))
+    
+    # Territory using BFS
+    my_territory, opp_territory = territory_count(board)
+    
+    if opp_moves == 0:
+        return 10000
+    if my_moves == 0:
+        return -10000
+    
+    return (my_moves - opp_moves) * 2 + (my_territory - opp_territory)
+
+def territory_count(board):
+    dist = np.full((6, 6), 999, dtype=int)
+    owner = np.full((6, 6), 0, dtype=int)
+    q = deque()
+    for r in range(6):
+        for c in range(6):
+            if board[r, c] == 1:
+                q.append((r, c, 0, 1))
+            elif board[r, c] == 2:
+                q.append((r, c, 0, 2))
+    
+    while q:
+        r, c, d, p = q.popleft()
+        for dr, dc in DIRECTIONS:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 6 and 0 <= nc < 6 and board[nr, nc] == 0 and d + 1 < dist[nr, nc]:
+                dist[nr, nc] = d + 1
+                owner[nr, nc] = p
+                q.append((nr, nc, d + 1, p))
+    
+    my_t = int(np.sum(owner == 1))
+    opp_t = int(np.sum(owner == 2))
+    return my_t, opp_t
+
+def get_queen_moves(board, r, c):
+    results = []
+    for dr, dc in DIRECTIONS:
+        nr, nc = r + dr, c + dc
+        while 0 <= nr < 6 and 0 <= nc < 6 and board[nr, nc] == 0:
+            results.append((nr, nc))
+            nr += dr
+            nc += dc
+    return results
+
+def get_all_moves(board, player):
+    moves = []
+    pieces = list(zip(*np.where(board == player)))
+    for fr, fc in pieces:
+        destinations = get_queen_moves(board, fr, fc)
+        for tr, tc in destinations:
+            # Simulate move
+            board[fr, fc] = 0
+            board[tr, tc] = player
+            arrows = get_queen_moves(board, tr, tc)
+            for ar, ac in arrows:
+                moves.append((fr, fc, tr, tc, ar, ac))
+            board[tr, tc] = 0
+            board[fr, fc] = player
+    return moves
+
+def apply_move(board, m):
+    fr, fc, tr, tc, ar, ac = m
+    b = board.copy()
+    b[fr, fc] = 0
+    b[tr, tc] = 1
+    b[ar, ac] = -1
+    return b
+</code>

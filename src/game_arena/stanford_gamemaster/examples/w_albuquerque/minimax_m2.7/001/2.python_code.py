@@ -1,0 +1,174 @@
+
+import random
+from copy import deepcopy
+
+# ------------------------------------------------------------
+# Helper functions
+# ------------------------------------------------------------
+BOARD_SIZE = 5
+DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1),
+        (-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+def parse_state(state):
+    """Convert the list of facts into a board dictionary and metadata."""
+    board = {}
+    control = None
+    step = 0
+    for fact in state:
+        if fact[0] == 'cell':
+            row = int(fact[1])
+            col = int(fact[2])
+            colour = fact[3]
+            board[(row, col)] = colour
+        elif fact[0] == 'control':
+            control = fact[1]
+        elif fact[0] == 'step':
+            step = int(fact[1])
+    return board, control, step
+
+def generate_moves(board, role):
+    """Return a list of all legal moves (simple steps and jumps) for `role`."""
+    opponent = 'black' if role == 'red' else 'red'
+    moves = []
+    for (r, c), colour in board.items():
+        if colour != role:
+            continue
+        for dr, dc in DIRS:
+            nr, nc = r + dr, c + dc
+            if 1 <= nr <= BOARD_SIZE and 1 <= nc <= BOARD_SIZE:
+                if board.get((nr, nc)) == 'blank':
+                    # simple move
+                    moves.append(('move', r, c, nr, nc))
+                    # jump
+                    mr, mc = nr, nc
+                    jr, jc = r + 2 * dr, c + 2 * dc
+                    if 1 <= jr <= BOARD_SIZE and 1 <= jc <= BOARD_SIZE:
+                        if board.get((mr, mc)) == opponent and board.get((jr, jc)) == 'blank':
+                            moves.append(('jump', r, c, mr, mc, jr, jc))
+    return moves
+
+def apply_move(board, move, role):
+    """Return a new board after performing `move` for `role`."""
+    new_board = deepcopy(board)
+    if move[0] == 'move':
+        _, r1, c1, r2, c2 = move
+        new_board[(r1, c1)] = 'blank'
+        new_board[(r2, c2)] = role
+    else:  # jump
+        _, r1, c1, mr, mc, jr, jc = move
+        opponent = 'black' if role == 'red' else 'red'
+        new_board[(r1, c1)] = 'blank'
+        new_board[(mr, mc)] = 'blank'          # captured piece
+        new_board[(jr, jc)] = role
+    return new_board
+
+def evaluate(board, role):
+    """Heuristic evaluation of the board from the perspective of `role`."""
+    opponent = 'black' if role == 'red' else 'red'
+
+    # Material (captured pieces are already removed)
+    my_pieces = sum(1 for v in board.values() if v == role)
+    opp_pieces = sum(1 for v in board.values() if v == opponent)
+    score = (my_pieces - opp_pieces) * 10
+
+    # Advancement towards opponent's baseline
+    if role == 'red':
+        for (r, c), v in board.items():
+            if v == role:
+                score += (BOARD_SIZE - r)          # smaller row -> closer to opponent
+    else:
+        for (r, c), v in board.items():
+            if v == role:
+                score += (r - 1)                    # larger row -> closer to opponent
+
+    # Centre control
+    if board.get((3, 3)) == role:
+        score += 5
+
+    # Capture opportunities (jumps) for the role
+    jumps = generate_moves(board, role)
+    jump_cnt = sum(1 for m in jumps if m[0] == 'jump')
+    score += jump_cnt * 15
+
+    # Safety: penalise pieces that can be captured on opponent's next turn
+    opp_jumps = generate_moves(board, opponent)
+    dangerous = set()
+    for m in opp_jumps:
+        if m[0] == 'jump':
+            # the piece being jumped over belongs to `role`
+            dangerous.add((m[3], m[4]))
+    for pos in dangerous:
+        if board.get(pos) == role:
+            score -= 20
+
+    return score
+
+def minimax(board, depth, alpha, beta, maximizing, role):
+    """Alpha‑beta Minimax search (depth‑limited)."""
+    if depth == 0:
+        return evaluate(board, role)
+
+    opponent = 'black' if role == 'red' else 'red'
+    if maximizing:
+        moves = generate_moves(board, role)
+        if not moves:
+            return evaluate(board, role) - 1000   # no moves -> bad terminal
+        best = -float('inf')
+        for move in moves:
+            new_board = apply_move(board, move, role)
+            val = minimax(new_board, depth - 1, alpha, beta, False, role)
+            best = max(best, val)
+            alpha = max(alpha, best)
+            if beta <= alpha:
+                break
+        return best
+    else:
+        moves = generate_moves(board, opponent)
+        if not moves:
+            return evaluate(board, role) + 1000   # opponent cannot move -> good terminal
+        best = float('inf')
+        for move in moves:
+            new_board = apply_move(board, move, opponent)
+            val = minimax(new_board, depth - 1, alpha, beta, True, role)
+            best = min(best, val)
+            beta = min(beta, best)
+            if beta <= alpha:
+                break
+        return best
+
+def choose_move(board, role):
+    """Select the best legal move using a depth‑3 Minimax search."""
+    MAX_DEPTH = 3
+    moves = generate_moves(board, role)
+    if not moves:
+        # Defensive fallback – should never happen in a legal position
+        raise ValueError("No legal moves available")
+    best_val = -float('inf')
+    best_moves = []
+    for move in moves:
+        new_board = apply_move(board, move, role)
+        val = minimax(new_board, MAX_DEPTH - 1, -float('inf'), float('inf'), False, role)
+        if val > best_val:
+            best_val = val
+            best_moves = [move]
+        elif val == best_val:
+            best_moves.append(move)
+    # Random tie‑break among equally valued moves
+    return random.choice(best_moves)
+
+# ------------------------------------------------------------
+# Main policy entry point
+# ------------------------------------------------------------
+def policy(state, role):
+    """
+    Return a legal Alquerque action for the given role in the current state.
+    The function uses a depth‑3 Minimax search with alpha‑beta pruning and a
+    heuristic evaluation based on material, advancement, centre control,
+    capture potential and safety.
+    """
+    board, _, _ = parse_state(state)
+    move = choose_move(board, role)
+    if move[0] == 'move':
+        return f"move({move[1]},{move[2]},{move[3]},{move[4]})"
+    else:
+        return f"jump({move[1]},{move[2]},{move[3]},{move[4]},{move[5]},{move[6]})"

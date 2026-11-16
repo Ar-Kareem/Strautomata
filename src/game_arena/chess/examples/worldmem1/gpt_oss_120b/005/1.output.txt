@@ -1,0 +1,119 @@
+**Strategy Overview**
+
+The policy evaluates every legal move with a fast heuristic score and picks the highest‑scoring one.
+
+* Scoring factors*  
+1. **Checkmate** (`#`) – huge bonus.  
+2. **Check** (`+`) – modest bonus.  
+3. **Castling** (`O-O`, `O-O-O`) – small safety bonus.  
+4. **Promotion** (`=Q`, `=R`, `=B`, `=N`) – value of the promoted piece.  
+5. **Capture** – value of the captured piece (derived from the board dictionary).  
+6. **Tie‑break** – if multiple moves obtain the same score, the first encountered is chosen.
+
+The evaluation is performed purely from the information supplied (`pieces`, `legal_moves`) without any external engine, ensuring the code runs well within the 1‑second limit.
+
+```python
+import copy
+
+# Piece values used for scoring
+PIECE_VALUES = {
+    'P': 1,
+    'N': 3,
+    'B': 3,
+    'R': 5,
+    'Q': 9,
+    'K': 0  # King capture is never legal, but keep for completeness
+}
+
+PROMOTION_VALUES = {
+    'Q': 9,
+    'R': 5,
+    'B': 3,
+    'N': 3
+}
+
+
+def _capture_value(move: str, pieces: dict) -> int:
+    """
+    Returns the value of the captured piece, if any, based on the move string.
+    """
+    if 'x' not in move:
+        return 0
+    idx = move.find('x')
+    # Destination square is the two characters after 'x'
+    target = move[idx + 1: idx + 3]
+    if len(target) < 2:
+        return 0
+    captured_piece = pieces.get(target)
+    if captured_piece is None:
+        return 0
+    return PIECE_VALUES.get(captured_piece[1], 0)
+
+
+def _promotion_value(move: str) -> int:
+    """
+    Returns the value of a promotion, if present.
+    """
+    if '=' not in move:
+        return 0
+    promo_piece = move.split('=')[1][0]  # first character after '='
+    return PROMOTION_VALUES.get(promo_piece, 0)
+
+
+def policy(pieces: dict[str, str],
+           to_play: str,
+           legal_moves: list[str],
+           memory: dict) -> tuple[str, dict]:
+    """
+    Choose the move with the highest heuristic score.
+
+    Parameters
+    ----------
+    pieces : dict
+        Mapping from square (e.g., 'e4') to piece code (e.g., 'wQ').
+    to_play : str
+        Either 'white' or 'black'.
+    legal_moves : list[str]
+        All legal moves for the side to play in standard algebraic notation.
+    memory : dict
+        Persistent dictionary between calls (unused in this simple policy).
+
+    Returns
+    -------
+    (move, memory) : tuple
+        The selected move (must be in legal_moves) and the possibly‑updated memory.
+    """
+    best_move = None
+    best_score = -float('inf')
+
+    for move in legal_moves:
+        score = 0.0
+
+        # Checkmate and check bonuses
+        if '#' in move:
+            score += 1000.0            # overwhelmingly good
+        if '+' in move:
+            score += 0.5               # modest incentive
+
+        # Castling safety bonus
+        if move in ('O-O', 'O-O-O'):
+            score += 0.2
+
+        # Promotion bonus
+        score += _promotion_value(move)
+
+        # Capture bonus
+        score += _capture_value(move, pieces)
+
+        # Keep the move with the highest score
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    # Fallback – should never happen because legal_moves is non‑empty
+    if best_move is None:
+        best_move = legal_moves[0]
+
+    # No memory modifications needed for this simple policy
+    return best_move, memory
+```

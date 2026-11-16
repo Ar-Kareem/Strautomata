@@ -1,0 +1,1007 @@
+<thinking>
+The user wants a Python function `policy(board)` that returns the next move for a 3x3 Tic Tac Toe game.
+The board is represented as a 3x3 list of lists with values:
+- `0`: empty
+- `1`: my player (AI)
+- `-1`: opponent
+
+The function should return a tuple `(row, col)` representing the chosen move (0-indexed).
+
+I need to implement a Tic Tac Toe AI policy. The standard approach for Tic Tac Toe is to prioritize preventing the opponent from winning, then trying to win, then making strategic moves.
+
+Here's a prioritized list of moves to consider:
+
+1.  **Win:** If I can make a move to win the game, do it.
+2.  **Block:** If the opponent can make a move to win the game on their next turn, block them.
+3.  **Fork:** Create an opportunity where I have two ways to win on the next turn.
+4.  **Block Opponent's Fork:** If the opponent can create a fork, block it.
+5.  **Center:** Take the center square (1,1) if it's free.
+6.  **Opposite Corner:** If the opponent is in a corner, take the opposite corner.
+7.  **Empty Corner:** Take any available corner.
+8.  **Empty Side:** Take any available side (middle of an edge).
+
+Let's break down how to implement these checks.
+
+**Helper function:** `check_win(board, player)`
+This function will check if a given `player` (1 or -1) has won the game given the current `board`.
+It needs to check all rows, columns, and diagonals.
+
+**Helper function:** `get_available_moves(board)`
+This function will return a list of `(row, col)` tuples for all empty cells.
+
+**Main Logic:**
+
+1.  **Check for immediate win:**
+    Iterate through all empty cells. For each empty cell, temporarily place my marker (`1`) there. If this hypothetical move results in a win for me, make that move and return it. Reset the cell.
+
+2.  **Check for immediate block:**
+    Iterate through all empty cells. For each empty cell, temporarily place the opponent's marker (`-1`) there. If this hypothetical move results in a win for the opponent, make that move (my blocking move) and return it. Reset the cell.
+
+3.  **Fork detection (more complex):**
+    This is where it gets trickier. A fork means creating a situation where I have two winning lines simultaneously.
+    To implement this:
+    *   Iterate through all empty cells.
+    *   For each empty cell, temporarily place my marker (`1`).
+    *   From this new board state, count how many *winning opportunities* I have created. A winning opportunity is a line (row, col, diag) where I have two of my markers and one empty cell.
+    *   If placing my marker at `(r, c)` creates *more than one* winning opportunity (i.e., two or more lines where I can win on the next move), then this is a fork. Choose this move.
+    *   Reset the cell.
+
+4.  **Block opponent's fork detection (even more complex):**
+    This is similar to fork detection, but I'm looking from the opponent's perspective.
+    *   Iterate through all empty cells.
+    *   For each empty cell, temporarily place the opponent's marker (`-1`).
+    *   From this hypothetical board state, check how many *winning opportunities* the opponent has created (lines with two `-1`s and one empty).
+    *   If the opponent can create *more than one* winning opportunity by moving into a specific empty cell, I must block that cell if it's currently empty.
+    *   This requires careful consideration. If multiple cells create opponent forks, which one do I block? A common strategy is to block the one that creates the most *future* winning lines for me, or just pick the first one found.
+
+    *Self-correction*: Implementing full fork detection and blocking can be computationally intensive and complex for a simple AI. For a 3x3 Tic Tac Toe, a simpler heuristic approach often suffices and is easier to implement within time limits. The minimax algorithm is the definitive "perfect" AI, but it's often overkill for a basic policy function and its implementation might be too verbose or complex if not carefully done.
+
+    Let's simplify the strategy to a more direct, greedy approach inspired by common Tic Tac Toe AI strategies, without full recursive minimax or explicit fork counting.
+
+**Revised, simpler strategy for `policy`:**
+
+1.  **Check for winning move:**
+    Iterate through all empty cells. If placing my marker (`1`) there results in a win, return that move.
+
+2.  **Check for blocking move:**
+    Iterate through all empty cells. If placing the opponent's marker (`-1`) there results in the opponent winning, return that move to block it.
+
+3.  **Take the center:**
+    If `board[1][1]` is empty (`0`), return `(1, 1)`.
+
+4.  **Take an opposite corner:**
+    If the opponent has taken a corner, take the opposite corner.
+    *   Corners are `(0,0), (0,2), (2,0), (2,2)`.
+    *   Opposite pairs: `(0,0)` vs `(2,2)`, `(0,2)` vs `(2,0)`.
+    *   If `board[0][0] == -1` and `board[2][2] == 0`, return `(2,2)`.
+    *   If `board[2][2] == -1` and `board[0][0] == 0`, return `(0,0)`.
+    *   If `board[0][2] == -1` and `board[2][0] == 0`, return `(2,0)`.
+    *   If `board[2][0] == -1` and `board[0][2] == 0`, return `(0,2)`.
+
+5.  **Take an empty corner:**
+    Check corners in a fixed order (e.g., `(0,0), (0,2), (2,0), (2,2)`). If any is empty, return it.
+
+6.  **Take an empty side:**
+    Check sides in a fixed order (e.g., `(0,1), (1,0), (1,2), (2,1)`). If any is empty, return it.
+
+This simplified strategy covers the most critical moves and is likely sufficient for a competitive 3x3 game.
+
+Let's refine the implementation details.
+
+**Function: `check_win(board, player)`**
+It needs to check:
+*   3 rows: `board[i][0] == board[i][1] == board[i][2] == player` for `i` in `0,1,2`
+*   3 columns: `board[0][j] == board[1][j] == board[2][j] == player` for `j` in `0,1,2`
+*   2 diagonals:
+    *   `board[0][0] == board[1][1] == board[2][2] == player`
+    *   `board[0][2] == board[1][1] == board[2][0] == player`
+
+**Function: `is_valid(r, c)`**
+Simple check for `0 <= r < 3` and `0 <= c < 3`.
+
+**Function: `get_empty_cells(board)`**
+Iterate through the board and collect `(r, c)` where `board[r][c] == 0`.
+
+```python
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    EMPTY = 0
+    PLAYER_ME = 1
+    PLAYER_OPPONENT = -1
+
+    def get_empty_cells(board):
+        """Returns a list of (row, col) for empty cells."""
+        cells = []
+        for r in range(3):
+            for c in range(3):
+                if board[r][c] == EMPTY:
+                    cells.append((r, c))
+        return cells
+
+    def check_win(board_state, player):
+        """Checks if the given player has won on this board state."""
+        # Check rows
+        for r in range(3):
+            if all(board_state[r][c] == player for c in range(3)):
+                return True
+        # Check columns
+        for c in range(3):
+            if all(board_state[r][c] == player for r in range(3)):
+                return True
+        # Check diagonals
+        if all(board_state[i][i] == player for i in range(3)):
+            return True
+        if all(board_state[i][2 - i] == player for i in range(3)):
+            return True
+        return False
+
+    empty_cells = get_empty_cells(board)
+
+    # Strategy 1: Win
+    for r, c in empty_cells:
+        # Make a hypothetical move
+        board[r][c] = PLAYER_ME
+        if check_win(board, PLAYER_ME):
+            board[r][c] = EMPTY # Undo hypothetical move
+            return (r, c)
+        board[r][c] = EMPTY # Undo hypothetical move
+
+    # Strategy 2: Block opponent
+    for r, c in empty_cells:
+        # Make a hypothetical move for opponent
+        board[r][c] = PLAYER_OPPONENT
+        if check_win(board, PLAYER_OPPONENT):
+            board[r][c] = EMPTY # Undo hypothetical move
+            return (r, c)
+        board[r][c] = EMPTY # Undo hypothetical move
+
+    # Strategy 3: Take the center
+    if board[1][1] == EMPTY:
+        return (1, 1)
+
+    # Strategy 4: Take an opposite corner
+    # Define corners and their opposites
+    corners = [(0, 0), (0, 2), (2, 0), (2, 2)]
+    opposite_corner = {
+        (0, 0): (2, 2), (2, 2): (0, 0),
+        (0, 2): (2, 0), (2, 0): (0, 2)
+    }
+    # Check if opponent is in a corner and we can take the opposite
+    for r_opp, c_opp in corners:
+        if board[r_opp][c_opp] == PLAYER_OPPONENT:
+            r_mine, c_mine = opposite_corner[(r_opp, c_opp)]
+            if board[r_mine][c_mine] == EMPTY:
+                return (r_mine, c_mine)
+
+    # Strategy 5: Take an empty corner
+    for r, c in corners:
+        if board[r][c] == EMPTY:
+            return (r, c)
+
+    # Strategy 6: Take an empty side
+    sides = [(0, 1), (1, 0), (1,2), (2,1)]
+    for r, c in sides:
+        if board[r][c] == EMPTY:
+            return (r, c)
+
+    # If somehow no move is found (should not happen in Tic Tac Toe before game end)
+    # This case should ideally not be reached if the game logic is correct outside this function.
+    # However, as a fallback, return the first available move.
+    if empty_cells:
+        return empty_cells[0]
+    else:
+        # This implies the board is full and no move is possible, which is an error state for finding a move.
+        # Raise an exception or return a default invalid move if absolutely necessary.
+        # For a game that guarantees a move is available if not finished, this is robust.
+        raise RuntimeError("No available moves, but policy function was called.")
+
+```
+
+**Testing the logic with some examples:**
+
+**Scenario 1: Immediate Win**
+Board:
+[[1, 1, 0],
+ [0, -1, 0],
+ [0, 0, -1]]
+My move (1,2) wins.
+The code should:
+1. Check for win: Tries `(0,2)`. Board becomes `[[1, 1, 1], ...]`. `check_win` returns True. `policy` returns `(0,2)`. Correct.
+
+**Scenario 2: Immediate Block**
+Board:
+[[1, 0, 0],
+ [0, -1, 0],
+ [1, 0, -1]]
+Opponent's move `(0,1)` would win.
+The code should:
+1. Check for win: No winning moves for me.
+2. Check for block: Tries `(0,1)` for opponent. Board becomes `[[1, -1, 0], ...]`. `check_win` for opponent returns True. `policy` returns `(0,1)`. Correct.
+
+**Scenario 3: Take Center**
+Board:
+[[1, -1, 1],
+ [-1, 0, 1],
+ [1, 1, -1]]
+Center `(1,1)` is empty.
+The code should:
+1. Check for win: No.
+2. Check for block: No.
+3. Take center: `board[1][1]` is `0`. Returns `(1,1)`. Correct.
+
+**Scenario 4: Opposite Corner**
+Board:
+[[1, 0, -1],
+ [0, 1, 0],
+ [0, 0, 0]]
+Opponent is at `(0,2)`. Opposite is `(2,0)`.
+The code should:
+1. Check for win: No.
+2. Check for block: No.
+3. Take center: `(1,1)` is `1`. Not empty.
+4. Opposite corner: `board[0][2]` is `-1`. Opposite is `(2,0)`. `board[2][0]` is `0`. Returns `(2,0)`. Correct.
+
+**Scenario 5: Empty Corner**
+Board:
+[[1, -1, 1],
+ [-1, 0, 1],
+ [1, 1, -1]]
+Wait, this board has `(1,1)` as center which is empty in the example I used for center. Let me correct the state to make it for corner.
+
+Board:
+[[1, -1, 1],
+ [-1, -1, 1], # Center taken by opponent
+ [1, 1, 0]] # Last move by me
+This board is actually won by me already if the last move was `(2,2)` and it was `1`. Let's restart the scenario.
+
+Consider:
+Board:
+[[1, -1, 1],
+ [-1, 0, -1],
+ [1, 0, 0]]
+Player me `1`. Player opp `-1`.
+1. Win: No immediate win for me.
+2. Block: No immediate block needed for opponent.
+3. Center: `board[1][1]` is `0`. Returns `(1,1)`.
+
+Let's try a state where center is taken.
+Board:
+[[1, -1, 1],
+ [-1, -1, 1],
+ [1, 0, 0]]
+1. Win: No.
+2. Block: No.
+3. Center: `board[1][1]` is `-1`. Not empty.
+4. Opposite corner:
+   `corners = [(0, 0), (0, 2), (2, 0), (2, 2)]`
+   `board[0][0] = 1`
+   `board[0][2] = 1`
+   `board[2][0] = 1`
+   Opponent is at `(0,1)` and `(1,0)` and `(1,1)`. No opponent in corners. This part of the strategy doesn't trigger.
+
+5. Empty corner:
+   `corners = [(0, 0), (0, 2), (2, 0), (2, 2)]`
+   `board[0][0]` is `1`.
+   `board[0][2]` is `1`.
+   `board[2][0]` is `1`.
+   `board[2][2]` is `0`. Returns `(2,2)`. Correct.
+
+**Scenario 6: Empty Side**
+Board:
+[[1, -1, 1],
+ [-1, -1, 1],
+ [1, 1, 0]] # Oops, this is invalid state if game is not over. Let's make another one.
+
+Board:
+[[1, -1, 0],
+ [-1, 1, 0],
+ [0, 0, 0]]
+1. Win: No.
+2. Block: No.
+3. Center: `board[1][1]` is `1`. Not empty.
+4. Opposite corner: Opponent is at `(0,1)` and `(1,0)`. Not corners.
+5. Empty corner:
+   `corners = [(0, 0), (0, 2), (2, 0), (2, 2)]`
+   `board[0][0] = 1`
+   `board[0][2] = 0`. Returns `(0,2)`. This is an empty corner.
+My code would return `(0,2)` first because it checks corners before sides. That's fine.
+
+Let's craft a state where only sides are left.
+Board:
+[[1, -1, 1],
+ [-1, -1, 1],
+ [1, 1, -1]]
+This board is full. `get_empty_cells` would be empty. The `if empty_cells:` check would fail, and it would raise an error. This is fine if the game state is indeed full. The policy function *assumes* it's called when a move is possible.
+
+Let's make a board where only sides are truly available as *last resort*.
+Board:
+[[1, -1, 1],
+ [-1, 1, -1],
+ [1, 0, 0]] # (2,1) and (2,2) are available.
+1. Win: No.
+2. Block: No.
+3. Center: `board[1][1]` is `1`. Not empty.
+4. Opposite corner: Opponent at `(0,1), (1,0), (1,2)`. No opponent in corners.
+5. Empty corner: `board[2][2]` is `0`. Returns `(2,2)`. This is a corner, not a side.
+
+The order is: Win, Block, Center, Opposite Corner, Empty Corner, Empty Side. This sequence correctly prioritizes.
+
+Consider the board:
+[[1, -1, 1],
+ [-1, 0, 1],
+ [1, 1, -1]]
+Wait, this board is won by `1` on the diagonal if I assume standard order of play. If it's my turn and the board is this, it means the last move for opponent was `(1,1)` which is not possible if `0`.
+This board is actually invalid for standard play if it's my turn.
+Corrected example for needing a side move:
+Board:
+[[1, -1, 1],
+ [-1, 1, -1],
+ [1, -1, 0]] # board[2][2] is empty. This is a corner.
+
+Let's try to force a side move:
+Board:
+[[1, -1, 1],
+ [-1, 1, 0],
+ [1, 0, -1]]
+ Here:
+ - `(1,2)` and `(2,1)` are empty.
+ - `(0,0)=1, (0,2)=1, (1,1)=1, (2,0)=1` (my pieces)
+ - `(0,1)=-1, (1,0)=-1, (1,2)?!, (2,2)=-1` (opponent pieces)
+ Let's check again:
+ Board:
+ [[1, -1, 1],
+  [-1, 1, 0],
+  [1, 0, -1]]
+ 1. Win: No.
+ 2. Block: No.
+ 3. Center: `board[1][1]` is `1`. Not empty.
+ 4. Opposite corner: `board[0][2]` is `1` (mine). `board[2][0]` is `1` (mine). No opponent in corners to capitalize on.
+ 5. Empty corner: `board[0][2]` is `1`. `board[2][0]` is `1`. `board[0][0]` is `1`.
+    No, `board[0][2]` is not a corner - it's `1`.
+    Corners are `(0,0), (0,2), (2,0), (2,2)`.
+    `board[0][0]=1`, `board[0][2]=1`, `board[2][0]=1`, `board[2][2]=-1`.
+    Opponent is at `(2,2)`. Opposite corner is `(0,0)`. `board[0][0]` is `1`, not empty. So opposite corner strategy doesn't apply.
+    Empty corners: `board[0][0]=1`, `board[0][2]=1`, `board[2][0]=1`. Wait, I wrote the board structure wrong in my head.
+    Let's rewrite the board state carefully:
+    Board:
+    `[[1, -1, 1],`
+     `[-1, 1, 0],`
+     `[1, 0, -1]]`
+    - `board[0][0]=1`
+    - `board[0][1]=-1`
+    - `board[0][2]=1`
+    - `board[1][0]=-1`
+    - `board[1][1]=1`
+    - `board[1][2]=0` (EMPTY)
+    - `board[2][0]=1`
+    - `board[2][1]=0` (EMPTY)
+    - `board[2][2]=-1`
+
+    Available moves: `(1,2)` and `(2,1)`. Both are sides.
+
+    Let's trace again:
+    1. Win: No.
+    2. Block: No.
+    3. Center: `board[1][1]` is `1`. Not empty.
+    4. Opposite corner:
+       `corners = [(0, 0), (0, 2), (2, 0), (2, 2)]`
+       Opponent is at `(2,2)`. Its opposite is `(0,0)`. `board[0][0]` is `1` (not empty). This strategy doesn't apply.
+    5. Empty Corner:
+       `board[0][0]` is `1`.
+       `board[0][2]` is `1`.
+       `board[2][0]` is `1`.
+       `board[2][2]` is `-1`.
+       No empty corners available. This strategy doesn't apply.
+    6. Empty Side:
+       `sides = [(0, 1), (1, 0), (1,2), (2,1)]`
+       `board[0][1]` is `-1`.
+       `board[1][0]` is `-1`.
+       `board[1][2]` is `0`. Returns `(1,2)`. Correct.
+
+The order of checking is crucial and the current implementation seems to follow the prioritized strategy well.
+
+The `check_win` helper should be efficient enough. The `get_empty_cells` helper is also very fast for a 3x3 board. The overall strategy involves iterating through empty cells a few times, which for a maximum of 9 cells is computationally cheap. Time complexity is O(N^2) where N is board dimension (constant 3 here), so it's O(1).
+
+One minor point: the `check_win` function is called on the `board` directly, which is modified temporarily. It's important that the modification is undone properly. The current code `board[r][c] = EMPTY` does this.
+
+Consider `numpy`:
+The user stated `numpy` is allowed. For a 3x3 board, using `numpy` might add a bit of overhead for the import and conversion, but it could simplify operations like summing rows/columns/diagonals if done that way. However, the current pure Python loop-based approach is clear and efficient enough. Let's stick with pure Python unless there's a clear advantage.
+
+Let's re-check the corner/opposite corner logic.
+Opposite corner logic:
+If opponent is at `(r_opp, c_opp)`, we want to take `(r_mine, c_mine)`.
+This logic is only useful if `board[r_opp][c_opp] == PLAYER_OPPONENT`.
+And we also need `board[r_mine][c_mine] == EMPTY`.
+My implementation:
+```python
+    # Strategy 4: Take an opposite corner
+    corners = [(0, 0), (0, 2), (2, 0), (2, 2)]
+    opposite_corner = {
+        (0, 0): (2, 2), (2, 2): (0, 0),
+        (0, 2): (2, 0), (2, 0): (0, 2)
+    }
+    # Check if opponent is in a corner and we can take the opposite
+    for r_opp, c_opp in corners:
+        if board[r_opp][c_opp] == PLAYER_OPPONENT: # If opponent occupies this corner
+            r_mine, c_mine = opposite_corner[(r_opp, c_opp)] # Get the opposite corner
+            if board[r_mine][c_mine] == EMPTY: # If the opposite corner is free
+                return (r_mine, c_mine)
+```
+This looks correct. It iterates through all corners, checks if the opponent occupies it, finds the opposite, and if the opposite is free, returns it. This means it will pick the *first* such opportunity found in the `corners` list order.
+
+Final check of the `check_win` function with indices.
+Rows `0,1,2`: `board[r][0], board[r][1], board[r][2]`
+Cols `0,1,2`: `board[0][c], board[1][c], board[2][c]`
+Diagonals:
+`board[0][0], board[1][1], board[2][2]`
+`board[0][2], board[1][1], board[2][0]`
+
+The `all()` function with generator expressions is concise and correct.
+
+The code seems robust and well-structured for the specified requirements. The fallback `if empty_cells: return empty_cells[0]` is a good safety net, though in a real game loop, the game would likely end before this.
+
+```python
+import random # Not strictly needed for this deterministic strategy, but good to have if randomness was introduced.
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Determines the next move for a 3x3 Tic Tac Toe game AI player (1).
+
+    Args:
+        board: A 3x3 list of lists representing the game board.
+               0: empty, 1: AI player, -1: opponent player.
+
+    Returns:
+        A tuple (row, col) of the chosen move (0-2, 0-2).
+    """
+    EMPTY = 0
+    PLAYER_ME = 1
+    PLAYER_OPPONENT = -1
+
+    def get_empty_cells(current_board):
+        """Returns a list of (row, col) for empty cells."""
+        cells = []
+        for r in range(3):
+            for c in range(3):
+                if current_board[r][c] == EMPTY:
+                    cells.append((r, c))
+        return cells
+
+    def check_win(current_board, player):
+        """Checks if the given player has won on this board state."""
+        # Check rows
+        for r in range(3):
+            if all(current_board[r][c] == player for c in range(3)):
+                return True
+        # Check columns
+        for c in range(3):
+            if all(current_board[r][c] == player for r in range(3)):
+                return True
+        # Check diagonals
+        if all(current_board[i][i] == player for i in range(3)):
+            return True
+        if all(current_board[i][2 - i] == player for i in range(3)):
+            return True
+        return False
+
+    empty_cells = get_empty_cells(board)
+
+    # Strategy 1: Win
+    # If a move exists that makes the AI win, take it.
+    for r, c in empty_cells:
+        # Make a hypothetical move
+        board[r][c] = PLAYER_ME
+        if check_win(board, PLAYER_ME):
+            board[r][c] = EMPTY  # Undo hypothetical move
+            return (r, c)
+        board[r][c] = EMPTY  # Undo hypothetical move
+
+    # Strategy 2: Block opponent
+    # If the opponent can win on their next move, block it.
+    for r, c in empty_cells:
+        # Make a hypothetical move for opponent
+        board[r][c] = PLAYER_OPPONENT
+        if check_win(board, PLAYER_OPPONENT):
+            board[r][c] = EMPTY  # Undo hypothetical move
+            return (r, c)
+        board[r][c] = EMPTY  # Undo hypothetical move
+
+    # Strategy 3: Take the center
+    # The center square is strategically important.
+    if board[1][1] == EMPTY:
+        return (1, 1)
+
+    # Strategy 4: Take an opposite corner
+    # If the opponent occupies a corner, take the opposite corner.
+    corners = [(0, 0), (0, 2), (2, 0), (2, 2)]
+    opposite_corner_map = {
+        (0, 0): (2, 2), (2, 2): (0, 0),
+        (0, 2): (2, 0), (2, 0): (0, 2)
+    }
+    for r_opp, c_opp in corners:
+        if board[r_opp][c_opp] == PLAYER_OPPONENT:  # If opponent occupies this corner
+            r_mine, c_mine = opposite_corner_map[(r_opp, c_opp)] # Get the opposite corner
+            if board[r_mine][c_mine] == EMPTY:  # If the opposite corner is free
+                return (r_mine, c_mine)
+
+    # Strategy 5: Take an empty corner
+    # If no winning or blocking moves, take any available corner.
+    for r, c in corners:
+        if board[r][c] == EMPTY:
+            return (r, c)
+
+    # Strategy 6: Take an empty side
+    # If no corners are available, take any available side (edge middle).
+    sides = [(0, 1), (1, 0), (1, 2), (2, 1)]
+    for r, c in sides:
+        if board[r][c] == EMPTY:
+            return (r, c)
+
+    # Fallback: Should not be reached in a valid game state where a move is possible.
+    # This would only happen if the board is full or the game is already over.
+    # If there are still empty cells, return the first one found.
+    if empty_cells:
+        return empty_cells[0]
+    else:
+        # This indicates an issue with the calling logic if a move is expected but none found.
+        # In a well-structured game, this branch implies the game is over.
+        # However, for robustness within this function, we could raise an error.
+        # For competitive play, returning a placeholder might be seen as a failure.
+        # Raising an error is cleaner if a move is genuinely expected.
+        raise RuntimeError("No available moves found on a non-full board or game already ended.")
+
+```
+The variable name `opposite_corner` was changed to `opposite_corner_map` for clarity.
+Added docstrings and comments for better understanding.
+The `check_win` function takes `current_board` which is good practice to avoid confusion about modifying `board` directly inside `check_win`.
+The logic for checking win/block is crucial. It does not rely on `check_win` to detect if *I* have already won *on this turn*. Instead, it simulates a move, then calls `check_win` to see if that *hypothetical* move resulted in a win. This is the standard way to implement such a strategy.
+
+The `random` import is not used, so it can be removed for a cleaner submit.
+The `RuntimeError` is a good signal if the function is called incorrectly.
+
+Let's make sure the function is self-contained and ready.
+The function signature matches.
+The board representation is handled.
+The return type is correct.
+The logic follows a standard Tic Tac Toe AI strategy.
+
+Consider edge cases:
+- Empty board: AI will likely take center (1,1). Correct.
+- Board with only one move left: The win/block logic will find it. If it's a game-winning move, it will be taken. If it's blocking, it will be taken. If it's neutral, it will fall to corner/side.
+- Board full: `empty_cells` will be empty, `RuntimeError` is raised.
+
+The problem statement implies this function will be called when a move is valid.
+
+Final review of structure:
+```python
+def policy(board): # signature ok
+    # constants ok
+    def get_empty_cells() # helper ok
+    def check_win() # helper ok
+    
+    # Main logic
+    # Step 1: Win
+    # Step 2: Block
+    # Step 3: Center
+    # Step 4: Opposite Corner
+    # Step 5: Empty Corner
+    # Step 6: Empty Side
+    # Fallback
+```
+This structure is very clear. One minor optimization: `get_empty_cells` is called once, and its results are iterated for win/block checks. This is fine.
+
+
+One more check: The `check_win` function is called on `board` which is temporarily modified during the win/block checks. This is intended, so `check_win` receives the board *after* the hypothetical move. The problem is that `board` is a mutable object. If one of these temporary modifications accidentally persisted, it would be bad. However, `board[r][c] = EMPTY` correctly undoes the change before the next iteration.
+
+The code looks good.
+```python
+# No external imports needed other than standard library.
+# 'random' import removed as it's not used.
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Determines the next move for a 3x3 Tic Tac Toe game AI player (1).
+
+    The AI follows a prioritized strategy:
+    1. Win the game if possible.
+    2. Block the opponent from winning if they can win on the next move.
+    3. Take the center square if available.
+    4. Take an opposite corner if the opponent is in a corner.
+    5. Take any available corner square.
+    6. Take any available side square.
+
+    Args:
+        board: A 3x3 list of lists representing the game board.
+               0: empty, 1: AI player, -1: opponent player.
+
+    Returns:
+        A tuple (row, col) of the chosen move (0-2, 0-2).
+    """
+    EMPTY = 0
+    PLAYER_ME = 1
+    PLAYER_OPPONENT = -1
+
+    def get_empty_cells(current_board):
+        """Returns a list of (row, col) for all empty cells."""
+        cells = []
+        for r in range(3):
+            for c in range(3):
+                if current_board[r][c] == EMPTY:
+                    cells.append((r, c))
+        return cells
+
+    def check_win(current_board, player):
+        """Checks if the given player has won on this board state."""
+        # Check rows
+        for r in range(3):
+            if all(current_board[r][c] == player for c in range(3)):
+                return True
+        # Check columns
+        for c in range(3):
+            if all(current_board[r][c] == player for r in range(3)):
+                return True
+        # Check diagonals
+        if all(current_board[i][i] == player for i in range(3)):
+            return True
+        if all(current_board[i][2 - i] == player for i in range(3)):
+            return True
+        return False
+
+    empty_cells = get_empty_cells(board)
+
+    # Strategy 1: Win
+    # Iterate through all empty cells and check if placing my marker there results in a win.
+    for r, c in empty_cells:
+        # Make a hypothetical move for PLAYER_ME
+        board[r][c] = PLAYER_ME
+        if check_win(board, PLAYER_ME):
+            board[r][c] = EMPTY  # Undo the hypothetical move
+            return (r, c)
+        board[r][c] = EMPTY  # Undo the hypothetical move
+
+    # Strategy 2: Block opponent
+    # Iterate through all empty cells and check if placing opponent's marker there results in their win.
+    # If so, make that move to block them.
+    for r, c in empty_cells:
+        # Make a hypothetical move for PLAYER_OPPONENT
+        board[r][c] = PLAYER_OPPONENT
+        if check_win(board, PLAYER_OPPONENT):
+            board[r][c] = EMPTY  # Undo the hypothetical move
+            return (r, c)
+        board[r][c] = EMPTY  # Undo the hypothetical move
+
+    # Strategy 3: Take the center
+    # The center square (1, 1) is strategically valuable in Tic Tac Toe.
+    if board[1][1] == EMPTY:
+        return (1, 1)
+
+    # Strategy 4: Take an opposite corner
+    # If opponent is in a corner, take the opposite corner to limit their winning lines.
+    corners = [(0, 0), (0, 2), (2, 0), (2, 2)]
+    opposite_corner_map = {
+        (0, 0): (2, 2), (2, 2): (0, 0),
+        (0, 2): (2, 0), (2, 0): (0, 2)
+    }
+    for r_opp, c_opp in corners:
+        if board[r_opp][c_opp] == PLAYER_OPPONENT:  # Check if opponent occupies this corner
+            r_mine, c_mine = opposite_corner_map[(r_opp, c_opp)] # Get the coordinates of the opposite corner
+            if board[r_mine][c_mine] == EMPTY:  # If the opposite corner is free
+                return (r_mine, c_mine)
+
+    # Strategy 5: Take an empty corner
+    # If strategically significant moves are not available, take any available corner.
+    for r, c in corners:
+        if board[r][c] == EMPTY:
+            return (r, c)
+
+    # Strategy 6: Take an empty side
+    # If no corners are available, take any available side square.
+    sides = [(0, 1), (1, 0), (1, 2), (2, 1)]
+    for r, c in sides:
+        if board[r][c] == EMPTY:
+            return (r, c)
+
+    # Fallback: If no move is found, it implies the board is full or game already ended.
+    # This case should ideally not be reached if the function is called in a valid game state.
+    # Raising an error is more informative if a move is expected but not found.
+    if empty_cells: # This condition means there are empty cells, but none were picked by strategies above.
+        # This scenario is unlikely with the prioritized strategy for standard TicTacToe,
+        # but as a failsafe, return the first available empty cell.
+        return empty_cells[0]
+    else:
+        # This branch means empty_cells is empty, i.e., the board is full.
+        # Raising an error is appropriate as an AI policy function should not be called on a full board.
+        raise RuntimeError("No available moves found on a full board. Policy function called unexpectedly.")
+
+```
+The last `if empty_cells:` condition in the fallback logic is a bit redundant given the `get_empty_cells` was called at the start. If `empty_cells` is empty, the `else` block will be hit. If `empty_cells` is not empty, it means `empty_cells[0]` will be returned. This is fine, but the `raise RuntimeError` is the critical part if the board is full. The logic is sound. The `empty_cells` might be empty if the previous strategies cover all possibilities and the board becomes full. But if the board becomes full, `get_empty_cells` would return an empty list at the beginning. So, the `if empty_cells:` check is redundant if the `else` is the only "path after it", but it doesn't hurt. Let me clean up the fallback slightly.
+
+```python
+# Final final check
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Determines the next move for a 3x3 Tic Tac Toe game AI player (1).
+
+    The AI follows a prioritized strategy:
+    1. Win the game if possible.
+    2. Block the opponent from winning if they can win on the next move.
+    3. Take the center square if available.
+    4. Take an opposite corner if the opponent is in a corner.
+    5. Take any available corner square.
+    6. Take any available side square.
+
+    Args:
+        board: A 3x3 list of lists representing the game board.
+               0: empty, 1: AI player, -1: opponent player.
+
+    Returns:
+        A tuple (row, col) of the chosen move (0-2, 0-2).
+    """
+    EMPTY = 0
+    PLAYER_ME = 1
+    PLAYER_OPPONENT = -1
+
+    def get_empty_cells(current_board):
+        """Returns a list of (row, col) for all empty cells."""
+        return [(r, c) for r in range(3) for c in range(3) if current_board[r][c] == EMPTY]
+
+    def check_win(current_board, player):
+        """Checks if the given player has won on this board state."""
+        # Check rows
+        for r in range(3):
+            if all(current_board[r][c] == player for c in range(3)):
+                return True
+        # Check columns
+        for c in range(3):
+            if all(current_board[r][c] == player for r in range(3)):
+                return True
+        # Check diagonals
+        if all(current_board[i][i] == player for i in range(3)):
+            return True
+        if all(current_board[i][2 - i] == player for i in range(3)):
+            return True
+        return False
+
+    empty_cells = get_empty_cells(board)
+
+    # If there are no empty cells, the game is over or called incorrectly.
+    if not empty_cells:
+        raise RuntimeError("No available moves found on a full board. Policy function called unexpectedly.")
+
+    # Strategy 1: Win
+    for r, c in empty_cells:
+        board[r][c] = PLAYER_ME
+        if check_win(board, PLAYER_ME):
+            board[r][c] = EMPTY
+            return (r, c)
+        board[r][c] = EMPTY
+
+    # Strategy 2: Block opponent
+    for r, c in empty_cells:
+        board[r][c] = PLAYER_OPPONENT
+        if check_win(board, PLAYER_OPPONENT):
+            board[r][c] = EMPTY
+            return (r, c)
+        board[r][c] = EMPTY
+
+    # Strategy 3: Take the center
+    if board[1][1] == EMPTY:
+        return (1, 1)
+
+    # Strategy 4: Take an opposite corner
+    corners = [(0, 0), (0, 2), (2, 0), (2, 2)]
+    opposite_corner_map = {
+        (0, 0): (2, 2), (2, 2): (0, 0),
+        (0, 2): (2, 0), (2, 0): (0, 2)
+    }
+    # Check if opponent is in a corner and we can take the opposite
+    for r_opp, c_opp in corners:
+        if board[r_opp][c_opp] == PLAYER_OPPONENT:
+            r_mine, c_mine = opposite_corner_map[(r_opp, c_opp)]
+            if board[r_mine][c_mine] == EMPTY:
+                return (r_mine, c_mine)
+
+    # Strategy 5: Take an empty corner
+    for r, c in corners:
+        if board[r][c] == EMPTY:
+            return (r, c)
+
+    # Strategy 6: Take an empty side
+    sides = [(0, 1), (1, 0), (1, 2), (2, 1)]
+    for r, c in sides:
+        if board[r][c] == EMPTY:
+            return (r, c)
+
+    # This fallback section should technically not be reached if the above strategies
+    # are exhaustive for all valid non-full boards due to the initial check.
+    # However, if empty_cells was not empty and none passed, something is weird.
+    # Given the logic, this part is effectively unreachable.
+    # The initial empty_cells check makes this fallback redundant.
+    # If the code reaches here without returning, it implies an unexpected state.
+    # For robustness in case of strange logic errors, we could return empty_cells[0],
+    # but the initial check prevents reaching this with empty empty_cells.
+
+    # If we get here and empty_cells was supposed to be populated, it means
+    # all strategies failed to pick a move from the identified empty cells.
+    # This implies a flaw in the prioritization or strategy itself.
+    # The safest is to return the first available move.
+    # However, the initial check already covers the "no moves left" situation.
+    # Therefore, any remaining empty_cells must be pickable by one of the above.
+    # For absolute certainty, I'll trust the previous logic and rely on the initial check.
+
+    # Reaching this point without returning means there are empty cells, but none were picked.
+    # This indicates a logical gap, but the initial check ensures empty_cells is not empty.
+    # The current structure of strategies guarantees a move is picked if empty_cells is not empty.
+    # So, no explicit fallback needed beyond the initial check.
+
+    # This line should be unreachable code IF the logic above is perfect.
+    # But to satisfy any compiler/linter suggesting a return path:
+    return empty_cells[0] # This is safe because the initial check ensures empty_cells is not empty.
+
+```
+Simplified `get_empty_cells` using list comprehension.
+Moved the `if not empty_cells` check to the beginning.
+The last `return empty_cells[0]` should indeed be unreachable if the strategy correctly covers all `empty_cells`, which it should. However, it's good defensive programming to have a final return.
+
+One last thought: the problem implies that `policy` is called when it is indeed AI's turn and a move is possible. So `RuntimeError` on empty board is appropriate.
+The code follows the common and effective Tic Tac Toe strategy.
+The time complexity is constant, well within limits.
+The code uses standard Python.
+
+All good.<thinking>
+The user wants a Python function `policy(board)` for a 3x3 Tic Tac Toe game.
+The function should take the current `board` as input and return the AI's next move as a `(row, col)` tuple.
+The `board` is a 3x3 list of lists where:
+- `0` represents an empty cell.
+- `1` represents the AI player.
+- `-1` represents the opponent player.
+
+I need to implement a decision-making logic for the AI. A common and effective strategy for Tic Tac Toe is a prioritized approach:
+
+1.  **Win:** If the AI can make a move to win the game on its current turn, it should do so.
+2.  **Block:** If the opponent can win the game on their next turn, the AI must block that move.
+3.  **Fork:** Create an opportunity where the AI has two ways to win on its next turn (not explicitly implemented in this simpler heuristic but covered by win/block in many cases).
+4.  **Block Opponent's Fork:** Prevent the opponent from creating a situation where they have two ways to win (also not explicitly implemented).
+5.  **Center:** Take the center square (1,1) if it's available.
+6.  **Opposite Corner:** If the opponent occupies a corner, take the opposite corner.
+7.  **Empty Corner:** Take any available corner square.
+8.  **Empty Side:** Take any available side square (middle of an edge).
+
+I will implement these priorities in order.
+
+**Helper Functions:**
+*   `get_empty_cells(board)`: Returns a list of `(row, col)` tuples for all unoccupied cells.
+*   `check_win(board, player)`: Checks if a given `player` has won on the provided `board` state.
+
+**Implementation Steps:**
+1.  Define constants for `EMPTY`, `PLAYER_ME` (1), and `PLAYER_OPPONENT` (-1) for clarity.
+2.  Implement the `get_empty_cells` helper.
+3.  Implement the `check_win` helper function by checking all rows, columns, and diagonals.
+4.  In the `policy` function:
+    *   Get all available empty cells.
+    *   **Strat 1 (Win):** Iterate through empty cells. For each, temporarily place `PLAYER_ME`'s marker. If `check_win` returns true for `PLAYER_ME`, make that move and return. Remember to undo the hypothetical move.
+    *   **Strat 2 (Block):** If no winning move was found, iterate through empty cells. For each, temporarily place `PLAYER_OPPONENT`'s marker. If `check_win` returns true for `PLAYER_OPPONENT`, make that move (as a block) and return. Remember to undo.
+    *   **Strat 3 (Center):** If the center `board[1][1]` is empty, return `(1, 1)`.
+    *   **Strat 4 (Opposite Corner):** Check if the opponent occupies any corner. If so, check if the opposite corner is empty. If both are true, return the opposite corner.
+    *   **Strat 5 (Empty Corner):** If no opposite corner was taken, iterate through corner cells and return the first one found that is empty.
+    *   **Strat 6 (Empty Side):** If no corners are available, iterate through side cells and return the first one found that is empty.
+    *   **Fallback:** If no move is found (which implies the board is full), raise an error or return a default. A robust implementation should check for empty cells at the start.
+
+The implementation should be efficient enough for a 3x3 board and respect the 1-second time limit. No complex algorithms like minimax are strictly necessary for a solid Tic Tac Toe AI, and a heuristic approach is often sufficient and faster.
+
+Let's construct the code.
+</thinking>
+<code>
+```python
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Determines the next move for a 3x3 Tic Tac Toe game AI player (1).
+
+    The AI follows a prioritized strategy:
+    1. Win the game if possible.
+    2. Block the opponent from winning if they can win on the next move.
+    3. Take the center square if available.
+    4. Take an opposite corner if the opponent is in a corner.
+    5. Take any available corner square.
+    6. Take any available side square.
+
+    Args:
+        board: A 3x3 list of lists representing the game board.
+               0: empty, 1: AI player, -1: opponent player.
+
+    Returns:
+        A tuple (row, col) of the chosen move (0-2, 0-2).
+    """
+    EMPTY = 0
+    PLAYER_ME = 1
+    PLAYER_OPPONENT = -1
+
+    def get_empty_cells(current_board):
+        """Returns a list of (row, col) for all empty cells."""
+        return [(r, c) for r in range(3) for c in range(3) if current_board[r][c] == EMPTY]
+
+    def check_win(current_board, player):
+        """Checks if the given player has won on this board state."""
+        # Check rows
+        for r in range(3):
+            if all(current_board[r][c] == player for c in range(3)):
+                return True
+        # Check columns
+        for c in range(3):
+            if all(current_board[r][c] == player for r in range(3)):
+                return True
+        # Check diagonals
+        if all(current_board[i][i] == player for i in range(3)):
+            return True
+        if all(current_board[i][2 - i] == player for i in range(3)):
+            return True
+        return False
+
+    empty_cells = get_empty_cells(board)
+
+    # If there are no empty cells, the game is over or the function was called incorrectly.
+    if not empty_cells:
+        # In a competitive environment, raising an error is cleaner than returning an invalid move.
+        raise RuntimeError("No available moves found on a full board. Policy function called unexpectedly.")
+
+    # Strategy 1: Win
+    # Iterate through all empty cells and check if placing my marker there results in a win.
+    for r, c in empty_cells:
+        # Make a hypothetical move for PLAYER_ME
+        board[r][c] = PLAYER_ME
+        if check_win(board, PLAYER_ME):
+            board[r][c] = EMPTY  # Undo the hypothetical move
+            return (r, c)
+        board[r][c] = EMPTY  # Undo the hypothetical move
+
+    # Strategy 2: Block opponent
+    # Iterate through all empty cells and check if placing opponent's marker there results in their win.
+    # If so, make that move to block them.
+    for r, c in empty_cells:
+        # Make a hypothetical move for PLAYER_OPPONENT
+        board[r][c] = PLAYER_OPPONENT
+        if check_win(board, PLAYER_OPPONENT):
+            board[r][c] = EMPTY  # Undo the hypothetical move
+            return (r, c)
+        board[r][c] = EMPTY  # Undo the hypothetical move
+
+    # Strategy 3: Take the center
+    # The center square (1, 1) is strategically valuable in Tic Tac Toe.
+    if board[1][1] == EMPTY:
+        return (1, 1)
+
+    # Strategy 4: Take an opposite corner
+    # If opponent is in a corner, take the opposite corner to limit their winning lines.
+    corners = [(0, 0), (0, 2), (2, 0), (2, 2)]
+    opposite_corner_map = {
+        (0, 0): (2, 2), (2, 2): (0, 0),
+        (0, 2): (2, 0), (2, 0): (0, 2)
+    }
+    # Check if opponent occupies any corner and if the opposite corner is free
+    for r_opp, c_opp in corners:
+        if board[r_opp][c_opp] == PLAYER_OPPONENT:  # Check if opponent occupies this corner
+            r_mine, c_mine = opposite_corner_map[(r_opp, c_opp)] # Get the coordinates of the opposite corner
+            if board[r_mine][c_mine] == EMPTY:  # If the opposite corner is free
+                return (r_mine, c_mine)
+
+    # Strategy 5: Take an empty corner
+    # If strategically significant moves are not available, take any available corner.
+    for r, c in corners:
+        if board[r][c] == EMPTY:
+            return (r, c)
+
+    # Strategy 6: Take an empty side
+    # If no corners are available, take any available side square.
+    sides = [(0, 1), (1, 0), (1, 2), (2, 1)]
+    for r, c in sides:
+        if board[r][c] == EMPTY:
+            return (r, c)
+
+    # This point should theoretically be unreachable if empty_cells was not empty,
+    # as the strategies cover all possible cell types.
+    # However, as a safeguard, if empty_cells is not empty, return the first available cell.
+    # The initial check `if not empty_cells:` handles the explicit no-move case.
+    # This final return is more of a theoretical fallback.
+    return empty_cells[0]
+
+```
+</code>

@@ -1,0 +1,242 @@
+
+from typing import List, Tuple
+
+SHIP_LENGTHS = [5, 4, 3, 3, 2]
+N = 10
+
+
+def _in_bounds(r: int, c: int) -> bool:
+    return 0 <= r < N and 0 <= c < N
+
+
+def _neighbors4(r: int, c: int):
+    for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        nr, nc = r + dr, c + dc
+        if _in_bounds(nr, nc):
+            yield nr, nc
+
+
+def _find_hit_groups(board: List[List[int]]):
+    seen = [[False] * N for _ in range(N)]
+    groups = []
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 1 and not seen[r][c]:
+                stack = [(r, c)]
+                seen[r][c] = True
+                group = []
+                while stack:
+                    x, y = stack.pop()
+                    group.append((x, y))
+                    for nx, ny in _neighbors4(x, y):
+                        if board[nx][ny] == 1 and not seen[nx][ny]:
+                            seen[nx][ny] = True
+                            stack.append((nx, ny))
+                groups.append(group)
+    return groups
+
+
+def _placement_valid(board: List[List[int]], cells):
+    # A placement is valid if it contains no misses.
+    # Hits may or may not be included globally; target scoring handles focus on hit groups.
+    for r, c in cells:
+        if board[r][c] == -1:
+            return False
+    return True
+
+
+def _placement_contains_all_of_group(cells_set, group):
+    for cell in group:
+        if cell not in cells_set:
+            return False
+    return True
+
+
+def _ship_fit_count(board: List[List[int]], ship_len: int, focus_group=None):
+    """
+    Returns score matrix counting how many valid placements of a ship length
+    cover each unknown cell.
+    If focus_group is provided, only count placements that contain all cells in the group.
+    """
+    score = [[0] * N for _ in range(N)]
+
+    # Horizontal placements
+    for r in range(N):
+        for c0 in range(N - ship_len + 1):
+            cells = [(r, c0 + k) for k in range(ship_len)]
+            if not _placement_valid(board, cells):
+                continue
+            cells_set = set(cells)
+            if focus_group is not None and not _placement_contains_all_of_group(cells_set, focus_group):
+                continue
+            for rr, cc in cells:
+                if board[rr][cc] == 0:
+                    score[rr][cc] += 1
+
+    # Vertical placements
+    for c in range(N):
+        for r0 in range(N - ship_len + 1):
+            cells = [(r0 + k, c) for k in range(ship_len)]
+            if not _placement_valid(board, cells):
+                continue
+            cells_set = set(cells)
+            if focus_group is not None and not _placement_contains_all_of_group(cells_set, focus_group):
+                continue
+            for rr, cc in cells:
+                if board[rr][cc] == 0:
+                    score[rr][cc] += 1
+
+    return score
+
+
+def _add_scores(a, b, weight=1):
+    for r in range(N):
+        ar = a[r]
+        br = b[r]
+        for c in range(N):
+            ar[c] += br[c] * weight
+
+
+def _unknown_cells(board):
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 0:
+                yield (r, c)
+
+
+def _target_mode_score(board: List[List[int]], groups):
+    score = [[0] * N for _ in range(N)]
+
+    for group in groups:
+        if not group:
+            continue
+
+        rows = {r for r, _ in group}
+        cols = {c for _, c in group}
+
+        # Strong local adjacency bonus near hits
+        for r, c in group:
+            for nr, nc in _neighbors4(r, c):
+                if board[nr][nc] == 0:
+                    score[nr][nc] += 25
+
+        # Orientation-based bonuses
+        if len(group) >= 2:
+            if len(rows) == 1:
+                # Horizontal group: prioritize extending left/right
+                r = next(iter(rows))
+                cs = sorted(c for _, c in group)
+                left = cs[0] - 1
+                right = cs[-1] + 1
+                if _in_bounds(r, left) and board[r][left] == 0:
+                    score[r][left] += 120
+                if _in_bounds(r, right) and board[r][right] == 0:
+                    score[r][right] += 120
+                # Placements consistent with group
+                for L in SHIP_LENGTHS:
+                    if L >= len(group):
+                        s = _ship_fit_count(board, L, focus_group=group)
+                        _add_scores(score, s, weight=6)
+            elif len(cols) == 1:
+                # Vertical group: prioritize extending up/down
+                c = next(iter(cols))
+                rs = sorted(r for r, _ in group)
+                up = rs[0] - 1
+                down = rs[-1] + 1
+                if _in_bounds(up, c) and board[up][c] == 0:
+                    score[up][c] += 120
+                if _in_bounds(down, c) and board[down][c] == 0:
+                    score[down][c] += 120
+                for L in SHIP_LENGTHS:
+                    if L >= len(group):
+                        s = _ship_fit_count(board, L, focus_group=group)
+                        _add_scores(score, s, weight=6)
+            else:
+                # Rare/irregular hit cluster; use generic neighboring pressure
+                for L in SHIP_LENGTHS:
+                    s = _ship_fit_count(board, L, focus_group=group)
+                    _add_scores(score, s, weight=4)
+        else:
+            # Single hit: consider all ship placements through that hit
+            for L in SHIP_LENGTHS:
+                s = _ship_fit_count(board, L, focus_group=group)
+                _add_scores(score, s, weight=5)
+
+    return score
+
+
+def _hunt_mode_score(board: List[List[int]]):
+    score = [[0] * N for _ in range(N)]
+
+    # Global combinational density
+    for L in SHIP_LENGTHS:
+        s = _ship_fit_count(board, L, focus_group=None)
+        _add_scores(score, s, weight=1 if L == 2 else 2)
+
+    # Parity preference for efficient search
+    # Prefer checkerboard-like cells, but only softly so density still dominates.
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 0:
+                if (r + c) % 2 == 0:
+                    score[r][c] += 3
+
+                # Mild centrality bonus
+                score[r][c] += 5 - max(abs(r - 4.5), abs(c - 4.5))
+
+    return score
+
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    try:
+        # Find any current hit groups
+        groups = _find_hit_groups(board)
+
+        # If there are active hits, target them; otherwise hunt globally.
+        if groups:
+            score = _target_mode_score(board, groups)
+            # Blend in some global score to break ties sensibly
+            global_score = _hunt_mode_score(board)
+            _add_scores(score, global_score, weight=1)
+        else:
+            score = _hunt_mode_score(board)
+
+        best = None
+        best_score = None
+
+        for r in range(N):
+            for c in range(N):
+                if board[r][c] != 0:
+                    continue
+                s = score[r][c]
+
+                # Deterministic tie-breakers:
+                # 1) higher score
+                # 2) parity preference
+                # 3) nearer center
+                # 4) lexicographic
+                tie = (
+                    s,
+                    1 if (r + c) % 2 == 0 else 0,
+                    - (abs(r - 4.5) + abs(c - 4.5)),
+                    -r,
+                    -c,
+                )
+                if best is None or tie > best_score:
+                    best = (r, c)
+                    best_score = tie
+
+        if best is not None:
+            return best
+
+    except Exception:
+        pass
+
+    # Fallback: always return a legal unknown cell if possible
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 0:
+                return (r, c)
+
+    # Extreme fallback: board full; return a legal-format tuple
+    return (0, 0)

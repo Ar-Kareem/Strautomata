@@ -1,0 +1,95 @@
+
+def policy(state: list[list[object]], role: str) -> str:
+    # Parse the board
+    board = {}
+    for prop in state:
+        if prop[0] == "cell":
+            row, col, value = int(prop[1]), int(prop[2]), prop[3]
+            board[(row, col)] = value
+    
+    # Get all our marks and opponent marks
+    our_marks = set()
+    opponent_marks = set()
+    
+    for (r, c), val in board.items():
+        if val == role:
+            our_marks.add((r, c))
+        elif val != "b":
+            opponent_marks.add((r, c))
+    
+    # Find all empty cells
+    empty_cells = []
+    for r in range(1, 5):
+        for c in range(1, 5):
+            if (r, c) not in board or board[(r, c)] == "b":
+                empty_cells.append((r, c))
+    
+    # Helper function: check if a position is adjacent (orthogonally) to any mark in a set
+    def is_adjacent_to(pos, mark_set):
+        r, c = pos
+        for (mr, mc) in mark_set:
+            if abs(r - mr) + abs(c - mc) == 1:
+                return True
+        return False
+    
+    # Helper function: calculate minimum distance to own marks
+    def min_distance_to_own(pos):
+        if not our_marks:
+            return float('inf')
+        r, c = pos
+        min_dist = float('inf')
+        for (mr, mc) in our_marks:
+            dist = abs(r - mr) + abs(c - mc)
+            min_dist = min(min_dist, dist)
+        return min_dist
+    
+    # Helper function: calculate minimum distance to opponent marks
+    def min_distance_to_opponent(pos):
+        if not opponent_marks:
+            return float('inf')
+        r, c = pos
+        min_dist = float('inf')
+        for (or_, oc) in opponent_marks:
+            dist = abs(r - or_) + abs(c - oc)
+            min_dist = min(min_dist, dist)
+        return min_dist
+    
+    # Filter legal moves (not adjacent to our own marks)
+    legal_moves = []
+    for cell in empty_cells:
+        if not is_adjacent_to(cell, our_marks):
+            legal_moves.append(cell)
+    
+    # If no legal moves exist, this shouldn't happen in normal play, but return any empty cell
+    if not legal_moves:
+        if empty_cells:
+            return f"mark({empty_cells[0][0]},{empty_cells[0][1]})"
+        return "mark(1,1)"
+    
+    # Score moves: prefer those that maximize distance to own marks and minimize opponent's expansion
+    best_move = None
+    best_score = float('-inf')
+    
+    for move in legal_moves:
+        # Primary: maximize distance to our own marks (avoid clustering)
+        own_distance = min_distance_to_own(move)
+        
+        # Secondary: minimize distance to opponent (try to constrain them)
+        opponent_distance = min_distance_to_opponent(move)
+        
+        # Tertiary: prefer positions closer to center or corners for strategic control
+        r, c = move
+        center_distance = abs(r - 2.5) + abs(c - 2.5)
+        
+        # Composite score: prioritize spreading out, then constraining opponent
+        score = (own_distance * 100) - (opponent_distance * 10) - center_distance
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    if best_move:
+        return f"mark({best_move[0]},{best_move[1]})"
+    else:
+        # Fallback to first legal move
+        return f"mark({legal_moves[0][0]},{legal_moves[0][1]})"

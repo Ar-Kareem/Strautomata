@@ -1,0 +1,211 @@
+
+import math
+
+# Piece values
+PIECE_VALUES = {
+    'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 100000
+}
+
+# Piece square tables for positional bonuses
+# We'll use a simple flipped version for black by mirroring the rank
+PST = {
+    'P': [
+        [ 0,  0,  0,  0,  0,  0,  0,  0],
+        [50, 50, 50, 50, 50, 50, 50, 50],
+        [10, 10, 20, 30, 30, 20, 10, 10],
+        [ 5,  5, 10, 25, 25, 10,  5,  5],
+        [ 0,  0,  0, 20, 20,  0,  0,  0],
+        [ 5, -5,-10,  0,  0,-10, -5,  5],
+        [ 5, 10, 10,-20,-20, 10, 10,  5],
+        [ 0,  0,  0,  0,  0,  0,  0,  0]
+    ],
+    'N': [
+        [-50,-40,-30,-30,-30,-30,-40,-50],
+        [-40,-20,  0,  0,  0,  0,-20,-40],
+        [-30,  0, 10, 15, 15, 10,  0,-30],
+        [-30,  5, 15, 20, 20, 15,  5,-30],
+        [-30,  0, 15, 20, 20, 15,  0,-30],
+        [-30,  5, 10, 15, 15, 10,  5,-30],
+        [-40,-20,  0,  5,  5,  0,-20,-40],
+        [-50,-40,-30,-30,-30,-30,-40,-50]
+    ],
+    'B': [
+        [-20,-10,-10,-10,-10,-10,-10,-20],
+        [-10,  0,  0,  0,  0,  0,  0,-10],
+        [-10,  0,  5, 10, 10,  5,  0,-10],
+        [-10,  5,  5, 10, 10,  5,  5,-10],
+        [-10,  0, 10, 10, 10, 10,  0,-10],
+        [-10, 10, 10, 10, 10, 10, 10,-10],
+        [-10,  5,  0,  0,  0,  0,  5,-10],
+        [-20,-10,-10,-10,-10,-10,-10,-20]
+    ],
+    'R': [
+        [ 0,  0,  0,  0,  0,  0,  0,  0],
+        [ 5, 10, 10, 10, 10, 10, 10,  5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [ 0,  0,  0,  5,  5,  0,  0,  0]
+    ],
+    'Q': [
+        [-20,-10,-10, -5, -5,-10,-10,-20],
+        [-10,  0,  0,  0,  0,  0,  0,-10],
+        [-10,  0,  5,  5,  5,  5,  0,-10],
+        [ -5,  0,  5,  5,  5,  5,  0, -5],
+        [  0,  0,  5,  5,  5,  5,  0, -5],
+        [-10,  5,  5,  5,  5,  5,  0,-10],
+        [-10,  0,  5,  0,  0,  0,  0,-10],
+        [-20,-10,-10, -5, -5,-10,-10,-20]
+    ],
+    'K': [
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-20,-30,-30,-40,-40,-30,-30,-20],
+        [-10,-20,-20,-20,-20,-20,-20,-10],
+        [ 20, 20,  0,  0,  0,  0, 20, 20],
+        [ 20, 30, 10,  0,  0, 10, 30, 20]
+    ]
+}
+
+# Convert algebraic square to (file, rank) indices
+def square_to_indices(sq):
+    file = ord(sq[0]) - ord('a')
+    rank = int(sq[1]) - 1
+    return file, rank
+
+# Convert indices to algebraic square
+def indices_to_square(f, r):
+    return chr(ord('a') + f) + str(r + 1)
+
+# Mirror rank for black's perspective
+def mirror_rank(rank, color):
+    if color == 'b':
+        return 7 - rank
+    return rank
+
+# Evaluate a single piece's positional score
+def piece_square_value(piece, square, color):
+    piece_type = piece.upper()
+    if piece_type not in PST:
+        return 0
+    file, rank = square_to_indices(square)
+    mirrored_rank = mirror_rank(rank, color)
+    return PST[piece_type][mirrored_rank][file]
+
+# King safety score (encourage king to stay in corner and not be too open)
+def king_safety_score(king_square, color, pieces):
+    file, rank = square_to_indices(king_square)
+    # Encourage king to stay in corners (a1, h1, a8, h8)
+    # Also encourage staying in back rank early
+    safety_bonus = 0
+    if color == 'w':
+        # White king prefers back rank
+        if rank < 2:
+            safety_bonus += 20
+    else:
+        # Black king prefers back rank
+        if rank > 5:
+            safety_bonus += 20
+    # Corner bonus
+    if (file == 0 or file == 7) and (rank == 0 or rank == 7):
+        safety_bonus += 30
+    return safety_bonus
+
+# Evaluate the entire board
+def evaluate(pieces, to_play_color):
+    score = 0
+    for square, piece_code in pieces.items():
+        color = piece_code[0]
+        piece_type = piece_code[1]
+        value = PIECE_VALUES.get(piece_type, 0)
+        pst_bonus = piece_square_value(piece_code[1], square, color)
+        if color == to_play_color[0]:
+            score += value + pst_bonus
+        else:
+            score -= value + pst_bonus
+    
+    # King safety for both sides
+    white_king_sq = None
+    black_king_sq = None
+    for sq, piece in pieces.items():
+        if piece == 'wK':
+            white_king_sq = sq
+        elif piece == 'bK':
+            black_king_sq = sq
+    
+    if white_king_sq and to_play_color == 'white':
+        score += king_safety_score(white_king_sq, 'w', pieces)
+    if black_king_sq and to_play_color == 'black':
+        score += king_safety_score(black_king_sq, 'b', pieces)
+        
+    return score
+
+# Simulate a move on the board
+def make_move(board, move):
+    new_board = board.copy()
+    from_sq = move[:2]
+    to_sq = move[2:4]
+    piece = new_board.get(from_sq)
+    if not piece:
+        return new_board
+    new_board[to_sq] = piece
+    del new_board[from_sq]
+    # Handle promotion
+    if len(move) > 4:
+        promo = move[4].upper()
+        new_board[to_sq] = piece[0] + promo
+    return new_board
+
+# Check if a move gives check (simple approximation)
+def gives_check(board, move, opponent_king_code):
+    # This is a simplified version - a more precise way would require move generation
+    # For now, we'll just check if the move lands on the opponent king square
+    to_sq = move[2:4]
+    for sq, piece in board.items():
+        if piece == opponent_king_code:
+            if sq == to_sq:
+                return True
+    return False
+
+# Main policy function
+def policy(pieces: dict[str, str], to_play: str, memory: dict) -> tuple[str, dict]:
+    # Convert color name to one character
+    my_color = 'w' if to_play == 'white' else 'b'
+    opponent_color = 'b' if my_color == 'w' else 'w'
+    
+    # Retrieve legal moves from memory (assumed to be precomputed and passed in)
+    legal_moves = memory.get("legal_moves", [])
+    if not legal_moves:
+        # Fallback if legal_moves not provided, but according to problem spec, it should be
+        return "e2e4", {}  # Just in case
+    
+    # If only one move, play it
+    if len(legal_moves) == 1:
+        return legal_moves[0], memory
+
+    best_move = legal_moves[0]
+    best_score = -math.inf
+    
+    # Opponent king code for checking
+    opponent_king_code = opponent_color + 'K'
+
+    # Iterate through all legal moves and pick the best one based on evaluation after the move
+    for move in legal_moves:
+        # Simulate the move
+        new_pieces = make_move(pieces, move)
+        # Evaluate the position after the move
+        score = evaluate(new_pieces, to_play)
+        
+        # Simple check detection: if move captures opponent king (simplified)
+        if gives_check(pieces, move, opponent_king_code):
+            score += 10000  # Large bonus for checking the opponent king
+            
+        if score > best_score:
+            best_score = score
+            best_move = move
+            
+    return best_move, memory

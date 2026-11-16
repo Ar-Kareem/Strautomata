@@ -1,0 +1,104 @@
+
+import numpy as np
+from itertools import product
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    # Convert to numpy array for easier manipulation
+    board_np = np.array(board)
+    
+    # Find all empty positions
+    empty_positions = []
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board_np[i, j, k] == 0:
+                    empty_positions.append((i, j, k))
+    
+    if not empty_positions:
+        return (0, 0, 0)  # Should never happen in valid game state
+    
+    # Check if we can win in one move
+    for i, j, k in empty_positions:
+        board_np[i, j, k] = 1  # Try placing our mark
+        
+        # Check if this gives us a win
+        if check_win(board_np, 1):
+            board_np[i, j, k] = 0  # Restore
+            return (i, j, k)
+        
+        board_np[i, j, k] = 0  # Restore
+    
+    # Check if opponent can win and block
+    for i, j, k in empty_positions:
+        board_np[i, j, k] = -1  # Try opponent's mark
+        
+        # Check if this gives opponent a win
+        if check_win(board_np, -1):
+            board_np[i, j, k] = 0  # Restore
+            return (i, j, k)
+        
+        board_np[i, j, k] = 0  # Restore
+    
+    # Try to take center if available
+    if board_np[1, 1, 1] == 0:
+        return (1, 1, 1)
+    
+    # Try to take a corner if available
+    corners = [(0, 0, 0), (0, 0, 2), (0, 2, 0), (0, 2, 2),
+               (2, 0, 0), (2, 0, 2), (2, 2, 0), (2, 2, 2)]
+    for i, j, k in corners:
+        if board_np[i, j, k] == 0:
+            return (i, j, k)
+    
+    # Otherwise, take any available position (preferably not on edges)
+    # But for simplicity, just return the first one
+    return empty_positions[0]
+
+def check_win(board, player):
+    """Check if the given player has won on this board"""
+    
+    # Check all 3D lines (rows, columns, pillars)
+    # Horizontal lines (fix k)
+    for k in range(3):
+        for i in range(3):
+            if all(board[i, j, k] == player for j in range(3)):
+                return True
+    
+    # Vertical lines (fix k)
+    for k in range(3):
+        for j in range(3):
+            if all(board[i, j, k] == player for i in range(3)):
+                return True
+    
+    # Depth lines (fix i)
+    for i in range(3):
+        for j in range(3):
+            if all(board[i, j, k] == player for k in range(3)):
+                return True
+    
+    # Check all 4 main diagonals
+    # Diagonals in the front face (k=0)
+    if all(board[i, i, 0] == player for i in range(3)) or all(board[i, 2-i, 0] == player for i in range(3)):
+        return True
+    
+    # Diagonals in the back face (k=2)
+    if all(board[i, i, 2] == player for i in range(3)) or all(board[i, 2-i, 2] == player for i in range(3)):
+        return True
+    
+    # Diagonals through the center
+    if all(board[i, i, i] == player for i in range(3)) or \
+       all(board[i, i, 2-i] == player for i in range(3)) or \
+       all(board[i, 2-i, i] == player for i in range(3)) or \
+       all(board[i, 2-i, 2-i] == player for i in range(3)):
+        return True
+    
+    # Diagonals that go through each face
+    if all(board[0, i, i] == player for i in range(3)) or \
+       all(board[2, i, i] == player for i in range(3)) or \
+       all(board[i, 0, i] == player for i in range(3)) or \
+       all(board[i, 2, i] == player for i in range(3)) or \
+       all(board[i, i, 0] == player for i in range(3)) or \
+       all(board[i, i, 2] == player for i in range(3)):
+        return True
+    
+    return False

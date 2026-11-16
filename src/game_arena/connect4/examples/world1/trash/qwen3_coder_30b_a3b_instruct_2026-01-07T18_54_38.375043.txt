@@ -1,0 +1,174 @@
+<thinking>
+I need to implement a Connect 4 AI policy that chooses the best column to drop a disc. Let me break this down:
+
+1. **Goal**: Find a column that either:
+   - Creates a winning position (4 in a row) 
+   - Blocks opponent from winning
+   - Creates a strong position (like 3 in a row)
+
+2. **Strategy approach**:
+   - Check if I can win in one move
+   - Check if opponent can win in one move (and block)
+   - Otherwise evaluate positions based on strategic value (3-in-a-row, 2-in-a-row with potential, etc.)
+
+3. **Implementation approach**:
+   - First check for immediate wins
+   - Then check for opponent wins to block
+   - If not, evaluate positions using a heuristic that rewards:
+     * 4 in a row (win) 
+     * 3 in a row with empty ends (strong position)
+     * 2 in a row with empty ends (good position)
+     * Center column preference (as it offers more opportunities)
+
+4. **Board representation**:
+   - 6 rows x 7 columns (0-5, 0-6)
+   - Rows 0-5 (top to bottom), columns 0-6 (left to right)
+
+5. **Helper functions needed**:
+   - Check if move wins the game
+   - Check if any position is available in a column (not full)
+   - Evaluate position scores
+
+Let me think of the most effective approach. For speed, I'll probably do a simple greedy evaluation - first check immediate wins, then immediate blocks, then evaluate based on potential.
+
+Actually, let me reconsider. The most important immediate checks are:
+1. Can I win this turn? (check each column, simulate drop, check for win)
+2. Can opponent win next turn? (check each column, simulate their drop, and see if it wins) 
+3. Otherwise, evaluate each available column for long-term strategic value
+
+Let me create a simple evaluation function that considers:
+- Horizontal lines (left and right)
+- Vertical lines (only the new piece matters)
+- Diagonal lines (left and right)
+- Score based on how many my discs are placed in a line with empty ends
+- Prefer center columns
+</thinking>
+<code>
+def policy(board: list[list[int]]) -> int:
+    import numpy as np
+    
+    def is_valid_move(board, col):
+        return board[0][col] == 0
+    
+    def get_next_row(board, col):
+        for row in range(5, -1, -1):
+            if board[row][col] == 0:
+                return row
+        return -1
+    
+    def check_win(board, player):
+        # Check horizontal
+        for row in range(6):
+            for col in range(4):
+                if all(board[row][col + i] == player for i in range(4)):
+                    return True
+        
+        # Check vertical
+        for row in range(3):
+            for col in range(7):
+                if all(board[row + i][col] == player for i in range(4)):
+                    return True
+        
+        # Check diagonal (top-left to bottom-right)
+        for row in range(3):
+            for col in range(4):
+                if all(board[row + i][col + i] == player for i in range(4)):
+                    return True
+        
+        # Check diagonal (top-right to bottom-left)
+        for row in range(3):
+            for col in range(3, 7):
+                if all(board[row + i][col - i] == player for i in range(4)):
+                    return True
+        
+        return False
+    
+    def evaluate_position(board, player):
+        score = 0
+        # Score center columns higher
+        for col in range(3, 5):
+            if board[0][col] == 0:  # if column not full 
+                score += 1
+        
+        # Score horizontal lines
+        for row in range(6):
+            for col in range(4):
+                line = [board[row][col + i] for i in range(4)]
+                count = line.count(player)
+                empty = line.count(0)
+                if count == 3 and empty == 1:
+                    score += 10
+                elif count == 2 and empty == 2:
+                    score += 2
+        
+        # Score vertical lines
+        for row in range(3):
+            for col in range(7):
+                line = [board[row + i][col] for i in range(4)]
+                count = line.count(player)
+                if count == 3 and empty := line.count(0) == 1:
+                    score += 10
+                elif count == 2 and empty == 2:
+                    score += 2
+        
+        # Score diagonal lines
+        for row in range(3):
+            for col in range(4):
+                line = [board[row + i][col + i] for i in range(4)]
+                count = line.count(player)
+                empty = line.count(0)
+                if count == 3 and empty == 1:
+                    score += 10
+                elif count == 2 and empty == 2:
+                    score += 2
+        
+        for row in range(3, 6):
+            for col in range(3, 7):
+                line = [board[row - i][col - i] for i in range(4)]
+                count = line.count(player)
+                empty = line.count(0)
+                if count == 3 and empty == 1:
+                    score += 10
+                elif count == 2 and empty == 2:
+                    score += 2
+        
+        return score
+    
+    # First check for immediate wins
+    for col in range(7):
+        if is_valid_move(board, col):
+            row = get_next_row(board, col)
+            # Simulate drop
+            board[row][col] = 1
+            if check_win(board, 1):
+                board[row][col] = 0
+                return col
+            board[row][col] = 0
+    
+    # Then check for opponent wins to block
+    for col in range(7):
+        if is_valid_move(board, col):
+            row = get_next_row(board, col)
+            # Simulate opponent drop
+            board[row][col] = -1
+            if check_win(board, -1):
+                board[row][col] = 0
+                return col
+            board[row][col] = 0
+    
+    # If no immediate action, choose based on strategy
+    best_score = float('-inf')
+    best_col = 3  # Default to center
+    for col in range(7):
+        if is_valid_move(board, col):
+            row = get_next_row(board, col)
+            # Simulate drop
+            board[row][col] = 1
+            score = evaluate_position(board, 1)
+            board[row][col] = 0
+            if score > best_score:
+                best_score = score
+                best_col = col
+    
+    return best_col
+</code>

@@ -1,0 +1,267 @@
+The strategy for this policy is to generate all legal moves, evaluate each resulting position using a simple material-based heuristic with basic checkmate detection, and apply a shallow minimax search (depth 2 with alpha-beta pruning). The engine prioritizes checkmates, then material advantage, and ensures all moves are legal (i.e., not leaving the king in check).
+
+<code>
+import random
+import math
+
+FILES = "abcdefgh"
+RANKS = "12345678"
+
+PIECE_VALUES = {
+    'P': 100,
+    'N': 320,
+    'B': 330,
+    'R': 500,
+    'Q': 900,
+    'K': 0
+}
+
+def sq_to_xy(sq):
+    return FILES.index(sq[0]), int(sq[1]) - 1
+
+def xy_to_sq(x, y):
+    return FILES[x] + str(y + 1)
+
+def opponent(color):
+    return 'b' if color == 'w' else 'w'
+
+def apply_move(board, move):
+    new_board = dict(board)
+    frm, to = move[:2], move[2:4]
+    promo = move[4] if len(move) == 5 else None
+    piece = new_board.pop(frm)
+    # handle castling
+    fx, fy = sq_to_xy(frm)
+    tx, ty = sq_to_xy(to)
+    if piece[1] == 'K' and abs(tx - fx) == 2:
+        # king side
+        if tx > fx:
+            rook_from = xy_to_sq(7, fy)
+            rook_to = xy_to_sq(5, fy)
+        else:
+            rook_from = xy_to_sq(0, fy)
+            rook_to = xy_to_sq(3, fy)
+        if rook_from in new_board:
+            rook_piece = new_board.pop(rook_from)
+            new_board[rook_to] = rook_piece
+    # capture if exists
+    if to in new_board:
+        new_board.pop(to)
+    # promotion
+    if promo:
+        new_board[to] = piece[0] + promo.upper()
+    else:
+        new_board[to] = piece
+    return new_board
+
+def is_square_attacked(square, by_color, board):
+    sx, sy = sq_to_xy(square)
+    # pawn attacks
+    if by_color == 'w':
+        for dx in (-1, 1):
+            x, y = sx + dx, sy - 1
+            if 0 <= x < 8 and 0 <= y < 8:
+                if board.get(xy_to_sq(x, y)) == 'wP':
+                    return True
+    else:
+        for dx in (-1, 1):
+            x, y = sx + dx, sy + 1
+            if 0 <= x < 8 and 0 <= y < 8:
+                if board.get(xy_to_sq(x, y)) == 'bP':
+                    return True
+    # knight attacks
+    for dx, dy in [(1,2),(2,1),(-1,2),(-2,1),(1,-2),(2,-1),(-1,-2),(-2,-1)]:
+        x, y = sx + dx, sy + dy
+        if 0 <= x < 8 and 0 <= y < 8:
+            p = board.get(xy_to_sq(x, y))
+            if p == by_color + 'N':
+                return True
+    # bishop/queen diagonal
+    for dx, dy in [(1,1),(-1,1),(1,-1),(-1,-1)]:
+        x, y = sx + dx, sy + dy
+        while 0 <= x < 8 and 0 <= y < 8:
+            p = board.get(xy_to_sq(x, y))
+            if p:
+                if p[0] == by_color and p[1] in ('B','Q'):
+                    return True
+                break
+            x += dx; y += dy
+    # rook/queen straight
+    for dx, dy in [(1,0),(-1,0),(0,1),(0,-1)]:
+        x, y = sx + dx, sy + dy
+        while 0 <= x < 8 and 0 <= y < 8:
+            p = board.get(xy_to_sq(x, y))
+            if p:
+                if p[0] == by_color and p[1] in ('R','Q'):
+                    return True
+                break
+            x += dx; y += dy
+    # king adjacency
+    for dx in (-1,0,1):
+        for dy in (-1,0,1):
+            if dx == 0 and dy == 0:
+                continue
+            x, y = sx + dx, sy + dy
+            if 0 <= x < 8 and 0 <= y < 8:
+                p = board.get(xy_to_sq(x, y))
+                if p == by_color + 'K':
+                    return True
+    return False
+
+def is_in_check(color, board):
+    for sq, piece in board.items():
+        if piece == color + 'K':
+            return is_square_attacked(sq, opponent(color), board)
+    return False
+
+def generate_pseudo_moves(board, color):
+    moves = []
+    for sq, piece in board.items():
+        if piece[0] != color:
+            continue
+        ptype = piece[1]
+        x, y = sq_to_xy(sq)
+        if ptype == 'P':
+            direction = 1 if color == 'w' else -1
+            start_rank = 1 if color == 'w' else 6
+            next_y = y + direction
+            # forward move
+            if 0 <= next_y < 8:
+                fwd_sq = xy_to_sq(x, next_y)
+                if fwd_sq not in board:
+                    if next_y == (7 if color == 'w' else 0):
+                        for promo in 'qrbn':
+                            moves.append(sq + fwd_sq + promo)
+                    else:
+                        moves.append(sq + fwd_sq)
+                    # double move
+                    if y == start_rank:
+                        next2_y = y + 2 * direction
+                        fwd_sq2 = xy_to_sq(x, next2_y)
+                        if fwd_sq2 not in board:
+                            moves.append(sq + fwd_sq2)
+            # captures
+            for dx in (-1, 1):
+                nx = x + dx
+                ny = y + direction
+                if 0 <= nx < 8 and 0 <= ny < 8:
+                    cap_sq = xy_to_sq(nx, ny)
+                    if cap_sq in board and board[cap_sq][0] != color:
+                        if ny == (7 if color == 'w' else 0):
+                            for promo in 'qrbn':
+                                moves.append(sq + cap_sq + promo)
+                        else:
+                            moves.append(sq + cap_sq)
+        elif ptype == 'N':
+            for dx, dy in [(1,2),(2,1),(-1,2),(-2,1),(1,-2),(2,-1),(-1,-2),(-2,-1)]:
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < 8 and 0 <= ny < 8:
+                    dest = xy_to_sq(nx, ny)
+                    if dest not in board or board[dest][0] != color:
+                        moves.append(sq + dest)
+        elif ptype in ('B','R','Q'):
+            directions = []
+            if ptype in ('B','Q'):
+                directions += [(1,1),(-1,1),(1,-1),(-1,-1)]
+            if ptype in ('R','Q'):
+                directions += [(1,0),(-1,0),(0,1),(0,-1)]
+            for dx, dy in directions:
+                nx, ny = x + dx, y + dy
+                while 0 <= nx < 8 and 0 <= ny < 8:
+                    dest = xy_to_sq(nx, ny)
+                    if dest in board:
+                        if board[dest][0] != color:
+                            moves.append(sq + dest)
+                        break
+                    moves.append(sq + dest)
+                    nx += dx; ny += dy
+        elif ptype == 'K':
+            for dx in (-1,0,1):
+                for dy in (-1,0,1):
+                    if dx == 0 and dy == 0:
+                        continue
+                    nx, ny = x + dx, y + dy
+                    if 0 <= nx < 8 and 0 <= ny < 8:
+                        dest = xy_to_sq(nx, ny)
+                        if dest not in board or board[dest][0] != color:
+                            moves.append(sq + dest)
+            # castling (simplified)
+            if color == 'w' and sq == 'e1':
+                if board.get('h1') == 'wR' and 'f1' not in board and 'g1' not in board:
+                    moves.append('e1g1')
+                if board.get('a1') == 'wR' and 'b1' not in board and 'c1' not in board and 'd1' not in board:
+                    moves.append('e1c1')
+            if color == 'b' and sq == 'e8':
+                if board.get('h8') == 'bR' and 'f8' not in board and 'g8' not in board:
+                    moves.append('e8g8')
+                if board.get('a8') == 'bR' and 'b8' not in board and 'c8' not in board and 'd8' not in board:
+                    moves.append('e8c8')
+    return moves
+
+def generate_legal_moves(board, color):
+    moves = []
+    for mv in generate_pseudo_moves(board, color):
+        b2 = apply_move(board, mv)
+        if not is_in_check(color, b2):
+            moves.append(mv)
+    return moves
+
+def evaluate(board):
+    score = 0
+    for piece in board.values():
+        val = PIECE_VALUES[piece[1]]
+        if piece[0] == 'w':
+            score += val
+        else:
+            score -= val
+    return score
+
+def minimax(board, color, depth, alpha, beta):
+    moves = generate_legal_moves(board, color)
+    if depth == 0 or not moves:
+        if not moves:
+            if is_in_check(color, board):
+                return -99999 if color == 'w' else 99999
+            else:
+                return 0
+        return evaluate(board)
+    if color == 'w':
+        value = -math.inf
+        for mv in moves:
+            b2 = apply_move(board, mv)
+            value = max(value, minimax(b2, 'b', depth-1, alpha, beta))
+            alpha = max(alpha, value)
+            if beta <= alpha:
+                break
+        return value
+    else:
+        value = math.inf
+        for mv in moves:
+            b2 = apply_move(board, mv)
+            value = min(value, minimax(b2, 'w', depth-1, alpha, beta))
+            beta = min(beta, value)
+            if beta <= alpha:
+                break
+        return value
+
+def policy(pieces, to_play, memory):
+    board = dict(pieces)
+    color = 'w' if to_play == 'white' else 'b'
+    moves = generate_legal_moves(board, color)
+    if not moves:
+        return ("0000", memory)
+    best_move = moves[0]
+    best_val = -math.inf if color == 'w' else math.inf
+    for mv in moves:
+        b2 = apply_move(board, mv)
+        val = minimax(b2, opponent(color), 1, -math.inf, math.inf)
+        if color == 'w':
+            if val > best_val:
+                best_val = val
+                best_move = mv
+        else:
+            if val < best_val:
+                best_val = val
+                best_move = mv
+    return (best_move, memory)
+</code>

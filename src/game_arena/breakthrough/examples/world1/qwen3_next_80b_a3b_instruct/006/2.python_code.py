@@ -1,0 +1,242 @@
+
+import numpy as np
+from typing import List, Tuple, Dict, Set
+import copy
+import time
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    """
+    Implements a smart Breakthrough policy using minimax with alpha-beta pruning and heuristic evaluation.
+    """
+    # Define board size
+    BOARD_SIZE = 8
+    
+    # Convert lists to sets for fast lookup
+    my_pieces = set(me)
+    opp_pieces = set(opp)
+    
+    # Determine direction: black ('b') moves down (row decreases), white ('w') moves up (row increases)
+    direction = -1 if color == 'b' else 1
+    home_row = 0 if color == 'b' else 7  # Target row to win
+    opponent_home_row = 7 if color == 'b' else 0
+    
+    # Check for immediate win: any piece already on opponent's home row?
+    for (r, c) in my_pieces:
+        if r == opponent_home_row:
+            # Already won? This shouldn't happen on your turn unless opponent failed to detect win.
+            # But if it does, return any valid move? Actually, game should have ended.
+            # So we just proceed to find move.
+            pass
+    
+    # Generate all legal moves
+    def generate_legal_moves():
+        moves = []
+        for r, c in my_pieces:
+            # Straight forward move
+            new_r = r + direction
+            new_c = c
+            if 0 <= new_r < BOARD_SIZE and 0 <= new_c < BOARD_SIZE:
+                if (new_r, new_c) not in my_pieces and (new_r, new_c) not in opp_pieces:
+                    moves.append(((r, c), (new_r, new_c)))
+                # Capture move diagonally left
+                new_r_diag_left = r + direction
+                new_c_diag_left = c - 1
+                if (0 <= new_r_diag_left < BOARD_SIZE and 0 <= new_c_diag_left < BOARD_SIZE and 
+                    (new_r_diag_left, new_c_diag_left) in opp_pieces):
+                    moves.append(((r, c), (new_r_diag_left, new_c_diag_left)))
+                # Capture move diagonally right
+                new_r_diag_right = r + direction
+                new_c_diag_right = c + 1
+                if (0 <= new_r_diag_right < BOARD_SIZE and 0 <= new_c_diag_right < BOARD_SIZE and 
+                    (new_r_diag_right, new_c_diag_right) in opp_pieces):
+                    moves.append(((r, c), (new_r_diag_right, new_c_diag_right)))
+        return moves
+
+    def evaluate_board(me_set, opp_set):
+        """
+        Heuristic evaluation function:
+        - +1000 for each piece on opponent's home row
+        - +10 per piece advanced toward opponent's home row (weighted by row distance)
+        - +5 per legal move (mobility)
+        - -50 for each opponent piece on our home row
+        - -10 per opponent piece advanced
+        - +3 for each pair of adjacent friendly pieces (structure)
+        """
+        score = 0
+
+        # Win condition immediate: if any piece is on opponent's home row
+        for r, c in me_set:
+            if r == opponent_home_row:
+                return 10000  # Massive bonus for immediate win
+
+        # Loss condition: if opponent has piece on our home row
+        for r, c in opp_set:
+            if r == home_row:
+                score -= 10000
+
+        # Value of piece advancement (for our pieces)
+        for r, c in me_set:
+            # Distance to goal: how many rows left to go
+            distance_to_goal = abs(r - opponent_home_row)
+            # Closer = better. Reward proximity. For black: r=7 -> r=0 (so 7 rows to go), so use 7 - r for black? 
+            # Actually: black is at row 7 and moves to row 0. So advancement = 7 - r
+            # White is at row 0 and moves to row 7. Advancement = r
+            advancement = r if direction == 1 else (7 - r)
+            score += advancement * 2  # Linear reward for progress
+
+        # For opponent pieces: penalize their advancement
+        for r, c in opp_set:
+            advancement = r if direction == -1 else (7 - r)  # If we are black (direction=-1), then opp is white: advancement = r
+            score -= advancement * 1.5
+
+        # Mobility: number of possible moves for current player
+        moves = generate_legal_moves()
+        score += len(moves) * 2
+
+        # Structure: reward adjacent friendly pieces (in 3x3 neighborhood)
+        for r, c in me_set:
+            for dr in [-1, 0, 1]:
+                for dc in [-1, 0, 1]:
+                    if dr == 0 and dc == 0:
+                        continue
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE:
+                        if (nr, nc) in me_set:
+                            score += 1  # each adjacent friendly piece adds 1
+
+        # Capture opportunities: if we can capture an opponent piece that is advancing
+        for r, c in my_pieces:
+            # Check diagonal captures
+            diag_left = (r + direction, c - 1)
+            diag_right = (r + direction, c + 1)
+            if diag_left in opp_set:
+                # If the capture opponent piece is near their home row, it's extra valuable
+                if diag_left[0] == opponent_home_row - direction:
+                    score += 50
+                else:
+                    score += 30
+            if diag_right in opp_set:
+                if diag_right[0] == opponent_home_row - direction:
+                    score += 50
+                else:
+                    score += 30
+
+        return score
+
+    def minimax(board_me, board_opp, depth, alpha, beta, maximizing_player, start_time):
+        # Time check
+        if time.time() - start_time > 0.8:  # Leave 0.2s buffer
+            return evaluate_board(board_me, board_opp), None
+
+        legal_moves = generate_legal_moves_for_state(board_me, board_opp)
+        
+        if depth == 0 or len(legal_moves) == 0:
+            return evaluate_board(board_me, board_opp), None
+
+        best_move = None
+        if maximizing_player:
+            max_eval = float('-inf')
+            for move in legal_moves:
+                from_pos, to_pos = move
+                # Create new state
+                new_me = set(board_me)
+                new_opp = set(board_opp)
+                new_me.remove(from_pos)
+                new_me.add(to_pos)
+                if to_pos in new_opp:
+                    new_opp.remove(to_pos)
+                
+                eval_score, _ = minimax(new_me, new_opp, depth-1, alpha, beta, False, start_time)
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_move = move
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            for move in legal_moves:
+                from_pos, to_pos = move
+                # Create new state: we are opponent
+                new_me = set(board_opp)
+                new_opp = set(board_me)
+                new_me.remove(from_pos)
+                new_me.add(to_pos)
+                if to_pos in new_opp:
+                    new_opp.remove(to_pos)
+                
+                # Note: now we're evaluating from opponent's perspective
+                eval_score, _ = minimax(new_me, new_opp, depth-1, alpha, beta, True, start_time)
+                # Flip score because it's opponent's evaluation
+                eval_score = -eval_score
+                if eval_score < min_eval:
+                    min_eval = eval_score
+                    best_move = move
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval, best_move
+
+    def generate_legal_moves_for_state(my_set, opp_set):
+        moves = []
+        for r, c in my_set:
+            new_r = r + direction
+            new_c = c
+            if 0 <= new_r < BOARD_SIZE and 0 <= new_c < BOARD_SIZE:
+                if (new_r, new_c) not in my_set and (new_r, new_c) not in opp_set:
+                    moves.append(((r, c), (new_r, new_c)))
+                # Capture left
+                new_r = r + direction
+                new_c = c - 1
+                if (0 <= new_r < BOARD_SIZE and 0 <= new_c < BOARD_SIZE and 
+                    (new_r, new_c) in opp_set):
+                    moves.append(((r, c), (new_r, new_c)))
+                # Capture right
+                new_r = r + direction
+                new_c = c + 1
+                if (0 <= new_r < BOARD_SIZE and 0 <= new_c < BOARD_SIZE and 
+                    (new_r, new_c) in opp_set):
+                    moves.append(((r, c), (new_r, new_c)))
+        return moves
+
+    # Priority order: first check for immediate win by any move
+    # Try captures first, then advanced moves
+    moves = generate_legal_moves()
+    if not moves:
+        # Safety: this should never occur in valid game state, but return dummy to avoid disqualification
+        return ((0,0), (0,0))  # Will be invalid, but fallback
+
+    # If we have a move that reaches opponent's home row, take it immediately
+    for move in moves:
+        from_pos, to_pos = move
+        if to_pos[0] == opponent_home_row:
+            return move
+
+    # Prioritize capture moves
+    capture_moves = [move for move in moves if move[1] in opp_pieces]
+    if capture_moves:
+        moves = capture_moves + [m for m in moves if m not in capture_moves]
+    else:
+        # Sort by advancement (for non-capture moves)
+        moves.sort(key=lambda move: -abs(move[1][0] - home_row))  # favor moves that get closer to target
+
+    # Use iterative deepening with time management
+    start_time = time.time()
+    best_move = moves[0]  # Default: first legal move
+    max_depth = 3 if len(my_pieces) + len(opp_pieces) > 10 else 5  # Deeper search in endgame
+    depth = max_depth
+
+    # Try iterative deepening
+    for d in range(1, depth + 1):
+        if time.time() - start_time > 0.8:
+            break
+        _, move = minimax(my_pieces, opp_pieces, d, float('-inf'), float('inf'), True, start_time)
+        if move is not None:
+            best_move = move
+
+    # Final fallback: ensure we return a legal move
+    if best_move not in moves:
+        best_move = moves[0]  # Fallback to first legal move
+
+    return best_move

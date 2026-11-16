@@ -1,0 +1,189 @@
+
+import sys
+import time
+
+sys.setrecursionlimit(10000)
+
+def _simulate_move(player, opp, move):
+    """
+    Simulate a move from *player*'s side.
+    Returns (new_player, new_opp, extra_move, terminal, capture)
+    """
+    # copy boards
+    p = player[:]          # player side (list of 7 ints)
+    o = opp[:]             # opponent side (list of 7 ints)
+
+    seeds = p[move]
+    if seeds == 0:
+        # illegal move – should never happen in a legal call
+        raise ValueError("Move from empty house")
+    p[move] = 0
+
+    # start sowing from the next slot
+    cur_slot = (move + 1) % 13      # 0..5 -> houses, 6 -> store, 7..12 -> opp houses
+    skip_idx = move                  # original house must be skipped for the whole sowing
+    extra_move = False
+    captured = False
+
+    while seeds > 0:
+        # remember the count before dropping the seed (needed for capture detection)
+        if cur_slot < 6:
+            prior = p[cur_slot]
+            p[cur_slot] += 1
+        elif cur_slot == 6:
+            prior = p[6]
+            p[6] += 1
+        else:  # 7..12 -> opponent houses
+            idx = cur_slot - 7
+            prior = o[idx]
+            o[idx] += 1
+
+        seeds -= 1
+
+        if seeds == 0:                     # last seed of this move
+            extra_move = (cur_slot == 6)   # landed in own store
+            # capture rule: last seed lands in an empty house on player's side
+            # and the opposite opponent house contains seeds
+            if cur_slot < 6 and prior == 0 and o[5 - cur_slot] > 0:
+                captured = True
+                cap = 1 + o[5 - cur_slot]   # our seed + opponent seeds
+                p[cur_slot] = 0              # remove the seed we just placed
+                o[5 - cur_slot] = 0
+                p[6] += cap
+            break
+
+        # advance to the next slot, skipping the original house
+        cur_slot = (cur_slot + 1) % 13
+        if cur_slot == skip_idx:
+            cur_slot = (cur_slot + 1) % 13
+
+    # after sowing, check for game end (one side has no seeds in houses)
+    if all(p[i] == 0 for i in range(6)):
+        # opponent captures all seeds still on their side
+        total = sum(o[i] for i in range(6))
+        o[6] += total
+        for i in range(6):
+            o[i] = 0
+        terminal = True
+    elif all(o[i] == 0 for i in range(6)):
+        # player captures all seeds still on their side
+        total = sum(p[i] for i in range(6))
+        p[6] += total
+        for i in range(6):
+            p[i] = 0
+        terminal = True
+    else:
+        terminal = False
+
+    return p, o, extra_move, terminal, captured
+
+
+def _simulate_for_state(you, opp, player, move):
+    """Wrapper that returns the new (you, opp) after *player* makes *move*."""
+    if player == 0:
+        n_you, n_opp, extra, term, cap = _simulate_move(you, opp, move)
+    else:
+        n_opp, n_you, extra, term, cap = _simulate_move(opp, you, move)
+    return n_you, n_opp, extra, term, cap
+
+
+def _evaluate(you, opp):
+    """Total seed difference from the perspective of the *you* player."""
+    return sum(you) - sum(opp)
+
+
+def _search(you, opp, player, depth, alpha, beta, max_depth):
+    """
+    Minimax with alpha‑beta.
+    player = 0 -> you (maximiser), player = 1 -> opponent (minimiser).
+    Returns (score, best_move) from the root player's viewpoint.
+    """
+    # terminal ?
+    if all(you[i] == 0 for i in range(6)) or all(opp[i] == 0 for i in range(6)):
+        return _evaluate(you, opp), None
+
+    if depth >= max_depth:
+        return _evaluate(you, opp), None
+
+    # legal moves for the player to move
+    side = you if player == 0 else opp
+    legal = [i for i in range(6) if side[i] > 0]
+    if not legal:                     # should not happen (game would already be over)
+        return _evaluate(you, opp), None
+
+    # order moves – extra move (+2) and capture (+1) first
+    ordered = []
+    for m in legal:
+        _, _, extra, _, capture = _simulate_for_state(you, opp, player, m)
+        prio = (2 if extra else 0) + (1 if capture else 0)
+        ordered.append((prio, m))
+    ordered.sort(key=lambda x: x[0], reverse=True)
+    ordered_moves = [m for _, m in ordered]
+
+    if player == 0:   # maximising
+        best_score = -float('inf')
+        best_move = None
+        for m in ordered_moves:
+            ny, no, extra, term, _ = _simulate_for_state(you, opp, player, m)
+            if term:
+                score = _evaluate(ny, no)
+            else:
+                if extra:
+                    score, _ = _search(ny, no, player, depth + 1, alpha, beta, max_depth)
+                else:
+                    score, _ = _search(ny, no, 1 - player, depth + 1, alpha, beta, max_depth)
+            if score > best_score:
+                best_score = score
+                best_move = m
+                alpha = max(alpha, best_score)
+                if beta <= alpha:
+                    break
+        return best_score, best_move
+    else:             # minimising
+        best_score = float('inf')
+        best_move = None
+        for m in ordered_moves:
+            ny, no, extra, term, _ = _simulate_for_state(you, opp, player, m)
+            if term:
+                score = _evaluate(ny, no)
+            else:
+                if extra:
+                    score, _ = _search(ny, no, player, depth + 1, alpha, beta, max_depth)
+                else:
+                    score, _ = _search(ny, no, 1 - player, depth + 1, alpha, beta, max_depth)
+            if score < best_score:
+                best_score = score
+                best_move = m
+                beta = min(beta, best_score)
+                if beta <= alpha:
+                    break
+        return best_score, best_move
+
+
+def policy(you, opponent):
+    """
+    Return a legal move (0‑5) for the current player.
+    The function is never called when you have no legal move.
+    """
+    # all legal moves for the player to move (the "you" player)
+    legal = [i for i in range(6) if you[i] > 0]
+    if not legal:
+        return 0   # fallback – should never happen
+
+    start = time.time()
+    TIME_LIMIT = 0.9   # leave a little margin
+
+    best = legal[0]    # default answer
+
+    # iterative deepening – try deeper and deeper searches until we run out of time
+    for depth_limit in range(1, 30):
+        score, move = _search(you, opponent, 0, 0, -float('inf'), float('inf'), depth_limit)
+        if move is not None:
+            best = move
+        if time.time() - start > TIME_LIMIT:
+            break
+
+    # safety – best must be a legal move
+    if best not in legal:
+        best = legal[0]
+    return best

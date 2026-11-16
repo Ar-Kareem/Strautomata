@@ -1,0 +1,116 @@
+
+from typing import List, Tuple
+
+def _all_lines() -> List[List[Tuple[int,int,int]]]:
+    lines = []
+    rng = range(3)
+    # Straight lines along axes
+    # x-lines (vary x)
+    for y in rng:
+        for z in rng:
+            lines.append([(x,y,z) for x in rng])
+    # y-lines (vary y)
+    for x in rng:
+        for z in rng:
+            lines.append([(x,y,z) for y in rng])
+    # z-lines (vary z)
+    for x in rng:
+        for y in rng:
+            lines.append([(x,y,z) for z in rng])
+    # Diagonals in xy planes (for each z)
+    for z in rng:
+        lines.append([(0,0,z),(1,1,z),(2,2,z)])
+        lines.append([(0,2,z),(1,1,z),(2,0,z)])
+    # Diagonals in xz planes (for each y)
+    for y in rng:
+        lines.append([(0,y,0),(1,y,1),(2,y,2)])
+        lines.append([(0,y,2),(1,y,1),(2,y,0)])
+    # Diagonals in yz planes (for each x)
+    for x in rng:
+        lines.append([(x,0,0),(x,1,1),(x,2,2)])
+        lines.append([(x,0,2),(x,1,1),(x,2,0)])
+    # 4 space diagonals
+    lines.append([(0,0,0),(1,1,1),(2,2,2)])
+    lines.append([(0,0,2),(1,1,1),(2,2,0)])
+    lines.append([(0,2,0),(1,1,1),(2,0,2)])
+    lines.append([(0,2,2),(1,1,1),(2,0,0)])
+    return lines
+
+_LINES = _all_lines()
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    """
+    Choose a move for 3x3x3 tic-tac-toe.
+    board[z][y][x] or board[a][b][c] ? The problem describes three dimensions equally.
+    We interpret board as board[i][j][k] where each index ranges 0..2 and coordinates returned correspond
+    (i, j, k) in the same order.
+    Values: 1 = our mark, -1 = opponent, 0 = empty.
+    """
+    # Validate size minimally
+    if not (isinstance(board, list) and len(board) == 3):
+        raise ValueError("board must be 3x3x3")
+    for layer in board:
+        if not (isinstance(layer, list) and len(layer) == 3):
+            raise ValueError("board must be 3x3x3")
+        for row in layer:
+            if not (isinstance(row, list) and len(row) == 3):
+                raise ValueError("board must be 3x3x3")
+
+    # Helper to read cell
+    def cell(coord):
+        i,j,k = coord
+        return board[i][j][k]
+
+    # Find all empties
+    empties = [(i,j,k) for i in range(3) for j in range(3) for k in range(3) if board[i][j][k] == 0]
+
+    # 1) Winning move for us: line with exactly two 1s and one empty
+    for line in _LINES:
+        vals = [cell(c) for c in line]
+        if vals.count(1) == 2 and vals.count(0) == 1:
+            idx = vals.index(0)
+            return line[idx]
+
+    # 2) Block opponent immediate win: line with two -1s and one empty
+    for line in _LINES:
+        vals = [cell(c) for c in line]
+        if vals.count(-1) == 2 and vals.count(0) == 1:
+            idx = vals.index(0)
+            return line[idx]
+
+    # 3) Take center if available (1,1,1)
+    center = (1,1,1)
+    if board[1][1][1] == 0:
+        return center
+
+    # 4) Heuristic: choose empty cell maximizing number of open lines for us through that cell.
+    # An "open" line is one that contains no opponent marks (-1).
+    best = None
+    best_score = -1
+    # Precompute lines through each cell
+    lines_through = { (i,j,k): [] for i in range(3) for j in range(3) for k in range(3) }
+    for line in _LINES:
+        for c in line:
+            lines_through[c].append(line)
+
+    for e in sorted(empties):  # deterministic order
+        score = 0
+        for line in lines_through[e]:
+            # Check if any opponent on the line
+            has_opponent = any(cell(c) == -1 for c in line)
+            if not has_opponent:
+                score += 1
+        if score > best_score:
+            best_score = score
+            best = e
+
+    # If no empties (shouldn't happen), fallback to (0,0,0)
+    if best is None:
+        return (0,0,0)
+    return best
+
+# If this file is executed directly, a small self-test can be run.
+if __name__ == "__main__":
+    # Empty board -> center
+    b = [[[0]*3 for _ in range(3)] for _ in range(3)]
+    print(policy(b))  # expect (1,1,1)

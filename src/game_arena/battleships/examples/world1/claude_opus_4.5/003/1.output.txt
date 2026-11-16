@@ -1,0 +1,294 @@
+<thinking>
+Let me think about a good Battleship strategy:
+
+1. **Hunt mode**: When no hits are pending, search for ships using a pattern that maximizes coverage. A checkerboard pattern is efficient since the smallest ship is length 2.
+
+2. **Target mode**: When there are hits that haven't been fully explored (adjacent to unknown cells), focus on sinking that ship by firing adjacent to hits.
+
+Key considerations:
+- Ships have lengths 5, 4, 3, 3, 2
+- Minimum ship length is 2, so a checkerboard pattern (parity) can be used
+- When we hit something, we should try to sink it by exploring adjacent cells
+- We can use probability density to determine the best cell to target
+
+Let me implement a strategy:
+
+1. First, check if there are any "hot" cells - cells adjacent to hits that are still unknown
+2. If in target mode (adjacent to hits), prioritize those cells, especially if we can determine ship orientation
+3. If in hunt mode, use probability-based targeting considering ship placements
+
+For the probability approach:
+- For each unknown cell, count how many ways ships could be placed that include that cell
+- Weight by remaining ships
+
+Let me implement this:
+
+```python
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    import numpy as np
+    
+    # Ship lengths
+    ships = [5, 4, 3, 3, 2]
+    
+    # Find all hits and misses
+    hits = set()
+    misses = set()
+    unknown = set()
+    
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1:
+                hits.add((r, c))
+            elif board[r][c] == -1:
+                misses.add((r, c))
+            else:
+                unknown.add((r, c))
+    
+    if not unknown:
+        return (0, 0)  # Shouldn't happen
+    
+    # Find hits that might have unexplored neighbors (unsunk ships)
+    def get_neighbors(r, c):
+        neighbors = []
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 10 and 0 <= nc < 10:
+                neighbors.append((nr, nc))
+        return neighbors
+    
+    # Check if a hit has unknown neighbors
+    hot_hits = []
+    for h in hits:
+        for n in get_neighbors(h[0], h[1]):
+            if n in unknown:
+                hot_hits.append(h)
+                break
+    
+    # If we have hot hits, focus on them
+    if hot_hits:
+        # Try to determine ship direction
+        # Look for consecutive hits
+        target_cells = set()
+        
+        for hit in hot_hits:
+            r, c = hit
+            # Check if there's a line of hits
+            # Horizontal check
+            h_line = [hit]
+            for dc in [-1, 1]:
+                nc = c + dc
+                while 0 <= nc < 10 and (r, nc) in hits:
+                    h_line.append((r, nc))
+                    nc += dc
+            
+            # Vertical check
+            v_line = [hit]
+            for dr in [-1, 1]:
+                nr = r + dr
+                while 0 <= nr < 10 and (nr, c) in hits:
+                    v_line.append((nr, c))
+                    nr += dr
+            
+            if len(h_line) > 1:
+                # Extend horizontally
+                min_c = min(p[1] for p in h_line)
+                max_c = max(p[1] for p in h_line)
+                if (r, min_c - 1) in unknown:
+                    target_cells.add((r, min_c - 1))
+                if (r, max_c + 1) in unknown:
+                    target_cells.add((r, max_c + 1))
+            
+            if len(v_line) > 1:
+                # Extend vertically
+                min_r = min(p[0] for p in v_line)
+                max_r = max(p[0] for p in v_line)
+                if (min_r - 1, c) in unknown:
+                    target_cells.add((min_r - 1, c))
+                if (max_r + 1, c) in unknown:
+                    target_cells.add((max_r + 1, c))
+            
+            if len(h_line) == 1 and len(v_line) == 1:
+                # Single hit, try all directions
+                for n in get_neighbors(r, c):
+                    if n in unknown:
+                        target_cells.add(n)
+        
+        if target_cells:
+            return target_cells.pop()
+    
+    # Hunt mode: use probability density
+    prob = [[0.0] * 10 for _ in range(10)]
+    
+    for length in ships:
+        # Horizontal placements
+        for r in range(10):
+            for c in range(10 - length + 1):
+                cells = [(r, c + i) for i in range(length)]
+                if all(cell in unknown or cell in hits for cell in cells):
+                    for cell in cells:
+                        if cell in unknown:
+                            prob[cell[0]][cell[1]] += 1
+        
+        # Vertical placements
+        for r in range(10 - length + 1):
+            for c in range(10):
+                cells = [(r + i, c) for i in range(length)]
+                if all(cell in unknown or cell in hits for cell in cells):
+                    for cell in cells:
+                        if cell in unknown:
+                            prob[cell[0]][cell[1]] += 1
+    
+    # Find max probability cell
+    best = None
+    best_prob = -1
+    for r in range(10):
+        for c in range(10):
+            if (r, c) in unknown and prob[r][c] > best_prob:
+                best_prob = prob[r][c]
+                best = (r, c)
+    
+    if best:
+        return best
+    
+    # Fallback
+    return unknown.pop()
+```
+
+Wait, I need to reconsider the probability calculation. The issue is that I'm counting all ships, but some ships might already be sunk. Let me also add a parity optimization for hunting.
+
+Actually, let me refine the approach to be more robust. The key insight is:
+1. When we have hits, prioritize finishing off ships
+2. When hunting, use checkerboard pattern weighted by probability
+
+Let me also consider that we can't easily tell which ships are sunk without tracking damage. Let me simplify and make it more robust.
+</thinking>
+
+<code>
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Ship lengths in the game
+    SHIPS = [5, 4, 3, 3, 2]
+    
+    # Classify cells
+    hits = set()
+    unknown = set()
+    
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1:
+                hits.add((r, c))
+            elif board[r][c] == 0:
+                unknown.add((r, c))
+    
+    if not unknown:
+        # Shouldn't happen, but fallback
+        for r in range(10):
+            for c in range(10):
+                if board[r][c] == 0:
+                    return (r, c)
+        return (0, 0)
+    
+    def neighbors(r, c):
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 10 and 0 <= nc < 10:
+                yield (nr, nc)
+    
+    # Find hits with unknown neighbors (unsunk ship parts)
+    active_hits = [h for h in hits if any(n in unknown for n in neighbors(*h))]
+    
+    # TARGET MODE: If we have active hits, focus on sinking ships
+    if active_hits:
+        target_scores = {}
+        
+        for hit in active_hits:
+            r, c = hit
+            
+            # Find connected hits in each direction
+            # Horizontal line
+            h_hits = [hit]
+            for dc in [-1, 1]:
+                nc = c + dc
+                while 0 <= nc < 10 and (r, nc) in hits:
+                    h_hits.append((r, nc))
+                    nc += dc
+            
+            # Vertical line
+            v_hits = [hit]
+            for dr in [-1, 1]:
+                nr = r + dr
+                while 0 <= nr < 10 and (nr, c) in hits:
+                    v_hits.append((nr, c))
+                    nr += dr
+            
+            # If we have a horizontal line, prioritize extending it
+            if len(h_hits) > 1:
+                min_c = min(p[1] for p in h_hits)
+                max_c = max(p[1] for p in h_hits)
+                if (r, min_c - 1) in unknown:
+                    target_scores[(r, min_c - 1)] = target_scores.get((r, min_c - 1), 0) + 100 + len(h_hits)
+                if (r, max_c + 1) in unknown:
+                    target_scores[(r, max_c + 1)] = target_scores.get((r, max_c + 1), 0) + 100 + len(h_hits)
+            
+            # If we have a vertical line, prioritize extending it
+            if len(v_hits) > 1:
+                min_r = min(p[0] for p in v_hits)
+                max_r = max(p[0] for p in v_hits)
+                if (min_r - 1, c) in unknown:
+                    target_scores[(min_r - 1, c)] = target_scores.get((min_r - 1, c), 0) + 100 + len(v_hits)
+                if (max_r + 1, c) in unknown:
+                    target_scores[(max_r + 1, c)] = target_scores.get((max_r + 1, c), 0) + 100 + len(v_hits)
+            
+            # Single isolated hit - try all directions
+            if len(h_hits) == 1 and len(v_hits) == 1:
+                for n in neighbors(r, c):
+                    if n in unknown:
+                        target_scores[n] = target_scores.get(n, 0) + 10
+        
+        if target_scores:
+            best_target = max(target_scores.keys(), key=lambda x: target_scores[x])
+            return best_target
+    
+    # HUNT MODE: Calculate probability density for each cell
+    prob = [[0.0] * 10 for _ in range(10)]
+    
+    for length in SHIPS:
+        # Horizontal placements
+        for r in range(10):
+            for c in range(10 - length + 1):
+                cells = [(r, c + i) for i in range(length)]
+                # Valid if all cells are unknown (no misses, no existing hits for hunt)
+                if all(cell in unknown for cell in cells):
+                    for cell in cells:
+                        prob[cell[0]][cell[1]] += 1
+        
+        # Vertical placements
+        for r in range(10 - length + 1):
+            for c in range(10):
+                cells = [(r + i, c) for i in range(length)]
+                if all(cell in unknown for cell in cells):
+                    for cell in cells:
+                        prob[cell[0]][cell[1]] += 1
+    
+    # Add small bonus for checkerboard pattern (parity optimization)
+    for r in range(10):
+        for c in range(10):
+            if (r, c) in unknown:
+                if (r + c) % 2 == 0:
+                    prob[r][c] += 0.1
+    
+    # Find the cell with highest probability
+    best_cell = None
+    best_prob = -1
+    
+    for r in range(10):
+        for c in range(10):
+            if (r, c) in unknown and prob[r][c] > best_prob:
+                best_prob = prob[r][c]
+                best_cell = (r, c)
+    
+    if best_cell:
+        return best_cell
+    
+    # Fallback: return any unknown cell
+    return next(iter(unknown))
+</code>

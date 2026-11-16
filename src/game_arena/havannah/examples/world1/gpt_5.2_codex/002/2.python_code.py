@@ -1,0 +1,59 @@
+
+import numpy as np
+
+def policy(me, opp, valid_mask):
+    N = valid_mask.shape[0]
+    occupied = set(me) | set(opp)
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    # Precompute center
+    center = (N - 1) / 2.0
+    
+    # Hex neighbors as described
+    def neighbors(r, c):
+        return [
+            (r-1, c), (r+1, c),
+            (r, c-1), (r-1, c-1),
+            (r, c+1), (r-1, c+1)
+        ]
+    
+    best_move = None
+    best_score = -1e9
+    
+    for r in range(N):
+        for c in range(N):
+            if not valid_mask[r][c]: 
+                continue
+            if (r, c) in occupied:
+                continue
+            
+            adj_me = 0
+            adj_opp = 0
+            for nr, nc in neighbors(r, c):
+                if 0 <= nr < N and 0 <= nc < N and valid_mask[nr][nc]:
+                    if (nr, nc) in me_set:
+                        adj_me += 1
+                    elif (nr, nc) in opp_set:
+                        adj_opp += 1
+            
+            # Centrality bonus (closer to center is better)
+            centrality = - (abs(r - center) + abs(c - center))
+            
+            score = adj_me * 2.0 - adj_opp * 1.2 + centrality * 0.1
+            
+            # Defensive bonus if surrounded by opponent
+            if adj_opp >= 2 and adj_me == 0:
+                score += 0.5
+            
+            if score > best_score:
+                best_score = score
+                best_move = (r, c)
+    
+    # Fallback (should never be None if there is a legal move)
+    if best_move is None:
+        for r in range(N):
+            for c in range(N):
+                if valid_mask[r][c] and (r, c) not in occupied:
+                    return (r, c)
+    return best_move

@@ -1,0 +1,132 @@
+The strategy for this policy is based on a **Shortest Path Heuristic** using Dijkstra's algorithm.
+
+1.  **Path Evaluation**: The board is treated as a graph where each cell is a node. For the current player (me), we define the cost to enter an empty cell as 1 and the cost to enter a cell already occupied by our own stones as 0. Opponent stones are treated as impassable obstacles (infinite cost).
+2.  **Goal**: We calculate the minimum "cost" (number of stones to place) required to connect the two opposing edges of the board.
+3.  **Decision Making**: The policy iterates through all legal moves. For each potential move, it simulates placing the stone and calculates two values:
+    *   **My Distance**: The remaining cost for me to win.
+    *   **Opponent Distance**: The remaining cost for the opponent to win (acting as the opponent).
+4.  **Scoring**: It selects the move that maximizes the advantage. Specifically, it looks for moves that significantly increase the opponent's path length (blocking) while decreasing its own path length (building). If an immediate win is detected (distance 0), it is chosen instantly.
+5.  **Geometry**: The neighbor logic follows the specific Hex connectivity rules provided in the prompt (6 neighbors per cell).
+
+<code>
+import heapq
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    me_set = set(me)
+    opp_set = set(opp)
+    board_size = 11
+
+    # Define neighbors based on the prompt's specific geometry rules:
+    # All 8 neighbors except (r-1, c-1) and (r+1, c+1).
+    # Neighbors: (r-1, c), (r-1, c+1), (r, c-1), (r, c+1), (r+1, c-1), (r+1, c)
+    neighbor_offsets = [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0)]
+
+    def get_neighbors(r, c):
+        for dr, dc in neighbor_offsets:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < board_size and 0 <= nc < board_size:
+                yield nr, nc
+
+    def calculate_distance(my_stones, opp_stones, player_color):
+        """
+        Calculates the minimum number of stones needed to connect the sides.
+        Uses Dijkstra's algorithm.
+        Cost: 0 for own stone, 1 for empty, Infinity for opponent stone.
+        """
+        # Define edges based on color
+        if player_color == 'b':
+            # Black connects Top (row 0) to Bottom (row 10)
+            start_edge = [(r, c) for r in range(board_size) for c in range(board_size) if r == 0]
+            is_target = lambda r, c: r == board_size - 1
+        else:
+            # White connects Left (col 0) to Right (col 10)
+            start_edge = [(r, c) for r in range(board_size) for c in range(board_size) if c == 0]
+            is_target = lambda r, c: c == board_size - 1
+
+        # Priority Queue: (cost, row, col)
+        pq = []
+        visited = set()
+        
+        # Initialize queue with start edge cells
+        for r, c in start_edge:
+            if (r, c) in opp_stones:
+                continue
+            cost = 0 if (r, c) in my_stones else 1
+            heapq.heappush(pq, (cost, r, c))
+            
+        while pq:
+            dist, r, c = heapq.heappop(pq)
+            
+            if (r, c) in visited:
+                continue
+            visited.add((r, c))
+            
+            if is_target(r, c):
+                return dist
+            
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) in visited or (nr, nc) in opp_stones:
+                    continue
+                
+                # Cost to move to neighbor
+                if (nr, nc) in my_stones:
+                    move_cost = 0
+                else:
+                    move_cost = 1
+                
+                heapq.heappush(pq, (dist + move_cost, nr, nc))
+                
+        return float('inf')
+
+    # Generate all legal moves
+    legal_moves = []
+    for r in range(board_size):
+        for c in range(board_size):
+            if (r, c) not in me_set and (r, c) not in opp_set:
+                legal_moves.append((r, c))
+
+    # If board is empty or we are first to move, take center
+    if not me_set and not opp_set:
+        return (5, 5)
+    
+    # Opening response: if opponent has center, play adjacent
+    if not me_set:
+        return (5, 5)
+
+    best_move = None
+    best_score = -float('inf')
+    
+    opp_color = 'w' if color == 'b' else 'b'
+
+    # Evaluate each move
+    for r, c in legal_moves:
+        # Simulate move
+        new_me = me_set | {(r, c)}
+        
+        # Calculate distances after move
+        my_dist = calculate_distance(new_me, opp_set, color)
+        opp_dist = calculate_distance(opp_set, new_me, opp_color)
+        
+        # Immediate win
+        if my_dist == 0:
+            return (r, c)
+            
+        # Heuristic:
+        # We want to minimize our distance and maximize opponent distance.
+        # Maximizing (opp_dist - my_dist) achieves this.
+        # We scale distances to prioritize blocking/progress.
+        # If opp_dist is huge, it means we effectively blocked them.
+        # If my_dist is small, we are close to winning.
+        score = (opp_dist * 100) - (my_dist * 100)
+        
+        # Tie-breaker: slight preference for center-ish moves to avoid random edge picks
+        # distance from center (5,5)
+        center_dist = abs(r - 5) + abs(c - 5)
+        score -= center_dist * 0.01
+        
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+            
+    return best_move
+</code>

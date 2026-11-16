@@ -1,0 +1,229 @@
+**Strategy Overview**
+
+The policy follows a simple yet strong greedy strategy:
+
+1. **Bar priority** – If we have checkers on the bar they must be entered first.
+2. **Higher‑die first** – When both dice can be used we always try the larger die first (as required by the rules).  
+   *If the higher die cannot be played we fall back to the lower die.*
+3. **Legal‑move generation** – For a given die we enumerate every start point that:
+   * is on the bar (`B`) or a point that holds at least one of our checkers,
+   * can move to a destination that is not blocked (≤ 1 opponent checker),
+   * can bear off if all our checkers are already in the home board.
+4. **Look‑ahead** – After picking a candidate start for the higher die we simulate that move on a copy of the board and compute the remaining legal moves for the lower die.  
+   This guarantees that the pair of moves we finally output is legal.
+5. **Scoring heuristic** – Among all legal `(high‑move, low‑move)` pairs the policy picks the one with the highest score, where a move gains points for:
+   * hitting an opponent’s blot (`+10`),
+   * bearing off a checker (`+8`),
+   * entering from the bar (`+5`),
+   * moving from a higher‑indexed point (the farther the checker is from home, the more useful it is).
+
+If only one die can be played the policy returns the move for that die and a `P` (pass) for the second slot.  
+If no move is possible it returns `H:P,P`.
+
+The code below implements the described policy and conforms to the required API.
+
+```python
+<code>
+import copy
+from typing import List, Tuple, Optional
+
+# ----------------------------------------------------------------------
+# Helper functions
+# ----------------------------------------------------------------------
+def destination(idx: int, die: int) -> int:
+    """Resulting index after moving a checker from idx by die.
+    Returns -1 when the move would bear off (i - die < 0)."""
+    return idx - die
+
+
+def entry_point(die: int) -> int:
+    """Point index where a checker from the bar would land."""
+    return 24 - die  # 0‑based board, player moves from 23 down to 0
+
+
+def all_in_home(my_pts: List[int]) -> bool:
+    """True if all our checkers are on points 0..5 (home board)."""
+    # Points 0..5 are the home board for the player moving towards decreasing indices
+    for i in range(6, 24):
+        if my_pts[i] > 0:
+            return False
+    return True
+
+
+def legal_starts(state: dict, die: int) -> List[Tuple[str, int, int, bool]]:
+    """
+    Return a list of possible moves for a single die.
+    Each entry is a tuple (src_token, src_idx, dest_idx, is_bear_off)
+    where src_token is 'B' for bar or 'A{idx}' for a board point.
+    dest_idx is -1 for bearing off.
+    """
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    starts = []
+
+    # 1. Moves from the bar
+    if state['my_bar'] > 0:
+        dest = entry_point(die)
+        if opp_pts[dest] <= 1:          # entry not blocked
+            starts.append(('B', -1, dest, False))
+        return starts                     # must move from bar, nothing else is allowed
+
+    # 2. Moves from the board
+    for i in range(24):
+        if my_pts[i] == 0:
+            continue
+        dest = destination(i, die)
+        # bearing off?
+        if dest < 0:
+            if all_in_home(my_pts):
+                # exact bear‑off allowed
+                starts.append((f'A{i}', i, -1, True))
+        else:
+            # normal move – destination must not be blocked
+            if opp_pts[dest] <= 1:
+                starts.append((f'A{i}', i, dest, False))
+    return starts
+
+
+def apply_move(state: dict, src_token: str, src_idx: int, dest_idx: int,
+               is_bear_off: bool) -> dict:
+    """Return a new state after performing the specified move."""
+    new_state = copy.deepcopy(state)
+
+    # remove checker from source
+    if src_token == 'B':
+        new_state['my_bar'] -= 1
+    else:
+        new_state['my_pts'][src_idx] -= 1
+
+    if is_bear_off:
+        new_state['my_off'] += 1
+        return new_state
+
+    # handle hit
+    if new_state['opp_pts'][dest_idx] == 1:
+        # opponent blot is hit: move it to the opponent's bar
+        new_state['opp_pts'][dest_idx] = 0
+        new_state['opp_bar'] += 1
+
+    # place checker on destination
+    new_state['my_pts'][dest_idx] += 1
+    return new_state
+
+
+def score_move(is_hit: bool, is_bear_off: bool, from_bar: bool, src_idx: int) -> int:
+    """Simple heuristic score for a single move."""
+    s = 0
+    if is_hit:
+        s += 10
+    if is_bear_off:
+        s += 8
+    if from_bar:
+        s += 5
+    # moving from a higher point (farther from home) is slightly better
+    s += src_idx / 23.0 * 2
+    return s
+
+
+# ----------------------------------------------------------------------
+# Main policy function
+# ----------------------------------------------------------------------
+def policy(state: dict) -> str:
+    """
+    Returns a move string of the form  H:A5,B   or   L:P,P
+    following the compact format required by the arena.
+    """
+    dice = state['dice']
+    # No dice – must pass
+    if not dice:
+        return "H:P,P"
+
+    # Determine high / low die (same when only one die)
+    if len(dice) == 1:
+        high = low = dice[0]
+    else:
+        high = max(dice)
+        low = min(dice)
+
+    # ------------------------------------------------------------------
+    # Try to play the higher die first
+    # ------------------------------------------------------------------
+    high_moves = legal_starts(state, high)
+
+    # If no high‑die move is possible, try the low die (if different)
+    if not high_moves:
+        if high != low:
+            low_moves = legal_starts(state, low)
+            if low_moves:
+                # choose best low‑die move, second slot is pass
+                best = max(
+                    low_moves,
+                    key=lambda mv: score_move(
+                        is_hit=state['opp_pts'][mv[2]] == 1 if mv[2] >= 0 else False,
+                        is_bear_off=mv[3],
+                        from_bar=(mv[0] == 'B'),
+                        src_idx=mv[1] if mv[1] >= 0 else 23
+                    )
+                )
+                src_tok, src_idx, dest_idx, is_bear = best
+                order = 'H' if high >= low else 'L'   # arbitrary, we use H
+                return f"{order}:{src_tok},P"
+        # Nothing can be played
+        return "H:P,P"
+
+    # ------------------------------------------------------------------
+    # For each possible high‑die move, look ahead for a low‑die move
+    # ------------------------------------------------------------------
+    best_score = -1
+    best_pair = None   # (src1, src2, order)
+
+    for hm in high_moves:
+        src1_tok, src1_idx, dest1_idx, bear1 = hm
+        # Apply the high‑die move to a temporary state
+        tmp_state = apply_move(state, src1_tok, src1_idx, dest1_idx, bear1)
+
+        # Determine legal low‑die moves on the updated board
+        low_moves = legal_starts(tmp_state, low)
+
+        # If low die cannot be played we will later treat second slot as Pass
+        if low_moves:
+            for lm in low_moves:
+                src2_tok, src2_idx, dest2_idx, bear2 = lm
+                # Score the two‑move sequence
+                score = (
+                    score_move(
+                        is_hit=state['opp_pts'][dest1_idx] == 1 if dest1_idx >= 0 else False,
+                        is_bear_off=bear1,
+                        from_bar=(src1_tok == 'B'),
+                        src_idx=src1_idx if src1_idx >= 0 else 23
+                    )
+                    + score_move(
+                        is_hit=tmp_state['opp_pts'][dest2_idx] == 1 if dest2_idx >= 0 else False,
+                        is_bear_off=bear2,
+                        from_bar=(src2_tok == 'B'),
+                        src_idx=src2_idx if src2_idx >= 0 else 23
+                    )
+                )
+                if score > best_score:
+                    best_score = score
+                    best_pair = (src1_tok, src2_tok, 'H')
+        else:
+            # Only high die can be played – second slot is Pass
+            score = score_move(
+                is_hit=state['opp_pts'][dest1_idx] == 1 if dest1_idx >= 0 else False,
+                is_bear_off=bear1,
+                from_bar=(src1_tok == 'B'),
+                src_idx=src1_idx if src1_idx >= 0 else 23
+            )
+            if score > best_score:
+                best_score = score
+                best_pair = (src1_tok, 'P', 'H')
+
+    # If we never found a pair (should not happen) just pass
+    if best_pair is None:
+        return "H:P,P"
+
+    src1, src2, order = best_pair
+    return f"{order}:{src1},{src2}"
+</code>
+```

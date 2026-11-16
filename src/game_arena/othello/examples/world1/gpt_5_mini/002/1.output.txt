@@ -1,0 +1,280 @@
+Strategy:
+- I implement a minimax (alpha-beta) Othello policy with a fairly strong static evaluation and move ordering, tuned to play well across the game phases.
+- The evaluation mixes a classic positional weights matrix (corners very good, near-corner squares penalized), mobility (number of legal moves), and disc counts (weighted heavier late game).
+- The search depth adapts with the number of empty squares (deeper in the endgame), and I use alpha-beta pruning plus a simple transposition cache and move ordering based on immediate heuristic evaluation to speed search.
+- The code always returns a legal move string (or "pass" when there is no legal move).
+
+<code>
+import numpy as np
+import time
+import random
+from typing import List, Tuple, Dict
+
+# Policy API required:
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    """
+    Return a legal Othello move for the current player as a string like 'd3'.
+    If no legal moves, return 'pass'.
+    """
+    # Configuration
+    start_time = time.time()
+    TIME_LIMIT = 0.95  # seconds
+    # positional weights commonly used in Othello heuristics
+    WEIGHTS = np.array([
+        [100, -25, 10,  5,  5, 10, -25, 100],
+        [-25, -25, 1,  1,  1,  1, -25, -25],
+        [10,   1,  5,  2,  2,  5,   1,  10],
+        [5,    1,  2,  1,  1,  2,   1,   5],
+        [5,    1,  2,  1,  1,  2,   1,   5],
+        [10,   1,  5,  2,  2,  5,   1,  10],
+        [-25, -25, 1,  1,  1,  1, -25, -25],
+        [100, -25, 10,  5,  5, 10, -25, 100],
+    ], dtype=float)
+
+    # Directions
+    DIRS = [(-1, -1), (-1, 0), (-1, 1),
+            (0, -1),          (0, 1),
+            (1, -1),  (1, 0), (1, 1)]
+
+    # Helper: generate legal moves for current player
+    def legal_moves(cur_you: np.ndarray, cur_opp: np.ndarray) -> List[Tuple[int,int]]:
+        moves = []
+        occupied = (cur_you | cur_opp)
+        # iterate over empty squares only
+        for r in range(8):
+            for c in range(8):
+                if occupied[r, c]:
+                    continue
+                if _would_flip(cur_you, cur_opp, r, c):
+                    moves.append((r, c))
+        return moves
+
+    # Helper: check if move would flip at least one disc
+    def _would_flip(cur_you: np.ndarray, cur_opp: np.ndarray, r: int, c: int) -> bool:
+        if cur_you[r, c] or cur_opp[r, c]:
+            return False
+        for dr, dc in DIRS:
+            rr, cc = r + dr, c + dc
+            found_opp = False
+            while 0 <= rr < 8 and 0 <= cc < 8:
+                if cur_opp[rr, cc]:
+                    found_opp = True
+                    rr += dr; cc += dc
+                    continue
+                if cur_you[rr, cc] and found_opp:
+                    return True
+                break
+        return False
+
+    # Helper: apply a move and return new arrays (you, opp) after move applied.
+    def apply_move(cur_you: np.ndarray, cur_opp: np.ndarray, move: Tuple[int,int]) -> Tuple[np.ndarray, np.ndarray]:
+        r, c = move
+        new_you = cur_you.copy()
+        new_opp = cur_opp.copy()
+        to_flip = []
+        for dr, dc in DIRS:
+            rr, cc = r + dr, c + dc
+            flips_dir = []
+            while 0 <= rr < 8 and 0 <= cc < 8:
+                if new_opp[rr, cc]:
+                    flips_dir.append((rr, cc))
+                    rr += dr; cc += dc
+                    continue
+                if new_you[rr, cc] and flips_dir:
+                    to_flip.extend(flips_dir)
+                break
+        # place the disc and flip
+        if not to_flip:
+            # Illegal call, but just return unmodified (should not happen)
+            return cur_you.copy(), cur_opp.copy()
+        new_you[r, c] = 1
+        for (fr, fc) in to_flip:
+            new_you[fr, fc] = 1
+            new_opp[fr, fc] = 0
+        return new_you, new_opp
+
+    # Evaluation function: returns score from root player's perspective
+    def eval_board(cur_you: np.ndarray, cur_opp: np.ndarray, root_is_current: bool) -> float:
+        # positional weighting
+        pos_score = np.sum(WEIGHTS * (cur_you - cur_opp))
+        # mobility
+        my_moves = len(legal_moves(cur_you, cur_opp))
+        opp_moves = len(legal_moves(cur_opp, cur_you))
+        if my_moves + opp_moves > 0:
+            mobility = 100.0 * (my_moves - opp_moves) / (my_moves + opp_moves)
+        else:
+            mobility = 0.0
+        # frontier: discs adjacent to empty squares (penalize)
+        frontier_penalty = 0
+        occupied = (cur_you | cur_opp)
+        for r in range(8):
+            for c in range(8):
+                if occupied[r, c]:
+                    for dr, dc in DIRS:
+                        rr, cc = r + dr, c + dc
+                        if 0 <= rr < 8 and 0 <= cc < 8 and not occupied[rr, cc]:
+                            if cur_you[r, c]:
+                                frontier_penalty += 1
+                            else:
+                                frontier_penalty -= 1
+                            break
+        # disc difference (more important late game)
+        disc_diff = int(np.sum(cur_you) - np.sum(cur_opp))
+        empties = 64 - int(np.sum(cur_you) + np.sum(cur_opp))
+        # weight disc difference more as empties go down
+        disc_weight = 100 if empties <= 12 else (20 if empties <= 30 else 5)
+        eval_val = pos_score + 2.0 * mobility - 5.0 * frontier_penalty + disc_weight * disc_diff
+        # If root_is_current False, we must invert sign (we always want score from root player's POV)
+        return eval_val if root_is_current else -eval_val
+
+    # Terminal evaluation: final disc majority result (large magnitude)
+    def terminal_value(cur_you: np.ndarray, cur_opp: np.ndarray, root_is_current: bool) -> float:
+        root_discs = np.sum(cur_you) if root_is_current else np.sum(cur_opp)
+        opp_discs = np.sum(cur_opp) if root_is_current else np.sum(cur_you)
+        if root_discs > opp_discs:
+            return 1e6 + (root_discs - opp_discs)  # win
+        elif root_discs < opp_discs:
+            return -1e6 - (opp_discs - root_discs)  # loss
+        else:
+            return 0.0  # draw
+
+    # Transposition table: map key -> (depth, value)
+    trans_table: Dict[Tuple[bytes, bytes, bool, int], float] = {}
+
+    # Minimax with alpha-beta. Arrays oriented so that `you` is the player to move now.
+    def minimax(cur_you: np.ndarray, cur_opp: np.ndarray, depth: int,
+                alpha: float, beta: float, maximizing: bool, root_is_current: bool,
+                time_limit: float) -> float:
+        # time cutoff
+        if time.time() - start_time > time_limit:
+            # return a static evaluation quickly
+            return eval_board(cur_you, cur_opp, root_is_current)
+
+        # Hash key for transposition
+        key = (cur_you.tobytes(), cur_opp.tobytes(), root_is_current, depth)
+        if key in trans_table:
+            return trans_table[key]
+
+        # terminal conditions
+        my_moves = legal_moves(cur_you, cur_opp)
+        opp_moves = legal_moves(cur_opp, cur_you)
+        if depth == 0:
+            val = eval_board(cur_you, cur_opp, root_is_current)
+            trans_table[key] = val
+            return val
+        if not my_moves and not opp_moves:
+            val = terminal_value(cur_you, cur_opp, root_is_current)
+            trans_table[key] = val
+            return val
+
+        if not my_moves:
+            # pass: same board but swap players for recursion
+            val = minimax(cur_opp, cur_you, depth, alpha, beta, not maximizing, not root_is_current, time_limit)
+            trans_table[key] = val
+            return val
+
+        # Move ordering: evaluate immediate resulting position and sort descending for maximizing
+        move_evals = []
+        for mv in my_moves:
+            new_you, new_opp = apply_move(cur_you, cur_opp, mv)
+            # For ordering, evaluate after move from root's perspective:
+            immediate_eval = eval_board(new_you, new_opp, root_is_current)
+            move_evals.append((immediate_eval, mv))
+        move_evals.sort(reverse=True, key=lambda x: x[0])
+
+        best_val = -1e9 if maximizing else 1e9
+
+        for _, mv in move_evals:
+            new_you, new_opp = apply_move(cur_you, cur_opp, mv)
+            # Recurse with swapped arrays: opponent to move next
+            val = minimax(new_opp, new_you, depth - 1, alpha, beta, not maximizing, not root_is_current, time_limit)
+            if maximizing:
+                if val > best_val:
+                    best_val = val
+                if best_val > alpha:
+                    alpha = best_val
+                if alpha >= beta:
+                    break  # beta cut-off
+            else:
+                if val < best_val:
+                    best_val = val
+                if best_val < beta:
+                    beta = best_val
+                if alpha >= beta:
+                    break  # alpha cut-off
+
+        trans_table[key] = best_val
+        return best_val
+
+    # Choose depth based on empties (deeper in endgame)
+    empties = int(64 - np.sum(you) - np.sum(opponent))
+    if empties <= 10:
+        max_depth = 7
+    elif empties <= 20:
+        max_depth = 6
+    elif empties <= 30:
+        max_depth = 5
+    elif empties <= 44:
+        max_depth = 4
+    else:
+        max_depth = 3
+
+    # generate initial legal moves
+    initial_moves = legal_moves(you, opponent)
+    if not initial_moves:
+        return "pass"
+
+    # If only one move, just play it
+    if len(initial_moves) == 1:
+        r, c = initial_moves[0]
+        return chr(ord('a') + c) + str(r + 1)
+
+    # Iterative deepening from 1..max_depth, keep best move found so far
+    best_move = None
+    best_score = -1e9
+    # small randomization order to avoid deterministic trap in equal evals
+    random.shuffle(initial_moves)
+    for depth in range(1, max_depth + 1):
+        # reset transposition table between different depths? keep it to help.
+        # Time check
+        if time.time() - start_time > TIME_LIMIT:
+            break
+        current_best_move = None
+        current_best_score = -1e9
+        # order moves by immediate heuristic to improve alpha-beta
+        move_evals = []
+        for mv in initial_moves:
+            new_you, new_opp = apply_move(you, opponent, mv)
+            immediate_eval = eval_board(new_you, new_opp, True)
+            move_evals.append((immediate_eval, mv))
+        move_evals.sort(reverse=True, key=lambda x: x[0])
+
+        alpha = -1e9
+        beta = 1e9
+        for _, mv in move_evals:
+            if time.time() - start_time > TIME_LIMIT:
+                break
+            new_you, new_opp = apply_move(you, opponent, mv)
+            # opponent to move next, maximizing should be False (opponent minimizes root perspective)
+            score = minimax(new_opp, new_you, depth - 1, alpha, beta, False, False, TIME_LIMIT)
+            # score is from root perspective
+            if score > current_best_score or (abs(score - current_best_score) < 1e-6 and random.random() < 0.5):
+                current_best_score = score
+                current_best_move = mv
+            # update alpha for root
+            if score > alpha:
+                alpha = score
+        if current_best_move is not None:
+            best_move = current_best_move
+            best_score = current_best_score
+        # time out safety
+        if time.time() - start_time > TIME_LIMIT:
+            break
+
+    if best_move is None:
+        # fallback: choose any legal move (shouldn't happen)
+        best_move = initial_moves[0]
+
+    r, c = best_move
+    return chr(ord('a') + c) + str(r + 1)
+</code>

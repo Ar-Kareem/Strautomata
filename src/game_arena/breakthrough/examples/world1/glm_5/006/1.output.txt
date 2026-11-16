@@ -1,0 +1,206 @@
+The strategy for this policy is to use an **Iterative Deepening Negamax search with Alpha-Beta pruning**. This approach allows the AI to search deeper into the game tree within the time constraints, while maintaining a best move found at shallower depths. The evaluation function prioritizes **material count** (number of pieces) and **positional advancement** (how close pieces are to the opponent's home row). Move ordering is applied to search capturing moves and moves leading to immediate wins first, which significantly improves pruning efficiency.
+
+<code>
+import time
+
+def policy(me, opp, color):
+    """
+    Calculates the next move for the Breakthrough game using Negamax with Alpha-Beta pruning.
+    """
+    start_time = time.time()
+    TIME_LIMIT = 0.95  # Seconds
+    
+    me_set = set(me)
+    opp_set = set(opp)
+    is_white = (color == 'w')
+    
+    # Direction and goals
+    # White moves UP (increasing row), Black moves DOWN (decreasing row)
+    # White goal is row 7, Black goal is row 0
+    forward = 1 if is_white else -1
+    my_goal_row = 7 if is_white else 0
+    
+    def get_moves(p_set, o_set, fwd):
+        """Generates all possible moves for player p_set."""
+        moves = []
+        for r, c in p_set:
+            nr = r + fwd
+            if not (0 <= nr <= 7):
+                continue
+            
+            # Straight forward (must be empty)
+            if (nr, c) not in p_set and (nr, c) not in o_set:
+                moves.append((r, c, nr, c, 0)) # 0 = quiet
+            
+            # Diagonals
+            for dc in [-1, 1]:
+                nc = c + dc
+                if 0 <= nc <= 7:
+                    target = (nr, nc)
+                    if target in o_set:
+                        moves.append((r, c, nr, nc, 1)) # 1 = capture
+                    elif target not in p_set:
+                        moves.append((r, c, nr, nc, 0)) # 0 = quiet
+        return moves
+
+    def evaluate(p_set, o_set, p_is_white):
+        """Evaluates the board position relative to player p_set."""
+        score = 0
+        # Material and Advancement
+        for r, c in p_set:
+            score += 10000 # Material value
+            if p_is_white:
+                score += r * 100 # Advancement (0 to 7)
+            else:
+                score += (7 - r) * 100 # Advancement (7 to 0)
+        
+        for r, c in o_set:
+            score -= 10000
+            if p_is_white:
+                # Opponent is Black, values lower rows (closer to 0)
+                score -= (7 - r) * 100
+            else:
+                # Opponent is White, values higher rows (closer to 7)
+                score -= r * 100
+        
+        # Mobility bonus (small)
+        # score += len(get_moves(p_set, o_set, 1 if p_is_white else -1)) * 10
+        return score
+
+    def negamax(p_set, o_set, depth, alpha, beta, p_is_white):
+        """Negamax search with Alpha-Beta pruning."""
+        # Terminal checks
+        my_goal = 7 if p_is_white else 0
+        opp_goal = 0 if p_is_white else 7
+        
+        # Check win for current player (p_set)
+        for r, c in p_set:
+            if r == my_goal:
+                return 1000000 + depth # Win bonus
+        
+        # Check win for opponent (o_set)
+        for r, c in o_set:
+            if r == opp_goal:
+                return -1000000 - depth # Loss penalty
+
+        if depth == 0:
+            return evaluate(p_set, o_set, p_is_white)
+        
+        fwd = 1 if p_is_white else -1
+        moves = get_moves(p_set, o_set, fwd)
+        
+        # Move ordering: Captures first, then most advanced pieces
+        # Sort: captures (desc), then row advancement (desc)
+        def move_key(m):
+            fr, fc, tr, tc, cap = m
+            # Prioritize captures (1 > 0)
+            # Prioritize advancement towards goal
+            if p_is_white:
+                adv = tr
+            else:
+                adv = 7 - tr
+            return (cap, adv)
+            
+        moves.sort(key=move_key, reverse=True)
+        
+        best_val = -2000000
+        for fr, fc, tr, tc, cap in moves:
+            # Apply move
+            p_new = set(p_set)
+            p_new.remove((fr, fc))
+            p_new.add((tr, tc))
+            
+            o_new = o_set
+            if cap:
+                o_new = set(o_set)
+                o_new.remove((tr, tc))
+            
+            val = -negamax(o_new, p_new, depth - 1, -beta, -alpha, not p_is_white)
+            
+            if val > best_val:
+                best_val = val
+            
+            if val > alpha:
+                alpha = val
+            
+            if alpha >= beta:
+                break # Prune
+                
+        return best_val
+
+    # Initial moves generation
+    root_moves = get_moves(me_set, opp_set, forward)
+    if not root_moves:
+        return ((0,0),(0,0)) # Fallback (should not happen in valid game)
+
+    # Sort root moves initially
+    def root_key(m):
+        fr, fc, tr, tc, cap = m
+        adv = tr if is_white else (7 - tr)
+        return (cap, adv)
+    root_moves.sort(key=root_key, reverse=True)
+    
+    best_move = (root_moves[0][0:2], root_moves[0][2:4])
+    
+    # Iterative Deepening
+    for depth in range(1, 10):
+        current_best_move = None
+        current_max_val = -float('inf')
+        alpha = -float('inf')
+        beta = float('inf')
+        
+        # Re-sort root_moves based on previous iteration's best move?
+        # Simple heuristic: Try previous best move first
+        # We can just iterate; root_moves are sorted by heuristic
+        
+        for move in root_moves:
+            fr, fc, tr, tc, cap = move
+            
+            # Immediate win check
+            if tr == my_goal_row:
+                return ((fr, fc), (tr, tc))
+            
+            # Apply move
+            p_new = set(me_set)
+            p_new.remove((fr, fc))
+            p_new.add((tr, tc))
+            
+            o_new = opp_set
+            if cap:
+                o_new = set(opp_set)
+                o_new.remove((tr, tc))
+            
+            # Check time
+            if time.time() - start_time > TIME_LIMIT:
+                break
+            
+            val = -negamax(o_new, p_new, depth - 1, -beta, -alpha, not is_white)
+            
+            if val > current_max_val:
+                current_max_val = val
+                current_best_move = ((fr, fc), (tr, tc))
+            
+            if val > alpha:
+                alpha = val
+        
+        # Update best move if we completed the depth
+        if time.time() - start_time < TIME_LIMIT:
+            if current_best_move:
+                best_move = current_best_move
+                # Move this to front of root_moves for next iteration?
+                # Find index and swap
+                try:
+                    idx = root_moves.index((current_best_move[0][0], current_best_move[0][1], current_best_move[1][0], current_best_move[1][1], cap))
+                    # Wait, we don't know cap easily here without re-checking.
+                    # We just trust the sorting.
+                    pass
+                except:
+                    pass
+        else:
+            break
+            
+        if current_max_val >= 1000000: # Found a winning line
+            break
+
+    return best_move
+</code>

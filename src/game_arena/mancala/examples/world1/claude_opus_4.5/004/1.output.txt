@@ -1,0 +1,1478 @@
+<thinking>
+Let me analyze this Kalah game and implement a good policy.
+
+First, let me understand the game mechanics:
+1. We have 6 houses (indices 0-5) and 1 store (index 6)
+2. When we pick seeds from house i, we distribute them counter-clockwise
+3. We skip opponent's store
+4. If last seed lands in our store, we get another turn
+5. If last seed lands in an empty house on our side and opposite has seeds, we capture both
+
+Key strategies:
+1. Prioritize moves that give us extra turns (landing in our store)
+2. Look for capture opportunities
+3. Avoid giving opponent good positions
+4. Use minimax with alpha-beta pruning for deeper analysis
+
+Let me implement this step by step:
+
+1. First, simulate a move to see the resulting state
+2. Use minimax with alpha-beta pruning to evaluate positions
+3. Evaluate based on: store difference, potential captures, seeds on each side
+
+Let me write the simulation function:
+
+```python
+def simulate_move(you, opponent, move):
+    # Returns (new_you, new_opponent, extra_turn)
+    you = you.copy()
+    opponent = opponent.copy()
+    
+    seeds = you[move]
+    you[move] = 0
+    pos = move + 1
+    side = 0  # 0 = you, 1 = opponent
+    
+    while seeds > 0:
+        if side == 0:
+            if pos <= 6:  # your houses and store
+                you[pos] += 1
+                seeds -= 1
+                last_side = 0
+                last_pos = pos
+                pos += 1
+                if pos > 6:
+                    pos = 0
+                    side = 1
+            else:
+                pos = 0
+                side = 1
+        else:
+            if pos <= 5:  # opponent's houses only (skip store)
+                opponent[pos] += 1
+                seeds -= 1
+                last_side = 1
+                last_pos = pos
+                pos += 1
+                if pos > 5:
+                    pos = 0
+                    side = 0
+            else:
+                pos = 0
+                side = 0
+    
+    # Check for extra turn
+    extra_turn = (last_side == 0 and last_pos == 6)
+    
+    # Check for capture
+    if last_side == 0 and last_pos < 6 and you[last_pos] == 1:
+        opposite = 5 - last_pos
+        if opponent[opposite] > 0:
+            you[6] += you[last_pos] + opponent[opposite]
+            you[last_pos] = 0
+            opponent[opposite] = 0
+    
+    return you, opponent, extra_turn
+```
+
+Wait, I need to be more careful. The capture happens when the last seed lands in an empty house that *was* empty before. Since we're adding the seed, it means after adding, the count is 1.
+
+Let me trace through more carefully:
+- We pick up seeds from house i
+- We distribute counter-clockwise: i+1, i+2, ..., 5, your store, opponent 0-5, your 0-5, ...
+- We skip opponent's store
+- After all seeds placed, check where the last one landed
+
+For the capture: "If the last seed lands in one of your houses you[i] (0..5) and it was empty before the drop" - so if you[i] == 1 after we place the last seed there, it was empty before.
+
+Let me implement minimax with alpha-beta pruning:
+
+```python
+def minimax(you, opponent, depth, alpha, beta, maximizing):
+    # Check terminal state
+    you_sum = sum(you[:6])
+    opp_sum = sum(opponent[:6])
+    
+    if you_sum == 0 or opp_sum == 0:
+        # Game over
+        final_you = you[6] + you_sum
+        final_opp = opponent[6] + opp_sum
+        return final_you - final_opp, None
+    
+    if depth == 0:
+        return you[6] - opponent[6], None
+    
+    if maximizing:
+        max_eval = float('-inf')
+        best_move = None
+        for i in range(6):
+            if you[i] > 0:
+                new_you, new_opp, extra = simulate_move(you, opponent, i)
+                if extra:
+                    eval_score, _ = minimax(new_you, new_opp, depth, alpha, beta, True)
+                else:
+                    eval_score, _ = minimax(new_opp, new_you, depth - 1, alpha, beta, False)
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_move = i
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+        return max_eval, best_move
+    else:
+        min_eval = float('inf')
+        best_move = None
+        for i in range(6):
+            if you[i] > 0:
+                new_you, new_opp, extra = simulate_move(you, opponent, i)
+                if extra:
+                    eval_score, _ = minimax(new_you, new_opp, depth, alpha, beta, False)
+                else:
+                    eval_score, _ = minimax(new_opp, new_you, depth - 1, alpha, beta, True)
+                if eval_score < min_eval:
+                    min_eval = eval_score
+                    best_move = i
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+        return min_eval, best_move
+```
+
+Hmm wait, I need to think about the perspective more carefully. When it's opponent's turn, they're trying to maximize their own score. So from our perspective, they minimize our score.
+
+But actually, I'm passing you/opponent swapped when it's opponent's turn. So the "you" in the recursive call is actually the opponent. Let me reconsider...
+
+Actually, let me restructure. I'll keep the perspective consistent - always evaluating from the original "you" perspective.
+
+Let me rewrite more carefully:
+
+```python
+def minimax(my_state, opp_state, depth, alpha, beta, is_my_turn):
+    """
+    my_state: the original player's state
+    opp_state: the opponent's state
+    is_my_turn: True if it's the original player's turn
+    Returns evaluation from original player's perspective
+    """
+```
+
+Actually, let me simplify. I'll use a convention where we always pass (current_player, other_player) and the evaluation is from current_player's perspective at the root.
+
+Let me think again... actually the cleanest way is:
+
+When calling minimax from policy, we're maximizing.
+When opponent plays, we swap perspectives but we're minimizing from our original viewpoint.
+
+Let me just track whose turn it is:
+
+```python
+def minimax(you, opponent, depth, alpha, beta, your_turn):
+    # Evaluation is always from "you" perspective (the original caller)
+```
+
+When it's your_turn=True, you want to maximize.
+When it's your_turn=False (opponent's turn), they will choose the move that minimizes your score.
+
+Let me rewrite:
+
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    def simulate(you_s, opp_s, move):
+        you_s = list(you_s)
+        opp_s = list(opp_s)
+        seeds = you_s[move]
+        you_s[move] = 0
+        pos = move
+        
+        # Total positions: 13 (your 6 houses + your store + opponent 6 houses)
+        # Skip opponent store
+        while seeds > 0:
+            pos = (pos + 1) % 13
+            if pos < 6:
+                you_s[pos] += 1
+            elif pos == 6:
+                you_s[6] += 1
+            else:  # pos 7-12 -> opponent 0-5
+                opp_s[pos - 7] += 1
+            seeds -= 1
+            last_pos = pos
+        
+        # Check extra turn (last seed in your store)
+        extra = (last_pos == 6)
+        
+        # Check capture
+        if last_pos < 6 and you_s[last_pos] == 1:
+            opposite = 5 - last_pos
+            if opp_s[opposite] > 0:
+                you_s[6] += 1 + opp_s[opposite]
+                you_s[last_pos] = 0
+                opp_s[opposite] = 0
+        
+        return you_s, opp_s, extra
+```
+
+Actually I think I had the indexing wrong. Let me trace through manually.
+
+Your houses: indices 0-5
+Your store: index 6
+
+When you move from house i:
+- Seeds go to i+1, i+2, ..., 5 (your remaining houses)
+- Then to your store (index 6)
+- Then to opponent's houses: 0, 1, 2, 3, 4, 5
+- Skip opponent's store
+- Then back to your houses: 0, 1, 2, 3, 4, 5
+- Then your store
+- etc.
+
+So the order is: your[i+1], ..., your[5], your[6], opp[0], ..., opp[5], your[0], ..., your[5], your[6], ...
+
+Let me implement this with a more explicit approach:
+
+```python
+def simulate(you_s, opp_s, move):
+    you_s = list(you_s)
+    opp_s = list(opp_s)
+    seeds = you_s[move]
+    you_s[move] = 0
+    
+    # Position tracking: 0-5 = your houses, 6 = your store, 7-12 = opp houses
+    pos = move
+    
+    while seeds > 0:
+        pos += 1
+        if pos == 13:
+            pos = 0
+        
+        if pos <= 5:
+            you_s[pos] += 1
+        elif pos == 6:
+            you_s[6] += 1
+        else:  # 7-12
+            opp_s[pos - 7] += 1
+        seeds -= 1
+    
+    # Check extra turn
+    extra = (pos == 6)
+    
+    # Check capture
+    if pos <= 5 and you_s[pos] == 1:
+        opposite = 5 - pos
+        if opp_s[opposite] > 0:
+            you_s[6] += 1 + opp_s[opposite]
+            you_s[pos] = 0
+            opp_s[opposite] = 0
+    
+    return you_s, opp_s, extra
+```
+
+Hmm, I realize the position math should be different. When we start from house `move`, the first seed goes to `move + 1`. So if move=5, the first seed goes to position 6 (your store). If move=4, first seed goes to 5, second to 6, etc.
+
+Let me trace an example:
+- move = 4, seeds = 3
+- pos starts at 4
+- pos = 5: you_s[5] += 1
+- pos = 6: you_s[6] += 1
+- pos = 7: opp_s[0] += 1
+- Final pos = 7 (opponent's house 0)
+
+Actually the way I think about it:
+- Positions 0-5: your houses
+- Position 6: your store
+- Positions 7-12: opponent's houses
+- Position 13 would be opponent's store (skip)
+
+So after position 12 (opponent's house 5), we go back to position 0 (your house 0), skipping 13.
+
+Let me fix:
+
+```python
+def simulate(you_s, opp_s, move):
+    you_s = list(you_s)
+    opp_s = list(opp_s)
+    seeds = you_s[move]
+    you_s[move] = 0
+    
+    pos = move
+    
+    while seeds > 0:
+        pos = (pos + 1) % 13  # 0-12, skipping opponent's store (would be 13)
+        
+        if pos <= 5:
+            you_s[pos] += 1
+        elif pos == 6:
+            you_s[6] += 1
+        else:  # 7-12
+            opp_s[pos - 7] += 1
+        seeds -= 1
+    
+    # ...
+```
+
+Wait, modulo 13 gives us 0-12, which is correct. When pos = 12 and we add 1, we get (12+1) % 13 = 0, which is your house 0. That's correct because we skip position 13 (opponent's store).
+
+OK let me finalize the implementation with minimax:
+
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    def simulate(you_s, opp_s, move):
+        you_s = list(you_s)
+        opp_s = list(opp_s)
+        seeds = you_s[move]
+        you_s[move] = 0
+        pos = move
+        
+        while seeds > 0:
+            pos = (pos + 1) % 13
+            if pos <= 5:
+                you_s[pos] += 1
+            elif pos == 6:
+                you_s[6] += 1
+            else:
+                opp_s[pos - 7] += 1
+            seeds -= 1
+        
+        extra = (pos == 6)
+        
+        if pos <= 5 and you_s[pos] == 1:
+            opposite = 5 - pos
+            if opp_s[opposite] > 0:
+                you_s[6] += 1 + opp_s[opposite]
+                you_s[pos] = 0
+                opp_s[opposite] = 0
+        
+        return tuple(you_s), tuple(opp_s), extra
+    
+    def evaluate(you_s, opp_s):
+        return you_s[6] - opp_s[6]
+    
+    def minimax(you_s, opp_s, depth, alpha, beta, maximizing):
+        you_seeds = sum(you_s[:6])
+        opp_seeds = sum(opp_s[:6])
+        
+        if you_seeds == 0:
+            return you_s[6] - (opp_s[6] + opp_seeds), None
+        if opp_seeds == 0:
+            return (you_s[6] + you_seeds) - opp_s[6], None
+        
+        if depth == 0:
+            return evaluate(you_s, opp_s), None
+        
+        if maximizing:
+            max_eval = float('-inf')
+            best_move = None
+            for i in range(6):
+                if you_s[i] > 0:
+                    new_you, new_opp, extra = simulate(you_s, opp_s, i)
+                    if extra:
+                        ev, _ = minimax(new_you, new_opp, depth, alpha, beta, True)
+                    else:
+                        ev, _ = minimax(new_opp, new_you, depth - 1, alpha, beta, False)
+                    if ev > max_eval:
+                        max_eval = ev
+                        best_move = i
+                    alpha = max(alpha, ev)
+                    if beta <= alpha:
+                        break
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            best_move = None
+            for i in range(6):
+                if you_s[i] > 0:
+                    new_you, new_opp, extra = simulate(you_s, opp_s, i)
+                    if extra:
+                        ev, _ = minimax(new_you, new_opp, depth, alpha, beta, False)
+                    else:
+                        ev, _ = minimax(new_opp, new_you, depth - 1, alpha, beta, True)
+                    if ev < min_eval:
+                        min_eval = ev
+                        best_move = i
+                    beta = min(beta, ev)
+                    if beta <= alpha:
+                        break
+            return min_eval, best_move
+    
+    _, best = minimax(tuple(you), tuple(opponent), 10, float('-inf'), float('inf'), True)
+    return best
+```
+
+Wait, there's an issue with the perspective in minimax. When it's not maximizing (opponent's turn), the simulate is from opponent's perspective, but then I swap the states. Let me trace through:
+
+Initial call: minimax(you, opponent, ..., True)
+- We simulate our move i: new_you, new_opp, extra = simulate(you, opp, i)
+- If not extra, we call minimax(new_opp, new_you, ..., False)
+  - Now from opponent's perspective, they're "you" in this call
+  - They simulate their move j: new_them, new_us, extra = simulate(new_opp, new_you, j)
+  - If not extra, they call minimax(new_us, new_them, ..., True)
+
+The issue is the evaluation. When we return evaluate(you_s, opp_s), this is from the current player's perspective. But in minimax, when maximizing=False (opponent's turn), the evaluation should still be from the original player's perspective, not the current mover's.
+
+Let me fix this by always tracking whose turn it is and adjusting evaluation:
+
+Actually, a cleaner approach: always evaluate from the perspective of the player who called policy(), and flip the sign when it's opponent's turn.
+
+Actually wait, I think the issue is more subtle. Let me reconsider.
+
+When minimax is called with maximizing=True:
+- you_s represents the current mover (who is the original "you")
+- opp_s represents the opponent
+
+When minimax is called with maximizing=False:
+- you_s represents the current mover (who is the original opponent)
+- opp_s represents us (the original "you")
+
+So evaluate(you_s, opp_s) = you_s[6] - opp_s[6]
+When maximizing=False, this gives opponent's score - our score
+We want to return our score - opponent's score
+So we need to negate: -(you_s[6] - opp_s[6]) = opp_s[6] - you_s[6]
+
+Let me fix:
+
+```python
+def minimax(you_s, opp_s, depth, alpha, beta, maximizing):
+    you_seeds = sum(you_s[:6])
+    opp_seeds = sum(opp_s[:6])
+    
+    if you_seeds == 0:
+        score = you_s[6] - (opp_s[6] + opp_seeds)
+        return score if maximizing else -score, None
+    if opp_seeds == 0:
+        score = (you_s[6] + you_seeds) - opp_s[6]
+        return score if maximizing else -score, None
+    
+    if depth == 0:
+        score = you_s[6] - opp_s[6]
+        return score if maximizing else -score, None
+    
+    # ... rest same
+```
+
+Actually wait, this is getting confusing. Let me think more carefully.
+
+The standard minimax convention is:
+- When maximizing, we return the max of child evaluations
+- When minimizing, we return the min of child evaluations
+- All evaluations are from the same perspective (the original maximizer)
+
+In my code:
+- When maximizing=True, we're the original player (wanting to maximize)
+- When maximizing=False, we're the opponent (wanting to minimize our original player's score)
+
+The evaluate function should always return from original player's perspective.
+
+After swapping (when going from maximizing=True to False), the new you_s is the opponent, and new opp_s is us.
+
+So when maximizing=False:
+- you_s is opponent's state
+- opp_s is our original state
+- evaluate(you_s, opp_s) = opponent_store - our_store
+- But we want: our_store - opponent_store
+- So we should return -evaluate(you_s, opp_s)
+
+Actually, let me just simplify and not flip during the recursion. I'll always keep the perspective as (original_you, original_opponent):
+
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    def simulate(you_s, opp_s, move, is_you_moving):
+        if is_you_moving:
+            mover = list(you_s)
+            other = list(opp_s)
+        else:
+            mover = list(opp_s)
+            other = list(you_s)
+        
+        seeds = mover[move]
+        mover[move] = 0
+        pos = move
+        
+        while seeds > 0:
+            pos = (pos + 1) % 13
+            if pos <= 5:
+                mover[pos] += 1
+            elif pos == 6:
+                mover[6] += 1
+            else:
+                other[pos - 7] += 1
+            seeds -= 1
+        
+        extra = (pos == 6)
+        
+        if pos <= 5 and mover[pos] == 1:
+            opposite = 5 - pos
+            if other[opposite] > 0:
+                mover[6] += 1 + other[opposite]
+                mover[pos] = 0
+                other[opposite] = 0
+        
+        if is_you_moving:
+            return tuple(mover), tuple(other), extra
+        else:
+            return tuple(other), tuple(mover), extra
+    
+    def evaluate(you_s, opp_s):
+        return you_s[6] - opp_s[6]
+    
+    def is_game_over(you_s, opp_s):
+        return sum(you_s[:6]) == 0 or sum(opp_s[:6]) == 0
+    
+    def final_score(you_s, opp_s):
+        you_final = you_s[6] + sum(you_s[:6])
+        opp_final = opp_s[6] + sum(opp_s[:6])
+        return you_final - opp_final
+    
+    def minimax(you_s, opp_s, depth, alpha, beta, is_you_turn):
+        if is_game_over(you_s, opp_s):
+            return final_score(you_s, opp_s), None
+        
+        if depth == 0:
+            return evaluate(you_s, opp_s), None
+        
+        mover = you_s if is_you_turn else opp_s
+        
+        if is_you_turn:
+            max_eval = float('-inf')
+            best_move = None
+            for i in range(6):
+                if mover[i] > 0:
+                    new_you, new_opp, extra = simulate(you_s, opp_s, i, True)
+                    if extra:
+                        ev, _ = minimax(new_you, new_opp, depth, alpha, beta, True)
+                    else:
+                        ev, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, False)
+                    if ev > max_eval:
+                        max_eval = ev
+                        best_move = i
+                    alpha = max(alpha, ev)
+                    if beta <= alpha:
+                        break
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            best_move = None
+            for i in range(6):
+                if mover[i] > 0:
+                    new_you, new_opp, extra = simulate(you_s, opp_s, i, False)
+                    if extra:
+                        ev, _ = minimax(new_you, new_opp, depth, alpha, beta, False)
+                    else:
+                        ev, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, True)
+                    if ev < min_eval:
+                        min_eval = ev
+                        best_move = i
+                    beta = min(beta, ev)
+                    if beta <= alpha:
+                        break
+            return min_eval, best_move
+    
+    _, best = minimax(tuple(you), tuple(opponent), 10, float('-inf'), float('inf'), True)
+    return best
+```
+
+This is cleaner. Now the state is always (you, opponent) from the original caller's perspective.
+
+But let me double-check the simulate function. When is_you_moving=True:
+- mover = you_s (copy)
+- other = opp_s (copy)
+- We distribute seeds from mover
+- Return (mover, other, extra) = (new_you, new_opp, extra)
+
+When is_you_moving=False:
+- mover = opp_s (copy)
+- other = you_s (copy)
+- We distribute seeds from mover (opponent)
+- Return (other, mover, extra) = (new_you, new_opp, extra)
+
+That looks correct.
+
+Now let me also handle the edge case where depth is 0 but there's a winning move. Actually, iterative deepening would be better for time management, but let me first make sure the basic algorithm works.
+
+Let me also add better move ordering (prioritize captures and extra turns) for better alpha-beta performance:
+
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    def simulate(you_s, opp_s, move, is_you_moving):
+        if is_you_moving:
+            mover = list(you_s)
+            other = list(opp_s)
+        else:
+            mover = list(opp_s)
+            other = list(you_s)
+        
+        seeds = mover[move]
+        mover[move] = 0
+        pos = move
+        
+        while seeds > 0:
+            pos = (pos + 1) % 13
+            if pos <= 5:
+                mover[pos] += 1
+            elif pos == 6:
+                mover[6] += 1
+            else:
+                other[pos - 7] += 1
+            seeds -= 1
+        
+        extra = (pos == 6)
+        
+        capture = 0
+        if pos <= 5 and mover[pos] == 1:
+            opposite = 5 - pos
+            if other[opposite] > 0:
+                capture = 1 + other[opposite]
+                mover[6] += capture
+                mover[pos] = 0
+                other[opposite] = 0
+        
+        if is_you_moving:
+            return tuple(mover), tuple(other), extra, capture
+        else:
+            return tuple(other), tuple(mover), extra, capture
+    
+    def evaluate(you_s, opp_s):
+        # More sophisticated evaluation
+        score = you_s[6] - opp_s[6]
+        # Add bonus for having more seeds on your side (potential for captures)
+        score += 0.1 * (sum(you_s[:6]) - sum(opp_s[:6]))
+        return score
+    
+    def is_game_over(you_s, opp_s):
+        return sum(you_s[:6]) == 0 or sum(opp_s[:6]) == 0
+    
+    def final_score(you_s, opp_s):
+        you_final = you_s[6] + sum(you_s[:6])
+        opp_final = opp_s[6] + sum(opp_s[:6])
+        return you_final - opp_final
+    
+    def get_moves_ordered(state, opp_state, is_you_turn):
+        mover = state if is_you_turn else opp_state
+        moves = []
+        for i in range(6):
+            if mover[i] > 0:
+                _, _, extra, capture = simulate(state, opp_state, i, is_you_turn)
+                # Priority: extra turns first, then captures, then others
+                priority = (extra, capture)
+                moves.append((priority, i))
+        moves.sort(reverse=True)
+        return [m[1] for m in moves]
+    
+    def minimax(you_s, opp_s, depth, alpha, beta, is_you_turn):
+        if is_game_over(you_s, opp_s):
+            return final_score(you_s, opp_s), None
+        
+        if depth == 0:
+            return evaluate(you_s, opp_s), None
+        
+        moves = get_moves_ordered(you_s, opp_s, is_you_turn)
+        
+        if is_you_turn:
+            max_eval = float('-inf')
+            best_move = None
+            for i in moves:
+                new_you, new_opp, extra, _ = simulate(you_s, opp_s, i, True)
+                if extra:
+                    ev, _ = minimax(new_you, new_opp, depth, alpha, beta, True)
+                else:
+                    ev, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, False)
+                if ev > max_eval:
+                    max_eval = ev
+                    best_move = i
+                alpha = max(alpha, ev)
+                if beta <= alpha:
+                    break
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            best_move = None
+            for i in moves:
+                new_you, new_opp, extra, _ = simulate(you_s, opp_s, i, False)
+                if extra:
+                    ev, _ = minimax(new_you, new_opp, depth, alpha, beta, False)
+                else:
+                    ev, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, True)
+                if ev < min_eval:
+                    min_eval = ev
+                    best_move = i
+                beta = min(beta, ev)
+                if beta <= alpha:
+                    break
+            return min_eval, best_move
+    
+    _, best = minimax(tuple(you), tuple(opponent), 8, float('-inf'), float('inf'), True)
+    return best
+```
+
+Hmm, this could still be slow. Let me add iterative deepening and time management:
+
+Actually, for simplicity, let me first test with a fixed depth. The key optimization is using alpha-beta pruning effectively with good move ordering.
+
+Let me also consider using transposition tables (memoization), but that might complicate things.
+
+Let me simplify and just go with a reasonable depth:
+
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    import time
+    start_time = time.time()
+    time_limit = 0.9  # Leave some buffer
+    
+    def simulate(you_s, opp_s, move, is_you_moving):
+        # ... same as before
+    
+    # ... rest of the code
+    
+    # Iterative deepening
+    best_move = None
+    for depth in range(1, 20):
+        if time.time() - start_time > time_limit:
+            break
+        _, move = minimax(tuple(you), tuple(opponent), depth, float('-inf'), float('inf'), True)
+        if move is not None:
+            best_move = move
+    
+    return best_move
+```
+
+Actually, let me keep it simpler without time management for now. The game tree for Kalah isn't too deep, and with good pruning, we should be able to search reasonably deep.
+
+Let me also fix a potential bug: when the game is over, I need to make sure we're returning the final score correctly.
+
+Let me write the final version:
+
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    def simulate(you_s, opp_s, move, is_you_moving):
+        if is_you_moving:
+            mover = list(you_s)
+            other = list(opp_s)
+        else:
+            mover = list(opp_s)
+            other = list(you_s)
+        
+        seeds = mover[move]
+        mover[move] = 0
+        pos = move
+        
+        while seeds > 0:
+            pos = (pos + 1) % 13
+            if pos <= 5:
+                mover[pos] += 1
+            elif pos == 6:
+                mover[6] += 1
+            else:
+                other[pos - 7] += 1
+            seeds -= 1
+        
+        extra = (pos == 6)
+        
+        if pos <= 5 and mover[pos] == 1:
+            opposite = 5 - pos
+            if other[opposite] > 0:
+                mover[6] += 1 + other[opposite]
+                mover[pos] = 0
+                other[opposite] = 0
+        
+        if is_you_moving:
+            return tuple(mover), tuple(other), extra
+        else:
+            return tuple(other), tuple(mover), extra
+
+    def evaluate(you_s, opp_s):
+        return you_s[6] - opp_s[6]
+
+    def final_score(you_s, opp_s):
+        you_final = you_s[6] + sum(you_s[:6])
+        opp_final = opp_s[6] + sum(opp_s[:6])
+        return you_final - opp_final
+
+    def minimax(you_s, opp_s, depth, alpha, beta, is_you_turn):
+        you_empty = sum(you_s[:6]) == 0
+        opp_empty = sum(opp_s[:6]) == 0
+        
+        if you_empty or opp_empty:
+            return final_score(you_s, opp_s), None
+        
+        if depth == 0:
+            return evaluate(you_s, opp_s), None
+        
+        mover = you_s if is_you_turn else opp_s
+        
+        if is_you_turn:
+            max_eval = float('-inf')
+            best_move = None
+            for i in range(6):
+                if mover[i] > 0:
+                    new_you, new_opp, extra = simulate(you_s, opp_s, i, True)
+                    if extra:
+                        ev, _ = minimax(new_you, new_opp, depth, alpha, beta, True)
+                    else:
+                        ev, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, False)
+                    if ev > max_eval:
+                        max_eval = ev
+                        best_move = i
+                    alpha = max(alpha, ev)
+                    if beta <= alpha:
+                        break
+            if best_move is None:
+                # No valid moves (shouldn't happen based on problem statement)
+                return evaluate(you_s, opp_s), None
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            best_move = None
+            for i in range(6):
+                if mover[i] > 0:
+                    new_you, new_opp, extra = simulate(you_s, opp_s, i, False)
+                    if extra:
+                        ev, _ = minimax(new_you, new_opp, depth, alpha, beta, False)
+                    else:
+                        ev, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, True)
+                    if ev < min_eval:
+                        min_eval = ev
+                        best_move = i
+                    beta = min(beta, ev)
+                    if beta <= alpha:
+                        break
+            if best_move is None:
+                return evaluate(you_s, opp_s), None
+            return min_eval, best_move
+
+    _, best = minimax(tuple(you), tuple(opponent), 10, float('-inf'), float('inf'), True)
+    return best
+```
+
+Wait, I think there might be an issue with how the game ends. If one player has no moves (all houses empty), the game ends and remaining seeds go to the other player's store.
+
+But in my minimax, if it's your turn and you have no moves, the game should already be over. Let me check the terminal condition again.
+
+Actually, I check `you_empty or opp_empty` at the start, which handles this.
+
+But wait, there could be a case where during the recursion, when it's opponent's turn but they have no seeds, we should end the game. Let me trace:
+
+- It's your turn, you have seeds, opponent is empty
+- We detect `opp_empty = True`, return final_score
+
+- It's opponent's turn, they have no seeds, you still have some
+- We detect... wait, we check both at once. If opponent is empty, game ends.
+
+Actually the logic is correct. If either side's houses are empty at the start of a turn, the game is over.
+
+But there's a subtle issue: in the rules, it says "The game ends when one player has no seeds in all of their houses". This means when it's their turn to move and they can't. So if it's your turn and opponent is empty, you can still move (if you have seeds). The game only ends when it's a player's turn and they have no seeds.
+
+Let me fix:
+
+```python
+def minimax(you_s, opp_s, depth, alpha, beta, is_you_turn):
+    mover = you_s if is_you_turn else opp_s
+    mover_empty = sum(mover[:6]) == 0
+    
+    if mover_empty:
+        # Current player can't move, game ends
+        return final_score(you_s, opp_s), None
+    
+    # ... rest
+```
+
+Hmm, but actually in my code, if mover_empty, the for loop won't find any valid moves anyway. But let me be explicit about it.
+
+Actually, let me re-read the rules: "The game ends when one player has no seeds in all of their houses (0..5 all zero). The other player moves all remaining seeds into their store."
+
+So the game ends when ANY player has empty houses, not specifically when it's their turn. Let me check this interpretation...
+
+Actually, I think the standard Kalah rule is: the game ends when one player's side is empty (after a move). At that point, the other player collects all their remaining seeds.
+
+So in my code, checking if either side is empty before evaluating is correct.
+
+Let me also make sure the depth doesn't run forever for chains of extra moves. Since I don't decrement depth on extra moves, this could be a problem. Let me add a check:
+
+Actually, extra moves are relatively rare and the total number of seeds is limited (48 in standard Kalah with 4 seeds per house), so the game will always terminate. And with alpha-beta pruning, it should be fine.
+
+Let me add move ordering for better pruning:
+
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    def simulate(you_s, opp_s, move, is_you_moving):
+        if is_you_moving:
+            mover = list(you_s)
+            other = list(opp_s)
+        else:
+            mover = list(opp_s)
+            other = list(you_s)
+        
+        seeds = mover[move]
+        mover[move] = 0
+        pos = move
+        
+        while seeds > 0:
+            pos = (pos + 1) % 13
+            if pos <= 5:
+                mover[pos] += 1
+            elif pos == 6:
+                mover[6] += 1
+            else:
+                other[pos - 7] += 1
+            seeds -= 1
+        
+        extra = (pos == 6)
+        
+        captured = 0
+        if pos <= 5 and mover[pos] == 1:
+            opposite = 5 - pos
+            if other[opposite] > 0:
+                captured = 1 + other[opposite]
+                mover[6] += captured
+                mover[pos] = 0
+                other[opposite] = 0
+        
+        if is_you_moving:
+            return tuple(mover), tuple(other), extra, captured
+        else:
+            return tuple(other), tuple(mover), extra, captured
+
+    def evaluate(you_s, opp_s):
+        return you_s[6] - opp_s[6]
+
+    def final_score(you_s, opp_s):
+        you_final = you_s[6] + sum(you_s[:6])
+        opp_final = opp_s[6] + sum(opp_s[:6])
+        return you_final - opp_final
+
+    def get_ordered_moves(you_s, opp_s, is_you_turn):
+        mover = you_s if is_you_turn else opp_s
+        moves = []
+        for i in range(6):
+            if mover[i] > 0:
+                _, _, extra, captured = simulate(you_s, opp_s, i, is_you_turn)
+                # Higher priority for extra moves and captures
+                priority = (extra, captured)
+                moves.append((priority, i))
+        moves.sort(reverse=True)
+        return [m[1] for m in moves]
+
+    def minimax(you_s, opp_s, depth, alpha, beta, is_you_turn):
+        you_empty = sum(you_s[:6]) == 0
+        opp_empty = sum(opp_s[:6]) == 0
+        
+        if you_empty or opp_empty:
+            return final_score(you_s, opp_s), None
+        
+        if depth == 0:
+            return evaluate(you_s, opp_s), None
+        
+        moves = get_ordered_moves(you_s, opp_s, is_you_turn)
+        
+        if not moves:
+            return final_score(you_s, opp_s), None
+        
+        if is_you_turn:
+            max_eval = float('-inf')
+            best_move = moves[0]
+            for i in moves:
+                new_you, new_opp, extra, _ = simulate(you_s, opp_s, i, True)
+                if extra:
+                    ev, _ = minimax(new_you, new_opp, depth, alpha, beta, True)
+                else:
+                    ev, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, False)
+                if ev > max_eval:
+                    max_eval = ev
+                    best_move = i
+                alpha = max(alpha, ev)
+                if beta <= alpha:
+                    break
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            best_move = moves[0]
+            for i in moves:
+                new_you, new_opp, extra, _ = simulate(you_s, opp_s, i, False)
+                if extra:
+                    ev, _ = minimax(new_you, new_opp, depth, alpha, beta, False)
+                else:
+                    ev, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, True)
+                if ev < min_eval:
+                    min_eval = ev
+                    best_move = i
+                beta = min(beta, ev)
+                if beta <= alpha:
+                    break
+            return min_eval, best_move
+
+    _, best = minimax(tuple(you), tuple(opponent), 10, float('-inf'), float('inf'), True)
+    return best
+```
+
+Let me also add a transposition table for efficiency:
+
+Actually, let me test first without it. The depth of 10 might be too deep or too shallow. Let me add iterative deepening with time management:
+
+```python
+import time
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    start_time = time.time()
+    time_limit = 0.9
+    
+    # ... helper functions ...
+    
+    best_move = None
+    for depth in range(1, 30):
+        if time.time() - start_time > time_limit * 0.8:
+            break
+        _, move = minimax(tuple(you), tuple(opponent), depth, float('-inf'), float('inf'), True)
+        if move is not None:
+            best_move = move
+    
+    # Fallback: return first valid move
+    if best_move is None:
+        for i in range(6):
+            if you[i] > 0:
+                return i
+    
+    return best_move
+```
+
+Let me finalize the code:
+
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    import time
+    start_time = time.time()
+    time_limit = 0.9
+    
+    def simulate(you_s, opp_s, move, is_you_moving):
+        if is_you_moving:
+            mover = list(you_s)
+            other = list(opp_s)
+        else:
+            mover = list(opp_s)
+            other = list(you_s)
+        
+        seeds = mover[move]
+        mover[move] = 0
+        pos = move
+        
+        while seeds > 0:
+            pos = (pos + 1) % 13
+            if pos <= 5:
+                mover[pos] += 1
+            elif pos == 6:
+                mover[6] += 1
+            else:
+                other[pos - 7] += 1
+            seeds -= 1
+        
+        extra = (pos == 6)
+        
+        captured = 0
+        if pos <= 5 and mover[pos] == 1:
+            opposite = 5 - pos
+            if other[opposite] > 0:
+                captured = 1 + other[opposite]
+                mover[6] += captured
+                mover[pos] = 0
+                other[opposite] = 0
+        
+        if is_you_moving:
+            return tuple(mover), tuple(other), extra, captured
+        else:
+            return tuple(other), tuple(mover), extra, captured
+
+    def evaluate(you_s, opp_s):
+        return you_s[6] - opp_s[6]
+
+    def final_score(you_s, opp_s):
+        you_final = you_s[6] + sum(you_s[:6])
+        opp_final = opp_s[6] + sum(opp_s[:6])
+        return you_final - opp_final
+
+    def get_ordered_moves(you_s, opp_s, is_you_turn):
+        mover = you_s if is_you_turn else opp_s
+        moves = []
+        for i in range(6):
+            if mover[i] > 0:
+                _, _, extra, captured = simulate(you_s, opp_s, i, is_you_turn)
+                priority = (extra, captured)
+                moves.append((priority, i))
+        moves.sort(reverse=True)
+        return [m[1] for m in moves]
+
+    def minimax(you_s, opp_s, depth, alpha, beta, is_you_turn):
+        if sum(you_s[:6]) == 0 or sum(opp_s[:6]) == 0:
+            return final_score(you_s, opp_s), None
+        
+        if depth == 0:
+            return evaluate(you_s, opp_s), None
+        
+        moves = get_ordered_moves(you_s, opp_s, is_you_turn)
+        
+        if not moves:
+            return final_score(you_s, opp_s), None
+        
+        if is_you_turn:
+            max_eval = float('-inf')
+            best_move = moves[0]
+            for i in moves:
+                new_you, new_opp, extra, _ = simulate(you_s, opp_s, i, True)
+                if extra:
+                    ev, _ = minimax(new_you, new_opp, depth, alpha, beta, True)
+                else:
+                    ev, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, False)
+                if ev > max_eval:
+                    max_eval = ev
+                    best_move = i
+                alpha = max(alpha, ev)
+                if beta <= alpha:
+                    break
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            best_move = moves[0]
+            for i in moves:
+                new_you, new_opp, extra, _ = simulate(you_s, opp_s, i, False)
+                if extra:
+                    ev, _ = minimax(new_you, new_opp, depth, alpha, beta, False)
+                else:
+                    ev, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, True)
+                if ev < min_eval:
+                    min_eval = ev
+                    best_move = i
+                beta = min(beta, ev)
+                if beta <= alpha:
+                    break
+            return min_eval, best_move
+
+    best_move = None
+    for depth in range(1, 30):
+        if time.time() - start_time > time_limit * 0.7:
+            break
+        try:
+            _, move = minimax(tuple(you), tuple(opponent), depth, float('-inf'), float('inf'), True)
+            if move is not None:
+                best_move = move
+        except:
+            break
+    
+    if best_move is None:
+        for i in range(6):
+            if you[i] > 0:
+                return i
+    
+    return best_move
+```
+
+Actually, I realize there might be an issue with the time management in the middle of a minimax call. The iterative deepening only checks time between depths, not within a depth. For a 1-second limit, this should be fine, but let me add a timeout mechanism:
+
+Actually, let's keep it simple. The iterative deepening should be sufficient for time management.
+
+Let me also add a simple transposition table to speed things up:
+
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    import time
+    start_time = time.time()
+    time_limit = 0.9
+    
+    cache = {}
+    
+    def simulate(you_s, opp_s, move, is_you_moving):
+        # ... same as before
+    
+    def minimax(you_s, opp_s, depth, alpha, beta, is_you_turn):
+        key = (you_s, opp_s, depth, is_you_turn)
+        if key in cache:
+            return cache[key]
+        
+        # ... rest of minimax
+        
+        cache[key] = (result, best_move)
+        return result, best_move
+```
+
+Actually, with alpha-beta, caching is tricky because the result depends on alpha and beta. Let me skip caching for simplicity.
+
+Let me finalize:
+
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    import time
+    start_time = time.time()
+    time_limit = 0.9
+    
+    def simulate(you_s, opp_s, move, is_you_moving):
+        if is_you_moving:
+            mover = list(you_s)
+            other = list(opp_s)
+        else:
+            mover = list(opp_s)
+            other = list(you_s)
+        
+        seeds = mover[move]
+        mover[move] = 0
+        pos = move
+        
+        while seeds > 0:
+            pos = (pos + 1) % 13
+            if pos <= 5:
+                mover[pos] += 1
+            elif pos == 6:
+                mover[6] += 1
+            else:
+                other[pos - 7] += 1
+            seeds -= 1
+        
+        extra = (pos == 6)
+        
+        captured = 0
+        if pos <= 5 and mover[pos] == 1:
+            opposite = 5 - pos
+            if other[opposite] > 0:
+                captured = 1 + other[opposite]
+                mover[6] += captured
+                mover[pos] = 0
+                other[opposite] = 0
+        
+        if is_you_moving:
+            return tuple(mover), tuple(other), extra, captured
+        else:
+            return tuple(other), tuple(mover), extra, captured
+
+    def evaluate(you_s, opp_s):
+        score = (you_s[6] - opp_s[6]) * 10
+        # Bonus for having seeds that can potentially capture or get extra turns
+        for i in range(6):
+            seeds = you_s[i]
+            if seeds > 0:
+                landing = (i + seeds) % 13
+                if landing == 6:  # Extra turn possible
+                    score += 2
+        return score
+
+    def final_score(you_s, opp_s):
+        you_final = you_s[6] + sum(you_s[:6])
+        opp_final = opp_s[6] + sum(opp_s[:6])
+        return (you_final - opp_final) * 100  # Large value for terminal states
+
+    def get_ordered_moves(you_s, opp_s, is_you_turn):
+        mover = you_s if is_you_turn else opp_s
+        moves = []
+        for i in range(6):
+            if mover[i] > 0:
+                _, _, extra, captured = simulate(you_s, opp_s, i, is_you_turn)
+                priority = (extra * 100 + captured, i)  # Prefer extra turns, then captures
+                moves.append((priority, i))
+        moves.sort(reverse=True)
+        return [m[1] for m in moves]
+
+    def minimax(you_s, opp_s, depth, alpha, beta, is_you_turn):
+        if sum(you_s[:6]) == 0 or sum(opp_s[:6]) == 0:
+            return final_score(you_s, opp_s), None
+        
+        if depth == 0:
+            return evaluate(you_s, opp_s), None
+        
+        moves = get_ordered_moves(you_s, opp_s, is_you_turn)
+        
+        if not moves:
+            return final_score(you_s, opp_s), None
+        
+        if is_you_turn:
+            max_eval = float('-inf')
+            best_move = moves[0]
+            for i in moves:
+                new_you, new_opp, extra, _ = simulate(you_s, opp_s, i, True)
+                if extra:
+                    ev, _ = minimax(new_you, new_opp, depth, alpha, beta, True)
+                else:
+                    ev, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, False)
+                if ev > max_eval:
+                    max_eval = ev
+                    best_move = i
+                alpha = max(alpha, ev)
+                if beta <= alpha:
+                    break
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            best_move = moves[0]
+            for i in moves:
+                new_you, new_opp, extra, _ = simulate(you_s, opp_s, i, False)
+                if extra:
+                    ev, _ = minimax(new_you, new_opp, depth, alpha, beta, False)
+                else:
+                    ev, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, True)
+                if ev < min_eval:
+                    min_eval = ev
+                    best_move = i
+                beta = min(beta, ev)
+                if beta <= alpha:
+                    break
+            return min_eval, best_move
+
+    best_move = None
+    you_tuple = tuple(you)
+    opp_tuple = tuple(opponent)
+    
+    for depth in range(1, 25):
+        if time.time() - start_time > time_limit * 0.7:
+            break
+        _, move = minimax(you_tuple, opp_tuple, depth, float('-inf'), float('inf'), True)
+        if move is not None:
+            best_move = move
+    
+    if best_move is None:
+        for i in range(6):
+            if you[i] > 0:
+                return i
+    
+    return best_move
+```
+
+This looks good. Let me double-check a few things:
+
+1. The simulation correctly handles wrapping around the board
+2. The capture logic is correct
+3. The evaluation function is reasonable
+4. Move ordering prioritizes good moves
+5. Time management prevents timeout
+
+I think this is a solid implementation. Let me clean it up:
+</thinking>
+
+Looking at this Kalah game, I need to implement a policy that uses minimax with alpha-beta pruning to find good moves. The key mechanics to handle are:
+1. Seed distribution around the board (skipping opponent's store)
+2. Extra turns when landing in your store
+3. Captures when landing in an empty house with seeds opposite
+
+I'll use iterative deepening to make best use of the time limit, and prioritize moves that give extra turns or captures for better pruning.
+
+<code>
+def policy(you: list[int], opponent: list[int]) -> int:
+    import time
+    start_time = time.time()
+    time_limit = 0.85
+    
+    def simulate(you_s, opp_s, move, is_you_moving):
+        if is_you_moving:
+            mover = list(you_s)
+            other = list(opp_s)
+        else:
+            mover = list(opp_s)
+            other = list(you_s)
+        
+        seeds = mover[move]
+        mover[move] = 0
+        pos = move
+        
+        while seeds > 0:
+            pos = (pos + 1) % 13  # 0-5: mover houses, 6: mover store, 7-12: other houses
+            if pos <= 5:
+                mover[pos] += 1
+            elif pos == 6:
+                mover[6] += 1
+            else:
+                other[pos - 7] += 1
+            seeds -= 1
+        
+        extra = (pos == 6)
+        captured = 0
+        
+        if pos <= 5 and mover[pos] == 1:
+            opposite = 5 - pos
+            if other[opposite] > 0:
+                captured = 1 + other[opposite]
+                mover[6] += captured
+                mover[pos] = 0
+                other[opposite] = 0
+        
+        if is_you_moving:
+            return tuple(mover), tuple(other), extra, captured
+        else:
+            return tuple(other), tuple(mover), extra, captured
+
+    def evaluate(you_s, opp_s):
+        return you_s[6] - opp_s[6]
+
+    def final_score(you_s, opp_s):
+        you_final = you_s[6] + sum(you_s[:6])
+        opp_final = opp_s[6] + sum(opp_s[:6])
+        return (you_final - opp_final) * 100
+
+    def get_ordered_moves(you_s, opp_s, is_you_turn):
+        mover = you_s if is_you_turn else opp_s
+        moves = []
+        for i in range(6):
+            if mover[i] > 0:
+                _, _, extra, captured = simulate(you_s, opp_s, i, is_you_turn)
+                priority = extra * 1000 + captured * 10 + (5 - i)
+                moves.append((priority, i))
+        moves.sort(reverse=True)
+        return [m[1] for m in moves]
+
+    def minimax(you_s, opp_s, depth, alpha, beta, is_you_turn):
+        you_sum = sum(you_s[:6])
+        opp_sum = sum(opp_s[:6])
+        
+        if you_sum == 0 or opp_sum == 0:
+            return final_score(you_s, opp_s), None
+        
+        if depth == 0:
+            return evaluate(you_s, opp_s), None
+        
+        moves = get_ordered_moves(you_s, opp_s, is_you_turn)
+        
+        if not moves:
+            return final_score(you_s, opp_s), None
+        
+        if is_you_turn:
+            max_eval = float('-inf')
+            best_move = moves[0]
+            for i in moves:
+                new_you, new_opp, extra, _ = simulate(you_s, opp_s, i, True)
+                if extra:
+                    ev, _ = minimax(new_you, new_opp, depth, alpha, beta, True)
+                else:
+                    ev, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, False)
+                if ev > max_eval:
+                    max_eval = ev
+                    best_move = i
+                alpha = max(alpha, ev)
+                if beta <= alpha:
+                    break
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            best_move = moves[0]
+            for i in moves:
+                new_you, new_opp, extra, _ = simulate(you_s, opp_s, i, False)
+                if extra:
+                    ev, _ = minimax(new_you, new_opp, depth, alpha, beta, False)
+                else:
+                    ev, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, True)
+                if ev < min_eval:
+                    min_eval = ev
+                    best_move = i
+                beta = min(beta, ev)
+                if beta <= alpha:
+                    break
+            return min_eval, best_move
+
+    best_move = None
+    you_tuple = tuple(you)
+    opp_tuple = tuple(opponent)
+    
+    # Iterative deepening
+    for depth in range(1, 30):
+        if time.time() - start_time > time_limit * 0.7:
+            break
+        _, move = minimax(you_tuple, opp_tuple, depth, float('-inf'), float('inf'), True)
+        if move is not None:
+            best_move = move
+    
+    # Fallback
+    if best_move is None:
+        for i in range(6):
+            if you[i] > 0:
+                return i
+    
+    return best_move
+</code>

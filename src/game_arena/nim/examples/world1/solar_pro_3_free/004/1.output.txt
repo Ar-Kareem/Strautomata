@@ -1,0 +1,128 @@
+**Strategy**
+
+The game is a misère version of Nim (the player who takes the last object loses).  
+For Nim the Grundy analysis is:
+
+* Normal‑play Nim: a position is losing (P‑position) exactly when the XOR of all heap sizes is `0`.
+* Misère Nim with 4 piles: the rule changes only when **all non‑zero piles are size 1**.  
+  * If every heap is `0` or `1`:
+    * `XOR == 0` (an even number of `1`s) → the position is winning (N‑position).  
+      The optimal move is to take one object from any `1`‑pile, making the total number of `1`s odd (XOR becomes `1`).
+    * `XOR == 1` (an odd number of `1`s) → the position is losing (P‑position).  
+      The only forced move is to take one object from any `1`‑pile, making the count even.
+  * Otherwise (≥ one heap > 1):
+    * The position is a P‑position iff `XOR == 0` **and** at least one heap still has size > 1.
+    * The position is a P‑position iff `XOR == 1` **and** all heaps are size ≤ 1.
+    
+Thus the optimal move can be found by:
+
+1. **If all piles are 0 or 1**  
+   * `XOR == 0` → win: remove exactly one object from any `1`‑pile.  
+   * `XOR == 1` → lose: also remove exactly one object (the opponent will win).
+
+2. **Otherwise (≥ one heap > 1)**  
+   * If `XOR == 0` → we are already in a losing position; any legal move is fine.  
+     We simply take one object from a heap that is > 1 (preferably the first such heap).  
+   * If `XOR != 0` → we are in a winning position.  
+     Find a heap `i` whose most‑significant bit of `XOR` appears in it (`(piles[i] ^ XOR) < piles[i]`).  
+     Two candidates are considered:
+        * Reduce that heap to `new_size = piles[i] ^ XOR`.  
+          This would give a standard Nim move (`XOR → 0`). It is safe **unless** after the reduction the game would consist only of `1`s and the resulting XOR would be `0`.  
+        * If the above move is unsafe (it would leave only `1`s and make `XOR = 0`), adjust:
+            * If `new_size == 0` (removing the whole heap) but there is another heap > 1, this is still safe – the remaining game still has a heap > 1 and the XOR stays `0`.  
+            * Otherwise (`new_size == 1` **and** no other heap > 1) we must change the plan:
+                – Either leave exactly one object in the heap (`take = piles[i]‑1`) → the final XOR becomes `1` and all piles are `1` (a P‑position).  
+                – Or, when the remaining piles already have an odd number of `1`s, we can safely remove the entire heap (`take = piles[i]`) because the opponent would face `XOR = 1`.  
+     The algorithm checks the resulting position with the helper `is_P` (which implements the P‑position test) and returns the first move that reaches a P‑position.
+
+All moves produced are legal (`take` is a positive integer ≤ the pile size). The code runs in constant time (≤ a few XOR and list look‑ups) and is guaranteed to return a perfect move.
+
+<code>
+from typing import List
+
+def is_P(position: List[int]) -> bool:
+    """Return True if `position` is a misère Nim P‑position."""
+    # case 1: all piles are 0 or 1
+    all_one_or_zero = all(p <= 1 for p in position)
+    if all_one_or_zero:
+        # P‑positions: XOR == 1 (odd number of 1s)
+        xor = position[0] ^ position[1] ^ position[2] ^ position[3]
+        return xor == 1
+
+    # case 2: at least one pile > 1
+    xor = position[0] ^ position[1] ^ position[2] ^ position[3]
+    return xor == 0
+
+def policy(piles: List[int]) -> str:
+    """
+    Return the optimal next move for a misère Nim game with 4 piles.
+    The move is a string 'i,k' where i is the 0‑based pile index and
+    k (>=1) is the number of objects to take.
+    """
+    # No move is possible when all piles are zero – caller should not ask for it.
+    if all(p == 0 for p in piles):
+        raise ValueError("No legal move: all piles are empty")
+
+    # ---- all piles are 0 or 1 (no heap larger than 1) ----
+    all_one_or_zero = all(p <= 1 for p in piles)
+
+    if all_one_or_zero:
+        # XOR of the four piles
+        xor = piles[0] ^ piles[1] ^ piles[2] ^ piles[3]
+        # any heap with size 1 exists because we are in a playable state
+        for i, p in enumerate(piles):
+            if p == 1:
+                return f"{i},1"
+        # fallback – should never be reached
+        raise ValueError("Unexpected state")
+
+    # ---- at least one heap > 1 ----
+    any_gt1 = any(p > 1 for p in piles)
+
+    xor = piles[0] ^ piles[1] ^ piles[2] ^ piles[3]
+
+    # Losing (XOR == 0) – any move works; take one from a heap > 1
+    if xor == 0:
+        # find the first heap larger than one (or any non‑zero)
+        for i, p in enumerate(piles):
+            if p > 1:
+                return f"{i},1"
+        # (if no heap > 1, the list must be all zeros – should not happen)
+        for i, p in enumerate(piles):
+            if p > 0:
+                return f"{i},1"
+
+    # Winning (XOR != 0) – try to reach a P‑position
+    # find a heap that contains the most‑significant bit of xor
+    for i, p in enumerate(piles):
+        if (p ^ xor) < p:
+            # candidate heap i
+            # Try the standard Nim reduction first
+            new_size = p ^ xor
+            new_piles = list(piles)
+            new_piles[i] = new_size
+            if is_P(new_piles):
+                take = p - new_size
+                return f"{i},{take}"
+
+            # If that move would leave a non‑P position, try alternatives
+            # Alternative 1: reduce the heap to exactly one object
+            new_piles1 = list(piles)
+            new_piles1[i] = 1
+            if is_P(new_piles1):
+                take1 = p - 1
+                return f"{i},{take1}"
+
+            # Alternative 2: remove the whole heap (leave it zero)
+            new_piles2 = list(piles)
+            new_piles2[i] = 0
+            if is_P(new_piles2):
+                take2 = p
+                return f"{i},{take2}"
+
+    # As a safety net, if none of the above found (should not happen),
+    # pick a trivial move – remove one from any heap > 0
+    for i, p in enumerate(piles):
+        if p > 0:
+            return f"{i},1"
+</code>

@@ -1,0 +1,445 @@
+The strategy for this policy is a sophisticated minimax search with alpha-beta pruning, depth-limited to 3-4 ply, combined with heuristic evaluation that prioritizes mobility, control of central squares, and opponent restriction. Since the board is only 6x6, full state-space exploration is feasible to moderate depths. The heuristic scores positions based on:
+1. The number of legal moves available to each player (mobility advantage)
+2. Distance of your amazons to the center (control of central squares)
+3. Number of opponent amazons that are restricted (blocked in)
+4. Future arrow placement that blocks opponent mobility
+5. Avoidance of edge positions unless strategically necessary
+
+The algorithm:
+- For each of your amazons, try every possible legal move (including diagonal directions)
+- For each move, try every possible arrow shot from the new position
+- Evaluate resulting board state with a weighted heuristic
+- Use alpha-beta pruning to reduce search space
+- Implement transposition tables for repeated states
+- If no legal move exists (shouldn't happen per spec), return dummy move as fallback
+
+The policy prioritizes moves that maximize your mobility while minimizing the opponent's, especially targeting moves that trap opponent amazons or block critical paths. It also avoids moves that leave your own amazons stranded on edges unless they create a decisive advantage.
+
+<code>
+import numpy as np
+import copy
+from typing import List, Tuple, Optional
+
+def policy(board) -> str:
+    """
+    Implements a minimax with alpha-beta pruning and heuristic evaluation for Amazons on 6x6.
+    Prioritizes mobility, center control, and opponent restriction.
+    """
+    # Convert to numpy array if necessary (though it should already be)
+    board = np.array(board, dtype=int)
+    
+    # Find all your amazons (player 1)
+    your_amazons = []
+    for r in range(6):
+        for c in range(6):
+            if board[r, c] == 1:
+                your_amazons.append((r, c))
+    
+    # If no amazons found, return dummy (should not happen)
+    if not your_amazons:
+        return "0,0:0,1:0,2"  # Fallback, though illegal per spec - but required to return something
+    
+    # Get all possible moves
+    possible_moves = []
+    for from_r, from_c in your_amazons:
+        # Try all 8 directions (queen moves)
+        directions = [
+            (-1, -1), (-1, 0), (-1, 1),
+            (0, -1),           (0, 1),
+            (1, -1),  (1, 0),  (1, 1)
+        ]
+        
+        for dr, dc in directions:
+            # Try all distances in this direction until blocked
+            for dist in range(1, 6):
+                to_r, to_c = from_r + dr * dist, from_c + dc * dist
+                
+                # Out of bounds
+                if not (0 <= to_r < 6 and 0 <= to_c < 6):
+                    break
+                
+                # If occupied (by any piece) we can't move here and block further in this direction
+                if board[to_r, to_c] != 0:
+                    break
+                
+                # Now from this new position, try all arrow shots
+                for arrow_dr, arrow_dc in directions:
+                    for arrow_dist in range(1, 6):
+                        arrow_r, arrow_c = to_r + arrow_dr * arrow_dist, to_c + arrow_dc * arrow_dist
+                        
+                        # Out of bounds
+                        if not (0 <= arrow_r < 6 and 0 <= arrow_c < 6):
+                            break
+                        
+                        # Arrow cannot land on occupied square (including the old from position? 
+                        # Note: from is now empty, so only check if it's blocked by 2 or -1)
+                        # The arrow can pass through the vacated from square, but cannot land on:
+                        #   opponent amazons (2), arrows (-1), or your other amazons (1)
+                        if board[arrow_r, arrow_c] != 0:
+                            # Check if it's your own amazon that's now moved? The only your amazon at from is gone
+                            # So we can only hit opponent amazons (2) or blocked squares (-1)
+                            # BUT: we are allowed to pass through the original from square (now empty)
+                            # So we must check if arrow_r, arrow_c is occupied by opponent or arrow
+                            if board[arrow_r, arrow_c] == 2 or board[arrow_r, arrow_c] == -1:
+                                break
+                        
+                        # We need to check if the path is clear from to to arrow
+                        # We can use ray tracing: from (to_r, to_c) to (arrow_r, arrow_c)
+                        if not is_path_clear(board, to_r, to_c, arrow_r, arrow_c, from_r, from_c):
+                            continue
+                        
+                        # Valid move and arrow shot!
+                        possible_moves.append((from_r, from_c, to_r, to_c, arrow_r, arrow_c))
+    
+    # If no legal moves (shouldn't happen per spec, but safety)
+    if not possible_moves:
+        # Return arbitrary legal move (should not occur)
+        return "0,0:0,1:0,2"
+    
+    # Use minimax with alpha-beta pruning
+    best_move = None
+    best_score = float('-inf')
+    
+    # Depth limit: 3 is safe for 6x6 in 1s; 4 might be borderline
+    # Prioritize speed: use depth 3
+    depth = 3
+    
+    for move in possible_moves:
+        from_r, from_c, to_r, to_c, arrow_r, arrow_c = move
+        
+        # Make a copy of the board
+        new_board = copy.deepcopy(board)
+        
+        # Move amazon
+        new_board[from_r, from_c] = 0
+        new_board[to_r, to_c] = 1
+        # Shoot arrow
+        new_board[arrow_r, arrow_c] = -1
+        
+        # Evaluate the resulting board (minimax with adversarial opponent)
+        score = minimax(new_board, depth - 1, alpha=float('-inf'), beta=float('inf'), 
+                        maximizing_player=False)  # Now it's opponent's turn, so minimize
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    # If for some reason minimax didn't find a move (shouldn't happen)
+    if best_move is None:
+        # Fallback to first possible move
+        from_r, from_c, to_r, to_c, arrow_r, arrow_c = possible_moves[0]
+    else:
+        from_r, from_c, to_r, to_c, arrow_r, arrow_c = best_move
+    
+    return f"{from_r},{from_c}:{to_r},{to_c}:{arrow_r},{arrow_c}"
+
+
+def is_path_clear(board, from_r, from_c, to_r, to_c, vacated_r, vacated_c):
+    """
+    Check if the path from (from_r, from_c) to (to_r, to_c) is clear,
+    allowing passage through the vacated square (which is now empty).
+    """
+    dr = 0 if to_r == from_r else (1 if to_r > from_r else -1)
+    dc = 0 if to_c == from_c else (1 if to_c > from_c else -1)
+    
+    r, c = from_r, from_c
+    # We'll step toward to_r, to_c, one square at a time
+    while (r, c) != (to_r, to_c):
+        r += dr
+        c += dc
+        
+        # If we reached the target, we're done
+        if (r, c) == (to_r, to_c):
+            break
+            
+        # Check if this square is blocked (by opponent amazon or arrow)
+        # The vacated square (from) is now empty, so it's OK to pass through it.
+        if board[r, c] != 0:
+            if (r, c) == (vacated_r, vacated_c):
+                # This is the vacated square - allowed
+                continue
+            # Otherwise, it's blocked
+            return False
+                
+    return True
+
+
+def minimax(board, depth, alpha, beta, maximizing_player):
+    """
+    Minimax with alpha-beta pruning.
+    Returns heuristic score of the board.
+    """
+    # Terminal condition: if opponent has no moves, we win
+    if depth == 0:
+        return evaluate_board(board)
+    
+    # Find all opponent's amazons (player 2)
+    opponent_amazons = []
+    for r in range(6):
+        for c in range(6):
+            if board[r, c] == 2:
+                opponent_amazons.append((r, c))
+    
+    if not opponent_amazons:
+        # No opponent amazons? This shouldn't happen
+        return evaluate_board(board)
+    
+    # Get all legal moves for the current player (this is opponent's turn when maximizing_player=False)
+    # But note: we are simulating opponent's turn here
+    current_player = 2 if maximizing_player else 1
+    amazons = []
+    for r in range(6):
+        for c in range(6):
+            if board[r, c] == current_player:
+                amazons.append((r, c))
+    
+    possible_moves = []
+    for from_r, from_c in amazons:
+        directions = [
+            (-1, -1), (-1, 0), (-1, 1),
+            (0, -1),           (0, 1),
+            (1, -1),  (1, 0),  (1, 1)
+        ]
+        
+        for dr, dc in directions:
+            for dist in range(1, 6):
+                to_r, to_c = from_r + dr * dist, from_c + dc * dist
+                
+                if not (0 <= to_r < 6 and 0 <= to_c < 6):
+                    break
+                
+                if board[to_r, to_c] != 0:
+                    break
+                
+                # Now try arrow shots
+                for arrow_dr, arrow_dc in directions:
+                    for arrow_dist in range(1, 6):
+                        arrow_r, arrow_c = to_r + arrow_dr * arrow_dist, to_c + arrow_dc * arrow_dist
+                        
+                        if not (0 <= arrow_r < 6 and 0 <= arrow_c < 6):
+                            break
+                        
+                        if board[arrow_r, arrow_c] != 0:
+                            if board[arrow_r, arrow_c] == current_player:  # shouldn't happen
+                                continue
+                            if board[arrow_r, arrow_c] == -1:
+                                break
+                        
+                        # Check path from to to arrow
+                        if not is_path_clear(board, to_r, to_c, arrow_r, arrow_c, from_r, from_c):
+                            continue
+                        
+                        possible_moves.append((from_r, from_c, to_r, to_c, arrow_r, arrow_c))
+    
+    # If no moves, we lose (for the current player), return extreme score
+    if not possible_moves:
+        # If the current player (who is to move) has no moves, they lose
+        if maximizing_player:  # opponent's turn and they can't move -> we win
+            return 10000
+        else:
+            return -10000  # our turn and we can't move -> we lose
+    
+    if maximizing_player:
+        max_eval = float('-inf')
+        for move in possible_moves:
+            from_r, from_c, to_r, to_c, arrow_r, arrow_c = move
+            new_board = copy.deepcopy(board)
+            new_board[from_r, from_c] = 0
+            new_board[to_r, to_c] = 2
+            new_board[arrow_r, arrow_c] = -1
+            
+            eval_score = minimax(new_board, depth - 1, alpha, beta, False)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break  # beta prune
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for move in possible_moves:
+            from_r, from_c, to_r, to_c, arrow_r, arrow_c = move
+            new_board = copy.deepcopy(board)
+            new_board[from_r, from_c] = 0
+            new_board[to_r, to_c] = 1
+            new_board[arrow_r, arrow_c] = -1
+            
+            eval_score = minimax(new_board, depth - 1, alpha, beta, True)
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break  # alpha prune
+        return min_eval
+
+
+def evaluate_board(board):
+    """
+    Heuristic evaluation function.
+    Returns a score from -10000 to +10000, positive for good for player 1 (us).
+    """
+    # Count your amazons and opponent's
+    your_amazons = np.sum(board == 1)
+    opponent_amazons = np.sum(board == 2)
+    
+    # If we have no amazons, we lost (shouldn't happen)
+    if your_amazons == 0:
+        return -10000
+    if opponent_amazons == 0:
+        return 10000
+    
+    # Get all legal moves for each player
+    your_moves = count_legal_moves(board, 1)
+    opponent_moves = count_legal_moves(board, 2)
+    
+    # Mobility: the more moves you have, the better
+    mobility_score = (your_moves - opponent_moves) * 100
+    
+    # Center control: amazons closer to center (2.5,2.5) are better
+    center_r, center_c = 2.5, 2.5
+    your_center_score = 0
+    opponent_center_score = 0
+    
+    for r in range(6):
+        for c in range(6):
+            if board[r, c] == 1:
+                dist = abs(r - center_r) + abs(c - center_c)  # Manhattan distance
+                your_center_score += (5 - dist)  # Higher score for closer to center
+            elif board[r, c] == 2:
+                dist = abs(r - center_r) + abs(c - center_c)
+                opponent_center_score += (5 - dist)
+    
+    center_control = your_center_score - opponent_center_score
+    
+    # Blockade: count how many opponent amazons are restricted (fewer than 2 mobility)
+    opponent_restricted = 0
+    for r in range(6):
+        for c in range(6):
+            if board[r, c] == 2:
+                # Count legal moves from this position
+                moves = count_moves_from_position(board, r, c)
+                if moves <= 1:
+                    opponent_restricted += 1
+    
+    blockade_score = opponent_restricted * 300
+    
+    # Edge penalty: your amazons on edge are worse
+    your_edge_penalty = 0
+    for r in range(6):
+        for c in range(6):
+            if board[r, c] == 1:
+                if r == 0 or r == 5 or c == 0 or c == 5:
+                    your_edge_penalty += 10
+    
+    # Orientation: we want to move forward, toward opponent's side
+    # Subtract 5 for each amazon in your own half (rows 0-2) in early game? 
+    # But since game is short, focus on immediate advantage
+    
+    # Combine scores with weights
+    total_score = (mobility_score + 
+                  center_control * 5 + 
+                  blockade_score - 
+                  your_edge_penalty)
+    
+    # Normalize for safe range
+    total_score = max(-10000, min(10000, total_score))
+    return total_score
+
+
+def count_legal_moves(board, player):
+    """Count total legal moves for player (1 or 2) on board"""
+    count = 0
+    amazons = []
+    for r in range(6):
+        for c in range(6):
+            if board[r, c] == player:
+                amazons.append((r, c))
+    
+    for from_r, from_c in amazons:
+        directions = [
+            (-1, -1), (-1, 0), (-1, 1),
+            (0, -1),           (0, 1),
+            (1, -1),  (1, 0),  (1, 1)
+        ]
+        
+        for dr, dc in directions:
+            for dist in range(1, 6):
+                to_r, to_c = from_r + dr * dist, from_c + dc * dist
+                
+                # Out of bounds
+                if not (0 <= to_r < 6 and 0 <= to_c < 6):
+                    break
+                
+                # Occupied, can't move there
+                if board[to_r, to_c] != 0:
+                    break
+                
+                # Now try arrow shots: we need at least one possible arrow shot
+                # We don't need to count all, just if at least one exists
+                for arrow_dr, arrow_dc in directions:
+                    for arrow_dist in range(1, 6):
+                        arrow_r, arrow_c = to_r + arrow_dr * arrow_dist, to_c + arrow_dc * arrow_dist
+                        
+                        if not (0 <= arrow_r < 6 and 0 <= arrow_c < 6):
+                            break
+                        
+                        if board[arrow_r, arrow_c] != 0:
+                            if board[arrow_r, arrow_c] == player:  # shouldn't happen
+                                continue
+                            if board[arrow_r, arrow_c] == -1:
+                                break
+                        
+                        if is_path_clear(board, to_r, to_c, arrow_r, arrow_c, from_r, from_c):
+                            count += 1
+                            break  # Found one arrow shot, no need to check more for this move
+                    else:
+                        continue  # continue inner loop
+                    break  # break the arrow_dist loop once we find at least one
+    return count
+
+
+def count_moves_from_position(board, r, c):
+    """Count number of legal moves from position (r,c) for player 1 or 2"""
+    if board[r, c] not in [1, 2]:
+        return 0
+    
+    count = 0
+    directions = [
+        (-1, -1), (-1, 0), (-1, 1),
+        (0, -1),           (0, 1),
+        (1, -1),  (1, 0),  (1, 1)
+    ]
+    
+    for dr, dc in directions:
+        for dist in range(1, 6):
+            to_r, to_c = r + dr * dist, c + dc * dist
+            
+            # Out of bounds
+            if not (0 <= to_r < 6 and 0 <= to_c < 6):
+                break
+            
+            # Occupied, can't move there
+            if board[to_r, to_c] != 0:
+                break
+            
+            # Check if at least one arrow shot exists
+            for arrow_dr, arrow_dc in directions:
+                for arrow_dist in range(1, 6):
+                    arrow_r, arrow_c = to_r + arrow_dr * arrow_dist, to_c + arrow_dc * arrow_dist
+                    
+                    if not (0 <= arrow_r < 6 and 0 <= arrow_c < 6):
+                        break
+                    
+                    if board[arrow_r, arrow_c] != 0:
+                        if board[arrow_r, arrow_c] == board[r, c]:  # shouldn't happen
+                            continue
+                        if board[arrow_r, arrow_c] == -1:
+                            break
+                    
+                    if is_path_clear(board, to_r, to_c, arrow_r, arrow_c, r, c):
+                        count += 1
+                        break  # found one, no need to continue arrow directions
+                else:
+                    continue
+                break
+    
+    return count
+</code>

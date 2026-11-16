@@ -1,0 +1,445 @@
+The strategy for this policy is a fast tactical/positional Go policy that always returns a legal move. It prioritizes (1) immediate captures, (2) saving own groups in atari, (3) creating atari/pressure on nearby enemy groups, and (4) sensible opening/shape (corners and star-points early, then more central influence). It only searches a pruned set of candidate moves (urgent liberties, nearby empty points, and star points) and evaluates them with a lightweight simulation that enforces legality (no playing on occupied points, no suicide unless capturing, and a conservative superko check using stored position hashes). If no legal move is found, it passes.
+
+<code>
+from __future__ import annotations
+
+from collections import deque
+from typing import List, Tuple, Dict, Set, Optional
+
+
+N = 19
+NN = N * N
+
+# Board encoding: 0 empty, 1 = me, 2 = opponent
+
+
+def _idx(r: int, c: int) -> int:
+    return (r - 1) * N + (c - 1)
+
+
+def _rc(i: int) -> tuple[int, int]:
+    return (i // N + 1, i % N + 1)
+
+
+# Precompute neighbors for speed
+_NEI: List[List[int]] = []
+for i in range(NN):
+    r, c = i // N, i % N
+    ns = []
+    if r > 0:
+        ns.append(i - N)
+    if r < N - 1:
+        ns.append(i + N)
+    if c > 0:
+        ns.append(i - 1)
+    if c < N - 1:
+        ns.append(i + 1)
+    _NEI.append(ns)
+
+
+def _list_to_bits(stones: List[Tuple[int, int]]) -> int:
+    b = 0
+    for r, c in stones:
+        if 1 <= r <= N and 1 <= c <= N:
+            b |= 1 << _idx(r, c)
+    return b
+
+
+def _build_board(me: List[Tuple[int, int]], opp: List[Tuple[int, int]]) -> List[int]:
+    board = [0] * NN
+    for r, c in me:
+        board[_idx(r, c)] = 1
+    for r, c in opp:
+        board[_idx(r, c)] = 2
+    return board
+
+
+def _group_and_liberties(board: List[int], start: int, color: int, visited: Optional[List[bool]] = None):
+    """Return (stones_list, liberties_set)."""
+    q = [start]
+    stones = []
+    libs: Set[int] = set()
+    if visited is not None:
+        visited[start] = True
+    while q:
+        x = q.pop()
+        stones.append(x)
+        for y in _NEI[x]:
+            v = board[y]
+            if v == 0:
+                libs.add(y)
+            elif v == color:
+                if visited is None:
+                    # local BFS: we still need to avoid revisiting
+                    # use a small local set
+                    pass
+                # We'll handle visited externally when provided; otherwise local visited set.
+    # The above is incomplete without local visited; implement robustly below.
+
+
+def _group_and_liberties_local(board: List[int], start: int, color: int):
+    """Local BFS without shared visited."""
+    q = [start]
+    seen = {start}
+    stones = []
+    libs: Set[int] = set()
+    while q:
+        x = q.pop()
+        stones.append(x)
+        for y in _NEI[x]:
+            v = board[y]
+            if v == 0:
+                libs.add(y)
+            elif v == color and y not in seen:
+                seen.add(y)
+                q.append(y)
+    return stones, libs
+
+
+def _compute_groups(board: List[int], color: int):
+    """
+    Compute group_id map and group liberties count for one color.
+    Returns: gid_map (len NN, -1 for not color), group_libs (list), group_stones (list of lists)
+    """
+    gid_map = [-1] * NN
+    visited = [False] * NN
+    group_libs: List[int] = []
+    group_stones: List[List[int]] = []
+
+    gid = 0
+    for i in range(NN):
+        if board[i] != color or visited[i]:
+            continue
+        # BFS
+        q = [i]
+        visited[i] = True
+        stones: List[int] = []
+        libs: Set[int] = set()
+        while q:
+            x = q.pop()
+            gid_map[x] = gid
+            stones.append(x)
+            for y in _NEI[x]:
+                v = board[y]
+                if v == 0:
+                    libs.add(y)
+                elif v == color and not visited[y]:
+                    visited[y] = True
+                    q.append(y)
+        group_stones.append(stones)
+        group_libs.append(len(libs))
+        gid += 1
+
+    return gid_map, group_libs, group_stones
+
+
+def _simulate_move_me(
+    board: List[int],
+    me_bits: int,
+    opp_bits: int,
+    move: int,
+) -> Optional[tuple[List[int], int, int, int, int, int]]:
+    """
+    Simulate placing my stone at index move.
+    Returns None if illegal (occupied or suicide),
+    else returns (new_board, new_me_bits, new_opp_bits, captures, self_libs, atari_created).
+    """
+    if board[move] != 0:
+        return None
+
+    new_board = board[:]  # 361 ints, cheap enough
+    new_board[move] = 1
+
+    captured_mask = 0
+    captures = 0
+
+    # Capture any adjacent opponent groups with no liberties after placement
+    for nb in _NEI[move]:
+        if new_board[nb] == 2:
+            stones, libs = _group_and_liberties_local(new_board, nb, 2)
+            if len(libs) == 0:
+                for s in stones:
+                    new_board[s] = 0
+                    captured_mask |= 1 << s
+                captures += len(stones)
+
+    # Check my own liberties (after captures)
+    my_stones, my_libs = _group_and_liberties_local(new_board, move, 1)
+    self_libs = len(my_libs)
+    if self_libs == 0:
+        return None  # suicide
+
+    # Atari created on neighboring opponent groups (after captures)
+    atari_created = 0
+    seen_opp_reps: Set[int] = set()
+    for nb in _NEI[move]:
+        if new_board[nb] == 2:
+            stones, libs = _group_and_liberties_local(new_board, nb, 2)
+            rep = stones[0]
+            if rep in seen_opp_reps:
+                continue
+            seen_opp_reps.add(rep)
+            if len(libs) == 1:
+                atari_created += 1
+
+    new_me_bits = me_bits | (1 << move)
+    new_opp_bits = opp_bits & ~captured_mask
+
+    return new_board, new_me_bits, new_opp_bits, captures, self_libs, atari_created
+
+
+def _opening_points() -> List[Tuple[int, int]]:
+    # Practical order: corners first, then other star points, then nearby expansions
+    return [
+        (4, 4), (4, 16), (16, 4), (16, 16),
+        (10, 10),
+        (4, 10), (10, 4), (10, 16), (16, 10),
+        (3, 3), (3, 17), (17, 3), (17, 17),
+        (5, 5), (5, 15), (15, 5), (15, 15),
+    ]
+
+
+def _positional_bonus(total_stones: int, r: int, c: int) -> float:
+    # Early: corners/sides; Later: center-ish influence
+    # corner distance: 0 at edge, bigger toward center
+    corner_dist = min(r - 1, N - r, c - 1, N - c)
+    center_manh = abs(r - 10) + abs(c - 10)
+
+    if total_stones < 40:
+        # Prefer not on 1st line early; modest preference for 3-4 line
+        if corner_dist == 0:
+            return -2.5
+        if corner_dist == 1:
+            return 2.0
+        if corner_dist == 2:
+            return 3.0
+        if corner_dist == 3:
+            return 2.0
+        return 0.5 - 0.03 * center_manh
+    else:
+        # Mid/late: reduce extreme edge bias, mild center preference
+        edge_pen = -0.5 if corner_dist == 0 else 0.0
+        return edge_pen + (3.0 - center_manh / 6.0)
+
+
+def _looks_like_filling_own_eye(board: List[int], move: int, captures: int) -> bool:
+    if captures > 0:
+        return False
+    # If all neighbors are my stones, likely an eye fill (simple heuristic)
+    for nb in _NEI[move]:
+        if board[nb] != 1:
+            return False
+    return True
+
+
+def policy(
+    me: list[tuple[int, int]],
+    opponent: list[tuple[int, int]],
+    memory: dict
+) -> tuple[tuple[int, int], dict]:
+    # Initialize memory
+    seen = memory.get("seen")
+    if not isinstance(seen, set):
+        seen = set()
+    memory["seen"] = seen
+
+    board = _build_board(me, opponent)
+    me_bits = _list_to_bits(me)
+    opp_bits = _list_to_bits(opponent)
+
+    # Record current position (conservative superko)
+    seen.add((me_bits, opp_bits))
+
+    total = len(me) + len(opponent)
+
+    # Empty board opening
+    if total == 0:
+        for r, c in _opening_points():
+            mv = _idx(r, c)
+            sim = _simulate_move_me(board, me_bits, opp_bits, mv)
+            if sim is None:
+                continue
+            _, nmb, nob, _, _, _ = sim
+            if (nmb, nob) in seen:
+                continue
+            return (r, c), memory
+        # Fallback: first legal point
+        for i in range(NN):
+            sim = _simulate_move_me(board, me_bits, opp_bits, i)
+            if sim is None:
+                continue
+            _, nmb, nob, _, _, _ = sim
+            if (nmb, nob) in seen:
+                continue
+            return _rc(i), memory
+        return (0, 0), memory
+
+    # Compute groups once for urgent candidates and connection info
+    my_gid, my_glibs, _my_gstones = _compute_groups(board, 1)
+    opp_gid, opp_glibs, _opp_gstones = _compute_groups(board, 2)
+
+    urgent: List[int] = []
+
+    # 1) Capture opponent groups in atari (lib=1)
+    # For each opponent stone, if its group has 1 liberty, add that liberty.
+    # Avoid too much duplicate work by using group ids.
+    opp_groups_seen: Set[int] = set()
+    for i in range(NN):
+        if board[i] != 2:
+            continue
+        gid = opp_gid[i]
+        if gid < 0 or gid in opp_groups_seen:
+            continue
+        opp_groups_seen.add(gid)
+        if opp_glibs[gid] == 1:
+            stones, libs = _group_and_liberties_local(board, i, 2)
+            if libs:
+                urgent.append(next(iter(libs)))
+
+    # 2) Save my groups in atari (lib=1)
+    my_groups_seen: Set[int] = set()
+    for i in range(NN):
+        if board[i] != 1:
+            continue
+        gid = my_gid[i]
+        if gid < 0 or gid in my_groups_seen:
+            continue
+        my_groups_seen.add(gid)
+        if my_glibs[gid] == 1:
+            stones, libs = _group_and_liberties_local(board, i, 1)
+            if libs:
+                urgent.append(next(iter(libs)))
+
+    # Candidate generation: urgent + nearby empties + star points
+    cand_set: Set[int] = set()
+
+    for mv in urgent:
+        if 0 <= mv < NN and board[mv] == 0:
+            cand_set.add(mv)
+
+    # Nearby empties within radius 2 (by 4-neighbor steps)
+    stones_all = []
+    for r, c in me:
+        stones_all.append(_idx(r, c))
+    for r, c in opponent:
+        stones_all.append(_idx(r, c))
+
+    for s in stones_all:
+        # BFS up to depth 2 from each stone
+        q = deque([(s, 0)])
+        local_seen = {s}
+        while q:
+            x, d = q.popleft()
+            if d == 2:
+                continue
+            for nb in _NEI[x]:
+                if nb in local_seen:
+                    continue
+                local_seen.add(nb)
+                if board[nb] == 0:
+                    cand_set.add(nb)
+                q.append((nb, d + 1))
+
+    # Star/opening points as global candidates
+    for r, c in _opening_points():
+        mv = _idx(r, c)
+        if board[mv] == 0:
+            cand_set.add(mv)
+
+    # If still tiny candidate set, add all empties (rare)
+    if len(cand_set) < 10:
+        for i in range(NN):
+            if board[i] == 0:
+                cand_set.add(i)
+
+    # Quick prune to keep evaluation fast
+    # Rank by local activity: adjacent occupied/opponent
+    def quick_activity(mv: int) -> int:
+        score = 0
+        for nb in _NEI[mv]:
+            if board[nb] == 1:
+                score += 2
+            elif board[nb] == 2:
+                score += 3
+        return score
+
+    cand_list = list(cand_set)
+    cand_list.sort(key=quick_activity, reverse=True)
+
+    # Keep urgency plus top-K
+    K = 80
+    if len(cand_list) > K:
+        cand_list = cand_list[:K]
+
+    best_mv: Optional[int] = None
+    best_score = -10**18
+
+    for mv in cand_list:
+        sim = _simulate_move_me(board, me_bits, opp_bits, mv)
+        if sim is None:
+            continue
+        new_board, nmb, nob, captures, self_libs, atari_created = sim
+
+        # Superko (conservative): don't repeat any previous seen position
+        if (nmb, nob) in seen:
+            continue
+
+        r, c = _rc(mv)
+
+        # Connection bonus: number of distinct neighboring friendly groups in current position
+        neigh_gids = set()
+        for nb in _NEI[mv]:
+            if board[nb] == 1:
+                g = my_gid[nb]
+                if g >= 0:
+                    neigh_gids.add(g)
+        connect_bonus = 0
+        if len(neigh_gids) >= 2:
+            connect_bonus = 60
+        elif len(neigh_gids) == 1:
+            connect_bonus = 10
+
+        # Eye fill penalty (unless capturing)
+        eye_pen = 0
+        if _looks_like_filling_own_eye(board, mv, captures):
+            eye_pen = 120
+
+        # Self-atari penalty
+        self_atari_pen = 0
+        if self_libs == 1:
+            self_atari_pen = 180
+
+        pos = _positional_bonus(total, r, c)
+
+        # Main score (tuned to favor tactics first)
+        score = 0.0
+        score += 1200.0 * captures
+        score += 120.0 * atari_created
+        score += connect_bonus
+        score += 2.5 * self_libs
+        score -= eye_pen
+        score -= self_atari_pen
+        score += pos
+
+        # Small preference for playing rather than passing: implicit since pass not considered here
+        if score > best_score:
+            best_score = score
+            best_mv = mv
+
+    if best_mv is None:
+        # As a last resort, try any legal move on the board (in case pruning missed it)
+        for mv in range(NN):
+            if board[mv] != 0:
+                continue
+            sim = _simulate_move_me(board, me_bits, opp_bits, mv)
+            if sim is None:
+                continue
+            _, nmb, nob, _, _, _ = sim
+            if (nmb, nob) in seen:
+                continue
+            return _rc(mv), memory
+
+        return (0, 0), memory
+
+    return _rc(best_mv), memory
+</code>

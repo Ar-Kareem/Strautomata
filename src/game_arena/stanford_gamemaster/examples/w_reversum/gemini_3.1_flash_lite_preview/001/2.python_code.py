@@ -1,0 +1,57 @@
+
+def policy(state: list[list[object]], role: str) -> str:
+    # Identify colors
+    my_color = role
+    opp_color = "blue" if role == "red" else "red"
+    
+    board = {}
+    for fact in state:
+        if fact[0] == "cell":
+            board[(int(fact[1]), int(fact[2]))] = fact[3]
+    
+    # Heuristic grid for a 6x6 Reversi-like board
+    # Corners are safest assets.
+    weights = {
+        (1, 1): 10, (1, 6): 10, (6, 1): 10, (6, 6): 10,
+        (1, 2): 5, (2, 1): 5, (1, 5): 5, (5, 1): 5, (6, 2): 5, (2, 6): 5, (6, 5): 5, (5, 6): 5,
+        (3, 3): -1, (3, 4): -1, (4, 3): -1, (4, 4): -1
+    }
+
+    def get_flips(r, c, dr, dc):
+        flips = []
+        curr_r, curr_c = r + dr, c + dc
+        while 1 <= curr_r <= 6 and 1 <= curr_c <= 6:
+            if (curr_r, curr_c) not in board:
+                return []
+            if board[(curr_r, curr_c)] == opp_color:
+                flips.append((curr_r, curr_c))
+            elif board[(curr_r, curr_c)] == my_color:
+                return flips
+            else:
+                return []
+            curr_r += dr
+            curr_c += dc
+        return []
+
+    legal_moves = []
+    directions = [(0, 1), (0, -1), (1, 0), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1)]
+    
+    for r in range(1, 7):
+        for c in range(1, 7):
+            if (r, c) not in board:
+                total_flips = 0
+                for dr, dc in directions:
+                    total_flips += len(get_flips(r, c, dr, dc))
+                
+                if total_flips > 0:
+                    score = weights.get((r, c), 0) + total_flips * 2
+                    legal_moves.append((score, r, c))
+    
+    if not legal_moves:
+        # Fallback for game stability - though rare in legal play
+        return "move(1,1)"
+    
+    # Sort by score descending
+    legal_moves.sort(key=lambda x: x[0], reverse=True)
+    best_move = legal_moves[0]
+    return f"move({best_move[1]},{best_move[2]})"

@@ -1,0 +1,145 @@
+# Strategy
+
+My strategy for this poker policy is to create a sophisticated hand strength evaluation system combined with game theory optimal (GTO) bluffing and pot odds considerations. Here's my approach:
+
+1. **Hand Strength Evaluation**: I'll calculate the probability of having the best hand based on my hole cards and public cards. Since we're dealing with only one hole card, it's more focused on position and potential combinations rather than full hand strength.
+
+2. **Pot Odds and Expected Value**: I'll consider the pot odds when deciding whether to call or raise. When the pot odds are favorable, I'll be more aggressive; when not, I'll play tighter.
+
+3. **Game Theory Optimal Bluffing**: I'll include a bluffing component that considers the opponent's betting patterns and pot size. When I have a weak hand or marginal hand and the pot is large enough, I'll occasionally raise or bluff.
+
+4. **Positional Awareness**: Though not directly available from the state, I'll adjust strategy based on whether I'm the first or second player based on pot size and betting dynamics.
+
+5. **Stack Size and Tournament Style**: I'll be aggressive with larger stacks and more conservative when at risk.
+
+6. **Adjusting for Opponent Behavior**: If the opponent is playing tight and checking frequently, I'll try to steal pots with raises. If they're raising often, I'll play more defensively.
+
+7. **Simple but Effective Logic Flow**:
+   - If I can win without a bet (check/call), do that
+   - If I have a good hand or strong potential (high card, suited, possible straight/flush draws), raise or all-in
+   - If hand strength looks poor but pot odds are good, call
+   - If hand strength is poor and bet is excessive, fold
+   - Incorporate bluffing when pot is large enough to make it profitable
+
+The implementation will focus on a probabilistic approach to evaluating hand strength using the number of outs for drawing hands, and use the game state parameters to make strategic decisions.
+
+<code>
+import random
+
+def policy(state):
+    # Extract all relevant information from the state
+    private_cards = state['private_cards']
+    public_cards = state['public_cards']
+    pot = state['pot']
+    my_spent = state['my_spent']
+    opponent_spent = state['opponent_spent']
+    to_call = state['to_call']
+    allowed_actions = state['allowed_actions']
+    
+    # Simple hand strength evaluation based on single private card
+    # For a single card, we'll use rank as a proxy for strength
+    my_rank = private_cards[0]['rank']
+    
+    # Calculate pot odds
+    pot_odds = to_call / (pot + to_call) if pot + to_call > 0 else 0
+    
+    # Determine hand strength (simplified)
+    hand_strength = 0.0
+    
+    # Evaluate potential based on rank
+    if my_rank >= 10:  # High cards (10+)
+        hand_strength = 0.8
+    elif my_rank >= 7:  # Medium-high cards
+        hand_strength = 0.5
+    elif my_rank >= 4:  # Medium cards
+        hand_strength = 0.3
+    else:  # Low cards
+        hand_strength = 0.1
+    
+    # If we have no public cards, potential is lower
+    if len(public_cards) == 0:
+        hand_strength *= 0.5
+        
+    # Add a small boost for higher ranks even without public cards
+    if len(public_cards) == 0 and my_rank >= 8:
+        hand_strength = min(1.0, hand_strength + 0.3)
+    
+    # Adjust for board cards (if any)
+    if len(public_cards) > 0:
+        # Assume some draw possibilities or stronger combinations
+        board_ranks = [card['rank'] for card in public_cards]
+        if len(set(board_ranks)) == len(board_ranks):
+            # All different ranks (less likely to form strong hands)
+            hand_strength = min(1.0, hand_strength + 0.15)
+        else:
+            # Some duplicates (better odds for combinations)
+            hand_strength = min(1.0, hand_strength + 0.25)
+    
+    # Consider pot odds
+    # If pot odds are very favorable, more likely to call/raise
+    if pot_odds < 0.25 and hand_strength > 0.5:  # Pot odds < 25% and strong hand
+        pot_factor = 1.5
+    elif pot_odds < 0.4 and hand_strength > 0.3:  # Pot odds < 40% and medium hand
+        pot_factor = 1.2
+    else:
+        pot_factor = 1.0
+    
+    # Calculate adjusted strength
+    adjusted_strength = hand_strength * pot_factor
+    
+    # Basic action selection logic
+    if 'fold' in allowed_actions and to_call > 0:
+        # If opponent bet is too high relative to our hand and we have no good reason to call
+        if to_call > pot / 3 and adjusted_strength < 0.3:
+            return 'fold'
+        
+        # If our pot odds are bad and we're in a weak position
+        if pot_odds > 0.5 and adjusted_strength < 0.4:
+            # But not the first round in a game where both play 100 chips
+            if pot < 200:  # First round scenario
+                pass  # Allow playing through it
+            elif random.random() < 0.6:  # 60% chance to fold when weak hand and bad pot odds
+                return 'fold'
+    
+    # If we can raise and have good strength and pot odds
+    if 'raise' in allowed_actions and adjusted_strength >= 0.5:
+        # Also consider raising even with moderate strength if we think we can get value
+        if random.random() < adjusted_strength:  # Raise with increasing likelihood as strength increases
+            return 'raise'
+    
+    # If we have a strong hand or good pot odds, consider all-in when possible
+    if 'all-in' in allowed_actions and adjusted_strength >= 0.7:
+        return 'all-in'
+    
+    # If we can check or call, check if strong enough to raise or call
+    if to_call == 0:
+        # If we have a decent hand or good draw, check and be ready to raise
+        if adjusted_strength >= 0.4:
+            return 'call'  # Actually "check" in this case since to_call is 0
+        else:
+            return 'call'  # Still check to see more board cards
+    
+    # If opponent bet is manageable and our hand strength is decent
+    if to_call <= pot / 4 and adjusted_strength >= 0.3:
+        return 'call'
+    
+    # If we have a good reason to bluff or are on a draw
+    if to_call < pot / 2:
+        # Random bluffing factor if we have a chance (we don't have enough card info for true draws)
+        bluff_chance = adjusted_strength * 0.25 + (0.3 if len(public_cards) == 0 else 0.1)
+        if random.random() < bluff_chance and 'raise' in allowed_actions:
+            return 'raise'
+    
+    # Default to call when nothing else is appropriate
+    if 'call' in allowed_actions and to_call > 0:
+        # We might want to call if pot odds are somewhat favorable
+        if pot_odds <= 0.4 or adjusted_strength > 0.3:
+            return 'call'
+    
+    # If we can only fold, fold
+    if 'fold' in allowed_actions:
+        return 'fold'
+        
+    # Fallback if we have no better option
+    return 'call'
+</code>

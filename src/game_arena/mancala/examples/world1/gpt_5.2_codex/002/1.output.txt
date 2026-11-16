@@ -1,0 +1,155 @@
+The strategy for this policy is a depth‑limited alpha‑beta minimax search. It simulates legal moves (including extra turns and captures), and uses a heuristic based on store difference, remaining seeds, and tactical opportunities (extra moves and captures). Move ordering prioritizes captures and extra turns to improve pruning. This yields a strong, fast policy that always returns a legal move.
+
+<code>
+import math
+from typing import List, Tuple
+
+def apply_move(you: List[int], opp: List[int], move: int) -> Tuple[List[int], List[int], bool]:
+    """Return new (you, opp, extra_turn) after playing move."""
+    y = you.copy()
+    o = opp.copy()
+    seeds = y[move]
+    y[move] = 0
+    pos = move + 1
+    last_side = None
+    last_idx = None
+    last_empty = False  # whether the last seed lands in an empty own house
+
+    while seeds > 0:
+        if pos <= 5:  # your houses
+            if seeds == 1:
+                last_empty = (y[pos] == 0)
+            y[pos] += 1
+            seeds -= 1
+            last_side = 'you'
+            last_idx = pos
+            pos += 1
+        elif pos == 6:  # your store
+            if seeds == 1:
+                last_empty = False
+            y[6] += 1
+            seeds -= 1
+            last_side = 'store'
+            last_idx = 6
+            pos += 1
+        else:  # opponent houses 7..12 -> 0..5
+            if seeds == 1:
+                last_empty = False
+            o[pos - 7] += 1
+            seeds -= 1
+            last_side = 'opp'
+            last_idx = pos - 7
+            pos += 1
+
+        if pos > 12:
+            pos = 0
+
+    extra_turn = (last_side == 'store')
+
+    # Capture rule
+    if last_side == 'you' and last_empty and o[5 - last_idx] > 0:
+        y[6] += y[last_idx] + o[5 - last_idx]
+        y[last_idx] = 0
+        o[5 - last_idx] = 0
+
+    return y, o, extra_turn
+
+
+def terminal_score(you: List[int], opp: List[int]) -> int:
+    y_empty = sum(you[:6]) == 0
+    o_empty = sum(opp[:6]) == 0
+    y_store = you[6]
+    o_store = opp[6]
+    if y_empty:
+        o_store += sum(opp[:6])
+    elif o_empty:
+        y_store += sum(you[:6])
+    return y_store - o_store
+
+
+def heuristic(you: List[int], opp: List[int]) -> float:
+    store_diff = you[6] - opp[6]
+    house_diff = sum(you[:6]) - sum(opp[:6])
+
+    extra = 0.0
+    for i in range(6):
+        if you[i] > 0:
+            last = (i + you[i]) % 13
+            if last == 6:
+                extra += 0.6
+            elif last < 6 and you[last] == 0 and opp[5 - last] > 0:
+                extra += 0.5
+
+    opp_extra = 0.0
+    for i in range(6):
+        if opp[i] > 0:
+            last = (i + opp[i]) % 13
+            if last == 6:
+                opp_extra += 0.6
+            elif last < 6 and opp[last] == 0 and you[5 - last] > 0:
+                opp_extra += 0.5
+
+    return store_diff * 3.0 + house_diff * 0.5 + extra - opp_extra
+
+
+def move_order_score(you: List[int], opp: List[int], move: int) -> float:
+    seeds = you[move]
+    last = (move + seeds) % 13
+    score = seeds * 0.01
+    if last == 6:
+        score += 2.0
+    elif last < 6:
+        empty_before = (you[last] == 0) or (last == move)
+        if empty_before and opp[5 - last] > 0:
+            score += 1.5
+    return score
+
+
+def search(you: List[int], opp: List[int], depth: int, alpha: float, beta: float) -> float:
+    if sum(you[:6]) == 0 or sum(opp[:6]) == 0:
+        return terminal_score(you, opp)
+    if depth == 0:
+        return heuristic(you, opp)
+
+    legal = [i for i in range(6) if you[i] > 0]
+    # Move ordering
+    legal.sort(key=lambda m: move_order_score(you, opp, m), reverse=True)
+
+    for move in legal:
+        y2, o2, extra = apply_move(you, opp, move)
+        if extra:
+            val = search(y2, o2, depth - 1, alpha, beta)
+        else:
+            val = -search(o2, y2, depth - 1, -beta, -alpha)
+
+        if val > alpha:
+            alpha = val
+        if alpha >= beta:
+            break
+    return alpha
+
+
+def policy(you: List[int], opponent: List[int]) -> int:
+    legal = [i for i in range(6) if you[i] > 0]
+    if len(legal) == 1:
+        return legal[0]
+
+    depth = 7  # strong but fast
+    best_move = legal[0]
+    best_val = -1e9
+
+    legal.sort(key=lambda m: move_order_score(you, opponent, m), reverse=True)
+
+    for move in legal:
+        y2, o2, extra = apply_move(you, opponent, move)
+        if extra:
+            val = search(y2, o2, depth - 1, -1e9, 1e9)
+        else:
+            val = -search(o2, y2, depth - 1, -1e9, 1e9)
+
+        if val > best_val:
+            best_val = val
+            best_move = move
+
+    return best_move
+</code>

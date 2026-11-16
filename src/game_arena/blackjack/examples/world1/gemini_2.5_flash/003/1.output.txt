@@ -1,0 +1,657 @@
+<thinking>
+The user wants me to implement a policy for a simplified Blackjack-like game.
+I need to decide whether to "HIT" or "STAY" based on my current `hand` and the `target` score `T`.
+
+Here's a breakdown of the game rules and considerations:
+1.  **Card Values:**
+    *   "2"-"10": Face value
+    *   "J", "Q", "K": 10
+    *   "A": 11 (if hand value <= T) or 1 (if hand value > T). This is crucial for handling Aces.
+2.  **Goal:** Get as close to `target` without exceeding it. Exceeding `target` is a bust.
+3.  **Winning Conditions:**
+    *   Opponent busts, I don't -> Win
+    *   I bust, opponent doesn't -> Lose
+    *   Both bust -> Draw
+    *   Neither busts: Closer to `target` wins.
+
+My policy needs to decide whether to "HIT" or "STAY".
+
+**Strategy Considerations:**
+
+*   **Current Score Calculation:** This is the most important part. I need a function to accurately calculate the current score of the hand, handling Aces correctly. Since an Ace can be 1 or 11, I should prioritize 11 if it doesn't bust the hand and keeps it closer to the target. If using 11 would bust, it should be counted as 1. If using 11 doesn't bust but makes the hand *further* from the target than using 1, then maybe 1 is better. However, the rule states "11 (when the hand value <= T) or 1 (when the hand value > T)". This implies it automatically switches to 1 if 11 would bust *based on the current hand value*. A more sophisticated approach might be to try both and see which is better, but the rule seems to simplify this for us: `A` is 11 *unless* using 11 causes the total to exceed T, in which case it becomes 1. Or, more precisely, if the *sum so far* + 11 > T, then the Ace is 1. If sum so far + 11 <= T, then the Ace is 11. *However*, the rule description "11 (when the hand value <= T) or 1 (when the hand value > T)" is a bit ambiguous. It could mean "if the *final total* is <= T, then A is 11, otherwise it's 1". This implies a multi-pass calculation for Aces. A common Blackjack strategy for Aces is to always count it as 11 unless it busts, then count it as 1. Let's stick with the most common interpretation: calculate sum assuming all Aces are 11. If this sum busts, then convert one 11 to 1, and repeat until no Aces can be converted or the sum is no longer busted. For this game, the rule is explicitly "11 (when the hand value <= T) or 1 (when the hand value > T)". This phrasing might mean the *total hand value* is compared to T. This still requires some interpretation. A safer interpretation is that an Ace will try to be 11, but if the *current total with 11* exceeds T, it becomes 1. So, if I have multiple aces, it's essentially "soft" scoring.
+
+    Let's refine Ace handling:
+    1.  Calculate total assuming all non-Ace cards have their values.
+    2.  Count the number of Aces.
+    3.  Add 11 for each Ace initially.
+    4.  If the total exceeds `target` and there are Aces, subtract 10 for each Ace (effectively changing 11 to 1) until the total is no longer `target` or no more Aces can be converted. This is the standard "soft hand" logic.
+
+*   **Decision Logic ("HIT" vs. "STAY"):**
+    *   If current score is already > `target`, I must have busted. But the `policy` function is called *before* checking for bust. So I need to calculate my score, and if it's > `target`, I *should have already busted*. This means my previous "HIT" was a mistake or I had no choice. The problem description states "If at any point the sum of your card values is greater than target, you bust and immediately lose." This implies the game engine handles the bust before calling `policy` again.
+    *   So, if I'm called, my `hand` is not busted (current score <= `target`).
+    *   What's a good threshold to hit?
+        *   If my current score is very low, I almost certainly want to `HIT`.
+        *   If my current score is close to `target`, I might want to `STAY`.
+        *   What is "close"?
+
+    Let's think about probabilities. I have a 13-card deck. After a few draws, my deck becomes smaller. The distribution of remaining cards changes.
+    *   Cards with value 10: "10", "J", "Q", "K" (4 cards)
+    *   Aces: "A" (1 card, value 1 or 11)
+    *   Other cards: "2" - "9" (8 cards)
+
+    If I `HIT`, what's the probability of busting?
+    Let `current_score` be my hand's value.
+    Let `remaining_to_bust` = `target` - `current_score`.
+    I will bust if the next card drawn has a value > `remaining_to_bust`.
+
+    The simplest policy would be a fixed threshold: `HIT` if `current_score < threshold`, `STAY` otherwise.
+    What `threshold`?
+    *   If `target` is 10, and my score is 9, should I hit? A '2' would make it 11 (bust).
+    *   If `target` is 30, and my score is 20, should I hit? A '10' would make it 30. A '2' makes it 22. A 'K' makes it 30.
+
+    The optimal threshold will depend on `target`.
+
+    Let's calculate the expected value of drawing another card. This is complex because my deck depletes.
+    A simpler approach:
+    1.  Calculate current hand value (`current_value`).
+    2.  If `current_value` is very low (e.g., < 10), almost always `HIT`. Any card will likely not bust me.
+    3.  If `current_value` is high but still < `target`, I need to be careful.
+    4.  Consider the `target` value. If `target` is low (e.g., 10-15), I need to be very conservative. If `target` is high (e.g., 25-30), I can afford to draw more.
+
+    Let's refine the Ace handling in `calculate_score`.
+    `card_values` needs to map strings to numerical values.
+
+    ```python
+    card_face_values = {
+        "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10": 10,
+        "J": 10, "Q": 10, "K": 10
+    }
+
+    def calculate_score(hand: list[str], target: int) -> int:
+        score = 0
+        num_aces = 0
+        for card in hand:
+            if card == "A":
+                num_aces += 1
+            else:
+                score += card_face_values[card]
+
+        # First, try to count Aces as 11
+        for _ in range(num_aces):
+            if score + 11 <= target: # If adding 11 doesn't bust based on target
+                score += 11
+            else: # If adding 11 would bust or exceed target, count as 1
+                score += 1
+
+        # This logic for Ace is based on the rule "11 (when the hand value <= T) or 1 (when the hand value > T)".
+        # This is tricky because "hand value" is *the final hand value*.
+        # Let's interpret it as: an Ace is 11 unless 11 makes the total *exceed* T, in which case it is 1.
+        # This is the standard "soft hand" logic adjusted for `target`.
+        # Correct interpretation for "A": 11 if `score + 11 <= target`, else 1. This would be processed for *each* ace.
+        # Let's re-evaluate:
+        # Standard blackjack ace handling: count as 11, if bust, change 11 to 1.
+        # Here: "A" -> 11 (when the hand value <= T) or 1 (when the hand value > T)
+        # This implies that the total score matters *after* all cards are drawn and ace values are set.
+        # This is slightly different from standard.
+        # I will use the standard soft ace logic adjusted for target constraint (if 11 busts vs T, then it's 1).
+
+        # Simpler approach that matches the rule "11 (when the hand value <= T) or 1 (when the hand value > T)"
+        # Calculate sum with all Aces as 1 first.
+        # Then, for each Ace, if converting it to 11 *does not make the total exceed target*, then convert it.
+        score = 0
+        num_aces = 0
+        for card in hand:
+            if card == "A":
+                num_aces += 1
+            else:
+                score += card_face_values[card]
+
+        # Add Aces as 1 first
+        score += num_aces
+
+        # Try to convert 1s to 11s if it helps and doesn't bust
+        for _ in range(num_aces):
+            if score + 10 <= target: # If converting one Ace from 1 to 11 (adding 10) doesn't exceed target
+                score += 10
+            else:
+                break # Can't convert any more Aces without exceeding target
+
+        return score
+    ```
+    This `calculate_score` seems reasonable and respects the given rule for Aces.
+
+**Decision Threshold:**
+
+*   My goal is to maximize my chances of winning.
+*   I win if I'm closer to `target` or opponent busts and I don't.
+*   I lose if I bust.
+*   The opponent's strategy is unknown, but they are also trying to get close to `target`.
+
+Let `current_score = calculate_score(hand, target)`.
+`remaining_to_target = target - current_score`.
+
+If `current_score` is already high (e.g., `target - 1`, `target - 2`), hitting is very risky.
+If `current_score` is low, hitting is less risky.
+
+Let's simulate the next draw possibilities.
+The deck available to me is my 13-card deck minus `hand`.
+`my_deck = set(["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"])`
+`available_cards = list(my_deck - set(hand))`
+
+For each `card` in `available_cards`:
+  `new_score = calculate_score(hand + [card], target)`
+  If `new_score > target`, then this card would bust me.
+
+Let's quantify the risk.
+`num_bust_cards = 0`
+`num_safe_cards = 0`
+`num_ace_cards = 0` (Ace is special, need to handle its value in simulation)
+
+Let's re-think `calculate_score` for *predicting future scores*.
+When predicting, we don't have the "final hand value" yet.
+The simplest way to calculate the value of `card` if I `HIT` it:
+`card_value_hit(card, current_score, target)`
+  If `card == "A"`:
+    If `current_score + 11 <= target`: return 11
+    Else: return 1
+  Else: `return card_face_values[card]`
+
+This `card_value_hit` is effectively what `calculate_score` does, but for a single card in the context of the current hand.
+No, `calculate_score` is better because it correctly re-evaluates all aces in the hypothetical new hand.
+
+So, in the prediction:
+For each `card` in `available_cards`:
+  `hypothetical_hand = hand + [card]`
+  `hypothetical_score = calculate_score(hypothetical_hand, target)`
+  If `hypothetical_score > target`: `num_bust_cards += 1`
+  Else: `num_safe_cards += 1`
+
+`total_available_cards = len(available_cards)`
+`bust_probability = num_bust_cards / total_available_cards` if `total_available_cards > 0` else 0.
+
+If `bust_probability` is too high, I should `STAY`.
+What's "too high"?
+
+A good threshold for `bust_probability` might be around 0.3-0.4.
+If `target` is 20:
+ current hand 17.
+ Cards left: let's say my deck is full except for 17.
+ `remaining_to_bust` = 20 - 17 = 3.
+ Cards that would bust me: 3, 4, 5, 6, 7, 8, 9, 10, J, Q, K, A(11).
+ Cards that would *not* bust me: 2, A(1).
+ To be precise:
+  `available_cards` is `my_deck - set(hand)`.
+  Let's iterate through `available_cards`.
+
+Consider `current_score = calculate_score(hand, target)`
+
+If `current_score >= target - 1` (e.g., target 20, score 19), often `STAY` unless `target - current_score` is small enough that only an Ace as 1 would not bust.
+If `target - current_score` is very small (e.g., 0, 1), `STAY`.
+If `target - current_score == 0`, I have reached the target, so `STAY`.
+If `target - current_score == 1`, only an Ace as 1 would not bust. Hitting is very risky. `STAY`.
+If `target - current_score == 2`, only a '2' or an Ace as 1 (if I happen to turn 11 to 1) would save me. Risky. `STAY`.
+
+What if `current_score` is low? E.g., `target` = 25, `current_score` = 10. `remaining_to_bust` = 15. Almost any card is safe. I must `HIT`.
+
+Let's define a **risk tolerance**.
+If `current_score` is already very close to `target`, say `target - current_score <= safe_margin`, then `STAY`.
+A `safe_margin` of 2 or 3 seems reasonable.
+
+What if my current score is very low? E.g., `current_score < target / 2`.
+I *must* hit to get closer to `target`.
+
+Let's combine these:
+1.  Calculate `current_score = calculate_score(hand, target)`.
+2.  If `current_score == target`, `STAY`. I've hit the target exactly.
+3.  Calculate `bust_threshold = target - current_score`. This is the minimum value for the next card that would cause a bust *if Aces were only 1*.
+    This is not precise enough due to Ace's dynamic value.
+
+Let's pre-calculate the value of cards.
+`card_values_for_busting = { "A": 11, "2": 2, ..., "K": 10 }`
+This assumes Ace is 11. If it busts, it switches to 1.
+So, if `current_score + card_value_including_ace <= target`, then it's safe.
+Let's just use `calculate_score` directly for each hypothetical draw.
+
+```python
+import collections
+
+card_face_values = {
+    "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10": 10,
+    "J": 10, "Q": 10, "K": 10
+}
+
+# The full deck of my cards
+FULL_DECK = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+
+def calculate_score(hand: list[str], target: int) -> int:
+    score = 0
+    num_aces = 0
+    for card in hand:
+        if card == "A":
+            num_aces += 1
+        else:
+            score += card_face_values[card]
+
+    # Add Aces as 1 first
+    score += num_aces
+
+    # Try to convert 1s to 11s if it helps and doesn't bust
+    # The rule is "11 (when the hand value <= T) or 1 (when the hand value > T)".
+    # This implies that the 'final value' of the hand is considered.
+    # The standard soft ace logic where you convert 11 to 1 *if it busts* is more typical.
+    # The wording here "hand value <= T" is tricky.
+
+    # Let's interpret it as: for each Ace, if converting it from 1 to 11
+    # *would not cause the total score to exceed T*, then it's converted.
+    # This leads to a greedy approach: always convert if possible without busting relative to T.
+    for _ in range(num_aces):
+        if score + 10 <= target: # If converting one Ace from 1 to 11 (adding 10) doesn't exceed target
+            score += 10
+        # Else: it stays as 1, or is forced to be 1 if a previous conversion pushed it over.
+        # This implementation ensures the highest possible score without exceeding target, prioritizing 11 for Aces.
+        # Example: hand = ["A", "A"], target = 20
+        # initial score = 2, num_aces = 2
+        # score + 10 (first Ace) = 12 (<= 20) -> score = 12
+        # score + 10 (second Ace) = 22 (> 20) -> score remains 12. Correct final score is 12.
+
+    return score
+
+# Policy function
+def policy(hand: list[str], target: int) -> str:
+    current_score = calculate_score(hand, target)
+
+    # If already at target, STUCK. Also, if at target-1, target-2 etc. this is risky.
+    # Consider staying if close to target.
+    # This is a fixed threshold policy for now.
+    # If the target is, say, 10, and my score is 8, I want to be more careful than if target is 30 and score is 28.
+    # The "safety" of a score depends on the target.
+    # Let's use a dynamic threshold based on the target.
+
+    # If I've equaled the target, I should definitely STAY.
+    if current_score == target:
+        return "STAY"
+
+    # Calculate remaining cards in my deck
+    drawn_cards_count = collections.Counter(hand)
+    available_cards = []
+    for card_rank in FULL_DECK:
+        if drawn_cards_count[card_rank] == 0:
+            available_cards.append(card_rank)
+
+    # Count how many of the remaining cards would cause a bust
+    bust_count = 0
+    for next_card in available_cards:
+        hypothetical_hand = hand + [next_card]
+        hypothetical_score = calculate_score(hypothetical_hand, target)
+        if hypothetical_score > target:
+            bust_count += 1
+
+    # Probability of busting if I HIT
+    total_possible_draws = len(available_cards)
+    bust_probability = bust_count / total_possible_draws if total_possible_draws > 0 else 0.0
+
+    # Decision logic based on bust probability and current score distance to target
+    # If current score is very low, always hit (e.g., < target - 10)
+    # This prevents sticking at a very low score and essentially conceding to the opponent.
+    if current_score < target - 10 and total_possible_draws > 0: # Always hit if far from target
+        return "HIT"
+
+    # General threshold for hitting:
+    # If bust probability is low, hit.
+    # What's low? This requires tuning. Max target is 30, min is 10.
+    # If target is 10, and I have 7. My `bust_threshold` (cards >= 3) would be high.
+    # If target is 30, and I have 20. My `bust_threshold` (cards >= 11) would be low.
+
+    # Let's define a risk appetite based on the current score relative to target.
+    # More aggressive when far, more conservative when close.
+    # However, the bust probability already incorporates this to some extent.
+
+    # A simple threshold:
+    # If the probability of busting is less than X%, I HIT. Otherwise, I STAY.
+    # What should X be? Let's start with a reasonable value, say 30% or 40%.
+    # If I have low score AND low bust prob, HIT.
+    # If I have high score BUT low bust prob, should I still HIT? Depends on 'how high'
+
+    # Let's consider the opponent's strategy implicitly: they also try to hit target.
+    # If I stay too early, the opponent might pass my score.
+
+    # Adaptive bust probability threshold:
+    # If current_score is far from target, I can tolerate a higher bust probability.
+    # If current_score is close to target, I need a lower bust probability.
+
+    # Example: target = 20
+    # current_score = 10, remaining_to_target = 10. Most cards are safe. Bust_prob very low. -> HIT
+    # current_score = 17, remaining_to_target = 3. Cards > 3 bust. Bust_prob higher. -> Maybe STAY.
+    # current_score = 18, remaining_to_target = 2. Cards > 2 bust. Bust_prob higher. -> Maybe STAY.
+
+    # Let's use a fixed bust probability threshold for now, and see how it performs.
+    # A common Blackjack strategy threshold for hitting against an unknown dealer upcard is 17.
+    # Here, we know the target.
+
+    # If current_score + (value of lowest possible next card that doesn't burst AND is > 1) > target
+    # then I should probably STAY. Lowest value if not Ace and not '2': '3'.
+    # If current_score + 2 > target, it's very risky. (e.g. target 20, score 19 -> 19+2=21 > 20)
+
+    # Let's try a simpler approach for the threshold:
+    # Always HIT if score is low enough *and* there are cards left to draw.
+    # If score is high, calculate bust probability. Only HIT if bust probability is very low.
+
+    # If `current_score < target - 5` (e.g., target 20, score 14 or less), I still have a good margin.
+    # -> HIT, unless `bust_probability` is extremely high (which is unlikely given `target-5`).
+    # What if available_cards is empty? `total_possible_draws` would be 0 then `bust_probability` = 0.
+    # If `total_possible_draws == 0`, I cannot hit, so I must stay.
+    if total_possible_draws == 0:
+        return "STAY" # No cards left to draw
+
+    # Hard decision point for staying:
+    # If the current score is already very close to the target, it's safer to STAY.
+    # This range `target - X` needs to be tuned.
+    # For a target of 10-30, let's consider `target - 3` as a critical point.
+    # e.g., target 20, if my score is 17, 18, 19, 20.
+    # If score >= target - 3:
+    #   Calculate the number of cards that would improve my score without busting.
+    #   An "improvement" means getting closer to target.
+    num_improving_cards = 0
+    num_worsening_or_busting_cards = 0
+    best_possible_score_from_hit = -1
+    lowest_bust_score = float('inf') # The lowest score that would result in a bust.
+
+    for next_card in available_cards:
+        hypothetical_hand = hand + [next_card]
+        hypothetical_score = calculate_score(hypothetical_hand, target)
+
+        if hypothetical_score <= target:
+            # Not a bust. Is it an improvement?
+            # It's an improvement if it makes us closer to target than current_score, OR if it's the target itself.
+            # Here, the goal is just to not bust and potentially get closer.
+            num_improving_cards += 1
+            if hypothetical_score > best_possible_score_from_hit:
+                 best_possible_score_from_hit = hypothetical_score
+        else: # Bust
+            num_worsening_or_busting_cards += 1
+            if hypothetical_score < lowest_bust_score:
+                lowest_bust_score = hypothetical_score
+
+
+    # Let's use a simpler heuristic for HIT/STAY
+    # Rule 1: If current_score is already high (e.g., >= target - 3), lean towards STAY.
+    # But only if staying has higher expected value than hitting.
+    # What is the worst possible score that still wins against typical opponent?
+    # Assume opponent also plays optimally, they will aim for target or very close.
+
+    # Simple fixed threshold based on current score
+    # If current score is 20-21, usually BlackJack rules would make you stay.
+    # With target, this is flexible. Target can be 10.
+    # Target 10: I have 8. Hit? (2 -> 10, 3 -> 11 (Bust)). Risky.
+    # Target 30: I have 18. Hit? (10 -> 28, 2 -> 20). Safe.
+
+    # Let's dynamically set a risk threshold for `bust_probability`.
+    # When `current_score` is low, we are aggressive (high `bust_prob_threshold`).
+    # When `current_score` is high, we are conservative (low `bust_prob_threshold`).
+
+    # `current_score / target` could be a factor.
+    # e.g., 0.5 for target 20 (score 10) vs 0.9 for target 20 (score 18).
+
+    threshold_factor = current_score / target
+    # If threshold_factor is low (far from target), we can tolerate more risk.
+    # If threshold_factor is high (close to target), we should tolerate less risk.
+    # Let's say `bust_prob_threshold` decreases as `threshold_factor` increases.
+    # Linear interpolation:
+    # If `threshold_factor` is 0.5 (very low score), `bust_prob_threshold` = 0.5 (high risk tolerance)
+    # If `threshold_factor` is 0.9 (high score), `bust_prob_threshold` = 0.1 (low risk tolerance)
+    # So, `bust_prob_threshold = max_bust_prob - (max_bust_prob - min_bust_prob) * (threshold_factor - min_tf_range) / (max_tf_range - min_tf_range)`
+    # Let `min_tf_range = 0.5`, `max_tf_range = 0.9`
+    # Let `max_bust_prob = 0.4`, `min_bust_prob = 0.1`
+
+    # This is getting too complex for a standard simple policy.
+    # Let's pick a fixed `bust_probability_threshold`.
+    # A common strategy in simplified blackjack is: hit on 16 or less, stay on 17 or more.
+    # This translates to: `if current_score < X, HIT, else STAY`.
+    # Here `X` should be `target - margin`.
+    # Example: If `target` is 20, then maybe `X` is 17 or 18.
+    # So, if `current_score < target - 2`, always hit.
+    # If `current_score >= target - 2`, check bust probability.
+
+    # Let's try this:
+    # If `current_score < target * 0.75` (e.g., target 20, score < 15), then HIT.
+    # This ensures we don't stay on very low scores.
+    # We must have `available_cards` to HIT.
+    if current_score < target * 0.75 and total_possible_draws > 0:
+        return "HIT"
+
+    # If `current_score` is higher, be more cautious.
+    # If the `bust_probability` is above a certain threshold, we `STAY`.
+    # Let's assume a fixed acceptable `bust_probability_threshold`.
+    # What if `num_safe_cards` is 0? Then I will bust for sure if I hit. So `STAY`.
+    # This means `bust_count == total_possible_draws`. So `bust_probability == 1.0`.
+
+    # Let's pick a bust risk tolerance.
+    # If I have a score of `target - 1` or `target - 2`, even 1 card that busts is bad.
+    # For example, if target is 20, current_score is 18.
+    # If I `HIT`, and I draw "3", it's 21 (bust).
+    # If I draw "2", it's 20 (perfect!).
+    # If I draw "A", it depends on previous Aces in hand. If I have no Aces, and first Ace is 11, it's 29 (safe). If Ace is 1, it's 19 (safe).
+    # This `calculate_score` handles Aces properly for the *entire* hand.
+
+    # My proposed simplified threshold:
+    # Stay if the score is `target` or higher values would be too risky.
+    # Let `stand_threshold = target - 3` (e.g., target 20, stand on 17, 18, 19, 20).
+    # If `current_score >= stand_threshold`:
+    #   Calculate `bust_probability`.
+    #   If `bust_probability` is high (e.g., >= 0.5), `STAY`.
+    #   If `bust_probability` is low (e.g. < 0.5), `HIT`. (This encourages getting closer).
+    # This seems like a reasonable balance.
+
+    # Let's re-evaluate Ace handling in `calculate_score` one last time.
+    # Rule: "A" -> 11 (when the hand value <= T) or 1 (when the hand value > T)
+    # The current `calculate_score` logic:
+    # 1. Sum non-Aces.
+    # 2. Add `num_aces` (treating all as 1 initially).
+    # 3. For each Ace, if `score + 10 <= target`, convert from 1 to 11 (add 10).
+    # This logic correctly maximizes the score without exceeding T given the Ace rule.
+    # Example: hand = ["A", "8"], target = 18
+    #  score = 8, num_aces = 1
+    #  score = 8 + 1 = 9
+    #  score + 10 = 19. 19 > 18 (target). So no conversion. Final score: 9.
+    # Is this what the rule means?
+    # If hand value <= T means A=11. So 19 <= 18 is false. So A=1. The final hand value becomes 9.
+    # This works.
+
+    # Example: hand = ["A", "7"], target = 18
+    #  score = 7, num_aces = 1
+    #  score = 7 + 1 = 8
+    #  score + 10 = 18. 18 <= 18 (target). So convert. Final score: 18.
+    # This works.
+
+    # Okay, `calculate_score` seems solid for the specific Ace rule.
+
+    # Final policy logic:
+    # 1. Calculate current score.
+    # 2. If `current_score` == `target`, `STAY`. (Perfect score)
+    # 3. If `total_possible_draws == 0`, `STAY`. (No cards left)
+    # 4. Count `bust_count` by simulating drawing each `available_card` and calculating the `hypothetical_score`.
+    # 5. `bust_probability = bust_count / total_possible_draws`.
+
+    # Define a `risk_tolerance_threshold` for bust_probability.
+    # A value of 0.3 (30%) is often used in simple simulations.
+    risk_tolerance_threshold = 0.35 # Adjustable parameter
+
+    # If the score is low, always hit to try to get closer.
+    # If the current score is less than `target / 2` or `target - 10 points`, let's definitely hit.
+    if current_score < target * 0.65: # E.g., target 20, score < 13.
+        return "HIT"
+
+    # If the score is decent, but not super close
+    # and the probability of bust is low, then HIT.
+    if bust_probability < risk_tolerance_threshold:
+        return "HIT"
+
+    # Otherwise (score is high, or bust probability is high), STAY.
+    return "STAY"
+
+    # Let's test this logic against some scenarios:
+    # Target = 10
+    # Hand = ["A", "A"] (score = 2 initially, +2 aces = 4. With targets, if 4+10 <= 10 NO. So both aces are 1. Score = 2.
+    #   Corrected: score = 0, num_aces = 2. score=2. For ace1: score+10=12>10, so no. For ace2: score remains 2. Score 2.
+    #   `calculate_score(["A","A"], 10)` -> 2.
+    # Current score = 2.
+    # `2 < 10 * 0.65` (10*0.65 = 6.5) -> True.
+    # Return "HIT". (Good, 2 is too low)
+
+    # Target = 20
+    # Hand = ["7", "J"] (score = 17)
+    # `current_score = 17`.
+    # `17 < 20 * 0.65` (13) -> False.
+    # Calculate bust probability:
+    #   `hand = ["7", "J"]`. `available_cards` contains all cards minus "7", "J".
+    #   Cards that would make sum > 20 (bust):
+    #     Currently 17. Need <= 3.
+    #     Cards that would bust if added: 4, 5, 6, 7, 8, 9, 10, J, Q, K. (10 cards value >= 4)
+    #     Cards that would not bust: 2, 3, A. (3 cards for value < 4 including A)
+    #   Let's say `available_cards` = 11 (13 - 2).
+    #   `bust_count` would be if `calculate_score(["7", "J", next_card], 20)` > 20.
+    #   Next card 'A': score is 17. add A. `calculate_score(["7", "J", "A"], 20)`
+    #     Aces=1, score=17+1=18. Try to convert: 18+10=28 > 20. So Ace is 1. Final score 18. Safe.
+    #   Next card '2': score 17+2=19. Safe.
+    #   Next card '3': score 17+3=20. Safe.
+    #   Next card '4': score 17+4=21. Bust.
+    #   So bust cards are 4,5,6,8,9,10,Q,K. (8 cards).
+    #   Total available cards = 11. (assuming "7", "J" are removed).
+    #   `bust_probability = 8/11 = ~0.72`.
+    # `bust_probability` (0.72) is NOT < `risk_tolerance_threshold` (0.35).
+    # Return "STAY". (Good, 17 is good for target 20, high bust risk).
+
+    # Target = 25
+    # Hand = ["2", "3"] (score = 5)
+    # `current_score = 5`.
+    # `5 < 25 * 0.65` (16.25) -> True.
+    # Return "HIT". (Good, 5 is too low)
+
+    # Target = 25
+    # Hand = ["K", "6"] (score = 16)
+    # `current_score = 16`.
+    # `16 < 25 * 0.65` (16.25) -> True. (barely, but still hits the low score condition)
+    # Return "HIT". (Good, 16 needs improvement for target 25)
+
+    # Target = 25
+    # Hand = ["K", "A", "4"] (score = 10 non-ace + 4 non-ace = 14. 1 Ace. 14+1=15. Convert Ace? 15+10=25. YES. Score = 25).
+    # `current_score = calculate_score(["K", "A", "4"], 25)` -> 25.
+    # `current_score == target` -> True.
+    # Return "STAY". (Perfect score)
+
+    # The policy seems to be broadly reasonable.
+    # The `risk_tolerance_threshold` of 0.35 is a tunable parameter.
+    # The `target * 0.65` is also a tunable parameter for the aggressive hit lower bound.
+    # Using `collections.Counter` is good for tracking drawn cards.
+
+```
+</thinking>
+<code>
+import collections
+
+# Card face values for non-Ace cards.
+card_face_values = {
+    "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10": 10,
+    "J": 10, "Q": 10, "K": 10
+}
+
+# The full deck of available cards (one of each rank).
+FULL_DECK_RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+
+def calculate_score(hand: list[str], target: int) -> int:
+    """
+    Calculates the score of a given hand based on the game's specific Ace rule.
+    An Ace is 11 when the hand value (after all cards are drawn and Aces evaluated)
+    is <= target, or 1 when the hand value is > target.
+    This implementation prioritizes making Aces 11 if it doesn't exceed the target,
+    otherwise, they are counted as 1.
+    """
+    score_no_aces = 0
+    num_aces = 0
+    for card in hand:
+        if card == "A":
+            num_aces += 1
+        else:
+            score_no_aces += card_face_values[card]
+
+    # Start by counting all Aces as 1.
+    current_score = score_no_aces + num_aces
+
+    # Then, for each Ace, try to convert its value from 1 to 11 (by adding 10)
+    # if it helps to reach the target without exceeding it.
+    for _ in range(num_aces):
+        # If adding 10 to the current score (converting an Ace from 1 to 11)
+        # would not make the total score exceed the target, perform the conversion.
+        if current_score + 10 <= target:
+            current_score += 10
+        else:
+            # If converting would exceed the target, stop converting further Aces
+            # as they would definitely make the score exceed or stay as 1.
+            break
+
+    return current_score
+
+def policy(hand: list[str], target: int) -> str:
+    """
+    Implements the policy to decide whether to "HIT" or "STAY".
+
+    Args:
+        hand: A list of strings representing the cards currently held.
+        target: The integer 'T' the player is trying to approach.
+
+    Returns:
+        "HIT" to draw another card, or "STAY" to stop drawing.
+    """
+    current_score = calculate_score(hand, target)
+
+    # If the current score exactly matches the target, it's a perfect score. STAY.
+    if current_score == target:
+        return "STAY"
+
+    # Determine which cards are still available in the player's deck.
+    # The opponent has a separate deck, so only our own hand matters for available cards.
+    drawn_cards_count = collections.Counter(hand)
+    available_cards_to_draw = []
+    for card_rank in FULL_DECK_RANKS:
+        # Each rank appears once in the FULL_DECK_RANKS.
+        # If the card of this rank has not been drawn, it's available.
+        if drawn_cards_count[card_rank] == 0:
+            available_cards_to_draw.append(card_rank)
+
+    total_possible_draws = len(available_cards_to_draw)
+
+    # If there are no more cards to draw, we must STAY.
+    if total_possible_draws == 0:
+        return "STAY"
+
+    # Calculate the number of cards that would cause a bust if drawn.
+    bust_count = 0
+    for next_card in available_cards_to_draw:
+        hypothetical_hand = hand + [next_card]
+        hypothetical_score = calculate_score(hypothetical_hand, target)
+        if hypothetical_score > target:
+            bust_count += 1
+
+    # Calculate the probability of busting if we HIT.
+    bust_probability = bust_count / total_possible_draws
+
+    # Decision Logic:
+    # 1. If current score is very low, always HIT to get closer to the target.
+    #    This prevents staying with a score that is unlikely to win.
+    #    The threshold `target * 0.65` (e.g., if target=20, score < 13) is a tunable parameter.
+    if current_score < target * 0.65:
+        return "HIT"
+
+    # 2. If the current score is decent, but not necessarily very close to the target,
+    #    we decide based on the bust probability.
+    #    `risk_tolerance_threshold` is another tunable parameter (e.g., 0.35 means 35% chance of bust is tolerated).
+    #    If the probability of busting is below this threshold, it's relatively safe to HIT.
+    risk_tolerance_threshold = 0.35
+    if bust_probability < risk_tolerance_threshold:
+        return "HIT"
+
+    # 3. In all other cases (e.g., score is high, or bust probability is high), STAY.
+    #    This protects against busting when close to the target or when risk is substantial.
+    return "STAY"
+
+</code>

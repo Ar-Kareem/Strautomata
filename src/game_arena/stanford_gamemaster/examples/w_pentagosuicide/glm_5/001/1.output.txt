@@ -1,0 +1,222 @@
+Looking at this game, I need to understand "Pentago Suicide" - a variant where the goal is inverted. In normal Pentago, you win by getting 5-in-a-row. In suicide, you want your OPPONENT to get 5-in-a-row.
+
+From the trajectory: Black got 5-in-a-row (scored 100), meaning Red achieved the suicide goal (making opponent win). The key insight is:
+- In PLACE phase: Avoid creating 5-in-a-row for yourself; set up opportunities for opponent
+- In ROTATE phase: Try to create immediate 5-in-a-row for opponent
+
+The strategy:
+1. **Rotate phase priority**: Find rotations that immediately give opponent 5-in-a-row
+2. **Place phase priority**: Find placements that enable winning rotations for opponent
+3. **Avoid self-wins**: Never place/rotate to create your own 5-in-a-row
+4. **Heuristic evaluation**: Favor opponent's line potential (4-in-a-row, 3-in-a-row with open spaces), penalize your own
+
+The board uses quadrant notation (1-4 for sub-boards, local coords 1-3 within each). I'll convert to global coordinates for line checking.
+
+<code>
+import random
+
+def quadrant_to_global(q, lr, lc):
+    """Convert quadrant (1-4) and local position (1-3) to global (1-6) coordinates."""
+    if q == 1:
+        return (lr, lc)
+    elif q == 2:
+        return (lr, lc + 3)
+    elif q == 3:
+        return (lr + 3, lc)
+    else:
+        return (lr + 3, lc + 3)
+
+def rotate_pos_clockwise(lr, lc):
+    """Rotate position within 3x3 quadrant 90 degrees clockwise."""
+    return (lc, 4 - lr)
+
+def rotate_pos_counterclockwise(lr, lc):
+    """Rotate position within 3x3 quadrant 90 degrees counterclockwise."""
+    return (4 - lc, lr)
+
+def check_win(board, player):
+    """Check if player has 5 pieces in a row."""
+    directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
+    for r in range(1, 7):
+        for c in range(1, 7):
+            for dr, dc in directions:
+                count = 0
+                for i in range(5):
+                    nr, nc = r + i * dr, c + i * dc
+                    if 1 <= nr <= 6 and 1 <= nc <= 6 and board.get((nr, nc)) == player:
+                        count += 1
+                    else:
+                        break
+                if count == 5:
+                    return True
+    return False
+
+def apply_rotation(board, q, direction):
+    """Apply rotation to quadrant q and return new board state."""
+    new_board = dict(board)
+    pieces = []
+    for lr in range(1, 4):
+        for lc in range(1, 4):
+            gr, gc = quadrant_to_global(q, lr, lc)
+            if (gr, gc) in new_board:
+                pieces.append((lr, lc, new_board[(gr, gc)]))
+                del new_board[(gr, gc)]
+    
+    for lr, lc, player in pieces:
+        if direction == "clockwise":
+            new_lr, new_lc = rotate_pos_clockwise(lr, lc)
+        else:
+            new_lr, new_lc = rotate_pos_counterclockwise(lr, lc)
+        gr, gc = quadrant_to_global(q, new_lr, new_lc)
+        new_board[(gr, gc)] = player
+    
+    return new_board
+
+def count_patterns(board, player, length):
+    """Count lines with exactly 'length' pieces of player and rest empty."""
+    count = 0
+    directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
+    
+    for r in range(1, 7):
+        for c in range(1, 7):
+            for dr, dc in directions:
+                end_r, end_c = r + 4 * dr, c + 4 * dc
+                if not (1 <= end_r <= 6 and 1 <= end_c <= 6):
+                    continue
+                
+                player_count = 0
+                blocked = False
+                
+                for i in range(5):
+                    nr, nc = r + i * dr, c + i * dc
+                    cell = board.get((nr, nc))
+                    if cell == player:
+                        player_count += 1
+                    elif cell is not None:
+                        blocked = True
+                        break
+                
+                if not blocked and player_count == length:
+                    count += 1
+    
+    return count
+
+def evaluate(board, my_role):
+    """Evaluate board from suicide perspective."""
+    opponent = "black" if my_role == "red" else "red"
+    
+    if check_win(board, opponent):
+        return 100000
+    if check_win(board, my_role):
+        return -100000
+    
+    score = 0
+    score += count_patterns(board, opponent, 4) * 1000
+    score += count_patterns(board, opponent, 3) * 100
+    score += count_patterns(board, opponent, 2) * 10
+    
+    score -= count_patterns(board, my_role, 4) * 1000
+    score -= count_patterns(board, my_role, 3) * 100
+    score -= count_patterns(board, my_role, 2) * 10
+    
+    return score
+
+def policy(state, role):
+    phase = None
+    board = {}
+    
+    for prop in state:
+        if prop[0] == "phase":
+            phase = prop[1]
+        elif prop[0] == "cellholds":
+            q = int(prop[1])
+            lr = int(prop[2])
+            lc = int(prop[3])
+            player = prop[4]
+            gr, gc = quadrant_to_global(q, lr, lc)
+            board[(gr, gc)] = player
+    
+    opponent = "black" if role == "red" else "red"
+    
+    if phase == "place":
+        safe_moves = []
+        for q in range(1, 5):
+            for lr in range(1, 4):
+                for lc in range(1, 4):
+                    gr, gc = quadrant_to_global(q, lr, lc)
+                    if (gr, gc) not in board:
+                        new_board = dict(board)
+                        new_board[(gr, gc)] = role
+                        if not check_win(new_board, role):
+                            safe_moves.append((q, lr, lc, new_board))
+        
+        if not safe_moves:
+            for q in range(1, 5):
+                for lr in range(1, 4):
+                    for lc in range(1, 4):
+                        gr, gc = quadrant_to_global(q, lr, lc)
+                        if (gr, gc) not in board:
+                            return f"place({q},{lr},{lc})"
+        
+        best_score = float('-inf')
+        best_moves = []
+        
+        for q, lr, lc, new_board in safe_moves:
+            can_enable_win = False
+            for rq in range(1, 5):
+                for rdir in ["clockwise", "counterclockwise"]:
+                    rotated = apply_rotation(new_board, rq, rdir)
+                    if check_win(rotated, opponent):
+                        can_enable_win = True
+                        break
+                if can_enable_win:
+                    break
+            
+            score = 50000 if can_enable_win else evaluate(new_board, role)
+            
+            if score > best_score:
+                best_score = score
+                best_moves = [(q, lr, lc)]
+            elif score == best_score:
+                best_moves.append((q, lr, lc))
+        
+        if best_moves:
+            move = random.choice(best_moves)
+            return f"place({move[0]},{move[1]},{move[2]})"
+    
+    elif phase == "rotate":
+        winning_moves = []
+        other_moves = []
+        
+        for q in range(1, 5):
+            for direction in ["clockwise", "counterclockwise"]:
+                new_board = apply_rotation(board, q, direction)
+                if check_win(new_board, opponent):
+                    winning_moves.append((q, direction))
+                elif not check_win(new_board, role):
+                    other_moves.append((q, direction, new_board))
+        
+        if winning_moves:
+            move = random.choice(winning_moves)
+            return f"rotate({move[0]},{move[1]})"
+        
+        if not other_moves:
+            return "rotate(1,clockwise)"
+        
+        best_score = float('-inf')
+        best_moves = []
+        
+        for q, direction, new_board in other_moves:
+            score = evaluate(new_board, role)
+            if score > best_score:
+                best_score = score
+                best_moves = [(q, direction)]
+            elif score == best_score:
+                best_moves.append((q, direction))
+        
+        if best_moves:
+            move = random.choice(best_moves)
+            return f"rotate({move[0]},{move[1]})"
+    
+    return "place(1,1,1)"
+</code>

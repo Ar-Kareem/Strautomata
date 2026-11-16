@@ -1,0 +1,359 @@
+
+import copy
+import itertools
+
+# Standard piece values for material evaluation
+PIECE_VALUES = {
+    'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 1000
+}
+
+# Center squares for mobility and control evaluation
+CENTER_SQUARES = {'d4', 'e4', 'd5', 'e5'}
+
+def get_color(to_play):
+    return 'w' if to_play == 'white' else 'b'
+
+def get_opponent_color(to_play):
+    return 'b' if to_play == 'white' else 'w'
+
+def is_valid_square(sq):
+    return len(sq) == 2 and sq[0] in 'abcdefgh' and sq[1] in '12345678'
+
+def square_to_coords(sq):
+    if not is_valid_square(sq):
+        return None
+    file, rank = sq[0], sq[1]
+    return ord(file) - ord('a'), int(rank) - 1
+
+def coords_to_square(file_idx, rank_idx):
+    return chr(ord('a') + file_idx) + str(rank_idx + 1)
+
+def is_on_board(file_idx, rank_idx):
+    return 0 <= file_idx <= 7 and 0 <= rank_idx <= 7
+
+def get_piece_at(pieces, square):
+    return pieces.get(square, None)
+
+def get_king_square(pieces, color):
+    for sq, piece in pieces.items():
+        if piece == color + 'K':
+            return sq
+    return None
+
+def get_legal_moves_simple(pieces, square):
+    """Generate all legal moves for a single piece (without checking for check) - for move generation helper"""
+    piece = pieces.get(square, '')
+    if not piece:
+        return []
+    
+    color = piece[0]
+    ptype = piece[1]
+    file, rank = ord(square[0]) - ord('a'), int(square[1]) - 1
+    moves = []
+    
+    directions = []
+    
+    if ptype == 'P':
+        direction = 1 if color == 'w' else -1
+        # Forward
+        if is_on_board(file, rank + direction) and get_piece_at(pieces, coords_to_square(file, rank + direction)) is None:
+            moves.append(coords_to_square(file, rank + direction))
+            # Double move from starting rank
+            if (color == 'w' and rank == 1) or (color == 'b' and rank == 6):
+                if is_on_board(file, rank + 2*direction) and get_piece_at(pieces, coords_to_square(file, rank + 2*direction)) is None:
+                    moves.append(coords_to_square(file, rank + 2*direction))
+        # Captures
+        for df in [-1, 1]:
+            nf, nr = file + df, rank + direction
+            if is_on_board(nf, nr):
+                target_sq = coords_to_square(nf, nr)
+                target_piece = get_piece_at(pieces, target_sq)
+                if target_piece and target_piece[0] != color:
+                    moves.append(target_sq)
+        return moves
+
+    elif ptype == 'R':
+        directions = [(0,1), (0,-1), (1,0), (-1,0)]
+    elif ptype == 'B':
+        directions = [(1,1), (1,-1), (-1,1), (-1,-1)]
+    elif ptype == 'Q':
+        directions = [(0,1), (0,-1), (1,0), (-1,0), (1,1), (1,-1), (-1,1), (-1,-1)]
+    elif ptype == 'K':
+        directions = [(0,1), (0,-1), (1,0), (-1,0), (1,1), (1,-1), (-1,1), (-1,-1)]
+    elif ptype == 'N':
+        knight_moves = [(-2,-1), (-2,1), (-1,-2), (-1,2), (1,-2), (1,2), (2,-1), (2,1)]
+        for df, dr in knight_moves:
+            nf, nr = file + df, rank + dr
+            if is_on_board(nf, nr):
+                target_sq = coords_to_square(nf, nr)
+                target_piece = get_piece_at(pieces, target_sq)
+                if target_piece is None or target_piece[0] != color:
+                    moves.append(target_sq)
+        return moves
+    
+    for df, dr in directions:
+        nf, nr = file + df, rank + dr
+        while is_on_board(nf, nr):
+            target_sq = coords_to_square(nf, nr)
+            target_piece = get_piece_at(pieces, target_sq)
+            if target_piece is None:
+                moves.append(target_sq)
+            else:
+                if target_piece[0] != color:
+                    moves.append(target_sq)
+                break
+            nf += df
+            nr += dr
+            
+    return moves
+
+def generate_all_legal_moves(pieces, to_play):
+    """Generate all legal moves for the current player, accounting for check"""
+    color = get_color(to_play)
+    moves = []
+    # First, generate all pseudo-legal moves
+    for square, piece in pieces.items():
+        if piece[0] == color:
+            for dest in get_legal_moves_simple(pieces, square):
+                # Test move: make it and see if king is in check
+                test_pieces = copy.copy(pieces)
+                # Capture if any
+                if dest in test_pieces:
+                    del test_pieces[dest]
+                test_pieces[dest] = test_pieces.pop(square)
+                
+                if not is_in_check(test_pieces, color):
+                    # For pawn promotion: if pawn reaches last rank
+                    if piece[1] == 'P':
+                        if (color == 'w' and dest[1] == '8') or (color == 'b' and dest[1] == '1'):
+                            # Add promotions
+                            for promo in ['q', 'r', 'n', 'b']:
+                                moves.append(square + dest + promo)
+                        else:
+                            moves.append(square + dest)
+                    else:
+                        moves.append(square + dest)
+    return moves
+
+def is_in_check(pieces, color):
+    """Check if the king of the given color is in check"""
+    king_sq = get_king_square(pieces, color)
+    if not king_sq:
+        return False
+        
+    opponent_color = 'b' if color == 'w' else 'w'
+    
+    # See if any opponent piece can capture the king
+    for square, piece in pieces.items():
+        if piece[0] == opponent_color and piece[1] != 'K':
+            moves = get_legal_moves_simple(pieces, square)
+            if king_sq in moves:
+                return True
+                
+    # Also check for pawn attacks
+    file, rank = ord(king_sq[0]) - ord('a'), int(king_sq[1]) - 1
+    pawn_dirs = [(-1, 1), (1, 1)] if opponent_color == 'b' else [(-1, -1), (1, -1)]
+    for df, dr in pawn_dirs:
+        nf, nr = file + df, rank + dr
+        if is_on_board(nf, nr):
+            sq = coords_to_square(nf, nr)
+            if sq in pieces and pieces[sq] == opponent_color + 'P':
+                return True
+                
+    return False
+
+def evaluate_board(pieces, to_play):
+    """Evaluate the board position from the perspective of the player to play"""
+    color = get_color(to_play)
+    opponent_color = get_opponent_color(to_play)
+    
+    score = 0
+    
+    # Material score
+    for sq, piece in pieces.items():
+        if piece[0] == color:
+            score += PIECE_VALUES[piece[1]]
+        else:
+            score -= PIECE_VALUES[piece[1]]
+    
+    # Center control bonus (only for non-pawns and pawns in center)
+    for sq, piece in pieces.items():
+        if piece[0] == color:
+            if piece[1] == 'P' and sq in CENTER_SQUARES:
+                score += 0.2
+            elif piece[1] != 'P' and sq in CENTER_SQUARES:
+                score += 0.5
+        elif piece[0] == opponent_color:
+            if piece[1] == 'P' and sq in CENTER_SQUARES:
+                score -= 0.2
+            elif piece[1] != 'P' and sq in CENTER_SQUARES:
+                score -= 0.5
+    
+    # King safety: penalty if king on edge
+    my_king = get_king_square(pieces, color)
+    opp_king = get_king_square(pieces, opponent_color)
+    if my_king:
+        file, rank = ord(my_king[0]) - ord('a'), int(my_king[1]) - 1
+        if file in [0,7] or rank in [0,7]:
+            score -= 1.0
+        if file in [0,1,6,7] or rank in [0,1,6,7]:
+            score -= 0.3
+    if opp_king:
+        file, rank = ord(opp_king[0]) - ord('a'), int(opp_king[1]) - 1
+        if file in [0,7] or rank in [0,7]:
+            score += 1.0
+        if file in [0,1,6,7] or rank in [0,1,6,7]:
+            score += 0.3
+    
+    # Mobility bonus
+    # Count number of legal moves for player vs opponent
+    # Note: We assume our legal move generation is correct
+    player_moves = len(generate_all_legal_moves(pieces, to_play))
+    opponent_moves = len(generate_all_legal_moves(pieces, 'black' if to_play == 'white' else 'white'))
+    score += 0.05 * player_moves
+    score -= 0.05 * opponent_moves
+    
+    # Pawn structure: prefer connected pawns
+    my_pawns = [sq for sq, p in pieces.items() if p == color + 'P']
+    for p1 in my_pawns:
+        p1f, p1r = ord(p1[0]) - ord('a'), int(p1[1]) - 1
+        for p2 in my_pawns:
+            if p1 != p2:
+                p2f, p2r = ord(p2[0]) - ord('a'), int(p2[1]) - 1
+                # If pawns are on adjacent files and same rank
+                if abs(p1f - p2f) == 1 and p1r == p2r:
+                    score += 0.2
+    
+    return score
+
+def minimax(pieces, to_play, depth, alpha, beta, maximizing_player):
+    # Base case: depth == 0 or game over
+    if depth == 0:
+        return evaluate_board(pieces, to_play), None
+    
+    legal_moves = generate_all_legal_moves(pieces, to_play)
+    
+    if len(legal_moves) == 0:
+        # Check for stalemate
+        if is_in_check(pieces, get_color(to_play)):
+            # Checkmate
+            return (-10000 if maximizing_player else 10000), None
+        else:
+            # Stalemate
+            return 0, None
+    
+    # Order moves: captures first, promotions next, others last
+    def move_priority(move):
+        # Move format: e2e4, e7e8q
+        if len(move) > 4: # promotion
+            return 1000
+        target_sq = move[2:4]
+        if target_sq in pieces:
+            captured_piece = pieces[target_sq]
+            return 100 - PIECE_VALUES[captured_piece[1]]
+        return 0
+    
+    legal_moves.sort(key=move_priority, reverse=True)
+    
+    if maximizing_player:
+        max_eval = -float('inf')
+        best_move = None
+        for move in legal_moves:
+            test_pieces = copy.deepcopy(pieces)
+            source, dest = move[:2], move[2:4]
+            piece = test_pieces[source]
+            if len(move) == 5:  # promotion
+                test_pieces[dest] = piece[0] + move[4].upper()
+            else:
+                test_pieces[dest] = test_pieces.pop(source)
+            
+            # Check if king is in check after move? (Our move generation should prevent this, but double-check)
+            if is_in_check(test_pieces, get_color(to_play)):
+                continue  # This should be caught by legal_moves, but safety check
+            
+            eval_score, _ = minimax(test_pieces, 'black' if to_play == 'white' else 'white', depth-1, alpha, beta, False)
+            if eval_score > max_eval:
+                max_eval = eval_score
+                best_move = move
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break  # alpha-beta pruning
+        return max_eval, best_move
+    else:
+        min_eval = float('inf')
+        best_move = None
+        for move in legal_moves:
+            test_pieces = copy.deepcopy(pieces)
+            source, dest = move[:2], move[2:4]
+            piece = test_pieces[source]
+            if len(move) == 5:  # promotion
+                test_pieces[dest] = piece[0] + move[4].upper()
+            else:
+                test_pieces[dest] = test_pieces.pop(source)
+            
+            if is_in_check(test_pieces, get_color(to_play)):
+                continue
+            
+            eval_score, _ = minimax(test_pieces, 'black' if to_play == 'white' else 'white', depth-1, alpha, beta, True)
+            if eval_score < min_eval:
+                min_eval = eval_score
+                best_move = move
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break  # alpha-beta pruning
+        return min_eval, best_move
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    # First, check for immediate checkmate (depth 1)
+    legal_moves = generate_all_legal_moves(pieces, to_play)
+    color = get_color(to_play)
+    
+    # Try all moves to see if any deliver checkmate
+    for move in legal_moves:
+        test_pieces = copy.deepcopy(pieces)
+        source, dest = move[:2], move[2:4]
+        if len(move) == 5:  # promotion
+            test_pieces[dest] = test_pieces[source][0] + move[4].upper()
+        else:
+            test_pieces[dest] = test_pieces.pop(source)
+        
+        # Check if opponent is now in check
+        if is_in_check(test_pieces, get_opponent_color(to_play)):
+            # Check if this is checkmate: any legal escape?
+            opp_legal_moves = generate_all_legal_moves(test_pieces, 'black' if to_play == 'white' else 'white')
+            if len(opp_legal_moves) == 0:
+                # Checkmate!
+                return move
+                
+    # If there are any captures of high-value pieces, prefer them
+    # Order by piece value: queen > rook > bishop/knight > pawn
+    capture_moves = []
+    non_capture_moves = []
+    for move in legal_moves:
+        dest = move[2:4]
+        if dest in pieces:
+            captured_piece = pieces[dest]
+            value = PIECE_VALUES[captured_piece[1]]
+            capture_moves.append((move, value))
+        else:
+            non_capture_moves.append(move)
+    
+    # Sort capture moves by value (descending)
+    capture_moves.sort(key=lambda x: x[1], reverse=True)
+    ordered_moves = [move for move, val in capture_moves] + non_capture_moves
+    
+    # Now, search for best move with minimax
+    # Depth 2 search
+    try:
+        _, best_move = minimax(pieces, to_play, 2, -float('inf'), float('inf'), True)
+        if best_move is not None:
+            return best_move
+    except:
+        pass
+    
+    # Fallback: return first move if minimax failed
+    if len(legal_moves) > 0:
+        return legal_moves[0]
+    
+    # This should never happen as we are guaranteed a legal move
+    return 'a1a1'  # dummy, but per spec we must return a legal move

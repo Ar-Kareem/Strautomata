@@ -1,0 +1,396 @@
+The strategy for this policy is based on a depth-limited search with strict prioritizing of immediate game-ending states, combined with a bitboard representation for efficiency.
+
+1.  **Bitboard Representation**: The 6x6 board is flattened into two 36-bit integers (`you` and `opponent`). This allows extremely fast checking of winning conditions (5-in-a-row) and board transformations using bitwise operations. All 32 possible winning lines (rows, columns, diagonals) are precomputed as bitmasks.
+
+2.  **Move Generation & Execution**: A move consists of placing a marble in an empty cell and rotating a quadrant. We generate all valid moves.
+    -   *Rotation Logic*: We precalculate index permutation tables for the 8 possible quadrant rotations (4 quadrants $\times$ 2 directions) to quickly compute resulting board states.
+
+3.  **Decision Hierarchy**:
+    -   **Immediate Win**: We first scan all legal moves. If a move results in a winning state for us (5-in-a-row) and not for the opponent, we take it immediately. If it creates 5-in-a-row for *both* (a Draw), we note it as a fallback but keep looking for a pure Win.
+    -   **Heuristic Scoring**: If no immediate win exists, we assign a heuristic score to every move. The score is calculated based on the number of potential winning lines we form versus the opponent.
+        -   +1000 points for creating a 4-in-a-row.
+        -   +50 points for 3-in-a-row.
+        -   Heavy penalties if the opponent has open 3s or 4s.
+    -   **Safety Check (1-Ply Lookahead)**: We sort the moves by their heuristic score and select the top candidates (e.g., top 25). For each candidate, we simulate the opponent's subsequent turn.
+        -   We check if the opponent can force a win in response.
+        -   We filter out any moves where the opponent has a winning reply (forcing a loss).
+    -   **Selection**: We pick the highest-scored move that is deemed "safe" (opponent cannot win immediately). If all moves are unsafe, we pick the one with the highest heuristic score or a Draw if available, attempting to prolong the game or scavenge a tie.
+
+This approach effectively implements a shallow minimax search (Depth 2) with selective pruning (Beam Search) to handle the large branching factor of Pentago (~280 moves) within the 1-second time limit.
+
+```python
+import time
+import numpy as np
+
+def policy(you, opponent) -> str:
+    """
+    Pentago policy function.
+    
+    Args:
+        you: 6x6 numpy array or list of lists (0/1)
+        opponent: 6x6 numpy array or list of lists (0/1)
+    
+    Returns:
+        Move string "row,col,quad,dir" (1-based indices).
+    """
+    # Constants
+    BOARD_SIZE = 6
+    QUAD_SIZE = 3
+    
+    # --- Bitboard Helpers ---
+    def to_bitboard(arr):
+        bb = 0
+        for r in range(6):
+            for c in range(6):
+                if arr[r][c] == 1:
+                    idx = r * 6 + c
+                    bb |= (1 << idx)
+        return bb
+
+    # Precompute Winning Masks
+    # Indices are 0..35. 
+    # Row 0 is 0..5, Row 1 is 6..11, etc.
+    WIN_MASKS = []
+    
+    # Rows
+    for r in range(6):
+        row_start = r * 6
+        # xx11111 (cols 0-4)
+        mask1 = 0
+        for c in range(5): mask1 |= (1 << (row_start + c))
+        WIN_MASKS.append(mask1)
+        # 11111xx (cols 1-5)
+        mask2 = 0
+        for c in range(1, 6): mask2 |= (1 << (row_start + c))
+        WIN_MASKS.append(mask2)
+        
+    # Cols
+    for c in range(6):
+        # Rows 0-4
+        mask1 = 0
+        for r in range(5): mask1 |= (1 << (r * 6 + c))
+        WIN_MASKS.append(mask1)
+        # Rows 1-5
+        mask2 = 0
+        for r in range(1, 6): mask2 |= (1 << (r * 6 + c))
+        WIN_MASKS.append(mask2)
+
+    # Diagonals
+    # Main diagonals (TL to BR)
+    # Longest main diag (0,0) to ((5,5) length 6
+    # Indices: 0, 7, 14, 21, 28, 35
+    diag_main = [0, 7, 14, 21, 28, 35]
+    WIN_MASKS.append(sum(1 << x for x in diag_main[:5]))
+    WIN_MASKS.append(sum(1 << x for x in diag_main[1:]))
+    
+    # Offset diagonals length 5
+    # (0,1)..(4,5): 1, 8, 15, 22, 29
+    WIN_MASKS.append(sum(1 << x for x in [1, 8, 15, 22, 29]))
+    # (1,0)..(5,4): 6, 13, 20, 27, 34
+    WIN_MASKS.append(sum(1 << x for x in [6, 13, 20, 27, 34]))
+    
+    # Anti-diagonals (TR to BL)
+    # (0,5)..(5,0): 5, 10, 15, 20, 25, 30
+    diag_anti = [5, 10, 15, 20, 25, 30]
+    WIN_MASKS.append(sum(1 << x for x in diag_anti[:5]))
+    WIN_MASKS.append(sum(1 << x for x in diag_anti[1:]))
+    
+    # Offset anti-diagonals length 5
+    # (0,4)..(4,0): 4, 9, 14, 19, 24
+    WIN_MASKS.append(sum(1 << x for x in [4, 9, 14, 19, 24]))
+    # (1,5)..(5,1): 11, 16, 21, 26, 31
+    WIN_MASKS.append(sum(1 << x for x in [11, 16, 21, 26, 31]))
+    
+    # --- Rotation Logic ---
+    # Precompute permutation maps for rotations
+    # ROT_MAPS[quad][dir_idx][src_bit] = dst_bit
+    # dir_idx: 0 for L, 1 for R
+    ROT_MAPS = [[None, None] for _ in range(4)]
+    QUAD_MASKS = [0, 0, 0, 0]
+    
+    # Quad ranges:
+    # Q0: r 0-2, c 0-2 (Indices: 0,1,2, 6,7,8, 12,13,14)
+    # Q1: r 0-2, c 3-5
+    # Q2: r 3-5, c 0-2
+    # Q3: r 3-5, c 3-5
+    
+    quad_indices = [
+        [0,1,2, 6,7,8, 12,13,14],
+        [3,4,5, 9,10,11, 15,16,17],
+        [18,19,20, 24,25,26, 30,31,32],
+        [21,22,23, 27,28,29, 33,34,35]
+    ]
+    
+    for q in range(4):
+        indices = quad_indices[q]
+        mask = 0
+        for idx in indices: mask |= (1 << idx)
+        QUAD_MASKS[q] = mask
+        
+        # Calculate permutations
+        # Map 1D index to relative 3x3 coords (r, c)
+        pairs = []
+        for i in range(9):
+            idx = indices[i]
+            # global row/col
+            gr, gc = divmod(idx, 6)
+            # local row/col
+            lr, lc = gr % 3, gc % 3
+            pairs.append((idx, lr, lc))
+            
+        # Left (CCW): (r, c) -> (2-c, r)
+        map_L = {}
+        for idx, lr, lc in pairs:
+            nr, nc = 2 - lc, lr
+            # Convert back to global
+            if q == 0: dest = nr * 6 + nc
+            elif q == 1: dest = nr * 6 + (nc + 3)
+            elif q == 2: dest = (nr + 3) * 6 + nc
+            else: dest = (nr + 3) * 6 + (nc + 3)
+            map_L[idx] = dest
+            
+        # Right (CW): (r, c) -> (c, 2-r)
+        map_R = {}
+        for idx, lr, lc in pairs:
+            nr, nc = lc, 2 - lr
+            if q == 0: dest = nr * 6 + nc
+            elif q == 1: dest = nr * 6 + (nc + 3)
+            elif q == 2: dest = (nr + 3) * 6 + nc
+            else: dest = (nr + 3) * 6 + (nc + 3)
+            map_R[idx] = dest
+            
+        ROT_MAPS[q][0] = map_L
+        ROT_MAPS[q][1] = map_R
+
+    # Precompute fast rotation lookup tables for 9-bit chunks
+    # This avoids bit-by-bit loop in the critical path
+    # We will just map the 36-bit transformation directly via precomputed list
+    # Actually, simpler: Iterate the 9 bits of the quad. 
+    # Since 9 is small, we can unroll or just loop. 
+    # To be fastest in Python, we use a precomputed sparse mapping list
+    # TRANSFORMS[q][dir_idx] = list of (src, dst)
+    TRANSFORMS = [[[], []] for _ in range(4)]
+    for q in range(4):
+        for d_idx in range(2): # 0:L, 1:R
+            mapping = ROT_MAPS[q][d_idx]
+            for src, dst in mapping.items():
+                if src != dst:
+                    TRANSFORMS[q][d_idx].append((src, dst))
+
+    def rotate_board(bb, q_idx, d_idx):
+        # Clear the quad
+        new_bb = bb & ~QUAD_MASKS[q_idx]
+        # Set bits based on transform
+        # We iterate known source bits for this quad
+        # Check if bit set in original
+        transforms = TRANSFORMS[q_idx][d_idx]
+        # It's faster to reconstruct the quad bits
+        # But we need to know which bit goes where relative to input
+        # map: src -> dst. If src is 1 in bb, set dst in new_bb
+        
+        # Hard optimization: 9 checks
+        for src, dst in transforms:
+             if (bb >> src) & 1:
+                 new_bb |= (1 << dst)
+                 
+        # We also need to copy bits that map to themselves (center of quad)
+        # Center of quad maps to itself. 
+        # For Q0, center is (1,1) -> index 7. Left/Right rot of (1,1) is (1,1).
+        # So we can just check if center bit is set and set it.
+        # Centers: Q0:7, Q1:10, Q2:25, Q3:28
+        centers = [7, 10, 25, 28]
+        c = centers[q_idx]
+        if (bb >> c) & 1:
+            new_bb |= (1 << c)
+            
+        return new_bb
+
+    def check_win(bb):
+        for mask in WIN_MASKS:
+            if (bb & mask) == mask:
+                return True
+        return False
+        
+    def count_bits(n):
+        return bin(n).count('1')
+
+    # Heuristic scoring
+    # We evaluate "potential".
+    # Mask values: 5->Win, 4->High, 3->Med, 2->Low
+    def evaluate(my_bb, op_bb):
+        # If I won, inf
+        # If op won, -inf (checked outside usually)
+        
+        score = 0
+        
+        # We approximate by checking intersection with win masks
+        for mask in WIN_MASKS:
+            my_pop = count_bits(my_bb & mask)
+            op_pop = count_bits(op_bb & mask)
+            
+            # Simple line scoring
+            if my_pop > 0 and op_pop == 0:
+                if my_pop == 4: score += 1000
+                elif my_pop == 3: score += 50
+                elif my_pop == 2: score += 5
+                elif my_pop == 1: score += 1
+            
+            if op_pop > 0 and my_pop == 0:
+                if op_pop == 4: score -= 2000 # Critical danger
+                elif op_pop == 3: score -= 100
+                elif op_pop == 2: score -= 10
+                elif op_pop == 1: score -= 1
+                
+        return score
+
+    # --- Main Search Logic ---
+    
+    my_board = to_bitboard(you)
+    opp_board = to_bitboard(opponent)
+    
+    occupied = my_board | opp_board
+    empty_cells = []
+    for r in range(6):
+        for c in range(6):
+            idx = r*6 + c
+            if not ((occupied >> idx) & 1):
+                empty_cells.append((r, c, idx))
+
+    # Determine legal moves
+    # list of (r, c, q, d_char, new_my_bb, new_opp_bb)
+    moves = []
+    
+    # Directions: 0=L, 1=R
+    directions = [(0, 'L'), (1, 'R')]
+    
+    # 1. Generate all moves
+    for r, c, idx in empty_cells:
+        # Placement
+        p_my = my_board | (1 << idx)
+        p_opp = opp_board
+        
+        for q in range(4):
+            for d_idx, d_char in directions:
+                # Rotate
+                final_my = rotate_board(p_my, q, d_idx)
+                final_opp = rotate_board(p_opp, q, d_idx)
+                
+                moves.append({
+                    'move': f"{r+1},{c+1},{q},{d_char}",
+                    'my_bb': final_my,
+                    'opp_bb': final_opp,
+                    'score': 0
+                })
+
+    start_time = time.time()
+    
+    # 2. Check Immediate Win / Draw
+    winning_moves = []
+    draw_moves = []
+    
+    for m in moves:
+        my_win = check_win(m['my_bb'])
+        opp_win = check_win(m['opp_bb'])
+        
+        if my_win and not opp_win:
+            return m['move'] # Immediate Win
+        if my_win and opp_win:
+            draw_moves.append(m)
+            
+    # If no pure win, maybe we have to accept a draw?
+    # Only if we think we might lose otherwise. Let's hold onto draws.
+    
+    # 3. Calculate Heuristics & Sort
+    for m in moves:
+        # Check immediate loss (opponent already has 5)? 
+        # This shouldn't happen if we started from legal state, but wait:
+        # If I place and rotate, I might align opponent's 5.
+        if check_win(m['opp_bb']):
+            m['score'] = -1000000 # Suicide move
+        else:
+            m['score'] = evaluate(m['my_bb'], m['opp_bb'])
+            
+    # Sort descending
+    moves.sort(key=lambda x: x['score'], reverse=True)
+    
+    # If we have a Draw move and the best non-winning move is bad (heuristic says we are losing), taking draw is better?
+    # For now, let's keep draws as a backup if all safe moves are exhausted.
+    
+    # 4. Beam Search / Safety Check (Lookahead 1 ply)
+    # Check top K moves: Does opponent have a winning response?
+    K = 20
+    candidates = moves[:K]
+    safe_moves = []
+    
+    # Helper to check if opponent can win from a state
+    def can_opponent_win(c_my_bb, c_opp_bb):
+        c_occ = c_my_bb | c_opp_bb
+        # Opponent places in empty
+        # We invert bits to find empty slots roughly
+        # It's faster to iterate 0..35
+        # Optimization: Only check relevant moves? 
+        # No, checking 280 moves is fast enough if optimized.
+        
+        # Find empty slots
+        # ~c_occ is messy with infinite logic, use mask
+        full_mask = (1 << 36) - 1
+        empty_mask = (~c_occ) & full_mask
+        
+        # Iterate set bits in empty_mask
+        # Python iteration of bits
+        tmp = empty_mask
+        while tmp:
+            # isolate lowest bit
+            idx = (tmp & -tmp).bit_length() - 1
+            tmp &= tmp - 1 # clear bit
+            
+            # Place opp
+            post_place_opp = c_opp_bb | (1 << idx)
+            
+            # Check all rotations
+            # To speed up: Check if post_place_opp satisfies ANY win mask WITHOUT rotation?
+            # No, rotation is mandatory. 
+            
+            for q in range(4):
+                for d in range(2):
+                    rot_opp = rotate_board(post_place_opp, q, d)
+                    if check_win(rot_opp):
+                        # But wait, did opponent align ME?
+                        # If opp moves aligns me, is it a win for opp?
+                        # Rules: "If both... result is draw".
+                        # Opponent wants to WIN. Draw is not Win.
+                        # So if Opp move creates double 5, it is a Draw.
+                        # We are looking for FORCED LOSS (Opp pure Win).
+                        
+                        # We need to rotate my board too to check draw
+                        rot_me = rotate_board(c_my_bb, q, d)
+                        if not check_win(rot_me):
+                            return True # Opponent pure win
+        return False
+
+    best_move = None
+    
+    # Time management
+    for m in candidates:
+        if time.time() - start_time > 0.85:
+            break
+            
+        if m['score'] < -5000:
+            continue # Skip obvious suicide
+            
+        if not can_opponent_win(m['my_bb'], m['opp_bb']):
+            return m['move'] # Found a safe move with highest score
+            
+    # If no safe move found in top K, or time ran out
+    # Try Draw moves if any
+    if draw_moves:
+        return draw_moves[0]['move']
+        
+    # Return best heuristic move (even if unsafe, might be deep trap or invalid assumption)
+    # Or random if all bad.
+    if moves:
+        return moves[0]['move']
+        
+    # Fallback (should not happen given API constraints)
+    return "1,1,0,L"
+```

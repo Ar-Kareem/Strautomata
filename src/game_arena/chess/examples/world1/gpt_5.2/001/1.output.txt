@@ -1,0 +1,533 @@
+The strategy for this policy is to score every legal move using a fast static evaluation built from: (1) forced outcomes from the SAN suffix (`#` mate, `+` check), (2) material swings from captures and promotions (including rough en-passant handling), (3) king safety improvements (castling bonus) and simple centralization/development heuristics, and (4) blunder-avoidance by penalizing moves that leave valuable pieces (especially the moved piece) en prise according to a pseudo-legal attack map computed after the move. It always returns the highest-scoring move from the provided `legal_moves`, and falls back safely to a guaranteed-legal move if parsing ever fails.
+
+<code>
+import re
+from typing import Dict, List, Optional, Tuple
+
+FILES = "abcdefgh"
+RANKS = "12345678"
+
+PIECE_VALUE = {
+    "P": 100,
+    "N": 320,
+    "B": 330,
+    "R": 500,
+    "Q": 900,
+    "K": 0,
+}
+
+CENTER = {"d4", "e4", "d5", "e5"}
+EXT_CENTER = {"c3", "d3", "e3", "f3", "c4", "f4", "c5", "f5", "c6", "d6", "e6", "f6"}
+
+
+def policy(pieces: Dict[str, str], to_play: str, legal_moves: List[str]) -> str:
+    if not legal_moves:
+        # Should never happen if input is correct, but must return something.
+        return ""
+
+    us = "w" if to_play == "white" else "b"
+    them = "b" if us == "w" else "w"
+
+    # Fast path: if SAN explicitly contains mate, play it.
+    mates = [m for m in legal_moves if "#" in m]
+    if mates:
+        return mates[0]
+
+    best_move = legal_moves[0]
+    best_score = -10**18
+
+    for mv in legal_moves:
+        try:
+            info = _parse_san(mv)
+            new_board, mvinfo = _apply_move_san(pieces, us, them, mv, info)
+            score = _score_position_after_move(pieces, new_board, us, them, mv, info, mvinfo)
+        except Exception:
+            # Never disqualify: keep move legal by assigning a very low score on failures.
+            score = -10**15
+        if score > best_score:
+            best_score = score
+            best_move = mv
+
+    # Absolute safety: ensure returned move is legal.
+    if best_move not in legal_moves:
+        return legal_moves[0]
+    return best_move
+
+
+# -------------------- SAN parsing & move application --------------------
+
+def _parse_san(mv: str) -> dict:
+    s = mv.strip()
+
+    # Remove common annotation symbols if present (rare in arenas).
+    s = s.replace("!", "").replace("?", "")
+
+    check = s.endswith("+")
+    mate = s.endswith("#")
+    while s and s[-1] in "+#":
+        s = s[:-1]
+
+    if s.startswith("O-O-O"):
+        return {"castle": "O-O-O", "check": check, "mate": mate, "raw": mv}
+    if s.startswith("O-O"):
+        return {"castle": "O-O", "check": check, "mate": mate, "raw": mv}
+
+    promo = None
+    if "=" in s:
+        idx = s.index("=")
+        if idx + 1 < len(s) and s[idx + 1] in "QRBN":
+            promo = s[idx + 1]
+        s_core = s[:idx]
+    else:
+        s_core = s
+
+    # Destination square = last occurrence of [a-h][1-8]
+    sqs = re.findall(r"[a-h][1-8]", s_core)
+    if not sqs:
+        raise ValueError(f"Cannot find destination square in SAN: {mv}")
+    dest = sqs[-1]
+
+    # Prefix = everything before dest
+    prefix = s_core[: s_core.rfind(dest)]
+    capture = "x" in prefix
+    prefix_nox = prefix.replace("x", "")
+
+    piece = "P"
+    disamb = ""
+
+    if prefix_nox and prefix_nox[0] in "KQRBN":
+        piece = prefix_nox[0]
+        disamb = prefix_nox[1:]
+    else:
+        piece = "P"
+        disamb = prefix_nox  # pawn captures include origin file here (e.g., 'exd5' -> 'e')
+
+    # Handle alternative promotion notation like "b8Q" (no '='), if ever present.
+    if promo is None:
+        tail = s[len(s_core):]  # part after core (usually empty)
+        # Not reliable; instead check original stripped s (without +/#) after dest.
+        after_dest = s.replace(dest, "", 1)
+        # after_dest can still include 'x'/'disamb', so ignore. We'll only accept final char promo.
+        if len(s) >= 3 and s[-1] in "QRBN" and dest[1] in "18":
+            # If the move ends with a piece letter and it's on last rank, treat as promotion.
+            # Example: "b8Q"
+            if s[-1] in "QRBN" and s[-2] in "18" and s[-3] in FILES:
+                promo = s[-1]
+
+    return {
+        "castle": None,
+        "piece": piece,
+        "dest": dest,
+        "capture": capture,
+        "disamb": disamb,
+        "promo": promo,
+        "check": check,
+        "mate": mate,
+        "raw": mv,
+    }
+
+
+def _apply_move_san(board: Dict[str, str], us: str, them: str, mv: str, info: dict):
+    newb = dict(board)
+
+    if info.get("castle"):
+        side = info["castle"]
+        if us == "w":
+            king_from = "e1"
+            if side == "O-O":
+                king_to, rook_from, rook_to = "g1", "h1", "f1"
+            else:
+                king_to, rook_from, rook_to = "c1", "a1", "d1"
+        else:
+            king_from = "e8"
+            if side == "O-O":
+                king_to, rook_from, rook_to = "g8", "h8", "f8"
+            else:
+                king_to, rook_from, rook_to = "c8", "a8", "d8"
+
+        # Move king
+        newb.pop(king_from, None)
+        newb[king_to] = us + "K"
+        # Move rook
+        rook = newb.pop(rook_from, None)
+        if rook is None:
+            # In legal move list this should never happen, but keep robust.
+            rook = us + "R"
+        newb[rook_to] = rook
+
+        mvinfo = {
+            "from": king_from,
+            "to": king_to,
+            "moved": us + "K",
+            "captured": None,
+            "promotion": None,
+            "castle": side,
+        }
+        return newb, mvinfo
+
+    piece = info["piece"]
+    dest = info["dest"]
+    capture = info["capture"]
+    disamb = info["disamb"]
+    promo = info["promo"]
+
+    origin = _find_origin_square(board, us, piece, dest, capture, disamb, promo)
+    if origin is None:
+        raise ValueError(f"Cannot resolve origin for SAN {mv}")
+
+    moved_code = board[origin]
+    captured_code = None
+
+    # Capture removal (including en passant heuristic)
+    if capture:
+        if dest in newb and newb[dest][0] == them:
+            captured_code = newb.pop(dest)
+        else:
+            # Possible en passant: pawn capture to empty dest
+            if piece == "P" and dest not in newb:
+                ep_sq = _en_passant_captured_square(origin, dest, us)
+                if ep_sq and ep_sq in newb and newb[ep_sq] == them + "P":
+                    captured_code = newb.pop(ep_sq)
+
+    # Move piece
+    newb.pop(origin, None)
+
+    placed_piece_type = piece
+    promotion = None
+    if piece == "P" and promo in ("Q", "R", "B", "N"):
+        placed_piece_type = promo
+        promotion = promo
+    newb[dest] = us + placed_piece_type
+
+    mvinfo = {
+        "from": origin,
+        "to": dest,
+        "moved": moved_code,
+        "captured": captured_code,
+        "promotion": promotion,
+        "castle": None,
+    }
+    return newb, mvinfo
+
+
+def _find_origin_square(board: Dict[str, str], us: str, piece: str, dest: str, capture: bool,
+                        disamb: str, promo: Optional[str]) -> Optional[str]:
+    candidates = []
+    for sq, code in board.items():
+        if code[0] != us:
+            continue
+        if code[1] != piece:
+            continue
+        if not _disamb_matches(sq, disamb, piece, capture):
+            continue
+        if _can_piece_reach(board, us, piece, sq, dest, capture, promo):
+            candidates.append(sq)
+
+    if not candidates:
+        return None
+    # Legal SAN should disambiguate; choose deterministic order if still multiple.
+    candidates.sort()
+    return candidates[0]
+
+
+def _disamb_matches(origin: str, disamb: str, piece: str, capture: bool) -> bool:
+    if not disamb:
+        return True
+
+    # Pawn captures: disamb is origin file (e.g. "exd5" -> "e")
+    if piece == "P":
+        if len(disamb) == 1 and disamb in FILES:
+            return origin[0] == disamb
+        # Be permissive
+        return True
+
+    # Pieces: disamb can be file, rank, or both.
+    if len(disamb) == 1:
+        if disamb in FILES:
+            return origin[0] == disamb
+        if disamb in RANKS:
+            return origin[1] == disamb
+        return True
+    if len(disamb) == 2:
+        f, r = disamb[0], disamb[1]
+        okf = (f in FILES and origin[0] == f) or (f not in FILES)
+        okr = (r in RANKS and origin[1] == r) or (r not in RANKS)
+        return okf and okr
+
+    return True
+
+
+def _can_piece_reach(board: Dict[str, str], us: str, piece: str, origin: str, dest: str,
+                     capture: bool, promo: Optional[str]) -> bool:
+    if origin == dest:
+        return False
+
+    ox, oy = _sq_to_xy(origin)
+    dx, dy = _sq_to_xy(dest)
+
+    occ_dest = board.get(dest)
+
+    if piece == "P":
+        diry = 1 if us == "w" else -1
+        start_rank = 1 if us == "w" else 6  # 0-based y for rank 2/7
+        # Promotion must land on last rank (handled by legality list, but keep consistent)
+        if promo is not None and dy not in (0, 7):
+            return False
+
+        if capture:
+            if abs(dx - ox) != 1 or (dy - oy) != diry:
+                return False
+            # Normal capture or en passant (dest can be empty)
+            if occ_dest is not None:
+                return occ_dest[0] != us
+            return True  # allow ep; legality list guarantees correctness
+        else:
+            if dx != ox:
+                return False
+            if (dy - oy) == diry:
+                return dest not in board
+            if oy == start_rank and (dy - oy) == 2 * diry:
+                mid = _xy_to_sq(ox, oy + diry)
+                return (mid not in board) and (dest not in board)
+            return False
+
+    if piece == "N":
+        if (abs(dx - ox), abs(dy - oy)) not in {(1, 2), (2, 1)}:
+            return False
+        return (occ_dest is None) or (occ_dest[0] != us) if capture else (occ_dest is None)
+
+    if piece == "K":
+        if max(abs(dx - ox), abs(dy - oy)) != 1:
+            return False
+        return (occ_dest is None) or (occ_dest[0] != us) if capture else (occ_dest is None)
+
+    if piece in ("B", "R", "Q"):
+        if piece == "B":
+            if abs(dx - ox) != abs(dy - oy):
+                return False
+        elif piece == "R":
+            if not (dx == ox or dy == oy):
+                return False
+        else:  # Q
+            if not (abs(dx - ox) == abs(dy - oy) or dx == ox or dy == oy):
+                return False
+
+        if not _ray_clear(board, origin, dest):
+            return False
+
+        if capture:
+            return (occ_dest is not None) and (occ_dest[0] != us)
+        else:
+            return occ_dest is None
+
+    return False
+
+
+def _ray_clear(board: Dict[str, str], origin: str, dest: str) -> bool:
+    ox, oy = _sq_to_xy(origin)
+    dx, dy = _sq_to_xy(dest)
+    stepx = 0 if dx == ox else (1 if dx > ox else -1)
+    stepy = 0 if dy == oy else (1 if dy > oy else -1)
+    x, y = ox + stepx, oy + stepy
+    while (x, y) != (dx, dy):
+        sq = _xy_to_sq(x, y)
+        if sq in board:
+            return False
+        x += stepx
+        y += stepy
+    return True
+
+
+def _en_passant_captured_square(origin: str, dest: str, us: str) -> Optional[str]:
+    ox, oy = _sq_to_xy(origin)
+    dx, dy = _sq_to_xy(dest)
+    if abs(dx - ox) != 1:
+        return None
+    # EP capture square is dest file with origin rank.
+    return _xy_to_sq(dx, oy)
+
+
+# -------------------- Evaluation --------------------
+
+def _score_position_after_move(oldb: Dict[str, str], newb: Dict[str, str], us: str, them: str,
+                               mv: str, info: dict, mvinfo: dict) -> float:
+    # Forced outcomes from SAN marks
+    if info.get("mate"):
+        return 1e12
+    score = 0.0
+    if info.get("check"):
+        score += 65.0
+
+    # Material evaluation (only differences matter, but full is still cheap)
+    score += 1.0 * (_material(newb, us) - _material(newb, them))
+
+    # Tactical delta for capture/promotion
+    if mvinfo.get("captured"):
+        cap_type = mvinfo["captured"][1]
+        score += 1.2 * PIECE_VALUE[cap_type]
+        # Prefer capturing queens/rooks more strongly
+        if cap_type == "Q":
+            score += 250
+        elif cap_type == "R":
+            score += 80
+
+    if mvinfo.get("promotion"):
+        promo_type = mvinfo["promotion"]
+        score += 1.5 * (PIECE_VALUE[promo_type] - PIECE_VALUE["P"])
+        score += 200  # strong generic promotion bonus
+
+    # Castling bonus
+    if mvinfo.get("castle"):
+        score += 45
+
+    to_sq = mvinfo.get("to")
+    from_sq = mvinfo.get("from")
+    moved_code = mvinfo.get("moved", us + info.get("piece", "P"))
+    moved_type = moved_code[1]
+
+    # Center / space
+    if to_sq in CENTER:
+        score += 22
+    elif to_sq in EXT_CENTER:
+        score += 10
+
+    # Development heuristics: move minor pieces off back rank early; discourage repeated queen moves
+    if moved_type in ("N", "B"):
+        if (us == "w" and from_sq and from_sq[1] == "1") or (us == "b" and from_sq and from_sq[1] == "8"):
+            score += 12
+    if moved_type == "Q":
+        # discourage early queen wandering a bit (still overridden by tactics)
+        if (us == "w" and from_sq and from_sq[1] == "1") or (us == "b" and from_sq and from_sq[1] == "8"):
+            score -= 6
+
+    # King safety / blunder avoidance: penalize leaving pieces en prise
+    them_att, them_min_att = _attack_map(newb, them)
+    us_att, us_min_att = _attack_map(newb, us)
+
+    # Penalize moved piece hanging
+    if to_sq and moved_type != "K":
+        if to_sq in them_att:
+            moved_val = PIECE_VALUE[moved_type]
+            defended = to_sq in us_att
+            min_att = them_min_att.get(to_sq, moved_val)
+            # If not defended: big penalty
+            if not defended:
+                score -= 0.70 * moved_val
+            else:
+                # defended but attacked by smaller/equal piece: still concerning
+                if min_att <= moved_val:
+                    score -= 0.30 * moved_val
+
+    # Additional global safety: sum small penalties for our undefended attacked pieces
+    # (helps avoid "drop a queen" moves even without lookahead)
+    for sq, code in newb.items():
+        if code[0] != us:
+            continue
+        pt = code[1]
+        if pt == "K":
+            continue
+        if sq in them_att and sq not in us_att:
+            score -= 0.18 * PIECE_VALUE[pt]
+
+    # Encourage checking the enemy king a bit more if attack map says king is attacked (robust even if '+' missing)
+    ek = _find_king(newb, them)
+    if ek and ek in us_att:
+        score += 25
+
+    # Slight mobility proxy: number of attacked squares
+    score += 0.02 * (len(us_att) - len(them_att))
+
+    # Prefer not to stalemate-ish: if move is a quiet king move into corner, small penalty
+    if moved_type == "K" and to_sq in {"a1", "h1", "a8", "h8"} and not info.get("check"):
+        score -= 8
+
+    return score
+
+
+def _material(board: Dict[str, str], color: str) -> int:
+    s = 0
+    for code in board.values():
+        if code[0] == color:
+            s += PIECE_VALUE[code[1]]
+    return s
+
+
+def _find_king(board: Dict[str, str], color: str) -> Optional[str]:
+    target = color + "K"
+    for sq, code in board.items():
+        if code == target:
+            return sq
+    return None
+
+
+def _attack_map(board: Dict[str, str], color: str) -> Tuple[set, Dict[str, int]]:
+    attacked = set()
+    min_attacker_val: Dict[str, int] = {}
+
+    for sq, code in board.items():
+        if code[0] != color:
+            continue
+        pt = code[1]
+        from_xy = _sq_to_xy(sq)
+        val = PIECE_VALUE[pt]
+        for t in _piece_attacks_from(board, color, pt, from_xy):
+            attacked.add(t)
+            if t not in min_attacker_val or val < min_attacker_val[t]:
+                min_attacker_val[t] = val
+    return attacked, min_attacker_val
+
+
+def _piece_attacks_from(board: Dict[str, str], color: str, pt: str, from_xy: Tuple[int, int]):
+    x, y = from_xy
+    if pt == "P":
+        diry = 1 if color == "w" else -1
+        for dx in (-1, 1):
+            nx, ny = x + dx, y + diry
+            if 0 <= nx < 8 and 0 <= ny < 8:
+                yield _xy_to_sq(nx, ny)
+        return
+
+    if pt == "N":
+        for dx, dy in ((1, 2), (2, 1), (2, -1), (1, -2), (-1, -2), (-2, -1), (-2, 1), (-1, 2)):
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < 8 and 0 <= ny < 8:
+                yield _xy_to_sq(nx, ny)
+        return
+
+    if pt == "K":
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                if dx == 0 and dy == 0:
+                    continue
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < 8 and 0 <= ny < 8:
+                    yield _xy_to_sq(nx, ny)
+        return
+
+    # Sliding pieces
+    directions = []
+    if pt in ("B", "Q"):
+        directions += [(1, 1), (1, -1), (-1, 1), (-1, -1)]
+    if pt in ("R", "Q"):
+        directions += [(1, 0), (-1, 0), (0, 1), (0, -1)]
+
+    for dx, dy in directions:
+        nx, ny = x + dx, y + dy
+        while 0 <= nx < 8 and 0 <= ny < 8:
+            sq = _xy_to_sq(nx, ny)
+            yield sq
+            if sq in board:
+                break
+            nx += dx
+            ny += dy
+
+
+# -------------------- Square helpers --------------------
+
+def _sq_to_xy(sq: str) -> Tuple[int, int]:
+    return FILES.index(sq[0]), RANKS.index(sq[1])
+
+
+def _xy_to_sq(x: int, y: int) -> str:
+    return FILES[x] + RANKS[y]
+</code>

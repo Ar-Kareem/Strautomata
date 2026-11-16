@@ -1,0 +1,242 @@
+The strategy for this policy is to use a single-ply lookahead with a heuristic evaluation function. This balances speed and effectiveness for the 6-house Kalah variant.
+
+1.  **Move Generation**: The policy iterates through all legal moves (houses 0-5 with seeds).
+2.  **Simulation**: For each move, it performs a "dry run" of the game mechanics (sowing, extra turn logic, and capture logic) to determine the resulting board state and score difference.
+3.  **Heuristic Evaluation**: The resulting state is evaluated using a weighted score:
+    *   **Immediate Win**: Prioritized highest.
+    *   **Seed Gain**: The difference in total seeds between the player and opponent.
+    *   **Positional Bonus**: Seeds landing in "safe" houses (low indices) or houses adjacent to the store are favored to enable captures or extra turns.
+    *   **Next Turn Control**: If the move grants an extra turn, the evaluation looks one step ahead to the opponent's best response, penalizing moves that leave the opponent with strong options or allow them to close the score gap significantly.
+4.  **Selection**: The move with the highest heuristic score is chosen.
+
+<code>
+def policy(you: list[int], opponent: list[int]) -> int:
+    # Deep copy helper to avoid mutating original state during lookahead
+    def copy_state(y, o):
+        return y[:], o[:]
+
+    def is_game_over(y, o):
+        return sum(y[:6]) == 0 or sum(o[:6]) == 0
+
+    def get_final_score(y, o):
+        # If game is over, remaining seeds go to owner
+        y_score = y[6] + sum(y[:6])
+        o_score = o[6] + sum(o[:6])
+        return y_score, o_score
+
+    def evaluate_state(y, o, depth=0, is_maximizing=True):
+        # Basic terminal check
+        if is_game_over(y, o):
+            y_score, o_score = get_final_score(y, o)
+            if y_score > o_score:
+                return 100000 # Win
+            elif y_score < o_score:
+                return -100000 # Loss
+            else:
+                return 0 # Draw
+
+        # Heuristic Score Calculation
+        # 1. Seed Difference (Primary driver)
+        my_seeds = sum(y[:6]) + y[6]
+        opp_seeds = sum(o[:6]) + o[6]
+        score = (my_seeds - opp_seeds) * 10
+
+        # 2. Positional Bonus (Safe seeds and seeds near store)
+        # Seeds in later houses (3,4,5) are closer to store for quick points
+        # Seeds in earlier houses (0,1) are safer from opponent capture
+        # We weight 0 and 1 highly, and 3,4,5 moderately
+        pos_bonus = 0
+        for i in range(6):
+            if y[i] > 0:
+                if i <= 1: pos_bonus += 2
+                elif i == 2: pos_bonus += 1
+                elif i >= 3: pos_bonus += 2
+        score += pos_bonus
+
+        # 3. Threat/Risk (Opponent's potential captures)
+        # Penalize if we have empty houses where opponent has seeds across from them
+        # (Opponent index 5-i maps to our index i)
+        # If our house i is empty, and opponent house (5-i) > 0, we are vulnerable if opponent lands there
+        risk = 0
+        for i in range(6):
+            if y[i] == 0 and o[5-i] > 0:
+                risk += (o[5-i] * 2)
+        score -= risk
+
+        # 4. One-ply lookahead for root node (to prevent giving opponent immediate advantage)
+        # Only do this if we are at the root (depth 0) and not in a recursive call
+        if depth == 0:
+            # This branch is handled by the specific move evaluation logic below
+            pass
+
+        return score
+
+    # Main Move Selection Logic
+    best_move = -1
+    best_score = -float('inf')
+
+    # Get legal moves
+    legal_moves = [i for i in range(6) if you[i] > 0]
+
+    for move in legal_moves:
+        # Simulate the move
+        y_temp, o_temp = copy_state(you, opponent)
+        
+        # 1. Sowing
+        seeds = y_temp[move]
+        y_temp[move] = 0
+        idx = move
+        last_land = -1
+        
+        while seeds > 0:
+            idx += 1
+            # Wrap around logic
+            if idx == 6: # Our store
+                if seeds == 1: # Special case: if this is the last seed, it lands in store
+                    # But we increment store, so logic is standard
+                    pass
+                y_temp[6] += 1
+                seeds -= 1
+                if seeds == 0:
+                    last_land = 6
+                    break
+                continue
+            
+            if idx == 13: # Loop back to start (skipping opp store is handled by index jumps)
+                idx = 0
+            
+            # Standard board sowing (0-5 you, 6 you store, 7-12 opp houses, 13 opp store skipped)
+            # Let's map indices to array access
+            if idx < 6: # You houses
+                y_temp[idx] += 1
+            elif idx < 13: # Opponent houses (indices 7-12 map to opp 0-5)
+                o_temp[idx-7] += 1
+            
+            seeds -= 1
+            last_land = idx
+
+        # 2. Extra Turn Check
+        is_extra_turn = (last_land == 6)
+        
+        # 3. Capture Check
+        capture_happened = False
+        if not is_extra_turn and 0 <= last_land <= 5: # Landed in our house
+            if y_temp[last_land] == 1: # Was empty (now has 1)
+                opp_idx = 5 - last_land
+                if o_temp[opp_idx] > 0:
+                    # Capture!
+                    y_temp[6] += y_temp[last_land] + o_temp[opp_idx]
+                    y_temp[last_land] = 0
+                    o_temp[opp_idx] = 0
+                    capture_happened = True
+
+        # 4. Evaluation
+        current_score = 0
+        
+        # Check immediate win/loss
+        if is_game_over(y_temp, o_temp):
+            y_final, o_final = get_final_score(y_temp, o_temp)
+            if y_final > o_final:
+                current_score = 1000000 # Massive priority for win
+            elif y_final < o_final:
+                current_score = -1000000
+            else:
+                current_score = 0
+        else:
+            # If we got an extra turn, we evaluate the board state from our perspective again
+            # But we must be careful not to over-commit. 
+            # A simple effective heuristic:
+            # Base score from the immediate result
+            immediate_score = evaluate_state(y_temp, o_temp, depth=1)
+            
+            if is_extra_turn:
+                # We have another move!
+                # To avoid infinite lookahead, we only look at immediate options or just take the gain
+                # Gain is usually good. Let's add a bonus for the extra turn itself.
+                # And maybe look at worst-case opponent response if we didn't get the extra turn?
+                # Let's just boost the score and rely on the immediate state value.
+                current_score = immediate_score + 20 # Extra turn bonus
+            else:
+                # Normal turn. 
+                # Check if we left a massive capture opportunity for opponent?
+                # Or if we gained significantly.
+                current_score = immediate_score
+                
+                # Lookahead: Opponent's best response if it's their turn
+                # Only do this if we aren't winning massively to save time
+                if current_score < 5000: 
+                    best_opp_score = -float('inf')
+                    # Find opponent's best move (limited check to save time)
+                    for opp_move in range(6):
+                        if o_temp[opp_move] > 0:
+                            # Simulate opponent
+                            y_opp, o_opp = copy_state(y_temp, o_temp)
+                            
+                            # Sow opp
+                            seeds_o = y_opp[opp_move] # No wait, opponent is o_temp
+                            seeds_o = o_opp[opp_move]
+                            o_opp[opp_move] = 0
+                            idx_o = opp_move
+                            last_o = -1
+                            while seeds_o > 0:
+                                idx_o += 1
+                                if idx_o == 6: # Skip our store? No, skip opponent store is index 13
+                                    # Standard mapping:
+                                    # Opp indices: 7-12 (opp houses), 13 (opp store)
+                                    pass
+                                
+                                # Correct mapping for loop:
+                                # Board sequence: You Houses (0-5) -> You Store (6) -> Opp Houses (7-12) -> Opp Store (13 - SKIP) -> You Houses...
+                                # Wait, the prompt says: "you[i+1]...you[6]...opponent[0]...opponent[5]...you[0]..."
+                                # This implies indices: 0-5 you, 6 you store, 7-12 opp, 13 opp store (skip), 0...
+                                # Let's use index math.
+                                
+                                if idx_o == 13: # Skip opp store
+                                    idx_o = 0 
+                                
+                                if idx_o < 6: # You houses
+                                    y_opp[idx_o] += 1
+                                elif idx_o < 13: # Opponent houses
+                                    o_opp[idx_o-7] += 1
+                                # Skip 13 handled above
+                                
+                                seeds_o -= 1
+                                last_o = idx_o
+                            
+                            # Opp capture/extraturn
+                            is_extra_o = (last_o == 13) # Last seed landed in opp store
+                            if not is_extra_o and 0 <= last_o <= 5: # Landed in opp house (which is opp array indices 0-5)
+                                # Wait, last_o is the abstract index. 
+                                # 7-12 are opp houses. 
+                                if 7 <= last_o <= 12:
+                                    house_idx = last_o - 7
+                                    if o_opp[house_idx] == 1:
+                                        our_vuln_idx = 5 - house_idx # Our house opposite
+                                        if y_opp[our_vuln_idx] > 0:
+                                            o_opp[13] += o_opp[house_idx] + y_opp[our_vuln_idx] # Add to opp store
+                                            o_opp[house_idx] = 0
+                                            y_opp[our_vuln_idx] = 0
+                            
+                            # Evaluate opponent's board state (from our perspective, so negative)
+                            val = evaluate_state(y_opp, o_opp, depth=2)
+                            if val > best_opp_score:
+                                best_opp_score = val
+                            
+                            # If opponent has an extra turn, we need to check that too? 
+                            # To save time, assume the evaluation function captures the danger.
+                    
+                    # We want to minimize opponent's best outcome
+                    # We subtract opponent's score potential
+                    current_score -= best_opp_score * 0.5 
+
+        # Store best move
+        if current_score > best_score:
+            best_score = current_score
+            best_move = move
+
+    # Fallback if something goes wrong (shouldn't happen given legal_moves)
+    if best_move == -1 and legal_moves:
+        return legal_moves[0]
+        
+    return best_move
+</code>

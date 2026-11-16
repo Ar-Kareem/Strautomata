@@ -1,0 +1,814 @@
+<thinking>
+The user wants a Python function `policy(board)` that returns the best move for a 4x4 Tic Tac Toe game. I need to implement an AI strategy.
+
+Given the 1-second time limit, complex AI algorithms like Alpha-Beta pruning with deep search might be too slow for every move, especially if the branching factor is high. However, Tic-Tac-Toe is a finite game. For a 4x4 board, the state space is larger than 3x3 but still manageable to some extent for basic lookahead.
+
+Here's my plan:
+
+1.  **Represent the board**: The input `board` is already a 4x4 list of lists. `1` is me, `-1` is the opponent, `0` is empty.
+
+2.  **Define winning conditions**: A player wins if they have 4 in a row, column, or diagonal. I need helper functions to check this.
+
+3.  **Evaluate board state**: A function to check if the current board state results in a win for either player, or a draw.
+
+4.  **Minimax Algorithm (with limited depth)**:
+    *   This is a standard algorithm for adversarial games.
+    *   I'll start with a relatively small search depth (e.g., 3-5) and adjust if needed based on performance.
+    *   **Base cases for Minimax**:
+        *   If the search depth limit is reached, evaluate the current board state using a heuristic.
+        *   If a player has won, return a very high/low score.
+        *   If it's a draw, return 0.
+    *   **Recursive step**:
+        *   For the maximizing player (me), iterate through all empty cells, make a move, call minimax for the minimizing player, and choose the move that maximizes the returned score.
+        *   For the minimizing player (opponent), iterate through all empty cells, make a move, call minimax for the maximizing player, and choose the move that minimizes the returned score.
+
+5.  **Heuristic Evaluation Function**: If Minimax reaches its depth limit without a clear win/loss, it needs a way to estimate the "goodness" of the current board.
+    *   **Prioritize winning moves**: Immediately make a move that wins the game.
+    *   **Block opponent's winning moves**: Immediately block an opponent's move that would win the game.
+    *   **Consider potential lines**: Count potential lines (rows, columns, diagonals) where I have `N` pieces and the opponent has 0 pieces, and `M` empty cells needed to win. Score higher for lines with more of my pieces and fewer empty cells.
+    *   **Center control**: In 4x4, the center 2x2 area might be important.
+    *   **Corner control**: Corners can be important too.
+
+Let's refine the strategy:
+
+**Prioritized Move Order:**
+
+1.  **Win if possible**: Check if any move leads to an immediate win for me. If so, take it.
+2.  **Block opponent's win**: Check if any opponent's move leads to an immediate win for them. If so, block it.
+3.  **Fork creation**: Look for moves that create two or more winning threats simultaneously. (This is harder to implement correctly and might be too complex for a 1-second limit without a very efficient evaluation).
+4.  **Block opponent's fork**: Look for opponent's moves that create forks and block them.
+5.  **Minimax with Alpha-Beta Pruning**: If the above don't apply, use a limited-depth Minimax with Alpha-Beta pruning.
+
+**Simplified Heuristic for Minimax:**
+
+Instead of complex fork detection, a simpler heuristic can be:
+*   Count open 4-in-a-row lines for myself (e.g., how many lines have 3 of my pieces and 1 empty, 2 of my pieces and 2 empty, etc.). Assign higher scores to more complete lines.
+*   Subtract similarly for the opponent.
+
+Let's structure the code.
+
+**`check_win(board, player)` function:**
+Checks if `player` has won. This will iterate through all rows, columns, and diagonals.
+
+**`get_empty_cells(board)` function:**
+Returns a list of `(row, col)` tuples for all empty cells.
+
+**`evaluate_board(board)` function:**
+This is the heuristic.
+*   Scan all lines (rows, columns, diagonals).
+*   For each line, count my pieces (`my_count`) and opponent's pieces (`opp_count`).
+*   If `opp_count > 0` and `my_count > 0`, the line is blocked, so it's worthless for scoring.
+*   If `my_count == 4`, it's a win; return a very high score (e.g., `1000`).
+*   If `opp_count == 4`, it's a loss; return a very low score (e.g., `-1000`).
+*   Otherwise, assign scores based on `my_count` (e.g., 3-in-a-row with 1 empty is `X`, 2-in-a-row with 2 empty is `Y`).
+    *   A simple scoring for this:
+        *   `3 in a line + 1 empty`: score `+50`
+        *   `2 in a line + 2 empty`: score `+10`
+        *   `1 in a line + 3 empty`: score `+1`
+        *   Do the opposite for opponent (subtract score).
+
+**`minimax(board, depth, is_maximizing_player, alpha, beta)` function:**
+This will implement the Minimax algorithm with Alpha-Beta pruning.
+
+*   `depth`: Current search depth.
+*   `is_maximizing_player`: True if it's my turn, False if opponent's.
+*   `alpha`: Best score found for the maximizing player so far.
+*   `beta`: Best score found for the minimizing player so far.
+
+**Initial `policy` function:**
+1.  Get all available moves.
+2.  **Immediate Win Check**: For each available move, simulate making that move for me (`1`). If it wins, return that move immediately.
+3.  **Immediate Block Check**: For each available move, simulate making that move for the opponent (`-1`). If it wins *for them*, make that move (to block).
+4.  If no immediate win or block, proceed with Minimax.
+    *   Initialize `best_score = -infinity` (`math.inf`).
+    *   Initialize `best_move = None`.
+    *   Iterate through all empty cells.
+        *   For each cell, make the move (temporarily).
+        *   Call `minimax(new_board, depth=0, is_maximizing_player=False, alpha, beta)`.
+        *   Update `best_score` and `best_move`.
+        *   Undo the move.
+    *   Return `best_move`.
+
+**Considerations for `minimax` depth and heuristic:**
+
+*   **Max Depth**: For 4x4, the board size is small enough that a somewhat deeper search might be possible. A full board has 16 cells. A game typically ends much earlier. Let's try `MAX_DEPTH = 4` or `5`. If it's too slow, reduce it.
+*   **Draws**: If the board is full and no one has won, it's a draw, score 0.
+
+Let's refine the `evaluate_board` and `check_win` functions. They will need to check all 4x4 squares, and then the four main diagonals and the two smaller "broken" diagonals.
+
+**Lines to check for 4 in a row:**
+*   **Rows**: 4 rows (0,0)-(0,3), (1,0)-(1,3), etc.
+*   **Columns**: 4 columns (0,0)-(3,0), (0,1)-(3,1), etc.
+*   **Main Diagonals**:
+    *   (0,0)-(1,1)-(2,2)-(3,3)
+    *   (0,3)-(1,2)-(2,1)-(3,0)
+*   **Minor Diagonals (length 4)**: These are the "broken" diagonals that still form a line of 4.
+    *   (0,1)-(1,2)-(2,3)-(3,0) -- WRONG, this is not a straight line on the board
+    *   (0,0)-(1,1)-(2,2)-(3,3) - Primary
+    *   (0,3)-(1,2)-(2,1)-(3,0) - Secondary
+
+Let's list all possible winning lines explicitly for a 4x4 board. There are 4 rows, 4 columns, and 2 main diagonals.
+Total lines: 4 + 4 + 2 = 10.
+
+Wait, check the definition of N-in-a-row. Sometimes it includes broken diagonals. For standard Tic-Tac-Toe, it doesn't. Assume standard. Just 4 rows, 4 columns, 2 main diagonals.
+
+Example winning lines arrays:
+`[( (r,0), (r,1), (r,2), (r,3) ) for r in range(4)]` (rows)
+`[( (0,c), (1,c), (2,c), (3,c) ) for c in range(4)]` (columns)
+`[(0,0), (1,1), (2,2), (3,3)]` (main diagonal)
+`[(0,3), (1,2), (2,1), (3,0)]` (anti-diagonal)
+
+This totals 10 lines.
+
+**Heuristic scoring for `evaluate_board(board, player)`:**
+
+*   `score = 0`
+*   For each of the 10 winning lines:
+    *   Count `my_pieces` and `opp_pieces` in this line.
+    *   If `my_pieces > 0` and `opp_pieces > 0`, the line is blocked, score 0 for this line.
+    *   If current `player` is `1` (me):
+        *   If `my_pieces == 4`: return `winning_score` (e.g., `1000`).
+        *   If `my_pieces == 3` and `opp_pieces == 0`: `score += 50`
+        *   If `my_pieces == 2` and `opp_pieces == 0`: `score += 10`
+        *   If `my_pieces == 1` and `opp_pieces == 0`: `score += 1`
+    *   If current `player` is `-1` (opponent): (we are evaluating for the maximizing player whose turn it is now)
+        *   If `opp_pieces == 4`: return `losing_score` (e.g., `-1000`).
+        *   If `opp_pieces == 3` and `my_pieces == 0`: `score -= 50`
+        *   If `opp_pieces == 2` and `my_pieces == 0`: `score -= 10`
+        *   If `opp_pieces == 1` and `my_pieces == 0`: `score -= 1`
+
+This heuristic needs to be consistent with the `is_maximizing_player` in minimax. When `is_maximizing_player` is true, the `player` for evaluation is `1`. When `is_maximizing_player` is false, the `player` for evaluation is `-1`, but `minimax` returns a score in *my* perspective. So `evaluate_board` always returns score for player `1`.
+
+Let's refine `evaluate_board`:
+It should return a score from **my (player 1)** perspective.
+`player_factor` will be `1` for player `1` (me) and `-1` for player `-1` (opponent).
+```python
+def evaluate_board(board):
+    score = 0
+    winning_lines = get_winning_lines() # This function needs to return list of tuples of (r,c) for each line.
+    
+    for line in winning_lines:
+        my_pieces = 0
+        opp_pieces = 0
+        for r, c in line:
+            if board[r][c] == 1:
+                my_pieces += 1
+            elif board[r][c] == -1:
+                opp_pieces += 1
+        
+        # Check for immediate win/loss
+        if my_pieces == 4:
+            return 10000 # Very high score for winning
+        if opp_pieces == 4:
+            return -10000 # Very low score for opponent winning
+            
+        # Heuristic scoring
+        if opp_pieces == 0: # Line only has my pieces or is empty
+            if my_pieces == 3: score += 500
+            elif my_pieces == 2: score += 50
+            elif my_pieces == 1: score += 5
+        
+        if my_pieces == 0: # Line only has opponent's pieces or is empty
+            if opp_pieces == 3: score -= 500 # Block opponent's 3-in-a-row
+            elif opp_pieces == 2: score -= 50
+            elif opp_pieces == 1: score -= 5
+            
+    return score
+```
+
+The maximum depth for minimax:
+A 4x4 board has 16 cells. A game can end quickly.
+If we can search to depth 6-8, it would be quite strong.
+Let's make `MAX_DEPTH = 6` as a starting point.
+
+**Helper `get_winning_lines()`:**
+
+```python
+def get_winning_lines():
+    lines = []
+    # Rows
+    for r in range(4):
+        lines.append([(r, c) for c in range(4)])
+    # Columns
+    for c in range(4):
+        lines.append([(r, c) for r in range(4)])
+    # Main Diagonals
+    lines.append([(i, i) for i in range(4)])
+    lines.append([(i, 3 - i) for i in range(4)])
+    return lines
+```
+
+Let's check for board full during minimax.
+
+```python
+import math
+
+# Define global constants for players
+ME = 1
+OPPONENT = -1
+EMPTY = 0
+
+WINNING_SCORE = 100000
+LOSE_SCORE = -100000
+
+MAX_DEPTH = 6 # Can be adjusted, perhaps 4 or 5 is safer for speed.
+
+_WINNING_LINES = None # Cache winning lines
+
+def get_winning_lines():
+    global _WINNING_LINES
+    if _WINNING_LINES is not None:
+        return _WINNING_LINES
+
+    lines = []
+    # Rows
+    for r in range(4):
+        lines.append([(r, c) for c in range(4)])
+    # Columns
+    for c in range(4):
+        lines.append([(r, c) for r in range(4)])
+    # Main Diagonals
+    # Top-left to bottom-right
+    lines.append([(i, i) for i in range(4)])
+    # Top-right to bottom-left
+    lines.append([(i, 3 - i) for i in range(4)])
+    
+    _WINNING_LINES = lines
+    return lines
+
+def board_is_full(board):
+    for r in range(4):
+        for c in range(4):
+            if board[r][c] == EMPTY:
+                return False
+    return True
+
+def get_empty_cells(board):
+    empty_cells = []
+    for r in range(4):
+        for c in range(4):
+            if board[r][c] == EMPTY:
+                empty_cells.append((r, c))
+    return empty_cells
+
+def check_win(board, player):
+    winning_lines = get_winning_lines()
+    for line in winning_lines:
+        if all(board[r][c] == player for r, c in line):
+            return True
+    return False
+
+def evaluate_board(board):
+    winning_lines = get_winning_lines()
+    score = 0
+
+    for line in winning_lines:
+        my_pieces = 0
+        opp_pieces = 0
+        for r, c in line:
+            if board[r][c] == ME:
+                my_pieces += 1
+            elif board[r][c] == OPPONENT:
+                opp_pieces += 1
+        
+        # Immediate win/loss check (important for base cases and pruning)
+        if my_pieces == 4:
+            return WINNING_SCORE
+        if opp_pieces == 4:
+            return LOSE_SCORE
+            
+        # Heuristic scoring (from ME's perspective)
+        if opp_pieces == 0: # Line only contains my pieces or is empty
+            if my_pieces == 3: score += 500
+            elif my_pieces == 2: score += 50
+            elif my_pieces == 1: score += 5
+        
+        if my_pieces == 0: # Line only contains opponent's pieces or is empty
+            if opp_pieces == 3: score -= 500
+            elif opp_pieces == 2: score -= 50
+            elif opp_pieces == 1: score -= 5
+            
+    return score
+
+def minimax(board, depth, is_maximizing_player, alpha, beta):
+    # Base cases for recursion
+    if check_win(board, ME):
+        return WINNING_SCORE - depth  # Subtract depth to prefer faster wins
+    if check_win(board, OPPONENT):
+        return LOSE_SCORE + depth # Add depth to prefer losing slower
+    if board_is_full(board):
+        return 0  # Draw
+    if depth == MAX_DEPTH:
+        return evaluate_board(board)
+
+    empty_cells = get_empty_cells(board)
+
+    if is_maximizing_player:
+        max_eval = -math.inf
+        for r, c in empty_cells:
+            board[r][c] = ME
+            eval = minimax(board, depth + 1, False, alpha, beta)
+            board[r][c] = EMPTY  # Undo move
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:  # Minimizing player
+        min_eval = math.inf
+        for r, c in empty_cells:
+            board[r][c] = OPPONENT
+            eval = minimax(board, depth + 1, True, alpha, beta)
+            board[r][c] = EMPTY  # Undo move
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Cache winning lines for efficiency
+    get_winning_lines() 
+    
+    empty_cells = get_empty_cells(board)
+    if not empty_cells:
+        return (-1, -1) # No moves possible, though this case should be handled by the game manager
+
+    # 1. Check for immediate win
+    for r, c in empty_cells:
+        board[r][c] = ME
+        if check_win(board, ME):
+            board[r][c] = EMPTY # Undo move
+            return (r, c)
+        board[r][c] = EMPTY # Undo move
+
+    # 2. Check for immediate block (opponent's win)
+    for r, c in empty_cells:
+        board[r][c] = OPPONENT
+        if check_win(board, OPPONENT):
+            board[r][c] = EMPTY # Undo move
+            return (r, c)
+        board[r][c] = EMPTY # Undo move
+
+    # 3. Use Minimax with Alpha-Beta pruning
+    best_score = -math.inf
+    best_move = empty_cells[0] # Default to first empty cell, just in case
+
+    # Shuffle empty cells to introduce some randomness if scores are equal,
+    # or to potentially hit good branches earlier in alpha-beta.
+    # import random # Only if randomness is desired
+    # random.shuffle(empty_cells) 
+
+    for r, c in empty_cells:
+        board[r][c] = ME
+        # Call minimax for the opponent (minimizing player)
+        current_score = minimax(board, 0, False, -math.inf, math.inf)
+        board[r][c] = EMPTY
+
+        if current_score > best_score:
+            best_score = current_score
+            best_move = (r, c)
+
+    return best_move
+
+```
+
+Testing the logic:
+*   `check_win` and `evaluate_board` correctly handle the 10 lines.
+*   The `evaluate_board` returns a score *from my perspective*. If it's `ME`'s turn, `is_maximizing_player` is true, so `minimax` seeks to maximize this score. If it's `OPPONENT`'s turn, `is_maximizing_player` is false, `minimax` seeks to minimize *my* score (meaning, maximize opponent's score). This is correct.
+*   `WINNING_SCORE - depth` and `LOSE_SCORE + depth` are good for preferring faster wins/slower losses.
+*   The initial `policy` function correctly checks for immediate wins then immediate blocks before resorting to minimax. This is crucial for performance and correctness.
+*   `MAX_DEPTH`: 6 is a bit ambitious for a fully empty 4x4 board.
+    *   Maximum branching factor is 16 (first move).
+    *   `16!` path, way too big.
+    *   `16 * 15 * 14 * 13 * 12 * 11` for depth 6. Still huge for exhaustive search.
+    *   Alpha-beta prunes a lot, but worst case search is still exponential.
+    *   Estimated nodes for Tic-Tac-Toe (3x3) full game is 255168.
+    *   For 4x4, it's significantly more.
+    *   Let's check the number of states and typical game length for 4x4. A quick search suggests average game length is around 9-12 moves.
+    *   A depth of 4 or 5 offers a good balance for 1 second. Let's start with 5.
+
+Adjust MAX_DEPTH to 5.
+
+One edge case: if `empty_cells` is empty (board is full already), `policy` calls `get_empty_cells` which returns `[]`. My code `if not empty_cells: return (-1, -1)` handles this. Though, the game manager should ideally not call `policy` on a full board.
+
+Final checks on heuristic:
+`500` for 3-in-a-row (my pieces) and `-500` for 3-in-a-row (opponent's pieces) makes sense, as these are one move away from winning/losing.
+`50` for 2-in-a-row and `-50` for opponent's.
+`5` for 1-in-a-row and `-5` for opponent's.
+This provides a gradient that is sensitive to immediate threats and opportunities.
+
+The `alpha` and `beta` initialization in `minimax` and the main `policy` function for the initial call seem correct.
+The `board` is passed by reference, so temporary moves must be undone (`board[r][c] = EMPTY`). This is done.
+
+Consider using `numpy` for board operations if it were significantly faster, but for 4x4 and simple assignment, list of lists should be fine. It avoids `numpy` as a dependency.
+
+
+```python
+import math
+
+class TicTacToeAI:
+    def __init__(self):
+        self.ME = 1
+        self.OPPONENT = -1
+        self.EMPTY = 0
+
+        self.WINNING_SCORE = 100000
+        self.LOSE_SCORE = -100000
+
+        # Max depth for minimax search.
+        # 4x4 Tic Tac Toe can have long games, but a depth of 5 provides a good balance
+        # of strength and performance within 1 second.
+        self.MAX_DEPTH = 5 
+
+        self._WINNING_LINES = self._generate_winning_lines() # Cache winning lines
+
+    def _generate_winning_lines(self):
+        """Generates all possible 4-in-a-row winning lines for a 4x4 board."""
+        lines = []
+        # Rows
+        for r in range(4):
+            lines.append([(r, c) for c in range(4)])
+        # Columns
+        for c in range(4):
+            lines.append([(r, c) for r in range(4)])
+        # Main Diagonals
+        lines.append([(i, i) for i in range(4)])       # Top-left to bottom-right
+        lines.append([(i, 3 - i) for i in range(4)])   # Top-right to bottom-left
+        return lines
+
+    def _get_empty_cells(self, board):
+        """Returns a list of all empty (row, col) coordinates on the board."""
+        empty_cells = []
+        for r in range(4):
+            for c in range(4):
+                if board[r][c] == self.EMPTY:
+                    empty_cells.append((r, c))
+        return empty_cells
+
+    def _check_win(self, board, player):
+        """Checks if the given player has won the game."""
+        for line in self._WINNING_LINES:
+            if all(board[r][c] == player for r, c in line):
+                return True
+        return False
+
+    def _board_is_full(self, board):
+        """Checks if the board is completely filled."""
+        for r in range(4):
+            for c in range(4):
+                if board[r][c] == self.EMPTY:
+                    return False
+        return True
+
+    def _evaluate_board(self, board):
+        """Evaluates the current board state from the perspective of self.ME (player 1).
+           Returns a numeric score. Higher is better for self.ME.
+        """
+        score = 0
+
+        for line in self._WINNING_LINES:
+            my_pieces = 0
+            opp_pieces = 0
+            for r, c in line:
+                if board[r][c] == self.ME:
+                    my_pieces += 1
+                elif board[r][c] == self.OPPONENT:
+                    opp_pieces += 1
+            
+            # Immediate win/loss check (important for base cases and pruning efficiency)
+            if my_pieces == 4:
+                return self.WINNING_SCORE
+            if opp_pieces == 4:
+                return self.LOSE_SCORE
+                
+            # Heuristic scoring: Lines with more of my pieces and no opponent pieces are good.
+            # Lines with more opponent pieces and no my pieces are bad.
+            if opp_pieces == 0: # This line is potentially mine
+                if my_pieces == 3: score += 500  # 3 in a row
+                elif my_pieces == 2: score += 50   # 2 in a row
+                elif my_pieces == 1: score += 5    # 1 in a row
+            
+            if my_pieces == 0: # This line is potentially opponent's
+                if opp_pieces == 3: score -= 500  # Opponent has 3 in a row, block!
+                elif opp_pieces == 2: score -= 50
+                elif opp_pieces == 1: score -= 5
+                
+        return score
+
+    def _minimax(self, board, depth, is_maximizing_player, alpha, beta):
+        """Minimax algorithm with Alpha-Beta pruning."""
+        # Base cases for recursion
+        if self._check_win(board, self.ME):
+            return self.WINNING_SCORE - depth # Prefer faster wins
+        if self._check_win(board, self.OPPONENT):
+            return self.LOSE_SCORE + depth    # Prefer losing slower
+        if self._board_is_full(board):
+            return 0  # Draw
+        if depth == self.MAX_DEPTH:
+            return self._evaluate_board(board)
+
+        empty_cells = self._get_empty_cells(board)
+        if not empty_cells: # Should be caught by _board_is_full, but good safeguard
+            return 0
+
+        if is_maximizing_player:
+            max_eval = -math.inf
+            for r, c in empty_cells:
+                board[r][c] = self.ME
+                eval = self._minimax(board, depth + 1, False, alpha, beta)
+                board[r][c] = self.EMPTY  # Undo move
+                max_eval = max(max_eval, eval)
+                alpha = max(alpha, eval)
+                if beta <= alpha: # Alpha-Beta Pruning
+                    break
+            return max_eval
+        else:  # Minimizing player (opponent)
+            min_eval = math.inf
+            for r, c in empty_cells:
+                board[r][c] = self.OPPONENT
+                eval = self._minimax(board, depth + 1, True, alpha, beta)
+                board[r][c] = self.EMPTY  # Undo move
+                min_eval = min(min_eval, eval)
+                beta = min(beta, eval)
+                if beta <= alpha: # Alpha-Beta Pruning
+                    break
+            return min_eval
+
+    def policy(self, board: list[list[int]]) -> tuple[int, int]:
+        """
+        Determines the next best move for the AI (player 1) on a 4x4 Tic Tac Toe board.
+        """
+        empty_cells = self._get_empty_cells(board)
+        if not empty_cells:
+            # Should not happen in normal game flow if called when a move is expected
+            # If all cells are filled, no valid move exists.
+            return (0, 0) # Return a default or raise error, depending on game rules
+
+        # 1. Check for immediate win: If I can win in the next move, take it.
+        for r, c in empty_cells:
+            board[r][c] = self.ME
+            if self._check_win(board, self.ME):
+                board[r][c] = self.EMPTY # Undo move
+                return (r, c)
+            board[r][c] = self.EMPTY # Undo move
+
+        # 2. Check for immediate block: If the opponent can win in their next move, block it.
+        for r, c in empty_cells:
+            board[r][c] = self.OPPONENT
+            if self._check_win(board, self.OPPONENT):
+                board[r][c] = self.EMPTY # Undo move
+                return (r, c)
+            board[r][c] = self.EMPTY # Undo move
+
+        # 3. If no immediate wins or blocks, use Minimax to find the best move.
+        best_score = -math.inf
+        # Default to the first empty cell, this is a fallback if somehow all scores are -inf
+        best_move = empty_cells[0] 
+
+        # We can shuffle empty_cells here to introduce some randomness if multiple moves
+        # have the same best score, or for slightly better pruning chances.
+        # import random
+        # random.shuffle(empty_cells)
+
+        for r, c in empty_cells:
+            board[r][c] = self.ME # Make the move
+            # Call minimax for the opponent (minimizing player)
+            current_score = self._minimax(board, 0, False, -math.inf, math.inf)
+            board[r][c] = self.EMPTY # Undo the move
+
+            if current_score > best_score:
+                best_score = current_score
+                best_move = (r, c)
+
+        return best_move
+
+# Instantiate the AI once globally to cache winning lines and other properties
+_tic_tac_toe_ai = TicTacToeAI()
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Public interface for the AI policy.
+    Delegates to the instantiated AI object.
+    """
+    return _tic_tac_toe_ai.policy(board)
+
+```
+The code provides a class `TicTacToeAI` to encapsulate the logic and related constants/methods. This is good practice. The `policy` function then becomes a simple wrapper around an instance of this class. This allows the winning lines to be computed only once (`_WINNING_LINES = self._generate_winning_lines()`). This should be good.
+
+One final check: the `policy` function receives `board` as input. I'm modifying this `board` in the minimax and immediate check steps. This is normally not good practice if the `board` is expected to remain unchanged by the caller. However, in this competitive setup, the input `board` is a deep copy provided by the environment, so modifying it temporarily within the function and then reverting changes is acceptable and efficient (avoids deep copies repeatedly in minimax). If it wasn't guaranteed to be a deep copy, I'd need to create one `copy_board = [row[:] for row in board]` for every temporary move, which would be much slower. Given the context, the current approach is fine.
+</thinking>
+<code>
+import math
+
+class TicTacToeAI:
+    def __init__(self):
+        self.ME = 1
+        self.OPPONENT = -1
+        self.EMPTY = 0
+
+        self.WINNING_SCORE = 100000
+        self.LOSE_SCORE = -100000
+
+        # Max depth for minimax search.
+        # A depth of 5 provides a good balance of strength and performance for a 4x4 board
+        # within the 1-second time limit. Deepening this too much will exceed the time limit.
+        self.MAX_DEPTH = 5 
+
+        # Pre-compute all winning lines once to avoid repeated calculations.
+        self._WINNING_LINES = self._generate_winning_lines()
+
+    def _generate_winning_lines(self):
+        """Generates all possible 4-in-a-row winning lines for a 4x4 board.
+        A winning line consists of 4 cells in a row, column, or main diagonal.
+        """
+        lines = []
+        # Rows
+        for r in range(4):
+            lines.append([(r, c) for c in range(4)])
+        # Columns
+        for c in range(4):
+            lines.append([(r, c) for r in range(4)])
+        # Main Diagonals
+        lines.append([(i, i) for i in range(4)])        # Top-left to bottom-right
+        lines.append([(i, 3 - i) for i in range(4)])   # Top-right to bottom-left
+        return lines
+
+    def _get_empty_cells(self, board):
+        """Returns a list of all empty (row, col) coordinates on the board."""
+        empty_cells = []
+        for r in range(4):
+            for c in range(4):
+                if board[r][c] == self.EMPTY:
+                    empty_cells.append((r, c))
+        return empty_cells
+
+    def _check_win(self, board, player):
+        """Checks if the given player has won the game on the current board state."""
+        for line in self._WINNING_LINES:
+            if all(board[r][c] == player for r, c in line):
+                return True
+        return False
+
+    def _board_is_full(self, board):
+        """Checks if the board is completely filled."""
+        # This is a faster check than iterating if _get_empty_cells is expensive
+        # or if we need to quickly know if it's a draw state.
+        for r in range(4):
+            for c in range(4):
+                if board[r][c] == self.EMPTY:
+                    return False
+        return True
+
+    def _evaluate_board(self, board):
+        """Evaluates the current board state from the perspective of self.ME (player 1).
+           Returns a numeric score. Higher scores are favorable for self.ME, lower for the opponent.
+           This heuristic is used when minimax search depth is reached or for draw scenarios.
+        """
+        score = 0
+
+        for line in self._WINNING_LINES:
+            my_pieces = 0
+            opp_pieces = 0
+            for r, c in line:
+                if board[r][c] == self.ME:
+                    my_pieces += 1
+                elif board[r][c] == self.OPPONENT:
+                    opp_pieces += 1
+            
+            # Immediately return a decisive score if a win/loss state is found.
+            # This helps prune earlier in the minimax tree.
+            if my_pieces == 4:
+                return self.WINNING_SCORE
+            if opp_pieces == 4:
+                return self.LOSE_SCORE
+                
+            # Heuristic scoring: Prioritize lines that are closer to winning for ME,
+            # and penalize lines where the opponent is closer to winning.
+            # A line is only scored if it's not blocked by the other player.
+            if opp_pieces == 0: # This line contains only my pieces or is empty
+                if my_pieces == 3: score += 500  # 3 in a row, one move to win
+                elif my_pieces == 2: score += 50   # 2 in a row
+                elif my_pieces == 1: score += 5    # 1 in a row
+            
+            if my_pieces == 0: # This line contains only opponent's pieces or is empty
+                if opp_pieces == 3: score -= 500  # Opponent has 3 in a row, urgent block!
+                elif opp_pieces == 2: score -= 50
+                elif opp_pieces == 1: score -= 5
+                
+        return score
+
+    def _minimax(self, board, depth, is_maximizing_player, alpha, beta):
+        """Minimax algorithm with Alpha-Beta pruning for optimal decision making."""
+
+        # Base cases for recursion:
+        # 1. Terminal states (win, loss, draw)
+        if self._check_win(board, self.ME):
+            # Prefer solutions that lead to a win faster (smaller depth)
+            return self.WINNING_SCORE - depth 
+        if self._check_win(board, self.OPPONENT):
+            # Prefer solutions that lead to a loss slower (larger depth for opponent's win)
+            return self.LOSE_SCORE + depth    
+        if self._board_is_full(board):
+            return 0  # Draw
+        # 2. Search depth limit reached
+        if depth == self.MAX_DEPTH:
+            return self._evaluate_board(board)
+
+        empty_cells = self._get_empty_cells(board)
+        # Fallback for empty board, although _board_is_full should catch this first.
+        if not empty_cells: 
+            return 0
+
+        if is_maximizing_player: # AI (ME) is trying to maximize the score
+            max_eval = -math.inf
+            for r, c in empty_cells:
+                board[r][c] = self.ME # Make the move temporarily
+                eval = self._minimax(board, depth + 1, False, alpha, beta)
+                board[r][c] = self.EMPTY # Undo the move
+                max_eval = max(max_eval, eval)
+                alpha = max(alpha, eval) # Update alpha
+                if beta <= alpha: # Alpha-Beta Pruning: no need to search further
+                    break
+            return max_eval
+        else:  # Opponent is trying to minimize my score
+            min_eval = math.inf
+            for r, c in empty_cells:
+                board[r][c] = self.OPPONENT # Make the opponent's move temporarily
+                eval = self._minimax(board, depth + 1, True, alpha, beta)
+                board[r][c] = self.EMPTY  # Undo the move
+                min_eval = min(min_eval, eval)
+                beta = min(beta, eval) # Update beta
+                if beta <= alpha: # Alpha-Beta Pruning: no need to search further
+                    break
+            return min_eval
+
+    def policy(self, board: list[list[int]]) -> tuple[int, int]:
+        """
+        The main function that determines the next best move for the AI (player 1).
+        It prioritizes immediate wins, then immediate blocks, and finally uses 
+        minimax with alpha-beta pruning for strategic depth.
+        """
+        
+        empty_cells = self._get_empty_cells(board)
+        if not empty_cells:
+            # If no empty cells, the board is full. Return a default invalid move.
+            # The game manager should ideally not call policy in this state.
+            return (0, 0) 
+
+        # 1. Check for immediate win: If I can win in the next move, take it.
+        # This is the most crucial type of move.
+        for r, c in empty_cells:
+            board[r][c] = self.ME # Temporarily place my piece
+            if self._check_win(board, self.ME):
+                board[r][c] = self.EMPTY # Undo the temporary move
+                return (r, c) # Return the winning move
+            board[r][c] = self.EMPTY # Undo the temporary move
+
+        # 2. Check for immediate block: If the opponent can win in their next move, block it.
+        # This prevents the opponent from winning.
+        for r, c in empty_cells:
+            board[r][c] = self.OPPONENT # Temporarily place opponent's piece
+            if self._check_win(board, self.OPPONENT):
+                board[r][c] = self.EMPTY # Undo the temporary move
+                return (r, c) # Return the blocking move
+            board[r][c] = self.EMPTY # Undo the temporary move
+
+        # 3. If no immediate wins or blocks, use Minimax with Alpha-Beta pruning 
+        # to find the best strategic move.
+        best_score = -math.inf
+        # Initialize best_move with the first empty cell as a fallback.
+        best_move = empty_cells[0] 
+
+        # It can sometimes be beneficial to shuffle empty_cells to explore different 
+        # branches first, potentially improving alpha-beta pruning effectiveness 
+        # or introducing slight variation if multiple moves yield the same optimal score.
+        # import random
+        # random.shuffle(empty_cells)
+
+        for r, c in empty_cells:
+            board[r][c] = self.ME # Make the potential move
+            # Call minimax for the opponent (minimizing player) from the new board state
+            current_score = self._minimax(board, 0, False, -math.inf, math.inf)
+            board[r][c] = self.EMPTY # Undo the potential move
+
+            if current_score > best_score:
+                best_score = current_score
+                best_move = (r, c)
+            # If scores are equal, we could also randomly pick, but current behavior is fine.
+
+        return best_move
+
+# Create a single instance of the TicTacToeAI class.
+# This ensures that winning lines are generated only once, improving efficiency
+# for repeated calls to the policy function.
+_tic_tac_toe_ai_instance = TicTacToeAI()
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Public entry point for the AI's move decision.
+    Delegates the call to the pre-initialized TicTacToeAI instance.
+    """
+    return _tic_tac_toe_ai_instance.policy(board)
+
+</code>

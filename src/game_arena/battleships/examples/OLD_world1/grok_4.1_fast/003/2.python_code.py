@@ -1,0 +1,58 @@
+
+def generate_placements(length: int) -> list[list[tuple[int, int]]]:
+    placements = []
+    # horizontal
+    for i in range(10):
+        for j in range(11 - length):
+            placements.append([(i, j + k) for k in range(length)])
+    # vertical
+    for i in range(11 - length):
+        for j in range(10):
+            placements.append([(i + k, j) for k in range(length)])
+    return placements
+
+lengths = [5, 4, 3, 3, 2]
+all_possible = [generate_placements(l) for l in lengths]
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    probs = [[0.0] * 10 for _ in range(10)]
+    for ship_id in range(len(lengths)):
+        cover_count = [[0] * 10 for _ in range(10)]
+        valid_count = 0
+        for placement in all_possible[ship_id]:
+            valid = True
+            for r, c in placement:
+                if board[r][c] == -1:
+                    valid = False
+                    break
+            if valid:
+                valid_count += 1
+                for r, c in placement:
+                    cover_count[r][c] += 1
+        if valid_count > 0:
+            for r in range(10):
+                for c in range(10):
+                    probs[r][c] += cover_count[r][c] / valid_count
+
+    adj_bonus = [[0] * 10 for _ in range(10)]
+    directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1:
+                for dr, dc in directions:
+                    nr = r + dr
+                    nc = c + dc
+                    if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                        adj_bonus[nr][nc] += 1
+
+    best_r, best_c = -1, -1
+    best_score = -float('inf')
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0:
+                score = probs[r][c] + 50.0 * adj_bonus[r][c]
+                if score > best_score or (score == best_score and (r < best_r or (r == best_r and c < best_c))):
+                    best_score = score
+                    best_r = r
+                    best_c = c
+    return (best_r, best_c)

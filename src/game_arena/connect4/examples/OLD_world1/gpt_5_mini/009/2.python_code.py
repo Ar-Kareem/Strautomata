@@ -1,0 +1,159 @@
+
+from typing import List, Optional, Tuple
+
+ROWS = 6
+COLS = 7
+ME = 1
+OPP = -1
+
+def policy(board: List[List[int]]) -> int:
+    """
+    Choose a column (0-6) to drop our disc (1) on a 6x7 Connect-4 board.
+    Strategy:
+      1. If we have a winning move, play it.
+      2. If opponent has a direct winning move next, block it.
+      3. Otherwise score each legal move by pattern windows (4-cell windows in all directions),
+         prefer center, prefer creating 3-in-a-row with an open cell, and avoid moves that
+         immediately allow opponent to win next turn.
+    """
+    # Helpers
+    def next_row(b: List[List[int]], col: int) -> Optional[int]:
+        for r in range(ROWS - 1, -1, -1):
+            if b[r][col] == 0:
+                return r
+        return None
+
+    def drop(b: List[List[int]], col: int, player: int) -> Tuple[Optional[List[List[int]]], Optional[int]]:
+        r = next_row(b, col)
+        if r is None:
+            return None, None
+        nb = [row[:] for row in b]
+        nb[r][col] = player
+        return nb, r
+
+    def in_bounds(r: int, c: int) -> bool:
+        return 0 <= r < ROWS and 0 <= c < COLS
+
+    def check_win_at(b: List[List[int]], r: int, c: int, player: int) -> bool:
+        # Check 4 directions for a connect-4 including (r,c)
+        directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
+        for dr, dc in directions:
+            count = 1
+            # forward
+            rr, cc = r + dr, c + dc
+            while in_bounds(rr, cc) and b[rr][cc] == player:
+                count += 1
+                rr += dr; cc += dc
+            # backward
+            rr, cc = r - dr, c - dc
+            while in_bounds(rr, cc) and b[rr][cc] == player:
+                count += 1
+                rr -= dr; cc -= dc
+            if count >= 4:
+                return True
+        return False
+
+    # Get valid columns
+    valid_cols = [c for c in range(COLS) if next_row(board, c) is not None]
+    if not valid_cols:
+        # No legal move (shouldn't happen in normal play) - return arbitrary
+        return 0
+
+    # 1) Immediate win
+    for c in valid_cols:
+        nb, r = drop(board, c, ME)
+        if r is not None and check_win_at(nb, r, c, ME):
+            return c
+
+    # 2) Block opponent immediate win(s). If opponent can win in multiple ways,
+    # pick the block that is most center-preferred.
+    opp_winning_columns = []
+    for c in valid_cols:
+        nb, r = drop(board, c, OPP)
+        if r is not None and check_win_at(nb, r, c, OPP):
+            opp_winning_columns.append(c)
+    if opp_winning_columns:
+        # choose column among blockers closest to center
+        return min(opp_winning_columns, key=lambda x: abs(x - COLS // 2))
+
+    # 3) Score moves
+    # Scoring by examining all length-4 windows that include the new disc in all directions.
+    def score_move(col: int) -> float:
+        nb, r = drop(board, col, ME)
+        if r is None:
+            return -1e9
+        # If this move allows opponent an immediate win next turn, penalize heavily.
+        for oc in range(COLS):
+            rr = next_row(nb, oc)
+            if rr is not None:
+                nb2 = [row[:] for row in nb]
+                nb2[rr][oc] = OPP
+                if check_win_at(nb2, rr, oc, OPP):
+                    return -10000.0
+
+        score = 0.0
+        # Center preference
+        score += (3 - abs(col - (COLS // 2))) * 1.5  # center columns slightly preferred
+
+        directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
+        # For each direction, consider every length-4 window that contains (r,c)
+        for dr, dc in directions:
+            # k is offset of window start relative to the placed disc: window cells are r+(k+i)*dr, c+(k+i)*dc for i=0..3
+            for k in range(-3, 1):
+                player_count = 0
+                opp_present = False
+                empty_count = 0
+                contains_placed = False
+                for i in range(4):
+                    rr = r + (k + i) * dr
+                    cc = col + (k + i) * dc
+                    if not in_bounds(rr, cc):
+                        opp_present = True  # treat out-of-bounds as blocking this window
+                        break
+                    val = nb[rr][cc]
+                    if rr == r and cc == col:
+                        contains_placed = True
+                    if val == ME:
+                        player_count += 1
+                    elif val == OPP:
+                        opp_present = True
+                        break
+                    else:
+                        empty_count += 1
+                if opp_present or not contains_placed:
+                    continue
+                # Evaluate this window
+                if player_count >= 4:
+                    score += 100000.0
+                elif player_count == 3 and empty_count == 1:
+                    # create/threaten a 3-in-row with an open spot -> strong
+                    score += 200.0
+                elif player_count == 2 and empty_count == 2:
+                    score += 20.0
+                elif player_count == 1 and empty_count == 3:
+                    score += 1.0
+
+        # Slight bonus for vertical stacking (having discs beneath)
+        vert_count = 0
+        rr = r + 1
+        while rr < ROWS and nb[rr][col] == ME:
+            vert_count += 1
+            rr += 1
+        score += vert_count * 3.0
+
+        return score
+
+    # Evaluate all valid cols and choose best with center tie-break
+    best_col = None
+    best_score = -1e12
+    for c in valid_cols:
+        s = score_move(c)
+        if best_col is None or s > best_score or (abs(s - best_score) < 1e-6 and abs(c - COLS // 2) < abs(best_col - COLS // 2)):
+            best_score = s
+            best_col = c
+
+    # As a fallback (shouldn't be None), pick center-most valid column
+    if best_col is None:
+        best_col = min(valid_cols, key=lambda x: abs(x - COLS // 2))
+
+    return int(best_col)

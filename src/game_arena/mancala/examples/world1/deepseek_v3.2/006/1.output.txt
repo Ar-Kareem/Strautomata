@@ -1,0 +1,593 @@
+<thinking>
+We need to implement a policy for Kalah. This is a competitive scenario, so we want a strong policy. Since we have 1 second of computation time, we can implement a minimax search with alpha-beta pruning and some heuristics.
+
+The game is Kalah/Mancala with 6 houses per player. The rules are standard: the player chooses a house, sows seeds counterclockwise, skipping the opponent's store, and gets extra moves and captures as described.
+
+We need to write a policy that returns the best move (0-5) given the current state.
+
+Approach:
+1. Implement the game logic to simulate a move and get the resulting state.
+2. Implement a heuristic evaluation function that estimates the advantage for the player.
+3. Implement minimax with alpha-beta pruning to search for the best move within time constraints.
+4. Since we have 1 second, we can adjust the search depth accordingly. We might also use iterative deepening with a time limit.
+
+Potential heuristic components:
+- Difference in stores (you[6] - opponent[6])
+- Difference in seeds on your side vs opponent's side (total seeds in houses)
+- Potential for extra moves (having houses that land in your store)
+- Potential for captures (having empty houses opposite opponent's non-empty houses)
+- Positional advantage (having seeds in later houses might be better for extra moves?)
+
+Simpler heuristic: store difference plus some weight for seeds on your side.
+
+We also need to handle the extra move rule: if a move ends in your store, you get another move. In the search tree, this means the same player moves again.
+
+We'll implement a function that takes a state (you, opponent) and a move index, and returns the new state and a boolean indicating if the player gets another move.
+
+Let's design:
+
+```
+def apply_move(you, opponent, move):
+    # returns (new_you, new_opponent, extra_move)
+```
+
+We need to copy the lists.
+
+Implementation details:
+- Starting from house `move`, take `seeds = you[move]`, set `you[move] = 0`.
+- Distribute seeds:
+    - Start from next house (move+1) on your side, then your store, then opponent's houses (0-5), then your houses again, skipping opponent's store.
+- We can simulate by iterating and using modulo arithmetic.
+
+After distribution, check last seed:
+- If last seed landed in your store: extra_move = True.
+- If last seed landed in your empty house (0-5) and that house had 0 before the drop (so now has 1), and the opposite opponent's house has >0: capture: take the seed in your house and all seeds in opponent's opposite house and put them in your store.
+
+We also need to handle game end: after a move, if one side's houses are all empty, the game ends and the other player collects all remaining seeds. But for search, we can evaluate terminal states.
+
+For heuristic evaluation at non-terminal nodes:
+We can use:
+    score = (you[6] - opponent[6]) + 0.1 * (sum(you[0:6]) - sum(opponent[0:6]))
+
+But we need to account for extra moves and captures. The heuristic should reflect that having seeds in later houses might lead to extra moves. Alternatively, we can compute the potential for extra moves: count houses i where (you[i] + i) % 13 == 6? Actually, the condition for extra move is that the last seed lands in store. If you sow from house i with s seeds, the store is at position 6 relative to starting point (house i+1 is position 0). The store is at index (6 - i) in the sowing sequence if we consider only your houses and store? Actually, the sowing goes: your houses i+1..5 (count: 6 - (i+1) = 5-i), then your store (1), then opponent houses 0..5 (6), then your houses 0..i-1 (i). Total positions before wrapping: (5-i) + 1 + 6 + i = 12. So the store is at position (5-i) from start (0-indexed). So the last seed lands in store if (s % 13) == (5-i) ? Wait, we need to consider the skipping of opponent's store. The opponent's store is skipped, so the total number of positions in a full cycle is 12 (your 6 houses + your store + opponent's 6 houses). Actually, your store is 1, opponent's store is skipped, so total 12 positions. So the store is at index (5-i) in the first cycle? Let's derive properly.
+
+Better to simulate in the heuristic? Or we can rely on search to see deep consequences.
+
+We'll keep heuristic simple and let search handle tactics.
+
+We'll implement minimax with alpha-beta, but we must account for extra moves: if extra_move is True, then the same player moves again, so in the search tree, it's still the player's turn. So we need to handle that in the recursive function.
+
+We'll have a function `alphabeta(state, depth, alpha, beta, maximizingPlayer, extra_turn=False)` where state is (you, opponent), and if extra_turn is True, it means the player has an extra move (so same player moves again). Actually, we can incorporate that into the turn: we can pass a parameter `player` indicating whose turn it is. But since we always evaluate from the perspective of the player to move (the one who called policy), we can keep that perspective fixed. So we can have `maximizing` is True if it's the original player's turn, False if opponent's turn. But if there's an extra move, then it's still the same player's turn. So we can handle that by not switching sides when extra_move is True.
+
+Alternatively, we can have a function that returns the best move for the current player given the state. We'll implement:
+
+```
+def evaluate(state):
+    # state: (you, opponent)
+    you, opponent = state
+    return you[6] - opponent[6] + 0.1 * (sum(you[0:6]) - sum(opponent[0:6]))
+```
+
+Terminal condition: if one player has no seeds in houses, then game over. Collect remaining seeds to the other player's store and evaluate.
+
+Search: We'll use iterative deepening with time limit. We'll start depth=1 and increase until time runs out. We'll keep track of the best move found so far.
+
+We need to generate legal moves: indices i from 0 to 5 where you[i] > 0.
+
+We'll order moves heuristically to improve pruning: maybe moves that lead to extra moves or captures first.
+
+We'll implement a simple move ordering: sort moves by decreasing you[i] (more seeds might be good) or by potential for extra move? We can compute a quick score for each move: if (you[i] + i) % 13 == 6? Actually, extra move if (you[i] % 13) == (6 - i) considering the store position? Let's compute: store is at position (6 - i) in the sowing sequence if we consider only your side? Not accurate. Instead, we can simulate the move shallowly to see if it gives extra move or capture, and assign a high score.
+
+But for simplicity, we can order by number of seeds descending.
+
+We'll implement time management: check time at each node or after each depth iteration.
+
+Let's outline code:
+
+1. Import time.
+2. Define helper functions: apply_move, evaluate, terminal, collect_remaining.
+3. Define alphabeta function.
+4. In policy, start timer, do iterative deepening, return best move.
+
+We must ensure we return a legal move even if we run out of time before completing depth=1. So we'll initialize best_move with the first legal move.
+
+Edge cases: If a move leads to capture, we need to implement that.
+
+Let's implement apply_move:
+
+```
+def apply_move(you, opponent, move):
+    you = list(you)
+    opponent = list(opponent)
+    seeds = you[move]
+    you[move] = 0
+    pos = move + 1
+    side = 0  # 0 for your side, 1 for opponent side
+    while seeds > 0:
+        if side == 0:
+            if pos <= 5:
+                you[pos] += 1
+                seeds -= 1
+                last_house = (0, pos)
+                pos += 1
+            elif pos == 6:
+                you[6] += 1
+                seeds -= 1
+                last_house = (0, 6)
+                pos = 0
+                side = 1
+            else:
+                # pos > 6 shouldn't happen on your side
+                pass
+        else:  # opponent side
+            if pos <= 5:
+                opponent[pos] += 1
+                seeds -= 1
+                last_house = (1, pos)
+                pos += 1
+            elif pos == 6:
+                # opponent's store, skip
+                pos = 0
+                side = 0
+            else:
+                # shouldn't happen
+                pass
+    # after sowing, check last seed
+    extra_move = False
+    if last_house[0] == 0 and last_house[1] == 6:
+        extra_move = True
+    elif last_house[0] == 0 and last_house[1] <= 5:
+        # landed in your empty house?
+        if you[last_house[1]] == 1:  # now has 1 seed (was empty before)
+            opposite = 5 - last_house[1]
+            if opponent[opposite] > 0:
+                # capture
+                you[6] += you[last_house[1]] + opponent[opposite]
+                you[last_house[1]] = 0
+                opponent[opposite] = 0
+    return you, opponent, extra_move
+```
+
+But careful: the last seed might land in a house that was empty before the drop. In our simulation, we increment the house by 1, so if it was empty (0) before, after increment it becomes 1. So we need to know the state before increment. We can track the last seed's position and then check if that house was 0 before we added the seed. So we need to know the count before adding. We can simulate by keeping a copy of the board and stepping through each seed placement, recording the state before each placement. Alternatively, we can compute the last house analytically, but easier to simulate step by step and record the last house and whether it was empty before.
+
+We'll modify: while sowing, we keep track of the last house and its value before increment. We'll store (side, index, value_before). Then after sowing, we check: if side==0 and index==6 -> extra move. If side==0 and index<=5 and value_before==0 -> capture if opposite has seeds.
+
+We need to be careful about the order: we increment then decrement seeds. So we can check before incrementing.
+
+Let's adjust:
+
+```
+def apply_move(you, opponent, move):
+    you = list(you)
+    opponent = list(opponent)
+    seeds = you[move]
+    you[move] = 0
+    pos = move + 1
+    side = 0  # 0 for your side, 1 for opponent side
+    last_house = None
+    last_value_before = None
+    while seeds > 0:
+        if side == 0:
+            if pos <= 5:
+                last_value_before = you[pos]
+                you[pos] += 1
+                seeds -= 1
+                last_house = (0, pos)
+                pos += 1
+            elif pos == 6:
+                last_value_before = you[6]
+                you[6] += 1
+                seeds -= 1
+                last_house = (0, 6)
+                pos = 0
+                side = 1
+            else:
+                # should not happen
+                pos = 0
+                side = 1
+        else:  # opponent side
+            if pos <= 5:
+                last_value_before = opponent[pos]
+                opponent[pos] += 1
+                seeds -= 1
+                last_house = (1, pos)
+                pos += 1
+            elif pos == 6:
+                # skip opponent store
+                pos = 0
+                side = 0
+            else:
+                # should not happen
+                pos = 0
+                side = 0
+    # after sowing
+    extra_move = False
+    if last_house[0] == 0 and last_house[1] == 6:
+        extra_move = True
+    elif last_house[0] == 0 and last_house[1] <= 5:
+        if last_value_before == 0:
+            opposite = 5 - last_house[1]
+            if opponent[opposite] > 0:
+                # capture
+                you[6] += you[last_house[1]] + opponent[opposite]
+                you[last_house[1]] = 0
+                opponent[opposite] = 0
+    return you, opponent, extra_move
+```
+
+Now we need to handle game end: after a move, if one player's houses are all zero, the game ends. But in the search, we can evaluate terminal nodes. We'll have a function to check terminal and collect remaining seeds.
+
+```
+def is_terminal(you, opponent):
+    return sum(you[0:6]) == 0 or sum(opponent[0:6]) == 0
+
+def collect_remaining(you, opponent):
+    # if game over, collect all seeds to respective stores
+    you_total = sum(you[0:6])
+    opponent_total = sum(opponent[0:6])
+    new_you = [0]*6 + [you[6] + you_total]
+    new_opponent = [0]*6 + [opponent[6] + opponent_total]
+    return new_you, new_opponent
+```
+
+But we only collect when the game ends. In the search, if we reach a terminal state, we evaluate after collecting.
+
+Now evaluate function:
+
+```
+def evaluate_state(you, opponent):
+    # simple heuristic: store difference + 0.1 * seeds difference
+    return (you[6] - opponent[6]) + 0.1 * (sum(you[0:6]) - sum(opponent[0:6]))
+```
+
+We can adjust weight.
+
+Now alphabeta:
+
+We'll write a function that takes state (you, opponent), depth, alpha, beta, maximizing (True if it's the original player's turn), and extra_turn (if the player has an extra move, then maximizing stays same and we don't switch). Actually, we can incorporate extra_turn by not switching sides. So we can have a parameter `player` which is 0 for the original player (maximizing) and 1 for opponent (minimizing). But we can also keep a boolean `maximizing` and if extra_move, we call alphabeta again with same maximizing.
+
+We'll design:
+
+```
+def alphabeta(you, opponent, depth, alpha, beta, maximizing):
+    if depth == 0 or is_terminal(you, opponent):
+        if is_terminal(you, opponent):
+            you_f, opponent_f = collect_remaining(you, opponent)
+            return evaluate_state(you_f, opponent_f)
+        return evaluate_state(you, opponent)
+    
+    if maximizing:
+        value = -float('inf')
+        moves = [i for i in range(6) if you[i] > 0]
+        # order moves heuristically
+        moves.sort(key=lambda i: you[i], reverse=True)  # more seeds first
+        for move in moves:
+            new_you, new_opponent, extra = apply_move(you, opponent, move)
+            if extra:
+                # same player moves again
+                new_value = alphabeta(new_you, new_opponent, depth-1, alpha, beta, True)
+            else:
+                new_value = alphabeta(new_opponent, new_you, depth-1, alpha, beta, False)  # switch sides
+            if new_value > value:
+                value = new_value
+            alpha = max(alpha, value)
+            if value >= beta:
+                break
+        return value
+    else:
+        value = float('inf')
+        moves = [i for i in range(6) if you[i] > 0]  # note: now `you` is the current player, which is the opponent from original perspective
+        moves.sort(key=lambda i: you[i], reverse=True)
+        for move in moves:
+            new_you, new_opponent, extra = apply_move(you, opponent, move)
+            if extra:
+                # same player (still minimizing) moves again
+                new_value = alphabeta(new_you, new_opponent, depth-1, alpha, beta, False)
+            else:
+                # switch sides: now the original player (maximizing) moves
+                new_value = alphabeta(new_opponent, new_you, depth-1, alpha, beta, True)
+            if new_value < value:
+                value = new_value
+            beta = min(beta, value)
+            if value <= alpha:
+                break
+        return value
+```
+
+But careful: when we switch sides, we pass (new_opponent, new_you) as the state for the next call, because the players are swapped. In the minimizing branch, `you` refers to the opponent's houses and store? Actually, in our alphabeta, we always pass (you, opponent) from the perspective of the player to move. So when we switch sides, we need to swap the lists.
+
+We can design the state as a tuple (you, opponent) where "you" is the player to move. Then the apply_move function returns a new state from the same perspective? Actually, apply_move as defined assumes the moving player is the first argument (you). So if we call apply_move(you, opponent, move) where you is the player to move, it returns new_you, new_opponent from the same perspective (the moving player). Then if there is no extra move, the next player to move is the opponent, so the state for the next call should be (opponent, you) but with the new boards? Wait, we need to swap the lists: the new opponent becomes the next player's "you". So we can define:
+
+If no extra move, then next state is (new_opponent, new_you). Because the opponent now becomes the player to move.
+
+If extra move, next state is (new_you, new_opponent) (same player moves again).
+
+So in alphabeta, we can have:
+
+```
+def alphabeta(state, depth, alpha, beta, maximizing):
+    you, opponent = state
+    ...
+```
+
+Then:
+
+```
+new_state = (new_you, new_opponent) if extra else (new_opponent, new_you)
+new_value = alphabeta(new_state, depth-1, alpha, beta, maximizing if extra else not maximizing)
+```
+
+Because if extra, the same player moves again, so maximizing stays the same. If not extra, the opponent moves, so maximizing flips.
+
+We'll implement that.
+
+Now policy function:
+
+We'll do iterative deepening with time limit. We'll start depth=1 and increase. We'll keep track of the best move found at each depth. We'll break when time is near 1 second.
+
+We'll use `time.perf_counter()`.
+
+We'll generate legal moves and order them.
+
+We'll start with best_move = first legal move.
+
+Then for depth from 1 to, say, 20, we search with that depth, and update best_move with the move that gives the highest value for the root.
+
+We need to run alphabeta for each move at the root to get its value. We can do:
+
+```
+value = alphabeta((new_you, new_opponent) if extra else (new_opponent, new_you), depth-1, alpha, beta, maximizing=extra)  # at root, maximizing is always True? Actually, at root we are the maximizing player. So after our move, if extra, we are still maximizing, else minimizing.
+```
+
+Wait, at root we are choosing a move for the maximizing player. So we evaluate each move by calling alphabeta on the resulting state from the opponent's perspective (if no extra) or our perspective (if extra). So we need to set maximizing accordingly.
+
+We can have a separate root search function.
+
+Simplify: we can use alphabeta as defined, and at root we call it for each move with depth-1 and the appropriate maximizing flag.
+
+We'll implement:
+
+```
+def policy(you, opponent):
+    start_time = time.perf_counter()
+    legal_moves = [i for i in range(6) if you[i] > 0]
+    if not legal_moves:
+        return 0  # but problem says policy is never called when no legal move
+    best_move = legal_moves[0]
+    time_limit = 0.95  # leave some margin
+    depth = 1
+    while time.perf_counter() - start_time < time_limit:
+        best_value = -float('inf')
+        current_best = best_move
+        for move in legal_moves:
+            new_you, new_opponent, extra = apply_move(you, opponent, move)
+            if extra:
+                value = alphabeta((new_you, new_opponent), depth-1, -float('inf'), float('inf'), True)
+            else:
+                value = alphabeta((new_opponent, new_you), depth-1, -float('inf'), float('inf'), False)
+            if value > best_value:
+                best_value = value
+                current_best = move
+            # alpha-beta at root? we can break if time runs out
+            if time.perf_counter() - start_time >= time_limit:
+                break
+        if time.perf_counter() - start_time < time_limit:
+            best_move = current_best
+        depth += 1
+    return best_move
+```
+
+But we need to order moves at root as well. We can order by heuristic score.
+
+We also need to make sure alphabeta uses the same ordering.
+
+We'll implement move ordering in alphabeta as described.
+
+Potential improvements: transposition table, but might be overkill.
+
+We'll also add a heuristic for move ordering at root: compute a quick score for each move: if extra move possible, give high score; if capture possible, give medium score; else number of seeds.
+
+We can compute by simulating the move shallowly (just to see extra and capture) but that's similar to apply_move. We can do a quick simulation without copying? Or we can use the same apply_move but that costs. However, we only have 6 moves, so it's fine.
+
+We'll implement a function `move_score` that returns a tuple (extra_bonus, capture_bonus, seeds) to sort.
+
+But for simplicity, we can just sort by you[i] descending.
+
+Let's implement.
+
+We'll also need to handle the case when the game ends immediately after a move (all houses empty). In apply_move, we don't collect remaining seeds. That will be handled in terminal evaluation.
+
+Now, test our logic with simple cases.
+
+We'll code accordingly.
+
+Potential pitfalls: The capture rule: "if the last seed lands in one of your houses you[i] (0..5) and it was empty before the drop" - we check last_value_before == 0. But note: if the house was empty before, after dropping one seed it becomes 1. So we capture that one seed plus the opposite seeds. Our implementation does that.
+
+Also, we need to ensure we don't capture if the opposite house is empty. The rule says "and the opposite house opponent[5 - i] has seeds". We check opponent[opposite] > 0.
+
+Now, we must output the code in <code> tags.
+
+We'll write the complete Python file with imports, helper functions, and the policy function.
+
+We'll also add a main guard for testing, but the arena may not run it. We'll include it commented out or not.
+
+Let's write the code.
+</thinking>
+<code>
+import time
+import sys
+
+def apply_move(you, opponent, move):
+    """
+    Apply a move for the player whose state is given by `you`.
+    Returns (new_you, new_opponent, extra_move) where extra_move is True if the player gets another turn.
+    """
+    you = list(you)
+    opponent = list(opponent)
+    seeds = you[move]
+    you[move] = 0
+    pos = move + 1
+    side = 0  # 0 for your side, 1 for opponent side
+    last_house = None
+    last_value_before = None
+    while seeds > 0:
+        if side == 0:
+            if pos <= 5:
+                last_value_before = you[pos]
+                you[pos] += 1
+                seeds -= 1
+                last_house = (0, pos)
+                pos += 1
+            elif pos == 6:
+                last_value_before = you[6]
+                you[6] += 1
+                seeds -= 1
+                last_house = (0, 6)
+                pos = 0
+                side = 1
+            else:
+                # wrap to opponent side
+                pos = 0
+                side = 1
+        else:  # opponent side
+            if pos <= 5:
+                last_value_before = opponent[pos]
+                opponent[pos] += 1
+                seeds -= 1
+                last_house = (1, pos)
+                pos += 1
+            elif pos == 6:
+                # opponent's store, skip
+                pos = 0
+                side = 0
+            else:
+                # wrap to your side
+                pos = 0
+                side = 0
+    # after sowing, handle special rules
+    extra_move = False
+    if last_house[0] == 0 and last_house[1] == 6:
+        extra_move = True
+    elif last_house[0] == 0 and last_house[1] <= 5:
+        if last_value_before == 0:
+            opposite = 5 - last_house[1]
+            if opponent[opposite] > 0:
+                # capture
+                you[6] += you[last_house[1]] + opponent[opposite]
+                you[last_house[1]] = 0
+                opponent[opposite] = 0
+    return you, opponent, extra_move
+
+def is_terminal(you, opponent):
+    return sum(you[0:6]) == 0 or sum(opponent[0:6]) == 0
+
+def collect_remaining(you, opponent):
+    """If game is over, collect all seeds to stores and return final state."""
+    you_total = sum(you[0:6])
+    opponent_total = sum(opponent[0:6])
+    new_you = [0]*6 + [you[6] + you_total]
+    new_opponent = [0]*6 + [opponent[6] + opponent_total]
+    return new_you, new_opponent
+
+def evaluate_state(you, opponent):
+    """
+    Heuristic evaluation from the perspective of the player whose store is you[6].
+    """
+    store_diff = you[6] - opponent[6]
+    seeds_diff = sum(you[0:6]) - sum(opponent[0:6])
+    return store_diff + 0.1 * seeds_diff
+
+def alphabeta(state, depth, alpha, beta, maximizing):
+    """
+    state = (you, opponent) where `you` is the player to move.
+    Returns the evaluated score for the player who is originally to move at the root.
+    """
+    you, opponent = state
+    if depth == 0 or is_terminal(you, opponent):
+        if is_terminal(you, opponent):
+            you_f, opponent_f = collect_remaining(you, opponent)
+            return evaluate_state(you_f, opponent_f)
+        return evaluate_state(you, opponent)
+    
+    legal_moves = [i for i in range(6) if you[i] > 0]
+    # move ordering: sort by number of seeds descending
+    legal_moves.sort(key=lambda i: you[i], reverse=True)
+    
+    if maximizing:
+        value = -float('inf')
+        for move in legal_moves:
+            new_you, new_opponent, extra = apply_move(you, opponent, move)
+            if extra:
+                new_state = (new_you, new_opponent)
+                new_value = alphabeta(new_state, depth-1, alpha, beta, True)
+            else:
+                new_state = (new_opponent, new_you)
+                new_value = alphabeta(new_state, depth-1, alpha, beta, False)
+            if new_value > value:
+                value = new_value
+            alpha = max(alpha, value)
+            if value >= beta:
+                break
+        return value
+    else:
+        value = float('inf')
+        for move in legal_moves:
+            new_you, new_opponent, extra = apply_move(you, opponent, move)
+            if extra:
+                new_state = (new_you, new_opponent)
+                new_value = alphabeta(new_state, depth-1, alpha, beta, False)
+            else:
+                new_state = (new_opponent, new_you)
+                new_value = alphabeta(new_state, depth-1, alpha, beta, True)
+            if new_value < value:
+                value = new_value
+            beta = min(beta, value)
+            if value <= alpha:
+                break
+        return value
+
+def policy(you, opponent):
+    start_time = time.perf_counter()
+    legal_moves = [i for i in range(6) if you[i] > 0]
+    if not legal_moves:
+        # According to the problem, this should never happen.
+        return 0
+    
+    # Initial ordering: more seeds first
+    legal_moves.sort(key=lambda i: you[i], reverse=True)
+    best_move = legal_moves[0]
+    
+    time_limit = 0.95  # seconds, leave a small margin
+    depth = 1
+    while time.perf_counter() - start_time < time_limit:
+        best_value = -float('inf')
+        current_best = best_move
+        alpha = -float('inf')
+        beta = float('inf')
+        for move in legal_moves:
+            # Check time before evaluating each move
+            if time.perf_counter() - start_time >= time_limit:
+                break
+            new_you, new_opponent, extra = apply_move(you, opponent, move)
+            if extra:
+                value = alphabeta((new_you, new_opponent), depth-1, alpha, beta, True)
+            else:
+                value = alphabeta((new_opponent, new_you), depth-1, alpha, beta, False)
+            if value > best_value:
+                best_value = value
+                current_best = move
+                alpha = max(alpha, best_value)
+        # Only update best_move if we completed the depth without time out
+        if time.perf_counter() - start_time < time_limit:
+            best_move = current_best
+        depth += 1
+    return best_move
+
+# Example usage (for testing only):
+if __name__ == "__main__":
+    # Initial board: each house has 4 seeds, stores empty
+    you = [4,4,4,4,4,4,0]
+    opponent = [4,4,4,4,4,4,0]
+    move = policy(you, opponent)
+    print(f"Selected move: {move}")
+</code>

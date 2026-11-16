@@ -1,0 +1,84 @@
+<thinking>
+I'll compute the best current hand value (counting Aces as 11 where possible without exceeding target), then evaluate the expected utility of taking one more card by averaging over the remaining ranks in your deck (each remaining rank equally likely). Utility is defined simply as sum/target for non-bust hands (higher is better, capped at 1 when you hit the target) and -1 for a bust. If the expected utility of hitting is higher than staying, return "HIT", otherwise "STAY". This is a simple, robust probabilistic one-step lookahead policy that adapts to the target T and the cards already in your hand.
+</thinking>
+<code>
+from typing import List
+
+# Single Python file implementing the policy function.
+
+_DECK = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+
+def _card_base_value(rank: str) -> int:
+    if rank == "A":
+        return 11  # initial Ace value, may be reduced later
+    if rank in ("J", "Q", "K"):
+        return 10
+    return int(rank)
+
+def _hand_value(hand: List[str], target: int) -> int:
+    """
+    Compute the best hand value under the rule:
+    - Count A as 11 where possible; if value > target, reduce A from 11 to 1 (i.e. -10)
+      one by one until value <= target or no 11-valued A left.
+    """
+    total = 0
+    aces = 0
+    for r in hand:
+        if r == "A":
+            aces += 1
+            total += 11
+        else:
+            total += _card_base_value(r)
+    # Demote Aces from 11 to 1 (subtract 10) while over target
+    while total > target and aces > 0:
+        total -= 10
+        aces -= 1
+    return total
+
+def policy(hand: List[str], target: int) -> str:
+    """
+    Decide between "HIT" or "STAY" based on a one-step lookahead expected utility.
+    Utility:
+      - If hand value > target => bust => utility = -1
+      - Otherwise utility = sum / target  (ranges 0..1, 1 is perfect hit)
+    We compute utility_stay from current hand, and expected utility_hit by averaging
+    utilities after drawing each remaining rank from our deck (uniform over remaining ranks).
+    """
+    # Defensive: if hand already contains impossible duplicates it's okay:
+    # we simply treat ranks present in hand as removed from the available ranks.
+    current_sum = _hand_value(hand, target)
+    # Utility of staying
+    if current_sum > target:
+        util_stay = -1.0
+    else:
+        # normalized closeness to target
+        util_stay = current_sum / target
+
+    # If we've already hit the target exactly, best to stay.
+    if current_sum == target:
+        return "STAY"
+
+    # Determine available ranks in our deck (one copy of each rank total)
+    available = [r for r in _DECK if hand.count(r) == 0]
+    if not available:
+        # No cards left to draw from our deck -> must stay
+        return "STAY"
+
+    # Compute expected utility if we HIT (one-step lookahead)
+    total_util = 0.0
+    for r in available:
+        new_hand = hand + [r]
+        new_sum = _hand_value(new_hand, target)
+        if new_sum > target:
+            util = -1.0
+        else:
+            util = new_sum / target
+        total_util += util
+    util_hit = total_util / len(available)
+
+    # Compare and choose action. A small epsilon avoids flipping on tiny numerical differences.
+    if util_hit > util_stay + 1e-12:
+        return "HIT"
+    else:
+        return "STAY"
+</code>

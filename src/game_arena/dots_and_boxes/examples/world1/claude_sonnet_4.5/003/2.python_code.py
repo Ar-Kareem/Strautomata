@@ -1,0 +1,129 @@
+
+import numpy as np
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    """
+    Smart Dots and Boxes policy that balances aggression and defense.
+    """
+    
+    def count_box_edges(r, c):
+        """Count how many edges a box has filled."""
+        if r < 0 or r > 3 or c < 0 or c > 3:
+            return -1
+        count = 0
+        if horizontal[r, c] != 0: count += 1      # top
+        if horizontal[r+1, c] != 0: count += 1    # bottom
+        if vertical[r, c] != 0: count += 1        # left
+        if vertical[r, c+1] != 0: count += 1      # right
+        return count
+    
+    def boxes_completed_by_move(row, col, is_horizontal):
+        """Return list of boxes that would be completed by this move."""
+        boxes = []
+        if is_horizontal:
+            # Check box above
+            if row > 0 and count_box_edges(row-1, col) == 3:
+                boxes.append((row-1, col))
+            # Check box below
+            if row < 4 and count_box_edges(row, col) == 3:
+                boxes.append((row, col))
+        else:  # vertical
+            # Check box to the left
+            if col > 0 and count_box_edges(row, col-1) == 3:
+                boxes.append((row, col-1))
+            # Check box to the right
+            if col < 4 and count_box_edges(row, col) == 3:
+                boxes.append((row, col))
+        return boxes
+    
+    def boxes_made_3_sided(row, col, is_horizontal):
+        """Count how many boxes would go from 2 to 3 edges."""
+        count = 0
+        if is_horizontal:
+            if row > 0 and count_box_edges(row-1, col) == 2:
+                count += 1
+            if row < 4 and count_box_edges(row, col) == 2:
+                count += 1
+        else:
+            if col > 0 and count_box_edges(row, col-1) == 2:
+                count += 1
+            if col < 4 and count_box_edges(row, col) == 2:
+                count += 1
+        return count
+    
+    def get_legal_moves():
+        """Get all legal moves."""
+        moves = []
+        for r in range(5):
+            for c in range(5):
+                if horizontal[r, c] == 0:
+                    moves.append((r, c, 'H'))
+                if vertical[r, c] == 0:
+                    moves.append((r, c, 'V'))
+        return moves
+    
+    legal_moves = get_legal_moves()
+    if not legal_moves:
+        return "0,0,H"  # Shouldn't happen
+    
+    # Phase 1: Capture any available boxes
+    capturing_moves = []
+    for row, col, dir_char in legal_moves:
+        is_h = (dir_char == 'H')
+        boxes = boxes_completed_by_move(row, col, is_h)
+        if boxes:
+            capturing_moves.append((row, col, dir_char, len(boxes)))
+    
+    if capturing_moves:
+        # Take the move that captures the most boxes
+        capturing_moves.sort(key=lambda x: x[3], reverse=True)
+        row, col, dir_char, _ = capturing_moves[0]
+        return f"{row},{col},{dir_char}"
+    
+    # Phase 2: Find safe moves (don't create 3-sided boxes)
+    safe_moves = []
+    for row, col, dir_char in legal_moves:
+        is_h = (dir_char == 'H')
+        if boxes_made_3_sided(row, col, is_h) == 0:
+            safe_moves.append((row, col, dir_char))
+    
+    if safe_moves:
+        # Among safe moves, prefer those on boxes with fewer edges (keep options open)
+        def safe_move_score(move):
+            row, col, dir_char = move
+            is_h = (dir_char == 'H')
+            score = 0
+            
+            # Prefer moves on boxes with 0 or 1 edges
+            if is_h:
+                if row > 0:
+                    edges = count_box_edges(row-1, col)
+                    score -= edges
+                if row < 4:
+                    edges = count_box_edges(row, col)
+                    score -= edges
+            else:
+                if col > 0:
+                    edges = count_box_edges(row, col-1)
+                    score -= edges
+                if col < 4:
+                    edges = count_box_edges(row, col)
+                    score -= edges
+            
+            return score
+        
+        safe_moves.sort(key=safe_move_score, reverse=True)
+        row, col, dir_char = safe_moves[0]
+        return f"{row},{col},{dir_char}"
+    
+    # Phase 3: All moves create 3-sided boxes (sacrifice time)
+    # Choose the move that creates the fewest 3-sided boxes
+    scored_moves = []
+    for row, col, dir_char in legal_moves:
+        is_h = (dir_char == 'H')
+        bad_boxes = boxes_made_3_sided(row, col, is_h)
+        scored_moves.append((row, col, dir_char, bad_boxes))
+    
+    scored_moves.sort(key=lambda x: x[3])
+    row, col, dir_char, _ = scored_moves[0]
+    return f"{row},{col},{dir_char}"

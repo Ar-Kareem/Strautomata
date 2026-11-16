@@ -1,0 +1,124 @@
+
+import numpy as np
+
+def get_legal_moves(you, opponent):
+    moves = []
+    empty = ~(you | opponent)
+    for r in range(8):
+        for c in range(8):
+            if empty[r][c]:
+                if is_legal(r, c, you, opponent):
+                    moves.append((r, c))
+    return moves
+
+def is_legal(r, c, you, opponent):
+    for dr, dc in [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]:
+        nr, nc = r + dr, c + dc
+        found_opponent = False
+        while 0 <= nr < 8 and 0 <= nc < 8:
+            if opponent[nr][nc]:
+                found_opponent = True
+            elif you[nr][nc]:
+                if found_opponent:
+                    return True
+                else:
+                    break
+            else:
+                break
+            nr += dr
+            nc += dc
+    return False
+
+def make_move(r, c, you, opponent):
+    new_you = you.copy()
+    new_opp = opponent.copy()
+    new_you[r][c] = 1
+    for dr, dc in [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]:
+        nr, nc = r + dr, c + dc
+        path = []
+        while 0 <= nr < 8 and 0 <= nc < 8:
+            if new_opp[nr][nc]:
+                path.append((nr, nc))
+            elif new_you[nr][nc]:
+                for pr, pc in path:
+                    new_you[pr][pc] = 1
+                    new_opp[pr][pc] = 0
+                break
+            else:
+                break
+            nr += dr
+            nc += dc
+    return new_you, new_opp
+
+V = np.array([
+    [100, -20, 10,  5,  5, 10, -20, 100],
+    [-20, -50, -2, -2, -2, -2, -50, -20],
+    [ 10,  -2,  5,  1,  1,  5,  -2,  10],
+    [  5,  -2,  1,  0,  0,  1,  -2,   5],
+    [  5,  -2,  1,  0,  0,  1,  -2,   5],
+    [ 10,  -2,  5,  1,  1,  5,  -2,  10],
+    [-20, -50, -2, -2, -2, -2, -50, -20],
+    [100, -20, 10,  5,  5, 10, -20, 100]
+])
+
+def evaluate(you, opponent):
+    # Material and Position
+    score = np.sum(you * V) - np.sum(opponent * V)
+    
+    # Simple Mobility
+    my_moves = len(get_legal_moves(you, opponent))
+    opp_moves = len(get_legal_moves(opponent, you))
+    score += (my_moves - opp_moves) * 5
+    
+    return score
+
+def minimax(you, opponent, depth, alpha, beta, maximizing):
+    moves = get_legal_moves(you, opponent) if maximizing else get_legal_moves(opponent, you)
+    
+    if depth == 0 or (not moves and not get_legal_moves(opponent if maximizing else you, you if maximizing else opponent)):
+        return evaluate(you, opponent)
+
+    if not moves: # Pass turn
+        return minimax(you, opponent, depth - 1, alpha, beta, not maximizing)
+
+    if maximizing:
+        max_eval = -float('inf')
+        for r, c in moves:
+            ny, no = make_move(r, c, you, opponent)
+            eval = minimax(ny, no, depth - 1, alpha, beta, False)
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for r, c in moves:
+            no, ny = make_move(r, c, opponent, you)
+            eval = minimax(ny, no, depth - 1, alpha, beta, True)
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    legal_moves = get_legal_moves(you, opponent)
+    if not legal_moves:
+        return "pass"
+
+    best_score = -float('inf')
+    best_move = legal_moves[0]
+    
+    # Adjust depth based on stage of game (8x8 board has 64 squares)
+    filled = np.sum(you | opponent)
+    depth = 4 if filled < 50 else 5
+
+    for r, c in legal_moves:
+        ny, no = make_move(r, c, you, opponent)
+        score = minimax(ny, no, depth - 1, -float('inf'), float('inf'), False)
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+
+    return f"{chr(ord('a') + best_move[1])}{best_move[0] + 1}"

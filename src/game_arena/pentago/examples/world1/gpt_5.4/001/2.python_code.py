@@ -1,0 +1,320 @@
+
+import math
+
+# Precompute all 5-cell and 6-cell lines on a 6x6 Pentago board
+LINES5 = []
+# Horizontal
+for r in range(6):
+    for c in range(2):
+        LINES5.append([(r, c + i) for i in range(5)])
+# Vertical
+for c in range(6):
+    for r in range(2):
+        LINES5.append([(r + i, c) for i in range(5)])
+# Diagonal down-right
+for r in range(2):
+    for c in range(2):
+        LINES5.append([(r + i, c + i) for i in range(5)])
+# Diagonal down-left
+for r in range(2):
+    for c in range(4, 6):
+        LINES5.append([(r + i, c - i) for i in range(5)])
+
+LINES6 = []
+# Full horizontal 6
+for r in range(6):
+    LINES6.append([(r, c) for c in range(6)])
+# Full vertical 6
+for c in range(6):
+    LINES6.append([(r, c) for r in range(6)])
+# Full diagonals 6
+LINES6.append([(i, i) for i in range(6)])
+LINES6.append([(i, 5 - i) for i in range(6)])
+
+ALL_LINES = LINES5 + LINES6
+
+CENTER_WEIGHTS = [
+    [1, 2, 2, 2, 2, 1],
+    [2, 3, 3, 3, 3, 2],
+    [2, 3, 4, 4, 3, 2],
+    [2, 3, 4, 4, 3, 2],
+    [2, 3, 3, 3, 3, 2],
+    [1, 2, 2, 2, 2, 1],
+]
+
+QUAD_START = {
+    0: (0, 0),
+    1: (0, 3),
+    2: (3, 0),
+    3: (3, 3),
+}
+
+
+def board_from_inputs(you, opponent):
+    # 0 empty, 1 you, 2 opponent
+    b = [[0] * 6 for _ in range(6)]
+    for r in range(6):
+        yr = you[r]
+        orow = opponent[r]
+        for c in range(6):
+            if yr[c]:
+                b[r][c] = 1
+            elif orow[c]:
+                b[r][c] = 2
+    return b
+
+
+def rotate_quadrant(board, quad, direction):
+    r0, c0 = QUAD_START[quad]
+    sub = [row[c0:c0 + 3] for row in board[r0:r0 + 3]]
+    if direction == 'R':
+        rot = [[sub[2 - j][i] for j in range(3)] for i in range(3)]
+    else:  # 'L'
+        rot = [[sub[j][2 - i] for j in range(3)] for i in range(3)]
+    for i in range(3):
+        for j in range(3):
+            board[r0 + i][c0 + j] = rot[i][j]
+
+
+def apply_move(board, r, c, quad, direction, player):
+    nb = [row[:] for row in board]
+    nb[r][c] = player
+    rotate_quadrant(nb, quad, direction)
+    return nb
+
+
+def has_five(board, player):
+    for line in ALL_LINES:
+        cnt = 0
+        for r, c in line:
+            if board[r][c] == player:
+                cnt += 1
+            else:
+                cnt = 0
+            if cnt >= 5:
+                return True
+    return False
+
+
+def outcome_after_move(board_after):
+    you_win = has_five(board_after, 1)
+    opp_win = has_five(board_after, 2)
+    if you_win and opp_win:
+        return 0
+    if you_win:
+        return 1
+    if opp_win:
+        return -1
+    full = True
+    for r in range(6):
+        for c in range(6):
+            if board_after[r][c] == 0:
+                full = False
+                break
+        if not full:
+            break
+    if full:
+        return 0
+    return None
+
+
+def legal_moves(board):
+    moves = []
+    for r in range(6):
+        for c in range(6):
+            if board[r][c] == 0:
+                for q in range(4):
+                    moves.append((r, c, q, 'L'))
+                    moves.append((r, c, q, 'R'))
+    return moves
+
+
+def immediate_winning_moves(board):
+    wins = []
+    for mv in legal_moves(board):
+        nb = apply_move(board, mv[0], mv[1], mv[2], mv[3], 1)
+        out = outcome_after_move(nb)
+        if out == 1:
+            wins.append(mv)
+    return wins
+
+
+def opponent_has_immediate_win(board):
+    # On this board, opponent is to move next.
+    for mv in legal_moves(board):
+        nb = apply_move(board, mv[0], mv[1], mv[2], mv[3], 2)
+        you_win = has_five(nb, 1)
+        opp_win = has_five(nb, 2)
+        if opp_win and not you_win:
+            return True
+    return False
+
+
+def line_score_for(board, player):
+    other = 2 if player == 1 else 1
+    score = 0.0
+    for line in ALL_LINES:
+        p = 0
+        o = 0
+        e = 0
+        for r, c in line:
+            v = board[r][c]
+            if v == player:
+                p += 1
+            elif v == other:
+                o += 1
+            else:
+                e += 1
+        if p and o:
+            continue
+        if p:
+            if len(line) == 5:
+                if p == 5:
+                    score += 1000000
+                elif p == 4 and e == 1:
+                    score += 20000
+                elif p == 3 and e == 2:
+                    score += 1200
+                elif p == 2 and e == 3:
+                    score += 120
+                elif p == 1 and e == 4:
+                    score += 10
+            else:  # len 6
+                if p >= 5:
+                    score += 1200000
+                elif p == 4 and e == 2:
+                    score += 25000
+                elif p == 3 and e == 3:
+                    score += 1600
+                elif p == 2 and e == 4:
+                    score += 140
+                elif p == 1 and e == 5:
+                    score += 12
+        elif o:
+            # no contribution in player's own score
+            pass
+    return score
+
+
+def central_score(board):
+    s1 = 0
+    s2 = 0
+    for r in range(6):
+        for c in range(6):
+            if board[r][c] == 1:
+                s1 += CENTER_WEIGHTS[r][c]
+            elif board[r][c] == 2:
+                s2 += CENTER_WEIGHTS[r][c]
+    return s1 - s2
+
+
+def count_immediate_wins(board, player):
+    total = 0
+    for mv in legal_moves(board):
+        nb = apply_move(board, mv[0], mv[1], mv[2], mv[3], player)
+        p_win = has_five(nb, player)
+        o_win = has_five(nb, 1 if player == 2 else 2)
+        if p_win and not o_win:
+            total += 1
+    return total
+
+
+def evaluate(board):
+    # Terminal-like evaluation
+    you_win = has_five(board, 1)
+    opp_win = has_five(board, 2)
+    if you_win and opp_win:
+        return 0.0
+    if you_win:
+        return 1e9
+    if opp_win:
+        return -1e9
+
+    score = 0.0
+    score += line_score_for(board, 1)
+    score -= line_score_for(board, 2)
+    score += 15.0 * central_score(board)
+
+    # Tactical pressure
+    your_threats = count_immediate_wins(board, 1)
+    opp_threats = count_immediate_wins(board, 2)
+    score += 50000 * your_threats
+    score -= 70000 * opp_threats
+
+    return score
+
+
+def move_to_str(mv):
+    r, c, q, d = mv
+    return f"{r+1},{c+1},{q},{d}"
+
+
+def policy(you, opponent) -> str:
+    board = board_from_inputs(you, opponent)
+    moves = legal_moves(board)
+
+    # Safety fallback: guaranteed legal move if anything goes wrong later
+    fallback = move_to_str(moves[0])
+
+    # 1) Immediate win
+    best_win = None
+    best_win_score = -float('inf')
+    for mv in moves:
+        nb = apply_move(board, mv[0], mv[1], mv[2], mv[3], 1)
+        out = outcome_after_move(nb)
+        if out == 1:
+            sc = evaluate(nb)
+            if sc > best_win_score:
+                best_win_score = sc
+                best_win = mv
+    if best_win is not None:
+        return move_to_str(best_win)
+
+    # 2) Filter unsafe moves: avoid allowing opponent an immediate decisive win
+    safe_moves = []
+    unsafe_moves = []
+    for mv in moves:
+        nb = apply_move(board, mv[0], mv[1], mv[2], mv[3], 1)
+        out = outcome_after_move(nb)
+        if out == 0:
+            # draw is usually preferable to losing
+            safe_moves.append((mv, 0.0, nb))
+            continue
+        if out == -1:
+            unsafe_moves.append((mv, -1e12, nb))
+            continue
+
+        if opponent_has_immediate_win(nb):
+            unsafe_moves.append((mv, None, nb))
+        else:
+            safe_moves.append((mv, None, nb))
+
+    candidate_pool = safe_moves if safe_moves else unsafe_moves
+
+    # 3) Heuristic choice
+    best_mv = None
+    best_score = -float('inf')
+
+    for mv, preset, nb in candidate_pool:
+        if preset is not None:
+            sc = preset
+        else:
+            sc = evaluate(nb)
+
+            # Slight preference for flexibility: avoid consuming center only if weak
+            r, c, q, d = mv
+            sc += 2.0 * CENTER_WEIGHTS[r][c]
+
+            # Prefer creating multiple threats while suppressing opponent
+            ytw = count_immediate_wins(nb, 1)
+            otw = count_immediate_wins(nb, 2)
+            sc += 25000 * ytw - 40000 * otw
+
+        if sc > best_score:
+            best_score = sc
+            best_mv = mv
+
+    if best_mv is not None:
+        return move_to_str(best_mv)
+
+    return fallback

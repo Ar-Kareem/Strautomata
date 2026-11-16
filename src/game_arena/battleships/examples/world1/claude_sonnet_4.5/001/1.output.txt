@@ -1,0 +1,230 @@
+<thinking>
+Let me design an effective Battleship targeting policy. I need to consider several strategies:
+
+1. **Initial targeting pattern**: Use a checkerboard or parity pattern to maximize coverage, since ships occupy multiple cells. This is more efficient than random shooting.
+
+2. **Hunt vs Target mode**:
+   - **Hunt mode**: When no unsunk ships are being targeted, use a systematic pattern
+   - **Target mode**: When we find a hit, focus on sinking that ship
+
+3. **Target mode strategy**:
+   - When we hit a ship (find a `1`), we should explore adjacent cells (up, down, left, right)
+   - Once we have 2+ hits in a line, continue in that direction
+   - Track which hits belong to already-sunk ships
+
+4. **Probability-based improvements**:
+   - Consider ship sizes that remain
+   - Weight cells based on how many possible ship placements overlap them
+
+Let me implement a good strategy:
+
+**Key components**:
+1. Find all hits (cells with value 1)
+2. Determine which hits are part of unsunk ships
+3. If there are unsunk ship cells:
+   - Find adjacent unexplored cells to known hits
+   - Prioritize cells that extend lines of hits
+4. Otherwise, use a checkerboard pattern for hunting
+
+**Checkerboard pattern**: Since the smallest ship is size 2, we can use a checkerboard pattern initially. Every ship must occupy at least one cell in a checkerboard pattern.
+
+Let me code this up:
+
+```python
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Find all hits and determine targeting priority
+    
+    # First, identify all hit cells
+    hits = []
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1:
+                hits.append((r, c))
+    
+    # Find unsunk ship segments (hits that have adjacent hits or isolated hits)
+    # Strategy: look for hits and their neighbors
+    
+    # Priority 1: If we have hits, explore adjacent cells
+    if hits:
+        # Find all unexplored cells adjacent to hits
+        candidates = []
+        for r, c in hits:
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                    candidates.append((nr, nc))
+        
+        # Check if we have any hits in a line (to continue that direction)
+        # Look for pairs of hits that are adjacent
+        priority_candidates = []
+        for r, c in hits:
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = r + dr, c + dc
+                if (nr, nc) in hits:
+                    # We have a line, extend it in both directions
+                    # Try to extend forward
+                    ext_r, ext_c = nr + dr, nc + dc
+                    if 0 <= ext_r < 10 and 0 <= ext_c < 10 and board[ext_r][ext_c] == 0:
+                        priority_candidates.append((ext_r, ext_c))
+                    # Try to extend backward
+                    ext_r, ext_c = r - dr, c - dc
+                    if 0 <= ext_r < 10 and 0 <= ext_c < 10 and board[ext_r][ext_c] == 0:
+                        priority_candidates.append((ext_r, ext_c))
+        
+        if priority_candidates:
+            return priority_candidates[0]
+        if candidates:
+            return candidates[0]
+    
+    # Priority 2: Use checkerboard pattern for hunting
+    # Alternate pattern based on parity
+    for parity in [0, 1]:
+        for r in range(10):
+            for c in range(10):
+                if (r + c) % 2 == parity and board[r][c] == 0:
+                    return (r, c)
+    
+    # Fallback: any unexplored cell
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0:
+                return (r, c)
+    
+    return (0, 0)  # Should never reach here
+```
+
+Wait, I can improve this. The issue with the above is that it might target cells adjacent to already-sunk ships. Let me think about how to detect sunk ships...
+
+Actually, it's hard to definitively know when a ship is sunk without additional game state. A better approach is to just keep targeting around all hits until we've explored all adjacent cells. The game will naturally resolve sunk ships.
+
+Let me refine the strategy to be more systematic and add some improvements:
+
+1. Better line detection and extension
+2. Score-based selection when multiple candidates exist
+3. Better checkerboard hunting pattern
+
+```python
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Collect all hits
+    hits = set()
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1:
+                hits.add((r, c))
+    
+    # Target mode: we have hits to follow up on
+    if hits:
+        # Find cells adjacent to hits
+        adjacent_to_hits = []
+        
+        # First priority: extend known lines of hits
+        for r, c in hits:
+            for dr, dc in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+                nr, nc = r + dr, c + dc
+                if (nr, nc) in hits:
+                    # Found a line, try to extend it
+                    # Forward direction
+                    ext_r, ext_c = nr + dr, nc + dc
+                    if 0 <= ext_r < 10 and 0 <= ext_c < 10 and board[ext_r][ext_c] == 0:
+                        return (ext_r, ext_c)
+                    # Backward direction
+                    ext_r, ext_c = r - dr, c - dc
+                    if 0 <= ext_r < 10 and 0 <= ext_c < 10 and board[ext_r][ext_c] == 0:
+                        return (ext_r, ext_c)
+        
+        # Second priority: cells adjacent to any hit
+        for r, c in hits:
+            for dr, dc in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                    adjacent_to_hits.append((nr, nc))
+        
+        if adjacent_to_hits:
+            # Remove duplicates and return first
+            return adjacent_to_hits[0]
+    
+    # Hunt mode: use checkerboard pattern
+    for r in range(10):
+        for c in range(10):
+            if (r + c) % 2 == 0 and board[r][c] == 0:
+                return (r, c)
+    
+    # Fill in remaining cells
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0:
+                return (r, c)
+    
+    return (0, 0)
+```
+
+This is cleaner and should work well. Let me trace through the logic once more to make sure it's correct:
+
+1. Collect all hit positions
+2. If we have hits:
+   - First, look for lines of 2+ hits and try to extend them
+   - Then, look for any unexplored cells adjacent to hits
+3. If no hits, use checkerboard pattern (every ship must hit at least one checkerboard square)
+4. Fallback to any remaining cell
+
+This should be a solid implementation!
+</thinking>
+
+<code>
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Battleship targeting policy.
+    
+    Strategy:
+    1. If we have hits, enter "target mode" - explore adjacent cells
+    2. Prioritize extending lines of consecutive hits
+    3. Otherwise, use checkerboard pattern for efficient hunting
+    """
+    
+    # Collect all hit positions
+    hits = set()
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1:
+                hits.add((r, c))
+    
+    # Target mode: we have hits to follow up on
+    if hits:
+        # Priority 1: Extend known lines of hits
+        for r, c in hits:
+            for dr, dc in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+                nr, nc = r + dr, c + dc
+                if (nr, nc) in hits:
+                    # Found adjacent hits - we have a line
+                    # Try extending forward
+                    ext_r, ext_c = nr + dr, nc + dc
+                    if 0 <= ext_r < 10 and 0 <= ext_c < 10 and board[ext_r][ext_c] == 0:
+                        return (ext_r, ext_c)
+                    # Try extending backward
+                    ext_r, ext_c = r - dr, c - dc
+                    if 0 <= ext_r < 10 and 0 <= ext_c < 10 and board[ext_r][ext_c] == 0:
+                        return (ext_r, ext_c)
+        
+        # Priority 2: Explore cells adjacent to any hit
+        for r, c in hits:
+            for dr, dc in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                    return (nr, nc)
+    
+    # Hunt mode: use checkerboard pattern
+    # Since smallest ship is size 2, every ship covers at least one checkerboard cell
+    for r in range(10):
+        for c in range(10):
+            if (r + c) % 2 == 0 and board[r][c] == 0:
+                return (r, c)
+    
+    # Fill in remaining odd-parity cells
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0:
+                return (r, c)
+    
+    # Fallback (should never reach here in valid game)
+    return (0, 0)
+</code>

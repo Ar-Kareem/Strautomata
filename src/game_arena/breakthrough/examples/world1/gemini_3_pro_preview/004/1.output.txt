@@ -1,0 +1,288 @@
+The strategy for this policy is based on **Iterative Deepening Minimax with Alpha-Beta Pruning**. Given the strict 1-second time limit, the algorithm explores the game tree to increasing depths (typically reaching depth 3 or 4) and halts execution safely when time is running out.
+
+**State Evaluation:**
+The evaluation function is designed specifically for Breakthrough's dynamics:
+1.  **Advancement (Primary):** Pieces are rewarded exponentially based on their progress toward the opponent's home row. A piece close to winning is valued significantly higher than multiple pieces back at home.
+2.  **Material (Secondary):** A standard piece count difference is used, but it is weighted less than positional advancement.
+3.  **Safety:** Bonus points are awarded for pieces that are defended (protected diagonally from behind by friendly pieces).
+
+**Search Optimization:**
+-   **Move Ordering:** Moves are sorted before evaluation. Immediate winning moves are prioritized, followed by captures, and finally forward advances. This maximizes the efficiency of Alpha-Beta pruning.
+-   **Immediate Checks:** The policy checks for instant winning moves or unavoidable defeats before starting the search to save time.
+
+**Time Management:**
+The search runs inside a loop that deepens the search level by level. A timeout check occurs periodically within the recursive search. If the time limit (set to ~0.85s) is exceeded, the search aborts, and the best move found in the last fully completed depth is returned.
+
+<code>
+import time
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    """
+    Breakthrough AI Policy
+    Uses Iterative Deepening Minimax with Alpha-Beta Pruning.
+    """
+    
+    # Constants
+    BOARD_SIZE = 8
+    WHITE = 'w'
+    BLACK = 'b'
+    EMPTY = '.'
+    
+    # Configuration
+    TIME_LIMIT = 0.85 # seconds
+    start_time = time.time()
+    
+    class TimeoutException(Exception):
+        pass
+
+    # 1. Initialize Board
+    board = [[EMPTY for _ in range(BOARD_SIZE)] for _ in range(BOARD_SIZE)]
+    for r, c in me:
+        board[r][c] = color
+    
+    opp_color = BLACK if color == WHITE else WHITE
+    for r, c in opp:
+        board[r][c] = opp_color
+        
+    my_goal_row = 7 if color == WHITE else 0
+    opp_goal_row = 0 if color == WHITE else 7
+    direction = 1 if color == WHITE else -1
+
+    # 2. Helpers
+    def get_moves(pt_r, pt_c, b, p_color, p_dir):
+        moves = []
+        next_r = pt_r + p_dir
+        
+        # Check if next row is on board
+        if 0 <= next_r < BOARD_SIZE:
+            # Diagonal Left (Capture or Move)
+            if pt_c - 1 >= 0:
+                target = b[next_r][pt_c - 1]
+                # Can move if empty or capture if enemy
+                if target != p_color: 
+                    moves.append(((pt_r, pt_c), (next_r, pt_c - 1)))
+            
+            # Diagonal Right (Capture or Move)
+            if pt_c + 1 < BOARD_SIZE:
+                target = b[next_r][pt_c + 1]
+                if target != p_color:
+                    moves.append(((pt_r, pt_c), (next_r, pt_c + 1)))
+            
+            # Straight Forward (Move only)
+            if b[next_r][pt_c] == EMPTY:
+                moves.append(((pt_r, pt_c), (next_r, pt_c)))
+                
+        return moves
+
+    def get_all_moves(is_me, current_board):
+        p_color = color if is_me else opp_color
+        p_dir = direction if is_me else -direction
+        goal = my_goal_row if is_me else opp_goal_row
+        
+        poss_moves = []
+        # Scan board for pieces
+        for r in range(BOARD_SIZE):
+            for c in range(BOARD_SIZE):
+                if current_board[r][c] == p_color:
+                    poss_moves.extend(get_moves(r, c, current_board, p_color, p_dir))
+        
+        # Heuristic Move Ordering (for Alpha-Beta efficiency)
+        def move_score(m):
+            frm, to = m
+            # Immediate win
+            if to[0] == goal:
+                return 1000
+            
+            # Capture
+            target_val = current_board[to[0]][to[1]]
+            is_capture = (target_val != EMPTY)
+            
+            # Advancement score (closer to goal is better)
+            adv = to[0] if p_dir > 0 else (7 - to[0])
+            
+            return (100 if is_capture else 0) + adv
+            
+        # Sort moves: Win > Capture > Advance
+        poss_moves.sort(key=move_score, reverse=True)
+        return poss_moves
+
+    def evaluate(current_board):
+        score = 0
+        my_piece_count = 0
+        opp_piece_count = 0
+        
+        for r in range(BOARD_SIZE):
+            for c in range(BOARD_SIZE):
+                p = current_board[r][c]
+                
+                if p == color:
+                    my_piece_count += 1
+                    # Win condition check
+                    if r == my_goal_row: return 100000
+                    
+                    # Advancement score (Exponential)
+                    dist = r if color == WHITE else (7 - r)
+                    score += 2.0 * (dist ** 2)
+                    
+                    # Defended bonus (piece behind diagonally)
+                    back_r = r - direction
+                    if 0 <= back_r < BOARD_SIZE:
+                        if (c - 1 >= 0 and current_board[back_r][c - 1] == color) or \
+                           (c + 1 < BOARD_SIZE and current_board[back_r][c + 1] == color):
+                            score += 5
+                            
+                elif p == opp_color:
+                    opp_piece_count += 1
+                    # Lose condition check
+                    if r == opp_goal_row: return -100000
+                    
+                    # Opponent Advancement penalty
+                    dist = (7 - r) if color == WHITE else r
+                    score -= 2.0 * (dist ** 2)
+        
+        # Material Score
+        score += 20 * (my_piece_count - opp_piece_count)
+        
+        # Wipeout conditions
+        if my_piece_count == 0: return -100000
+        if opp_piece_count == 0: return 100000
+        
+        return score
+
+    # 3. Minimax Search
+    nodes_visited = 0
+
+    def alphabeta(current_board, depth, alpha, beta, maximizing_player):
+        nonlocal nodes_visited
+        nodes_visited += 1
+        
+        # Time check every 100 nodes
+        if nodes_visited % 100 == 0:
+            if time.time() - start_time > TIME_LIMIT:
+                raise TimeoutException()
+        
+        # Evaluate if depth reached
+        if depth == 0:
+            return evaluate(current_board)
+            
+        legal_moves = get_all_moves(maximizing_player, current_board)
+        
+        # Check termination (no moves -> loss)
+        if not legal_moves:
+            return -100000 if maximizing_player else 100000
+
+        if maximizing_player:
+            value = -float('inf')
+            for m in legal_moves:
+                (fr, fc), (tr, tc) = m
+                captured = current_board[tr][tc]
+                
+                # Make move
+                current_board[tr][tc] = color
+                current_board[fr][fc] = EMPTY
+                
+                # Check immediate win in recursion for early cutoff
+                if tr == my_goal_row:
+                    score = 100000
+                else:
+                    score = alphabeta(current_board, depth - 1, alpha, beta, False)
+                
+                # Undo move
+                current_board[fr][fc] = color
+                current_board[tr][tc] = captured
+                
+                if score > value:
+                    value = score
+                alpha = max(alpha, value)
+                if value >= beta:
+                    break
+            return value
+        else:
+            value = float('inf')
+            for m in legal_moves:
+                (fr, fc), (tr, tc) = m
+                captured = current_board[tr][tc]
+                
+                # Make move
+                current_board[tr][tc] = opp_color
+                current_board[fr][fc] = EMPTY
+                
+                if tr == opp_goal_row:
+                    score = -100000
+                else:
+                    score = alphabeta(current_board, depth - 1, alpha, beta, True)
+                
+                # Undo move
+                current_board[fr][fc] = opp_color
+                current_board[tr][tc] = captured
+                
+                if score < value:
+                    value = score
+                beta = min(beta, value)
+                if value <= alpha:
+                    break
+            return value
+
+    # 4. Main Search Logic
+    root_moves = get_all_moves(True, board)
+    
+    if not root_moves:
+        return ((0,0), (0,0)) # No moves available (Lost)
+    
+    # 4a. Instant Win check
+    for m in root_moves:
+        if m[1][0] == my_goal_row:
+            return m
+
+    best_move = root_moves[0]
+    
+    # 4b. Iterative Deepening
+    try:
+        current_depth = 1
+        max_depth = 10
+        
+        while current_depth <= max_depth:
+            best_score_this_depth = -float('inf')
+            best_move_this_depth = root_moves[0]
+            
+            alpha = -float('inf')
+            beta = float('inf')
+            
+            for m in root_moves:
+                (fr, fc), (tr, tc) = m
+                captured = board[tr][tc]
+                
+                # Make move
+                board[tr][tc] = color
+                board[fr][fc] = EMPTY
+                
+                # Search
+                score = alphabeta(board, current_depth, alpha, beta, False)
+                
+                # Undo
+                board[fr][fc] = color
+                board[tr][tc] = captured
+                
+                if score > best_score_this_depth:
+                    best_score_this_depth = score
+                    best_move_this_depth = m
+                
+                alpha = max(alpha, score)
+                
+                if time.time() - start_time > TIME_LIMIT:
+                    raise TimeoutException()
+            
+            # If we completed the depth fully, update best_move
+            best_move = best_move_this_depth
+            
+            # If found a winning line, take it
+            if best_score_this_depth > 90000:
+                break
+                
+            current_depth += 1
+            
+    except TimeoutException:
+        pass # Return the best move found so far
+
+    return best_move
+</code>

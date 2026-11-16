@@ -1,0 +1,173 @@
+## Strategy
+
+This Othello policy combines multiple strategic elements to make intelligent moves:
+
+1. **Corner Priority**: Corners are the most valuable squares (always taken if available)
+2. **Danger Squares**: Avoid X-squares (adjacent to corners) and C-squares unless the corner is already secured
+3. **Positional Weights**: Uses a standard Othello weight matrix favoring edges and center control
+4. **Mobility Maximization**: Prefers moves that maximize own legal moves while minimizing opponent's options
+5. **Endgame Focus**: In late game (56+ discs), prioritizes flipping maximum discs
+6. **Efficiency**: Fast move generation and evaluation to stay within 1-second limit
+
+The evaluation function balances these factors with appropriate weightings, with mobility being more important in early/midgame and disc count dominating the endgame.
+
+```python
+import numpy as np
+
+# Game constants
+DIRECTIONS = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+
+# Standard Othello position weights (corners highest, X-squares negative)
+WEIGHTS = np.array([
+    [100, -20, 10, 5, 5, 10, -20, 100],
+    [-20, -50, -2, -2, -2, -2, -50, -20],
+    [10, -2, 1, 1, 1, 1, -2, 10],
+    [5, -2, 1, 0, 0, 1, -2, 5],
+    [5, -2, 1, 0, 0, 1, -2, 5],
+    [10, -2, 1, 1, 1, 1, -2, 10],
+    [-20, -50, -2, -2, -2, -2, -50, -20],
+    [100, -20, 10, 5, 5, 10, -20, 100]
+])
+
+# Strategic positions
+CORNERS = {(0, 0), (0, 7), (7, 0), (7, 7)}
+X_SQUARES = {(1, 1), (1, 6), (6, 1), (6, 6)}
+C_SQUARES = {(0, 1), (1, 0), (0, 6), (1, 7), (6, 0), (7, 1), (6, 7), (7, 6)}
+
+
+def get_legal_moves(player_board, opponent_board):
+    """Get all legal moves for player as (row, col) tuples."""
+    moves = set()
+    empty = (player_board == 0) & (opponent_board == 0)
+    
+    # Find squares adjacent to opponent discs (potential moves)
+    opp_rows, opp_cols = np.where(opponent_board == 1)
+    candidates = set()
+    
+    for r, c in zip(opp_rows, opp_cols):
+        for dr, dc in DIRECTIONS:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 8 and 0 <= nc < 8 and empty[nr, nc]:
+                candidates.add((nr, nc))
+    
+    # Validate each candidate
+    for r, c in candidates:
+        for dr, dc in DIRECTIONS:
+            rr, cc = r + dr, c + dc
+            
+            # Must start with opponent disc
+            if not (0 <= rr < 8 and 0 <= cc < 8) or opponent_board[rr, cc] == 0:
+                continue
+            
+            # Scan until we hit a player disc or empty square
+            rr += dr
+            cc += dc
+            while 0 <= rr < 8 and 0 <= cc < 8 and opponent_board[rr, cc] == 1:
+                rr += dr
+                cc += dc
+            
+            # If we ended on a player disc, the move is valid
+            if 0 <= rr < 8 and 0 <= cc < 8 and player_board[rr, cc] == 1:
+                moves.add((r, c))
+                break
+    
+    return list(moves)
+
+
+def make_move(player_board, opponent_board, move):
+    """Apply move to boards and return new boards (player, opponent)."""
+    new_player = player_board.copy()
+    new_opponent = opponent_board.copy()
+    r, c = move
+    
+    # Place disc
+    new_player[r, c] = 1
+    
+    # Flip opponent discs in all valid directions
+    for dr, dc in DIRECTIONS:
+        rr, cc = r + dr, c + dc
+        flips = []
+        
+        # Collect contiguous opponent discs
+        while 0 <= rr < 8 and 0 <= cc < 8 and opponent_board[rr, cc] == 1:
+            flips.append((rr, cc))
+            rr += dr
+            cc += dc
+        
+        # If line ends at a player disc, flip the collected discs
+        if 0 <= rr < 8 and 0 <= cc < 8 and player_board[rr, cc] == 1:
+            for fr, fc in flips:
+                new_player[fr, fc] = 1
+                new_opponent[fr, fc] = 0
+    
+    return new_player, new_opponent
+
+
+def evaluate_move(you, opponent, move):
+    """Score a move based on strategic value."""
+    r, c = move
+    total_discs = np.sum(you) + np.sum(opponent)
+    
+    # Corners are game-winning moves
+    if (r, c) in CORNERS:
+        return 10000
+    
+    # Base score from position weights
+    score = WEIGHTS[r, c]
+    
+    # Heavy penalty for X-squares if corner is free
+    if (r, c) in X_SQUARES:
+        corner_row = 0 if r < 4 else 7
+        corner_col = 0 if c < 4 else 7
+        if you[corner_row, corner_col] == 0 and opponent[corner_row, corner_col] == 0:
+            score -= 1000
+    
+    # Moderate penalty for C-squares if corner is free
+    if (r, c) in C_SQUARES:
+        if r == 0: corner = (0, 0 if c < 4 else 7)
+        elif r == 7: corner = (7, 0 if c < 4 else 7)
+        elif c == 0: corner = (0 if r < 4 else 7, 0)
+        else: corner = (0 if r < 4 else 7, 7)
+        
+        if you[corner[0], corner[1]] == 0 and opponent[corner[0], corner[1]] == 0:
+            score -= 300
+    
+    # Simulate move
+    new_you, new_opponent = make_move(you, opponent, move)
+    
+    # Mobility evaluation (more important in early/midgame)
+    my_moves = len(get_legal_moves(new_you, new_opponent))
+    opp_moves = len(get_legal_moves(new_opponent, new_you))
+    mobility_weight = 15 if total_discs < 50 else 5
+    score += (my_moves - opp_moves) * mobility_weight
+    
+    # Endgame: maximize discs flipped
+    if total_discs > 56:
+        discs_flipped = np.sum(new_you) - np.sum(you) - 1
+        score += discs_flipped * 25
+    
+    return score
+
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    """
+    Main decision function.
+    Returns a move in algebraic notation (e.g., "d3") or "pass".
+    """
+    moves = get_legal_moves(you, opponent)
+    
+    if not moves:
+        return "pass"
+    
+    # Always take corner if available
+    for r, c in moves:
+        if (r, c) in CORNERS:
+            return f"{chr(c + ord('a'))}{r + 1}"
+    
+    # Pick best move by evaluation
+    best_move = max(moves, key=lambda m: evaluate_move(you, opponent, m))
+    
+    # Convert (row, col) to algebraic notation
+    r, c = best_move
+    return f"{chr(c + ord('a'))}{r + 1}"
+```

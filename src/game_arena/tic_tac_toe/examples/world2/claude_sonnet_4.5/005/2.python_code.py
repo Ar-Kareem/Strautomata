@@ -1,0 +1,117 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Play 4x4 Tic Tac Toe optimally.
+    Returns (row, col) for next move.
+    """
+    
+    def check_line_threat(line, player):
+        """
+        Check if a line has a winning opportunity for player.
+        Returns the index of empty cell if 3 are player's and 1 is empty, else -1.
+        """
+        count_player = sum(1 for cell in line if cell == player)
+        count_empty = sum(1 for cell in line if cell == 0)
+        
+        if count_player == 3 and count_empty == 1:
+            return next(i for i, cell in enumerate(line) if cell == 0)
+        return -1
+    
+    def get_all_lines():
+        """Get all rows, columns, and diagonals with their coordinates."""
+        lines = []
+        
+        # Rows
+        for r in range(4):
+            lines.append([(r, c) for c in range(4)])
+        
+        # Columns
+        for c in range(4):
+            lines.append([(r, c) for r in range(4)])
+        
+        # Main diagonal
+        lines.append([(i, i) for i in range(4)])
+        
+        # Anti-diagonal
+        lines.append([(i, 3-i) for i in range(4)])
+        
+        return lines
+    
+    def find_winning_move(player):
+        """Find immediate winning move for player."""
+        lines = get_all_lines()
+        
+        for coords in lines:
+            line = [board[r][c] for r, c in coords]
+            idx = check_line_threat(line, player)
+            if idx != -1:
+                return coords[idx]
+        return None
+    
+    def count_threats(player):
+        """Count number of lines where player has 2+ pieces."""
+        lines = get_all_lines()
+        threats = 0
+        
+        for coords in lines:
+            line = [board[r][c] for r, c in coords]
+            count_player = sum(1 for cell in line if cell == player)
+            count_opponent = sum(1 for cell in line if cell == -player)
+            
+            # A threat is when we have 2+ pieces and opponent has 0
+            if count_player >= 2 and count_opponent == 0:
+                threats += 1
+        
+        return threats
+    
+    def evaluate_move(r, c):
+        """Evaluate the quality of a move."""
+        if board[r][c] != 0:
+            return -1000
+        
+        # Try the move
+        board[r][c] = 1
+        score = 0
+        
+        # Check if this creates multiple threats
+        score += count_threats(1) * 10
+        
+        # Prefer center positions
+        if (r, c) in [(1, 1), (1, 2), (2, 1), (2, 2)]:
+            score += 5
+        
+        # Undo the move
+        board[r][c] = 0
+        
+        return score
+    
+    # 1. Check if we can win immediately
+    win_move = find_winning_move(1)
+    if win_move:
+        return win_move
+    
+    # 2. Check if we need to block opponent's win
+    block_move = find_winning_move(-1)
+    if block_move:
+        return block_move
+    
+    # 3. Find best strategic move
+    best_score = -1000
+    best_move = None
+    
+    for r in range(4):
+        for c in range(4):
+            if board[r][c] == 0:
+                score = evaluate_move(r, c)
+                if score > best_score:
+                    best_score = score
+                    best_move = (r, c)
+    
+    # 4. If no move found (shouldn't happen), take first available
+    if best_move is None:
+        for r in range(4):
+            for c in range(4):
+                if board[r][c] == 0:
+                    return (r, c)
+    
+    return best_move

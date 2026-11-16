@@ -1,0 +1,132 @@
+The strategy for this policy is:  
+1. **Liberty-based move selection** – prioritize moves that maximize liberties for our own groups while minimizing opponent liberties.  
+2. **Early-game corner/side focus** – in the first ~10 moves, claim corners or sides (classical opening).  
+3. **Emergency capture** – if opponent groups have only 1 liberty, capture immediately.  
+4. **Avoid self-atari** – never play a move that leaves our own group with only 1 liberty unless it’s a capturing race we can win.  
+5. **Memory usage** – track board size, move count, and last move to adapt strategy phase (opening/midgame/endgame).  
+6. **Fallback random legal move** – if no “smart” move is found, pick a random legal move to ensure we always return a valid move.  
+
+<code>
+import random
+import math
+
+EMPTY = 0
+MY_STONE = 1
+OPPONENT_STONE = 2
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    board_size = 19
+    # Initialize board
+    board = [[EMPTY for _ in range(board_size)] for _ in range(board_size)]
+    for r, c in me:
+        board[r-1][c-1] = MY_STONE
+    for r, c in opponent:
+        board[r-1][c-1] = OPPONENT_STONE
+
+    # Update memory
+    if 'move_count' not in memory:
+        memory['move_count'] = 0
+    move_count = memory['move_count']
+    memory['move_count'] += 1
+
+    # Helper: get neighbors inside board
+    def neighbors(r, c):
+        ns = []
+        if r > 0: ns.append((r-1, c))
+        if r < board_size-1: ns.append((r+1, c))
+        if c > 0: ns.append((r, c-1))
+        if c < board_size-1: ns.append((r, c+1))
+        return ns
+
+    # Helper: find group and its liberties
+    def find_group_and_liberties(sr, sc, stone_type):
+        visited = set()
+        stack = [(sr, sc)]
+        liberties = set()
+        while stack:
+            r, c = stack.pop()
+            if (r, c) in visited:
+                continue
+            visited.add((r, c))
+            for nr, nc in neighbors(r, c):
+                if board[nr][nc] == EMPTY:
+                    liberties.add((nr, nc))
+                elif board[nr][nc] == stone_type and (nr, nc) not in visited:
+                    stack.append((nr, nc))
+        return visited, liberties
+
+    # 1. Emergency capture: if opponent group has only 1 liberty, take it
+    opponent_stones_set = {(r-1, c-1) for r, c in opponent}
+    for sr, sc in opponent_stones_set:
+        _, libs = find_group_and_liberties(sr, sc, OPPONENT_STONE)
+        if len(libs) == 1:
+            capture_move = libs.pop()
+            # Check it's not suicide for us
+            board[capture_move[0]][capture_move[1]] = MY_STONE
+            _, my_libs = find_group_and_liberties(capture_move[0], capture_move[1], MY_STONE)
+            board[capture_move[0]][capture_move[1]] = EMPTY
+            if len(my_libs) > 0:
+                return (capture_move[0]+1, capture_move[1]+1), memory
+
+    # 2. Avoid self-atari: find moves that give our new group at least 2 liberties
+    my_stones_set = {(r-1, c-1) for r, c in me}
+    safe_moves = []
+    for r in range(board_size):
+        for c in range(board_size):
+            if board[r][c] != EMPTY:
+                continue
+            # Simulate move
+            board[r][c] = MY_STONE
+            _, liberties = find_group_and_liberties(r, c, MY_STONE)
+            board[r][c] = EMPTY
+            if len(liberties) >= 2:
+                safe_moves.append((r, c))
+
+    # 3. If early game (<10 moves), prefer corners/sides
+    if move_count < 10 and safe_moves:
+        corners = [(0,0), (0,18), (18,0), (18,18)]
+        sides = []
+        for i in range(1, board_size-1):
+            sides.extend([(0, i), (18, i), (i, 0), (i, 18)])
+        # Filter safe moves that are in corners/sides
+        preferred = [m for m in safe_moves if m in corners]
+        if not preferred:
+            preferred = [m for m in safe_moves if m in sides]
+        if preferred:
+            move = random.choice(preferred)
+            return (move[0]+1, move[1]+1), memory
+
+    # 4. Evaluate safe moves by liberty gain and opponent liberty reduction
+    if safe_moves:
+        best_score = -float('inf')
+        best_moves = []
+        for r, c in safe_moves:
+            # Simulate move
+            board[r][c] = MY_STONE
+            # Liberty count for new group
+            _, my_libs = find_group_and_liberties(r, c, MY_STONE)
+            # Opponent liberty reduction: check all adjacent opponent groups
+            opp_liberty_reduction = 0
+            for nr, nc in neighbors(r, c):
+                if board[nr][nc] == OPPONENT_STONE:
+                    _, opp_libs = find_group_and_liberties(nr, nc, OPPONENT_STONE)
+                    opp_liberty_reduction += (4 - len(opp_libs))  # heuristic
+            board[r][c] = EMPTY
+            score = len(my_libs) + opp_liberty_reduction
+            if score > best_score:
+                best_score = score
+                best_moves = [(r, c)]
+            elif score == best_score:
+                best_moves.append((r, c))
+        if best_moves:
+            move = random.choice(best_moves)
+            return (move[0]+1, move[1]+1), memory
+
+    # 5. Fallback: any legal move (including pass if no empty point)
+    empty_points = [(r, c) for r in range(board_size) for c in range(board_size) if board[r][c] == EMPTY]
+    if empty_points:
+        move = random.choice(empty_points)
+        return (move[0]+1, move[1]+1), memory
+    else:
+        return (0, 0), memory
+</code>

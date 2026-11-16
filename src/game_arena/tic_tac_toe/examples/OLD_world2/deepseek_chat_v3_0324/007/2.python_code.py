@@ -1,0 +1,177 @@
+
+import numpy as np
+from typing import Optional, Tuple
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Convert the board to numpy array for easier manipulation
+    board_array = np.array(board)
+    
+    # Check if we can win in the next move
+    for i in range(4):
+        for j in range(4):
+            if board_array[i, j] == 0:
+                board_array[i, j] = 1
+                if check_winner(board_array) == 1:
+                    return (i, j)
+                board_array[i, j] = 0
+    
+    # Check if opponent can win in the next move and block them
+    for i in range(4):
+        for j in range(4):
+            if board_array[i, j] == 0:
+                board_array[i, j] = -1
+                if check_winner(board_array) == -1:
+                    return (i, j)
+                board_array[i, j] = 0
+    
+    # If center is empty, take it
+    if board_array[1, 1] == 0 or board_array[1, 2] == 0 or board_array[2, 1] == 0 or board_array[2, 2] == 0:
+        for i, j in [(1, 1), (1, 2), (2, 1), (2, 2)]:
+            if board_array[i, j] == 0:
+                return (i, j)
+    
+    # Use minimax with alpha-beta pruning for deeper analysis
+    best_score = -float('inf')
+    best_move = None
+    
+    for i in range(4):
+        for j in range(4):
+            if board_array[i, j] == 0:
+                board_array[i, j] = 1
+                score = minimax(board_array, 3, False, -float('inf'), float('inf'))
+                board_array[i, j] = 0
+                if score > best_score:
+                    best_score = score
+                    best_move = (i, j)
+    
+    # If no better move found (shouldn't happen), pick the first empty spot
+    if best_move is None:
+        for i in range(4):
+            for j in range(4):
+                if board_array[i, j] == 0:
+                    return (i, j)
+    
+    return best_move
+
+def check_winner(board: np.ndarray) -> Optional[int]:
+    # Check rows
+    for row in range(4):
+        for col in range(2):
+            if (board[row, col] == board[row, col+1] == board[row, col+2] != 0 and 
+                (col == 0 or board[row, col-1] != board[row, col]) and 
+                (col == 1 or board[row, col+3] != board[row, col])):
+                return board[row, col]
+    
+    # Check columns
+    for col in range(4):
+        for row in range(2):
+            if (board[row, col] == board[row+1, col] == board[row+2, col] != 0 and 
+                (row == 0 or board[row-1, col] != board[row, col]) and 
+                (row == 1 or board[row+3, col] != board[row, col])):
+                return board[row, col]
+    
+    # Check diagonals (top-left to bottom-right)
+    for row in range(2):
+        for col in range(2):
+            if (board[row, col] == board[row+1, col+1] == board[row+2, col+2] != 0 and 
+                (row == 0 or col == 0 or board[row-1, col-1] != board[row, col]) and 
+                (row == 1 or col == 1 or board[row+3, col+3] != board[row, col])):
+                return board[row, col]
+    
+    # Check diagonals (top-right to bottom-left)
+    for row in range(2):
+        for col in range(2, 4):
+            if (board[row, col] == board[row+1, col-1] == board[row+2, col-2] != 0 and 
+                (row == 0 or col == 3 or board[row-1, col+1] != board[row, col]) and 
+                (row == 1 or col == 2 or board[row+3, col-3] != board[row, col])):
+                return board[row, col]
+    
+    # Check if board is full
+    if np.all(board != 0):
+        return 0
+    
+    return None
+
+def evaluate(board: np.ndarray) -> int:
+    score = 0
+    
+    # Evaluate rows
+    for row in range(4):
+        for col in range(2):
+            window = board[row, col:col+3]
+            score += evaluate_window(window)
+    
+    # Evaluate columns
+    for col in range(4):
+        for row in range(2):
+            window = board[row:row+3, col]
+            score += evaluate_window(window)
+    
+    # Evaluate diagonals (top-left to bottom-right)
+    for row in range(2):
+        for col in range(2):
+            window = [board[row+i, col+i] for i in range(3)]
+            score += evaluate_window(window)
+    
+    # Evaluate diagonals (top-right to bottom-left)
+    for row in range(2):
+        for col in range(2, 4):
+            window = [board[row+i, col-i] for i in range(3)]
+            score += evaluate_window(window)
+    
+    return score
+
+def evaluate_window(window: np.ndarray) -> int:
+    score = 0
+    my_count = np.count_nonzero(window == 1)
+    opp_count = np.count_nonzero(window == -1)
+    
+    if my_count == 3:
+        score += 100
+    elif my_count == 2 and opp_count == 0:
+        score += 10
+    elif my_count == 1 and opp_count == 0:
+        score += 1
+    
+    if opp_count == 3:
+        score -= 80  # Higher penalty to prioritize blocking
+    elif opp_count == 2 and my_count == 0:
+        score -= 8
+    elif opp_count == 1 and my_count == 0:
+        score -= 1
+    
+    return score
+
+def minimax(board: np.ndarray, depth: int, is_maximizing: bool, alpha: float, beta: float) -> int:
+    winner = check_winner(board)
+    if winner is not None:
+        return winner * 1000
+    if depth == 0:
+        return evaluate(board)
+    
+    if is_maximizing:
+        best_score = -float('inf')
+        for i in range(4):
+            for j in range(4):
+                if board[i, j] == 0:
+                    board[i, j] = 1
+                    score = minimax(board, depth-1, False, alpha, beta)
+                    board[i, j] = 0
+                    best_score = max(score, best_score)
+                    alpha = max(alpha, best_score)
+                    if beta <= alpha:
+                        break
+        return best_score
+    else:
+        best_score = float('inf')
+        for i in range(4):
+            for j in range(4):
+                if board[i, j] == 0:
+                    board[i, j] = -1
+                    score = minimax(board, depth-1, True, alpha, beta)
+                    board[i, j] = 0
+                    best_score = min(score, best_score)
+                    beta = min(beta, best_score)
+                    if beta <= alpha:
+                        break
+        return best_score

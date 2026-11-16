@@ -1,0 +1,171 @@
+
+import numpy as np
+import copy
+from collections import deque
+
+def get_valid_moves(board, player):
+    """Get all valid moves for the given player."""
+    moves = []
+    for r in range(6):
+        for c in range(6):
+            if board[r, c] == player:
+                # Get all valid moves from this amazon
+                possible_moves = get_moves_from_position(board, r, c, player)
+                for (to_r, to_c) in possible_moves:
+                    # Get all valid arrows from destination
+                    possible_arrows = get_arrows_from_position(board, to_r, to_c, player)
+                    for (arrow_r, arrow_c) in possible_arrows:
+                        moves.append((r, c, to_r, to_c, arrow_r, arrow_c))
+    return moves
+
+def get_moves_from_position(board, from_r, from_c, player):
+    """Get all valid moves for an amazon from a given position."""
+    moves = []
+    directions = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+    
+    for dr, dc in directions:
+        r, c = from_r + dr, from_c + dc
+        # Move in direction until hitting a boundary, obstacle, or another amazon
+        while 0 <= r < 6 and 0 <= c < 6:
+            if board[r, c] == 0:  # Empty square
+                moves.append((r, c))
+            elif board[r, c] == player or board[r, c] == -1:  # Cannot pass through own pieces/arrow
+                break
+            elif board[r, c] == 2:  # Hit opponent amazon
+                # Can't move here, but must try to remove this square in case hitting a friend
+                # Actually, we don't break because the non-blocking concept applies to unconditional movement
+                # Wait, no: you cannot move onto a square occupied by a piece
+                break
+            r, c = r + dr, c + dc
+    
+    return moves
+
+def get_arrows_from_position(board, from_r, from_c, player):
+    """Get all valid arrows from a given position."""
+    arrows = []
+    directions = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+    
+    for dr, dc in directions:
+        r, c = from_r + dr, from_c + dc
+        # Shoot in direction until hitting a boundary, obstacle, or another amazon
+        while 0 <= r < 6 and 0 <= c < 6:
+            if board[r, c] == 0 or board[r, c] == -1:  # Can shoot to empty or arrow squares
+                arrows.append((r, c))
+            else:  # Blocked by own amazon or opponent amazon
+                break
+            r, c = r + dr, c + dc
+    
+    return arrows
+
+def apply_move(board, from_r, from_c, to_r, to_c, arrow_r, arrow_c):
+    """Apply a move to a board and return the updated board."""
+    new_board = board.copy()
+    # Move amazon
+    new_board[from_r, from_c] = 0
+    new_board[to_r, to_c] = 1
+    # Place arrow
+    new_board[arrow_r, arrow_c] = -1
+    return new_board
+
+def evaluate_board(board):
+    """Heuristic evaluation function for the board."""
+    score = 0
+    
+    # Mobility bonus: how many moves can we make?
+    my_moves = get_valid_moves(board, 1)
+    op_moves = get_valid_moves(board, 2)
+    score += len(my_moves) * 10
+    score -= len(op_moves) * 8
+    
+    # Control of center bonus: reward central positions
+    center_bonus = 0
+    for r in [2, 3]:
+        for c in [2, 3]:
+            if board[r, c] == 1:
+                center_bonus += 5
+            elif board[r, c] == 2:
+                center_bonus -= 5
+    score += center_bonus
+    
+    # Line control bonus: control key lines
+    line_bonus = 0
+    
+    # Check how many clear paths are for us vs opponent
+    for r in range(6):
+        for c in range(6):
+            if board[r, c] == 1:
+                for dr, dc in [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]:
+                    # Count number of empty cells in one direction
+                    count = 0
+                    nr, nc = r + dr, c + dc
+                    while 0 <= nr < 6 and 0 <= nc < 6:
+                        if board[nr, nc] == 0:
+                            count += 1
+                        else:
+                            break
+                        nr, nc = nr + dr, nc + dc
+                    line_bonus += count * 0.1
+                    
+    score += line_bonus
+    
+    return score
+
+def minimax(board, depth, is_maximizing, alpha, beta):
+    """Minimax with alpha-beta pruning."""
+    if depth == 0:
+        return evaluate_board(board)
+    
+    valid_moves = get_valid_moves(board, 1 if is_maximizing else 2)
+    
+    if not valid_moves:
+        # No moves available, game over
+        return float('-inf') if is_maximizing else float('inf')
+    
+    if is_maximizing:
+        max_eval = float('-inf')
+        for move in valid_moves:
+            r, c, to_r, to_c, arrow_r, arrow_c = move
+            new_board = apply_move(board, r, c, to_r, to_c, arrow_r, arrow_c)
+            eval_score = minimax(new_board, depth - 1, False, alpha, beta)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for move in valid_moves:
+            r, c, to_r, to_c, arrow_r, arrow_c = move
+            new_board = apply_move(board, r, c, to_r, to_c, arrow_r, arrow_c)
+            eval_score = minimax(new_board, depth - 1, True, alpha, beta)
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def policy(board):
+    """Main policy function to return the best move."""
+    valid_moves = get_valid_moves(board, 1)
+    
+    if not valid_moves:
+        # Should not happen according to game rules, but just in case
+        raise ValueError("No valid moves available")
+    
+    # Try a deeper search for best move using a combination of moves
+    best_move = valid_moves[0]  # default choice
+    best_score = float('-inf')
+    
+    # Try for up to 4 moves ahead with a greedy first step approach
+    # To save time, we'll limit moves looked at based on good heuristic
+    for move in valid_moves[:10]:  # take the first 10 moves as sample for initial winner
+        r, c, to_r, to_c, arrow_r, arrow_c = move
+        new_board = apply_move(board, r, c, to_r, to_c, arrow_r, arrow_c)
+        score = minimax(new_board, 2, False, float('-inf'), float('inf'))
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    # Convert best_move to string format
+    r, c, to_r, to_c, arrow_r, arrow_c = best_move
+    return f"{r},{c}:{to_r},{to_c}:{arrow_r},{arrow_c}"

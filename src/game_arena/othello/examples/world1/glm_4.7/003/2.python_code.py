@@ -1,0 +1,249 @@
+
+import numpy as np
+import time
+
+# --- Constants ---
+FULL_BOARD = 0xFFFFFFFFFFFFFFFF
+NOT_A_FILE = 0xFEFEFEFEFEFEFEFE  # Mask to avoid wrapping from A-file to H-file
+NOT_H_FILE = 0x7F7F7F7F7F7F7F7F  # Mask to avoid wrapping from H-file to A-file
+
+# Directions for shifts: E, W, S, N, SE, SW, NE, NW
+DIRS = [1, -1, 8, -8, 9, 7, -7, -9]
+
+# Masks for each direction to prevent invalid wrapping
+DIR_MASKS = {
+    1: NOT_A_FILE,   # East (move right, can't come from H)
+    -1: NOT_H_FILE,  # West (move left, can't come from A)
+    8: FULL_BOARD,   # South
+    -8: FULL_BOARD,  # North
+    9: NOT_A_FILE,   # South-East (can't come from H)
+    7: NOT_H_FILE,   # South-West (can't come from A)
+    -7: FULL_BOARD,  # North-East
+    -9: FULL_BOARD   # North-West
+}
+
+# Positional Weights Map (Symmetric)
+# High values for corners, negative for X-squares (adjacent to corners)
+WEIGHTS = np.array([
+    100, -20, 10,  5,  5, 10, -20, 100,
+    -20, -50, -2, -2, -2, -2, -50, -20,
+     10,  -2, -1, -1, -1, -1,  -2,  10,
+      5,  -2, -1, -1, -1, -1,  -2,   5,
+      5,  -2, -1, -1, -1, -1,  -2,   5,
+     10,  -2, -1, -1, -1, -1,  -2,  10,
+    -20, -50, -2, -2, -2, -2, -50, -20,
+    100, -20, 10,  5,  5, 10, -20, 100
+], dtype=np.int32)
+
+def get_legal_moves(p, o):
+    """Returns a bitboard of legal moves for player p against opponent o."""
+    moves = 0
+    empty = ~(p | o) & FULL_BOARD
+    
+    for d in DIRS:
+        mask = DIR_MASKS[d]
+        # Find opponent pieces adjacent to player pieces in direction d
+        if d > 0:
+            candidates = o & (p << d)
+        else:
+            candidates = o & (p >> -d)
+        candidates &= mask
+        
+        # Extend the line of opponent pieces
+        while candidates:
+            # Any empty square after a line of opponent pieces is a valid move
+            if d > 0:
+                moves |= empty & (candidates << d)
+            else:
+                moves |= empty & (candidates >> -d)
+            
+            # Continue extending
+            if d > 0:
+                candidates = o & (candidates << d)
+            else:
+                candidates = o & (candidates >> -d)
+            candidates &= mask
+            
+    return moves
+
+def make_move(move_idx, p, o):
+    """Executes a move and returns the new (player, opponent) bitboards."""
+    move_bit = 1 << move_idx
+    flip = 0
+    
+    for d in DIRS:
+        mask = DIR_MASKS[d]
+        # Find bracketed opponent pieces
+        if d > 0:
+            line = o & (move_bit << d)
+        else:
+            line = o & (move_bit >> -d)
+        line &= mask
+        
+        to_flip = line
+        while line:
+            if d > 0:
+                line = o & (line << d)
+            else:
+                line = o & (line >> -d)
+            line &= mask
+            to_flip |= line
+            
+        # Check if the line is bracketed by our own piece
+        if d > 0:
+            if p & (to_flip << d):
+                flip |= to_flip
+        else:
+            if p & (to_flip >> -d):
+                flip |= to_flip
+                
+    return (p | flip | move_bit, o ^ flip)
+
+def evaluate(p, o):
+    """Evaluates the board state for player p."""
+    # If game is near end (few empty squares), pure piece count is good
+    empty_count = (~(p | o) & FULL_BOARD).bit_count()
+    if empty_count <= 10:
+        return (p.bit_count() - o.bit_count()) * 1000
+
+    score = 0
+    # Static weights
+    temp_p = p
+    while temp_p:
+        lsb = temp_p & -temp_p
+        idx = lsb.bit_length() - 1
+        score += WEIGHTS[idx]
+        temp_p ^= lsb
+        
+    temp_o = o
+    while temp_o:
+        lsb = temp_o & -temp_o
+        idx = lsb.bit_length() - 1
+        score -= WEIGHTS[idx]
+        temp_o ^= lsb
+        
+    return score
+
+def minimax(p, o, depth, alpha, beta, start_time):
+    """Minimax algorithm with Alpha-Beta pruning."""
+    # Time check
+    if time.time() - start_time > 0.95:
+        return evaluate(p, o)
+
+    if depth == 0:
+        return evaluate(p, o)
+    
+    moves = get_legal_moves(p, o)
+    
+    if moves == 0:
+        # Pass
+        opp_moves = get_legal_moves(o, p)
+        if opp_moves == 0:
+            # Game over
+            return evaluate(p, o)
+        return -minimax(o, p, depth - 1, -beta, -alpha, start_time)
+    
+    best_score = -100000
+    corner_mask = 0x8100000000000081 # Corners: a1, h1, a8, h8
+    
+    # Move ordering: Check corners first for better pruning
+    if moves & corner_mask:
+        # If we can take a corner, prioritize it
+        corners = moves & corner_mask
+        while corners:
+            move = (corners & -corners).bit_length() - 1
+            corners &= corners - 1
+            np_, no = make_move(move, p, o)
+            val = -minimax(no, np_, depth - 1, -beta, -alpha, start_time)
+            if val > best_score:
+                best_score = val
+            alpha = max(alpha, val)
+            if alpha >= beta:
+                return best_score
+        moves &= ~corner_mask
+
+    while moves:
+        move = (moves & -moves).bit_length() - 1
+        moves &= moves - 1
+        
+        np_, no = make_move(move, p, o)
+        val = -minimax(no, np_, depth - 1, -beta, -alpha, start_time)
+        
+        if val > best_score:
+            best_score = val
+        alpha = max(alpha, val)
+        if alpha >= beta:
+            break
+            
+    return best_score
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    # Convert numpy arrays to bitboards
+    me_bb = 0
+    opp_bb = 0
+    for r in range(8):
+        for c in range(8):
+            bit = 1 << (r * 8 + c)
+            if you[r][c]:
+                me_bb |= bit
+            elif opponent[r][c]:
+                opp_bb |= bit
+
+    start_time = time.time()
+    moves = get_legal_moves(me_bb, opp_bb)
+    
+    if moves == 0:
+        return "pass"
+        
+    # Greedy check: If a corner is available, take it immediately without search
+    # (Though minimax would find it, this saves time)
+    corners = moves & 0x8100000000000081
+    if corners:
+        idx = (corners & -corners).bit_length() - 1
+        r = idx // 8
+        c = idx % 8
+        return f"{chr(ord('a') + c)}{r + 1}"
+
+    best_move = -1
+    
+    # Iterative Deepening
+    for depth in range(1, 20):
+        alpha = -100000
+        beta = 100000
+        current_best = -100000
+        best_move_depth = -1
+        
+        current_moves = get_legal_moves(me_bb, opp_bb)
+        
+        # Iterate through moves
+        while current_moves:
+            move = (current_moves & -current_moves).bit_length() - 1
+            current_moves &= current_moves - 1
+            
+            np_, no = make_move(move, me_bb, opp_bb)
+            val = -minimax(no, np_, depth - 1, -beta, -alpha, start_time)
+            
+            if val > current_best:
+                current_best = val
+                best_move_depth = move
+            
+            alpha = max(alpha, val)
+            if alpha >= beta:
+                break
+        
+        if current_best > -90000:
+            best_move = best_move_depth
+        
+        # Stop if running out of time
+        if time.time() - start_time > 0.95:
+            break
+            
+    # Fallback if no move found (should not happen if legal moves exist)
+    if best_move == -1:
+        idx = (moves & -moves).bit_length() - 1
+    else:
+        idx = best_move
+        
+    r = idx // 8
+    c = idx % 8
+    return f"{chr(ord('a') + c)}{r + 1}"

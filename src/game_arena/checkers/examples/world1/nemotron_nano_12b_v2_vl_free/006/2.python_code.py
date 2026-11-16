@@ -1,0 +1,99 @@
+
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    """
+    Evaluates and selects the best move for the current player.
+    Captures have the highest priority, and among those, moves capturing kings are preferred.
+    If multiple jumps have equal capture value, the move that maximizes piece advancement is chosen.
+    """
+    from itertools import product
+    
+    def on_board(r, c):
+        return 0 <= r < 8 and 0 <= c < 8
+    
+    all_jumps = []
+    
+    # Generate all possible jump moves for my pieces.
+    for start in my_men + my_kings:
+        cr, cc = start
+        is_king = start in my_kings
+        
+        # Determine possible jump directions
+        if is_king:
+            directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+        else:
+            if color == 'b':
+                directions = [(-1, -1), (-1, 1)]  # Moving down (black)
+            else:
+                directions = [(1, -1), (1, 1)]    # Moving up (white)
+        
+        # BFS to explore all possible jump sequences from this start position
+        queue = [(current_r, current_c, steps, captured_kings, captured_men)]
+        queue = deque([(start[0], start[1], [], [], 0)])
+        visited = set()
+        visited.add((start[0], start[1]))
+        
+        while queue:
+            r, c, path, captures_kings, captures_men = queue.popleft()
+            
+            # Mark visited to avoid reprocessing
+            state_key = (r, c, len(path))
+            if state_key in visited:
+                continue
+            visited.add(state_key)
+            
+            # Evaluate move score if path contains at least one jump
+            if path:
+                all_jumps.append( (start, (r, c), len(path), captured_kings, captured_men) )
+            
+            # Determine possible jump directions
+            directions = []
+            if (r, c) in my_kings:
+                directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+            else:
+                if color == 'b':
+                    directions = [(-1, -1), (-1, 1)]
+                else:
+                    directions = [(1, -1), (1, 1)]
+            
+            for dx, dy in directions:
+                inter_r, inter_c = r + dx, c + dy
+                landing_r, landing_c = inter_r + dr, inter_c + dy
+                
+                # Validate intermediate and landing squares
+                if not on_board(inter_r, inter_c) or not on_board(landing_r, landing_c):
+                    continue
+                
+                if (inter_r, inter_c) not in opp_men_set and (inter_r, inter_c) not in opp_kings_set:
+                    continue
+                
+                if (landing_r, landing_c) in my_men_set or (landing_r, landing_c) in my_kings_set or (landing_r, landing_c) in opp_men_set or (landing_r, landing_c) in opp_kings_set:
+                    continue
+                
+                if (landing_r + landing_c) % 2 != 0:
+                    continue
+                
+                # Check capture value of this move
+                piece_captured = 'man' if (inter_r, inter_c) in opp_men else 'king'
+                new_captured_kings = captures_kings + (1 if piece_captured == 'king' else 0)
+                new_captured_men = captures_men + (1 if piece_captured == 'man' else 0)
+                
+                # Enqueue the new state after this jump
+                queue.append((landing_r, landing_c, path + [(dr, dy)], new_captured_kings, new_captured_men))
+    
+    # Choose best jump move based on evaluation
+    def evaluate_jump(move):
+        _, _, _, captured_kings, captured_men = move
+        return captured_kings * 10 + captured_men
+    
+    # Sort jumps by capture value (king first), then path length (more captures are better)
+    all_jumps.sort(key=lambda x: (-x[3], -x[2], x[0]))
+    if all_jumps:
+        best = all_jumps[0]
+    
+        # If multiple jumps with same priority, choose the longest jump move
+        best_jump = max(all_jumps, key=lambda x: x[2])
+        return (best_jump[0], best_jump[1])
+    
+    # If no jumps, evaluate all simple moves (this part is simplified for illustration)
+    # A simplified implementation for demonstration purposes.
+    return (min(my_men + my_kings), max(my_men + my_kings)) 

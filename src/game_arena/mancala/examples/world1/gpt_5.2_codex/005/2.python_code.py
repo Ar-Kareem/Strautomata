@@ -1,0 +1,145 @@
+
+import time
+import math
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    start = time.time()
+    TIME_LIMIT = 0.90  # seconds
+    
+    # Precompute legal moves
+    legal_moves = [i for i in range(6) if you[i] > 0]
+    if not legal_moves:
+        return 0  # should never happen by problem statement
+    
+    # Helpers
+    def is_game_over(a, b):
+        return all(x == 0 for x in a[:6]) or all(x == 0 for x in b[:6])
+    
+    def sweep_if_over(a, b):
+        if all(x == 0 for x in a[:6]):
+            b = b[:]  # copy
+            a = a[:]  # copy
+            b[6] += sum(b[:6])
+            for i in range(6):
+                b[i] = 0
+            return a, b
+        if all(x == 0 for x in b[:6]):
+            a = a[:]  # copy
+            b = b[:]  # copy
+            a[6] += sum(a[:6])
+            for i in range(6):
+                a[i] = 0
+            return a, b
+        return a, b
+
+    def make_move(a, b, pit):
+        # a and b are lists length 7, a is player to move
+        a = a[:]  # copy
+        b = b[:]
+        seeds = a[pit]
+        a[pit] = 0
+        pos = pit
+        last_pos = None
+        
+        while seeds > 0:
+            pos = (pos + 1) % 13  # 0..5 houses, 6 store, 7..12 opp houses
+            if pos < 6:
+                a[pos] += 1
+                last_pos = pos
+            elif pos == 6:
+                a[6] += 1
+                last_pos = pos
+            else:
+                b[pos - 7] += 1
+                last_pos = pos
+            seeds -= 1
+        
+        extra = (last_pos == 6)
+        # capture
+        if last_pos is not None and 0 <= last_pos < 6 and a[last_pos] == 1:
+            opp_idx = 5 - last_pos
+            if b[opp_idx] > 0:
+                a[6] += b[opp_idx] + 1
+                a[last_pos] = 0
+                b[opp_idx] = 0
+        
+        return a, b, extra
+    
+    def heuristic(a, b):
+        # terminal
+        if is_game_over(a, b):
+            a2, b2 = sweep_if_over(a, b)
+            return (a2[6] - b2[6]) * 10.0
+        store_diff = a[6] - b[6]
+        house_diff = sum(a[:6]) - sum(b[:6])
+        # bonus for possible extra moves and captures
+        extra_bonus = 0
+        capture_bonus = 0
+        for i in range(6):
+            if a[i] == 0: 
+                continue
+            # simulate landing position quickly
+            seeds = a[i]
+            pos = i
+            while seeds > 0:
+                pos = (pos + 1) % 13
+                if pos == 6 or pos < 6 or pos >= 7:
+                    seeds -= 1
+            if pos == 6:
+                extra_bonus += 1
+            if 0 <= pos < 6 and a[pos] == 0 and b[5 - pos] > 0:
+                capture_bonus += b[5 - pos] + 1
+        return store_diff * 3.0 + house_diff * 0.3 + extra_bonus * 0.5 + capture_bonus * 0.2
+    
+    # Negamax with alpha-beta
+    def negamax(a, b, depth, alpha, beta):
+        if time.time() - start > TIME_LIMIT:
+            return heuristic(a, b)
+        if depth == 0 or is_game_over(a, b):
+            return heuristic(a, b)
+        best = -math.inf
+        for mv in range(6):
+            if a[mv] == 0:
+                continue
+            na, nb, extra = make_move(a, b, mv)
+            if extra:
+                score = negamax(na, nb, depth - 1, alpha, beta)
+            else:
+                score = -negamax(nb, na, depth - 1, -beta, -alpha)
+            if score > best:
+                best = score
+            if best > alpha:
+                alpha = best
+            if alpha >= beta:
+                break
+        return best
+    
+    # Iterative deepening
+    best_move = legal_moves[0]
+    best_score = -math.inf
+    depth = 1
+    while depth <= 10:
+        if time.time() - start > TIME_LIMIT:
+            break
+        local_best = best_move
+        local_best_score = -math.inf
+        alpha = -math.inf
+        beta = math.inf
+        for mv in legal_moves:
+            if time.time() - start > TIME_LIMIT:
+                break
+            na, nb, extra = make_move(you, opponent, mv)
+            if extra:
+                score = negamax(na, nb, depth - 1, alpha, beta)
+            else:
+                score = -negamax(nb, na, depth - 1, -beta, -alpha)
+            if score > local_best_score:
+                local_best_score = score
+                local_best = mv
+        # update only if full depth finished
+        if time.time() - start <= TIME_LIMIT:
+            best_move = local_best
+            best_score = local_best_score
+        depth += 1
+    
+    return best_move

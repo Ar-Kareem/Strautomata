@@ -1,0 +1,130 @@
+
+def policy(hand: list[str], target: int) -> str:
+    """
+    Policy for simplified Blackjack-like game.
+    
+    Strategy:
+    - Calculate current hand value
+    - Estimate probability of busting with next card
+    - Consider opponent's expected value
+    - Make decision based on risk/reward
+    """
+    
+    def card_value(card: str, current_sum: int, target: int) -> int:
+        """Calculate the value of a card given current hand state."""
+        if card in ['J', 'Q', 'K']:
+            return 10
+        elif card == 'A':
+            # Ace is 11 if it doesn't cause us to exceed target, otherwise 1
+            if current_sum + 11 <= target:
+                return 11
+            else:
+                return 1
+        else:
+            return int(card)
+    
+    def hand_value(cards: list[str], target: int) -> int:
+        """Calculate total value of hand."""
+        total = 0
+        for card in cards:
+            total += card_value(card, total, target)
+        return total
+    
+    def get_remaining_cards(hand: list[str]) -> list[str]:
+        """Get list of cards not yet drawn from our deck."""
+        all_cards = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+        remaining = []
+        hand_copy = hand.copy()
+        for card in all_cards:
+            if card in hand_copy:
+                hand_copy.remove(card)
+            else:
+                remaining.append(card)
+        return remaining
+    
+    def expected_card_value(remaining: list[str], current_sum: int, target: int) -> float:
+        """Calculate expected value of next card draw."""
+        if not remaining:
+            return 0
+        total = 0
+        for card in remaining:
+            total += card_value(card, current_sum, target)
+        return total / len(remaining)
+    
+    current_value = hand_value(hand, target)
+    
+    # If we've already busted, this shouldn't happen, but stay
+    if current_value > target:
+        return "STAY"
+    
+    # If we hit exactly the target, stay
+    if current_value == target:
+        return "STAY"
+    
+    remaining = get_remaining_cards(hand)
+    
+    # If no cards left, must stay
+    if not remaining:
+        return "STAY"
+    
+    # Calculate probability of busting if we hit
+    bust_count = 0
+    safe_count = 0
+    for card in remaining:
+        next_value = current_value + card_value(card, current_value, target)
+        if next_value > target:
+            bust_count += 1
+        else:
+            safe_count += 1
+    
+    prob_bust = bust_count / len(remaining) if remaining else 1.0
+    
+    # Calculate expected value after hitting (only counting non-bust outcomes)
+    expected_value_if_hit = 0
+    if safe_count > 0:
+        for card in remaining:
+            next_value = current_value + card_value(card, current_value, target)
+            if next_value <= target:
+                expected_value_if_hit += next_value
+        expected_value_if_hit /= safe_count
+    
+    # Dynamic threshold based on target
+    # For higher targets, we should be more aggressive
+    # For lower targets, more conservative
+    
+    # Base threshold: stay if we're at a good percentage of target
+    threshold_ratio = 0.85  # Stay if we're at 85% of target or higher
+    
+    # Adjust based on bust probability
+    if prob_bust >= 0.5:
+        # High risk of busting, be more conservative
+        threshold_ratio = 0.80
+    elif prob_bust >= 0.7:
+        threshold_ratio = 0.75
+    
+    # Key decision logic:
+    # 1. If we're very close to target and high bust risk, stay
+    if current_value >= target * threshold_ratio and prob_bust >= 0.5:
+        return "STAY"
+    
+    # 2. If we're far from target and low bust risk, hit
+    if current_value < target * 0.7 and prob_bust < 0.3:
+        return "HIT"
+    
+    # 3. Middle ground: compare expected gain vs risk
+    gap_to_target = target - current_value
+    expected_gain = expected_value_if_hit - current_value if safe_count > 0 else 0
+    
+    # If expected gain is significant and bust risk is acceptable, hit
+    if expected_gain >= gap_to_target * 0.4 and prob_bust < 0.6:
+        return "HIT"
+    
+    # 4. Conservative play when we're reasonably close
+    if current_value >= target - 5:
+        return "STAY"
+    
+    # 5. Default: if we're still far from target, keep hitting
+    if current_value < target * 0.8:
+        return "HIT"
+    
+    return "STAY"

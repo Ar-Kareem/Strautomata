@@ -1,0 +1,159 @@
+The strategy for this policy is to prioritize moves that capture boxes. If no capturing moves are available, the policy avoids moves that would give the opponent an immediate capture. When no obvious good moves are available, the policy picks a legal random move, focusing on edges that are not part of a box with two edges already occupied.
+
+```python
+import numpy as np
+import random
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    """
+    A Dots and Boxes policy that prioritizes captures and avoids giving the opponent free captures.
+    """
+
+    def check_capture(horizontal, vertical, capture, row, col, dir):
+        """
+        Checks if a move captures a box and returns the number of boxes captured.
+        """
+        captured_boxes = 0
+        if dir == 'H':
+            # Check box above
+            if row > 0:
+                if horizontal[row - 1, col] != 0 and vertical[row - 1, col] != 0 and vertical[row - 1, col + 1] != 0:
+                    captured_boxes += 1
+            # Check box below
+            if row < 4:
+                if horizontal[row + 1, col] != 0 and vertical[row, col] != 0 and vertical[row, col + 1] != 0:
+                    captured_boxes += 1
+        elif dir == 'V':
+            # Check box to the left
+            if col > 0:
+                if vertical[row, col - 1] != 0 and horizontal[row, col - 1] != 0 and horizontal[row + 1, col - 1] != 0:
+                    captured_boxes += 1
+            # Check box to the right
+            if col < 4:
+                if vertical[row, col + 1] != 0 and horizontal[row, col] != 0 and horizontal[row + 1, col] != 0:
+                    captured_boxes += 1
+        return captured_boxes
+
+    def find_capture_moves(horizontal, vertical, capture):
+        """
+        Finds all moves that result in capturing a box.
+        """
+        capture_moves = []
+        for row in range(5):
+            for col in range(5):
+                if horizontal[row, col] == 0:
+                    if check_capture(horizontal, vertical, capture, row, col, 'H') > 0:
+                        capture_moves.append(f'{row},{col},H')
+                if vertical[row, col] == 0:
+                    if check_capture(horizontal, vertical, capture, row, col, 'V') > 0:
+                        capture_moves.append(f'{row},{col},V')
+        return capture_moves
+
+    def find_safe_moves(horizontal, vertical, capture):
+        """
+        Finds moves that don't immediately give the opponent a free capture.
+        """
+        safe_moves = []
+        for row in range(5):
+            for col in range(5):
+                if horizontal[row, col] == 0:
+                    temp_horizontal = horizontal.copy()
+                    temp_horizontal[row, col] = 1
+                                        
+                    if check_capture(temp_horizontal, vertical, capture, row, col, 'H') == 0:
+
+                        opponent_capture = False
+                        
+                        # Check if opponent can capture after this move
+                        temp_capture = capture.copy()
+                        
+                        # Simulate capture from the current move to see what the board would be like
+                        cap_boxes = check_capture(temp_horizontal, vertical, temp_capture, row, col, 'H')
+
+                        # If we captured one or more boxes from our move, we continue with policy
+                        if cap_boxes > 0:
+                            opponent_capture = False
+                        # If we captured none boxes, we check if the other opponent can capture by checking if the opponent can cap at any move they perform
+                        else:
+                             for row_o in range(5):
+                                for col_o in range(5):
+                                    # Horiztonal
+                                    if temp_horizontal[row_o, col_o] == 0:
+                                        if check_capture(temp_horizontal, vertical, temp_capture, row_o, col_o, 'H') > 0:
+                                            opponent_capture = True
+                                            break
+                                    # Vertical
+                                    if vertical[row_o, col_o] == 0:
+                                        if check_capture(temp_horizontal, vertical, temp_capture, row_o, col_o, 'V') > 0:
+                                            opponent_capture = True
+                                            break
+                                if opponent_capture :
+                                     break           
+                        if not opponent_capture:
+                            safe_moves.append(f'{row},{col},H')
+
+                if vertical[row, col] == 0:
+                    temp_vertical = vertical.copy()
+                    temp_vertical[row, col] = 1
+                    
+                    if check_capture(horizontal, temp_vertical, capture, row, col, 'V') == 0 :
+
+                        opponent_capture = False
+                        
+                        # Check if opponent can capture after this move
+                        temp_capture = capture.copy()
+                        
+                        # Simulate capture from the current move to see what the board would be like
+                        cap_boxes = check_capture(horizontal, temp_vertical, temp_capture, row, col, 'V')
+
+                        # If we captured one or more boxes from our move, we continue with policy
+                        if cap_boxes > 0:
+                            opponent_capture = False
+                        # If we captured none boxes, we check if the other opponent can capture by checking if the opponent can cap at any move they perform
+                        else:
+                             for row_o in range(5):
+                                for col_o in range(5):
+                                    # Horiztonal
+                                    if horizontal[row_o, col_o] == 0:
+                                        if check_capture(horizontal, temp_vertical, temp_capture, row_o, col_o, 'H') > 0:
+                                            opponent_capture = True
+                                            break
+                                    # Vertical
+                                    if temp_vertical[row_o, col_o] == 0:
+                                        if check_capture(horizontal, temp_vertical, temp_capture, row_o, col_o, 'V') > 0:
+                                            opponent_capture = True
+                                            break
+                                if opponent_capture:
+                                     break              
+                        if not opponent_capture:
+                           safe_moves.append(f'{row},{col},V')
+        return safe_moves
+
+    def find_random_moves(horizontal, vertical):
+        """
+        Finds all available moves in the board.
+        """
+        random_moves = []
+        for row in range(5):
+            for col in range(5):
+                if horizontal[row, col] == 0:
+                    random_moves.append(f'{row},{col},H')
+                if vertical[row, col] == 0:
+                    random_moves.append(f'{row},{col},V')
+        return random_moves
+
+    capture_moves = find_capture_moves(horizontal, vertical, capture)
+    if capture_moves:
+        return random.choice(capture_moves)
+
+    safe_moves = find_safe_moves(horizontal, vertical, capture)
+    if safe_moves:
+        return random.choice(safe_moves)
+      
+    random_moves = find_random_moves(horizontal, vertical)
+    if random_moves:
+        return random.choice(random_moves)
+
+    # If no moves are available (shouldn't happen in a normal game), return a dummy move
+    return '0,0,H'
+```

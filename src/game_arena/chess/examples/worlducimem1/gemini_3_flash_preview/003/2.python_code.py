@@ -1,0 +1,122 @@
+
+import random
+
+def policy(pieces, to_play, memory):
+    # Mapping piece types to values
+    vals = {'P': 10, 'N': 30, 'B': 32, 'R': 50, 'Q': 90, 'K': 900}
+    my_color = 'w' if to_play == 'white' else 'b'
+    opp_color = 'b' if to_play == 'white' else 'w'
+    
+    def get_piece_at(sq):
+        return pieces.get(sq)
+
+    def is_on_board(f, r):
+        return 0 <= f <= 7 and 0 <= r <= 7
+
+    def coords_to_sq(f, r):
+        return chr(ord('a') + f) + str(r + 1)
+
+    def sq_to_coords(sq):
+        return ord(sq[0]) - ord('a'), int(sq[1]) - 1
+
+    def get_legal_moves():
+        moves = []
+        for sq, pc in pieces.items():
+            if pc[0] != my_color:
+                continue
+            
+            f, r = sq_to_coords(sq)
+            pt = pc[1]
+            
+            # Pawn logic
+            if pt == 'P':
+                dir = 1 if my_color == 'w' else -1
+                # Forward
+                sq2 = coords_to_sq(f, r + dir)
+                if is_on_board(f, r + dir) and sq2 not in pieces:
+                    moves.append(sq + sq2)
+                    # Double push
+                    if (my_color == 'w' and r == 1) or (my_color == 'b' and r == 6):
+                        sq3 = coords_to_sq(f, r + 2 * dir)
+                        if sq3 not in pieces:
+                            moves.append(sq + sq3)
+                # Captures
+                for df in [-1, 1]:
+                    if is_on_board(f + df, r + dir):
+                        sq2 = coords_to_sq(f + df, r + dir)
+                        target = pieces.get(sq2)
+                        if target and target[0] == opp_color:
+                            moves.append(sq + sq2)
+            
+            # Knight logic
+            elif pt == 'N':
+                for df, dr in [(1,2),(1,-2),(-1,2),(-1,-2),(2,1),(2,-1),(-2,1),(-2,-1)]:
+                    nf, nr = f + df, r + dr
+                    if is_on_board(nf, nr):
+                        sq2 = coords_to_sq(nf, nr)
+                        target = pieces.get(sq2)
+                        if not target or target[0] == opp_color:
+                            moves.append(sq + sq2)
+                            
+            # Sliding pieces
+            elif pt in ['B', 'R', 'Q', 'K']:
+                dirs = []
+                if pt in ['B', 'Q', 'K']: dirs += [(1,1),(1,-1),(-1,1),(-1,-1)]
+                if pt in ['R', 'Q', 'K']: dirs += [(0,1),(0,-1),(1,0),(-1,0)]
+                for df, dr in dirs:
+                    for dist in range(1, 8):
+                        nf, nr = f + df * dist, r + dr * dist
+                        if not is_on_board(nf, nr): break
+                        sq2 = coords_to_sq(nf, nr)
+                        target = pieces.get(sq2)
+                        if not target:
+                            moves.append(sq + sq2)
+                        elif target[0] == opp_color:
+                            moves.append(sq + sq2)
+                            break
+                        else:
+                            break
+                        if pt == 'K': break
+        return moves
+
+    # Heuristic evaluation
+    legal = get_legal_moves()
+    if not legal:
+        return "", memory
+
+    best_move = legal[0]
+    best_score = -9999
+    
+    for move in legal:
+        score = 0
+        from_sq = move[:2]
+        to_sq = move[2:4]
+        
+        moving_piece = pieces[from_sq]
+        target_piece = pieces.get(to_sq)
+        
+        # Priority 1: Material Gain
+        if target_piece:
+            score += 10 * vals.get(target_piece[1], 0) - vals.get(moving_piece[1], 0) // 5
+            
+        # Priority 2: Central control
+        tf, tr = sq_to_coords(to_sq)
+        dist_to_center = abs(3.5 - tf) + abs(3.5 - tr)
+        score += (5 - dist_to_center)
+        
+        # Priority 3: Promotion
+        if moving_piece[1] == 'P':
+            if (my_color == 'w' and tr == 7) or (my_color == 'b' and tr == 0):
+                score += 80
+                move += 'q' # Append promotion flag for logic consistency
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    # Clean move string for promotion if needed
+    final_move = best_move[:4]
+    if len(best_move) > 4:
+        final_move = best_move[:4] + 'q'
+
+    return final_move, memory

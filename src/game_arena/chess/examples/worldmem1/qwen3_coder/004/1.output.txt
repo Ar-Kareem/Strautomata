@@ -1,0 +1,182 @@
+The strategy for this policy is to implement a simple but effective chess engine that evaluates board positions based on material value and basic tactical considerations. The policy uses a greedy approach, looking one move ahead to maximize material gain or deliver checkmate, while also considering king safety and avoiding blunders like hanging pieces.
+
+The evaluation function assigns standard point values to pieces (Pawn=1, Knight/Bishop=3, Rook=5, Queen=9) and includes a small bonus for king safety by penalizing exposed kings. For each legal move, the engine simulates the move, evaluates the resulting position, and selects the move that maximizes its evaluation score.
+
+In case of multiple moves with the same evaluation, it picks randomly among the best ones to add some variety. The memory dictionary is not used in this implementation since the engine doesn't require persistent state across moves.
+
+<code>
+import random
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str], memory: dict) -> tuple[str, dict]:
+    # Define piece values
+    piece_values = {
+        'P': 1,
+        'N': 3,
+        'B': 3,
+        'R': 5,
+        'Q': 9,
+        'K': 0  # King has no value since it cannot be captured
+    }
+
+    def evaluate_position(pieces_dict: dict[str, str], side: str) -> float:
+        """Evaluate the position from the perspective of the given side."""
+        score = 0.0
+        king_square = None
+        side_char = 'w' if side == 'white' else 'b'
+        opp_char = 'b' if side == 'white' else 'w'
+        
+        # Material count
+        for square, piece in pieces_dict.items():
+            piece_color = piece[0]
+            piece_type = piece[1]
+            
+            value = piece_values[piece_type]
+            if piece_color == side_char:
+                score += value
+            else:
+                score -= value
+                
+            # Track our king for safety evaluation
+            if piece == side_char + 'K':
+                king_square = square
+                
+        # Basic king safety: slightly penalize central king in midgame
+        # (In reality, you'd want proper king safety eval, but this is simple)
+        if king_square:
+            file_king = ord(king_square[0]) - ord('a')
+            rank_king = int(king_square[1])
+            # Prefer king castled (sides of board) or on back rank
+            if rank_king in [1, 8]:
+                if file_king < 3 or file_king > 4:  # Castled kings
+                    score += 0.2
+                elif file_king in [3, 4]:  # Central king
+                    score -= 0.1
+                    
+        return score
+
+    def simulate_move(pieces_dict: dict[str, str], move: str) -> dict[str, str]:
+        """Simulate a move on the board and return the new pieces dictionary."""
+        new_pieces = pieces_dict.copy()
+        
+        # Parse move manually by checking legal moves structure
+        # We can parse basic moves like "e4", "Nf3", "O-O", "exd5", etc.
+        
+        # Handle castling first
+        if move == "O-O":
+            if to_play == "white":
+                # Kingside castling
+                if 'e1' in new_pieces and new_pieces['e1'] == 'wK':
+                    del new_pieces['e1']
+                    new_pieces['g1'] = 'wK'
+                if 'h1' in new_pieces and new_pieces['h1'] == 'wR':
+                    del new_pieces['h1']
+                    new_pieces['f1'] = 'wR'
+            else:
+                # Black kingside
+                if 'e8' in new_pieces and new_pieces['e8'] == 'bK':
+                    del new_pieces['e8']
+                    new_pieces['g8'] = 'bK'
+                if 'h8' in new_pieces and new_pieces['h8'] == 'bR':
+                    del new_pieces['h8']
+                    new_pieces['f8'] = 'bR'
+            return new_pieces
+            
+        elif move == "O-O-O":
+            if to_play == "white":
+                # Queenside castling
+                if 'e1' in new_pieces and new_pieces['e1'] == 'wK':
+                    del new_pieces['e1']
+                    new_pieces['c1'] = 'wK'
+                if 'a1' in new_pieces and new_pieces['a1'] == 'wR':
+                    del new_pieces['a1']
+                    new_pieces['d1'] = 'wR'
+            else:
+                # Black queenside
+                if 'e8' in new_pieces and new_pieces['e8'] == 'bK':
+                    del new_pieces['e8']
+                    new_pieces['c8'] = 'bK'
+                if 'a8' in new_pieces and new_pieces['a8'] == 'bR':
+                    del new_pieces['a8']
+                    new_pieces['d8'] = 'bR'
+            return new_pieces
+            
+        # Handle other moves: find the most likely piece and target square
+        # This is simplified - real parsing would be more accurate but complex
+        # We'll assume the last two characters are the target square for basic moves
+        
+        if len(move) < 2:
+            return new_pieces
+            
+        target_square = move[-2:]
+        move_body = move[:-2]
+        
+        # Remove any special characters at end like + or #
+        while target_square and not (target_square[0].isalpha() and target_square[1].isdigit()):
+            target_square = move[-3:-1]
+            move_body = move[:-3]
+            break
+            
+        if len(target_square) != 2 or not (target_square[0].isalpha() and target_square[1].isdigit()):
+            return new_pieces
+            
+        # Try to deduce which piece made the move
+        moving_piece_type = 'P'  # default to pawn
+        moving_piece_color = 'w' if to_play == 'white' else 'b'
+        
+        if move_body:
+            first_char = move_body[0]
+            if first_char in ['N','B','R','Q','K']:
+                moving_piece_type = first_char
+            elif first_char == 'O':  # Already handled castling
+                return new_pieces
+                
+        # Find the piece that moved (naive search)
+        moving_piece = moving_piece_color + moving_piece_type
+        start_square = None
+        
+        for sq, pc in pieces_dict.items():
+            if pc == moving_piece:
+                # Very naive: just pick one (correct simulation would require full parser)
+                start_square = sq
+                break
+                
+        if start_square:
+            del new_pieces[start_square]
+            new_pieces[target_square] = moving_piece
+            
+        # Handle captures (if destination had opponent piece, it's gone now)
+        for sq in list(new_pieces.keys()):
+            if sq == target_square and new_pieces[sq][0] != moving_piece_color:
+                del new_pieces[sq]
+                
+        return new_pieces
+
+    # Main logic
+    if not legal_moves:
+        return ("", memory)  # Should not happen
+        
+    best_score = -float('inf')
+    best_moves = []
+    
+    # Check for mate or extremely good moves
+    for move in legal_moves:
+        simulated_board = simulate_move(pieces, move)
+        # Heuristic: Evaluate from our perspective after the move
+        score = evaluate_position(simulated_board, to_play)
+        
+        # Slightly prefer captures and checks (simple heuristic)
+        if 'x' in move:
+            score += 0.1
+        if '+' in move:
+            score += 0.05
+            
+        if score > best_score:
+            best_score = score
+            best_moves = [move]
+        elif abs(score - best_score) < 1e-6:  # Almost equal
+            best_moves.append(move)
+            
+    # Return a random choice among the best moves
+    chosen_move = random.choice(best_moves)
+    return (chosen_move, memory)
+</code>

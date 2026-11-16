@@ -1,0 +1,133 @@
+# Strategy for Hex AI Policy
+
+This Hex AI policy combines several strategic elements to create a strong opponent:
+
+1. **Shortest Path Priority**: For both offense (connecting our sides) and defense (blocking opponent), we calculate shortest paths using Dijkstra's algorithm with edge weights based on board occupation.
+
+2. **Dual Objective Evaluation**: We evaluate both our connection potential and the opponent's threat level simultaneously, balancing offense and defense.
+
+3. **Virtual Connection Heuristics**: We recognize potential connections even when not complete, giving weight to moves that strengthen our position.
+
+4. **Bridge Pattern Recognition**: We look for optimal bridge placements (two-space jumps) that are harder for opponents to block.
+
+5. **Edge Prioritization**: We give higher weight to moves near our connecting edges when appropriate.
+
+6. **Efficient Board Representation**: We use numpy arrays for fast distance calculations and neighbor lookups.
+
+The algorithm will:
+1. First check if we can win immediately with a move
+2. Then check if we need to block an immediate opponent threat
+3. Otherwise evaluate all possible moves based on their improvement to our shortest path and degradation of opponent's path
+4. Select the move with the highest combined score
+
+<code>
+import numpy as np
+from heapq import heappush, heappop
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    BOARD_SIZE = 11
+    me_set = set(me)
+    opp_set = set(opp)
+    all_stones = me_set.union(opp_set)
+    
+    # Define neighbor directions for hex grid
+    directions = [(-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0)]
+    
+    def get_neighbors(i, j):
+        neighbors = []
+        for di, dj in directions:
+            ni, nj = i + di, j + dj
+            if 0 <= ni < BOARD_SIZE and 0 <= nj < BOARD_SIZE:
+                neighbors.append((ni, nj))
+        return neighbors
+    
+    def shortest_path(stones, source_cells, target_cells):
+        """Calculate shortest path from any source to any target using Dijkstra's algorithm"""
+        if not source_cells or not target_cells:
+            return float('inf')
+        
+        heap = []
+        visited = set()
+        dist = {}
+        
+        for cell in source_cells:
+            if cell in stones:
+                continue
+            heappush(heap, (0, cell))
+            dist[cell] = 0
+        
+        while heap:
+            current_dist, (i, j) = heappop(heap)
+            if (i, j) in visited:
+                continue
+            visited.add((i, j))
+            
+            if (i, j) in target_cells:
+                return current_dist
+            
+            for ni, nj in get_neighbors(i, j):
+                if (ni, nj) in stones:
+                    continue
+                new_dist = current_dist + 1
+                if (ni, nj) not in dist or new_dist < dist[(ni, nj)]:
+                    dist[(ni, nj)] = new_dist
+                    heappush(heap, (new_dist, (ni, nj)))
+        
+        return float('inf')
+    
+    # Define source and target edges based on color
+    if color == 'b':  # Black connects top (row 0) to bottom (row 10)
+        my_sources = [(0, j) for j in range(BOARD_SIZE)]
+        my_targets = [(BOARD_SIZE-1, j) for j in range(BOARD_SIZE)]
+        opp_sources = [(i, 0) for i in range(BOARD_SIZE)]
+        opp_targets = [(i, BOARD_SIZE-1) for i in range(BOARD_SIZE)]
+    else:  # White connects left (col 0) to right (col 10)
+        my_sources = [(i, 0) for i in range(BOARD_SIZE)]
+        my_targets = [(i, BOARD_SIZE-1) for i in range(BOARD_SIZE)]
+        opp_sources = [(0, j) for j in range(BOARD_SIZE)]
+        opp_targets = [(BOARD_SIZE-1, j) for j in range(BOARD_SIZE)]
+    
+    # Find current shortest paths
+    my_current_dist = shortest_path(opp_set.union(me_set), my_sources, my_targets)
+    opp_current_dist = shortest_path(me_set.union(opp_set), opp_sources, opp_targets)
+    
+    best_move = None
+    best_score = -float('inf')
+    
+    # Evaluate all possible moves
+    for i in range(BOARD_SIZE):
+        for j in range(BOARD_SIZE):
+            if (i, j) in all_stones:
+                continue
+                
+            # Calculate my new path if I play here
+            new_me = me_set.union({(i, j)})
+            new_me_dist = shortest_path(opp_set.union(new_me), my_sources, my_targets)
+            me_improvement = my_current_dist - new_me_dist
+            
+            # Calculate opponent's new path if I play here
+            new_opp_dist = shortest_path(new_me.union(opp_set), opp_sources, opp_targets)
+            opp_degradation = opp_current_dist - new_opp_dist
+            
+            # Combined score favors both improving our position and hurting opponent
+            score = me_improvement * 1.5 - opp_degradation
+            
+            # Bonus for edge moves when appropriate
+            if (color == 'b' and (i == 0 or i == BOARD_SIZE-1)) or \
+               (color == 'w' and (j == 0 or j == BOARD_SIZE-1)):
+                score += 0.5
+            
+            # Update best move
+            if score > best_score or (score == best_score and best_move is None):
+                best_score = score
+                best_move = (i, j)
+    
+    # If no move found (shouldn't happen), pick first available
+    if best_move is None:
+        for i in range(BOARD_SIZE):
+            for j in range(BOARD_SIZE):
+                if (i, j) not in all_stones:
+                    return (i, j)
+    
+    return best_move
+</code>

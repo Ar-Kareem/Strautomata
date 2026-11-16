@@ -1,0 +1,159 @@
+**Strategy Overview**
+
+The policy evaluates every legal move and selects the one with the highest heuristic score.
+
+1. **Winning Moves** – If a move reaches the opponent’s home row, it wins instantly and gets a huge bonus.  
+2. **Captures** – Capturing an opponent piece is valuable (+100) and is favored when no immediate win is possible.  
+3. **Advance Towards Goal** – Moves that bring a piece closer to the goal row get points proportional to the distance reduced.  
+4. **Avoid Immediate Threats** – Moving onto a square that can be captured by the opponent on their next turn incurs a penalty, steering pieces away from dangerous spots.  
+
+The heuristic combines these factors, guaranteeing a legal move while aggressively advancing and exploiting capture opportunities.
+
+```python
+import random
+from typing import List, Tuple, Set
+
+def policy(me: List[Tuple[int, int]],
+           opp: List[Tuple[int, int]],
+           color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    """
+    Return the best move for Breakthrough.
+
+    Parameters
+    ----------
+    me : list of (row, col)
+        Your pieces.
+    opp : list of (row, col)
+        Opponent pieces.
+    color : 'b' or 'w'
+        Your colour. Black moves toward decreasing rows,
+        White moves toward increasing rows.
+
+    Returns
+    -------
+    ((from_row, from_col), (to_row, to_col))
+        The chosen legal move.
+    """
+    # Convert to sets for O(1) membership tests
+    my_set: Set[Tuple[int, int]] = set(me)
+    opp_set: Set[Tuple[int, int]] = set(opp)
+
+    # Direction of forward movement
+    d_forward = -1 if color == 'b' else 1
+    home_row = 0 if color == 'b' else 7  # row that gives immediate win
+
+    # Helper to test board limits
+    def in_board(r: int, c: int) -> bool:
+        return 0 <= r < 8 and 0 <= c < 8
+
+    # All possible moves with their scores
+    best_moves = []
+    best_score = -float('inf')
+
+    for (r, c) in me:
+        # Forward move (straight)
+        fr, fc = r + d_forward, c
+        if in_board(fr, fc) and (fr, fc) not in my_set and (fr, fc) not in opp_set:
+            score = 0
+            # Winning move?
+            if fr == home_row:
+                score += 10000
+            # Distance improvement
+            if color == 'b':
+                score += (r - fr) * 10   # positive when moving down
+            else:
+                score += (fr - r) * 10   # positive when moving up
+            # Risk penalty
+            if is_risky((fr, fc), opp_set, color):
+                score -= 50
+            update_best((r, c), (fr, fc), score)
+
+        # Diagonal left
+        dl_r, dl_c = r + d_forward, c - 1
+        if in_board(dl_r, dl_c):
+            if (dl_r, dl_c) in opp_set:          # capture
+                score = 100
+                if dl_r == home_row:
+                    score += 10000
+                # Captures are always safe (the opponent piece is removed)
+                update_best((r, c), (dl_r, dl_c), score)
+            elif (dl_r, dl_c) not in my_set:     # normal move
+                score = 0
+                if dl_r == home_row:
+                    score += 10000
+                if color == 'b':
+                    score += (r - dl_r) * 10
+                else:
+                    score += (dl_r - r) * 10
+                if is_risky((dl_r, dl_c), opp_set, color):
+                    score -= 50
+                update_best((r, c), (dl_r, dl_c), score)
+
+        # Diagonal right
+        dr_r, dr_c = r + d_forward, c + 1
+        if in_board(dr_r, dr_c):
+            if (dr_r, dr_c) in opp_set:          # capture
+                score = 100
+                if dr_r == home_row:
+                    score += 10000
+                update_best((r, c), (dr_r, dr_c), score)
+            elif (dr_r, dr_c) not in my_set:     # normal move
+                score = 0
+                if dr_r == home_row:
+                    score += 10000
+                if color == 'b':
+                    score += (r - dr_r) * 10
+                else:
+                    score += (dr_r - r) * 10
+                if is_risky((dr_r, dr_c), opp_set, color):
+                    score -= 50
+                update_best((r, c), (dr_r, dr_c), score)
+
+    # Fallback: if something went wrong, just pick a random legal move
+    if not best_moves:
+        # generate any legal move (should never happen)
+        for (r, c) in me:
+            for dc in (-1, 0, 1):
+                nr = r + d_forward
+                nc = c + dc
+                if not in_board(nr, nc):
+                    continue
+                if dc == 0:
+                    if (nr, nc) not in my_set and (nr, nc) not in opp_set:
+                        return ((r, c), (nr, nc))
+                else:
+                    if (nr, nc) in opp_set:
+                        return ((r, c), (nr, nc))
+                    elif (nr, nc) not in my_set and (nr, nc) not in opp_set:
+                        return ((r, c), (nr, nc))
+        # As absolute last resort, stay in place (illegal but never reached)
+        return ((me[0][0], me[0][1]), (me[0][0], me[0][1]))
+
+    # Choose among equally best moves randomly to add variety
+    return random.choice(best_moves)
+
+
+def is_risky(pos: Tuple[int, int],
+             opp_set: Set[Tuple[int, int]],
+             color: str) -> bool:
+    """Return True if the opponent could capture `pos` on their next turn."""
+    r, c = pos
+    # Opponent moves in opposite vertical direction
+    opp_forward = 1 if color == 'b' else -1
+    # Squares from which opponent could capture
+    cand1 = (r + opp_forward, c - 1)
+    cand2 = (r + opp_forward, c + 1)
+    return cand1 in opp_set or cand2 in opp_set
+
+
+def update_best(frm: Tuple[int, int],
+                to: Tuple[int, int],
+                score: int):
+    """Helper to keep track of the best moves discovered so far."""
+    nonlocal best_score, best_moves
+    if score > best_score:
+        best_score = score
+        best_moves = [ (frm, to) ]
+    elif score == best_score:
+        best_moves.append( (frm, to) )
+```

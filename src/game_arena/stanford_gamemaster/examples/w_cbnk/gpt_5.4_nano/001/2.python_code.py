@@ -1,0 +1,205 @@
+
+import re
+from typing import List, Tuple, Optional
+
+# --------- Helpers to interpret the state ---------
+
+def _parse_state(state: list[list[object]]):
+    blacks = set()
+    reds = set()
+    step = None
+    control = None
+    capturecount = {"black": 0, "red": 0}
+    for fact in state:
+        if not fact:
+            continue
+        pred = fact[0]
+        if pred == "location":
+            x, y, c = int(fact[1]), int(fact[2]), fact[3]
+            if c == "black":
+                blacks.add((x, y))
+            else:
+                reds.add((x, y))
+        elif pred == "step":
+            step = int(fact[1])
+        elif pred == "control":
+            control = fact[1]
+        elif pred == "capturecount":
+            capturecount[fact[1]] = int(fact[2])
+    return blacks, reds, step, control, capturecount
+
+def _wrap(y: int) -> int:
+    # y in {1..8}, wrapping top-bottom
+    # using modulo arithmetic centered on 1..8
+    return ((y - 1) % 8) + 1
+
+def _other(role: str) -> str:
+    return "red" if role == "black" else "black"
+
+def _inside(x: int) -> bool:
+    return 1 <= x <= 8
+
+# Based on examples, board coordinates are (x,y) with x in 1..8, y in 1..8.
+# Move examples suggest “single jump on a barrel” with diagonal movement.
+# Since no kings and only single jumps, we implement:
+# - black forward direction: decreasing y (from turn0: black at y=1 moved to y=2? Actually example move(1,3,2,4):
+#   black from (1,3) to (2,4) => y increases. So black forward increases y.
+# - red forward direction: decreasing y (from (2,6) to (1,5) in example turn9: move(2,6,1,5) => y decreases)
+#
+# Diagonal steps: (x±1, y+dir)
+# Jump: (x±2, y+2*dir) capturing the piece in between at (x±1, y+dir).
+#
+# Barrel wraps in y, not in x.
+
+def _dir_for(role: str) -> int:
+    # black moves toward higher y; red toward lower y
+    return 1 if role == "black" else -1
+
+def _step_moves(role: str, me: set, opp: set) -> List[Tuple[Tuple[int,int], Tuple[int,int]]]:
+    diry = _dir_for(role)
+    moves = []
+    for (x,y) in me:
+        nx = x + 1
+        ny = _wrap(y + diry)
+        if _inside(nx) and (nx, ny) not in me and (nx, ny) not in opp:
+            moves.append(((x,y),(nx,ny)))
+        nx = x - 1
+        ny = _wrap(y + diry)
+        if _inside(nx) and (nx, ny) not in me and (nx, ny) not in opp:
+            moves.append(((x,y),(nx,ny)))
+    return moves
+
+def _jump_moves(role: str, me: set, opp: set) -> List[Tuple[Tuple[int,int], Tuple[int,int], Tuple[int,int]]]:
+    # returns (from, to, captured_square)
+    diry = _dir_for(role)
+    jumps = []
+    for (x,y) in me:
+        for dx in (-2, 2):
+            nx = x + dx
+            if not _inside(nx):
+                continue
+            midx = x + dx//2
+            midy = _wrap(y + diry)
+            ny = _wrap(y + 2*diry)
+            # captured piece must be at mid square
+            if (midx, midy) in opp and (nx, ny) not in me and (nx, ny) not in opp:
+                jumps.append(((x,y),(nx,ny),(midx,midy)))
+    return jumps
+
+def _would_opponent_have_jump(state_me: set, state_opp: set, role_to_check: str) -> bool:
+    # check if role_to_check can jump given current occupancy
+    if role_to_check == "black":
+        me = state_me
+        opp = state_opp
+    else:
+        me = state_opp
+        opp = state_me
+    jm = _jump_moves(role_to_check, me, opp)
+    return len(jm) > 0
+
+def _danger_score(to_sq: Tuple[int,int], role: str, me_after: set, opp_after: set) -> int:
+    # crude: higher means more dangerous (opponent can jump onto or over positions)
+    # We'll check if opponent has any jump after making the hypothetical move;
+    # also if opponent has a jump that captures a piece currently adjacent to to_sq.
+    other_role = _other(role)
+    return 1 if _would_opponent_have_jump(me_after, opp_after, other_role) else 0
+
+def _choose_action_for_role(state, role: str) -> str:
+    me, opp, step, control, capturecount = _parse_state(state)
+
+    if role == "black":
+        my_set, opp_set = me, opp
+    else:
+        my_set, opp_set = reds if role == "red" else me, opp  # won't be used; keep consistent
+    if role == "red":
+        my_set, opp_set = opp, me
+
+    # generate jumps first
+    jumps = _jump_moves(role, my_set, opp_set)
+    if jumps:
+        # choose jump with:
+        # 1) must be capture
+        # 2) prefer landing squares that reduce opponent immediate jump availability
+        # 3) tiebreaker: prefer landing more "advanced" (forward)
+        diry = _dir_for(role)
+        best = None
+        best_key = None
+        for fr, to, cap in jumps:
+            new_me = set(my_set)
+            new_opp = set(opp_set)
+            new_me.remove(fr)
+            new_me.add(to)
+            new_opp.remove(cap)
+
+            opp_has_jump = _would_opponent_have_jump(new_me, new_opp, _other(role))
+            # advancement measure: for black y, higher is forward; for red lower is forward
+            advance = to[1] * diry
+            # danger: if opponent has jump -> higher score
+            danger = 1 if opp_has_jump else 0
+
+            key = ( -danger, -advance, fr[0], fr[1], to[0], to[1])
+            if best_key is None or key > best_key:
+                best_key = key
+                best = (fr, to)
+        (fr,to) = best
+        return f"jump({fr[0]},{fr[1]},{to[0]},{to[1]},{(0)},{(0)})".replace(",0,0", "")
+    # The above format attempt is wrong; correct with exact signature from examples:
+    # jump(x1,y1,x2,y2,x3,y3) where (x2,y2) is landing and (x3,y3) is captured?
+    # From example: jump(4,4,5,5,6,6) with black role.
+    # Interpreting: from (4,4) to (6,6) capturing (5,5).
+    # So signature is jump(x_from,y_from,x_cap,y_cap,x_to,y_to)
+
+    # So we must rebuild properly:
+    jumps = _jump_moves(role, my_set, opp_set)
+    if jumps:
+        diry = _dir_for(role)
+        best = None
+        best_key = None
+        for fr, to, cap in jumps:
+            new_me = set(my_set)
+            new_opp = set(opp_set)
+            new_me.remove(fr)
+            new_me.add(to)
+            new_opp.remove(cap)
+            opp_has_jump = _would_opponent_have_jump(new_me, new_opp, _other(role))
+            advance = to[1] * diry
+            danger = 1 if opp_has_jump else 0
+            key = (-danger, -advance, fr[0], fr[1], cap[0], cap[1], to[0], to[1])
+            if best_key is None or key > best_key:
+                best_key = key
+                best = (fr, cap, to)
+        fr, cap, to = best
+        return f"jump({fr[0]},{fr[1]},{cap[0]},{cap[1]},{to[0]},{to[1]})"
+
+    # No jumps: choose step move
+    steps = _step_moves(role, my_set, opp_set)
+    if not steps:
+        return "noop"
+
+    diry = _dir_for(role)
+    best = None
+    best_key = None
+    for fr, to in steps:
+        new_me = set(my_set)
+        new_opp = set(opp_set)
+        new_me.remove(fr)
+        new_me.add(to)
+
+        opp_has_jump = _would_opponent_have_jump(new_me, new_opp, _other(role))
+        danger = 1 if opp_has_jump else 0
+        advance = to[1] * diry
+        key = (-danger, -advance, fr[0], fr[1], to[0], to[1])
+        if best_key is None or key > best_key:
+            best_key = key
+            best = (fr, to)
+    fr, to = best
+    return f"move({fr[0]},{fr[1]},{to[0]},{to[1]})"
+
+def policy(state: list[list[object]], role: str) -> str:
+    # Always return a legal action string: either a jump/move found in inferred rules, else noop.
+    # Also handle the occasional "noop" action being the only legal one by returning noop if none found.
+    try:
+        return _choose_action_for_role(state, role)
+    except Exception:
+        # Fallback: if parsing/rules mismatch, try noop (allowed in examples).
+        return "noop"

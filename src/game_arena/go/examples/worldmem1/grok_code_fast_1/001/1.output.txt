@@ -1,0 +1,132 @@
+I implemented an AI for Go that uses a heuristic scoring system to select moves, aiming to balance expansion, safety, and aggression without being computationally intensive. It prioritizes moves near the center for early game control, favors playing adjacent to an existing stone for group growth, and penalizes moves near the opponent's stones to avoid fights until advantageous. It also checks for instant captures (opponent groups with 1 liberty) and prefers those for aggressive play. Moves are validated for legality (empty intersection, non-suicidal: the placed stone must have at least 1 liberty, and if not, it must capture something). If no moves are available, it passes.
+
+This strategy is simple but effective against basic opponents, as it's deterministic with a good heuristic and fast (runs in milliseconds on a 19x19 board).
+
+<code>
+import math
+
+# Directions for neighbors: up, down, left, right
+DIRECTIONS = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+
+class GoPolicy:
+    def __init__(self):
+        self.board_size = 19
+        self.board = [[0] * (self.board_size + 1) for _ in range(self.board_size + 1)]
+        self.min_row, self.max_row = 1, 19
+        self.min_col, self.max_col = 1, 19
+
+    def initialize_board(self, me, opponent):
+        for r in range(self.min_row, self.max_row + 1):
+            for c in range(self.min_col, self.max_col + 1):
+                self.board[r][c] = 0
+        for r, c in me:
+            self.board[r][c] = 1  # Me (black or current player)
+        for r, c in opponent:
+            self.board[r][c] = 2  # Opponent
+
+    def get_neighbors(self, r, c):
+        return [(r + dr, c + dc) for dr, dc in DIRECTIONS
+                if self.min_row <= r + dr <= self.max_row and
+                   self.min_col <= c + dc <= self.max_col]
+
+    def get_group(self, r, c, visited=set()):
+        stone = self.board[r][c]
+        group = []
+        stack = [(r, c)]
+        while stack:
+            curr_r, curr_c = stack.pop()
+            if (curr_r, curr_c) in visited:
+                continue
+            visited.add((curr_r, curr_c))
+            group.append((curr_r, curr_c))
+            for nr, nc in self.get_neighbors(curr_r, curr_c):
+                if self.board[nr][nc] == stone and (nr, nc) not in visited:
+                    stack.append((nr, nc))
+        return group
+
+    def get_liberties(self, group):
+        liberties = set()
+        for r, c in group:
+            for nr, nc in self.get_neighbors(r, c):
+                if self.board[nr][nc] == 0:
+                    liberties.add((nr, nc))
+        return liberties
+
+    def can_capture(self, r, c, player):
+        return self.board[r][c] == (3 - player)  # Opponent's stone
+
+    def check_move_legal(self, r, c):
+        if self.board[r][c] != 0:
+            return False
+        # Temporarily place stone
+        original = self.board[r][c]
+        self.board[r][c] = 1
+        group = self.get_group(r, c)
+        libs = self.get_liberties(group)
+        captured = False
+        captured_stones = []
+        for nr, nc in list(libs):
+            if self.can_capture(nr, nc, 1):
+                # Check if adjacent opponent group has 0 liberties
+                opp_group = self.get_group(nr, nc)
+                opp_libs = self.get_liberties(opp_group)
+                if len(opp_libs) <= 1:  # If it's the only liberty or less
+                    captured_stones.extend(opp_group)
+                    captured = True
+        # Remove capture if happened
+        for cr, cc in captured_stones:
+            self.board[cr][cc] = 0
+        # Restore
+        self.board[r][c] = original
+        if captured:
+            for cr, cc in captured_stones:
+                self.board[cr][cc] = 2  # Restore opponent
+        # Legal if my group has liberties or I captured
+        return len(libs) > 0 or captured
+
+    def score_move(self, r, c):
+        # Heuristic: prefer center, near own stones
+        center_r, center_c = 10, 10
+        dist = abs(r - center_r) + abs(c - center_c)
+        score = 100 - dist  # Closer to center is better
+
+        my_neighbors = sum(1 for nr, nc in self.get_neighbors(r, c) if self.board[nr][nc] == 1)
+        opp_neighbors = sum(1 for nr, nc in self.get_neighbors(r, c) if self.board[nr][nc] == 2)
+        
+        score += my_neighbors * 20  # Bonus for adjacency to own
+        score -= opp_neighbors * 10  # Penalty for adjacency to opponent's
+
+        # Temporarily place to check for captures
+        original = self.board[r][c]
+        self.board[r][c] = 1
+        captured_bonus = 0
+        for nr, nc in self.get_neighbors(r, c):
+            if self.board[nr][nc] == 2:
+                opp_group = self.get_group(nr, nc)
+                if len(self.get_liberties(opp_group)) == 1 and (r, c) in self.get_liberties(opp_group):
+                    captured_bonus = 500  # High bonus for capturing
+        self.board[r][c] = original
+
+        score += captured_bonus
+        return score
+
+    def get_best_move(self, me, opponent):
+        self.initialize_board(me, opponent)
+        best_move = None
+        best_score = -float('inf')
+        for r in range(1, 20):
+            for c in range(1, 20):
+                if self.board[r][c] == 0 and self.check_move_legal(r, c):
+                    score = self.score_move(r, c)
+                    if score > best_score:
+                        best_score = score
+                        best_move = (r, c)
+        if best_move:
+            return best_move
+        return (0, 0)  # Pass
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    go = GoPolicy()
+    move = go.get_best_move(me, opponent)
+    return (move, {})  # No need for memory here
+</code>

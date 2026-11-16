@@ -1,0 +1,90 @@
+
+import numpy as np
+from itertools import product
+
+# Direction vectors for orthogonal moves
+DIRS = [(-1, 0, 'U'), (0, 1, 'R'), (1, 0, 'D'), (0, -1, 'L')]
+DIR_ORDER = {'U': 0, 'L': 1, 'D': 2, 'R': 3}
+
+def _legal_moves(board, opp):
+    """Return list of legal captures for the player holding `board`."""
+    moves = []
+    # Identify positions of my pieces
+    my_pos = np.argwhere(board == 1)
+    for r, c in my_pos:
+        for dr, dc, dir_ in DIRS:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < board.shape[0] and 0 <= nc < board.shape[1] and opp[nr, nc] == 1:
+                moves.append((r, c, dr, dc, dir_))
+    return moves
+
+def _simulate(move, board, opp):
+    """Apply a single capture and return the resulting boards."""
+    r, c, dr, dc, dir_ = move
+    nr, nc = r + dr, c + dc
+    # Copy to avoid mutating the original
+    new_board = board.copy()
+    new_opp = opp.copy()
+    new_board[r, c] = 0
+    new_opp[nr, nc] = 0
+    new_board[nr, nc] = 1
+    return new_board, new_opp
+
+def _evaluate(board, opp):
+    """Simple heuristic: piece count advantage + mobility."""
+    my = np.sum(board)
+    opp_my = np.sum(opp)
+    # mobility term: captures I can do minus captures opponent can do
+    my_moves = len(_legal_moves(board, opp))
+    opp_moves = len(_legal_moves(opp, board))
+    return 1000 * (my - opp_my) + 10 * (my_moves - opp_moves)
+
+def _minimax(board, opp, depth, alpha, beta, maximizing):
+    """Depth‑limited minimax with α‑β pruning."""
+    # Terminal condition: depth exhausted or player has no captures
+    if depth == 0 or not _legal_moves(board, opp):
+        return _evaluate(board, opp)
+
+    best = -float('inf') if maximizing else float('inf')
+    moves = _legal_moves(board, opp) if maximizing else _legal_moves(opp, board)
+
+    for move in moves:
+        new_board, new_opp = _simulate(move, board, opp)
+        val = _minimax(new_board, new_opp, depth - 1, alpha, beta, not maximizing)
+        if maximizing:
+            best = max(best, val)
+            alpha = max(alpha, best)
+        else:
+            best = min(best, val)
+            beta = min(beta, best)
+        if beta <= alpha:
+            break
+    return best
+
+def policy(you, opponent):
+    """Entry point: return a legal capture as a string 'row,col,dir'."""
+    # Convert to proper NumPy arrays (handle possible flat input)
+    board_shape = (5, 6)
+    my_board = np.array(you).reshape(board_shape) if len(you) == board_shape[0] else np.array(you)
+    opp_board = np.array(opponent).reshape(board_shape) if len(opponent) == board_shape[0] else np.array(opponent)
+
+    # Generate all legal captures
+    moves = _legal_moves(my_board, opp_board)
+    if not moves:
+        # According to the problem spec this case should not happen.
+        raise RuntimeError("No legal moves available – likely a game‑over state")
+
+    # Evaluate each capture with a 2‑ply minimax
+    scores = []
+    for move in moves:
+        _, _, _, _, dir_ = move
+        # Use direction string for reproducibility of tie‑breakers
+        val = _minimax(my_board, opp_board, depth=2, alpha=-float('inf'), beta=float('inf'), maximizing=True)
+        scores.append((val, r, c, dir_))
+        # Simulate the board for the next evaluation to avoid contamination (optional)
+        # my_board, opp_board = _simulate(move, my_board, opp_board)
+
+    # Choose highest score, breaking ties by smallest row, col, dir order
+    scores.sort(key=lambda x: (x[0], x[1], x[2], x[3]))
+    val, row, col, dir_ = scores[0]
+    return f"{row},{col},{dir_}"

@@ -1,0 +1,148 @@
+My strategy focuses on balancing between scoring immediate points and avoiding giving free points to the opponent. It follows these principles:
+
+1. **Capture Available Boxes**: If there are any boxes that can be completed with a single move, capture them immediately.
+2. **Avoid Dangerous Moves**: Try not to create situations where completing a box gives too much advantage to the opponent. Specifically, avoid moves that leave segments with three out of four sides completed unless necessary.
+3. **Strategic Edge Selection**: Choose edges strategically based on how many potential future captures they could lead to.
+4. **Safe Placements**: Prefer moves that don't put us in immediate danger while also potentially setting up future opportunities.
+
+Here's the implementation:
+
+<code>
+import numpy as np
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    # Look for immediate captures (boxes with three edges filled)
+    def find_immediate_captures():
+        moves = []
+        # Check horizontal edges for possible captures
+        for r in range(4):
+            for c in range(4):
+                if capture[r,c] == 0:  # Box is unclaimed
+                    count = 0
+                    missing_edge = None
+                    
+                    # Top edge
+                    if horizontal[r,c] != 0:
+                        count += 1
+                    else:
+                        missing_edge = ('H', r, c)
+                    
+                    # Bottom edge
+                    if horizontal[r+1,c] != 0:
+                        count += 1
+                    else:
+                        missing_edge = ('H', r+1, c)
+                    
+                    # Left edge
+                    if vertical[r,c] != 0:
+                        count += 1
+                    else:
+                        missing_edge = ('V', r, c)
+                    
+                    # Right edge
+                    if vertical[r,c+1] != 0:
+                        count += 1
+                    else:
+                        missing_edge = ('V', r, c+1)
+                        
+                    # If three edges are filled, we can capture this box
+                    if count == 3 and missing_edge and (
+                            (missing_edge[0] == 'H' and horizontal[missing_edge[1], missing_edge[2]] == 0) or
+                            (missing_edge[0] == 'V' and vertical[missing_edge[1], missing_edge[2]] == 0)):
+                        moves.append(missing_edge)
+        
+        return moves
+    
+    # Avoid creating dangerous positions (three-sided boxes for opponent)
+    def is_dangerous_move(row, col, direction):
+        # For each adjacent box, check if playing this move would make it have three filled sides
+        if direction == 'H':
+            # Horizontal edge affects boxes above and below (if exists)
+            boxes_to_check = []
+            if row > 0:
+                boxes_to_check.append((row-1, col))
+            if row < 4:
+                boxes_to_check.append((row, col))
+        elif direction == 'V':
+            # Vertical edge affects boxes left and right (if exists)
+            boxes_to_check = []
+            if col > 0:
+                boxes_to_check.append((row, col-1))
+            if col < 4:
+                boxes_to_check.append((row, col))
+                
+        for r,c in boxes_to_check:
+            if capture[r,c] != 0:  # Already captured or owned
+                continue
+            
+            # Count filled edges around this box
+            count = 0
+            
+            # Top
+            if horizontal[r,c] != 0:
+                count += 1
+            # Bottom
+            if horizontal[r+1,c] != 0:
+                count += 1
+            # Left
+            if vertical[r,c] != 0:
+                count += 1
+            # Right
+            if vertical[r,c+1] != 0:
+                count += 1
+                
+            # This move would complete the fourth side, so the total would be 3 from other edges + new 1 = 4 (captured), safe
+            if ((direction == 'H' and (r == row or r+1 == row)) and (c <= col < c+1)) or \
+               (direction == 'V' and (c == col or c+1 == col)) and (r <= row < r+1): 
+                   # Our move completes this box; skip danger checks since we'll own it
+                   continue
+                
+            # Otherwise count if adding our edge makes it 3 filled => opponent can then capture
+            if count >= 2:  
+                return True
+                
+        return False
+    
+    # Find all valid moves (edges not yet drawn)
+    def find_legal_moves():
+        moves = []
+        # Horizontal edges
+        for r in range(5):
+            for c in range(4):  # Only 4 columns for horizontal edges per row
+                if horizontal[r,c] == 0:
+                    moves.append(('H', r, c))
+        # Vertical edges
+        for r in range(4):  # Only 4 rows for vertical edges per column
+            for c in range(5):
+                if vertical[r,c] == 0:
+                    moves.append(('V', r, c))
+        return moves
+
+    # First try capturing any available boxes
+    immediate_moves = find_immediate_captures()
+    if immediate_moves:
+        choice = immediate_moves[0]  # Take first valid immediate capture
+        return f"{choice[1]},{choice[2]},{choice[0]}"
+    
+    # Generate all legal moves
+    legal_moves = find_legal_moves()
+    
+    # Filter out dangerous moves (those leading to easy capture by opponent)
+    safe_moves = [move for move in legal_moves if not is_dangerous_move(move[1], move[2], move[0])]
+    
+    # Prioritize moves that aren't dangerous
+    if safe_moves:
+        # Pick a random safe move among them
+        import random
+        choice = random.choice(safe_moves)
+        return f"{choice[1]},{choice[2]},{choice[0]}"
+    else:
+        # No safe moves? Just pick randomly from remaining legal moves
+        if legal_moves:
+            import random
+            choice = random.choice(legal_moves)
+            return f"{choice[1]},{choice[2]},{choice[0]}"
+
+    # Fallback if no legal move found (shouldn't happen due to game rules)
+    return "0,0,H"
+</code>

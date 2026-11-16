@@ -1,0 +1,112 @@
+
+
+### Strategy
+
+The strategy for this policy is based on minimizing the resistance (number of stones needed to connect the two target sides) for the player while maximizing it for the opponent. The AI evaluates each possible move by:
+
+1. **Calculating Current Resistance**: Using Dijkstra's algorithm to find the shortest path (resistance) from the player's start edge to the target edge, existing player stones have zero resistance, opponent stones are impassable, and empty cells have a resistance of 1 (indicating the cost to place a stone there).
+   
+2. **Evaluating Move Impact**: For each empty cell, the policy assesses:
+   - **Player's Gain**: How much the move reduces the player's resistance by treating the cell as their own.
+   - **Opponent's Loss**: How much the move increases the opponent's resistance by blocking their path.
+
+3. **Scoring Moves**: Combines the gains (player improvement and opponent disruption) into a weighted score, prioritizing moves that benefit the player while hindering the opponent. Ties are broken by selecting the move closest to the board center.
+
+This approach efficiently balances offense and defense, ensuring strong connectivity while disrupting the opponent's strategy.
+
+<code>
+import heapq
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    # Define neighbor offsets for hexagonal grid
+    neighbor_offsets = [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0)]
+    size = 11  # 11x11 board
+
+    def compute_min_resistance(me_stones, opp_stones, player_color):
+        """Compute minimal resistance from start to target edge for the player."""
+        grid = [[1 for _ in range(size)] for _ in range(size)]
+        # Set player stones to 0 resistance
+        for r, c in me_stones:
+            grid[r][c] = 0
+        # Set opponent stones as blocked (infinite resistance)
+        for r, c in opp_stones:
+            grid[r][c] = float('inf')
+        
+        # Initialize distances and priority queue
+        dist = [[float('inf')] * size for _ in range(size)]
+        heap = []
+        
+        # Initialize start edge based on player color
+        if player_color == 'b':  # Black: start from top (row 0)
+            for c in range(size):
+                if grid[0][c] < float('inf'):
+                    dist[0][c] = grid[0][c]
+                    heapq.heappush(heap, (dist[0][c], 0, c))
+        else:  # White: start from left (col 0)
+            for r in range(size):
+                if grid[r][0] < float('inf'):
+                    dist[r][0] = grid[r][0]
+                    heapq.heappush(heap, (dist[r][0], r, 0))
+        
+        # Dijkstra's algorithm to find minimal resistance path
+        while heap:
+            d, r, c = heapq.heappop(heap)
+            if d > dist[r][c]:
+                continue  # Skip outdated entries
+            
+            # Check if reached target edge (bottom for black, right for white)
+            if (player_color == 'b' and r == 10) or (player_color == 'w' and c == 10):
+                return d
+            
+            # Explore all six neighbors
+            for dr, dc in neighbor_offsets:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < size and 0 <= nc < size:
+                    weight = grid[nr][nc]
+                    if weight == float('inf'):
+                        continue  # Skip blocked cells
+                    new_dist = d + weight
+                    if new_dist < dist[nr][nc]:
+                        dist[nr][nc] = new_dist
+                        heapq.heappush(heap, (new_dist, nr, nc))
+        
+        return float('inf')  # No path found
+
+    # Determine opponent's color and empty cells
+    opponent_color = 'w' if color == 'b' else 'b'
+    all_cells = {(i, j) for i in range(size) for j in range(size)}
+    empty_cells = list(all_cells - set(me) - set(opp))
+    if not empty_cells:
+        return (5, 5)  # Fallback (shouldn't occur in valid games)
+
+    # Calculate current resistances for player and opponent
+    current_res_me = compute_min_resistance(me, opp, color)
+    current_res_opp = compute_min_resistance(opp, me, opponent_color)
+
+    best_move = empty_cells[0]
+    best_score = -float('inf')
+
+    for cell in empty_cells:
+        r, c = cell
+        # Calculate new resistance if player places stone at (r, c)
+        new_me = me + [(r, c)]
+        new_res_me = compute_min_resistance(new_me, opp, color)
+        gain_me = current_res_me - new_res_me if current_res_me != float('inf') else (1000 if new_res_me < float('inf') else 0)
+        
+        # Calculate new resistance for opponent due to blocked cell
+        new_res_opp = compute_min_resistance(opp, new_me, opponent_color)
+        if current_res_opp == float('inf'):
+            gain_opp = 0 if new_res_opp == float('inf') else -1000  # Penalize accidentally helping opponent
+        else:
+            gain_opp = new_res_opp - current_res_opp if new_res_opp != float('inf') else 1000  # Big gain if fully blocked
+        
+        # Weighted score prioritizing own connection
+        score = gain_me + 0.7 * gain_opp
+
+        # Update best move
+        if score > best_score or (score == best_score and (abs(r - 5) + abs(c - 5) < abs(best_move[0] - 5) + abs(best_move[1] - 5))):
+            best_score = score
+            best_move = cell
+
+    return best_move
+</code>

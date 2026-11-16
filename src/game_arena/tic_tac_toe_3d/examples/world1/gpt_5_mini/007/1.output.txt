@@ -1,0 +1,127 @@
+<thinking>
+I will generate all winning lines (all straight lines of length 3 in the 3x3x3 grid) programmatically, then:
+
+1. Look for an immediate winning move (a line with two of my marks and one empty) and play it.
+2. Otherwise, block opponent immediate wins (a line with two opponent marks and one empty).
+3. Otherwise, prefer center if available.
+4. Otherwise, score empty cells by how many "potential" lines they belong to (a potential line contains no opponent marks). Choose the empty cell that participates in the most potential lines; tie-break by preferring corners (coordinates 0 or 2) and then by lexicographic order for determinism.
+5. If there are no empties (shouldn't happen in normal play), return (0,0,0).
+
+This is deterministic and aims to finish or block immediate threats, then maximize future win chances.
+</thinking>
+<code>
+from typing import List, Tuple
+
+def _generate_lines() -> List[List[Tuple[int,int,int]]]:
+    """Generate all unique straight lines of length 3 in a 3x3x3 grid."""
+    lines = []
+    seen = set()
+    for x in range(3):
+        for y in range(3):
+            for z in range(3):
+                for dx in (-1, 0, 1):
+                    for dy in (-1, 0, 1):
+                        for dz in (-1, 0, 1):
+                            if dx == dy == dz == 0:
+                                continue
+                            # canonical direction: first nonzero component must be positive
+                            for comp in (dx, dy, dz):
+                                if comp != 0:
+                                    if comp < 0:
+                                        break
+                                    else:
+                                        break
+                            else:
+                                # all zero (shouldn't happen because of earlier check)
+                                continue
+                            # Now enforce "first nonzero positive" rule explicitly
+                            first_nonzero = None
+                            for comp in (dx, dy, dz):
+                                if comp != 0:
+                                    first_nonzero = comp
+                                    break
+                            if first_nonzero is not None and first_nonzero < 0:
+                                continue
+
+                            x2, y2, z2 = x + dx, y + dy, z + dz
+                            x3, y3, z3 = x + 2*dx, y + 2*dy, z + 2*dz
+                            if 0 <= x2 < 3 and 0 <= y2 < 3 and 0 <= z2 < 3 and \
+                               0 <= x3 < 3 and 0 <= y3 < 3 and 0 <= z3 < 3:
+                                line = ((x, y, z), (x2, y2, z2), (x3, y3, z3))
+                                key = tuple(line)
+                                if key not in seen:
+                                    seen.add(key)
+                                    lines.append(list(line))
+    return lines
+
+# Precompute lines once
+_LINES = _generate_lines()
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    """
+    Choose a move for 3x3x3 Tic Tac Toe.
+    board[i][j][k] in {0, 1, -1}.
+    Returns (i, j, k) coordinates of chosen empty cell.
+    """
+    # Helper to get cell value
+    def val(cell):
+        i, j, k = cell
+        return board[i][j][k]
+
+    # Collect empties
+    empties = [(i,j,k) for i in range(3) for j in range(3) for k in range(3) if board[i][j][k] == 0]
+    if not empties:
+        return (0, 0, 0)
+
+    # 1) Win if possible
+    for line in _LINES:
+        vals = [val(c) for c in line]
+        if vals.count(1) == 2 and vals.count(0) == 1:
+            # take the empty
+            for c in line:
+                if val(c) == 0:
+                    return c
+
+    # 2) Block opponent immediate win
+    for line in _LINES:
+        vals = [val(c) for c in line]
+        if vals.count(-1) == 2 and vals.count(0) == 1:
+            for c in line:
+                if val(c) == 0:
+                    return c
+
+    # 3) Take center if free
+    if board[1][1][1] == 0:
+        return (1,1,1)
+
+    # 4) Evaluate potential lines: lines that contain no opponent marks
+    # Score each empty cell by how many potential lines it participates in.
+    score = {c: 0 for c in empties}
+    for line in _LINES:
+        vals = [val(c) for c in line]
+        if -1 not in vals:  # potential line (no opponent)
+            for c in line:
+                if val(c) == 0:
+                    score[c] += 1
+
+    # Choose cell with highest score; tie-break: prefer corners (more coords in {0,2}), then lexicographic
+    def corner_count(cell):
+        return sum(1 for x in cell if x in (0,2))
+
+    best_cells = sorted(
+        empties,
+        key=lambda c: (-score.get(c, 0), -corner_count(c), c[0], c[1], c[2])
+    )
+    if best_cells:
+        return best_cells[0]
+
+    # Fallback: return first empty (deterministic)
+    return empties[0]
+
+
+# Example quick test (not executed when imported)
+if __name__ == "__main__":
+    # empty board -> pick center
+    empty_board = [[[0]*3 for _ in range(3)] for _ in range(3)]
+    print(policy(empty_board))  # should be (1,1,1)
+</code>

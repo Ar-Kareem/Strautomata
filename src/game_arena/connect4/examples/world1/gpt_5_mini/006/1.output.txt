@@ -1,0 +1,177 @@
+<thinking>
+I'll implement a Connect 4 targeting policy that:
+- checks immediate winning moves for the current player,
+- checks immediate opponent winning moves and blocks them,
+- evaluates remaining legal moves by generating the board after each candidate move, discarding moves that allow an immediate opponent win (if avoidable),
+- scores moves by counting 3-in-a-row and 2-in-a-row "windows" for both players (favoring creating our threats and reducing opponent threats),
+- breaks ties using center preference.
+
+The code defines helper functions for simulating drops, checking wins, counting threat windows, and returns a valid column index 0-6.
+</thinking>
+<code>
+#!/usr/bin/env python3
+from copy import deepcopy
+
+ROWS = 6
+COLS = 7
+
+def policy(board: list[list[int]]) -> int:
+    """
+    Select a column (0-6) to drop a disc for the current player (1).
+    Board is a list of 6 rows x 7 cols, row 0 is top, row 5 is bottom.
+    Values: 0 empty, 1 our disc, -1 opponent's disc.
+    """
+
+    def valid_moves(b):
+        return [c for c in range(COLS) if b[0][c] == 0]
+
+    def drop_piece(b, col, player):
+        # returns new board with piece dropped, or None if column full
+        nb = [row.copy() for row in b]
+        for r in range(ROWS - 1, -1, -1):
+            if nb[r][col] == 0:
+                nb[r][col] = player
+                return nb, r, col
+        return None
+
+    def is_winning_board(b, player):
+        # check all directions for 4 in a row for player
+        # horizontal
+        for r in range(ROWS):
+            for c in range(COLS - 3):
+                if all(b[r][c + i] == player for i in range(4)):
+                    return True
+        # vertical
+        for c in range(COLS):
+            for r in range(ROWS - 3):
+                if all(b[r + i][c] == player for i in range(4)):
+                    return True
+        # diag down-right
+        for r in range(ROWS - 3):
+            for c in range(COLS - 3):
+                if all(b[r + i][c + i] == player for i in range(4)):
+                    return True
+        # diag up-right
+        for r in range(3, ROWS):
+            for c in range(COLS - 3):
+                if all(b[r - i][c + i] == player for i in range(4)):
+                    return True
+        return False
+
+    def count_windows(b, player):
+        # count windows of length 4 that contain certain counts of player's discs and empties
+        three_open = 0
+        two_open = 0
+        one_open = 0
+        for r in range(ROWS):
+            for c in range(COLS - 3):
+                window = [b[r][c + i] for i in range(4)]
+                if window.count(player) == 3 and window.count(0) == 1:
+                    three_open += 1
+                if window.count(player) == 2 and window.count(0) == 2:
+                    two_open += 1
+                if window.count(player) == 1 and window.count(0) == 3:
+                    one_open += 1
+        for c in range(COLS):
+            for r in range(ROWS - 3):
+                window = [b[r + i][c] for i in range(4)]
+                if window.count(player) == 3 and window.count(0) == 1:
+                    three_open += 1
+                if window.count(player) == 2 and window.count(0) == 2:
+                    two_open += 1
+                if window.count(player) == 1 and window.count(0) == 3:
+                    one_open += 1
+        for r in range(ROWS - 3):
+            for c in range(COLS - 3):
+                window = [b[r + i][c + i] for i in range(4)]
+                if window.count(player) == 3 and window.count(0) == 1:
+                    three_open += 1
+                if window.count(player) == 2 and window.count(0) == 2:
+                    two_open += 1
+                if window.count(player) == 1 and window.count(0) == 3:
+                    one_open += 1
+        for r in range(3, ROWS):
+            for c in range(COLS - 3):
+                window = [b[r - i][c + i] for i in range(4)]
+                if window.count(player) == 3 and window.count(0) == 1:
+                    three_open += 1
+                if window.count(player) == 2 and window.count(0) == 2:
+                    two_open += 1
+                if window.count(player) == 1 and window.count(0) == 3:
+                    one_open += 1
+        return three_open, two_open, one_open
+
+    def center_priority(col):
+        # prefer center column index 3, then 2/4, 1/5, 0/6
+        return -abs(col - 3)
+
+    legal = valid_moves(board)
+    if not legal:
+        return 0  # no legal moves, fallback
+
+    # 1) Immediate winning move
+    for c in legal:
+        res = drop_piece(board, c, 1)
+        if res is None:
+            continue
+        nb, _, _ = res
+        if is_winning_board(nb, 1):
+            return c
+
+    # 2) Block opponent's immediate winning move
+    opp_winning_cols = []
+    for c in legal:
+        res = drop_piece(board, c, -1)
+        if res is None:
+            continue
+        nb, _, _ = res
+        if is_winning_board(nb, -1):
+            opp_winning_cols.append(c)
+    if opp_winning_cols:
+        # If multiple threats, any blocking move is acceptable. Prefer one that also is center-ish.
+        return min(opp_winning_cols, key=lambda x: abs(x - 3))
+
+    # 3) Evaluate candidate moves avoiding creating immediate opponent win when possible
+    best_score = None
+    best_col = None
+    # Precompute opponent immediate wins after our candidate to detect dangerous moves
+    for c in sorted(legal, key=lambda x: (abs(x - 3), x)):  # try center-ish first in tie
+        res = drop_piece(board, c, 1)
+        if res is None:
+            continue
+        nb, _, _ = res
+
+        # If after our move the opponent has an immediate winning reply, mark as dangerous
+        opp_legal_after = [cc for cc in range(COLS) if nb[0][cc] == 0]
+        opponent_can_win = False
+        for cc in opp_legal_after:
+            res2 = drop_piece(nb, cc, -1)
+            if res2 is None:
+                continue
+            nb2, _, _ = res2
+            if is_winning_board(nb2, -1):
+                opponent_can_win = True
+                break
+
+        # compute heuristic score for our position
+        my3, my2, my1 = count_windows(nb, 1)
+        opp3, opp2, opp1 = count_windows(nb, -1)
+        # weight features: prioritize creating 3-in-a-row, then 2-in-a-row, penalize opponent threats
+        score = 1000 * my3 + 100 * my2 + 10 * my1 - (1200 * opp3 + 100 * opp2 + 10 * opp1)
+        # penalize dangerous moves that allow immediate opponent win heavily
+        if opponent_can_win:
+            score -= 100000
+
+        # tie-breaker: prefer center
+        score += 5 * center_priority(c)
+
+        if best_score is None or score > best_score:
+            best_score = score
+            best_col = c
+
+    if best_col is not None:
+        return best_col
+
+    # Fallback: choose center-most legal
+    return min(legal, key=lambda x: abs(x - 3))
+</code>

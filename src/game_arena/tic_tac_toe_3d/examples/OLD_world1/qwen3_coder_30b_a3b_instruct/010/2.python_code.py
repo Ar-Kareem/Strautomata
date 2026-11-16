@@ -1,0 +1,209 @@
+
+import numpy as np
+from itertools import product
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    """
+    Determine the next move for a 3D Tic Tac Toe game.
+    
+    Args:
+        board: 3D list representing the game board
+        
+    Returns:
+        Tuple of (x, y, z) coordinates for the next move
+    """
+    # Convert to numpy array for easier manipulation
+    board_np = np.array(board)
+    n = len(board)
+    
+    # Check for winning moves
+    for x, y, z in product(range(n), repeat=3):
+        if board[x][y][z] == 0:  # Empty cell
+            # Temporarily place our mark
+            board[x][y][z] = 1
+            
+            # Check if this creates a winning line
+            if check_win(board, x, y, z):
+                board[x][y][z] = 0  # Restore
+                return (x, y, z)
+            
+            # Restore the board
+            board[x][y][z] = 0
+    
+    # Check for blocking moves
+    for x, y, z in product(range(n), repeat=3):
+        if board[x][y][z] == 0:  # Empty cell
+            # Temporarily place opponent's mark
+            board[x][y][z] = -1
+            
+            # Check if opponent would win
+            if check_win(board, x, y, z):
+                board[x][y][z] = 0  # Restore
+                return (x, y, z)
+            
+            # Restore the board
+            board[x][y][z] = 0
+    
+    # Prefer center position if available
+    center = n // 2
+    if n % 2 == 1 and board[center][center][center] == 0:
+        return (center, center, center)
+    
+    # Prefer corners
+    corners = []
+    for x in [0, n-1]:
+        for y in [0, n-1]:
+            for z in [0, n-1]:
+                if board[x][y][z] == 0:
+                    corners.append((x, y, z))
+    
+    if corners:
+        # Prefer corners that are not on the same face
+        best_corner = None
+        for x, y, z in corners:
+            if (x == 0 or x == n-1) and (y == 0 or y == n-1) and (z == 0 or z == n-1):
+                # This is a corner that touches three faces
+                return (x, y, z)
+            elif not best_corner:
+                best_corner = (x, y, z)
+        if best_corner:
+            return best_corner
+    
+    # Prefer edges (if n > 3)
+    edges = []
+    if n > 3:
+        for x in range(n):
+            for y in range(n):
+                for z in range(n):
+                    # Check if it's an edge position (not corner)
+                    if (x == 0 or x == n-1 or y == 0 or y == n-1 or z == 0 or z == n-1):
+                        if (x not in [0, n-1] or y not in [0, n-1] or z not in [0, n-1]):
+                            # This is an edge but not a corner
+                            if board[x][y][z] == 0:
+                                edges.append((x, y, z))
+    
+    if edges and n > 3:
+        return edges[0]  # Return first edge
+    
+    # Otherwise, find first empty position
+    for x, y, z in product(range(n), repeat=3):
+        if board[x][y][z] == 0:
+            return (x, y, z)
+    
+    # Should never reach here in a valid game
+    return (0, 0, 0)
+
+def check_win(board, x, y, z):
+    """Check if placing a mark at (x, y, z) creates a win."""
+    n = len(board)
+    player = board[x][y][z]
+    
+    # Check 3D directions (along x, y, z axes)
+    # Horizontal (x-axis)
+    count = 0
+    for i in range(n):
+        if board[i][y][z] == player:
+            count += 1
+        else:
+            break
+    if count == n:
+        return True
+    
+    # Vertical (y-axis)
+    count = 0
+    for j in range(n):
+        if board[x][j][z] == player:
+            count += 1
+        else:
+            break
+    if count == n:
+        return True
+    
+    # Depth (z-axis)
+    count = 0
+    for k in range(n):
+        if board[x][y][k] == player:
+            count += 1
+        else:
+            break
+    if count == n:
+        return True
+    
+    # Diagonal along x,y plane
+    count = 0
+    for i in range(n):
+        if i < n and i < n:
+            if board[i][i][z] == player:
+                count += 1
+            else:
+                break
+    if count == n:
+        return True
+    
+    # Diagonal along x,z plane
+    count = 0
+    for i in range(n):
+        if i < n and i < n:
+            if board[i][y][i] == player:
+                count += 1
+            else:
+                break
+    if count == n:
+        return True
+    
+    # Diagonal along y,z plane
+    count = 0
+    for j in range(n):
+        if j < n and j < n:
+            if board[x][j][j] == player:
+                count += 1
+            else:
+                break
+    if count == n:
+        return True
+    
+    # Diagonal in 3D space (x=y=z)
+    count = 0
+    for i in range(n):
+        if i < n and i < n and i < n:
+            if board[i][i][i] == player:
+                count += 1
+            else:
+                break
+    if count == n:
+        return True
+    
+    # Other diagonals (negative diagonals)
+    count = 0
+    for i in range(n):
+        if i < n and (n-1-i) < n and i < n:
+            if board[i][n-1-i][i] == player:
+                count += 1
+            else:
+                break
+    if count == n:
+        return True
+    
+    # Other diagonals
+    count = 0
+    for i in range(n):
+        if i < n and i < n and (n-1-i) < n:
+            if board[i][i][n-1-i] == player:
+                count += 1
+            else:
+                break
+    if count == n:
+        return True
+    
+    # Other diagonals
+    count = 0
+    for i in range(n):
+        if (n-1-i) < n and i < n and (n-1-i) < n:
+            if board[n-1-i][i][n-1-i] == player:
+                count += 1
+            else:
+                break
+    if count == n:
+        return True
+    
+    return False

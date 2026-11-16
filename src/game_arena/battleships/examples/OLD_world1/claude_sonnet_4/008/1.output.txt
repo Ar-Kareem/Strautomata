@@ -1,0 +1,178 @@
+```python
+import random
+from typing import List, Tuple, Set
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Battleship targeting policy that combines hunt mode with smart targeting.
+    """
+    n = len(board)
+    
+    # Find all unfired positions
+    unfired = [(r, c) for r in range(n) for c in range(n) if board[r][c] == 0]
+    
+    if not unfired:
+        return (0, 0)  # Should not happen in valid game
+    
+    # Find all hit positions that are not part of a sunk ship
+    hits = [(r, c) for r in range(n) for c in range(n) if board[r][c] == 1]
+    
+    # If we have hits, try to find and finish ships
+    if hits:
+        target = find_best_target(board, hits, unfired)
+        if target:
+            return target
+    
+    # Hunt mode - use probability density targeting
+    return hunt_mode(board, unfired)
+
+def find_best_target(board: List[List[int]], hits: List[Tuple[int, int]], unfired: List[Tuple[int, int]]) -> Tuple[int, int]:
+    """
+    Target mode: try to finish off ships we've already hit.
+    """
+    n = len(board)
+    unfired_set = set(unfired)
+    
+    # Group hits into potential ship segments
+    ship_segments = find_ship_segments(board, hits)
+    
+    # For each ship segment, find the best continuation points
+    targets = []
+    
+    for segment in ship_segments:
+        if len(segment) == 1:
+            # Single hit - check all 4 directions
+            r, c = segment[0]
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < n and 0 <= nc < n and (nr, nc) in unfired_set:
+                    targets.append((nr, nc))
+        else:
+            # Multi-hit segment - determine direction and extend
+            segment.sort()
+            if len(segment) >= 2:
+                # Check if horizontal or vertical
+                if segment[0][0] == segment[1][0]:  # Same row - horizontal
+                    r = segment[0][0]
+                    min_c = min(pos[1] for pos in segment)
+                    max_c = max(pos[1] for pos in segment)
+                    # Try extending both ends
+                    for c in [min_c - 1, max_c + 1]:
+                        if 0 <= c < n and (r, c) in unfired_set:
+                            targets.append((r, c))
+                else:  # Same column - vertical
+                    c = segment[0][1]
+                    min_r = min(pos[0] for pos in segment)
+                    max_r = max(pos[0] for pos in segment)
+                    # Try extending both ends
+                    for r in [min_r - 1, max_r + 1]:
+                        if 0 <= r < n and (r, c) in unfired_set:
+                            targets.append((r, c))
+    
+    if targets:
+        return random.choice(targets)
+    return None
+
+def find_ship_segments(board: List[List[int]], hits: List[Tuple[int, int]]) -> List[List[Tuple[int, int]]]:
+    """
+    Group connected hits into ship segments.
+    """
+    n = len(board)
+    visited = set()
+    segments = []
+    
+    for hit in hits:
+        if hit in visited:
+            continue
+            
+        # BFS to find connected component
+        segment = []
+        queue = [hit]
+        visited.add(hit)
+        
+        while queue:
+            r, c = queue.pop(0)
+            segment.append((r, c))
+            
+            # Check 4-connected neighbors
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = r + dr, c + dc
+                if (0 <= nr < n and 0 <= nc < n and 
+                    (nr, nc) not in visited and board[nr][nc] == 1):
+                    visited.add((nr, nc))
+                    queue.append((nr, nc))
+        
+        segments.append(segment)
+    
+    return segments
+
+def hunt_mode(board: List[List[int]], unfired: List[Tuple[int, int]]) -> Tuple[int, int]:
+    """
+    Hunt mode: find new ships using probability density.
+    """
+    n = len(board)
+    ship_sizes = [5, 4, 3, 3, 2]
+    
+    # Calculate probability density for each unfired cell
+    probability = {}
+    
+    for r, c in unfired:
+        prob = 0
+        
+        # For each ship size, count possible placements through this cell
+        for ship_size in ship_sizes:
+            # Horizontal placements
+            for start_c in range(max(0, c - ship_size + 1), min(n - ship_size + 1, c + 1)):
+                if can_place_ship(board, r, start_c, ship_size, horizontal=True):
+                    prob += 1
+            
+            # Vertical placements
+            for start_r in range(max(0, r - ship_size + 1), min(n - ship_size + 1, r + 1)):
+                if can_place_ship(board, start_r, c, ship_size, horizontal=False):
+                    prob += 1
+        
+        probability[(r, c)] = prob
+    
+    # If no valid placements found (shouldn't happen), fall back to checkerboard
+    if not any(probability.values()):
+        return checkerboard_pattern(board, unfired)
+    
+    # Choose cell with highest probability
+    max_prob = max(probability.values())
+    best_cells = [pos for pos, prob in probability.items() if prob == max_prob]
+    
+    return random.choice(best_cells)
+
+def can_place_ship(board: List[List[int]], start_r: int, start_c: int, size: int, horizontal: bool) -> bool:
+    """
+    Check if a ship of given size can be placed at the given position.
+    """
+    n = len(board)
+    
+    if horizontal:
+        if start_c + size > n:
+            return False
+        for c in range(start_c, start_c + size):
+            if board[start_r][c] == -1:  # Hit water
+                return False
+    else:
+        if start_r + size > n:
+            return False
+        for r in range(start_r, start_r + size):
+            if board[r][start_c] == -1:  # Hit water
+                return False
+    
+    return True
+
+def checkerboard_pattern(board: List[List[int]], unfired: List[Tuple[int, int]]) -> Tuple[int, int]:
+    """
+    Fallback to checkerboard pattern for maximum ship detection.
+    """
+    # Prefer cells where (r + c) % 2 == 0 for better ship detection
+    checkerboard_cells = [pos for pos in unfired if (pos[0] + pos[1]) % 2 == 0]
+    
+    if checkerboard_cells:
+        return random.choice(checkerboard_cells)
+    else:
+        return random.choice(unfired)
+```

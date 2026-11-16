@@ -1,0 +1,1643 @@
+<thinking>
+Let me analyze the Kalah game and implement a good policy.
+
+First, let me understand the game mechanics:
+1. We have 6 houses (indices 0-5) and 1 store (index 6) for each player
+2. We pick seeds from one of our houses and distribute them counter-clockwise
+3. We skip the opponent's store
+4. If the last seed lands in our store, we get another turn
+5. If the last seed lands in an empty house on our side and the opposite house has seeds, we capture both
+
+Let me think about the distribution pattern:
+- From house i, seeds go to: you[i+1], you[i+2], ..., you[5], you[6] (store), opponent[0], opponent[1], ..., opponent[5], you[0], you[1], ..., and so on, skipping opponent[6]
+
+So the cycle length is 13 (6 + 1 + 6, skipping opponent's store).
+
+For a good policy, I should:
+1. Prioritize moves that give an extra turn (last seed in my store)
+2. Prioritize captures (especially large ones)
+3. Use minimax with alpha-beta pruning for deeper search
+
+Let me implement the game logic first:
+
+```python
+def simulate_move(you, opponent, move):
+    """Simulate a move and return (new_you, new_opponent, extra_turn)"""
+    you = you.copy()
+    opponent = opponent.copy()
+    
+    seeds = you[move]
+    you[move] = 0
+    
+    pos = move + 1  # Start dropping from next position
+    # Positions 0-5 are you[0-5], 6 is you[6] (store), 7-12 are opponent[0-5]
+    # We skip opponent[6] (position 13 in a full cycle would be skipped)
+    
+    while seeds > 0:
+        if pos <= 5:
+            you[pos] += 1
+        elif pos == 6:
+            you[6] += 1
+        elif pos <= 12:
+            opponent[pos - 7] += 1
+        else:
+            pos = 0
+            continue
+        seeds -= 1
+        if seeds > 0:
+            pos += 1
+            if pos > 12:
+                pos = 0
+    
+    # Check where last seed landed
+    last_pos = pos
+    extra_turn = False
+    
+    if last_pos == 6:
+        extra_turn = True
+    elif last_pos <= 5:
+        # Landed on our side
+        if you[last_pos] == 1:  # Was empty before (now has 1 seed we just dropped)
+            opposite = 5 - last_pos
+            if opponent[opposite] > 0:
+                # Capture!
+                you[6] += you[last_pos] + opponent[opposite]
+                you[last_pos] = 0
+                opponent[opposite] = 0
+    
+    return you, opponent, extra_turn
+```
+
+Wait, I need to be more careful. The condition "it was empty before the drop" means the house had 0 seeds before we dropped our last seed there. So after dropping, it has exactly 1 seed.
+
+Let me re-verify: If we're dropping seeds and the last one lands in an empty house on our side, and the opposite has seeds, we capture. This means after the drop, that house has exactly 1 seed (the one we just dropped).
+
+Actually wait, there's a subtlety. If we sow enough seeds to go around the board and land back in the same house we started from, that house wouldn't be "empty" anymore if we already dropped a seed there in this turn's sowing. Let me think...
+
+If we have a lot of seeds, we could loop around. Let's say house i has 20 seeds. We sow them, and they go around the board. Some might land back in houses we already passed, including potentially the starting house.
+
+The condition for capture is that the last seed lands in a house that was empty *before* that seed was placed. But if we went around and already placed seeds there, it wouldn't be empty.
+
+So the check should be: after placing the last seed, if that position is on our side (0-5), and it now has exactly 1 seed, and the opposite has seeds, we capture.
+
+Actually, that's not quite right either. The rule says "it was empty before the drop" - this refers to before *this particular seed* was dropped. So if during sowing we already added seeds to house j, and then the last seed also lands in house j, it's not empty.
+
+The simple check is: if after placing the last seed, that house has exactly 1 seed, it was empty before.
+
+Hmm, but that's also not right if the house already had seeds from before our turn. Let me re-read the rules.
+
+"If the last seed lands in one of your houses you[i] (0..5) and it was empty before the drop"
+
+I think "before the drop" means before this move started, i.e., the house was empty at the start of the turn. But then the condition is just checking the initial state of that house.
+
+Actually, let me reconsider. The phrase "it was empty before the drop" likely means it was empty just before we dropped the last seed. So if we went around and dropped seeds there already, it wouldn't be empty.
+
+The safest implementation: track the original state of the house, or equivalently, after the sowing is complete, if the last position on our side has exactly 1 seed, then it was empty before that last drop (assuming we can't have 0 seeds left after capture... but capture happens after sowing).
+
+Let me think more carefully. If the house had 0 seeds initially and we only drop the last seed there, it now has 1. If it had 0 seeds initially but we dropped multiple seeds (went around), it now has more than 1. If it had seeds initially, after dropping the last seed, it has (original + seeds dropped).
+
+So checking if it has exactly 1 seed is correct IF the house originally had 0 seeds AND we only dropped 1 seed there (the last one). But if it originally had 2 seeds and we dropped 0 there until the last, it now has 3, so the check fails - good.
+
+But if it originally had 0 seeds and we dropped 2 there (going around once and then landing there again as last), it now has 2, so we don't capture - correct per the rule "was empty before the drop".
+
+Wait, the rule says "empty before the drop". I think this means before we dropped that last seed. So if the house had 0 initially, we dropped 1 on first pass, now it has 1. Then we drop the last seed as the 2nd seed, now it has 2. "Before the drop" of the last seed, it had 1 seed, not empty. So no capture. This matches checking if it has exactly 1 seed after sowing.
+
+OK so the check `you[last_pos] == 1` is correct!
+
+Now let me implement minimax with alpha-beta:
+
+```python
+def policy(you, opponent):
+    def get_legal_moves(player):
+        return [i for i in range(6) if player[i] > 0]
+    
+    def game_over(you, opponent):
+        return all(you[i] == 0 for i in range(6)) or all(opponent[i] == 0 for i in range(6))
+    
+    def evaluate(you, opponent):
+        # Simple evaluation: difference in stores
+        return you[6] - opponent[6]
+    
+    def minimax(you, opponent, depth, alpha, beta, maximizing):
+        if depth == 0 or game_over(you, opponent):
+            return evaluate(you, opponent), None
+        
+        if maximizing:
+            moves = get_legal_moves(you)
+            if not moves:
+                # Game over, opponent gets remaining
+                opp_remaining = sum(opponent[i] for i in range(6))
+                return you[6] - (opponent[6] + opp_remaining), None
+            
+            max_eval = float('-inf')
+            best_move = moves[0]
+            for move in moves:
+                new_you, new_opp, extra = simulate_move(you, opponent, move)
+                if extra and not game_over(new_you, new_opp):
+                    val, _ = minimax(new_you, new_opp, depth, alpha, beta, True)
+                else:
+                    val, _ = minimax(new_opp, new_you, depth - 1, alpha, beta, False)
+                if val > max_eval:
+                    max_eval = val
+                    best_move = move
+                alpha = max(alpha, val)
+                if beta <= alpha:
+                    break
+            return max_eval, best_move
+        else:
+            moves = get_legal_moves(you)
+            if not moves:
+                our_remaining = sum(opponent[i] for i in range(6))
+                return (opponent[6] + our_remaining) - you[6], None
+            
+            min_eval = float('inf')
+            best_move = moves[0]
+            for move in moves:
+                new_you, new_opp, extra = simulate_move(you, opponent, move)
+                if extra and not game_over(new_you, new_opp):
+                    val, _ = minimax(new_you, new_opp, depth, alpha, beta, False)
+                else:
+                    val, _ = minimax(new_opp, new_you, depth - 1, alpha, beta, True)
+                if val < min_eval:
+                    min_eval = val
+                    best_move = move
+                beta = min(beta, val)
+                if beta <= alpha:
+                    break
+            return min_eval, best_move
+    
+    _, best_move = minimax(you.copy(), opponent.copy(), 10, float('-inf'), float('inf'), True)
+    return best_move
+```
+
+Wait, I think my minimax is getting confused. Let me reconsider.
+
+In minimax, we typically alternate between max and min players. The "you" and "opponent" are from the perspective of the original caller. When it's our turn, we maximize. When it's opponent's turn, we minimize.
+
+But when there's an extra turn, the same player goes again.
+
+Let me restructure:
+
+```python
+def minimax(you, opponent, depth, alpha, beta, is_my_turn):
+    # 'you' and 'opponent' are always from my perspective
+    # is_my_turn indicates whose turn it is
+```
+
+Actually, let me think differently. The state is (player_to_move_pits, other_player_pits). When calling recursively after a normal turn, we swap them. When there's an extra turn, we don't swap.
+
+Let me rewrite:
+
+```python
+def negamax(player, other, depth, alpha, beta):
+    # Returns value from player's perspective
+    if depth == 0 or game_over(player, other):
+        return player[6] - other[6], None  # Value from player's perspective
+    
+    moves = get_legal_moves(player)
+    if not moves:
+        remaining = sum(other[i] for i in range(6))
+        return player[6] - (other[6] + remaining), None
+    
+    max_eval = float('-inf')
+    best_move = moves[0]
+    for move in moves:
+        new_player, new_other, extra = simulate_move(player, other, move)
+        if game_over(new_player, new_other):
+            # Finalize scores
+            if sum(new_player[i] for i in range(6)) == 0:
+                remaining = sum(new_other[i] for i in range(6))
+                val = new_player[6] - (new_other[6] + remaining)
+            else:
+                remaining = sum(new_player[i] for i in range(6))
+                val = (new_player[6] + remaining) - new_other[6]
+        elif extra:
+            val, _ = negamax(new_player, new_other, depth, alpha, beta)
+        else:
+            val, _ = negamax(new_other, new_player, depth - 1, -beta, -alpha)
+            val = -val  # Negate because opponent's perspective
+        
+        if val > max_eval:
+            max_eval = val
+            best_move = move
+        alpha = max(alpha, val)
+        if alpha >= beta:
+            break
+    
+    return max_eval, best_move
+```
+
+Hmm, the depth management for extra turns is tricky. Let me simplify by decrementing depth only when the turn actually switches to the opponent.
+
+Also, I should add iterative deepening to respect the time limit.
+
+Let me also improve the evaluation function to consider more than just store difference.
+
+```python
+def evaluate(player, other):
+    # Store difference
+    score = player[6] - other[6]
+    
+    # Small bonus for seeds on our side
+    score += 0.1 * sum(player[i] for i in range(6))
+    score -= 0.1 * sum(other[i] for i in range(6))
+    
+    return score
+```
+
+Actually, for a competition, let me prioritize correctness and reasonable depth. Let me write a cleaner implementation:
+
+```python
+import time
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    start_time = time.time()
+    time_limit = 0.9  # Leave some margin
+    
+    def simulate(player, other, move):
+        player = player.copy()
+        other = other.copy()
+        
+        seeds = player[move]
+        player[move] = 0
+        pos = move
+        
+        while seeds > 0:
+            pos = (pos + 1) % 13
+            if pos < 6:
+                player[pos] += 1
+            elif pos == 6:
+                player[6] += 1
+            else:  # pos 7-12 -> other[0-5]
+                other[pos - 7] += 1
+            seeds -= 1
+        
+        extra_turn = (pos == 6)
+        
+        # Check capture
+        if pos < 6 and player[pos] == 1:
+            opp_idx = 5 - pos
+            if other[opp_idx] > 0:
+                player[6] += 1 + other[opp_idx]
+                player[pos] = 0
+                other[opp_idx] = 0
+        
+        return player, other, extra_turn
+    
+    def is_over(player, other):
+        return sum(player[:6]) == 0 or sum(other[:6]) == 0
+    
+    def finalize(player, other):
+        p = player.copy()
+        o = other.copy()
+        p[6] += sum(p[:6])
+        o[6] += sum(o[:6])
+        for i in range(6):
+            p[i] = 0
+            o[i] = 0
+        return p, o
+    
+    def negamax(player, other, depth, alpha, beta):
+        if is_over(player, other):
+            p, o = finalize(player, other)
+            return p[6] - o[6], None
+        
+        if depth <= 0:
+            return player[6] - other[6], None
+        
+        moves = [i for i in range(6) if player[i] > 0]
+        if not moves:
+            p, o = finalize(player, other)
+            return p[6] - o[6], None
+        
+        best_val = float('-inf')
+        best_move = moves[0]
+        
+        for move in moves:
+            new_p, new_o, extra = simulate(player, other, move)
+            
+            if extra and not is_over(new_p, new_o):
+                val, _ = negamax(new_p, new_o, depth, alpha, beta)
+            else:
+                val, _ = negamax(new_o, new_p, depth - 1, -beta, -alpha)
+                val = -val
+            
+            if val > best_val:
+                best_val = val
+                best_move = move
+            
+            alpha = max(alpha, val)
+            if alpha >= beta:
+                break
+        
+        return best_val, best_move
+    
+    best_move = None
+    for depth in range(1, 50):
+        if time.time() - start_time > time_limit:
+            break
+        _, move = negamax(you.copy(), opponent.copy(), depth, float('-inf'), float('inf'))
+        best_move = move
+    
+    if best_move is None:
+        for i in range(6):
+            if you[i] > 0:
+                return i
+    
+    return best_move
+```
+
+Wait, there's an issue. The positions don't map correctly. Let me trace through:
+- From house `move`, we pick up seeds and start distributing from `move + 1`
+- Position mapping in a cycle of 13:
+  - 0-5: player[0-5]
+  - 6: player[6] (store)
+  - 7-12: other[0-5]
+  - Then wrap to 0
+
+So if move = 3, we start at pos = 4, then 5, 6 (store), 7 (other[0]), etc.
+
+Let me fix:
+
+```python
+def simulate(player, other, move):
+    player = player.copy()
+    other = other.copy()
+    
+    seeds = player[move]
+    player[move] = 0
+    pos = move  # Starting position
+    
+    while seeds > 0:
+        pos = (pos + 1) % 13
+        if pos <= 5:
+            player[pos] += 1
+        elif pos == 6:
+            player[6] += 1
+        else:  # pos 7-12 -> other[0-5]
+            other[pos - 7] += 1
+        seeds -= 1
+    
+    extra_turn = (pos == 6)
+    
+    # Check capture
+    if pos <= 5 and player[pos] == 1:
+        opp_idx = 5 - pos
+        if other[opp_idx] > 0:
+            player[6] += 1 + other[opp_idx]
+            player[pos] = 0
+            other[opp_idx] = 0
+    
+    return player, other, extra_turn
+```
+
+This looks correct. Let me trace through an example:
+- move = 2, seeds = 4
+- pos starts at 2
+- pos = 3: player[3] += 1, seeds = 3
+- pos = 4: player[4] += 1, seeds = 2
+- pos = 5: player[5] += 1, seeds = 1
+- pos = 6: player[6] += 1, seeds = 0
+- Last pos = 6, extra turn!
+
+Another example:
+- move = 5, seeds = 1
+- pos = 6: player[6] += 1, seeds = 0
+- Extra turn!
+
+Another:
+- move = 5, seeds = 2
+- pos = 6: player[6] += 1, seeds = 1
+- pos = 7: other[0] += 1, seeds = 0
+- Last pos = 7, no extra turn
+
+Another for capture:
+- move = 0, seeds = 1, player = [1, 0, 0, 0, 0, 0, 0], other = [4, 4, 4, 4, 4, 4, 0]
+- pos = 1: player[1] += 1, seeds = 0
+- Last pos = 1, player[1] = 1 (was 0), opposite is other[4] = 4
+- Capture! player[6] += 1 + 4 = 5, player[1] = 0, other[4] = 0
+- Result: player = [0, 0, 0, 0, 0, 0, 5], other = [4, 4, 4, 4, 0, 4, 0]
+
+Looks correct!
+
+Now let me also consider move ordering for better alpha-beta pruning:
+1. Moves that give extra turn
+2. Moves that capture
+3. Other moves
+
+Let me also add a better evaluation for non-terminal positions.
+
+Actually, let me also be more careful with the time and add a flag to abort search:
+
+```python
+import time
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    start_time = time.time()
+    time_limit = 0.85
+    
+    def simulate(player, other, move):
+        player = list(player)
+        other = list(other)
+        
+        seeds = player[move]
+        player[move] = 0
+        pos = move
+        
+        while seeds > 0:
+            pos = (pos + 1) % 13
+            if pos <= 5:
+                player[pos] += 1
+            elif pos == 6:
+                player[6] += 1
+            else:
+                other[pos - 7] += 1
+            seeds -= 1
+        
+        extra_turn = (pos == 6)
+        
+        if pos <= 5 and player[pos] == 1:
+            opp_idx = 5 - pos
+            if other[opp_idx] > 0:
+                player[6] += 1 + other[opp_idx]
+                player[pos] = 0
+                other[opp_idx] = 0
+        
+        return player, other, extra_turn
+    
+    def is_over(player, other):
+        return sum(player[:6]) == 0 or sum(other[:6]) == 0
+    
+    def final_score(player, other):
+        return (player[6] + sum(player[:6])) - (other[6] + sum(other[:6]))
+    
+    def evaluate(player, other):
+        return player[6] - other[6] + 0.1 * (sum(player[:6]) - sum(other[:6]))
+    
+    def get_moves(player):
+        return [i for i in range(6) if player[i] > 0]
+    
+    def order_moves(player, other):
+        moves = get_moves(player)
+        scored = []
+        for m in moves:
+            p, o, extra = simulate(player, other, m)
+            if is_over(p, o):
+                score = 1000 + final_score(p, o)
+            elif extra:
+                score = 100
+            else:
+                score = p[6] - player[6]  # Immediate gain
+            scored.append((score, m))
+        scored.sort(reverse=True)
+        return [m for s, m in scored]
+    
+    abort = [False]
+    
+    def negamax(player, other, depth, alpha, beta):
+        if abort[0]:
+            return 0, None
+        
+        if time.time() - start_time > time_limit:
+            abort[0] = True
+            return 0, None
+        
+        if is_over(player, other):
+            return final_score(player, other), None
+        
+        if depth <= 0:
+            return evaluate(player, other), None
+        
+        moves = order_moves(player, other)
+        if not moves:
+            return final_score(player, other), None
+        
+        best_val = float('-inf')
+        best_move = moves[0]
+        
+        for move in moves:
+            new_p, new_o, extra = simulate(player, other, move)
+            
+            if is_over(new_p, new_o):
+                val = final_score(new_p, new_o)
+            elif extra:
+                val, _ = negamax(new_p, new_o, depth, alpha, beta)
+            else:
+                val, _ = negamax(new_o, new_p, depth - 1, -beta, -alpha)
+                val = -val
+            
+            if abort[0]:
+                return 0, None
+            
+            if val > best_val:
+                best_val = val
+                best_move = move
+            
+            alpha = max(alpha, val)
+            if alpha >= beta:
+                break
+        
+        return best_val, best_move
+    
+    best_move = get_moves(you)[0] if get_moves(you) else 0
+    
+    for depth in range(1, 30):
+        if time.time() - start_time > time_limit:
+            break
+        abort[0] = False
+        _, move = negamax(list(you), list(opponent), depth, float('-inf'), float('inf'))
+        if not abort[0] and move is not None:
+            best_move = move
+    
+    return best_move
+```
+
+Let me think about potential issues:
+1. The simulate function should handle the case where seeds >= 13 (more than one full cycle)
+2. Move ordering inside negamax might be slow; maybe only do shallow ordering
+
+Actually for the cycling, let's trace:
+- move = 0, seeds = 15
+- We go: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 0, 1, 2
+- pos 0, 1, 2 get 2 seeds each; pos 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 get 1 each
+- Wait, let me recount: 15 seeds from pos 0
+- 1: player[1]++, 14 left
+- 2: player[2]++, 13 left
+- ...
+- 6: player[6]++, 8 left
+- 7: other[0]++, 7 left
+- ...
+- 12: other[5]++, 2 left
+- (12+1)%13 = 0: player[0]++, 1 left
+- 1: player[1]++, 0 left
+- Last pos = 1
+
+So player[0] and player[1] each got 2 seeds, player[2-5] got 1, player[6] got 1, other[0-5] got 1.
+
+For capture: player[1] = 2, but it was empty before. So `player[pos] == 1` doesn't hold. No capture. Correct!
+
+Actually wait, there's a subtle issue. After the sowing:
+- player[1] was 0 initially, got 2 seeds during this sow
+- So player[1] == 2, not 1
+- No capture, which is correct!
+
+But what if player[1] had 1 seed initially?
+- After sowing, player[1] = 1 + 2 = 3
+- player[1] == 1 is false, no capture
+- But the last seed landed in a house that wasn't empty before... so correct!
+
+OK the logic is correct.
+
+Let me also add transposition table for efficiency:
+
+Actually, for 1 second time limit, let me keep it simpler but make sure move ordering is efficient. The current order_moves does full simulation which is expensive.
+
+Let me simplify:
+
+```python
+def order_moves(player, other):
+    moves = get_moves(player)
+    # Quick heuristic without full simulation
+    scored = []
+    for m in moves:
+        seeds = player[m]
+        # Check if we get an extra turn: land on position 6
+        dist_to_store = 6 - m
+        if seeds == dist_to_store:
+            score = 100
+        elif seeds % 13 == dist_to_store:
+            score = 100
+        else:
+            score = 0
+        # Check capture potential
+        if seeds < 13:
+            landing = m + seeds
+            if landing <= 5 and player[landing] == 0:
+                opp_idx = 5 - landing
+                score += other[opp_idx]
+        scored.append((score, m))
+    scored.sort(reverse=True)
+    return [m for s, m in scored]
+```
+
+Hmm, this is getting complicated. Let me just go with a simpler approach that's correct and reasonably fast.
+
+Actually, let me reconsider the capture check. If landing > 6, we went past the store and into opponent's side, or wrapped around. For large seeds this gets complex. Let me just simulate properly but only sort by a simple heuristic:
+
+```python
+def order_moves(player, other, quick=True):
+    moves = [i for i in range(6) if player[i] > 0]
+    if quick:
+        # Sort by: 1) Extra turn moves, 2) Moves with more seeds (more impact)
+        def score(m):
+            seeds = player[m]
+            dist = 6 - m
+            if seeds == dist or (seeds > dist and (seeds - dist) % 13 == 0):
+                return (1, seeds)
+            return (0, seeds)
+        moves.sort(key=score, reverse=True)
+    return moves
+```
+
+Actually this extra turn check is also wrong because after the store we go to opponent's side. Let me just simplify and trust the alpha-beta to be efficient enough:
+
+```python
+import time
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    start_time = time.time()
+    time_limit = 0.9
+    
+    def simulate(player, other, move):
+        player = list(player)
+        other = list(other)
+        
+        seeds = player[move]
+        player[move] = 0
+        pos = move
+        
+        while seeds > 0:
+            pos = (pos + 1) % 13
+            if pos <= 5:
+                player[pos] += 1
+            elif pos == 6:
+                player[6] += 1
+            else:
+                other[pos - 7] += 1
+            seeds -= 1
+        
+        extra_turn = (pos == 6)
+        
+        if pos <= 5 and player[pos] == 1:
+            opp_idx = 5 - pos
+            if other[opp_idx] > 0:
+                player[6] += 1 + other[opp_idx]
+                player[pos] = 0
+                other[opp_idx] = 0
+        
+        return tuple(player), tuple(other), extra_turn
+    
+    def is_over(player):
+        return sum(player[:6]) == 0
+    
+    def final_score(player, other):
+        return (player[6] + sum(player[:6])) - (other[6] + sum(other[:6]))
+    
+    def get_moves(player):
+        return [i for i in range(6) if player[i] > 0]
+    
+    nodes = [0]
+    abort = [False]
+    
+    def negamax(player, other, depth, alpha, beta):
+        nodes[0] += 1
+        
+        if time.time() - start_time > time_limit:
+            abort[0] = True
+            return 0, None
+        
+        if is_over(player) or is_over(other):
+            return final_score(player, other), None
+        
+        moves = get_moves(player)
+        if not moves:
+            return final_score(player, other), None
+        
+        if depth <= 0:
+            return player[6] - other[6], None
+        
+        best_val = float('-inf')
+        best_move = moves[0]
+        
+        # Simple move ordering: prefer moves closer to store, then more seeds
+        moves.sort(key=lambda m: (-(6-m-player[m]) % 13 == 0, -player[m]))
+        
+        for move in moves:
+            new_p, new_o, extra = simulate(player, other, move)
+            
+            if is_over(new_p) or is_over(new_o):
+                val = final_score(new_p, new_o)
+            elif extra:
+                val, _ = negamax(new_p, new_o, depth, alpha, beta)
+            else:
+                val, _ = negamax(new_o, new_p, depth - 1, -beta, -alpha)
+                val = -val
+            
+            if abort[0]:
+                return 0, None
+            
+            if val > best_val:
+                best_val = val
+                best_move = move
+            
+            alpha = max(alpha, val)
+            if alpha >= beta:
+                break
+        
+        return best_val, best_move
+    
+    you_t = tuple(you)
+    opp_t = tuple(opponent)
+    
+    moves = get_moves(you_t)
+    if len(moves) == 1:
+        return moves[0]
+    
+    best_move = moves[0]
+    
+    for depth in range(1, 50):
+        if time.time() - start_time > time_limit * 0.9:
+            break
+        nodes[0] = 0
+        abort[0] = False
+        val, move = negamax(you_t, opp_t, depth, float('-inf'), float('inf'))
+        if not abort[0] and move is not None:
+            best_move = move
+    
+    return best_move
+```
+
+Wait, the move ordering is wrong. Let me fix it - I want to prioritize extra turn moves. For extra turn: the last seed must land in position 6 (store). The number of positions from house `m` to store is `6 - m`. So if `seeds == 6 - m`, we get an extra turn. Also if we go around: `seeds % 13 == 6 - m` and `seeds >= 6 - m`.
+
+```python
+def gets_extra_turn(player, m):
+    seeds = player[m]
+    dist = 6 - m
+    return seeds >= dist and (seeds - dist) % 13 == 0
+```
+
+Hmm wait, if seeds = 6 - m, then we land exactly on store (position 6).
+If seeds = 6 - m + 13, we go around once and land on store.
+So `(seeds - (6 - m)) % 13 == 0` and `seeds >= 6 - m`.
+
+Actually `seeds == 6 - m` gives `seeds - (6 - m) = 0`, and 0 % 13 = 0. So just `(seeds - (6 - m)) % 13 == 0` should work if seeds >= 6 - m.
+
+But if seeds < 6 - m, then seeds - (6 - m) is negative, and in Python, negative mod is handled differently. Let's just check both conditions.
+
+Actually, let me just do quick simulation for move ordering since we already have the simulate function:
+
+```python
+def order_moves(player, other):
+    moves = [i for i in range(6) if player[i] > 0]
+    def score(m):
+        new_p, new_o, extra = simulate(player, other, m)
+        if is_over(new_p) or is_over(new_o):
+            return (2, final_score(new_p, new_o))
+        if extra:
+            return (1, new_p[6] - player[6])
+        return (0, new_p[6] - player[6])
+    moves.sort(key=score, reverse=True)
+    return moves
+```
+
+This might be a bit slow but should help with pruning.
+
+Let me also add a simple transposition table:
+
+```python
+import time
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    start_time = time.time()
+    time_limit = 0.9
+    
+    def simulate(player, other, move):
+        player = list(player)
+        other = list(other)
+        
+        seeds = player[move]
+        player[move] = 0
+        pos = move
+        
+        while seeds > 0:
+            pos = (pos + 1) % 13
+            if pos <= 5:
+                player[pos] += 1
+            elif pos == 6:
+                player[6] += 1
+            else:
+                other[pos - 7] += 1
+            seeds -= 1
+        
+        extra_turn = (pos == 6)
+        
+        if pos <= 5 and player[pos] == 1:
+            opp_idx = 5 - pos
+            if other[opp_idx] > 0:
+                player[6] += 1 + other[opp_idx]
+                player[pos] = 0
+                other[opp_idx] = 0
+        
+        return tuple(player), tuple(other), extra_turn
+    
+    def is_over(player):
+        return player[0] == player[1] == player[2] == player[3] == player[4] == player[5] == 0
+    
+    def final_score(player, other):
+        return (player[6] + sum(player[:6])) - (other[6] + sum(other[:6]))
+    
+    def get_moves(player):
+        return [i for i in range(6) if player[i] > 0]
+    
+    tt = {}
+    abort = [False]
+    
+    def negamax(player, other, depth, alpha, beta):
+        if time.time() - start_time > time_limit:
+            abort[0] = True
+            return 0, None
+        
+        if is_over(player) or is_over(other):
+            return final_score(player, other), None
+        
+        moves = get_moves(player)
+        if not moves:
+            return final_score(player, other), None
+        
+        if depth <= 0:
+            return player[6] - other[6], None
+        
+        key = (player, other, depth)
+        if key in tt:
+            return tt[key]
+        
+        best_val = float('-inf')
+        best_move = moves[0]
+        
+        # Move ordering
+        def move_score(m):
+            _, _, extra = simulate(player, other, m)
+            return (extra, player[m])
+        moves.sort(key=move_score, reverse=True)
+        
+        for move in moves:
+            new_p, new_o, extra = simulate(player, other, move)
+            
+            if is_over(new_p) or is_over(new_o):
+                val = final_score(new_p, new_o)
+            elif extra:
+                val, _ = negamax(new_p, new_o, depth, alpha, beta)
+            else:
+                val, _ = negamax(new_o, new_p, depth - 1, -beta, -alpha)
+                val = -val
+            
+            if abort[0]:
+                return 0, None
+            
+            if val > best_val:
+                best_val = val
+                best_move = move
+            
+            alpha = max(alpha, val)
+            if alpha >= beta:
+                break
+        
+        if not abort[0]:
+            tt[key] = (best_val, best_move)
+        
+        return best_val, best_move
+    
+    you_t = tuple(you)
+    opp_t = tuple(opponent)
+    
+    moves = get_moves(you_t)
+    if len(moves) == 1:
+        return moves[0]
+    
+    best_move = moves[0]
+    
+    for depth in range(1, 50):
+        if time.time() - start_time > time_limit * 0.8:
+            break
+        abort[0] = False
+        tt.clear()
+        val, move = negamax(you_t, opp_t, depth, float('-inf'), float('inf'))
+        if not abort[0] and move is not None:
+            best_move = move
+    
+    return best_move
+```
+
+Actually, the TT might not work well with iterative deepening since we clear it. Let me remove it for now and focus on correctness.
+
+Also, I realized I should handle the case better where game ends within the search. The finalization of scores should transfer remaining seeds to the respective stores.
+
+Let me clean up the code:
+
+```python
+import time
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    start_time = time.time()
+    time_limit = 0.85
+    
+    def simulate(player, other, move):
+        """Execute move and return (new_player, new_other, extra_turn)"""
+        p = list(player)
+        o = list(other)
+        
+        seeds = p[move]
+        p[move] = 0
+        pos = move
+        
+        # Distribute seeds
+        while seeds > 0:
+            pos = (pos + 1) % 13
+            if pos <= 5:
+                p[pos] += 1
+            elif pos == 6:
+                p[6] += 1
+            else:  # pos 7-12 -> opponent houses
+                o[pos - 7] += 1
+            seeds -= 1
+        
+        extra_turn = (pos == 6)
+        
+        # Check for capture
+        if pos <= 5 and p[pos] == 1:
+            opp_idx = 5 - pos
+            if o[opp_idx] > 0:
+                p[6] += 1 + o[opp_idx]
+                p[pos] = 0
+                o[opp_idx] = 0
+        
+        return tuple(p), tuple(o), extra_turn
+    
+    def game_ended(player, other):
+        """Check if game is over (one side has no seeds in houses)"""
+        return sum(player[:6]) == 0 or sum(other[:6]) == 0
+    
+    def final_score_diff(player, other):
+        """Return final score difference (player - other) after collecting remaining seeds"""
+        p_score = player[6] + sum(player[:6])
+        o_score = other[6] + sum(other[:6])
+        return p_score - o_score
+    
+    def get_legal_moves(player):
+        return [i for i in range(6) if player[i] > 0]
+    
+    abort_search = [False]
+    
+    def negamax(player, other, depth, alpha, beta):
+        """Negamax with alpha-beta pruning. Returns (value, best_move)."""
+        
+        # Time check
+        if time.time() - start_time > time_limit:
+            abort_search[0] = True
+            return 0, None
+        
+        # Terminal check
+        if game_ended(player, other):
+            return final_score_diff(player, other), None
+        
+        moves = get_legal_moves(player)
+        if not moves:  # Shouldn't happen if game_ended is correct
+            return final_score_diff(player, other), None
+        
+        # Depth limit - use evaluation
+        if depth <= 0:
+            return player[6] - other[6], None
+        
+        # Move ordering: prioritize moves that give extra turn or more seeds
+        def move_priority(m):
+            seeds = player[m]
+            dist = 6 - m
+            extra = (seeds >= dist and (seeds - dist) % 13 == 0)
+            return (extra, seeds)
+        moves.sort(key=move_priority, reverse=True)
+        
+        best_val = float('-inf')
+        best_move = moves[0]
+        
+        for move in moves:
+            new_p, new_o, extra = simulate(player, other, move)
+            
+            if game_ended(new_p, new_o):
+                val = final_score_diff(new_p, new_o)
+            elif extra:
+                # Same player moves again
+                val, _ = negamax(new_p, new_o, depth, alpha, beta)
+            else:
+                # Opponent's turn - switch perspective
+                val, _ = negamax(new_o, new_p, depth - 1, -beta, -alpha)
+                val = -val
+            
+            if abort_search[0]:
+                return 0, None
+            
+            if val > best_val:
+                best_val = val
+                best_move = move
+            
+            alpha = max(alpha, val)
+            if alpha >= beta:
+                break
+        
+        return best_val, best_move
+    
+    # Convert to tuples for immutability
+    you_t = tuple(you)
+    opp_t = tuple(opponent)
+    
+    # Quick check for only one legal move
+    legal_moves = get_legal_moves(you_t)
+    if len(legal_moves) == 1:
+        return legal_moves[0]
+    
+    # Iterative deepening
+    best_move = legal_moves[0]
+    
+    for depth in range(1, 40):
+        if time.time() - start_time > time_limit * 0.7:
+            break
+        
+        abort_search[0] = False
+        val, move = negamax(you_t, opp_t, depth, float('-inf'), float('inf'))
+        
+        if not abort_search[0] and move is not None:
+            best_move = move
+    
+    return best_move
+```
+
+This looks good. Let me verify the extra turn check again:
+- From house m, we need seeds to land on position 6
+- Positions traversed: m+1, m+2, ..., up to final position
+- Distance from m to store (6) is 6 - m positions
+- So if seeds == 6 - m, we land exactly on 6
+- If seeds > 6 - m, we go past 6 and continue
+- After the store (6), we go to opponent (7-12), then back to player (0-5), then store (6) again
+- So the cycle is 13 (skipping opponent store)
+- To land on 6 again: seeds = 6 - m + 13k for some k >= 0
+- Which means (seeds - (6 - m)) % 13 == 0 and seeds >= 6 - m
+
+Let me verify:
+- m = 5, seeds = 1: dist = 1, 1 >= 1 and (1-1) % 13 = 0 ✓
+- m = 4, seeds = 2: dist = 2, 2 >= 2 and (2-2) % 13 = 0 ✓
+- m = 0, seeds = 6: dist = 6, 6 >= 6 and (6-6) % 13 = 0 ✓
+- m = 0, seeds = 19: dist = 6, 19 >= 6 and (19-6) % 13 = 0 ✓ (goes around once)
+
+Great, the logic is correct.
+
+One more thing - I should make sure the evaluation function is from the current player's perspective in the negamax. At depth 0, we return `player[6] - other[6]`, which is correct.
+
+Let me also add some basic defensive/offensive considerations to the evaluation:
+
+```python
+def evaluate(player, other):
+    """Evaluate position from player's perspective."""
+    # Primary: store difference
+    score = player[6] - other[6]
+    
+    # Secondary: seeds on own side (potential future points)
+    own_seeds = sum(player[:6])
+    opp_seeds = sum(other[:6])
+    
+    # Game ending considerations
+    total = own_seeds + opp_seeds + player[6] + other[6]
+    half = total // 2
+    
+    # If we have more than half, we're winning
+    if player[6] > half:
+        score += 100
+    elif other[6] > half:
+        score -= 100
+    
+    return score
+```
+
+Actually, for simplicity, let me stick with the basic store difference for now. The search depth should handle most tactics.
+
+Let me finalize the code:
+
+```python
+import time
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    start_time = time.time()
+    time_limit = 0.85
+    
+    def simulate(player, other, move):
+        p = list(player)
+        o = list(other)
+        
+        seeds = p[move]
+        p[move] = 0
+        pos = move
+        
+        while seeds > 0:
+            pos = (pos + 1) % 13
+            if pos <= 5:
+                p[pos] += 1
+            elif pos == 6:
+                p[6] += 1
+            else:
+                o[pos - 7] += 1
+            seeds -= 1
+        
+        extra_turn = (pos == 6)
+        
+        if pos <= 5 and p[pos] == 1:
+            opp_idx = 5 - pos
+            if o[opp_idx] > 0:
+                p[6] += 1 + o[opp_idx]
+                p[pos] = 0
+                o[opp_idx] = 0
+        
+        return tuple(p), tuple(o), extra_turn
+    
+    def game_ended(player, other):
+        return sum(player[:6]) == 0 or sum(other[:6]) == 0
+    
+    def final_score(player, other):
+        return (player[6] + sum(player[:6])) - (other[6] + sum(other[:6]))
+    
+    def get_moves(player):
+        return [i for i in range(6) if player[i] > 0]
+    
+    abort = [False]
+    
+    def negamax(player, other, depth, alpha, beta):
+        if time.time() - start_time > time_limit:
+            abort[0] = True
+            return 0, None
+        
+        if game_ended(player, other):
+            return final_score(player, other), None
+        
+        moves = get_moves(player)
+        if not moves:
+            return final_score(player, other), None
+        
+        if depth <= 0:
+            return player[6] - other[6], None
+        
+        # Move ordering
+        def priority(m):
+            seeds = player[m]
+            dist = 6 - m
+            extra = seeds >= dist and (seeds - dist) % 13 == 0
+            return (extra, seeds)
+        moves.sort(key=priority, reverse=True)
+        
+        best_val = float('-inf')
+        best_move = moves[0]
+        
+        for move in moves:
+            new_p, new_o, extra = simulate(player, other, move)
+            
+            if game_ended(new_p, new_o):
+                val = final_score(new_p, new_o)
+            elif extra:
+                val, _ = negamax(new_p, new_o, depth, alpha, beta)
+            else:
+                val, _ = negamax(new_o, new_p, depth - 1, -beta, -alpha)
+                val = -val
+            
+            if abort[0]:
+                return 0, None
+            
+            if val > best_val:
+                best_val = val
+                best_move = move
+            
+            alpha = max(alpha, val)
+            if alpha >= beta:
+                break
+        
+        return best_val, best_move
+    
+    you_t = tuple(you)
+    opp_t = tuple(opponent)
+    
+    moves = get_moves(you_t)
+    if len(moves) == 1:
+        return moves[0]
+    
+    best_move = moves[0]
+    
+    for depth in range(1, 40):
+        if time.time() - start_time > time_limit * 0.7:
+            break
+        abort[0] = False
+        val, move = negamax(you_t, opp_t, depth, float('-inf'), float('inf'))
+        if not abort[0] and move is not None:
+            best_move = move
+    
+    return best_move
+```
+
+This should be a solid implementation. Let me review once more:
+
+1. simulate() correctly distributes seeds and handles captures
+2. game_ended() checks if either side has no seeds
+3. final_score() gives the score difference after game ends
+4. negamax uses alpha-beta pruning with move ordering
+5. Iterative deepening respects time limits
+
+I think this is good. Let me add one more optimization - memoization with a transposition table:
+
+Actually, the issue with TT in negamax is that the depth matters. Let me add a proper TT:
+
+```python
+import time
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    start_time = time.time()
+    time_limit = 0.85
+    
+    def simulate(player, other, move):
+        p = list(player)
+        o = list(other)
+        
+        seeds = p[move]
+        p[move] = 0
+        pos = move
+        
+        while seeds > 0:
+            pos = (pos + 1) % 13
+            if pos <= 5:
+                p[pos] += 1
+            elif pos == 6:
+                p[6] += 1
+            else:
+                o[pos - 7] += 1
+            seeds -= 1
+        
+        extra_turn = (pos == 6)
+        
+        if pos <= 5 and p[pos] == 1:
+            opp_idx = 5 - pos
+            if o[opp_idx] > 0:
+                p[6] += 1 + o[opp_idx]
+                p[pos] = 0
+                o[opp_idx] = 0
+        
+        return tuple(p), tuple(o), extra_turn
+    
+    def game_ended(player, other):
+        return sum(player[:6]) == 0 or sum(other[:6]) == 0
+    
+    def final_score(player, other):
+        return (player[6] + sum(player[:6])) - (other[6] + sum(other[:6]))
+    
+    def get_moves(player):
+        return [i for i in range(6) if player[i] > 0]
+    
+    abort = [False]
+    tt = {}
+    EXACT, LOWER, UPPER = 0, 1, 2
+    
+    def negamax(player, other, depth, alpha, beta):
+        if time.time() - start_time > time_limit:
+            abort[0] = True
+            return 0, None
+        
+        if game_ended(player, other):
+            return final_score(player, other), None
+        
+        moves = get_moves(player)
+        if not moves:
+            return final_score(player, other), None
+        
+        # TT lookup
+        key = (player, other)
+        if key in tt:
+            tt_depth, tt_flag, tt_val, tt_move = tt[key]
+            if tt_depth >= depth:
+                if tt_flag == EXACT:
+                    return tt_val, tt_move
+                elif tt_flag == LOWER:
+                    alpha = max(alpha, tt_val)
+                elif tt_flag == UPPER:
+                    beta = min(beta, tt_val)
+                if alpha >= beta:
+                    return tt_val, tt_move
+        
+        if depth <= 0:
+            val = player[6] - other[6]
+            return val, None
+        
+        # Move ordering
+        def priority(m):
+            seeds = player[m]
+            dist = 6 - m
+            extra = seeds >= dist and (seeds - dist) % 13 == 0
+            return (extra, seeds)
+        moves.sort(key=priority, reverse=True)
+        
+        orig_alpha = alpha
+        best_val = float('-inf')
+        best_move = moves[0]
+        
+        for move in moves:
+            new_p, new_o, extra = simulate(player, other, move)
+            
+            if game_ended(new_p, new_o):
+                val = final_score(new_p, new_o)
+            elif extra:
+                val, _ = negamax(new_p, new_o, depth, alpha, beta)
+            else:
+                val, _ = negamax(new_o, new_p, depth - 1, -beta, -alpha)
+                val = -val
+            
+            if abort[0]:
+                return 0, None
+            
+            if val > best_val:
+                best_val = val
+                best_move = move
+            
+            alpha = max(alpha, val)
+            if alpha >= beta:
+                break
+        
+        # TT store
+        if not abort[0]:
+            if best_val <= orig_alpha:
+                tt_flag = UPPER
+            elif best_val >= beta:
+                tt_flag = LOWER
+            else:
+                tt_flag = EXACT
+            tt[key] = (depth, tt_flag, best_val, best_move)
+        
+        return best_val, best_move
+    
+    you_t = tuple(you)
+    opp_t = tuple(opponent)
+    
+    moves = get_moves(you_t)
+    if len(moves) == 1:
+        return moves[0]
+    
+    best_move = moves[0]
+    
+    for depth in range(1, 40):
+        if time.time() - start_time > time_limit * 0.7:
+            break
+        abort[0] = False
+        val, move = negamax(you_t, opp_t, depth, float('-inf'), float('inf'))
+        if not abort[0] and move is not None:
+            best_move = move
+    
+    return best_move
+```
+
+Actually, with TT and iterative deepening, I shouldn't clear the TT between iterations. Let me also use the TT move for move ordering.
+
+This is getting complex. Let me simplify and just go with a clean implementation without TT for robustness:
+
+```python
+import time
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    start_time = time.time()
+    time_limit = 0.9
+    
+    def simulate(player, other, move):
+        p = list(player)
+        o = list(other)
+        
+        seeds = p[move]
+        p[move] = 0
+        pos = move
+        
+        while seeds > 0:
+            pos = (pos + 1) % 13
+            if pos <= 5:
+                p[pos] += 1
+            elif pos == 6:
+                p[6] += 1
+            else:
+                o[pos - 7] += 1
+            seeds -= 1
+        
+        extra_turn = (pos == 6)
+        
+        if pos <= 5 and p[pos] == 1:
+            opp_idx = 5 - pos
+            if o[opp_idx] > 0:
+                p[6] += 1 + o[opp_idx]
+                p[pos] = 0
+                o[opp_idx] = 0
+        
+        return tuple(p), tuple(o), extra_turn
+    
+    def game_ended(player, other):
+        return sum(player[:6]) == 0 or sum(other[:6]) == 0
+    
+    def final_score(player, other):
+        return (player[6] + sum(player[:6])) - (other[6] + sum(other[:6]))
+    
+    def get_moves(player):
+        return [i for i in range(6) if player[i] > 0]
+    
+    abort = [False]
+    
+    def negamax(player, other, depth, alpha, beta):
+        if time.time() - start_time > time_limit:
+            abort[0] = True
+            return 0, None
+        
+        if game_ended(player, other):
+            return final_score(player, other), None
+        
+        moves = get_moves(player)
+        if not moves:
+            return final_score(player, other), None
+        
+        if depth <= 0:
+            return player[6] - other[6], None
+        
+        def priority(m):
+            seeds = player[m]
+            dist = 6 - m
+            extra = seeds >= dist and (seeds - dist) % 13 == 0
+            return (extra, seeds)
+        moves.sort(key=priority, reverse=True)
+        
+        best_val = float('-inf')
+        best_move = moves[0]
+        
+        for move in moves:
+            new_p, new_o, extra = simulate(player, other, move)
+            
+            if game_ended(new_p, new_o):
+                val = final_score(new_p, new_o)
+            elif extra:
+                val, _ = negamax(new_p, new_o, depth, alpha, beta)
+            else:
+                val, _ = negamax(new_o, new_p, depth - 1, -beta, -alpha)
+                val = -val
+            
+            if abort[0]:
+                return 0, None
+            
+            if val > best_val:
+                best_val = val
+                best_move = move
+            
+            alpha = max(alpha, val)
+            if alpha >= beta:
+                break
+        
+        return best_val, best_move
+    
+    you_t = tuple(you)
+    opp_t = tuple(opponent)
+    
+    moves = get_moves(you_t)
+    if len(moves) == 1:
+        return moves[0]
+    
+    best_move = moves[0]
+    
+    for depth in range(1, 40):
+        if time.time() - start_time > time_limit * 0.7:
+            break
+        abort[0] = False
+        val, move = negamax(you_t, opp_t, depth, float('-inf'), float('inf'))
+        if not abort[0] and move is not None:
+            best_move = move
+    
+    return best_move
+```
+
+This should work well. The key features:
+1. Correct game simulation
+2. Alpha-beta pruning for efficient search
+3. Move ordering to improve pruning
+4. Iterative deepening with time management
+5. Simple but effective evaluation (store difference)
+</thinking>
+
+Looking at this Kalah game problem, I need to implement a solid policy using minimax search with alpha-beta pruning.
+
+Key observations:
+1. The game has 13 positions in the sowing cycle (6 houses + 1 store for me, 6 houses for opponent, skipping opponent's store)
+2. Extra turns when last seed lands in my store (position 6)
+3. Captures when last seed lands in an empty house on my side with seeds in the opposite opponent house
+
+My approach:
+- Implement accurate game simulation
+- Use negamax with alpha-beta pruning
+- Move ordering: prioritize extra-turn moves and moves with more seeds
+- Iterative deepening to manage the 1-second time limit
+- Simple evaluation: store difference (depth search handles tactics)
+
+<code>
+import time
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    start_time = time.time()
+    time_limit = 0.9
+    
+    def simulate(player, other, move):
+        p = list(player)
+        o = list(other)
+        
+        seeds = p[move]
+        p[move] = 0
+        pos = move
+        
+        while seeds > 0:
+            pos = (pos + 1) % 13
+            if pos <= 5:
+                p[pos] += 1
+            elif pos == 6:
+                p[6] += 1
+            else:
+                o[pos - 7] += 1
+            seeds -= 1
+        
+        extra_turn = (pos == 6)
+        
+        if pos <= 5 and p[pos] == 1:
+            opp_idx = 5 - pos
+            if o[opp_idx] > 0:
+                p[6] += 1 + o[opp_idx]
+                p[pos] = 0
+                o[opp_idx] = 0
+        
+        return tuple(p), tuple(o), extra_turn
+    
+    def game_ended(player, other):
+        return sum(player[:6]) == 0 or sum(other[:6]) == 0
+    
+    def final_score(player, other):
+        return (player[6] + sum(player[:6])) - (other[6] + sum(other[:6]))
+    
+    def get_moves(player):
+        return [i for i in range(6) if player[i] > 0]
+    
+    abort = [False]
+    
+    def negamax(player, other, depth, alpha, beta):
+        if time.time() - start_time > time_limit:
+            abort[0] = True
+            return 0, None
+        
+        if game_ended(player, other):
+            return final_score(player, other), None
+        
+        moves = get_moves(player)
+        if not moves:
+            return final_score(player, other), None
+        
+        if depth <= 0:
+            return player[6] - other[6], None
+        
+        def priority(m):
+            seeds = player[m]
+            dist = 6 - m
+            extra = seeds >= dist and (seeds - dist) % 13 == 0
+            return (extra, seeds)
+        moves.sort(key=priority, reverse=True)
+        
+        best_val = float('-inf')
+        best_move = moves[0]
+        
+        for move in moves:
+            new_p, new_o, extra = simulate(player, other, move)
+            
+            if game_ended(new_p, new_o):
+                val = final_score(new_p, new_o)
+            elif extra:
+                val, _ = negamax(new_p, new_o, depth, alpha, beta)
+            else:
+                val, _ = negamax(new_o, new_p, depth - 1, -beta, -alpha)
+                val = -val
+            
+            if abort[0]:
+                return 0, None
+            
+            if val > best_val:
+                best_val = val
+                best_move = move
+            
+            alpha = max(alpha, val)
+            if alpha >= beta:
+                break
+        
+        return best_val, best_move
+    
+    you_t = tuple(you)
+    opp_t = tuple(opponent)
+    
+    moves = get_moves(you_t)
+    if len(moves) == 1:
+        return moves[0]
+    
+    best_move = moves[0]
+    
+    for depth in range(1, 40):
+        if time.time() - start_time > time_limit * 0.7:
+            break
+        abort[0] = False
+        val, move = negamax(you_t, opp_t, depth, float('-inf'), float('inf'))
+        if not abort[0] and move is not None:
+            best_move = move
+    
+    return best_move
+</code>

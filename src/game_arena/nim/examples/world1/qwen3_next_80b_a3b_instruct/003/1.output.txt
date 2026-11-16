@@ -1,0 +1,70 @@
+The game described is a variant of Nim where the player who takes the last object loses — this is known as "misère Nim". In standard Nim, the winning strategy is based on the XOR (nim-sum) of all pile sizes. However, in misère Nim, the strategy differs slightly.
+
+For misère Nim with 4 piles, the key insight is:
+
+- If all piles are of size 1, the winning strategy is to leave an odd number of piles of size 1 (so the opponent is forced to take the last one).
+- Otherwise, if there's at least one pile with more than 1 object, the strategy is the same as standard Nim: compute the nim-sum (XOR of all pile sizes), and if it's non-zero, make a move to reduce it to zero. But crucially, we must avoid leaving the opponent in a position where all remaining piles are size 1 and the count is even (which would be a losing position for us in misère play).
+
+Actually, in misère Nim with more than one pile having more than 1 object, the winning strategy is identical to standard Nim: make a move that gives a nim-sum of 0. Only when all remaining piles are size 1 do we deviate (and then we want to leave an odd number of piles).
+
+So our policy:
+
+1. Count the number of piles with size > 1.
+2. If this count is 0 (all piles are 1), then we want to leave an odd number of piles. Since there are 4 piles, if all are 1, we must take 1 from any pile, leaving 3 piles of 1 (odd) — which forces the opponent into a losing position (because they must then take one, leaving 2, then we take one, leaving 1 for them to take last).
+3. If the count is >= 1 (i.e., at least one pile > 1), we compute the nim-sum of all piles. If the nim-sum is 0, we are in a losing position (but we must still make a legal move — so we take 1 from the largest pile to try to create a mistake opportunity).
+4. If the nim-sum != 0, we find a pile and a number to take so that the new nim-sum becomes 0. We look for a pile `i` such that `piles[i] XOR nim_sum < piles[i]`, then take `piles[i] - (piles[i] XOR nim_sum)` objects from pile `i`.
+
+But since it's misère, we must avoid the case where after our move, all piles become 1 and the count is even. However, it's a known result in combinatorial game theory that for misère Nim with 4 piles (and more generally, when not all piles are size 1), the optimal strategy is the same as normal play. Only when all piles are ≤1 does the misère strategy change.
+
+Therefore, the algorithm:
+
+- If the nim-sum is non-zero and there's at least one pile > 1: make the normal Nim move (to make nim-sum 0).
+- If the nim-sum is zero and there's at least one pile > 1: we are in a losing position. We must make a move that doesn't immediately lose — so we take 1 from the largest pile (to avoid giving opponent a simple win).
+- If all piles are 1: then we must take 1 from any pile to leave 3 piles of 1 (odd number), forcing opponent to eventually take the last one.
+
+This strategy is proven optimal for misère Nim.
+
+We'll code accordingly.
+
+<code>
+import numpy as np
+
+def policy(piles: list[int]) -> str:
+    # Count how many piles have more than 1 item
+    count_greater_than_one = sum(1 for p in piles if p > 1)
+    
+    # Case 1: All piles are 1
+    if count_greater_than_one == 0:
+        # We have [1,1,1,1]. Take 1 from any pile (e.g., the first) to leave 3 ones (odd)
+        return "0,1"
+    
+    # Compute nim-sum (XOR of all piles)
+    nim_sum = 0
+    for p in piles:
+        nim_sum ^= p
+    
+    # Case 2: nim_sum != 0 and there's at least one pile > 1
+    # We want to make a move to set nim_sum to 0
+    if nim_sum != 0:
+        for i in range(4):
+            # We want to reduce pile i to piles[i] ^ nim_sum
+            target = piles[i] ^ nim_sum
+            if target < piles[i]:
+                take = piles[i] - target
+                if take >= 1:
+                    return f"{i},{take}"
+    
+    # Case 3: nim_sum == 0 (losing position) but there's at least one pile > 1
+    # We must make a move. Best is to take 1 from the largest pile to avoid giving opponent a simple path
+    # Find the pile with the most objects
+    max_pile = max(piles)
+    for i in range(4):
+        if piles[i] == max_pile:
+            # Take 1 from the largest pile
+            return f"{i},1"
+    
+    # Fallback: should never reach here, but guarantee a legal move
+    for i in range(4):
+        if piles[i] > 0:
+            return f"{i},1"
+</code>

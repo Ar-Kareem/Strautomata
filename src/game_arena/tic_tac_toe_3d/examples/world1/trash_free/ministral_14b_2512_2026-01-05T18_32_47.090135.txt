@@ -1,0 +1,194 @@
+Here's a Python implementation for a 3D Tic Tac Toe policy function that uses a combination of heuristic evaluation and minimax search with alpha-beta pruning to determine the next move. This implementation prioritizes winning moves, then blocking opponent wins, and finally evaluates positions based on potential threats and center control.
+
+```python
+import numpy as np
+from typing import List, Tuple
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    """
+    Determines the next move for a 3D Tic Tac Toe game using minimax with alpha-beta pruning.
+
+    Args:
+        board: A 3x3x3 list of lists where 0 is empty, 1 is player, and -1 is opponent.
+
+    Returns:
+        A tuple (x, y, z) representing the coordinates of the chosen empty cell.
+    """
+    # Convert to numpy array for easier manipulation
+    board_np = np.array(board, dtype=int)
+    player = 1  # Our player
+
+    # Check for immediate winning moves
+    winning_move = find_winning_move(board_np, player)
+    if winning_move is not None:
+        return winning_move
+
+    # Block opponent's winning moves
+    opponent = -1
+    blocking_move = find_winning_move(board_np, opponent)
+    if blocking_move is not None:
+        return blocking_move
+
+    # If no immediate win/block, use minimax with alpha-beta pruning
+    best_move = None
+    best_score = -float('inf')
+
+    for x in range(3):
+        for y in range(3):
+            for z in range(3):
+                if board_np[x, y, z] == 0:
+                    # Make a move
+                    board_np[x, y, z] = player
+                    score = minimax(board_np, depth=0, alpha=-float('inf'), beta=float('inf'), maximizing_player=False)
+                    board_np[x, y, z] = 0  # Undo move
+
+                    if score > best_score:
+                        best_score = score
+                        best_move = (x, y, z)
+
+    return best_move
+
+def find_winning_move(board: np.ndarray, player: int) -> Tuple[int, int, int]:
+    """Check if there's a winning move for the given player."""
+    # Check all possible lines (rows, columns, pillars, and space diagonals)
+    lines = get_all_lines(board)
+
+    for line in lines:
+        empty_cells = [i for i, val in enumerate(line) if val == 0]
+        if len(empty_cells) == 1:
+            # Convert 1D index to 3D coordinates
+            x, y, z = index_to_3d(empty_cells[0])
+            return (x, y, z)
+    return None
+
+def get_all_lines(board: np.ndarray) -> List[List[int]]:
+    """Get all possible winning lines in 3D Tic Tac Toe."""
+    lines = []
+
+    # Rows (fixed x, y, varying z)
+    for x in range(3):
+        for y in range(3):
+            lines.append(board[x, y, :].tolist())
+
+    # Columns (fixed x, z, varying y)
+    for x in range(3):
+        for z in range(3):
+            lines.append(board[x, :, z].tolist())
+
+    # Pillars (fixed y, z, varying x)
+    for y in range(3):
+        for z in range(3):
+            lines.append(board[:, y, z].tolist())
+
+    # Space diagonals (main space diagonals)
+    lines.append(board.diagonal().tolist())
+    lines.append(board[::-1, :, :].diagonal().tolist())
+    lines.append(board[:, ::-1, :].diagonal().tolist())
+    lines.append(board[:, :, ::-1].diagonal().tolist())
+
+    # Face diagonals (diagonals within each 2D face)
+    for x in range(3):
+        for y in range(3):
+            lines.append(board[x, y, [0, 1, 2]].tolist())  # Already covered by rows
+            lines.append(board[x, y, [2, 1, 0]].tolist())  # Already covered by rows
+
+    # Other face diagonals (e.g., top-left to bottom-right in each face)
+    for x in range(3):
+        lines.append(board[x, :, :].diagonal().tolist())
+        lines.append(board[x, ::-1, :].diagonal().tolist())
+        lines.append(board[x, :, ::-1].diagonal().tolist())
+        lines.append(board[x, ::-1, ::-1].diagonal().tolist())
+
+    # Similarly for y and z fixed diagonals
+    for y in range(3):
+        lines.append(board[:, y, :].diagonal().tolist())
+        lines.append(board[::-1, y, :].diagonal().tolist())
+        lines.append(board[:, y, ::-1].diagonal().tolist())
+        lines.append(board[::-1, y, ::-1].diagonal().tolist())
+
+    for z in range(3):
+        lines.append(board[:, :, z].diagonal().tolist())
+        lines.append(board[::-1, :, z].diagonal().tolist())
+        lines.append(board[:, ::-1, z].diagonal().tolist())
+        lines.append(board[::-1, ::-1, z].diagonal().tolist())
+
+    return lines
+
+def index_to_3d(index: int) -> Tuple[int, int, int]:
+    """Convert 1D index to 3D coordinates (x, y, z)."""
+    z = index % 3
+    y = (index // 3) % 3
+    x = index // 9
+    return (x, y, z)
+
+def minimax(board: np.ndarray, depth: int, alpha: float, beta: float, maximizing_player: bool) -> int:
+    """Minimax algorithm with alpha-beta pruning."""
+    # Check if the game is over
+    if check_win(board, 1):
+        return 10 - depth  # Player wins
+    elif check_win(board, -1):
+        return depth - 10  # Opponent wins
+    elif is_board_full(board):
+        return 0  # Draw
+
+    if maximizing_player:
+        max_eval = -float('inf')
+        for x in range(3):
+            for y in range(3):
+                for z in range(3):
+                    if board[x, y, z] == 0:
+                        board[x, y, z] = 1
+                        eval = minimax(board, depth + 1, alpha, beta, False)
+                        board[x, y, z] = 0
+                        max_eval = max(max_eval, eval)
+                        alpha = max(alpha, eval)
+                        if beta <= alpha:
+                            break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for x in range(3):
+            for y in range(3):
+                for z in range(3):
+                    if board[x, y, z] == 0:
+                        board[x, y, z] = -1
+                        eval = minimax(board, depth + 1, alpha, beta, True)
+                        board[x, y, z] = 0
+                        min_eval = min(min_eval, eval)
+                        beta = min(beta, eval)
+                        if beta <= alpha:
+                            break
+        return min_eval
+
+def check_win(board: np.ndarray, player: int) -> bool:
+    """Check if the given player has won."""
+    lines = get_all_lines(board)
+    for line in lines:
+        if all(cell == player for cell in line):
+            return True
+    return False
+
+def is_board_full(board: np.ndarray) -> bool:
+    """Check if the board is full."""
+    return np.all(board != 0)
+```
+
+### Explanation:
+1. **Policy Function**:
+   - First checks for immediate winning moves.
+   - Then blocks opponent's winning moves.
+   - If no immediate win/block, uses minimax with alpha-beta pruning to evaluate the best move.
+
+2. **Winning Move Detection**:
+   - `find_winning_move` checks all possible lines (rows, columns, pillars, and diagonals) for a winning move.
+   - `get_all_lines` generates all possible winning lines in 3D space.
+
+3. **Minimax with Alpha-Beta Pruning**:
+   - Recursively evaluates all possible moves, prioritizing moves that lead to a win or block an opponent's win.
+   - Uses depth to prioritize immediate wins over future ones.
+
+4. **Helper Functions**:
+   - `check_win` verifies if a player has won by checking all lines.
+   - `is_board_full` checks if the board is full (draw condition).
+
+This implementation ensures the AI makes optimal moves by considering both immediate threats and long-term strategy. The minimax algorithm with alpha-beta pruning significantly reduces the search space, making it feasible for a 3D Tic Tac Toe game.

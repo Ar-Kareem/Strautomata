@@ -1,0 +1,495 @@
+The strategy for this policy is to implement a search-based AI using the Minimax algorithm with Alpha-Beta pruning to a depth of 3. This allows the engine to look ahead several moves to avoid immediate blunders and capture hanging pieces. The evaluation function combines material difference with Piece-Square Tables (PST), incentivizing the AI to control the center, develop pieces early, and advance pawns. The move generator enforces standard chess rules, including check validation and castling rights (inferred from the current piece positions), and always promotes pawns to Queens to maximize value. Move ordering (prioritizing captures) is used to improve the efficiency of the alpha-beta pruning within the 1-second time limit.
+
+<code>
+import random
+import sys
+
+# --- Constants and Piece-Square Tables ---
+
+# Internal representation:
+# 0: Empty
+# 1: White Pawn, 2: White Knight, 3: White Bishop, 4: White Rook, 5: White Queen, 6: White King
+# 7: Black Pawn, 8: Black Knight, 9: Black Bishop, 10: Black Rook, 11: Black Queen, 12: Black King
+
+WHITE_PAWN, WHITE_KNIGHT, WHITE_BISHOP, WHITE_ROOK, WHITE_QUEEN, WHITE_KING = 1, 2, 3, 4, 5, 6
+BLACK_PAWN, BLACK_KNIGHT, BLACK_BISHOP, BLACK_ROOK, BLACK_QUEEN, BLACK_KING = 7, 8, 9, 10, 11, 12
+
+# Piece Values for Evaluation
+PIECE_VALUES = {
+    WHITE_PAWN: 100, WHITE_KNIGHT: 320, WHITE_BISHOP: 330, WHITE_ROOK: 500, WHITE_QUEEN: 900, WHITE_KING: 20000,
+    BLACK_PAWN: 100, BLACK_KNIGHT: 320, BLACK_BISHOP: 330, BLACK_ROOK: 500, BLACK_QUEEN: 900, BLACK_KING: 20000
+}
+
+# Simplified PST (Piece-Square Tables) to encourage positional play
+# Represented as lists of 64 integers (row-major: a8=0, h8=7, a1=56, h1=63)
+
+def generate_pst():
+    # Center control encouragement
+    pst = {}
+    # Pawns: Encourage moving forward
+    wp = [0]*64
+    bp = [0]*64
+    for r in range(8):
+        for c in range(8):
+            idx = r * 8 + c
+            # White pawns want to increase rank (0-7 to 1-8)
+            wp[idx] = (r * 10)
+            # Black pawns want to decrease rank (7-0 to 8-1)
+            bp[idx] = ((7 - r) * 10)
+            
+    # Knights: Encourage center
+    kn_center = [ -50,-40,-30,-30,-30,-30,-40,-50,
+                  -40,-20,  0,  0,  0,  0,-20,-40,
+                  -30,  0, 10, 15, 15, 10,  0,-30,
+                  -30,  5, 15, 20, 20, 15,  5,-30,
+                  -30,  0, 15, 20, 20, 15,  0,-30,
+                  -30,  5, 10, 15, 15, 10,  5,-30,
+                  -40,-20,  0,  5,  5,  0,-20,-40,
+                  -50,-40,-30,-30,-30,-30,-40,-50 ]
+    
+    pst[WHITE_KNIGHT] = kn_center
+    pst[BLACK_KNIGHT] = [-v for v in kn_center]
+    pst[WHITE_PAWN] = wp
+    pst[BLACK_PAWN] = bp
+    return pst
+
+PST = generate_pST() # Helper to rename below
+
+# --- Board and Move Logic ---
+
+def alg_to_idx(alg):
+    """Converts algebraic notation (e.g., 'e4') to index (0-63)."""
+    file = ord(alg[0]) - ord('a')
+    rank = 8 - int(alg[1])
+    return rank * 8 + file
+
+def idx_to_alg(idx):
+    """Converts index (0-63) to algebraic notation."""
+    rank = 8 - (idx // 8)
+    file = chr((idx % 8) + ord('a'))
+    return f"{file}{rank}"
+
+def get_piece_at(board, idx):
+    return board[idx]
+
+def is_valid(idx):
+    return 0 <= idx < 64
+
+def get_color(piece):
+    if piece == 0: return None
+    return 'white' if 1 <= piece <= 6 else 'black'
+
+def is_enemy(p1, p2):
+    if p1 == 0 or p2 == 0: return False
+    return (1 <= p1 <= 6 and 7 <= p2 <= 12) or (7 <= p1 <= 12 and 1 <= p2 <= 6)
+
+def is_friendly(p1, p2):
+    if p1 == 0 or p2 == 0: return False
+    return (1 <= p1 <= 6 and 1 <= p2 <= 6) or (7 <= p1 <= 12 and 7 <= p2 <= 12)
+
+# --- Move Generation ---
+
+# Offsets for knights
+KNIGHT_OFFSETS = [-17, -15, -10, -6, 6, 10, 15, 17]
+# Offsets for kings
+KING_OFFSETS = [-9, -8, -7, -1, 1, 7, 8, 9]
+
+# Sliding pieces directions
+ROOK_DIRS = [-8, -1, 1, 8]
+BISHOP_DIRS = [-9, -7, 7, 9]
+
+def generate_pseudo_moves(board, color):
+    moves = [] # list of (from_idx, to_idx, is_promotion)
+    
+    is_white = (color == 'white')
+    start_p = WHITE_PAWN if is_white else BLACK_PAWN
+    end_p = WHITE_KING if is_white else BLACK_KING
+    enemy_start = BLACK_PAWN if is_white else WHITE_PAWN
+    enemy_end = BLACK_KING if is_white else WHITE_KING
+
+    for idx in range(64):
+        piece = board[idx]
+        if piece == 0: continue
+        p_color = 'white' if 1 <= piece <= 6 else 'black'
+        if p_color != color: continue
+
+        row = idx // 8
+        col = idx % 8
+
+        # Pawn Logic
+        if piece == WHITE_PAWN:
+            # Move forward 1
+            if idx - 8 >= 0 and board[idx - 8] == 0:
+                if row == 1: # Promotion
+                    moves.append((idx, idx - 8, 'q'))
+                else:
+                    moves.append((idx, idx - 8, None))
+                # Move forward 2
+                if row == 6 and board[idx - 16] == 0:
+                    moves.append((idx, idx - 16, None))
+            # Captures
+            for dc in [-1, 1]:
+                target = idx - 8 + dc
+                if 0 <= target < 64:
+                    # Check file wrap
+                    if abs((target % 8) - col) > 1: continue
+                    if enemy_start <= board[target] <= enemy_end:
+                        if row == 1:
+                            moves.append((idx, target, 'q'))
+                        else:
+                            moves.append((idx, target, None))
+                            
+        elif piece == BLACK_PAWN:
+            # Move forward 1
+            if idx + 8 < 64 and board[idx + 8] == 0:
+                if row == 6: # Promotion
+                    moves.append((idx, idx + 8, 'q'))
+                else:
+                    moves.append((idx, idx + 8, None))
+                # Move forward 2
+                if row == 1 and board[idx + 16] == 0:
+                    moves.append((idx, idx + 16, None))
+            # Captures
+            for dc in [-1, 1]:
+                target = idx + 8 + dc
+                if 0 <= target < 64:
+                    if abs((target % 8) - col) > 1: continue
+                    if enemy_start <= board[target] <= enemy_end:
+                        if row == 6:
+                            moves.append((idx, target, 'q'))
+                        else:
+                            moves.append((idx, target, None))
+
+        # Knight
+        elif piece == WHITE_KNIGHT or piece == BLACK_KNIGHT:
+            for off in KNIGHT_OFFSETS:
+                target = idx + off
+                if 0 <= target < 64:
+                    if abs((target % 8) - col) > 2: continue # Wrap fix
+                    if board[target] == 0 or (enemy_start <= board[target] <= enemy_end):
+                        moves.append((idx, target, None))
+
+        # King
+        elif piece == WHITE_KING or piece == BLACK_KING:
+            for off in KING_OFFSETS:
+                target = idx + off
+                if 0 <= target < 64:
+                    if abs((target % 8) - col) > 1: continue # Wrap fix
+                    if board[target] == 0 or (enemy_start <= board[target] <= enemy_end):
+                        moves.append((idx, target, None))
+            
+            # Castling (simplified: assumes king and rook haven't moved if on starting squares)
+            # Must ensure path is empty and not under attack (handled in legal check)
+            if is_white:
+                if row == 7 and col == 4: # e1
+                    # Kingside
+                    if board[63] == WHITE_ROOK and board[61] == 0 and board[62] == 0:
+                        moves.append((idx, 62, None)) # e1g1
+                    # Queenside
+                    if board[56] == WHITE_ROOK and board[59] == 0 and board[58] == 0 and board[57] == 0:
+                        moves.append((idx, 58, None)) # e1c1
+            else:
+                if row == 0 and col == 4: # e8
+                    # Kingside
+                    if board[7] == BLACK_ROOK and board[5] == 0 and board[6] == 0:
+                        moves.append((idx, 6, None)) # e8g8
+                    # Queenside
+                    if board[0] == BLACK_ROOK and board[3] == 0 and board[2] == 0 and board[1] == 0:
+                        moves.append((idx, 2, None)) # e8c8
+
+        # Sliding Pieces (Rook, Bishop, Queen)
+        else:
+            directions = []
+            if piece == WHITE_ROOK or piece == BLACK_ROOK or piece == WHITE_QUEEN or piece == BLACK_QUEEN:
+                directions += ROOK_DIRS
+            if piece == WHITE_BISHOP or piece == BLACK_BISHOP or piece == WHITE_QUEEN or piece == BLACK_QUEEN:
+                directions += BISHOP_DIRS
+            
+            for d in directions:
+                curr = idx
+                while True:
+                    curr += d
+                    # Board boundaries and edge wrapping
+                    if not (0 <= curr < 64): break
+                    c_col = curr % 8
+                    if abs(c_col - col) > (int(abs(d)%8==0) + int(abs(d)%8!=0)*(abs(d)//8+1)) and d in [7, 9, -7, -9]: # Simple wrap check not robust for sliding, use row/col diff
+                    
+                    # Better wrap check:
+                    curr_row = curr // 8
+                    curr_col = curr % 8
+                    prev_row = (curr - d) // 8
+                    prev_col = (curr - d) % 8
+                    
+                    if abs(curr_row - prev_row) > 1 or abs(curr_col - prev_col) > 1:
+                        break
+
+                    if board[curr] == 0:
+                        moves.append((idx, curr, None))
+                    elif enemy_start <= board[curr] <= enemy_end:
+                        moves.append((idx, curr, None))
+                        break
+                    else:
+                        # Hit friendly piece
+                        break
+                    
+    return moves
+
+def get_king_pos(board, color):
+    target_king = WHITE_KING if color == 'white' else BLACK_KING
+    for i in range(64):
+        if board[i] == target_king:
+            return i
+    return -1
+
+def is_square_attacked(board, sq_idx, attacker_color):
+    # Reverse check: pretend a piece is at sq_idx and see if it hits an attacker
+    
+    # 1. Pawn attacks
+    row = sq_idx // 8
+    col = sq_idx % 8
+    if attacker_color == 'white':
+        # White pawns attack 'up' the board (indices decrease) from row below
+        # From sq_idx, look at row+1 (since white pawns are below target they attack up? No. 
+        # If I am at sq_idx, a white pawn attacking me must be at sq_idx + 8 +/- 1)
+        attack_offsets = [7, 9]
+        pawn_type = WHITE_PAWN
+    else:
+        attack_offsets = [-7, -9]
+        pawn_type = BLACK_PAWN
+        
+    for off in attack_offsets:
+        target = sq_idx + off
+        if 0 <= target < 64:
+            if abs((target % 8) - col) > 1: continue
+            if board[target] == pawn_type:
+                return True
+
+    # 2. Knight attacks
+    for off in KNIGHT_OFFSETS:
+        target = sq_idx + off
+        if 0 <= target < 64:
+            if abs((target % 8) - col) > 2: continue
+            p = board[target]
+            if p != 0 and get_color(p) == attacker_color:
+                if (attacker_color == 'white' and (p == WHITE_KNIGHT)) or \
+                   (attacker_color == 'black' and (p == BLACK_KNIGHT)):
+                    return True
+
+    # 3. King attacks (for adjacency check)
+    for off in KING_OFFSETS:
+        target = sq_idx + off
+        if 0 <= target < 64:
+            if abs((target % 8) - col) > 1: continue
+            p = board[target]
+            if p != 0 and get_color(p) == attacker_color:
+                if (attacker_color == 'white' and (p == WHITE_KING)) or \
+                   (attacker_color == 'black' and (p == BLACK_KING)):
+                    return True
+            
+    # 4. Sliding attacks
+    # Rook/Queen
+    for d in ROOK_DIRS:
+        curr = sq_idx
+        while True:
+            curr += d
+            if not (0 <= curr < 64): break
+            # Check wrap
+            if abs((curr%8) - (curr-d)%8) > 1 and d in [-1, 1]: break
+            if abs((curr//8) - (curr-d)//8) > 1 and d in [-8, 8]: break
+
+            p = board[curr]
+            if p == 0: continue
+            
+            if get_color(p) == attacker_color:
+                if attacker_color == 'white':
+                    if p in [WHITE_ROOK, WHITE_QUEEN]: return True
+                else:
+                    if p in [BLACK_ROOK, BLACK_QUEEN]: return True
+            break # Blocked
+
+    # Bishop/Queen
+    for d in BISHOP_DIRS:
+        curr = sq_idx
+        while True:
+            curr += d
+            if not (0 <= curr < 64): break
+            # Check wrap
+            if abs((curr%8) - (curr-d)%8) > 1 and d in [-7, -9, 7, 9]: break
+            
+            p = board[curr]
+            if p == 0: continue
+            
+            if get_color(p) == attacker_color:
+                if attacker_color == 'white':
+                    if p in [WHITE_BISHOP, WHITE_QUEEN]: return True
+                else:
+                    if p in [BLACK_BISHOP, BLACK_QUEEN]: return True
+            break # Blocked
+
+    return False
+
+def is_check(board, color):
+    k_pos = get_king_pos(board, color)
+    if k_pos == -1: return False # King missing?
+    attacker = 'black' if color == 'white' else 'white'
+    return is_square_attacked(board, k_pos, attacker)
+
+def make_move(board, move):
+    # move: (from, to, promo)
+    f, t, promo = move
+    new_board = list(board)
+    piece = new_board[f]
+    new_board[f] = 0
+    new_board[t] = piece
+    
+    # Handle Castling (move rook)
+    # Kingside: e1(60)->g1(62), R h1(63)->f1(61)
+    # Queenside: e1(60)->c1(58), R a1(56)->d1(59)
+    # Black similar
+    is_white = (1 <= piece <= 6)
+    if is_white:
+        if piece == WHITE_KING and f == 60 and t == 62: # Kingside
+            new_board[63] = 0; new_board[61] = WHITE_ROOK
+        if piece == WHITE_KING and f == 60 and t == 58: # Queenside
+            new_board[56] = 0; new_board[59] = WHITE_ROOK
+    else:
+        if piece == BLACK_KING and f == 4 and t == 6: # Kingside
+            new_board[7] = 0; new_board[5] = BLACK_ROOK
+        if piece == BLACK_KING and f == 4 and t == 2: # Queenside
+            new_board[0] = 0; new_board[3] = BLACK_ROOK
+
+    # Handle Promotion
+    if promo:
+        if is_white: new_board[t] = WHITE_QUEEN
+        else: new_board[t] = BLACK_QUEEN
+        
+    return new_board
+
+def get_legal_moves(board, color):
+    pseudo = generate_pseudo_moves(board, color)
+    legal = []
+    for move in pseudo:
+        # Check for legality (king not in check after move)
+        new_board = make_move(board, move)
+        if not is_check(new_board, color):
+            legal.append(move)
+    return legal
+
+# --- Evaluation & Search ---
+
+def evaluate(board):
+    # Material + PST
+    score = 0
+    for i in range(64):
+        p = board[i]
+        if p == 0: continue
+        
+        val = PIECE_VALUES[p]
+        score += val
+        
+        # Add PST bonus
+        if p in PST:
+            score += PST[p][i]
+            
+    return score
+
+def minimax(board, depth, alpha, beta, maximizing_player, color):
+    legal = get_legal_moves(board, color)
+    
+    if depth == 0:
+        return evaluate(board), None
+        
+    if not legal:
+        if is_check(board, color):
+            # Checkmate
+            return -20000 if maximizing_player else 20000, None
+        else:
+            # Stalemate
+            return 0, None
+
+    # Move ordering: Captures first
+    legal.sort(key=lambda m: PIECE_VALUES[board[m[1]]] if board[m[1]] != 0 else 0, reverse=True)
+
+    best_move = random.choice(legal) # fallback
+    
+    if maximizing_player:
+        max_eval = -float('inf')
+        for move in legal:
+            new_board = make_move(board, move)
+            eval_score, _ = minimax(new_board, depth - 1, alpha, beta, False, 'black' if color == 'white' else 'white')
+            
+            if eval_score > max_eval:
+                max_eval = eval_score
+                best_move = move
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval, best_move
+    else:
+        min_eval = float('inf')
+        for move in legal:
+            new_board = make_move(board, move)
+            eval_score, _ = minimax(new_board, depth - 1, alpha, beta, True, 'black' if color == 'white' else 'white')
+            
+            if eval_score < min_eval:
+                min_eval = eval_score
+                best_move = move
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval, best_move
+
+# --- Policy ---
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    # 1. Convert pieces dict to board list
+    board = [0] * 64
+    for sq, pc in pieces.items():
+        idx = alg_to_idx(sq)
+        p_char = pc[1]
+        color_char = pc[0]
+        
+        code = 0
+        if color_char == 'w':
+            if p_char == 'P': code = WHITE_PAWN
+            elif p_char == 'N': code = WHITE_KNIGHT
+            elif p_char == 'B': code = WHITE_BISHOP
+            elif p_char == 'R': code = WHITE_ROOK
+            elif p_char == 'Q': code = WHITE_QUEEN
+            elif p_char == 'K': code = WHITE_KING
+        else:
+            if p_char == 'P': code = BLACK_PAWN
+            elif p_char == 'N': code = BLACK_KNIGHT
+            elif p_char == 'B': code = BLACK_BISHOP
+            elif p_char == 'R': code = BLACK_ROOK
+            elif p_char == 'Q': code = BLACK_QUEEN
+            elif p_char == 'K': code = BLACK_KING
+        board[idx] = code
+
+    # 2. Search
+    # Depth 3 is usually safe for 1 sec in Python. 
+    # If we are white, we want to maximize the evaluation.
+    # If we are black, we want to minimize.
+    # Note: My evaluate() returns + for White advantage.
+    
+    _, best_move = minimax(board, 3, -float('inf'), float('inf'), to_play == 'white', to_play)
+
+    if best_move is None:
+        # Should not happen in a playable game, but return a dummy move or random legal
+        moves = get_legal_moves(board, to_play)
+        if moves:
+            best_move = random.choice(moves)
+        else:
+            return "a1a1" # Fail safe
+            
+    f, t, promo = best_move
+    
+    move_str = idx_to_alg(f) + idx_to_alg(t)
+    if promo:
+        move_str += promo
+        
+    return move_str
+
+# Renaming global PST for correct access
+PST = generate_pst()
+</code>

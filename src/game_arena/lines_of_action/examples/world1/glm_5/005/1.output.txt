@@ -1,0 +1,266 @@
+The strategy for this policy is based on a Minimax search with Alpha-Beta pruning to look ahead several moves. The evaluation function prioritizes the primary win condition: connecting all friendly pieces into a single contiguous group. It assigns a very high score to states where the player's pieces are fully connected and penalizes states where the opponent is connected. To guide the search in intermediate states, it uses a heuristic that minimizes the number of disconnected groups (components) and encourages pieces to move closer together (using pairwise Manhattan distances). The search depth is adapted based on the number of pieces on the board to ensure the move is computed within the time limit.
+
+<code>
+import numpy as np
+import math
+
+def policy(board):
+    """
+    Returns the best move for the current player (1) on the given board.
+    """
+    # Convert board to numpy array for efficient operations
+    current_board = np.array(board, dtype=np.int8)
+    
+    # Determine search depth based on game complexity (number of pieces)
+    piece_count = np.sum(current_board != 0)
+    if piece_count <= 6:
+        depth = 4
+    elif piece_count <= 10:
+        depth = 3
+    else:
+        depth = 3
+
+    # Perform Minimax search
+    best_move = None
+    best_score = -float('inf')
+    alpha = -float('inf')
+    beta = float('inf')
+    
+    # Generate moves for the root node
+    moves = get_legal_moves(current_board, 1)
+    
+    # Simple move ordering: try captures first to improve pruning
+    moves.sort(key=lambda m: current_board[m[2], m[3]] == -1, reverse=True)
+
+    for move in moves:
+        r1, c1, r2, c2 = move
+        captured = current_board[r2, c2]
+        
+        # Make move
+        current_board[r2, c2] = 1
+        current_board[r1, c1] = 0
+        
+        score = minimax(current_board, depth - 1, alpha, beta, False)
+        
+        # Unmake move
+        current_board[r1, c1] = 1
+        current_board[r2, c2] = captured
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+        alpha = max(alpha, score)
+        
+    # Fallback if no move found (should not happen in valid game state)
+    if best_move is None:
+        if moves:
+            best_move = moves[0]
+        else:
+            return "0,0:0,0" # Should not happen
+
+    return f"{best_move[0]},{best_move[1]}:{best_move[2]},{best_move[3]}"
+
+def minimax(board, depth, alpha, beta, maximizing_player):
+    if depth == 0:
+        return evaluate(board)
+    
+    player = 1 if maximizing_player else -1
+    
+    # Terminal state check (connectivity)
+    # We check this in evaluate, but checking here allows early exit
+    # However, evaluate is called at depth 0 anyway. 
+    # Let's rely on evaluate for terminal checks to save overhead in internal nodes
+    # unless a immediate win is detected.
+    
+    moves = get_legal_moves(board, player)
+    
+    if not moves:
+        # If no moves, player passes? In LOA, usually you lose if you can't move? 
+        # Or pass. If pass, evaluation stays same.
+        # Assuming pass is not a standard winning strategy, return a bad score for stuck player.
+        return -100000 if maximizing_player else 100000
+
+    if maximizing_player:
+        max_eval = -float('inf')
+        for r1, c1, r2, c2 in moves:
+            captured = board[r2, c2]
+            board[r2, c2] = 1
+            board[r1, c1] = 0
+            
+            eval_val = minimax(board, depth - 1, alpha, beta, False)
+            
+            board[r1, c1] = 1
+            board[r2, c2] = captured
+            
+            if eval_val > max_eval:
+                max_eval = eval_val
+            alpha = max(alpha, eval_val)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for r1, c1, r2, c2 in moves:
+            captured = board[r2, c2]
+            board[r2, c2] = -1
+            board[r1, c1] = 0
+            
+            eval_val = minimax(board, depth - 1, alpha, beta, True)
+            
+            board[r1, c1] = -1
+            board[r2, c2] = captured
+            
+            if eval_val < min_eval:
+                min_eval = eval_val
+            beta = min(beta, eval_val)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def evaluate(board):
+    # Connectivity heuristic
+    my_components = count_components(board, 1)
+    opp_components = count_components(board, -1)
+    
+    # Win/Loss checks
+    if my_components == 1:
+        return 100000 # Win
+    if opp_components == 1:
+        return -100000 # Loss
+    
+    # Heuristic score
+    # Minimize my components, maximize opponent components
+    score = (opp_components - my_components) * 1000
+    
+    # Distance heuristic: Sum of pairwise distances
+    # Lower is better for the player.
+    my_dist = total_pairwise_distance(board, 1)
+    opp_dist = total_pairwise_distance(board, -1)
+    
+    # We want to minimize our distance, maximize opponent's (or minimize their connectivity)
+    # Actually we want to be close. So my_dist is bad (penalty).
+    score -= my_dist * 5
+    score += opp_dist * 5
+    
+    # Centralization: pieces near center are generally more flexible
+    # Center is (3.5, 3.5)
+    # This is a minor factor.
+    
+    return score
+
+def total_pairwise_distance(board, player):
+    pieces = np.argwhere(board == player)
+    total = 0
+    n = len(pieces)
+    if n < 2:
+        return 0
+    # Sum of Manhattan distances (faster to compute than Euclidean)
+    # Using nested loops is fine for small N (max 12-16 pieces)
+    for i in range(n):
+        for j in range(i + 1, n):
+            total += abs(pieces[i][0] - pieces[j][0]) + abs(pieces[i][1] - pieces[j][1])
+    return total
+
+def count_components(board, player):
+    visited = np.zeros((8, 8), dtype=bool)
+    components = 0
+    pieces = np.argwhere(board == player)
+    
+    if len(pieces) == 0:
+        return 0
+    
+    for r, c in pieces:
+        if not visited[r, c]:
+            components += 1
+            # BFS
+            queue = [(r, c)]
+            visited[r, c] = True
+            idx = 0
+            while idx < len(queue):
+                curr_r, curr_c = queue[idx]
+                idx += 1
+                # Check 8 neighbors
+                for dr in [-1, 0, 1]:
+                    for dc in [-1, 0, 1]:
+                        if dr == 0 and dc == 0:
+                            continue
+                        nr, nc = curr_r + dr, curr_c + dc
+                        if 0 <= nr < 8 and 0 <= nc < 8:
+                            if board[nr, nc] == player and not visited[nr, nc]:
+                                visited[nr, nc] = True
+                                queue.append((nr, nc))
+    return components
+
+def get_legal_moves(board, player):
+    moves = []
+    # Directions: Row, Col, Diag1, Diag2
+    directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
+    
+    pieces = np.argwhere(board == player)
+    
+    for r, c in pieces:
+        for dr, dc in directions:
+            # Count pieces in this line
+            count = 1 # Self
+            
+            # Scan positive direction
+            tr, tc = r + dr, c + dc
+            while 0 <= tr < 8 and 0 <= tc < 8:
+                if board[tr, tc] != 0:
+                    count += 1
+                tr += dr
+                tc += dc
+                
+            # Scan negative direction
+            tr, tc = r - dr, c - dc
+            while 0 <= tr < 8 and 0 <= tc < 8:
+                if board[tr, tc] != 0:
+                    count += 1
+                tr -= dr
+                tc -= dc
+            
+            dist = count
+            
+            # Generate moves for this direction (+dist and -dist)
+            # Positive direction
+            nr, nc = r + dr * dist, c + dc * dist
+            if 0 <= nr < 8 and 0 <= nc < 8:
+                # Check path validity
+                # Path is strictly between (r,c) and (nr,nc)
+                # We must ensure no opponent piece blocks the path
+                # Friendly pieces (player) are allowed in path (jumping)
+                
+                path_valid = True
+                step = 1
+                while step < dist:
+                    cr, cc = r + dr * step, c + dc * step
+                    if board[cr, cc] == -player:
+                        path_valid = False
+                        break
+                    step += 1
+                
+                if path_valid:
+                    # Check landing spot
+                    target = board[nr, nc]
+                    if target != player: # Can move to empty or capture opponent
+                        moves.append((r, c, nr, nc))
+
+            # Negative direction
+            nr, nc = r - dr * dist, c - dc * dist
+            if 0 <= nr < 8 and 0 <= nc < 8:
+                path_valid = True
+                step = 1
+                while step < dist:
+                    cr, cc = r - dr * step, c - dc * step
+                    if board[cr, cc] == -player:
+                        path_valid = False
+                        break
+                    step += 1
+                
+                if path_valid:
+                    target = board[nr, nc]
+                    if target != player:
+                        moves.append((r, c, nr, nc))
+                        
+    return moves
+</code>

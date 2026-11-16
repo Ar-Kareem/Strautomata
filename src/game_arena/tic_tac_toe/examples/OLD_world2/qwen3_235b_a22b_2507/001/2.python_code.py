@@ -1,0 +1,131 @@
+
+import numpy as np
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Determines the next move for a 4x4 Tic Tac Toe game using a minimax algorithm with alpha-beta pruning.
+    """
+    board_array = np.array(board)
+    
+    def is_terminal(state):
+        # Check rows, columns, and diagonals for a winner
+        for i in range(4):
+            if abs(np.sum(state[i, :])) == 4 or abs(np.sum(state[:, i])) == 4:
+                return np.sum(state[i, :]) // 4 if abs(np.sum(state[i, :])) == 4 else np.sum(state[:, i]) // 4
+        
+        # Check diagonals
+        if abs(np.sum(np.diag(state))) == 4:
+            return np.sum(np.diag(state)) // 4
+        if abs(np.sum(np.diag(np.fliplr(state)))) == 4:
+            return np.sum(np.diag(np.fliplr(state))) // 4
+            
+        # Check for draw or ongoing game
+        if 0 not in state:
+            return 0
+        return None
+    
+    def evaluate(state):
+        # Immediate terminal state check
+        terminal = is_terminal(state)
+        if terminal is not None:
+            return terminal * 1000
+            
+        score = 0
+        
+        # Evaluate rows
+        for i in range(4):
+            row = state[i, :]
+            score += evaluate_line(row)
+        
+        # Evaluate columns
+        for j in range(4):
+            col = state[:, j]
+            score += evaluate_line(col)
+        
+        # Evaluate diagonals
+        score += evaluate_line(np.diag(state))
+        score += evaluate_line(np.diag(np.fliplr(state)))
+        
+        return score
+    
+    def evaluate_line(line):
+        if 1 in line and -1 in line:  # Mixed line has no winner
+            return 0
+            
+        count = np.sum(line)
+        if count > 0:  # Only player 1 has marks here
+            return count * count  # Prefer lines with more of our marks
+        elif count < 0:  # Only player -1 has marks here
+            return count * count  # Prefer to block opponent's progress
+        return 0
+    
+    def minimax(state, depth, alpha, beta, maximizing):
+        terminal = is_terminal(state)
+        if terminal is not None or depth == 0:
+            return evaluate(state)
+            
+        if maximizing:
+            max_eval = float('-inf')
+            for i in range(4):
+                for j in range(4):
+                    if state[i, j] == 0:
+                        state[i, j] = 1
+                        eval_score = minimax(state, depth - 1, alpha, beta, False)
+                        state[i, j] = 0
+                        max_eval = max(max_eval, eval_score)
+                        alpha = max(alpha, eval_score)
+                        if beta <= alpha:
+                            break
+                else:
+                    continue
+                break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for i in range(4):
+                for j in range(4):
+                    if state[i, j] == 0:
+                        state[i, j] = -1
+                        eval_score = minimax(state, depth - 1, alpha, beta, True)
+                        state[i, j] = 0
+                        min_eval = min(min_eval, eval_score)
+                        beta = min(beta, eval_score)
+                        if beta <= alpha:
+                            break
+                else:
+                    continue
+                break
+            return min_eval
+    
+    # Find all valid moves
+    valid_moves = []
+    for i in range(4):
+        for j in range(4):
+            if board_array[i, j] == 0:
+                valid_moves.append((i, j))
+    
+    # If it's the first move, take center position
+    if len(valid_moves) == 16:
+        return (1, 1)
+    
+    # If only one move left, take it
+    if len(valid_moves) == 1:
+        return valid_moves[0]
+    
+    # Apply minimax with depth limit based on remaining moves
+    best_score = float('-inf')
+    best_move = valid_moves[0]
+    search_depth = min(5, max(3, 8 - len(valid_moves)))  # Adjust depth based on game stage
+    
+    for move in valid_moves:
+        i, j = move
+        board_array[i, j] = 1
+        score = minimax(board_array, search_depth, float('-inf'), float('inf'), False)
+        board_array[i, j] = 0
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move

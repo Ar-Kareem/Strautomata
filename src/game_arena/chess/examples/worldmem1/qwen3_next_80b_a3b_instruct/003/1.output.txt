@@ -1,0 +1,166 @@
+The strategy for this policy is to implement a weighted evaluation function that prioritizes:
+1. Checkmate moves (highest priority)
+2. Captures of high-value pieces (Queen > Rook > Bishop/Knight > Pawn)
+3. Moves that develop pieces or control the center
+4. Moves that improve king safety (e.g., castling when safe)
+5. Avoiding moves that expose the king or lose material
+6. As a fallback, selecting the lexicographically first move if no clear superior option exists
+
+The policy uses a simple but effective scoring system that evaluates each legal move based on:
+- Material gain (capture value)
+- Piece type being moved (prioritize queens and rooks for activity)
+- Center control (d4, d5, e4, e5 squares)
+- Castling opportunity
+- Check promotion
+
+We store minimal state in memory (only to track if we're in early, mid, or late game for evaluation tweaks).
+
+<code>
+import numpy as np
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str], memory: dict) -> tuple[str, dict]:
+    # Define piece values for material evaluation
+    piece_values = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}  # King has no material value
+    
+    # Determine color for our side
+    my_color = 'w' if to_play == 'white' else 'b'
+    opponent_color = 'b' if my_color == 'w' else 'w'
+    
+    # Early game detection (fewer than 16 total pieces)
+    total_pieces = len(pieces)
+    is_early_game = total_pieces > 20  # More than 20 pieces means early/midgame
+    
+    # Score moves based on criteria
+    move_scores = []
+    
+    for move in legal_moves:
+        score = 0.0
+        
+        # Check for checkmate (highest priority)
+        if move.endswith('+') or '++' in move:  # Check or double check
+            # We don't have board state to validate checkmate, but if it's reported as mate, it's the move
+            # In some systems, mate is indicated with '#', but the problem says check is '+'
+            # Since we don't have board context, we assume if move has check and is decisive... but we can't confirm mate
+            # So we rely on: moves that capture opponent's king are illegal, so checkmate moves are the ones that would end the game
+            # We'll treat any move that ends with '+' as potentially mating, but we need to prioritize if it's the only option
+            # Actually, in standard notation, checkmate is often denoted with '#', but problem says only '+' for check
+            # So we'll prioritize moves that are captures AND lead to check
+            # Let's be safe: if there's any move that is a capture AND gives check, it might be mate
+            if 'x' in move and '+' in move:
+                score += 10000
+            else:
+                score += 5000  # Just a strong check
+        
+        # Check for captures
+        if 'x' in move:
+            # Extract captured piece: it's the last part after 'x'
+            # But we need to infer the target square and look up the piece
+            # Simplified: if the move is a capture, we assume it's a valuable piece
+            # Use heuristic: if move contains x, assume it's a capture
+            # Look for the target square: last two characters before promotion or check
+            
+            # Extract potential target square (last 2 chars, before = or +)
+            target_square = move
+            if '=' in move:
+                target_square = target_square.split('=')[0]
+            if '+' in target_square:
+                target_square = target_square.replace('+', '')
+            if 'x' in target_square:
+                # Move format like "Nxe5" or "Raxb5"
+                # Find the last part after 'x'
+                parts = target_square.split('x')
+                if len(parts) >= 2:
+                    square_after_x = parts[-1]
+                    # Look up the captured piece
+                    if square_after_x in pieces:
+                        captured_piece = pieces[square_after_x]
+                        if captured_piece[0] == opponent_color:
+                            piece_type = captured_piece[1]
+                            if piece_type in piece_values:
+                                score += piece_values[piece_type] * 5  # Multiply by 5 for capture priority
+                                if piece_type == 'Q':
+                                    score += 1000  # Huge bonus for queen capture
+                                elif piece_type == 'R':
+                                    score += 500   # Strong bonus for rook
+                                elif piece_type == 'B' or piece_type == 'N':
+                                    score += 300   # Solid bonus for minor pieces
+            
+            # Also check for promotion captures: exd8=Q (captures on the promotion square)
+            # In standard notation, it's like "dxe8=Q" or "exd8=Q"
+            if '=' in move:
+                # Promotion capture
+                before_eq = move.split('=')[0]
+                if 'x' in before_eq:
+                    # Then it's a capturing promotion
+                    if 'Q' in move and move.endswith('Q'):
+                        score += 1000  # Promote to queen after capturing is very good
+                    elif 'R' in move and move.endswith('R'):
+                        score += 700
+                    elif 'B' in move and move.endswith('B'):
+                        score += 500
+                    elif 'N' in move and move.endswith('N'):
+                        score += 400
+        
+        # Check for castling
+        if move == 'O-O' or move == 'O-O-O':
+            # Castling is good for king safety, especially early game
+            if is_early_game:
+                score += 800
+            else:
+                score += 300
+        
+        # Promotions (without capture)
+        if '=' in move and 'x' not in move:
+            # Promotion move
+            if 'Q' in move:
+                score += 800
+            elif 'R' in move:
+                score += 600
+            elif 'B' in move:
+                score += 400
+            elif 'N' in move:
+                score += 350
+            # We assume promotion is always good, especially on 8th rank
+        
+        # Central control: prioritize moves to or from center squares
+        center_squares = {'d4', 'd5', 'e4', 'e5', 'c4', 'c5', 'f4', 'f5'}
+        if 'x' in move:
+            # For captures, check target square
+            target_sq = move.replace('x', '').replace('+', '').replace('=', '').replace('O-O', '').replace('O-O-O', '')
+            # Split if it's a disambiguated move
+            if len(target_sq) >= 2:
+                target_sq = target_sq[-2:]  # Last 2 characters should be the target
+            if target_sq in center_squares:
+                score += 100
+        else:
+            # Normal move
+            move_sq = move.replace('+', '').replace('=', '')
+            if len(move_sq) >= 2:
+                end_sq = move_sq[-2:]
+                if end_sq in center_squares:
+                    score += 100
+        
+        # Avoid moves that expose the king (very rough heuristic) - if we have no king in safety, avoid
+        # We don't have full board context, so we rely on piece activity
+        
+        # Add bonus for developing minor pieces early
+        if move.startswith(('N', 'B')) and move[0] in 'N' and '1' in move and is_early_game:
+            score += 150  # Develop knights early
+        if move.startswith('B') and 'c' in move and is_early_game:
+            score += 100  # Develop bishop
+    
+        move_scores.append(score)
+    
+    # Find the move with the highest score
+    if len(move_scores) == 0:
+        # Should never happen, return dummy
+        return "a2a3", memory
+    
+    best_idx = np.argmax(move_scores)
+    best_move = legal_moves[best_idx]
+    
+    # Update memory with game stage
+    memory['total_pieces'] = total_pieces
+    
+    return best_move, memory
+</code>

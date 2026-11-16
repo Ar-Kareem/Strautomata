@@ -1,0 +1,85 @@
+Okay, I will design a chess policy that aims to make intelligent moves based on the current board state and available legal moves. The core strategy prioritizes the following:
+
+1. **Checkmate:** If a checkmate is available, take it immediately.
+2. **Material Gain:** Evaluate the material value of each move and prioritize moves that capture opponent's pieces with higher value than the piece being sacrificed.
+3. **King Safety:** Prioritize moves that improve the king's safety by moving the king away from threats, or by interposing pieces to block attacks.
+4. **Threat Prevention:** Identify immediate threats to our pieces and block or move the threatened piece to safety.
+5. **Piece Activity/Development:** Develop pieces towards the center of the board to control more squares.  Knights before bishops in the opening.
+6. **Pawn Structure:**  Avoid weakening pawn structures unnecessarily.
+
+The policy will use a scoring function to evaluate the quality of each legal move. The scoring function will take into account material balance, king safety, and piece activity. To do this in the time limit I will keep the function relatively simple but hopefully effective.
+
+```python
+import chess
+
+def evaluate_board(board: chess.Board, to_play: str) -> float:
+    """
+    A very basic evaluation function.  Positive scores are good for white, negative for black.
+    """
+    piece_values = {
+        chess.PAWN: 1,
+        chess.KNIGHT: 3,
+        chess.BISHOP: 3.2,
+        chess.ROOK: 5,
+        chess.QUEEN: 9,
+        chess.KING: 0  # King's value is only relevant for endgame or checkmate
+    }
+
+    score = 0
+    for square in chess.SQUARES:
+        piece = board.piece_at(square)
+        if piece:
+            if piece.color == chess.WHITE:
+                score += piece_values[piece.piece_type]
+            else:
+                score -= piece_values[piece.piece_type]
+
+    # Simple King Safety - Penalize if king is open
+    king_square = board.king(chess.WHITE if to_play == 'white' else chess.BLACK)
+    if king_square:
+       neighbors = [king_square + i for i in [-9,-8,-7,-1,1,7,8,9] if 0 <= king_square + i < 64]
+       pawns_around = 0
+       for n in neighbors:
+           p = board.piece_at(n)
+           if p and p.piece_type == chess.PAWN and p.color == (chess.WHITE if to_play == 'white' else chess.BLACK):
+               pawns_around += 1
+       score -= (6 - pawns_around)*0.2 if to_play == 'white' else (6 - pawns_around)*-0.2
+    return score
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    """
+    Selects the next move based on a simple evaluation function.
+    """
+    piece_map = {}
+    for sq, pc in pieces.items():
+        piece_map[chess.SQUARE_NAMES.index(sq)] = chess.Piece.from_symbol(pc[1 if pc[0] == 'w' else 0])
+        if pc[0] == 'b':
+              piece_map[chess.SQUARE_NAMES.index(sq)] *= -1
+
+    board = chess.Board()
+    board.clear()
+    board.set_piece_map(piece_map)
+    board.turn = chess.WHITE if to_play == 'white' else chess.BLACK
+
+    legal_moves_str = [move.uci() for move in board.legal_moves]
+
+    best_move = None
+    best_score = float('-inf') if to_play == 'white' else float('inf')  # Initialize based on player
+    for move_str in legal_moves_str:
+        move = chess.Move.from_uci(move_str)
+        board.push(move)
+        score = evaluate_board(board, to_play)  # Evaluate the resulting board
+        board.pop()
+
+        if to_play == 'white':
+            if score > best_score:
+                best_score = score
+                best_move = move_str
+        else:
+            if score < best_score:
+                best_score = score
+                best_move = move_str
+    if not best_move:
+        return str(list(board.legal_moves)[0])
+    return best_move
+```

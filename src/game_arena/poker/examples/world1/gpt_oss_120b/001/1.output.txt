@@ -1,0 +1,236 @@
+**Strategy Overview**
+
+The policy estimates the equity of the hand by Monte‑Carlo simulation.  
+From the current known cards (my hole card and the community cards) we
+sample random opponent hole cards and the missing community cards,
+evaluate the best five‑card poker hand for both players, and compute the
+probability of winning (ties count as half a win).
+
+Using this win probability we compare against the *pot odds*:
+
+```
+pot_odds = to_call / (pot + to_call)      # fraction of the pot we must invest
+```
+
+* If the equity is well above the pot odds we raise (if a raise is legal).  
+* If the equity is just above the pot odds we call (or check when `to_call==0`).  
+* Otherwise we fold (unless folding is illegal in the very first round).
+
+The hand evaluator works by enumerating all 5‑card combinations of the
+available cards (hole + board) and classifies each hand using the
+standard Texas Hold’em ranking (straight‑flush, four‑of‑a‑kind, …,
+high‑card).  The best hand is the one with the highest rank tuple.
+
+The policy runs a modest number of simulations (≈1500) which is fast
+enough for the 1‑second limit while giving a reliable estimate of equity.
+
+```python
+<code>
+import random
+import itertools
+from collections import Counter
+
+# ----- Hand evaluation -------------------------------------------------
+
+# Hand categories (higher is better)
+_CAT_STRAIGHT_FLUSH = 9
+_CAT_FOUR_KIND = 8
+_CAT_FULL_HOUSE = 7
+_CAT_FLUSH = 6
+_CAT_STRAIGHT = 5
+_CAT_THREE_KIND = 4
+_CAT_TWO_PAIR = 3
+_CAT_PAIR = 2
+_CAT_HIGH = 1
+
+def hand_rank(cards):
+    """Return a rank tuple for 5 cards. Higher tuple means stronger hand."""
+    ranks = [c['rank'] for c in cards]
+    suits = [c['suit'] for c in cards]
+
+    rank_counts = Counter(ranks)
+    counts = sorted(rank_counts.values(), reverse=True)      # e.g. [3,2]
+    ordered_ranks = sorted(rank_counts.items(),
+                           key=lambda x: (-x[1], -x[0]))     # by count then rank
+    # list of ranks sorted by count then rank
+    rank_by_count = [r for r, _ in ordered_ranks]
+
+    is_flush = len(set(suits)) == 1
+
+    # Straight detection (including wheel A‑2‑3‑4‑5)
+    uniq = sorted(set(ranks))
+    is_straight = False
+    high_straight = None
+    if len(uniq) == 5:
+        if uniq[-1] - uniq[0] == 4:
+            is_straight = True
+            high_straight = uniq[-1]
+        elif uniq == [2, 3, 4, 5, 14]:          # Ace low straight
+            is_straight = True
+            high_straight = 5
+
+    # Straight flush
+    if is_straight and is_flush:
+        return (_CAT_STRAIGHT_FLUSH, high_straight)
+
+    # Four of a kind
+    if counts[0] == 4:
+        four = rank_by_count[0]
+        kicker = rank_by_count[1]
+        return (_CAT_FOUR_KIND, four, kicker)
+
+    # Full house
+    if counts[0] == 3 and counts[1] == 2:
+        three = rank_by_count[0]
+        pair = rank_by_count[1]
+        return (_CAT_FULL_HOUSE, three, pair)
+
+    # Flush
+    if is_flush:
+        return (_CAT_FLUSH, ) + tuple(sorted(ranks, reverse=True))
+
+    # Straight
+    if is_straight:
+        return (_CAT_STRAIGHT, high_straight)
+
+    # Three of a kind
+    if counts[0] == 3:
+        three = rank_by_count[0]
+        kickers = sorted([r for r in ranks if r != three], reverse=True)[:2]
+        return (_CAT_THREE_KIND, three) + tuple(kickers)
+
+    # Two pair
+    if counts[0] == 2 and counts[1] == 2:
+        high_pair, low_pair = sorted([rank_by_count[0], rank_by_count[1]],
+                                     reverse=True)
+        kicker = rank_by_count[2]
+        return (_CAT_TWO_PAIR, high_pair, low_pair, kicker)
+
+    # One pair
+    if counts[0] == 2:
+        pair = rank_by_count[0]
+        kickers = sorted([r for r in ranks if r != pair], reverse=True)[:3]
+        return (_CAT_PAIR, pair) + tuple(kickers)
+
+    # High card
+    return (_CAT_HIGH, ) + tuple(sorted(ranks, reverse=True))
+
+def best_hand(all_cards):
+    """Given a list of >=5 cards, return the best hand rank."""
+    best = None
+    for combo in itertools.combinations(all_cards, 5):
+        r = hand_rank(combo)
+        if best is None or r > best:
+            best = r
+    return best
+
+# ----- Monte‑Carlo equity estimation ------------------------------------
+
+def estimate_equity(state, sims=1500):
+    """Return win probability (0..1) for the current state."""
+    my_private = state['private_cards']
+    public = state['public_cards']
+
+    # Build the deck of unknown cards
+    known = set()
+    for c in my_private + public:
+        known.add((c['rank'], c['suit']))
+
+    # Full deck
+    full_deck = [(rank, suit) for rank in range(2, 15) for suit in range(4)]
+    unknown = [c for c in full_deck if c not in known]
+
+    wins = 0
+    ties = 0
+
+    needed_public = 5 - len(public)          # cards that will still be dealt
+
+    for _ in range(sims):
+        deck = unknown[:]
+        random.shuffle(deck)
+
+        # opponent hole card (single card, same size as ours)
+        opp_private = [{'rank': deck[0][0], 'suit': deck[0][1]}]
+        idx = 1
+
+        # fill missing community cards
+        community = [{'rank': c['rank'], 'suit': c['suit']} for c in public]
+        for _ in range(needed_public):
+            community.append({'rank': deck[idx][0], 'suit': deck[idx][1]})
+            idx += 1
+
+        # evaluate hands
+        my_hand = best_hand(my_private + community)
+        opp_hand = best_hand(opp_private + community)
+
+        if my_hand > opp_hand:
+            wins += 1
+        elif my_hand == opp_hand:
+            ties += 1
+        # else lose
+
+    return (wins + 0.5 * ties) / sims
+
+# ----- Decision logic --------------------------------------------------
+
+def decide_action(state, equity):
+    """Choose an action based on equity and pot odds."""
+    to_call = state['to_call']
+    pot = state['pot']
+    allowed = set(state['allowed_actions'])
+
+    # Pot odds: fraction of the total pot we must invest to stay in
+    if to_call > 0:
+        pot_odds = to_call / (pot + to_call)
+    else:
+        pot_odds = 0.0
+
+    # Simple thresholds (tunable)
+    raise_thresh = 0.65   # equity needed to raise
+    call_thresh = pot_odds + 0.02   # a tiny margin over pot odds
+
+    # Prevent illegal folding in the very first betting round
+    if state['my_spent'] == 0 and state['opponent_spent'] == 0 and pot == 0:
+        # this is the start of the hand – folding is forbidden
+        allowed.discard('fold')
+
+    if to_call == 0:          # we can check or raise
+        if equity >= raise_thresh and 'raise' in allowed:
+            return 'raise'
+        else:
+            return 'call'    # check
+    else:                     # we face a bet
+        if equity >= raise_thresh and 'raise' in allowed:
+            return 'raise'
+        elif equity >= call_thresh and 'call' in allowed:
+            return 'call'
+        elif 'fold' in allowed:
+            return 'fold'
+        elif 'call' in allowed:   # fallback
+            return 'call'
+        else:
+            return 'all-in'        # last resort
+
+def policy(state: dict) -> str:
+    """
+    Return a legal action ('fold', 'call', 'raise', 'all-in') for the given
+    poker state.
+    """
+    # Quick sanity: if we have no information (pre‑flop with only one private
+    # card), use a simple rank‑based rule to avoid expensive simulation.
+    if not state['public_cards']:
+        rank = state['private_cards'][0]['rank']
+        # Very high cards we treat as strong
+        if rank >= 12:   # Q, K, A
+            if 'raise' in state['allowed_actions']:
+                return 'raise'
+            return 'call'
+        else:
+            if 'call' in state['allowed_actions']:
+                return 'call'
+            return 'fold'
+
+    equity = estimate_equity(state, sims=1500)
+    return decide_action(state, equity)
+</code>
+```

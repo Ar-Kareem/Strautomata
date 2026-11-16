@@ -1,0 +1,109 @@
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str], memory: dict) -> tuple[str, dict]:
+    # Initialize memory if empty
+    if not memory:
+        memory = {
+            'piece_values': {'Q': 9, 'R': 5, 'B': 3, 'N': 3, 'P': 1, 'K': 0},
+            'previous_pieces': pieces.copy(),
+            'move_history': []
+        }
+
+    # Update memory with current board state
+    memory['previous_pieces'] = pieces.copy()
+
+    # Helper function to evaluate a move
+    def evaluate_move(move):
+        score = 0
+
+        # Check for checkmate (highest priority)
+        if '+' in move and '#' in move:
+            return float('inf')
+
+        # Check for check
+        if '+' in move:
+            score += 100
+
+        # Check for promotion
+        if '=' in move:
+            score += 1000  # Very high priority for promotion
+
+        # Check for capture
+        if 'x' in move:
+            # Extract captured piece (format: e.g., 'Bxf5' -> 'f5')
+            if len(move) >= 4 and move[1] == 'x':
+                target_square = move[2:4]
+            else:
+                # Handle cases like 'exd5' or 'Nxd5'
+                parts = move.split('x')
+                if len(parts) > 1:
+                    target_square = parts[1][:2]
+
+            if target_square in pieces:
+                captured_piece = pieces[target_square]
+                if captured_piece[0] != to_play[0]:  # Opponent's piece
+                    piece_type = captured_piece[1]
+                    score += memory['piece_values'].get(piece_type, 0) * 10
+
+        # Check for castling (good for king safety)
+        if move in ['O-O', 'O-O-O']:
+            score += 50
+
+        # Check for pawn moves (prefer advancing pawns)
+        if move[0].islower() and move[0] != 'x' and move[0] != 'O' and move[0] != '=':
+            # It's a pawn move (format: e.g., 'e4', 'e5')
+            if len(move) == 2:
+                rank = int(move[1])
+                if to_play == 'white':
+                    score += (rank - 1)  # Higher for advancing pawns
+                else:
+                    score += (8 - rank)  # Higher for advancing pawns
+
+        # Check for piece development (moving pieces from back rank)
+        if len(move) >= 2 and move[0].isupper() and move[0] != 'K':
+            # It's a piece move (not king)
+            from_square = None
+            if len(move) == 2:
+                # Simple move like 'Nf3'
+                from_square = find_from_square(move, pieces, to_play)
+            elif len(move) == 3 and move[1] == 'x':
+                # Capture like 'Nxf3'
+                from_square = find_from_square(move, pieces, to_play)
+            elif len(move) == 4:
+                # Disambiguated move like 'N1c3'
+                from_square = move[:2]
+
+            if from_square:
+                from_rank = int(from_square[1])
+                if to_play == 'white' and from_rank == 1:
+                    score += 20  # Developing from back rank
+                elif to_play == 'black' and from_rank == 8:
+                    score += 20  # Developing from back rank
+
+        return score
+
+    # Helper function to find the from square for a move
+    def find_from_square(move, pieces, to_play):
+        piece_type = move[0].upper()
+        target_square = move[-2:]
+
+        for square, piece in pieces.items():
+            if piece[1] == piece_type and piece[0] == to_play[0]:
+                # Check if this piece can move to target_square
+                # This is a simplified check - in a real implementation, we'd verify the move is legal
+                # But since we're only given legal moves, we can assume any piece of this type can make the move
+                return square
+        return None
+
+    # Evaluate all legal moves
+    move_scores = []
+    for move in legal_moves:
+        score = evaluate_move(move)
+        move_scores.append((score, move))
+
+    # Sort moves by score (descending)
+    move_scores.sort(reverse=True, key=lambda x: x[0])
+
+    # Select the best move
+    best_move = move_scores[0][1] if move_scores else legal_moves[0]
+
+    return best_move, memory

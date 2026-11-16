@@ -1,0 +1,98 @@
+<thinking>
+*   Game mechanics: Single deck (13 cards), target score $T \in [10, 30]$.
+*   Card values: Ace is 1 or 11; J, Q, K are 10.
+*   The goal: Get as close to $T$ as possible without exceeding it.
+*   Opponent: The opponent has their own independent deck and follows a similar goal. Since I don't know the opponent's hand or their exact strategy, I should play "optimally" against an average outcome.
+*   Strategy: Calculate the current hand value (accounting for flexible Aces). Calculate the probability of "busting" if I hit, versus the strength of my current hand.
+*   Logic:
+    1. Calculate current hand value $S$.
+    2. Identify remaining cards in the deck.
+    3. If $S$ is already very close to $T$ (e.g., $S \ge T-1$), staying is likely best.
+    4. If the probability of drawing a card that busts the hand is high, consider staying.
+    5. Since $T$ can be as high as 30, and the deck only has 13 cards (total value 95), players will likely need to draw many cards for high targets.
+    6. For $T \le 21$, standard Blackjack logic applies. For $T > 21$, we need to be more aggressive.
+
+Value Calculation:
+- Sum face values.
+- If sum > $T$ and there are Aces treated as 11, convert them to 1.
+
+Heuristic:
+- If current sum $S > T$, we already lost (though the prompt says policy is called to make a decision, so $S \le T$).
+- If $S \le T - 10$, the chance of busting is 0 (since max card value is 10). Always HIT.
+- If $S > T - 10$, calculate how many cards in the remaining deck would cause a bust.
+- If the probability of busting is $> 0.5$ AND the current score is "respectable" (e.g., within 4 of the target), STAY.
+</thinking>
+
+<code>
+def policy(hand: list[str], target: int) -> str:
+    """
+    Determines whether to HIT or STAY in a Blackjack-like game with a variable target.
+    """
+    # Map ranks to their primary values
+    values_map = {
+        "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9,
+        "10": 10, "J": 10, "Q": 10, "K": 10, "A": 11
+    }
+    
+    def calculate_score(current_hand):
+        score = sum(values_map[card] for card in current_hand)
+        aces = current_hand.count("A")
+        # Adjust Aces from 11 to 1 if we are over the target
+        while score > target and aces > 0:
+            score -= 10
+            aces -= 1
+        return score
+
+    current_score = calculate_score(hand)
+    
+    # If we are already at or above target (though game should end if above), stay
+    if current_score >= target:
+        return "STAY"
+    
+    # Identify cards remaining in our 13-card deck
+    full_deck = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    remaining_deck = full_deck.copy()
+    for card in hand:
+        if card in remaining_deck:
+            remaining_deck.remove(card)
+            
+    if not remaining_deck:
+        return "STAY"
+
+    # Calculate the probability of busting if we HIT
+    bust_count = 0
+    for next_card in remaining_deck:
+        if calculate_score(hand + [next_card]) > target:
+            bust_count += 1
+            
+    prob_bust = bust_count / len(remaining_deck)
+    
+    # Strategy: 
+    # 1. If we can't possibly bust, always HIT.
+    if bust_count == 0:
+        return "HIT"
+    
+    # 2. If the target is high, we need to be more aggressive.
+    # 3. If the score is close to the target, and bust risk is significant, STAY.
+    
+    # Threshold logic:
+    # If target is large (e.g. 30), a score of 20 is not "good". 
+    # We want to be within a certain distance of the target.
+    distance_to_target = target - current_score
+    
+    # Risk tolerance: if the distance to target is small, we are more likely to stay.
+    # If we are within 4 points of the target, and the chance of busting is over 40%, stay.
+    if distance_to_target <= 3:
+        if prob_bust > 0.3:
+            return "STAY"
+    
+    if distance_to_target <= 5:
+        if prob_bust > 0.5:
+            return "STAY"
+
+    # Default to staying if bust probability is high
+    if prob_bust > 0.7:
+        return "STAY"
+
+    return "HIT"
+</code>

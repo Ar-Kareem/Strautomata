@@ -1,0 +1,48 @@
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    # Piece values for material evaluation
+    piece_values = {
+        'wP': 1, 'wN': 3, 'wB': 3, 'wR': 5, 'wQ': 9, 'wK': 1000,
+        'bP': -1, 'bN': -3, 'bB': -3, 'bR': -5, 'bQ': -9, 'bK': -1000
+    }
+    
+    # Evaluate position strength (higher = better for to_play)
+    def evaluate_position(new_pieces):
+        score = 0
+        for square, piece in new_pieces.items():
+            score += piece_values[piece]
+        return score
+    
+    best_move = None
+    best_score = -float('inf')
+    
+    for move in legal_moves:
+        # Parse move (e.g., 'e2e4' -> source='e2', dest='e4')
+        source, dest = move[:2], move[2:]
+        
+        # Simulate move on a copy of the board
+        new_pieces = pieces.copy()
+        
+        # Handle promotions (e.g., 'a2a1q' -> promote to queen)
+        if len(move) > 4:
+            promoted_piece = move[4]
+            new_pieces[dest] = promoted_piece
+        else:
+            new_pieces[dest] = new_pieces[source]
+        
+        # Remove captured piece from destination
+        if dest in new_pieces and new_pieces[dest] != 'wK' and new_pieces[dest] != 'bK':
+            del new_pieces[dest]
+        
+        # Remove source piece
+        del new_pieces[source]
+        
+        # Evaluate new position
+        score = evaluate_position(new_pieces)
+        
+        # Update best move if current score is higher
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move

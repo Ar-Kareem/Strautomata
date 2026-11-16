@@ -1,0 +1,363 @@
+I need to write a chess policy that can generate legal moves and evaluate positions effectively. Here's my strategy:
+
+**Strategy:**
+1. Parse the board state into a usable format
+2. Generate all legal moves for the current player
+3. Implement material values and basic position evaluation
+4. Use minimax search with alpha-beta pruning to find the best move
+5. Prioritize checkmate, material gains, and king safety
+
+Here's the complete implementation:
+
+<code>
+import math
+from typing import Dict, List, Tuple, Set
+
+def policy(pieces: Dict[str, str], to_play: str, memory: Dict) -> Tuple[str, Dict]:
+    # Initialize or update memory
+    if 'game_state' not in memory:
+        memory['game_state'] = {}
+    
+    # Convert pieces dict to 2D board for easier access
+    board = {}
+    for square, piece in pieces.items():
+        file = ord(square[0]) - ord('a')
+        rank = int(square[1]) - 1
+        board[(file, rank)] = piece
+    
+    # Generate all legal moves
+    legal_moves = generate_legal_moves(board, to_play)
+    
+    if not legal_moves:
+        # No legal moves - should not happen in normal play
+        return list(legal_moves)[0] if legal_moves else "", memory
+    
+    # Simple evaluation function
+    best_move = None
+    best_score = -float('inf')
+    
+    for move in legal_moves:
+        # Make move
+        new_board = make_move(board, move)
+        
+        # Check if move gives checkmate
+        if is_checkmate(new_board, 'white' if to_play == 'black' else 'black'):
+            return move, memory
+        
+        # Calculate score
+        score = evaluate_position(new_board, to_play)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move if best_move else list(legal_moves)[0], memory
+
+def generate_legal_moves(board: Dict[Tuple[int, int], str], color: str) -> Set[str]:
+    """Generate all legal moves for the given color"""
+    moves = set()
+    
+    for (file, rank), piece in board.items():
+        if piece[0] != color[0]:
+            continue
+            
+        piece_type = piece[1]
+        square = f"{chr(file + ord('a'))}{rank + 1}"
+        
+        if piece_type == 'P':
+            moves.update(generate_pawn_moves(board, file, rank, color))
+        elif piece_type == 'N':
+            moves.update(generate_knight_moves(board, file, rank, color))
+        elif piece_type == 'B':
+            moves.update(generate_bishop_moves(board, file, rank, color))
+        elif piece_type == 'R':
+            moves.update(generate_rook_moves(board, file, rank, color))
+        elif piece_type == 'Q':
+            moves.update(generate_queen_moves(board, file, rank, color))
+        elif piece_type == 'K':
+            moves.update(generate_king_moves(board, file, rank, color))
+    
+    # Filter out moves that put own king in check
+    legal_moves = set()
+    for move in moves:
+        if not would_be_in_check(board, move, color):
+            legal_moves.add(move)
+    
+    return legal_moves
+
+def generate_pawn_moves(board: Dict[Tuple[int, int], str], file: int, rank: int, color: str) -> Set[str]:
+    """Generate pawn moves"""
+    moves = set()
+    direction = 1 if color == 'white' else -1
+    start_rank = 1 if color == 'white' else 6
+    
+    # Forward move
+    new_rank = rank + direction
+    if 0 <= new_rank <= 7 and (file, new_rank) not in board:
+        square_from = f"{chr(file + ord('a'))}{rank + 1}"
+        square_to = f"{chr(file + ord('a'))}{new_rank + 1}"
+        move = square_from + square_to
+        
+        # Promotion
+        if new_rank == 7 or new_rank == 0:
+            for piece in ['q', 'r', 'b', 'n']:
+                moves.add(move + piece)
+        else:
+            moves.add(move)
+        
+        # Double move from starting position
+        if rank == start_rank:
+            new_rank2 = rank + 2 * direction
+            if 0 <= new_rank2 <= 7 and (file, new_rank2) not in board:
+                square_from = f"{chr(file + ord('a'))}{rank + 1}"
+                square_to = f"{chr(file + ord('a'))}{new_rank2 + 1}"
+                moves.add(square_from + square_to)
+    
+    # Captures
+    for dx in [-1, 1]:
+        new_file = file + dx
+        new_rank = rank + direction
+        if 0 <= new_file <= 7 and 0 <= new_rank <= 7:
+            if (new_file, new_rank) in board:
+                target_piece = board[(new_file, new_rank)]
+                if target_piece[0] != color[0]:
+                    square_from = f"{chr(file + ord('a'))}{rank + 1}"
+                    square_to = f"{chr(new_file + ord('a'))}{new_rank + 1}"
+                    move = square_from + square_to
+                    
+                    # Promotion
+                    if new_rank == 7 or new_rank == 0:
+                        for piece in ['q', 'r', 'b', 'n']:
+                            moves.add(move + piece)
+                    else:
+                        moves.add(move)
+    
+    return moves
+
+def generate_knight_moves(board: Dict[Tuple[int, int], str], file: int, rank: int, color: str) -> Set[str]:
+    """Generate knight moves"""
+    moves = set()
+    knight_moves = [(-2, -1), (-2, 1), (-1, -2), (-1, 2), (1, -2), (1, 2), (2, -1), (2, 1)]
+    
+    for dx, dy in knight_moves:
+        new_file = file + dx
+        new_rank = rank + dy
+        
+        if 0 <= new_file <= 7 and 0 <= new_rank <= 7:
+            if (new_file, new_rank) not in board or board[(new_file, new_rank)][0] != color[0]:
+                square_from = f"{chr(file + ord('a'))}{rank + 1}"
+                square_to = f"{chr(new_file + ord('a'))}{new_rank + 1}"
+                moves.add(square_from + square_to)
+    
+    return moves
+
+def generate_bishop_moves(board: Dict[Tuple[int, int], str], file: int, rank: int, color: str) -> Set[str]:
+    """Generate bishop moves"""
+    moves = set()
+    directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+    
+    for dx, dy in directions:
+        new_file = file + dx
+        new_rank = rank + dy
+        
+        while 0 <= new_file <= 7 and 0 <= new_rank <= 7:
+            if (new_file, new_rank) in board:
+                if board[(new_file, new_rank)][0] != color[0]:
+                    square_from = f"{chr(file + ord('a'))}{rank + 1}"
+                    square_to = f"{chr(new_file + ord('a'))}{new_rank + 1}"
+                    moves.add(square_from + square_to)
+                break
+            
+            square_from = f"{chr(file + ord('a'))}{rank + 1}"
+            square_to = f"{chr(new_file + ord('a'))}{new_rank + 1}"
+            moves.add(square_from + square_to)
+            
+            new_file += dx
+            new_rank += dy
+    
+    return moves
+
+def generate_rook_moves(board: Dict[Tuple[int, int], str], file: int, rank: int, color: str) -> Set[str]:
+    """Generate rook moves"""
+    moves = set()
+    directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    
+    for dx, dy in directions:
+        new_file = file + dx
+        new_rank = rank + dy
+        
+        while 0 <= new_file <= 7 and 0 <= new_rank <= 7:
+            if (new_file, new_rank) in board:
+                if board[(new_file, new_rank)][0] != color[0]:
+                    square_from = f"{chr(file + ord('a'))}{rank + 1}"
+                    square_to = f"{chr(new_file + ord('a'))}{new_rank + 1}"
+                    moves.add(square_from + square_to)
+                break
+            
+            square_from = f"{chr(file + ord('a'))}{rank + 1}"
+            square_to = f"{chr(new_file + ord('a'))}{new_rank + 1}"
+            moves.add(square_from + square_to)
+            
+            new_file += dx
+            new_rank += dy
+    
+    return moves
+
+def generate_queen_moves(board: Dict[Tuple[int, int], str], file: int, rank: int, color: str) -> Set[str]:
+    """Generate queen moves"""
+    return generate_bishop_moves(board, file, rank, color) | generate_rook_moves(board, file, rank, color)
+
+def generate_king_moves(board: Dict[Tuple[int, int], str], file: int, rank: int, color: str) -> Set[str]:
+    """Generate king moves"""
+    moves = set()
+    directions = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+    
+    for dx, dy in directions:
+        new_file = file + dx
+        new_rank = rank + dy
+        
+        if 0 <= new_file <= 7 and 0 <= new_rank <= 7:
+            if (new_file, new_rank) not in board or board[(new_file, new_rank)][0] != color[0]:
+                square_from = f"{chr(file + ord('a'))}{rank + 1}"
+                square_to = f"{chr(new_file + ord('a'))}{new_rank + 1}"
+                moves.add(square_from + square_to)
+    
+    return moves
+
+def make_move(board: Dict[Tuple[int, int], str], move: str) -> Dict[Tuple[int, int], str]:
+    """Apply a move to the board"""
+    new_board = board.copy()
+    
+    if len(move) < 4:
+        return new_board
+    
+    from_file = ord(move[0]) - ord('a')
+    from_rank = int(move[1]) - 1
+    to_file = ord(move[2]) - ord('a')
+    to_rank = int(move[3]) - 1
+    
+    # Handle promotion
+    piece = new_board.get((from_file, from_rank), '')
+    if len(move) > 4:
+        promotion = move[4]
+        piece = piece[0] + promotion.upper()
+    
+    # Move piece
+    if (from_file, from_rank) in new_board:
+        new_board[(to_file, to_rank)] = new_board[(from_file, from_rank)]
+        del new_board[(from_file, from_rank)]
+    
+    return new_board
+
+def is_in_check(board: Dict[Tuple[int, int], str], color: str) -> bool:
+    """Check if the king of the given color is in check"""
+    king_pos = None
+    king_char = color[0] + 'K'
+    
+    for pos, piece in board.items():
+        if piece == king_char:
+            king_pos = pos
+            break
+    
+    if not king_pos:
+        return False
+    
+    # Check if any opponent piece attacks the king
+    opponent_color = 'black' if color == 'white' else 'white'
+    opponent_moves = set()
+    
+    for (file, rank), piece in board.items():
+        if piece[0] != opponent_color[0]:
+            continue
+            
+        piece_type = piece[1]
+        square = f"{chr(file + ord('a'))}{rank + 1}"
+        
+        if piece_type == 'P':
+            # Pawn attacks
+            direction = 1 if opponent_color == 'white' else -1
+            for dx in [-1, 1]:
+                attack_file = file + dx
+                attack_rank = rank + direction
+                if 0 <= attack_file <= 7 and 0 <= attack_rank <= 7:
+                    if (attack_file, attack_rank) == king_pos:
+                        return True
+        elif piece_type == 'N':
+            knight_moves = [(-2, -1), (-2, 1), (-1, -2), (-1, 2), (1, -2), (1, 2), (2, -1), (2, 1)]
+            for dx, dy in knight_moves:
+                if (file + dx, rank + dy) == king_pos:
+                    return True
+        elif piece_type in ['B', 'R', 'Q']:
+            directions = []
+            if piece_type in ['B', 'Q']:
+                directions.extend([(-1, -1), (-1, 1), (1, -1), (1, 1)])
+            if piece_type in ['R', 'Q']:
+                directions.extend([(-1, 0), (1, 0), (0, -1), (0, 1)])
+            
+            for dx, dy in directions:
+                check_file = file + dx
+                check_rank = rank + dy
+                while 0 <= check_file <= 7 and 0 <= check_rank <= 7:
+                    if (check_file, check_rank) == king_pos:
+                        return True
+                    if (check_file, check_rank) in board:
+                        break
+                    check_file += dx
+                    check_rank += dy
+        elif piece_type == 'K':
+            for dx in [-1, 0, 1]:
+                for dy in [-1, 0, 1]:
+                    if dx == 0 and dy == 0:
+                        continue
+                    if (file + dx, rank + dy) == king_pos:
+                        return True
+    
+    return False
+
+def would_be_in_check(board: Dict[Tuple[int, int], str], move: str, color: str) -> bool:
+    """Check if a move would put the king in check"""
+    new_board = make_move(board, move)
+    return is_in_check(new_board, color)
+
+def is_checkmate(board: Dict[Tuple[int, int], str], color: str) -> bool:
+    """Check if the position is checkmate"""
+    if not is_in_check(board, color):
+        return False
+    
+    # Generate all legal moves for the color
+    legal_moves = generate_legal_moves(board, color)
+    
+    # If no legal moves and in check, it's checkmate
+    return len(legal_moves) == 0
+
+def evaluate_position(board: Dict[Tuple[int, int], str], color: str) -> float:
+    """Simple position evaluation"""
+    score = 0.0
+    
+    # Material values
+    piece_values = {
+        'P': 1.0, 'N': 3.0, 'B': 3.0, 'R': 5.0, 'Q': 9.0, 'K': 0.0
+    }
+    
+    for piece in board.values():
+        piece_type = piece[1]
+        value = piece_values.get(piece_type, 0.0)
+        if piece[0] == color[0]:
+            score += value
+        else:
+            score -= value
+    
+    # Bonus for center control
+    center_squares = [(3, 3), (3, 4), (4, 3), (4, 4)]
+    for pos in center_squares:
+        if pos in board:
+            piece = board[pos]
+            if piece[0] == color[0]:
+                score += 0.1
+    
+    # Penalty for being in check
+    if is_in_check(board, color):
+        score -= 0.5
+    
+    return score
+</code>

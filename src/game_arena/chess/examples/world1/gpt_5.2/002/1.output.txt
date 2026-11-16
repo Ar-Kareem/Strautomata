@@ -1,0 +1,236 @@
+The strategy for this policy is a fast, robust heuristic selector using only the given `pieces` map and the provided SAN-like `legal_moves`. It prioritizes (1) immediate checkmate, then (2) promotions (especially to a queen), (3) winning material via captures (valued by the piece on the destination square, including en-passant inference), (4) giving check, (5) castling for king safety, and finally (6) simple positional bonuses like central pawn advances and minor-piece development. It always returns a move from `legal_moves`, with deterministic tie-breaking.
+
+<code>
+import re
+from typing import Dict, List, Tuple
+
+PIECE_VALUE = {
+    "P": 1.0,
+    "N": 3.0,
+    "B": 3.25,
+    "R": 5.0,
+    "Q": 9.0,
+    "K": 0.0,
+}
+
+CENTER_SQUARES = {"d4", "e4", "d5", "e5"}
+NEAR_CENTER = {
+    "c3", "d3", "e3", "f3",
+    "c4", "d4", "e4", "f4",
+    "c5", "d5", "e5", "f5",
+    "c6", "d6", "e6", "f6",
+}
+
+SQUARE_RE = re.compile(r"([a-h][1-8])")
+
+
+def _color_char(to_play: str) -> str:
+    return "w" if to_play == "white" else "b"
+
+
+def _opponent_color_char(to_play: str) -> str:
+    return "b" if to_play == "white" else "w"
+
+
+def _strip_suffixes(move: str) -> str:
+    # Remove trailing check/mate markers (+/#), and common annotations if any appear.
+    m = move
+    while m and m[-1] in {"+", "#", "!", "?"}:
+        m = m[:-1]
+    return m
+
+
+def _is_castle(move: str) -> bool:
+    return move.startswith("O-O")
+
+
+def _dest_square(move: str, to_play: str) -> str | None:
+    if _is_castle(move):
+        # Standard chess: king lands on g/c file.
+        if move.startswith("O-O-O"):
+            return "c1" if to_play == "white" else "c8"
+        return "g1" if to_play == "white" else "g8"
+    core = _strip_suffixes(move)
+    matches = SQUARE_RE.findall(core)
+    if not matches:
+        return None
+    return matches[-1]
+
+
+def _moving_piece_type(move: str) -> str:
+    if _is_castle(move):
+        return "K"
+    if move and move[0] in "KQRBN":
+        return move[0]
+    return "P"
+
+
+def _promotion_piece(move: str) -> str | None:
+    core = _strip_suffixes(move)
+    if "=" in core:
+        promo = core.split("=")[-1]
+        if promo and promo[0] in "QRBN":
+            return promo[0]
+    return None
+
+
+def _is_capture(move: str) -> bool:
+    return "x" in move
+
+
+def _square_to_coords(sq: str) -> Tuple[int, int]:
+    return (ord(sq[0]) - ord("a"), int(sq[1]))
+
+
+def _coords_to_square(file_i: int, rank: int) -> str:
+    return chr(ord("a") + file_i) + str(rank)
+
+
+def _captured_piece_value(pieces: Dict[str, str], to_play: str, move: str) -> float:
+    if not _is_capture(move):
+        return 0.0
+
+    dest = _dest_square(move, to_play)
+    if not dest:
+        return 0.0
+
+    opp = _opponent_color_char(to_play)
+    victim = pieces.get(dest)
+    if victim and victim.startswith(opp):
+        return PIECE_VALUE.get(victim[1], 0.0)
+
+    # Possible en passant: pawn capture to an empty square.
+    mover = _moving_piece_type(move)
+    if mover != "P":
+        return 0.0
+
+    # Infer en-passant victim square: same file as destination, one rank behind destination.
+    f, r = _square_to_coords(dest)
+    if to_play == "white":
+        victim_sq = _coords_to_square(f, r - 1)
+    else:
+        victim_sq = _coords_to_square(f, r + 1)
+
+    victim2 = pieces.get(victim_sq)
+    if victim2 and victim2.startswith(opp) and victim2[1] == "P":
+        return PIECE_VALUE["P"]
+    return 0.0
+
+
+def _positional_bonus(move: str, to_play: str) -> float:
+    dest = _dest_square(move, to_play)
+    if not dest:
+        return 0.0
+
+    bonus = 0.0
+    mover = _moving_piece_type(move)
+
+    # Checks and mates are already explicit in SAN-like strings.
+    if "#" in move:
+        bonus += 1_000_000.0
+    if "+" in move:
+        bonus += 0.6
+
+    # Promotions.
+    promo = _promotion_piece(move)
+    if promo:
+        bonus += 2.0 * PIECE_VALUE.get(promo, 0.0)
+        # Small preference for queen > rook > bishop/knight if values equal-ish.
+        if promo == "Q":
+            bonus += 0.2
+        elif promo == "R":
+            bonus += 0.05
+
+    # Castling.
+    if _is_castle(move):
+        bonus += 0.4
+
+    # Central and near-central placement.
+    if dest in CENTER_SQUARES:
+        bonus += 0.18
+    elif dest in NEAR_CENTER:
+        bonus += 0.08
+
+    # Pawn central pushes.
+    if mover == "P":
+        if dest in CENTER_SQUARES:
+            bonus += 0.12
+        # Encourage advancing pawns toward promotion a bit.
+        rank = int(dest[1])
+        if to_play == "white":
+            if rank == 7:
+                bonus += 0.18
+            elif rank == 6:
+                bonus += 0.10
+        else:
+            if rank == 2:
+                bonus += 0.18
+            elif rank == 3:
+                bonus += 0.10
+
+    # Minor piece development-ish: knights/bishops to active squares.
+    if mover in {"N", "B"} and dest in NEAR_CENTER:
+        bonus += 0.08
+
+    # Slight preference to avoid "quiet" king moves unless they are checks/mates/castles.
+    if mover == "K" and not _is_castle(move) and "+" not in move and "#" not in move:
+        bonus -= 0.05
+
+    return bonus
+
+
+def _deterministic_tiebreak_key(pieces: Dict[str, str], to_play: str, move: str) -> int:
+    # Deterministic pseudo-random ordering derived from board + move.
+    items = sorted(pieces.items())
+    s = to_play + "|" + ";".join(f"{sq}:{pc}" for sq, pc in items) + "|" + move
+    h = 0
+    for ch in s:
+        h = (h * 131 + ord(ch)) & 0xFFFFFFFF
+    return h
+
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    if not legal_moves:
+        return ""
+
+    best_move = legal_moves[0]
+    best_score = -1e18
+    best_tie = None
+
+    for mv in legal_moves:
+        score = 0.0
+
+        # Forced outcomes first.
+        if "#" in mv:
+            score += 1_000_000.0
+
+        # Material gain via capture.
+        cap_val = _captured_piece_value(pieces, to_play, mv)
+        if cap_val:
+            score += 1.55 * cap_val
+            # Extra bump for capturing queens/rooks.
+            if cap_val >= 5.0:
+                score += 0.15
+
+        # Promotion and positional.
+        score += _positional_bonus(mv, to_play)
+
+        # Prefer moves that are both check and capture slightly.
+        if "+" in mv and "x" in mv:
+            score += 0.08
+
+        # Mild preference for shorter SAN (often indicates simplicity/forcing, not always).
+        score += max(0.0, 0.03 - 0.002 * len(mv))
+
+        tie = _deterministic_tiebreak_key(pieces, to_play, mv)
+
+        if score > best_score or (abs(score - best_score) < 1e-12 and (best_tie is None or tie < best_tie)):
+            best_score = score
+            best_move = mv
+            best_tie = tie
+
+    # Absolute safety: ensure it's legal.
+    if best_move not in legal_moves:
+        return legal_moves[0]
+    return best_move
+</code>

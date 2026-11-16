@@ -1,0 +1,231 @@
+
+import numpy as np
+import time
+from collections import deque
+
+def policy(board):
+    """Main policy function that selects the best move"""
+    board = np.array(board)
+    
+    # Find all legal moves
+    legal_moves = get_legal_moves(board)
+    
+    if not legal_moves:
+        return "0,0:0,0"  # Should not happen in valid game
+    
+    # If only one legal move, take it
+    if len(legal_moves) == 1:
+        return format_move(legal_moves[0])
+    
+    # Use minimax with alpha-beta pruning to find best move
+    best_move = None
+    best_score = float('-inf')
+    alpha = float('-inf')
+    beta = float('inf')
+    
+    # Sort moves to improve alpha-beta efficiency (try captures first)
+    legal_moves.sort(key=lambda m: 1 if board[m[2]][m[3]] == -1 else 0, reverse=True)
+    
+    start_time = time.time()
+    max_depth = 4
+    
+    for move in legal_moves:
+        # Make move
+        new_board = make_move(board, move)
+        
+        # Evaluate using minimax
+        score = -alphabeta(new_board, max_depth - 1, -beta, -alpha, False, start_time)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+            alpha = max(alpha, score)
+        
+        # Time check
+        if time.time() - start_time > 0.9:
+            break
+    
+    if best_move is None:
+        # Fallback to first legal move if time runs out
+        best_move = legal_moves[0]
+    
+    return format_move(best_move)
+
+def get_legal_moves(board):
+    """Generate all legal moves for the current player"""
+    moves = []
+    size = 8
+    
+    for r in range(size):
+        for c in range(size):
+            if board[r][c] == 1:  # Current player's piece
+                # Check all 8 directions
+                directions = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+                
+                for dr, dc in directions:
+                    # Count pieces in this direction
+                    count = count_pieces_in_direction(board, r, c, dr, dc)
+                    
+                    if count > 0:
+                        # Calculate target position
+                        tr, tc = r + dr * count, c + dc * count
+                        
+                        # Check if target is within bounds
+                        if 0 <= tr < size and 0 <= tc < size:
+                            # Check if path is clear (no enemy pieces blocking)
+                            if is_path_clear(board, r, c, tr, tc, dr, dc):
+                                moves.append((r, c, tr, tc))
+    
+    return moves
+
+def count_pieces_in_direction(board, r, c, dr, dc):
+    """Count pieces in a given direction"""
+    count = 0
+    size = 8
+    cr, cc = r, c
+    
+    # Move in the direction until we hit the edge
+    while 0 <= cr < size and 0 <= cc < size:
+        if board[cr][cc] != 0:  # There's a piece
+            count += 1
+        cr += dr
+        cc += dc
+    
+    return count
+
+def is_path_clear(board, r1, c1, r2, c2, dr, dc):
+    """Check if path from (r1,c1) to (r2,c2) is clear of enemy pieces"""
+    # We need to check the path excluding the starting square but including the ending square
+    cr, cc = r1 + dr, c1 + dc
+    size = 8
+    
+    while 0 <= cr < size and 0 <= cc < size and (cr != r2 or cc != c2):
+        if board[cr][cc] == -1:  # Enemy piece blocking
+            return False
+        cr += dr
+        cc += dc
+    
+    return True
+
+def make_move(board, move):
+    """Apply a move to the board and return the new board"""
+    r1, c1, r2, c2 = move
+    new_board = board.copy()
+    
+    # Move piece
+    new_board[r2][c2] = new_board[r1][c1]
+    new_board[r1][c1] = 0
+    
+    # Capture if enemy piece at destination
+    if new_board[r2][c2] == 1 and board[r2][c2] == -1:
+        new_board[r2][c2] = 1  # Already set above
+    
+    return new_board
+
+def evaluate(board):
+    """Evaluate the board position"""
+    if is_game_over(board):
+        # Check who won
+        player_connected = count_connected_components(board, 1) == 1
+        if player_connected:
+            return 100000  # Win
+        else:
+            return -100000  # Loss
+    
+    # Heuristic evaluation
+    score = 0
+    
+    # 1. Piece count advantage
+    player_pieces = np.sum(board == 1)
+    opponent_pieces = np.sum(board == -1)
+    score += (player_pieces - opponent_pieces) * 10
+    
+    # 2. Connectivity - fewer connected components is better
+    player_components = count_connected_components(board, 1)
+    opponent_components = count_connected_components(board, -1)
+    score += (opponent_components - player_components) * 50
+    
+    # 3. Mobility - more legal moves is better
+    player_moves = len(get_legal_moves(board))
+    # Switch player perspective for opponent moves
+    flipped_board = -board
+    opponent_moves = len(get_legal_moves(flipped_board))
+    score += (player_moves - opponent_moves) * 5
+    
+    return score
+
+def count_connected_components(board, player):
+    """Count connected components for a player"""
+    visited = np.zeros((8, 8), dtype=bool)
+    components = 0
+    size = 8
+    
+    def dfs(r, c):
+        if (r < 0 or r >= size or c < 0 or c >= size or 
+            visited[r][c] or board[r][c] != player):
+            return
+        visited[r][c] = True
+        # Check all 8 directions
+        for dr in [-1, 0, 1]:
+            for dc in [-1, 0, 1]:
+                if dr != 0 or dc != 0:
+                    dfs(r + dr, c + dc)
+    
+    for r in range(size):
+        for c in range(size):
+            if board[r][c] == player and not visited[r][c]:
+                dfs(r, c)
+                components += 1
+    
+    return components
+
+def is_game_over(board):
+    """Check if the game is over"""
+    player_connected = count_connected_components(board, 1) == 1
+    opponent_connected = count_connected_components(board, -1) == 1
+    
+    return player_connected or opponent_connected
+
+def alphabeta(board, depth, alpha, beta, maximizing_player, start_time):
+    """Alpha-beta pruning minimax search"""
+    # Time check
+    if time.time() - start_time > 0.9:
+        return evaluate(board)
+    
+    # Terminal conditions
+    if depth == 0 or is_game_over(board):
+        return evaluate(board)
+    
+    if maximizing_player:
+        max_eval = float('-inf')
+        moves = get_legal_moves(board)
+        
+        for move in moves:
+            new_board = make_move(board, move)
+            eval_score = alphabeta(new_board, depth - 1, alpha, beta, False, start_time)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        # Switch perspective for opponent
+        flipped_board = -board
+        moves = get_legal_moves(flipped_board)
+        
+        for move in moves:
+            # Apply move to flipped board, then flip back
+            new_flipped = make_move(flipped_board, move)
+            new_board = -new_flipped
+            eval_score = alphabeta(new_board, depth - 1, alpha, beta, True, start_time)
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def format_move(move):
+    """Format move as required string"""
+    r1, c1, r2, c2 = move
+    return f"{r1},{c1}:{r2},{c2}"

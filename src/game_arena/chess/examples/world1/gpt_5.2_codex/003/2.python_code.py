@@ -1,0 +1,58 @@
+
+import re
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    # piece values
+    values = {'P':1, 'N':3, 'B':3, 'R':5, 'Q':9, 'K':0}
+    promo_values = {'Q':9, 'R':5, 'B':3, 'N':3}
+
+    def score_move(move: str) -> float:
+        # Check for check/mate
+        checkmate = move.endswith('#')
+        check = move.endswith('+')
+        base_move = move[:-1] if (checkmate or check) else move
+
+        # Castling
+        if base_move in ('O-O', 'O-O-O'):
+            return (1000 if checkmate else 0) + (2 if check else 0) + 0.5
+
+        # Promotion
+        promo = None
+        if '=' in base_move:
+            base_move, promo = base_move.split('=')
+
+        # Find target square
+        sqs = re.findall(r'[a-h][1-8]', base_move)
+        target = sqs[-1] if sqs else None
+
+        # Capture?
+        capture = 'x' in base_move
+        capture_value = 0
+        if capture:
+            if target in pieces:
+                capture_value = values.get(pieces[target][1], 1)
+            else:
+                # likely en passant
+                capture_value = 1
+
+        promo_value = promo_values.get(promo, 0) if promo else 0
+
+        score = 0
+        if checkmate:
+            score += 1000
+        if check:
+            score += 2
+        score += capture_value * 10
+        score += promo_value * 8
+
+        return score
+
+    # Choose best move by score
+    best_move = legal_moves[0]
+    best_score = score_move(best_move)
+    for mv in legal_moves[1:]:
+        sc = score_move(mv)
+        if sc > best_score:
+            best_score = sc
+            best_move = mv
+    return best_move

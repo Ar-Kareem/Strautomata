@@ -1,0 +1,195 @@
+I'll create a competitive Othello AI using a combination of positional strategy, mobility, and tactical evaluation.
+
+## Strategy
+
+My policy uses a multi-faceted approach:
+
+1. **Positional Weights**: Corners are extremely valuable (worth 100), edges are good (worth 10-20), and positions adjacent to corners are dangerous early on (negative weight) as they often give the opponent corner access.
+
+2. **Game Phase Adaptation**: 
+   - Early game: Focus on mobility and avoid giving away corners
+   - Mid game: Balance between position and disc count
+   - End game: Maximize disc count and secure stable discs
+
+3. **Mobility**: Maximize our options while minimizing opponent's options
+
+4. **Stability**: Prioritize discs that cannot be flipped (corners and stable edges)
+
+5. **Minimax with Alpha-Beta Pruning**: Look ahead 3-4 moves to evaluate positions, with deeper search in endgame
+
+<code>
+import numpy as np
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    """
+    Advanced Othello policy using positional play, mobility, and minimax search.
+    """
+    legal_moves = get_legal_moves(you, opponent)
+    
+    if not legal_moves:
+        return "pass"
+    
+    # Count total discs to determine game phase
+    total_discs = np.sum(you) + np.sum(opponent)
+    
+    # Adjust search depth based on game phase
+    if total_discs > 52:  # Endgame
+        depth = 6
+    elif total_discs > 40:
+        depth = 4
+    else:
+        depth = 3
+    
+    best_move = None
+    best_score = float('-inf')
+    
+    for move in legal_moves:
+        new_you, new_opp = apply_move(you, opponent, move)
+        score = -minimax(new_opp, new_you, depth - 1, float('-inf'), float('inf'), False, total_discs)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return move_to_string(best_move)
+
+def minimax(you, opponent, depth, alpha, beta, maximizing, total_discs):
+    """Minimax with alpha-beta pruning."""
+    if depth == 0:
+        return evaluate_position(you, opponent, total_discs)
+    
+    legal_moves = get_legal_moves(you, opponent)
+    
+    if not legal_moves:
+        opp_moves = get_legal_moves(opponent, you)
+        if not opp_moves:
+            # Game over
+            diff = np.sum(you) - np.sum(opponent)
+            return diff * 10000
+        # Pass
+        return -minimax(opponent, you, depth - 1, -beta, -alpha, not maximizing, total_discs)
+    
+    if maximizing:
+        max_eval = float('-inf')
+        for move in legal_moves:
+            new_you, new_opp = apply_move(you, opponent, move)
+            eval_score = minimax(new_you, new_opp, depth - 1, alpha, beta, False, total_discs)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for move in legal_moves:
+            new_you, new_opp = apply_move(you, opponent, move)
+            eval_score = minimax(new_you, new_opp, depth - 1, alpha, beta, True, total_discs)
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def evaluate_position(you, opponent, total_discs):
+    """Evaluate board position with multiple heuristics."""
+    score = 0
+    
+    # Positional weights
+    position_weights = np.array([
+        [100, -20,  10,   5,   5,  10, -20, 100],
+        [-20, -40,  -5,  -5,  -5,  -5, -40, -20],
+        [ 10,  -5,   5,   2,   2,   5,  -5,  10],
+        [  5,  -5,   2,   1,   1,   2,  -5,   5],
+        [  5,  -5,   2,   1,   1,   2,  -5,   5],
+        [ 10,  -5,   5,   2,   2,   5,  -5,  10],
+        [-20, -40,  -5,  -5,  -5,  -5, -40, -20],
+        [100, -20,  10,   5,   5,  10, -20, 100]
+    ])
+    
+    # In endgame, focus more on disc count
+    if total_discs > 50:
+        score += (np.sum(you) - np.sum(opponent)) * 50
+        position_weight = 0.5
+    else:
+        position_weight = 1.0
+    
+    # Positional score
+    score += position_weight * (np.sum(you * position_weights) - np.sum(opponent * position_weights))
+    
+    # Mobility (number of legal moves)
+    my_moves = len(get_legal_moves(you, opponent))
+    opp_moves = len(get_legal_moves(opponent, you))
+    score += (my_moves - opp_moves) * 5
+    
+    # Corner control
+    corners = [(0,0), (0,7), (7,0), (7,7)]
+    for r, c in corners:
+        if you[r, c]:
+            score += 50
+        if opponent[r, c]:
+            score -= 50
+    
+    return score
+
+def get_legal_moves(you, opponent):
+    """Returns list of legal moves as (row, col) tuples."""
+    moves = []
+    for r in range(8):
+        for c in range(8):
+            if you[r, c] == 0 and opponent[r, c] == 0:
+                if is_legal_move(you, opponent, r, c):
+                    moves.append((r, c))
+    return moves
+
+def is_legal_move(you, opponent, r, c):
+    """Check if placing a disc at (r, c) is legal."""
+    directions = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+    
+    for dr, dc in directions:
+        if check_direction(you, opponent, r, c, dr, dc):
+            return True
+    return False
+
+def check_direction(you, opponent, r, c, dr, dc):
+    """Check if placing at (r,c) flips discs in direction (dr, dc)."""
+    nr, nc = r + dr, c + dc
+    found_opponent = False
+    
+    while 0 <= nr < 8 and 0 <= nc < 8:
+        if opponent[nr, nc]:
+            found_opponent = True
+        elif you[nr, nc]:
+            return found_opponent
+        else:
+            return False
+        nr += dr
+        nc += dc
+    
+    return False
+
+def apply_move(you, opponent, move):
+    """Apply move and return new board states."""
+    new_you = you.copy()
+    new_opp = opponent.copy()
+    r, c = move
+    
+    new_you[r, c] = 1
+    
+    directions = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+    
+    for dr, dc in directions:
+        if check_direction(you, opponent, r, c, dr, dc):
+            nr, nc = r + dr, c + dc
+            while opponent[nr, nc]:
+                new_opp[nr, nc] = 0
+                new_you[nr, nc] = 1
+                nr += dr
+                nc += dc
+    
+    return new_you, new_opp
+
+def move_to_string(move):
+    """Convert (row, col) to algebraic notation."""
+    r, c = move
+    return chr(ord('a') + c) + str(r + 1)
+</code>

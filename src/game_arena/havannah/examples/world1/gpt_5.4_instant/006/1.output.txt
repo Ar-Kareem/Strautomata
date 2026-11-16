@@ -1,0 +1,583 @@
+The strategy for this policy is a fast tactical Havannah heuristic with strict legality guarantees.
+
+Core ideas:
+1. Always return a legal move.
+2. First look for immediate winning moves for ourselves.
+3. Then block any immediate winning move by the opponent.
+4. Otherwise score legal moves using strong local and structural heuristics:
+   - prefer moves adjacent to our stones
+   - prefer moves that connect separate friendly groups
+   - prefer moves that increase corner/edge reach, which helps bridge/fork potential
+   - prefer central influence in the opening
+   - mildly penalize moves that help the opponent locally
+5. Use lightweight union-find style component analysis and exact post-move checks for bridge/fork/ring on candidate moves.
+6. Restrict expensive win-checking mostly to tactically relevant candidates so the policy stays fast.
+
+This is not a full search engine, but it is robust, legal, and strategically competent under tight time constraints.
+
+<code>
+from collections import deque, defaultdict
+import math
+
+N = 15
+
+# Hex neighbors for the board representation described in the prompt:
+# (r-1,c), (r+1,c), (r,c-1), (r,c+1), (r-1,c+1), (r+1,c-1)
+DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, 1), (1, -1)]
+
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    valid_cells = []
+    occupied = set(me) | set(opp)
+    for r in range(len(valid_mask)):
+        row = valid_mask[r]
+        for c in range(len(row)):
+            if row[c] and (r, c) not in occupied:
+                valid_cells.append((r, c))
+
+    # Absolute legality guarantee
+    if not valid_cells:
+        # Should not happen in a valid game state, but remain safe.
+        for r in range(len(valid_mask)):
+            for c in range(len(valid_mask[r])):
+                if valid_mask[r][c]:
+                    return (r, c)
+        return (0, 0)
+
+    valid_set = set(valid_cells)
+    me_set = set(me)
+    opp_set = set(opp)
+
+    # Opening: center-ish if available
+    if not me and not opp:
+        pref = sorted(valid_cells, key=lambda x: hex_dist_to_center(x, valid_mask))
+        return pref[0]
+
+    # Build component info once
+    me_comp_id, me_comps = build_components(me_set, valid_mask)
+    opp_comp_id, opp_comps = build_components(opp_set, valid_mask)
+
+    # Candidate reduction: tactically relevant + central fallback
+    candidates = prioritized_candidates(valid_cells, me_set, opp_set, valid_mask)
+
+    # 1) Immediate winning move for self
+    for mv in candidates:
+        if is_immediate_win(me_set, mv, valid_mask):
+            return mv
+
+    # 2) Immediate winning move for opponent: block
+    opp_wins = []
+    for mv in candidates:
+        if is_immediate_win(opp_set, mv, valid_mask):
+            opp_wins.append(mv)
+    if opp_wins:
+        # If multiple blocks, choose the one best for us too
+        best = max(opp_wins, key=lambda m: move_score(
+            m, me_set, opp_set, valid_mask, me_comp_id, me_comps, opp_comp_id, opp_comps
+        ))
+        return best
+
+    # 3) Score candidates heuristically
+    best_move = None
+    best_score = -10**18
+    for mv in candidates:
+        sc = move_score(mv, me_set, opp_set, valid_mask, me_comp_id, me_comps, opp_comp_id, opp_comps)
+        if sc > best_score:
+            best_score = sc
+            best_move = mv
+
+    if best_move is not None:
+        return best_move
+
+    # Fallback legality guarantee
+    return min(valid_cells, key=lambda x: hex_dist_to_center(x, valid_mask))
+
+
+def neighbors(r, c, valid_mask):
+    n = len(valid_mask)
+    for dr, dc in DIRS:
+        rr, cc = r + dr, c + dc
+        if 0 <= rr < n and 0 <= cc < n and valid_mask[rr][cc]:
+            yield (rr, cc)
+
+
+def build_components(stones, valid_mask):
+    comp_id = {}
+    comps = []
+    for s in stones:
+        if s in comp_id:
+            continue
+        idx = len(comps)
+        q = [s]
+        comp_id[s] = idx
+        cells = []
+        corners = set()
+        edges = set()
+        while q:
+            u = q.pop()
+            cells.append(u)
+            corners |= corner_ids(u, valid_mask)
+            edges |= edge_ids(u, valid_mask)
+            r, c = u
+            for v in neighbors(r, c, valid_mask):
+                if v in stones and v not in comp_id:
+                    comp_id[v] = idx
+                    q.append(v)
+        comps.append({
+            "cells": cells,
+            "corners": corners,
+            "edges": edges,
+        })
+    return comp_id, comps
+
+
+def corner_points(valid_mask):
+    pts = []
+    n = len(valid_mask)
+    for r in range(n):
+        for c in range(n):
+            if not valid_mask[r][c]:
+                continue
+            deg = sum(1 for _ in neighbors(r, c, valid_mask))
+            if deg == 3:
+                pts.append((r, c))
+    return pts
+
+
+def edge_sets(valid_mask):
+    # Build the six boundary chains between corners.
+    corners = corner_points(valid_mask)
+    corner_set = set(corners)
+    boundary = []
+    n = len(valid_mask)
+    for r in range(n):
+        for c in range(n):
+            if valid_mask[r][c]:
+                deg = sum(1 for _ in neighbors(r, c, valid_mask))
+                if deg < 6:
+                    boundary.append((r, c))
+
+    # On a Havannah hex board, boundary non-corners should have exactly 4 neighbors, corners 3.
+    # Build graph among boundary cells, then traverse the cycle.
+    bset = set(boundary)
+    b_adj = {u: [v for v in neighbors(u[0], u[1], valid_mask) if v in bset] for u in boundary}
+
+    if len(corners) != 6:
+        return [], []
+
+    start = sorted(corners)[0]
+    cyc = [start]
+    prev = None
+    cur = start
+    while True:
+        nxts = [x for x in b_adj[cur] if x != prev]
+        if not nxts:
+            break
+        # Prefer deterministic traversal
+        nxt = sorted(nxts)[0] if prev is None else nxts[0]
+        if nxt == start:
+            break
+        cyc.append(nxt)
+        prev, cur = cur, nxt
+        if len(cyc) > len(boundary) + 2:
+            break
+
+    # The above traversal may not always produce full cycle depending on start branch choice.
+    # Robust alternative: walk both ways from start around the unique boundary cycle.
+    if set(cyc) != bset:
+        cyc = boundary_cycle_from_start(start, b_adj)
+
+    pos = {u: i for i, u in enumerate(cyc)}
+    ordered_corners = sorted(corners, key=lambda x: pos.get(x, 10**9))
+    ordered_corners = [c for c in ordered_corners if c in pos]
+
+    if len(ordered_corners) != 6:
+        ordered_corners = corners
+
+    edges = []
+    for i in range(6):
+        a = ordered_corners[i]
+        b = ordered_corners[(i + 1) % 6]
+        seg = boundary_segment(cyc, a, b)
+        seg = [x for x in seg if x not in corner_set]
+        edges.append(set(seg))
+
+    return corners, edges
+
+
+_EDGE_CACHE = {}
+_CORNER_CACHE = {}
+
+
+def get_board_features(valid_mask):
+    key = id(valid_mask)
+    if key in _EDGE_CACHE and key in _CORNER_CACHE:
+        return _CORNER_CACHE[key], _EDGE_CACHE[key]
+    corners, edges = edge_sets(valid_mask)
+    _CORNER_CACHE[key] = corners
+    _EDGE_CACHE[key] = edges
+    return corners, edges
+
+
+def boundary_cycle_from_start(start, b_adj):
+    n1, n2 = b_adj[start][0], b_adj[start][1]
+    path1 = [start]
+    prev, cur = start, n1
+    while cur != start:
+        path1.append(cur)
+        nxts = [x for x in b_adj[cur] if x != prev]
+        if not nxts:
+            break
+        prev, cur = cur, nxts[0]
+
+    path2 = []
+    prev, cur = start, n2
+    while cur != start:
+        path2.append(cur)
+        nxts = [x for x in b_adj[cur] if x != prev]
+        if not nxts:
+            break
+        prev, cur = cur, nxts[0]
+
+    # One direction plus reversed other direction should cover cycle
+    cyc = [start] + path1[1:] + list(reversed(path2))
+    seen = set()
+    out = []
+    for x in cyc:
+        if x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
+
+
+def boundary_segment(cycle, a, b):
+    if a not in cycle or b not in cycle:
+        return []
+    ia, ib = cycle.index(a), cycle.index(b)
+    if ia <= ib:
+        s1 = cycle[ia:ib+1]
+        s2 = cycle[ib:] + cycle[:ia+1]
+    else:
+        s1 = cycle[ia:] + cycle[:ib+1]
+        s2 = cycle[ib:ia+1]
+    return s1 if len(s1) <= len(s2) else list(reversed(s2))
+
+
+def corner_ids(cell, valid_mask):
+    corners, _ = get_board_features(valid_mask)
+    out = set()
+    for i, p in enumerate(corners):
+        if cell == p:
+            out.add(i)
+    return out
+
+
+def edge_ids(cell, valid_mask):
+    _, edges = get_board_features(valid_mask)
+    out = set()
+    for i, e in enumerate(edges):
+        if cell in e:
+            out.add(i)
+    return out
+
+
+def is_immediate_win(stones, move, valid_mask):
+    if move in stones:
+        return False
+    newstones = set(stones)
+    newstones.add(move)
+    return has_bridge_or_fork(newstones, move, valid_mask) or has_ring(newstones, move, valid_mask)
+
+
+def has_bridge_or_fork(stones, move, valid_mask):
+    seen = {move}
+    q = [move]
+    corners = set()
+    edges = set()
+    while q:
+        u = q.pop()
+        corners |= corner_ids(u, valid_mask)
+        edges |= edge_ids(u, valid_mask)
+        r, c = u
+        for v in neighbors(r, c, valid_mask):
+            if v in stones and v not in seen:
+                seen.add(v)
+                q.append(v)
+    return len(corners) >= 2 or len(edges) >= 3
+
+
+def has_ring(stones, move, valid_mask):
+    # Local exact test: a ring exists iff after placing move, there is a cycle of stones
+    # enclosing at least one non-stone cell. We test for any reachable non-stone region
+    # adjacent to move that is cut off from the outside.
+    considered = set([move])
+    adj_nonstones = []
+    for nb in neighbors(move[0], move[1], valid_mask):
+        if nb not in stones:
+            adj_nonstones.append(nb)
+
+    if len(adj_nonstones) < 2:
+        return False
+
+    # Outside starts from boundary non-stone cells.
+    boundary_nonstones = set()
+    n = len(valid_mask)
+    for r in range(n):
+        for c in range(n):
+            if valid_mask[r][c] and (r, c) not in stones:
+                deg = sum(1 for _ in neighbors(r, c, valid_mask))
+                if deg < 6:
+                    boundary_nonstones.add((r, c))
+
+    # BFS outside through non-stones
+    outside = set(boundary_nonstones)
+    dq = deque(boundary_nonstones)
+    while dq:
+        u = dq.popleft()
+        for v in neighbors(u[0], u[1], valid_mask):
+            if v not in stones and v not in outside:
+                outside.add(v)
+                dq.append(v)
+
+    # If any non-stone neighbor of move is not outside, move closes/creates an enclosure.
+    for x in adj_nonstones:
+        if x not in outside:
+            return True
+    return False
+
+
+def prioritized_candidates(valid_cells, me_set, opp_set, valid_mask):
+    scores = []
+    for mv in valid_cells:
+        r, c = mv
+        near_me = 0
+        near_opp = 0
+        second = 0
+        for nb in neighbors(r, c, valid_mask):
+            if nb in me_set:
+                near_me += 1
+            elif nb in opp_set:
+                near_opp += 1
+            else:
+                rr, cc = nb
+                for nb2 in neighbors(rr, cc, valid_mask):
+                    if nb2 in me_set:
+                        second += 1
+                        break
+        center_bonus = -hex_dist_to_center(mv, valid_mask)
+        s = 4 * near_me + 2 * near_opp + second + center_bonus
+        scores.append((s, mv))
+    scores.sort(reverse=True)
+    k = min(len(scores), 40)
+    return [mv for _, mv in scores[:k]]
+
+
+def move_score(mv, me_set, opp_set, valid_mask, me_comp_id, me_comps, opp_comp_id, opp_comps):
+    r, c = mv
+    score = 0.0
+
+    # Centrality
+    score += 4.0 * (-hex_dist_to_center(mv, valid_mask))
+
+    # Local adjacency
+    my_nbs = []
+    opp_nbs = []
+    empty_nbs = 0
+    for nb in neighbors(r, c, valid_mask):
+        if nb in me_set:
+            my_nbs.append(nb)
+        elif nb in opp_set:
+            opp_nbs.append(nb)
+        else:
+            empty_nbs += 1
+
+    score += 10.0 * len(my_nbs)
+    score += 4.0 * len(opp_nbs)
+
+    # Connect friendly components
+    touched = set()
+    touched_corners = set(corner_ids(mv, valid_mask))
+    touched_edges = set(edge_ids(mv, valid_mask))
+    for nb in my_nbs:
+        cid = me_comp_id.get(nb)
+        if cid is not None:
+            touched.add(cid)
+    if touched:
+        score += 18.0 * len(touched)
+        all_corners = set(touched_corners)
+        all_edges = set(touched_edges)
+        total_size = 1
+        for cid in touched:
+            comp = me_comps[cid]
+            total_size += len(comp["cells"])
+            all_corners |= comp["corners"]
+            all_edges |= comp["edges"]
+        score += 0.4 * total_size
+        score += 22.0 * len(all_corners)
+        score += 12.0 * len(all_edges)
+        if len(all_corners) >= 2:
+            score += 500.0
+        if len(all_edges) >= 3:
+            score += 500.0
+
+    # Block opponent connectivity
+    opp_touched = set()
+    opp_corners = set()
+    opp_edges = set()
+    for nb in opp_nbs:
+        cid = opp_comp_id.get(nb)
+        if cid is not None:
+            opp_touched.add(cid)
+    if opp_touched:
+        for cid in opp_touched:
+            comp = opp_comps[cid]
+            opp_corners |= comp["corners"]
+            opp_edges |= comp["edges"]
+        score += 11.0 * len(opp_touched)
+        score += 18.0 * len(opp_corners)
+        score += 10.0 * len(opp_edges)
+
+    # Shape heuristic: avoid isolated edge clutter early, value flexibility
+    if len(my_nbs) == 0:
+        score -= 8.0
+    score += 1.5 * empty_nbs
+
+    # Ring potential: if move touches at least two friendly stones with spread
+    if len(my_nbs) >= 2:
+        score += 12.0
+        if creates_small_cycle_pattern(mv, me_set, valid_mask):
+            score += 35.0
+
+    # Tactical threat creation
+    me_new = set(me_set)
+    me_new.add(mv)
+    if has_bridge_or_fork(me_new, mv, valid_mask):
+        score += 1000.0
+    elif local_two_step_threat(me_new, valid_mask, mine=True):
+        score += 40.0
+
+    # Opponent reply danger penalty
+    danger = estimate_opp_counterplay(mv, me_set, opp_set, valid_mask)
+    score -= danger
+
+    # Tiny deterministic tiebreaker
+    score += (r * 0.001 + c * 0.0001)
+    return score
+
+
+def creates_small_cycle_pattern(mv, me_set, valid_mask):
+    my_nbs = [nb for nb in neighbors(mv[0], mv[1], valid_mask) if nb in me_set]
+    if len(my_nbs) < 2:
+        return False
+    # If two neighbors are connected by a short path without mv, this often supports a ring.
+    target = set(my_nbs)
+    start = my_nbs[0]
+    q = deque([start])
+    seen = {start}
+    depth = {start: 0}
+    while q:
+        u = q.popleft()
+        if u in target and u != start and depth[u] <= 4:
+            return True
+        if depth[u] == 4:
+            continue
+        for v in neighbors(u[0], u[1], valid_mask):
+            if v in me_set and v not in seen:
+                seen.add(v)
+                depth[v] = depth[u] + 1
+                q.append(v)
+    return False
+
+
+def local_two_step_threat(stones, valid_mask, mine=True):
+    # Cheap threat estimate: among empties adjacent to current stones, can any be a win next?
+    frontier = set()
+    occupied = set(stones)
+    n = len(valid_mask)
+    for s in stones:
+        for nb in neighbors(s[0], s[1], valid_mask):
+            if nb not in occupied:
+                frontier.add(nb)
+    cnt = 0
+    for mv in list(frontier)[:16]:
+        if is_immediate_win(stones, mv, valid_mask):
+            cnt += 1
+            if cnt >= 2:
+                return True
+    return False
+
+
+def estimate_opp_counterplay(mv, me_set, opp_set, valid_mask):
+    # Evaluate after our move whether opponent gets dangerous immediate tactics nearby.
+    occupied = set(me_set) | set(opp_set)
+    occupied.add(mv)
+    frontier = set()
+    for nb in neighbors(mv[0], mv[1], valid_mask):
+        if nb not in occupied:
+            frontier.add(nb)
+            for nb2 in neighbors(nb[0], nb[1], valid_mask):
+                if nb2 not in occupied:
+                    frontier.add(nb2)
+
+    danger = 0.0
+    checked = 0
+    for x in frontier:
+        checked += 1
+        if checked > 18:
+            break
+        if is_immediate_win(opp_set, x, valid_mask):
+            danger += 300.0
+        else:
+            local = 0
+            for y in neighbors(x[0], x[1], valid_mask):
+                if y in opp_set:
+                    local += 1
+            danger += 3.0 * local
+    return danger
+
+
+def hex_dist_to_center(cell, valid_mask):
+    # Use graph distance to nearest center candidate(s), approximated by cube-like embedding.
+    # For this board embedding, a good proxy is distance in axial coords (q=c, r=row).
+    r, c = cell
+    centers = board_centers(valid_mask)
+    return min(axial_hex_dist((r, c), ctr) for ctr in centers)
+
+
+_CENTER_CACHE = {}
+
+
+def board_centers(valid_mask):
+    key = id(valid_mask)
+    if key in _CENTER_CACHE:
+        return _CENTER_CACHE[key]
+    cells = [(r, c) for r in range(len(valid_mask)) for c in range(len(valid_mask[r])) if valid_mask[r][c]]
+    # choose cell(s) minimizing max distance
+    best = []
+    best_val = 10**9
+    sample = cells
+    for x in sample:
+        val = 0
+        # sparse approximation good enough
+        for y in sample[::max(1, len(sample)//40)]:
+            val = max(val, axial_hex_dist(x, y))
+        if val < best_val:
+            best_val = val
+            best = [x]
+        elif val == best_val:
+            best.append(x)
+    _CENTER_CACHE[key] = best[:3]
+    return _CENTER_CACHE[key]
+
+
+def axial_hex_dist(a, b):
+    # Map board coords to axial-like coords (q=c, r=row), then cube distance proxy:
+    # x=q, z=r, y=-x-z
+    r1, c1 = a
+    r2, c2 = b
+    x1, z1 = c1, r1
+    y1 = -x1 - z1
+    x2, z2 = c2, r2
+    y2 = -x2 - z2
+    return max(abs(x1 - x2), abs(y1 - y2), abs(z1 - z2))
+</code>

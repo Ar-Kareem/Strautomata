@@ -1,0 +1,219 @@
+
+import random
+import math
+import heapq
+import time
+from typing import List, Tuple
+
+# 6 neighbor directions for Hex board
+DIRS = [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0)]
+SIZE = 11
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[int, int]:
+    start_time = time.time()
+    # Preprocess: sets for quick lookup
+    me_set = set(me)
+    opp_set = set(opp)
+    occupied = me_set | opp_set
+    
+    # Helper: Dijkstra distance from one side to other
+    def dijkstra_dist(stone_set, is_black):
+        # For black: connect top row (row 0) to bottom row (row 10)
+        # For white: connect left col (col 0) to right col (col 10)
+        # Treat stones in stone_set as weight 0, empty cells as weight 1
+        # Actually, for distance to connect sides, we consider graph of empty cells + my stones
+        # We'll compute shortest path in terms of needed empty cells.
+        # Use multi-source Dijkstra from start side cells that are either my stone or empty.
+        dist = [[float('inf')] * SIZE for _ in range(SIZE)]
+        heap = []
+        
+        if is_black:
+            # Start side: top row (row=0)
+            for col in range(SIZE):
+                if (0, col) in stone_set:
+                    dist[0][col] = 0
+                    heapq.heappush(heap, (0, 0, col))
+                elif (0, col) not in occupied:
+                    dist[0][col] = 1
+                    heapq.heappush(heap, (1, 0, col))
+        else:
+            # Start side: left col (col=0)
+            for row in range(SIZE):
+                if (row, 0) in stone_set:
+                    dist[row][0] = 0
+                    heapq.heappush(heap, (0, row, 0))
+                elif (row, 0) not in occupied:
+                    dist[row][0] = 1
+                    heapq.heappush(heap, (1, row, 0))
+        
+        while heap:
+            d, r, c = heapq.heappop(heap)
+            if d > dist[r][c]:
+                continue
+            for dr, dc in DIRS:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < SIZE and 0 <= nc < SIZE:
+                    cost = 0 if (nr, nc) in stone_set else 1
+                    if (nr, nc) in occupied and (nr, nc) not in stone_set:
+                        # opponent stone or my stone already counted
+                        continue
+                    nd = d + cost
+                    if nd < dist[nr][nc]:
+                        dist[nr][nc] = nd
+                        heapq.heappush(heap, (nd, nr, nc))
+        
+        # Get minimal distance to reach opposite side
+        min_dist = float('inf')
+        if is_black:
+            for col in range(SIZE):
+                min_dist = min(min_dist, dist[10][col])
+        else:
+            for row in range(SIZE):
+                min_dist = min(min_dist, dist[row][10])
+        return min_dist if min_dist != float('inf') else SIZE * SIZE
+    
+    # 1. Check immediate win
+    for r in range(SIZE):
+        for c in range(SIZE):
+            if (r, c) in occupied:
+                continue
+            # Simulate placing my stone
+            new_me = me_set | {(r, c)}
+            if color == 'b':
+                if dijkstra_dist(new_me, True) == 0:
+                    return (r, c)
+            else:
+                if dijkstra_dist(new_me, False) == 0:
+                    return (r, c)
+    
+    # 2. Block opponent immediate win
+    opp_color = 'w' if color == 'b' else 'b'
+    for r in range(SIZE):
+        for c in range(SIZE):
+            if (r, c) in occupied:
+                continue
+            new_opp = opp_set | {(r, c)}
+            if opp_color == 'b':
+                if dijkstra_dist(new_opp, True) == 0:
+                    return (r, c)
+            else:
+                if dijkstra_dist(new_opp, False) == 0:
+                    return (r, c)
+    
+    # 3. MCTS
+    class Node:
+        def __init__(self, move=None, parent=None):
+            self.move = move  # (r,c) or None for root
+            self.parent = parent
+            self.children = []
+            self.wins = 0.0
+            self.visits = 0
+            self.untried_moves = []
+        
+        def uct_select_child(self, exploration=1.414):
+            best_score = -float('inf')
+            best_child = None
+            for child in self.children:
+                if child.visits == 0:
+                    score = float('inf')
+                else:
+                    score = child.wins / child.visits + exploration * math.sqrt(math.log(self.visits) / child.visits)
+                if score > best_score:
+                    best_score = score
+                    best_child = child
+            return best_child
+        
+        def add_child(self, move):
+            child = Node(move=move, parent=self)
+            self.children.append(child)
+            return child
+        
+        def update(self, result):
+            self.visits += 1
+            self.wins += result
+    
+    def get_empty_cells(occ_set):
+        cells = []
+        for r in range(SIZE):
+            for c in range(SIZE):
+                if (r, c) not in occ_set:
+                    cells.append((r, c))
+        return cells
+    
+    def rollout_state(my_stones, opp_stones, turn_me):
+        # Simple evaluation: distance difference
+        my_dist = dijkstra_dist(my_stones, color == 'b')
+        opp_dist = dijkstra_dist(opp_stones, opp_color == 'b')
+        # Normalize: smaller distance better -> bigger score better
+        score = (opp_dist - my_dist) / (SIZE * SIZE)  # between -1 and 1
+        return score
+    
+    def simulate_random(node_state_me, node_state_opp):
+        # Play random moves until game ends or depth limit
+        occ = node_state_me | node_state_opp
+        empty = get_empty_cells(occ)
+        random.shuffle(empty)
+        my_turn = True
+        depth = 0
+        while depth < 10 and empty:
+            move = empty.pop()
+            if my_turn:
+                node_state_me.add(move)
+            else:
+                node_state_opp.add(move)
+            my_turn = not my_turn
+            occ.add(move)
+            empty = get_empty_cells(occ)
+            depth += 1
+        return rollout_state(node_state_me, node_state_opp, not my_turn)
+    
+    root = Node()
+    root.untried_moves = get_empty_cells(occupied)
+    TIME_LIMIT = 0.95  # seconds
+    
+    while time.time() - start_time < TIME_LIMIT:
+        # Selection
+        node = root
+        state_me = set(me_set)
+        state_opp = set(opp_set)
+        
+        # Traverse tree
+        while node.untried_moves == [] and node.children:
+            node = node.uct_select_child()
+            state_me.add(node.move)
+        
+        # Expansion
+        if node.untried_moves:
+            move = random.choice(node.untried_moves)
+            node.untried_moves.remove(move)
+            state_me.add(move)
+            node = node.add_child(move)
+        
+        # Simulation
+        result = simulate_random(set(state_me), set(state_opp))
+        
+        # Backpropagation
+        while node is not None:
+            node.update(result)
+            node = node.parent
+    
+    # Choose best move from root
+    if root.children:
+        best_child = max(root.children, key=lambda c: c.visits)
+        return best_child.move
+    
+    # Fallback: greedy distance minimization
+    best_move = None
+    best_score = -float('inf')
+    for r in range(SIZE):
+        for c in range(SIZE):
+            if (r, c) in occupied:
+                continue
+            new_me = me_set | {(r, c)}
+            my_dist = dijkstra_dist(new_me, color == 'b')
+            opp_dist = dijkstra_dist(opp_set, opp_color == 'b')
+            score = opp_dist - my_dist
+            if score > best_score:
+                best_score = score
+                best_move = (r, c)
+    return best_move if best_move is not None else random.choice(get_empty_cells(occupied))

@@ -1,0 +1,270 @@
+
+import numpy as np
+import time
+from collections import deque
+
+# Precompute all possible directions for queen moves
+DIRECTIONS = [(dx, dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1) if (dx, dy) != (0, 0)]
+
+def policy(board):
+    player = 1
+    opponent = 2
+    
+    # Time management for iterative deepening
+    start_time = time.time()
+    time_limit = 0.95  # use 95% of available time
+    
+    # Initialize best move with a random legal move as fallback
+    best_move = get_random_legal_move(board, player)
+    if not best_move:
+        return ""  # should not happen as per rules
+    
+    # Iterative deepening
+    depth = 1
+    while time.time() - start_time < time_limit:
+        try:
+            move, _ = alpha_beta_search(
+                board, depth, player, opponent, 
+                start_time, time_limit
+            )
+            if move:
+                best_move = move
+            depth += 1
+        except TimeoutError:
+            break
+    
+    return format_move(best_move)
+
+def alpha_beta_search(board, depth, player, opponent, start_time, time_limit):
+    alpha = -float('inf')
+    beta = float('inf')
+    best_move = None
+    
+    # Generate all legal moves ordered by heuristic
+    moves = get_all_legal_moves(board, player)
+    if not moves:
+        return None, 0  # no legal moves
+    
+    # Order moves by heuristic to improve pruning
+    moves = order_moves(board, moves, player, opponent)
+    
+    for move in moves:
+        # Check time
+        if time.time() - start_time > time_limit:
+            raise TimeoutError()
+            
+        # Make move
+        new_board = apply_move(board, move, player)
+        # Recursive call
+        value = -negamax(new_board, depth-1, opponent, player, -beta, -alpha, start_time, time_limit)
+        # Undo move is not needed as we work on copies
+        
+        if value > alpha:
+            alpha = value
+            best_move = move
+            if alpha >= beta:
+                break
+    
+    return best_move, alpha
+
+def negamax(board, depth, player, opponent, alpha, beta, start_time, time_limit):
+    # Check terminal conditions
+    enemy_moves = get_all_legal_moves(board, opponent)
+    if not enemy_moves:
+        return float('inf')  # opponent has no moves, we win
+    
+    if depth == 0:
+        return evaluate(board, player, opponent)
+        
+    # Generate and order moves
+    moves = get_all_legal_moves(board, player)
+    if not moves:
+        return -float('inf')  # we have no moves, we lose
+        
+    moves = order_moves(board, moves, player, opponent)
+    
+    value = -float('inf')
+    for move in moves:
+        # Check time
+        if time.time() - start_time > time_limit:
+            raise TimeoutError()
+            
+        new_board = apply_move(board, move, player)
+        score = -negamax(new_board, depth-1, opponent, player, -beta, -alpha, start_time, time_limit)
+        value = max(value, score)
+        alpha = max(alpha, value)
+        if alpha >= beta:
+            break
+            
+    return value
+
+def evaluate(board, player, opponent):
+    """Heuristic evaluation of board position"""
+    # Mobility evaluation (most important factor)
+    player_moves = len(get_all_legal_moves(board, player))
+    opponent_moves = len(get_all_legal_moves(board, opponent))
+    mobility_score = 10 * (player_moves - opponent_moves)
+    
+    # Territory control - squares reachable by each player
+    player_territory = count_reachable_squares(board, player)
+    opponent_territory = count_reachable_squares(board, opponent)
+    territory_score = 3 * (player_territory - opponent_territory)
+    
+    # Center control - prefer central positions
+    center_score = 0
+    amazon_positions = get_amazon_positions(board, player)
+    for row, col in amazon_positions:
+        distance_to_center = abs(row - 2.5) + abs(col - 2.5)
+        center_score -= distance_to_center
+    
+    # Opponent proximity - keep distance from opponent's amazons
+    opponent_amazons = get_amazon_positions(board, opponent)
+    proximity_score = 0
+    for a_row, a_col in amazon_positions:
+        for o_row, o_col in opponent_amazons:
+            distance = max(abs(a_row - o_row), abs(a_col - o_col))
+            proximity_score -= 1.0 / (distance + 1)  # prefer farther away
+    
+    # Arrow impact - how much does each arrow restrict movement
+    arrow_score = 0
+    arrow_positions = np.where(board == -1)
+    for row, col in zip(*arrow_positions):
+        # Count how many opponent moves would be blocked by this arrow
+        for dx, dy in DIRECTIONS:
+            for dist in range(1, 6):
+                new_r, new_c = row + dx * dist, col + dy * dist
+                if not (0 <= new_r < 6 and 0 <= new_c < 6):
+                    break
+                if board[new_r, new_c] != 0:
+                    break
+                # This square would be blocked for opponent
+                arrow_score += 0.5
+    
+    total_score = (
+        mobility_score + 
+        territory_score + 
+        0.5 * center_score + 
+        0.5 * proximity_score +
+        0.3 * arrow_score
+    )
+    
+    return total_score
+
+def count_reachable_squares(board, player):
+    """Count squares reachable by any amazon of the given player"""
+    amazons = get_amazon_positions(board, player)
+    visited = set()
+    queue = deque()
+    
+    for amazon in amazons:
+        visited.add(amazon)
+        queue.append(amazon)
+    
+    while queue:
+        row, col = queue.popleft()
+        for dx, dy in DIRECTIONS:
+            for dist in range(1, 6):
+                new_r, new_c = row + dx * dist, col + dy * dist
+                if not (0 <= new_r < 6 and 0 <= new_c < 6):
+                    break
+                if board[new_r, new_c] != 0:
+                    break
+                if (new_r, new_c) not in visited:
+                    visited.add((new_r, new_c))
+                    queue.append((new_r, new_c))
+    
+    return len(visited) - len(amazons)  # don't count amazon positions
+
+def get_amazon_positions(board, player):
+    """Return list of (row, col) positions of player's amazons"""
+    return list(zip(*np.where(board == player)))
+
+def order_moves(board, moves, player, opponent):
+    """Order moves by heuristic evaluation to improve alpha-beta pruning"""
+    def move_score(move):
+        # Basic heuristic: prefer moves that restrict opponent and expand our mobility
+        _, to, arrow = move
+        score = 0
+        
+        # Prefer moves toward center
+        score -= (abs(to[0] - 2.5) + abs(to[1] - 2.5))
+        
+        # Prefer arrows that block more directions
+        arrow_blocking = 0
+        for dx, dy in DIRECTIONS:
+            r, c = arrow[0] + dx, arrow[1] + dy
+            if 0 <= r < 6 and 0 <= c < 6:
+                arrow_blocking += 1
+        score += arrow_blocking
+        
+        return score
+    
+    return sorted(moves, key=move_score, reverse=True)
+
+def get_all_legal_moves(board, player):
+    """Generate all legal moves for player"""
+    moves = []
+    amazons = get_amazon_positions(board, player)
+    
+    for from_r, from_c in amazons:
+        # First part - move the amazon
+        for dx, dy in DIRECTIONS:
+            for dist in range(1, 6):
+                to_r, to_c = from_r + dx * dist, from_c + dy * dist
+                if not (0 <= to_r < 6 and 0 <= to_c < 6):
+                    break
+                if board[to_r, to_c] != 0:
+                    break
+                
+                # Second part - shoot arrow from new position
+                # Create temporary board after move
+                temp_board = board.copy()
+                temp_board[from_r, from_c] = 0
+                temp_board[to_r, to_c] = player
+                
+                for ax, ay in DIRECTIONS:
+                    for a_dist in range(1, 6):
+                        arrow_r, arrow_c = to_r + ax * a_dist, to_c + ay * a_dist
+                        if not (0 <= arrow_r < 6 and 0 <= arrow_c < 6):
+                            break
+                        if temp_board[arrow_r, arrow_c] != 0:
+                            break
+                            
+                        # Check if arrow path is blocked (except the vacated from square)
+                        # The path can go through the vacated from square
+                        path_clear = True
+                        for path_dist in range(1, a_dist):
+                            path_r = to_r + ax * path_dist
+                            path_c = to_c + ay * path_dist
+                            
+                            # The original from square is now empty in temp_board
+                            if (path_r, path_c) == (from_r, from_c):
+                                continue
+                                
+                            if temp_board[path_r, path_c] != 0:
+                                path_clear = False
+                                break
+                        
+                        if path_clear:
+                            moves.append(((from_r, from_c), (to_r, to_c), (arrow_r, arrow_c)))
+    
+    return moves
+
+def get_random_legal_move(board, player):
+    """Get any legal move as fallback"""
+    moves = get_all_legal_moves(board, player)
+    return moves[0] if moves else None
+
+def apply_move(board, move, player):
+    """Return new board after applying move (doesn't modify original)"""
+    from_pos, to_pos, arrow_pos = move
+    new_board = board.copy()
+    new_board[from_pos[0], from_pos[1]] = 0
+    new_board[to_pos[0], to_pos[1]] = player
+    new_board[arrow_pos[0], arrow_pos[1]] = -1
+    return new_board
+
+def format_move(move):
+    """Convert move tuple to required string format"""
+    from_pos, to_pos, arrow_pos = move
+    return f"{from_pos[0]},{from_pos[1]}:{to_pos[0]},{to_pos[1]}:{arrow_pos[0]},{arrow_pos[1]}"

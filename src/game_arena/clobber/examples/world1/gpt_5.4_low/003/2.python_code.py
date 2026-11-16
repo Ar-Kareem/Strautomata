@@ -1,0 +1,281 @@
+
+import time
+from typing import List, Tuple, Dict
+
+ROWS = 5
+COLS = 6
+N = ROWS * COLS
+
+DIRS = [(-1, 0, 'U'), (0, 1, 'R'), (1, 0, 'D'), (0, -1, 'L')]
+
+# Precomputed adjacency and move descriptions
+NEIGH_MASKS = [0] * N
+MOVES_FROM = [[] for _ in range(N)]  # list of (to_idx, dir_char)
+CENTER_SCORE = [0] * N
+
+for r in range(ROWS):
+    for c in range(COLS):
+        i = r * COLS + c
+        CENTER_SCORE[i] = -(abs(r - 2) + abs(c - 2.5))
+        for dr, dc, ch in DIRS:
+            rr, cc = r + dr, c + dc
+            if 0 <= rr < ROWS and 0 <= cc < COLS:
+                j = rr * COLS + cc
+                NEIGH_MASKS[i] |= 1 << j
+                MOVES_FROM[i].append((j, ch))
+
+BIT_COUNT = int.bit_count
+
+
+def arrays_to_bitboards(you: List[List[int]], opponent: List[List[int]]) -> Tuple[int, int]:
+    me = 0
+    opp = 0
+    for r in range(ROWS):
+        rowy = you[r]
+        rowo = opponent[r]
+        base = r * COLS
+        for c in range(COLS):
+            idx = base + c
+            if rowy[c]:
+                me |= 1 << idx
+            elif rowo[c]:
+                opp |= 1 << idx
+    return me, opp
+
+
+def legal_moves(me: int, opp: int):
+    """Yield moves as (src, dst, dir_char)."""
+    pieces = me
+    while pieces:
+        lsb = pieces & -pieces
+        src = lsb.bit_length() - 1
+        pieces ^= lsb
+        for dst, ch in MOVES_FROM[src]:
+            if (opp >> dst) & 1:
+                yield (src, dst, ch)
+
+
+def legal_moves_list(me: int, opp: int):
+    return list(legal_moves(me, opp))
+
+
+def move_count(me: int, opp: int) -> int:
+    cnt = 0
+    pieces = me
+    while pieces:
+        lsb = pieces & -pieces
+        src = lsb.bit_length() - 1
+        pieces ^= lsb
+        cnt += BIT_COUNT(NEIGH_MASKS[src] & opp)
+    return cnt
+
+
+def apply_move(me: int, opp: int, src: int, dst: int) -> Tuple[int, int]:
+    # mover piece goes from src to dst, captures opponent at dst, then perspective swaps
+    me_after = (me ^ (1 << src)) | (1 << dst)
+    opp_after = opp ^ (1 << dst)
+    return opp_after, me_after  # swapped: opponent to move next
+
+
+def evaluate(me: int, opp: int) -> int:
+    my_moves = move_count(me, opp)
+    if my_moves == 0:
+        return -100000
+    opp_moves = move_count(opp, me)
+    if opp_moves == 0:
+        return 100000
+
+    my_pieces = BIT_COUNT(me)
+    opp_pieces = BIT_COUNT(opp)
+
+    # Positional pressure / centrality
+    pos = 0
+    bits = me
+    while bits:
+        lsb = bits & -bits
+        i = lsb.bit_length() - 1
+        bits ^= lsb
+        pos += CENTER_SCORE[i]
+    bits = opp
+    while bits:
+        lsb = bits & -bits
+        i = lsb.bit_length() - 1
+        bits ^= lsb
+        pos -= CENTER_SCORE[i]
+
+    # Isolation/attack potential
+    attack = 0
+    bits = me
+    while bits:
+        lsb = bits & -bits
+        i = lsb.bit_length() - 1
+        bits ^= lsb
+        attack += BIT_COUNT(NEIGH_MASKS[i] & opp)
+    bits = opp
+    while bits:
+        lsb = bits & -bits
+        i = lsb.bit_length() - 1
+        bits ^= lsb
+        attack -= BIT_COUNT(NEIGH_MASKS[i] & me)
+
+    return (
+        120 * (my_moves - opp_moves)
+        + 18 * (my_pieces - opp_pieces)
+        + 14 * attack
+        + 3 * pos
+    )
+
+
+class Searcher:
+    def __init__(self, time_limit: float):
+        self.start = time.perf_counter()
+        self.deadline = self.start + time_limit
+        self.tt: Dict[Tuple[int, int, int], Tuple[int, int]] = {}
+        self.best_move = None
+        self.best_score = -10**9
+        self.timeout = False
+
+    def time_up(self) -> bool:
+        return time.perf_counter() >= self.deadline
+
+    def ordered_moves(self, me: int, opp: int, pv_move=None):
+        moves = legal_moves_list(me, opp)
+        if not moves:
+            return moves
+
+        scored = []
+        for mv in moves:
+            src, dst, ch = mv
+            score = 0
+
+            if pv_move is not None and mv == pv_move:
+                score += 1000000
+
+            next_me, next_opp = apply_move(me, opp, src, dst)
+
+            # Immediate win if opponent has no move
+            opp_mc = move_count(next_me, next_opp)
+            if opp_mc == 0:
+                score += 500000
+
+            # Prefer moves that reduce opponent mobility and keep ours high after the swap-back perspective
+            my_future_mc = move_count(next_opp, next_me)
+            score += 150 * (my_future_mc - opp_mc)
+
+            # Prefer central landing squares
+            score += 10 * CENTER_SCORE[dst] - 3 * CENTER_SCORE[src]
+
+            # Prefer captures that move into contested squares
+            score += 8 * BIT_COUNT(NEIGH_MASKS[dst] & next_me)
+
+            scored.append((score, mv))
+
+        scored.sort(reverse=True, key=lambda x: x[0])
+        return [mv for _, mv in scored]
+
+    def negamax(self, me: int, opp: int, depth: int, alpha: int, beta: int) -> int:
+        if self.time_up():
+            self.timeout = True
+            return 0
+
+        key = (me, opp, depth)
+        if key in self.tt:
+            return self.tt[key][0]
+
+        mc = move_count(me, opp)
+        if mc == 0:
+            return -100000 + (20 - depth)  # prefer faster wins/slower losses
+
+        if depth == 0:
+            return evaluate(me, opp)
+
+        pv_move = self.tt.get((me, opp, depth + 1), (None, None))[1]
+        best = -10**9
+        best_mv = None
+
+        for src, dst, ch in self.ordered_moves(me, opp, pv_move):
+            nme, nopp = apply_move(me, opp, src, dst)
+            score = -self.negamax(nme, nopp, depth - 1, -beta, -alpha)
+            if self.timeout:
+                return 0
+            if score > best:
+                best = score
+                best_mv = (src, dst, ch)
+            if best > alpha:
+                alpha = best
+            if alpha >= beta:
+                break
+
+        self.tt[key] = (best, best_mv)
+        return best
+
+    def search(self, me: int, opp: int):
+        legal = legal_moves_list(me, opp)
+        if not legal:
+            return None
+
+        # Safe fallback: always legal
+        fallback = self.ordered_moves(me, opp)[0]
+        self.best_move = fallback
+        self.best_score = -10**9
+
+        # Quick tactical check for immediate wins
+        for mv in self.ordered_moves(me, opp):
+            src, dst, ch = mv
+            nme, nopp = apply_move(me, opp, src, dst)
+            if move_count(nme, nopp) == 0:
+                self.best_move = mv
+                self.best_score = 999999
+                return mv
+
+        depth = 1
+        while depth <= 20 and not self.time_up():
+            self.timeout = False
+            score = self.negamax(me, opp, depth, -10**9, 10**9)
+            if self.timeout:
+                break
+            tt_entry = self.tt.get((me, opp, depth))
+            if tt_entry and tt_entry[1] is not None:
+                self.best_move = tt_entry[1]
+                self.best_score = score
+            depth += 1
+
+        return self.best_move
+
+
+def move_to_str(mv: Tuple[int, int, str]) -> str:
+    src, dst, ch = mv
+    r, c = divmod(src, COLS)
+    return f"{r},{c},{ch}"
+
+
+def policy(you: list[int], opponent: list[int]) -> str:
+    me, opp = arrays_to_bitboards(you, opponent)
+
+    # Enumerate legal moves immediately for guaranteed legality.
+    legal = legal_moves_list(me, opp)
+    if not legal:
+        # No legal move should normally mean the game is lost already.
+        # Return a syntactically valid string as a last resort.
+        return "0,0,R"
+
+    # Time budget chosen to stay comfortably below 1 second.
+    searcher = Searcher(time_limit=0.92)
+    best = searcher.search(me, opp)
+    if best is None:
+        best = legal[0]
+
+    # Final legality guard
+    src, dst, ch = best
+    if not ((me >> src) & 1):
+        best = legal[0]
+    else:
+        ok = False
+        for d2, ch2 in MOVES_FROM[src]:
+            if d2 == dst and ch2 == ch and ((opp >> dst) & 1):
+                ok = True
+                break
+        if not ok:
+            best = legal[0]
+
+    return move_to_str(best)

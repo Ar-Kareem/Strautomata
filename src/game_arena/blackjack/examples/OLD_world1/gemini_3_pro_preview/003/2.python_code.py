@@ -1,0 +1,241 @@
+
+import random
+from functools import lru_cache
+
+def policy(hand: list[str], target: int) -> str:
+    """
+    Determines whether to HIT or STAY given the current hand and target score.
+    Uses Monte Carlo simulation to estimate the opponent's distribution and
+    Dynamic Programming to maximize expected utility.
+    """
+    
+    # ------------------------------------------------------------------
+    # 1. Game Constants & Setup
+    # ------------------------------------------------------------------
+    ranks = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    
+    # Values for base calculation (A counts as 1 initially)
+    # J, Q, K count as 10.
+    card_values = {}
+    for r in ranks:
+        if r == "A":
+            card_values[r] = 1
+        elif r in ["J", "Q", "K"]:
+            card_values[r] = 10
+        else:
+            card_values[r] = int(r)
+            
+    # Mapping cards to bitmask indices (0..12)
+    rank_to_shbit = {r: i for i, r in enumerate(ranks)}
+    
+    # ------------------------------------------------------------------
+    # 2. Opponent Simulation (Monte Carlo)
+    # ------------------------------------------------------------------
+    # We estimate the probability of the opponent ending with specific scores.
+    # We assume the opponent plays a rational "Threshold" strategy (e.g., stop at T-4).
+    
+    # Heuristic: Opponent stands on scores >= max(10, target - 4).
+    # This captures the urge to get close to T without taking excessive risks.
+    OPP_THRESHOLD = max(10, target - 4)
+    SIMULATIONS = 400
+    
+    opp_bust_count = 0
+    opp_score_counts = [0] * (target + 1)
+    
+    # Reusable full deck for simulation
+    full_deck = ranks[:]
+    
+    for _ in range(SIMULATIONS):
+        random.shuffle(full_deck)
+        
+        # Simulate opponent play
+        current_val = 0
+        has_ace = False
+        final_score = 0
+        busted = False
+        
+        for card in full_deck:
+            # Update hand value
+            val = card_values[card]
+            if card == "A":
+                has_ace = True
+                current_val += 1
+            else:
+                current_val += val
+            
+            # Calculate best score (Soft Ace logic)
+            score_now = current_val
+            if has_ace and current_val + 10 <= target:
+                score_now += 10
+            
+            # Check game end conditions
+            if score_now > target:
+                busted = True
+                break
+            
+            if score_now >= OPP_THRESHOLD:
+                final_score = score_now
+                break
+        
+        if busted:
+            opp_bust_count += 1
+        else:
+            opp_score_counts[final_score] += 1
+            
+    # Calculate probabilities
+    p_opp_bust = opp_bust_count / SIMULATIONS
+    p_opp_scores = [c / SIMULATIONS for c in opp_score_counts]
+
+    # Precompute CDF: P(Opponent Score < S)
+    prob_opp_less_than = [0.0] * (target + 2)
+    acc = 0.0
+    for s in range(target + 1):
+        prob_opp_less_than[s] = acc
+        acc += p_opp_scores[s]
+    prob_opp_less_than[target + 1] = acc
+
+    # ------------------------------------------------------------------
+    # 3. Utility Function Calculation
+    # ------------------------------------------------------------------
+    def get_utility(my_score):
+        """
+        Returns expected score (Win=1, Draw=0.5, Loss=0) if we end with 'my_score'
+        and do not bust.
+        """
+        if my_score > target:
+            return 0.0 # Should be handled by caller, but safety check
+        
+        # Win if opponent busts
+        # Win if opponent doesn't bust but has lower score
+        # Draw if opponent has same score
+        p_win = p_opp_bust + prob_opp_less_than[my_score]
+        p_draw = p_opp_scores[my_score]
+        
+        return p_win + 0.5 * p_draw
+
+    # Utility if we bust.
+    # If we bust, we lose immediately unless rules say "If both bust, draw".
+    # However, problem says "If at any point... you bust... immediately lose".
+    # But later says "If both... bust, draw".
+    # Usually "immediately lose" takes precedence in sequential play, 
+    # but based on standard tournament AI rules for this prompt, the draw condition implies 
+    # we retain utility = 0.5 * P(Opponent Busts).
+    utility_bust = 0.5 * p_opp_bust
+
+    # ------------------------------------------------------------------
+    # 4. Optimal Strategy Solver (DP)
+    # ------------------------------------------------------------------
+    
+    @lru_cache(maxsize=None)
+    def solve(mask, base_val, ace_present):
+        """
+        Returns the max expected utility from the current state.
+        mask: bitmask of remaining cards in my deck.
+        base_val: sum of card values (A=1).
+        ace_present: boolean, do we hold an Ace?
+        """
+        # Calculate current real score
+        score = base_val
+        if ace_present and base_val + 10 <= target:
+            score += 10
+            
+        if score > target:
+            return utility_bust
+        
+        # Option 1: STAY
+        u_stay = get_utility(score)
+        
+        # Option 2: HIT
+        # Determine available cards from mask
+        # mask bits map to 'ranks' indices
+        available_indices = []
+        for i in range(13):
+            if mask & (1 << i):
+                available_indices.append(i)
+        
+        if not available_indices:
+            return u_stay
+            
+        # Calculate expected utility of hitting
+        sum_u_hit = 0
+        for idx in available_indices:
+            card = ranks[idx]
+            val = card_values[card]
+            
+            new_mask = mask & ~(1 << idx)
+            new_base = base_val
+            new_ace = ace_present
+            
+            if card == "A":
+                new_base += 1
+                new_ace = True
+            else:
+                new_base += val
+            
+            sum_u_hit += solve(new_mask, new_base, new_ace)
+            
+        u_hit = sum_u_hit / len(available_indices)
+        
+        return max(u_stay, u_hit)
+
+    # ------------------------------------------------------------------
+    # 5. Evaluate Current Hand
+    # ------------------------------------------------------------------
+    
+    # Construct state from current hand
+    current_mask = (1 << 13) - 1
+    cur_base = 0
+    cur_ace = False
+    
+    for c in hand:
+        idx = rank_to_shbit[c]
+        # Remove card from mask (assuming input is consistent with deck)
+        current_mask &= ~(1 << idx)
+        
+        if c == "A":
+            cur_base += 1
+            cur_ace = True
+        else:
+            cur_base += card_values[c]
+            
+    # Check if already over target
+    cur_score_real = cur_base
+    if cur_ace and cur_base + 10 <= target:
+        cur_score_real += 10
+        
+    if cur_score_real > target:
+        return "STAY" # Cannot act, game effectively over
+        
+    # Calculate values for HIT vs STAY
+    val_stay = get_utility(cur_score_real)
+    
+    # Calculate HIT value explicitly for the root call
+    remaining_indices = [i for i in range(13) if current_mask & (1 << i)]
+    
+    if not remaining_indices:
+        return "STAY"
+        
+    sum_hit_val = 0
+    for idx in remaining_indices:
+        c = ranks[idx]
+        val = card_values[c]
+        
+        nm = current_mask & ~(1 << idx)
+        nb = cur_base
+        na = cur_ace
+        if c == "A":
+            nb += 1
+            na = True
+        else:
+            nb += val
+            
+        sum_hit_val += solve(nm, nb, na)
+        
+    val_hit = sum_hit_val / len(remaining_indices)
+    
+    # Decide
+    # Use a tiny epsilon to break ties towards STAY (reduce variance)
+    if val_hit > val_stay + 1e-9:
+        return "HIT"
+    else:
+        return "STAY"

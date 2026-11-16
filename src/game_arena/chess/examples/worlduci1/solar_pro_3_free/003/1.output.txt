@@ -1,0 +1,239 @@
+The strategy for this policy is to play the strongest move that the engine could ever present.  
+First, any move that captures opponent material is examined; among captures we prefer the capture with the highest material value (queen > rook > bishop / knight > pawn).  
+If no captures are available, moves that give check are chosen next, preferring the checking move with the highest material value (again queen promotions are favored).  
+If still no capture or check is available, we prioritize safe king moves – castling (side‑long if both are legal) or moving the king itself – before falling back to any other legal move.  
+The evaluation never uses external libraries; it relies only on board heuristics (capture weight, piece‑type check detection, castling safety) and runs well within the 1‑second limit.
+
+<code>
+from typing import Dict, Tuple
+
+def idx_from_square(square: str) -> Tuple[int, int]:
+    """Return (file_index, rank_index) for algebraic square."""
+    f = ord(square[0]) - ord('a')
+    r = int(square[1]) - 1
+    return f, r
+
+def rook_attacks(dest_idx: Tuple[int, int], king_idx: Tuple[int, int],
+                 board: Dict[str, str]) -> bool:
+    """True if a rook placed at dest_idx would give check."""
+    if dest_idx[0] != king_idx[0] and dest_idx[1] != king_idx[1]:
+        return False
+    if dest_idx[0] == king_idx[0]:          # same rank
+        step = 1 if dest_idx[1] < king_idx[1] else -1
+        r = dest_idx[1]
+        while r != king_idx[1]:
+            sq = (dest_idx[0], r)
+            if sq in board:
+                return False
+            r += step
+        return True
+    else:                                 # same file
+        step = 1 if dest_idx[0] < king_idx[0] else -1
+        f = dest_idx[0]
+        while f != king_idx[0]:
+            sq = (f, dest_idx[1])
+            if sq in board:
+                return False
+            f += step
+        return True
+
+def bishop_attacks(dest_idx: Tuple[int, int], king_idx: Tuple[int, int],
+                  board: Dict[str, str]) -> bool:
+    """True if a bishop placed at dest_idx would give check."""
+    dx = abs(dest_idx[0] - king_idx[0])
+    dy = abs(dest_idx[1] - king_idx[1])
+    if dx != dy or dx == 0:
+        return False
+    step_f = 1 if dest_idx[0] < king_idx[0] else -1
+    step_r = 1 if dest_idx[1] < king_idx[1] else -1
+    sq = (dest_idx[0] + step_f, dest_idx[1] + step_r)
+    while sq != king_idx:
+        if sq in board:
+            return False
+        sq = (sq[0] + step_f, sq[1] + step_r)
+    return True
+
+def queen_attacks(dest_idx: Tuple[int, int], king_idx: Tuple[int, int],
+                  board: Dict[str, str]) -> bool:
+    """True if a queen placed at dest_idx would give check."""
+    return rook_attacks(dest_idx, king_idx, board) or bishop_attacks(dest_idx, king_idx, board)
+
+def knight_attacks(dest_idx: Tuple[int, int], king_idx: Tuple[int, int]) -> bool:
+    """True if a knight placed at dest_idx attacks the king."""
+    dx = abs(dest_idx[0] - king_idx[0])
+    dy = abs(dest_idx[1] - king_idx[1])
+    return (dx == 1 and dy == 2) or (dx == 2 and dy == 1)
+
+def pawn_attacks(dest_idx: Tuple[int, int], king_idx: Tuple[int, int],
+                 to_play: str) -> bool:
+    """True if a pawn placed at dest_idx attacks the king."""
+    forward_dir = 1 if to_play == 'white' else -1
+    if abs(dest_idx[0] - king_idx[0]) == 1 and dest_idx[1] + forward_dir == king_idx[1]:
+        return True
+    return False
+
+def move_gives_check(move: str, after_board: Dict[str, str],
+                     king_idx: Tuple[int, int], to_play: str) -> bool:
+    """Check if the move would give check based on the board after the move."""
+    src = move[:2]
+    dest = move[2:4]
+    promo = None
+    if len(move) == 4:
+        promo = None
+    else:
+        promo = move[-1]                # 'q', 'n', 'b', 'r'
+
+    dest_idx = idx_from_square(dest)
+    piece_type = promo if promo else after_board.get(dest)[1]
+    if piece_type == 'K':
+        return False
+
+    if piece_type == 'P':
+        return pawn_attacks(dest_idx, king_idx, to_play)
+    if piece_type == 'N':
+        return knight_attacks(dest_idx, king_idx)
+    if piece_type == 'R':
+        return rook_attacks(dest_idx, king_idx, after_board)
+    if piece_type == 'B':
+        return bishop_attacks(dest_idx, king_idx, after_board)
+    if piece_type == 'Q':
+        return queen_attacks(dest_idx, king_idx, after_board)
+
+    return False
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    """
+    Return a strong legal move from the supplied list of legal_moves.
+    The function runs in < 1 second on a modern CPU.
+    """
+    # Material values (higher = better)
+    piece_val = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9}
+    opponent_color = 'black' if to_play == 'white' else 'white'
+
+    # Find king squares
+    opp_king_sq = None
+    own_king_sq = None
+    for sq, pc in pieces.items():
+        if pc[0] == opponent_color and pc[1] == 'K':
+            opp_king_sq = sq
+        if pc[0] == to_play and pc[1] == 'K':
+            own_king_sq = sq
+    opp_king_idx = idx_from_square(opp_king_sq) if opp_king_sq else (-1, -1)
+    forward_dir = 1 if to_play == 'white' else -1
+
+    # -----------------------------------------------------------------
+    # 1. Prefer captures with maximal material gain
+    # -----------------------------------------------------------------
+    captures = []
+    for mv in legal_moves:                     # global list of legal moves
+        src = mv[:2]
+        dest = mv[2:4]
+        promo = None
+        if len(mv) == 4:
+            promo = None
+        else:
+            promo = mv[-1]
+
+        # Simulate board after the move
+        after = dict(pieces)
+        del after[src]
+
+        captured_type = None
+        if promo is None:
+            if dest in after:
+                captured_type = after[dest][1]
+                del after[dest]
+            after[dest] = pieces[src]
+        else:                                 # promotion
+            if dest in after:
+                captured_type = after[dest][1]
+                del after[dest]
+            after[dest] = to_play + promo
+
+        # Material value of the move
+        val = piece_val.get(captured_type, 0)
+        if promo:
+            val = piece_val.get(promo, 0)
+
+        captures.append((-val, move_gives_check(mv, after, opp_king_idx, to_play), mv))
+
+    if captures:
+        captures.sort()
+        # The first element has highest material (lowest negative key) and possibly a check.
+        return captures[0][2]
+
+    # -----------------------------------------------------------------
+    # 2. If no captures, prefer checking moves (again favour higher material)
+    # -----------------------------------------------------------------
+    checks = []
+    for mv in legal_moves:
+        src = mv[:2]
+        dest = mv[2:4]
+        promo = None
+        if len(mv) == 4:
+            promo = None
+        else:
+            promo = mv[-1]
+
+        after = dict(pieces)
+        del after[src]
+        if promo is None:
+            if dest in after:
+                del after[dest]
+            after[dest] = pieces[src]
+        else:
+            if dest in after:
+                del after[dest]
+            after[dest] = to_play + promo
+
+        piece_type = promo if promo else after[dest][1]
+        if piece_type == 'P':
+            if pawn_attacks(idx_from_square(dest), opp_king_idx, to_play):
+                checks.append((piece_val.get(promo, 0), mv))
+        elif piece_type == 'N':
+            if knight_attacks(idx_from_square(dest), opp_king_idx):
+                checks.append((0, mv))
+        elif piece_type == 'R':
+            if rook_attacks(idx_from_square(dest), opp_king_idx, after):
+                checks.append((0, mv))
+        elif piece_type == 'B':
+            if bishop_attacks(idx_from_square(dest), opp_king_idx, after):
+                checks.append((0, mv))
+        elif piece_type == 'Q':
+            if queen_attacks(idx_from_square(dest), opp_king_idx, after):
+                checks.append((0, mv))
+
+    if checks:
+        checks.sort(key=lambda x: x[0], reverse=True)
+        return checks[0][1]
+
+    # -----------------------------------------------------------------
+    # 3. Prefer castling moves (safe king maneuver)
+    # -----------------------------------------------------------------
+    castling = []
+    if to_play == 'white':
+        if 'e1g1' in legal_moves:
+            castling.append('e1g1')
+        if 'e1c1' in legal_moves:
+            castling.append('e1c1')
+    else:  # black
+        if 'e8g8' in legal_moves:
+            castling.append('e8g8')
+        if 'e8c1' in legal_moves:
+            castling.append('e8c1')
+    if castling:
+        # Prefer queenside when both are legal
+        return castling[0]
+
+    # -----------------------------------------------------------------
+    # 4. If still nothing, move our king (king safety first)
+    # -----------------------------------------------------------------
+    for mv in legal_moves:
+        if pieces[mv[:2]][1] == 'K':
+            return mv
+
+    # -----------------------------------------------------------------
+    # 5. Fallback – any legal move
+    # -----------------------------------------------------------------
+    return legal_moves[0]
+</code>

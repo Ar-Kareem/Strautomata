@@ -1,0 +1,99 @@
+
+import copy
+from typing import List, Tuple, Optional
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Return the optimal move (row, col) for the current player (represented by 1)
+    on the given Tic‑Tac‑Toe board.
+    """
+    PLAYER = 1          # our pieces
+    OPPONENT = -1        # opponent pieces
+
+    def check_winner(b: List[List[int]]) -> Optional[int]:
+        """Return 1 if PLAYER wins, -1 if OPPONENT wins, 0 for draw, None otherwise."""
+        lines = []
+
+        # rows and columns
+        for i in range(3):
+            lines.append(b[i])                     # row i
+            lines.append([b[0][i], b[1][i], b[2][i]])  # column i
+
+        # diagonals
+        lines.append([b[0][0], b[1][1], b[2][2]])
+        lines.append([b[0][2], b[1][1], b[2][0]])
+
+        for line in lines:
+            s = sum(line)
+            if s == 3:
+                return PLAYER
+            if s == -3:
+                return OPPONENT
+
+        # draw?
+        if all(cell != 0 for row in b for cell in row):
+            return 0
+
+        return None  # game not finished
+
+    def minimax(b: List[List[int]], depth: int, maximizing: bool,
+                alpha: int, beta: int) -> Tuple[int, Optional[Tuple[int, int]]]:
+        """
+        Return (score, best_move) for the current board.
+        Score: +1 = PLAYER win, -1 = PLAYER loss, 0 = draw.
+        """
+        result = check_winner(b)
+        if result is not None:
+            # terminal node
+            if result == PLAYER:
+                return 1, None
+            if result == OPPONENT:
+                return -1, None
+            return 0, None  # draw
+
+        if maximizing:
+            max_eval = -float('inf')
+            best_move = None
+            for r in range(3):
+                for c in range(3):
+                    if b[r][c] == 0:
+                        b[r][c] = PLAYER
+                        eval_score, _ = minimax(b, depth + 1, False, alpha, beta)
+                        b[r][c] = 0
+                        if eval_score > max_eval:
+                            max_eval = eval_score
+                            best_move = (r, c)
+                        alpha = max(alpha, eval_score)
+                        if beta <= alpha:
+                            break
+                if beta <= alpha:
+                    break
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            best_move = None
+            for r in range(3):
+                for c in range(3):
+                    if b[r][c] == 0:
+                        b[r][c] = OPPONENT
+                        eval_score, _ = minimax(b, depth + 1, True, alpha, beta)
+                        b[r][c] = 0
+                        if eval_score < min_eval:
+                            min_eval = eval_score
+                            best_move = (r, c)
+                        beta = min(beta, eval_score)
+                        if beta <= alpha:
+                            break
+                if beta <= alpha:
+                    break
+            return min_eval, best_move
+
+    # Quick shortcut: if board is empty, take the centre (standard optimal opening)
+    empty_cells = [(r, c) for r in range(3) for c in range(3) if board[r][c] == 0]
+    if len(empty_cells) == 9:
+        return (1, 1)
+
+    # Run minimax from the current position
+    _, move = minimax(board, 0, True, -float('inf'), float('inf'))
+    # move should never be None because there is at least one empty cell
+    return move if move is not None else empty_cells[0]

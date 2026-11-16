@@ -1,0 +1,96 @@
+The strategy for this policy is to treat the decision as an optimal‑stopping problem using the exact remaining cards in our personal deck.  
+At every call we compute our current best hand value (Aces flex as 11 or 1). We then compare:
+
+- **STAY**: keep the current value.
+- **HIT**: draw one random remaining card, then continue optimally.  
+
+We recursively compute the expected optimal final score for every possible remaining deck state (busts count as 0), and choose HIT only if its expected value is higher than staying. This maximizes expected closeness to the target while controlling bust risk.
+
+<code>
+from functools import lru_cache
+
+# Full single-suit deck
+FULL_DECK = ("A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K")
+FULL_SET = frozenset(FULL_DECK)
+FACE_CARDS = {"J", "Q", "K"}
+
+def hand_value(hand, target):
+    """Compute best hand value <= target using Aces as 11 or 1."""
+    total = 0
+    aces = 0
+    for c in hand:
+        if c == "A":
+            aces += 1
+            total += 11
+        elif c in FACE_CARDS:
+            total += 10
+        else:
+            total += int(c)
+    # Downgrade Aces from 11 to 1 if needed
+    while total > target and aces > 0:
+        total -= 10
+        aces -= 1
+    return total
+
+def hand_value_from_remaining(remaining_fs, target):
+    """Compute hand value given remaining cards (hand = FULL_SET - remaining)."""
+    hand_cards = FULL_SET.difference(remaining_fs)
+    return hand_value(hand_cards, target)
+
+@lru_cache(maxsize=None)
+def best_expected_value(remaining_fs, target):
+    """
+    Expected optimal final score from this state.
+    Busts count as 0.
+    """
+    current_value = hand_value_from_remaining(remaining_fs, target)
+    if current_value > target:
+        return 0.0
+
+    # Option 1: stay
+    stay_value = current_value
+
+    # If no cards left, must stay
+    if not remaining_fs:
+        return stay_value
+
+    # Option 2: hit and then play optimally
+    exp_hit = 0.0
+    n = len(remaining_fs)
+    for card in remaining_fs:
+        new_rem = frozenset(remaining_fs - {card})
+        exp_hit += best_expected_value(new_rem, target)
+    exp_hit /= n
+
+    return max(stay_value, exp_hit)
+
+def policy(hand: list[str], target: int) -> str:
+    """
+    Decide whether to HIT or STAY.
+    """
+    current_value = hand_value(hand, target)
+    if current_value > target:
+        return "STAY"  # already bust, but legal response
+
+    hand_set = set(hand)
+    remaining = frozenset([c for c in FULL_DECK if c not in hand_set])
+
+    # If no remaining cards, must stay
+    if not remaining:
+        return "STAY"
+
+    stay_value = current_value
+
+    # Expected value if we choose to hit now
+    exp_hit = 0.0
+    n = len(remaining)
+    for card in remaining:
+        new_rem = frozenset(remaining - {card})
+        exp_hit += best_expected_value(new_rem, target)
+    exp_hit /= n
+
+    if exp_hit > stay_value + 1e-9:
+        return "HIT"
+    else:
+        return "STAY"
+</code>

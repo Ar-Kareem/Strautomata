@@ -1,0 +1,201 @@
+
+#!/usr/bin/env python3
+# Go policy for 19x19 board
+# Implements a heuristic move selection with capture/suicide simulation.
+
+from collections import deque
+from typing import List, Tuple, Dict
+
+BOARD_SIZE = 19
+
+def neighbors(r: int, c: int):
+    if r > 0:
+        yield (r-1, c)
+    if r < BOARD_SIZE-1:
+        yield (r+1, c)
+    if c > 0:
+        yield (r, c-1)
+    if c < BOARD_SIZE-1:
+        yield (r, c+1)
+
+def find_group(board: List[List[int]], start_r: int, start_c: int) -> Tuple[set, set]:
+    """
+    Return (group_stones_set, liberties_set) for the group at (start_r, start_c).
+    board values: 0 empty, 1 me, 2 opp
+    Coordinates are 0-based.
+    """
+    color = board[start_r][start_c]
+    if color == 0:
+        return set(), set()
+    visited = set()
+    liberties = set()
+    q = deque()
+    q.append((start_r, start_c))
+    visited.add((start_r, start_c))
+    while q:
+        r, c = q.popleft()
+        for nr, nc in neighbors(r, c):
+            if board[nr][nc] == 0:
+                liberties.add((nr, nc))
+            elif board[nr][nc] == color:
+                if (nr, nc) not in visited:
+                    visited.add((nr, nc))
+                    q.append((nr, nc))
+    return visited, liberties
+
+def all_groups(board: List[List[int]], color: int):
+    """
+    Yield (stones_set, liberties_set) for every group of given color.
+    """
+    seen = set()
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if board[r][c] == color and (r, c) not in seen:
+                stones, libs = find_group(board, r, c)
+                for s in stones:
+                    seen.add(s)
+                yield stones, libs
+
+def simulate_move(board: List[List[int]], move_r: int, move_c: int) -> Tuple[bool, List[List[int]], int, int]:
+    """
+    Simulate placing our stone (1) at (move_r, move_c) on a copy of board.
+    Returns (is_legal, new_board, captured_count, opp_lib_diff)
+    opp_lib_diff = sum(prev_libs) - sum(new_libs) for opponent groups (positive if we reduced liberties)
+    """
+    if board[move_r][move_c] != 0:
+        return False, board, 0, 0  # occupied
+    
+    # copy board
+    nb = [row[:] for row in board]
+    # compute opponent liberties sum before
+    opp_before = 0
+    opp_groups_before = []
+    for stones, libs in all_groups(nb, 2):
+        opp_before += len(libs)
+        opp_groups_before.append((stones, libs))
+    # place our stone
+    nb[move_r][move_c] = 1
+    # remove opponent groups with 0 liberties
+    captured = 0
+    removed_any = False
+    opp_groups_after = []
+    # We'll check all opponent groups (simple approach)
+    for stones, libs in opp_groups_before:
+        # If any liberty is the placed point, that is now occupied; need to recompute liberties
+        # Recompute liberties for this group on new board
+        # Find one stone to start
+        arbitrary = next(iter(stones))
+        sset, libs_now = find_group(nb, arbitrary[0], arbitrary[1])
+        if len(libs_now) == 0:
+            # capture
+            removed_any = True
+            captured += len(sset)
+            for (sr, sc) in sset:
+                nb[sr][sc] = 0
+        else:
+            opp_groups_after.append((sset, libs_now))
+    # After removing opponent dead groups, check our placed group's liberties
+    my_stones, my_libs = find_group(nb, move_r, move_c)
+    if len(my_libs) == 0:
+        # illegal (suicide)
+        return False, board, 0, 0
+    # compute opponent liberties sum after
+    opp_after = 0
+    # Note: opp_groups_after may be stale if captures happened that split groups; compute fresh
+    for stones, libs in all_groups(nb, 2):
+        opp_after += len(libs)
+    opp_lib_diff = (opp_before - opp_after)
+    return True, nb, captured, opp_lib_diff
+
+def build_board(me: List[Tuple[int,int]], opponent: List[Tuple[int,int]]) -> List[List[int]]:
+    b = [[0]*BOARD_SIZE for _ in range(BOARD_SIZE)]
+    for (r,c) in me:
+        if 1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE:
+            b[r-1][c-1] = 1
+    for (r,c) in opponent:
+        if 1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE:
+            # do not overwrite our stones if input inconsistent
+            if b[r-1][c-1] == 0:
+                b[r-1][c-1] = 2
+    return b
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    """
+    Returns ((row, col), memory)
+    Coordinates are 1-based as required by the arena.
+    """
+    board = build_board(me, opponent)
+    best_move = None
+    best_score = None
+
+    # Precompute center distances and adjacency counts to opponent
+    center = (BOARD_SIZE-1)/2.0
+    opp_set = set(((r-1, c-1) for (r,c) in opponent))
+    me_set = set(((r-1, c-1) for (r,c) in me))
+
+    # Precompute opponent liberties before (for baseline)
+    opp_lib_before = 0
+    for stones, libs in all_groups(board, 2):
+        opp_lib_before += len(libs)
+
+    # Evaluate every empty position
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if board[r][c] != 0:
+                continue
+            legal, new_board, captured, opp_lib_diff = simulate_move(board, r, c)
+            if not legal:
+                continue
+            # Heuristic scoring
+            score = 0
+            # Captures are very valuable
+            score += captured * 1000
+            # Reducing opponent liberties good
+            score += opp_lib_diff * 50
+            # Connectivity: count adjacent my stones after move
+            adj_my = 0
+            adj_opp = 0
+            for nr, nc in neighbors(r, c):
+                if new_board[nr][nc] == 1:
+                    adj_my += 1
+                elif new_board[nr][nc] == 2:
+                    adj_opp += 1
+            score += adj_my * 20
+            # Slight bonus for putting pressure near opponent (adjacent to opponent)
+            score += adj_opp * 15
+            # Reward liberties of the placed stone's group
+            my_group, my_libs = find_group(new_board, r, c)
+            score += len(my_libs) * 5
+            # Slight center preference
+            dist = abs(r - center) + abs(c - center)
+            score += max(0, 20 - dist) * 0.5
+            # Prefer moves that increase total my liberties vs before
+            # compute my total liberties before and after
+            my_lib_before = 0
+            my_lib_after = 0
+            for stones, libs in all_groups(board, 1):
+                my_lib_before += len(libs)
+            for stones, libs in all_groups(new_board, 1):
+                my_lib_after += len(libs)
+            score += (my_lib_after - my_lib_before) * 10
+            # Slight tie-breaker: prefer lower row, then lower col (deterministic)
+            # We'll keep score as tuple (score, -r, -c) to choose min tie-breaker later.
+
+            # Save best
+            key = (score, -r, -c)
+            if best_score is None or key > best_score:
+                best_score = key
+                best_move = (r, c)
+
+    if best_move is None:
+        # no legal moves found: pass
+        return (0, 0), memory
+    else:
+        # convert back to 1-based coordinates
+        return (best_move[0]+1, best_move[1]+1), memory
+
+# If run as main for quick internal test (not used by arena)
+if __name__ == "__main__":
+    # simple test: empty board, should play near center
+    move, mem = policy([], [], {})
+    print("Chosen move:", move)

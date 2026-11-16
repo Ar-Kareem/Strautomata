@@ -1,0 +1,256 @@
+
+import math
+from functools import lru_cache
+
+def policy(state: list[list[object]], role: str) -> str:
+    # Connect Four parameters
+    ROWS, COLS = 6, 7
+
+    # Build board: board[r][c] in {0,1,2}
+    # 0 empty, 1 = red, 2 = black (internal)
+    board = [[0 for _ in range(COLS)] for __ in range(ROWS)]
+    for fact in state:
+        if len(fact) == 4 and fact[0] == "cell":
+            r = int(fact[1]) - 1
+            c = int(fact[2]) - 1
+            col = fact[3]
+            if col == "red":
+                board[r][c] = 1
+            elif col == "black":
+                board[r][c] = 2
+
+    me = 1 if role == "red" else 2
+    opp = 2 if me == 1 else 1
+
+    def get_next_row(col_idx):
+        # Find lowest empty row in this column
+        for r in range(ROWS - 1, -1, -1):
+            if board[r][col_idx] == 0:
+                return r
+        return None
+
+    legal_cols = []
+    for c in range(COLS):
+        if get_next_row(c) is not None:
+            legal_cols.append(c)
+
+    # Ensure we always return a legal action
+    if not legal_cols:
+        # Shouldn't happen in normal play; return a default legal-looking action
+        return "drop(1)"
+
+    def apply_move(bd, col_idx, player):
+        r = None
+        for rr in range(ROWS - 1, -1, -1):
+            if bd[rr][col_idx] == 0:
+                r = rr
+                break
+        if r is None:
+            return None
+        nb = [row[:] for row in bd]
+        nb[r][col_idx] = player
+        return nb
+
+    def check_winner(bd):
+        # Return 0 none, 1 red, 2 black
+        # Horizontal
+        for r in range(ROWS):
+            for c in range(COLS - 3):
+                line = bd[r][c:c+4]
+                if line[0] != 0 and line.count(line[0]) == 4:
+                    return line[0]
+        # Vertical
+        for c in range(COLS):
+            for r in range(ROWS - 3):
+                v = [bd[r+i][c] for i in range(4)]
+                if v[0] != 0 and v.count(v[0]) == 4:
+                    return v[0]
+        # Diagonal down-right
+        for r in range(ROWS - 3):
+            for c in range(COLS - 3):
+                d = [bd[r+i][c+i] for i in range(4)]
+                if d[0] != 0 and d.count(d[0]) == 4:
+                    return d[0]
+        # Diagonal up-right
+        for r in range(3, ROWS):
+            for c in range(COLS - 3):
+                d = [bd[r-i][c+i] for i in range(4)]
+                if d[0] != 0 and d.count(d[0]) == 4:
+                    return d[0]
+        return 0
+
+    def board_to_key(bd):
+        # compact tuple for memo
+        return tuple(x for row in bd for x in row)
+
+    def score_window(window, player):
+        # window is list of 4 values
+        oppp = opp if player == me else me  # not used; but keep symmetry
+        cnt_player = window.count(player)
+        cnt_opp = window.count(2 if player == 1 else 1)
+        cnt_empty = window.count(0)
+
+        if cnt_player == 4:
+            return 10_000
+        if cnt_opp == 4:
+            return -10_000
+
+        # Strong heuristics for "threats"
+        if cnt_player == 3 and cnt_empty == 1:
+            return 500
+        if cnt_player == 2 and cnt_empty == 2:
+            return 50
+        if cnt_player == 1 and cnt_empty == 3:
+            return 5
+
+        # Penalize opponent threats
+        if cnt_opp == 3 and cnt_empty == 1:
+            return -600
+        if cnt_opp == 2 and cnt_empty == 2:
+            return -60
+        if cnt_opp == 1 and cnt_empty == 3:
+            return -6
+
+        return 0
+
+    def heuristic(bd, player):
+        # Center preference
+        center_col = COLS // 2  # 3
+        center_count = sum(1 for r in range(ROWS) if bd[r][center_col] == player)
+        score = center_count * 12
+
+        # Windows of 4
+        # Horizontal
+        for r in range(ROWS):
+            for c in range(COLS - 3):
+                window = bd[r][c:c+4]
+                score += score_window(window, player)
+        # Vertical
+        for c in range(COLS):
+            for r in range(ROWS - 3):
+                window = [bd[r+i][c] for i in range(4)]
+                score += score_window(window, player)
+        # Diagonal down-right
+        for r in range(ROWS - 3):
+            for c in range(COLS - 3):
+                window = [bd[r+i][c+i] for i in range(4)]
+                score += score_window(window, player)
+        # Diagonal up-right
+        for r in range(3, ROWS):
+            for c in range(COLS - 3):
+                window = [bd[r-i][c+i] for i in range(4)]
+                score += score_window(window, player)
+
+        return score
+
+    # Quick tactical checks: immediate win/block
+    def immediate_win_moves(bd, player):
+        wins = []
+        for c in legal_cols:
+            nb = apply_move(bd, c, player)
+            if nb is None:
+                continue
+            if check_winner(nb) == player:
+                wins.append(c)
+        return wins
+
+    my_wins = immediate_win_moves(board, me)
+    if my_wins:
+        # choose winning move with preference for center if multiple
+        best = sorted(my_wins, key=lambda x: abs(x - (COLS//2)))[0]
+        return f"drop({best+1})"
+
+    opp_wins = immediate_win_moves(board, opp)
+    if opp_wins:
+        # block any immediate threat; if multiple, pick best defensive (also center)
+        best = sorted(opp_wins, key=lambda x: abs(x - (COLS//2)))[0]
+        return f"drop({best+1})"
+
+    # Minimax with alpha-beta, small depth for speed
+    # Depth adapts to game stage: fewer pieces -> deeper
+    filled = sum(1 for r in range(ROWS) for c in range(COLS) if board[r][c] != 0)
+    # remaining empties: max 42
+    # early game more empty -> slightly deeper
+    if filled <= 12:
+        depth = 4
+    elif filled <= 24:
+        depth = 3
+    else:
+        depth = 2
+
+    center_order = sorted(legal_cols, key=lambda x: abs(x - (COLS//2)))
+    # move ordering helps alpha-beta
+
+    @lru_cache(maxsize=50_000)
+    def minimax(bd_key, depth_left, alpha, beta, turn):
+        # turn: 1 for me, 2 for opp
+        # reconstruct board from key for simplicity
+        bd = [[0]*COLS for _ in range(ROWS)]
+        it = iter(bd_key)
+        for rr in range(ROWS):
+            for cc in range(COLS):
+                bd[rr][cc] = next(it)
+
+        winner = check_winner(bd)
+        if winner == me:
+            return 10_000 + depth_left  # prefer quicker win
+        if winner == opp:
+            return -10_000 - depth_left  # prefer slower loss
+        if depth_left == 0:
+            return heuristic(bd, me)
+
+        # legal moves from this bd
+        moves = []
+        for c in range(COLS):
+            # check top cell empty
+            if bd[0][c] == 0:
+                moves.append(c)
+        if not moves:
+            return 0
+
+        # Determine maximizing for current player perspective (me maximizing)
+        maximizing = (turn == me)
+
+        # order moves: center first
+        moves = sorted(moves, key=lambda x: abs(x - (COLS//2)))
+
+        if maximizing:
+            value = -math.inf
+            for c in moves:
+                nb = apply_move(bd, c, turn)
+                nk = board_to_key(nb)
+                score = minimax(nk, depth_left - 1, alpha, beta, opp if turn == me else me)
+                value = max(value, score)
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break
+            return value
+        else:
+            value = math.inf
+            for c in moves:
+                nb = apply_move(bd, c, turn)
+                nk = board_to_key(nb)
+                score = minimax(nk, depth_left - 1, alpha, beta, opp if turn == me else me)
+                value = min(value, score)
+                beta = min(beta, value)
+                if alpha >= beta:
+                    break
+            return value
+
+    root_key = board_to_key(board)
+    best_move = None
+    best_val = -math.inf
+
+    # Use a one-ply move selection with minimax evaluation
+    for c in center_order:
+        nb = apply_move(board, c, me)
+        nk = board_to_key(nb)
+        val = minimax(nk, depth - 1, -math.inf, math.inf, opp)
+        if val > best_val:
+            best_val = val
+            best_move = c
+
+    if best_move is None:
+        best_move = sorted(legal_cols, key=lambda x: abs(x - (COLS//2)))[0]
+
+    return f"drop({best_move+1})"

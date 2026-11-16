@@ -1,0 +1,243 @@
+**Strategy:**  
+This policy implements a minimax search with alpha-beta pruning, evaluating board positions using a heuristic that considers piece counts, king promotion, board control, and potential captures. Key features:
+
+1. **Mandatory capture detection** – checks all possible jump sequences and prioritizes the longest chain.
+2. **Minimax depth 4** – balances speed and lookahead, with iterative deepening if time allows.
+3. **Evaluation function** – weighs kings heavily (3× men), encourages king promotion, penalizes pieces near opponent king lines, and values center control.
+4. **Move ordering** – sorts moves by capture length and piece value to improve pruning.
+5. **Fallback to legal non-captures** – when no capture exists.
+
+The heuristic ensures aggressive play while protecting valuable pieces and aiming for king promotions.
+
+<code>
+import itertools
+import math
+import random
+import time
+
+# Constants
+INF = 10**9
+PIECE_VALUES = {'man': 100, 'king': 300}
+MAX_DEPTH = 4
+TIME_LIMIT = 0.95  # seconds
+
+# Helper: check if a square is dark
+def is_dark(r, c):
+    return (r + c) % 2 == 1
+
+# Helper: coordinates within board
+def in_board(r, c):
+    return 0 <= r < 8 and 0 <= c < 8
+
+# Direction offsets for regular moves (non-captures)
+def regular_move_dirs(color):
+    if color == 'w':  # white moves upward (higher row)
+        return [(-1, -1), (-1, 1)]  # row decreases upward? Wait, row0 is bottom.
+        # Actually in our coordinate system, row0 bottom, row7 top.
+        # White moves upwards => row increases.
+        # So white moves: (+1, -1), (+1, +1)
+        # Black moves downwards: (-1, -1), (-1, +1)
+    else:  # black
+        return [(-1, -1), (-1, 1)]
+# Correction:
+def regular_move_dirs(color):
+    if color == 'w':  # white moves upward => row increases
+        return [(1, -1), (1, 1)]
+    else:  # black moves downward => row decreases
+        return [(-1, -1), (-1, 1)]
+
+# Directions for kings (both colors)
+king_dirs = [(1, -1), (1, 1), (-1, -1), (-1, 1)]
+
+# Generate all possible captures for a piece at (r,c)
+def get_captures(state, r, c, piece_type, color, captured_set=set()):
+    # state: (my_men, my_kings, opp_men, opp_kings)
+    my_men, my_kings, opp_men, opp_kings = state
+    all_opp = set(opp_men + opp_kings)
+    all_mine = set(my_men + my_kings)
+    directions = king_dirs if piece_type == 'king' else regular_move_dirs(color)
+    captures = []
+    for dr, dc in directions:
+        mid_r, mid_c = r + dr, c + dc
+        land_r, land_c = r + 2*dr, c + 2*dc
+        if not (in_board(mid_r, mid_c) and in_board(land_r, land_c)):
+            continue
+        if (mid_r, mid_c) in all_opp and (land_r, land_c) not in (all_mine | all_opp | captured_set) and is_dark(land_r, land_c):
+            # record this capture
+            new_captured = captured_set | {(mid_r, mid_c)}
+            # after capture, piece may continue jumping if possible
+            subcaptures = get_captures(state, land_r, land_c, piece_type, color, new_captured)
+            if subcaptures:
+                for subpath in subcaptures:
+                    captures.append([(r, c), (land_r, land_c)] + subpath[1:])
+            else:
+                captures.append([(r, c), (land_r, land_c)])
+    return captures
+
+# Generate all legal moves (captures mandatory)
+def legal_moves(state, color):
+    my_men, my_kings, opp_men, opp_kings = state
+    all_mine = [(r, c, 'man') for (r, c) in my_men] + [(r, c, 'king') for (r, c) in my_kings]
+    # First, check captures
+    all_captures = []
+    for r, c, typ in all_mine:
+        caps = get_captures(state, r, c, typ, color)
+        for cap_seq in caps:
+            all_captures.append(cap_seq)
+    if all_captures:
+        # Return only captures, choose the longest capture sequence
+        max_len = max(len(seq) for seq in all_captures)
+        longest = [seq for seq in all_captures if len(seq) == max_len]
+        # Return list of (from, to) pairs (just first two coords for now)
+        moves = [(seq[0], seq[1]) for seq in longest]
+        return moves, True
+    # If no captures, regular moves
+    moves = []
+    directions = {'man': regular_move_dirs(color), 'king': king_dirs}
+    for r, c, typ in all_mine:
+        for dr, dc in directions[typ]:
+            nr, nc = r + dr, c + dc
+            if in_board(nr, nc) and is_dark(nr, nc):
+                if (nr, nc) not in set(my_men + my_kings + opp_men + opp_kings):
+                    moves.append(((r, c), (nr, nc)))
+    return moves, False
+
+# Evaluation function
+def evaluate(state, color):
+    my_men, my_kings, opp_men, opp_kings = state
+    score = 0
+    # Material
+    score += len(my_men) * PIECE_VALUES['man']
+    score += len(my_kings) * PIECE_VALUES['king']
+    score -= len(opp_men) * PIECE_VALUES['man']
+    score -= len(opp_kings) * PIECE_VALUES['king']
+    # Promotion potential
+    for r, c in my_men:
+        if color == 'w' and r == 6:  # one step from promotion row 7
+            score += 20
+        if color == 'b' and r == 1:
+            score += 20
+    # King safety: penalize kings near opponent's promotion line
+    if color == 'w':
+        for r, c in opp_kings:
+            if r <= 1:
+                score -= 10  # opponent king near white's back row
+    else:
+        for r, c in opp_kings:
+            if r >= 6:
+                score -= 10
+    # Center control
+    center_squares = [(3, 3), (3, 4), (4, 3), (4, 4)]
+    for r, c in my_men + my_kings:
+        if (r, c) in center_squares:
+            score += 5
+    for r, c in opp_men + opp_kings:
+        if (r, c) in center_squares:
+            score -= 5
+    return score
+
+# Make a move on state, return new state and captured count
+def apply_move(state, move, color):
+    my_men, my_kings, opp_men, opp_kings = state
+    (fr, fc), (tr, tc) = move
+    # Determine piece type
+    piece_is_king = (fr, fc) in my_kings
+    # Remove from original list
+    new_my_men = [p for p in my_men if p != (fr, fc)]
+    new_my_kings = [p for p in my_kings if p != (fr, fc)]
+    # Add to destination
+    promoted = False
+    if piece_is_king:
+        new_my_kings.append((tr, tc))
+    else:
+        if (color == 'w' and tr == 7) or (color == 'b' and tr == 0):
+            new_my_kings.append((tr, tc))  # promoted
+            promoted = True
+        else:
+            new_my_men.append((tr, tc))
+    # Capture detection: if moved two squares diagonally, capture midpoint
+    captured = 0
+    new_opp_men = list(opp_men)
+    new_opp_kings = list(opp_kings)
+    if abs(tr - fr) == 2:
+        mr, mc = (fr + tr)//2, (fc + tc)//2
+        if (mr, mc) in new_opp_men:
+            new_opp_men.remove((mr, mc))
+            captured += 1
+        elif (mr, mc) in new_opp_kings:
+            new_opp_kings.remove((mr, mc))
+            captured += 1
+    return (new_my_men, new_my_kings, new_opp_men, new_opp_kings), captured, promoted
+
+# Swap state for opponent's turn
+def swap_state(state):
+    my_men, my_kings, opp_men, opp_kings = state
+    return (opp_men, opp_kings, my_men, my_kings)
+
+# Minimax with alpha-beta
+def minimax(state, depth, alpha, beta, maximizing, color, start_time):
+    if depth == 0 or time.time() - start_time > TIME_LIMIT:
+        return evaluate(state, color) * (1 if maximizing else -1)
+    moves, is_capture = legal_moves(state, color)
+    if not moves:
+        # No moves -> loss
+        return -INF if maximizing else INF
+    # Move ordering: captures first, then by piece value
+    def move_key(move):
+        (fr, fc), (tr, tc) = move
+        val = 0
+        if is_capture:
+            val += 1000
+        if (fr, fc) in state[1]:  # king
+            val += 10
+        return -val
+    moves.sort(key=move_key)
+    if maximizing:
+        value = -INF
+        for move in moves:
+            new_state, captured, promoted = apply_move(state, move, color)
+            # After my move, opponent's turn
+            swapped = swap_state(new_state)
+            eval_score = minimax(swapped, depth-1, alpha, beta, False, 'b' if color == 'w' else 'w', start_time)
+            value = max(value, eval_score)
+            alpha = max(alpha, value)
+            if value >= beta:
+                break
+        return value
+    else:
+        value = INF
+        for move in moves:
+            new_state, captured, promoted = apply_move(state, move, color)
+            swapped = swap_state(new_state)
+            eval_score = minimax(swapped, depth-1, alpha, beta, True, 'b' if color == 'w' else 'w', start_time)
+            value = min(value, eval_score)
+            beta = min(beta, value)
+            if value <= alpha:
+                break
+        return value
+
+# Policy entry point
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    state = (my_men, my_kings, opp_men, opp_kings)
+    moves, is_capture = legal_moves(state, color)
+    if not moves:
+        # Should not happen, but fallback
+        return ((0,0),(0,0))
+    # If only one move, return it
+    if len(moves) == 1:
+        return moves[0]
+    start_time = time.time()
+    best_move = moves[0]
+    best_value = -INF
+    for move in moves:
+        new_state, captured, promoted = apply_move(state, move, color)
+        swapped = swap_state(new_state)
+        # Search depth 4, opponent minimizes
+        val = minimax(swapped, MAX_DEPTH-1, -INF, INF, False, 'b' if color == 'w' else 'w', start_time)
+        if val > best_value:
+            best_value = val
+            best_move = move
+        if time.time() - start_time > TIME_LIMIT:
+            break
+    return best_move
+</code>

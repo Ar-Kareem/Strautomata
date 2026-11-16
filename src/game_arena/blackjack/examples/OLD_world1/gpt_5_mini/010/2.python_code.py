@@ -1,0 +1,95 @@
+
+from typing import List
+
+RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+
+def _best_total(hand: List[str], target: int) -> int:
+    """
+    Compute the best total for a hand under the game's Ace rule:
+    - Count all Aces as 1 initially, then upgrade as many Aces as possible by +10
+      (making them 11 instead of 1) while staying <= target.
+    Returns the total (may be > target indicating a bust).
+    """
+    total = 0
+    aces = 0
+    for c in hand:
+        if c == "A":
+            aces += 1
+            total += 1  # count Ace as 1 initially
+        elif c in ("J", "Q", "K"):
+            total += 10
+        else:
+            total += int(c)
+    # upgrade aces from 1 -> 11 by adding 10 as long as it stays <= target
+    while aces > 0 and total + 10 <= target:
+        total += 10
+        aces -= 1
+    return total
+
+def policy(hand: List[str], target: int) -> str:
+    """
+    Decide whether to HIT or STAY given current hand and target.
+    Heuristic policy:
+    - If already busted or exactly at target -> STAY.
+    - If guaranteed safe to draw any single card (current_total <= target - 11) -> HIT.
+    - Otherwise simulate one-card lookahead over remaining cards in our deck:
+      compute probability of not busting and expected distance to target among safe outcomes.
+      Hit if the lookahead suggests an improvement in expected distance with a reasonable safety.
+    """
+    # Quick sanity: if hand is empty or malformed, default to hit
+    if hand is None:
+        return "HIT"
+
+    # Current best total
+    cur_total = _best_total(hand, target)
+
+    # If already busted or exactly at target, stop
+    if cur_total > target:
+        return "STAY"
+    if cur_total == target:
+        return "STAY"
+
+    # If any card draw up to 11 cannot bust us, it's safe to draw (Ace can be 11)
+    # The maximum single-card value possible is 11 (an Ace counting as 11).
+    if cur_total <= target - 11:
+        return "HIT"
+
+    # Build remaining ranks in our deck (one of each rank initially, minus those in hand)
+    remaining = [r for r in RANKS if r not in hand]
+    if not remaining:
+        return "STAY"  # no cards left to draw
+
+    # Evaluate one-card lookahead
+    safe_count = 0
+    safe_distance_sum = 0.0
+    for r in remaining:
+        new_total = _best_total(hand + [r], target)
+        if new_total <= target:
+            safe_count += 1
+            safe_distance_sum += (target - new_total)
+        else:
+            # busts contribute nothing to safe-distance sum, but will be accounted via safety prob
+            pass
+
+    p_safe = safe_count / len(remaining)
+    # If no safe outcomes, definitely don't hit
+    if p_safe == 0:
+        return "STAY"
+
+    expected_distance_conditioned = safe_distance_sum / safe_count
+    current_distance = target - cur_total
+
+    # Decision thresholds:
+    # - If the expected distance after a safe draw is strictly better and safety is reasonable -> HIT.
+    # - If safety is very high and conditioned expected distance is at least slightly better -> HIT.
+    # - Otherwise STAY.
+    if expected_distance_conditioned + (1 - p_safe) * target < current_distance and p_safe >= 0.25:
+        return "HIT"
+    if p_safe >= 0.60 and expected_distance_conditioned < current_distance:
+        return "HIT"
+
+    # Additional heuristic: if we're relatively far (distance >= 6) and decent chance (>40%) to improve, hit.
+    if current_distance >= 6 and p_safe >= 0.40 and expected_distance_conditioned < current_distance:
+        return "HIT"
+
+    return "STAY"

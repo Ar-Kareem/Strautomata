@@ -1,0 +1,112 @@
+The strategy is to implement a heuristic-based policy that prioritizes capturing the opponent's pieces while minimizing risk. The evaluation considers the number of capture opportunities (mobility), the immediate value of capturing specific pieces (weighting central pieces and pieces adjacent to multiple allies higher), and the stability of the resulting board position (checking if the moved piece will be immediately capturable).
+
+If no "safe" captures are found (leaving the piece safe), the policy prefers moves that leave the piece adjacent to friendly allies (for mutual protection) over moves that leave it isolated. If all else is equal, it selects the move that captures the highest-weighted opponent piece (usually a central piece).
+
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    rows = 5
+    cols = 6
+    
+    # Helper to check if a piece exists at (r, c) for a given board list
+    def is_piece(board, r, c):
+        return 0 <= r < rows and 0 <= c < cols and board[r * cols + c] == 1
+    
+    def get_board_idx(r, c):
+        return r * cols + c
+
+    # Directions: (row_change, col_change, dir_char)
+    moves = [(-1, 0, 'U'), (0, 1, 'R'), (1, 0, 'D'), (0, -1, 'L')]
+    
+    best_move = None
+    max_score = -float('inf')
+    
+    # Pre-calculate weights for opponent positions to prioritize capturing high-value pieces
+    # Center pieces are worth more. Pieces with 3+ neighbors are also high value.
+    # We use this to rank captures if safety is equal.
+    opponent_weights = {}
+    
+    # Helper to count neighbor pieces of a specific type
+    def count_neighbors(board, r, c, is_ally):
+        count = 0
+        for dr, dc, _ in moves:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < rows and 0 <= nc < cols:
+                if is_piece(board, nr, nc):
+                    count += 1
+        return count
+
+    for r in range(rows):
+        for c in range(cols):
+            if is_piece(opponent, r, c):
+                # Base weight: center bias
+                weight = 0
+                if 1 <= r <= 3 and 1 <= c <= 4:
+                    weight += 1
+                if 2 <= r <= 2 and 2 <= c <= 3:
+                    weight += 1
+                
+                # Weight based on how many allies it has nearby (harder to capture safely)
+                ally_adj = count_neighbors(you, r, c, True)
+                weight += ally_adj * 0.1
+                
+                opponent_weights[get_board_idx(r, c)] = weight
+
+    for r in range(rows):
+        for c in range(cols):
+            if is_piece(you, r, c):
+                for dr, dc, dir_char in moves:
+                    nr, nc = r + dr, c + dc
+                    
+                    # Check if opponent exists there
+                    if is_piece(opponent, nr, nc):
+                        # 1. Safety Check: Will our moved piece be capturable by opponent?
+                        # We simulate the move: our piece moves to (nr, nc), (r, c) becomes empty.
+                        
+                        # Check all 4 directions from destination (nr, nc) for an opponent piece
+                        safe = True
+                        for ddr, ddc, _ in moves:
+                            o_r, o_c = nr + ddr, nc + ddc
+                            if is_piece(opponent, o_r, o_c):
+                                safe = False
+                                break
+                        
+                        # 2. Value Calculation
+                        # Base value: Capture score
+                        captured_idx = get_board_idx(nr, nc)
+                        cap_score = opponent_weights.get(captured_idx, 0)
+                        
+                        # Neighbor bonus: Does moving to (nr, nc) give us allies?
+                        # We need to count neighbors considering the piece has moved.
+                        # The piece itself is not there, so we count original allies minus potentially the start pos
+                        # plus new neighbors.
+                        # Actually, simpler: count allies around (nr, nc) excluding (r, c).
+                        new_neighbor_score = 0
+                        for ddr, ddc, _ in moves:
+                            ar, ac = nr + ddr, nc + ddc
+                            # Exclude the original position (r, c) because it's now empty
+                            if (ar, ac) == (r, c):
+                                continue
+                            if is_piece(you, ar, ac):
+                                new_neighbor_score += 1
+                        
+                        # Total Score Formula
+                        # Prioritize safety heavily. 
+                        # If safe, score is high.
+                        # If not safe, score is penalized heavily but we might still have to move.
+                        # Prefer having neighbors.
+                        
+                        score = cap_score + new_neighbor_score * 0.1
+                        
+                        if safe:
+                            score += 100  # Massive bonus for being safe
+                        else:
+                            # Penalize unsafe moves, but less if it captures a high value piece
+                            # or if we are desperate (not evaluated here, but implied).
+                            score -= 50 
+                            
+                        if score > max_score:
+                            max_score = score
+                            best_move = f"{r},{c},{dir_char}"
+                            
+    return best_move
+```

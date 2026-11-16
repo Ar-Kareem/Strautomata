@@ -1,0 +1,331 @@
+
+import time
+import math
+
+# Piece codes
+WHITE_MAN = 1
+WHITE_KING = 2
+BLACK_MAN = 3
+BLACK_KING = 4
+
+WHITE = 'w'
+BLACK = 'b'
+
+def piece_color(piece):
+    return WHITE if piece in (WHITE_MAN, WHITE_KING) else BLACK
+
+def is_man(piece):
+    return piece in (WHITE_MAN, BLACK_MAN)
+
+def is_king(piece):
+    return piece in (WHITE_KING, BLACK_KING)
+
+def opponent_color(color):
+    return BLACK if color == WHITE else WHITE
+
+# ------------------------------------------------------------
+# Move generation helpers
+# ------------------------------------------------------------
+def can_jump(board, pos, piece, player_color):
+    """Check if the piece has at least one legal jump."""
+    r, c = pos
+    if is_man(piece):
+        dr = 1 if player_color == WHITE else -1
+        for dc in (-1, 1):
+            mid_r = r + dr
+            mid_c = c + dc
+            land_r = r + 2 * dr
+            land_c = c + 2 * dc
+            if 0 <= land_r < 8 and 0 <= land_c < 8:
+                mid_piece = board.get((mid_r, mid_c))
+                if (mid_piece and piece_color(mid_piece) != player_color
+                        and (land_r, land_c) not in board):
+                    return True
+        return False
+    else:  # king
+        for dr, dc in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+            mid_r = r + dr
+            mid_c = c + dc
+            land_r = r + 2 * dr
+            land_c = c + 2 * dc
+            if 0 <= land_r < 8 and 0 <= land_c < 8:
+                mid_piece = board.get((mid_r, mid_c))
+                if (mid_piece and piece_color(mid_piece) != player_color
+                        and (land_r, land_c) not in board):
+                    return True
+        return False
+
+def has_any_capture(board, player_color):
+    for pos, piece in board.items():
+        if piece_color(piece) == player_color and can_jump(board, pos, piece, player_color):
+            return True
+    return False
+
+def generate_jumps(board, pos, piece, player_color, path):
+    """Recursively generate all complete capture sequences starting with jumps
+    from this piece. Returns list of (new_board, path)."""
+    r, c = pos
+    jumps = []
+    if is_man(piece):
+        dr = 1 if player_color == WHITE else -1
+        for dc in (-1, 1):
+            mid_r = r + dr
+            mid_c = c + dc
+            land_r = r + 2 * dr
+            land_c = c + 2 * dc
+            if 0 <= land_r < 8 and 0 <= land_c < 8:
+                mid_piece = board.get((mid_r, mid_c))
+                if (mid_piece and piece_color(mid_piece) != player_color
+                        and (land_r, land_c) not in board):
+                    jumps.append((land_r, land_c, mid_r, mid_c))
+    else:  # king
+        for dr, dc in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+            mid_r = r + dr
+            mid_c = c + dc
+            land_r = r + 2 * dr
+            land_c = c + 2 * dc
+            if 0 <= land_r < 8 and 0 <= land_c < 8:
+                mid_piece = board.get((mid_r, mid_c))
+                if (mid_piece and piece_color(mid_piece) != player_color
+                        and (land_r, land_c) not in board):
+                    jumps.append((land_r, land_c, mid_r, mid_c))
+
+    results = []
+    for land_r, land_c, mid_r, mid_c in jumps:
+        # Apply jump
+        new_board = board.copy()
+        del new_board[pos]
+        del new_board[(mid_r, mid_c)]
+
+        new_piece = piece
+        promoted = False
+        if is_man(piece):
+            if (player_color == WHITE and land_r == 7) or (player_color == BLACK and land_r == 0):
+                new_piece = WHITE_KING if player_color == WHITE else BLACK_KING
+                promoted = True
+
+        new_board[(land_r, land_c)] = new_piece
+        new_path = path + [(pos, (land_r, land_c))]
+
+        if promoted:
+            results.append((new_board, new_path))
+        else:
+            sub_results = generate_jumps(new_board, (land_r, land_c), new_piece, player_color, new_path)
+            if sub_results:
+                results.extend(sub_results)
+            else:
+                results.append((new_board, new_path))
+    return results
+
+def get_capture_moves(board, player_color):
+    """Return all complete capture sequences."""
+    sequences = []
+    for pos, piece in board.items():
+        if piece_color(piece) == player_color and can_jump(board, pos, piece, player_color):
+            sequences.extend(generate_jumps(board, pos, piece, player_color, []))
+    return sequences
+
+def get_simple_moves(board, player_color):
+    """Return all non‑capture moves (simple steps)."""
+    moves = []
+    for pos, piece in board.items():
+        if piece_color(piece) != player_color:
+            continue
+        r, c = pos
+        if is_man(piece):
+            dr = 1 if player_color == WHITE else -1
+            for dc in (-1, 1):
+                new_r = r + dr
+                new_c = c + dc
+                if 0 <= new_r < 8 and 0 <= new_c < 8 and (new_r, new_c) not in board:
+                    new_board = board.copy()
+                    del new_board[pos]
+                    new_piece = piece
+                    if (player_color == WHITE and new_r == 7) or (player_color == BLACK and new_r == 0):
+                        new_piece = WHITE_KING if player_color == WHITE else BLACK_KING
+                    new_board[(new_r, new_c)] = new_piece
+                    moves.append((new_board, [(pos, (new_r, new_c))]))
+        else:  # king
+            for dr, dc in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                new_r = r + dr
+                new_c = c + dc
+                if 0 <= new_r < 8 and 0 <= new_c < 8 and (new_r, new_c) not in board:
+                    new_board = board.copy()
+                    del new_board[pos]
+                    new_board[(new_r, new_c)] = piece
+                    moves.append((new_board, [(pos, (new_r, new_c))]))
+    return moves
+
+def get_all_moves(board, player_color):
+    """Return all legal moves for the player (captures are mandatory)."""
+    if has_any_capture(board, player_color):
+        return get_capture_moves(board, player_color)
+    else:
+        return get_simple_moves(board, player_color)
+
+# ------------------------------------------------------------
+# Evaluation
+# ------------------------------------------------------------
+def evaluate(board, root_color):
+    score = 0
+    for pos, piece in board.items():
+        color = piece_color(piece)
+        value = 0
+        if is_man(piece):
+            value = 100
+            # advancement
+            if color == WHITE:
+                value += pos[0] * 5
+            else:
+                value += (7 - pos[0]) * 5
+        else:
+            value = 200
+        # centre bonus
+        if 2 <= pos[0] <= 5 and 2 <= pos[1] <= 5 and (pos[0] + pos[1]) % 2 == 0:
+            value += 10
+        if color == root_color:
+            score += value
+        else:
+            score -= value
+    return score
+
+# ------------------------------------------------------------
+# Move ordering
+# ------------------------------------------------------------
+def order_moves(board, moves, player_color):
+    """Sort moves by a quick heuristic (evaluation difference)."""
+    scored = []
+    for new_board, seq in moves:
+        diff = evaluate(new_board, player_color) - evaluate(board, player_color)
+        scored.append((diff, new_board, seq))
+    scored.sort(reverse=True, key=lambda x: x[0])
+    return [(new_board, seq) for _, new_board, seq in scored]
+
+# ------------------------------------------------------------
+# Quiescence search
+# ------------------------------------------------------------
+def quiesce(board, alpha, beta, root_color, current_color):
+    stand_pat = evaluate(board, root_color)
+    if stand_pat >= beta:
+        return beta
+    if alpha < stand_pat:
+        alpha = stand_pat
+
+    moves = get_capture_moves(board, current_color)
+    if not moves:
+        return stand_pat
+
+    ordered = order_moves(board, moves, current_color)
+    for new_board, _ in ordered:
+        score = quiesce(new_board, alpha, beta, root_color,
+                        opponent_color(current_color))
+        if score >= beta:
+            return beta
+        if score > alpha:
+            alpha = score
+    return alpha
+
+# ------------------------------------------------------------
+# Alpha‑beta search
+# ------------------------------------------------------------
+def alphabeta(board, depth, alpha, beta, root_color, current_color):
+    maximizing = (current_color == root_color)
+    if depth == 0:
+        return quiesce(board, alpha, beta, root_color, current_color)
+
+    moves = get_all_moves(board, current_color)
+    if not moves:
+        # No moves → loss for the player to move
+        return -1000000 if maximizing else 1000000
+
+    ordered = order_moves(board, moves, current_color)
+
+    if maximizing:
+        max_eval = -math.inf
+        for new_board, _ in ordered:
+            ev = alphabeta(new_board, depth - 1, alpha, beta,
+                           root_color, opponent_color(current_color))
+            if ev > max_eval:
+                max_eval = ev
+            alpha = max(alpha, ev)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = math.inf
+        for new_board, _ in ordered:
+            ev = alphabeta(new_board, depth - 1, alpha, beta,
+                           root_color, opponent_color(current_color))
+            if ev < min_eval:
+                min_eval = ev
+            beta = min(beta, ev)
+            if beta <= alpha:
+                break
+        return min_eval
+
+# ------------------------------------------------------------
+# Main policy function
+# ------------------------------------------------------------
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    start_time = time.time()
+    TIME_LIMIT = 0.9          # seconds
+
+    # Build board dict
+    board = {}
+    # my pieces
+    for pos in my_men:
+        board[tuple(pos)] = WHITE_MAN if color == WHITE else BLACK_MAN
+    for pos in my_kings:
+        board[tuple(pos)] = WHITE_KING if color == WHITE else BLACK_KING
+    # opponent pieces
+    opp_c = opponent_color(color)
+    for pos in opp_men:
+        board[tuple(pos)] = WHITE_MAN if opp_c == WHITE else BLACK_MAN
+    for pos in opp_kings:
+        board[tuple(pos)] = WHITE_KING if opp_c == WHITE else BLACK_KING
+
+    # Generate all root moves
+    root_moves = get_all_moves(board, color)
+    if not root_moves:                     # should not happen in a playable state
+        return ((0, 0), (0, 0))
+
+    # Quick ordering for root moves
+    ordered_root = order_moves(board, root_moves, color)
+
+    best_seq = ordered_root[0][1]          # fallback
+    best_prev_seq = best_seq
+
+    # Iterative deepening
+    max_depth = 6
+    for depth in range(1, max_depth + 1):
+        if time.time() - start_time > TIME_LIMIT:
+            break
+
+        # Put the previous best move first
+        depth_moves = []
+        for nb, seq in ordered_root:
+            if seq == best_prev_seq:
+                depth_moves.insert(0, (nb, seq))
+            else:
+                depth_moves.append((nb, seq))
+
+        current_best_score = -math.inf
+        current_best_seq = None
+        for nb, seq in depth_moves:
+            if time.time() - start_time > TIME_LIMIT:
+                break
+            score = alphabeta(nb, depth - 1, -math.inf, math.inf,
+                              color, opponent_color(color))
+            if score > current_best_score:
+                current_best_score = score
+                current_best_seq = seq
+
+        if current_best_seq is not None:
+            best_seq = current_best_seq
+            best_prev_seq = current_best_seq
+        else:
+            # time ran out before finishing this depth
+            break
+
+    # Return the first step of the chosen sequence
+    return best_seq[0]

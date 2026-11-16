@@ -1,0 +1,254 @@
+# Strategy
+
+The strategy for this policy is based on the following key principles:
+
+1. **Avoid giving away boxes**: Never make a move that would complete a box for the opponent.
+2. **Look for immediate captures**: Prioritize moves that complete one or more boxes for ourselves.
+3. **Control the game flow**: When no immediate captures are available, prefer moves that maintain flexibility and don't create "forced" moves for the opponent.
+4. **Minimax lookahead**: Use a limited-depth search to evaluate future board states and choose moves that maximize our advantage.
+
+The implementation uses a recursive minimax algorithm with alpha-beta pruning to search several moves ahead. It evaluates board states based on:
+- Current score difference
+- Number of available moves
+- Potential for creating chains (sequences of boxes that can be captured in succession)
+
+<code>
+import numpy as np
+from typing import Tuple, List
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    """
+    Main policy function that determines the next move.
+    
+    Args:
+        horizontal: 5x5 array indicating horizontal edges (0 = empty, 1 = taken by us, -1 = taken by opponent)
+        vertical: 5x5 array indicating vertical edges (0 = empty, 1 = taken by us, -1 = taken by opponent)
+        capture: 5x5 array indicating box ownership (0 = unclaimed, 1 = ours, -1 = opponent's)
+    
+    Returns:
+        A string in the format 'row,col,dir' where row and col are 0-4 and dir is 'H' or 'V'
+    """
+    
+    # Get all legal moves
+    legal_moves = get_legal_moves(horizontal, vertical)
+    
+    # If only one move left, take it
+    if len(legal_moves) == 1:
+        return legal_moves[0]
+    
+    # First, check for immediate captures
+    immediate_captures = []
+    for move in legal_moves:
+        if would_capture_box(move, horizontal, vertical, capture):
+            immediate_captures.append(move)
+    
+    if immediate_captures:
+        # If multiple captures available, choose the one that captures the most boxes
+        best_capture = max(immediate_captures, key=lambda move: count_captures(move, horizontal, vertical, capture))
+        return best_capture
+    
+    # Use minimax to search ahead
+    best_move, _ = minimax(horizontal.copy(), vertical.copy(), capture.copy(), 
+                          depth=3, alpha=-np.inf, beta=np.inf, maximizing=True)
+    
+    return best_move
+
+def get_legal_moves(horizontal: np.ndarray, vertical: np.ndarray) -> List[str]:
+    """Get all legal moves from the current state."""
+    moves = []
+    
+    # Check horizontal edges (4 rows x 5 columns)
+    for row in range(4):
+        for col in range(5):
+            if horizontal[row, col] == 0:
+                moves.append(f"{row},{col},H")
+    
+    # Check vertical edges (5 rows x 4 columns)
+    for row in range(5):
+        for col in range(4):
+            if vertical[row, col] == 0:
+                moves.append(f"{row},{col},V")
+    
+    return moves
+
+def would_capture_box(move: str, horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> bool:
+    """Check if making this move would capture at least one box."""
+    row, col, dir = parse_move(move)
+    
+    if dir == 'H':
+        # Check boxes above and below the horizontal edge
+        if row > 0 and capture[row-1, col] == 0:
+            # Check if the move completes the bottom edge of the box above
+            if count_edges(row-1, col, horizontal, vertical) == 3:
+                return True
+        
+        if row < 4 and capture[row, col] == 0:
+            # Check if the move completes the top edge of the box below
+            if count_edges(row, col, horizontal, vertical) == 3:
+                return True
+                
+    else:  # dir == 'V'
+        # Check boxes to the left and right of the vertical edge
+        if col > 0 and capture[row, col-1] == 0:
+            # Check if the move completes the right edge of the box to the left
+            if count_edges(row, col-1, horizontal, vertical) == 3:
+                return True
+        
+        if col < 4 and capture[row, col] == 0:
+            # Check if the move completes the left edge of the box to the right
+            if count_edges(row, col, horizontal, vertical) == 3:
+                return True
+    
+    return False
+
+def count_captures(move: str, horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> int:
+    """Count how many boxes this move would capture."""
+    row, col, dir = parse_move(move)
+    captures = 0
+    
+    if dir == 'H':
+        if row > 0 and capture[row-1, col] == 0 and count_edges(row-1, col, horizontal, vertical) == 3:
+            captures += 1
+        if row < 4 and capture[row, col] == 0 and count_edges(row, col, horizontal, vertical) == 3:
+            captures += 1
+    else:  # dir == 'V'
+        if col > 0 and capture[row, col-1] == 0 and count_edges(row, col-1, horizontal, vertical) == 3:
+            captures += 1
+        if col < 4 and capture[row, col] == 0 and count_edges(row, col, horizontal, vertical) == 3:
+            captures += 1
+    
+    return captures
+
+def count_edges(row: int, col: int, horizontal: np.ndarray, vertical: np.ndarray) -> int:
+    """Count how many edges are already drawn for the box at (row, col)."""
+    edges = 0
+    # Top edge
+    if row > 0 and horizontal[row-1, col] != 0:
+        edges += 1
+    # Bottom edge
+    if row < 4 and horizontal[row, col] != 0:
+        edges += 1
+    # Left edge
+    if col > 0 and vertical[row, col-1] != 0:
+        edges += 1
+    # Right edge
+    if col < 4 and vertical[row, col] != 0:
+        edges += 1
+    return edges
+
+def parse_move(move: str) -> Tuple[int, int, str]:
+    """Parse a move string into row, col, and direction."""
+    parts = move.split(',')
+    return int(parts[0]), int(parts[1]), parts[2]
+
+def make_move(move: str, horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray, player: int):
+    """Apply a move to the board and return the updated arrays."""
+    row, col, dir = parse_move(move)
+    
+    if dir == 'H':
+        horizontal[row, col] = player
+    else:
+        vertical[row, col] = player
+    
+    # Check for captures
+    captures_made = False
+    if dir == 'H':
+        if row > 0 and capture[row-1, col] == 0 and count_edges(row-1, col, horizontal, vertical) == 4:
+            capture[row-1, col] = player
+            captures_made = True
+        if row < 4 and capture[row, col] == 0 and count_edges(row, col, horizontal, vertical) == 4:
+            capture[row, col] = player
+            captures_made = True
+    else:  # dir == 'V'
+        if col > 0 and capture[row, col-1] == 0 and count_edges(row, col-1, horizontal, vertical) == 4:
+            capture[row, col-1] = player
+            captures_made = True
+        if col < 4 and capture[row, col] == 0 and count_edges(row, col, horizontal, vertical) == 4:
+            capture[row, col] = player
+            captures_made = True
+    
+    return captures_made
+
+def evaluate_board(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> float:
+    """Evaluate the current board state from our perspective."""
+    # Count captures
+    our_captures = np.sum(capture == 1)
+    opponent_captures = np.sum(capture == -1)
+    
+    # Basic score difference
+    score = our_captures - opponent_captures
+    
+    # Bonus for having more available moves (flexibility)
+    our_moves = len(get_legal_moves(horizontal, vertical))
+    
+    return score + our_moves * 0.1
+
+def minimax(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray, 
+           depth: int, alpha: float, beta: float, maximizing: bool) -> Tuple[str, float]:
+    """Minimax algorithm with alpha-beta pruning."""
+    
+    # Terminal conditions
+    if depth == 0 or is_game_over(horizontal, vertical):
+        return "", evaluate_board(horizontal, vertical, capture)
+    
+    legal_moves = get_legal_moves(horizontal, vertical)
+    
+    if maximizing:
+        max_eval = -np.inf
+        best_move = legal_moves[0]
+        
+        for move in legal_moves:
+            # Make the move
+            h_copy = horizontal.copy()
+            v_copy = vertical.copy()
+            c_copy = capture.copy()
+            
+            captures_made = make_move(move, h_copy, v_copy, c_copy, 1)
+            
+            # If we captured boxes, we get another turn
+            if captures_made:
+                _, eval_score = minimax(h_copy, v_copy, c_copy, depth, alpha, beta, True)
+            else:
+                _, eval_score = minimax(h_copy, v_copy, c_copy, depth - 1, alpha, beta, False)
+            
+            if eval_score > max_eval:
+                max_eval = eval_score
+                best_move = move
+            
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        
+        return best_move, max_eval
+    else:
+        min_eval = np.inf
+        best_move = legal_moves[0]
+        
+        for move in legal_moves:
+            # Make the move (opponent's move)
+            h_copy = horizontal.copy()
+            v_copy = vertical.copy()
+            c_copy = capture.copy()
+            
+            captures_made = make_move(move, h_copy, v_copy, c_copy, -1)
+            
+            # If opponent captured boxes, they get another turn
+            if captures_made:
+                _, eval_score = minimax(h_copy, v_copy, c_copy, depth, alpha, beta, False)
+            else:
+                _, eval_score = minimax(h_copy, v_copy, c_copy, depth - 1, alpha, beta, True)
+            
+            if eval_score < min_eval:
+                min_eval = eval_score
+                best_move = move
+            
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        
+        return best_move, min_eval
+
+def is_game_over(horizontal: np.ndarray, vertical: np.ndarray) -> bool:
+    """Check if the game is over (all edges are drawn)."""
+    return np.sum(horizontal == 0) == 0 and np.sum(vertical == 0) == 0
+</code>

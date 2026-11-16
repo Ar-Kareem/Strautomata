@@ -1,0 +1,61 @@
+
+import re
+import random
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str], memory: dict) -> tuple[str, dict]:
+    piece_values = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}
+    my_color = 'w' if to_play == 'white' else 'b'
+    opponent_color = 'b' if my_color == 'w' else 'w'
+    
+    # Check for checkmate moves
+    mate_moves = [m for m in legal_moves if '#' in m]
+    if mate_moves:
+        return (random.choice(mate_moves), memory)
+    
+    max_score = -float('inf')
+    best_moves = []
+    
+    for move in legal_moves:
+        score = 0.0
+        
+        # Check for captures
+        if 'x' in move:
+            target_part = move.split('x')[1]
+            target_square = ''.join(re.findall(r'^[a-h][1-8]', target_part))
+            if target_square in pieces:
+                piece_code = pieces[target_square]
+                if piece_code[0] == opponent_color:
+                    piece_type = piece_code[1]
+                    score += piece_values.get(piece_type, 0)
+        
+        # Check for promotions
+        if '=' in move:
+            promo_piece = move.split('=')[1][0]
+            promo_value = piece_values.get(promo_piece, 0) - piece_values['P']
+            score += promo_value
+        
+        # Check for checks
+        if move.endswith('+'):
+            score += 0.5
+        
+        # Check for castling
+        if move in ('O-O', 'O-O-O'):
+            score += 2
+        
+        # Centrality bonus for non-capturing moves
+        squares = re.findall(r'[a-h][1-8]', move)
+        if squares:
+            dest_square = squares[-1]
+            central_squares = {'d4', 'e4', 'd5', 'e5'}
+            if 'x' not in move and dest_square in central_squares:
+                score += 1
+        
+        # Update best moves
+        if score > max_score:
+            max_score = score
+            best_moves = [move]
+        elif score == max_score:
+            best_moves.append(move)
+    
+    chosen_move = random.choice(best_moves)
+    return (chosen_move, memory)

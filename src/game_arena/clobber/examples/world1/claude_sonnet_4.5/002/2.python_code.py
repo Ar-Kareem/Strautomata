@@ -1,0 +1,117 @@
+
+def policy(you: list[int], opponent: list[int]) -> str:
+    import numpy as np
+    
+    you = np.array(you)
+    opponent = np.array(opponent)
+    
+    def get_legal_moves(player, other):
+        """Get all legal moves for a player."""
+        moves = []
+        rows, cols = player.shape
+        directions = [(-1, 0, 'U'), (1, 0, 'D'), (0, -1, 'L'), (0, 1, 'R')]
+        
+        for r in range(rows):
+            for c in range(cols):
+                if player[r, c] == 1:
+                    for dr, dc, dir_name in directions:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < rows and 0 <= nc < cols and other[nr, nc] == 1:
+                            moves.append((r, c, dir_name, nr, nc))
+        return moves
+    
+    def apply_move(player, other, move):
+        """Apply a move and return new board states."""
+        r, c, _, nr, nc = move
+        new_player = player.copy()
+        new_other = other.copy()
+        new_player[r, c] = 0
+        new_player[nr, nc] = 1
+        new_other[nr, nc] = 0
+        return new_player, new_other
+    
+    def count_moves(player, other):
+        """Count number of legal moves for a player."""
+        return len(get_legal_moves(player, other))
+    
+    def evaluate_position(player, other):
+        """Evaluate board position from player's perspective."""
+        player_moves = count_moves(player, other)
+        opponent_moves = count_moves(other, player)
+        
+        # If opponent has no moves, we win (very good)
+        if opponent_moves == 0:
+            return 10000
+        
+        # If we have no moves, we lose (very bad)
+        if player_moves == 0:
+            return -10000
+        
+        # Mobility difference is most important
+        mobility_score = (player_moves - opponent_moves) * 100
+        
+        # Material count
+        player_pieces = np.sum(player)
+        opponent_pieces = np.sum(other)
+        material_score = (player_pieces - opponent_pieces) * 10
+        
+        # Center control bonus
+        rows, cols = player.shape
+        center_score = 0
+        for r in range(rows):
+            for c in range(cols):
+                if player[r, c] == 1:
+                    # Distance from center
+                    center_r, center_c = rows / 2, cols / 2
+                    dist = abs(r - center_r) + abs(c - center_c)
+                    center_score += (5 - dist) * 0.5
+        
+        return mobility_score + material_score + center_score
+    
+    def evaluate_move(move, player, other):
+        """Evaluate a specific move."""
+        new_player, new_other = apply_move(player, other, move)
+        
+        # Base evaluation
+        score = evaluate_position(new_player, new_other)
+        
+        # Bonus for capturing pieces that have high mobility
+        r, c, _, nr, nc = move
+        # Count how many moves the captured piece could have made
+        captured_mobility = 0
+        directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+        for dr, dc in directions:
+            check_r, check_c = nr + dr, nc + dc
+            if 0 <= check_r < player.shape[0] and 0 <= check_c < player.shape[1]:
+                if player[check_r, check_c] == 1:
+                    captured_mobility += 1
+        
+        score += captured_mobility * 20
+        
+        # Bonus for moves that reduce opponent's future mobility more
+        opponent_future_moves = count_moves(new_other, new_player)
+        score += (count_moves(other, player) - opponent_future_moves) * 50
+        
+        return score
+    
+    # Get all legal moves
+    legal_moves = get_legal_moves(you, opponent)
+    
+    # Should never happen, but safety check
+    if not legal_moves:
+        # Return any syntactically valid move (will lose, but won't crash)
+        return "0,0,R"
+    
+    # Evaluate all moves
+    best_move = None
+    best_score = float('-inf')
+    
+    for move in legal_moves:
+        score = evaluate_move(move, you, opponent)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    # Return the best move
+    r, c, dir_name, _, _ = best_move
+    return f"{r},{c},{dir_name}"

@@ -1,0 +1,416 @@
+The strategy for this policy is a time-bounded, tactical minimax (negamax) player with alpha–beta pruning. It always generates all legal Lines of Action moves, prioritizes forcing lines (immediate wins, then captures, then moves that reduce the number of connected components), and searches a few plies deep with iterative deepening until the time limit. The evaluation function strongly rewards forming a single connected group (few components) and penalizes being “spread out” by estimating inter-group distances (MST over groups). A safe fallback always returns a legal move even under extreme time pressure.
+
+<code>
+import time
+from collections import deque
+
+# Lines of Action policy for 8x8 board.
+# Board encoding: 0 empty, 1 us (side to move), -1 opponent.
+
+N = 8
+DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1),
+        (-1, -1), (-1, 1), (1, -1), (1, 1)]
+NEI8 = DIRS
+
+WIN_SCORE = 10_000_000
+INF = 10_000_000_000
+
+# Soft time budget (seconds). Arena says 1s; keep margin.
+TIME_BUDGET = 0.92
+
+
+def _inb(r, c):
+    return 0 <= r < N and 0 <= c < N
+
+
+def _board_key(board):
+    """
+    Compact hashable key. Map values {-1,0,1} -> {0,1,2} and pack into bytes.
+    """
+    b = bytearray(64)
+    k = 0
+    for r in range(N):
+        row = board[r]
+        for c in range(N):
+            v = row[c]
+            b[k] = 2 if v == 1 else (0 if v == -1 else 1)
+            k += 1
+    return bytes(b)
+
+
+def _count_line_pieces(board, r, c, dr, dc):
+    """
+    Count total non-empty pieces on the entire line in direction (dr,dc)
+    passing through (r,c).
+    """
+    rr, cc = r, c
+    # rewind to start of line
+    while _inb(rr - dr, cc - dc):
+        rr -= dr
+        cc -= dc
+    cnt = 0
+    while _inb(rr, cc):
+        if board[rr][cc] != 0:
+            cnt += 1
+        rr += dr
+        cc += dc
+    return cnt
+
+
+def _is_connected(board, who):
+    """
+    Connectivity in 8 directions. True if all pieces of 'who' form one group
+    (or 0/1 pieces).
+    """
+    pieces = []
+    for r in range(N):
+        row = board[r]
+        for c in range(N):
+            if row[c] == who:
+                pieces.append((r, c))
+    if len(pieces) <= 1:
+        return True
+
+    start = pieces[0]
+    seen = set([start])
+    dq = deque([start])
+    while dq:
+        r, c = dq.popleft()
+        for dr, dc in NEI8:
+            rr, cc = r + dr, c + dc
+            if _inb(rr, cc) and board[rr][cc] == who and (rr, cc) not in seen:
+                seen.add((rr, cc))
+                dq.append((rr, cc))
+    return len(seen) == len(pieces)
+
+
+def _groups(board, who):
+    """
+    Return list of groups, each group is list of (r,c).
+    """
+    visited = [[False] * N for _ in range(N)]
+    groups = []
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == who and not visited[r][c]:
+                visited[r][c] = True
+                comp = [(r, c)]
+                dq = deque([(r, c)])
+                while dq:
+                    rr, cc = dq.popleft()
+                    for dr, dc in NEI8:
+                        r2, c2 = rr + dr, cc + dc
+                        if _inb(r2, c2) and not visited[r2][c2] and board[r2][c2] == who:
+                            visited[r2][c2] = True
+                            comp.append((r2, c2))
+                            dq.append((r2, c2))
+                groups.append(comp)
+    return groups
+
+
+def _group_mst_distance(groups):
+    """
+    Approximate "spread" by MST over groups using min Chebyshev distance between groups.
+    If 0/1 groups -> 0.
+    """
+    g = len(groups)
+    if g <= 1:
+        return 0
+
+    # Precompute pairwise distances (min Chebyshev between any piece in group i and j)
+    # g is small in practice.
+    dist = [[0] * g for _ in range(g)]
+    for i in range(g):
+        for j in range(i + 1, g):
+            best = 99
+            gi = groups[i]
+            gj = groups[j]
+            for (r1, c1) in gi:
+                for (r2, c2) in gj:
+                    d = max(abs(r1 - r2), abs(c1 - c2))
+                    if d < best:
+                        best = d
+                        if best == 1:
+                            break
+                if best == 1:
+                    break
+            dist[i][j] = dist[j][i] = best
+
+    # Prim MST
+    used = [False] * g
+    min_edge = [99] * g
+    min_edge[0] = 0
+    total = 0
+    for _ in range(g):
+        v = -1
+        best = 100
+        for i in range(g):
+            if not used[i] and min_edge[i] < best:
+                best = min_edge[i]
+                v = i
+        used[v] = True
+        total += best
+        for u in range(g):
+            if not used[u] and dist[v][u] < min_edge[u]:
+                min_edge[u] = dist[v][u]
+    return total
+
+
+def _centrality(board, who):
+    """
+    Mild preference for central squares: sum of negative distance-to-center.
+    """
+    # center around (3.5,3.5). Use L1 for speed.
+    score = 0
+    for r in range(N):
+        row = board[r]
+        for c in range(N):
+            if row[c] == who:
+                score += (7 - (abs(r - 3.5) + abs(c - 3.5)))
+    return score
+
+
+def _generate_moves(board):
+    """
+    Generate all legal moves for side-to-move pieces == 1.
+    Returns list of (fr,fc,tr,tc, is_capture).
+    """
+    moves = []
+    for r in range(N):
+        row = board[r]
+        for c in range(N):
+            if row[c] != 1:
+                continue
+            for dr, dc in DIRS:
+                cnt = _count_line_pieces(board, r, c, dr, dc)
+                tr = r + dr * cnt
+                tc = c + dc * cnt
+                if not _inb(tr, tc):
+                    continue
+                # cannot land on friendly
+                if board[tr][tc] == 1:
+                    continue
+                # cannot jump over enemy
+                blocked = False
+                rr, cc = r + dr, c + dc
+                for _ in range(cnt - 1):
+                    if board[rr][cc] == -1:
+                        blocked = True
+                        break
+                    rr += dr
+                    cc += dc
+                if blocked:
+                    continue
+                is_cap = (board[tr][tc] == -1)
+                moves.append((r, c, tr, tc, is_cap))
+    return moves
+
+
+def _apply_move(board, mv):
+    """
+    Apply move for player 1 on a copy of board.
+    """
+    fr, fc, tr, tc, _ = mv
+    nb = [row[:] for row in board]
+    nb[fr][fc] = 0
+    nb[tr][tc] = 1  # capture if enemy present
+    return nb
+
+
+def _evaluate(board):
+    """
+    Evaluate position for side to move (pieces=1) from its perspective.
+    Higher is better for side to move.
+    """
+    # Primary: connectedness
+    my_groups = _groups(board, 1)
+    op_groups = _groups(board, -1)
+
+    if len(my_groups) == 1:
+        # Not an automatic win unless achieved by a move, but very strong.
+        base = 2_000_000
+    else:
+        base = 0
+
+    if len(op_groups) == 1:
+        base -= 2_000_000
+
+    # Group count (very strong)
+    score = base
+    score += (len(op_groups) - len(my_groups)) * 120_000
+
+    # Spread (MST distance between groups)
+    my_mst = _group_mst_distance(my_groups)
+    op_mst = _group_mst_distance(op_groups)
+    score += (op_mst - my_mst) * 18_000
+
+    # Mild centrality / cohesion
+    score += (_centrality(board, 1) - _centrality(board, -1)) * 350
+
+    # Mobility (light)
+    my_moves = len(_generate_moves(board))
+    # Opp mobility: flip perspective quickly
+    flipped = [[-v for v in row] for row in board]
+    op_moves = len(_generate_moves(flipped))
+    score += (my_moves - op_moves) * 600
+
+    return score
+
+
+def _order_moves(board, moves):
+    """
+    Move ordering: immediate wins, captures, then reduce component count, then central.
+    """
+    if not moves:
+        return moves
+
+    # Precompute current group count for delta feature
+    cur_groups = len(_groups(board, 1))
+
+    ordered = []
+    for mv in moves:
+        fr, fc, tr, tc, is_cap = mv
+        nb = _apply_move(board, mv)
+
+        # Immediate win check (end-of-move)
+        win = _is_connected(nb, 1)
+
+        new_groups = len(_groups(nb, 1))
+        group_delta = cur_groups - new_groups  # positive if improved
+
+        # central pull
+        cent = (7 - (abs(tr - 3.5) + abs(tc - 3.5)))
+
+        # Tuple for sorting descending
+        key = (
+            1 if win else 0,
+            1 if is_cap else 0,
+            group_delta,
+            cent
+        )
+        ordered.append((key, mv))
+
+    ordered.sort(key=lambda x: x[0], reverse=True)
+    return [mv for _, mv in ordered]
+
+
+def policy(board) -> str:
+    """
+    Return a legal move string: "from_row,from_col:to_row,to_col"
+    """
+    t0 = time.perf_counter()
+    deadline = t0 + TIME_BUDGET
+
+    # Normalize input to list-of-lists ints
+    b = [list(map(int, row)) for row in board]
+
+    moves = _generate_moves(b)
+    if not moves:
+        # Should not happen in LOA, but must return something; attempt any pseudo-legal fallback.
+        # Find any piece and any destination in-bounds (still might be illegal, but we tried).
+        for r in range(N):
+            for c in range(N):
+                if b[r][c] == 1:
+                    rr = min(7, r + 1)
+                    cc = c
+                    return f"{r},{c}:{rr},{cc}"
+        return "0,0:0,0"
+
+    moves = _order_moves(b, moves)
+    best_move = moves[0]
+
+    # Transposition table: key -> (depth, value)
+    tt = {}
+
+    def negamax(board_pos, depth, alpha, beta, ply):
+        # Time check
+        if time.perf_counter() >= deadline:
+            raise TimeoutError
+
+        key = _board_key(board_pos)
+        hit = tt.get(key)
+        if hit is not None:
+            d0, v0 = hit
+            if d0 >= depth:
+                return v0
+
+        if depth == 0:
+            v = _evaluate(board_pos)
+            tt[key] = (depth, v)
+            return v
+
+        legal = _generate_moves(board_pos)
+        if not legal:
+            # No legal moves: treat as very bad.
+            v = -WIN_SCORE + ply
+            tt[key] = (depth, v)
+            return v
+
+        legal = _order_moves(board_pos, legal)
+
+        best = -INF
+        for mv in legal:
+            nb = _apply_move(board_pos, mv)
+
+            # Winning move ends the game immediately for mover
+            if _is_connected(nb, 1):
+                v = WIN_SCORE - ply
+            else:
+                # Switch perspective by flipping signs (so next player becomes "1")
+                child = [[-v for v in row] for row in nb]
+                v = -negamax(child, depth - 1, -beta, -alpha, ply + 1)
+
+            if v > best:
+                best = v
+            if best > alpha:
+                alpha = best
+            if alpha >= beta:
+                break
+
+        tt[key] = (depth, best)
+        return best
+
+    # Iterative deepening
+    depth = 1
+    try:
+        while depth <= 6:
+            if time.perf_counter() >= deadline:
+                break
+
+            cur_best = None
+            cur_best_val = -INF
+
+            # Root search with aspiration-ish bounds
+            alpha, beta = -INF, INF
+
+            for mv in moves:
+                if time.perf_counter() >= deadline:
+                    raise TimeoutError
+
+                nb = _apply_move(b, mv)
+
+                if _is_connected(nb, 1):
+                    val = WIN_SCORE
+                else:
+                    child = [[-v for v in row] for row in nb]
+                    val = -negamax(child, depth - 1, -beta, -alpha, 1)
+
+                if val > cur_best_val:
+                    cur_best_val = val
+                    cur_best = mv
+                if val > alpha:
+                    alpha = val
+
+            if cur_best is not None:
+                best_move = cur_best
+
+            depth += 1
+    except TimeoutError:
+        pass
+    except Exception:
+        # Safety: never crash, always return a legal move we already have.
+        pass
+
+    fr, fc, tr, tc, _ = best_move
+    return f"{fr},{fc}:{tr},{tc}"
+</code>

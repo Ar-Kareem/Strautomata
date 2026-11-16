@@ -1,0 +1,92 @@
+The strategy is to use a dynamic risk-adjusted approach that adapts to the current hand's proximity to the target score. The policy calculates the exact probability of busting on the next draw by analyzing the remaining cards in the deck, then compares this against a risk tolerance threshold that becomes more conservative as the hand value approaches the target. When far from the target, it tolerates higher risk to improve the score; when near, it avoids busting even if that means settling for a lower score.
+
+<code>
+def hand_value(hand, target):
+    """
+    Calculate the value of a hand considering Ace flexibility.
+    Aces are counted as 11 if possible without exceeding target,
+    otherwise as 1. Multiple aces can be counted differently.
+    """
+    total = 0
+    aces = 0
+    
+    # Sum non-ace cards
+    for card in hand:
+        if card == 'A':
+            aces += 1
+        elif card in ['J', 'Q', 'K', '10']:
+            total += 10
+        else:  # '2' through '9'
+            total += int(card)
+    
+    # Add aces as 11 initially
+    total += aces * 11
+    
+    # Reduce ace values from 11 to 1 if we exceed target
+    while total > target and aces > 0:
+        total -= 10  # Change one ace from 11 to 1
+        aces -= 1
+    
+    return total
+
+def policy(hand, target):
+    """
+    Decide whether to HIT or STAY based on current hand and target.
+    
+    Strategy:
+    - If close to target (within 3 points), always STAY
+    - If far from target (< 50% of target), be very aggressive (hit unless nearly certain bust)
+    - Otherwise, use graduated risk tolerance based on progress toward target
+    """
+    current_value = hand_value(hand, target)
+    
+    # If hand value exceeds target, we're bust - stay (game would have ended)
+    if current_value > target:
+        return "STAY"
+    
+    # If very close to target, play it safe
+    if current_value >= target - 3:
+        return "STAY"
+    
+    # Determine remaining cards in the deck
+    all_cards = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    remaining = {card: 1 for card in all_cards}
+    for card in hand:
+        if card in remaining:
+            remaining[card] -= 1
+    
+    total_remaining = sum(remaining.values())
+    if total_remaining == 0:
+        return "STAY"
+    
+    # Calculate probability of busting on next draw
+    bust_cards = 0
+    for card, count in remaining.items():
+        if count <= 0:
+            continue
+        
+        # Test if drawing this card would cause a bust
+        test_hand = hand + [card]
+        if hand_value(test_hand, target) > target:
+            bust_cards += count
+    
+    bust_probability = bust_cards / total_remaining
+    
+    # Very far from target: be aggressive, hit unless almost certain bust (>90%)
+    if current_value < target * 0.5:
+        if bust_probability < 0.9:
+            return "HIT"
+        else:
+            return "STAY"
+    
+    # Medium distance: graduated risk tolerance
+    progress = current_value / target
+    if progress < 0.7:
+        max_bust_prob = 0.3  # Up to 30% bust risk
+    elif progress < 0.85:
+        max_bust_prob = 0.2  # Up to 20% bust risk
+    else:
+        max_bust_prob = 0.1  # Only 10% bust risk
+    
+    return "HIT" if bust_probability <= max_bust_prob else "STAY"
+</code>

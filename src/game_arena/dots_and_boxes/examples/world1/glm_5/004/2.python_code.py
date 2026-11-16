@@ -1,0 +1,151 @@
+
+import numpy as np
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    h = horizontal.copy()
+    v = vertical.copy()
+    c = capture.copy()
+    
+    comp = find_completing(h, v)
+    if comp:
+        return f"{comp[0]},{comp[1]},{comp[2]}"
+    
+    best = search(h, v, c, depth=12)
+    return f"{best[0]},{best[1]},{best[2]}"
+
+def get_moves(h, v):
+    moves = []
+    for r in range(5):
+        for co in range(4):
+            if h[r, co] == 0:
+                moves.append((r, co, 'H'))
+    for r in range(4):
+        for co in range(5):
+            if v[r, co] == 0:
+                moves.append((r, co, 'V'))
+    return moves
+
+def box_sides(br, bc, h, v):
+    return (h[br, bc] != 0) + (h[br+1, bc] != 0) + (v[br, bc] != 0) + (v[br, bc+1] != 0)
+
+def num_completed(move, h, v):
+    r, co, d = move
+    n = 0
+    if d == 'H':
+        if r < 4 and box_sides(r, co, h, v) == 3: n += 1
+        if r > 0 and box_sides(r-1, co, h, v) == 3: n += 1
+    else:
+        if co < 4 and box_sides(r, co, h, v) == 3: n += 1
+        if co > 0 and box_sides(r, co-1, h, v) == 3: n += 1
+    return n
+
+def find_completing(h, v):
+    for m in get_moves(h, v):
+        if num_completed(m, h, v) > 0:
+            return m
+    return None
+
+def creates_danger(move, h, v):
+    r, co, d = move
+    if d == 'H':
+        if r < 4 and box_sides(r, co, h, v) == 2: return True
+        if r > 0 and box_sides(r-1, co, h, v) == 2: return True
+    else:
+        if co < 4 and box_sides(r, co, h, v) == 2: return True
+        if co > 0 and box_sides(r, co-1, h, v) == 2: return True
+    return False
+
+def do_move(h, v, c, move, player):
+    r, co, d = move
+    if d == 'H':
+        h[r, co] = player
+    else:
+        v[r, co] = player
+    
+    captured = []
+    if d == 'H':
+        if r < 4 and box_sides(r, co, h, v) == 4 and c[r, co] == 0:
+            c[r, co] = player
+            captured.append((r, co))
+        if r > 0 and box_sides(r-1, co, h, v) == 4 and c[r-1, co] == 0:
+            c[r-1, co] = player
+            captured.append((r-1, co))
+    else:
+        if co < 4 and box_sides(r, co, h, v) == 4 and c[r, co] == 0:
+            c[r, co] = player
+            captured.append((r, co))
+        if co > 0 and box_sides(r, co-1, h, v) == 4 and c[r, co-1] == 0:
+            c[r, co-1] = player
+            captured.append((r, co-1))
+    return captured
+
+def undo_move(h, v, c, move, captured):
+    r, co, d = move
+    for br, bc in captured:
+        c[br, bc] = 0
+    if d == 'H':
+        h[r, co] = 0
+    else:
+        v[r, co] = 0
+
+def evaluate(h, v, c):
+    return int(np.sum(c == 1) - np.sum(c == -1))
+
+def minimax(h, v, c, depth, alpha, beta, is_max):
+    moves = get_moves(h, v)
+    if not moves or depth == 0:
+        return evaluate(h, v, c)
+    
+    comp = find_completing(h, v)
+    if comp:
+        p = 1 if is_max else -1
+        captured = do_move(h, v, c, comp, p)
+        s = minimax(h, v, c, depth-1, alpha, beta, is_max)
+        undo_move(h, v, c, comp, captured)
+        return s
+    
+    moves.sort(key=lambda m: 0 if creates_danger(m, h, v) else 1, reverse=True)
+    
+    if is_max:
+        mx = float('-inf')
+        for m in moves:
+            captured = do_move(h, v, c, m, 1)
+            s = minimax(h, v, c, depth-1, alpha, beta, len(captured) > 0)
+            undo_move(h, v, c, m, captured)
+            mx = max(mx, s)
+            alpha = max(alpha, s)
+            if beta <= alpha:
+                break
+        return mx
+    else:
+        mn = float('inf')
+        for m in moves:
+            captured = do_move(h, v, c, m, -1)
+            s = minimax(h, v, c, depth-1, alpha, beta, len(captured) == 0)
+            undo_move(h, v, c, m, captured)
+            mn = min(mn, s)
+            beta = min(beta, s)
+            if beta <= alpha:
+                break
+        return mn
+
+def search(h, v, c, depth=12):
+    moves = get_moves(h, v)
+    if not moves:
+        return (0, 0, 'H')
+    
+    safe = [m for m in moves if not creates_danger(m, h, v)]
+    candidates = safe if safe else moves
+    
+    best_m = candidates[0]
+    best_s = float('-inf')
+    
+    for m in candidates:
+        captured = do_move(h, v, c, m, 1)
+        s = minimax(h, v, c, depth-1, float('-inf'), float('inf'), len(captured) > 0)
+        undo_move(h, v, c, m, captured)
+        if s > best_s:
+            best_s = s
+            best_m = m
+    
+    return best_m

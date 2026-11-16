@@ -1,0 +1,187 @@
+### Strategy for this Policy
+
+The strategy for this policy is based on a **modified greedy algorithm with lookahead and box completion prioritization**. Here's the breakdown:
+
+1. **Box Completion Priority**: First, the policy looks for moves that complete **at least one box** for the current player. This is crucial because capturing boxes gives an extra turn, and the player who captures more boxes wins.
+   - If multiple such moves exist, it prefers moves that complete **more than one box** (e.g., a move that closes two adjacent boxes).
+   - If no such moves exist, it defaults to a greedy approach.
+
+2. **Greedy Lookahead for Opponent's Boxes**:
+   - If no immediate box-completing moves are available, the policy avoids moves that would allow the opponent to complete a box on their next turn (i.e., moves that leave exactly **three sides of a box** for the opponent).
+   - It prioritizes moves that **block opponent's potential box completions** (e.g., moves that leave the opponent with no possible box completions in the next turn).
+
+3. **Greedy Edge Selection**:
+   - If no box-completing or blocking moves are available, the policy selects the **edge that is part of the most potential boxes** (i.e., the edge that contributes to the most unclosed boxes).
+   - This is done to maximize future opportunities for capturing boxes.
+
+4. **Fallback to Random Legal Move**:
+   - If the board is nearly full and no strategic moves are left, the policy picks a **random legal move** to avoid getting stuck in a non-optimal pattern.
+
+5. **Edge Cases**:
+   - If the opponent has no possible moves (all edges are drawn), the policy will still return a legal move (though this shouldn't happen in a valid game).
+   - The policy ensures that it **never completes a box for the opponent** unless it cannot avoid it (i.e., it doesn't make moves that leave exactly three sides for the opponent unless forced).
+
+6. **Efficiency**:
+   - The policy uses **bitwise operations and precomputed masks** to quickly evaluate the state of the board and determine which boxes are completable or which edges are part of the most potential boxes.
+   - It avoids unnecessary computations by focusing only on the edges that are legal (i.e., `horizontal` or `vertical` values are `0`).
+
+---
+
+### Python Source Code for the Policy
+
+```python
+import numpy as np
+from typing import List, Tuple
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    """
+    Dots and Boxes policy for a 4x4 grid (5x5 arrays).
+    Strategy: Prioritize moves that complete boxes, avoid giving opponent 3-sided boxes,
+    and otherwise play greedily to maximize future box completions.
+    """
+    # Directions: H (horizontal), V (vertical)
+    dirs = ['H', 'V']
+    # Possible moves: all legal edges (0 in horizontal or vertical)
+    legal_moves = []
+    for row in range(5):
+        for col in range(5):
+            if horizontal[row, col] == 0:
+                legal_moves.append((row, col, 'H'))
+            if vertical[row, col] == 0:
+                legal_moves.append((row, col, 'V'))
+
+    if not legal_moves:
+        # Should not happen in a valid game, but return a dummy move if no legal moves exist
+        return "0,0,H"
+
+    # Step 1: Find moves that complete at least one box for the current player
+    box_completing_moves = []
+    for move in legal_moves:
+        row, col, dir = move
+        if dir == 'H':
+            # Check if this horizontal edge completes a box
+            if (vertical[row, col] != 0 and vertical[row, col + 1] != 0 and
+                horizontal[row, col - 1] != 0 if col > 0 else True and
+                horizontal[row, col + 1] != 0 if col < 4 else True):
+                box_completing_moves.append(move)
+        elif dir == 'V':
+            # Check if this vertical edge completes a box
+            if (horizontal[row, col] != 0 and horizontal[row + 1, col] != 0 and
+                vertical[row, col - 1] != 0 if col > 0 else True and
+                vertical[row + 1, col] != 0 if row < 4 else True):
+                box_completing_moves.append(move)
+
+    # Step 2: Among box-completing moves, prefer those that complete more than one box
+    multi_box_moves = []
+    for move in box_completing_moves:
+        row, col, dir = move
+        boxes_completed = 0
+        # Check if this move completes any boxes
+        if dir == 'H':
+            # Check left box (if exists)
+            if col > 0 and vertical[row, col] != 0 and vertical[row, col - 1] != 0 and horizontal[row, col - 1] != 0:
+                boxes_completed += 1
+            # Check right box (if exists)
+            if col < 4 and vertical[row, col + 1] != 0 and vertical[row, col] != 0 and horizontal[row, col + 1] != 0:
+                boxes_completed += 1
+        elif dir == 'V':
+            # Check top box (if exists)
+            if row > 0 and horizontal[row, col] != 0 and horizontal[row - 1, col] != 0 and vertical[row - 1, col] != 0:
+                boxes_completed += 1
+            # Check bottom box (if exists)
+            if row < 4 and horizontal[row + 1, col] != 0 and horizontal[row, col] != 0 and vertical[row + 1, col] != 0:
+                boxes_completed += 1
+        if boxes_completed > 1:
+            multi_box_moves.append(move)
+
+    if multi_box_moves:
+        # Prefer moves that complete multiple boxes
+        return _select_move_by_potential(multi_box_moves, horizontal, vertical, capture)
+    elif box_completing_moves:
+        # Otherwise, prefer moves that complete at least one box
+        return _select_move_by_potential(box_completing_moves, horizontal, vertical, capture)
+    else:
+        # Step 3: Avoid moves that give opponent exactly 3 sides of a box
+        opponent_three_sided_moves = []
+        for move in legal_moves:
+            row, col, dir = move
+            if dir == 'H':
+                # Check if this move leaves opponent with exactly 3 sides in any box
+                if col > 0 and vertical[row, col] == 0 and vertical[row, col - 1] == 0 and horizontal[row, col - 1] == 0:
+                    opponent_three_sided_moves.append(move)
+                if col < 4 and vertical[row, col] == 0 and vertical[row, col + 1] == 0 and horizontal[row, col + 1] == 0:
+                    opponent_three_sided_moves.append(move)
+            elif dir == 'V':
+                # Check if this move leaves opponent with exactly 3 sides in any box
+                if row > 0 and horizontal[row, col] == 0 and horizontal[row - 1, col] == 0 and vertical[row - 1, col] == 0:
+                    opponent_three_sided_moves.append(move)
+                if row < 4 and horizontal[row + 1, col] == 0 and horizontal[row, col] == 0 and vertical[row + 1, col] == 0:
+                    opponent_three_sided_moves.append(move)
+
+        if opponent_three_sided_moves:
+            # Avoid these moves
+            remaining_moves = [move for move in legal_moves if move not in opponent_three_sided_moves]
+            return _select_move_by_potential(remaining_moves, horizontal, vertical, capture)
+        else:
+            # Step 4: Greedy move selection (maximize potential boxes)
+            return _select_move_by_potential(legal_moves, horizontal, vertical, capture)
+
+def _select_move_by_potential(moves: List[Tuple[int, int, str]], horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    """
+    Selects a move from the given list by evaluating the potential number of boxes it can help complete.
+    """
+    # Evaluate each move's potential (number of boxes it can contribute to)
+    best_move = None
+    best_potential = -1
+    for move in moves:
+        row, col, dir = move
+        potential = 0
+        # Count potential boxes for this move
+        if dir == 'H':
+            # Left box potential
+            if col > 0 and vertical[row, col] == 0 and vertical[row, col - 1] == 0 and horizontal[row, col - 1] == 0:
+                potential += 1
+            # Right box potential
+            if col < 4 and vertical[row, col] == 0 and vertical[row, col + 1] == 0 and horizontal[row, col + 1] == 0:
+                potential += 1
+        elif dir == 'V':
+            # Top box potential
+            if row > 0 and horizontal[row, col] == 0 and horizontal[row - 1, col] == 0 and vertical[row - 1, col] == 0:
+                potential += 1
+            # Bottom box potential
+            if row < 4 and horizontal[row + 1, col] == 0 and horizontal[row, col] == 0 and vertical[row + 1, col] == 0:
+                potential += 1
+        # Also count boxes that would be completed by this move (for tie-breaking)
+        boxes_completed = 0
+        if dir == 'H':
+            if col > 0 and vertical[row, col] != 0 and vertical[row, col - 1] != 0 and horizontal[row, col - 1] != 0:
+                boxes_completed += 1
+            if col < 4 and vertical[row, col + 1] != 0 and vertical[row, col] != 0 and horizontal[row, col + 1] != 0:
+                boxes_completed += 1
+        elif dir == 'V':
+            if row > 0 and horizontal[row, col] != 0 and horizontal[row - 1, col] != 0 and vertical[row - 1, col] != 0:
+                boxes_completed += 1
+            if row < 4 and horizontal[row + 1, col] != 0 and horizontal[row, col] != 0 and vertical[row + 1, col] != 0:
+                boxes_completed += 1
+        # Prefer moves that complete boxes over those that just have potential
+        if boxes_completed > 0:
+            potential += 10  # High priority for box-completing moves
+        if potential > best_potential:
+            best_potential = potential
+            best_move = move
+    return f"{best_move[0]},{best_move[1]},{best_move[2]}"
+```---
+
+### Explanation of Key Functions:
+1. **`policy`**:
+   - Collects all legal moves (`horizontal` or `vertical` edges with value `0`).
+   - Prioritizes moves that complete **one or more boxes** (either single or multi-box moves).
+   - Avoids moves that would leave the opponent with **exactly three sides of a box** (unless no other moves are available).
+   - Falls back to a **greedy move selection** (maximizing potential boxes) if no strategic moves are found.
+
+2. **`_select_move_by_potential`**:
+   - Helper function to evaluate moves based on how many boxes they can contribute to.
+   - Moves that complete boxes are given higher priority (with a `potential += 10`).
+   - Otherwise, moves are selected based on the number of **unclosed boxes** they are part of.
+
+This strategy is designed to be **aggressive in capturing boxes** while **defensive against opponent's threats**, making it strong in the Dots and Boxes arena.

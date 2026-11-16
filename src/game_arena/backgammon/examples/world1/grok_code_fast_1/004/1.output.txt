@@ -1,0 +1,59 @@
+### Strategy Description
+
+The policy implements a simple rule-based approach for Backgammon, designed to prioritize essential moves for survival and progression. It follows these heuristics, in order of preference:
+1. **Move checkers from the bar**: If there are any checkers on the bar, always attempt to move them first (e.g., using the bar as the from location). This ensures re-entry into the game.
+2. **Bearing off**: If all remaining checkers are in the home board (points A0-A5) and bearing off is possible, prefer points from A0-A5 to try to remove checkers from the board.
+3. **Advance leaders**: Otherwise, move checkers from the farthest (highest-index) points where they are present, to advance them towards bearing off (from 23 to 0).
+4. **Order of moves**: For two dice, prioritize the higher die first (always 'H' for simplicity and to satisfy the "higher die when possible" rule for singles). If only one die, it's effectively the first move.
+5. **Pass only if forced**: Use 'P,P' only if no legal moves are found (though the engine enforces legality, so this is a fallback).
+
+This is a greedy, heuristic-based policy without complex search or evaluation, aiming to balance safety (clearing bar, not leaving blots) and progression. It should perform reasonably against naïve opponents but isn't optimized for advanced tactics like priming or anchoring. Execution is fast and within the 1-second limit.
+
+<code>
+import copy
+
+def policy(state: dict) -> str:
+    """
+    Simple rule-based Backgammon policy.
+    Prioritize: bar moves > bearing off > advancing farthest checkers.
+    """
+    dice = state['dice']
+    if not dice:
+        return 'H:P,P'
+    
+    sorted_dice = sorted(dice, reverse=True)  # sorted_dice[0] is the higher die
+    if len(dice) == 1:
+        # Single die: play it on the best available point
+        best_from = _find_best_move(state, sorted_dice[0])
+        return f'H:{best_from},P'
+    elif len(dice) == 2:
+        # Two dice: play higher first, then lower, on best points
+        first_from = _find_best_move(state, sorted_dice[0])
+        second_from = _find_best_move(state, sorted_dice[1])
+        return f'H:{first_from},{second_from}'
+
+def _find_best_move(state: dict, die_val: int) -> str:
+    """
+    Find the best 'from' location for a given die value.
+    Prioritizes bar > bearing off potential > farthest points.
+    """
+    # 1. Prioritize bar if checkers are on it
+    if state['my_bar'] > 0:
+        return 'B'
+    
+    # Check if bearing off is possible (all checkers in 0-5)
+    can_bear_off = all(state['my_pts'][i] == 0 for i in range(6, 24))
+    if can_bear_off:
+        # Prioritize points 0-5 in order from highest to lowest (farthest first)
+        for p in range(5, -1, -1):  # A5 to A0
+            if state['my_pts'][p] > 0:
+                return f'A{p}'
+    
+    # 3. Otherwise, move from the farthest point with checkers (23 to 0)
+    for p in range(23, -1, -1):
+        if state['my_pts'][p] > 0:
+            return f'A{p}'
+    
+    # Fallback: should not happen if there are checkers left
+    return 'P'
+</code>

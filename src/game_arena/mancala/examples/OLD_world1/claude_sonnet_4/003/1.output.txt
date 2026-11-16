@@ -1,0 +1,149 @@
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    def simulate_move(you_state, opp_state, move):
+        """Simulate a move and return the resulting state and whether we get an extra turn."""
+        you_copy = you_state[:]
+        opp_copy = opp_state[:]
+        
+        seeds = you_copy[move]
+        you_copy[move] = 0
+        
+        pos = move
+        player = 'you'
+        
+        while seeds > 0:
+            pos += 1
+            
+            if player == 'you':
+                if pos <= 5:
+                    you_copy[pos] += 1
+                elif pos == 6:
+                    you_copy[6] += 1
+                else:
+                    player = 'opp'
+                    pos = 0
+                    opp_copy[0] += 1
+            else:
+                if pos <= 5:
+                    opp_copy[pos] += 1
+                else:
+                    player = 'you'
+                    pos = 0
+                    you_copy[0] += 1
+            
+            seeds -= 1
+        
+        # Check for extra move
+        extra_turn = (player == 'you' and pos == 6)
+        
+        # Check for capture
+        if (player == 'you' and 0 <= pos <= 5 and 
+            you_copy[pos] == 1 and opp_copy[5 - pos] > 0):
+            captured = you_copy[pos] + opp_copy[5 - pos]
+            you_copy[6] += captured
+            you_copy[pos] = 0
+            opp_copy[5 - pos] = 0
+        
+        return you_copy, opp_copy, extra_turn
+    
+    def evaluate_position(you_state, opp_state):
+        """Evaluate the position from our perspective."""
+        score = you_state[6] - opp_state[6]
+        
+        # Add bonus for seeds on our side (mobility)
+        our_seeds = sum(you_state[:6])
+        their_seeds = sum(opp_state[:6])
+        score += our_seeds * 0.1 - their_seeds * 0.1
+        
+        # Bonus for potential captures
+        capture_bonus = 0
+        for i in range(6):
+            if you_state[i] == 0 and opp_state[5-i] > 0:
+                capture_bonus += opp_state[5-i] * 0.2
+        score += capture_bonus
+        
+        return score
+    
+    def minimax(you_state, opp_state, depth, is_our_turn, alpha, beta):
+        """Minimax with alpha-beta pruning."""
+        if depth == 0:
+            return evaluate_position(you_state, opp_state), -1
+        
+        # Check if game is over
+        if sum(you_state[:6]) == 0 or sum(opp_state[:6]) == 0:
+            final_you = you_state[:]
+            final_opp = opp_state[:]
+            final_you[6] += sum(final_you[:6])
+            final_opp[6] += sum(final_opp[:6])
+            return final_you[6] - final_opp[6], -1
+        
+        if is_our_turn:
+            max_eval = float('-inf')
+            best_move = -1
+            
+            for move in range(6):
+                if you_state[move] > 0:
+                    new_you, new_opp, extra_turn = simulate_move(you_state, opp_state, move)
+                    
+                    if extra_turn:
+                        eval_score, _ = minimax(new_you, new_opp, depth - 1, True, alpha, beta)
+                    else:
+                        eval_score, _ = minimax(new_you, new_opp, depth - 1, False, alpha, beta)
+                    
+                    if eval_score > max_eval:
+                        max_eval = eval_score
+                        best_move = move
+                    
+                    alpha = max(alpha, eval_score)
+                    if beta <= alpha:
+                        break
+            
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            best_move = -1
+            
+            for move in range(6):
+                if opp_state[move] > 0:
+                    new_opp, new_you, extra_turn = simulate_move(opp_state, you_state, move)
+                    
+                    if extra_turn:
+                        eval_score, _ = minimax(new_you, new_opp, depth - 1, False, alpha, beta)
+                    else:
+                        eval_score, _ = minimax(new_you, new_opp, depth - 1, True, alpha, beta)
+                    
+                    if eval_score < min_eval:
+                        min_eval = eval_score
+                        best_move = move
+                    
+                    beta = min(beta, eval_score)
+                    if beta <= alpha:
+                        break
+            
+            return min_eval, best_move
+    
+    # Quick check for immediate extra turns or big captures
+    for move in range(6):
+        if you[move] > 0:
+            new_you, new_opp, extra_turn = simulate_move(you, opponent, move)
+            
+            # Prioritize extra turns
+            if extra_turn:
+                return move
+            
+            # Check for big captures
+            capture_value = new_you[6] - you[6] - 1  # -1 for the seed we placed
+            if capture_value > 3:  # Big capture
+                return move
+    
+    # Use minimax for deeper analysis
+    _, best_move = minimax(you, opponent, 6, True, float('-inf'), float('inf'))
+    
+    # Fallback to first valid move if minimax fails
+    if best_move == -1:
+        for move in range(6):
+            if you[move] > 0:
+                return move
+    
+    return best_move
+```

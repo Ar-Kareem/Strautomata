@@ -1,0 +1,258 @@
+The strategy for this policy is:
+
+1. Always return a legal move, with a safe fallback.
+2. Use strong tactical rules first:
+   - play an immediate winning move if available,
+   - block an opponent immediate winning move when possible.
+3. Use alpha-beta negamax search with iterative deepening, so the policy searches as deeply as time allows.
+4. Use center-first move ordering, because central columns are stronger in Connect 4 and improve pruning.
+5. Use a heuristic evaluation that values:
+   - center control,
+   - 2-in-a-row and 3-in-a-row patterns,
+   - blocking opponent threats.
+
+<code>
+import time
+
+ROWS = 6
+COLS = 7
+ORDER = [3, 2, 4, 1, 5, 0, 6]
+INF = 10**9
+WIN_SCORE = 10**7
+
+
+def policy(board: list[list[int]]) -> int:
+    legal = legal_moves(board)
+    if not legal:
+        return 0  # should not happen in a valid game, but guarantees an int
+
+    # Safe fallback: center-first legal move
+    fallback = ordered_moves(board)[0]
+
+    # 1) Immediate win
+    for c in ordered_moves(board):
+        if winning_move_for(board, c, 1):
+            return c
+
+    # 2) Immediate block if opponent has exactly one winning move
+    opp_wins = [c for c in legal if winning_move_for(board, c, -1)]
+    if len(opp_wins) == 1 and opp_wins[0] in legal:
+        return opp_wins[0]
+
+    # 3) Iterative deepening alpha-beta search
+    start = time.time()
+    deadline = start + 0.92
+
+    best_move = fallback
+    depth = 1
+    tt = {}
+
+    try:
+        while True:
+            move = search_root(board, depth, deadline, tt)
+            if move is not None and move in legal:
+                best_move = move
+            depth += 1
+    except TimeoutError:
+        pass
+    except Exception:
+        # Never fail to return a legal move
+        pass
+
+    if best_move not in legal:
+        return fallback
+    return best_move
+
+
+def legal_moves(board):
+    return [c for c in range(COLS) if board[0][c] == 0]
+
+
+def ordered_moves(board):
+    legal = set(legal_moves(board))
+    return [c for c in ORDER if c in legal]
+
+
+def next_open_row(board, col):
+    for r in range(ROWS - 1, -1, -1):
+        if board[r][col] == 0:
+            return r
+    return -1
+
+
+def winning_move_for(board, col, player):
+    r = next_open_row(board, col)
+    if r == -1:
+        return False
+    return is_winning_placement(board, r, col, player)
+
+
+def is_winning_placement(board, r, c, player):
+    # Count in a line through (r, c), treating (r, c) as player's new disc.
+    for dr, dc in ((1, 0), (0, 1), (1, 1), (1, -1)):
+        cnt = 1
+        rr, cc = r + dr, c + dc
+        while 0 <= rr < ROWS and 0 <= cc < COLS and board[rr][cc] == player:
+            cnt += 1
+            rr += dr
+            cc += dc
+        rr, cc = r - dr, c - dc
+        while 0 <= rr < ROWS and 0 <= cc < COLS and board[rr][cc] == player:
+            cnt += 1
+            rr -= dr
+            cc -= dc
+        if cnt >= 4:
+            return True
+    return False
+
+
+def play_and_flip(board, col):
+    # Current player is always represented as 1.
+    # After making a move, flip signs so the next player also sees themselves as 1.
+    r = next_open_row(board, col)
+    new_board = [row[:] for row in board]
+    new_board[r][col] = 1
+    for i in range(ROWS):
+        row = new_board[i]
+        for j in range(COLS):
+            row[j] = -row[j]
+    return new_board
+
+
+def board_key(board):
+    return tuple(tuple(row) for row in board)
+
+
+def search_root(board, depth, deadline, tt):
+    if time.time() > deadline:
+        raise TimeoutError
+
+    moves = ordered_moves(board)
+    if not moves:
+        return 0
+
+    # Tactical priority at root
+    for c in moves:
+        if winning_move_for(board, c, 1):
+            return c
+
+    best_score = -INF
+    best_move = moves[0]
+    alpha = -INF
+    beta = INF
+
+    for c in moves:
+        if time.time() > deadline:
+            raise TimeoutError
+
+        child = play_and_flip(board, c)
+        score = -negamax(child, depth - 1, -beta, -alpha, deadline, tt)
+
+        if score > best_score:
+            best_score = score
+            best_move = c
+        if score > alpha:
+            alpha = score
+
+    return best_move
+
+
+def negamax(board, depth, alpha, beta, deadline, tt):
+    if time.time() > deadline:
+        raise TimeoutError
+
+    key = (board_key(board), depth)
+    if key in tt:
+        return tt[key]
+
+    moves = ordered_moves(board)
+
+    if not moves:
+        return 0  # draw
+
+    # If current player can win immediately, prefer faster wins.
+    for c in moves:
+        if winning_move_for(board, c, 1):
+            return WIN_SCORE + depth
+
+    if depth == 0:
+        val = evaluate(board)
+        tt[key] = val
+        return val
+
+    best = -INF
+
+    for c in moves:
+        child = play_and_flip(board, c)
+        score = -negamax(child, depth - 1, -beta, -alpha, deadline, tt)
+
+        if score > best:
+            best = score
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+
+    tt[key] = best
+    return best
+
+
+def evaluate(board):
+    score = 0
+
+    # Center column preference
+    center = 3
+    center_count = sum(1 for r in range(ROWS) if board[r][center] == 1)
+    opp_center_count = sum(1 for r in range(ROWS) if board[r][center] == -1)
+    score += 6 * center_count
+    score -= 6 * opp_center_count
+
+    # Evaluate all 4-windows
+    # Horizontal
+    for r in range(ROWS):
+        for c in range(COLS - 3):
+            score += eval_window([board[r][c + i] for i in range(4)])
+    # Vertical
+    for r in range(ROWS - 3):
+        for c in range(COLS):
+            score += eval_window([board[r + i][c] for i in range(4)])
+    # Diagonal down-right
+    for r in range(ROWS - 3):
+        for c in range(COLS - 3):
+            score += eval_window([board[r + i][c + i] for i in range(4)])
+    # Diagonal down-left
+    for r in range(ROWS - 3):
+        for c in range(3, COLS):
+            score += eval_window([board[r + i][c - i] for i in range(4)])
+
+    return score
+
+
+def eval_window(window):
+    own = window.count(1)
+    opp = window.count(-1)
+    empty = window.count(0)
+
+    if own == 4:
+        return 100000
+    if opp == 4:
+        return -100000
+
+    if opp == 0:
+        if own == 3 and empty == 1:
+            return 120
+        if own == 2 and empty == 2:
+            return 14
+        if own == 1 and empty == 3:
+            return 2
+
+    if own == 0:
+        if opp == 3 and empty == 1:
+            return -140
+        if opp == 2 and empty == 2:
+            return -16
+        if opp == 1 and empty == 3:
+            return -2
+
+    return 0
+</code>

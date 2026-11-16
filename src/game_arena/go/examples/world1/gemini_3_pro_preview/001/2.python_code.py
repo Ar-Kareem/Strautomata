@@ -1,0 +1,229 @@
+
+import random
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    """
+    A heuristic Go policy that prioritizes capturing, saving stones in Atari,
+    and playing good shape/opening moves.
+    """
+    BOARD_SIZE = 19
+    
+    # Weights for heuristics
+    W_CAPTURE = 100000
+    W_SAVE_ATARI = 50000
+    W_MAKE_ATARI = 1000
+    W_REDUCE_LIB = 100
+    W_EYE_FILL = -20000  # Strongly discourage filling own eyes
+    
+    # 1. Board Representation
+    # 0 = Empty, 1 = Me, 2 = Opponent
+    board = [[0] * (BOARD_SIZE + 2) for _ in range(BOARD_SIZE + 2)]
+    
+    for r, c in me:
+        board[r][c] = 1
+    for r, c in opponent:
+        board[r][c] = 2
+        
+    def is_on_board(r, c):
+        return 1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE
+    
+    deltas = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+
+    # 2. Group Analysis (Counting Liberties)
+    # Map (r,c) to a group index
+    group_map = [[-1] * (BOARD_SIZE + 2) for _ in range(BOARD_SIZE + 2)]
+    groups = [] # List of dicts: {'color': int, 'stones': set, 'liberties': set}
+    visited = set()
+    
+    for r in range(1, BOARD_SIZE + 1):
+        for c in range(1, BOARD_SIZE + 1):
+            color = board[r][c]
+            if color != 0 and (r, c) not in visited:
+                # Flood fill to find group
+                gid = len(groups)
+                stack = [(r, c)]
+                g_stones = set()
+                g_libs = set()
+                g_stones.add((r, c))
+                visited.add((r, c))
+                
+                # Separate stack processing to ensure gid mapping
+                process_stack = [(r, c)]
+                
+                while process_stack:
+                    curr_r, curr_c = process_stack.pop()
+                    group_map[curr_r][curr_c] = gid
+                    
+                    for dr, dc in deltas:
+                        nr, nc = curr_r + dr, curr_c + dc
+                        if is_on_board(nr, nc):
+                            n_color = board[nr][nc]
+                            if n_color == 0:
+                                g_libs.add((nr, nc))
+                            elif n_color == color and (nr, nc) not in g_stones:
+                                g_stones.add((nr, nc))
+                                visited.add((nr, nc))
+                                process_stack.append((nr, nc))
+                                
+                groups.append({
+                    'id': gid,
+                    'color': color,
+                    'stones': g_stones,
+                    'liberties': g_libs
+                })
+
+    # 3. Candidate Generation
+    # Consider liberties of all groups, neighbors of stones, and star points.
+    candidates = set()
+    
+    # Add liberties (Urgent points)
+    for g in groups:
+        candidates.update(g['liberties'])
+        
+    # Star points (Opening strategy)
+    star_points = [
+        (4,4), (4,16), (16,4), (16,16), # Hoshis
+        (3,3), (3,17), (17,3), (17,17), # Sansans
+        (3,4), (4,3), (3,16), (4,17), (16,3), (17,4), (16,17), (17,16), # Komokus
+        (10,10) # Tengen
+    ]
+    for sp in star_points:
+        if board[sp[0]][sp[1]] == 0:
+            candidates.add(sp)
+
+    # Local shape (Neighbors of existing stones)
+    # Limiting this check if board is too full to save time, 
+    # but 19x19 usually handles O(N) fine.
+    for r in range(1, BOARD_SIZE + 1):
+        for c in range(1, BOARD_SIZE + 1):
+            if board[r][c] != 0:
+                for dr, dc in deltas:
+                    nr, nc = r + dr, c + dc
+                    if is_on_board(nr, nc) and board[nr][nc] == 0:
+                        candidates.add((nr, nc))
+    
+    # Fallback to random empty if candidates empty
+    if not candidates:
+         for r in range(1, BOARD_SIZE + 1):
+            for c in range(1, BOARD_SIZE + 1):
+                if board[r][c] == 0:
+                    candidates.add((r, c))
+
+    # 4. Move Evaluation
+    best_move = (0, 0)
+    best_score = -float('inf')
+
+    for (r, c) in candidates:
+        if board[r][c] != 0: continue # Should be empty
+        
+        score = random.random() * 5.0 # Add Jitter
+        
+        # --- Heuristic: Position ---
+        # Prefer 3rd and 4th lines
+        d_edge = min(r-1, 19-r, c-1, 19-c)
+        if d_edge == 2 or d_edge == 3: score += 20
+        elif d_edge < 2: score -= 5
+        
+        # --- Logic: Analyze Move Consequences ---
+        
+        opp_groups_adj = set()
+        my_groups_adj = set()
+        
+        # Check neighbors
+        for dr, dc in deltas:
+            nr, nc = r + dr, c + dc
+            if is_on_board(nr, nc):
+                nbr_color = board[nr][nc]
+                if nbr_color != 0:
+                    gid = group_map[nr][nc]
+                    if nbr_color == 2:
+                        opp_groups_adj.add(gid)
+                    else:
+                        my_groups_adj.add(gid)
+
+        # Check Capture (Offense)
+        captured_stones = 0
+        is_capture = False
+        
+        for gid in opp_groups_adj:
+            g = groups[gid]
+            # If we fill the last liberty
+            if len(g['liberties']) == 1 and (r, c) in g['liberties']:
+                captured_stones += len(g['stones'])
+                is_capture = True
+        
+        if is_capture:
+            score += W_CAPTURE * captured_stones
+        
+        # Check Legality (Suicide) & Defense
+        # We need to approximate the liberties of the NEW stone/group at (r,c)
+        if not is_capture:
+            # If not capturing, we must have liberties remaining.
+            # Liberties = (Direct empty neighbors) + (Liberties of merged friendly groups) - (r,c itself)
+            
+            potential_libs = set()
+            
+            # Direct empty neighbors
+            for dr, dc in deltas:
+                nr, nc = r + dr, c + dc
+                if is_on_board(nr, nc) and board[nr][nc] == 0:
+                    potential_libs.add((nr, nc))
+            
+            # Connected friendly groups
+            merged_atari = False # Are we connecting to a group in atari?
+            
+            for gid in my_groups_adj:
+                g = groups[gid]
+                potential_libs.update(g['liberties'])
+                if len(g['liberties']) == 1:
+                    merged_atari = True
+            
+            # Remove self
+            if (r, c) in potential_libs:
+                potential_libs.remove((r, c))
+            
+            lib_count = len(potential_libs)
+            
+            # SUICIDE CHECK
+            if lib_count == 0:
+                continue # Move is illegal (Suicide)
+            
+            # Defense: Save Atari
+            if merged_atari:
+                if lib_count > 1:
+                    score += W_SAVE_ATARI
+                else: 
+                    # Extending only preserves 1 liberty (bad shape/ladder)
+                    score -= 50
+            
+            # Eye Check: Do not fill single point eyes
+            # If all neighbors are friendly (and borders count as friendly for corners)
+            is_eye = True
+            for dr, dc in deltas:
+                nr, nc = r + dr, c + dc
+                if is_on_board(nr, nc):
+                    if board[nr][nc] != 1:
+                        is_eye = False
+                        break
+            if is_eye:
+                score += W_EYE_FILL
+                
+            # Bonus for increasing liberties
+            score += lib_count * 2
+
+        # Offense: Reduce Opponent Liberties (Atari / Squeeze)
+        if not is_capture:
+            for gid in opp_groups_adj:
+                g = groups[gid]
+                if (r, c) in g['liberties']:
+                    rem_libs = len(g['liberties']) - 1
+                    if rem_libs == 1:
+                        score += W_MAKE_ATARI
+                    elif rem_libs > 1:
+                        score += W_REDUCE_LIB
+
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+            
+    return best_move

@@ -1,0 +1,181 @@
+ The strategy for this policy is to use **iterative deepening alpha-beta search** with **negamax** framework to efficiently explore the game tree within the 1-second time limit. The evaluation function combines:
+
+1. **Positional weights**: Corner squares (a1, h1, a8, h8) are heavily weighted (120), while X-squares (b2, g2, b7, g7) and C-squares (a2, b1, etc.) are penalized to avoid giving up corners.
+2. **Mobility**: The relative difference in available moves between players, scaled to prioritize having more options than the opponent in the midgame.
+3. **Move ordering**: Moves are sorted to prioritize corners and edge squares while deprioritizing dangerous squares adjacent to corners, improving alpha-beta pruning efficiency.
+
+The algorithm searches to increasing depths until the time limit (0.95s) is approached, ensuring it always returns the best move found at the deepest completed depth. In the endgame (few empty squares), the search naturally extends deeper due to reduced branching factor, approaching optimal play.
+
+<code>
+import numpy as np
+import time
+
+DIRECTIONS = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+CORNERS = {(0, 0), (0, 7), (7, 0), (7, 7)}
+DANGEROUS = {(0, 1), (1, 0), (0, 6), (1, 7), (6, 0), (7, 1), (6, 7), (7, 6),
+             (1, 1), (1, 6), (6, 1), (6, 6)}
+
+WEIGHTS = np.array([
+    [120, -20,  20,   5,   5,  20, -20, 120],
+    [-20, -40,  -5,  -5,  -5,  -5, -40, -20],
+    [ 20,  -5,  15,   3,   3,  15,  -5,  20],
+    [  5,  -5,   3,   3,   3,   3,  -5,   5],
+    [  5,  -5,   3,   3,   3,   3,  -5,   5],
+    [ 20,  -5,  15,   3,   3,  15,  -5,  20],
+    [-20, -40,  -5,  -5,  -5,  -5, -40, -20],
+    [120, -20,  20,   5,   5,  20, -20, 120]
+])
+
+def get_moves(player, opponent):
+    """Generate list of legal moves as (r, c) tuples."""
+    moves = []
+    empty = (player == 0) & (opponent == 0)
+    for r in range(8):
+        for c in range(8):
+            if empty[r, c]:
+                valid = False
+                for dr, dc in DIRECTIONS:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 8 and 0 <= nc < 8 and opponent[nr, nc]:
+                        # Walk down this direction
+                        while 0 <= nr < 8 and 0 <= nc < 8 and opponent[nr, nc]:
+                            nr += dr
+                            nc += dc
+                        if 0 <= nr < 8 and 0 <= nc < 8 and player[nr, nc]:
+                            valid = True
+                            break
+                if valid:
+                    moves.append((r, c))
+    return moves
+
+def apply_move(player, opponent, r, c):
+    """Apply move and return (new_opponent_board, new_player_board) with sides swapped."""
+    new_p = player.copy()
+    new_o = opponent.copy()
+    new_p[r, c] = 1
+    for dr, dc in DIRECTIONS:
+        nr, nc = r + dr, c + dc
+        to_flip = []
+        while 0 <= nr < 8 and 0 <= nc < 8 and opponent[nr, nc]:
+            to_flip.append((nr, nc))
+            nr += dr
+            nc += dc
+        if to_flip and 0 <= nr < 8 and 0 <= nc < 8 and player[nr, nc]:
+            for fr, fc in to_flip:
+                new_p[fr, fc] = 1
+                new_o[fr, fc] = 0
+    return new_o, new_p
+
+def evaluate(player, opponent):
+    """Static evaluation from player's perspective."""
+    # Positional score
+    score = np.sum(WEIGHTS * (player - opponent))
+    
+    # Mobility component
+    pm = len(get_moves(player, opponent))
+    om = len(get_moves(opponent, player))
+    if pm + om > 0:
+        score += 20 * (pm - om) / (pm + om)
+    return score
+
+def negamax(player, opponent, depth, alpha, beta, start_time, time_limit):
+    """Negamax search with alpha-beta pruning."""
+    if time.time() - start_time > time_limit:
+        raise TimeoutError
+    
+    moves = get_moves(player, opponent)
+    
+    if not moves:
+        # Check pass or game over
+        opp_moves = get_moves(opponent, player)
+        if not opp_moves:
+            # Game over
+            diff = np.sum(player) - np.sum(opponent)
+            return 10000 if diff > 0 else -10000 if diff < 0 else 0
+        else:
+            # Pass turn
+            return -negamax(opponent, player, depth - 1, -beta, -alpha, start_time, time_limit)
+    
+    if depth == 0:
+        return evaluate(player, opponent)
+    
+    # Move ordering: corners best, dangerous squares worst
+    def priority(m):
+        if m in CORNERS:
+            return 100
+        if m in DANGEROUS:
+            return -50
+        if m[0] in [0, 7] or m[1] in [0, 7]:
+            return 10
+        return 0
+    
+    moves.sort(key=priority, reverse=True)
+    
+    for move in moves:
+        new_o, new_p = apply_move(player, opponent, move[0], move[1])
+        score = -negamax(new_p, new_o, depth - 1, -beta, -alpha, start_time, time_limit)
+        if score >= beta:
+            return beta
+        if score > alpha:
+            alpha = score
+    return alpha
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    start = time.time()
+    time_limit = 0.95
+    
+    moves = get_moves(you, opponent)
+    if not moves:
+        return "pass"
+    
+    if len(moves) == 1:
+        r, c = moves[0]
+        return chr(ord('a') + c) + str(r + 1)
+    
+    best_move = moves[0]
+    depth = 1
+    
+    # Iterative deepening
+    while True:
+        try:
+            if time.time() - start > time_limit:
+                break
+            
+            best_score = -float('inf')
+            current_best = moves[0]
+            
+            # Sort for this iteration
+            def priority(m):
+                if m in CORNERS:
+                    return 100
+                if m in DANGEROUS:
+                    return -50
+                if m[0] in [0, 7] or m[1] in [0, 7]:
+                    return 10
+                return 0
+            
+            sorted_moves = sorted(moves, key=priority, reverse=True)
+            alpha, beta = -float('inf'), float('inf')
+            
+            for move in sorted_moves:
+                if time.time() - start > time_limit:
+                    raise TimeoutError
+                
+                new_o, new_p = apply_move(you, opponent, move[0], move[1])
+                score = -negamax(new_p, new_o, depth - 1, -beta, -alpha, start, time_limit)
+                
+                if score > best_score:
+                    best_score = score
+                    current_best = move
+                if score > alpha:
+                    alpha = score
+            
+            best_move = current_best
+            depth += 1
+            
+        except TimeoutError:
+            break
+    
+    r, c = best_move
+    return chr(ord('a') + c) + str(r + 1)
+</code>

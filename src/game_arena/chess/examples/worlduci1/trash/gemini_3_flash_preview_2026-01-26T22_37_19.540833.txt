@@ -1,0 +1,104 @@
+The strategy for this policy is to use a minimax search with alpha-beta pruning and a material-based evaluation function. It utilizes the `chess` library to handle move generation, legal validation, and game state management. The evaluation function assigns weights to pieces (Pawn: 1, Knight: 3, Bishop: 3, Rook: 5, Queen: 9) and includes a small bonus for central control to guide the AI toward stronger positions in the absence of immediate material gains.
+
+<code>
+import chess
+
+def evaluate_board(board):
+    if board.is_checkmate():
+        if board.turn:
+            return -9999
+        else:
+            return 9999
+    if board.is_stalemate() or board.is_insufficient_material():
+        return 0
+
+    piece_values = {
+        chess.PAWN: 100,
+        chess.KNIGHT: 320,
+        chess.BISHOP: 330,
+        chess.ROOK: 500,
+        chess.QUEEN: 900,
+        chess.KING: 20000
+    }
+    
+    score = 0
+    for sq in chess.SQUARES:
+        piece = board.piece_at(sq)
+        if piece:
+            val = piece_values.get(piece.piece_type, 0)
+            # Simple central control bonus
+            if sq in [chess.D4, chess.D5, chess.E4, chess.E5]:
+                val += 10
+            
+            if piece.color == chess.WHITE:
+                score += val
+            else:
+                score -= val
+    return score
+
+def minimax(board, depth, alpha, beta, maximizing_player):
+    if depth == 0 or board.is_game_over():
+        return evaluate_board(board)
+
+    if maximizing_player:
+        max_eval = -100000
+        for move in board.legal_moves:
+            board.push(move)
+            eval = minimax(board, depth - 1, alpha, beta, False)
+            board.pop()
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = 100000
+        for move in board.legal_moves:
+            board.push(move)
+            eval = minimax(board, depth - 1, alpha, beta, True)
+            board.pop()
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    board = chess.Board(None)
+    
+    # Setup board from dictionary
+    color_map = {'w': chess.WHITE, 'b': chess.BLACK}
+    piece_map = {'P': chess.PAWN, 'N': chess.KNIGHT, 'B': chess.BISHOP, 'R': chess.ROOK, 'Q': chess.QUEEN, 'K': chess.KING}
+    
+    for sq_name, p_code in pieces.items():
+        color = color_map[p_code[0]]
+        ptype = piece_map[p_code[1]]
+        board.set_piece_at(chess.SQUARE_NAMES.index(sq_name), chess.Piece(ptype, color))
+    
+    board.turn = chess.WHITE if to_play == 'white' else chess.BLACK
+    
+    best_move = None
+    if board.turn == chess.WHITE:
+        best_val = -100000
+        for move in board.legal_moves:
+            board.push(move)
+            val = minimax(board, 2, -100000, 100000, False)
+            board.pop()
+            if val > best_val:
+                best_val = val
+                best_move = move
+    else:
+        best_val = 100000
+        for move in board.legal_moves:
+            board.push(move)
+            val = minimax(board, 2, -100000, 100000, True)
+            board.pop()
+            if val < best_val:
+                best_val = val
+                best_move = move
+
+    if best_move is None:
+        return list(board.legal_moves)[0].uci()
+    
+    return best_move.uci()
+</code>

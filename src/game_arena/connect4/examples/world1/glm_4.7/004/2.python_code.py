@@ -1,0 +1,232 @@
+
+import math
+import random
+import time
+
+def policy(board: list[list[int]]) -> int:
+    """
+    Connect 4 Policy using Minimax with Alpha-Beta Pruning.
+    Optimized for speed with efficient win checking and move ordering.
+    """
+    
+    # Configuration
+    ROW_COUNT = 6
+    COLUMN_COUNT = 7
+    PLAYER = 1
+    OPPONENT = -1
+    EMPTY = 0
+    DEPTH_LIMIT = 5
+    TIME_LIMIT = 0.95
+    
+    start_time = time.time()
+    
+    # Center preference array for move ordering (indices 0-6)
+    # Columns closer to center (3) are preferred
+    CENTER_PREFERENCE = [abs(c - COLUMN_COUNT // 2) for c in range(COLUMN_COUNT)]
+
+    def get_valid_locations(b):
+        """Returns list of column indices that are not full."""
+        return [c for c in range(COLUMN_COUNT) if b[0][c] == EMPTY]
+
+    def drop_piece(b, col, piece):
+        """Drops a piece in the lowest empty row of the column. Returns row index."""
+        for r in range(ROW_COUNT - 1, -1, -1):
+            if b[r][col] == EMPTY:
+                b[r][col] = piece
+                return r
+        return -1
+
+    def check_win_at(b, r, c, piece):
+        """
+        Efficiently checks if placing a piece at (r, c) creates a connect 4.
+        Only checks lines passing through (r, c).
+        """
+        # Horizontal
+        count = 0
+        for i in range(max(0, c-3), min(COLUMN_COUNT, c+4)):
+            if b[r][i] == piece:
+                count += 1
+                if count == 4: return True
+            else: count = 0
+            
+        # Vertical
+        count = 0
+        for i in range(max(0, r-3), min(ROW_COUNT, r+4)):
+            if b[i][c] == piece:
+                count += 1
+                if count == 4: return True
+            else: count = 0
+            
+        # Positive Diagonal (\)
+        count = 0
+        for i in range(-3, 4):
+            if 0 <= r+i < ROW_COUNT and 0 <= c+i < COLUMN_COUNT:
+                if b[r+i][c+i] == piece:
+                    count += 1
+                    if count == 4: return True
+                else: count = 0
+        
+        # Negative Diagonal (/)
+        count = 0
+        for i in range(-3, 4):
+            if 0 <= r-i < ROW_COUNT and 0 <= c+i < COLUMN_COUNT:
+                if b[r-i][c+i] == piece:
+                    count += 1
+                    if count == 4: return True
+                else: count = 0
+        return False
+
+    def evaluate_window(window, piece):
+        """Scores a window of 4 cells based on piece configuration."""
+        score = 0
+        opp_piece = PLAYER if piece == OPPONENT else OPPONENT
+        count_piece = window.count(piece)
+        count_empty = window.count(EMPTY)
+        count_opp = window.count(opp_piece)
+
+        if count_piece == 4:
+            score += 100
+        elif count_piece == 3 and count_empty == 1:
+            score += 5
+        elif count_piece == 2 and count_empty == 2:
+            score += 2
+        
+        if count_opp == 3 and count_empty == 1:
+            score -= 4
+        
+        return score
+
+    def score_position(b, piece):
+        """Heuristic evaluation of the board state."""
+        score = 0
+        center_col = COLUMN_COUNT // 2
+        center_array = [row[center_col] for row in b]
+        score += center_array.count(piece) * 3
+        
+        # Horizontal
+        for r in range(ROW_COUNT):
+            row = b[r]
+            for c in range(COLUMN_COUNT - 3):
+                window = row[c:c+4]
+                score += evaluate_window(window, piece)
+        
+        # Vertical
+        for c in range(COLUMN_COUNT):
+            col = [b[r][c] for r in range(ROW_COUNT)]
+            for r in range(ROW_COUNT - 3):
+                window = col[r:r+4]
+                score += evaluate_window(window, piece)
+        
+        # Positive Diagonal
+        for r in range(ROW_COUNT - 3):
+            for c in range(COLUMN_COUNT - 3):
+                window = [b[r+i][c+i] for i in range(4)]
+                score += evaluate_window(window, piece)
+        
+        # Negative Diagonal
+        for r in range(ROW_COUNT - 3):
+            for c in range(COLUMN_COUNT - 3):
+                window = [b[r+3-i][c+i] for i in range(4)]
+                score += evaluate_window(window, piece)
+                
+        return score
+
+    def minimax(b, depth, alpha, beta, maximizingPlayer):
+        valid_locations = get_valid_locations(b)
+        
+        # Timeout check: return heuristic if time is up
+        if time.time() - start_time > TIME_LIMIT:
+            return score_position(b, PLAYER) if maximizingPlayer else score_position(b, OPPONENT)
+
+        if len(valid_locations) == 0:
+            return 0 # Draw
+
+        if maximizingPlayer:
+            value = -math.inf
+            # Sort moves by center preference to optimize pruning
+            valid_locations.sort(key=lambda c: CENTER_PREFERENCE[c])
+            
+            for col in valid_locations:
+                row = drop_piece(b, col, PLAYER)
+                
+                # Immediate win check
+                if check_win_at(b, row, col, PLAYER):
+                    b[row][col] = EMPTY
+                    return math.inf
+                
+                if depth == 0:
+                    new_score = score_position(b, PLAYER)
+                else:
+                    new_score = minimax(b, depth-1, alpha, beta, False)
+                
+                b[row][col] = EMPTY
+                value = max(value, new_score)
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break
+            return value
+        else:
+            value = math.inf
+            valid_locations.sort(key=lambda c: CENTER_PREFERENCE[c])
+            
+            for col in valid_locations:
+                row = drop_piece(b, col, OPPONENT)
+                
+                # Immediate win check
+                if check_win_at(b, row, col, OPPONENT):
+                    b[row][col] = EMPTY
+                    return -math.inf
+                
+                if depth == 0:
+                    new_score = score_position(b, PLAYER)
+                else:
+                    new_score = minimax(b, depth-1, alpha, beta, True)
+                
+                b[row][col] = EMPTY
+                value = min(value, new_score)
+                beta = min(beta, value)
+                if alpha >= beta:
+                    break
+            return value
+
+    # --- Main Policy Logic ---
+    
+    valid_moves = get_valid_locations(board)
+    
+    # Fallback for empty board (should not happen in standard game flow, but safe)
+    if not valid_moves:
+        return 3 
+
+    # 1. Check for immediate winning move
+    for col in valid_moves:
+        row = drop_piece(board, col, PLAYER)
+        if check_win_at(board, row, col, PLAYER):
+            board[row][col] = EMPTY
+            return col
+        board[row][col] = EMPTY
+
+    # 2. Check for immediate blocking move (opponent win)
+    for col in valid_moves:
+        row = drop_piece(board, col, OPPONENT)
+        if check_win_at(board, row, col, OPPONENT):
+            board[row][col] = EMPTY
+            return col
+        board[row][col] = EMPTY
+        
+    # 3. Execute Minimax Search
+    best_score = -math.inf
+    best_col = random.choice(valid_moves) # Default to random if search fails
+    
+    # Sort valid moves to try center first
+    valid_moves.sort(key=lambda c: CENTER_PREFERENCE[c])
+    
+    for col in valid_moves:
+        row = drop_piece(board, col, PLAYER)
+        score = minimax(board, DEPTH_LIMIT - 1, -math.inf, math.inf, False)
+        board[row][col] = EMPTY # Undo move
+        
+        if score > best_score:
+            best_score = score
+            best_col = col
+            
+    return best_col

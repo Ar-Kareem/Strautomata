@@ -1,0 +1,88 @@
+
+import numpy as np
+import math
+
+# Directions for queen-like movement
+DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1),
+        (-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+def in_bounds(r, c, n=6):
+    return 0 <= r < n and 0 <= c < n
+
+def get_moves(board, player):
+    moves = []
+    n = board.shape[0]
+    positions = np.argwhere(board == player)
+    for fr, fc in positions:
+        for dr, dc in DIRS:
+            r, c = fr + dr, fc + dc
+            while in_bounds(r, c, n) and board[r, c] == 0:
+                # Landing square is (r, c)
+                # Generate arrow shots from landing
+                for adr, adc in DIRS:
+                    ar, ac = r + adr, c + adc
+                    while in_bounds(ar, ac, n) and (board[ar, ac] == 0 or (ar == fr and ac == fc)):
+                        moves.append((fr, fc, r, c, ar, ac))
+                        ar += adr
+                        ac += adc
+                r += dr
+                c += dc
+    return moves
+
+def apply_move(board, move, player):
+    fr, fc, tr, tc, ar, ac = move
+    new_board = board.copy()
+    new_board[fr, fc] = 0
+    new_board[tr, tc] = player
+    new_board[ar, ac] = -1
+    return new_board
+
+def mobility_estimate(board, player):
+    n = board.shape[0]
+    positions = np.argwhere(board == player)
+    count = 0
+    for r, c in positions:
+        for dr, dc in DIRS:
+            rr, cc = r + dr, c + dc
+            while in_bounds(rr, cc, n) and board[rr, cc] == 0:
+                count += 1
+                rr += dr
+                cc += dc
+    return count
+
+def evaluate(board):
+    return mobility_estimate(board, 1) - mobility_estimate(board, 2)
+
+def policy(board) -> str:
+    moves = get_moves(board, 1)
+    if not moves:
+        # Fallback (should not happen if called properly)
+        return "0,0:0,0:0,0"
+
+    best_move = moves[0]
+    best_val = -math.inf
+
+    for mv in moves:
+        b2 = apply_move(board, mv, 1)
+        opp_moves = get_moves(b2, 2)
+
+        if not opp_moves:
+            val = math.inf  # Winning move
+        else:
+            val = math.inf
+            # Minimize over opponent's responses
+            for omv in opp_moves:
+                b3 = apply_move(b2, omv, 2)
+                score = evaluate(b3)
+                if score < val:
+                    val = score
+                # Alpha-beta pruning
+                if val <= best_val:
+                    break
+
+        if val > best_val:
+            best_val = val
+            best_move = mv
+
+    fr, fc, tr, tc, ar, ac = best_move
+    return f"{fr},{fc}:{tr},{tc}:{ar},{ac}"

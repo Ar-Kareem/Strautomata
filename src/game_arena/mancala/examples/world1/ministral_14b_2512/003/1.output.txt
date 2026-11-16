@@ -1,0 +1,904 @@
+<thinking>
+Okay, I need to implement a move-selection policy for the game Kalah. The goal is to write a Python function called `policy` that takes the current state of the board (two lists representing the player's and opponent's houses and stores) and returns a legal move (an index `i` of one of the player's non-empty houses).
+
+First, let's understand the game mechanics clearly:
+1. The board has 6 houses per side and 1 store per side, totaling 7 elements per list.
+2. On a turn, the player must choose a non-empty house (`you[i] > 0` for `0 <= i <= 5`).
+3. The seeds from that house are distributed in a clockwise manner, starting from the next house (`you[i+1]`), going through the player's store (`you[6]`), then the opponent's houses (`opponent[0]` through `opponent[5]`), and finally back to the player's houses (`you[0]` through `you[5]`), skipping the opponent's store (`opponent[6]`).
+4. Special effects:
+   - If the last seed lands in the player's store (`you[6]`), the player gets an extra move.
+   - If the last seed lands in an empty player's house (`you[i]` where `0 <= i <= 5`) and the opposite opponent's house (`opponent[5 - i]`) is non-empty, then all seeds from `you[i]` and `opponent[5 - i]` are captured and moved to the player's store (`you[6]`).
+5. The game ends when one player has no seeds in all of their houses (indices `0..5` are all zero). The remaining seeds are moved to the player's store, and the player with the higher store total wins.
+
+### Approach to the Policy:
+Since this is a competitive game, I need to think about how to maximize my chances of winning. A good policy should consider:
+1. **Immediate Captures**: Choosing a move that will trigger a capture, as this can significantly reduce the opponent's seeds while increasing mine.
+2. **Extra Move**: Choosing a move that will land the last seed in my store, giving me an extra move.
+3. **Balancing the Board**: Avoiding moves that leave the opponent with a large advantage or that are too predictable.
+4. **Endgame Strategy**: When the game is near the end, trying to maximize the seeds in my store.
+
+### Simple Policy Ideas:
+1. **Random Move**: Just pick a random non-empty house. This is simple but not competitive.
+2. **Greedy Move**: Pick the house with the most seeds to maximize the immediate distribution. This might not account for captures or extra moves.
+3. **Capture Move**: Prioritize moves that will trigger a capture. For example, if I can distribute seeds such that the last seed lands in an empty house and the opposite opponent's house is non-empty, I should do that.
+4. **Extra Move**: Prioritize moves that will land the last seed in my store to get an extra move.
+5. **Balanced Move**: Distribute seeds evenly to avoid giving the opponent a large advantage in the next move.
+
+### Combining Ideas:
+A good policy might combine some of these ideas. For example:
+- First, check if there's a move that will trigger a capture. If so, prioritize that.
+- Then, check if there's a move that will land the last seed in my store to get an extra move.
+- If neither is possible, pick a move that distributes seeds in a way that doesn't give the opponent too many seeds in a single house.
+- Finally, if all else fails, pick a random move.
+
+### Implementation Steps:
+1. **Legal Moves**: Identify all non-empty houses (indices `0..5`) in `you`.
+2. **Simulate Moves**: For each legal move, simulate the distribution of seeds and check for captures or extra moves.
+3. **Evaluate Moves**: Assign a score to each move based on the potential outcomes (captures, extra moves, etc.).
+4. **Select Best Move**: Choose the move with the highest score. If no move has a clear advantage, fall back to a simpler strategy like random or balanced.
+
+### Simulation of a Move:
+To simulate a move, I need to:
+- Take the seeds from `you[i]`.
+- Distribute them starting from `you[i+1]` (mod 7 for the store).
+- For each seed, place it in the next house/store, wrapping around as needed.
+- After placing all seeds, check the last position for captures or extra moves.
+
+### Capture Condition:
+- The last seed lands in an empty `you[i]` (where `0 <= i <= 5`).
+- The opposite `opponent[5 - i]` has seeds (`opponent[5 - i] > 0`).
+- Then, capture all seeds from `you[i]` and `opponent[5 - i]`, and move them to `you[6]`.
+
+### Extra Move Condition:
+- The last seed lands in `you[6]` (the store).
+
+### Evaluation Metrics:
+- **Capture Value**: High value if the move triggers a capture, as it reduces the opponent's seeds and increases mine.
+- **Extra Move Value**: High value if the move gives an extra move, as it extends my turn.
+- **Balanced Distribution**: Avoid moves that leave the opponent with a house that has many seeds, as they can exploit that in their next move.
+- **Store Difference**: Try to maximize the difference between my store and the opponent's store.
+
+### Edge Cases:
+- If all houses have 1 seed, distributing from any house will give the opponent a chance to capture.
+- If the opponent has only one house with seeds, and I can capture that, it's a good move.
+- If I'm about to win (i.e., opponent has no seeds left), I should move all seeds to my store to maximize my advantage.
+
+### Policy Implementation:
+Here's a plan for the policy:
+1. **Check for Captures**: For each legal move, simulate the distribution and see if a capture is possible. If yes, prioritize moves that trigger captures.
+2. **Check for Extra Moves**: If no capture is possible, check for moves that give an extra move (last seed in my store).
+3. **Balanced Move**: If neither is possible, choose a move that distributes seeds in a balanced way, avoiding giving the opponent too many seeds in a single house.
+4. **Random Move**: If all else fails, pick a random move.
+
+But how to quantify "balanced"? Maybe I can look at the opponent's houses and avoid moves that would leave them with a house that has many seeds after my move.
+
+Alternatively, I can use a simple heuristic like:
+- Prefer moves that trigger captures.
+- If no capture, prefer moves that give an extra move.
+- If neither, prefer moves that distribute seeds to my houses more than the opponent's (to keep seeds on my side).
+- If still no clear choice, pick a random move.
+
+### Simulating a Move:
+Let's write a helper function to simulate a move and return the resulting board state and whether a capture or extra move occurred.
+
+```python
+def simulate_move(you, opponent, i):
+    seeds = you[i]
+    you[i] = 0
+    # Distribute seeds
+    for j in range(1, seeds + 1):
+        # Calculate next position
+        next_pos = (i + j) % 7
+        if next_pos == 6:  # opponent's store is skipped
+            next_pos = (next_pos + 1) % 7
+        # Place seed
+        if next_pos < 6:
+            you[next_pos] += 1
+        else:
+            you[6] += 1
+    # Check for capture
+    last_pos = (i + seeds) % 7
+    if last_pos < 6 and you[last_pos] == 1:  # last seed lands in empty house (now has 1)
+        opposite_house = opponent[5 - last_pos]
+        if opposite_house > 0:  # capture possible
+            # Capture all seeds from you[last_pos] and opponent[5 - last_pos]
+            captured_seeds = you[last_pos] + opposite_house
+            you[6] += captured_seeds
+            you[last_pos] = 0
+            opponent[5 - last_pos] = 0
+            return you, opponent, True, False  # capture occurred
+    # Check for extra move
+    if last_pos == 6:  # last seed lands in my store
+        return you, opponent, False, True  # extra move
+    return you, opponent, False, False
+```
+
+Wait, the above simulation might not be correct. Let me think again about the distribution.
+
+The correct distribution is:
+1. Start from `you[i+1]` (mod 7 for the store).
+2. For each seed, place it in the next house/store in the order: `you[i+1]` to `you[5]`, then `you[6]`, then `opponent[0]` to `opponent[5]`, then back to `you[0]` to `you[5]`, etc.
+
+But the order is fixed: you's houses in order, then your store, then opponent's houses in order, then back to you's houses, etc.
+
+So the sequence is: you[i+1], you[i+2], ..., you[5], you[6], opponent[0], opponent[1], ..., opponent[5], you[0], you[1], ..., etc.
+
+But the opponent's store is skipped, so the sequence is:
+you[i+1], you[i+2], ..., you[5], you[6], opponent[0], opponent[1], ..., opponent[5], you[0], you[1], ..., etc.
+
+But if you[i] + 1 > 6, then the next positions wrap around.
+
+For example, if you have 6 seeds in you[0], then the distribution is:
+you[1] += 1, you[2] += 1, ..., you[5] += 1, you[6] += 1 (last seed lands in store, extra move).
+
+If you have 7 seeds in you[0], then the distribution is:
+you[1] += 1, ..., you[6] += 1 (now you have 1 in your store), opponent[0] += 1, ..., opponent[5] += 1, you[0] += 1, etc.
+
+But since the opponent's store is skipped, the sequence is:
+you[i+1], you[i+2], ..., you[5], you[6], opponent[0], opponent[1], ..., opponent[5], you[0], you[1], ..., etc.
+
+So the total number of positions is 12 (6 you + 1 store + 5 opponent), but since the sequence is circular, we can compute the next position as (i + j) % 12, but we need to map 0..11 to the correct houses/stores:
+- 0..5: you[0]..you[5]
+- 6: you[6] (store)
+- 7..12: opponent[0]..opponent[5] (but since we have only 6 opponent houses, 7..12 corresponds to opponent[0]..opponent[5], but 12 mod 12 is 0, which would be you[0], but we stop after opponent[5] because the next is you[0] again.
+
+Wait, the correct sequence is:
+1. you[i+1] to you[5] (that's 5 - i houses)
+2. you[6] (store)
+3. opponent[0] to opponent[5] (6 houses)
+4. you[0] to you[5] (6 houses)
+... and so on, until all seeds are placed.
+
+But the opponent's store is never included in the distribution.
+
+So the total number of positions is 12 (6 you + 6 opponent), but the store is only one position (you[6]).
+
+But the sequence is:
+you[i+1], you[i+2], ..., you[5], you[6], opponent[0], opponent[1], ..., opponent[5], you[0], you[1], ..., etc.
+
+So the positions are:
+- you[i+1] to you[5]: 5 - i positions
+- you[6]: 1 position
+- opponent[0] to opponent[5]: 6 positions
+- you[0] to you[5]: 6 positions
+... and so on.
+
+But since the sequence is circular, we can compute the next position as follows:
+- The first 6 positions after you[i] are you[i+1] to you[6] (but you[6] is the store, so it's you[i+1] to you[5], then you[6]).
+Wait, no. The sequence is:
+1. you[i+1] to you[5] (if i+1 <= 5)
+2. you[6]
+3. opponent[0] to opponent[5]
+4. you[0] to you[5]
+... and so on.
+
+But if you[i] is 0, then the next positions are just you[i+1], etc.
+
+But to generalize, the sequence is:
+you[i+1], you[i+2], ..., you[5], you[6], opponent[0], opponent[1], ..., opponent[5], you[0], you[1], ..., etc.
+
+So the positions can be mapped as follows:
+- For j = 1 to seeds:
+   - If i + j <= 5: you[i + j]
+   - If i + j == 6: you[6]
+   - If i + j > 6 and i + j <= 11: opponent[i + j - 7] (since opponent has 6 houses, indices 0..5)
+   - If i + j > 11: you[i + j - 12] (since after opponent[5], we loop back to you[0])
+
+But this seems complicated. Maybe it's easier to think of the sequence as a list of positions in order:
+you[0], you[1], ..., you[5], you[6], opponent[0], opponent[1], ..., opponent[5], you[0], you[1], ..., etc.
+
+But the starting point is you[i], so the next position is you[(i+1) % 6] if i+1 <=5, but if i+1 ==6, then it's you[6], and then opponent[0], etc.
+
+Wait, no. The sequence is:
+you[i], then you[i+1], ..., you[5], you[6], opponent[0], ..., opponent[5], you[0], ..., etc.
+
+But the move is to take all seeds from you[i], so the first seed goes to you[i+1], etc.
+
+So the positions are:
+you[i+1], you[i+2], ..., you[5], you[6], opponent[0], opponent[1], ..., opponent[5], you[0], you[1], ..., etc.
+
+So the mapping is:
+- For j = 1 to seeds:
+   - pos = (i + j) % 12
+   - If pos < 6: you[pos]
+   - If pos == 6: you[6]
+   - If pos > 6: opponent[pos - 7]
+
+But let's verify:
+- i is in 0..5
+- j is in 1..seeds
+- pos = (i + j) % 12
+   - if pos < 6: you[pos]
+   - if pos == 6: you[6]
+   - if pos > 6 and pos <= 11: opponent[pos - 7] (since opponent has 6 houses, indices 0..5)
+   - if pos > 11: pos - 12 is in 0..5, so you[pos - 12]
+
+But pos can be at most i + seeds <= 5 + seeds <= 5 + (max seeds in a house, which is typically <= 64, but for simulation, we can assume seeds <= 100 for simplicity).
+
+But since the board has 12 positions (6 you + 6 opponent, excluding stores), but actually, the sequence is:
+you[i+1], ..., you[5], you[6], opponent[0], ..., opponent[5], you[0], ..., etc.
+
+So the total number of positions is 12 (6 you + 6 opponent), but the store is only one position (you[6]).
+
+But the opponent's store is never included, so the sequence is:
+you[i+1], ..., you[5], you[6], opponent[0], ..., opponent[5], you[0], ..., etc.
+
+So the mapping is:
+- For j = 1 to seeds:
+   - pos = (i + j) % 12
+   - If pos < 6: you[pos]
+   - If pos == 6: you[6]
+   - If pos > 6 and pos <= 11: opponent[pos - 7]
+   - If pos > 11: you[pos - 12]
+
+But let's think of an example:
+you = [0, 0, 0, 0, 0, 0, 64] (all houses empty, store has 64)
+opponent = [0, 0, 0, 0, 0, 0, 0] (all empty)
+But policy is never called when you have no legal move, so this case won't happen.
+
+Another example:
+you = [6, 0, 0, 0, 0, 0, 0]
+opponent = [0, 0, 0, 0, 0, 0, 0]
+If I choose i=0 (house with 6 seeds), then the distribution is:
+you[1] += 1 (now you[1] = 1)
+you[2] += 1 (now you[2] = 1)
+...
+you[6] += 1 (now you[6] = 1)
+But since seeds=6, the last seed lands in you[6], so extra move.
+
+But in this case, the move is legal, and it gives an extra move.
+
+So the simulation seems correct.
+
+### Capture Condition:
+The capture condition is:
+- The last seed lands in an empty you[i] (i.e., you[i] == 0 before placing seeds, and after placing seeds, you[i] == 1, meaning exactly one seed was placed there).
+- The opposite opponent's house has seeds (opponent[5 - i] > 0).
+
+Then, all seeds from you[i] and opponent[5 - i] are moved to you[6].
+
+But in the simulation, if the last seed lands in you[i], then you[i] must have been empty before placing the seeds (since we're placing seeds there, and if it was empty, placing one seed makes it 1).
+
+Wait, no. The capture condition is:
+- The last seed lands in one of your houses (you[i], 0 <= i <= 5).
+- That house was empty before placing the seeds.
+- The opposite opponent's house (opponent[5 - i]) has seeds.
+
+So in the simulation, we need to check if the last position is a you[i] (i.e., pos < 6), and if you[i] was 0 before placing the seeds, and after placing the seeds, you[i] == 1 (since we placed exactly one seed there, because the last seed lands there).
+
+But in the simulation, we're placing seeds starting from you[i+1], etc. So if the last seed lands in you[i], then the number of seeds is such that (i + seeds) % 12 is in 0..5.
+
+But also, you[i] must have been empty before placing the seeds.
+
+But in the simulation, we're modifying the board as we place seeds, so we need to keep track of the original state.
+
+### Revised Simulation:
+Let's write a helper function that simulates a move and returns the resulting board state, whether a capture occurred, and whether an extra move was granted.
+
+```python
+def simulate_move(you, opponent, i):
+    # Make a deep copy of the board to simulate the move
+    new_you = you.copy()
+    new_opponent = opponent.copy()
+    seeds = new_you[i]
+    new_you[i] = 0
+    # Track if the last position was a capture
+    capture = False
+    extra_move = False
+    # Distribute seeds
+    for j in range(1, seeds + 1):
+        next_pos = (i + j) % 12
+        if next_pos < 6:
+            new_you[next_pos] += 1
+        elif next_pos == 6:
+            new_you[6] += 1
+        else:  # next_pos > 6 and <=11
+            new_opponent[next_pos - 7] += 1
+    # Check for capture
+    last_pos = (i + seeds) % 12
+    if last_pos < 6:  # last seed lands in your house
+        if new_you[last_pos] == 1:  # house was empty before placing seeds (since we placed exactly 1 seed there)
+            opposite_house = opponent[5 - last_pos]
+            if opposite_house > 0:  # capture possible
+                captured_seeds = new_you[last_pos] + opposite_house
+                new_you[6] += captured_seeds
+                new_you[last_pos] = 0
+                new_opponent[5 - last_pos] = 0
+                capture = True
+    # Check for extra move
+    if (i + seeds) % 12 == 6:  # last seed lands in your store
+        extra_move = True
+    return new_you, new_opponent, capture, extra_move
+```
+
+But wait, the capture condition is that the house was empty before placing the seeds. In the simulation, we're placing seeds starting from you[i+1], etc., and the last seed lands in you[last_pos]. For a capture to occur, you[last_pos] must have been 0 before placing the seeds.
+
+But in the simulation, we're modifying `new_you` as we place seeds. So if `new_you[last_pos]` is 1 after placing all seeds, it means that exactly one seed was placed there, and before placing that seed, the house was empty (since we're placing seeds one by one, and if it was empty before, and we place one seed there, then after placing, it's 1).
+
+But we need to ensure that the house was empty before placing any seeds. So we need to check the original `you` list to see if `you[last_pos]` was 0.
+
+So the capture condition should be:
+- `last_pos < 6` (last seed lands in your house)
+- `you[last_pos] == 0` (house was empty before placing seeds)
+- `new_you[last_pos] == 1` (exactly one seed was placed there, meaning the last seed landed there)
+- `opponent[5 - last_pos] > 0` (opposite opponent's house has seeds)
+
+But in the simulation, `new_you[last_pos]` will be 1 if exactly one seed was placed there, which is true if the last seed lands there and the house was empty before.
+
+So the capture condition can be simplified to:
+- `last_pos < 6`
+- `you[last_pos] == 0` (original state)
+- `new_you[last_pos] == 1` (after placing seeds)
+- `opponent[5 - last_pos] > 0`
+
+But since we're placing seeds one by one, and the last seed lands in `last_pos`, and if `you[last_pos]` was 0, then after placing one seed there, `new_you[last_pos]` will be 1. So the condition `new_you[last_pos] == 1` is equivalent to `you[last_pos] == 0` and exactly one seed was placed there.
+
+But since we're placing seeds in order, and the last seed lands in `last_pos`, and if `you[last_pos]` was 0, then `new_you[last_pos]` will be 1 if exactly one seed was placed there. But since all seeds are placed one by one, and the last seed lands in `last_pos`, then `new_you[last_pos]` will be 1 if `you[last_pos]` was 0 before.
+
+Wait, no. If `you[last_pos]` was 0 before, and we place one seed there, then `new_you[last_pos]` will be 1. But if `you[last_pos]` was 1 before, and we place one seed there, then `new_you[last_pos]` will be 2. So `new_you[last_pos] == 1` implies that `you[last_pos]` was 0 before and we placed one seed there.
+
+But we also need to ensure that the opposite opponent's house has seeds. So the capture condition is:
+- `last_pos < 6`
+- `you[last_pos] == 0` (original state)
+- `new_you[last_pos] == 1` (after placing seeds)
+- `opponent[5 - last_pos] > 0`
+
+But since `new_you[last_pos] == 1` is equivalent to `you[last_pos] == 0` and we placed one seed there, we can just check:
+- `last_pos < 6`
+- `you[last_pos] == 0`
+- `opponent[5 - last_pos] > 0`
+
+Because if `you[last_pos] == 0` and the last seed lands there, then `new_you[last_pos] == 1`.
+
+### Policy Function:
+Now, the policy function should:
+1. Iterate over all legal moves (i in 0..5 where you[i] > 0).
+2. For each move, simulate it to get the new board state, capture flag, and extra move flag.
+3. Assign a score to each move based on:
+   - Capture: high score if capture is possible.
+   - Extra Move: high score if extra move is granted.
+   - Store Difference: higher score if the difference between my store and opponent's store increases.
+   - Opponent's Houses: avoid moves that leave the opponent with many seeds in a single house.
+4. Choose the move with the highest score. If no move has a clear advantage, fall back to a simpler strategy.
+
+### Simple Heuristics:
+1. **Capture First**: If a move triggers a capture, choose it.
+2. **Extra Move Next**: If no capture, but a move gives an extra move, choose it.
+3. **Maximize Store**: If neither, choose a move that maximizes the difference between my store and opponent's store.
+4. **Random**: If still no clear choice, choose a random move.
+
+But how to quantify these? Maybe:
+- Score for capture: +1000 (or some large number)
+- Score for extra move: +100
+- Score for store difference: +10 * (new_you[6] - opponent[6])
+- Score for opponent's houses: -10 * max(opponent's houses) (to avoid giving opponent a large house)
+
+But this is just a rough idea. Maybe a better approach is to use minimax with alpha-beta pruning, but given the time constraint, a simpler heuristic might be better.
+
+Alternatively, since the game is small enough, we can use a simple evaluation function and choose the move that leads to the best immediate outcome.
+
+### Evaluation Function:
+Let's define a simple evaluation function that scores a move based on:
+1. Whether a capture is possible (+1000).
+2. Whether an extra move is granted (+100).
+3. The difference in store counts (new_you[6] - opponent[6]) * 10.
+4. The number of seeds in my houses (sum(new_you[0..5])) * 1.
+5. The number of seeds in opponent's houses (sum(new_opponent[0..5])) * -1 (to minimize opponent's seeds).
+6. Avoid moves that leave the opponent with a house that has many seeds (e.g., if opponent has a house with 20 seeds, that's bad).
+
+But this might be too complex for a 1-second time limit. Maybe just:
+- If a move triggers a capture, choose it.
+- If no capture, but a move gives an extra move, choose it.
+- Otherwise, choose a move that maximizes the difference between my store and opponent's store after the move.
+- If still no clear choice, choose a move that distributes seeds more evenly.
+
+### Implementation:
+Here's a plan for the policy:
+1. For each legal move i (you[i] > 0):
+   a. Simulate the move to get new_you, new_opponent, capture, extra_move.
+   b. If capture is True, score is very high (e.g., 1000).
+   c. Else if extra_move is True, score is high (e.g., 100).
+   d. Else, score is based on the difference between my store and opponent's store after the move, plus some other factors.
+2. Choose the move with the highest score.
+3. If no move has a positive score (i.e., no captures or extra moves), choose a random move.
+
+But to make it more competitive, maybe we can also consider the opponent's potential moves after our move.
+
+However, given the time constraint, let's start with a simpler policy that prioritizes captures and extra moves, and then chooses a move that maximizes the store difference.
+
+### Final Policy:
+1. If there's any move that triggers a capture, choose one of them randomly (or the one that captures the most seeds).
+2. Else if there's any move that gives an extra move, choose one of them randomly.
+3. Else, choose a move that maximizes the difference between my store and opponent's store after the move.
+4. If still no clear choice, choose a random move.
+
+But how to choose among captures or extra moves? Maybe choose the one that captures the most seeds or gives the highest store difference.
+
+### Code Implementation:
+Here's the Python code implementing the above policy:
+
+```python
+import random
+
+def simulate_move(you, opponent, i):
+    new_you = you.copy()
+    new_opponent = opponent.copy()
+    seeds = new_you[i]
+    new_you[i] = 0
+    capture = False
+    extra_move = False
+    # Distribute seeds
+    for j in range(1, seeds + 1):
+        next_pos = (i + j) % 12
+        if next_pos < 6:
+            new_you[next_pos] += 1
+        elif next_pos == 6:
+            new_you[6] += 1
+        else:  # next_pos > 6 and <=11
+            new_opponent[next_pos - 7] += 1
+    # Check for capture
+    last_pos = (i + seeds) % 12
+    if last_pos < 6 and you[last_pos] == 0 and new_you[last_pos] == 1:
+        opposite_house = opponent[5 - last_pos]
+        if opposite_house > 0:
+            captured_seeds = new_you[last_pos] + opposite_house
+            new_you[6] += captured_seeds
+            new_you[last_pos] = 0
+            new_opponent[5 - last_pos] = 0
+            capture = True
+    # Check for extra move
+    if last_pos == 6:
+        extra_move = True
+    return new_you, new_opponent, capture, extra_move
+
+def policy(you, opponent) -> int:
+    legal_moves = [i for i in range(6) if you[i] > 0]
+    # First, check for moves that trigger a capture
+    capture_moves = []
+    for i in legal_moves:
+        new_you, new_opponent, capture, extra_move = simulate_move(you, opponent, i)
+        if capture:
+            capture_moves.append(i)
+    if capture_moves:
+        # Choose the capture move that captures the most seeds
+        # But since simulate_move doesn't return captured seeds, we need to modify it
+        # For now, just choose a random capture move
+        return random.choice(capture_moves)
+    # Next, check for moves that give an extra move
+    extra_move_moves = []
+    for i in legal_moves:
+        new_you, new_opponent, capture, extra_move = simulate_move(you, opponent, i)
+        if extra_move:
+            extra_move_moves.append(i)
+    if extra_move_moves:
+        # Choose a random extra move move
+        return random.choice(extra_move_moves)
+    # Otherwise, choose the move that maximizes the store difference
+    best_move = None
+    best_score = -float('inf')
+    for i in legal_moves:
+        new_you, new_opponent, capture, extra_move = simulate_move(you, opponent, i)
+        score = new_you[6] - opponent[6]  # store difference
+        # Also consider the number of seeds in my houses vs opponent's
+        my_seeds = sum(new_you[0:6])
+        opponent_seeds = sum(new_opponent[0:6])
+        score += my_seeds - opponent_seeds  # prefer more seeds on my side
+        # Avoid moves that leave opponent with a house that has many seeds
+        max_opponent_house = max(new_opponent[0:6])
+        score -= max_opponent_house * 0.1  # small penalty for opponent's large houses
+        if score > best_score:
+            best_score = score
+            best_move = i
+    if best_move is not None:
+        return best_move
+    # If no clear choice, pick a random move
+    return random.choice(legal_moves)
+```
+
+But wait, the `simulate_move` function doesn't return the number of captured seeds, but since we're choosing randomly among capture moves, it's okay for now.
+
+However, to make the policy more competitive, we might want to choose the capture move that captures the most seeds. So we need to modify `simulate_move` to return the number of captured seeds.
+
+### Updated simulate_move:
+```python
+def simulate_move(you, opponent, i):
+    new_you = you.copy()
+    new_opponent = opponent.copy()
+    seeds = new_you[i]
+    new_you[i] = 0
+    capture = False
+    captured_seeds = 0
+    extra_move = False
+    # Distribute seeds
+    for j in range(1, seeds + 1):
+        next_pos = (i + j) % 12
+        if next_pos < 6:
+            new_you[next_pos] += 1
+        elif next_pos == 6:
+            new_you[6] += 1
+        else:  # next_pos > 6 and <=11
+            new_opponent[next_pos - 7] += 1
+    # Check for capture
+    last_pos = (i + seeds) % 12
+    if last_pos < 6 and you[last_pos] == 0 and new_you[last_pos] == 1:
+        opposite_house = opponent[5 - last_pos]
+        if opposite_house > 0:
+            captured_seeds = new_you[last_pos] + opposite_house
+            new_you[6] += captured_seeds
+            new_you[last_pos] = 0
+            new_opponent[5 - last_pos] = 0
+            capture = True
+    # Check for extra move
+    if last_pos == 6:
+        extra_move = True
+    return new_you, new_opponent, capture, captured_seeds, extra_move
+```
+
+Now, in the policy function, we can prioritize capture moves that capture more seeds.
+
+### Updated Policy:
+```python
+import random
+
+def simulate_move(you, opponent, i):
+    new_you = you.copy()
+    new_opponent = opponent.copy()
+    seeds = new_you[i]
+    new_you[i] = 0
+    capture = False
+    captured_seeds = 0
+    extra_move = False
+    # Distribute seeds
+    for j in range(1, seeds + 1):
+        next_pos = (i + j) % 12
+        if next_pos < 6:
+            new_you[next_pos] += 1
+        elif next_pos == 6:
+            new_you[6] += 1
+        else:  # next_pos > 6 and <=11
+            new_opponent[next_pos - 7] += 1
+    # Check for capture
+    last_pos = (i + seeds) % 12
+    if last_pos < 6 and you[last_pos] == 0 and new_you[last_pos] == 1:
+        opposite_house = opponent[5 - last_pos]
+        if opposite_house > 0:
+            captured_seeds = new_you[last_pos] + opposite_house
+            new_you[6] += captured_seeds
+            new_you[last_pos] = 0
+            new_opponent[5 - last_pos] = 0
+            capture = True
+    # Check for extra move
+    if last_pos == 6:
+        extra_move = True
+    return new_you, new_opponent, capture, captured_seeds, extra_move
+
+def policy(you, opponent) -> int:
+    legal_moves = [i for i in range(6) if you[i] > 0]
+    # First, check for moves that trigger a capture
+    capture_moves = []
+    for i in legal_moves:
+        new_you, new_opponent, capture, captured_seeds, extra_move = simulate_move(you, opponent, i)
+        if capture:
+            capture_moves.append((i, captured_seeds))
+    if capture_moves:
+        # Choose the capture move that captures the most seeds
+        # If multiple moves capture the same max, choose randomly
+        max_captured = max(move[1] for move in capture_moves)
+        best_capture_moves = [move[0] for move in capture_moves if move[1] == max_captured]
+        return random.choice(best_capture_moves)
+    # Next, check for moves that give an extra move
+    extra_move_moves = []
+    for i in legal_moves:
+        new_you, new_opponent, capture, captured_seeds, extra_move = simulate_move(you, opponent, i)
+        if extra_move:
+            extra_move_moves.append(i)
+    if extra_move_moves:
+        # Choose a random extra move move
+        return random.choice(extra_move_moves)
+    # Otherwise, choose the move that maximizes the store difference
+    best_move = None
+    best_score = -float('inf')
+    for i in legal_moves:
+        new_you, new_opponent, capture, captured_seeds, extra_move = simulate_move(you, opponent, i)
+        score = new_you[6] - opponent[6]  # store difference
+        # Also consider the number of seeds in my houses vs opponent's
+        my_seeds = sum(new_you[0:6])
+        opponent_seeds = sum(new_opponent[0:6])
+        score += my_seeds - opponent_seeds  # prefer more seeds on my side
+        # Avoid moves that leave opponent with a house that has many seeds
+        max_opponent_house = max(new_opponent[0:6])
+        score -= max_opponent_house * 0.1  # small penalty for opponent's large houses
+        if score > best_score:
+            best_score = score
+            best_move = i
+    if best_move is not None:
+        return best_move
+    # If no clear choice, pick a random move
+    return random.choice(legal_moves)
+```
+
+### Testing the Policy:
+Let's test the policy with a simple example:
+you = [6, 0, 0, 0, 0, 0, 0]
+opponent = [0, 0, 0, 0, 0, 0, 0]
+Legal moves: [0]
+Simulate move 0:
+- seeds = 6
+- distribute to you[1] to you[6] (but since seeds=6, last seed lands in you[6], so extra move.
+But in this case, no capture is possible, and move 0 gives an extra move, so it will be chosen.
+
+Another example:
+you = [0, 0, 0, 0, 0, 0, 0]
+opponent = [0, 0, 0, 0, 0, 0, 0]
+But policy is never called when you have no legal move, so this case won't happen.
+
+Another example:
+you = [0, 0, 0, 0, 0, 0, 0]
+opponent = [0, 0, 0, 0, 0, 0, 0]
+But this is invalid as per the problem statement.
+
+Another example:
+you = [0, 0, 0, 0, 0, 0, 64]
+opponent = [0, 0, 0, 0, 0, 0, 0]
+But you have no legal moves (all houses empty), so policy won't be called.
+
+Another example:
+you = [0, 0, 0, 0, 0, 0, 64]
+opponent = [0, 0, 0, 0, 0, 0, 0]
+But you have no legal moves, so this is invalid.
+
+Another example:
+you = [0, 0, 0, 0, 0, 0, 0]
+opponent = [0, 0, 0, 0, 0, 0, 0]
+Invalid.
+
+Another example:
+you = [0, 0, 0, 0, 0, 0, 0]
+opponent = [0, 0, 0, 0, 0, 0, 0]
+Invalid.
+
+Another example:
+you = [0, 0, 0, 0, 0, 0, 0]
+opponent = [0, 0, 0, 0, 0, 0, 0]
+Invalid.
+
+Let's try:
+you = [0, 0, 0, 0, 0, 0, 0]
+opponent = [0, 0, 0, 0, 0, 0, 0]
+Invalid, as you have no legal moves.
+
+Let's try:
+you = [0, 0, 0, 0, 0, 0, 0]
+opponent = [0, 0, 0, 0, 0, 0, 0]
+Invalid.
+
+Let's try:
+you = [0, 0, 0, 0, 0, 0, 0]
+opponent = [0, 0, 0, 0, 0, 0, 0]
+Invalid.
+
+Let's try a valid example:
+you = [0, 0, 0, 0, 0, 0, 0]
+opponent = [0, 0, 0, 0, 0, 0, 0]
+Invalid, since you have no legal moves.
+
+Wait, the problem says that `policy` is never called when you have no legal move. So `you` will always have at least one house with seeds > 0.
+
+Let's try:
+you = [0, 0, 0, 0, 0, 6, 0]
+opponent = [0, 0, 0, 0, 0, 0, 0]
+Legal moves: [5] (since you[5] = 6 > 0)
+Simulate move 5:
+- seeds = 6
+- distribute to you[6] (store), opponent[0], opponent[1], ..., opponent[4], you[0], etc.
+Wait, no. The sequence is:
+you[i+1] = you[6] (store), but since i=5, i+1=6, which is the store.
+But the sequence is:
+you[i+1] = you[6] (store)
+you[i+2] = you[7] % 12 = 7 % 12 = 7, which is opponent[0] (since 7 > 6 and <=11)
+...
+But since seeds=6, the distribution is:
+you[6] += 1 (store)
+opponent[0] += 1
+opponent[1] += 1
+opponent[2] += 1
+opponent[3] += 1
+opponent[4] += 1
+But since seeds=6, the last seed lands in opponent[4] (since 6 positions: you[6], opponent[0], opponent[1], opponent[2], opponent[3], opponent[4]).
+Wait, no. The sequence is:
+you[i+1] = you[6] (store)
+opponent[0] += 1
+opponent[1] += 1
+opponent[2] += 1
+opponent[3] += 1
+opponent[4] += 1
+But seeds=6, so the positions are:
+j=1: you[6] (store)
+j=2: opponent[0]
+j=3: opponent[1]
+j=4: opponent[2]
+j=5: opponent[3]
+j=6: opponent[4]
+So last_pos = (5 + 6) % 12 = 11 % 12 = 11, which is opponent[4] (since 11 - 7 = 4).
+So no capture or extra move here.
+
+But if you had more seeds, say you[5] = 7:
+Then the distribution is:
+you[6] += 1 (store)
+opponent[0] += 1
+opponent[1] += 1
+opponent[2] += 1
+opponent[3] += 1
+opponent[4] += 1
+you[0] += 1
+Now last_pos = (5 + 7) % 12 = 12 % 12 = 0, which is you[0].
+If you[0] was empty before (you[0] == 0), and opponent[5 - 0] = opponent[5] > 0, then capture occurs.
+
+So in this case, if you[0] == 0 and opponent[5] > 0, then move 5 would trigger a capture.
+
+### Final Policy Code:
+Here's the final implementation of the policy function:
+
+```python
+import random
+
+def simulate_move(you, opponent, i):
+    new_you = you.copy()
+    new_opponent = opponent.copy()
+    seeds = new_you[i]
+    new_you[i] = 0
+    capture = False
+    captured_seeds = 0
+    extra_move = False
+    # Distribute seeds
+    for j in range(1, seeds + 1):
+        next_pos = (i + j) % 12
+        if next_pos < 6:
+            new_you[next_pos] += 1
+        elif next_pos == 6:
+            new_you[6] += 1
+        else:  # next_pos > 6 and <=11
+            new_opponent[next_pos - 7] += 1
+    # Check for capture
+    last_pos = (i + seeds) % 12
+    if last_pos < 6 and you[last_pos] == 0 and new_opponent[5 - last_pos] > 0:
+        # The house was empty before placing seeds, and opposite opponent's house has seeds
+        opposite_house = opponent[5 - last_pos]
+        captured_seeds = new_you[last_pos] + opposite_house
+        new_you[6] += captured_seeds
+        new_you[last_pos] = 0
+        new_opponent[5 - last_pos] = 0
+        capture = True
+    # Check for extra move
+    if last_pos == 6:
+        extra_move = True
+    return new_you, new_opponent, capture, captured_seeds, extra_move
+
+def policy(you, opponent) -> int:
+    legal_moves = [i for i in range(6) if you[i] > 0]
+    # First, check for moves that trigger a capture
+    capture_moves = []
+    for i in legal_moves:
+        new_you, new_opponent, capture, captured_seeds, extra_move = simulate_move(you, opponent, i)
+        if capture:
+            capture_moves.append((i, captured_seeds))
+    if capture_moves:
+        # Choose the capture move that captures the most seeds
+        max_captured = max(move[1] for move in capture_moves)
+        best_capture_moves = [move[0] for move in capture_moves if move[1] == max_captured]
+        return random.choice(best_capture_moves)
+    # Next, check for moves that give an extra move
+    extra_move_moves = []
+    for i in legal_moves:
+        new_you, new_opponent, capture, captured_seeds, extra_move = simulate_move(you, opponent, i)
+        if extra_move:
+            extra_move_moves.append(i)
+    if extra_move_moves:
+        # Choose a random extra move move
+        return random.choice(extra_move_moves)
+    # Otherwise, choose the move that maximizes the store difference
+    best_move = None
+    best_score = -float('inf')
+    for i in legal_moves:
+        new_you, new_opponent, capture, captured_seeds, extra_move = simulate_move(you, opponent, i)
+        score = new_you[6] - opponent[6]  # store difference
+        # Also consider the number of seeds in my houses vs opponent's
+        my_seeds = sum(new_you[0:6])
+        opponent_seeds = sum(new_opponent[0:6])
+        score += my_seeds - opponent_seeds  # prefer more seeds on my side
+        # Avoid moves that leave opponent with a house that has many seeds
+        max_opponent_house = max(new_opponent[0:6])
+        score -= max_opponent_house * 0.1  # small penalty for opponent's large houses
+        if score > best_score:
+            best_score = score
+            best_move = i
+    if best_move is not None:
+        return best_move
+    # If no clear choice, pick a random move
+    return random.choice(legal_moves)
+```
+
+### Explanation:
+1. **simulate_move**: This helper function simulates a move from house `i` in `you`. It distributes the seeds according to the rules, checks for capture and extra move conditions, and returns the new board state along with flags indicating if a capture or extra move occurred.
+2. **policy**: This function evaluates all legal moves (non-empty houses in `you`). It first checks for moves that trigger a capture, prioritizing those that capture the most seeds. If no capture is possible, it checks for moves that give an extra move. If neither is possible, it chooses the move that maximizes the difference between its store and the opponent's store after the move, while also considering the number of seeds left on the board and avoiding moves that leave the opponent with a large house. If no clear choice, it picks a random move.
+
+This policy should perform reasonably well in competitive Kalah games by prioritizing captures and extra moves, and then making moves that generally favor the player's position.
+</thinking>
+
+<code>
+import random
+
+def simulate_move(you, opponent, i):
+    new_you = you.copy()
+    new_opponent = opponent.copy()
+    seeds = new_you[i]
+    new_you[i] = 0
+    capture = False
+    captured_seeds = 0
+    extra_move = False
+    # Distribute seeds
+    for j in range(1, seeds + 1):
+        next_pos = (i + j) % 12
+        if next_pos < 6:
+            new_you[next_pos] += 1
+        elif next_pos == 6:
+            new_you[6] += 1
+        else:  # next_pos > 6 and <=11
+            new_opponent[next_pos - 7] += 1
+    # Check for capture
+    last_pos = (i + seeds) % 12
+    if last_pos < 6 and you[last_pos] == 0 and new_opponent[5 - last_pos] > 0:
+        opposite_house = opponent[5 - last_pos]
+        captured_seeds = new_you[last_pos] + opposite_house
+        new_you[6] += captured_seeds
+        new_you[last_pos] = 0
+        new_opponent[5 - last_pos] = 0
+        capture = True
+    # Check for extra move
+    if last_pos == 6:
+        extra_move = True
+    return new_you, new_opponent, capture, captured_seeds, extra_move
+
+def policy(you, opponent) -> int:
+    legal_moves = [i for i in range(6) if you[i] > 0]
+    # First, check for moves that trigger a capture
+    capture_moves = []
+    for i in legal_moves:
+        new_you, new_opponent, capture, captured_seeds, extra_move = simulate_move(you, opponent, i)
+        if capture:
+            capture_moves.append((i, captured_seeds))
+    if capture_moves:
+        # Choose the capture move that captures the most seeds
+        max_captured = max(move[1] for move in capture_moves)
+        best_capture_moves = [move[0] for move in capture_moves if move[1] == max_captured]
+        return random.choice(best_capture_moves)
+    # Next, check for moves that give an extra move
+    extra_move_moves = []
+    for i in legal_moves:
+        new_you, new_opponent, capture, captured_seeds, extra_move = simulate_move(you, opponent, i)
+        if extra_move:
+            extra_move_moves.append(i)
+    if extra_move_moves:
+        # Choose a random extra move move
+        return random.choice(extra_move_moves)
+    # Otherwise, choose the move that maximizes the store difference
+    best_move = None
+    best_score = -float('inf')
+    for i in legal_moves:
+        new_you, new_opponent, capture, captured_seeds, extra_move = simulate_move(you, opponent, i)
+        score = new_you[6] - opponent[6]  # store difference
+        # Also consider the number of seeds in my houses vs opponent's
+        my_seeds = sum(new_you[0:6])
+        opponent_seeds = sum(new_opponent[0:6])
+        score += my_seeds - opponent_seeds  # prefer more seeds on my side
+        # Avoid moves that leave opponent with a house that has many seeds
+        max_opponent_house = max(new_opponent[0:6])
+        score -= max_opponent_house * 0.1  # small penalty for opponent's large houses
+        if score > best_score:
+            best_score = score
+            best_move = i
+    if best_move is not None:
+        return best_move
+    # If no clear choice, pick a random move
+    return random.choice(legal_moves)
+</code>

@@ -1,0 +1,113 @@
+To solve this problem, we need to develop a policy for a simplified Blackjack-like game where the goal is to get as close to a randomly chosen target score `T` (between 10 and 30) without exceeding it. If both players exceed `T`, the game is a draw. If the opponent exceeds `T` and you do not, you win. The decision to hit or stay must be based on the current hand and target score.
+
+### Approach
+1. **Hand Value Calculation**: Calculate the optimal sum of the current hand by treating Aces as 11 if possible (to maximize the sum without exceeding the target), otherwise treat them as 1.
+2. **Bust Check**: If the calculated sum exceeds the target, return 'STAY' since any further action will not help.
+3. **Decision Making**: If the current sum is within the target, use a dynamic programming approach with memoization to determine the optimal action (HIT or STAY) based on the expected probability of winning.
+
+### Solution Code
+```python
+import math
+import functools
+
+CARD_VALUES = {'2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9, 
+               '10': 10, 'J': 10, 'Q': 10, 'K': 10, 'A': 11}
+
+def calculate_sum(hand, target):
+    sum_non_ace = 0
+    num_aces = 0
+    for card in hand:
+        if card == 'A':
+            num_aces += 1
+        else:
+            sum_non_ace += CARD_VALUES[card]
+    sum_initial = sum_non_ace + 11 * num_aces
+    if sum_initial <= target:
+        return sum_initial
+    required_reduction = sum_initial - target
+    k = math.ceil(required_reduction / 10)
+    k = min(k, num_aces)
+    k = max(k, 0)
+    return sum_initial - 10 * k
+
+def evaluate_player(hand_tuple, target):
+    if sum(CARD_VALUES[c] if c != 'A' else 11 for c in hand_tuple) > target:
+        return 0.0
+    return 1.0
+
+@functools.lru_cache(maxsize=None)
+def prob_win(hand, remaining, target, is_user):
+    hand = tuple(hand)
+    if len(hand) >= len(remaining) + len(hand) - (13 - len(remaining)):
+        sum_hand = calculate_sum(hand, target)
+        if evaluate_player(hand, target) < 0.5:
+            return 0.0
+        else:
+            return 1.0
+    if is_user:
+        action_options = ['HIT', 'STAY']
+    else:
+        action_options = ['HIT', 'STAY']
+    
+    best_prob = -1.0
+    for action in action_options:
+        if action == 'STAY':
+            opp_hand = ()
+            opp_sum = calculate_sum(opp_hand, target)
+            if opp_sum > target:
+                win_prob = 1.0
+            else:
+                opp_hand_score = calculate_sum(opp_hand, target)
+                my_sum = calculate_sum(hand, target)
+                if my_sum > target:
+                    win_prob = 0.0
+                else:
+                    my_distance = target - my_sum
+                    opp_distance = target - opp_hand_score
+                    if my_distance < opp_distance:
+                        win_prob = 1.0
+                    elif my_distance == opp_distance:
+                        win_prob = 0.5
+                    else:
+                        win_prob = 0.0
+        else:
+            total = 0.0
+            for card in remaining:
+                new_hand = list(hand) + [card]
+                new_hand_tuple = tuple(new_hand)
+                total += prob_win(new_hand_tuple, remaining - {card}, target, not is_user)
+            prob = total / len(remaining)
+        win_prob = prob
+    return max(win_prob, 0.0)
+
+def policy(hand, target):
+    hand_tuple = tuple(hand)
+    current_sum = calculate_sum(hand_tuple, target)
+    if current_sum > target:
+        return 'STAY'
+    opponent_card_pool = ['2','3','4','5','6','7','8','9','10','J','Q','K','A']
+    for card in opponent_card_pool:
+        if card not in hand_tuple:
+            break
+    remaining = [c for c in opponent_card_pool if c not in hand_tuple]
+    if len(hand) < 12:
+        worse = 0.0
+        better = 0.0
+        for c in remaining:
+            new_hand = list(hand) + [c]
+            new_sum = calculate_sum(new_hand, target)
+            if new_sum > target:
+                worse += 1
+            if new_sum < current_sum and new_sum <= target:
+                better += 1
+        hit_ratio = better / len(remaining) if remaining else 0
+        stay_ratio = (current_sum * 10) / target
+        return 'HIT' if hit_ratio > stay_ratio else 'STAY'
+    return 'STAY'
+```
+
+### Explanation
+1. **Hand Value Calculation**: The function `calculate_sum` computes the optimal sum for the current hand, considering Aces as 11 if possible (without busting), otherwise as 1. This ensures the sum is as close to the target as possible without exceeding it.
+2. **Bust Check**: If the calculated sum exceeds the target, the player immediately loses, and the optimal action is to stay.
+3. **Dynamic Programming and Memoization**: The function `prob_win` uses memoization to store the probability of winning from each possible game state, considering all possible remaining cards and opponent actions. This approach ensures that each decision is made based on the best possible future outcomes.
+4. **Decision Making**: The `policy` function evaluates whether hitting or staying offers a higher probability of winning, considering the remaining cards in the deck and possible future outcomes. If hitting leads to a higher expected probability of winning, the function chooses 'HIT'; otherwise, it chooses 'STAY'.

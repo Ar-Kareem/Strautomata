@@ -1,0 +1,362 @@
+
+from typing import List, Tuple, Dict
+
+SIZE = 19
+N = SIZE * SIZE
+
+# Precompute neighbors and diagonals for every point.
+NEIGHBORS = [[] for _ in range(N)]
+DIAGONALS = [[] for _ in range(N)]
+R2_NEAR = [[] for _ in range(N)]  # nearby points within manhattan distance <= 2, with weights
+
+for r in range(SIZE):
+    for c in range(SIZE):
+        i = r * SIZE + c
+        if r > 0:
+            NEIGHBORS[i].append((r - 1) * SIZE + c)
+        if r + 1 < SIZE:
+            NEIGHBORS[i].append((r + 1) * SIZE + c)
+        if c > 0:
+            NEIGHBORS[i].append(r * SIZE + (c - 1))
+        if c + 1 < SIZE:
+            NEIGHBORS[i].append(r * SIZE + (c + 1))
+
+        for dr, dc in ((-1, -1), (-1, 1), (1, -1), (1, 1)):
+            rr, cc = r + dr, c + dc
+            if 0 <= rr < SIZE and 0 <= cc < SIZE:
+                DIAGONALS[i].append(rr * SIZE + cc)
+
+        for dr in range(-2, 3):
+            for dc in range(-2, 3):
+                if dr == 0 and dc == 0:
+                    continue
+                md = abs(dr) + abs(dc)
+                if md <= 2:
+                    rr, cc = r + dr, c + dc
+                    if 0 <= rr < SIZE and 0 <= cc < SIZE:
+                        # closer points matter more
+                        weight = 3 - md
+                        R2_NEAR[i].append((rr * SIZE + cc, weight))
+
+
+# Opening preferences (0-based indices).
+OPENING_BONUS: Dict[int, int] = {}
+
+def _add_opening(points, bonus):
+    for r, c in points:
+        OPENING_BONUS[r * SIZE + c] = max(OPENING_BONUS.get(r * SIZE + c, 0), bonus)
+
+# 4-4 corners
+_add_opening([(3, 3), (3, 15), (15, 3), (15, 15)], 34)
+# 3-4 and 4-3
+_add_opening([(2, 3), (3, 2), (2, 15), (3, 16),
+              (15, 2), (16, 3), (15, 16), (16, 15)], 30)
+# side star points
+_add_opening([(3, 9), (9, 3), (9, 15), (15, 9)], 20)
+# tengen
+_add_opening([(9, 9)], 8)
+
+
+def board_hash(board: List[int]) -> bytes:
+    b = bytearray(N)
+    for i, v in enumerate(board):
+        if v == 1:
+            b[i] = 1
+        elif v == -1:
+            b[i] = 2
+        else:
+            b[i] = 0
+    return bytes(b)
+
+
+def build_board(me: List[Tuple[int, int]], opponent: List[Tuple[int, int]]) -> List[int]:
+    board = [0] * N
+    for r, c in me:
+        if 1 <= r <= SIZE and 1 <= c <= SIZE:
+            board[(r - 1) * SIZE + (c - 1)] = 1
+    for r, c in opponent:
+        if 1 <= r <= SIZE and 1 <= c <= SIZE:
+            board[(r - 1) * SIZE + (c - 1)] = -1
+    return board
+
+
+def group_and_liberties(board: List[int], start: int):
+    color = board[start]
+    stack = [start]
+    seen = {start}
+    stones = []
+    libs = set()
+
+    while stack:
+        p = stack.pop()
+        stones.append(p)
+        for n in NEIGHBORS[p]:
+            v = board[n]
+            if v == 0:
+                libs.add(n)
+            elif v == color and n not in seen:
+                seen.add(n)
+                stack.append(n)
+
+    return stones, libs
+
+
+def analyze_groups(board: List[int]):
+    visited = [False] * N
+    group_of = [-1] * N
+    groups = []  # each: (color, stones, libs)
+
+    for i in range(N):
+        if board[i] == 0 or visited[i]:
+            continue
+        color = board[i]
+        stack = [i]
+        visited[i] = True
+        stones = []
+        libs = set()
+
+        while stack:
+            p = stack.pop()
+            stones.append(p)
+            for n in NEIGHBORS[p]:
+                v = board[n]
+                if v == 0:
+                    libs.add(n)
+                elif v == color and not visited[n]:
+                    visited[n] = True
+                    stack.append(n)
+
+        gid = len(groups)
+        for s in stones:
+            group_of[s] = gid
+        groups.append((color, stones, libs))
+
+    return group_of, groups
+
+
+def is_own_eye_like(board: List[int], idx: int) -> bool:
+    if board[idx] != 0:
+        return False
+
+    # All orthogonal neighbors must be our stones (or edge, which simply means fewer neighbors).
+    for n in NEIGHBORS[idx]:
+        if board[n] != 1:
+            return False
+
+    bad_diags = 0
+    for d in DIAGONALS[idx]:
+        if board[d] != 1:
+            bad_diags += 1
+
+    r, c = divmod(idx, SIZE)
+    on_edge = (r == 0 or r == SIZE - 1 or c == 0 or c == SIZE - 1)
+    # Conservative true-eye-ish detector.
+    if on_edge:
+        return bad_diags == 0
+    return bad_diags <= 1
+
+
+def shape_bonus(idx: int, total_stones: int) -> int:
+    r, c = divmod(idx, SIZE)
+    dist_side = min(r, SIZE - 1 - r, c, SIZE - 1 - c)
+
+    if total_stones < 10:
+        table = {
+            0: -28,  # 1st line
+            1: -10,  # 2nd line
+            2: 12,   # 3rd line
+            3: 18,   # 4th line
+            4: 6,
+        }
+        return table.get(dist_side, 0) + OPENING_BONUS.get(idx, 0)
+    elif total_stones < 30:
+        table = {
+            0: -18,
+            1: -6,
+            2: 8,
+            3: 10,
+            4: 4,
+        }
+        return table.get(dist_side, 0)
+    else:
+        table = {
+            0: -5,
+            1: 0,
+            2: 2,
+            3: 2,
+        }
+        return table.get(dist_side, 0)
+
+
+def nearby_action_bonus(board: List[int], idx: int, total_stones: int) -> int:
+    score = 0
+    for j, w in R2_NEAR[idx]:
+        v = board[j]
+        if v == 1:
+            score += w
+        elif v == -1:
+            score += 2 * w  # favor contact with opponent a bit more
+    if total_stones >= 8:
+        return score
+    # Early game: if isolated and not a good opening point, discourage.
+    if score == 0 and OPENING_BONUS.get(idx, 0) == 0:
+        return -14
+    return score
+
+
+def simulate_move(board: List[int], idx: int, group_of, groups, seen_hashes):
+    """Return (new_board, captured, new_libs_count, new_group_size, new_hash) or None if illegal."""
+    if idx < 0 or idx >= N or board[idx] != 0:
+        return None
+
+    new_board = board.copy()
+    new_board[idx] = 1
+    captured = 0
+    checked_enemy = set()
+
+    # Capture adjacent opponent groups already in atari with this point as liberty.
+    for n in NEIGHBORS[idx]:
+        if board[n] == -1:
+            gid = group_of[n]
+            if gid in checked_enemy:
+                continue
+            checked_enemy.add(gid)
+            libs = groups[gid][2]
+            if len(libs) == 1 and idx in libs:
+                for s in groups[gid][1]:
+                    new_board[s] = 0
+                captured += len(groups[gid][1])
+
+    # Suicide check after captures.
+    new_group, new_libs = group_and_liberties(new_board, idx)
+    libs_count = len(new_libs)
+    if libs_count == 0:
+        return None
+
+    h = board_hash(new_board)
+    # Conservative repetition avoidance (ko/superko-safe).
+    if h in seen_hashes:
+        return None
+
+    return new_board, captured, libs_count, len(new_group), h
+
+
+def evaluate_move(board: List[int], idx: int, total_stones: int, group_of, groups,
+                  captured: int, new_libs: int, new_group_size: int) -> int:
+    score = 0
+
+    adj_friend = set()
+    adj_enemy = set()
+    saved = 0
+    threatened = 0
+
+    for n in NEIGHBORS[idx]:
+        if board[n] == 1:
+            gid = group_of[n]
+            if gid not in adj_friend:
+                adj_friend.add(gid)
+                libs = groups[gid][2]
+                if len(libs) == 1 and idx in libs:
+                    saved += len(groups[gid][1])
+        elif board[n] == -1:
+            gid = group_of[n]
+            if gid not in adj_enemy:
+                adj_enemy.add(gid)
+
+    for gid in adj_enemy:
+        libs = groups[gid][2]
+        if len(libs) == 2 and idx in libs:
+            threatened += len(groups[gid][1])
+
+    # Tactical priorities
+    score += 55 * captured
+    score += 45 * saved
+    score += 17 * threatened
+
+    # Shape / connectivity
+    score += 8 * max(0, len(adj_friend) - 1)   # connecting groups
+    score += 4 * len(adj_friend)
+    score += 3 * len(adj_enemy)
+    score += 2 * min(new_group_size, 10)
+    score += 5 * min(new_libs, 4)
+
+    # Penalize poor liberties / self-atari
+    if new_libs == 1:
+        score -= 90 if captured == 0 and saved == 0 else 25
+    elif new_libs == 2:
+        score -= 10
+
+    # Avoid filling own eyes unless tactical.
+    if is_own_eye_like(board, idx):
+        score -= 140 if captured == 0 and saved == 0 else 20
+
+    # Empty-contact heuristic
+    empties_adj = 0
+    for n in NEIGHBORS[idx]:
+        if board[n] == 0:
+            empties_adj += 1
+    if empties_adj == 0 and captured == 0:
+        score -= 20
+
+    # Positional / opening / nearby action
+    score += shape_bonus(idx, total_stones)
+    score += nearby_action_bonus(board, idx, total_stones)
+
+    return score
+
+
+def idx_to_move(idx: int) -> Tuple[int, int]:
+    return (idx // SIZE + 1, idx % SIZE + 1)
+
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    board = build_board(me, opponent)
+    total_stones = len(me) + len(opponent)
+
+    # Recover seen hashes conservatively.
+    raw_seen = []
+    if isinstance(memory, dict):
+        raw_seen = memory.get("seen", [])
+    seen_hashes = set(raw_seen) if isinstance(raw_seen, (list, tuple, set)) else set()
+
+    current_hash = board_hash(board)
+    seen_hashes.add(current_hash)
+
+    group_of, groups = analyze_groups(board)
+
+    best_idx = None
+    best_hash = None
+    best_key = None  # tuple for deterministic max comparison
+
+    # Evaluate all legal moves.
+    for idx in range(N):
+        if board[idx] != 0:
+            continue
+
+        sim = simulate_move(board, idx, group_of, groups, seen_hashes)
+        if sim is None:
+            continue
+
+        _, captured, new_libs, new_group_size, new_hash = sim
+        score = evaluate_move(board, idx, total_stones, group_of, groups,
+                              captured, new_libs, new_group_size)
+
+        # Stable tie-breaks: prefer higher score, then capture, then opening bonus, then lower index.
+        key = (
+            score,
+            captured,
+            OPENING_BONUS.get(idx, 0),
+            -idx,
+        )
+
+        if best_key is None or key > best_key:
+            best_key = key
+            best_idx = idx
+            best_hash = new_hash
+
+    if best_idx is not None:
+        seen_hashes.add(best_hash)
+        return idx_to_move(best_idx), {"seen": list(seen_hashes)}
+
+    # Final safety fallback: if no legal board move found, pass.
+    return (0, 0), {"seen": list(seen_hashes)}

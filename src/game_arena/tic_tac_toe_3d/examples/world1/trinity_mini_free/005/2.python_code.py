@@ -1,0 +1,76 @@
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    # Check for opponent's winning moves (block)
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board[i][j][k] == 0:
+                    # Check if placing 1 here blocks opponent's win
+                    if (board[0][j][k] == -1 and board[2][j][k] == -1) or \
+                       (board[i][0][k] == -1 and board[i][2][k] == -1) or \
+                       (board[i][j][0] == -1 and board[i][j][2] == -1):
+                        return (i, j, k)
+    
+    # Check for my winning moves
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board[i][j][k] == 0:
+                    if (board[0][j][k] == 1 and board[2][j][k] == 1) or \
+                       (board[i][0][k] == 1 and board[i][2][k] == 1) or \
+                       (board[i][j][0] == 1 and board[i][j][2] == 1):
+                        return (i, j, k)
+    
+    # Check for forks (create two winning threats)
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board[i][j][k] == 0:
+                    count = 0
+                    if board[0][j][k] == 1 and board[2][j][k] == 1:
+                        count += 1
+                    if board[i][0][k] == 1 and board[i][2][k] == 1:
+                        count += 1
+                    if board[i][j][0] == 1 and board[i][j][2] == 1:
+                        count += 1
+                    if count >= 2:
+                        return (i, j, k)
+    
+    # Check for threats (create one winning threat)
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board[i][j][k] == 0:
+                    count = 0
+                    if board[0][j][k] == 1 and board[2][j][k] == 1:
+                        count += 1
+                    if board[i][0][k] == 1 and board[i][2][k] == 1:
+                        count += 1
+                    if board[i][j][0] == 1 and board[i][j][2] == 1:
+                        count += 1
+                    if count >= 1:
+                        return (i, j, k)
+    
+    # Play center if available
+    if board[1][1][1] == 0:
+        return (1, 1, 1)
+    
+    # Play corners
+    corners = [(0, 0, 0), (0, 0, 2), (0, 2, 0), (0, 2, 2),
+               (2, 0, 0), (2, 0, 2), (2, 2, 0), (2, 2, 2)]
+    for corner in corners:
+        i, j, k = corner
+        if board[i][j][k] == 0:
+            return (i, j, k)
+    
+    # Play edges
+    edges = [(0, 0, 1), (0, 1, 0), (0, 1, 2), (0, 2, 1),
+             (1, 0, 0), (1, 0, 2), (1, 2, 0), (1, 2, 2),
+             (2, 0, 1), (2, 1, 0), (2, 1, 2), (2, 2, 1)]
+    for edge in edges:
+        i, j, k = edge
+        if board[i][j][k] == 0:
+            return (i, j, k)
+    
+    # Fallback (should not occur in valid games)
+    return (0, 0, 0)

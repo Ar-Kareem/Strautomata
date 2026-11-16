@@ -1,0 +1,322 @@
+
+# Chess policy for the arena
+# Implements: policy(pieces: dict[str,str], to_play: str, memory: dict) -> (move_uci, memory)
+# Produces legal UCI moves (no castling/en-passant support). Uses 2-ply minimax with material+mobility eval.
+
+from typing import Dict, Tuple, List
+
+FILES = "abcdefgh"
+RANKS = "12345678"
+PIECE_VALUES = {'P':100, 'N':320, 'B':330, 'R':500, 'Q':900, 'K':20000}
+PROMOTIONS = ['q','r','b','n']
+
+def square_to_coords(sq: str):
+    return FILES.index(sq[0]), RANKS.index(sq[1])
+
+def coords_to_square(x: int, y: int):
+    return FILES[x] + RANKS[y]
+
+def inside(x: int, y: int):
+    return 0 <= x < 8 and 0 <= y < 8
+
+def find_king(pieces: Dict[str,str], color: str):
+    code = ('w' if color=='white' else 'b') + 'K'
+    for sq,p in pieces.items():
+        if p == code:
+            return sq
+    return None
+
+def piece_color(piece_code: str):
+    return 'white' if piece_code[0]=='w' else 'black'
+
+def opponent(color: str):
+    return 'black' if color=='white' else 'white'
+
+def copy_board(pieces: Dict[str,str]):
+    return dict(pieces)
+
+def get_piece_at(pieces: Dict[str,str], x:int, y:int):
+    if not inside(x,y): return None
+    return pieces.get(coords_to_square(x,y), None)
+
+# Generate pseudo-legal moves (no castling, no en-passant)
+def generate_pseudo_moves_for_piece(sq: str, piece: str, pieces: Dict[str,str]) -> List[str]:
+    moves = []
+    x,y = square_to_coords(sq)
+    color = 'white' if piece[0]=='w' else 'black'
+    ptype = piece[1]
+    forward = 1 if color=='white' else -1
+
+    def add_move(tx, ty, promote=None):
+        if not inside(tx,ty): return
+        to_sq = coords_to_square(tx,ty)
+        if promote:
+            for pr in PROMOTIONS:
+                moves.append(sq + to_sq + pr)
+        else:
+            moves.append(sq + to_sq)
+
+    if ptype == 'P':
+        # one step
+        ny = y + forward
+        if inside(x,ny) and get_piece_at(pieces,x,ny) is None:
+            # promotion?
+            if ny == 7 or ny == 0:
+                add_move(x,ny, promote=True)
+            else:
+                add_move(x,ny)
+            # two-step from starting rank
+            start_rank = 1 if color=='white' else 6
+            ny2 = y + 2*forward
+            if y == start_rank and inside(x,ny2) and get_piece_at(pieces,x,ny2) is None:
+                # ensure intermediate empty
+                add_move(x,ny2)
+        # captures
+        for dx in (-1, 1):
+            nx = x + dx
+            ny = y + forward
+            if inside(nx,ny):
+                target = get_piece_at(pieces,nx,ny)
+                if target is not None and piece_color(target) != color:
+                    if ny == 7 or ny == 0:
+                        add_move(nx,ny, promote=True)
+                    else:
+                        add_move(nx,ny)
+        # Note: en-passant not implemented
+    elif ptype == 'N':
+        for dx,dy in [(1,2),(2,1),(2,-1),(1,-2),(-1,-2),(-2,-1),(-2,1),(-1,2)]:
+            nx,ny = x+dx, y+dy
+            if not inside(nx,ny): continue
+            target = get_piece_at(pieces,nx,ny)
+            if target is None or piece_color(target) != color:
+                add_move(nx,ny)
+    elif ptype == 'B' or ptype == 'R' or ptype == 'Q':
+        directions = []
+        if ptype in ('B','Q'):
+            directions += [(1,1),(1,-1),(-1,1),(-1,-1)]
+        if ptype in ('R','Q'):
+            directions += [(1,0),(-1,0),(0,1),(0,-1)]
+        for dx,dy in directions:
+            nx,ny = x+dx, y+dy
+            while inside(nx,ny):
+                target = get_piece_at(pieces,nx,ny)
+                if target is None:
+                    add_move(nx,ny)
+                else:
+                    if piece_color(target) != color:
+                        add_move(nx,ny)
+                    break
+                nx += dx; ny += dy
+    elif ptype == 'K':
+        for dx in (-1,0,1):
+            for dy in (-1,0,1):
+                if dx==0 and dy==0: continue
+                nx,ny = x+dx, y+dy
+                if not inside(nx,ny): continue
+                target = get_piece_at(pieces,nx,ny)
+                if target is None or piece_color(target) != color:
+                    add_move(nx,ny)
+        # Castling not implemented
+    return moves
+
+def apply_move(pieces: Dict[str,str], move: str) -> Dict[str,str]:
+    newb = copy_board(pieces)
+    from_sq = move[0:2]; to_sq = move[2:4]
+    mover = newb.get(from_sq)
+    if mover is None:
+        # invalid but keep board unchanged
+        return newb
+    # handle promotion
+    if len(move) == 5:
+        prom = move[4]
+        color = mover[0]
+        newb.pop(from_sq, None)
+        newb.pop(to_sq, None)  # capture if any
+        newb[to_sq] = color + prom.upper()
+    else:
+        newb.pop(from_sq, None)
+        newb.pop(to_sq, None)
+        newb[to_sq] = mover
+    return newb
+
+# Check if square (string) is attacked by color 'white' or 'black' in given pieces
+def is_square_attacked(square: str, by_color: str, pieces: Dict[str,str]) -> bool:
+    tx,ty = square_to_coords(square)
+    # Pawn attacks
+    dir = 1 if by_color=='white' else -1
+    pawn_code = ('w' if by_color=='white' else 'b') + 'P'
+    for dx in (-1,1):
+        px,py = tx - dx, ty - dir  # reverse engineering: pawn at (px,py) attacks square at (tx,ty) if its attack forward aligns
+        # Actually simpler: check pawn at (tx-dx, ty-dir)? Let's compute pawn positions that attack target:
+        # White pawns attack from below (y-1) to target y, so px = tx+dx? Let's just test both:
+        pass
+    # To avoid logic confusion, do generic scan of all pieces of by_color and see if they can move to square (attack), using movement rules and occupancy.
+    for sq,p in pieces.items():
+        if piece_color(p) != by_color: continue
+        px,py = square_to_coords(sq)
+        ptype = p[1]
+        dx = tx - px
+        dy = ty - py
+        adx = abs(dx); ady = abs(dy)
+        if ptype == 'P':
+            # pawns attack diagonally forward
+            forward = 1 if by_color=='white' else -1
+            if dy == forward and adx == 1:
+                return True
+        elif ptype == 'N':
+            if (adx,ady) in ((1,2),(2,1)):
+                return True
+        elif ptype == 'B':
+            if adx == ady and adx != 0:
+                stepx = 1 if dx>0 else -1
+                stepy = 1 if dy>0 else -1
+                cx,cy = px+stepx, py+stepy
+                blocked = False
+                while (cx,cy) != (tx,ty):
+                    if get_piece_at(pieces,cx,cy) is not None:
+                        blocked = True; break
+                    cx += stepx; cy += stepy
+                if not blocked: return True
+        elif ptype == 'R':
+            if (dx == 0 and dy != 0) or (dy == 0 and dx != 0):
+                stepx = 0 if dx==0 else (1 if dx>0 else -1)
+                stepy = 0 if dy==0 else (1 if dy>0 else -1)
+                cx,cy = px+stepx, py+stepy
+                blocked = False
+                while (cx,cy) != (tx,ty):
+                    if get_piece_at(pieces,cx,cy) is not None:
+                        blocked = True; break
+                    cx += stepx; cy += stepy
+                if not blocked: return True
+        elif ptype == 'Q':
+            if (adx == ady and adx != 0) or (dx == 0 and dy != 0) or (dy == 0 and dx != 0):
+                stepx = 0 if dx==0 else (1 if dx>0 else -1)
+                stepy = 0 if dy==0 else (1 if dy>0 else -1)
+                if dx==0 and dy==0:
+                    continue
+                cx,cy = px+stepx, py+stepy
+                blocked = False
+                while (cx,cy) != (tx,ty):
+                    if get_piece_at(pieces,cx,cy) is not None:
+                        blocked = True; break
+                    cx += stepx; cy += stepy
+                if not blocked: return True
+        elif ptype == 'K':
+            if max(adx,ady) == 1:
+                return True
+    return False
+
+def generate_legal_moves(pieces: Dict[str,str], color: str) -> List[str]:
+    legal = []
+    our_code_prefix = 'w' if color=='white' else 'b'
+    opp = opponent(color)
+    king_sq = find_king(pieces, color)
+    for sq,p in list(pieces.items()):
+        if not p.startswith(our_code_prefix): continue
+        pseudo = generate_pseudo_moves_for_piece(sq,p,pieces)
+        for mv in pseudo:
+            newb = apply_move(pieces, mv)
+            # find king square after move
+            new_king_sq = find_king(newb, color)
+            # If king got captured (shouldn't happen), skip
+            if new_king_sq is None:
+                continue
+            if not is_square_attacked(new_king_sq, opp, newb):
+                legal.append(mv)
+    return legal
+
+def material_score(pieces: Dict[str,str], viewpoint: str) -> int:
+    # viewpoint: 'white' or 'black' - positive means advantage for viewpoint
+    score = 0
+    for p in pieces.values():
+        val = PIECE_VALUES.get(p[1],0)
+        if piece_color(p) == viewpoint:
+            score += val
+        else:
+            score -= val
+    return score
+
+def evaluate(pieces: Dict[str,str], side_to_move: str) -> int:
+    # positive is good for side_to_move
+    opp = opponent(side_to_move)
+    # material
+    mat = material_score(pieces, side_to_move)
+    # mobility
+    my_moves = generate_legal_moves(pieces, side_to_move)
+    opp_moves = generate_legal_moves(pieces, opp)
+    mobility = 10 * (len(my_moves) - len(opp_moves))
+    # checkmate/stalemate detection
+    if len(my_moves) == 0:
+        # if no moves, check if in check
+        king = find_king(pieces, side_to_move)
+        if king is None:
+            return -100000  # lost
+        if is_square_attacked(king, opp, pieces):
+            return -100000  # checkmate for side_to_move
+        else:
+            return 0  # stalemate
+    return mat + mobility
+
+def choose_move(pieces: Dict[str,str], to_play: str, memory: Dict) -> Tuple[str, Dict]:
+    legal = generate_legal_moves(pieces, to_play)
+    if not legal:
+        # no legal moves; return any pseudo move (shouldn't occur in normal use)
+        # try to return a safe dummy by scanning pseudo moves (even if illegal)
+        for sq,p in pieces.items():
+            if piece_color(p) == to_play:
+                pseu = generate_pseudo_moves_for_piece(sq,p,pieces)
+                if pseu:
+                    return pseu[0], memory
+        # ultimate fallback: return first two squares concatenated (invalid but something)
+        return "a1a1", memory
+
+    # Immediate winning check: any move that results in opponent having 0 legal moves and king in check => mate
+    for mv in legal:
+        nb = apply_move(pieces, mv)
+        opp = opponent(to_play)
+        opp_legal = generate_legal_moves(nb, opp)
+        opp_king = find_king(nb, opp)
+        if len(opp_legal) == 0 and opp_king is not None and is_square_attacked(opp_king, to_play, nb):
+            return mv, memory
+
+    # 2-ply: choose move that maximizes our worst-case response
+    best_move = legal[0]
+    best_score = -10**9
+    for mv in legal:
+        nb = apply_move(pieces, mv)
+        opp = opponent(to_play)
+        opp_legal = generate_legal_moves(nb, opp)
+        # if opponent has no legal moves -> handled earlier (mate) or stalemate
+        if not opp_legal:
+            sc = evaluate(nb, to_play)
+            if sc > best_score:
+                best_score = sc
+                best_move = mv
+            continue
+        worst = 10**9
+        for om in opp_legal:
+            nnb = apply_move(nb, om)
+            sc = evaluate(nnb, to_play)
+            if sc < worst:
+                worst = sc
+            # alpha-beta pruning-ish
+            if worst <= best_score:
+                break
+        if worst > best_score:
+            best_score = worst
+            best_move = mv
+
+    # store last move in memory for possible future use
+    memory = dict(memory)
+    memory['last_move'] = best_move
+    return best_move, memory
+
+def policy(pieces: Dict[str,str], to_play: str, memory: Dict) -> Tuple[str, Dict]:
+    """
+    pieces: dict mapping square->piece code, e.g. 'e2':'wP'
+    to_play: 'white' or 'black'
+    memory: dict preserved between calls
+    returns: (move_uci, memory)
+    """
+    move, mem = choose_move(pieces, to_play, memory or {})
+    return move, mem

@@ -1,0 +1,106 @@
+The strategy for this policy is to evaluate each legal move based on a simplified chess engine approach:
+
+1. **Checkmate Detection:** Prioritize moves that lead to immediate checkmate of the opponent.
+2. **Material Advantage:** Assign numerical values to pieces (Queen: 9, Rook: 5, Bishop: 3, Knight: 3, Pawn: 1) and select moves that capture opponent pieces of higher value than the captured piece (or move a threatened piece).
+3. **King Safety:**  Try to move the king to a safer location or move pieces in such a way that the king is more protected.
+4. **Simple Evaluation:**  For remaining moves, score them positively based on attacking central squares and negatively based on leaving pieces vulnerable.
+5. **Return a Legal Move:** If no move is outstanding, return the first legal move.
+
+This approach allows an AI to play a reasonably logical game of chess under time constraints by making locally optimal decisions.
+
+```python
+import chess
+
+def evaluate_move(board, move, to_play):
+    """A simplified evaluation function for chess moves."""
+    score = 0
+
+    # Material values
+    piece_values = {
+        chess.PAWN: 1,
+        chess.KNIGHT: 3,
+        chess.BISHOP: 3,
+        chess.ROOK: 5,
+        chess.QUEEN: 9,
+        chess.KING: 0  # King value is not considered for material advantage
+    }
+
+    # 1. Capture evaluation
+    if board.is_capture(move):
+        captured_piece = board.piece_at(move.to_square)
+        if captured_piece:
+            score += piece_values.get(captured_piece.piece_type, 0)
+        if board.piece_at(move.from_square):
+            score -= piece_values.get(board.piece_at(move.from_square).piece_type, 0)
+
+    # 2. Central control
+    center_squares = [chess.D4, chess.E4, chess.D5, chess.E5]
+    if move.to_square in center_squares:
+        score += 0.1
+
+    # 3. Piece protection (basic) - try to prevent pieces from being attacked
+    board.push(move)
+    
+    # Check if the move itself creates a check:
+    if board.is_check():
+        score += 0.5  # Added benefit for checking the opponent
+
+    board.pop()
+
+    return score
+
+
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    """
+    Selects a move based on the provided pieces and the player's turn.
+    """
+
+    board = chess.Board()
+    board.clear()
+
+    piece_map = {
+        'K': chess.KING,
+        'Q': chess.QUEEN,
+        'R': chess.ROOK,
+        'B': chess.BISHOP,
+        'N': chess.KNIGHT,
+        'P': chess.PAWN
+    }
+
+    for square, piece in pieces.items():
+        color = chess.WHITE if piece[0] == 'w' else chess.BLACK
+        piece_type = piece_map[piece[1]]
+        square_index = chess.parse_square(square)
+        board.set_piece_at(square_index, chess.Piece(piece_type, color))
+    
+    board.turn = chess.WHITE if to_play == 'white' else chess.BLACK
+
+    legal_moves = list(board.legal_moves)
+
+    if not legal_moves:
+        return 'a1a1'  # return a dummy move
+
+    best_move = None
+    best_score = float('-inf')
+
+    for move in legal_moves:
+        # 1. Checkmate detection:
+        board.push(move)
+        if board.is_checkmate():
+            board.pop()
+            return move.uci()
+        board.pop()
+
+        # 2. Evaluate move (material advantage, central control, king safety)
+        score = evaluate_move(board, move, to_play)
+
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    if best_move:
+        return best_move.uci()
+    else:
+        return legal_moves[0].uci()
+```

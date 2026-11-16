@@ -1,0 +1,301 @@
+The strategy for this policy prioritizes immediate winning threats, blocks opponent wins, creates double threats when possible, and focuses on strategic central positions to maintain control of the game board.
+
+<code>
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    """
+    Smart policy for 3x3x3 3D Tic Tac Toe that prioritizes:
+    1. Winning moves
+    2. Blocking opponent wins
+    3. Creating double threats (forks)
+    4. Center control
+    5. Strategic positioning in critical lines
+    """
+    
+    # Check if current player (me) has a winning move
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board[i][j][k] == 0:
+                    # Simulate placing my mark
+                    temp_board = [[row[:] for row in plane] for plane in board]
+                    temp_board[i][j][k] = 1
+                    if check_win(temp_board, 1):
+                        return (i, j, k)
+    
+    # Check if opponent is threatening to win next move
+    threat_opponent = check_threat(board, -1)
+    if threat_opponent:
+        # Block the opponent's threat
+        return (threat_opponent[0], threat_opponent[1], threat_opponent[2])
+    
+    # Check if I have a winning threat (two in a row)
+    my_threat = check_threat(board, 1)
+    if my_threat:
+        # If it's the same as opponent's threat, choose center or prioritize better option
+        if my_threat == threat_opponent:
+            return choose_center_priority(board)
+        else:
+            return (my_threat[0], my_threat[1], my_threat[2])
+    
+    # Look for fork opportunities (double threats)
+    fork_opportunities = find_fork_opportunities(board)
+    if fork_opportunities:
+        # Evaluate which fork has highest winning probability
+        best_fork = max(fork_opportunities, key=lambda cell: evaluate_fork(board, cell))
+        return best_fork
+    
+    # Center control (1,1,1) is the most valuable position
+    center = (1, 1, 1)
+    if board[1][1][1] == 0:
+        return center
+    
+    # Play along strategic lines (common winning lines in 3D)
+    strategic_lines = [
+        (0, 0, 0), (1, 1, 1), (2, 2, 2),  # Main diagonal
+        (0, 0, 2), (1, 1, 1), (2, 2, 0),  # Face diagonal
+        (0, 2, 0), (1, 1, 1), (2, 0, 2),  # Vertical diagonal
+        (0, 0, 1), (0, 1, 2), (0, 2, 0),  # Edge with multiple possibilities
+        (1, 0, 1), (1, 1, 1), (1, 2, 1),  # Central edge in all layers
+    ]
+    
+    for cell in strategic_lines:
+        if board[cell[0]][cell[1]][cell[2]] == 0:
+            return cell
+    
+    # If all else fails, pick a random legal move from empty cells
+    empty_cells = []
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board[i][j][k] == 0:
+                    empty_cells.append((i, j, k))
+    
+    # Choose randomly but prioritize cells with highest scoring potential
+    best_cell = None
+    max_score = -1
+    for cell in empty_cells:
+        cell_score = evaluate_cell(board, cell)
+        if cell_score > max_score:
+            max_score = cell_score
+            best_cell = cell
+    return best_cell
+
+def check_win(board: list[list[list[int]]], player: int) -> bool:
+    """Check if player has a winning line in any of the 49 possible winning lines"""
+    # Check all 27 rows (3 layers * 3x3 per layer)
+    for z in range(3):
+        for y in range(3):
+            for x in range(3):
+                # Check line (x,y,z) to (x,y,z+2) if exists
+                if 0 <= z+2 < 3:
+                    if board[x][y][z] == player and board[x][y][z+1] == player and board[x][y][z+2] == player:
+                        return True
+    
+    # Check all 27 columns
+    for z in range(3):
+        for x in range(3):
+            for y in range(3):
+                if 0 << z+2 < 3:
+                    if board[x][y][z] == player and board[x+1][y][z] == player and board[x+2][y][z] == player:
+                        return True
+    
+    # Check all 9 pillars (through layers)
+    for x in range(3):
+        for y in range(3):
+            if 0 <= z+2 < 3:
+                if board[x][y][z] == player and board[x][y][z+1] == player and board[x][y][z+2] == player:
+                    return True
+    
+    # Check all 4 space diagonals
+    if board[0][0][0] == player and board[1][1][1] == player and board[2][2][2] == player:
+        return True
+    if board[0][2][0] == player and board[1][1][1] == player and board[2][0][2] == player:
+        return True
+    if board[0][0][2] == player and board[1][1][1] == player and board[2][2][0] == player:
+        return True
+    if board[0][2][2] == player and board[1][1][1] == player and board[2][0][0] == player:
+        return True
+    
+    return False
+
+def check_threat(board: list[list[list[int]]], player: int) -> tuple[int, int, int] | None:
+    """Check if player has any two-in-a-row threats (could win next turn)"""
+    # Check all 49 lines for two-in-a-row patterns
+    for z in range(3):
+        for y in range(3):
+            for x in range(3):
+                # Check horizontal lines in layer
+                if 0 <= z+2 < 3:
+                    if board[x][y][z] == player and board[x][y][z+1] == player:
+                        if board[x][y][z+2] == 0:
+                            return (x, y, z+2)
+                    if board[x][y][z] == player and board[x][y][z+2] == player:
+                        if board[x][y][z+1] == 0:
+                            return (x, y, z+1)
+                    if board[x][y][z+1] == player and board[x][y][z+2] == player:
+                        if board[x][y][z] == 0:
+                            return (x, y, z)
+                
+                # Check vertical lines in layer
+                if 0 <= x+2 < 3:
+                    if board[x][y][z] == player and board[x+1][y][z] == player:
+                        if board[x+2][y][z] == 0:
+                            return (x+2, y, z)
+                    if board[x][y][z] == player and board[x+2][y][z] == player:
+                        if board[x+1][y][z] == 0:
+                            return (x+1, y, z)
+                    if board[x+1][y][z] == player and board[x+2][y][z] == player:
+                        if board[x][y][z] == 0:
+                            return (x, y, z)
+    
+    # Check pillars through layers
+    for x in range(3):
+        for y in range(3):
+            for z in range(3):
+                if board[x][y][z] == player and board[x][y][z+1] == player:
+                    if board[x][y][z+2] == 0:
+                        return (x, y, z+2)
+                if board[x][y][z] == player and board[x][y][z+2] == player:
+                    if board[x][y][z+1] == 0:
+                        return (x, y, z+1)
+                if board[x][y][z+1] == player and board[x][y][z+2] == player:
+                    if board[x][y][z] == 0:
+                        return (x, y, z)
+    
+    # Check diagonal lines through layers
+    if board[0][0][0] == player and board[1][1][1] == player:
+        if board[2][2][2] == 0:
+            return (2, 2, 2)
+    if board[0][0][0] == player and board[2][2][2] == player:
+        if board[1][1][1] == 0:
+            return (1, 1, 1)
+    if board[0][2][0] == player and board[2][0][2] == player:
+        if board[1][1][1] == 0:
+            return (1, 1, 1)
+    if board[0][2][2] == player and board[2][0][0] == player:
+        if board[1][1][1] == 0:
+            return (1, 1, 1)
+    
+    return None
+
+def find_fork_opportunities(board: list[list[list[int]]]) -> list[tuple[int, int, int]]:
+    """Find positions that allow creating multiple winning threats (forks)"""
+    # Identify promising positions based on common fork patterns
+    # (1,1,1) center creates many fork opportunities
+    # Corner positions create multiple line threats
+    # Edge positions create cross-layer threats
+    
+    empty_cells = [(i, j, k) for i in range(3) for j in range(3) for k in range(3) if board[i][j][k] == 0]
+    
+    # Prioritize center and corners for forks
+    return [cell for cell in empty_cells if cell in [(0,0,0), (0,0,2), (0,2,0), (2,0,0), (2,2,0), (2,0,2), (0,2,2), (2,2,2)] 
+          or cell == (1,1,1)]
+
+def choose_center_priority(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    """Choose between conflicting center and threat options"""
+    center = (1, 1, 1)
+    threat_cells = [
+        board[0][1][1], board[1][0][1], board[1][1][0], board[1][1][2],
+        board[2][1][1], board[1][2][1]
+    ]
+    
+    # Prioritize center if available or if it gives more flexibility
+    if board[1][1][1] == 0 or len(empty_cells) <= 2:
+        return center
+    else:
+        # Return the highest priority threat
+        if my_threat and len(my_threat) == 1:
+            return my_threat[0]
+        if threat_opponent and len(threat_opponent) == 1:
+            return threat_opponent[0]
+        # Otherwise choose best threat from empty cells
+        empty_cells = [(i, j, k) for i in range(3) for j in range(3) for k in range(3) if board[i][j][k] == 0]
+        if not empty_cells:
+            return center  # Should not happen
+            
+        # Choose the threat that gives most control
+        return max(empty_cells, key=lambda cell: evaluate_cell(board, cell))
+
+def evaluate_cell(board: list[list[list[int]]], cell: tuple[int, int, int]) -> int:
+    """Score cells based on their strategic value in 3D Tic Tac Toe"""
+    score = 0
+    
+    # Cell value based on position
+    if cell == (1, 1, 1):
+        score += 100  # Center has highest value
+    elif cell in [(0,0,0), (0,0,2), (0,2,0), (2,0,0), (2,2,0), (2,0,2), (0,2,2), (2,2,2)]:
+        score += 50   # Corners are highly valuable
+    elif cell in [(0,1,1), (1,0,1), (1,2,1), (2,1,1)]:
+        score += 80   # Mid-edges have high value
+    
+    # Line value (checks for partial lines)
+    partial = check_partial_line(board, cell)
+    score += partial * 20
+    
+    # Threat value (creates potential forks)
+    fork_potential = is_fork_position(board, cell)
+    score += fork_potential * 30
+    
+    # Center proximity
+    center_dist = abs(cell[0] - 1) + abs(cell[1] - 1) + abs(cell[2] - 1)
+    score -= center_dist
+    
+    # Layer flexibility
+    layer_count = count_nonempty_layers(board)
+    if cell[2] == 0 and layer_count > 0:
+        score += 2
+    
+    return score
+
+def is_fork_position(board: list[list[list[int]]], cell: tuple[int, int, int]) -> bool:
+    """Check if placing at this cell creates multiple winning opportunities"""
+    # Try placing at this cell and check for potential forks
+    temp_board = [[row[:] for row in plane] for plane in board]
+    temp_board[cell[0]][cell[1]][cell[2]] = 1
+    
+    # Check if this creates multiple two-in-a-row threats
+    threats = []
+    for line in all_lines():
+        if check_line(temp_board, line) == 2 and line_has_empty(temp_board, line):
+            threats.append(line)
+    
+    return len(threats) > 1
+
+# Precompute all winning lines (49 total)
+all_lines = [
+    # Layer lines (z fixed)
+    ( (0,0,0), (0,0,1), (0,0,2) ), ( (0,1,0), (0,1,1), (0,1,2) ), ( (0,2,0), (0,2,1), (0,2,2) ),
+    ( (1,0,0), (1,0,1), (1,0,2) ), ( (1,1,0), (1,1,1), (1,1,2) ), ( (1,2,0), (1,2,1), (1,2,2) ),
+    ( (2,0,0), (2,0,1), (2,0,2) ), ( (2,1,0), (2,1,1), (2,1,2) ), ( (2,2,0), (2,2,1), (2,2,2) ),
+    
+    # Column lines (x fixed)
+    ( (0,0,0), (1,0,0), (2,0,0) ), ( (0,1,0), (1,1,0), (2,1,0) ), ( (0,2,0), (1,2,0), (2,2,0) ),
+    ( (0,0,1), (1,0,1), (2,0,1) ), ( (0,1,1), (1,1,1), (2,1,1) ), ( (0,2,1), (1,2,1), (2,2,1) ),
+    ( (0,0,2), (1,0,2), (2,0,2) ), ( (0,1,2), (1,1,2), (2,1,2) ), ( (0,2,2), (1,2,2), (2,2,2) ),
+    
+    # Pillar lines (through layers)
+    ( (0,0,0), (0,0,1), (0,0,2) ), ( (0,1,0), (0,1,1), (0,1,2) ), ( (0,2,0), (0,2,1), (0,2,2) ),
+    ( (1,0,0), (1,0,1), (1,0,2) ), ( (1,1,0), (1,1,1), (1,1,2) ), ( (1,2,0), (1,2,1), (1,2,2) ),
+    ( (2,0,0), (2,0,1), (2,0,2) ), ( (2,1,0), (2,1,1), (2,1,2) ), ( (2,2,0), (2,2,1), (2,2,2) ),
+    
+    # Diagonal lines through layers
+    ( (0,0,0), (1,1,1), (2,2,2) ), ( (0,2,0), (1,1,1), (2,0,2) ),
+    ( (0,0,2), (1,1,1), (2,2,0) ), ( (0,2,2), (1,1,1), (2,0,0) ),
+]
+
+def check_line(board: list[list[list[int]]], line: tuple[tuple[int, int, int], ...]) -> int:
+    """Return count of player's marks in this line"""
+    player = board[line[0][0]][line[0][1]][line[0][2]]
+    count = 0
+    for coord in line:
+        if board[coord[0]][coord[1]][coord[2]] == player:
+            count += 1
+    return count
+
+def line_has_empty(board: list[list[list[int]]], line: tuple[tuple[int, int, int], ...]) -> bool:
+    """Check if there's an empty cell in this line"""
+    for coord in line:
+        if board[coord[0]][coord[1]][coord[2]] == 0:
+            return True
+    return False
+</code>

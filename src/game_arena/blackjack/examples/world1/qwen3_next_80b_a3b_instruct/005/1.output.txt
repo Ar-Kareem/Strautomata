@@ -1,0 +1,79 @@
+The strategy for this policy is to use a dynamic threshold approach based on the current hand value relative to the target. Since Aces can be 1 or 11, we first calculate the optimal hand value by treating Aces as 11 when beneficial (i.e., when hand value ≤ target). We then implement a risk-aware decision rule:
+
+1. If the current optimal hand value exceeds the target → STAY (already busted, no point in drawing more)
+2. If the current optimal hand value is very close to target (within 1-3 points) → STAY (minimize risk of busting)
+3. If the current optimal hand value is low (≤ target - 10) → HIT (high reward potential)
+4. For intermediate values (target - 10 < current ≤ target - 4), we use a probabilistic heuristic: calculate the probability of drawing a card that doesn't cause a bust, and HIT only if this probability is above a threshold (e.g., 50%). This threshold is adjusted based on how close we are to the target.
+
+We also account for the fact that cards are drawn without replacement from a fixed deck of 13 unique cards. We track which cards remain to estimate the probability distribution of the next card.
+
+This policy balances aggression when behind and caution when near the target, while explicitly considering card depletion to avoid overestimating safe drawing probabilities.
+
+<code>
+import numpy as np
+
+def policy(hand: list[str], target: int) -> str:
+    # Card values mapping
+    card_values = {
+        "A": 11, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, 
+        "7": 7, "8": 8, "9": 9, "10": 10, "J": 10, "Q": 10, "K": 10
+    }
+    
+    # All cards in the standard deck
+    all_cards = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    
+    # Determine which cards are still in the deck (not in hand)
+    remaining_cards = [card for card in all_cards if card not in hand]
+    
+    # Calculate current hand value with optimal Ace usage
+    def calculate_optimal_value(cards):
+        # Count Aces and sum non-Ace cards
+        non_ace_sum = sum(card_values[card] for card in cards if card != "A")
+        num_aces = cards.count("A")
+        
+        # Try using as many Aces as 11 as possible without busting
+        # Start with all Aces as 11, then reduce one by one if needed
+        total = non_ace_sum + num_aces * 11
+        
+        # If total exceeds target, convert Aces from 11 to 1 one by one
+        while total > target and num_aces > 0:
+            total -= 10  # convert one Ace from 11 to 1
+            num_aces -= 1
+            
+        return total
+    
+    current_value = calculate_optimal_value(hand)
+    
+    # If already busted, must stay (though game would end, but policy must return stay)
+    if current_value > target:
+        return "STAY"
+    
+    # If very close to target, stay to avoid risk
+    if current_value >= target - 2:
+        return "STAY"
+    
+    # If far from target, hit aggressively
+    if current_value <= target - 10:
+        return "HIT"
+    
+    # For intermediate range: target - 10 < current_value < target - 3
+    # Calculate probability that next card doesn't cause bust
+    safe_cards = []
+    for card in remaining_cards:
+        card_val = card_values[card]
+        # Calculate new value if we draw this card
+        new_hand = hand + [card]
+        new_value = calculate_optimal_value(new_hand)
+        
+        if new_value <= target:
+            safe_cards.append(card)
+    
+    safe_prob = len(safe_cards) / len(remaining_cards) if remaining_cards else 0
+    
+    # We'll HIT if probability of staying safe is > 50%, otherwise STAY
+    # This gives us a balance: when we have good chance to improve safely, we hit
+    if safe_prob > 0.5:
+        return "HIT"
+    else:
+        return "STAY"
+</code>

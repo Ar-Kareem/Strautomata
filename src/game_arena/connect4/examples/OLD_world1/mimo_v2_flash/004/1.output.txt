@@ -1,0 +1,290 @@
+**Thinking Process:**
+
+1.  **Analyze the Goal:** I need to implement a Connect 4 AI (`policy` function) for a 6x7 grid. The AI should be robust, aiming to win while blocking the opponent.
+2.  **Determine the Strategy:** A pure heuristic approach (like "play in the center") is too weak. A Minimax algorithm with Alpha-Beta pruning is the standard for this kind of problem. Given the 1-second time limit, I can afford a search depth of around 6-8 plies, which is sufficient to beat most non-searching opponents.
+3.  **Refine the Algorithm:**
+    *   **State Representation:** The input is a `list[list[int]]`. I should convert this to a more efficient format for the search. A tuple of tuples or a flat tuple is hashable and can be used for a transposition table (cache) to speed up the search. Given the grid size (42 cells), an integer bitboard is efficient, but for readability and simplicity in Python, a tuple representation is acceptable. However, for speed, I'll stick to the list format but flatten it or use a specific indexing scheme if needed.
+    *   **Evaluation Function:** This is crucial.
+        *   Score += 1 for having 2 discs in a row with empty space on both ends.
+        *   Score += 3 for 3 discs in a row with an empty space on at least one end.
+        *   Score += 100 for 4 in a row (Win).
+        *   I must also check for potential opponent wins and block them. Usually, Minimax handles this, but explicit blocking moves in the heuristic can save depth.
+    *   **Move Ordering:** To make Alpha-Beta effective, moves must be checked in a specific order:
+        1.  Winning moves (immediate win).
+        2.  Blocking moves (prevent opponent win next turn).
+        3.  Center columns first (columns 3, 2, 4, 1, 5, 0, 5...). The center is strategically the most valuable.
+    *   **Depth:** With the time limit, I can likely perform a search of depth 5 to 7.
+    *   **Heuristics:**
+        *   Check for "Connect 4".
+        *   Check for "Threats" (3 in a row).
+        *   Center control preference.
+    *   **Win Detection:** I need a fast way to check if the last move won. Since `policy` only receives the board, I must simulate moves or check the board state for 4 lines. Scanning the board for 4-in-a-row is straightforward.
+
+4.  **Drafting the Code Structure:**
+    *   `class Connect4AI`: Holds the logic (Minimax, Evaluation).
+    *   `policy(board)`: The entry point. It instantiates the AI or calls static methods, converts the board to the internal format, runs the search, and returns the column.
+    *   **Internal Board Representation:** I'll likely stick to the list of lists for the input to be safe, but for the recursive search, I will pass simple lists or tuples to avoid overhead.
+
+5.  **Optimization for Python:**
+    *   Python recursion limit is usually 1000. Depth 6 is fine.
+    *   Pure Python recursion for Minimax might be slow. However, for depth 6-7, it's manageable (approx $7^7$ nodes is too high, but Alpha-Beta prunes heavily).
+    *   *Wait, 1 second on 3GHz CPU for Python.* This is tight for a deep search if not optimized. I need to use bitboards or a very optimized evaluation.
+    *   Let's try a **Bitboard** approach for speed and memory efficiency. 6 rows x 7 cols = 42 bits. Fits in a standard 64-bit integer.
+    *   However, the input is `list[list[int]]`. Converting it to a bitboard every time is overhead, but necessary for fast simulation.
+    *   Actually, simpler heuristics with depth 4-5 might be safer and robust enough without complex bitboard implementation, but let's try to be as smart as possible.
+    *   Let's stick to a list/tuple representation but optimize the evaluation function. I will use a simple heuristic that checks for lines.
+
+6.  **Writing the Code (Mental Draft):**
+    *   *Imports:* None needed (or `typing`).
+    *   *Constants:* `ROWS=6`, `COLS=7`.
+    *   *Helper `is_valid_location(board, col)`:* Check if `board[0][col] == 0`.
+    *   *Helper `get_next_open_row(board, col)`:* Iterate from bottom up.
+    *   *Helper `winning_move(board, piece)`:* Check 4 directions.
+    *   *Heuristic `evaluate_window(window, piece)`:* Score a slice of 4 cells.
+    *   *Minimax `minimax(board, depth, alpha, beta, maximizingPlayer)`:* Recursive.
+
+7.  **Refining the Search:**
+    *   Given the time limit, I will implement a **Depth-Limited Minimax**.
+    *   *Root Level:* Check for immediate win. Check for immediate block. If neither, proceed to search.
+    *   *Search:* Depth 4 or 5.
+    *   *Evaluation:* Sum of threats. If `len(available_moves) == 0`, draw.
+
+8.  **Code Construction Details:**
+    *   The board is `List[List[int]]`.
+    *   To optimize the search, I will create a copy of the board for simulation.
+    *   *Move Ordering:* The most important optimization for Alpha-Beta. I will order moves by column index distance from the center (columns 3, 2, 4, 1, 5, 0, 6). This helps prune branches early.
+
+9.  **Final Polish:**
+    *   Ensure the function signature matches exactly.
+    *   The code must be a single file.
+    *   Handle edge cases like full board.
+    *   The prompt implies I am the *current* player (1). I don't need to compute whose turn it is from the board counts if the function is called correctly, but it's good practice to ensure validity.
+
+10. **Self-Correction during drafting:**
+    *   *Issue:* Python recursion overhead.
+    *   *Solution:* Keep depth reasonable (e.g., 5). If time runs out, a lower depth is better than a crash.
+    *   *Heuristic:* Instead of just "who has more pieces", it must be "who has more threats".
+        *   100000 for win.
+        *   1000 for 3 in a row (flexible).
+        *   10 for 2 in a row.
+        *   Center column bonus.
+
+11. **Detailed Implementation Plan:**
+    *   `get_valid_locations(board)`
+    *   `score_position(board, piece)`: Calculates heuristic score for the board state.
+    *   `terminal_node(board)`: Checks for win or draw.
+    *   `minimax(board, depth, alpha, beta, maximizingPlayer)`: Returns column index (at root) or score.
+    *   `policy(board)`:
+        *   If immediate win exists, take it.
+        *   If opponent wins next turn if I don't block, block it.
+        *   Run minimax to depth 5.
+        *   Return best move.
+
+12. **Let's write the code.** I will use a global variable for depth to ensure it fits in time. Depth 5 is usually safe for Connect 4 in Python on 1 second.
+
+```python
+import sys
+# We don't strictly need numpy for this, standard lists are fine.
+# However, to be robust, we might use simple loops.
+
+def policy(board: list[list[int]]) -> int:
+    ROWS = 6
+    COLS = 7
+    
+    # ... (rest of the logic) ...
+```
+
+Let's write the actual code now.
+
+```python
+def policy(board: list[list[int]]) -> int:
+    ROWS = 6
+    COLS = 7
+
+    # Helper: Get all valid locations (columns that are not full)
+    def get_valid_locations(b):
+        valid = []
+        for col in range(COLS):
+            if b[0][col] == 0:
+                valid.append(col)
+        return valid
+
+    # Helper: Check if a move is valid
+    def is_valid_location(b, col):
+        return b[0][col] == 0
+
+    # Helper: Get the next open row for a column
+    def get_next_open_row(b, col):
+        for r in range(ROWS - 1, -1, -1):
+            if b[r][col] == 0:
+                return r
+        return -1
+
+    # Helper: Check for a win
+    def winning_move(b, piece):
+        # Horizontal
+        for r in range(ROWS):
+            for c in range(COLS - 3):
+                if b[r][c] == piece and b[r][c+1] == piece and b[r][c+2] == piece and b[r][c+3] == piece:
+                    return True
+        # Vertical
+        for r in range(ROWS - 3):
+            for c in range(COLS):
+                if b[r][c] == piece and b[r+1][c] == piece and b[r+2][c] == piece and b[r+3][c] == piece:
+                    return True
+        # Positive Slope Diagonal
+        for r in range(ROWS - 3):
+            for c in range(COLS - 3):
+                if b[r][c] == piece and b[r+1][c+1] == piece and b[r+2][c+2] == piece and b[r+3][c+3] == piece:
+                    return True
+        # Negative Slope Diagonal
+        for r in range(3, ROWS):
+            for c in range(COLS - 3):
+                if b[r][c] == piece and b[r-1][c+1] == piece and b[r-2][c+2] == piece and b[r-3][c+3] == piece:
+                    return True
+        return False
+
+    # Evaluation function: Check for threats and center control
+    def evaluate_window(window, piece):
+        score = 0
+        opp_piece = -1 if piece == 1 else 1
+        
+        count_piece = window.count(piece)
+        count_empty = window.count(0)
+        count_opp = window.count(opp_piece)
+
+        if count_piece == 4:
+            score += 100000 # Win
+        elif count_piece == 3 and count_empty == 1:
+            score += 100 # Threat
+        elif count_piece == 2 and count_empty == 2:
+            score += 10 # Potential
+
+        # Blocking logic
+        if count_opp == 3 and count_empty == 1:
+            score -= 90000 # Urgent block
+
+        return score
+
+    # Score the board for a specific piece
+    def score_position(b, piece):
+        score = 0
+        
+        # Center column preference
+        center_array = [b[r][3] for r in range(ROWS)]
+        center_count = center_array.count(piece)
+        score += center_count * 3
+
+        # Horizontal
+        for r in range(ROWS):
+            row_array = b[r]
+            for c in range(COLS - 3):
+                window = row_array[c:c+4]
+                score += evaluate_window(window, piece)
+
+        # Vertical
+        for c in range(COLS):
+            col_array = [b[r][c] for r in range(ROWS)]
+            for r in range(ROWS - 3):
+                window = col_array[r:r+4]
+                score += evaluate_window(window, piece)
+
+        # Positive Diagonal
+        for r in range(ROWS - 3):
+            for c in range(COLS - 3):
+                window = [b[r+i][c+i] for i in range(4)]
+                score += evaluate_window(window, piece)
+
+        # Negative Diagonal
+        for r in range(3, ROWS):
+            for c in range(COLS - 3):
+                window = [b[r-i][c+i] for i in range(4)]
+                score += evaluate_window(window, piece)
+
+        return score
+
+    # Minimax Algorithm with Alpha-Beta Pruning
+    def minimax(b, depth, alpha, beta, maximizingPlayer):
+        valid_locations = get_valid_locations(b)
+        is_terminal = winning_move(b, 1) or winning_move(b, -1) or len(valid_locations) == 0
+        
+        if depth == 0 or is_terminal:
+            if is_terminal:
+                if winning_move(b, 1):
+                    return (None, 100000000000000)
+                elif winning_move(b, -1):
+                    return (None, -100000000000000)
+                else: # Game is over, no more valid moves
+                    return (None, 0)
+            else: # Depth is zero
+                return (None, score_position(b, 1))
+
+        # Move ordering: check center columns first to improve pruning
+        # Col order: 3, 2, 4, 1, 5, 0, 6
+        ordered_cols = []
+        center = COLS // 2
+        for offset in range(0, COLS // 2 + 1):
+            if center - offset >= 0: ordered_cols.append(center - offset)
+            if center + offset < COLS and center + offset != center - offset: ordered_cols.append(center + offset)
+
+        if maximizingPlayer:
+            value = -float('inf')
+            best_col = ordered_cols[0] # Default fallback
+            for col in ordered_cols:
+                if col in valid_locations:
+                    # Create a copy of the board
+                    temp_board = [r[:] for r in b]
+                    row = get_next_open_row(temp_board, col)
+                    temp_board[row][col] = 1 # AI Move
+                    
+                    new_score = minimax(temp_board, depth-1, alpha, beta, False)[1]
+                    if new_score > value:
+                        value = new_score
+                        best_col = col
+                    alpha = max(alpha, value)
+                    if alpha >= beta:
+                        break
+            return best_col, value
+        else:
+            value = float('inf')
+            best_col = ordered_cols[0]
+            for col in ordered_cols:
+                if col in valid_locations:
+                    temp_board = [r[:] for r in b]
+                    row = get_next_open_row(temp_board, col)
+                    temp_board[row][col] = -1 # Opponent Move
+                    
+                    new_score = minimax(temp_board, depth-1, alpha, beta, True)[1]
+                    if new_score < value:
+                        value = new_score
+                        best_col = col
+                    beta = min(beta, value)
+                    if alpha >= beta:
+                        break
+            return best_col, value
+
+    # --- Policy Logic Starts Here ---
+    
+    # 1. Check for immediate win
+    valid_locations = get_valid_locations(board)
+    for col in valid_locations:
+        temp_board = [r[:] for r in board]
+        row = get_next_open_row(temp_board, col)
+        temp_board[row][col] = 1
+        if winning_move(temp_board, 1):
+            return col
+
+    # 2. Check for immediate block (opponent wins if we don't act)
+    for col in valid_locations:
+        temp_board = [r[:] for r in board]
+        row = get_next_open_row(temp_board, col)
+        temp_board[row][col] = -1
+        if winning_move(temp_board, -1):
+            return col
+
+    # 3. Minimax Search
+    # Depth 5 is a good balance for 1s time limit in Python on standard hardware
+    best_col, minimax_score = minimax(board, 5, -float('inf'), float('inf'), True)
+    
+    return best_col
+```

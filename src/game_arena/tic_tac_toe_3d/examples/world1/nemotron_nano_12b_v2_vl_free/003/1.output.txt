@@ -1,0 +1,183 @@
+To develop an AI for a **3x3x3 3D Tic Tac Toe** game that can perform optimally within the constraints of 1 second on a modern CPU, we employ a **multi-phase decision-making process**:
+
+---
+
+### 🧠 **Strategy Overview**
+
+1. **Immediate Win**:  
+   First, check if the AI can win by placing its symbol (1) in any of the empty cells. This is done by simulating placing a move and checking if any of the 49 winning lines are completed.
+
+2. **Block Opponent's Win**:  
+   If no immediate win is possible, check if the opponent (represented by -1) can win in their next move. If so, block that move immediately to prevent the opponent from securing a win.
+
+3. **Heuristic Move Selection**:  
+   If neither a win nor a block is possible, make a move based on a heuristic strategy:
+   - **Center of the cube** (1,1,1) — the most central and strategic position.
+   - **Face centers** — these are high-value positions that contribute to the most lines.
+   - **Corners** — these are part of multiple winning lines and are also valuable.
+   - **Edge cells** — less valuable than the above but still part of several lines.
+   - **Fallback**: If no better move is available, choose any empty cell.
+
+This strategy ensures the AI is both **defensive** (blocking opponent's wins) and **aggressive** (seeking to win as soon as possible), while also incorporating a **strong heuristic** for move selection in non-critical positions.
+
+---
+
+### 🧾 **Python Code Implementation**
+
+```python
+# Predefined list of all 49 winning lines in 3D Tic Tac Toe
+all_lines = [
+    # X-axis lines (fixed y, z)
+    [(0,0,0), (1,0,0), (2,0,0)],
+    [(0,0,1), (1,0,1), (2,0,1)],
+    [(0,0,2), (1,0,2), (2,0,2)],
+    [(0,1,0), (1,1,0), (2,1,0)],
+    [(0,1,1), (1,1,1), (2,1,1)],
+    [(0,1,2), (1,1,2), (2,1,2)],
+    [(0,2,0), (1,2,0), (2,2,0)],
+    [(0,2,1), (1,2,1), (2,2,1)],
+    [(0,2,2), (1,2,2), (2,2,2)],
+    # Y-axis lines (fixed x, z)
+    [(0,0,0), (0,1,0), (0,2,0)],
+    [(0,0,1), (0,1,1), (0,2,1)],
+    [(0,0,2), (0,1,2), (0,2,2)],
+    [(1,0,0), (1,1,0), (1,2,0)],
+    [(1,0,1), (1,1,1), (1,2,1)],
+    [(1,0,2), (1,1,2), (1,2,2)],
+    [(2,0,0), (2,1,0), (2,2,0)],
+    [(2,0,1), (2,1,1), (2,2,1)],
+    [(2,0,2), (2,1,2), (2,2,2)],
+    # Z-axis lines (fixed x, y)
+    [(0,0,0), (0,0,1), (0,0,2)],
+    [(0,1,0), (0,1,1), (0,1,2)],
+    [(0,2,0), (0,2,1), (0,2,2)],
+    [(1,0,0), (1,0,1), (1,0,2)],
+    [(1,1,0), (1,1,1), (1,0,2)],
+    [(1,2,0), (1,2,1), (1,2,2)],
+    [(2,0,0), (2,0,1), (2,0,2)],
+    [(2,1,0), (2,1,1), (2,1,2)],
+    [(2,2,0), (2,2,1), (2,2,2)],
+    # Face diagonals (XY planes)
+    [(0,0,0), (1,1,0), (2,2,0)],
+    [(0,2,0), (1,1,0), (2,0,0)],
+    [(0,0,1), (1,1,1), (2,2,1)],
+    [(0,2,1), (1,1,1), (2,0,1)],
+    [(0,0,2), (1,1,2), (2,2,2)],
+    [(0,2,2), (1,1,2), (2,0,2)],
+    # Face diagonals (YZ planes)
+    [(0,0,0), (0,1,1), (0,2,2)],
+    [(0,0,2), (0,1,1), (0,2,0)],
+    [(1,0,0), (1,1,1), (1,2,2)],
+    [(1,0,2), (1,1,1), (1,2,0)],
+    [(2,0,0), (2,1,1), (2,2,2)],
+    [(2,0,2), (2,1,1), (2,2,0)],
+    # Face diagonals (XZ planes)
+    [(0,0,0), (1,0,1), (2,0,2)],
+    [(0,2,0), (1,0,1), (2,0,2)],
+    [(0,0,2), (1,0,0), (2,0,2)],
+    [(0,2,2), (1,0,1), (2,2,0)],
+    # Space diagonals
+    [(0,0,0), (1,1,1), (2,2,2)],
+    [(0,0,2), (1,1,1), (2,2,0)],
+    [(0,2,0), (1,1,1), (2,0,2)],
+    [(0,2,2), (1,1,1), (2,0,0)]
+]
+
+def check_win(bd, player):
+    """
+    Checks if the given board has a winning line for the specified player.
+    :param bd: 3x3x3 board (list of lists of lists)
+    :param player: 1 or -1
+    :return: True if player has a winning line, False otherwise
+    """
+    for line in all_lines:
+        if all(bd[i][j][k] == player for i, j, k in line):
+            return True
+    return False
+
+def policy(board):
+    """
+    Returns the next move as a tuple (i, j, k) for a 3x3x3 3D Tic Tac Toe game.
+    :param board: 3x3x3 list of lists of lists
+    :return: (i, j, k) where board[i][j][k] == 0
+    """
+    # Helper to make a deep copy of the board
+    def copy_board(b):
+        return [[[b[x][y][z] for z in range(3)] for y in range(3)] for x in range(3)]
+
+    # Step 1: Try to find a winning move
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board[i][j][k] == 0:
+                    new = copy_board(board)
+                    new[i][j][k] = 1
+                    if check_win(new, 1):
+                        return (i, j, k)
+
+    # Step 2: Block opponent's winning move
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board[i][j][k] == 0:
+                    new = copy_board(board)
+                    new[i][j][k] = -1
+                    if check_win(new, -1):
+                        return (i, j, k)
+
+    # Step 3: Heuristic-based move selection (priority-based)
+    priority = [
+        (1,1,1),  # Center of cube
+        (0,1,1), (2,1,1), (1,0,1), (1,2,1), (1,1,0), (1,1,2),  # Face centers
+        (0,0,0), (0,0,2), (0,2,0), (0,2,2),  # Corners
+        (2,0,0), (2,0,2), (2,2,0), (2,2,2),
+    ]
+
+    # Edge cells (middle of cube edges)
+    edges = [
+        (0,0,1), (0,2,1), (2,0,1), (2,2,1),
+        (0,1,0), (0,1,2), (2,1,0), (2,1,2),
+        (1,0,0), (1,2,0), (1,0,2), (1,2,2)
+    ]
+    priority.extend(edges)
+
+    # Select first available move in priority order
+    for i, j, k in priority:
+        if board[i][j][k] == 0:
+            return (i, j, k)
+
+    # Fallback: return any empty cell (shouldn't happen if board isn't full)
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board[i][j][k] == 0:
+                    return (i, j, k)
+
+    return None  # Should not reach here unless board is full
+```
+
+---
+
+### 📌 **Strategy Summary**
+
+- **Immediate Win Check**: Prioritize any move that could win the game on this turn.
+- **Blocking Move Check**: Prevent the opponent from winning on their next turn.
+- **Heuristic Priority**:
+  - **Center cell** (1,1,1) — best strategic position.
+  - **Face centers** (e.g., (0,1,1), (2,1,1), etc.) — second-best.
+  - **Corners** (e.g., (0,0,0), (2,2,2), etc.) — third priority.
+  - **Edges** (e.g., (0,0,1), (1,0,0)) — fourth priority.
+- **Fallback**: If no better move exists, choose any empty cell.
+
+This strategy ensures the AI is both **defensive** and **strategic**, maximizing its chances of winning or at least drawing the game.
+
+---
+
+### 🧪 **Performance Note**
+
+The algorithm ensures:
+- **Efficient copying** of the board using list comprehensions.
+- **Early exits** when a winning or blocking move is found.
+- **Minimal computation** during heuristic selection by using a pre-defined priority order.
+
+This ensures that the function can run **within the 1-second time limit** even on average devices.

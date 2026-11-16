@@ -1,0 +1,403 @@
+This policy implements a chess engine using alpha‑beta search with iterative deepening up to depth 4, classical material evaluation, and piece‑square tables. It generates all legal moves from the given board state (including castling, but excluding en passant for safety), orders moves with MVV‑LVA heuristics, and returns the UCI move string that maximises the minimax score within a 1‑second time limit.
+
+<code>
+import time
+
+# -------------------- constants --------------------
+
+PIECE_VALUES = {
+    'P':100, 'N':320, 'B':330, 'R':500, 'Q':900, 'K':20000
+}
+
+# Piece-square tables (white perspective, row 0 = rank1, row 7 = rank8)
+PST = {
+    'P':[
+         0,  0,  0,  0,  0,  0,  0,  0,
+        50, 50, 50, 50, 50, 50, 50, 50,
+        10, 10, 20, 30, 30, 20, 10, 10,
+         5,  5, 10, 25, 25, 10,  5,  5,
+         0,  0,  0, 20, 20,  0,  0,  0,
+         5, -5,-10,  0,  0,-10, -5,  5,
+         5, 10, 10,-20,-20, 10, 10,  5,
+         0,  0,  0,  0,  0,  0,  0,  0
+    ],
+    'N':[
+        -50,-40,-30,-30,-30,-30,-40,-50,
+        -40,-20,  0,  0,  0,  0,-20,-40,
+        -30,  0, 10, 15, 15, 10,  0,-30,
+        -30,  5, 15, 20, 20, 15,  5,-30,
+        -30,  0, 15, 20, 20, 15,  0,-30,
+        -30,  5, 10, 15, 15, 10,  5,-30,
+        -40,-20,  0,  5,  5,  0,-20,-40,
+        -50,-40,-30,-30,-30,-30,-40,-50
+    ],
+    'B':[
+        -20,-10,-10,-10,-10,-10,-10,-20,
+        -10,  0,  0,  0,  0,  0,  0,-10,
+        -10,  0,  5, 10, 10,  5,  0,-10,
+        -10,  5,  5, 10, 10,  5,  5,-10,
+        -10,  0, 10, 10, 10, 10,  0,-10,
+        -10, 10, 10, 10, 10, 10, 10,-10,
+        -10,  5,  0,  0,  0,  0,  5,-10,
+        -20,-10,-10,-10,-10,-10,-10,-20
+    ],
+    'R':[
+         0,  0,  0,  0,  0,  0,  0,  0,
+         5, 10, 10, 10, 10, 10, 10,  5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+         0,  0,  0,  5,  5,  0,  0,  0
+    ],
+    'Q':[
+        -20,-10,-10, -5, -5,-10,-10,-20,
+        -10,  0,  0,  0,  0,  0,  0,-10,
+        -10,  0,  5,  5,  5,  5,  0,-10,
+         -5,  0,  5,  5,  5,  5,  0, -5,
+          0,  0,  5,  5,  5,  5,  0, -5,
+        -10,  5,  5,  5,  5,  5,  0,-10,
+        -10,  0,  5,  0,  0,  0,  0,-10,
+        -20,-10,-10, -5, -5,-10,-10,-20
+    ],
+    'K':[
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -20,-30,-30,-40,-40,-30,-30,-20,
+        -10,-20,-20,-20,-20,-20,-20,-10,
+         20, 20,  0,  0,  0,  0, 20, 20,
+         20, 30, 10,  0,  0, 10, 30, 20
+    ]
+}
+
+KNIGHT_MOVES = [(-2,-1),(-2,1),(-1,-2),(-1,2),(1,-2),(1,2),(2,-1),(2,1)]
+DIR_S = {
+    'B':[(-1,-1),(-1,1),(1,-1),(1,1)],
+    'R':[(-1,0),(1,0),(0,-1),(0,1)],
+    'Q':[(-1,-1),(-1,1),(1,-1),(1,1),(-1,0),(1,0),(0,-1),(0,1)]
+}
+
+# -------------------- board utilities --------------------
+def sq_to_idx(sq):
+    """'c2' -> index 0-63, file a=0, rank 1=0"""
+    f = ord(sq[0]) - 97
+    r = int(sq[1]) - 1
+    return r*8 + f
+
+def idx_to_sq(idx):
+    r, c = divmod(idx, 8)
+    return chr(c+97) + str(r+1)
+
+def parse_board(pieces):
+    "Return list of 64 pieces like 'wP' or None"
+    b = [None]*64
+    for sq, p in pieces.items():
+        b[sq_to_idx(sq)] = p
+    return b
+
+def find_king(b, color):
+    "Return index of king of given color"
+    t = color + 'K'
+    for i, p in enumerate(b):
+        if p == t:
+            return i
+    return -1
+
+# -------------------- move generation --------------------
+def _in(i):
+    return 0 <= i < 8
+
+def move_generation(b, side, castling=True):
+    """
+    side: 'w' or 'b'
+    Returns list of (from_sq, to_sq, promo) where promo is 0 or 'q','r','b','n'
+    """
+    moves = []
+    opp = 'b' if side == 'w' else 'w'
+    for i, piece in enumerate(b):
+        if piece is None or piece[0] != side:
+            continue
+        ptype = piece[1]
+        r, c = divmod(i, 8)
+
+        if ptype == 'P':
+            dir = 1 if side == 'w' else -1
+            start_row = 1 if side == 'w' else 6
+            prom_row = 7 if side == 'w' else 0
+            # push
+            nr = r + dir
+            if _in(nr) and _in(c) and b[nr*8+c] is None:
+                if nr == prom_row:
+                    moves.extend([( i, nr*8+c, q) for q in ['q','r','b','n'] ])
+                else:
+                    moves.append((i, nr*8+c, 0))
+                    if r == start_row:
+                        nnr = r + 2*dir
+                        if b[nnr*8+c] is None:
+                            moves.append((i, nnr*8+c, 0))
+            # captures
+            for dc in (-1, 1):
+                nc = c + dc
+                if _in(nr) and _in(nc):
+                    target = b[nr*8+nc]
+                    if target is not None and target[0] == opp:
+                        if nr == prom_row:
+                            moves.extend([( i, nr*8+nc, q) for q in ['q','r','b','n'] ])
+                        else:
+                            moves.append((i, nr*8+nc, 0))
+        elif ptype == 'N':
+            for dr, dc in KNIGHT_MOVES:
+                nr, nc = r+dr, c+dc
+                if _in(nr) and _in(nc):
+                    target = b[nr*8+nc]
+                    if target is None or target[0] == opp:
+                        moves.append((i, nr*8+nc, 0))
+        elif ptype in ('B','R','Q'):
+            for dr, dc in DIR_S[ptype]:
+                nr, nc = r+dr, c+dc
+                while _in(nr) and _in(nc):
+                    target = b[nr*8+nc]
+                    if target is None:
+                        moves.append((i, nr*8+nc, 0))
+                    elif target[0] == opp:
+                        moves.append((i, nr*8+nc, 0))
+                        break
+                    else:
+                        break
+                    nr += dr
+                    nc += dc
+        elif ptype == 'K':
+            for dr in (-1,0,1):
+                for dc in (-1,0,1):
+                    if dr == 0 and dc == 0:
+                        continue
+                    nr, nc = r+dr, c+dc
+                    if _in(nr) and _in(nc):
+                        target = b[nr*8+nc]
+                        if target is None or target[0] == opp:
+                            moves.append((i, nr*8+nc, 0))
+            # castling
+            if castling:
+                if side == 'w':
+                    if i == 4:  # e1
+                        # kingside h1
+                        if b[7] == 'wR' and b[5] is None and b[6] is None:
+                            if not attacked(b, 4, opp) and not attacked(b, 5, opp) and not attacked(b, 6, opp):
+                                moves.append((4, 6, 0))  # e1->g1
+                        # queenside a1
+                        if b[0] == 'wR' and b[1] is None and b[2] is None and b[3] is None:
+                            if not attacked(b, 4, opp) and not attacked(b, 3, opp) and not attacked(b, 2, opp):
+                                moves.append((4, 2, 0))  # e1->c1
+                else: # black
+                    if i == 60:  # e8
+                        if b[63] == 'bR' and b[61] is None and b[62] is None:
+                            if not attacked(b, 60, opp) and not attacked(b, 61, opp) and not attacked(b, 62, opp):
+                                moves.append((60, 62, 0))  # e8->g8
+                        if b[56] == 'bR' and b[57] is None and b[58] is None and b[59] is None:
+                            if not attacked(b, 60, opp) and not attacked(b, 59, opp) and not attacked(b, 58, opp):
+                                moves.append((60, 58, 0))  # e8->c8
+    return moves
+
+def attacked(b, sq, attacker_color):
+    """
+    True if square sq is attacked by any piece of attacker_color.
+    attacker_color: 'w' or 'b'
+    """
+    opp = attacker_color
+    for i, piece in enumerate(b):
+        if piece is None or piece[0] != opp:
+            continue
+        r, c = divmod(i, 8)
+        ptype = piece[1]
+        if ptype == 'P':
+            # pawn attacks: for white attackers, dir = -1? Wait we are seeing if a piece attacks sq from its position.
+            # If attacker is white, pawns move upward (row+1), so attacks are row+1, col+/-1.
+            # But we check whether square sq is attacked, so we see if there is a pawn that can attack sq.
+            # Reverse perspective: if attacker is white, their pawn is at (r,c), they attack (r+1, c-1) and (r+1, c+1).
+            # So if sq == those, then attacked.
+            if opp == 'w':
+                dr = 1
+            else:
+                dr = -1
+            if (r+dr, c-1) == divmod(sq, 8) or (r+dr, c+1) == divmod(sq, 8):
+                return True
+        elif ptype == 'N':
+            for dr, dc in KNIGHT_MOVES:
+                if (r+dr, c+dc) == divmod(sq, 8):
+                    return True
+        elif ptype == 'K':
+            for dr in (-1,0,1):
+                for dc in (-1,0,1):
+                    if dr==0 and dc==0: continue
+                    if (r+dr, c+dc) == divmod(sq, 8):
+                        return True
+        elif ptype in ('B','R','Q'):
+            dirs = DIR_S[ptype]
+            for dr, dc in dirs:
+                nr, nc = r+dr, c+dc
+                while _in(nr) and _in(nc):
+                    if nr*8+nc == sq:
+                        return True
+                    if b[nr*8+nc] is not None:
+                        break
+                    nr += dr
+                    nc += dc
+    return False
+
+def is_in_check(b, side):
+    k = find_king(b, side)
+    if k == -1:
+        return False
+    return attacked(b, k, 'b' if side == 'w' else 'w')
+
+def make_move(b, mve):
+    "Apply move (from, to, promo) to a new board, return new board"
+    fr, to, prom = mve
+    nb = b[:]
+    piece = nb[fr]
+    nb[fr] = None
+    # Handle castling rook move
+    ptype = piece[1]
+    if ptype == 'K':
+        if fr == 4 and to == 6 and piece == 'wK':  # white kingside
+            nb[5] = 'wR'
+            nb[7] = None
+        elif fr == 4 and to == 2 and piece == 'wK':  # white queenside
+            nb[3] = 'wR'
+            nb[0] = None
+        elif fr == 60 and to == 62 and piece == 'bK':  # black kingside
+            nb[61] = 'bR'
+            nb[63] = None
+        elif fr == 60 and to == 58 and piece == 'bK':  # black queenside
+            nb[59] = 'bR'
+            nb[56] = None
+    if prom != 0:
+        nb[to] = piece[0] + prom.upper()
+    else:
+        nb[to] = piece
+    return nb
+
+def legal_moves(b, side):
+    "Generate fully legal moves"
+    moves = []
+    for mv in move_generation(b, side):
+        nb = make_move(b, mv)
+        if not is_in_check(nb, side):
+            moves.append(mv)
+    return moves
+
+# -------------------- evaluation --------------------
+def evaluate(b, side):
+    """Score for 'side' (positive = side better)"""
+    score = 0
+    for i, p in enumerate(b):
+        if p is None:
+            continue
+        color = p[0]
+        ptype = p[1]
+        val = PIECE_VALUES[p[1]
+        pst = PST[ptype]
+        if color == 'w':
+            sq = i
+        else:
+            sq = 63 - i  # flip for black
+        s = val + pst[sq]
+        if color == side:
+            score += s
+        else:
+            score -= s
+    return score
+
+def order_moves(mves, b, side):
+    "Score moves for ordering: captures by MVV-LVA"
+    def score(mv):
+        fr, to, prom = mv
+        if prom:
+            return 1000 + PIECE_VALUES[prom.upper()]  # promotion good
+        vctim = b[to]
+        if vctim is not None:
+            attacker = b[fr]
+            return 10 * PIECE_VALUES[vctim[1]] - PIECE_VALUES[attacker[1]]
+        return 0
+    return sorted(mves, key=score, reverse=True)
+
+# -------------------- search --------------------
+DEFAULT_MAX_DEPTH = 4
+TIME_LIMIT = 0.9  # seconds
+
+def alpha_beta(b, depth, alpha, beta, side, start_time):
+    if time.monotonic() - start_time > TIME_LIMIT:
+        raise TimeoutError
+    mves = legal_moves(b, side)
+    if not mves:
+        # checkmate or stalemate; huge penalty for being checkmated
+        if is_in_check(b, side):
+            return -99999 - depth  # prefer faster mate
+        else:
+            return 0  # stalemate
+    if depth == 0:
+        return evalute(b, side)
+    mves = order_moves(mves, b, side)
+    for mv in mves:
+        nb = make_move(b, mv)
+        score = -alpha_beta(nb, depth-1, -beta, -alpha, 'b' if side=='w' else 'w', start_time)
+        if score > alpha:
+            alpha = score
+            if alpha >= beta:
+                break
+    return alpha
+
+def find_best_move(b, side):
+    start = time.monotonic()
+    best_move = None
+    try:
+        for depth in range(1, DEFAULT_MAX_DEPTH+1):
+            alpha = -100000
+            beta = 100000
+            mves = legal_moves(b, side)
+            if not mves:
+                break
+            # move ordering for root
+            mves = order_moves(mves, b, side)
+            best = None
+            best_score = -1000000
+            for mv in mves:
+                nb = make_move(b, mv)
+                score = -alpha_beta(nb, depth-1, -beta, -alpha, 'b' if side=='w' else 'w', start)
+                if score > best_score:
+                    best_score = score
+                    best = mv
+            best_move = best
+            if time.monotonic() - start > TIME_LIMIT:
+                break
+    except TimeoutError:
+        pass
+    if best_move is None:
+        # fallback: first legal move
+        mves = legal_moves(b, side)
+        if mves:
+            best_move = mves[0]
+    return best_move
+
+def move_to_uci(mv):
+    fr, to, prom = mv
+    base = idx_to_sq(fr) + idx_to_sq(to)
+    if prom:
+        base += prom
+    return base
+
+# -------------------- public API --------------------
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    b = parse_board(pieces)
+    side = 'w' if to_play == 'white' else 'b'
+    mv = find_best_move(b, side)
+    if mv is None:
+        # safety: return any legal move
+        mvs = legal_moves(b, side)
+        if mvs:
+            mv = mvs[0]
+    return move_to_uci(mv)
+</code>

@@ -1,0 +1,140 @@
+
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Hybrid Battleship strategy: Target mode for finishing ships, 
+    Probability density for hunting.
+    """
+    # ---- 1. TARGET MODE ----
+    # Prioritize cells adjacent to hits, with bonus for continuing a line
+    best_score = -1
+    best_target = None
+    
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1:  # Existing hit
+                for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                    nr, nc = r + dr, c + dc
+                    # Check bounds and if cell is unknown
+                    if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                        score = 1
+                        # Check if we are continuing a line of hits
+                        br, bc = r - dr, c - dc
+                        if 0 <= br < 10 and 0 <= bc < 10 and board[br][bc] == 1:
+                            score += 3  # Strong preference for straight lines
+                        if score > best_score:
+                            best_score = score
+                            best_target = (nr, nc)
+    
+    if best_target:
+        return best_target
+    
+    # ---- 2. DETECT SUNK SHIPS ----
+    # Identify fully bounded lines of hits to remove from consideration
+    all_ships = [5, 4, 3, 3, 2]
+    visited = [[False] * 10 for _ in range(10)]
+    sunk_lengths = []
+    
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1 and not visited[r][c]:
+                # Check horizontal line
+                cells = [(r, c)]
+                nc = c + 1
+                while nc < 10 and board[r][nc] == 1:
+                    cells.append((r, nc))
+                    nc += 1
+                nc = c - 1
+                while nc >= 0 and board[r][nc] == 1:
+                    cells.append((r, nc))
+                    nc -= 1
+                
+                if len(cells) > 1:
+                    for cr, cc in cells:
+                        visited[cr][cc] = True
+                    # Check if bounded on both ends
+                    left_bound = (nc < 0) or (board[r][nc] == -1)
+                    right_bound = (c + (len(cells) - (c - nc)) >= 10) or (board[r][c + (len(cells) - (c - nc))] == -1)
+                    if left_bound and right_bound:
+                        sunk_lengths.append(len(cells))
+                    continue
+                
+                # Check vertical line
+                cells = [(r, c)]
+                nr = r + 1
+                while nr < 10 and board[nr][c] == 1:
+                    cells.append((nr, c))
+                    nr += 1
+                nr = r - 1
+                while nr >= 0 and board[nr][c] == 1:
+                    cells.append((nr, c))
+                    nr -= 1
+                
+                if len(cells) > 1:
+                    for cr, cc in cells:
+                        visited[cr][cc] = True
+                    top_bound = (nr < 0) or (board[nr][c] == -1)
+                    bot_bound = (r + (len(cells) - (r - nr)) >= 10) or (board[r + (len(cells) - (r - nr))][c] == -1)
+                    if top_bound and bot_bound:
+                        sunk_lengths.append(len(cells))
+    
+    remaining_ships = list(all_ships)
+    for sl in sunk_lengths:
+        if sl in remaining_ships:
+            remaining_ships.remove(sl)
+    
+    # ---- 3. HUNT MODE (Probability Density) ----
+    prob = [[0.0 for _ in range(10)] for _ in range(10)]
+    
+    for length in remaining_ships:
+        # Horizontal placements
+        for r in range(10):
+            for c in range(10 - length + 1):
+                valid = True
+                for i in range(length):
+                    if board[r][c + i] == -1:
+                        valid = False
+                        break
+                if valid:
+                    for i in range(length):
+                        if board[r][c + i] == 0:
+                            prob[r][c + i] += 1
+        
+        # Vertical placements
+        for r in range(10 - length + 1):
+            for c in range(10):
+                valid = True
+                for i in range(length):
+                    if board[r + i][c] == -1:
+                        valid = False
+                        break
+                if valid:
+                    for i in range(length):
+                        if board[r + i][c] == 0:
+                            prob[r + i][c] += 1
+    
+    # Find cell with max probability
+    max_prob = -1.0
+    best_move = None
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0:
+                if prob[r][c] > max_prob:
+                    max_prob = prob[r][c]
+                    best_move = (r, c)
+                elif prob[r][c] == max_prob and best_move is not None:
+                    # Tie-breaker: prefer center-ish positions slightly
+                    if abs(r - 4.5) + abs(c - 4.5) < abs(best_move[0] - 4.5) + abs(best_move[1] - 4.5):
+                        best_move = (r, c)
+    
+    if best_move:
+        return best_move
+    
+    # ---- 4. FALLBACK ----
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0:
+                return (r, c)
+    
+    return (0, 0)  # Should never reach here if board is not full

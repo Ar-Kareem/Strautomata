@@ -1,0 +1,156 @@
+ The strategy for this policy is to use a **depth-2 minimax search with alpha-beta pruning** and a **mobility-based evaluation function**. 
+
+**Key points:**
+1.  **Search Algorithm:** It looks two moves ahead (my move + opponent's response) to avoid blunders that would give the opponent a decisive advantage. Alpha-beta pruning significantly reduces the number of nodes evaluated.
+2.  **Evaluation Function:** Since calculating the exact number of legal moves (including arrow shots) is computationally expensive, the heuristic approximates strength by counting "queen mobility" — the number of empty squares reachable in straight lines from each amazon. The score is the difference between my total mobility and the opponent's.
+3.  **Move Generation:** It efficiently generates all legal moves by iterating over all 8 directions for both the amazon's movement and the subsequent arrow shot, correctly handling the rule that the arrow may pass through the vacated starting square.
+4.  **Robustness:** If no move is found (terminal state), it returns a placeholder. It also prioritizes immediate winning moves (where the opponent is left with zero mobility).
+
+This balances strength and speed for the 6x6 board within the 1-second time limit.
+
+<code>
+import numpy as np
+
+DIRECTIONS = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+
+def _get_queen_mobility(board, r, c):
+    """Count empty squares reachable from (r,c) in straight lines."""
+    count = 0
+    for dr, dc in DIRECTIONS:
+        nr, nc = r + dr, c + dc
+        while 0 <= nr < 6 and 0 <= nc < 6 and board[nr, nc] == 0:
+            count += 1
+            nr += dr
+            nc += dc
+    return count
+
+def _evaluate(board):
+    """Evaluate board from perspective of player 1. Higher is better."""
+    p1_mobility = 0
+    p2_mobility = 0
+    
+    # Iterate through board to find amazons
+    for r in range(6):
+        for c in range(6):
+            val = board[r, c]
+            if val == 1:
+                p1_mobility += _get_queen_mobility(board, r, c)
+            elif val == 2:
+                p2_mobility += _get_queen_mobility(board, r, c)
+    
+    return p1_mobility - p2_mobility
+
+def _generate_moves(board, player):
+    """Generate all legal moves for player (1 or 2).
+    Returns list of ((fr,fc), (tr,tc), (ar,ac))."""
+    moves = []
+    # Find amazons for player
+    amazons = [(r, c) for r in range(6) for c in range(6) if board[r, c] == player]
+    
+    for fr, fc in amazons:
+        # Amazon movement phase
+        for dr, dc in DIRECTIONS:
+            for dist in range(1, 6):
+                tr, tc = fr + dr * dist, fc + dc * dist
+                if not (0 <= tr < 6 and 0 <= tc < 6) or board[tr, tc] != 0:
+                    break
+                
+                # Arrow shooting phase from new position (tr,tc)
+                # Original square (fr,fc) is treated as empty for the arrow path
+                for dr2, dc2 in DIRECTIONS:
+                    for dist2 in range(1, 6):
+                        ar, ac = tr + dr2 * dist2, tc + dc2 * dist2
+                        if not (0 <= ar < 6 and 0 <= ac < 6):
+                            break
+                        # Check obstacle; allow passing through vacated (fr,fc)
+                        if board[ar, ac] != 0 and (ar, ac) != (fr, fc):
+                            break
+                        moves.append(((fr, fc), (tr, tc), (ar, ac)))
+    return moves
+
+def _minimax(board, depth, is_maximizing, alpha, beta):
+    """Minimax with alpha-beta pruning."""
+    if depth == 0:
+        return _evaluate(board), None
+    
+    player = 1 if is_maximizing else 2
+    moves = _generate_moves(board, player)
+    
+    if not moves:
+        # Current player has no moves = loss for current player
+        if is_maximizing:
+            return -1000000, None
+        else:
+            return 1000000, None
+    
+    best_move = None
+    
+    if is_maximizing:
+        max_eval = -float('inf')
+        for move in moves:
+            (fr, fc), (tr, tc), (ar, ac) = move
+            new_board = board.copy()
+            new_board[fr, fc] = 0
+            new_board[tr, tc] = 1
+            new_board[ar, ac] = -1
+            
+            eval_score, _ = _minimax(new_board, depth - 1, False, alpha, beta)
+            
+            if eval_score > max_eval:
+                max_eval = eval_score
+                best_move = move
+            
+            # Pruning check
+            if eval_score >= 1000000:  # Found winning move
+                return eval_score, best_move
+                
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval, best_move
+    else:
+        min_eval = float('inf')
+        for move in moves:
+            (fr, fc), (tr, tc), (ar, ac) = move
+            new_board = board.copy()
+            new_board[fr, fc] = 0
+            new_board[tr, tc] = 2
+            new_board[ar, ac] = -1
+            
+            eval_score, _ = _minimax(new_board, depth - 1, True, alpha, beta)
+            
+            if eval_score < min_eval:
+                min_eval = eval_score
+                best_move = move
+            
+            # Pruning check
+            if eval_score <= -1000000:  # Opponent found winning move
+                return eval_score, best_move
+                
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval, best_move
+
+def policy(board):
+    """Return the best move string."""
+    # Ensure board is numpy array
+    board = np.array(board)
+    
+    # Check for immediate winning moves or use depth-2 search
+    moves = _generate_moves(board, 1)
+    
+    if not moves:
+        # No legal moves available (should not happen per problem statement)
+        return "0,0:0,0:0,0"
+    
+    # Use depth 2 minimax
+    score, best_move = _minimax(board, 2, True, -float('inf'), float('inf'))
+    
+    if best_move is None:
+        # Fallback to first legal move if something went wrong
+        best_move = moves[0]
+    
+    (fr, fc), (tr, tc), (ar, ac) = best_move
+    return f"{fr},{fc}:{tr},{tc}:{ar},{ac}"
+</code>

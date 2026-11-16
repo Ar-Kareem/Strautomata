@@ -1,0 +1,163 @@
+The strategy for this policy is to evaluate every legal move using a heuristic scoring function that prioritizes connectivity and positional milestones.
+1. **Connectivity Graph**: We model the board connectivity using an 8-neighbor adjacency (surrounding the coordinate) to robustly handle the specific hexagonal grid topology described. This ensures we capture all possible connections for Rings, Bridges, and Forks.
+2. **Group Identification**: We dynamicallly identify connected groups (chains) of stones for both the player and the opponent using a Union-Find-like traversal.
+3. **Move Scoring**:
+    - **Merge Bonus**: Moves that connect two or more disjoint groups of our own stones receive a high score, advancing towards Bridges or Rings.
+    - **Blocking Bonus**: Moves that connect two or more disjoint opponent groups receive a similar high score to prevent the opponent from winning.
+    - **Edge/Corner Bias**: Moves on the boundary of the valid board area are incentivized, as they are necessary for Bridges and Forks.
+    - **Centrality**: A small bonus is given for moves closer to the center of the board to encourage control.
+4. **Execution**: The policy iterates through all valid empty cells, computes their score, and returns the highest-scoring move. This greedy approach efficiently balances offense (building structures) and defense (cutting lines).
+
+<code>
+import math
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    """
+    A heuristic policy for Havannah that prioritizes connecting groups and blocking the opponent.
+    """
+    size = 15
+    
+    # 1. State Representation
+    # 0 = empty, 1 = me, 2 = opp
+    board = [[0] * size for _ in range(size)]
+    for r, c in me:
+        board[r][c] = 1
+    for r, c in opp:
+        board[r][c] = 2
+        
+    # Robust connectivity set (8-way) to capture Hex neighbors regardless of specific skew
+    # This covers the user's example neighbors and standard axial directions.
+    # Offsets: (row_diff, col_diff)
+    offsets = [
+        (-1, -1), (-1, 0), (-1, 1),
+        (0, -1),           (0, 1),
+        (1, -1),  (1, 0),  (1, 1)
+    ]
+    
+    # 2. Group Identification Helper
+    def get_groups(player_stones):
+        """Returns a dict mapping group_id -> set of (r,c) stones."""
+        stones_set = set(player_stones)
+        parent = {pos: pos for pos in player_stones}
+        
+        def find(pos):
+            if parent[pos] != pos:
+                parent[pos] = find(parent[pos])
+            return parent[pos]
+            
+        def union(pos1, pos2):
+            root1 = find(pos1)
+            root2 = find(pos2)
+            if root1 != root2:
+                parent[root1] = root2
+                
+        # Union adjacent stones
+        for r, c in player_stones:
+            for dr, dc in offsets:
+                nr, nc = r + dr, c + dc
+                if (nr, nc) in stones_set:
+                    union((r, c), (nr, nc))
+                    
+        groups = {}
+        for pos in player_stones:
+            root = find(pos)
+            if root not in groups:
+                groups[root] = set()
+            groups[root].add(pos)
+            
+        # Map each stone to its group leader for O(1) checks
+        stone_to_root = {}
+        for root, members in groups.items():
+            for member in members:
+                stone_to_root[member] = root
+                
+        return stone_to_root
+
+    # Build group maps
+    my_groups_map = get_groups(me)
+    opp_groups_map = get_groups(opp)
+    
+    best_score = -float('inf')
+    best_move = None
+    
+    # Center for distance calculation
+    center_r, center_c = 7, 7
+    
+    # 3. Evaluate Moves
+    possible_moves = []
+    
+    for r in range(size):
+        for c in range(size):
+            # Check validity and emptiness
+            if valid_mask[r][c] and board[r][c] == 0:
+                possible_moves.append((r, c))
+                
+                score = 0.0
+                
+                # Factor 1: Centrality (small bias to stay active)
+                # Max dist is approx 8-10.
+                dist = abs(r - center_r) + abs(c - center_c)
+                score += (15.0 - dist) * 0.1
+                
+                # Check neighbors
+                valid_neighbors_count = 0
+                adjacent_my_roots = set()
+                adjacent_opp_roots = set()
+                
+                for dr, dc in offsets:
+                    nr, nc = r + dr, c + dc
+                    
+                    if 0 <= nr < size and 0 <= nc < size:
+                        if valid_mask[nr][nc]:
+                            valid_neighbors_count += 1
+                        
+                        # Neighboring stone analysis
+                        content = board[nr][nc]
+                        if content == 1:
+                            if (nr, nc) in my_groups_map:
+                                adjacent_my_roots.add(my_groups_map[(nr, nc)])
+                        elif content == 2:
+                            if (nr, nc) in opp_groups_map:
+                                adjacent_opp_roots.add(opp_groups_map[(nr, nc)])
+                
+                # Factor 2: Connect Move (Offense)
+                # Touching own stone is good. Connecting two groups is excellent.
+                if len(adjacent_my_roots) > 0:
+                    score += 2.0
+                    if len(adjacent_my_roots) > 1:
+                        # Massive bonus for connecting disjoint groups (Bridge/Ring builder)
+                        score += 15.0 * len(adjacent_my_roots)
+                
+                # Factor 3: Block Move (Defense)
+                # Touching opp stone is okay. Connecting their groups (cutting them) is critical.
+                if len(adjacent_opp_roots) > 0:
+                    score += 1.0
+                    if len(adjacent_opp_roots) > 1:
+                        # Critical defensive move to stop their connection
+                        score += 12.0 * len(adjacent_opp_roots)
+                
+                # Factor 4: Edge/Corner proximity
+                # "Normal" hex cell has 6 neighbors. 
+                # Edges have fewer (usually 3-4 in array, or <6 in graph).
+                # We use the 8-way valid neighbor count as a proxy.
+                # If valid_neighbors_count < 8, we are on a boundary.
+                # Lower count -> sharper corner.
+                if valid_neighbors_count < 8:
+                    score += 1.5  # Edge bonus
+                    if valid_neighbors_count <= 4:
+                        score += 3.0 # Corner likely
+                        
+                if score > best_score:
+                    best_score = score
+                    best_move = (r, c)
+
+    # 4. Fallback
+    if best_move is None:
+        if possible_moves:
+            return possible_moves[len(possible_moves)//2] # Return center-ish valid
+        else:
+            # Should not happen based on game rules (no pass)
+            return (0, 0)
+            
+    return best_move
+</code>

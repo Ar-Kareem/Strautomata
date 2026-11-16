@@ -1,0 +1,120 @@
+The strategy for this policy is to always obey forced captures, preferring captures of kings and moves that promote to kings. If no capture is available, it chooses a safe move that advances pieces, prioritizes kinging, and avoids immediate recapture when possible.
+
+<code>
+import random
+from typing import List, Tuple
+
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    # Convert to sets for fast lookup
+    my_men = set(map(tuple, my_men))
+    my_kings = set(map(tuple, my_kings))
+    opp_men = set(map(tuple, opp_men))
+    opp_kings = set(map(tuple, opp_kings))
+    all_my = my_men | my_kings
+    all_opp = opp_men | opp_kings
+    occupied = all_my | all_opp
+
+    def in_bounds(r,c):
+        return 0 <= r < 8 and 0 <= c < 8
+
+    # movement directions
+    if color == 'b':
+        forward = -1
+        opp_forward = 1
+        king_row = 0
+    else:
+        forward = 1
+        opp_forward = -1
+        king_row = 7
+
+    # Generate capture moves
+    capture_moves = []
+    for (r,c) in my_men:
+        for dc in (-1, 1):
+            r1, c1 = r + forward, c + dc
+            r2, c2 = r + 2*forward, c + 2*dc
+            if in_bounds(r2,c2) and (r1,c1) in all_opp and (r2,c2) not in occupied:
+                capture_moves.append(((r,c),(r2,c2),(r1,c1)))
+    for (r,c) in my_kings:
+        for dr in (-1,1):
+            for dc in (-1,1):
+                r1, c1 = r + dr, c + dc
+                r2, c2 = r + 2*dr, c + 2*dc
+                if in_bounds(r2,c2) and (r1,c1) in all_opp and (r2,c2) not in occupied:
+                    capture_moves.append(((r,c),(r2,c2),(r1,c1)))
+
+    # If captures exist, choose best capture
+    if capture_moves:
+        def cap_score(move):
+            (_, _), (_, _), cap = move
+            return 3 if cap in opp_kings else 1
+        best = max(capture_moves, key=cap_score)
+        return (best[0], best[1])
+
+    # Generate non-capture moves
+    moves = []
+    for (r,c) in my_men:
+        for dc in (-1,1):
+            r1, c1 = r + forward, c + dc
+            if in_bounds(r1,c1) and (r1,c1) not in occupied:
+                moves.append(((r,c),(r1,c1)))
+    for (r,c) in my_kings:
+        for dr in (-1,1):
+            for dc in (-1,1):
+                r1, c1 = r + dr, c + dc
+                if in_bounds(r1,c1) and (r1,c1) not in occupied:
+                    moves.append(((r,c),(r1,c1)))
+
+    if not moves:
+        # Should not happen in normal play, but return any piece staying put (illegal) avoided.
+        # Fallback: return first available from my_men or my_kings to itself if no moves (should be unreachable).
+        if my_men:
+            p = next(iter(my_men))
+            return (p,p)
+        if my_kings:
+            p = next(iter(my_kings))
+            return (p,p)
+
+    # Risk evaluation: check if opponent can capture destination
+    def is_safe(dest, moved_from):
+        # build occupied after move
+        occ = set(occupied)
+        occ.remove(moved_from)
+        occ.add(dest)
+        r, c = dest
+        # check opponent men
+        for (orow,ocol) in opp_men:
+            for dc in (-1,1):
+                r1, c1 = orow + opp_forward, ocol + dc
+                r2, c2 = orow + 2*opp_forward, ocol + 2*dc
+                if (r1,c1) == dest and in_bounds(r2,c2) and (r2,c2) not in occ:
+                    return False
+        # check opponent kings
+        for (orow,ocol) in opp_kings:
+            for dr in (-1,1):
+                for dc in (-1,1):
+                    r1, c1 = orow + dr, ocol + dc
+                    r2, c2 = orow + 2*dr, ocol + 2*dc
+                    if (r1,c1) == dest and in_bounds(r2,c2) and (r2,c2) not in occ:
+                        return False
+        return True
+
+    def move_score(move):
+        (r,c),(r1,c1) = move
+        score = 0.0
+        # kinging
+        if (r,c) in my_men and r1 == king_row:
+            score += 3.0
+        # advancement for men
+        if (r,c) in my_men:
+            score += 0.1 * abs(r1 - r)
+        # central preference
+        score += 0.01 * (3.5 - abs(c1-3.5))
+        # safety
+        if not is_safe((r1,c1),(r,c)):
+            score -= 2.0
+        return score
+
+    best_move = max(moves, key=move_score)
+    return best_move
+</code>

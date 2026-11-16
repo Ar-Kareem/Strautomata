@@ -1,0 +1,304 @@
+The strategy for this policy is:
+
+1. **Never miss forced tactics**:
+   - Play an immediate winning move if one exists.
+   - Block an immediate opponent win if necessary.
+   - Create a fork if possible.
+   - Block an opponent fork when possible.
+
+2. **Use alpha-beta minimax after tactical checks**:
+   - Search deeper in late-game positions where exact calculation is feasible.
+   - Use strong move ordering so winning, blocking, and high-value squares are searched first.
+
+3. **Use a line-based heuristic for non-terminal positions**:
+   - Reward lines containing only our marks and empty cells.
+   - Penalize lines containing only opponent marks and empty cells.
+   - Prefer squares that participate in more winning lines.
+
+4. **Always return a legal move**:
+   - If anything unexpected happens, fall back to the first empty square.
+
+<code>
+from typing import List, Tuple
+
+N = 4
+
+# All winning lines on a 4x4 board
+LINES = []
+
+# Rows
+for r in range(N):
+    LINES.append([(r, c) for c in range(N)])
+# Cols
+for c in range(N):
+    LINES.append([(r, c) for r in range(N)])
+# Diagonals
+LINES.append([(i, i) for i in range(N)])
+LINES.append([(i, N - 1 - i) for i in range(N)])
+
+# For move ordering / local evaluations
+CELL_TO_LINES = {(r, c): [] for r in range(N) for c in range(N)}
+for idx, line in enumerate(LINES):
+    for cell in line:
+        CELL_TO_LINES[cell].append(idx)
+
+CELL_PRIORITY = {}
+for r in range(N):
+    for c in range(N):
+        # More lines through a cell is generally better
+        CELL_PRIORITY[(r, c)] = len(CELL_TO_LINES[(r, c)])
+
+# Heuristic weights for open lines with k marks and no enemy marks
+LINE_WEIGHTS = [0, 2, 12, 120, 1000000]
+
+
+def _board_to_tuple(board: List[List[int]]) -> Tuple[Tuple[int, ...], ...]:
+    return tuple(tuple(row) for row in board)
+
+
+def _legal_moves(board: List[List[int]]) -> List[Tuple[int, int]]:
+    return [(r, c) for r in range(N) for c in range(N) if board[r][c] == 0]
+
+
+def _check_winner(board: List[List[int]]) -> int:
+    for line in LINES:
+        s = sum(board[r][c] for r, c in line)
+        if s == N:
+            return 1
+        if s == -N:
+            return -1
+    return 0
+
+
+def _is_full(board: List[List[int]]) -> bool:
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 0:
+                return False
+    return True
+
+
+def _would_win(board: List[List[int]], move: Tuple[int, int], player: int) -> bool:
+    r, c = move
+    board[r][c] = player
+    won = (_check_winner(board) == player)
+    board[r][c] = 0
+    return won
+
+
+def _winning_moves(board: List[List[int]], player: int) -> List[Tuple[int, int]]:
+    wins = []
+    for move in _legal_moves(board):
+        if _would_win(board, move, player):
+            wins.append(move)
+    return wins
+
+
+def _count_future_wins_after_move(board: List[List[int]], move: Tuple[int, int], player: int) -> int:
+    r, c = move
+    board[r][c] = player
+    wins = _winning_moves(board, player)
+    board[r][c] = 0
+    return len(wins)
+
+
+def _fork_moves(board: List[List[int]], player: int) -> List[Tuple[int, int]]:
+    forks = []
+    for move in _legal_moves(board):
+        # Immediate wins are handled separately; fork means creating >=2 winning threats
+        if _would_win(board, move, player):
+            continue
+        if _count_future_wins_after_move(board, move, player) >= 2:
+            forks.append(move)
+    return forks
+
+
+def _evaluate(board: List[List[int]]) -> int:
+    winner = _check_winner(board)
+    if winner == 1:
+        return 10_000_000
+    if winner == -1:
+        return -10_000_000
+
+    score = 0
+
+    # Line-based heuristic
+    for line in LINES:
+        vals = [board[r][c] for r, c in line]
+        cnt_self = vals.count(1)
+        cnt_opp = vals.count(-1)
+
+        if cnt_self and cnt_opp:
+            continue
+        if cnt_opp == 0:
+            score += LINE_WEIGHTS[cnt_self]
+        elif cnt_self == 0:
+            score -= LINE_WEIGHTS[cnt_opp]
+
+    # Slight positional preference
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 1:
+                score += CELL_PRIORITY[(r, c)]
+            elif board[r][c] == -1:
+                score -= CELL_PRIORITY[(r, c)]
+
+    return score
+
+
+def _ordered_moves(board: List[List[int]], player: int) -> List[Tuple[int, int]]:
+    moves = _legal_moves(board)
+    opp = -player
+
+    scored = []
+    opp_wins_now = set(_winning_moves(board, opp))
+
+    for move in moves:
+        score = 0
+
+        if _would_win(board, move, player):
+            score += 1_000_000
+        if move in opp_wins_now:
+            score += 500_000
+
+        # Fork creation / prevention
+        future_wins = _count_future_wins_after_move(board, move, player)
+        if future_wins >= 2:
+            score += 200_000
+        board[move[0]][move[1]] = player
+        opp_future = len(_winning_moves(board, opp))
+        board[move[0]][move[1]] = 0
+        score -= opp_future * 20_000
+
+        score += CELL_PRIORITY[move] * 100
+        scored.append((score, move))
+
+    scored.sort(reverse=True)
+    return [m for _, m in scored]
+
+
+def _alphabeta(board: List[List[int]], depth: int, alpha: int, beta: int, player: int) -> int:
+    winner = _check_winner(board)
+    if winner == 1:
+        return 10_000_000 + depth
+    if winner == -1:
+        return -10_000_000 - depth
+    if depth == 0 or _is_full(board):
+        return _evaluate(board)
+
+    moves = _ordered_moves(board, player)
+
+    if player == 1:
+        value = -10**18
+        for r, c in moves:
+            board[r][c] = 1
+            value = max(value, _alphabeta(board, depth - 1, alpha, beta, -1))
+            board[r][c] = 0
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+        return value
+    else:
+        value = 10**18
+        for r, c in moves:
+            board[r][c] = -1
+            value = min(value, _alphabeta(board, depth - 1, alpha, beta, 1))
+            board[r][c] = 0
+            beta = min(beta, value)
+            if alpha >= beta:
+                break
+        return value
+
+
+def _choose_search_depth(board: List[List[int]]) -> int:
+    empties = sum(1 for r in range(N) for c in range(N) if board[r][c] == 0)
+    if empties <= 6:
+        return empties
+    if empties <= 8:
+        return 7
+    if empties <= 11:
+        return 5
+    return 4
+
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    legal = _legal_moves(board)
+    if not legal:
+        return (0, 0)
+
+    # 1. Immediate win
+    my_wins = _winning_moves(board, 1)
+    if my_wins:
+        return my_wins[0]
+
+    # 2. Immediate block
+    opp_wins = _winning_moves(board, -1)
+    if opp_wins:
+        # If multiple opponent winning moves exist, prefer a move that blocks one and creates counterplay.
+        if len(opp_wins) == 1:
+            return opp_wins[0]
+        best = None
+        best_score = -10**18
+        for move in legal:
+            if move not in opp_wins:
+                continue
+            r, c = move
+            board[r][c] = 1
+            score = _evaluate(board)
+            board[r][c] = 0
+            if score > best_score:
+                best_score = score
+                best = move
+        if best is not None:
+            return best
+
+    # 3. Create fork
+    my_forks = _fork_moves(board, 1)
+    if my_forks:
+        my_forks.sort(key=lambda m: CELL_PRIORITY[m], reverse=True)
+        return my_forks[0]
+
+    # 4. Block opponent fork
+    opp_forks = _fork_moves(board, -1)
+    if opp_forks:
+        blockers = [m for m in legal if m in opp_forks]
+        if blockers:
+            blockers.sort(key=lambda m: CELL_PRIORITY[m], reverse=True)
+            return blockers[0]
+        # Otherwise choose move that reduces opponent threats most
+        best = None
+        best_score = 10**18
+        for move in legal:
+            r, c = move
+            board[r][c] = 1
+            score = len(_fork_moves(board, -1)) * 1000 + len(_winning_moves(board, -1)) * 100
+            board[r][c] = 0
+            if score < best_score:
+                best_score = score
+                best = move
+        if best is not None:
+            return best
+
+    # 5. Alpha-beta minimax
+    depth = _choose_search_depth(board)
+    best_move = None
+    best_value = -10**18
+
+    for move in _ordered_moves(board, 1):
+        r, c = move
+        board[r][c] = 1
+        value = _alphabeta(board, depth - 1, -10**18, 10**18, -1)
+        board[r][c] = 0
+        if value > best_value:
+            best_value = value
+            best_move = move
+
+    if best_move is not None and board[best_move[0]][best_move[1]] == 0:
+        return best_move
+
+    # 6. Guaranteed legal fallback
+    for move in legal:
+        return move
+
+    return (0, 0)
+</code>

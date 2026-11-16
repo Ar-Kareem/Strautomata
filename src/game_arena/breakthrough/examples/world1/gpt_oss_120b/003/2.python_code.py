@@ -1,0 +1,127 @@
+
+from typing import List, Tuple, Set
+
+def policy(me: List[Tuple[int, int]],
+           opp: List[Tuple[int, int]],
+           color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    """
+    Return a legal move for Breakthrough.
+
+    Parameters
+    ----------
+    me   : list of (row, col) of our pieces
+    opp  : list of (row, col) of opponent pieces
+    color: 'w' for white (moves up), 'b' for black (moves analyze down)
+
+    Returns
+    -------
+    ((from_row, from_col), (to_row, to_col))
+    """
+
+    # --------------------------------------------------------------
+    # Helper utilities
+    # --------------------------------------------------------------
+    BOARD_SIZE = 8
+    my_dir = 1 if color == 'w' else -1            # forward direction for us
+    opp_dir = -my_dir                               # forward direction for opponent
+    goal_row = 7 if color == 'w' else 0            # row that makes us win
+
+    my_set: Set[Tuple[int, int]] = set(me)
+    opp_set: Set[Tuple[int, int]] = set(opp)
+
+    def inside(r: int, c: int) -> bool:
+        return 0 <= r < BOARD_SIZE and 0 <= c < BOARD_SIZE
+
+    # --------------------------------------------------------------
+    # Generate all legal moves
+    # --------------------------------------------------------------
+    moves = []            # each element: (from_sq, to_sq, is_capture)
+    capture_moves = []   # subset where we capture an opponent piece
+    win_moves = []       # subset that immediately wins
+
+    for r, c in me:
+        # forward
+        fr, fc = r + my_dir, c
+        if inside(fr, fc) and (fr, fc) not in my_set and (fr, fc) not in opp_set:
+            mv = ((r, c), (fr, fc), False)
+            moves.append(mv)
+            if fr == goal_row:
+                win_moves.append(mv)
+
+        # diagonal left
+        dlr, dlc = r + my_dir, c - 1
+        if inside(dlr, dlc):
+            if (dlr, dlc) in opp_set:   # capture
+                mv = ((r, c), (dlr, dlc), True)
+                moves.append(mv)
+                capture_moves.append(mv)
+                if dlr == goal_row:
+                    win_moves.append(mv)
+            elif (dlr, dlc) not in my_set:   # simple move
+                mv = ((r, c), (dlr, dlc), False)
+                moves.append(mv)
+                if dlr == goal_row:
+                    win_moves.append(mv)
+
+        # diagonal right
+        drr, drc = r + my_dir, c + 1
+        if inside(drr, drc):
+            if (drr, drc) in opp_set:   # capture
+                mv = ((r, c), (drr, drc), True)
+                moves.append(mv)
+                capture_moves.append(mv)
+                if drr == goal_row:
+                    win_moves.append(mv)
+            elif (drr, drc) not in my_set:   # simple move
+                mv = ((r, c), (drr, drc), False)
+                moves.append(mv)
+                if drr == goal_row:
+                    win_moves.append(mv)
+
+    # --------------------------------------------------------------
+    # 1. Immediate winning move
+    # --------------------------------------------------------------
+    if win_moves:
+        # any winning move is fine; pick the first
+        return win_moves[0][:2]
+
+    # --------------------------------------------------------------
+    # Threat evaluation: number of opponent pieces that could capture us next turn
+    # --------------------------------------------------------------
+    def threat_count(to_sq: Tuple[int, int]) -> int:
+        tr, tc = to_sq
+        # Opponent can capture from squares one row behind them and one column aside
+        possible_attackers = [
+            (tr - opp_dir, tc - 1),
+            (tr - opp_dir, tc + 1)
+        ]
+        return sum(1 for sq in possible_attackers if sq in opp_set)
+
+    # --------------------------------------------------------------
+    # 2. Captures – choose the safest capture
+    # --------------------------------------------------------------
+    if capture_moves:
+        # evaluate safety after capture
+        best = min(capture_moves,
+                   key=lambda mv: (threat_count(mv[1]),  # safety
+                                   abs(goal_row - mv[1][0])))  # closer to goal is better
+        return best[:2]
+
+    # --------------------------------------------------------------
+    # 3. Safe advance – choose non‑capture move with minimal threat,
+    #    preferring forward progress.
+    # --------------------------------------------------------------
+    if moves:
+        # filter out captures (already handled) – keep only non‑capture moves
+        non_capture = [mv for mv in moves if not mv[2]]
+        if non_capture:
+            best = min(non_capture,
+                       key=lambda mv: (threat_count(mv[1]),
+                                       abs(goal_row - mv[1][0])))
+            return best[:2]
+
+    # --------------------------------------------------------------
+    # 4. Fallback (should never be reached in a legal position)
+    # --------------------------------------------------------------
+    # Return any move; here we just raise an error to avoid silent failures.
+    raise RuntimeError("No legal moves generated – invalid board state.")

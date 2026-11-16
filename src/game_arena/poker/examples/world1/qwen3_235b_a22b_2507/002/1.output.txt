@@ -1,0 +1,182 @@
+The strategy for this policy is to use an aggressive yet adaptive approach based on hand strength estimates and pot odds. Since we are playing heads-up No-Limit Texas Hold'em with only one private card (which suggests a simplified variant), we adjust our strategy accordingly. We estimate hand strength by comparing our single card's rank and suit against possible combinations given the board, while factoring in:
+
+1. **Position advantage**: As the player to act, we can control the pot size.
+2. **Pot odds and implied odds**: Compare `to_call` cost versus potential return.
+3. **Stages of the game**: Pre-flop, flop, turn, river — each influences variance and hand reading.
+4. **Aggression**: We raise or all-in strong hands early to build the pot or bluff occasionally when board texture allows.
+5. **Stack pressure**: If we have limited chips left, we commit only with strong hands.
+6. **Opponent modeling (light)**: Track opponent aggression via `opponent_spent` vs `my_spent`.
+
+We use hand strength heuristics:
+- High-rank card (e.g., 10–14) improves value.
+- Suited cards improve flush potential on coordinated boards.
+- Paired or connected boards increase draw possibilities.
+
+Our policy avoids risky calls with weak holdings, raises aggressively with strong ones, and bluffs selectively on wet boards when the opponent shows weakness (low `to_call`, likely checking range). The strategy is designed to exploit passive players while minimizing losses against aggressive ones.
+
+<code>
+import random
+from typing import List, Dict
+
+def policy(state: dict) -> str:
+    # Extract state information
+    private_cards: List[Dict] = state['private_cards']
+    public_cards: List[Dict] = state['public_cards']
+    pot: float = state['pot']
+    my_spent: float = state['my_spent']
+    opponent_spent: float = state['opponent_spent']
+    to_call: float = state['to_call']
+    allowed_actions: List[str] = state['allowed_actions']
+
+    # Assumed stack size (common in short deck games or simplified poker)
+    # Since initial pot is 100 each, assume starting stack is 100
+    my_total_chips = 100
+    my_remaining = my_total_chips - my_spent
+    effective_stack = min(my_remaining, my_total_chips - opponent_spent)
+
+    # Our single private card
+    my_card = private_cards[0]
+    my_rank = my_card['rank']  # 2–14 (Ace high)
+    my_suit = my_card['suit']
+
+    # Number of board cards
+    board_ranks = [c['rank'] for c in public_cards]
+    board_suits = [c['suit'] for c in public_cards]
+    board_size = len(public_cards)
+
+    # Helper functions
+    def hand_strength():
+        """Estimate hand strength based on private + public cards"""
+        if board_size == 0:
+            # Pre-flop: just evaluate our single card
+            if my_rank >= 13:  # A or K
+                return 0.9
+            elif my_rank >= 11:  # Q, J
+                return 0.7
+            elif my_rank >= 9:  # T
+                return 0.5
+            else:
+                return 0.3
+
+        # Post-flop: check for pair, draw, or high card
+        paired = my_rank in board_ranks
+        flush_draw = sum(1 for s in board_suits if s == my_suit) >= 2
+        straight_draw = has_straight_draw(my_rank, board_ranks)
+        top_pair_or_better = paired and my_rank >= max(board_ranks)
+
+        strength = 0.4
+        if paired:
+            if top_pair_or_better:
+                strength = 0.8
+            else:
+                strength = 0.5
+        elif my_rank > max(board_ranks):
+            strength = 0.6  # High card > board
+
+        if flush_draw and board_size < 5:
+            strength += 0.15
+        if straight_draw and board_size < 5:
+            strength += 0.1
+
+        # Cap at 0.95 to avoid overestimation
+        return min(strength, 0.95)
+
+    def has_straight_draw(my_r, board_rs):
+        """Check if we have 4 cards toward a straight"""
+        all_ranks = sorted(set([my_r] + board_rs))
+        if len(all_ranks) < 4:
+            return False
+        # Look for 3 consecutive + gap of 1 or less
+        for i in range(len(all_ranks) - 3):
+            seq = all_ranks[i:i+4]
+            gaps = sum(seq[j+1] - seq[j] - 1 for j in range(3))
+            if gaps <= 1:
+                return True
+        return False
+
+    def pot_odds():
+        """Return pot odds: ratio of call cost to total pot after call"""
+        if to_call == 0:
+            return float('inf')
+        pot_after_call = pot + to_call
+        return to_call / pot_after_call
+
+    def implied_odds():
+        """Estimate implied return if we hit a draw"""
+        equity = hand_strength()
+        current_equity_value = equity * pot
+        if my_rank in board_ranks:
+            return current_equity_value + 0.5 * effective_stack
+        if sum(1 for s in board_suits if s == my_suit) >= 3:
+            return current_equity_value + 0.3 * effective_stack
+        return current_equity_value
+
+    def evaluate_aggression():
+        """Decide whether to raise or call based on context"""
+        strength = hand_strength()
+        cost_ratio = to_call / pot if pot > 0 else 0
+        call_affordable = to_call <= my_remaining
+
+        if to_call == 0:
+            if strength > 0.5:
+                return 'raise' if 'raise' in allowed_actions else 'call'
+            else:
+                return 'call'
+
+        if strength < 0.4:
+            if to_call / my_total_chips > 0.3 or 'call' not in allowed_actions:
+                return 'fold' if 'fold' in allowed_actions else 'call'
+            elif random.random() < 0.2:
+                # Occasional bluff on wet board
+                is_wet = (len(set(board_suits)) == 1 or len(board_ranks) >= 2 and max(board_ranks) - min(board_ranks) <= 4)
+                if is_wet and strength > 0.3:
+                    return 'raise' if 'raise' in allowed_actions and to_call < 0.5 * pot else 'call'
+                return 'fold' if 'fold' in allowed_actions else 'call'
+            else:
+                return 'fold' if 'fold' in allowed_actions else 'call'
+
+        if strength > 0.7:
+            if to_call == 0:
+                return 'raise' if 'raise' in allowed_actions else 'call'
+            elif to_call <= pot * 0.5:
+                if random.random() < 0.7:  # Often raise
+                    return 'raise' if 'raise' in allowed_actions else 'call'
+                else:
+                    return 'call'
+            elif to_call > pot * 0.5 and to_call < my_remaining * 0.7:
+                return 'call'  # Commit without overextending
+            else:
+                # High call cost — go all-in only if strong and affordable
+                if strength > 0.85 or my_remaining <= to_call * 1.5:
+                    return 'all-in' if 'all-in' in allowed_actions else 'call'
+                else:
+                    return 'call'
+
+        # Medium strength (0.4 to 0.7)
+        if cost_ratio > 0.3 and strength < 0.6:
+            return 'fold' if 'fold' in allowed_actions else 'call'
+        elif cost_ratio > 0.4:
+            return 'call'
+        else:
+            if strength >= 0.6 and random.random() < 0.4 and 'raise' in allowed_actions:
+                return 'raise'
+            else:
+                return 'call'
+
+    # Main decision logic
+    strength = hand_strength()
+    move = evaluate_aggression()
+
+    # Final safety check: ensure move is allowed
+    if move not in allowed_actions:
+        if 'call' in allowed_actions:
+            return 'call'
+        elif 'fold' in allowed_actions:
+            return 'fold'
+        elif 'all-in' in allowed_actions:
+            return 'all-in'
+        else:
+            return 'call'  # Fallback
+
+    return move
+</code>

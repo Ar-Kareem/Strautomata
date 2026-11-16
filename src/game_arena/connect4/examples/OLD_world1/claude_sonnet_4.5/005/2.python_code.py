@@ -1,0 +1,159 @@
+
+import numpy as np
+
+def policy(board: list[list[int]]) -> int:
+    """
+    Connect 4 policy that uses minimax with alpha-beta pruning.
+    """
+    board = np.array(board)
+    rows, cols = board.shape
+    
+    def get_valid_moves(b):
+        """Return list of columns that are not full."""
+        return [c for c in range(cols) if b[0, c] == 0]
+    
+    def drop_disc(b, col, player):
+        """Drop a disc in the given column and return the new board."""
+        new_board = b.copy()
+        for row in range(rows - 1, -1, -1):
+            if new_board[row, col] == 0:
+                new_board[row, col] = player
+                return new_board
+        return new_board
+    
+    def check_win(b, player):
+        """Check if the given player has won."""
+        # Horizontal
+        for r in range(rows):
+            for c in range(cols - 3):
+                if all(b[r, c + i] == player for i in range(4)):
+                    return True
+        
+        # Vertical
+        for r in range(rows - 3):
+            for c in range(cols):
+                if all(b[r + i, c] == player for i in range(4)):
+                    return True
+        
+        # Diagonal (down-right)
+        for r in range(rows - 3):
+            for c in range(cols - 3):
+                if all(b[r + i, c + i] == player for i in range(4)):
+                    return True
+        
+        # Diagonal (down-left)
+        for r in range(rows - 3):
+            for c in range(3, cols):
+                if all(b[r + i, c - i] == player for i in range(4)):
+                    return True
+        
+        return False
+    
+    def evaluate_position(b):
+        """Evaluate the board position for the current player (1)."""
+        if check_win(b, 1):
+            return 10000
+        if check_win(b, -1):
+            return -10000
+        
+        score = 0
+        
+        # Count potential wins (sequences of 2 or 3 with open spaces)
+        def score_window(window):
+            s = 0
+            if np.sum(window == 1) == 3 and np.sum(window == 0) == 1:
+                s += 100
+            elif np.sum(window == 1) == 2 and np.sum(window == 0) == 2:
+                s += 10
+            
+            if np.sum(window == -1) == 3 and np.sum(window == 0) == 1:
+                s -= 150  # Prioritize blocking opponent's 3-in-a-row
+            elif np.sum(window == -1) == 2 and np.sum(window == 0) == 2:
+                s -= 10
+            
+            return s
+        
+        # Horizontal windows
+        for r in range(rows):
+            for c in range(cols - 3):
+                window = b[r, c:c+4]
+                score += score_window(window)
+        
+        # Vertical windows
+        for r in range(rows - 3):
+            for c in range(cols):
+                window = b[r:r+4, c]
+                score += score_window(window)
+        
+        # Diagonal windows
+        for r in range(rows - 3):
+            for c in range(cols - 3):
+                window = np.array([b[r+i, c+i] for i in range(4)])
+                score += score_window(window)
+        
+        for r in range(rows - 3):
+            for c in range(3, cols):
+                window = np.array([b[r+i, c-i] for i in range(4)])
+                score += score_window(window)
+        
+        # Prefer center columns
+        center_count = np.sum(b[:, cols//2] == 1)
+        score += center_count * 3
+        
+        return score
+    
+    def minimax(b, depth, alpha, beta, maximizing):
+        """Minimax with alpha-beta pruning."""
+        valid_moves = get_valid_moves(b)
+        
+        if depth == 0 or len(valid_moves) == 0:
+            return evaluate_position(b), None
+        
+        if check_win(b, 1) or check_win(b, -1):
+            return evaluate_position(b), None
+        
+        if maximizing:
+            max_eval = float('-inf')
+            best_col = valid_moves[0]
+            for col in valid_moves:
+                new_board = drop_disc(b, col, 1)
+                eval_score, _ = minimax(new_board, depth - 1, alpha, beta, False)
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_col = col
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval, best_col
+        else:
+            min_eval = float('inf')
+            best_col = valid_moves[0]
+            for col in valid_moves:
+                new_board = drop_disc(b, col, -1)
+                eval_score, _ = minimax(new_board, depth - 1, alpha, beta, True)
+                if eval_score < min_eval:
+                    min_eval = eval_score
+                    best_col = col
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval, best_col
+    
+    # Check for immediate winning move
+    valid_moves = get_valid_moves(board)
+    for col in valid_moves:
+        test_board = drop_disc(board, col, 1)
+        if check_win(test_board, 1):
+            return col
+    
+    # Check for blocking opponent's winning move
+    for col in valid_moves:
+        test_board = drop_disc(board, col, -1)
+        if check_win(test_board, -1):
+            return col
+    
+    # Use minimax to find best move
+    depth = 5
+    _, best_move = minimax(board, depth, float('-inf'), float('inf'), True)
+    
+    return best_move if best_move is not None else valid_moves[0]

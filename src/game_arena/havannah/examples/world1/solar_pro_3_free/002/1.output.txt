@@ -1,0 +1,111 @@
+The strategy for this policy is a lightweight but systematic heuristic that tries to keep the game moving toward the three winning structures (ring, bridge, fork) while staying legal.  
+Key ideas:
+
+* **Edge‑focus** – Hexagonal Havannah is won most often by connecting to the outer edges. The policy therefore scores candidates higher if the stone would sit on an edge cell or be adjacent to edge cells.
+* **Own‑adjacency vs opponent‑adjacency** – A stone that touches many of the player’s existing stones is preferred (`my_adj`), while one that would touch many of the opponent’s stones is penalised (`opp_adj`).
+* **Fast score & deterministic choice** – For each empty cell that is in `valid_mask` we compute a simple score  
+  `score = my_adj – opp_adj + 3·(is_edge) + 2·(edge_adj)`  
+  (`is_edge` is true for rows 0, 14 or columns 0, 14).  
+  The best‑scoring cell is returned; ties are broken randomly (but always a legal move).
+* **No exhaustive win‑check** – Detecting a winning ring/bridge/fork in a 15×15 hex grid would require a heavy BFS. The policy skips that to stay within the 1 s time budget, relying on the edge‑connection heuristics to win in practice.
+
+The implementation uses plain Python lists and a tiny helper to compute the hexagonal neighbourhood, so it works with or without NumPy. The function is fully self‑contained, guarantees a legal move, and runs comfortably in well under a second.
+
+<code>
+import random
+from typing import List, Tuple
+
+# Hexagonal neighbourhood offsets.
+# Odd‑row (row % 2 == 1) and even‑row (row % 2 == 0) have slightly different neighbour patterns.
+DIRS: List[Tuple[int, int]] = [
+    # even rows
+    (-1, -1), (-1, 0), (0, -1), (0, 1), (1, -1), (1, 0),
+    # odd rows
+    (-1, 0), (-1, 1), (0, -1), (0, 1), (1, 0), (1, 1),
+]
+
+def is_edge(cell: Tuple[int, int]) -> bool:
+    """Return True if a cell touches the outer border of the 15×15 board."""
+    r, c = cell
+    return r == 0 or r == 14 or c == 0 or c == 14
+
+def heuristic_score(cell: Tuple[int, int],
+                    me: List[Tuple[int, int]],
+                    opp: List[Tuple[int, int]],
+                    valid_mask: List[List[bool]]) -> int:
+    """
+    Compute a simple score for a candidate empty cell:
+    * +my_adj : how many of the player’s stones would be adjacent after placing here.
+    * -opp_adj: how many opponent stones would be adjacent.
+    * +3*is_edge: extra incentive for being on the edge itself.
+    * +2*edge_adj: extra incentive for touching edge cells as neighbours.
+    """
+    r, c = cell
+    # quick validity test (if invalid just give a low score)
+    if not valid_mask[r][c]:
+        return -10
+
+    # Convert to set for O(1) membership tests.
+    my_set = set(me)
+    opp_set = set(opp)
+
+    my_adj = 0
+    opp_adj = 0
+    edge_adj = 0
+    is_edge_self = is_edge(cell)
+
+    # iterate through the six possible neighbours respecting the hex shape.
+    for dr, dc in DIRS:
+        nr = r + dr
+        nc = c + dc
+        # neighbour might be outside the board → ignore (edge detection later)
+        if not (0 <= nr < 15 and 0 <= nc < 15):
+            continue
+        # own adjacency
+        if (nr, nc) in my_set:
+            my_adj += 1
+        # opponent adjacency
+        if (nr, nc) in opp_set:
+            opp_adj += 1
+        # edge adjacency of neighbour (if neighbour touches board edge)
+        if is_edge((nr, nc)):
+            edge_adj += 1
+
+    # final score
+    score = my_adj - opp_adj + 3 * is_edge_self + 2 * edge_adj
+    return score
+
+def policy(me: List[Tuple[int, int]],
+           opp: List[Tuple[int, int]],
+           valid_mask: List[List[bool]]) -> Tuple[int, int]:
+    """
+    Return the next move for the player (player‑0). The move must be a legal
+    empty cell marked True in `valid_mask`. The function runs in < 1 s.
+    """
+    # Convert the opponent list for quick lookup.
+    opp_set = set(opp)
+    # Gather all candidate cells.
+    candidates = [(r, c) for r in range(15)
+                     for c in range(15)
+                     if valid_mask[r][c] and (r, c) not in me and (r, c) not in opp_set]
+
+    # Edge‑early‑exit: if there are no legal moves we fall back to the first True cell
+    # (this should never happen in a legal Havannah position).
+    if not candidates:
+        # Find any True cell (ignoring ownership – shouldn't be needed)
+        for r in range(15):
+            for c in range(15):
+                if valid_mask[r][c]:
+                    return r, c
+
+    # Score candidates.
+    scored = [(cell, heuristic_score(cell, me, opp_set, valid_mask)) for cell in candidates]
+
+    # Pick the best score.
+    best_score = max(s for _, s in scored)
+    best_candidates = [cell for cell, s in scored if s == best_score]
+
+    # Randomised tie‑break – always a legal move.
+    chosen = random.choice(best_candidates)
+    return chosen[0], chosen[1]
+</code>

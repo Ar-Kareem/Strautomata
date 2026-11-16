@@ -1,0 +1,237 @@
+
+def get_all_moves(my_men, my_kings, opp_men, opp_kings, color):
+    """Get all valid moves. If captures are available, only return captures."""
+    moves = []
+    capture_moves = []
+    
+    if color == 'b':
+        forward_dirs = [(-1, -1), (-1, 1)]
+    else:
+        forward_dirs = [(1, -1), (1, 1)]
+    
+    all_dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+    
+    opp_piece_set = set(opp_men) | set(opp_kings)
+    my_piece_set = set(my_men) | set(my_kings)
+    
+    for r, c in my_men:
+        for dr, dc in forward_dirs:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 8 and 0 <= nc < 8 and (nr + nc) % 2 == 1:
+                if (nr, nc) not in my_piece_set and (nr, nc) not in opp_piece_set:
+                    moves.append(((r, c), (nr, nc)))
+            
+            jr, jc = r + 2*dr, c + 2*dc
+            mr, mc = r + dr, c + dc
+            if 0 <= jr < 8 and 0 <= jc < 8 and (jr + jc) % 2 == 1:
+                if (mr, mc) in opp_piece_set:
+                    if (jr, jc) not in my_piece_set and (jr, jc) not in opp_piece_set:
+                        capture_moves.append(((r, c), (jr, jc)))
+    
+    for r, c in my_kings:
+        for dr, dc in all_dirs:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 8 and 0 <= nc < 8 and (nr + nc) % 2 == 1:
+                if (nr, nc) not in my_piece_set and (nr, nc) not in opp_piece_set:
+                    moves.append(((r, c), (nr, nc)))
+            
+            jr, jc = r + 2*dr, c + 2*dc
+            mr, mc = r + dr, c + dc
+            if 0 <= jr < 8 and 0 <= jc < 8 and (jr + jc) % 2 == 1:
+                if (mr, mc) in opp_piece_set:
+                    if (jr, jc) not in my_piece_set and (jr, jc) not in opp_piece_set:
+                        capture_moves.append(((r, c), (jr, jc)))
+    
+    return capture_moves if capture_moves else moves
+
+
+def apply_move_abs(state, move, color):
+    """Apply a move to the absolute state."""
+    b_men, b_kings, w_men, w_kings = state
+    from_sq, to_sq = move
+    fr, fc = from_sq
+    tr, tc = to_sq
+    
+    b_men = list(b_men)
+    b_kings = list(b_kings)
+    w_men = list(w_men)
+    w_kings = list(w_kings)
+    
+    if color == 'b':
+        my_men, my_kings = b_men, b_kings
+        opp_men, opp_kings = w_men, w_kings
+    else:
+        my_men, my_kings = w_men, w_kings
+        opp_men, opp_kings = b_men, b_kings
+    
+    piece_type = None
+    if (fr, fc) in my_men:
+        my_men.remove((fr, fc))
+        piece_type = 'man'
+    elif (fr, fc) in my_kings:
+        my_kings.remove((fr, fc))
+        piece_type = 'king'
+    
+    if abs(fr - tr) == 2:
+        mr, mc = (fr + tr) // 2, (fc + tc) // 2
+        if (mr, mc) in opp_men:
+            opp_men.remove((mr, mc))
+        elif (mr, mc) in opp_kings:
+            opp_kings.remove((mr, mc))
+    
+    if piece_type == 'man':
+        if color == 'b' and tr == 0:
+            my_kings.append((tr, tc))
+        elif color == 'w' and tr == 7:
+            my_kings.append((tr, tc))
+        else:
+            my_men.append((tr, tc))
+    else:
+        my_kings.append((tr, tc))
+    
+    return (tuple(b_men), tuple(b_kings), tuple(w_men), tuple(w_kings))
+
+
+def evaluate(state, color):
+    """Evaluate the board state from color's perspective."""
+    b_men, b_kings, w_men, w_kings = state
+    
+    if color == 'b':
+        my_men, my_kings = b_men, b_kings
+        opp_men, opp_kings = w_men, w_kings
+    else:
+        my_men, my_kings = w_men, w_kings
+        opp_men, opp_kings = b_men, b_kings
+    
+    score = len(my_men) + 3.0 * len(my_kings)
+    score -= len(opp_men) + 3.0 * len(opp_kings)
+    
+    for r, c in my_men:
+        if color == 'b':
+            score += (7 - r) * 0.1
+        else:
+            score += r * 0.1
+    
+    back_row = 7 if color == 'b' else 0
+    for r, c in my_men:
+        if r == back_row:
+            score += 0.05
+    
+    for r, c in my_men + my_kings:
+        if c == 0 or c == 7:
+            score += 0.02
+    
+    center_squares = [(3, 2), (3, 4), (4, 3), (4, 5)]
+    for sq in center_squares:
+        if sq in my_men or sq in my_kings:
+            score += 0.05
+        if sq in opp_men or sq in opp_kings:
+            score -= 0.05
+    
+    return score
+
+
+def order_moves(moves, my_men, my_kings, color):
+    """Order moves for better alpha-beta pruning."""
+    if not moves:
+        return moves
+    
+    if abs(moves[0][0][0] - moves[0][1][0]) == 2:
+        return moves
+    
+    promoting_moves = []
+    other_moves = []
+    
+    for from_sq, to_sq in moves:
+        fr, fc = from_sq
+        tr, tc = to_sq
+        if (fr, fc) in my_men:
+            if (color == 'b' and tr == 0) or (color == 'w' and tr == 7):
+                promoting_moves.append((from_sq, to_sq))
+            else:
+                other_moves.append((from_sq, to_sq))
+        else:
+            other_moves.append((from_sq, to_sq))
+    
+    return promoting_moves + other_moves
+
+
+def minimax(state, depth, is_maximizing, alpha, beta, my_color):
+    """Minimax with alpha-beta pruning."""
+    b_men, b_kings, w_men, w_kings = state
+    
+    to_move_color = my_color if is_maximizing else ('w' if my_color == 'b' else 'b')
+    
+    if to_move_color == 'b':
+        my_men, my_kings = b_men, b_kings
+        opp_men, opp_kings = w_men, w_kings
+    else:
+        my_men, my_kings = w_men, w_kings
+        opp_men, opp_kings = b_men, b_kings
+    
+    if depth == 0:
+        return evaluate(state, my_color)
+    
+    if not my_men and not my_kings:
+        return -1000
+    if not opp_men and not opp_kings:
+        return 1000
+    
+    moves = get_all_moves(my_men, my_kings, opp_men, opp_kings, to_move_color)
+    
+    if not moves:
+        return -1000 if is_maximizing else 1000
+    
+    if is_maximizing:
+        max_eval = float('-inf')
+        for move in moves:
+            new_state = apply_move_abs(state, move, to_move_color)
+            eval_score = minimax(new_state, depth - 1, False, alpha, beta, my_color)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for move in moves:
+            new_state = apply_move_abs(state, move, to_move_color)
+            eval_score = minimax(new_state, depth - 1, True, alpha, beta, my_color)
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval
+
+
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    """Main policy function using minimax with alpha-beta pruning."""
+    if color == 'b':
+        state = (tuple(my_men), tuple(my_kings), tuple(opp_men), tuple(opp_kings))
+    else:
+        state = (tuple(opp_men), tuple(opp_kings), tuple(my_men), tuple(my_kings))
+    
+    moves = get_all_moves(my_men, my_kings, opp_men, opp_kings, color)
+    
+    if not moves:
+        if my_men:
+            return ((my_men[0][0], my_men[0][1]), (0, 0))
+        elif my_kings:
+            return ((my_kings[0][0], my_kings[0][1]), (0, 0))
+        return ((0, 0), (0, 0))
+    
+    my_men_set = set(my_men)
+    my_kings_set = set(my_kings)
+    ordered_moves = order_moves(moves, my_men_set, my_kings_set, color)
+    
+    best_score = float('-inf')
+    best_move = ordered_moves[0]
+    
+    for move in ordered_moves:
+        new_state = apply_move_abs(state, move, color)
+        score = minimax(new_state, 3, False, float('-inf'), float('inf'), color)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move

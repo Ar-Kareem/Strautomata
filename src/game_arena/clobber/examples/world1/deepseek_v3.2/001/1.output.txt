@@ -1,0 +1,156 @@
+**Strategy**
+
+Clobber is a combinatorial game where mobility and piece count are key. Since the board is small (5x6), we can compute legal moves easily and evaluate positions with a simple static evaluator. A common approach is to use minimax with alpha-beta pruning and a heuristic that considers:
+
+1. **Mobility advantage**: Count of legal moves for us minus legal moves for opponent.
+2. **Piece difference**: Our pieces minus opponent pieces (since capturing reduces opponent pieces but also reduces our pieces by one in the short term, but we keep a piece in the new cell).
+3. **Central control**: Prefer moving pieces towards the center to increase mobility.
+
+Given the time constraint (1 second), I can search deeper with alpha-beta. I'll implement iterative deepening with a transposition table for efficiency. The evaluation function will combine mobility and piece difference.
+
+**Key Points**:
+- We can represent the board as two bitboards (30 bits each), but since board is small, a simple list-of-lists is fine.
+- Move generation: iterate over each cell of ours, check four directions for opponent piece.
+- Alpha-beta with iterative deepening ensures we use all available time.
+- Transposition table caches board states (hashed) to avoid recomputation.
+- Since the total pieces decrease monotonically, the game depth is bounded by total pieces (max 30 moves).
+
+I'll implement:
+1. `generate_moves(board_you, board_opp)` → list of (r, c, dir)
+2. `make_move(board_you, board_opp, move)` → new boards after move
+3. `evaluate(board_you, board_opp)` → heuristic score
+4. Alpha-beta search with iterative deepening.
+
+**Heuristic**:
+- `score = (our_moves - opponent_moves) * 0.5 + (our_pieces - opponent_pieces)`
+Weights chosen to prioritize piece advantage but also mobility.
+
+**Edge Cases**:
+- Must always return a legal move, even if search fails.
+- Fallback: return first legal move found.
+
+**Implementation**:
+
+<code>
+import itertools
+import time
+
+ROWS = 5
+COLS = 6
+DIRS = [('U', -1, 0), ('R', 0, 1), ('D', 1, 0), ('L', 0, -1)]
+
+def policy(you, opponent):
+    start_time = time.time()
+    you_board = [list(row) for row in you]
+    opp_board = [list(row) for row in opponent]
+    
+    # convert to tuple for hashing
+    def board_to_tuple(you_b, opp_b):
+        return (tuple(tuple(r) for r in you_b), tuple(tuple(r) for r in opp_b))
+    
+    # generate all legal moves from given boards
+    def generate_moves(yb, ob):
+        moves = []
+        for r in range(ROWS):
+            for c in range(COLS):
+                if yb[r][c] == 1:
+                    for d, dr, dc in DIRS:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < ROWS and 0 <= nc < COLS and ob[nr][nc] == 1:
+                            moves.append((r, c, d))
+        return moves
+    
+    # apply move, return new boards (copied)
+    def make_move(yb, ob, move):
+        r, c, d = move
+        # find direction
+        dr, dc = next((dr, dc) for (dd, drr, dcc) in DIRS if dd == d)
+        nr, nc = r + dr, c + dc
+        new_you = [list(row) for row in yb]
+        new_opp = [list(row) for row in ob]
+        new_you[r][c] = 0
+        new_you[nr][nc] = 1
+        new_opp[nr][nc] = 0
+        return new_you, new_opp
+    
+    # static evaluation
+    def evaluate(yb, ob):
+        our_moves = len(generate_moves(yb, ob))
+        # opponent moves after we move? we evaluate from current player perspective.
+        opp_moves = len(generate_moves(ob, yb))
+        our_pieces = sum(sum(r) for r in yb)
+        opp_pieces = sum(sum(r) for r in ob)
+        return 0.5 * (our_moves - opp_moves) + (our_pieces - opp_pieces)
+    
+    # transposition table: dict[tuple_board] -> (score, depth)
+    transposition = {}
+    
+    # alpha-beta search
+    def alpha_beta(yb, ob, depth, alpha, beta, maximizing):
+        key = board_to_tuple(yb, ob)
+        if key in transposition and transposition[key][1] >= depth:
+            return transposition[key][0]
+        
+        moves = generate_moves(yb, ob)
+        if depth == 0 or not moves:
+            # terminal or leaf
+            score = evaluate(yb, ob)
+            transposition[key] = (score, depth)
+            return score
+        
+        if maximizing:
+            value = float('-inf')
+            for m in moves:
+                ny, no = make_move(yb, ob, m)
+                value = max(value, alpha_beta(ny, no, depth-1, alpha, beta, False))
+                alpha = max(alpha, value)
+                if value >= beta:
+                    break
+            transposition[key] = (value, depth)
+            return value
+        else:
+            value = float('inf')
+            for m in moves:
+                ny, no = make_move(yb, ob, m)
+                value = min(value, alpha_beta(ny, no, depth-1, alpha, beta, True))
+                beta = min(beta, value)
+                if value <= alpha:
+                    break
+            transposition[key] = (value, depth)
+            return value
+    
+    # iterative deepening
+    best_move = None
+    legal_moves = generate_moves(you_board, opp_board)
+    if not legal_moves:
+        # should not happen per spec, but fallback
+        return "0,0,U"
+    
+    # ensure we return a move even if time expires quickly
+    best_move = legal_moves[0]
+    
+    depth = 1
+    while time.time() - start_time < 0.95:  # leave 50ms buffer
+        current_best = None
+        best_score = float('-inf')
+        alpha = float('-inf')
+        beta = float('inf')
+        for m in legal_moves:
+            ny, no = make_move(you_board, opp_board, m)
+            score = alpha_beta(ny, no, depth-1, alpha, beta, False)
+            if score > best_score:
+                best_score = score
+                current_best = m
+                alpha = max(alpha, score)
+        if current_best is not None:
+            best_move = current_best
+        depth += 1
+        # if depth exceeds remaining pieces, break
+        total_pieces = sum(sum(r) for r in you_board) + sum(sum(r) for r in opp_board)
+        if depth > total_pieces:
+            break
+    
+    r, c, d = best_move
+    return f"{r},{c},{d}"
+
+</code>

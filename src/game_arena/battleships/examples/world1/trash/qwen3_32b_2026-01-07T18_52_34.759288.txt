@@ -1,0 +1,90 @@
+<thinking>
+The provided solution implements a targeting policy for the Battleship game that combines two strategies: first, it targets cells adjacent to any hits to exploit potential ship placements, and second, it uses a probabilistic approach to evaluate unshot cells when no adjacent targets are available. The probabilistic evaluation considers all possible valid ship placements (accounting for current misses) to determine which unshot cell is most likely to contain a ship segment.
+
+Key components of the solution:
+1. **Adjacency Priority**: When there are existing hits, the policy prioritizes firing adjacent cells (up, down, left, right) that haven't been fired at yet. This focuses fire on likely ship extensions.
+
+2. **Probabilistic Scoring**: For unshot cells not adjacent to hits, the policy uses a scoring system based on potential ship placements. For each unshot cell, it evaluates how many valid ship positions (of all ship lengths and orientations) could include this cell, given the current board state (ignoring overlapping ship constraints for efficiency).
+
+3. **Efficient Calculation**: The scoring function iterates through each ship length and direction, checking if valid ship placements including the cell are possible. This balances computational efficiency with reasonable accuracy.
+
+4. **Stateless Operation**: Since the board encodes all necessary state information, the function does not require external state tracking. All decisions are derived directly from the provided `board` input.
+
+5. **Optimal Cell Selection**: When multiple candidates are available (adjacent to hits or with high probabilistic scores), the function selects the cell with the highest score, breaking ties arbitrarily.
+
+This approach balances systematic exploration with opportunistic exploitation of hits, making it effective for the game's constraints.
+</thinking>
+
+<code>
+```python
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    def calculate_score(r: int, c: int) -> int:
+        score = 0
+        for length in [5, 4, 3, 3, 2]:
+            # Check horizontal placements
+            min_start_col = max(0, c - (length - 1))
+            max_start_col = min(9 - length + 1, c)
+            for start_col in range(min_start_col, max_start_col + 1):
+                valid = True
+                for i in range(length):
+                    x, y = r, start_col + i
+                    if board[x][y] == -1:
+                        valid = False
+                        break
+                if valid:
+                    score += 1
+            # Check vertical placements
+            min_start_row = max(0, r - (length - 1))
+            max_start_row = min(9 - length + 1, r)
+            for start_row in range(min_start_row, max_start_row + 1):
+                valid = True
+                for i in range(length):
+                    x, y = start_row + i, c
+                    if board[x][y] == -1:
+                        valid = False
+                        break
+                if valid:
+                    score += 1
+        return score
+
+    # Generate candidates adjacent to hits
+    candidates = []
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1:
+                for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                        candidates.append((nr, nc))
+    # Deduplicate while preserving order (using seen set)
+    seen = set()
+    unique_candidates = []
+    for cell in candidates:
+        if cell not in seen:
+            seen.add(cell)
+            unique_candidates.append(cell)
+
+    if unique_candidates:
+        # Find candidate with highest score
+        best_score = -1
+        best_cell = unique_candidates[0]
+        for (r, c) in unique_candidates:
+            s = calculate_score(r, c)
+            if s > best_score:
+                best_score = s
+                best_cell = (r, c)
+        return best_cell
+    else:
+        # Evaluate all unshot cells
+        best_cell = None
+        best_score = -1
+        for r in range(10):
+            for c in range(10):
+                if board[r][c] == 0:
+                    s = calculate_score(r, c)
+                    if best_cell is None or s > best_score or (s == best_score and (r, c) < best_cell):
+                        best_score = s
+                        best_cell = (r, c)
+        return best_cell
+```
+</code>

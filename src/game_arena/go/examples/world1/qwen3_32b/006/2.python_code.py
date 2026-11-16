@@ -1,0 +1,65 @@
+
+def policy(me, opponent):
+    me_set = set(me)
+    opponent_set = set(opponent)
+    candidates = []
+    for r in range(1, 20):
+        for c in range(1, 20):
+            pos = (r, c)
+            if pos not in me_set and pos not in opponent_set:
+                candidates.append(pos)
+    if not candidates:
+        return (0, 0)
+    
+    def compute_score(pos):
+        r, c = pos
+        adjacent_me = 0
+        for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+            nr, nc = r + dr, c + dc
+            if (nr, nc) in me_set:
+                adjacent_me += 1
+        
+        is_corner = 0
+        if (r <= 3 and c <= 3) or (r <= 3 and c >= 17) or (r >= 17 and c <= 3) or (r >= 17 and c >= 17):
+            is_corner = 5
+        
+        is_edge = 0
+        if (r == 1 or r == 19 or c == 1 or c == 19):
+            if not (r <= 3 and c <=3) and not (r <= 3 and c >= 17) and not (r >= 17 and c <=3) and not (r >= 17 and c >= 17):
+                is_edge = 2
+        
+        return adjacent_me + is_corner + is_edge
+    
+    candidates.sort(key=lambda x: -compute_score(x))
+    
+    def is_legal(move):
+        r, c = move
+        if (r, c) in me_set or (r, c) in opponent_set:
+            return False
+        
+        visited = set()
+        queue = [move]
+        visited.add(move)
+        group = [move]
+        while queue:
+            current_r, current_c = queue.pop(0)
+            for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+                nr, nc = current_r + dr, current_c + dc
+                neighbor = (nr, nc)
+                if neighbor in me_set and neighbor not in visited:
+                    visited.add(neighbor)
+                    group.append(neighbor)
+                    queue.append(neighbor)
+        
+        for (gr, gc) in group:
+            for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+                ngr, ngc = gr + dr, gc + dc
+                empty = (ngr, ngc)
+                if empty not in me_set and empty not in opponent_set:
+                    return True
+        return False
+    
+    for move in candidates:
+        if is_legal(move):
+            return move
+    return (0, 0)

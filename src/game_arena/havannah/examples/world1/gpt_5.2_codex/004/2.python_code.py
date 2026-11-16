@@ -1,0 +1,212 @@
+
+import math
+from typing import List, Tuple
+
+def policy(me: List[Tuple[int,int]], opp: List[Tuple[int,int]], valid_mask) -> Tuple[int,int]:
+    N = len(valid_mask)
+    # Valid cells
+    valid = [(r,c) for r in range(N) for c in range(N) if valid_mask[r][c]]
+    valid_set = set(valid)
+    me_set = set(me)
+    opp_set = set(opp)
+    empty = [cell for cell in valid if cell not in me_set and cell not in opp_set]
+    if not empty:
+        # Should never happen, but return any valid
+        return valid[0]
+
+    # Standard axial neighbor offsets (symmetric)
+    dirs = [(1,0),(-1,0),(0,1),(0,-1),(1,-1),(-1,1)]
+
+    # Precompute neighbors
+    neighbors = {}
+    for r,c in valid:
+        nbs = []
+        for dr,dc in dirs:
+            nr, nc = r+dr, c+dc
+            if 0 <= nr < N and 0 <= nc < N and valid_mask[nr][nc]:
+                nbs.append((nr,nc))
+        neighbors[(r,c)] = nbs
+
+    # Degree, boundary, corners
+    degree = {cell: len(neighbors[cell]) for cell in valid}
+    boundary = set(cell for cell in valid if degree[cell] < 6)
+    corners = set(cell for cell in valid if degree[cell] == 3)
+
+    # Fallback corner detection if needed
+    if len(corners) != 6:
+        coords = list(valid)
+        min_r = min(r for r,c in coords); max_r = max(r for r,c in coords)
+        min_c = min(c for r,c in coords); max_c = max(c for r,c in coords)
+        min_rc = min(r+c for r,c in coords); max_rc = max(r+c for r,c in coords)
+        corner_candidates = set()
+        for r,c in coords:
+            if r==min_r or r==max_r or c==min_c or c==max_c or r+c==min_rc or r+c==max_rc:
+                corner_candidates.add((r,c))
+        corners = set([cell for cell in corner_candidates if degree.get(cell,0)<=3])
+        if len(corners) < 6:
+            # final fallback
+            corners = set(cell for cell in valid if degree[cell] == 3)
+
+    # Compute edges by walking the boundary
+    edge_id = {}
+    if len(corners) == 6:
+        bneighbors = {cell:[n for n in neighbors[cell] if n in boundary] for cell in boundary}
+        start = next(iter(corners))
+        if bneighbors[start]:
+            prev = start
+            curr = bneighbors[start][0]
+            edges = []
+            for _ in range(6):
+                edge_cells = []
+                while curr not in corners:
+                    edge_cells.append(curr)
+                    nxts = [n for n in bneighbors[curr] if n != prev]
+                    if not nxts:
+                        break
+                    prev, curr = curr, nxts[0]
+                edges.append(edge_cells)
+                nxts = [n for n in bneighbors[curr] if n != prev]
+                if not nxts:
+                    break
+                prev, curr = curr, nxts[0]
+            for idx, cells in enumerate(edges):
+                for cell in cells:
+                    edge_id[cell] = idx
+
+    # Helper: check ring
+    def has_ring(stones_set):
+        if len(stones_set) < 6:
+            return False
+        non_player_set = set(valid) - stones_set
+        if not non_player_set:
+            return False
+        visited = set()
+        stack = [cell for cell in boundary if cell in non_player_set]
+        for s in stack:
+            visited.add(s)
+        while stack:
+            s = stack.pop()
+            for nb in neighbors[s]:
+                if nb in non_player_set and nb not in visited:
+                    visited.add(nb)
+                    stack.append(nb)
+        return len(visited) != len(non_player_set)
+
+    # Helper: win detection
+    def is_win(stones_set):
+        visited = set()
+        for stone in stones_set:
+            if stone in visited:
+                continue
+            stack = [stone]
+            visited.add(stone)
+            edges = set()
+            corners_touch = set()
+            if stone in edge_id:
+                edges.add(edge_id[stone])
+            if stone in corners:
+                corners_touch.add(stone)
+            while stack:
+                s = stack.pop()
+                for nb in neighbors[s]:
+                    if nb in stones_set and nb not in visited:
+                        visited.add(nb)
+                        stack.append(nb)
+                        if nb in edge_id:
+                            edges.add(edge_id[nb])
+                        if nb in corners:
+                            corners_touch.add(nb)
+            if len(corners_touch) >= 2 or len(edges) >= 3:
+                return True
+        if has_ring(stones_set):
+            return True
+        return False
+
+    # 1) Immediate win for me
+    for move in empty:
+        if is_win(me_set | {move}):
+            return move
+
+    # 2) Block opponent immediate win
+    for move in empty:
+        if is_win(opp_set | {move}):
+            return move
+
+    # Precompute components of my stones for heuristic
+    comp_id = {}
+    comp_edges = []
+    comp_corners = []
+    visited = set()
+    for stone in me_set:
+        if stone in visited:
+            continue
+        stack = [stone]
+        visited.add(stone)
+        edges = set()
+        corners_touch = set()
+        if stone in edge_id:
+            edges.add(edge_id[stone])
+        if stone in corners:
+            corners_touch.add(stone)
+        comp_stones = [stone]
+        while stack:
+            s = stack.pop()
+            for nb in neighbors[s]:
+                if nb in me_set and nb not in visited:
+                    visited.add(nb)
+                    stack.append(nb)
+                    comp_stones.append(nb)
+                    if nb in edge_id:
+                        edges.add(edge_id[nb])
+                    if nb in corners:
+                        corners_touch.add(nb)
+        comp_idx = len(comp_edges)
+        comp_edges.append(edges)
+        comp_corners.append(corners_touch)
+        for s in comp_stones:
+            comp_id[s] = comp_idx
+
+    # Center of board (mean of valid coords)
+    center_r = sum(r for r,c in valid) / len(valid)
+    center_c = sum(c for r,c in valid) / len(valid)
+
+    # 3) Heuristic scoring
+    best_move = empty[0]
+    best_score = -1e9
+    for move in empty:
+        r,c = move
+        adj_my = 0
+        adj_opp = 0
+        adj_comps = set()
+        for nb in neighbors[move]:
+            if nb in me_set:
+                adj_my += 1
+                adj_comps.add(comp_id[nb])
+            elif nb in opp_set:
+                adj_opp += 1
+        # union of edges/corners from adjacent comps
+        union_edges = set()
+        union_corners = set()
+        for cid in adj_comps:
+            union_edges |= comp_edges[cid]
+            union_corners |= comp_corners[cid]
+        if move in edge_id:
+            union_edges.add(edge_id[move])
+        if move in corners:
+            union_corners.add(move)
+
+        # Score
+        dist = abs(r - center_r) + abs(c - center_c)
+        score = 0.0
+        score += 2.0 * adj_my
+        score += 0.5 * adj_opp
+        score += 2.0 * len(union_edges)
+        score += 3.0 * len(union_corners)
+        score += 1.0 * max(0, len(adj_comps)-1)  # connecting components
+        score -= 0.15 * dist
+
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return best_move

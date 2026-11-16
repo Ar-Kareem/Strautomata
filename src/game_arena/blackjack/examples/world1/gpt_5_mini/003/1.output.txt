@@ -1,0 +1,100 @@
+<thinking>
+I can't share internal chain-of-thought. Brief non-sensitive summary: I implement a risk-aware one-step lookahead policy that examines the remaining cards in your personal 13-card deck, computes the expected utility of drawing one more card (using a heavy penalty for busting) versus the utility of staying, and chooses the action with higher expected utility. Aces are valued as 11 when possible (and reduced to 1 as needed to avoid busting).
+</thinking>
+<code>
+from typing import List
+
+# Policy for simplified Blackjack-like game
+# Returns "HIT" or "STAY"
+
+RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+VALUE_MAP = {
+    "2": 2, "3": 3, "4": 4, "5": 5, "6": 6,
+    "7": 7, "8": 8, "9": 9, "10": 10,
+    "J": 10, "Q": 10, "K": 10
+}
+
+def _best_hand_value(hand: List[str], target: int) -> (int, bool):
+    """
+    Compute best hand value <= target when possible, treating A as 11 or 1.
+    Returns (value, is_bust).
+    """
+    # Sum non-A values
+    aces = 0
+    total = 0
+    for card in hand:
+        if card == "A":
+            aces += 1
+        else:
+            total += VALUE_MAP.get(card, 0)
+    # Start by treating all aces as 11
+    total += 11 * aces
+    # If over target, convert aces from 11 to 1 (reduce by 10 each) as needed
+    while total > target and aces > 0:
+        total -= 10  # 11 -> 1 reduces by 10
+        aces -= 1
+    is_bust = total > target
+    return total, is_bust
+
+def _expected_utility_after_one_hit(hand: List[str], target: int) -> float:
+    """
+    Compute expected utility for taking exactly one card now (and then stopping).
+    Utility:
+      - Bust -> -1.0 (strong penalty)
+      - Otherwise -> closer to target is better: utility = -abs(target - value) / target
+    """
+    # Build remaining ranks in our deck (we have one of each rank originally)
+    remaining = [r for r in RANKS if r not in hand]
+    if not remaining:
+        return float("-inf")
+    utilities = []
+    for card in remaining:
+        new_hand = hand + [card]
+        val, is_bust = _best_hand_value(new_hand, target)
+        if is_bust:
+            utilities.append(-1.0)
+        else:
+            utilities.append(-abs(target - val) / max(1, target))
+    return sum(utilities) / len(utilities)
+
+def policy(hand: List[str], target: int) -> str:
+    """
+    Decide whether to HIT or STAY given current hand and target T.
+    Uses one-step lookahead expected-utility comparison with a strong penalty for busting.
+    """
+    # Validate inputs minimally
+    if not isinstance(hand, list):
+        raise ValueError("hand must be a list of card rank strings")
+    # Current hand value
+    value, is_bust = _best_hand_value(hand, target)
+    # If already bust (shouldn't normally be called in that state), stay
+    if is_bust:
+        return "STAY"
+    # If already at target, optimal to stay
+    if value == target:
+        return "STAY"
+    # If no cards left to draw, must stay
+    if len(hand) >= len(RANKS):
+        return "STAY"
+    # Utility of staying now
+    stay_utility = -abs(target - value) / max(1, target)
+    # Expected utility of hitting once (then stopping or allowing future decisions next call)
+    hit_utility = _expected_utility_after_one_hit(hand, target)
+    # If hitting yields higher expected utility, choose HIT; otherwise STAY
+    if hit_utility > stay_utility + 1e-12:
+        return "HIT"
+    else:
+        return "STAY"
+
+# If desired: the following can be used for quick manual tests (not required)
+if __name__ == "__main__":
+    tests = [
+        (["A"], 21),
+        (["10", "7"], 18),
+        (["K", "A"], 20),
+        (["5", "9"], 17),
+        (["10", "9"], 19),
+    ]
+    for h, t in tests:
+        print(h, t, "->", policy(h, t))
+</code>

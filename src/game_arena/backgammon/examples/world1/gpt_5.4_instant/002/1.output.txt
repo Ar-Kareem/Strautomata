@@ -1,0 +1,315 @@
+The strategy for this policy is to first generate all legal move strings by simulating the rules implied by the engine interface, then score the resulting positions with a heuristic and choose the best legal action. This guarantees legality while still being competitive.
+
+Heuristic priorities:
+- Enter from the bar whenever required.
+- Prefer moves that hit blots.
+- Prefer making points, especially in the home board and advanced anchors.
+- Prefer reducing blots and avoiding leaving many exposed single checkers.
+- Prefer lower pip count.
+- Prefer bearing off.
+- Prefer stronger racing when contact is low.
+- Slightly prefer using both dice and making legal progress.
+
+The implementation is robust:
+- It enumerates all legal one-roll actions for 0, 1, or 2 dice.
+- It enforces bar-entry priority, blocked points, higher-die-forced cases, both-dice-if-possible, doubles handling, and bearing off.
+- It always returns a legal move string, falling back to `H:P,P` only when no move exists.
+
+<code>
+from typing import List, Tuple, Dict, Optional
+
+# Backgammon policy:
+# - Always returns a legal move string.
+# - Enumerates legal actions for the current dice.
+# - Scores resulting states with a heuristic and picks the best.
+
+def policy(state: dict) -> str:
+    my_pts = list(state["my_pts"])
+    opp_pts = list(state["opp_pts"])
+    my_bar = int(state["my_bar"])
+    opp_bar = int(state["opp_bar"])
+    my_off = int(state["my_off"])
+    opp_off = int(state["opp_off"])
+    dice = list(state["dice"])
+
+    # No dice / no move case
+    if not dice:
+        return "H:P,P"
+
+    # Normalize to at most 2 dice per spec; also support doubles if engine ever provides [d,d]
+    if len(dice) == 1:
+        d1 = dice[0]
+        actions = _enumerate_actions(my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off, [d1])
+    else:
+        d_low = min(dice[0], dice[1])
+        d_high = max(dice[0], dice[1])
+        if dice[0] == dice[1]:
+            actions = _enumerate_actions(my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off, [d_high, d_high, d_high, d_high])
+        else:
+            actions = _enumerate_actions(my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off, [d_low, d_high])
+
+    if not actions:
+        return "H:P,P"
+
+    best_score = None
+    best_move = None
+
+    for move_str, st in actions:
+        score = _evaluate_state(*st)
+        # Tiny deterministic tie-breaker by move string for stability
+        tie = move_str
+        key = (score, tie)
+        if best_score is None or key > best_score:
+            best_score = key
+            best_move = move_str
+
+    return best_move if best_move is not None else "H:P,P"
+
+
+def _enumerate_actions(my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off, dice_seq: List[int]):
+    # Returns list of (move_str, resulting_state)
+    n = len(dice_seq)
+
+    # Handle 4-move doubles internally, but output still only needs first two FROM fields by arena spec.
+    # We encode first two actual starts; extra internal moves only affect legality and evaluation.
+    if n == 1:
+        legal1 = _legal_single_moves(my_pts, opp_pts, my_bar, my_off, dice_seq[0])
+        if not legal1:
+            return [("H:P,P", (my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off))]
+        out = []
+        for frm1, st1 in legal1:
+            order = "H"
+            s = f"{order}:{_tok(frm1)},P"
+            out.append((s, (st1[0], st1[1], st1[2], opp_bar + st1[3], st1[4], opp_off)))
+        return out
+
+    # For two distinct dice, must consider both orders, then enforce:
+    # - if both dice can be played, must play both
+    # - if only one can be played, must play higher die when possible
+    if n == 2 and dice_seq[0] != dice_seq[1]:
+        low, high = dice_seq[0], dice_seq[1]
+        actions = []
+
+        # Order H then L
+        firsts = _legal_single_moves(my_pts, opp_pts, my_bar, my_off, high)
+        for frm1, st1 in firsts:
+            seconds = _legal_single_moves(st1[0], st1[1], st1[2], st1[4], low)
+            if seconds:
+                for frm2, st2 in seconds:
+                    s = f"H:{_tok(frm1)},{_tok(frm2)}"
+                    actions.append((s, (st2[0], st2[1], st2[2], opp_bar + st1[3] + st2[3], st2[4], opp_off)))
+            else:
+                s = f"H:{_tok(frm1)},P"
+                actions.append((s, (st1[0], st1[1], st1[2], opp_bar + st1[3], st1[4], opp_off)))
+
+        # Order L then H
+        firsts = _legal_single_moves(my_pts, opp_pts, my_bar, my_off, low)
+        for frm1, st1 in firsts:
+            seconds = _legal_single_moves(st1[0], st1[1], st1[2], st1[4], high)
+            if seconds:
+                for frm2, st2 in seconds:
+                    s = f"L:{_tok(frm1)},{_tok(frm2)}"
+                    actions.append((s, (st2[0], st2[1], st2[2], opp_bar + st1[3] + st2[3], st2[4], opp_off)))
+            else:
+                s = f"L:{_tok(frm1)},P"
+                actions.append((s, (st1[0], st1[1], st1[2], opp_bar + st1[3], st1[4], opp_off)))
+
+        if not actions:
+            return [("H:P,P", (my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off))]
+
+        # Enforce both-dice-if-possible
+        two_move_actions = [(m, st) for (m, st) in actions if not m.endswith(",P")]
+        if two_move_actions:
+            return two_move_actions
+
+        # Otherwise enforce higher-die-if-possible
+        higher_only = [(m, st) for (m, st) in actions if m.startswith("H:")]
+        if higher_only:
+            return higher_only
+        return actions
+
+    # Doubles or 4-step sequence. Need max number of moves.
+    # Output only first two starts, but legality/eval uses full sequence.
+    die = dice_seq[0]
+    paths = [([], (list(my_pts), list(opp_pts), my_bar, 0, my_off))]  # moves, state=(my_pts,opp_pts,my_bar,opp_bar_delta,my_off)
+    for _ in dice_seq:
+        new_paths = []
+        for moves, st in paths:
+            legals = _legal_single_moves(st[0], st[1], st[2], st[4], die)
+            if legals:
+                for frm, stn in legals:
+                    new_paths.append((moves + [frm], (stn[0], stn[1], stn[2], st[3] + stn[3], stn[4])))
+            else:
+                new_paths.append((moves + [None], st))
+        paths = new_paths
+
+    # Need maximum number of actual played dice
+    max_used = max(sum(1 for x in mv if x is not None) for mv, _ in paths)
+    paths = [(mv, st) for mv, st in paths if sum(1 for x in mv if x is not None) == max_used]
+
+    out = []
+    for moves, st in paths:
+        actual = [x for x in moves if x is not None]
+        frm1 = actual[0] if len(actual) >= 1 else None
+        frm2 = actual[1] if len(actual) >= 2 else None
+        s = f"H:{_tok(frm1)},{_tok(frm2)}"
+        out.append((s, (st[0], st[1], st[2], opp_bar + st[3], st[4], opp_off)))
+
+    if not out:
+        return [("H:P,P", (my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off))]
+    return out
+
+
+def _tok(frm: Optional[int]) -> str:
+    if frm is None:
+        return "P"
+    if frm == -1:
+        return "B"
+    return f"A{frm}"
+
+
+def _all_in_home(my_pts: List[int], my_bar: int) -> bool:
+    if my_bar > 0:
+        return False
+    # Home board is points 0..5 for player moving 23 -> 0
+    return sum(my_pts[6:]) == 0
+
+
+def _legal_single_moves(my_pts: List[int], opp_pts: List[int], my_bar: int, my_off: int, die: int):
+    # Returns list of (from_token_internal, new_state)
+    # internal from token: -1 for bar, 0..23 for board point
+    out = []
+
+    # Must enter from bar first
+    if my_bar > 0:
+        dest = 24 - die  # entering from bar onto opponent home / our 24-die point
+        if 0 <= dest < 24 and opp_pts[dest] < 2:
+            nmy = list(my_pts)
+            nopp = list(opp_pts)
+            nbar = my_bar - 1
+            noff = my_off
+            hit = 0
+            if nopp[dest] == 1:
+                nopp[dest] = 0
+                hit = 1
+            nmy[dest] += 1
+            out.append((-1, (nmy, nopp, nbar, hit, noff)))
+        return out
+
+    home = _all_in_home(my_pts, my_bar)
+
+    for src in range(24):
+        if my_pts[src] <= 0:
+            continue
+        dest = src - die
+        # Normal move on board
+        if dest >= 0:
+            if opp_pts[dest] >= 2:
+                continue
+            nmy = list(my_pts)
+            nopp = list(opp_pts)
+            nmy[src] -= 1
+            hit = 0
+            if nopp[dest] == 1:
+                nopp[dest] = 0
+                hit = 1
+            nmy[dest] += 1
+            out.append((src, (nmy, nopp, my_bar, hit, my_off)))
+        else:
+            # Bearing off
+            if not home:
+                continue
+            # Exact bear off always allowed
+            if dest == -1:
+                nmy = list(my_pts)
+                nmy[src] -= 1
+                out.append((src, (nmy, list(opp_pts), my_bar, 0, my_off + 1)))
+            else:
+                # Oversized die: allowed only if no checkers on higher points than src
+                # Since movement is toward 0, "higher points" in home are larger indices among 0..5
+                if src > 5:
+                    continue
+                if sum(my_pts[src + 1:6]) == 0:
+                    nmy = list(my_pts)
+                    nmy[src] -= 1
+                    out.append((src, (nmy, list(opp_pts), my_bar, 0, my_off + 1)))
+
+    return out
+
+
+def _evaluate_state(my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off) -> float:
+    score = 0.0
+
+    # Strong terminal-ish incentives
+    score += 120.0 * my_off
+    score -= 120.0 * opp_off
+
+    # Bar is very costly / valuable
+    score -= 35.0 * my_bar
+    score += 30.0 * opp_bar
+
+    # Pip count
+    my_pip = sum((i + 1) * my_pts[i] for i in range(24)) + 25 * my_bar
+    opp_pip = sum((24 - i) * opp_pts[i] for i in range(24)) + 25 * opp_bar
+    score += 1.2 * (opp_pip - my_pip)
+
+    # Made points and blots
+    my_made = 0
+    opp_made = 0
+    my_blots = 0
+    opp_blots = 0
+    for i in range(24):
+        if my_pts[i] >= 2:
+            my_made += 1
+        elif my_pts[i] == 1:
+            my_blots += 1
+        if opp_pts[i] >= 2:
+            opp_made += 1
+        elif opp_pts[i] == 1:
+            opp_blots += 1
+
+    score += 8.0 * my_made
+    score -= 7.0 * opp_made
+    score -= 6.5 * my_blots
+    score += 5.5 * opp_blots
+
+    # Prime / blockade value in home and outer boards
+    for i in range(6):
+        if my_pts[i] >= 2:
+            score += 6.0
+        if opp_pts[23 - i] >= 2:
+            score -= 4.0
+
+    # Anchors in opponent home board (our advanced anchors at 18..23)
+    for i in range(18, 24):
+        if my_pts[i] >= 2:
+            score += 4.5
+
+    # Builders (exactly 2-3 checkers on useful points)
+    for i in range(6, 18):
+        if my_pts[i] == 2:
+            score += 1.0
+        elif my_pts[i] >= 3:
+            score += 0.4
+
+    # Contact/race adjustment
+    my_back = max((i for i in range(24) if my_pts[i] > 0), default=-1)
+    opp_back_from_my_view = min((i for i in range(24) if opp_pts[i] > 0), default=24)
+    contact = my_back >= opp_back_from_my_view
+    if not contact:
+        # Pure race: emphasize pip and off
+        score += 0.8 * (opp_pip - my_pip)
+        score += 20.0 * (my_off - opp_off)
+
+    # Distribution preference: avoid stacks
+    for i in range(24):
+        if my_pts[i] >= 4:
+            score -= 1.5 * (my_pts[i] - 3)
+
+    # Slight preference for home-board checkers when bearing in
+    for i in range(6):
+        score += 0.6 * my_pts[i]
+        score -= 0.3 * opp_pts[23 - i]
+
+    return score
+</code>

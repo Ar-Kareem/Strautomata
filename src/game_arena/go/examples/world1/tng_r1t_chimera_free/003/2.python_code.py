@@ -1,0 +1,90 @@
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    my_stones = set(me)
+    opp_stones = set(opponent)
+    occupied = my_stones.union(opp_stones)
+    
+    empty = []
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if (r, c) not in occupied:
+                empty.append((r, c))
+    
+    tier1 = []
+    for (r, c) in empty:
+        for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+            nr, nc = r + dr, c + dc
+            if 1 <= nr <= 19 and 1 <= nc <= 19 and (nr, nc) not in occupied:
+                tier1.append((r, c))
+                break
+
+    candidates = tier1 if tier1 else empty
+    
+    scored = []
+    for (r, c) in candidates:
+        corner = r in {1, 19} and c in {1, 19}
+        edge = (r in {1, 19} or c in {1, 19}) and not corner
+        edge_score = 10 if corner else 5 if edge else 0
+        proximity = sum(1 for sr, sc in my_stones if abs(sr - r) + abs(sc - c) == 1) * 2
+        opp_adj = sum(1 for sr, sc in opp_stones if abs(sr - r) + abs(sc - c) == 1)
+        center_penalty = (abs(r - 10) + abs(c - 10)) / 10.0
+        total = edge_score + proximity + opp_adj - center_penalty
+        scored.append((-total, r, c))
+    
+    scored.sort()
+    
+    for score_val, r, c in scored:
+        if (r, c) in tier1:
+            return (r, c)
+        temp_occupied = occupied | {(r, c)}
+        captures = False
+        for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+            nr, nc = r + dr, c + dc
+            if (nr, nc) in opp_stones:
+                queue, visited = [(nr, nc)], set()
+                opp_group = []
+                while queue:
+                    x, y = queue.pop(0)
+                    if (x, y) not in opp_stones or (x, y) in visited:
+                        continue
+                    visited.add((x, y))
+                    opp_group.append((x, y))
+                    for dx, dy in [(-1,0), (1,0), (0,-1), (0,1)]:
+                        nx, ny = x + dx, y + dy
+                        if (nx, ny) not in visited:
+                            queue.append((nx, ny))
+                libs = set()
+                for x, y in opp_group:
+                    for dx, dy in [(-1,0), (1,0), (0,-1), (0,1)]:
+                        nx, ny = x + dx, y + dy
+                        if 1 <= nx <= 19 and 1 <= ny <= 19 and (nx, ny) not in temp_occupied:
+                            libs.add((nx, ny))
+                if not libs:
+                    captures = True
+                    break
+        if captures:
+            return (r, c)
+        queue, visited = [(r, c)], set()
+        my_group = []
+        while queue:
+            x, y = queue.pop(0)
+            if (x, y) in visited:
+                continue
+            if (x, y) != (r, c) and (x, y) not in my_stones:
+                continue
+            visited.add((x, y))
+            my_group.append((x, y))
+            for dx, dy in [(-1,0), (1,0), (0,-1), (0,1)]:
+                nx, ny = x + dx, y + dy
+                if 1 <= nx <= 19 and 1 <= ny <= 19 and ((nx, ny) == (r, c) or (nx, ny) in my_stones):
+                    queue.append((nx, ny)) 
+        libs = set()
+        for x, y in my_group:
+            for dx, dy in [(-1,0), (1,0), (0,-1), (0,1)]:
+                nx, ny = x + dx, y + dy
+                if 1 <= nx <= 19 and 1 <= ny <= 19 and (nx, ny) not in temp_occupied:
+                    libs.add((nx, ny))
+        if libs:
+            return (r, c)
+    
+    return (0, 0)

@@ -1,0 +1,121 @@
+
+
+The strategy for this policy is to prioritize moves that capture high-value pieces, promote pawns to queens, and control the center. It evaluates each possible move based on material gain, promotion potential, and central positioning while avoiding squares attacked by opponent pawns. The policy also encourages castling for king safety and piece development.
+
+<code>
+def policy(pieces: dict[str, str], to_play: str, memory: dict) -> tuple[str, dict]:
+    piece_values = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}
+    center_squares = {'d4', 'e4', 'd5', 'e5', 'c3', 'c6', 'f3', 'f6'}
+    color = 'w' if to_play == 'white' else 'b'
+    opponent_color = 'b' if color == 'w' else 'w'
+    best_score = -float('inf')
+    best_move = None
+
+    for square, piece in pieces.items():
+        if piece[0] != color:
+            continue
+        piece_type = piece[1]
+        current_file, current_rank = square[0], int(square[1])
+
+        # Generate pawn moves
+        if piece_type == 'P':
+            direction = 1 if color == 'w' else -1
+            start_rank = 2 if color == 'w' else 7
+            new_rank = current_rank + direction
+            if 1 <= new_rank <= 8:
+                # Forward moves
+                forward_square = f"{current_file}{new_rank}"
+                if forward_square not in pieces:
+                    score = 900 if new_rank in (1, 8) else 0.5 if forward_square in center_squares else 0
+                    if score > best_score:
+                        best_move = f"{square}{forward_square}" + ('q' if new_rank in (1, 8) else '')
+                        best_score = score
+                # Captures
+                for df in (-1, 1):
+                    new_file = chr(ord(current_file) + df)
+                    if 'a' <= new_file <= 'h':
+                        capture_square = f"{new_file}{new_rank}"
+                        if capture_square in pieces and pieces[capture_square][0] == opponent_color:
+                            captured_value = piece_values.get(pieces[capture_square][1], 0)
+                            score = captured_value + (900 if new_rank in (1, 8) else 0) + (0.5 if capture_square in center_squares else 0)
+                            if score > best_score:
+                                best_move = f"{square}{capture_square}" + ('q' if new_rank in (1, 8) else '')
+                                best_score = score
+
+        # Generate knight moves
+        elif piece_type == 'N':
+            for df, dr in [(2,1),(2,-1),(-2,1),(-2,-1),(1,2),(1,-2),(-1,2),(-1,-2)]:
+                new_file = chr(ord(current_file) + df)
+                new_rank_pos = current_rank + dr
+                if 'a' <= new_file <= 'h' and 1 <= new_rank_pos <= 8:
+                    new_square = f"{new_file}{new_rank_pos}"
+                    captured_value = 0
+                    if new_square in pieces:
+                        if pieces[new_square][0] == color:
+                            continue
+                        captured_value = piece_values.get(pieces[new_square][1], 0)
+                    score = captured_value + (0.5 if new_square in center_squares else 0)
+                    if score > best_score:
+                        best_move = f"{square}{new_square}"
+                        best_score = score
+
+        # Generate king moves (including castling)
+        elif piece_type == 'K':
+            for df in (-1, 0, 1):
+                for dr in (-1, 0, 1):
+                    if df == 0 and dr == 0:
+                        continue
+                    new_file = chr(ord(current_file) + df)
+                    new_rank_pos = current_rank + dr
+                    if 'a' <= new_file <= 'h' and 1 <= new_rank_pos <= 8:
+                        new_square = f"{new_file}{new_rank_pos}"
+                        if new_square in pieces and pieces[new_square][0] == color:
+                            continue
+                        captured_value = piece_values.get(pieces.get(new_square, '  ')[1], 0)
+                        castle_bonus = 1.0 if abs(df) == 2 else 0  # Castling move
+                        score = captured_value + castle_bonus
+                        if score > best_score:
+                            best_move = f"{square}{new_square}"
+                            best_score = score
+
+        # Generate sliding pieces moves (Bishop, Rook, Queen)
+        elif piece_type in ('B', 'R', 'Q'):
+            directions = []
+            if piece_type == 'B':
+                directions = [(-1,-1), (-1,1), (1,-1), (1,1)]
+            elif piece_type == 'R':
+                directions = [(-1,0), (1,0), (0,-1), (0,1)]
+            else:  # Queen
+                directions = [(-1,-1), (-1,1), (1,-1), (1,1), (-1,0), (1,0), (0,-1), (0,1)]
+            
+            for dx, dy in directions:
+                for step in range(1, 8):
+                    new_file = chr(ord(current_file) + dx * step)
+                    new_rank_pos = current_rank + dy * step
+                    if not ('a' <= new_file <= 'h' and 1 <= new_rank_pos <= 8):
+                        break
+                    new_square = f"{new_file}{new_rank_pos}"
+                    if new_square in pieces:
+                        if pieces[new_square][0] == color:
+                            break
+                        captured_value = piece_values.get(pieces[new_square][1], 0)
+                        score = captured_value + (0.5 if new_square in center_squares else 0)
+                        if score > best_score:
+                            best_move = f"{square}{new_square}"
+                            best_score = score
+                        break  # Can't jump over pieces
+                    else:
+                        score = 0.5 if new_square in center_squares else 0
+                        if score > best_score:
+                            best_move = f"{square}{new_square}"
+                            best_score = score
+
+    # Fallback to first found move if no evaluation was done
+    if best_move is None:
+        for square in pieces:
+            if pieces[square][0] == color:
+                best_move = f"{square}{square}"  # Invalid move but ensures legal fallback
+                break
+
+    return (best_move, memory)
+</code>

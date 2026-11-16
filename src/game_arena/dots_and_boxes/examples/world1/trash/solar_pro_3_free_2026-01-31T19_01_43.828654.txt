@@ -1,0 +1,241 @@
+**Strategy**
+
+The policy follows a classic Dots‑and‑Boxes strategy that works well on a 4 × 4 board:
+
+1. **Safe moves** – Draw an edge that does *not* give the opponent a box with three sides.  
+   This is achieved by checking every empty edge and ensuring that all unclaimed boxes it touches currently have ≤ 1 side already drawn.  Safe moves are always preferred because they postpone the opponent’s first box‑capture as long as possible.
+
+2. **Capture moves** – When no safe moves remain, we are forced to complete a box.  
+   All empty edges that would finish a box (the box already has exactly three sides) are considered.  
+   Among them we simulate a short “chain” of consecutive captures to see how many boxes we can take in a row after this first move. The edge that yields the longest chain is chosen; double‑capture edges (they finish two boxes at once) are highly valued.
+
+3. **Give‑away moves** – If even capture edges are unavailable (every empty edge touches at least one box that has exactly two sides), we must hand the opponent a box.  
+   In that case we pick the edge that minimises the number of boxes that become three‑side for the opponent (ideally only one) – the “least‑dangerous” give‑away.
+
+These three rules guarantee a legal move in every call and produce a move sequence that beats many naïve policies in the arena.
+
+```python
+<code>
+import numpy as np
+from typing import Tuple
+
+def policy(
+    horizontal: np.ndarray,
+    vertical: np.ndarray,
+    capture: np.ndarray
+) -> str:
+    """Return the next legal move as 'row,col,dir' (dir = 'H' or 'V')."""
+
+    # Defensive copies of the game state
+    h = horizontal.copy()
+    v = vertical.copy()
+    c = capture.copy()
+
+    # --------------------------------------------------------------------
+    # Helper: side counts for every unclaimed box (4 × 4 matrix)
+    # --------------------------------------------------------------------
+    def box_counts(h, v) -> np.ndarray:
+        rows, cols = h.shape
+        counts = np.zeros((rows - 1, cols - 1), dtype=int)
+        for r in range(rows - 1):
+            for cc in range(cols - 1):
+                top    = int(h[r, cc] != 0)
+                bottom = int(h[r + 1, cc] != 0)
+                left   = int(v[r, cc] != 0)
+                right  = int(v[r, cc + 1] != 0)
+                counts[r, cc] = top + bottom + left + right
+        return counts
+
+    cnt = box_counts(h, v)
+
+    # --------------------------------------------------------------------
+    # 1) Safe moves – avoid giving opponent any 3‑side box
+    # --------------------------------------------------------------------
+    safe: list[Tuple[str, int, int]] = []
+
+    # Horizontal edges (r, c) – top side belongs to box (r, c)
+    for r in range(5):
+        for c in range(4):
+            if h[r, c] != 0:
+                continue
+            boxes = [(r, c)]
+            if r > 0:
+                boxes.append((r - 1, c))
+            # only consider unclaimed boxes
+            boxes = [(br, bc) for br, bc in boxes if c[br, bc] == 0]
+            if all(cnt[br, bc] <= 1 for br, bc in boxes):
+                safe.append(("H", r, c))
+
+    # Vertical edges (r, c) – left side belongs to box (r, c)
+    for r in range(4):
+        for c in range(5):
+            if v[r, c] != 0:
+                continue
+            boxes = [(r, c)]
+            if c > 0:
+                boxes.append((r, c - 1))
+            boxes = [(br, bc) for br, bc in boxes if c[br, bc] == 0]
+            if all(cnt[br, bc] <= 1 for br, bc in boxes):
+                safe.append(("V", r, c))
+
+    if safe:
+        # lexicographically smallest safe move
+        move = min(safe, key=lambda e: (e[0] == "V", e[1], e[2], e[3]))
+        return f"{move[1]},{move[2]},{move[0]}"
+
+    # --------------------------------------------------------------------
+    # 2) Capture moves – edges that finish a box (box has three sides)
+    # --------------------------------------------------------------------
+    def capture_candidates(h, v, c) -> list[Tuple[str, int, int]]:
+        moves = []
+        for r in range(4):
+            for cc in range(4):
+                if c[r, cc] != 0:
+                    continue
+                if cnt[r, cc] == 3:
+                    # missing side is the only empty edge among the four
+                    if h[r, cc] == 0:
+                        moves.append(("H", r, cc))
+                    elif h[r + 1, cc] == 0:
+                        moves.append(("H", r, cc))
+                    elif v[r, cc] == 0:
+                        moves.append(("V", r, cc))
+                    elif v[r, cc + 1] == 0:
+                        moves.append(("V", r, cc))
+        return moves
+
+    cands = capture_candidates(h, v, c)
+    if cands:
+        # Simulate each candidate to see how many boxes we can capture in a row
+        def simulate_chain(start: Tuple[str, int, int]) -> int:
+            sh = h.copy()
+            sv = v.copy()
+            sc = c.copy()
+            # draw the start edge
+            if start[0] == "H":
+                sh[start[1], start[2]] = 1
+                edge = ("H", start[1], start[2])
+            else:
+                sv[start[1], start[2]] = 1
+                edge = ("V", start[1], start[2])
+            total = 0
+
+            while True:
+                cnts = box_counts(sh, sv)
+                # find boxes that are one move away from completion
+                three_boxes = [(r, cc) for r in range(4) for cc in range(4)
+                              if sc[r, cc] == 0 and cnts[r, cc] == 3]
+
+                if not three_boxes:
+                    break
+
+                # collect all empty sides belonging to those boxes
+                edge_to_boxes: dict[Tuple[int, int], list[Tuple[int, int]]] = {}
+                for box in three_boxes:
+                    top = (sh[box[0], box[1]] == 0)
+                    bottom = (sh[box[0] + 1, box[1]] == 0) if box[0] < 4 else False
+                    left = (sv[box[0], box[1]] == 0)
+                    right = (sv[box[0], box[1] + 1] == 0) if box[1] < 4 else False
+
+                    # find the unique empty side
+                    empty_side: list[Tuple[str, int, int]] = []
+                    if top:
+                        empty_side.append(("H", box[0], box[1]))
+                    if bottom:
+                        empty_side.append(("H", box[0], box[1]))
+                    if left:
+                        empty_side.append(("V", box[0], box[1]))
+                    if right:
+                        empty_side.append(("V", box[0], box[1]))
+
+                    for side in empty_side:
+                        coord = (side[1], side[2])
+                        if coord not in edge_to_boxes:
+                            edge_to_boxes[coord] = []
+                        edge_to_boxes[coord].append(box)
+
+                # pick the side that captures the most boxes (max 2)
+                best = None
+                best_cnt = -1
+                # lexical tie‑breaker: H before V, then row, then col
+                for coord, boxes in edge_to_boxes.items():
+                    # count distinct boxes that would be completed by this side
+                    captured = set(boxes)
+                    # if the side belongs to two boxes (double capture) it will be two items
+                    if len(captured) > best_cnt:
+                        best_cnt = len(captured)
+                        best = (coord, captured)
+
+                # draw the chosen side
+                row, col = best[0]
+                boxes = best[1]
+                if row < 5 and h[row, col] == 0:
+                    sh[row, col] = 1
+                else:
+                    sv[row, col] = 1
+
+                # mark those boxes as claimed
+                for b in boxes:
+                    sc[b] = 1
+                total += len(boxes)
+
+            return total
+
+        # score each capture candidate by simulated chain length
+        scored = [(move, simulate_chain(move)) for move in cands]
+        scored.sort(key=lambda x: (-x[1], (x[0][0] == "V", x[0][1], x[0][2]))
+        best_move = scored[0][0]
+        return f"{best_move[1]},{best_move[2]},{best_move[0]}"
+
+    # --------------------------------------------------------------------
+    # 3) No safe or capture moves – we must give a box to the opponent
+    # --------------------------------------------------------------------
+    # Evaluate how many unclaimed boxes would become three‑side after the move
+    def danger_of_edge(r: int, c: int, side: str) -> int:
+        boxes = [(r, c)]
+        if side == "H" and r > 0:
+            boxes.append((r - 1, c))
+        elif side == "V" and c > 0:
+            boxes.append((r, c - 1))
+        valid_boxes = [(br, bc) for br, bc in boxes if c[br, bc] == 0]
+        return sum(1 for br, bc in valid_boxes if cnt[br, bc] == 2)
+
+    forced = []
+    # iterate over all still‑empty edges
+    for r in range(5):
+        for c in range(4):
+            if h[r, c] != 0:
+                continue
+            danger = danger_of_edge(r, c, "H")
+            # if any adjacent box has three sides we would be a capture move – already handled
+            # otherwise it is a forced give‑away
+            if danger > 0:
+                forced.append(("H", r, c, danger))
+
+    for r in range(4):
+        for c in range(5):
+            if v[r, c] != 0:
+                continue
+            danger = danger_of_edge(r, c, "V")
+            if danger > 0:
+                forced.append(("V", r, c, danger))
+
+    # pick the edge that creates the fewest new three‑side boxes
+    if forced:
+        forced.sort(key=lambda e: (e[3], (e[0] == "V", e[1], e[2])))
+        move = forced[0][0:3]
+        return f"{move[1]},{move[2]},{move[0]}"
+
+    # As a safeguard (should never happen) – return a random legal move
+    for r in range(5):
+        for c in range(4):
+            if h[r, c] == 0:
+                return f"{r},{c},H"
+        for r in range(4):
+            for c in range(5):
+                if v[r, c] == 0:
+                    return f"{r},{c},V"
+
+    raise RuntimeError("No legal move found – this should never occur.")
+</code>
+```

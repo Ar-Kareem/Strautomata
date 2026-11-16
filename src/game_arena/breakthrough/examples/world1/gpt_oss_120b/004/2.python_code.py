@@ -1,0 +1,119 @@
+
+import random
+from typing import List, Tuple, Set
+
+def policy(me: List[Tuple[int, int]],
+           opp: List[Tuple[int, int]],
+           color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    """
+    Return a move for Breakthrough.
+
+    Parameters
+    ----------
+    me : list of (row, col)
+        Positions of our own pieces.
+    opp : list of (row, col)
+        Positions of the opponent's pieces.
+    color : {'b', 'w'}
+        'b' moves downwards (decreasing row), 'w' moves upwards (increasing row).
+
+    Returns
+    -------
+    ((from_row, from_col), (to_row, to_col))
+        A legal move.
+    """
+    # ----- helpers -------------------------------------------------
+    BOARD_SIZE = 8
+    me_set: Set[Tuple[int, int]] = set(me)
+    opp_set: Set[Tuple[int, int]] = set(opp)
+
+    # direction of movement for us and opponent
+    my_dir = -1 if color == 'b' else 1
+    opp_dir = 1 if color == 'b' else -1
+
+    # goal row for us
+    goal_row = 0 if color == 'b' else 7
+
+    # ----- generate all legal moves -------------------------------
+    def in_bounds(r: int, c: int) -> bool:
+        return 0 <= r < BOARD_SIZE and 0 <= c < BOARD_SIZE
+
+    moves = []  # list of ((r0,c0), (r1,c1))
+    for r, c in me:
+        forward_r = r + my_dir
+
+        # straight forward (must be empty)
+        if in_bounds(forward_r, c) and (forward_r, c) not in me_set and (forward_r, c) not in opp_set:
+            moves.append(((r, c), (forward_r, c)))
+
+        # diagonal left
+        diag_l_c = c - 1
+        if in_bounds(forward_r, diag_l_c):
+            dest = (forward_r, diag_l_c)
+            if dest in opp_set:                     # capture
+                moves.append(((r, c), dest))
+            elif dest not in me_set:                # normal move
+                moves.append(((r, c), dest))
+
+        # diagonal right
+        diag_r_c = c + 1
+        if in_bounds(forward_r, diag_r_c):
+            dest = (forward_r, diag_r_c)
+            if dest in opp_set:                     # capture
+                moves.append(((r, c), dest))
+            elif dest not in me_set:                # normal move
+                moves.append(((r, c), dest))
+
+    # If for any reason no move was generated (should never happen in a legal position),
+    # fallback to a random piece moving straight forward if possible.
+    if not moves:
+        for r, c in me:
+            forward_r = r + my_dir
+            if in_bounds(forward_r, c) and (forward_r, c) not in me_set and (forward_r, c) not in opp_set:
+                return ((r, c), (forward_r, c))
+
+    # ----- evaluation of a move -----------------------------------
+    def evaluate(move: Tuple[Tuple[int, int], Tuple[int, int]]) -> int:
+        src, dst = move
+        dr, dc = dst
+        score = 0
+
+        # 1) immediate win
+        if dr == goal_row:
+            return 10000  # highest possible
+
+        # 2) capture bonus
+        if dst in opp_set:
+            score += 500
+
+        # 3) progress towards goal (smaller distance → higher score)
+        if color == 'b':
+            distance = dr                     # rows left to reach 0
+        else:
+            distance = 7 - dr                 # rows left to reach 7
+        score -= distance  # fewer rows left = larger score
+
+        # 4) safety penalty – can opponent capture this piece next turn?
+        for orow, ocol in opp_set:
+            cap_r = orow + opp_dir
+            if not in_bounds(cap_r, 0):
+                continue
+            if (cap_r, ocol - 1) == dst or (cap_r, ocol + 1) == dst:
+                score -= 300   # modest penalty
+                break
+
+        return score
+
+    # ----- pick best move -----------------------------------------
+    best_score = -10**9
+    best_moves = []
+    for m in moves:
+        s = evaluate(m)
+        if s > best_score:
+            best_score = s
+            best_moves = [m]
+        elif s == best_score:
+            best_moves.append(m)
+
+    # random tie‑break
+    return random.choice(best_moves)

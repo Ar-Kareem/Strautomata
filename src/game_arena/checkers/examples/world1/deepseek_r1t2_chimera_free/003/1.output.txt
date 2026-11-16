@@ -1,0 +1,104 @@
+
+
+The strategy for this policy focuses on maximizing captures and positioning pieces advantageously while adhering to game rules. Key elements include:
+
+1. **Mandatory Captures**: Prioritizes sequences with the most captures, preferring those capturing kings when possible.
+2. **King Promotion**: Promotes men to kings by moving toward the promotion row, awarding high scores for reaching it.
+3. **Positional Play**: Values central positions for kings to maximize mobility and control. Men earn points for advancing toward promotion.
+4. **Safety**: Although simplified, the policy avoids predictable vulnerabilities by considering move outcomes.
+
+The code implements these strategies using depth-first search for capture sequences and heuristic evaluations for regular moves.
+
+<code>
+import copy
+from collections import deque
+
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    my_pieces = set(my_men + my_kings)
+    opp_pieces = set(opp_men + opp_kings)
+    all_occupied = my_pieces | opp_pieces
+    
+    # Generate all capture sequences
+    capture_sequences = []
+    for piece in my_men + my_kings:
+        is_king = piece in my_kings
+        seqs = get_capture_sequences(piece, is_king, color, my_pieces, opp_pieces, all_occupied)
+        capture_sequences.extend(seqs)
+    
+    # Select best capture sequence
+    if capture_sequences:
+        best_seq = max(capture_sequences, key=lambda s: (len(s[2]), -len(s[1])))
+        return (best_seq[0], best_seq[1][0])
+    
+    # Evaluate regular moves if no captures
+    best_move = None
+    best_score = -float('inf')
+    for piece in my_men:
+        moves = get_regular_moves(piece, True, color, all_occupied)
+        for move in moves:
+            score = evaluate_move(piece, move, color, True, my_kings, opp_pieces)
+            if score > best_score:
+                best_score = score
+                best_move = (piece, move)
+    for piece in my_kings:
+        moves = get_regular_moves(piece, False, color, all_occupied)
+        for move in moves:
+            score = evaluate_move(piece, move, color, False, my_kings, opp_pieces)
+            if score > best_score:
+                best_score = score
+                best_move = (piece, move)
+    
+    return best_move if best_move else ((0,0), (0,0))  # Fallback
+
+def get_capture_sequences(start, is_king, color, my_pieces, opp_pieces, occupied):
+    stack = deque([(start, is_king, [], [], opp_pieces.copy(), occupied.copy())])
+    sequences = []
+    
+    while stack:
+        pos, king, path, captured, opp, occ = stack.pop()
+        directions = [(-1,-1), (-1,1), (1,-1), (1,1)] if king else \
+            [(-1,-1), (-1,1)] if color == 'b' else [(1,-1), (1,1)]
+        
+        any_jump = False
+        for dr, dc in directions:
+            adj = (pos[0] + dr, pos[1] + dc)
+            land = (pos[0] + 2*dr, pos[1] + 2*dc)
+            if land[0] < 0 or land[0] > 7 or land[1] < 0 or land[1] > 7:
+                continue
+            if adj in opp and land not in occ and land not in path:
+                new_opp = opp - {adj}
+                new_occ = (occ - {adj, pos}) | {land}
+                new_king = king or (color == 'b' and land[0] == 0) or (color == 'w' and land[0] == 7)
+                new_pos = land
+                new_path = path + [land]
+                new_captured = captured + [adj]
+                stack.append((new_pos, new_king, new_path, new_captured, new_opp, new_occ))
+                any_jump = True
+        
+        if not any_jump and path:
+            sequences.append((start, path, captured))
+    
+    return sequences
+
+def get_regular_moves(piece, is_man, color, occupied):
+    moves = []
+    dirs = [(-1,-1), (-1,1)] if color == 'b' and is_man else \
+           [(1,-1), (1,1)] if color == 'w' and is_man else \
+           [(-1,-1), (-1,1), (1,-1), (1,1)]
+    
+    for dr, dc in dirs:
+        new = (piece[0] + dr, piece[1] + dc)
+        if 0 <= new[0] < 8 and 0 <= new[1] < 8 and new not in occupied:
+            moves.append(new)
+    return moves
+
+def evaluate_move(fr, to, color, is_man, my_kings, opp_pieces):
+    score = 0
+    if is_man:
+        score = (fr[0] - to[0]) * 10 if color == 'b' else (to[0] - fr[0]) * 10
+        if (color == 'b' and to[0] == 0) or (color == 'w' and to[0] == 7):
+            score += 50
+    else:
+        score = 4 - abs(to[0] - 3.5) - abs(to[1] - 3.5)
+    return score
+</code>

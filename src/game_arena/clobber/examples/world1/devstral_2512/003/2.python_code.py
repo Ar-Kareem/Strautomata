@@ -1,0 +1,80 @@
+
+import random
+import numpy as np
+
+def policy(you: list[int], opponent: list[int]) -> str:
+    # Convert to numpy arrays for easier manipulation
+    you_board = np.array(you).reshape(5, 6)
+    opp_board = np.array(opponent).reshape(5, 6)
+
+    # Directions: U, R, D, L
+    directions = [(-1, 0, 'U'), (0, 1, 'R'), (1, 0, 'D'), (0, -1, 'L')]
+    legal_moves = []
+
+    # Find all legal moves
+    for row in range(5):
+        for col in range(6):
+            if you_board[row, col] == 1:
+                for dr, dc, dir in directions:
+                    new_row, new_col = row + dr, col + dc
+                    if 0 <= new_row < 5 and 0 <= new_col < 6:
+                        if opp_board[new_row, new_col] == 1:
+                            legal_moves.append((row, col, dir))
+
+    # If no legal moves, return a dummy move (shouldn't happen as per problem statement)
+    if not legal_moves:
+        return "0,0,U"
+
+    # Score each move based on strategy
+    scored_moves = []
+    for move in legal_moves:
+        row, col, dir = move
+        score = 0
+
+        # Center control bonus
+        if 1 <= row <= 3 and 1 <= col <= 4:
+            score += 3
+
+        # Edge penalty
+        if row == 0 or row == 4 or col == 0 or col == 5:
+            score -= 1
+
+        # Potential follow-up captures
+        # Check if this move creates new capture opportunities
+        temp_you = you_board.copy()
+        temp_opp = opp_board.copy()
+
+        # Simulate the move
+        dr, dc = 0, 0
+        if dir == 'U': dr, dc = -1, 0
+        elif dir == 'R': dr, dc = 0, 1
+        elif dir == 'D': dr, dc = 1, 0
+        elif dir == 'L': dr, dc = 0, -1
+
+        new_row, new_col = row + dr, col + dc
+        temp_you[row, col] = 0
+        temp_you[new_row, new_col] = 1
+        temp_opp[new_row, new_col] = 0
+
+        # Count potential follow-up captures
+        follow_up = 0
+        for r in range(5):
+            for c in range(6):
+                if temp_you[r, c] == 1:
+                    for dr2, dc2, _ in directions:
+                        nr, nc = r + dr2, c + dc2
+                        if 0 <= nr < 5 and 0 <= nc < 6:
+                            if temp_opp[nr, nc] == 1:
+                                follow_up += 1
+                                break
+
+        score += follow_up * 2
+
+        scored_moves.append((score, move))
+
+    # Sort moves by score (descending)
+    scored_moves.sort(key=lambda x: (-x[0], random.random()))
+
+    # Return the best move
+    best_move = scored_moves[0][1]
+    return f"{best_move[0]},{best_move[1]},{best_move[2]}"

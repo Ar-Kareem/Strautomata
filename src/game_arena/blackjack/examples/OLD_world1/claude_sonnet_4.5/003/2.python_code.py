@@ -1,0 +1,116 @@
+
+def policy(hand: list[str], target: int) -> str:
+    """
+    Policy for simplified Blackjack-like game.
+    
+    Strategy:
+    - Calculate current hand value
+    - Estimate probability of busting on next card
+    - Make decision based on expected value and risk assessment
+    """
+    
+    def card_value(card: str, current_total: int, target: int) -> int:
+        """Calculate the value of a card given current hand total."""
+        if card in ['J', 'Q', 'K']:
+            return 10
+        elif card == 'A':
+            # Ace is 11 if it doesn't bust, otherwise 1
+            return 11 if current_total + 11 <= target else 1
+        else:
+            return int(card)
+    
+    def hand_value(cards: list[str], target: int) -> int:
+        """Calculate total value of hand."""
+        total = 0
+        for card in cards:
+            total += card_value(card, total, target)
+        return total
+    
+    def remaining_cards(hand: list[str]) -> list[str]:
+        """Return list of cards not yet drawn from our deck."""
+        all_cards = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+        remaining = []
+        hand_copy = hand.copy()
+        
+        for card in all_cards:
+            if card in hand_copy:
+                hand_copy.remove(card)
+            else:
+                remaining.append(card)
+        
+        return remaining
+    
+    current_value = hand_value(hand, target)
+    
+    # If we've busted, we've already lost (shouldn't happen in valid game)
+    if current_value > target:
+        return "STAY"
+    
+    # Get remaining cards in our deck
+    remaining = remaining_cards(hand)
+    
+    if len(remaining) == 0:
+        return "STAY"
+    
+    # Calculate probabilities and expected outcomes
+    bust_count = 0
+    safe_values = []
+    
+    for card in remaining:
+        next_value = current_value + card_value(card, current_value, target)
+        if next_value > target:
+            bust_count += 1
+        else:
+            safe_values.append(next_value)
+    
+    bust_probability = bust_count / len(remaining)
+    
+    # Strategic decision based on current position
+    gap_to_target = target - current_value
+    
+    # If we're very close to target, be conservative
+    if gap_to_target <= 3:
+        # Only hit if very low bust probability
+        if bust_probability < 0.3:
+            return "HIT"
+        else:
+            return "STAY"
+    
+    # If we're far from target, we need to take more risk
+    if gap_to_target > 10:
+        # Hit unless bust probability is very high
+        if bust_probability < 0.7:
+            return "HIT"
+        else:
+            return "STAY"
+    
+    # Medium range (4-10 away from target)
+    # Calculate expected value of hitting
+    if safe_values:
+        avg_safe_value = sum(safe_values) / len(safe_values) if safe_values else current_value
+        
+        # Consider opponent's likely score
+        # Opponent has same deck, so we estimate they'll get similar cards
+        # Conservative estimate: opponent will get to around 80-85% of target
+        estimated_opponent_score = target * 0.82
+        
+        # If our current score is already good and bust risk is moderate/high
+        if current_value >= estimated_opponent_score and bust_probability > 0.4:
+            return "STAY"
+        
+        # If hitting gives us good expected value with acceptable risk
+        if bust_probability < 0.5:
+            expected_value = (1 - bust_probability) * avg_safe_value
+            if expected_value > current_value + 1:  # Margin for improvement
+                return "HIT"
+    
+    # Default strategy based on thresholds
+    # Generally hit if we're below ~75% of target with acceptable bust risk
+    threshold_percentage = 0.75
+    
+    if current_value < target * threshold_percentage:
+        if bust_probability < 0.6:
+            return "HIT"
+    
+    # Otherwise stay
+    return "STAY"

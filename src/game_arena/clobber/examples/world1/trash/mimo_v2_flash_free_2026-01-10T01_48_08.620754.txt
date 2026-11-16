@@ -1,0 +1,1215 @@
+The game is Clobber, a combinatorial game played on a grid. The board size is 5x6 (30 squares). The game is played with two players, "you" and "opponent", represented by binary grids. A move consists of taking one of your pieces and moving it orthogonally to an adjacent square occupied by an opponent's piece, removing the opponent's piece. The first player unable to move loses.
+
+The game Clobber is known to be an impartial game (in this specific input format, the board is symmetric with respect to the definition of the players' pieces, though the specific positions might differ). The game ends when a player cannot move. Since there are no draws (a player must eventually run out of pieces or mobility), the game is a zero-sum game with values $\{1, -1\}$ (Win/Loss).
+
+Because the board is small (30 cells), the total number of states is at most $3^{30} \approx 2 \times 10^{14}$, which is too large for full retrograde analysis. However, the "density" of the game implies that typically players have few legal moves (often < 5). This suggests that a search algorithm like Minimax with Alpha-Beta pruning, potentially using a transposition table, can search the game tree to sufficient depth to find optimal moves.
+
+Since we are competing in a gaming arena, we need a strategy that is:
+1.  **Fast**: Must execute within 1 second.
+2.  **Optimal**: Should find the best move if the game tree is shallow enough, or a very good move if it is deep.
+
+**Strategy:**
+1.  **State Hashing**: We will represent the board state as a 64-bit integer (Zobrist hashing) to support a transposition table.
+2.  **Minimax with Alpha-Beta Pruning**: We will use a recursive search. Since the game is deterministic and perfect information, Minimax is appropriate.
+3.  **Transposition Table**: We will store visited states to avoid re-computation. This is critical for efficiency.
+4.  **Iterative Deepening**: We will search depth 1, then depth 2, etc., until time runs out. This ensures we always have a move ready.
+5.  **Simple Evaluation**: If we reach the depth limit or a terminal state, we use a simple heuristic. A simple win/loss heuristic (1 for win, -1 for loss, 0 for draw if possible) is best. Since the game is finite and acyclic, we don't strictly need a depth-based heuristic, but the depth limit requires one. However, for Clobber, the terminal state is simply "no moves left". A player who has no moves loses. So the evaluation at leaf nodes should be based on who has moves.
+    *   If it's the current player's turn and they have no moves: Loss (-1).
+    *   If it's the opponent's turn and they have no moves: Win (+1).
+6.  **Symmetry**: The game is symmetric. We can analyze the state regardless of who is "you" or "opponent" in the abstract sense, but for the code, we need to map the input `you` and `opponent` to a state.
+
+**Implementation Details:**
+*   **Representation**: We will flatten the 5x6 grid into a 30-bit integer. Bit `i` (0-29) represents cell `(i//6, i%6)`.
+    *   Bit = 1: You
+    *   Bit = 0: Opponent (Wait, the input is two lists. `you[row][col]` and `opponent[row][col]`. Since they are mutually exclusive, we can treat the game state as a set of pieces belonging to the current player to move. However, the `policy` function is always called with `you` (the AI) as the current player.
+    *   To use symmetry and a single transposition table, we should define the state relative to the player whose turn it is.
+    *   Let's use a 60-bit state? Or just keep two masks: `me_mask` and `opp_mask`.
+    *   Actually, Clobber is a partisan game? No, the rules are identical for both. So it is impartial.
+    *   However, the `policy` function is fixed: `you` is always the AI's pieces, `opponent` is the adversary. The AI always moves `you` pieces.
+    *   Let's simply use `you_mask` and `opp_mask` (2 30-bit integers).
+    *   We want to store the state in the TT. We can combine them into a 60-bit integer or a tuple `(you_mask, opp_mask)`.
+    *   We can map the state `(me, opp)` to `(opp, me)` for the opponent's turn in the recursion.
+    *   To save space and simplify, we can use a `dict` for TT.
+
+*   **Transposition Table Key**: `(me_mask, opp_mask)`.
+*   **Value**: Since the game is partisan (Wait, is it? Clobber is usually played with stones of two colors. A stone moves to an opponent's square. The rules are symmetric. So it is an impartial game if we consider the set of positions available to the current player. But `you` and `opponent` are fixed roles. When we recurse, the roles swap.
+    *   We need to return a score relative to the current node's player.
+    *   We are Player A (`you`). We want to maximize score.
+    *   Recursion: `solve(me, opp, depth, alpha, beta)` returns the best score for `me`.
+    *   If `me` has no moves: return -1 (Loss).
+    *   If `opp` has no moves: return +1 (Win).
+    *   We can prune if we find a winning move (+1).
+
+*   **Move Generation**:
+    *   Iterate through bits of `me`.
+    *   Check Up, Down, Left, Right.
+    *   Check if target is in bounds.
+    *   Check if target bit is set in `opp`.
+    *   If yes, generate new masks: `new_me = me ^ (1 << current) ^ (1 << target)` (move piece). `new_opp = opp ^ (1 << target)` (remove opponent).
+    *   Note: Clobber rules usually say the piece *jumps* to the target. The starting square becomes empty.
+    *   Wait, in the description: "The opponent piece is removed; your piece occupies the destination square; your starting square becomes empty."
+    *   So `new_me` has the bit at `target` set, `current` cleared.
+
+*   **Ordering**: Moves that remove the opponent's pieces are good. We should order moves to improve alpha-beta pruning. Captures that lead to immediate wins (like removing a piece that gives us a direct win next turn) are good.
+    *   Heuristic: Prioritize moves that leave the opponent with fewer moves? Or simply random?
+
+*   **Optimizations**:
+    *   Bit manipulation is crucial.
+    *   Use `ctypes` or just integers.
+    *   The board is 5x6. Rows 0-4, Cols 0-5.
+    *   Coordinates: `r*6 + c`.
+    *   Directions:
+        *   Up: `-6` (if `r > 0`)
+        *   Down: `+6` (if `r < 4`)
+        *   Left: `-1` (if `c > 0`)
+        *   Right: `+1` (if `c < 5`)
+
+*   **Time Management**:
+    *   We have 1 second. Iterative deepening is mandatory.
+    *   Start with `depth=1`.
+    *   If `depth=1` finishes, try `depth=3` (or `2`, `3`...). Even numbers correspond to our turn (depth 0 is current, depth 1 is opponent response, depth 2 is our response...).
+    *   Actually, iterative deepening usually goes 1, 2, 3...
+    *   We need to check time inside the search loop. Since Python is slow, checking time every node is expensive. Checking every N nodes or every depth completion is better.
+
+*   **Handling the "Always Return Legal Move" constraint**:
+    *   If the search fails (time runs out during depth 1), we must fall back to a greedy or random legal move.
+    *   But `IterativeDeepening` usually guarantees at least depth 1 is searched.
+
+Let's code the structure:
+
+1.  **Helper functions**:
+    *   `get_moves(me, opp)`: Generator yielding `(new_me, new_opp)`.
+    *   `hash_state(me, opp)`: Returns a hashable key.
+
+2.  **Solver**:
+    *   `solve(me, opp, depth, alpha, beta)`.
+    *   Check TT.
+    *   Check terminal (no moves).
+    *   If depth == 0, return heuristic (e.g., 0, or difference in move counts? No, exact is better. But at depth limit, we must estimate. Since we are doing iterative deepening, we usually stop when depth limit is hit. If we hit depth limit, we can return a heuristic. However, for Clobber, which is a "solved" type game, we want to find the Win/Loss. Let's try to avoid heuristics and rely on iterative deepening reaching terminal nodes or time limit. If we run out of time, we abort. We need a signal for that).
+    *   We need a global flag `timeout`.
+
+3.  **Policy**:
+    *   Convert inputs to masks.
+    *   Run iterative deepening.
+    *   Track the best move found at the highest completed depth.
+
+**Refinements on State**:
+*   The input `you` and `opponent` are `list[list[int]]`. Access is `you[r][c]`.
+*   5 rows, 6 cols.
+*   Row index `r` from 0 to 4. Col index `c` from 0 to 5.
+*   Bit index: `r * 6 + c`.
+*   Mask `me = 0`, `opp = 0`.
+*   Loop `r` in `range(5)`, `c` in `range(6)`:
+    *   If `you[r][c] == 1`: `me |= 1 << (r*6 + c)`
+    *   If `opponent[r][c] == 1`: `opp |= 1 << (r*6 + c)`
+
+**Move Generation Logic**:
+*   Let `p` be a bit index where `(me >> p) & 1`.
+*   `r, c = p // 6, p % 6`.
+*   Directions:
+    *   `U`: `r > 0`, `t = p - 6`. Check `opp` bit `t`.
+    *   `D`: `r < 4`, `t = p + 6`. Check `opp` bit `t`.
+    *   `L`: `c > 0`, `t = p - 1`. Check `opp` bit `t`.
+    *   `R`: `c < 5`, `t = p + 1`. Check `opp` bit `t`.
+*   If valid:
+    *   `new_me = me ^ (1 << p) ^ (1 << t)` (XOR removes `p`, adds `t`).
+    *   `new_opp = opp ^ (1 << t)` (XOR removes `t`).
+
+**Transposition Table**:
+*   Keys: `(me, opp)`. We can pack them into a single integer if needed, but a tuple is fine for Python dict.
+*   Value: `score` (1, -1) and `depth` (to prune if we have a deeper entry). Also `pv` (principal variation) if we want to be fancy, but not necessary.
+*   Since we do iterative deepening, we can just store `(score, depth)`.
+
+**Alpha-Beta**:
+*   Max node (our turn): Iterate moves, `score = -solve(new_opp, new_me, depth-1, -beta, -alpha)`. `alpha = max(alpha, score)`. If `alpha >= beta`, break.
+*   Min node (Opponent's turn): Wait, in a standard Minimax, we switch roles.
+*   Let's define `solve(me, opp, depth, alpha, beta)` returns the value of the state `(me, opp)` for the player `me`.
+*   If `depth == 0`: return heuristic? Or we can just play until terminal.
+*   Actually, for Clobber, the game tree isn't super deep. Average branching factor ~2-3. Depth might be ~20. We can't search full depth.
+*   So we need a depth limit.
+*   At depth 0, we can evaluate based on:
+    *   `my_moves = count_moves(me, opp)`
+    *   `opp_moves = count_moves(opp, me)`
+    *   Score = `my_moves - opp_moves`.
+*   This is a simple heuristic.
+
+**Safety**:
+*   The prompt says "You should assume policy is never called when there is no legal move". This is a bit contradictory to "The first player to have no legal moves on their turn loses". If the user assumes I have a move, I must return a move. If the game rules say I might not have a move, the caller should handle the Loss. But the prompt says "You must ALWAYS return a legal move string". So I will generate moves and if the list is empty (which shouldn't happen), I'll raise an error or return a dummy, but better to be robust.
+*   The prompt says "If no legal moves exist...". The specific instruction: "You should assume `policy` is never called when there is no legal move". So we don't handle that case in the main logic, just maybe an assertion.
+
+**Implementation Plan**:
+1.  Convert `you`, `opponent` to `me_mask`, `opp_mask`.
+2.  Define move generators and count functions.
+3.  Define `search` function with `me`, `opp`, `depth`, `alpha`, `beta`.
+4.  Inside `search`:
+    *   Check TT.
+    *   If `depth == 0`: return heuristic (move count difference).
+    *   Generate moves.
+    *   If no moves: return -1 (Loss) for current player. (Because if I have no moves, I lose).
+    *   Sort moves? Maybe by capture? Captures reduce opponent options.
+    *   Loop moves:
+        *   `val = -search(opp_new, me_new, depth-1, -beta, -alpha)`
+        *   Update alpha.
+        *   If `alpha >= beta`: break.
+    *   Store in TT.
+    *   Return alpha.
+5.  Iterative Deepening loop:
+    *   `best_move = None`
+    *   `start_time = time.time()`
+    *   `depth = 1`
+    *   `while True`:
+        *   Check time: if `time.time() - start_time > 0.8`: break.
+        *   `alpha = -2` (Loss is -1, so -2 is safe lower bound)
+        *   `beta = 2` (Win is +1)
+        *   `current_best_move = None`
+        *   Iterate legal moves (generate at top level).
+        *   For each move `m`:
+            *   `score = -search(opp_new, me_new, depth-1, -beta, -alpha)`
+            *   If `score > alpha`: `alpha = score`, `current_best_move = m`.
+            *   If `alpha >= beta`: break.
+        *   If `current_best_move`: `best_move = current_best_move`.
+        *   If `alpha == 1`: break (Found win, no need to search deeper).
+        *   `depth += 2` (to keep parity). Or +1? Let's do +1 and check depth parity in search.
+        *   Wait, iterative deepening usually increments by 1. Let's do `depth += 1`.
+
+**Heuristic**:
+*   At `depth=0`, we can't just return 0. We need a static evaluation.
+*   Evaluation: `count_moves(me, opp) - count_moves(opp, me)`.
+*   But if we are at max depth, and the game isn't over, this is just an estimate.
+*   However, the search is for a "score" of 1 (win) or -1 (loss). The heuristic should be between -1 and 1 to be consistent.
+*   Let's normalize: `eval = (my_moves - opp_moves) / (my_moves + opp_moves + 1)`.
+*   Or just `eval = my_moves - opp_moves` and scale? No, because alpha-beta relies on bounds.
+*   If we use `1` and `-1` for wins/losses, the heuristic must be strictly between -1 and 1.
+*   Let's use `score = (my_moves - opp_moves) / 10.0`. (Since max moves is usually < 10).
+*   Actually, a simpler approach: just play random if we can't find a win. But we want to win.
+*   Let's stick to `my_moves - opp_moves`. It might slightly violate bounds if values exceed 1, but usually fine if bounds are loose. Or just clamp.
+
+**Constraints & Safety Check**:
+*   The `policy` function receives `you` and `opponent` as lists. Access is `you[r][c]`.
+*   The board is 5x6.
+*   The return string is `f"{r},{c},{dir}"`.
+
+**Code Structure**:
+
+```python
+import time
+import random
+
+def policy(you, opponent):
+    # ... setup ...
+    
+    def get_moves(me, opp):
+        # yield (new_me, new_opp, r, c, dir)
+
+    def count_moves(m, o):
+        # simple count
+
+    def search(m, o, depth, alpha, beta):
+        # TT check
+        # Terminal check (if m has no moves: return -1)
+        # if depth == 0: return heuristic
+        # Generate moves
+        # Sort moves? (Prioritize captures)
+        # Loop
+        #   val = -search(o_new, m_new, ...)
+        #   alpha = max(...)
+        #   if alpha >= beta: break
+        # Store TT
+        # return alpha
+
+    # Iterative Deepening
+    # ...
+```
+
+**Move Ordering**:
+*   Prioritize captures that leave opponent with few moves?
+*   Or simply captures vs non-captures? In Clobber, all moves are captures.
+*   In Clobber, a move *must* capture. So all generated moves are captures.
+*   What distinguishes moves?
+    *   The position after the move.
+    *   We can sort moves based on the opponent's mobility after the move. `count_moves(opp_new, me_new)`. Lower is better.
+    *   Computing this for every move is expensive.
+    *   Let's try random ordering or simple geometric ordering.
+    *   Actually, sorting by `count_moves(opp_new, me_new)` (ascending) is a good heuristic for alpha-beta pruning. It puts the "most restrictive" moves first, which might fail high (cut off) sooner.
+    *   We'll do this only at depth 0 or 1 to save time. Or maybe just capture moves first (but all moves are captures).
+    *   Wait, in Clobber, you capture the opponent. So all moves are captures.
+    *   Okay, let's just iterate moves. Python overhead for sorting might be high. But we want to win.
+    *   Let's implement a simple sorting: moves that leave the opponent with fewer moves are better.
+
+**Time Limit**:
+*   `policy` is called, we have ~1 second.
+*   `time.time()` check in the loop.
+*   If we timeout inside `search`, we should return what we have.
+*   Python recursion limit? Depth ~15-20 is fine. 5x6 Clobber is not extremely deep. Iterative deepening helps.
+
+**Correction on Game Rules**:
+*   "The opponent piece is removed; your piece occupies the destination square; your starting square becomes empty."
+*   This confirms the move mechanics.
+
+**Symmetry/Bitboard**:
+*   `me`, `opp` are 30-bit ints.
+*   `me` bits are `1` for "your" pieces.
+*   In `search`, we swap `me` and `opp` for the recursive call? No.
+    *   `solve(current_player, other_player)`.
+    *   We are `you`. `opponent` is `them`.
+    *   In `search(m, o, ...)`, `m` is the player to move.
+    *   So we call `search(new_me, new_opp, ...)` for our turn, but inside `search`, we need to evaluate the opponent's turn.
+    *   Wait.
+    *   `search(player, opponent, depth, alpha, beta)`:
+        *   Generate moves for `player`.
+        *   If no moves: `player` loses -> return -1.
+        *   Next step is `search(opponent, new_player, depth-1, ...)`. Wait, the roles swap.
+        *   So if we are `A`, and we move to state `S`. In `S`, it is `B`'s turn.
+        *   So `search(A, B)` calls `search(B, A')`.
+        *   So we need to swap arguments.
+
+**Heuristic Value**:
+*   Return value should be `1` if the current player can force a win, `-1` if they lose.
+*   The static eval at depth limit should estimate this.
+*   Let `val = (my_mobility - opp_mobility)`. Max possible mobility is limited.
+*   If `val > 0`, it's good for `me`.
+*   We can scale this to `(-1, 1)` range. `val / 20.0`.
+*   If we use `val` directly, `alpha` and `beta` should be loose. e.g., `-float('inf')`, `float('inf')`.
+*   But standard is `-1, 1`.
+*   Let's use `score = (my_mobility - opp_mobility) * 0.1`. This ensures it fits within bounds usually. Or `val / (total_mobility + 1)`.
+
+**Transposition Table Key**:
+*   `(me, opp)` is unique. `me` and `opp` are disjoint.
+*   We can pack them: `key = (me << 30) | opp`. 60 bits fits in Python int easily.
+*   This is faster than tuple hashing.
+
+**Optimization**:
+*   `count_moves` can be done by iterating bits of `me` and checking neighbors in `opp`.
+*   We can combine `generate_moves` and `count_moves`.
+*   Let's implement `get_moves_and_counts(me, opp)` which yields `(new_me, new_opp, r, c, dir, opp_mobility_after_move)`.
+*   Then we can sort by `opp_mobility_after_move` (ascending).
+
+**Implementation details for move generation**:
+*   Precompute neighbor masks? Or just bit twiddling.
+*   `me` bits: `b = me`
+*   `while b: p = (b & -b).bit_length() - 1` (get index of lowest set bit). Or `p = b.bit_length() - 1`.
+*   Let's use `b.bit_length() - 1` for lowest set bit.
+*   `b ^= 1 << p` to clear it.
+
+**Directions**:
+*   `r, c = p // 6, p % 6`.
+*   Up: `if r > 0: t = p - 6`
+*   Down: `if r < 4: t = p + 6`
+*   Left: `if c > 0: t = p - 1`
+*   Right: `if c < 5: t = p + 1`
+
+**Check `opp`**:
+*   `if (opp >> t) & 1:`
+*   `new_me = me ^ (1 << p) ^ (1 << t)`
+*   `new_opp = opp ^ (1 << t)`
+
+**Count Opponent Mobility**:
+*   Function `count_mobility(p_mask, o_mask)`:
+    *   Iterate bits of `p_mask`.
+    *   For each bit, check 4 directions against `o_mask`.
+    *   Sum valid moves.
+*   This is needed for sorting.
+
+**Code Generation**:
+
+```python
+import time
+
+def policy(you, opponent):
+    # 1. Build Bitmasks
+    me = 0
+    opp = 0
+    for r in range(5):
+        row_y = you[r]
+        row_o = opponent[r]
+        for c in range(6):
+            if row_y[c]: me |= 1 << (r * 6 + c)
+            if row_o[c]: opp |= 1 << (r * 6 + c)
+
+    # 2. Constants
+    ROWS = 5
+    COLS = 6
+    
+    # 3. Helper: Count Mobility (moves) for a player against opponent
+    def count_mobility(p_mask, o_mask):
+        count = 0
+        temp = p_mask
+        while temp:
+            p = (temp & -temp).bit_length() - 1
+            temp ^= 1 << p
+            r, c = p // 6, p % 6
+            
+            # Up
+            if r > 0:
+                t = p - 6
+                if (o_mask >> t) & 1: count += 1
+            # Down
+            if r < 4:
+                t = p + 6
+                if (o_mask >> t) & 1: count += 1
+            # Left
+            if c > 0:
+                t = p - 1
+                if (o_mask >> t) & 1: count += 1
+            # Right
+            if c < 5:
+                t = p + 1
+                if (o_mask >> t) & 1: count += 1
+        return count
+
+    # 4. Helper: Get all moves with sorting info
+    def get_moves(p_mask, o_mask):
+        moves = []
+        temp = p_mask
+        while temp:
+            p = (temp & -temp).bit_length() - 1
+            temp ^= 1 << p
+            r, c = p // 6, p % 6
+            
+            # Directions: (dr, dc, bit_diff, char)
+            # Up
+            if r > 0:
+                t = p - 6
+                if (o_mask >> t) & 1:
+                    nm = p_mask ^ (1 << p) ^ (1 << t)
+                    no = o_mask ^ (1 << t)
+                    moves.append((nm, no, r, c, 'U', count_mobility(no, nm)))
+            # Down
+            if r < 4:
+                t = p + 6
+                if (o_mask >> t) & 1:
+                    nm = p_mask ^ (1 << p) ^ (1 << t)
+                    no = o_mask ^ (1 << t)
+                    moves.append((nm, no, r, c, 'D', count_mobility(no, nm)))
+            # Left
+            if c > 0:
+                t = p - 1
+                if (o_mask >> t) & 1:
+                    nm = p_mask ^ (1 << p) ^ (1 << t)
+                    no = o_mask ^ (1 << t)
+                    moves.append((nm, no, r, c, 'L', count_mobility(no, nm)))
+            # Right
+            if c < 5:
+                t = p + 1
+                if (o_mask >> t) & 1:
+                    nm = p_mask ^ (1 << p) ^ (1 << t)
+                    no = o_mask ^ (1 << t)
+                    moves.append((nm, no, r, c, 'R', count_mobility(no, nm)))
+        # Sort moves: prioritize those that minimize opponent mobility (most restrictive)
+        # Also use r, c as tie-breaker
+        moves.sort(key=lambda x: (x[5], x[2], x[3]))
+        return moves
+
+    # 5. Transposition Table
+    # Key: (player_mask << 30) | opp_mask
+    tt = {}
+    
+    # 6. Search Function
+    # Returns score relative to the player 'me'
+    def search(me, opp, depth, alpha, beta, start_time):
+        # Check time occasionally (every ~1000 nodes or so? Hard to track without counter)
+        # We'll check at root and after sorting
+        
+        # TT Key
+        key = (me << 30) | opp
+        if key in tt:
+            stored_depth, stored_score = tt[key]
+            if stored_depth >= depth:
+                return stored_score
+        
+        # Check terminal: if me has no moves, I lose immediately
+        # Actually, check if I have moves. If not, return -1.
+        # Optimization: we can integrate this with move generation
+        moves = get_moves(me, opp)
+        
+        if not moves:
+            return -1 # Loss
+        
+        if depth == 0:
+            # Static evaluation
+            my_mob = len(moves) # We already computed moves
+            # To count opp_mob efficiently without generating moves again:
+            # We can approximate or compute. Let's compute.
+            opp_mob = count_mobility(opp, me)
+            score = (my_mob - opp_mob) * 0.1 # Scale
+            # Clamp to -0.9, 0.9 to ensure bounds are respected (mostly)
+            if score > 0.9: score = 0.9
+            if score < -0.9: score = -0.9
+            return score
+
+        # Recursive search
+        # Moves are sorted (worst for opp -> best for us)
+        # We want to maximize.
+        # If we find a move that guarantees win (score >= 1), we can stop?
+        # No, we use alpha-beta.
+        
+        best_score = -float('inf')
+        
+        for new_me, new_opp, r, c, d, _ in moves:
+            # Time check (expensive, so do it rarely)
+            # We'll do it every node... no, too slow.
+            # Let's rely on iterative deepening time check at root.
+            
+            val = -search(new_opp, new_me, depth - 1, -beta, -alpha, start_time)
+            
+            if val > best_score:
+                best_score = val
+            if val > alpha:
+                alpha = val
+            if alpha >= beta:
+                break
+        
+        # Store in TT
+        tt[key] = (depth, best_score)
+        return best_score
+
+    # 7. Iterative Deepening
+    # We need to keep track of the best move found so far
+    best_move = None
+    depth = 1
+    start_time = time.time()
+    
+    # We need to generate moves at root once to use in ID
+    root_moves = get_moves(me, opp)
+    if not root_moves:
+        # Should not happen per prompt
+        return "0,0,U" 
+    
+    # Pre-calculate root mobility for fallback
+    # We will store the raw move objects (without scores) to reconstruct
+    # (r, c, d, new_me, new_opp)
+    # Wait, get_moves returns (new_me, new_opp, r, c, d, cost)
+    
+    while True:
+        # Time check
+        if time.time() - start_time > 0.85:
+            break
+            
+        # Current iteration best
+        current_best_move = None
+        alpha = -float('inf')
+        beta = float('inf')
+        
+        # We need to search root moves. 
+        # Note: At root, we are maximizing.
+        # We should sort root moves? get_moves already sorts.
+        
+        for move in root_moves:
+            new_me, new_opp, r, c, d, _ = move
+            
+            # Search depth-1 for opponent
+            val = -search(new_opp, new_me, depth - 1, -beta, -alpha, start_time)
+            
+            if val > alpha:
+                alpha = val
+                current_best_move = (r, c, d)
+                # If we found a guaranteed win, we can stop searching this depth and potentially break?
+                # But we need to be sure it's best. 
+                # If alpha == 1, it's a win. We can stop.
+                if alpha == 1:
+                    break
+            if alpha >= beta:
+                break
+        
+        if current_best_move:
+            best_move = current_best_move
+            
+        # If we found a win, stop deeper search
+        if alpha == 1:
+            break
+            
+        depth += 1
+        if depth > 25: # Safety break
+            break
+
+    # Fallback: if for some reason best_move is None (should not happen), pick first
+    if best_move is None:
+        best_move = (root_moves[0][2], root_moves[0][3], root_moves[0][4])
+        
+    return f"{best_move[0]},{best_move[1]},{best_move[2]}"
+```
+
+**Review of Logic**:
+*   `count_mobility`: Iterates bits of `p`, checks neighbors against `o_mask`.
+*   `get_moves`: Iterates bits of `p`, checks neighbors against `o_mask`. If valid, computes `new_me`, `new_opp`, and `count_mobility(new_opp, new_me)` (opponent's mobility after move).
+    *   This count is used for sorting.
+    *   Sort key: `cost` (opponent mobility). Lower is better (more restrictive).
+    *   Tie-breaker: `r, c` (arbitrary but consistent).
+*   `search`: Standard Minimax.
+    *   TT stores `(depth, score)`.
+    *   Base case `depth == 0`: Heuristic `0.1 * (my_mob - opp_mob)`.
+    *   Terminal case (no moves): return -1.
+    *   Recursive step: `-search(opp, me, ...)` with swapped arguments.
+*   Iterative Deepening:
+    *   Runs `depth` 1, 2, 3...
+    *   Updates `best_move` whenever a better move is found.
+    *   Breaks if `alpha == 1` (Win found).
+    *   Breaks if time > 0.85s.
+
+**Potential Issues**:
+*   **Speed**: Python bit operations are fast, but recursion overhead and function calls are slow.
+    *   `count_mobility` is called for every generated move. This is heavy.
+    *   Optimization: Maybe don't sort every time? Or compute cost lazily?
+    *   But sorting is crucial for alpha-beta efficiency.
+    *   Alternative: Don't sort at depth > 0? Only sort at root?
+    *   Let's restrict sorting to depth <= 2 or root.
+    *   Actually, `get_moves` is expensive because of `count_mobility`.
+    *   Let's split: `get_moves_simple` returns `(nm, no, r, c, d)`.
+    *   `get_moves_sorted` calls simple, then computes cost, sorts.
+    *   In `search`, if depth > 2, just use unsorted moves? Or sort by something cheaper (e.g., position).
+    *   Let's stick to the plan but optimize `count_mobility`.
+    *   `count_mobility` is essentially counting bits of `(neighbor_mask & o_mask)`.
+    *   We can't easily precompute neighbor masks for the whole board efficiently in Python without a table.
+    *   A small lookup table for offsets might help, but function calls dominate.
+    *   **Crucial**: `count_mobility` calls `get_moves` logic again!
+    *   In `get_moves`, we already know the opponent's new mobility is just counting the moves of `new_opp` against `new_me`.
+    *   This is recursive.
+    *   Let's keep it simple. The board is small. 30 bits. Branching factor ~2-3.
+    *   The depth of Clobber on 5x6 is not huge (maybe 15-20).
+    *   Iterative deepening with sorting is standard.
+
+**Refined Plan for Speed**:
+*   `count_mobility`: Keep it simple.
+*   `get_moves`: Generate moves. If we need sorting (depth == 0 or depth == 1), we compute cost and sort. If depth > 1, we return unsorted (or sorted by something trivial like r*c).
+*   Wait, sorting is most important at root and shallow depths. Deep search has few nodes (due to pruning), so sorting overhead matters less, but we need pruning to happen early.
+*   Let's sort always, but optimize `count_mobility`.
+*   `count_mobility` is the bottleneck.
+*   Can we approximate cost? No, accuracy matters for pruning.
+*   Okay, let's proceed with the plan. It's likely fast enough for 5x6.
+
+**One more check on Time**:
+*   1 second.
+*   Python can do maybe 100,000 - 1,000,000 operations per second depending on complexity.
+*   A full game tree might be large.
+*   However, Clobber has very low branching factor.
+*   Average branching factor ~3.
+*   Depth 10: $3^{10} \approx 59,000$ nodes.
+*   Depth 15: $14 \times 10^6$ nodes.
+*   Sorting adds overhead.
+*   We should be able to hit depth 6-8 easily. Maybe more with pruning.
+*   The "always return legal move" constraint is satisfied by `root_moves` logic.
+
+**Final Code Polish**:
+*   Use `range` and `//`, `%` for coordinates.
+*   Directions mapping.
+*   `return f"{r},{c},{d}"`.
+
+```python
+import time
+
+def policy(you, opponent):
+    # Convert inputs to bitmasks
+    me = 0
+    opp = 0
+    for r in range(5):
+        for c in range(6):
+            if you[r][c]:
+                me |= 1 << (r * 6 + c)
+            elif opponent[r][c]:
+                opp |= 1 << (r * 6 + c)
+
+    # Constants for board geometry
+    ROWS = 5
+    COLS = 6
+    
+    # Precomputed neighbor offsets for speed
+    # Not strictly necessary but cleaner
+    DIRS = [(-1, 0, 'U'), (1, 0, 'D'), (0, -1, 'L'), (0, 1, 'R')]
+
+    # Count mobility for a player (mask) against opponent (opp_mask)
+    def count_mobility(mask, opp_mask):
+        count = 0
+        m = mask
+        while m:
+            p = (m & -m).bit_length() - 1
+            m ^= 1 << p
+            r, c = p // 6, p % 6
+            
+            # Check 4 directions
+            # Up
+            if r > 0:
+                t = p - 6
+                if (opp_mask >> t) & 1: count += 1
+            # Down
+            if r < 4:
+                t = p + 6
+                if (opp_mask >> t) & 1: count += 1
+            # Left
+            if c > 0:
+                t = p - 1
+                if (opp_mask >> t) & 1: count += 1
+            # Right
+            if c < 5:
+                t = p + 1
+                if (opp_mask >> t) & 1: count += 1
+        return count
+
+    # Generate moves, optionally sorted
+    def get_moves(p_mask, o_mask, sort=True):
+        moves = []
+        m = p_mask
+        while m:
+            p = (m & -m).bit_length() - 1
+            m ^= 1 << p
+            r, c = p // 6, p % 6
+            
+            # Up
+            if r > 0:
+                t = p - 6
+                if (o_mask >> t) & 1:
+                    nm = p_mask ^ (1 << p) ^ (1 << t)
+                    no = o_mask ^ (1 << t)
+                    moves.append((nm, no, r, c, 'U', p, t))
+            # Down
+            if r < 4:
+                t = p + 6
+                if (o_mask >> t) & 1:
+                    nm = p_mask ^ (1 << p) ^ (1 << t)
+                    no = o_mask ^ (1 << t)
+                    moves.append((nm, no, r, c, 'D', p, t))
+            # Left
+            if c > 0:
+                t = p - 1
+                if (o_mask >> t) & 1:
+                    nm = p_mask ^ (1 << p) ^ (1 << t)
+                    no = o_mask ^ (1 << t)
+                    moves.append((nm, no, r, c, 'L', p, t))
+            # Right
+            if c < 5:
+                t = p + 1
+                if (o_mask >> t) & 1:
+                    nm = p_mask ^ (1 << p) ^ (1 << t)
+                    no = o_mask ^ (1 << t)
+                    moves.append((nm, no, r, c, 'R', p, t))
+        
+        if not sort:
+            return moves
+            
+        # Sorting logic: minimize opponent mobility after move
+        # We compute opponent mobility for each move
+        # This is expensive but critical for pruning
+        # We limit sorting to specific conditions if too slow? 
+        # Let's do it fully for now.
+        
+        scored_moves = []
+        for move in moves:
+            nm, no, r, c, d, p, t = move
+            # Calculate opponent mobility
+            # This is count_mobility(no, nm)
+            # Optimized inline for speed
+            om = 0
+            temp = no
+            while temp:
+                op = (temp & -temp).bit_length() - 1
+                temp ^= 1 << op
+                orow, ocol = op // 6, op % 6
+                
+                # Check neighbors against nm
+                # Up
+                if orow > 0:
+                    if (nm >> (op - 6)) & 1: om += 1
+                # Down
+                if orow < 4:
+                    if (nm >> (op + 6)) & 1: om += 1
+                # Left
+                if ocol > 0:
+                    if (nm >> (op - 1)) & 1: om += 1
+                # Right
+                if ocol < 5:
+                    if (nm >> (op + 1)) & 1: om += 1
+            
+            scored_moves.append((om, r, c, d, nm, no))
+            
+        # Sort by opponent mobility (ascending) then r, c
+        scored_moves.sort(key=lambda x: (x[0], x[1], x[2]))
+        return scored_moves
+
+    # Transposition Table
+    # Key: (me << 30) | opp
+    tt = {}
+    
+    # Search
+    def search(m, o, depth, alpha, beta, start_time):
+        key = (m << 30) | o
+        if key in tt:
+            d_st, s_st = tt[key]
+            if d_st >= depth:
+                return s_st
+        
+        # Move generation (unsorted for deeper levels to save time)
+        # At depth 0 or 1 we might want sorting, but we handle that by checking depth
+        # Actually, let's just use unsorted moves for internal nodes > 1
+        # For depth <= 1, we are at leaf or near leaf, sorting less critical
+        # Actually, sorting is critical for pruning.
+        # Let's always sort, but maybe optimize depth check?
+        # If time is tight, remove sorting for depth > 2.
+        
+        # To optimize speed:
+        # If depth <= 2, sort. Else don't.
+        do_sort = (depth <= 2)
+        # Actually, root sorting is handled outside.
+        # Let's do unsorted for internal recursive calls to be safe on time.
+        # Wait, pruning works best with sorted moves.
+        # Let's just use unsorted moves for recursion to be safe on execution time for deep searches.
+        # But for depth 1 (opponent's turn), sorting is vital to prune.
+        # Let's set a cutoff: if depth <= 2, sort.
+        moves = get_moves(m, o, sort=(depth <= 2))
+        
+        if not moves:
+            return -1 # Loss
+            
+        if depth == 0:
+            # Heuristic
+            my_mob = count_mobility(m, o)
+            opp_mob = count_mobility(o, m)
+            # Normalize
+            val = (my_mob - opp_mob) * 0.1
+            if val > 0.9: val = 0.9
+            if val < -0.9: val = -0.9
+            return val
+            
+        best = -float('inf')
+        for move in moves:
+            # Unpack (moves returns different formats based on sort)
+            if do_sort:
+                _, _, _, _, nm, no = move
+            else:
+                nm, no, _, _, _, _, _ = move
+            
+            # Time check (every node is too slow, just rely on ID cutoff)
+            
+            val = -search(no, nm, depth - 1, -beta, -alpha, start_time)
+            if val > best:
+                best = val
+            if val > alpha:
+                alpha = val
+            if alpha >= beta:
+                break
+        
+        tt[key] = (depth, best)
+        return best
+
+    # Iterative Deepening
+    start_time = time.time()
+    best_move = None
+    depth = 1
+    
+    # Generate root moves (sorted)
+    root_moves = get_moves(me, opp, sort=True)
+    if not root_moves:
+        # Fallback, shouldn't happen
+        return "0,0,U"
+
+    while True:
+        if time.time() - start_time > 0.85:
+            break
+            
+        current_best = None
+        alpha = -float('inf')
+        beta = float('inf')
+        
+        for move in root_moves:
+            _, _, r, c, d, nm, no = move
+            
+            val = -search(no, nm, depth - 1, -beta, -alpha, start_time)
+            
+            if val > alpha:
+                alpha = val
+                current_best = (r, c, d)
+                if alpha >= 1.0: # Found win
+                    break
+            
+            # Pruning at root?
+            if alpha >= beta:
+                break
+        
+        if current_best:
+            best_move = current_best
+        
+        if alpha >= 1.0:
+            break
+            
+        depth += 1
+        # Cap depth to avoid infinite loop if time is weird
+        if depth > 20:
+            break
+
+    if best_move is None:
+        # If search failed immediately, pick first legal move
+        best_move = (root_moves[0][2], root_moves[0][3], root_moves[0][4])
+        
+    return f"{best_move[0]},{best_move[1]},{best_move[2]}"
+```
+
+**Double Check**:
+*   `get_moves` for root returns `scored_moves`: `(_, r, c, d, nm, no)`.
+*   `get_moves` for internal nodes (if sorted) returns `scored_moves`.
+*   `get_moves` for internal nodes (if not sorted) returns `moves`: `(nm, no, r, c, d, p, t)`.
+*   Unpacking logic in `search` handles this.
+*   Wait, `get_moves` returns `scored_moves` if `sort=True`. `scored_moves` is `[(om, r, c, d, nm, no), ...]`.
+*   `get_moves` returns `moves` if `sort=False`. `moves` is `[(nm, no, r, c, d, p, t), ...]`.
+*   This inconsistency is messy.
+*   Let's standardize `get_moves` to return a list of objects: `(nm, no, r, c, d)`.
+*   We need `nm, no` for recursion.
+*   We need `r, c, d` for the result.
+*   We need `om` (opponent mobility) for sorting.
+*   Let's make `get_moves` return `[(nm, no, r, c, d)]`.
+*   Let's make `sort_moves` take that list and return sorted `[(nm, no, r, c, d)]`.
+*   This decoupling is cleaner.
+
+**Revised Structure**:
+1.  `get_moves_simple(m, o) -> list` of `(nm, no, r, c, d)`.
+2.  `score_move(move, m, o) -> int` (computes `om`).
+3.  `get_moves_sorted(m, o) -> list` of `(...)` sorted by `score_move`.
+4.  `search`:
+    *   If `depth <= 2`: `moves = get_moves_sorted(m, o)`.
+    *   Else: `moves = get_moves_simple(m, o)`.
+    *   Unpack is `nm, no, r, c, d = move`.
+    *   `r, c, d` are unused inside recursion, only `nm, no` matter.
+    *   So `get_moves_simple` can just return `(nm, no)` to save memory/time? No, we need them for root.
+    *   Inside recursion, we don't need `r, c, d`.
+    *   So `search` doesn't need to unpack `r, c, d` except at root.
+    *   Let's handle unpacking carefully.
+
+Let's stick to the previous code but fix the unpacking inconsistency.
+
+In `search`:
+`moves` is a list.
+If `do_sort`:
+  Item is `(om, r, c, d, nm, no)`. We need `nm, no`.
+If not `do_sort`:
+  Item is `(nm, no, r, c, d, p, t)`. We need `nm, no`.
+
+So:
+```python
+            if do_sort:
+                nm, no = move[4], move[5]
+            else:
+                nm, no = move[0], move[1]
+```
+This is correct.
+
+What about `root_moves`?
+`root_moves = get_moves(me, opp, sort=True)`.
+Item is `(om, r, c, d, nm, no)`.
+`r, c, d` are `move[1], move[2], move[3]`.
+
+Looks good.
+
+One final optimization: `get_moves` (unsorted) is still generating `nm, no`. That's necessary for the recursion. It's unavoidable.
+
+Let's refine `count_mobility` in `score_move`.
+It iterates bits of `no`.
+For each bit `op`, checks neighbors in `nm`.
+This is exactly `count_mobility(no, nm)`.
+So `score_move` just calls `count_mobility`.
+But `count_mobility` takes `mask` and `opp_mask`.
+So `score_move` = `count_mobility(move_no, move_nm)`.
+This is expensive.
+Can we approximate? `count_mobility` is the number of legal moves.
+Lower is better.
+We want to sort by `count_mobility(opponent_after_move, me_after_move)`.
+We should cache `count_mobility` results?
+`count_mobility` is deterministic based on `(mask, opp_mask)`.
+The state space is huge, so caching `count_mobility` in a global dict is bad (pollutes TT).
+But `count_mobility` is fast enough? 30 bits, popcount operations.
+Bit operations in Python are fast.
+Let's stick to the plan.
+
+One detail: `count_mobility` calls `count_mobility` logic inside `score_move` to avoid function call overhead? No, we wrote it inline. That's good.
+
+Final check on "Policy" return type.
+`return f"{best_move[0]},{best_move[1]},{best_move[2]}"`
+`best_move` is `(r, c, d)`.
+`r, c` are ints.
+`d` is string.
+Formatted correctly.
+
+Time limit check: `time.time() - start_time > 0.85`. Leaves 0.15s buffer. Good.
+
+Edge case: `me` and `opp` are valid.
+Prompt says "You should assume policy is never called when there is no legal move".
+So `root_moves` will not be empty.
+But inside recursion, it might be (terminal state).
+If `root_moves` is empty, the code picks `root_moves[0]` which fails.
+Let's add a guard: `if not root_moves: return "0,0,U"` (or raise error, but "0,0,U" is safer to not crash, though invalid). The prompt says "You will be disqualified if you do not return a legal move string." So returning an illegal move is bad.
+If `root_moves` is empty, there are no legal moves. The prompt says "You should assume... never called". So we don't need to handle it, but `if not root_moves` prevents a crash (IndexError). Returning a dummy string is better than crashing.
+The prompt says "You MUST ALWAYS return a legal move string".
+If no legal moves exist, returning a legal move is impossible.
+The prompt says "You should assume `policy` is never called when there is no legal move".
+So `if not root_moves` is just a safeguard. I'll return "0,0,U" which is illegal but safe. Or I can generate a random move from empty set? No.
+I will assume the assumption holds.
+
+Final code structure:
+```python
+import time
+
+def policy(you, opponent):
+    # 1. Bitboards
+    me = ...
+    opp = ...
+
+    # 2. Helpers
+    # count_mobility
+    # get_moves_simple
+    # score_move (calls count_mobility)
+    # get_moves_sorted
+
+    # 3. Search
+    # tt = {}
+    # def search(...)
+
+    # 4. ID Loop
+    # ...
+
+    # 5. Return
+```
+
+Let's write the code.
+
+Wait, `get_moves_simple` and `get_moves_sorted`.
+If I define `get_moves_simple`, I need to iterate bits and check neighbors.
+If I define `get_moves_sorted`, I call `get_moves_simple`, then iterate results to score, then sort.
+This involves two passes over the moves.
+Since the number of moves is small (< 10 usually), this is fine.
+
+Actually, in `search`, if `depth <= 2`, I need sorted moves.
+I will implement:
+`def get_moves(m, o, sort_needed):`
+  `simple_moves = []`
+  `... generation ...`
+  `if not sort_needed: return simple_moves`
+  `scored = []`
+  `for (nm, no, r, c, d) in simple_moves:`
+    `cost = count_mobility(no, nm)`
+    `scored.append((cost, r, c, d, nm, no))`
+  `scored.sort(...)`
+  `return scored`
+
+In `search`:
+  `moves = get_moves(m, o, depth <= 2)`
+  `for move in moves:`
+    `if depth <= 2: nm, no = move[4], move[5]`
+    `else: nm, no = move[0], move[1]`
+
+This is clean.
+
+One optimization for `count_mobility`:
+Since we call it frequently with `no` and `nm`, and `nm` is usually the opponent of the previous state, there might be some symmetry, but not worth exploiting.
+Inline bit manipulation is best.
+
+Let's write the final code.The strategy involves using a recursive Minimax search with Alpha-Beta pruning, enhanced by a Transposition Table (using Zobrist hashing via bitmasks) to avoid re-computing states. Since the game is small (5x6) but the branching factor can be high, we use Iterative Deepening to maximize search depth within the 1-second time limit. 
+
+Move ordering is crucial for effective pruning. We sort moves based on the opponent's mobility after the move (fewer opponent moves is better). This is computed dynamically. At depth 0 (leaf nodes), we use a heuristic based on the difference in mobility counts to estimate the position.
+
+The board is represented as two 30-bit integers (bitboards) for speed. The search returns the move that maximizes the score relative to the current player.
+
+```python
+import time
+
+def policy(you, opponent):
+    # 1. Convert input to bitmasks
+    # Board is 5 rows x 6 columns = 30 cells.
+    # Bit index i = r * 6 + c
+    me = 0
+    opp = 0
+    for r in range(5):
+        for c in range(6):
+            if you[r][c]:
+                me |= 1 << (r * 6 + c)
+            elif opponent[r][c]:
+                opp |= 1 << (r * 6 + c)
+
+    # 2. Helper: Count mobility (number of legal moves) for a mask against opponent mask
+    def count_mobility(mask, opp_mask):
+        count = 0
+        m = mask
+        while m:
+            # Get index of lowest set bit
+            p = (m & -m).bit_length() - 1
+            m ^= 1 << p
+            r, c = p // 6, p % 6
+            
+            # Check 4 orthogonal directions
+            # Up
+            if r > 0:
+                if (opp_mask >> (p - 6)) & 1: count += 1
+            # Down
+            if r < 4:
+                if (opp_mask >> (p + 6)) & 1: count += 1
+            # Left
+            if c > 0:
+                if (opp_mask >> (p - 1)) & 1: count += 1
+            # Right
+            if c < 5:
+                if (opp_mask >> (p + 1)) & 1: count += 1
+        return count
+
+    # 3. Helper: Generate moves
+    # Returns list of (new_me, new_opp, r, c, dir)
+    def get_moves_simple(m, o):
+        moves = []
+        temp = m
+        while temp:
+            p = (temp & -temp).bit_length() - 1
+            temp ^= 1 << p
+            r, c = p // 6, p % 6
+            
+            # Up
+            if r > 0:
+                t = p - 6
+                if (o >> t) & 1:
+                    moves.append((m ^ (1 << p) ^ (1 << t), o ^ (1 << t), r, c, 'U'))
+            # Down
+            if r < 4:
+                t = p + 6
+                if (o >> t) & 1:
+                    moves.append((m ^ (1 << p) ^ (1 << t), o ^ (1 << t), r, c, 'D'))
+            # Left
+            if c > 0:
+                t = p - 1
+                if (o >> t) & 1:
+                    moves.append((m ^ (1 << p) ^ (1 << t), o ^ (1 << t), r, c, 'L'))
+            # Right
+            if c < 5:
+                t = p + 1
+                if (o >> t) & 1:
+                    moves.append((m ^ (1 << p) ^ (1 << t), o ^ (1 << t), r, c, 'R'))
+        return moves
+
+    # 4. Transposition Table (Zobrist hashing using bitmasks)
+    # Key: (player_mask << 30) | opponent_mask
+    tt = {}
+
+    # 5. Search function (Minimax with Alpha-Beta pruning)
+    def search(m, o, depth, alpha, beta, start_time):
+        # TT Key
+        key = (m << 30) | o
+        
+        # Check TT
+        if key in tt:
+            d_st, s_st = tt[key]
+            if d_st >= depth:
+                return s_st
+        
+        # Generate moves
+        # We sort moves for shallow depths to improve pruning
+        # For deeper depths, sorting overhead might be too high, so we skip it
+        moves = get_moves_simple(m, o)
+        
+        # If no moves, current player loses immediately (return -1)
+        if not moves:
+            return -1
+        
+        # Depth limit check
+        if depth == 0:
+            # Static Evaluation
+            my_mob = len(moves) # We already have moves, so count is len(moves)
+            opp_mob = count_mobility(o, m)
+            # Heuristic: normalized difference in mobility
+            val = (my_mob - opp_mob) * 0.1
+            # Clamp to (-0.9, 0.9) to ensure it stays strictly better than win/loss (1/-1)
+            if val > 0.9: val = 0.9
+            if val < -0.9: val = -0.9
+            return val
+
+        # Sort moves if shallow depth
+        if depth <= 2:
+            # Calculate opponent mobility after each move for sorting
+            scored_moves = []
+            for nm, no, r, c, d in moves:
+                cost = count_mobility(no, nm)
+                scored_moves.append((cost, r, c, d, nm, no))
+            # Sort by opponent mobility (ascending) -> more restrictive moves first
+            scored_moves.sort(key=lambda x: (x[0], x[1], x[2]))
+        else:
+            # Just use simple moves (don't unpack r,c,d as they are not needed inside recursion)
+            scored_moves = moves # Here moves are (nm, no, r, c, d)
+
+        best_score = -float('inf')
+        
+        for move in scored_moves:
+            # Unpack based on whether we sorted
+            if depth <= 2:
+                nm, no = move[4], move[5]
+            else:
+                nm, no = move[0], move[1]
+
+            # Time check (expensive, do it rarely. Here we do it per node in shallow depths only)
+            if depth <= 2 and (time.time() - start_time > 0.9):
+                break
+
+            # Recursive call with swapped roles (me becomes opp, opp becomes me)
+            val = -search(no, nm, depth - 1, -beta, -alpha, start_time)
+            
+            if val > best_score:
+                best_score = val
+            if val > alpha:
+                alpha = val
+            if alpha >= beta:
+                break
+        
+        # Store in TT
+        tt[key] = (depth, best_score)
+        return best_score
+
+    # 6. Iterative Deepening
+    start_time = time.time()
+    best_move = None
+    depth = 1
+    
+    # Pre-calculate root moves (always sorted for root)
+    root_moves = get_moves_simple(me, opp)
+    if root_moves:
+        # Sort root moves for initial heuristics
+        scored_root = []
+        for nm, no, r, c, d in root_moves:
+            scored_root.append((count_mobility(no, nm), r, c, d, nm, no))
+        scored_root.sort(key=lambda x: (x[0], x[1], x[2]))
+        
+        while True:
+            # Time check
+            if time.time() - start_time > 0.85:
+                break
+            
+            current_best = None
+            alpha = -float('inf')
+            beta = float('inf')
+            
+            for move in scored_root:
+                # Unpack: cost, r, c, d, nm, no
+                r, c, d, nm, no = move[1], move[2], move[3], move[4], move[5]
+                
+                # Search with depth-1 (opponent's turn)
+                val = -search(no, nm, depth - 1, -beta, -alpha, start_time)
+                
+                if val > alpha:
+                    alpha = val
+                    current_best = (r, c, d)
+                    if alpha >= 1.0: # Found a guaranteed win
+                        break
+                
+                if alpha >= beta:
+                    break
+            
+            if current_best:
+                best_move = current_best
+            
+            # If we found a win, stop deeper search
+            if alpha >= 1.0:
+                break
+            
+            depth += 1
+            if depth > 25: # Safety cap
+                break
+    else:
+        # Should not be called when no moves exist, but fail-safe
+        return "0,0,U"
+
+    # 7. Return Result
+    if best_move:
+        return f"{best_move[0]},{best_move[1]},{best_move[2]}"
+    
+    # Fallback to first sorted move if something goes wrong
+    return f"{scored_root[0][1]},{scored_root[0][2]},{scored_root[0][3]}"
+```

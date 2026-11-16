@@ -1,0 +1,167 @@
+
+import itertools
+
+def policy(state: dict) -> str:
+    my_pts = state['my_pts'][:]
+    opp_pts = state['opp_pts'][:]
+    my_bar = state['my_bar']
+    dice = state['dice'][:]
+    
+    if not dice:
+        return "H:P,P"
+    
+    # Generate all legal moves and pick the best one
+    legal_moves = generate_legal_moves(my_pts, opp_pts, my_bar, dice)
+    
+    if not legal_moves:
+        return "H:P,P"
+    
+    best_move = None
+    best_score = float('-inf')
+    
+    for move in legal_moves:
+        new_my_pts, new_opp_pts, new_my_bar, new_my_off = simulate_move(my_pts, opp_pts, my_bar, state['my_off'], dice, move)
+        score = evaluate_position(new_my_pts, new_opp_pts, new_my_bar, new_my_off, state['opp_bar'])
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return format_move(best_move, dice)
+
+def generate_legal_moves(my_pts, opp_pts, my_bar, dice):
+    moves = []
+    if len(dice) == 0:
+        return [('P', 'P')]
+    
+    if len(dice) == 1:
+        single_moves = get_single_moves(my_pts, opp_pts, my_bar, dice[0])
+        if single_moves:
+            return [(m, 'P') for m in single_moves]
+        return [('P', 'P')]
+    
+    d1, d2 = dice[0], dice[1]
+    
+    # Try both orderings
+    for first_die, second_die in [(d1, d2), (d2, d1)]:
+        first_moves = get_single_moves(my_pts, opp_pts, my_bar, first_die)
+        for m1 in first_moves:
+            new_pts, new_opp, new_bar, _ = apply_single_move(my_pts, opp_pts, my_bar, 0, m1, first_die)
+            second_moves = get_single_moves(new_pts, new_opp, new_bar, second_die)
+            for m2 in second_moves:
+                if first_die >= second_die:
+                    moves.append((m1, m2))
+                else:
+                    moves.append((m2, m1))
+    
+    # Remove duplicates and filter
+    unique_moves = list(set(moves))
+    
+    # If we found 2-move sequences, prefer them
+    two_moves = [m for m in unique_moves if m[0] != 'P' and m[1] != 'P']
+    if two_moves:
+        return two_moves
+    
+    # Otherwise try single moves with pass
+    one_moves = [m for m in unique_moves if m[0] != 'P' or m[1] != 'P']
+    if one_moves:
+        return one_moves
+    
+    return [('P', 'P')]
+
+def get_single_moves(my_pts, opp_pts, my_bar, die):
+    moves = []
+    
+    if my_bar > 0:
+        dest = 24 - die
+        if dest >= 0 and opp_pts[dest] < 2:
+            moves.append('B')
+        return moves
+    
+    for i in range(24):
+        if my_pts[i] > 0:
+            dest = i - die
+            if dest >= 0:
+                if opp_pts[dest] < 2:
+                    moves.append(f'A{i}')
+            else:
+                # Bearing off
+                if all(my_pts[j] == 0 for j in range(6, 24)):
+                    if dest == -1 or (i == max(j for j in range(6) if my_pts[j] > 0) and dest < 0):
+                        moves.append(f'A{i}')
+    
+    return moves
+
+def apply_single_move(my_pts, opp_pts, my_bar, my_off, move, die):
+    my_pts = my_pts[:]
+    opp_pts = opp_pts[:]
+    
+    if move == 'P':
+        return my_pts, opp_pts, my_bar, my_off
+    
+    if move == 'B':
+        my_bar -= 1
+        dest = 24 - die
+        if opp_pts[dest] == 1:
+            opp_pts[dest] = 0
+        my_pts[dest] += 1
+    else:
+        src = int(move[1:])
+        my_pts[src] -= 1
+        dest = src - die
+        if dest >= 0:
+            if opp_pts[dest] == 1:
+                opp_pts[dest] = 0
+            my_pts[dest] += 1
+        else:
+            my_off += 1
+    
+    return my_pts, opp_pts, my_bar, my_off
+
+def simulate_move(my_pts, opp_pts, my_bar, my_off, dice, move):
+    m1, m2 = move
+    d1 = max(dice) if len(dice) >= 1 else 0
+    d2 = min(dice) if len(dice) >= 2 else 0
+    
+    my_pts, opp_pts, my_bar, my_off = apply_single_move(my_pts, opp_pts, my_bar, my_off, m1, d1)
+    my_pts, opp_pts, my_bar, my_off = apply_single_move(my_pts, opp_pts, my_bar, my_off, m2, d2)
+    
+    return my_pts, opp_pts, my_bar, my_off
+
+def evaluate_position(my_pts, opp_pts, my_bar, my_off, opp_bar):
+    score = 0
+    
+    # Borne off checkers (highest priority)
+    score += my_off * 100
+    
+    # Penalize bar
+    score -= my_bar * 50
+    
+    # Reward opponent on bar
+    score += opp_bar * 30
+    
+    # Made points (2+ checkers)
+    for i in range(24):
+        if my_pts[i] >= 2:
+            score += 10
+            if i < 6:  # Home board
+                score += 5
+    
+    # Penalize blots
+    for i in range(24):
+        if my_pts[i] == 1:
+            danger = sum(opp_pts[j] for j in range(max(0, i+1), min(24, i+7)))
+            score -= (5 + danger)
+    
+    # Progress toward home
+    for i in range(24):
+        score += my_pts[i] * (24 - i) * 0.5
+    
+    return score
+
+def format_move(move, dice):
+    m1, m2 = move
+    if len(dice) >= 2 and dice[0] >= dice[1]:
+        order = 'H'
+    else:
+        order = 'H'
+    return f"{order}:{m1},{m2}"

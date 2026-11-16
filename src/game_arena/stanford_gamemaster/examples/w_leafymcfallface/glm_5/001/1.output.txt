@@ -1,0 +1,133 @@
+Looking at this game, I need to understand the mechanics:
+- Two caterpillars on a 7x7 grid of leaves
+- Players alternate moving to adjacent cells with leaves
+- When moving, the leaf at the destination is consumed
+- Game ends when a player can't move on their turn - they lose
+- Winner gets 100 points
+
+From the examples, I can see:
+- `move(x,y)` means move to position (x,y) which must have a leaf and be adjacent
+- Each move consumes one leaf from the board
+- The player who makes the last successful move wins if the opponent can't move after
+
+**Strategy:**
+1. Use minimax with alpha-beta pruning to search for optimal moves
+2. Evaluate positions based on mobility difference (available moves)
+3. Adjust search depth based on remaining leaves (deeper when fewer leaves)
+4. Prioritize moves that restrict opponent's options
+
+The key insight from the final example: after Red's last move, Blue has no legal moves on their turn, so Red wins. This means the game ends when a player can't move on their turn, regardless of whether they could have moved later.
+
+<code>
+def policy(state, role):
+    """
+    Policy for the leafymcfallface game.
+    Uses minimax with alpha-beta pruning.
+    """
+    # Parse state
+    leaves = set()
+    players = {}
+    
+    for prop in state:
+        if prop[0] == "leaf":
+            leaves.add((int(prop[1]), int(prop[2])))
+        elif prop[0] == "isplayer":
+            players[prop[3]] = (int(prop[1]), int(prop[2]))
+    
+    my_pos = players[role]
+    opponent = "blue" if role == "red" else "red"
+    opp_pos = players[opponent]
+    
+    DIRECTIONS = [(0, 1), (0, -1), (1, 0), (-1, 0)]
+    
+    def get_legal_moves(pos, leaf_set):
+        """Get all legal moves from a position."""
+        x, y = pos
+        return [(x + dx, y + dy) for dx, dy in DIRECTIONS if (x + dx, y + dy) in leaf_set]
+    
+    def evaluate(leaf_set, my_pos_curr, opp_pos_curr):
+        """Heuristic: mobility difference + territory consideration."""
+        my_moves = len(get_legal_moves(my_pos_curr, leaf_set))
+        opp_moves = len(get_legal_moves(opp_pos_curr, leaf_set))
+        
+        # Bonus for controlling center and blocking opponent
+        mx, my_coord = my_pos_curr
+        ox, oy = opp_pos_curr
+        
+        # Simple territory: prefer positions that limit opponent's access
+        score = my_moves - opp_moves
+        
+        # Slight bonus for being closer to opponent (trapping potential)
+        distance = abs(mx - ox) + abs(my_coord - oy)
+        score += (7 - distance) * 0.2
+        
+        return score
+    
+    def minimax(leaf_set, my_pos_curr, opp_pos_curr, is_my_turn, depth, alpha, beta):
+        """Minimax with alpha-beta pruning."""
+        current_pos = my_pos_curr if is_my_turn else opp_pos_curr
+        moves = get_legal_moves(current_pos, leaf_set)
+        
+        # Terminal: current player can't move - they lose
+        if not moves:
+            return (-1000) if is_my_turn else 1000
+        
+        # Depth limit reached
+        if depth == 0:
+            return evaluate(leaf_set, my_pos_curr, opp_pos_curr)
+        
+        # Move ordering: try moves that limit opponent's options first
+        if is_my_turn:
+            moves.sort(key=lambda m: len(get_legal_moves(opp_pos_curr, leaf_set - {m})))
+        else:
+            moves.sort(key=lambda m: -len(get_legal_moves(my_pos_curr, leaf_set - {m})))
+        
+        if is_my_turn:
+            max_eval = float('-inf')
+            for move in moves:
+                new_leaves = leaf_set - {move}
+                score = minimax(new_leaves, move, opp_pos_curr, False, depth - 1, alpha, beta)
+                max_eval = max(max_eval, score)
+                alpha = max(alpha, score)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for move in moves:
+                new_leaves = leaf_set - {move}
+                score = minimax(new_leaves, my_pos_curr, move, True, depth - 1, alpha, beta)
+                min_eval = min(min_eval, score)
+                beta = min(beta, score)
+                if beta <= alpha:
+                    break
+            return min_eval
+    
+    # Get legal moves for current player
+    my_moves = get_legal_moves(my_pos, leaves)
+    
+    if not my_moves:
+        # Fallback - shouldn't happen in valid game
+        return "move(1,1)"
+    
+    # If only one move, take it immediately
+    if len(my_moves) == 1:
+        return f"move({my_moves[0][0]},{my_moves[0][1]})"
+    
+    # Find best move using minimax
+    best_move = my_moves[0]
+    best_score = float('-inf')
+    
+    # Adjust depth based on remaining leaves - deeper when fewer leaves
+    num_leaves = len(leaves)
+    depth = min(12, max(4, num_leaves // 3))
+    
+    for move in my_moves:
+        new_leaves = leaves - {move}
+        score = minimax(new_leaves, move, opp_pos, False, depth, float('-inf'), float('inf'))
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return f"move({best_move[0]},{best_move[1]})"
+</code>

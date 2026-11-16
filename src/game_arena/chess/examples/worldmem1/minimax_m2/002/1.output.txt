@@ -1,0 +1,72 @@
+To solve this problem, we need to create a chess move selection policy that efficiently evaluates legal moves and selects the strongest one based on a set of heuristics. The policy must prioritize checkmates, material gains, king safety, checks, and positional advantages within a strict time constraint.
+
+### Approach
+1. **Checkmate Detection**: Moves resulting in checkmate are given the highest priority.
+2. **Material Gain**: Moves that capture opponent pieces are prioritized based on the captured piece's value (pawn=1, knight/bishop=3, rook=5, queen=9, king=0).
+3. **King Safety**: Castling moves are prioritized to ensure king safety.
+4. **Check Moves**: Moves delivering check to the opponent are given a moderate bonus.
+5. **Positional Advantage**: Non-capturing, non-check, non-castling moves are evaluated based on the centralization of the destination square. Moves toward the center of the board are preferred.
+
+### Solution Code
+```python
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str], memory: dict) -> tuple[str, dict]:
+    piece_values = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}
+    
+    def get_destination(move, to_play):
+        if move.startswith('O-O'):
+            return 'g1' if to_play == 'white' else 'g8'
+        elif move.startswith('O-O-O'):
+            return 'c1' if to_play == 'white' else 'c8'
+        else:
+            for i in range(len(move)-1, 0, -1):
+                if move[i-1] in 'abcdefgh' and move[i] in '12345678':
+                    return move[i-1:i+1]
+            return None
+    
+    scored_moves = []
+    for move in legal_moves:
+        score = 0
+        if move.endswith('#'):
+            score += 1000000
+        elif move.endswith('+'):
+            score += 10000
+        
+        if 'x' in move:
+            dest = get_destination(move, to_play)
+            captured_piece = pieces.get(dest)
+            if captured_piece is not None:
+                piece_type = captured_piece[1]
+                value = piece_values.get(piece_type, 0)
+                score += value * 100
+        
+        if move.startswith('O-O') or move.startswith('O-O-O'):
+            score += 1000
+        else:
+            dest = get_destination(move, to_play)
+            if dest is not None:
+                file_char = dest[0]
+                rank_char = dest[1]
+                x = ord(file_char) - ord('a')
+                y = int(rank_char) - 1
+                dist = ((x - 3.5)**2 + (y - 3.5)**2)**0.5
+                bonus = 100 - dist * 10
+                if bonus < 0:
+                    bonus = 0
+                score += bonus
+        
+        scored_moves.append((score, move))
+    
+    scored_moves.sort(key=lambda x: x[0], reverse=True)
+    chosen_move = scored_moves[0][1]
+    return chosen_move, {}
+```
+
+### Explanation
+1. **Checkmate Detection**: The policy first checks if any move results in checkmate (`#`). Such moves are assigned a score of 1,000,000, ensuring they are selected first.
+2. **Material Gain**: For capturing moves (`x`), the policy evaluates the captured piece's value using a predefined dictionary (`piece_values`). The score is increased by the piece's value multiplied by 100.
+3. **King Safety**: Castling moves (`O-O` or `O-O-O`) are assigned a score of 1,000 to prioritize king safety.
+4. **Check Moves**: Moves delivering check (`+`) but not checkmate are assigned a score of 10,000.
+5. **Positional Advantage**: For remaining moves, the policy computes a centralization bonus based on the destination square's proximity to the board center. The bonus is calculated using the Euclidean distance from the center (3.5, 3.5) and added to the score.
+6. **Move Selection**: After scoring all moves, the policy sorts them in descending order and selects the highest-scoring move. The chosen move and an empty memory dictionary are returned.
+
+This approach efficiently balances strategic priorities within the time constraint, ensuring optimal move selection based on chess heuristics.

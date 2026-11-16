@@ -1,0 +1,210 @@
+**Strategy**
+
+The agent uses a classic game‑tree search – iterative deepening depth‑limited Minimax with alpha‑beta pruning.  
+At each node the evaluation function is a weighted difference of the final scores (store + remaining houses).  
+The houses are given a small positive weight (0.25) so that retaining seeds that can later be captured or stored is still valuable.
+
+To improve pruning, move ordering is performed only at the root of the search: legal moves are simulated once and sorted by a quick heuristic that rewards captures, landing in the own store, and any immediate store increase.  
+
+Because the search depth is limited (default = 8 plies) the program easily fits into the 1‑second time limit while still being strong enough to beat simpler heuristics.
+
+<code>
+from __future__ import annotations
+import sys
+import time
+
+sys.setrecursionlimit(10000)
+
+INF = 10**9
+
+# ----------------------------------------------------------------------
+# Core game logic
+# ----------------------------------------------------------------------
+def is_terminal(you, opponent):
+    """Return True if one player has no seeds in any of their houses."""
+    return sum(you[:6]) == 0 or sum(opponent[:6]) == 0
+
+def evaluate(you, opponent):
+    """Heuristic: difference of total scores (store + houses)."""
+    your_total = you[6] + sum(you[:6])
+    opp_total = opponent[6] + sum(opponent[:6])
+    # weight houses a little less than the store
+    return (your_total - opp_total) + 0.25 * (sum(you[:6]) - sum(opponent[:6]))
+
+def make_move_generic(player, opponent, house):
+    """
+    Simulate a move for the player whose turn it is.
+    player, opponent – lists of length 7 (houses + store).
+    house – index 0..5 of the house from which we sow.
+    Returns (new_player, new_opponent, extra) where extra is True
+    if the player gets another turn (last seed landed in his store).
+    """
+    player = list(player)       # copy
+    opponent = list(opponent)  # copy
+
+    seeds = player[house]
+    if seeds == 0:
+        raise ValueError("Move from empty house")
+    player[house] = 0
+
+    # Positions: 0‑5 player houses, 6 player store,
+    # 7‑12 opponent houses (opponent store is skipped)
+    idx = (house + 1) % 13
+    while seeds > 0:
+        if idx == 6:
+            player[6] += 1
+        elif idx < 6:
+            player[idx] += 1
+        else:  # 7‑12
+            opponent[idx - 7] += 1
+        seeds -= 1
+        idx = (idx + 1) % 13
+
+    last_pos = (idx - 1) % 13
+    extra = (last_pos == 6)
+
+    # Capture rule
+    if 0 <= last_pos <= 5 and player[last_pos] == 1 and opponent[5 - last_pos] > 0:
+        captured = 1 + opponent[5 - last_pos]
+        player[6] += captured
+        player[last_pos] = 0
+        opponent[5 - last_pos] = 0
+
+    return player, opponent, extra
+
+def move_you(you, opponent, house):
+    """Execute a move for the 'you' side."""
+    new_you, new_opp, extra = make_move_generic(you, opponent, house)
+    return new_you, new_opp, extra
+
+def move_opponent(you, opponent, house):
+    """Execute a move for the opponent side."""
+    new_opp, new_you, extra = make_move_generic(opponent, you, house)
+    return new_you, new_opp, extra
+
+# ----------------------------------------------------------------------
+# Move ordering (used only at the root of the search)
+# ----------------------------------------------------------------------
+def order_moves(you, opponent, is_you):
+    """
+    Return a list of legal house indices sorted by a cheap heuristic.
+    is_you == True → moves for 'you', otherwise for opponent.
+    """
+    moves = []
+    if is_you:
+        for i in range(6):
+            if you[i] == 0:
+                continue
+            new_you, new_opp, extra = move_you(you, opponent, i)
+            gain = new_you[6] - you[6]          # increase of own store
+            priority = gain * 10 + (50 if extra else 0) + (100 if gain > 1 else 0)
+            moves.append((priority, i))
+    else:
+        for i in range(6):
+            if opponent[i] == 0:
+                continue
+            new_opp, new_you, extra = move_opponent(you, opponent, i)
+            gain = new_opp[6] - opponent[6]
+            priority = gain * 10 + (50 if extra else 0) + (100 if gain > 1 else 0)
+            moves.append((priority, i))
+
+    moves.sort(key=lambda x: -x[0])
+    return [i for _, i in moves]
+
+# ----------------------------------------------------------------------
+# Minimax with alpha‑beta pruning and depth‑limited search
+# ----------------------------------------------------------------------
+def minimax(you, opponent, depth, alpha, beta, maximizing, order=False):
+    """Recursive minimax.  If order is True the root is ordered."""
+    if depth == 0 or is_terminal(you, opponent):
+        return evaluate(you, opponent)
+
+    if maximizing:
+        # own move
+        if order:
+            moves = order_moves(you, opponent, True)
+        else:
+            moves = [i for i in range(6) if you[i] > 0]
+        if not moves:
+            return evaluate(you, opponent)
+        best = -INF
+        for move in moves:
+            new_you, new_opp, extra = move_you(you, opponent, move)
+            if extra:
+                val = minimax(new_you, new_opp, depth - 1, alpha, beta, True, False)
+            else:
+                val = minimax(new_you, new_opp, depth - 1, alpha, beta, False, False)
+            if val > best:
+                best = val
+            alpha = max(alpha, val)
+            if beta <= alpha:
+                break
+        return best
+    else:
+        # opponent's move
+        if order:
+            moves = order_moves(you, opponent, False)
+        else:
+            moves = [i for i in range(6) if opponent[i] > 0]
+        if not moves:
+            return evaluate(you, opponent)
+        best = INF
+        for move in moves:
+            new_you, new_opp, extra = move_opponent(you, opponent, move)
+            if extra:
+                val = minimax(new_you, new_opp, depth - 1, alpha, beta, False, False)
+            else:
+                val = minimax(new_you, new_opp, depth - 1, alpha, beta, True, False)
+            if val < best:
+                best = val
+            beta = min(beta, val)
+            if beta <= alpha:
+                break
+        return best
+
+# ----------------------------------------------------------------------
+# Iterative deepening driver – returns the chosen house index
+# ----------------------------------------------------------------------
+def choose_move(you, opponent, max_depth=8):
+    """Iterative deepening search, returns the best move for the current player."""
+    start = time.time()
+    legal = [i for i in range(6) if you[i] > 0]
+    if not legal:
+        return 0  # should never happen
+
+    best_move = legal[0]
+    for depth in range(1, max_depth + 1):
+        # stop if we are running out of time
+        if time.time() - start > 0.85:
+            break
+        # order the root moves
+        moves = order_moves(you, opponent, True)
+        alpha = -INF
+        beta = INF
+        best_val = -INF
+        best_this = None
+        for move in moves:
+            new_you, new_opp, extra = move_you(you, opponent, move)
+            if extra:
+                val = minimax(new_you, new_opp, depth - 1, alpha, beta, True, False)
+            else:
+                val = minimax(new_you, new_opp, depth - 1, alpha, beta, False, False)
+            if val > best_val:
+                best_val = val
+                best_this = move
+            alpha = max(alpha, val)
+            if beta <= alpha:
+                break
+        if best_this is not None:
+            best_move = best_this
+    return best_move
+
+# ----------------------------------------------------------------------
+# Public API
+# ----------------------------------------------------------------------
+def policy(you: list[int], opponent: list[int]) -> int:
+    """
+    Main entry point.  Returns a legal house index (0‑5) for the current player.
+    """
+    return choose_move(you, opponent, max_depth=8)
+</code>

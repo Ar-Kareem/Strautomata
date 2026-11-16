@@ -1,0 +1,157 @@
+The strategy for this policy is to explicitly generate all legal move sequences for the given dice, respect backgammon move constraints (bar priority, blocked points, bearing off rules, higher‑die rule), and then choose the sequence that maximizes a heuristic evaluation. The heuristic prefers bearing off, hitting opponents, having fewer checkers on the bar, creating points, and reducing pip count while increasing the opponent’s pip count. This provides a robust, legal, and competitive move choice.
+
+<code>
+def policy(state: dict) -> str:
+    # Helper functions
+    def clone_state(st):
+        return {
+            'my_pts': st['my_pts'][:],
+            'opp_pts': st['opp_pts'][:],
+            'my_bar': st['my_bar'],
+            'opp_bar': st['opp_bar'],
+            'my_off': st['my_off'],
+            'opp_off': st['opp_off']
+        }
+
+    def all_in_home(my_pts, my_bar):
+        if my_bar > 0:
+            return False
+        for i in range(6, 24):
+            if my_pts[i] > 0:
+                return False
+        return True
+
+    def can_bear_off(i, die, my_pts):
+        dest = i - die
+        if dest == -1:
+            return True
+        if dest < -1:
+            # overshoot allowed only if no checkers on higher points
+            for j in range(i + 1, 6):
+                if my_pts[j] > 0:
+                    return False
+            return True
+        return False
+
+    def generate_moves(st, die):
+        my_pts = st['my_pts']
+        opp_pts = st['opp_pts']
+        my_bar = st['my_bar']
+        opp_bar = st['opp_bar']
+        my_off = st['my_off']
+        opp_off = st['opp_off']
+
+        moves = []
+        if my_bar > 0:
+            dest = 24 - die
+            if 0 <= dest <= 23 and opp_pts[dest] < 2:
+                new_st = clone_state(st)
+                new_st['my_bar'] -= 1
+                if new_st['opp_pts'][dest] == 1:
+                    new_st['opp_pts'][dest] = 0
+                    new_st['opp_bar'] += 1
+                new_st['my_pts'][dest] += 1
+                moves.append(('B', new_st))
+            return moves
+        else:
+            home_ready = all_in_home(my_pts, my_bar)
+            for i in range(24):
+                if my_pts[i] == 0:
+                    continue
+                dest = i - die
+                if dest >= 0:
+                    if opp_pts[dest] >= 2:
+                        continue
+                    new_st = clone_state(st)
+                    new_st['my_pts'][i] -= 1
+                    if new_st['opp_pts'][dest] == 1:
+                        new_st['opp_pts'][dest] = 0
+                        new_st['opp_bar'] += 1
+                    new_st['my_pts'][dest] += 1
+                    moves.append((f'A{i}', new_st))
+                else:
+                    if home_ready and i <= 5 and can_bear_off(i, die, my_pts):
+                        new_st = clone_state(st)
+                        new_st['my_pts'][i] -= 1
+                        new_st['my_off'] += 1
+                        moves.append((f'A{i}', new_st))
+            return moves
+
+    def evaluate(st):
+        my_pts = st['my_pts']
+        opp_pts = st['opp_pts']
+        my_bar = st['my_bar']
+        opp_bar = st['opp_bar']
+        my_off = st['my_off']
+        opp_off = st['opp_off']
+
+        my_pip = sum((i + 1) * my_pts[i] for i in range(24)) + my_bar * 25
+        opp_pip = sum((24 - i) * opp_pts[i] for i in range(24)) + opp_bar * 25
+
+        score = (opp_pip - my_pip)
+        score += (my_off - opp_off) * 50
+        score += (opp_bar - my_bar) * 20
+
+        my_points = sum(1 for i in range(24) if my_pts[i] >= 2)
+        opp_points = sum(1 for i in range(24) if opp_pts[i] >= 2)
+        score += my_points * 2 - opp_points * 2
+
+        my_blots = sum(1 for i in range(24) if my_pts[i] == 1)
+        opp_blots = sum(1 for i in range(24) if opp_pts[i] == 1)
+        score += opp_blots * 1 - my_blots * 1
+
+        score += sum(my_pts[i] for i in range(6)) * 0.5
+        return score
+
+    def generate_sequences(st, dice):
+        if len(dice) == 1:
+            die = dice[0]
+            moves = generate_moves(st, die)
+            return [('H', m[0], 'P', m[1]) for m in moves]
+
+        h = max(dice)
+        l = min(dice)
+        orders = [('H', h, l)]
+        if h != l:
+            orders.append(('L', l, h))
+
+        seq_two = []
+        seq_one = []
+
+        for order, die1, die2 in orders:
+            moves1 = generate_moves(st, die1)
+            if not moves1:
+                continue
+            for from1, st1 in moves1:
+                moves2 = generate_moves(st1, die2)
+                if moves2:
+                    for from2, st2 in moves2:
+                        seq_two.append((order, from1, from2, st2))
+                else:
+                    seq_one.append((order, from1, 'P', st1))
+
+        if seq_two:
+            return seq_two
+
+        # Only one move possible
+        if h == l:
+            return seq_one
+
+        high_seq = [s for s in seq_one if s[0] == 'H']
+        if high_seq:
+            return high_seq
+        return seq_one
+
+    dice = state.get('dice', [])
+    if not dice:
+        return "H:P,P"
+
+    sequences = generate_sequences(state, dice)
+
+    if not sequences:
+        return "H:P,P"
+
+    best_seq = max(sequences, key=lambda s: evaluate(s[3]))
+    order, from1, from2, _ = best_seq
+    return f"{order}:{from1},{from2}"
+</code>

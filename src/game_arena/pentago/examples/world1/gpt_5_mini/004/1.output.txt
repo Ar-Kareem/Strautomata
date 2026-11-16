@@ -1,0 +1,285 @@
+My strategy (brief):
+- First look for an immediate winning move (one that gives me 5 in a row after the placement+rotation) that does not simultaneously give the opponent 5 (a plain win).
+- If none, avoid moves that allow the opponent an immediate win on their next turn. Among safe moves pick the one that maximizes my longest contiguous line minus the opponent's longest contiguous line after my move (a simple heuristic to create threats).
+- If no completely safe move exists, pick a move that minimizes the opponent's immediate winning replies.
+- Always return a legal move string.
+
+<code>
+import numpy as np
+
+def policy(you, opponent) -> str:
+    """
+    Pentago policy:
+    - you, opponent: 6x6 array-like of 0/1 (ints).
+    - Return "row,col,quad,dir" with 1-indexed row,col, quad 0..3 and dir 'L' or 'R'.
+    """
+    # Convert to numpy arrays to manipulate
+    you = np.array(you, dtype=np.int8)
+    opp = np.array(opponent, dtype=np.int8)
+    N = 6
+
+    # Quadrant slices mapping
+    quad_slices = {
+        0: (0, 3, 0, 3),
+        1: (0, 3, 3, 6),
+        2: (3, 6, 0, 3),
+        3: (3, 6, 3, 6),
+    }
+
+    dirs = ['L', 'R']
+
+    def rotate_quadrant(arr, quad, d):
+        r0, r1, c0, c1 = quad_slices[quad]
+        sub = arr[r0:r1, c0:c1].copy()
+        # L = 90 deg anticlockwise => np.rot90(k=1)
+        # R = 90 deg clockwise => np.rot90(k=3)
+        k = 1 if d == 'L' else 3
+        arr[r0:r1, c0:c1] = np.rot90(sub, k=k)
+
+    def apply_move(you_board, opp_board, r, c, quad, d):
+        # returns new copies of you_board, opp_board after placing at (r,c) and rotating quad in dir d
+        y = you_board.copy()
+        o = opp_board.copy()
+        y[r, c] = 1
+        # rotating quadrant affects both boards
+        rotate_quadrant(y, quad, d)
+        rotate_quadrant(o, quad, d)
+        return y, o
+
+    def has_five(board):
+        # return True if board has >=5 in a row in any direction
+        # scan all cells and directions
+        N = 6
+        for i in range(N):
+            for j in range(N):
+                if board[i, j] != 1:
+                    continue
+                # four directions: horiz, vert, diag \, diag /
+                # horizontal
+                cnt = 0
+                x, y = i, j
+                while y < N and board[x, y] == 1:
+                    cnt += 1
+                    y += 1
+                if cnt >= 5:
+                    return True
+                # vertical
+                cnt = 0
+                x, y = i, j
+                while x < N and board[x, y] == 1:
+                    cnt += 1
+                    x += 1
+                if cnt >= 5:
+                    return True
+                # diag down-right
+                cnt = 0
+                x, y = i, j
+                while x < N and y < N and board[x, y] == 1:
+                    cnt += 1
+                    x += 1; y += 1
+                if cnt >= 5:
+                    return True
+                # diag down-left
+                cnt = 0
+                x, y = i, j
+                while x < N and y >= 0 and board[x, y] == 1:
+                    cnt += 1
+                    x += 1; y -= 1
+                if cnt >= 5:
+                    return True
+        return False
+
+    def longest_line(board):
+        # returns the longest contiguous run of 1's on board in any straight direction
+        best = 0
+        N = 6
+        for i in range(N):
+            for j in range(N):
+                if board[i, j] != 1:
+                    continue
+                # horiz
+                cnt = 0
+                y = j
+                while y < N and board[i, y] == 1:
+                    cnt += 1
+                    y += 1
+                if cnt > best:
+                    best = cnt
+                # vert
+                cnt = 0
+                x = i
+                while x < N and board[x, j] == 1:
+                    cnt += 1
+                    x += 1
+                if cnt > best:
+                    best = cnt
+                # diag down-right
+                cnt = 0
+                x, y = i, j
+                while x < N and y < N and board[x, y] == 1:
+                    cnt += 1
+                    x += 1; y += 1
+                if cnt > best:
+                    best = cnt
+                # diag down-left
+                cnt = 0
+                x, y = i, j
+                while x < N and y >= 0 and board[x, y] == 1:
+                    cnt += 1
+                    x += 1; y -= 1
+                if cnt > best:
+                    best = cnt
+        return best
+
+    # Helper: check if opponent can win immediately on next move from a given position
+    def opponent_has_immediate_win(you_b, opp_b):
+        empties = np.where((you_b == 0) & (opp_b == 0))
+        rows = empties[0]
+        cols = empties[1]
+        # iterate opponent possible moves
+        for idx in range(len(rows)):
+            r = rows[idx]; c = cols[idx]
+            for quad in range(4):
+                for d in dirs:
+                    o2 = opp_b.copy()
+                    y2 = you_b.copy()
+                    # opponent places at r,c then rotates
+                    o2[r, c] = 1
+                    rotate_quadrant(o2, quad, d)
+                    rotate_quadrant(y2, quad, d)
+                    if has_five(o2):
+                        return True
+        return False
+
+    # Build list of empty cells
+    empties = np.where((you == 0) & (opp == 0))
+    empty_positions = list(zip(empties[0].tolist(), empties[1].tolist()))
+
+    best_move = None
+    best_score = -10**9
+    # Keep track of moves that give immediate win for us (non-draw)
+    draw_candidates = []
+    # If all moves lead to opponent immediate win, choose one minimizing opponent responses
+    move_opponent_win_count = {}
+
+    # Pre-generate moves
+    moves = []
+    for (r, c) in empty_positions:
+        for quad in range(4):
+            for d in dirs:
+                moves.append((r, c, quad, d))
+
+    # Evaluate moves
+    for (r, c, quad, d) in moves:
+        you_new, opp_new = apply_move(you, opp, r, c, quad, d)
+        my_win = has_five(you_new)
+        opp_win_after = has_five(opp_new)
+        # Prefer immediate clean win (we win and opponent doesn't)
+        if my_win and not opp_win_after:
+            # return immediately
+            return f"{r+1},{c+1},{quad},{d}"
+        # If both win, it's a draw; keep as fallback
+        if my_win and opp_win_after:
+            draw_candidates.append((r, c, quad, d))
+            continue
+
+        # Check if opponent has an immediate win after this move
+        # If yes, mark as risky
+        opp_can_win = False
+        opp_win_count = 0
+        empt_after = np.where((you_new == 0) & (opp_new == 0))
+        rows_a = empt_after[0]
+        cols_a = empt_after[1]
+        # Early exit if none empties (shouldn't happen by spec)
+        for idx in range(len(rows_a)):
+            rr = rows_a[idx]; cc = cols_a[idx]
+            found = False
+            for q in range(4):
+                for dd in dirs:
+                    o2 = opp_new.copy()
+                    y2 = you_new.copy()
+                    o2[rr, cc] = 1
+                    rotate_quadrant(o2, q, dd)
+                    rotate_quadrant(y2, q, dd)
+                    if has_five(o2):
+                        opp_can_win = True
+                        opp_win_count += 1
+                        found = True
+                        break
+                if found:
+                    # don't double count same placement with different rotations further than necessary
+                    # but we keep counting different rotation wins (that's useful)
+                    pass
+            # small optimization: if opp_can_win and opp_win_count large we can break early in some cases,
+            # but we want count for tie-breaker. Keep scanning but if count exceeds a threshold we can stop.
+            if opp_win_count > 200:
+                break
+
+        move_opponent_win_count[(r, c, quad, d)] = opp_win_count
+
+        # Avoid moves that allow opp immediate win; subtract a big penalty
+        pen = 100000 if opp_can_win else 0
+
+        # Score: maximize our longest contiguous line minus opponent's longest contiguous line after this move
+        my_long = longest_line(you_new)
+        opp_long = longest_line(opp_new)
+        # Slight preference for center cells to break ties
+        center_pref = -((abs((r+0.5)-3.0) + abs((c+0.5)-3.0)) * 0.1)
+
+        score = (my_long - opp_long) * 10 + center_pref - pen - opp_win_count * 0.01
+
+        if score > best_score:
+            best_score = score
+            best_move = (r, c, quad, d)
+
+    # If best_move is None (unlikely), pick first legal move
+    if best_move is None:
+        # prefer center placements if available
+        pref_order = sorted(moves, key=lambda mc: (abs((mc[0]+0.5)-3.0) + abs((mc[1]+0.5)-3.0)))
+        sel = pref_order[0]
+        return f"{sel[0]+1},{sel[1]+1},{sel[2]},{sel[3]}"
+
+    # If we did not find an immediate strict win but have draw candidate, maybe prefer a draw if best_move is risky
+    # If best_move allows opponent immediate win, try to choose a draw candidate if available
+    r_best, c_best, quad_best, d_best = best_move
+    # Check if this best move actually gives us a win/draw already
+    you_best, opp_best = apply_move(you, opp, r_best, c_best, quad_best, d_best)
+    if has_five(you_best) and not has_five(opp_best):
+        return f"{r_best+1},{c_best+1},{quad_best},{d_best}"
+    # If best move gives opponent immediate win on next move, but there is a draw candidate, prefer draw
+    # Determine whether best move allows opponent immediate win
+    def opp_can_win_after_move(you_b, opp_b):
+        empties_b = np.where((you_b == 0) & (opp_b == 0))
+        for idx in range(len(empties_b[0])):
+            rr = empties_b[0][idx]; cc = empties_b[1][idx]
+            for q in range(4):
+                for dd in dirs:
+                    o2 = opp_b.copy()
+                    y2 = you_b.copy()
+                    o2[rr, cc] = 1
+                    rotate_quadrant(o2, q, dd)
+                    rotate_quadrant(y2, q, dd)
+                    if has_five(o2):
+                        return True
+        return False
+
+    if opp_can_win_after_move(you_best, opp_best):
+        if draw_candidates:
+            # pick any draw candidate (prefer center)
+            draw_candidates_sorted = sorted(draw_candidates, key=lambda mc: (abs((mc[0]+0.5)-3.0) + abs((mc[1]+0.5)-3.0)))
+            r, c, q, d = draw_candidates_sorted[0]
+            return f"{r+1},{c+1},{q},{d}"
+        # else try to pick move minimizing opponent winning replies
+        best_min_move = None
+        best_min_count = 10**9
+        for mv, cnt in move_opponent_win_count.items():
+            if cnt < best_min_count:
+                best_min_count = cnt
+                best_min_move = mv
+        if best_min_move is not None:
+            r, c, q, d = best_min_move
+            return f"{r+1},{c+1},{q},{d}"
+
+    # Otherwise return best_move
+    return f"{r_best+1},{c_best+1},{quad_best},{d_best}"
+</code>

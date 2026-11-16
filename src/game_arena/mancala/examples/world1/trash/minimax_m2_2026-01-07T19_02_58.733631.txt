@@ -1,0 +1,245 @@
+<thinking>
+The user wants a complete Python file implementing a Kalah move selection policy. The key points:
+
+- Define a function `policy(you, opponent) -> int`.
+- Must always return a legal move (index 0–5 where you[i] > 0).
+- Use any standard Python imports (including numpy). Only 1 second execution time per call.
+- Need to simulate the Kalah rules: seeding order, extra turn, capture, end of game detection.
+
+We need to create a policy that is reasonably strong without overly complex search, while meeting the time constraint. A depth‑limited minimax with alpha‑beta pruning and a simple heuristic (store difference, house difference) is sufficient. Move ordering based on capture, extra turn and immediate store gain will help pruning.
+
+Implementation details:
+
+- Represent the board as two length‑7 lists.
+- Simulate a move: copy the lists, remove seeds from the chosen house, distribute them clockwise, skipping opponent’s store. Detect extra turn (last seed in own store) and capture (last seed in an empty own house, opposite opponent house non‑empty).
+- Terminal detection: when a player has no seeds in any of their houses; then the final scores are the store plus remaining houses for each player.
+- Evaluation: store difference (big weight) + small weight on house difference. Terminal states give large win/loss values.
+- Move ordering: quick heuristic: capture > extra turn > store gain. Simulate each move once for ordering.
+- Alpha‑beta minimax: depth = 6 (or adapt based on total seeds). Use transposition table keyed by (tuple(you), tuple(opponent), depth) to cache results.
+- The policy chooses the move with the highest minimax value.
+
+Complexity: For depth 6, branching factor ≤6, total nodes ≈ 6⁶ = 46656. With pruning and ordering this is well within 1 s. The transposition table reduces repeated work.
+
+Now write the final code.
+</thinking>
+
+<code>
+import sys
+
+# Set a generous recursion limit – depth‑limited search won't hit it, but it's safe.
+sys.setrecursionlimit(1000000)
+
+# Global constants
+INF = 10 ** 9
+
+# Transposition table: (tuple(you), tuple(opponent), depth) -> evaluation score
+_TT = {}
+
+# ----------------------------------------------------------------------
+# Helper functions
+# ----------------------------------------------------------------------
+
+
+def _is_terminal(you, opponent):
+    """Return True if the game is over (one side has no seeds in its houses)."""
+    return all(v == 0 for v in you[:6]) or all(v == 0 for opponent[:6])
+
+
+def _evaluate(you, opponent):
+    """
+    Heuristic evaluation from the perspective of the player to move.
+    Large win/loss values are returned for terminal positions.
+    """
+    if _is_terminal(you, opponent):
+        # After game end each side gathers all remaining houses into its store.
+        final_you = you[6] + sum(you[:6])
+        final_op = opponent[6] + sum(opponent[:6])
+        diff = final_you - final_op
+        if diff > 0:
+            # Win with a large margin – the extra diff avoids ties being ignored.
+            return 10000 + diff
+        elif diff < 0:
+            return -10000 - diff
+        else:
+            return 0
+
+    # Non‑terminal heuristic: strong emphasis on store difference,
+    # a modest weight on total house seeds.
+    store_diff = you[6] - opponent[6]
+    house_diff = sum(you[:6]) - sum(opponent[:6])
+    return store_diff * 100 + house_diff
+
+
+def _simulate_move(you, opponent, move):
+    """
+    Simulate a move from the current player's side.
+    Returns:
+        new_you       – list[int] (length 7)
+        new_opponent  – list[int] (length 7)
+        extra_turn    – bool, true if the last seed landed in own store
+        capture_flag  – bool, true if a capture happened on the last seed
+    """
+    you = list(you)
+    opp = list(opponent)
+
+    seeds = you[move]
+    you[move] = 0
+
+    # Position tracking: side 0 = player, side 1 = opponent.
+    side = 0
+    idx = move
+    extra = False
+    capture = False
+
+    while seeds > 0:
+        # Advance to the next cell.
+        if side == 0:  # player side
+            if idx < 5:
+                idx += 1
+            elif idx == 5:
+                idx = 6  # own store
+            else:  # idx == 6 (own store)
+                side = 1
+                idx = 0  # opponent house 0
+        else:  # opponent side
+            if idx < 5:
+                idx += 1
+            elif idx == 5:
+                # wrap to player's house 0 – opponent store is always skipped
+                side = 0
+                idx = 0
+            else:
+                # Should never occur – opponent store is never visited.
+                pass
+
+        # Place the seed.
+        if side == 0:
+            you[idx] += 1
+        else:
+            opp[idx] += 1
+        seeds -= 1
+
+        # Record extra turn condition as soon as a seed lands in the store.
+        if side == 0 and idx == 6:
+            extra = True
+
+    # Capture rule (only possible if the last seed landed on a player house).
+    if side == 0 and 0 <= idx <= 5:
+        if you[idx] == 1 and opp[5 - idx] > 0:
+            captured = you[idx] + opp[5 - idx]
+            you[idx] = 0
+            opp[5 - idx] = 0
+            you[6] += captured
+            capture = True
+
+    return you, opp, extra, capture
+
+
+def _legal_moves(you):
+    """Return a list of house indices that are non‑empty."""
+    return [i for i, v in enumerate(you) if v > 0]
+
+
+def _order_moves(you, opponent):
+    """
+    Order the legal moves using a cheap heuristic:
+    – capture is best,
+    – extra turn is second,
+    – store gain is third,
+    – fallback to index order.
+    """
+    moves = []
+    for i in _legal_moves(you):
+        new_you, new_opp, extra, capture = _simulate_move(you, opponent, i)
+        store_gain = new_you[6] - you[6]
+        score = (capture * 3) + (extra * 2) + store_gain
+        moves.append((score, i))
+    # Stable sort: if scores are equal, original order (lower index) is kept.
+    moves.sort(key=lambda x: x[0], reverse=True)
+    return [i for _, i in moves]
+
+
+# ----------------------------------------------------------------------
+# Minimax with alpha‑beta pruning
+# ----------------------------------------------------------------------
+
+
+def _search(you, opponent, depth, alpha=-INF, beta=INF):
+    """
+    Alpha‑beta minimax for the player to move.
+    Returns the evaluation score from that player's perspective.
+    """
+    key = (tuple(you), tuple(opponent), depth)
+    if key in _TT:
+        return _TT[key]
+
+    # Leaf nodes or terminal positions.
+    if depth == 0 or _is_terminal(you, opponent):
+        val = _evaluate(you, opponent)
+        _TT[key] = val
+        return val
+
+    # Generate ordered moves (most promising first).
+    best = -INF
+    for move in _order_moves(you, opponent):
+        new_you, new_opp, extra, _ = _simulate_move(you, opponent, move)
+        if extra:
+            # Player keeps the turn.
+            val = _search(new_you, new_opp, depth - 1, alpha, beta)
+        else:
+            # Pass the turn to the opponent.
+            val = _search(new_opp, new_you, depth - 1, alpha, beta)
+
+        if val > best:
+            best = val
+        if best > alpha:
+            alpha = best
+        if beta <= alpha:
+            break
+
+    _TT[key] = best
+    return best
+
+
+# ----------------------------------------------------------------------
+# Public API
+# ----------------------------------------------------------------------
+
+
+def policy(you, opponent):
+    """
+    Choose a legal move for the current player.
+    The board is described by two lists of length 7:
+        [h0, h1, h2, h3, h4, h5, store]
+    Returns an integer i (0..5) where you[i] > 0.
+    """
+    # Simple adaptive depth: deeper search early in the game.
+    total_seeds = sum(you) + sum(opponent)
+    if total_seeds > 80:
+        depth = 5
+    elif total_seeds > 40:
+        depth = 6
+    else:
+        depth = 7
+
+    best_move = None
+    best_val = -INF
+
+    for move in _order_moves(you, opponent):
+        new_you, new_opp, extra, _ = _simulate_move(you, opponent, move)
+        if extra:
+            val = _search(new_you, new_opp, depth - 1)
+        else:
+            val = _search(new_opp, new_you, depth - 1)
+        if val > best_val:
+            best_val = val
+            best_move = move
+
+    # As a safety net (should never be needed under the problem guarantees):
+    if best_move is None:
+        for i, v in enumerate(you):
+            if v > 0:
+                best_move = i
+                break
+    return best_move
+</code>

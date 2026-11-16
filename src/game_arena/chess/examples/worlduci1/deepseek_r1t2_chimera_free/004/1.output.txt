@@ -1,0 +1,298 @@
+
+
+The strategy for this policy is to prioritize checkmate, material gain, and piece activity. It evaluates legal moves by generating all possible moves (including captures, promotions, and basic checks) and scores them based on captured piece value, promotion bonuses, and checks. The highest-scoring move is selected to maximize advantage. Move legality is ensured by verifying that moves do not leave the king in check.
+
+<code>
+import copy
+
+def parse_square(square):
+    file = square[0]
+    rank = square[1:]
+    col = ord(file) - ord('a')
+    row = int(rank) - 1
+    return (row, col)
+
+def to_algebraic(row, col, promotion=None):
+    file = chr(col + ord('a'))
+    rank = row + 1
+    move_str = f"{file}{rank}"
+    if promotion:
+        return move_str + promotion.lower()  # UCI uses lowercase for promotion
+    return move_str
+
+material_values = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}
+
+def is_in_bounds(row, col):
+    return 0 <= row < 8 and 0 <= col < 8
+
+def get_pawn_moves(board, row, col, color):
+    moves = []
+    direction = -1 if color == 'w' else 1
+    start_row = 1 if color == 'w' else 6
+
+    # Single move forward
+    new_row = row + direction
+    if is_in_bounds(new_row, col):
+        if board[new_row][col] is None:
+            # Promotion check
+            if (color == 'w' and new_row == 0) or (color == 'b' and new_row == 7):
+                for promo in ['q', 'r', 'b', 'n']:
+                    moves.append((new_row, col, promo))
+            else:
+                moves.append((new_row, col, None))
+            # Double move from starting row
+            if row == start_row:
+                new_row2 = new_row + direction
+                if is_in_bounds(new_row2, col) and board[new_row2][col] is None:
+                    moves.append((new_row2, col, None))
+
+    # Captures
+    for d_col in [-1, 1]:
+        new_col = col + d_col
+        new_row = row + direction
+        if is_in_bounds(new_row, new_col):
+            target = board[new_row][new_col]
+            if target is not None and target[0] != color:
+                if (color == 'w' and new_row == 0) or (color == 'b' and new_row == 7):
+                    for promo in ['q', 'r', 'b', 'n']:
+                        moves.append((new_row, new_col, promo))
+                else:
+                    moves.append((new_row, new_col, None))
+    return moves
+
+def get_knight_moves(board, row, col, color):
+    moves = []
+    knight_moves = [(-2, -1), (-2, 1), (-1, -2), (-1, 2), (1, -2), (1, 2), (2, -1), (2, 1)]
+    for dr, dc in knight_moves:
+        new_row = row + dr
+        new_col = col + dc
+        if is_in_bounds(new_row, new_col):
+            target = board[new_row][new_col]
+            if target is None or target[0] != color:
+                moves.append((new_row, new_col, None))
+    return moves
+
+def get_king_moves(board, row, col, color):
+    moves = []
+    king_moves = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+    for dr, dc in king_moves:
+        new_row = row + dr
+        new_col = col + dc
+        if is_in_bounds(new_row, new_col):
+            target = board[new_row][new_col]
+            if target is None or target[0] != color:
+                moves.append((new_row, new_col, None))
+    return moves
+
+def get_slider_moves(board, row, col, color, directions):
+    moves = []
+    for dr, dc in directions:
+        r, c = row + dr, col + dc
+        while is_in_bounds(r, c):
+            target = board[r][c]
+            if target is None:
+                moves.append((r, c, None))
+            else:
+                if target[0] != color:
+                    moves.append((r, c, None))
+                break
+            r += dr
+            c += dc
+    return moves
+
+def get_bishop_moves(board, row, col, color):
+    directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+    return get_slider_moves(board, row, col, color, directions)
+
+def get_rook_moves(board, row, col, color):
+    directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    return get_slider_moves(board, row, col, color, directions)
+
+def get_queen_moves(board, row, col, color):
+    return get_bishop_moves(board, row, col, color) + get_rook_moves(board, row, col, color)
+
+def generate_pseudo_legal_moves(board, color):
+    moves = []
+    for row in range(8):
+        for col in range(8):
+            piece = board[row][col]
+            if piece is None or piece[0] != color:
+                continue
+            piece_type = piece[1]
+            if piece_type == 'P':
+                pawn_moves = get_pawn_moves(board, row, col, color)
+                moves.extend([(row, col, new_row, new_col, promo) for (new_row, new_col, promo) in pawn_moves])
+            elif piece_type == 'N':
+                knight_moves = get_knight_moves(board, row, col, color)
+                moves.extend([(row, col, new_row, new_col, None) for (new_row, new_col, _) in knight_moves])
+            elif piece_type == 'B':
+                bishop_moves = get_bishop_moves(board, row, col, color)
+                moves.extend([(row, col, new_row, new_col, None) for (new_row, new_col, _) in bishop_moves])
+            elif piece_type == 'R':
+                rook_moves = get_rook_moves(board, row, col, color)
+                moves.extend([(row, col, new_row, new_col, None) for (new_row, new_col, _) in rook_moves])
+            elif piece_type == 'Q':
+                queen_moves = get_queen_moves(board, row, col, color)
+                moves.extend([(row, col, new_row, new_col, None) for (new_row, new_col, _) in queen_moves])
+            elif piece_type == 'K':
+                king_moves = get_king_moves(board, row, col, color)
+                moves.extend([(row, col, new_row, new_col, None) for (new_row, new_col, _) in king_moves])
+    return moves
+
+def make_move(board, move):
+    start_row, start_col, end_row, end_col, promo = move
+    new_board = copy.deepcopy(board)
+    piece = new_board[start_row][start_col]
+    new_board[end_row][end_col] = piece
+    new_board[start_row][start_col] = None
+    if promo:
+        # Promote pawn to specified piece
+        new_piece = piece[0] + promo.upper()
+        new_board[end_row][end_col] = new_piece
+    return new_board
+
+def find_king(board, color):
+    for row in range(8):
+        for col in range(8):
+            piece = board[row][col]
+            if piece and piece[0] == color and piece[1] == 'K':
+                return (row, col)
+    return None
+
+def is_square_under_attack(board, row, col, attacker_color):
+    # Check knight attacks
+    knight_moves = [(-2, -1), (-2, 1), (-1, -2), (-1, 2), (1, -2), (1, 2), (2, -1), (2, 1)]
+    for dr, dc in knight_moves:
+        r = row + dr
+        c = col + dc
+        if is_in_bounds(r, c):
+            piece = board[r][c]
+            if piece and piece[0] == attacker_color and piece[1] == 'N':
+                return True
+
+    # Check pawn attacks (depend on color)
+    pawn_direction = 1 if attacker_color == 'w' else -1
+    for dc in [-1, 1]:
+        r = row - pawn_direction
+        c = col + dc
+        if is_in_bounds(r, c):
+            piece = board[r][c]
+            if piece and piece[0] == attacker_color and piece[1] == 'P':
+                return True
+
+    # Check sliding attacks (queen, rook, bishop)
+    directions = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
+    for dr, dc in directions:
+        r, c = row + dr, col + dc
+        while is_in_bounds(r, c):
+            piece = board[r][c]
+            if piece:
+                if piece[0] == attacker_color:
+                    if dr == 0 or dc == 0:  # Horizontal/vertical
+                        if piece[1] in ['R', 'Q']:
+                            return True
+                    else:  # Diagonal
+                        if piece[1] in ['B', 'Q']:
+                            return True
+                break
+            r += dr
+            c += dc
+
+    # Check king adjacent (king attacks)
+    king_adj = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+    for dr, dc in king_adj:
+        r = row + dr
+        c = col + dc
+        if is_in_bounds(r, c):
+            piece = board[r][c]
+            if piece and piece[0] == attacker_color and piece[1] == 'K':
+                return True
+
+    return False
+
+def is_king_in_check(board, king_color):
+    king_pos = find_king(board, king_color)
+    if not king_pos:
+        return False
+    attacker_color = 'b' if king_color == 'w' else 'w'
+    return is_square_under_attack(board, king_pos[0], king_pos[1], attacker_color)
+
+def generate_legal_moves(board, color):
+    pseudo_moves = generate_pseudo_legal_moves(board, color)
+    legal_moves = []
+    for move in pseudo_moves:
+        temp_board = make_move(board, move)
+        if not is_king_in_check(temp_board, color):
+            start_row, start_col, end_row, end_col, promotion = move
+            uci_move = to_algebraic(start_row, start_col) + to_algebraic(end_row, end_col)
+            if promotion:
+                uci_move += promotion
+            legal_moves.append(uci_move)
+    return legal_moves
+
+def evaluate_move(board, move, color):
+    # Convert UCI to internal move
+    from_sq = move[:2]
+    to_sq = move[2:4]
+    promo = move[4] if len(move) > 4 else None
+    start_row, start_col = parse_square(from_sq)
+    end_row, end_col = parse_square(to_sq)
+    
+    # Apply move temporarily
+    temp_board = copy.deepcopy(board)
+    piece = temp_board[start_row][start_col]
+    temp_board[end_row][end_col] = piece
+    temp_board[start_row][start_col] = None
+    if promo:
+        piece = piece[0] + promo.upper()
+        temp_board[end_row][end_col] = piece
+    
+    score = 0
+
+    # Material gain from capture
+    target_piece = board[end_row][end_col]
+    if target_piece and target_piece[0] != color:
+        piece_type = target_piece[1]
+        score += material_values[piece_type]
+
+    # Promotion bonus
+    if promo:
+        score += material_values['Q'] - material_values['P']  # Assume promoting to queen is best
+    
+    # Check bonus
+    opponent_color = 'b' if color == 'w' else 'w'
+    opponent_king_pos = find_king(temp_board, opponent_color)
+    if opponent_king_pos and is_square_under_attack(temp_board, opponent_king_pos[0], opponent_king_pos[1], color):
+        score += 1  # Bonus for check
+    
+    # Center control bonus for knights and bishops
+    if piece[1] in ['N', 'B']:
+        center_squares = [(3, 3), (3, 4), (4, 3), (4, 4)]
+        if (end_row, end_col) in center_squares:
+            score += 1
+
+    return score
+
+def policy(pieces, to_play):
+    color = 'w' if to_play == 'white' else 'b'
+    # Convert pieces to board representation
+    board = [[None for _ in range(8)] for _ in range(8)]
+    for square, piece in pieces.items():
+        row, col = parse_square(square)
+        board[row][col] = piece
+    
+    legal_moves = generate_legal_moves(board, color)
+    if not legal_moves:
+        return ''  # No legal moves (should not happen)
+    
+    best_move = None
+    highest_score = -1000
+    
+    for move in legal_moves:
+        score = evaluate_move(board, move, color)
+        if score > highest_score:
+            highest_score = score
+            best_move = move
+    
+    return best_move
+</code>

@@ -1,0 +1,108 @@
+```python
+import numpy as np
+from collections import deque
+import random
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Convert to numpy array for easier manipulation
+    grid = np.array(board)
+    n = len(grid)
+    
+    # Find all unknown cells (0)
+    unknown_cells = np.where(grid == 0)
+    unknown_coords = list(zip(unknown_cells[0], unknown_cells[1]))
+    
+    if not unknown_coords:
+        # This shouldn't happen in a valid game
+        return (0, 0)
+    
+    # Check for existing hits to build a hit chain
+    hits = np.where(grid == 1)
+    hit_coords = list(zip(hits[0], hits[1]))
+    
+    if hit_coords:
+        # Try to extend existing hit chains
+        # First, find all connected components of hits
+        visited = set()
+        for r, c in hit_coords:
+            if (r, c) not in visited:
+                # Find all connected hits (horizontal or vertical)
+                chain = []
+                queue = deque([(r, c)])
+                visited.add((r, c))
+                chain.append((r, c))
+                
+                # BFS to find all connected hits
+                while queue:
+                    cr, cc = queue.popleft()
+                    # Check neighbors
+                    for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                        nr, nc = cr + dr, cc + dc
+                        if (0 <= nr < n and 0 <= nc < n and 
+                            (nr, nc) not in visited and 
+                            grid[nr, nc] == 1):
+                            visited.add((nr, nc))
+                            queue.append((nr, nc))
+                            chain.append((nr, nc))
+                
+                # If we found a chain of length > 1, try to extend it
+                if len(chain) > 1:
+                    # Find the orientation
+                    chain = sorted(chain)
+                    if len(chain) >= 2:
+                        # Check if chain is horizontal or vertical (we already have hits)
+                        if chain[0][0] == chain[-1][0]:  # Horizontal
+                            # Check for possible continuation on left or right
+                            leftmost = (chain[0][0], chain[0][1] - 1)
+                            rightmost = (chain[-1][0], chain[-1][1] + 1)
+                            
+                            # Try to shoot left first if valid
+                            if (0 <= leftmost[1] < n) and grid[leftmost] == 0:
+                                return leftmost
+                            # Try to shoot right if valid
+                            if (0 <= rightmost[1] < n) and grid[rightmost] == 0:
+                                return rightmost
+                        else:  # Vertical
+                            topmost = (chain[0][0] - 1, chain[0][1])
+                            bottommost = (chain[-1][0] + 1, chain[-1][1])
+                            
+                            # Try to shoot above first if valid
+                            if (0 <= topmost[0] < n) and grid[topmost] == 0:
+                                return topmost
+                            # Try to shoot below if valid
+                            if (0 <= bottommost[0] < n) and grid[bottommost] == 0:
+                                return bottommost
+    
+    # If no hits or no extension possible, check for high-value cells
+    # Look for cells adjacent to known hits (to find the direction of the ship)
+    if hit_coords:
+        # For each hit, find adjacent unknown cells
+        potential_targets = set()
+        for r, c in hit_coords:
+            # Check 4 adjacent cells
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < n and 0 <= nc < n and grid[nr, nc] == 0:
+                    potential_targets.add((nr, nc))
+        
+        # Sort potential targets by preference
+        if potential_targets:
+            # Prefer cells that are not on edges (less likely to be ship boundaries)
+            sorted_targets = sorted(potential_targets, 
+                                  key=lambda x: (abs(x[0] - n//2) + abs(x[1] - n//2), 
+                                               not (x[0] in [0, n-1] or x[1] in [0, n-1])))
+            return sorted_targets[0]
+    
+    # If no hits or no adjacent targets, fire at random unknown cell
+    # But prefer center region for better probability
+    center_region = []
+    for r, c in unknown_coords:
+        # Prefer center area 3x3
+        if 3 <= r <= 6 and 3 <= c <= 6:
+            center_region.append((r, c))
+    
+    if center_region:
+        return random.choice(center_region)
+    else:
+        return random.choice(unknown_coords)
+```

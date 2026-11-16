@@ -1,0 +1,187 @@
+<code>
+import numpy as np
+
+def policy(board):
+    """
+    Smart Amazons policy for a 6x6 board.
+    Uses a combination of:
+    - Mobility scoring for each amazon
+    - Arrow placement to maximize opponent's future constraints
+    - Simple minimax with alpha-beta pruning and depth limit
+    """
+    
+    # Constants
+    ROWS, COLS = 6, 6
+    EMPTY = 0
+    OWN_AMAZON = 1
+    OPP_AMAZON = 2
+    ARROW = -1
+    
+    def get_directions():
+        """Return all 8 queen directions."""
+        return [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+    
+    def is_valid(r, c):
+        """Check if position is on board."""
+        return 0 <= r < ROWS and 0 <= c < COLS
+    
+    def get_moves(pos, board_state):
+        """Get all valid queen moves from pos on board_state."""
+        r, c = pos
+        moves = []
+        for dr, dc in get_directions():
+            for dist in range(1, ROWS):
+                nr, nc = r + dr*dist, c + dc*dist
+                if not is_valid(nr, nc):
+                    break
+                if board_state[nr, nc] != EMPTY:
+                    break
+                moves.append((nr, nc))
+        return moves
+    
+    def get_legal_actions(board_state):
+        """Get all legal moves for player 1 (current player)."""
+        actions = []
+        # Find all amazons of player 1
+        amazon_positions = [(r, c) for r in range(ROWS) for c in range(COLS) 
+                           if board_state[r, c] == OWN_AMAZON]
+        
+        for r, c in amazon_positions:
+            # Get possible move destinations
+            move_dests = get_moves((r, c), board_state)
+            for tr, tc in move_dests:
+                # Temporarily move amazon to (tr, tc) to check arrow shots
+                temp_board = board_state.copy()
+                temp_board[r, c] = EMPTY
+                temp_board[tr, tc] = OWN_AMAZON
+                
+                # Get possible arrow shots from (tr, tc)
+                arrow_dests = get_moves((tr, tc), temp_board)
+                for ar, ac in arrow_dests:
+                    actions.append((r, c, tr, tc, ar, ac))
+        return actions
+    
+    def evaluate(board_state):
+        """
+        Heuristic evaluation function.
+        Returns positive if player 1 is advantaged, negative if opponent is advantaged.
+        """
+        # Count mobility for each player
+        p1_moves = 0
+        p2_moves = 0
+        
+        # Player 1 moves
+        p1_amazons = [(r, c) for r in range(ROWS) for c in range(COLS) 
+                     if board_state[r, c] == OWN_AMAZON]
+        for pos in p1_amazons:
+            p1_moves += len(get_moves(pos, board_state))
+        
+        # Player 2 moves
+        p2_amazons = [(r, c) for r in range(ROWS) for c in range(COLS) 
+                     if board_state[r, c] == OPP_AMAZON]
+        for pos in p2_amazons:
+            p2_moves += len(get_moves(pos, board_state))
+        
+        # Basic mobility difference
+        mobility_score = p1_moves - p2_moves
+        
+        # Bonus for blocking opponent's mobility more aggressively
+        # Simple heuristic: prioritize moves that reduce opponent mobility more
+        return mobility_score
+    
+    def apply_action(board_state, action):
+        """Apply action and return new board state."""
+        fr, fc, tr, tc, ar, ac = action
+        new_board = board_state.copy()
+        # Move amazon
+        new_board[fr, fc] = EMPTY
+        new_board[tr, tc] = OWN_AMAZON
+        # Shoot arrow
+        new_board[ar, ac] = ARROW
+        return new_board
+    
+    def minimax(board_state, depth, alpha, beta, is_maximizing):
+        """
+        Minimax with alpha-beta pruning.
+        Depth 2 is usually enough for 6x6 Amazons to look ahead effectively.
+        """
+        # Terminal check: if no moves available, current player loses
+        legal_actions = get_legal_actions(board_state)
+        if len(legal_actions) == 0:
+            if is_maximizing:
+                # If maximizing player has no moves, they lose (return large negative)
+                return -1000
+            else:
+                # If minimizing player has no moves, maximizing player wins
+                return 1000
+        
+        if depth == 0:
+            return evaluate(board_state)
+        
+        if is_maximizing:
+            max_eval = -np.inf
+            for action in legal_actions:
+                new_board = apply_action(board_state, action)
+                eval_score = minimax(new_board, depth - 1, alpha, beta, False)
+                max_eval = max(max_eval, eval_score)
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            # For minimizing player, swap perspective by inverting board state
+            # Temporarily swap 1 and 2 to simulate opponent's turn
+            inverted_board = board_state.copy()
+            inverted_board[inverted_board == OWN_AMAZON] = 999  # temp swap
+            inverted_board[inverted_board == OPP_AMAZON] = OWN_AMAZON
+            inverted_board[inverted_board == 999] = OPP_AMAZON
+            
+            min_eval = np.inf
+            # Get opponent's moves using swapped board
+            opponent_actions = get_legal_actions(inverted_board)
+            for action in opponent_actions:
+                new_inverted_board = apply_action(inverted_board, action)
+                # Swap back for recursive call
+                temp_board = new_inverted_board.copy()
+                temp_board[temp_board == OWN_AMAZON] = 999
+                temp_board[temp_board == OPP_AMAZON] = OWN_AMAZON
+                temp_board[temp_board == 999] = OPP_AMAZON
+                eval_score = minimax(temp_board, depth - 1, alpha, beta, True)
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval
+    
+    # Find all legal actions
+    legal_actions = get_legal_actions(board)
+    
+    if len(legal_actions) == 0:
+        # Should not happen, but return a valid format if forced
+        # Find any amazon and return a format, though it's not a legal move
+        r, c = next((r, c) for r in range(ROWS) for c in range(COLS) if board[r, c] == OWN_AMAZON)
+        return f"{r},{c}:{r},{c}:{r},{c}"
+    
+    # If only one action available, take it (fast path)
+    if len(legal_actions) == 1:
+        fr, fc, tr, tc, ar, ac = legal_actions[0]
+        return f"{fr},{fc}:{tr},{tc}:{ar},{ac}"
+    
+    # Evaluate all actions using minimax
+    best_action = legal_actions[0]
+    best_score = -np.inf
+    
+    # Depth can be adjusted based on complexity/time
+    depth = 2
+    
+    for action in legal_actions:
+        new_board = apply_action(board, action)
+        score = minimax(new_board, depth - 1, -np.inf, np.inf, False)
+        
+        if score > best_score:
+            best_score = score
+            best_action = action
+    
+    fr, fc, tr, tc, ar, ac = best_action
+    return f"{fr},{fc}:{tr},{tc}:{ar},{ac}"
+</code>

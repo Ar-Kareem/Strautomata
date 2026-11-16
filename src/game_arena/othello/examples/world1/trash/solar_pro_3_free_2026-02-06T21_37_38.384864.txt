@@ -1,0 +1,210 @@
+The strategy for this policy is a classic piece‑square‑table (PST) based heuristic that also looks at mobility, stability and corner‑centric bonuses.  
+Key ideas:
+
+* **Piece‑square‑table** – a fixed weight map gives big bonuses for corner squares, medium bonuses for edge squares and modest bonuses for the centre.  
+* **Flips** – the immediate gain of flipping opponent discs is heavily weighted.  
+* **Mobility** – the difference in legal moves after the move (your moves – opponent moves) is added; higher mobility is always better.  
+* **Stability** – stable pairs (adjacent discs of the same colour) are counted and favour moves that increase them.  
+* **Corner bonuses** – extra points are added for any move that places a disc in a corner or that captures an opponent corner disc.  
+* **Pass handling** – if the opponent has already no legal moves we return `"pass"`; otherwise we always pick a legal move.
+
+The policy first checks whether any corner move exists – those are prioritised because corners are worth a lot. If none are available it evaluates every legal move using the weighted formula and returns the move with the highest score. All calculations are done with NumPy and stay well under the 1‑second time limit.
+
+<code>
+import numpy as np
+import random
+
+# 8 possible directions (orthogonal + diagonal)
+DIRS = [(-1, -1), (-1, 0), (-1, 1),
+        (0, -1),           (0, 1),
+        (1, -1),  (1, 0),  (1, 1)]
+
+# Piece‑square‑table weights.
+# Corners (4) are worth a lot, edge‑near‑corners (8) moderate, all other squares a small value.
+WEIGHTS = np.array([
+    [100,  10,   5,   5,   5,   5,  10, 100],
+    [ 10,   0,   0,   0,   0,   0,   0,  10],
+    [  5,   0,   0,   0,   0,   0,   0,   5],
+    [  5,   0,   0,   0,   0,   0,   0,   5],
+    [  5,   0,   0,   0,   0,   0,   0,   5],
+    [  5,   0,   0,   0,   0,   0,   0,   5],
+    [ 10,   0,   0,   0,   0,   0,   0,  10],
+    [100,  10,   5,   5,   5,   5,  10, 100]
+], dtype=int)
+
+# Extra bonuses for corner‑related actions
+CORNER_PLACEMENT_BONUS = 30
+CORNER_CAPTURE_BONUS   = 15
+
+# Stability – we count adjacent discs of the same colour
+STABILITY_WEIGHT = 2
+
+# Mobility – difference in legal move counts after the move
+MOBILITY_WEIGHT = 3
+
+# Helper: convert separate disc arrays into a combined board where you = 1, opponent = –1
+def board_from(you: np.ndarray, opponent: np.ndarray) -> np.ndarray:
+    """Return a 8×8 integer board with 1 for your discs and –1 for opponent discs."""
+    board = np.zeros((8, 8), dtype=int)
+    board[you == 1] = 1
+    board[opponent == 1] = -1
+    return board
+
+# Helper: opposite conversion
+def board_to(board: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Split a combined board back into separate you/opponent arrays."""
+    you = np.zeros((8, 8), dtype=int)
+    opponent = np.zeros((8, 8), dtype=int)
+    you[board == 1] = 1
+    opponent[board == -1] = 1
+    return you, opponent
+
+# Apply a move to the board and return the flipped opponent‑cell list
+def apply_move(board: np.ndarray, r: int, c: int) -> tuple[np.ndarray, list[tuple[int, int]]]:
+    """Place a disc of value 1 at (r,c) and flip captured opponent discs.
+    Returns the new board and the list of (row, col) positions that changed."""
+    new_board = board.copy()
+    new_board[r][c] = 1
+    flips: list[tuple[int, int]] = []
+
+    for dr, dc in DIRS:
+        step = 1
+        while True:
+            rr = r + dr * step
+            cc = c + dc * step
+            if not (0 <= rr < 8 and 0 <= cc < 8):
+                break
+            val = new_board[rr][cc]
+            if val == 0:            # empty – stop scanning this direction
+                break
+            if val == 1:            # we reached our own disc – capture
+                if flips:
+                    # flip the captured opponent pieces
+                    for fr, fc in flips:
+                        new_board[fr][fc] = 1
+                break
+            else:                  # val == -1 – opponent disc
+                flips.append((rr, cc))
+                step += 1
+    return new_board, flips
+
+# Legal moves (empty cell that flips at least one opponent disc)
+def legal_moves(board: np.ndarray) -> list[tuple[int, int, list[tuple[int, int]]]]:
+    """Return a list of (row, col, flips) for every legal move."""
+    moves = []
+    you, opponent = board_to(board)
+
+    # Check every empty cell
+    for r in range(8):
+        for c in range(8):
+            if you[r][c] != 0 or opponent[r][c] != 0:
+                continue                # cell is not empty
+            new_board, flips = apply_move(board, r, c)
+            if flips:                   # at least one disc flipped
+                moves.append((r, c, flips))
+    return moves
+
+# Stability – count stable pairs (adjacent same‑colour discs)
+def stable_pairs(you: np.ndarray) -> int:
+    """Return the number of stable pairs for a given player (you)."""
+    total = 0
+    for r in range(8):
+        for c in range(8):
+            if you[r][c] == 0:
+                continue
+            for dr, dc in DIRS:
+                if you[r + dr][c + dc] == 1:
+                    total += 1
+    # each pair counted twice → divide by two
+    return total // 2
+
+# Legal‑move count (mobility) – used after a hypothetical move
+def mobility_diff(you: np.ndarray, opponent: np.ndarray) -> int:
+    """Return (your legal moves – opponent legal moves)."""
+    return len(legal_moves(board_from(you, opponent))) - len(legal_moves(board_from(opponent, you)))
+
+# Convert algebraic notation to a board cell (row, col)
+def algebraic_to_coord(move: str) -> tuple[int, int]:
+    """‘a1’ → (0, 0), ‘d5’ → (4, 3) etc."""
+    file = move[0].lower()
+    rank = int(move[1])
+    col = ord(file) - ord('a')
+    row = rank - 1
+    return row, col
+
+# Convert (row, col) back to algebraic notation
+def coord_to_algebraic(row: int, col: int) -> str:
+    return f"{chr(ord('a') + col)}{row + 1}"
+
+# Main policy – always returns a legal move or "pass"
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    """Choose the next move for the player whose discs are stored in `you`."""
+    board = board_from(you, opponent)
+
+    # 1️⃣  Prioritise any legal move into a corner
+    corner_moves = []
+    corners = [(0, 0), (0, 7), (7, 0), (7, 7)]
+    for (r, c) in corners:
+        if board[r][c] != 0:       # corner already occupied – try to capture it
+            new_board, flips = apply_move(board, r, c)
+            if flips:               # you can capture that corner piece
+                corner_moves.append((r, c, flips))
+        else:                      # empty corner – simple legality test
+            new_board, flips = apply_move(board, r, c)
+            if flips:
+                corner_moves.append((r, c, flips))
+
+    if corner_moves:
+        # pick the corner move with the most flips (still legal)
+        best = max(corner_moves, key=lambda x: (len(x[2]), np.sum(WEIGHTS * apply_move(board_from(you, opponent), x[0], x[1])[0][x[2]]))
+        return coord_to_algebraic(*best[:2])
+
+    # 2️⃣  Evaluate all legal moves
+    all_moves = legal_moves(board)                # list of (row, col, flips)
+    if not all_moves:                            # no legal move → pass
+        return "pass"
+
+    # Heuristic components
+    def eval_move(move):
+        r, c, flips = move
+        new_board, _ = apply_move(board_from(you, opponent), r, c)
+
+        #  • Net PST value
+        net = np.sum(WEIGHTS * new_board)
+
+        #  • Direct flip count (very important early)
+        flips_score = len(flips)
+
+        #  • Mobility difference after the move
+        my_new, opp_new = board_to(new_board)
+        mob_diff = mobility_diff(my_new, opp_new)
+
+        #  • Stability increase (stable pairs – weighted small)
+        stab_my = stable_pairs(my_new)
+        stab_opp = stable_pairs(opponent)
+        stab_score = stab_my - stab_opp
+
+        #  • Corner bonuses
+        corner_bonus = 0
+        if (r, c) in corners:
+            corner_bonus += CORNER_PLACEMENT_BONUS
+        if any((rr, cc) in corners for rr, cc in flips):
+            corner_bonus += CORNER_CAPTURE_BONUS
+
+        return (
+            net + MOBILITY_WEIGHT * mob_diff + STABILITY_WEIGHT * stab_score
+            + FLIPS_WEIGHT * flips_score + corner_bonus,
+            flips_score,
+            mob_diff,
+            stab_score,
+            corner_bonus
+        )
+
+    # Sort by primary score, then by tie‑breakers
+    best_move = max(all_moves, key=eval_move)
+
+    # In an extremely unlikely tie (all scores identical) we break randomness
+    # to avoid deterministic loops – still guaranteed legal.
+    # To keep the function pure‑deterministic we simply pick the first.
+    return coord_to_algebraic(*best_move[:2])
+</code>

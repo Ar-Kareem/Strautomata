@@ -1,0 +1,397 @@
+
+import numpy as np
+from typing import List, Tuple, Set
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], valid_mask) -> Tuple[int, int]:
+    """
+    Strategic Havannah policy that evaluates moves based on multiple criteria:
+    1. Immediate win detection
+    2. Blocking opponent wins
+    3. Creating winning threats
+    4. Positional value (center, edges, corners)
+    5. Connectivity and board control
+    """
+    
+    # Convert to sets for efficient lookup
+    my_stones = set(me)
+    opponent_stones = set(opp)
+    board_size = len(valid_mask)
+    
+    # Create board representation: 0=empty, 1=me, 2=opp
+    board = np.zeros((board_size, board_size), dtype=int)
+    for r, c in my_stones:
+        board[r][c] = 1
+    for r, c in opponent_stones:
+        board[r][c] = 2
+    
+    # Helper function for hexagonal neighbors
+    def get_neighbors(r: int, c: int) -> List[Tuple[int, int]]:
+        """Get all valid neighboring coordinates in hexagonal grid"""
+        # Hex directions: up-left, up-right, left, right, down-left, down-right
+        # Due to board layout, neighbors depend on column parity
+        if c % 2 == 0:  # Even column
+            directions = [(-1, -1), (-1, 0), (0, -1), (0, 1), (1, -1), (1, 0)]
+        else:  # Odd column
+            directions = [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, 0), (1, 1)]
+        
+        neighbors = []
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < board_size and 0 <= nc < board_size:
+                neighbors.append((nr, nc))
+        return neighbors
+    
+    def is_on_edge(r: int, c: int) -> bool:
+        """Check if position is on any board edge"""
+        return r == 0 or r == board_size - 1 or c == 0 or c == board_size - 1
+    
+    def is_corner(r: int, c: int) -> bool:
+        """Check if position is a corner cell"""
+        return (r == 0 and c == 0) or \
+               (r == 0 and c == board_size - 1) or \
+               (r == board_size - 1 and c == 0) or \
+               (r == board_size - 1 and c == board_size - 1)
+    
+    def get_edge_side(r: int, c: int) -> int:
+        """
+        Get which edge side a position belongs to:
+        0=top, 1=right, 2=bottom, 3=left, -1=none (corner or not on edge)
+        """
+        if r == 0 and c > 0 and c < board_size - 1:
+            return 0  # Top edge
+        elif c == board_size - 1 and r > 0 and r < board_size - 1:
+            return 1  # Right edge
+        elif r == board_size - 1 and c > 0 and c < board_size - 1:
+            return 2  # Bottom edge
+        elif c == 0 and r > 0 and r < board_size - 1:
+            return 3  # Left edge
+        else:
+            return -1  # Corner or not on edge
+    
+    def get_corners() -> List[Tuple[int, int]]:
+        """Get the six corner cells of the hexagonal board"""
+        return [(0, 0), (0, board_size - 1), 
+                (board_size // 2, 0), (board_size // 2, board_size - 1),
+                (board_size - 1, 0), (board_size - 1, board_size - 1)]
+    
+    def count_my_connected(r: int, c: int, my_board: np.ndarray, visited: Set[Tuple[int, int]]) -> int:
+        """Count connected stones of same color using flood fill"""
+        if (r, c) in visited or my_board[r][c] != 1:
+            return 0
+        
+        visited.add((r, c))
+        count = 1
+        for nr, nc in get_neighbors(r, c):
+            count += count_my_connected(nr, nc, my_board, visited)
+        return count
+    
+    def check_win_after_move(move_r: int, move_c: int, player: int) -> bool:
+        """Check if placing a stone at (move_r, move_c) results in a win for player"""
+        # Temporarily place stone
+        board_copy = board.copy()
+        board_copy[move_r][move_c] = player
+        
+        # Create temporary board for connectivity check
+        temp_board = np.zeros((board_size, board_size), dtype=int)
+        for r in range(board_size):
+            for c in range(board_size):
+                if board_copy[r][c] == player:
+                    temp_board[r][c] = 1
+        
+        # Check for ring
+        if check_ring(temp_board, move_r, move_c, player):
+            return True
+        
+        # Check for bridge
+        if check_bridge(temp_board, player):
+            return True
+        
+        # Check for fork
+        if check_fork(temp_board, player):
+            return True
+        
+        return False
+    
+    def check_ring(board_state: np.ndarray, start_r: int, start_c: int, player: int) -> bool:
+        """Check if there's a ring around the start position"""
+        # Use flood fill to find connected component size
+        visited = set()
+        component = set()
+        
+        def flood_fill(r: int, c: int):
+            if (r, c) in visited or board_state[r][c] != 1:
+                return
+            visited.add((r, c))
+            component.add((r, c))
+            for nr, nc in get_neighbors(r, c):
+                flood_fill(nr, nc)
+        
+        flood_fill(start_r, start_c)
+        
+        # Check if this component forms a cycle (ring)
+        # A ring exists if component has more than 3 stones and encloses at least one empty cell
+        if len(component) < 4:
+            return False
+        
+        # Simple ring check: see if any empty cell is surrounded by player's stones
+        # by checking if removing this cell would disconnect the board
+        empty_cells = [(r, c) for r in range(board_size) for c in range(board_size) 
+                      if board_state[r][c] == 0]
+        
+        for empty_r, empty_c in empty_cells[:50]:  # Limit search
+            if is_surrounded_by_player(empty_r, empty_c, board_state, player):
+                return True
+        
+        return False
+    
+    def is_surrounded_by_player(r: int, c: int, board_state: np.ndarray, player: int) -> bool:
+        """Check if an empty cell is completely surrounded by player's stones"""
+        neighbors = get_neighbors(r, c)
+        if len(neighbors) < 6:  # On edge, can't be surrounded
+            return False
+        
+        for nr, nc in neighbors:
+            if board_state[nr][nc] != 1:
+                return False
+        return True
+    
+    def check_bridge(board_state: np.ndarray, player: int) -> bool:
+        """Check if player has connected two corners with a bridge"""
+        corners = get_corners()
+        corner_stones = [corner for corner in corners if board_state[corner[0]][corner[1]] == 1]
+        
+        if len(corner_stones) < 2:
+            return False
+        
+        # Check if any two corner stones are connected
+        for i in range(len(corner_stones)):
+            for j in range(i + 1, len(corner_stones)):
+                if are_connected(corner_stones[i], corner_stones[j], board_state, player):
+                    return True
+        return False
+    
+    def are_connected(start: Tuple[int, int], end: Tuple[int, int], board_state: np.ndarray, player: int) -> bool:
+        """Check if two positions are connected by player's stones"""
+        if board_state[start[0]][start[1]] != 1 or board_state[end[0]][end[1]] != 1:
+            return False
+        
+        visited = set()
+        queue = [start]
+        visited.add(start)
+        
+        while queue:
+            current = queue.pop(0)
+            if current == end:
+                return True
+            
+            for nr, nc in get_neighbors(current[0], current[1]):
+                if (nr, nc) not in visited and board_state[nr][nc] == 1:
+                    visited.add((nr, nc))
+                    queue.append((nr, nc))
+        return False
+    
+    def check_fork(board_state: np.ndarray, player: int) -> bool:
+        """Check if player has connected three different edges"""
+        edge_contacts = set()
+        
+        # Find all edge positions controlled by player
+        for r in range(board_size):
+            for c in range(board_size):
+                if board_state[r][c] == 1 and is_on_edge(r, c):
+                    edge = get_edge_side(r, c)
+                    if edge >= 0:
+                        edge_contacts.add(edge)
+        
+        # Need at least 3 different edges
+        return len(edge_contacts) >= 3
+    
+    def get_positional_value(r: int, c: int) -> float:
+        """Calculate strategic value of a position"""
+        value = 0.0
+        
+        # Center control (most valuable)
+        center = board_size // 2
+        distance_from_center = abs(r - center) + abs(c - center)
+        value += (board_size - distance_from_center) * 2.0
+        
+        # Edge value (good for forks and bridges)
+        if is_on_edge(r, c) and not is_corner(r, c):
+            value += 1.5
+        
+        # Corner value (good for bridges)
+        if is_corner(r, c):
+            value += 2.0
+        
+        # Proximity to existing stones (connectivity)
+        neighbors = get_neighbors(r, c)
+        my_neighbor_count = sum(1 for nr, nc in neighbors if board[nr][nc] == 1)
+        opp_neighbor_count = sum(1 for nr, nc in neighbors if board[nr][nc] == 2)
+        
+        value += my_neighbor_count * 0.5  # Connectivity bonus
+        value += opp_neighbor_count * 0.3  # Proximity to opponent (for blocking)
+        
+        return value
+    
+    def generate_candidate_moves() -> List[Tuple[int, int]]:
+        """Generate promising candidate moves"""
+        candidates = set()
+        
+        # Get all valid moves
+        valid_moves = [(r, c) for r in range(board_size) for c in range(board_size) 
+                      if valid_mask[r][c] and board[r][c] == 0]
+        
+        if not valid_moves:
+            return []
+        
+        # Priority 1: Neighbors of existing stones (most promising)
+        for r, c in my_stones | opponent_stones:
+            for nr, nc in get_neighbors(r, c):
+                if 0 <= nr < board_size and 0 <= nc < board_size and valid_mask[nr][nc] and board[nr][nc] == 0:
+                    candidates.add((nr, nc))
+        
+        # Priority 2: Strategic center positions
+        center = board_size // 2
+        for dr in range(-2, 3):
+            for dc in range(-2, 3):
+                nr, nc = center + dr, center + dc
+                if 0 <= nr < board_size and 0 <= nc < board_size and valid_mask[nr][nc] and board[nr][nc] == 0:
+                    candidates.add((nr, nc))
+        
+        # Priority 3: Edge and corner positions
+        for r, c in valid_moves:
+            if is_on_edge(r, c):
+                candidates.add((r, c))
+        
+        # If we have too many candidates, filter to best ones
+        if len(candidates) > 30:
+            scored = [(pos, get_positional_value(pos[0], pos[1])) for pos in candidates]
+            scored.sort(key=lambda x: -x[1])
+            candidates = set(pos for pos, _ in scored[:30])
+        
+        return list(candidates)
+    
+    def get_opponent_threatening_moves() -> List[Tuple[int, int]]:
+        """Find moves that would win for opponent"""
+        threats = []
+        for r in range(board_size):
+            for c in range(board_size):
+                if valid_mask[r][c] and board[r][c] == 0:
+                    if check_win_after_move(r, c, 2):  # If opponent plays here
+                        threats.append((r, c))
+        return threats
+    
+    def get_my_winning_moves() -> List[Tuple[int, int]]:
+        """Find moves that would win for me"""
+        wins = []
+        for r in range(board_size):
+            for c in range(board_size):
+                if valid_mask[r][c] and board[r][c] == 0:
+                    if check_win_after_move(r, c, 1):  # If I play here
+                        wins.append((r, c))
+        return wins
+    
+    def evaluate_move(r: int, c: int) -> float:
+        """Comprehensive evaluation of a move"""
+        score = 0.0
+        
+        # Immediate win check (highest priority)
+        if check_win_after_move(r, c, 1):
+            return 1000.0
+        
+        # Block opponent win (very high priority)
+        if check_win_after_move(r, c, 2):
+            score += 500.0
+        
+        # Strategic positional value
+        score += get_positional_value(r, c)
+        
+        # Threat creation: does this move set up a future win?
+        # Simulate placing stone and check for new threats
+        board[r][c] = 1
+        potential_wins = 0
+        for nr, nc in get_neighbors(r, c):
+            if board[nr][nc] == 0:
+                if check_win_after_move(nr, nc, 1):
+                    potential_wins += 1
+        board[r][c] = 0  # Undo
+        
+        score += potential_wins * 10.0
+        
+        # Connectivity improvement
+        neighbors = get_neighbors(r, c)
+        my_connected_components = 0
+        opp_connected_components = 0
+        
+        for nr, nc in neighbors:
+            if board[nr][nc] == 1:
+                my_connected_components += 1
+            elif board[nr][nc] == 2:
+                opp_connected_components += 1
+        
+        # Bonus for connecting my stones
+        if my_connected_components >= 2:
+            score += 5.0
+        
+        # Bonus for disrupting opponent connectivity
+        if opp_connected_components >= 2:
+            score += 3.0
+        
+        # Edge advancement for fork potential
+        if is_on_edge(r, c):
+            edge = get_edge_side(r, c)
+            score += 2.0  # Contributing to edge control
+        
+        # Corner proximity for bridge potential
+        if is_corner(r, c):
+            score += 3.0
+        
+        # Move ordering bias toward center
+        center = board_size // 2
+        if abs(r - center) <= 3 and abs(c - center) <= 3:
+            score += 1.0
+        
+        # Random small factor to break ties and add variety
+        score += np.random.random() * 0.5
+        
+        return score
+    
+    # Main decision logic
+    # 1. Check for immediate winning moves
+    winning_moves = get_my_winning_moves()
+    if winning_moves:
+        # Choose the winning move with best strategic value
+        best_move = max(winning_moves, key=lambda m: get_positional_value(m[0], m[1]))
+        return best_move
+    
+    # 2. Check for opponent winning moves that need blocking
+    opponent_threats = get_opponent_threatening_moves()
+    if opponent_threats:
+        # Block the most threatening move
+        best_block = max(opponent_threats, key=lambda m: get_positional_value(m[0], m[1]))
+        return best_block
+    
+    # 3. Generate and evaluate candidate moves
+    candidates = generate_candidate_moves()
+    
+    if not candidates:
+        # Fallback to any valid move
+        for r in range(board_size):
+            for c in range(board_size):
+                if valid_mask[r][c] and board[r][c] == 0:
+                    return (r, c)
+    
+    # Evaluate and choose best candidate
+    best_move = None
+    best_score = float('-inf')
+    
+    for r, c in candidates:
+        score = evaluate_move(r, c)
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+    
+    if best_move:
+        return best_move
+    
+    # Final fallback
+    return candidates[0]

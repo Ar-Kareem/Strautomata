@@ -1,0 +1,110 @@
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    me_set = set(me)
+    opp_set = set(opponent)
+    
+    empty_points = []
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if (r, c) not in me_set and (r, c) not in opp_set:
+                empty_points.append((r, c))
+    
+    def is_valid(r, c):
+        if (r, c) in me_set or (r, c) in opp_set:
+            return False
+        new_me = me_set | {(r, c)}
+        opp_groups_to_capture = []
+        
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if (nr, nc) in opp_set:
+                group, liberties = find_opponent_group_and_liberties((nr, nc), opp_set, new_me)
+                if not liberties:
+                    opp_groups_to_capture.append(group)
+        
+        effective_opp = opp_set.copy()
+        for group in opp_groups_to_capture:
+            effective_opp -= group
+        
+        # Check if new_me's group has any liberties
+        visited = set()
+        queue = [(r, c)]
+        visited.add((r, c))
+        while queue:
+            curr_r, curr_c = queue.pop(0)
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nr, nc = curr_r + dr, curr_c + dc
+                if (nr, nc) in new_me and (nr, nc) not in visited:
+                    visited.add((nr, nc))
+                    queue.append((nr, nc))
+        
+        # Compute liberties for the new group
+        liberties = set()
+        for (gr, gc) in visited:
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nr, nc = gr + dr, gc + dc
+                if 1 <= nr <= 19 and 1 <= nc <= 19:
+                    if (nr, nc) not in new_me and (nr, nc) not in effective_opp:
+                        liberties.add((nr, nc))
+        
+        if liberties:
+            return True
+        else:
+            return len(opp_groups_to_capture) > 0
+    
+    def find_opponent_group_and_liberties(start, opp_set, new_me):
+        group = set()
+        queue = [start]
+        visited = set()
+        while queue:
+            curr = queue.pop(0)
+            if curr in visited:
+                continue
+            visited.add(curr)
+            group.add(curr)
+            r, c = curr
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nr, nc = r + dr, c + dc
+                if (nr, nc) in opp_set and (nr, nc) not in visited:
+                    queue.append((nr, nc))
+        # Compute liberties, considering new_me and effective_opp
+        liberties = set()
+        for (gr, gc) in group:
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nr, nc = gr + dr, gc + dc
+                if (nr, nc) not in opp_set and (nr, nc) not in new_me:
+                    if 1 <= nr <= 19 and 1 <= nc <= 19:
+                        liberties.add((nr, nc))
+        return group, liberties
+    
+    # Generate all legal moves
+    legal_moves = []
+    for r, c in empty_points:
+        if is_valid(r, c):
+            legal_moves.append((r, c))
+    
+    if not legal_moves:
+        return ((0, 0), {})
+    
+    # Evaluate candidates
+    candidates = []
+    for r, c in legal_moves:
+        captured_count = 0
+        new_me = me_set | {(r, c)}
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if (nr, nc) in opp_set:
+                group, liberties = find_opponent_group_and_liberties((nr, nc), opp_set, new_me)
+                if not liberties:
+                    captured_count += len(group)
+        adjacent_same = 0
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if (nr, nc) in me_set:
+                adjacent_same += 1
+        candidates.append((-captured_count, -adjacent_same, (r, c)))
+    
+    # Sort candidates
+    candidates.sort()
+    best_move = candidates[0][2]
+    return (best_move, {})

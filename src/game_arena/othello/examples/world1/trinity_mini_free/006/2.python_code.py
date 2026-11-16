@@ -1,0 +1,120 @@
+
+import numpy as np
+
+def generate_moves(you, opponent):
+    moves = []
+    for r in range(8):
+        for c in range(8):
+            if you[r][c] == 0 and opponent[r][c] == 0:
+                if is_legal_move(you, opponent, r, c):
+                    moves.append((r, c))
+    return moves
+
+def is_legal_move(you, opponent, r, c):
+    directions = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+    for dx, dy in directions:
+        current_r = r + dx
+        current_c = c + dy
+        count = 0
+        valid = False
+        while 0 <= current_r < 8 and 0 <= current_c < 8:
+            if opponent[current_r][current_c] == 1:
+                count += 1
+                current_r += dx
+                current_c += dy
+            elif you[current_r][current_c] == 1:
+                if count > 0:
+                    valid = True
+                break
+            else:
+                break
+        if valid:
+            return True
+    return False
+
+def simulate_move(you, opponent, move):
+    r, c = move
+    new_you = np.copy(you)
+    new_opponent = np.copy(opponent)
+    new_you[r][c] = 1
+    directions = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+    for dx, dy in directions:
+        current_r = r + dx
+        current_c = c + dy
+        count = 0
+        valid = False
+        while 0 <= current_r < 8 and 0 <= current_c < 8:
+            if opponent[current_r][current_c] == 1:
+                count += 1
+                current_r += dx
+                current_c += dy
+            elif new_you[current_r][current_c] == 1:
+                if count > 0:
+                    valid = True
+                break
+            else:
+                break
+        if valid:
+            current_r = r + dx
+            current_c = c + dy
+            while 0 <= current_r < 8 and 0 <= current_c < 8:
+                if opponent[current_r][current_c] == 1:
+                    new_you[current_r][current_c] = 1
+                    current_r += dx
+                    current_c += dy
+                elif new_you[current_r][current_c] == 1:
+                    break
+                else:
+                    break
+    return new_you, new_opponent
+
+def evaluate(you, opponent):
+    disc_count = np.sum(you) - np.sum(opponent)
+    your_moves = generate_moves(you, opponent)
+    opp_moves = generate_moves(opponent, you)
+    mobility = len(your_moves) - len(opp_moves)
+    corners = [(0,0), (0,7), (7,0), (7,7)]
+    corner_count = 0
+    for (r, c) in corners:
+        if you[r][c] == 1:
+            corner_count += 1
+    return disc_count + 0.5 * mobility + 12 * corner_count
+
+def minimax(you, opponent, depth, alpha, beta, is_maximizing):
+    moves = generate_moves(you, opponent) if is_maximizing else generate_moves(opponent, you)
+    if not moves or depth == 0:
+        return evaluate(you, opponent), None
+
+    if is_maximizing:
+        max_eval = -float('inf')
+        best_move = None
+        for move in moves:
+            new_you, new_opponent = simulate_move(you, opponent, move)
+            eval, _ = minimax(new_you, new_opponent, depth-1, alpha, beta, False)
+            if eval > max_eval:
+                max_eval = eval
+                best_move = move
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break
+        return max_eval, best_move
+    else:
+        min_eval = float('inf')
+        best_move = None
+        for move in moves:
+            new_opponent, new_you = simulate_move(opponent, you, move)
+            eval, _ = minimax(new_you, new_opponent, depth-1, alpha, beta, True)
+            if eval < min_eval:
+                min_eval = eval
+                best_move = move
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break
+        return min_eval, best_move
+
+def policy(you, opponent):
+    moves = generate_moves(you, opponent)
+    if not moves:
+        return "pass"
+    best_move, _ = minimax(you, opponent, 2, -float('inf'), float('inf'), True)
+    return f"{chr(best_move[1] + 97)}{best_move[0] + 1}"

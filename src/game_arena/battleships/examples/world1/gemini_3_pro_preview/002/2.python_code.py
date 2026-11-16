@@ -1,0 +1,119 @@
+
+import numpy as np
+import random
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Battleship targeting policy based on a Probability Density Function (PDF).
+    It calculates the likelihood of each cell containing a ship based on:
+      1. Placing all remaining ship types in all valid positions.
+      2. Weighting positions significantly higher if they overlap existing hits.
+      3. Using a checkerboard parity mask in 'Hunt Mode' to optimize search efficiency.
+    """
+    rows, cols = 10, 10
+    # Standard Battleship fleet sizes
+    ship_lengths = [5, 4, 3, 3, 2]
+    
+    # Initialize probability grid
+    # We will accumulate weights here.
+    prob_grid = np.zeros((rows, cols), dtype=float)
+    
+    # 1. Build Probability Density Function
+    # Iterate over every ship length and every possible position
+    for length in ship_lengths:
+        # -- Horizontal Placements --
+        for r in range(rows):
+            for c in range(cols - length + 1):
+                # Get the board segment for this potential ship
+                segment = board[r][c : c + length]
+                
+                # Check for Misses (-1). If valid, a ship CANNOT be here.
+                if -1 in segment:
+                    continue
+                
+                # Count Hits (1) in this segment
+                hits = segment.count(1)
+                
+                # Determine Weight
+                # Base weight for a valid spot is 1.0
+                # If the placement covers existing hits, it is much more likely/valuable.
+                weight = 1.0
+                if hits > 0:
+                    # Boost weight exponentially based on number of hits covered.
+                    # This naturally switches the bot to 'Target Mode'.
+                    # A placement covering 3 hits is far more likely than one covering 1.
+                    weight = 100.0 + (100.0 * (hits ** 2))
+                
+                # Add weight to all UNKNOWN (0) cells in this configuration
+                # We do not add weight to already hit/miss cells.
+                for i, val in enumerate(segment):
+                    if val == 0:
+                        prob_grid[r, c + i] += weight
+                        
+        # -- Vertical Placements --
+        for c in range(cols):
+            for r in range(rows - length + 1):
+                # Construct segment manually for vertical
+                segment = [board[r + k][c] for k in range(length)]
+                
+                if -1 in segment:
+                    continue
+                
+                hits = segment.count(1)
+                
+                weight = 1.0
+                if hits > 0:
+                    weight = 100.0 + (100.0 * (hits ** 2))
+                    
+                for i, val in enumerate(segment):
+                    if val == 0:
+                        prob_grid[r + i, c] += weight
+
+    # 2. Filter Invalid Targets
+    # Set probability of known cells (Miss -1, Hit 1) to -1.0 so they aren't picked
+    for r in range(rows):
+        for c in range(cols):
+            if board[r][c] != 0:
+                prob_grid[r, c] = -1.0
+
+    # 3. Hunt Mode Optimization (Parity)
+    # If the maximum probability on the board is low, it indicates we don't have
+    # strong "Target Mode" candidates (i.e., we are searching for a new ship).
+    # In this case, restrict search to a checkerboard pattern (parity) to ensure
+    # we find ships (sized >= 2) with minimal shots.
+    
+    max_score = np.max(prob_grid)
+    
+    # Threshold 50.0 implies no placement used the hit-bonus (min bonus ~200).
+    if max_score > 0 and max_score < 50.0:
+        indices = np.indices((rows, cols))
+        # Parity Mask: (row + col) is even
+        parity_mask = (indices[0] + indices[1]) % 2 == 0
+        
+        masked_grid = prob_grid.copy()
+        # Zero out probabilities on odd parity cells
+        masked_grid[~parity_mask] = -1.0
+        
+        # Only use the masked grid if valid moves remain
+        if np.max(masked_grid) > 0:
+            prob_grid = masked_grid
+
+    # Filters applied. Re-evaluate max score.
+    best_score = np.max(prob_grid)
+    
+    # 4. Selection
+    if best_score <= 0:
+        # Fallback: Pick any random available cell (should theoretically not be reached)
+        candidates = [(r, c) for r in range(rows) for c in range(cols) if board[r][c] == 0]
+        if not candidates:
+            return (0, 0)
+        choice = candidates[random.randint(0, len(candidates) - 1)]
+        return choice
+    
+    # Identify all cells sharing the best score
+    candidates = np.argwhere(prob_grid == best_score)
+    
+    # Break ties randomly
+    choice = candidates[random.randint(0, len(candidates) - 1)]
+    
+    return int(choice[0]), int(choice[1])

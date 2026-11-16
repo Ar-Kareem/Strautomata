@@ -1,0 +1,148 @@
+
+def policy(board: list[list[int]]) -> int:
+    # Convert board to list of lists if it's not already
+    if not isinstance(board, list):
+        board = [list(row) for row in board]
+    
+    # Find all legal moves (not confirmed as ours)
+    legal_moves = []
+    for i in range(3):
+        for j in range(3):
+            if board[i][j] != 1:
+                legal_moves.append((i, j))
+    
+    # If no legal moves, return first position (should not happen)
+    if not legal_moves:
+        return (0, 0)
+    
+    # Check for winning moves
+    for move in legal_moves:
+        if is_winning_move(board, move, 1):
+            return move
+    
+    # Check for blocking moves (opponent might win)
+    for move in legal_moves:
+        if is_winning_move(board, move, 0):
+            return move
+    
+    # Positional strategy: center > corners > edges
+    center = (1, 1)
+    corners = [(0, 0), (0, 2), (2, 0), (2, 2)]
+    edges = [(0, 1), (1, 0), (1, 2), (2, 1)]
+    
+    # Prefer center
+    if center in legal_moves:
+        return center
+    
+    # Prefer corners
+    for corner in corners:
+        if corner in legal_moves:
+            return corner
+    
+    # Take any legal move (prefer edges last)
+    for edge in edges:
+        if edge in legal_moves:
+            return edge
+    
+    # Fallback to first legal move
+    return legal_moves[0]
+
+def is_winning_move(board, move, player_id):
+    """Check if placing a mark at move would create a winning condition for player_id"""
+    row, col = move
+    
+    # Create a test board
+    test_board = [list(r) for r in board]
+    test_board[row][col] = 1  # Assume our move succeeds
+    
+    # Check rows
+    if all(test_board[row][c] == 1 for c in range(3) if (row, c) != move or test_board[row][c] == 1):
+        # But we need to be careful - if we're checking our own winning condition,
+        # we should verify that the other positions are either confirmed ours or unknown
+        row_winning = True
+        for c in range(3):
+            if (row, c) != move:
+                if player_id == 1:
+                    if board[row][c] == 0:  # Unknown cell
+                        continue
+                    elif board[row][c] == 1:  # Confirmed ours
+                        continue
+                    else:  # Should not happen
+                        row_winning = False
+                        break
+        if row_winning and player_id == 1:
+            return True
+    
+    # Check columns
+    if all(test_board[r][col] == 1 for r in range(3) if (r, col) != move or test_board[r][col] == 1):
+        col_winning = True
+        for r in range(3):
+            if (r, col) != move:
+                if player_id == 1:
+                    if board[r][col] == 0:  # Unknown cell
+                        continue
+                    elif board[r][col] == 1:  # Confirmed ours
+                        continue
+                    else:  # Should not happen
+                        col_winning = False
+                        break
+        if col_winning and player_id == 1:
+            return True
+    
+    # Check diagonals if applicable
+    if row == col:  # Main diagonal
+        diag_winning = True
+        for i in range(3):
+            if (i, i) != move:
+                if player_id == 1:
+                    if board[i][i] == 0:  # Unknown cell
+                        continue
+                    elif board[i][i] == 1:  # Confirmed ours
+                        continue
+                    else:  # Should not happen
+                        diag_winning = False
+                        break
+        if diag_winning and player_id == 1:
+            return True
+    
+    if row + col == 2:  # Anti-diagonal
+        anti_diag_winning = True
+        for i in range(3):
+            if (i, 2-i) != move:
+                if player_id == 1:
+                    if board[i][2-i] == 0:  # Unknown cell
+                        continue
+                    elif board[i][2-i] == 1:  # Confirmed ours
+                        continue
+                    else:  # Should not happen
+                        anti_diag_winning = False
+                        break
+        if anti_diag_winning and player_id == 1:
+            return True
+    
+    # Simplified check for opponent blocking - if this position makes a line of unknowns+potentially theirs
+    # This is complex in phantom TT, so let's use a heuristic:
+    # If we're checking for opponent, we want to block lines that are nearly complete with 0s
+    if player_id == 0:
+        # Check row
+        row_count = sum(1 for c in range(3) if board[row][c] == 0)
+        if row_count >= 2 and board[row][col] != 1:
+            return True
+            
+        # Check column
+        col_count = sum(1 for r in range(3) if board[r][col] == 0)
+        if col_count >= 2 and board[row][col] != 1:
+            return True
+            
+        # Check diagonals
+        if row == col:
+            diag_count = sum(1 for i in range(3) if board[i][i] == 0)
+            if diag_count >= 2 and board[row][col] != 1:
+                return True
+                
+        if row + col == 2:
+            anti_count = sum(1 for i in range(3) if board[i][2-i] == 0)
+            if anti_count >= 2 and board[row][col] != 1:
+                return True
+    
+    return False

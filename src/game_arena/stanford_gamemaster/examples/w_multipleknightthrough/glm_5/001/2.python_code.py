@@ -1,0 +1,119 @@
+
+def policy(state: list[list[object]], role: str) -> str:
+    cells = {}
+    played_boards = set()
+    
+    for prop in state:
+        if prop[0] == "cell":
+            cells[(prop[1], prop[2], prop[3])] = prop[4]
+        elif prop[0] == "played":
+            played_boards.add(prop[1])
+    
+    col_to_idx = {'a': 0, 'b': 1, 'c': 2, 'd': 3}
+    idx_to_col = {0: 'a', 1: 'b', 2: 'c', 3: 'd'}
+    
+    my_color = role
+    enemy_color = 'black' if role == 'white' else 'white'
+    
+    if role == 'white':
+        my_moves = [(-2, 1), (2, 1), (-1, 2), (1, 2)]
+        enemy_moves = [(-2, -1), (2, -1), (-1, -2), (1, -2)]
+    else:
+        my_moves = [(-2, -1), (2, -1), (-1, -2), (1, -2)]
+        enemy_moves = [(-2, 1), (2, 1), (-1, 2), (1, 2)]
+    
+    my_winning_row = 8 if role == 'white' else 1
+    enemy_winning_row = 8 if enemy_color == 'white' else 1
+    
+    # Find enemy pieces threatening to win on board b
+    threatening = set()
+    for (board, col, row), color in cells.items():
+        if color != enemy_color or board != 'b':
+            continue
+        col_idx = col_to_idx[col]
+        row_idx = int(row)
+        for dc, dr in enemy_moves:
+            nc, nr = col_idx + dc, row_idx + dr
+            if 0 <= nc <= 3 and nr == enemy_winning_row:
+                threatening.add((board, col, row))
+                break
+    
+    # Generate legal moves
+    all_moves, unplayed_moves = [], []
+    
+    for (board, col, row), color in cells.items():
+        if color != my_color:
+            continue
+        
+        col_idx = col_to_idx[col]
+        row_idx = int(row)
+        
+        for dc, dr in my_moves:
+            nc, nr = col_idx + dc, row_idx + dr
+            if not (0 <= nc <= 3 and 1 <= nr <= 8):
+                continue
+            
+            new_col = idx_to_col[nc]
+            dest = (board, new_col, str(nr))
+            
+            if cells.get(dest) == my_color:
+                continue
+            
+            move_info = {
+                'str': f"move({board},{col},{row},{new_col},{nr})",
+                'board': board,
+                'from_row': row_idx,
+                'to_row': nr,
+                'to_col': new_col,
+                'to_col_idx': nc,
+                'dest': dest
+            }
+            all_moves.append(move_info)
+            if board not in played_boards:
+                unplayed_moves.append(move_info)
+    
+    legal_moves = unplayed_moves if unplayed_moves else all_moves
+    
+    if not legal_moves:
+        return "noop"
+    
+    def evaluate(m):
+        # Immediate win on board b
+        if m['board'] == 'b' and m['to_row'] == my_winning_row:
+            return 1_000_000
+        
+        score = 0
+        
+        # Capture threatening enemy piece
+        if m['dest'] in threatening:
+            score += 500_000
+        
+        # Board b priority
+        if m['board'] == 'b':
+            score += 1000
+        
+        # Progress toward goal
+        if role == 'white':
+            score += m['to_row'] * 50
+            if m['to_row'] >= 6:
+                score += (m['to_row'] - 5) * 200
+        else:
+            score += (9 - m['to_row']) * 50
+            if m['to_row'] <= 3:
+                score += (6 - m['to_row']) * 200
+        
+        # Captures
+        if cells.get(m['dest']) == enemy_color:
+            score += 300
+            if role == 'white' and m['to_row'] >= 5:
+                score += 200
+            elif role == 'black' and m['to_row'] <= 4:
+                score += 200
+        
+        # Central columns have more mobility
+        if m['to_col_idx'] in [1, 2]:
+            score += 10
+        
+        return score
+    
+    return max(legal_moves, key=evaluate)['str']

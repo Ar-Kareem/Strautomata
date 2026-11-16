@@ -1,0 +1,263 @@
+**Strategy Overview**
+
+The policy follows a simple but effective hierarchy of tactical priorities:
+
+1. **Capture** – if an opponent group has a single liberty, play there (capturing the group).  
+   The move that captures the most stones is chosen first.
+
+2. **Defend** – if one of our own groups has a single liberty, play there to keep it alive.  
+   Moves that also capture opponent stones are preferred (they receive a higher score).
+
+3. **Expand** – otherwise play on an empty point that is adjacent to at least one of our stones.  
+   Among those points we favour the one with the most own neighbours (it extends our territory).
+
+4. **Fallback** – if none of the above are possible, any legal empty point is tried.  
+   If no legal move exists the player passes `(0,0)`.
+
+All moves are checked for legality: a move that would leave our own stones with zero liberties (self‑capture) is rejected, and a simple Ko rule prohibits recreating the board position that existed just before the opponent’s last move.  
+The previous board position is stored in the supplied `memory` dictionary under the key `prev_board` and is used only for Ko detection.
+
+The implementation uses BFS to find connected groups and their liberties, which is fast enough for a 19×19 board within the 1 s limit.
+
+---
+
+<code>
+def policy(me, opponent, memory):
+    """
+    Return a legal move for a 19×19 Go board.
+    The strategy (in order of priority):
+      1. Capture any opponent group with a single liberty.
+      2. Defend any of our groups that have a single liberty
+         (prefer moves that also capture opponent stones).
+      3. Expand by playing next to one of our stones.
+      4. Pass if no legal move is available.
+    Ko‑avoidance is implemented by remembering the board after our last move.
+    """
+    BOARD_SIZE = 19
+    # neighbor offsets
+    offsets = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+
+    def neighbors(coord):
+        r, c = coord
+        for dr, dc in offsets:
+            nr, nc = r + dr, c + dc
+            if 1 <= nr <= BOARD_SIZE and 1 <= nc <= BOARD_SIZE:
+                yield (nr, nc)
+
+    # ------------------------------------------------------------------ #
+    # 1.  Basic board representation
+    # ------------------------------------------------------------------ #
+    my_set = set(me)
+    opp_set = set(opponent)
+
+    # all board points and the currently empty points
+    board_points = {(r, c) for r in range(1, BOARD_SIZE + 1) for c in range(1, BOARD_SIZE + 1)}
+    empty_set = board_points - my_set - opp_set
+
+    # previous board (used only for Ko detection)
+    prev_board = memory.get('prev_board')          # tuple (my_frozenset, opp_frozenset) or None
+
+    # ------------------------------------------------------------------ #
+    # 2.  Helpers: groups, liberties, legality
+    # ------------------------------------------------------------------ #
+    def compute_groups(stones):
+        """return list of groups (set of coordinates) and a stone→group index mapping"""
+        visited = set()
+        groups = []
+        stone_to_group = {}
+        for s in stones:
+            if s in visited:
+                continue
+            stack = [s]
+            group = set()
+            while stack:
+                cur = stack.pop()
+                if cur in visited:
+                    continue
+                visited.add(cur)
+                group.add(cur)
+                for nb in neighbors(cur):
+                    if nb in stones and nb not in visited:
+                        stack.append(nb)
+            idx = len(groups)
+            groups.append(group)
+            for g_stone in group:
+                stone_to_group[g_stone] = idx
+        return groups, stone_to_group
+
+    # groups for each colour
+    my_groups, _ = compute_groups(my_set)
+    opp_groups, _ = compute_groups(opp_set)
+
+    # liberties for each group
+    occupied = my_set | opp_set
+
+    my_liberties = []
+    for g in my_groups:
+        libs = set()
+        for s in g:
+            for nb in neighbors(s):
+                if nb not in occupied:
+                    libs.add(nb)
+        my_liberties.append(libs)
+
+    opp_liberties = []
+    for g in opp_groups:
+        libs = set()
+            for s in g:
+                for nb in neighbors(s):
+                    if nb not in occupied:
+                        libs.add(nb)
+        opp_liberties.append(libs)
+
+    # map each empty point to the groups that consider it a liberty
+    liberty_to_my_groups = {}
+    for i, libs in enumerate(my_liberties):
+        for lib in libs:
+            liberty_to_my_groups.setdefault(lib, []).append(i)
+
+    liberty_to_opp_groups = {}
+    for i, libs in enumerate(opp_liberties):
+        for lib in libs:
+            liberty_to_opp_groups.setdefault(lib, []).append(i)
+
+    # ------------------------------------------------------------------ #
+    # 3.  Legality test (self‑capture & simple Ko)
+    # ------------------------------------------------------------------ #
+    def is_legal(move):
+        """return True iff playing at *move* is legal."""
+        if move not in empty_set:
+            return False
+
+        # opponent groups that would be captured
+        captured_opp_ids = [gid for gid in liberty_to_opp_groups.get(move, [])
+                            if len(opp_liberties[gid]) == 1]
+        captured_stones = set()
+        for gid in captured_opp_ids:
+            captured_stones.update(opp_groups[gid])
+
+        # board after the move
+        new_my = my_set.union({move})
+        new_opp = opp_set.difference(captured_stones)
+
+        # empty points after the move (captured stones become empty, except the played point)
+        new_empty = empty_set.difference({move}).union(captured_stones)
+
+        # group that the new stone belongs to after the move
+        group = set()
+        stack = [move]
+        visited = set()
+        while stack:
+            cur = stack.pop()
+            if cur in visited:
+                continue
+            visited.add(cur)
+            group.add(cur)
+            for nb in neighbors(cur):
+                if nb in new_my and nb not in visited:
+                    stack.append(nb)
+
+        # liberties of that group in the new position
+        libs = set()
+        for s in group:
+            for nb in neighbors(s):
+                if nb in new_empty:
+                    libs.add(nb)
+
+        # self‑capture: if we captured nothing and the new group has no liberties → illegal
+        if not captured_opp_ids and not libs:
+            return False
+
+        # Ko: we may not recreate the board that existed just before the opponent's last move
+        if prev_board is not None:
+            if frozenset(new_my) == prev_board[0] and frozenset(new_opp) == prev_board[1]:
+                return False
+        return True
+
+    # ------------------------------------------------------------------ #
+    # 4.  Move selection
+    # ------------------------------------------------------------------ #
+    sorted_empty = sorted(empty_set)          # deterministic order
+
+    # ---- a) capture opponent groups with a single liberty ----
+    capture_moves = {}
+    for pt in sorted_empty:
+        cand = [gid for gid in liberty_to_opp_groups.get(pt, [])
+                if len(opp_liberties[gid]) == 1]
+        if cand:
+            capture_moves[pt] = sum(len(opp_groups[gid]) for gid in cand)
+
+    for pt, _ in sorted(capture_moves.items(), key=lambda x: -x[1]):
+        if is_legal(pt):
+            # apply the capture
+            captured = [gid for gid in liberty_to_opp_groups.get(pt, [])
+                        if len(opp_liberties[gid]) == 1]
+            captured_stones = set()
+            for gid in captured:
+                captured_stones.update(opp_groups[gid])
+            new_my = my_set.union({pt})
+            new_opp = opp_set.difference(captured_stones)
+            memory['prev_board'] = (frozenset(new_my), frozenset(new_opp))
+            return (pt, memory)
+
+    # ---- b) defend own groups with a single liberty (prefer moves that also capture) ----
+    defence_moves = {}
+    for pt in sorted_empty:
+        own_atari = [gid for gid in liberty_to_my_groups.get(pt, [])
+                     if len(my_liberties[gid]) == 1]
+        opp_atari = [gid for gid in liberty_to_opp_groups.get(pt, [])
+                     if len(opp_liberties[gid]) == 1]
+        if own_atari or opp_atari:
+            # score: captures count 10×, defence counts 1×
+            score = len(opp_atari) * 10 + len(own_atari)
+            defence_moves[pt] = score
+
+    for pt, _ in sorted(defence_moves.items(), key=lambda x: -x[1]):
+        if is_legal(pt):
+            captured = [gid for gid in liberty_to_opp_groups.get(pt, [])
+                        if len(opp_liberties[gid]) == 1]
+            captured_stones = set()
+            for gid in captured:
+                captured_stones.update(opp_groups[gid])
+            new_my = my_set.union({pt})
+            new_opp = opp_set.difference(captured_stones)
+            memory['prev_board'] = (frozenset(new_my), frozenset(new_opp))
+            return (pt, memory)
+
+    # ---- c) expand – play next to one of our stones ----
+    expansion = {}
+    for pt in sorted_empty:
+        if any(nb in my_set for nb in neighbors(pt)):
+            if is_legal(pt):
+                weight = sum(1 for nb in neighbors(pt) if nb in my_set)
+                expansion[pt] = weight
+
+    if expansion:
+        pt = max(expansion.keys(), key=lambda p: expansion[p])
+        captured = [gid for gid in liberty_to_opp_groups.get(pt, [])
+                    if len(opp_liberties[gid]) == 1]
+        captured_stones = set()
+        for gid in captured:
+            captured_stones.update(opp_groups[gid])
+        new_my = my_set.union({pt})
+        new_opp = opp_set.difference(captured_stones)
+        memory['prev_board'] = (frozenset(new_my), frozenset(new_opp))
+        return (pt, memory)
+
+    # ---- d) any legal empty point ----
+    for pt in sorted_empty:
+        if is_legal(pt):
+            captured = [gid for gid in liberty_to_opp_groups.get(pt, [])
+                        if len(opp_liberties[gid]) == 1]
+            captured_stones = set()
+            for gid in captured:
+                captured_stones.update(opp_groups[gid])
+            new_my = my_set.union({pt})
+            new_opp = opp_set.difference(captured_stones)
+            memory['prev_board'] = (frozenset(new_my), frozenset(new_opp))
+            return (pt, memory)
+
+    # ---- e) pass ----
+    memory['prev_board'] = (frozenset(my_set), frozenset(opp_set))
+    return ((0, 0), memory)
+</code>

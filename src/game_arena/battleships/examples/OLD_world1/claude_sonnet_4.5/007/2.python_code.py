@@ -1,0 +1,180 @@
+
+import random
+from typing import Optional
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Advanced Battleship targeting policy that combines:
+    1. Hunt mode: probabilistic targeting based on ship placement constraints
+    2. Target mode: focused firing around hits to sink ships
+    """
+    
+    # Ship lengths still to sink
+    ship_lengths = [5, 4, 3, 3, 2]
+    
+    # Find all hits and determine which ships might be sunk
+    hits = []
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1:
+                hits.append((r, c))
+    
+    # Try to find unsunk ships (hits that aren't part of a complete ship)
+    unsunk_hits = find_unsunk_hits(board, hits)
+    
+    # TARGET MODE: If we have unsunk hits, focus fire around them
+    if unsunk_hits:
+        target = get_target_mode_shot(board, unsunk_hits)
+        if target:
+            return target
+    
+    # HUNT MODE: Use probability density to find best shot
+    return get_hunt_mode_shot(board, ship_lengths)
+
+
+def find_unsunk_hits(board: list[list[int]], hits: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Find hits that are likely part of unsunk ships."""
+    if not hits:
+        return []
+    
+    unsunk = []
+    for r, c in hits:
+        # Check if this hit has at least one adjacent unknown cell
+        # or is part of an incomplete ship
+        has_unknown_neighbor = False
+        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 10 and 0 <= nc < 10:
+                if board[nr][nc] == 0:
+                    has_unknown_neighbor = True
+                    break
+        
+        if has_unknown_neighbor:
+            unsunk.append((r, c))
+    
+    return unsunk
+
+
+def get_target_mode_shot(board: list[list[int]], unsunk_hits: list[tuple[int, int]]) -> Optional[tuple[int, int]]:
+    """
+    When we have hits, try to sink the ship by firing at adjacent cells.
+    Prioritize cells that could complete a line of hits.
+    """
+    candidates = []
+    
+    for r, c in unsunk_hits:
+        # Check all 4 directions
+        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                priority = calculate_target_priority(board, nr, nc, unsunk_hits)
+                candidates.append((priority, nr, nc))
+    
+    if candidates:
+        candidates.sort(reverse=True)
+        return (candidates[0][1], candidates[0][2])
+    
+    return None
+
+
+def calculate_target_priority(board: list[list[int]], r: int, c: int, unsunk_hits: list[tuple[int, int]]) -> int:
+    """Calculate priority for a target cell based on surrounding hits."""
+    priority = 0
+    
+    # Check if this cell is in line with multiple hits (likely part of same ship)
+    for dr, dc in [(0, 1), (1, 0)]:  # horizontal and vertical
+        hits_in_line = 0
+        # Check both directions
+        for direction in [1, -1]:
+            dist = 1
+            while True:
+                nr = r + dr * dist * direction
+                nc = c + dc * dist * direction
+                if 0 <= nr < 10 and 0 <= nc < 10:
+                    if board[nr][nc] == 1:
+                        hits_in_line += 1
+                        dist += 1
+                    elif board[nr][nc] == -1:
+                        break
+                    else:
+                        break
+                else:
+                    break
+        
+        priority += hits_in_line * 10
+    
+    # Bonus for being adjacent to a hit
+    for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 1:
+            priority += 5
+    
+    return priority
+
+
+def get_hunt_mode_shot(board: list[list[int]], ship_lengths: list[int]) -> tuple[int, int]:
+    """
+    Use probability density based on possible ship placements.
+    """
+    # Create probability map
+    prob_map = [[0.0 for _ in range(10)] for _ in range(10)]
+    
+    # For each ship length, count how many ways it can be placed through each cell
+    for ship_len in ship_lengths:
+        # Horizontal placements
+        for r in range(10):
+            for c in range(10 - ship_len + 1):
+                if can_place_ship_horizontal(board, r, c, ship_len):
+                    for i in range(ship_len):
+                        prob_map[r][c + i] += 1
+        
+        # Vertical placements
+        for r in range(10 - ship_len + 1):
+            for c in range(10):
+                if can_place_ship_vertical(board, r, c, ship_len):
+                    for i in range(ship_len):
+                        prob_map[r + i][c] += 1
+    
+    # Find cell with highest probability that hasn't been fired at
+    best_cells = []
+    max_prob = -1
+    
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0:
+                # Add parity bonus for checkerboard pattern (useful early game)
+                bonus = 0.1 if (r + c) % 2 == 0 else 0
+                total_prob = prob_map[r][c] + bonus
+                
+                if total_prob > max_prob:
+                    max_prob = total_prob
+                    best_cells = [(r, c)]
+                elif total_prob == max_prob:
+                    best_cells.append((r, c))
+    
+    if best_cells:
+        return random.choice(best_cells)
+    
+    # Fallback: return first unknown cell
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0:
+                return (r, c)
+    
+    return (0, 0)
+
+
+def can_place_ship_horizontal(board: list[list[int]], r: int, c: int, length: int) -> bool:
+    """Check if a ship of given length can be placed horizontally at (r, c)."""
+    for i in range(length):
+        if board[r][c + i] == -1:  # Hit a miss, can't place here
+            return False
+    return True
+
+
+def can_place_ship_vertical(board: list[list[int]], r: int, c: int, length: int) -> bool:
+    """Check if a ship of given length can be placed vertically at (r, c)."""
+    for i in range(length):
+        if board[r + i][c] == -1:  # Hit a miss, can't place here
+            return False
+    return True

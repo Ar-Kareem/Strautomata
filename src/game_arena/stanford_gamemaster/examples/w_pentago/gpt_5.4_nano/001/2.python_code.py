@@ -1,0 +1,264 @@
+
+import re
+from typing import List, Tuple, Optional
+
+# Pentago: 6x6 board, 4 quadrants (1..4). Each move:
+# place(q?) actually place(r,c,color) then rotate(quadrant,clockwise/counterclockwise)
+
+N = 6
+
+def _parse_state(state: List[List[object]]):
+    board = [[None for _ in range(N)] for _ in range(N)]
+    role_color = None
+    phase = None
+    for fact in state:
+        if not fact:
+            continue
+        if fact[0] == "phase":
+            phase = fact[1]
+        elif fact[0] == "control":
+            # current side to act
+            role_color = fact[1]
+        elif fact[0] == "cellholds":
+            # ["cellholds", row, col, color]
+            # row and col are 1-indexed in propositions per examples
+            r = int(fact[1]) - 1
+            c = int(fact[2]) - 1
+            color = fact[4]
+            board[r][c] = color
+    return board, phase, role_color
+
+def _in_bounds(r,c):
+    return 0 <= r < N and 0 <= c < N
+
+def _get_quadrant_indices(q: int):
+    # quadrants: typical mapping:
+    # 1: rows 0-2, cols 0-2
+    # 2: rows 0-2, cols 3-5
+    # 3: rows 3-5, cols 0-2
+    # 4: rows 3-5, cols 3-5
+    if q == 1:
+        rs, cs = (0,3), (0,3)
+    elif q == 2:
+        rs, cs = (0,3), (3,6)
+    elif q == 3:
+        rs, cs = (3,6), (0,3)
+    elif q == 4:
+        rs, cs = (3,6), (3,6)
+    else:
+        raise ValueError("bad quadrant")
+    coords = []
+    for r in range(rs[0], rs[1]):
+        for c in range(cs[0], cs[1]):
+            coords.append((r,c))
+    return rs, cs, coords
+
+def _rotate_board(board, q: int, clockwise: bool):
+    # returns new board after rotating quadrant q by 90 degrees
+    nb = [row[:] for row in board]
+    rs, cs, _ = _get_quadrant_indices(q)
+    # extract 3x3
+    sub = [[nb[r][c] for c in range(cs[0], cs[1])] for r in range(rs[0], rs[1])]
+    # rotate
+    if clockwise:
+        rot = [[sub[2-j][i] for j in range(3)] for i in range(3)]
+    else:
+        rot = [[sub[j][2-i] for j in range(3)] for i in range(3)]
+    # write back
+    for i in range(3):
+        for j in range(3):
+            nb[rs[0]+i][cs[0]+j] = rot[i][j]
+    return nb
+
+def _lines_of_5():
+    lines = []
+    # horizontal
+    for r in range(N):
+        for c0 in range(N-4):
+            lines.append([(r, c0+k) for k in range(5)])
+    # vertical
+    for c in range(N):
+        for r0 in range(N-4):
+            lines.append([(r0+k, c) for k in range(5)])
+    # diag down-right
+    for r0 in range(N-4):
+        for c0 in range(N-4):
+            lines.append([(r0+k, c0+k) for k in range(5)])
+    # diag up-right
+    for r0 in range(4, N):
+        for c0 in range(N-4):
+            lines.append([(r0-k, c0+k) for k in range(5)])
+    return lines
+
+LINES5 = _lines_of_5()
+
+def _check_win(board, color: str) -> bool:
+    for line in LINES5:
+        ok = True
+        for r,c in line:
+            if board[r][c] != color:
+                ok = False
+                break
+        if ok:
+            return True
+    return False
+
+def _heuristic(board, me: str, opp: str) -> int:
+    # Score lines windows of 5 based on counts (ignore mixed lines)
+    score = 0
+    for line in LINES5:
+        cnt_me = 0
+        cnt_opp = 0
+        empties = 0
+        for r,c in line:
+            v = board[r][c]
+            if v == me:
+                cnt_me += 1
+            elif v == opp:
+                cnt_opp += 1
+            else:
+                empties += 1
+        if cnt_me > 0 and cnt_opp > 0:
+            continue
+        if cnt_me == 5:
+            return 10_000_000
+        if cnt_opp == 5:
+            return -10_000_000
+        # prefer advancing my lines; heavily penalize opponent progress
+        if cnt_me > 0:
+            if cnt_me == 4 and empties == 1:
+                score += 5000
+            elif cnt_me == 3 and empties == 2:
+                score += 800
+            elif cnt_me == 2 and empties == 3:
+                score += 120
+            elif cnt_me == 1 and empties == 4:
+                score += 20
+        if cnt_opp > 0:
+            if cnt_opp == 4 and empties == 1:
+                score -= 6000
+            elif cnt_opp == 3 and empties == 2:
+                score -= 900
+            elif cnt_opp == 2 and empties == 3:
+                score -= 140
+            elif cnt_opp == 1 and empties == 4:
+                score -= 25
+    # center preference
+    center_coords = [(2,2),(2,3),(3,2),(3,3)]
+    for r,c in center_coords:
+        if board[r][c] == me:
+            score += 30
+        elif board[r][c] == opp:
+            score -= 30
+    # small empty mobility bonus
+    score += sum(1 for r in range(N) for c in range(N) if board[r][c] is None) * 1
+    return score
+
+def _legal_place_moves(board):
+    moves = []
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] is None:
+                moves.append((r,c))
+    return moves
+
+def _choose_place(board, me, opp):
+    empties = _legal_place_moves(board)
+    best_move = None
+    best_score = -10**18
+
+    # 1) winning move
+    for r,c in empties:
+        nb = [row[:] for row in board]
+        nb[r][c] = me
+        # after placing, there is always a rotation afterwards by the same turn,
+        # so a strict win after placement might be followed/altered by rotation.
+        # But rules allow win before or after rotation in move => win immediately is enough.
+        if _check_win(nb, me):
+            return (r,c)
+    # 2) block opponent immediate win after their prior board? We can't see their placement,
+    # but we can block current opponent already having 4 in a row that could become 5 by rotation.
+    # We approximate by checking if placing here prevents opponent from having immediate win
+    # either now (unlikely) or after our required rotation.
+    # Since rotation choice comes next, we'll score overall by considering best rotation after placement.
+    for r,c in empties:
+        nb = [row[:] for row in board]
+        nb[r][c] = me
+        # choose best rotation for us after this placement
+        best_after_place = -10**18
+        for q in (1,2,3,4):
+            for cw in (True, False):
+                rb = _rotate_board(nb, q, cw)
+                if _check_win(rb, me):
+                    sc = 10_000_000
+                else:
+                    # big penalty if opponent would win in their next rotation? too hard.
+                    # Instead, evaluate who is closer to win right now on board after our rotation.
+                    sc = _heuristic(rb, me, opp)
+                if sc > best_after_place:
+                    best_after_place = sc
+        # also: if this move stops opponent from having an immediate 5 after our move,
+        # reflect with heuristic already.
+        if best_after_place > best_score:
+            best_score = best_after_place
+            best_move = (r,c)
+
+    # 3) fallback: center-ish among empties with max heuristic after best rotation
+    if best_move is None:
+        best = None
+        best_score = -10**18
+        for r,c in empties:
+            nb = [row[:] for row in board]
+            nb[r][c] = me
+            rb = nb
+            sc = _heuristic(rb, me, opp)
+            if sc > best_score:
+                best_score = sc
+                best = (r,c)
+        best_move = best
+    return best_move
+
+def _choose_rotate(board, me, opp):
+    # in rotate phase: must rotate one quadrant cw or ccw
+    best_action = None
+    best_score = -10**18
+
+    # 1) immediate win
+    for q in (1,2,3,4):
+        for cw in (True, False):
+            rb = _rotate_board(board, q, cw)
+            if _check_win(rb, me):
+                return (q, cw)
+
+    # 2) block: avoid giving opponent win
+    # (approx) choose rotation that maximizes heuristic for us and minimizes opponent.
+    for q in (1,2,3,4):
+        for cw in (True, False):
+            rb = _rotate_board(board, q, cw)
+            if _check_win(rb, opp):
+                sc = -10_000_000
+            else:
+                sc = _heuristic(rb, me, opp)
+            if sc > best_score:
+                best_score = sc
+                best_action = (q, cw)
+    if best_action is None:
+        best_action = (1, True)
+    return best_action
+
+def policy(state: list[list[object]], role: str) -> str:
+    board, phase, control_color = _parse_state(state)
+    me = role
+    opp = "black" if me == "red" else "red"
+
+    # Sometimes state might not include control/phase; infer phase by presence of cellholds vs rotate?
+    if phase is None:
+        # crude inference: if any "phase","rotate" in state set; else place.
+        phase = "rotate" if any(f and f[0]=="phase" and f[1]=="rotate" for f in state) else "place"
+
+    if phase == "place":
+        r,c = _choose_place(board, me, opp)
+        return f"place({r+1},{c+1},{me})"
+    else:
+        q, cw = _choose_rotate(board, me, opp)
+        return f"rotate({q},{'clockwise' if cw else 'counterclockwise'})"

@@ -1,0 +1,188 @@
+
+import random
+import numpy as np
+from collections import defaultdict
+import time
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    # Convert to 0-indexed for internal processing
+    me = [(r-1, c-1) for r, c in me]
+    opponent = [(r-1, c-1) for r, c in opponent]
+    
+    # Initialize board state
+    board_size = 19
+    board = np.zeros((board_size, board_size), dtype=int)
+    for r, c in me:
+        board[r, c] = 1
+    for r, c in opponent:
+        board[r, c] = -1
+    
+    # Check for pass condition
+    if len(me) + len(opponent) < 3:
+        # Early game, play in center or nearby
+        center = (9, 9)
+        if board[center] == 0:
+            return ((center[0]+1, center[1]+1), memory)
+        # Find an empty nearby spot
+        for dr in [-1, 0, 1]:
+            for dc in [-1, 0, 1]:
+                r, c = center[0] + dr, center[1] + dc
+                if 0 <= r < board_size and 0 <= c < board_size and board[r, c] == 0:
+                    return ((r+1, c+1), memory)
+    
+    # MCTS implementation with tactical evaluation
+    def get_liberties(stones):
+        """Get liberties for given stones"""
+        liberties = set()
+        for r, c in stones:
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < board_size and 0 <= nc < board_size and board[nr, nc] == 0:
+                    liberties.add((nr, nc))
+        return liberties
+    
+    def get_group(r, c):
+        """Get connected group of stones"""
+        if board[r, c] == 0:
+            return set()
+        color = board[r, c]
+        group = set()
+        queue = [(r, c)]
+        visited = set()
+        
+        while queue:
+            pos = queue.pop(0)
+            if pos in visited:
+                continue
+            visited.add(pos)
+            if board[pos] != color:
+                continue
+            group.add(pos)
+            
+            # Add neighbors
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nr, nc = pos[0] + dr, pos[1] + dc
+                if 0 <= nr < board_size and 0 <= nc < board_size:
+                    if (nr, nc) not in visited and board[nr, nc] == color:
+                        queue.append((nr, nc))
+        
+        return group
+    
+    def evaluate_position(board_state, move):
+        """Simple tactical evaluation"""
+        r, c = move
+        if board_state[r, c] != 0:
+            return -1000  # Illegal move
+            
+        # Check for atari (1 liberty)
+        score = 0
+        color = 1 if not memory.get('is_black', True) else -1
+        opponent_color = -color
+        
+        # Test the move
+        new_board = board_state.copy()
+        new_board[r, c] = color
+        
+        # Check if opponent gets atari
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < board_size and 0 <= nc < board_size and new_board[nr, nc] == opponent_color:
+                group = get_group(nr, nc)
+                liberties = get_liberties(group)
+                if len(liberties) == 1:
+                    score += 50  # Atari potential
+                    
+        # Prefer center and 4-4 points in early game
+        center_dist = abs(r - 9) + abs(c - 9)
+        if center_dist <= 3:
+            score += 100 - center_dist * 10
+        
+        # Prefer corners in opening
+        if (r in [0, 18] and c in [0, 18]):
+            score += 50
+            
+        # Prefer edge positions
+        if r == 0 or r == 18 or c == 0 or c == 18:
+            score += 20
+            
+        return score
+    
+    # Simple MCTS for the first few moves, then tactical + territory
+    if len(me) + len(opponent) < 10:
+        # Easy pattern recognition approach for early game
+        candidates = []
+        # Generate candidates around existing stones
+        for r, c in me + opponent:
+            for dr in [-2, -1, 0, 1, 2]:
+                for dc in [-2, -1, 0, 1, 2]:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < board_size and 0 <= nc < board_size and board[nr, nc] == 0:
+                        candidates.append((nr, nc))
+        
+        if not candidates:
+            return ((9+1, 9+1), memory)  # Default center
+            
+        # Sort by evaluation
+        candidates = sorted(candidates, key=lambda x: evaluate_position(board, x), reverse=True)
+        return (candidates[0][0]+1, candidates[0][1]+1), memory
+    else:
+        # Advanced evaluation
+        def find_good_moves(board_state):
+            """Find the best moves through evaluation"""
+            good_moves = []
+            center = (9, 9)
+            
+            # Try to place stones in empty spaces in critical areas
+            for r in range(board_size):
+                for c in range(board_size):
+                    if board_state[r, c] == 0:
+                        # Check if this move potentially blocks opponent or creates own liberty
+                        score = 0
+                        # Check liberties of adjacent friendly stones
+                        friendly_liberties = 0
+                        opponent_liberties = 0
+                        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                            nr, nc = r + dr, c + dc
+                            if 0 <= nr < board_size and 0 <= nc < board_size:
+                                if board_state[nr, nc] == 1:
+                                    group = get_group(nr, nc)
+                                    liberties = get_liberties(group)
+                                    friendly_liberties += len(liberties)
+                                elif board_state[nr, nc] == -1:
+                                    group = get_group(nr, nc)
+                                    liberties = get_liberties(group)
+                                    opponent_liberties += len(liberties)
+                        
+                        score = friendly_liberties - opponent_liberties
+                    
+                        # Prefer center
+                        dist = abs(r - center[0]) + abs(c - center[1])
+                        if dist < 5:
+                            score += (5 - dist) * 15
+                        else:
+                            # Prefer middle area
+                            if (r > 3 and r < 15) and (c > 3 and c < 15):
+                                score += 20
+                        
+                        good_moves.append(((r, c), score))
+            
+            # Sort and return the best
+            good_moves.sort(key=lambda x: x[1], reverse=True)
+            return good_moves[:10]  # Top 10 moves
+            
+        candidates = find_good_moves(board)
+        
+        for move, score in candidates:
+            if score > 0 or len(me) + len(opponent) < 30:  # In early game, be more aggressive
+                return (move[0]+1, move[1]+1), memory
+        
+        # Fallback to center if all good moves are neutral
+        return (9+1, 9+1), memory
+
+    # Fallback to pass or random valid move
+    for r in range(board_size):
+        for c in range(board_size):
+            if board[r, c] == 0:
+                return (r+1, c+1), memory
+
+    return (0, 0), memory

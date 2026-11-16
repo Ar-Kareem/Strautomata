@@ -1,0 +1,192 @@
+
+from typing import List, Tuple
+import copy
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    """
+    Choose a move for 3D tic-tac-toe (n x n x n).
+    board: cube of ints: 0 empty, 1 = us, -1 = opponent
+    Returns (x,y,z) tuple coordinates (0-based).
+    Strategy:
+      1. Win if possible.
+      2. Block opponent immediate win.
+      3. Create a fork (move that creates >=2 immediate winning threats).
+      4. Block opponent fork (prefer moves that prevent all forks).
+      5. Take center if available.
+      6. Choose best heuristic move (maximize number of lines we can use).
+      7. Fallback: first empty cell lexicographically.
+    """
+    n = len(board)
+    # Helpers
+    def in_bounds(x, y, z):
+        return 0 <= x < n and 0 <= y < n and 0 <= z < n
+
+    # Generate all straight lines of length n in the n x n x n grid
+    directions = [(dx, dy, dz)
+                  for dx in (-1, 0, 1)
+                  for dy in (-1, 0, 1)
+                  for dz in (-1, 0, 1)
+                  if not (dx == 0 and dy == 0 and dz == 0)]
+    lines = []
+    # To avoid duplicates: only start at cells for which previous step is out of bounds
+    for x in range(n):
+        for y in range(n):
+            for z in range(n):
+                for dx, dy, dz in directions:
+                    px, py, pz = x - dx, y - dy, z - dz
+                    if in_bounds(px, py, pz):
+                        continue  # not a minimal starting cell for this direction
+                    # collect n positions
+                    pos = []
+                    ok = True
+                    for k in range(n):
+                        nx, ny, nz = x + dx * k, y + dy * k, z + dz * k
+                        if not in_bounds(nx, ny, nz):
+                            ok = False
+                            break
+                        pos.append((nx, ny, nz))
+                    if ok and len(pos) == n:
+                        lines.append(pos)
+    # Build mapping from cell to lines indices for quick lookup
+    cell_to_lines = {}
+    for idx, line in enumerate(lines):
+        for pos in line:
+            cell_to_lines.setdefault(pos, []).append(idx)
+
+    # Utility to inspect a line
+    def line_counts(line):
+        cnt_us = cnt_op = cnt_empty = 0
+        empties = []
+        for (x, y, z) in line:
+            v = board[x][y][z]
+            if v == 1:
+                cnt_us += 1
+            elif v == -1:
+                cnt_op += 1
+            else:
+                cnt_empty += 1
+                empties.append((x, y, z))
+        return cnt_us, cnt_op, cnt_empty, empties
+
+    # Collect all empty cells
+    empties = [(x, y, z) for x in range(n) for y in range(n) for z in range(n) if board[x][y][z] == 0]
+    empties.sort()  # deterministic order
+
+    # 1) Win immediately if possible
+    for idx, line in enumerate(lines):
+        cnt_us, cnt_op, cnt_empty, empties_in_line = line_counts(line)
+        if cnt_us == n - 1 and cnt_empty == 1:
+            return empties_in_line[0]
+
+    # 2) Block opponent immediate win
+    for idx, line in enumerate(lines):
+        cnt_us, cnt_op, cnt_empty, empties_in_line = line_counts(line)
+        if cnt_op == n - 1 and cnt_empty == 1:
+            return empties_in_line[0]
+
+    # Helper to simulate placing a move on a board copy
+    def simulate_place(bd, move, player):
+        x, y, z = move
+        bd2 = copy.deepcopy(bd)
+        bd2[x][y][z] = player
+        return bd2
+
+    # Helper to count immediate winning threats for a given simulated board for player
+    def count_immediate_threats(bd, player):
+        threats = 0
+        for line in lines:
+            cnt_us = cnt_op = cnt_empty = 0
+            for (x, y, z) in line:
+                v = bd[x][y][z]
+                if v == player:
+                    cnt_us += 1
+                elif v == -player:
+                    cnt_op += 1
+                else:
+                    cnt_empty += 1
+            # For player param, cnt_us refers to that player's marks
+            if cnt_us == n - 1 and cnt_empty == 1:
+                threats += 1
+        return threats
+
+    # 3) Create a fork: choose an empty cell that after our move creates >=2 immediate threats
+    best_fork_move = None
+    best_fork_threats = 0
+    for move in empties:
+        bd2 = simulate_place(board, move, 1)
+        threats = count_immediate_threats(bd2, 1)
+        if threats >= 2 and threats > best_fork_threats:
+            best_fork_threats = threats
+            best_fork_move = move
+    if best_fork_move is not None:
+        return best_fork_move
+
+    # 4) Block opponent forks.
+    # Detect opponent fork cells (where opponent playing there creates >=2 threats)
+    opponent_fork_cells = []
+    for move in empties:
+        bd2 = simulate_place(board, move, -1)
+        threats = count_immediate_threats(bd2, -1)
+        if threats >= 2:
+            opponent_fork_cells.append(move)
+    # If there are opponent fork cells, try to choose a move that prevents all forks.
+    if opponent_fork_cells:
+        # If we can play one of the fork cells ourselves, do it (direct block)
+        for fork_cell in sorted(set(opponent_fork_cells)):
+            if fork_cell in empties:
+                return fork_cell
+        # Otherwise, try to find a move such that after our move opponent has zero fork opportunities.
+        for move in empties:
+            bd2 = simulate_place(board, move, 1)
+            # recompute opponent forks on bd2
+            opp_forks_after = 0
+            for m2 in [(x, y, z) for x in range(n) for y in range(n) for z in range(n) if bd2[x][y][z] == 0]:
+                bd3 = simulate_place(bd2, m2, -1)
+                if count_immediate_threats(bd3, -1) >= 2:
+                    opp_forks_after += 1
+                    break
+            if opp_forks_after == 0:
+                return move
+
+    # 5) Take center if available (for odd n)
+    if n % 2 == 1:
+        c = n // 2
+        if board[c][c][c] == 0:
+            return (c, c, c)
+
+    # 6) Heuristic: choose empty cell with best score: lines that have no opponent marks favor us.
+    # Weight lines by how many of our marks they already have.
+    def heuristic_score_for_cell(move):
+        score = 0
+        for idx in cell_to_lines.get(move, []):
+            line = lines[idx]
+            cnt_us, cnt_op, cnt_empty, _ = line_counts(line)
+            if cnt_op == 0:
+                # lines with more of our marks are better
+                # weight: 100 for 2-in-row (n-1), 10 for 1, 1 for 0 (for n=3)
+                score += (10 ** cnt_us)
+            elif cnt_us == 0:
+                # lines dominated by opponent are somewhat important to block
+                # but less than proactive lines
+                score += 0.5 * (10 ** cnt_op)
+        return score
+
+    best_score = None
+    best_moves = []
+    for move in empties:
+        s = heuristic_score_for_cell(move)
+        if best_score is None or s > best_score:
+            best_score = s
+            best_moves = [move]
+        elif s == best_score:
+            best_moves.append(move)
+    if best_moves:
+        best_moves.sort()
+        return best_moves[0]
+
+    # 7) Fallback: first empty cell
+    if empties:
+        return empties[0]
+
+    # No moves (shouldn't happen) -- return a default
+    return (0, 0, 0)

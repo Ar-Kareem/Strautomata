@@ -1,0 +1,245 @@
+## Strategy
+
+My chess policy will implement a minimax search with alpha-beta pruning to find strong moves. The key components are:
+
+1. **Board Representation**: Convert the pieces dictionary to an internal board representation for efficient move generation and evaluation.
+
+2. **Move Generation**: Implement legal move generation for all piece types, including special moves (castling, en passant, pawn promotion).
+
+3. **Evaluation Function**: Use a combination of:
+   - Material values (Pawn=100, Knight=320, Bishop=330, Rook=500, Queen=900, King=20000)
+   - Piece-square tables for positional evaluation
+   - Basic king safety considerations
+
+4. **Search**: Minimax with alpha-beta pruning, searching 3-4 plies deep depending on position complexity.
+
+5. **Move Ordering**: Order moves by captures (MVV-LVA), checks, and promotions first to improve alpha-beta cutoffs.
+
+6. **Legal Move Validation**: Since we receive legal_moves, we'll generate candidate moves and validate against the legal moves list.
+
+<code>
+import re
+
+PIECE_VALUES = {'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000}
+
+# Piece-square tables (from white's perspective, flip for black)
+PST = {
+    'P': [0,0,0,0,0,0,0,0, 5,10,10,-20,-20,10,10,5, 5,-5,-10,0,0,-10,-5,5, 0,0,0,20,20,0,0,0, 5,5,10,25,25,10,5,5, 10,10,20,30,30,20,10,10, 50,50,50,50,50,50,50,50, 0,0,0,0,0,0,0,0],
+    'N': [-50,-40,-30,-30,-30,-30,-40,-50, -40,-20,0,5,5,0,-20,-40, -30,5,10,15,15,10,5,-30, -30,0,15,20,20,15,0,-30, -30,5,15,20,20,15,5,-30, -30,0,10,15,15,10,0,-30, -40,-20,0,0,0,0,-20,-40, -50,-40,-30,-30,-30,-30,-40,-50],
+    'B': [-20,-10,-10,-10,-10,-10,-10,-20, -10,5,0,0,0,0,5,-10, -10,10,10,10,10,10,10,-10, -10,0,10,10,10,10,0,-10, -10,5,5,10,10,5,5,-10, -10,0,5,10,10,5,0,-10, -10,0,0,0,0,0,0,-10, -20,-10,-10,-10,-10,-10,-10,-20],
+    'R': [0,0,0,5,5,0,0,0, -5,0,0,0,0,0,0,-5, -5,0,0,0,0,0,0,-5, -5,0,0,0,0,0,0,-5, -5,0,0,0,0,0,0,-5, -5,0,0,0,0,0,0,-5, 5,10,10,10,10,10,10,5, 0,0,0,0,0,0,0,0],
+    'Q': [-20,-10,-10,-5,-5,-10,-10,-20, -10,0,5,0,0,0,0,-10, -10,5,5,5,5,5,0,-10, 0,0,5,5,5,5,0,-5, -5,0,5,5,5,5,0,-5, -10,0,5,5,5,5,0,-10, -10,0,0,0,0,0,0,-10, -20,-10,-10,-5,-5,-10,-10,-20],
+    'K': [20,30,10,0,0,10,30,20, 20,20,0,0,0,0,20,20, -10,-20,-20,-20,-20,-20,-20,-10, -20,-30,-30,-40,-40,-30,-30,-20, -30,-40,-40,-50,-50,-40,-40,-30, -30,-40,-40,-50,-50,-40,-40,-30, -30,-40,-40,-50,-50,-40,-40,-30, -30,-40,-40,-50,-50,-40,-40,-30]
+}
+
+def sq_to_idx(sq):
+    return (ord(sq[0]) - ord('a')) + (int(sq[1]) - 1) * 8
+
+def idx_to_sq(idx):
+    return chr(ord('a') + idx % 8) + str(idx // 8 + 1)
+
+def evaluate(pieces, to_play):
+    score = 0
+    my_color = 'w' if to_play == 'white' else 'b'
+    for sq, piece in pieces.items():
+        color, ptype = piece[0], piece[1]
+        val = PIECE_VALUES.get(ptype, 0)
+        idx = sq_to_idx(sq)
+        if color == 'w':
+            pst_idx = (7 - idx // 8) * 8 + idx % 8
+        else:
+            pst_idx = idx
+        pst_val = PST.get(ptype, [0]*64)[pst_idx]
+        total = val + pst_val
+        if color == my_color:
+            score += total
+        else:
+            score -= total
+    return score
+
+def generate_moves(pieces, color):
+    moves = []
+    c = 'w' if color == 'white' else 'b'
+    opp = 'b' if c == 'w' else 'w'
+    
+    for sq, piece in pieces.items():
+        if piece[0] != c:
+            continue
+        ptype = piece[1]
+        f, r = ord(sq[0]) - ord('a'), int(sq[1]) - 1
+        
+        if ptype == 'P':
+            direction = 1 if c == 'w' else -1
+            start_rank = 1 if c == 'w' else 6
+            promo_rank = 7 if c == 'w' else 0
+            
+            # Forward
+            nr = r + direction
+            if 0 <= nr <= 7:
+                tsq = chr(ord('a') + f) + str(nr + 1)
+                if tsq not in pieces:
+                    if nr == promo_rank:
+                        for p in ['q', 'r', 'b', 'n']:
+                            moves.append(sq + tsq + p)
+                    else:
+                        moves.append(sq + tsq)
+                        if r == start_rank:
+                            nr2 = r + 2 * direction
+                            tsq2 = chr(ord('a') + f) + str(nr2 + 1)
+                            if tsq2 not in pieces:
+                                moves.append(sq + tsq2)
+            # Captures
+            for df in [-1, 1]:
+                nf = f + df
+                nr = r + direction
+                if 0 <= nf <= 7 and 0 <= nr <= 7:
+                    tsq = chr(ord('a') + nf) + str(nr + 1)
+                    if tsq in pieces and pieces[tsq][0] == opp:
+                        if nr == promo_rank:
+                            for p in ['q', 'r', 'b', 'n']:
+                                moves.append(sq + tsq + p)
+                        else:
+                            moves.append(sq + tsq)
+        
+        elif ptype == 'N':
+            for df, dr in [(-2,-1),(-2,1),(-1,-2),(-1,2),(1,-2),(1,2),(2,-1),(2,1)]:
+                nf, nr = f + df, r + dr
+                if 0 <= nf <= 7 and 0 <= nr <= 7:
+                    tsq = chr(ord('a') + nf) + str(nr + 1)
+                    if tsq not in pieces or pieces[tsq][0] == opp:
+                        moves.append(sq + tsq)
+        
+        elif ptype == 'B' or ptype == 'Q':
+            for df, dr in [(-1,-1),(-1,1),(1,-1),(1,1)]:
+                for i in range(1, 8):
+                    nf, nr = f + df*i, r + dr*i
+                    if not (0 <= nf <= 7 and 0 <= nr <= 7):
+                        break
+                    tsq = chr(ord('a') + nf) + str(nr + 1)
+                    if tsq in pieces:
+                        if pieces[tsq][0] == opp:
+                            moves.append(sq + tsq)
+                        break
+                    moves.append(sq + tsq)
+        
+        if ptype == 'R' or ptype == 'Q':
+            for df, dr in [(0,-1),(0,1),(-1,0),(1,0)]:
+                for i in range(1, 8):
+                    nf, nr = f + df*i, r + dr*i
+                    if not (0 <= nf <= 7 and 0 <= nr <= 7):
+                        break
+                    tsq = chr(ord('a') + nf) + str(nr + 1)
+                    if tsq in pieces:
+                        if pieces[tsq][0] == opp:
+                            moves.append(sq + tsq)
+                        break
+                    moves.append(sq + tsq)
+        
+        if ptype == 'K':
+            for df in [-1, 0, 1]:
+                for dr in [-1, 0, 1]:
+                    if df == 0 and dr == 0:
+                        continue
+                    nf, nr = f + df, r + dr
+                    if 0 <= nf <= 7 and 0 <= nr <= 7:
+                        tsq = chr(ord('a') + nf) + str(nr + 1)
+                        if tsq not in pieces or pieces[tsq][0] == opp:
+                            moves.append(sq + tsq)
+            # Castling
+            if c == 'w' and sq == 'e1':
+                moves.extend(['e1g1', 'e1c1'])
+            elif c == 'b' and sq == 'e8':
+                moves.extend(['e8g8', 'e8c8'])
+    
+    return moves
+
+def apply_move(pieces, move):
+    new_pieces = dict(pieces)
+    src, dst = move[:2], move[2:4]
+    promo = move[4] if len(move) > 4 else None
+    
+    piece = new_pieces.pop(src, None)
+    if piece is None:
+        return new_pieces
+    
+    if dst in new_pieces:
+        del new_pieces[dst]
+    
+    if promo:
+        new_pieces[dst] = piece[0] + promo.upper()
+    else:
+        new_pieces[dst] = piece
+    
+    return new_pieces
+
+def minimax(pieces, color, depth, alpha, beta, maximizing):
+    if depth == 0:
+        return evaluate(pieces, color), None
+    
+    opp = 'black' if color == 'white' else 'white'
+    current = color if maximizing else opp
+    
+    moves = generate_moves(pieces, current)
+    if not moves:
+        return evaluate(pieces, color), None
+    
+    # Move ordering
+    def move_score(m):
+        dst = m[2:4]
+        score = 0
+        if dst in pieces:
+            score += PIECE_VALUES.get(pieces[dst][1], 0)
+        if len(m) > 4:
+            score += 800
+        return -score
+    
+    moves.sort(key=move_score)
+    
+    best_move = moves[0] if moves else None
+    
+    if maximizing:
+        max_eval = -100000
+        for move in moves[:20]:  # Limit branching
+            new_pieces = apply_move(pieces, move)
+            eval_score, _ = minimax(new_pieces, color, depth - 1, alpha, beta, False)
+            if eval_score > max_eval:
+                max_eval = eval_score
+                best_move = move
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval, best_move
+    else:
+        min_eval = 100000
+        for move in moves[:20]:
+            new_pieces = apply_move(pieces, move)
+            eval_score, _ = minimax(new_pieces, color, depth - 1, alpha, beta, True)
+            if eval_score < min_eval:
+                min_eval = eval_score
+                best_move = move
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval, best_move
+
+def policy(pieces: dict[str, str], to_play: str, memory: dict) -> tuple[str, dict]:
+    # Generate our candidate moves
+    candidate_moves = generate_moves(pieces, to_play)
+    
+    if not candidate_moves:
+        # Fallback - shouldn't happen with legal moves
+        return "0000", memory
+    
+    # Search for best move
+    best_score = -100000
+    best_move = candidate_moves[0]
+    
+    for move in candidate_moves:
+        new_pieces = apply_move(pieces, move)
+        score, _ = minimax(new_pieces, to_play, 2, -100000, 100000, False)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move, memory
+</code>

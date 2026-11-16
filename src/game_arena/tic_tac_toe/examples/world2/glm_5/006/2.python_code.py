@@ -1,0 +1,196 @@
+
+import time
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # --- Constants and Pre-computation ---
+    # Winning masks for 4x4 Tic Tac Toe (10 lines total)
+    # Indices: 0..15 mapping row*4 + col
+    WIN_MASKS = []
+    # Rows
+    for r in range(4):
+        WIN_MASKS.append(sum(1 << (r * 4 + c) for c in range(4)))
+    # Cols
+    for c in range(4):
+        WIN_MASKS.append(sum(1 << (r * 4 + c) for r in range(4)))
+    # Diagonals
+    WIN_MASKS.append(sum(1 << (i * 4 + i) for i in range(4)))         # TL-BR
+    WIN_MASKS.append(sum(1 << (i * 4 + (3 - i)) for i in range(4)))   # TR-BL
+
+    # Move ordering preference: Center > Corners > Edges
+    # Indices: 5,6,9,10 (Center), 0,3,12,15 (Corners), Others (Edges)
+    MOVE_ORDER = [5, 6, 9, 10, 0, 3, 12, 15, 1, 2, 4, 7, 8, 11, 13, 14]
+
+    start_time = time.time()
+    TIME_LIMIT = 0.95 # seconds
+
+    # --- Board Conversion to Bitboards ---
+    my_bits = 0
+    opp_bits = 0
+    for r in range(4):
+        for c in range(4):
+            idx = r * 4 + c
+            if board[r][c] == 1:
+                my_bits |= (1 << idx)
+            elif board[r][c] == -1:
+                opp_bits |= (1 << idx)
+
+    # --- Helper Functions ---
+    
+    def check_win(bits: int) -> bool:
+        """Check if the bitboard contains a winning line."""
+        for mask in WIN_MASKS:
+            if (bits & mask) == mask:
+                return True
+        return False
+
+    def get_empty_bits(my_b: int, opp_b: int) -> int:
+        """Return a bitmask of empty cells."""
+        return (~(my_b | opp_b)) & 0xFFFF
+
+    def get_ordered_moves(empty_bits: int) -> list[int]:
+        """Generate move indices from empty bits, sorted by preference."""
+        moves = []
+        # Extract indices from bitmask
+        temp_empty = empty_bits
+        while temp_empty:
+            lsb = temp_empty & -temp_empty
+            idx = (lsb.bit_length() - 1)
+            moves.append(idx)
+            temp_empty -= lsb
+        
+        # Sort based on pre-computed order
+        # Using index lookup for speed (linear scan is fine for 16 items)
+        moves.sort(key=lambda x: MOVE_ORDER.index(x) if x in MOVE_ORDER else 99)
+        return moves
+
+    def count_pieces(bits: int) -> int:
+        return bits.bit_count()
+
+    def evaluate(my_b: int, opp_b: int) -> int:
+        """
+        Heuristic evaluation of the board state.
+        Positive scores favor AI, negative favor opponent.
+        """
+        score = 0
+        for mask in WIN_MASKS:
+            my_line = my_b & mask
+            opp_line = opp_b & mask
+            
+            my_cnt = count_pieces(my_line)
+            opp_cnt = count_pieces(opp_line)
+
+            # If line is mixed, it's worthless to both
+            if my_cnt > 0 and opp_cnt > 0:
+                continue
+            
+            # Weight for line potential: 10^count
+            if my_cnt > 0:
+                score += 10 ** my_cnt
+            elif opp_cnt > 0:
+                score -= 10 ** opp_cnt
+        
+        return score
+
+    # --- Immediate Checks ---
+    
+    empty_bits = get_empty_bits(my_bits, opp_bits)
+    empty_moves = get_ordered_moves(empty_bits)
+    
+    if not empty_moves:
+        return (0, 0) # Should not happen if game isn't over
+
+    # 1. Check for immediate win
+    for idx in empty_moves:
+        if check_win(my_bits | (1 << idx)):
+            return (idx // 4, idx % 4)
+
+    # 2. Check for immediate block (opponent wins next turn)
+    for idx in empty_moves:
+        if check_win(opp_bits | (1 << idx)):
+            return (idx // 4, idx % 4)
+
+    # --- Minimax with Alpha-Beta Pruning ---
+
+    def minimax(my_b: int, opp_b: int, depth: int, alpha: float, beta: float, maximizing: bool) -> tuple[int, int]:
+        # Time check to prevent timeout
+        if time.time() - start_time > TIME_LIMIT:
+            return 0, -1 # Signal to unwind
+
+        # Terminal state checks
+        if check_win(my_b): return 100000 + depth, None
+        if check_win(opp_b): return -100000 - depth, None
+        
+        current_empty = get_empty_bits(my_b, opp_b)
+        if current_empty == 0: return 0, None # Draw
+        
+        if depth == 0:
+            return evaluate(my_b, opp_b), None
+
+        moves = get_ordered_moves(current_empty)
+        best_move = moves[0] # Default
+
+        if maximizing:
+            max_eval = -float('inf')
+            for idx in moves:
+                move_bit = 1 << idx
+                eval_score, _ = minimax(my_b | move_bit, opp_b, depth - 1, alpha, beta, False)
+                
+                if time.time() - start_time > TIME_LIMIT: break
+                
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_move = idx
+                
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            for idx in moves:
+                move_bit = 1 << idx
+                eval_score, _ = minimax(my_b, opp_b | move_bit, depth - 1, alpha, beta, True)
+                
+                if time.time() - start_time > TIME_LIMIT: break
+                
+                if eval_score < min_eval:
+                    min_eval = eval_score
+                    best_move = idx
+                
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval, best_move
+
+    # --- Iterative Deepening ---
+    
+    # Opening move optimization
+    if len(empty_moves) >= 14: # Early game
+        # Prefer center
+        if 5 in empty_moves: return (1, 1)
+        if 6 in empty_moves: return (1, 2)
+        if 9 in empty_moves: return (2, 1)
+        if 10 in empty_moves: return (2, 2)
+
+    best_move_idx = empty_moves[0]
+    max_depth_reached = 0
+    
+    # Search depth limited by time. 4x4 game is small enough to reach decent depth.
+    for depth in range(1, 16):
+        if time.time() - start_time > TIME_LIMIT:
+            break
+        
+        score, move = minimax(my_bits, opp_bits, depth, -float('inf'), float('inf'), True)
+        
+        if time.time() - start_time > TIME_LIMIT:
+            break
+            
+        if move != -1 and move is not None:
+            best_move_idx = move
+            max_depth_reached = depth
+            
+        # If we found a forced win, stop searching
+        if score >= 100000:
+            break
+
+    return (best_move_idx // 4, best_move_idx % 4)

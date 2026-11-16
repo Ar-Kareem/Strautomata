@@ -1,0 +1,148 @@
+<thinking>
+First, I need to understand the problem thoroughly:
+- We're implementing a Blackjack-like strategy.
+- We have a single 13-card deck with one of each rank: A, 2-10, J, Q, K.
+- Card values: number cards are face value, J/Q/K=10, A=11 or 1 (11 if it doesn't bust).
+- Target T is between 10-30 and is fixed per game.
+- We must decide to HIT or STAY based on our current hand.
+- If we go over T, we bust and lose.
+- Winner is closest to T without going over, or if opponent busts.
+
+To implement a good policy, I need to:
+1. Calculate the current hand value correctly (with A handling).
+2. Estimate the risk of hitting vs. the potential benefit.
+3. Consider how close we are to the target.
+4. Since we don't know what cards we have left or what the opponent is doing, we must play optimally for our hand.
+
+Let's approach this step-by-step:
+1. Calculate current hand value with optimal A usage.
+2. If we're already at or above a "safe" threshold close to T, STAY.
+3. If we're well below T and the risk of busting is low, HIT.
+4. Consider remaining cards in our deck to assess risk.
+
+A smarter approach might be to:
+- Determine how many cards we've drawn to know what's left.
+- Calculate the probability distribution of outcomes if we HIT.
+- Compare expected value or risk of hitting vs staying.
+
+But given the time constraint and that we only see our hand, a simpler heuristic might work well:
+- If current value is >= some threshold (like T - small margin), STAY.
+- Else, HIT.
+
+Let me think about the optimal ace handling: Aces should count as 11 if the total doesn't exceed T, and 1 otherwise.
+
+I'll calculate the hand value and then apply a threshold-based policy. A good threshold might be T - 4 or T - 5, since cards can be worth 1-11.
+
+Actually, let's think better:
+- If I'm at T, I should STAY.
+- If I'm over T, I've already busted (this function won't be called).
+- If I'm much below T, I should probably HIT.
+- The question is: when am I close enough to STAY?
+
+A classic Blackjack strategy is to HIT until 17, but here T varies.
+
+Let me try a dynamic threshold:
+- If T is low (e.g. 10-15), be more conservative.
+- If T is high, I can afford to HIT more.
+
+Perhaps stay when hand_value >= T - 2 or T - 3. That's a common conservative approach.
+
+But we can do better. Let's estimate the risk:
+1. Count how many cards I have left (13 - len(hand)).
+2. Among remaining cards, how many will bust me if I HIT?
+3. Among remaining cards, what's the expected value increase?
+
+This is more complex, but better. In a real-time setting, simple heuristics might be better. My policy function will be called on every turn, so it should be fast.
+
+Let's do this:
+1. Calculate current hand value with proper ace handling.
+2. If value >= target, STAY (but this shouldn't happen since bust ends game).
+3. If value is close to target (like within 2-3 points), STAY to avoid risk.
+4. Else, if we think the next card likely won't bust us, HIT.
+
+For the "close to target" threshold, I'll try `target - 3`.
+
+Actually, better yet, I can simulate a bit. If I know what cards I've used, I know what's left, and I can compute exactly the bust probability.
+
+The full deck is: ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+So I can determine what cards are left, and for each, what my new hand value would be. Then I can compute:
+- Probability of busting with next card.
+- If not busting, what's the new expected hand value.
+
+But even better, I can be more aggressive. For example, if T=25 and I have 15, there's almost no way to bust, so I should HIT.
+
+A rule of thumb:
+- If hand_value >= target - 2, STAY.
+- Else, if bust_probability < 0.5, HIT.
+- Else STAY.
+
+Let's code that.
+</thinking>
+
+<code>
+def policy(hand: list[str], target: int) -> str:
+    # Full deck of 13 cards
+    full_deck = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    
+    # Determine which cards are left in the deck
+    remaining_cards = full_deck.copy()
+    for card in hand:
+        if card in remaining_cards:
+            remaining_cards.remove(card)
+    
+    # Function to compute hand value with optimal Ace handling
+    def compute_hand_value(cards):
+        # First, compute sum without Aces
+        value = 0
+        aces = 0
+        for card in cards:
+            if card == "A":
+                aces += 1
+            elif card in ["J", "Q", "K"]:
+                value += 10
+            else:
+                value += int(card)
+        
+        # Now, for each Ace, decide whether to add 1 or 11
+        # Add as many 11s as possible without busting
+        for _ in range(aces):
+            if value + 11 <= target:
+                value += 11
+            else:
+                value += 1
+        return value
+    
+    current_value = compute_hand_value(hand)
+    
+    # Safety net: if already very close to target, stay to avoid busting
+    if current_value >= target - 2:
+        return "STAY"
+    
+    # If no cards left to draw, must STAY
+    if not remaining_cards:
+        return "STAY"
+    
+    # Simulate drawing each possible next card and check for bust
+    bust_count = 0
+    total_count = len(remaining_cards)
+    
+    for card in remaining_cards:
+        new_hand = hand + [card]
+        new_value = compute_hand_value(new_hand)
+        if new_value > target:
+            bust_count += 1
+    
+    bust_probability = bust_count / total_count if total_count > 0 else 0
+    
+    # If bust risk is low, take the chance to improve hand
+    if bust_probability < 0.5:
+        return "HIT"
+    else:
+        # Even if risk is high, if we're far from target, we might take the chance
+        # But if we're close, play it safe
+        if current_value >= target - 4:
+            return "STAY"
+        else:
+            # Risky but potentially necessary
+            return "HIT" if bust_probability < 0.7 else "STAY"
+</code>

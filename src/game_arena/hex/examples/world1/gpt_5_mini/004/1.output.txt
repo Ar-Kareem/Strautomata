@@ -1,0 +1,208 @@
+The strategy for this policy:
+
+- Immediate tactics: if there's a winning move for me, play it. If the opponent has any immediate winning move, block it.
+- Strategic plan: compute a minimum-cost path connecting my two goal sides using Dijkstra on the hex adjacency graph. Treat my stones as free (cost 0), empty cells as cost 1 (placing needed), and opponent stones as very expensive (to discourage crossing). Choose the first empty cell on that least-cost path (closest to my side).
+- Opening and tie-breakers: prefer central moves when there are ties (deterministic by distance to the board center).
+- Always return a legal empty cell.
+
+This approach aggressively wins when possible, blocks immediate threats, and otherwise follows the shortest connection route toward my goal.
+
+<code>
+import heapq
+from typing import List, Tuple, Set
+
+# Board size (11x11)
+N = 11
+
+# Neighbor deltas for hex grid as described:
+DELTAS = [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0)]
+
+CENTER = ((N - 1) / 2.0, (N - 1) / 2.0)
+
+BIG = 10**6  # large cost to make opponent cells undesirable
+
+
+def neighbors(cell):
+    i, j = cell
+    for di, dj in DELTAS:
+        ni, nj = i + di, j + dj
+        if 0 <= ni < N and 0 <= nj < N:
+            yield (ni, nj)
+
+
+def dist_to_center(cell):
+    # squared Euclidean distance to center for deterministic tie-breaker
+    (ci, cj) = CENTER
+    return (cell[0] - ci) ** 2 + (cell[1] - cj) ** 2
+
+
+def is_connected(player_set: Set[Tuple[int, int]], color: str) -> bool:
+    # Check whether player_set connects the required sides
+    if not player_set:
+        return False
+    visited = set()
+    stack = []
+    if color == 'b':
+        # connect top (row==0) to bottom (row==N-1)
+        for i in range(N):
+            cell = (0, i)
+            if cell in player_set:
+                stack.append(cell)
+                visited.add(cell)
+        target_row = N - 1
+        while stack:
+            c = stack.pop()
+            if c[0] == target_row:
+                return True
+            for nb in neighbors(c):
+                if nb in player_set and nb not in visited:
+                    visited.add(nb)
+                    stack.append(nb)
+        return False
+    else:
+        # 'w': connect left (col==0) to right (col==N-1)
+        for i in range(N):
+            cell = (i, 0)
+            if cell in player_set:
+                stack.append(cell)
+                visited.add(cell)
+        target_col = N - 1
+        while stack:
+            c = stack.pop()
+            if c[1] == target_col:
+                return True
+            for nb in neighbors(c):
+                if nb in player_set and nb not in visited:
+                    visited.add(nb)
+                    stack.append(nb)
+        return False
+
+
+def dijkstra_shortest_connection(me_set: Set[Tuple[int, int]], opp_set: Set[Tuple[int, int]], color: str):
+    # Build a Dijkstra over cells with node cost:
+    # cost(cell) = 0 if me_has stone, 1 if empty, BIG if opponent stone
+    # Add virtual source 'S' and target 'T' connected to side cells.
+    # Return path as list of cells from S -> ... -> T (excluding S,T)
+    def cell_cost(cell):
+        if cell in me_set:
+            return 0
+        if cell in opp_set:
+            return BIG
+        return 1
+
+    # Set of all cells for convenience
+    all_cells = [(i, j) for i in range(N) for j in range(N)]
+
+    # Determine side cells
+    if color == 'b':
+        source_side = [(0, j) for j in range(N)]
+        target_side = [(N - 1, j) for j in range(N)]
+    else:
+        source_side = [(i, 0) for i in range(N)]
+        target_side = [(i, N - 1) for i in range(N)]
+
+    # Dijkstra: nodes are cells; we'll treat source as starting positions with initial cost = cell_cost(cell)
+    dist = {}
+    prev = {}
+    heap = []
+
+    # Initialize distances for source side cells
+    for cell in source_side:
+        d = cell_cost(cell)
+        dist[cell] = d
+        prev[cell] = None
+        heapq.heappush(heap, (d, cell))
+
+    visited = set()
+    target_found = None
+
+    while heap:
+        d, node = heapq.heappop(heap)
+        if node in visited:
+            continue
+        visited.add(node)
+        # If node is on target side, we can stop
+        if node in target_side:
+            target_found = node
+            break
+        for nb in neighbors(node):
+            nd = d + cell_cost(nb)
+            if nd >= BIG:
+                # don't bother relaxing through opponent-heavy routes
+                continue
+            if nb not in dist or nd < dist[nb]:
+                dist[nb] = nd
+                prev[nb] = node
+                heapq.heappush(heap, (nd, nb))
+
+    if target_found is None:
+        return None  # no path found (shouldn't happen on Hex board)
+    # Reconstruct path from target_found back to a source_side node
+    path = []
+    cur = target_found
+    while cur is not None:
+        path.append(cur)
+        cur = prev.get(cur)
+    path.reverse()  # from source-side cell to target-side cell
+    return path
+
+
+def choose_first_empty_on_path(path, me_set):
+    # Given a path (list of cells), choose the earliest empty cell (not already mine).
+    for cell in path:
+        if cell not in me_set:
+            return cell
+    return None
+
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[int, int]:
+    me_set = set(me)
+    opp_set = set(opp)
+    # All empty cells
+    all_cells = [(i, j) for i in range(N) for j in range(N)]
+    empty = [c for c in all_cells if c not in me_set and c not in opp_set]
+
+    # 0) Safety: if no empties (shouldn't happen), return a dummy
+    if not empty:
+        return (0, 0)
+
+    # 1) Immediate win: if any empty move grants a connection for me, play it
+    for cell in empty:
+        new_me = set(me_set)
+        new_me.add(cell)
+        if is_connected(new_me, color):
+            return cell
+
+    # 2) Immediate block: if opponent has a winning move next, block it
+    opponent_wins = []
+    for cell in empty:
+        new_opp = set(opp_set)
+        new_opp.add(cell)
+        if is_connected(new_opp, 'b' if color == 'w' else 'w'):
+            opponent_wins.append(cell)
+    if opponent_wins:
+        # choose the most central blocking cell (deterministic)
+        opponent_wins.sort(key=lambda c: (dist_to_center(c), c))
+        return opponent_wins[0]
+
+    # 3) Opening move: if board is almost empty, take center if available
+    # Consider "almost empty" as fewer than 2 stones placed overall
+    if len(me) + len(opp) <= 1:
+        center = (N // 2, N // 2)
+        if center in empty:
+            return center
+        # otherwise choose a nearby central empty
+        empty.sort(key=lambda c: (dist_to_center(c), c))
+        return empty[0]
+
+    # 4) Strategic path: use Dijkstra to find minimal-cost connection path
+    path = dijkstra_shortest_connection(me_set, opp_set, color)
+    if path:
+        choice = choose_first_empty_on_path(path, me_set)
+        if choice is not None:
+            return choice
+
+    # 5) Fallback: choose the empty cell closest to center (deterministic)
+    empty.sort(key=lambda c: (dist_to_center(c), c))
+    return empty[0]
+</code>

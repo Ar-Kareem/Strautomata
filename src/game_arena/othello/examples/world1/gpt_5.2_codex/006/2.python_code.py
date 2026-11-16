@@ -1,0 +1,103 @@
+
+import numpy as np
+
+# Positional weight matrix (corners are highly valued)
+WEIGHTS = np.array([
+    [100, -20, 10, 5, 5, 10, -20, 100],
+    [-20, -50, -2, -2, -2, -2, -50, -20],
+    [10,  -2, -1, -1, -1, -1,  -2,  10],
+    [5,   -2, -1, -1, -1, -1,  -2,   5],
+    [5,   -2, -1, -1, -1, -1,  -2,   5],
+    [10,  -2, -1, -1, -1, -1,  -2,  10],
+    [-20, -50, -2, -2, -2, -2, -50, -20],
+    [100, -20, 10, 5, 5, 10, -20, 100],
+], dtype=np.int32)
+
+DIRS = [(-1,-1),(-1,0),(-1,1),
+        (0,-1),       (0,1),
+        (1,-1),(1,0),(1,1)]
+
+def in_bounds(r, c):
+    return 0 <= r < 8 and 0 <= c < 8
+
+def legal_moves(you, opp):
+    moves = []
+    occupied = you | opp
+    for r in range(8):
+        for c in range(8):
+            if occupied[r][c]:
+                continue
+            if is_legal_move(you, opp, r, c):
+                moves.append((r, c))
+    return moves
+
+def is_legal_move(you, opp, r, c):
+    for dr, dc in DIRS:
+        rr, cc = r+dr, c+dc
+        found_opp = False
+        while in_bounds(rr, cc) and opp[rr][cc]:
+            found_opp = True
+            rr += dr
+            cc += dc
+        if found_opp and in_bounds(rr, cc) and you[rr][cc]:
+            return True
+    return False
+
+def apply_move(you, opp, r, c):
+    new_you = you.copy()
+    new_opp = opp.copy()
+    new_you[r][c] = 1
+    for dr, dc in DIRS:
+        rr, cc = r+dr, c+dc
+        path = []
+        while in_bounds(rr, cc) and new_opp[rr][cc]:
+            path.append((rr, cc))
+            rr += dr
+            cc += dc
+        if path and in_bounds(rr, cc) and new_you[rr][cc]:
+            for pr, pc in path:
+                new_opp[pr][pc] = 0
+                new_you[pr][pc] = 1
+    return new_you, new_opp
+
+def evaluate(you, opp):
+    # positional score
+    pos_score = int(np.sum(WEIGHTS * (you - opp)))
+    # mobility
+    my_moves = len(legal_moves(you, opp))
+    opp_moves = len(legal_moves(opp, you))
+    mobility = 2 * (my_moves - opp_moves)
+    # corners
+    corners = [(0,0),(0,7),(7,0),(7,7)]
+    my_c = sum(you[r][c] for r,c in corners)
+    opp_c = sum(opp[r][c] for r,c in corners)
+    corner_score = 25 * (my_c - opp_c)
+    # disc difference (small)
+    disc_diff = int(np.sum(you) - np.sum(opp))
+    return pos_score + mobility + corner_score + disc_diff
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    moves = legal_moves(you, opponent)
+    if not moves:
+        return "pass"
+    best_move = moves[0]
+    best_score = -10**9
+    # depth-2 minimax
+    for r, c in moves:
+        new_you, new_opp = apply_move(you, opponent, r, c)
+        opp_moves = legal_moves(new_opp, new_you)
+        if not opp_moves:
+            score = evaluate(new_you, new_opp) + 10  # slight bonus
+        else:
+            worst = 10**9
+            for orr, occ in opp_moves:
+                o_you, o_opp = apply_move(new_opp, new_you, orr, occ)
+                score0 = evaluate(o_opp, o_you)
+                if score0 < worst:
+                    worst = score0
+            score = worst
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+    r, c = best_move
+    return chr(ord('a') + c) + str(r + 1)

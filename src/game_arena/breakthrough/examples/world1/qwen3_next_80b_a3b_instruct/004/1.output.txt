@@ -1,0 +1,411 @@
+The strategy for this policy is to implement a minimax algorithm with alpha-beta pruning to evaluate board positions several moves deep, prioritizing moves that:
+1. Advance pieces toward the opponent's home row (win condition)
+2. Capture opponent pieces when possible
+3. Maintain piece cohesion and avoid isolated pieces
+4. Block opponent advancement
+5. Prioritize moves that threaten immediate win
+
+The evaluation function assigns bonuses for:
+- Distance to opponent home row (higher reward for pieces closer)
+- Number of opponent pieces captured or threatened
+- Center control (central columns are more valuable)
+- Pawn structure (pieces in a diagonal line are stronger)
+
+The AI looks 3-4 moves deep depending on board state (shallow for early game, deeper when captures are possible). It prioritizes capturing moves and winning moves above all else. If no good moves are found, it defaults to safest forward move.
+
+To handle edge cases, we always check for immediate wins before evaluating, and ensure we never return an illegal move.
+
+<code>
+import heapq
+from typing import List, Tuple, Optional
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    """
+    Implements a minimax with alpha-beta pruning for Breakthrough game.
+    Prioritizes winning moves, captures, and strategic advancement.
+    """
+    
+    # Define board dimensions
+    BOARD_SIZE = 8
+    
+    # Define direction based on color
+    # Black ('b') moves downward (row decreases)
+    # White ('w') moves upward (row increases)
+    direction = -1 if color == 'b' else 1
+    home_row = 0 if color == 'w' else 7  # Target row to win
+    opponent_home_row = 7 if color == 'b' else 0  # Opponent's home row
+    
+    # Check for immediate win moves
+    for piece in me:
+        r, c = piece
+        # Check straight forward move
+        new_r = r + direction
+        if new_r == home_row:
+            return ((r, c), (new_r, c))
+        if (new_r, c) not in me and (new_r, c) not in opp:
+            # This is a legal move, but not necessarily winning
+            pass  # We'll consider it in evaluation
+            
+        # Check diagonal forward captures
+        for dc in [-1, 1]:
+            new_r = r + direction
+            new_c = c + dc
+            if 0 <= new_r < BOARD_SIZE and 0 <= new_c < BOARD_SIZE:
+                if (new_r, new_c) in opp:
+                    if new_r == home_row:
+                        return ((r, c), (new_r, new_c))  # Immediate winning capture
+    
+    # Check if we can make any capture move
+    for piece in me:
+        r, c = piece
+        for dc in [-1, 1]:
+            new_r = r + direction
+            new_c = c + dc
+            if 0 <= new_r < BOARD_SIZE and 0 <= new_c < BOARD_SIZE:
+                if (new_r, new_c) in opp:
+                    return ((r, c), (new_r, new_c))  # Capture move
+    
+    # Create sets for faster lookup
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    # Generate all legal moves
+    legal_moves = []
+    
+    for r, c in me:
+        # Straight forward move
+        new_r = r + direction
+        new_c = c
+        if 0 <= new_r < BOARD_SIZE and 0 <= new_c < BOARD_SIZE:
+            if (new_r, new_c) not in me_set and (new_r, new_c) not in opp_set:
+                legal_moves.append(((r, c), (new_r, new_c)))
+        
+        # Diagonal forward moves (capture and non-capture)
+        for dc in [-1, 1]:
+            new_r = r + direction
+            new_c = c + dc
+            if 0 <= new_r < BOARD_SIZE and 0 <= new_c < BOARD_SIZE:
+                target_pos = (new_r, new_c)
+                # Can move to empty square or capture opponent
+                if target_pos not in me_set:
+                    legal_moves.append(((r, c), target_pos))
+    
+    # If no legal moves (shouldn't happen in normal play, but safety)
+    if not legal_moves:
+        # Try any possible move - this is defensive fallback
+        for r, c in me:
+            new_r = r + direction
+            new_c = c
+            if 0 <= new_r < BOARD_SIZE and 0 <= new_c < BOARD_SIZE:
+                if (new_r, new_c) not in me_set and (new_r, new_c) not in opp_set:
+                    return ((r, c), (new_r, new_c))
+        # Last resort: try diagonal
+        for r, c in me:
+            for dc in [-1, 1]:
+                new_r = r + direction
+                new_c = c + dc
+                if 0 <= new_r < BOARD_SIZE and 0 <= new_c < BOARD_SIZE:
+                    if (new_r, new_c) not in me_set:
+                        return ((r, c), (new_r, new_c))
+        # If all else fails, return a random legal move from our earlier list
+        # This is extremely unlikely to happen, but required to be safe
+        return ((me[0][0], me[0][1]), (me[0][0] + direction, me[0][1]))
+    
+    # Sort moves by priority: captures and winning moves first
+    def move_priority(move):
+        from_pos, to_pos = move
+        to_r, to_c = to_pos
+        
+        # High priority: Winning move
+        if to_r == home_row:
+            return 1000
+        
+        # High priority: Capture move
+        if to_pos in opp_set:
+            return 500
+        
+        # Medium priority: Advancing toward home
+        advancement = abs(to_r - home_row) - abs(from_pos[0] - home_row)
+        if advancement < 0:  # Moving closer to home row
+            return 100 + (8 - abs(to_r - home_row))
+        
+        # Medium priority: Controlling center
+        center_bonus = 0
+        if 2 <= to_c <= 5:
+            center_bonus = 10
+        
+        # Slight bonus for not being too far forward (avoids isolation)
+        # Low priority: Safe non-capture moves
+        return 10 + center_bonus + (8 - to_r) if color == 'w' else to_r
+    
+    # Sort moves by priority
+    legal_moves.sort(key=move_priority, reverse=True)
+    
+    # For early game, use shallow search; for endgame, use deeper search
+    # We'll use depth 3 for most cases, depth 4 if there are few pieces
+    total_pieces = len(me) + len(opp)
+    max_depth = 4 if total_pieces <= 10 else 3
+    
+    # Minimax with alpha-beta pruning
+    def minimax(board_state, depth, alpha, beta, maximizing_player):
+        # board_state: (me_tuple, opp_tuple)
+        me_pos, opp_pos = board_state
+        me_set = set(me_pos)
+        opp_set = set(opp_pos)
+        
+        # Terminal conditions
+        # Check if current player won
+        for r, c in me_pos:
+            if r == home_row:
+                return 10000, None  # Immediate win
+        
+        # Check if opponent won
+        for r, c in opp_pos:
+            if r == opponent_home_row:
+                return -10000, None  # Opponent won
+        
+        # Check if all opponent pieces are captured
+        if len(opp_pos) == 0:
+            return 10000, None
+        
+        # Check if all our pieces are captured
+        if len(me_pos) == 0:
+            return -10000, None
+            
+        # Reached max depth
+        if depth == 0:
+            return evaluate_board(me_pos, opp_pos, color, home_row), None
+        
+        # Generate moves for current player
+        if maximizing_player:
+            current_player = me_pos
+            opponent = opp_pos
+        else:
+            current_player = opp_pos
+            opponent = me_pos
+            
+        # Generate all moves for current player
+        moves = []
+        for r, c in current_player:
+            # Straight forward
+            new_r = r + (direction if maximizing_player else -direction)
+            new_c = c
+            if 0 <= new_r < BOARD_SIZE and 0 <= new_c < BOARD_SIZE:
+                if (new_r, new_c) not in current_player and (new_r, new_c) not in opponent:
+                    moves.append(((r, c), (new_r, new_c)))
+            
+            # Diagonal forward
+            for dc in [-1, 1]:
+                new_r = r + (direction if maximizing_player else -direction)
+                new_c = c + dc
+                if 0 <= new_r < BOARD_SIZE and 0 <= new_c < BOARD_SIZE:
+                    target = (new_r, new_c)
+                    if target not in current_player:
+                        moves.append(((r, c), target))
+        
+        if not moves:
+            # No moves left, consider it a loss
+            return (-10000 if maximizing_player else 10000), None
+        
+        best_move = moves[0]
+        
+        if maximizing_player:
+            max_eval = -float('inf')
+            for move in moves:
+                from_pos, to_pos = move
+                new_me = list(me_pos)
+                new_opp = list(opp_pos)
+                
+                # Apply move
+                if from_pos in new_me:
+                    new_me.remove(from_pos)
+                if to_pos in opp_set:
+                    new_opp.remove(to_pos)
+                if from_pos in new_me:
+                    new_me.append(to_pos)
+                
+                # Recursive call
+                eval_score, _ = minimax((tuple(new_me), tuple(new_opp)), depth - 1, alpha, beta, False)
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_move = move
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            for move in moves:
+                from_pos, to_pos = move
+                new_me = list(me_pos)
+                new_opp = list(opp_pos)
+                
+                # Apply move
+                if from_pos in new_opp:
+                    new_opp.remove(from_pos)
+                if to_pos in me_set:
+                    new_me.remove(to_pos)
+                if from_pos in new_opp:
+                    new_opp.append(to_pos)
+                
+                eval_score, _ = minimax((tuple(new_me), tuple(new_opp)), depth - 1, alpha, beta, True)
+                if eval_score < min_eval:
+                    min_eval = eval_score
+                    best_move = move
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval, best_move
+    
+    # Evaluation function
+    def evaluate_board(me_positions, opp_positions, player_color, target_row):
+        """Evaluates the board state from the perspective of the current player"""
+        score = 0
+        
+        # Center control bonus
+        center_bonus = 0
+        for r, c in me_positions:
+            if 2 <= c <= 5:  # Center columns
+                center_bonus += 1
+        score += center_bonus * 2
+        
+        # Advancement bonus
+        for r, c in me_positions:
+            # Closer to target row = higher score
+            dist = abs(r - target_row)
+            score += (8 - dist)  # 8 - dist: 8 if at target, 1 if at home
+            
+            # Avoid being at home row (already won)
+            if r == target_row:
+                score += 50  # Bonus for winning position
+        
+        # Capture potential
+        for r, c in me_positions:
+            for dc in [-1, 1]:
+                new_r = r + direction
+                new_c = c + dc
+                if 0 <= new_r < BOARD_SIZE and 0 <= new_c < BOARD_SIZE:
+                    if (new_r, new_c) in opp_positions:
+                        score += 25  # High value for capturing opponent
+        
+        # Opponent advancement penalty
+        for r, c in opp_positions:
+            dist_opponent = abs(r - opponent_home_row)
+            score -= (8 - dist_opponent) * 1.5  # Opponent advancing is bad for us
+        
+        # Piece cohesion (bonus for having adjacent pieces)
+        for i, (r1, c1) in enumerate(me_positions):
+            for j, (r2, c2) in enumerate(me_positions):
+                if i < j:
+                    # Check if pieces are adjacent
+                    if abs(r1 - r2) <= 1 and abs(c1 - c2) <= 1:
+                        score += 2
+            
+        # Avoid isolated pieces (penalize pieces with no neighbors)
+        for r, c in me_positions:
+            isolated = True
+            for dr in [-1, 0, 1]:
+                for dc in [-1, 0, 1]:
+                    if dr == 0 and dc == 0:
+                        continue
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE:
+                        if (nr, nc) in me_positions:
+                            isolated = False
+                            break
+                if not isolated:
+                    break
+            if isolated:
+                score -= 10  # Large penalty for isolation
+        
+        # Threat assessment: if opponent can capture our piece next turn
+        for r, c in me_positions:
+            for dc in [-1, 1]:
+                new_r = r + direction
+                new_c = c + dc
+                if 0 <= new_r < BOARD_SIZE and 0 <= new_c < BOARD_SIZE:
+                    # If opponent can move here next turn to capture
+                    if (new_r, new_c) in opp_positions:
+                        # Check if opponent piece can actually reach the target
+                        opp_r, opp_c = new_r, new_c
+                        for opp_dc in [-1, 1]:
+                            back_r = opp_r - direction
+                            back_c = opp_c + opp_dc
+                            if 0 <= back_r < BOARD_SIZE and 0 <= back_c < BOARD_SIZE:
+                                if (back_r, back_c) in me_positions and (back_r, back_c) != (r, c):
+                                    # This is a threat - opponent can capture us next turn
+                                    score -= 30
+                                    break
+        
+        return score
+    
+    # For faster play, if we have very few moves, just pick the best heuristic move
+    if len(legal_moves) <= 3:
+        # Sort by heuristic and pick best
+        def heuristic_score(move):
+            from_pos, to_pos = move
+            to_r, to_c = to_pos
+            from_r, from_c = from_pos
+            
+            # Winning move (highest priority)
+            if to_r == home_row:
+                return 1000
+                
+            # Capture move
+            if to_pos in opp_set:
+                return 500
+                
+            # Advancement
+            advancement = abs(to_r - home_row) - abs(from_r - home_row)
+            base_score = 200 if advancement < 0 else 0
+            
+            # Center control
+            center_bonus = 10 if 2 <= to_c <= 5 else 0
+            
+            # Position safety - avoid edges
+            edge_bonus = 5 if 1 <= to_c <= 6 else 0
+            
+            return base_score + center_bonus + edge_bonus + (8 - to_r if color == 'w' else to_r)
+        
+        ranked_moves = sorted(legal_moves, key=heuristic_score, reverse=True)
+        return ranked_moves[0]
+    
+    # Minimax search
+    try:
+        _, best_move = minimax((tuple(me), tuple(opp)), max_depth, -float('inf'), float('inf'), True)
+        if best_move is not None:
+            return best_move
+    except:
+        # Fallback: return highest priority move if minimax fails
+        pass
+    
+    # Final fallback: return the best move by heuristic
+    def final_heuristic(move):
+        from_pos, to_pos = move
+        to_r, to_c = to_pos
+        
+        # Winning move
+        if to_r == home_row:
+            return float('inf')
+        
+        # Capture
+        if to_pos in opp_set:
+            return 500
+        
+        # Advancement
+        advancement = abs(to_r - home_row) - abs(from_pos[0] - home_row)
+        if advancement < 0:
+            return 300 + (8 - to_r) * 10 if color == 'w' else 300 + to_r * 10
+        
+        # Center control
+        center_bonus = 30 if 2 <= to_c <= 5 else 0
+        
+        # Edge avoidance
+        edge_bonus = 10 if 1 <= to_c <= 6 else 0
+        
+        return center_bonus + edge_bonus
+    
+    # Sort and return best
+    ranked_moves = sorted(legal_moves, key=final_heuristic, reverse=True)
+    return ranked_moves[0]
+</code>

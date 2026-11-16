@@ -1,0 +1,303 @@
+My strategy is to perform a depth-limited Minimax search with Alpha-Beta pruning to evaluate potential moves.
+
+1.  **Representation**: The board is represented using NumPy arrays for efficient row/column/diagonal slicing. To minimize redundant memory allocations during the search, I will use a "flattened" list of occupied coordinates to represent the board state, rather than copying full 6x6 matrices.
+2.  **Search**: I will iterate through all legal moves (placing a marble and rotating a quadrant). Since the branching factor is high (36 empty cells * 4 quadrants * 2 directions), I will prune the search space by only evaluating moves that:
+    *   Create a 5-in-a-row (Win).
+    *   Block an opponent's immediate win.
+    *   Satisfy heuristic constraints (e.g., occupying the center, playing near existing pieces).
+3.  **Evaluation**: A custom evaluation function will score board states based on the number of potential 5-in-a-row lines (lines with only my pieces and empty spaces).
+4.  **Execution**: The function will prioritize immediate wins, then immediate blocks, and finally select the best move based on the limited-depth search.
+
+```python
+import numpy as np
+from itertools import combinations
+
+# Precompute lines for the 6x6 board
+ROWS = [[(r, c) for c in range(6)] for r in range(6)]
+COLS = [[(r, c) for r in range(6)] for c in range(6)]
+DIAG1 = [[(r, r + c) for r in range(6)] for c in range(-5, 1)] # Down-right
+DIAG2 = [[(r, -r + c) for r in range(6)] for c in range(6, 11)] # Up-right
+# Flatten lines
+ALL_LINES = ROWS + COLS + DIAG1 + DIAG2
+# Filter lines to keep only those with at least 5 cells (standard Pentago lines on 6x6 are length 5 or 6)
+ALL_LINES = [line for line in ALL_LINES if len(line) >= 5]
+
+def get_moves(player_cells, opponent_cells):
+    """Generator yielding (r, c, quad, dir, new_p, new_o)"""
+    empties = set(range(36)) - player_cells - opponent_cells
+    if not empties: return
+    
+    # Optimization: Don't iterate all empties blindly if we can avoid it
+    # But we must find a legal move. 
+    # Pruning: We only consider moves that interact with existing pieces (neighbor radius 1)
+    # or center squares (13, 14, 19, 20).
+    
+    center = {13, 14, 19, 20}
+    occupied = player_cells | opponent_cells
+    neighbors = set()
+    for cell in occupied:
+        r, c = divmod(cell, 6)
+        for dr in (-1, 0, 1):
+            for dc in (-1, 0, 1):
+                nr, nc = r+dr, c+dc
+                if 0 <= nr < 6 and 0 <= nc < 6:
+                    neighbors.add(nr * 6 + nc)
+    
+    candidates = empties.intersection(neighbors.union(center))
+    if not candidates:
+        candidates = empties # Fallback: all empty cells if isolated board
+
+    for cell in candidates:
+        r, c = divmod(cell, 6)
+        # Quadrant mapping
+        q = (r // 3) * 2 + (c // 3)
+        
+        for d in ('L', 'R'):
+            # Apply rotation logic on coordinates
+            # Transform coords relative to quadrant, rotate, transform back
+            qr, qc = r % 3, c % 3
+            if d == 'R': # Clockwise
+                nr_qr, nr_qc = qc, 2 - qr
+            else: # Left (Anti-clockwise)
+                nr_qr, nr_qc = 2 - qc, qr
+            
+            br_base = (q // 2) * 3
+            bc_base = (q % 2) * 3
+            nr, nc = br_base + nr_qr, bc_base + nr_qc
+            nr_cell, nc_cell = nr * 6 + nc
+            
+            # Determine rotation impacts
+            # Rotating q moves cell 'cell' -> 'nr_cell'
+            # We need to see where existing pieces go.
+            # This requires a full map of the quadrant.
+            
+            # Optimization: only check if the rotation moves something important
+            # To be correct, we must compute the new sets.
+            
+            # Let's compute rotation map for the quadrant
+            rot_map = {}
+            for tr in range(3):
+                for tc in range(3):
+                    t_idx = (br_base + tr) * 6 + (bc_base + tc)
+                    if d == 'R':
+                        s_r, s_c = 2 - tr, tc
+                    else:
+                        s_r, s_c = tr, 2 - tc
+                    s_idx = (br_base + s_r) * 6 + (bc_base + s_c)
+                    rot_map[t_idx] = s_idx # What moves TO target t_idx?
+                    # Actually we need Source -> Target
+                    # Source (tr, tc) -> Target
+            
+            # Map for Source -> Target
+            src_to_tgt = {}
+            for tr in range(3):
+                for tc in range(3):
+                    s_idx = (br_base + tr) * 6 + (bc_base + tc)
+                    if d == 'R':
+                        t_r, t_c = tc, 2 - tr
+                    else:
+                        t_r, t_c = 2 - tc, tr
+                    t_idx = (br_base + t_r) * 6 + (bc_base + t_c)
+                    src_to_tgt[s_idx] = t_idx
+
+            # Place piece
+            # The placed piece is at (r, c). It is placed BEFORE rotation.
+            # So in the pre-rotation view, we occupy (r, c).
+            # Then the rotation happens.
+            
+            p_temp = set(player_cells)
+            o_temp = set(opponent_cells)
+            
+            # Check if placed cell is in rotated quadrant
+            if cell in src_to_tgt:
+                # If (r,c) is in the quad, it rotates to src_to_tgt[cell]
+                p_temp.add(cell)
+            else:
+                # If (r,c) is outside quad, it stays
+                p_temp.add(cell)
+            
+            # Now apply rotation to the pieces in the quadrant
+            # We can't just move p_temp elements blindly because we added 'cell' which might be in the quad.
+            # Let's do it cleanly:
+            
+            p_new = set()
+            o_new = set()
+            
+            # 1. Move pieces from the quadrant
+            for p in player_cells:
+                if p in src_to_tgt:
+                    p_new.add(src_to_tgt[p])
+                elif p not in p_temp: # Should be covered, but keep logic distinct
+                    p_new.add(p)
+            for p in opponent_cells:
+                if p in src_to_tgt:
+                    o_new.add(src_to_tgt[p])
+                elif p not in o_temp:
+                    o_new.add(p)
+            
+            # 2. Add the placed piece
+            # If placed piece was in quadrant, it was already moved by the rotation loop above (since it was in player_cells)
+            # But we added it to player_cells. Wait, 'player_cells' input doesn't have the new move.
+            # So we need to add the new piece to the *pre-rotation* sets, then rotate.
+            
+            # Correct approach:
+            pre_p = set(player_cells)
+            pre_o = set(opponent_cells)
+            pre_p.add(cell) # Place the piece
+            
+            final_p = set()
+            final_o = set()
+            
+            for p_idx in range(36):
+                is_p = p_idx in pre_p
+                is_o = p_idx in pre_o
+                if not is_p and not is_o: continue
+                
+                # If this index is in the moving quadrant, rotate it
+                if p_idx in src_to_tgt:
+                    t_idx = src_to_tgt[p_idx]
+                    if is_p: final_p.add(t_idx)
+                    if is_o: final_o.add(t_idx)
+                else:
+                    # Static
+                    if is_p: final_p.add(p_idx)
+                    if is_o: final_o.add(p_idx)
+            
+            yield (r, c, q, d, final_p, final_o)
+
+def evaluate(cells, opp_cells):
+    """Heuristic score"""
+    score = 0
+    for line in ALL_LINES:
+        p_count = 0
+        o_count = 0
+        e_count = 0
+        for r, c in line:
+            idx = r * 6 + c
+            if idx in cells: p_count += 1
+            elif idx in opp_cells: o_count += 1
+            else: e_count += 1
+        
+        if p_count >= 5:
+            score += 100000 * (p_count - 4)
+        elif p_count == 4 and e_count == 1:
+            score += 5000
+        elif p_count == 3 and e_count == 2:
+            score += 100
+        elif p_count == 2 and e_count == 3:
+            score += 10
+            
+        if o_count >= 5:
+            score -= 100000 * (o_count - 4)
+        elif o_count == 4 and e_count == 1:
+            score -= 6000 # Slightly higher penalty for opp threat
+        elif o_count == 3 and e_count == 2:
+            score -= 150
+        elif o_count == 2 and e_count == 3:
+            score -= 15
+            
+    return score
+
+def check_win(cells):
+    for line in ALL_LINES:
+        count = 0
+        for r, c in line:
+            if r * 6 + c in cells:
+                count += 1
+            else:
+                count = 0
+            if count >= 5: return True
+    return False
+
+def parse_board(you, opponent):
+    p = set()
+    o = set()
+    for r in range(6):
+        for c in range(6):
+            if you[r][c]: p.add(r * 6 + c)
+            if opponent[r][c]: o.add(r * 6 + c)
+    return p, o
+
+def policy(you, opponent):
+    player_cells, opponent_cells = parse_board(you, opponent)
+    
+    best_move = None
+    best_score = -float('inf')
+    
+    # 1. Check for immediate wins
+    for r, c, q, d, fp, fo in get_moves(player_cells, opponent_cells):
+        if check_win(fp):
+            return f"{r+1},{c+1},{q},{d}"
+    
+    # 2. Check for blocking opponent wins (force them to block you or lose)
+    # We simulate opponent's move after ours. If they can win immediately, we must block.
+    # A more aggressive block check: if I don't block a specific spot, they win next turn.
+    # This is expensive. Let's rely on heuristic blocking.
+    
+    # 3. Search with Depth 1 (Evaluate all my moves)
+    # In parallel, check if opponent has immediate winning response to any of my moves.
+    # If so, that move is bad.
+    
+    for r, c, q, d, fp, fo in get_moves(player_cells, opponent_cells):
+        # Immediate win check already done.
+        
+        # Check if opponent wins immediately after this move
+        opp_can_win = False
+        # Heuristic: Check if we left a 4-in-a-row open for opp in any line
+        # Fast check: iterate lines, see if opp has 4 and we didn't fill the hole
+        # This is part of the evaluation function.
+        
+        # Minimax Depth 2 (Opponent Response)
+        # We want to minimize the opponent's best outcome.
+        # Since branching is high, we prune:
+        # Only consider opponent moves that threaten a win or block.
+        # We calculate max possible score for opponent after this move.
+        
+        # Optimization: Depth 2 is too slow (1s limit).
+        # We will use Depth 1 + Heuristic + Pruning.
+        
+        # Block Check: If opponent has 4 in a row, we MUST block.
+        # We can check this by looking at current opponent threats.
+        
+        # Evaluate position
+        sc = evaluate(fp, fo)
+        
+        # Center control bonus
+        center_bonus = 0
+        if 13 in fp: center_bonus += 5
+        if 14 in fp: center_bonus += 5
+        if 19 in fp: center_bonus += 5
+        if 20 in fp: center_bonus += 5
+        sc += center_bonus
+        
+        # Penalize moves that leave opponent with a 4-in-a-row opportunity
+        # Check opponent 3-in-a-row threats
+        threat = False
+        for line in ALL_LINES:
+            o_cnt = 0
+            e_cnt = 0
+            last_empty = None
+            for rr, cc in line:
+                idx = rr * 6 + cc
+                if idx in fo: o_cnt += 1
+                elif idx not in fp: e_cnt += 1; last_empty = idx
+            if o_cnt == 3 and e_cnt == 2:
+                # If this empty cell is adjacent to the 3, it's a threat
+                # Simplified: penalty if opponent has 3 alive
+                # Make penalty larger if the line includes 2 opp pieces and we moved near them?
+                # Let's just punish leaving opp 3-lines open.
+                sc -= 300
+                
+        if sc > best_score:
+            best_score = sc
+            best_move = (r, c, q, d)
+
+    # If we still haven't picked a move (unlikely), pick first valid
+    if best_move is None:
+        # Fallback: pick any valid move
+        for r, c, q, d, fp, fo in get_moves(player_cells, opponent_cells):
+            best_move = (r, c, q, d)
+            break
+            
+    return f"{best_move[0]+1},{best_move[1]+1},{best_move[2]},{best_move[3]}"
+```

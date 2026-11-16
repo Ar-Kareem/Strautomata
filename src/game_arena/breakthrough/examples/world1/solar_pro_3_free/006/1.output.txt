@@ -1,0 +1,193 @@
+**Strategy**
+
+The policy implements a depth‑limited minimax search (3–4 plies) with alpha‑beta pruning.  
+Each node evaluates the position with a simple heuristic that rewards:
+
+* Pieces that are close to the opponent’s home row (the side that determines victory).  
+* Fewer opponent pieces, especially those that are close to their own home row.  
+
+Before digging into search we first check for any immediate winning move – a move that puts one of our pieces on the opponent’s home row. If such a move exists we return it immediately, guaranteeing a win in one turn.
+
+If no immediate win is possible we let the minimax explore the move tree. The evaluation function assigns a weight `w = 8 - row` for black pieces (because they move toward row 0) and `w = row + 1` for white pieces (because they move toward row 7). The total score is the sum of our piece weights minus the sum of the opponent’s piece weights. Capturing an opponent piece removes its weight from the opponent side, giving a clear incentive to capture.
+
+All generated moves are legal: forward‑straight and forward‑diagonal captures only. The algorithm never returns an illegal move, satisfying the arena’s strict legality requirement while still exploiting the heuristic to out‑play typical opponents.
+
+---
+
+<code>
+import math
+from typing import List, Tuple
+
+# Constants for the board size and home rows
+SIZE = 8
+BLACK_HOME = 0   # bottom row (white starts here)
+WHITE_HOME = 7   # top row (black starts here)
+
+# Heuristic weights
+#   black piece: weight = 8 - row  (increases as it moves down toward 0)
+#   white piece: weight = row + 1   (increases as it moves up toward 7)
+WEIGHT_B = lambda row: 8 - row
+WEIGHT_W = lambda row: row + 1
+
+def evaluate(state: Tuple[Tuple[int, int], Tuple[int, int]], my_color: str) -> float:
+    """
+    Return a numeric score for the given position from the perspective of `my_color`.
+    Higher score is better.
+    """
+    my_set, opp_set = state
+    score_me = 0.0
+    score_opp = 0.0
+
+    # Convert opponent color
+    opp_color = 'b' if my_color == 'w' else 'w'
+
+    for piece in my_set:
+        r, c = piece
+        if my_color == 'b':
+            score_me += WEIGHT_B(r)
+        else:
+            score_me += WEIGHT_W(r)
+
+    for piece in opp_set:
+        r, c = piece
+        if opp_color == 'b':
+            score_opp += WEIGHT_B(r)
+        else:
+            score_opp += WEIGHT_W(r)
+
+    return score_me - score_opp
+
+def generate_moves(me_set: frozenset, opp_set: frozenset, dr: int) -> List[Tuple[Tuple[int, int], Tuple[int, int]]]:
+    """
+    Return all legal moves for `me_set` given direction `dr`.
+    """
+    moves = []
+    for (r, c) in me_set:
+        # diagonal forward captures
+        for dc in (-1, 1):
+            tr, tc = r + dr, c + dc
+            if (tr, tc) in opp_set:
+                moves.append(((r, c), (tr, tc)))
+
+        # straight forward (no capture)
+        tr, tc = r + dr, c
+        if 0 <= tr < SIZE and 0 <= tc < SIZE:
+            if (tr, tc) not in me_set and (tr, tc) not in opp_set:
+                moves.append(((r, c), (tr, tc)))
+    return moves
+
+def apply_move(me_set: frozenset, opp_set: frozenset, move: Tuple[Tuple[int, int], Tuple[int, int]]) -> Tuple[Tuple[Tuple[int, int], Tuple[int, int]], Tuple[Tuple[int, int], Tuple[int, int]]]:
+    (fr, fc), (tr, tc) = move
+    new_me = set(me_set)
+    new_me.remove((fr, fc))
+    new_me.add((tr, tc))
+    new_opp = set(opp_set)
+    if (tr, tc) in opp_set:
+        new_opp.remove((tr, tc))
+    return (frozenset(new_me), frozenset(new_opp))
+
+def minimax(state: Tuple[Tuple[int, int], Tuple[int, int]],
+           depth: int,
+           alpha: float,
+           beta: float,
+           maximizing: bool) -> float:
+    """
+    Classic minimax with alpha‑beta pruning.
+    Returns the best score for the side whose turn it is.
+    """
+    my_set, opp_set = state
+
+    # Terminal condition: depth limit or no moves
+    if depth == 0 or not generate_moves(my_set, opp_set, -1 if maximizing else 1):
+        return evaluate(state, 'b' if maximizing else 'w')
+
+    # Determine direction for this player (black moves -1, white moves +1)
+    dr = -1 if maximizing else 1
+
+    best_score = -math.inf if maximizing else math.inf
+    for move in generate_moves(my_set, opp_set, dr):
+        child_state = apply_move(my_set, opp_set, move)
+        score = minimax(child_state, depth - 1, alpha, beta, not maximizing)
+        if maximizing:
+            if score > best_score:
+                best_score = score
+            alpha = max(alpha, best_score)
+        else:
+            if score < best_score:
+                best_score = score
+            beta = min(beta, best_score)
+        if alpha >= beta:
+            break
+    return best_score
+
+def best_move_from_children(me_set: frozenset, opp_set: frozenset, dr: int) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    """
+    Helper that returns the move with the highest minimax score from the current perspective.
+    """
+    max_score = -math.inf
+    best_move = None
+    for move in generate_moves(me_set, opp_set, dr):
+        child_state = apply_move(me_set, opp_set, move)
+        score = minimax(child_state, 2, -math.inf, math.inf, not (dr == -1))
+        if score > max_score:
+            max_score = score
+            best_move = move
+    return best_move
+
+def policy(me: List[Tuple[int, int]],
+           opp: List[Tuple[int, int]],
+           color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    """
+    Core entry point required by the arena.
+    Returns a legal move as ((from_row, from_col), (to_row, to_col)).
+    """
+    # Convert input lists to frozensets for fast membership tests
+    me_set = frozenset(me)
+    opp_set = frozenset(opp)
+    dr = -1 if color == 'b' else 1
+
+    # 1️⃣ Immediate winning move check
+    win_target = BLACK_HOME if color == 'b' else WHITE_HOME
+    for move in generate_moves(me_set, opp_set, dr):
+        child_me, _ = apply_move(me_set, opp_set, move)
+        # If any piece of us lands on the opponent's home row we win
+        for (r, _) in child_me:
+            if r == win_target:
+                return move
+
+    # 2️⃣ Depth‑limited search for the best move
+    # We explore up to depth 4 (i.e. 4 plies) – this is enough for typical Breakthrough boards.
+    max_depth = 4
+    best_move = best_move_from_children(me_set, opp_set, dr)
+
+    # If by chance no move is found (should not happen in a legal game)
+    if best_move is None:
+        # Fallback to any forward move (must exist because Breakthrough always has a move)
+        dr_forward = -1 if color == 'b' else 1
+        for piece in me_set:
+            r, c = piece
+            # forward diagonal capture first
+            for dc in (-1, 1):
+                tr, tc = r + dr_forward, c + dc
+                if (tr, tc) in opp_set:
+                    # capture is always legal and better than nothing
+                    return ((r, c), (tr, tc))
+            # forward straight
+            tr, tc = r + dr_forward, c
+            if 0 <= tr < SIZE and 0 <= tc < SIZE:
+                # ensure square empty
+                if (tr, tc) not in me_set and (tr, tc) not in opp_set:
+                    return ((r, c), (tr, tc))
+
+    return best_move
+
+# The following if‑guard makes the file import‑safe when run directly
+if __name__ == "__main__":
+    # Example usage (for debugging only, not part of the required API)
+    import random
+    # Mock random positions
+    me = [(7,0), (7,1), (6,0), (6,1), (5,2), (5,3)]
+    opp = [(0,6), (0,7), (1,6), (1,7), (2,5), (2,4)]
+    print("Black policy:", policy(me, opp, "b"))
+    print("White policy:", policy(opp, me, "w"))
+</code>

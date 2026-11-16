@@ -1,0 +1,125 @@
+
+import random
+from collections import deque
+from typing import List, Tuple
+
+# Directions: (dr, dc) for the 8 possible lines
+DIRS = [(-1, -1), (-1, 0), (-1, 1),
+        (0, -1),          (0, 1),
+        (1, -1),  (1, 0), (1, 1)]
+
+def policy(board: List[List[int]]) -> str:
+    """
+    Return a legal Lines of Action move for the current player (value 1).
+    The move is returned as "from_row,from_col:to_row,to_col".
+    """
+    N = 8  # board size
+
+    # ---------- helper functions ----------
+    def in_bounds(r: int, c: int) -> bool:
+        return 0 <= r < N and 0 <= c < N
+
+    def count_on_line(r: int, c: int, dr: int, dc: int) -> int:
+        """Count all pieces (both colors) on the line that goes through (r,c) with direction (dr,dc)."""
+        cnt = 0
+        # walk backwards
+        rr, cc = r - dr, c - dc
+        while in_bounds(rr, cc):
+            if board[rr][cc] != 0:
+                cnt += 1
+            rr -= dr
+            cc -= dc
+        # walk forwards (including the start square)
+        rr, cc = r, c
+        while in_bounds(rr, cc):
+            if board[rr][cc] != 0:
+                cnt += 1
+            rr += dr
+            cc += dc
+        return cnt
+
+    def path_is_clear(r0: int, c0: int, r1: int, c1: int, dr: int, dc: int) -> bool:
+        """Check that no opponent piece is jumped over between start (exclusive) and dest (exclusive)."""
+        steps = max(abs(r1 - r0), abs(c1 - c0))
+        rr, cc = r0 + dr, c0 + dc
+        for _ in range(steps - 1):
+            if board[rr][cc] == -1:  # opponent piece blocks the jump
+                return False
+            rr += dr
+            cc += dc
+        return True
+
+    def generate_moves() -> List[Tuple[int, int, int, int]]:
+        """Return a list of all legal moves as tuples (r0,c0,r1,c1)."""
+        moves = []
+        for r in range(N):
+            for c in range(N):
+                if board[r][c] != 1:
+                    continue
+                for dr, dc in DIRS:
+                    if dr == 0 and dc == 0:
+                        continue
+                    # distance is number of pieces on the whole line defined by direction
+                    dist = count_on_line(r, c, dr, dc)
+                    if dist == 0:
+                        continue
+                    r1, c1 = r + dr * dist, c + dc * dist
+                    if not in_bounds(r1, c1):
+                        continue
+                    # destination cannot contain our own piece
+                    if board[r1][c1] == 1:
+                        continue
+                    if not path_is_clear(r, c, r1, c1, dr, dc):
+                        continue
+                    moves.append((r, c, r1, c1))
+        return moves
+
+    def components_after_move(move: Tuple[int, int, int, int]) -> int:
+        """Apply move on a temporary board and count connected components of our pieces."""
+        r0, c0, r1, c1 = move
+        tmp = [row[:] for row in board]
+        tmp[r0][c0] = 0
+        tmp[r1][c1] = 1   # capture handled automatically (overwrites -1)
+        # BFS to count components
+        visited = [[False]*N for _ in range(N)]
+        comp = 0
+        for i in range(N):
+            for j in range(N):
+                if tmp[i][j] != 1 or visited[i][j]:
+                    continue
+                comp += 1
+                q = deque()
+                q.append((i, j))
+                visited[i][j] = True
+                while q:
+                    x, y = q.popleft()
+                    for dr, dc in DIRS:
+                        nx, ny = x + dr, y + dc
+                        if in_bounds(nx, ny) and not visited[nx][ny] and tmp[nx][ny] == 1:
+                            visited[nx][ny] = True
+                            q.append((nx, ny))
+        return comp
+
+    # ---------- main policy ----------
+    legal_moves = generate_moves()
+    if not legal_moves:
+        # Should never happen; return a dummy move to keep the interface safe
+        return "0,0:0,0"
+
+    # Evaluate each move
+    best_moves = []
+    best_score = None
+    for mv in legal_moves:
+        comps = components_after_move(mv)
+        # Prefer captures when component count is equal
+        capture = board[mv[3]][mv[2]] == -1
+        score = (comps, not capture)  # tuple: smaller comps first, then capture (False < True)
+        if best_score is None or score < best_score:
+            best_score = score
+            best_moves = [mv]
+        elif score == best_score:
+            best_moves.append(mv)
+
+    chosen = random.choice(best_moves)
+    r0, c0, r1, c1 = chosen
+    return f"{r0},{c0}:{r1},{c1}"

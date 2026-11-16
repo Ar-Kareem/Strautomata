@@ -1,0 +1,216 @@
+The strategy for this policy is to use a combination of Monte Carlo Tree Search (MCTS) and basic pattern recognition to make intelligent moves in Go. The policy will:
+
+1. **Prioritize urgent moves** (like saving at-risk groups or capturing opponent stones)
+2. **Use MCTS for strategic decisions** when no urgent moves are available
+3. **Avoid self-atari** (moves that would put our own stones in immediate danger)
+4. **Balance between influence and territory** by evaluating potential moves
+5. **Pass when no beneficial moves are available**
+
+The MCTS implementation will be simplified to fit within the 1-second time constraint, using a basic rollout policy and UCT selection.
+
+<code>
+import random
+import math
+import time
+from collections import defaultdict
+
+class GoNode:
+    def __init__(self, parent=None, move=None):
+        self.parent = parent
+        self.move = move
+        self.children = []
+        self.wins = 0
+        self.visits = 0
+        self.untried_moves = None
+
+    def uct_select_child(self):
+        log_parent_visits = math.log(self.visits)
+
+        def uct_score(child):
+            exploit = child.wins / child.visits
+            explore = math.sqrt(2 * log_parent_visits / child.visits)
+            return exploit + explore
+
+        return max(self.children, key=uct_score)
+
+    def add_child(self, move, board_state):
+        child = GoNode(parent=self, move=move)
+        child.untried_moves = get_legal_moves(board_state)
+        self.untried_moves.remove(move)
+        self.children.append(child)
+        return child
+
+    def update(self, result):
+        self.visits += 1
+        self.wins += result
+
+def get_legal_moves(board_state):
+    me, opponent = board_state
+    legal_moves = set()
+    for row in range(1, 20):
+        for col in range(1, 20):
+            if (row, col) not in me and (row, col) not in opponent:
+                legal_moves.add((row, col))
+    legal_moves.add((0, 0))  # Pass is always legal
+    return legal_moves
+
+def is_legal_move(move, board_state):
+    me, opponent = board_state
+    if move == (0, 0):
+        return True
+    if move in me or move in opponent:
+        return False
+    return True
+
+def simulate_game(board_state):
+    me, opponent = board_state
+    current_player = 0  # 0 for me, 1 for opponent
+    for _ in range(100):  # Max simulation depth
+        legal_moves = get_legal_moves((me, opponent))
+        if not legal_moves:
+            break
+
+        # Simple rollout policy
+        if current_player == 0:
+            # For our moves, prefer moves near our stones
+            candidate_moves = []
+            for move in legal_moves:
+                if move == (0, 0):
+                    continue
+                # Count adjacent friendly stones
+                adjacent = 0
+                for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                    r, c = move[0]+dr, move[1]+dc
+                    if (r, c) in me:
+                        adjacent += 1
+                candidate_moves.append((move, adjacent))
+
+            if candidate_moves:
+                candidate_moves.sort(key=lambda x: -x[1])
+                move = candidate_moves[0][0]
+            else:
+                move = random.choice(list(legal_moves))
+        else:
+            # Opponent plays randomly
+            move = random.choice(list(legal_moves))
+
+        if move == (0, 0):
+            current_player = 1 - current_player
+            continue
+
+        # Update board
+        if current_player == 0:
+            me.add(move)
+        else:
+            opponent.add(move)
+
+        current_player = 1 - current_player
+
+    # Simple scoring: count stones
+    return len(me) - len(opponent)
+
+def mcts(root_state, iterations=100):
+    root = GoNode()
+    root.untried_moves = get_legal_moves(root_state)
+
+    for _ in range(iterations):
+        node = root
+        state = root_state.copy()
+
+        # Selection
+        while node.untried_moves == [] and node.children != []:
+            node = node.uct_select_child()
+            if node.move != (0, 0):
+                if node.parent == root or node.parent.parent == root:
+                    state[0].add(node.move)
+                else:
+                    state[1].add(node.move)
+
+        # Expansion
+        if node.untried_moves != []:
+            move = random.choice(node.untried_moves)
+            state_copy = [set(state[0]), set(state[1])]
+            if node.parent == root or node.parent.parent == root:
+                state_copy[0].add(move)
+            else:
+                state_copy[1].add(move)
+            node = node.add_child(move, state_copy)
+
+        # Simulation
+        result = simulate_game(state_copy)
+
+        # Backpropagation
+        while node is not None:
+            node.update(result)
+            node = node.parent
+
+    # Return the move with highest visit count
+    return max(root.children, key=lambda c: c.visits).move
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    start_time = time.time()
+    me_set = set(me)
+    opponent_set = set(opponent)
+
+    # Check for urgent moves (saving at-risk groups)
+    # This is a simplified version - in a real implementation we'd check for actual atari
+    urgent_moves = []
+    for my_stone in me:
+        # Check if this stone is isolated
+        adjacent_friendly = 0
+        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+            r, c = my_stone[0]+dr, my_stone[1]+dc
+            if (r, c) in me_set:
+                adjacent_friendly += 1
+        if adjacent_friendly == 0:
+            # Try to save this stone
+            for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                r, c = my_stone[0]+dr, my_stone[1]+dc
+                if (r, c) not in me_set and (r, c) not in opponent_set and 1 <= r <= 19 and 1 <= c <= 19:
+                    urgent_moves.append((r, c))
+
+    if urgent_moves:
+        # Return the first urgent move found
+        return urgent_moves[0]
+
+    # Check for capturing opportunities
+    for opp_stone in opponent:
+        # Check if opponent stone is in atari (only 1 liberty)
+        liberties = 0
+        liberty_pos = None
+        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+            r, c = opp_stone[0]+dr, opp_stone[1]+dc
+            if (r, c) not in me_set and (r, c) not in opponent_set and 1 <= r <= 19 and 1 <= c <= 19:
+                liberties += 1
+                liberty_pos = (r, c)
+        if liberties == 1:
+            return liberty_pos
+
+    # If no urgent moves, use MCTS
+    try:
+        iterations = max(1, int((time.time() - start_time) * 1000))
+        move = mcts((me_set, opponent_set), iterations=iterations)
+        if is_legal_move(move, (me_set, opponent_set)):
+            return move
+    except:
+        pass
+
+    # Fallback: play near our stones
+    candidate_moves = []
+    for move in get_legal_moves((me_set, opponent_set)):
+        if move == (0, 0):
+            continue
+        adjacent = 0
+        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+            r, c = move[0]+dr, move[1]+dc
+            if (r, c) in me_set:
+                adjacent += 1
+        candidate_moves.append((move, adjacent))
+
+    if candidate_moves:
+        candidate_moves.sort(key=lambda x: -x[1])
+        return candidate_moves[0][0]
+
+    # If all else fails, pass
+    return (0, 0)
+</code>

@@ -1,0 +1,189 @@
+
+import time
+import random
+
+def policy(board: list[list[int]]) -> int:
+    ROWS, COLS = 6, 7
+    b = [row[:] for row in board]
+    
+    def get_valid_moves():
+        return [c for c in range(COLS) if b[0][c] == 0]
+    
+    def drop_row(col):
+        for r in range(ROWS - 1, -1, -1):
+            if b[r][col] == 0:
+                return r
+        return -1
+    
+    def check_win(player):
+        for r in range(ROWS):
+            for c in range(COLS - 3):
+                if all(b[r][c+i] == player for i in range(4)):
+                    return True
+        for r in range(ROWS - 3):
+            for c in range(COLS):
+                if all(b[r+i][c] == player for i in range(4)):
+                    return True
+        for r in range(ROWS - 3):
+            for c in range(COLS - 3):
+                if all(b[r+i][c+i] == player for i in range(4)):
+                    return True
+        for r in range(3, ROWS):
+            for c in range(COLS - 3):
+                if all(b[r-i][c+i] == player for i in range(4)):
+                    return True
+        return False
+    
+    def evaluate_window(window, player):
+        opp = -player
+        score = 0
+        pc = window.count(player)
+        oc = window.count(opp)
+        ec = window.count(0)
+        if pc == 4:
+            score += 100000
+        elif pc == 3 and ec == 1:
+            score += 50
+        elif pc == 2 and ec == 2:
+            score += 10
+        if oc == 3 and ec == 1:
+            score -= 80
+        elif oc == 2 and ec == 2:
+            score -= 8
+        return score
+    
+    def score_position(player):
+        score = 0
+        # Center preference
+        for r in range(ROWS):
+            if b[r][3] == player:
+                score += 6
+            elif b[r][3] == -player:
+                score -= 6
+        # Horizontal
+        for r in range(ROWS):
+            for c in range(COLS - 3):
+                w = [b[r][c+i] for i in range(4)]
+                score += evaluate_window(w, player)
+        # Vertical
+        for r in range(ROWS - 3):
+            for c in range(COLS):
+                w = [b[r+i][c] for i in range(4)]
+                score += evaluate_window(w, player)
+        # Diag
+        for r in range(ROWS - 3):
+            for c in range(COLS - 3):
+                w = [b[r+i][c+i] for i in range(4)]
+                score += evaluate_window(w, player)
+        for r in range(3, ROWS):
+            for c in range(COLS - 3):
+                w = [b[r-i][c+i] for i in range(4)]
+                score += evaluate_window(w, player)
+        return score
+    
+    move_order = [3, 2, 4, 1, 5, 0, 6]
+    
+    def minimax(depth, alpha, beta, maximizing, deadline):
+        valid = [c for c in move_order if b[0][c] == 0]
+        if not valid:
+            return 0, -1
+        if check_win(1):
+            return 1000000 + depth, -1
+        if check_win(-1):
+            return -1000000 - depth, -1
+        if depth == 0 or time.time() > deadline:
+            return score_position(1), -1
+        
+        if maximizing:
+            val = -float('inf')
+            best = valid[0]
+            for c in valid:
+                r = drop_row(c)
+                b[r][c] = 1
+                s, _ = minimax(depth - 1, alpha, beta, False, deadline)
+                b[r][c] = 0
+                if s > val:
+                    val = s
+                    best = c
+                alpha = max(alpha, val)
+                if alpha >= beta:
+                    break
+                if time.time() > deadline:
+                    break
+            return val, best
+        else:
+            val = float('inf')
+            best = valid[0]
+            for c in valid:
+                r = drop_row(c)
+                b[r][c] = -1
+                s, _ = minimax(depth - 1, alpha, beta, True, deadline)
+                b[r][c] = 0
+                if s < val:
+                    val = s
+                    best = c
+                beta = min(beta, val)
+                if alpha >= beta:
+                    break
+                if time.time() > deadline:
+                    break
+            return val, best
+    
+    valid_moves = get_valid_moves()
+    if not valid_moves:
+        return 0
+    
+    # Immediate win
+    for c in valid_moves:
+        r = drop_row(c)
+        b[r][c] = 1
+        if check_win(1):
+            b[r][c] = 0
+            return c
+        b[r][c] = 0
+    
+    # Block immediate opponent win
+    for c in valid_moves:
+        r = drop_row(c)
+        b[r][c] = -1
+        if check_win(-1):
+            b[r][c] = 0
+            return c
+        b[r][c] = 0
+    
+    # Avoid moves that give opponent a win
+    safe_moves = []
+    for c in valid_moves:
+        r = drop_row(c)
+        b[r][c] = 1
+        gives_win = False
+        if r > 0:
+            b[r-1][c] = -1
+            if check_win(-1):
+                gives_win = True
+            b[r-1][c] = 0
+        b[r][c] = 0
+        if not gives_win:
+            safe_moves.append(c)
+    
+    if safe_moves:
+        search_moves = safe_moves
+    else:
+        search_moves = valid_moves
+    
+    deadline = time.time() + 0.85
+    best_move = search_moves[0] if search_moves else valid_moves[0]
+    
+    for depth in range(1, 30):
+        if time.time() > deadline:
+            break
+        score, move = minimax(depth, -float('inf'), float('inf'), True, deadline)
+        if move in search_moves and time.time() <= deadline:
+            best_move = move
+        if abs(score) > 500000:
+            break
+    
+    if best_move not in valid_moves:
+        best_move = valid_moves[0]
+    
+    return best_move

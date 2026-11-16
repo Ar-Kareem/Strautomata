@@ -1,0 +1,284 @@
+
+import numpy as np
+from typing import List, Tuple
+import random
+
+def policy(board: List[List[int]]) -> int:
+    """
+    Returns the next best move for the current player (1) in a Connect 4 game.
+    Uses a hybrid strategy combining minimax with alpha-beta pruning and pattern-based heuristics.
+    """
+    # Convert board to numpy array for easier manipulation
+    np_board = np.array(board, dtype=int)
+    rows, cols = np_board.shape
+
+    # Check for immediate win
+    immediate_win = find_immediate_win(np_board)
+    if immediate_win is not None:
+        return immediate_win
+
+    # Check for opponent's immediate win and block it
+    opponent_immediate_win = find_immediate_win(np_board * -1)
+    if opponent_immediate_win is not None:
+        return opponent_immediate_win
+
+    # Get list of legal moves (columns with at least one empty cell)
+    legal_moves = get_legal_moves(np_board)
+
+    # If no forced move, use minimax with alpha-beta pruning (depth-limited)
+    if len(legal_moves) > 0:
+        best_move = minimax(np_board, depth=5, alpha=-float('inf'), beta=float('inf'), maximizing_player=True)
+        if best_move is not None:
+            return best_move
+
+    # Fallback: simple heuristic (center control + potential lines)
+    return simple_heuristic(np_board, legal_moves)
+
+def find_immediate_win(board: np.ndarray) -> int:
+    """Returns a column where placing a disc would immediately win the game."""
+    for col in range(board.shape[1]):
+        if board[0][col] == 0:  # Column is not full
+            # Simulate dropping a disc in this column
+            new_board = drop_disc(board, col, 1)
+            if check_win(new_board, 1):
+                return col
+    return None
+
+def drop_disc(board: np.ndarray, col: int, player: int) -> np.ndarray:
+    """Drops a disc in the given column and returns the new board."""
+    new_board = board.copy()
+    for row in range(rows - 1, -1, -1):
+        if new_board[row][col] == 0:
+            new_board[row][col] = player
+            break
+    return new_board
+
+def check_win(board: np.ndarray, player: int) -> bool:
+    """Checks if the given player has a Connect 4 line."""
+    # Check horizontal
+    for row in range(rows):
+        for col in range(cols - 3):
+            if all(board[row][col + i] == player for i in range(4)):
+                return True
+
+    # Check vertical
+    for row in range(rows - 3):
+        for col in range(cols):
+            if all(board[row + i][col] == player for i in range(4)):
+                return True
+
+    # Check diagonal (top-left to bottom-right)
+    for row in range(rows - 3):
+        for col in range(cols - 3):
+            if all(board[row + i][col + i] == player for i in range(4)):
+                return True
+
+    # Check diagonal (top-right to bottom-left)
+    for row in range(rows - 3):
+        for col in range(3, cols):
+            if all(board[row + i][col - i] == player for i in range(4)):
+                return True
+
+    return False
+
+def get_legal_moves(board: np.ndarray) -> List[int]:
+    """Returns list of columns where a disc can be dropped."""
+    return [col for col in range(board.shape[1]) if board[0][col] == 0]
+
+def minimax(board: np.ndarray, depth: int, alpha: float, beta: float, maximizing_player: bool) -> int:
+    """Minimax with alpha-beta pruning to find the best move."""
+    if depth == 0 or check_win(board, 1) or check_win(board, -1):
+        return None
+
+    legal_moves = get_legal_moves(board)
+    if not legal_moves:
+        return None
+
+    if maximizing_player:
+        best_score = -float('inf')
+        best_move = None
+        for move in legal_moves:
+            new_board = drop_disc(board, move, 1)
+            score = evaluate_board(new_board)
+            if score > best_score:
+                best_score = score
+                best_move = move
+            # Alpha-beta pruning
+            if best_score >= beta:
+                return best_move
+            alpha = max(alpha, best_score)
+        return best_move
+    else:
+        best_score = float('inf')
+        best_move = None
+        for move in legal_moves:
+            new_board = drop_disc(board, move, -1)
+            score = evaluate_board(new_board)
+            if score < best_score:
+                best_score = score
+                best_move = move
+            # Alpha-beta pruning
+            if best_score <= alpha:
+                return best_move
+            beta = min(beta, best_score)
+        return best_move
+
+def evaluate_board(board: np.ndarray) -> int:
+    """Evaluates the board using pattern-based heuristics."""
+    score = 0
+    rows, cols = board.shape
+
+    # Weight for center columns (3-4)
+    center_weight = [0, 1, 2, 3, 2, 1, 0]
+
+    # Check all possible lines (horizontal, vertical, diagonal)
+    for row in range(rows):
+        for col in range(cols):
+            if board[row][col] == 0:
+                continue
+            # Horizontal
+            for c in range(col, min(col + 4, cols)):
+                window = board[row][col:c+1]
+                if window[0] == 1 and window[1] == 1 and window[2] == 1 and window[3] == 1:
+                    score += 100
+                elif window[0] == 1 and window[1] == 1 and window[2] == 1:
+                    score += 10
+                elif window[0] == 1 and window[1] == 1 and window[2] == 1 and board[row][c+1] == 0:
+                    score += 5
+                elif window[0] == -1 and window[1] == -1 and window[2] == -1 and window[3] == -1:
+                    score -= 100
+                elif window[0] == -1 and window[1] == -1 and window[2] == -1:
+                    score -= 10
+                elif window[0] == -1 and window[1] == -1 and window[2] == -1 and board[row][c+1] == 0:
+                    score -= 5
+
+            # Vertical
+            for r in range(row, min(row + 4, rows)):
+                window = board[r:row+1][col]
+                if window[0] == 1 and window[1] == 1 and window[2] == 1 and window[3] == 1:
+                    score += 100
+                elif window[0] == 1 and window[1] == 1 and window[2] == 1:
+                    score += 10
+                elif window[0] == 1 and window[1] == 1 and window[2] == 1 and board[r+1][col] == 0:
+                    score += 5
+                elif window[0] == -1 and window[1] == -1 and window[2] == -1 and window[3] == -1:
+                    score -= 100
+                elif window[0] == -1 and window[1] == -1 and window[2] == -1:
+                    score -= 10
+                elif window[0] == -1 and window[1] == -1 and window[2] == -1 and board[r+1][col] == 0:
+                    score -= 5
+
+            # Diagonal (top-left to bottom-right)
+            for r, c in zip(range(row, min(row + 4, rows)), range(col, min(col + 4, cols))):
+                window = board[r:row+1][c:col+1]
+                if window[0] == 1 and window[1] == 1 and window[2] == 1 and window[3] == 1:
+                    score += 100
+                elif window[0] == 1 and window[1] == 1 and window[2] == 1:
+                    score += 10
+                elif window[0] == 1 and window[1] == 1 and window[2] == 1 and board[r+1][c+1] == 0:
+                    score += 5
+                elif window[0] == -1 and window[1] == -1 and window[2] == -1 and window[3] == -1:
+                    score -= 100
+                elif window[0] == -1 and window[1] == -1 and window[2] == -1:
+                    score -= 10
+                elif window[0] == -1 and window[1] == -1 and window[2] == -1 and board[r+1][c+1] == 0:
+                    score -= 5
+
+            # Diagonal (top-right to bottom-left)
+            for r, c in zip(range(row, min(row + 4, rows)), range(col, max(col - 4, -1), -1)):
+                window = board[r:row+1][c:col+1]
+                if window[0] == 1 and window[1] == 1 and window[2] == 1 and window[3] == 1:
+                    score += 100
+                elif window[0] == 1 and window[1] == 1 and window[2] == 1:
+                    score += 10
+                elif window[0] == 1 and window[1] == 1 and window[2] == 1 and board[r+1][c-1] == 0:
+                    score += 5
+                elif window[0] == -1 and window[1] == -1 and window[2] == -1 and window[3] == -1:
+                    score -= 100
+                elif window[0] == -1 and window[1] == -1 and window[2] == -1:
+                    score -= 10
+                elif window[0] == -1 and window[1] == -1 and window[2] == -1 and board[r+1][c-1] == 0:
+                    score -= 5
+
+    # Add center control weight
+    for col in range(cols):
+        if board[0][col] == 0:
+            # Simulate dropping a disc in this column
+            new_board = drop_disc(board, col, 1)
+            score += center_weight[col] * evaluate_potential(new_board, 1)
+            new_board = drop_disc(board, col, -1)
+            score -= center_weight[col] * evaluate_potential(new_board, -1)
+
+    return score
+
+def evaluate_potential(board: np.ndarray, player: int) -> int:
+    """Evaluates potential lines for a player (e.g., sequences of 2, 3, or 4)."""
+    score = 0
+    rows, cols = board.shape
+
+    for row in range(rows):
+        for col in range(cols):
+            if board[row][col] == 0:
+                continue
+            # Horizontal
+            for c in range(col, min(col + 4, cols)):
+                window = board[row][col:c+1]
+                if window[0] == player and window[1] == player and window[2] == player and window[3] == player:
+                    score += 100
+                elif window[0] == player and window[1] == player and window[2] == player:
+                    score += 10
+                elif window[0] == player and window[1] == player and window[2] == player and board[row][c+1] == 0:
+                    score += 5
+
+            # Vertical
+            for r in range(row, min(row + 4, rows)):
+                window = board[r:row+1][col]
+                if window[0] == player and window[1] == player and window[2] == player and window[3] == player:
+                    score += 100
+                elif window[0] == player and window[1] == player and window[2] == player:
+                    score += 10
+                elif window[0] == player and window[1] == player and window[2] == player and board[r+1][col] == 0:
+                    score += 5
+
+            # Diagonal (top-left to bottom-right)
+            for r, c in zip(range(row, min(row + 4, rows)), range(col, min(col + 4, cols))):
+                window = board[r:row+1][c:col+1]
+                if window[0] == player and window[1] == player and window[2] == player and window[3] == player:
+                    score += 100
+                elif window[0] == player and window[1] == player and window[2] == player:
+                    score += 10
+                elif window[0] == player and window[1] == player and window[2] == player and board[r+1][c+1] == 0:
+                    score += 5
+
+            # Diagonal (top-right to bottom-left)
+            for r, c in zip(range(row, min(row + 4, rows)), range(col, max(col - 4, -1), -1)):
+                window = board[r:row+1][c:col+1]
+                if window[0] == player and window[1] == player and window[2] == player and window[3] == player:
+                    score += 100
+                elif window[0] == player and window[1] == player and window[2] == player:
+                    score += 10
+                elif window[0] == player and window[1] == player and window[2] == player and board[r+1][c-1] == 0:
+                    score += 5
+
+    return score
+
+def simple_heuristic(board: np.ndarray, legal_moves: List[int]) -> int:
+    """Fallback heuristic: prioritizes center columns and potential lines."""
+    # Center columns (3-4) are weighted more
+    center_weight = [0, 1, 2, 3, 2, 1, 0]
+    scores = []
+
+    for col in legal_moves:
+        # Simulate dropping a disc in this column
+        new_board = drop_disc(board, col, 1)
+        score = evaluate_potential(new_board, 1) + center_weight[col]
+        scores.append(score)
+
+    # Randomly select among top moves to avoid predictability
+    max_score = max(scores)
+    best_moves = [i for i, s in enumerate(scores) if s == max_score]
+    return random.choice(best_moves)
+
+# Constants for board dimensions
+rows = 6
+cols = 7

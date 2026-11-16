@@ -1,0 +1,222 @@
+
+import math
+from functools import lru_cache
+from typing import List, Tuple
+
+INF = 10**6
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Choose a move for player 1 on a 4x4 tic-tac-toe board.
+    board: 4x4 list of lists with values: 0 empty, 1 (us), -1 (opponent)
+    Returns (row, col) with 0 <= row,col <= 3
+    """
+    # Flatten helpers
+    def lines_indices():
+        # rows
+        for r in range(4):
+            yield [(r, c) for c in range(4)]
+        # cols
+        for c in range(4):
+            yield [(r, c) for r in range(4)]
+        # diag
+        yield [(i, i) for i in range(4)]
+        # anti-diag
+        yield [(i, 3 - i) for i in range(4)]
+
+    # check winner: returns 1 if player 1 wins, -1 if player -1 wins, 0 otherwise
+    def check_winner(bd: List[List[int]]) -> int:
+        for line in lines_indices():
+            s = sum(bd[r][c] for r, c in line)
+            if s == 4:
+                return 1
+            if s == -4:
+                return -1
+        return 0
+
+    # heuristic evaluation for non-terminal positions, from perspective of player_to_move=1
+    def heuristic(bd: List[List[int]]) -> int:
+        score = 0
+        base = 10
+        for line in lines_indices():
+            cnt1 = 0
+            cntm1 = 0
+            for r, c in line:
+                if bd[r][c] == 1:
+                    cnt1 += 1
+                elif bd[r][c] == -1:
+                    cntm1 += 1
+            if cnt1 > 0 and cntm1 > 0:
+                continue
+            if cnt1 > 0:
+                score += base ** cnt1
+            elif cntm1 > 0:
+                score -= base ** cntm1
+        return score
+
+    # get empty cells
+    empties = [(r, c) for r in range(4) for c in range(4) if board[r][c] == 0]
+    if not empties:
+        # no move possible
+        return (0, 0)
+
+    # immediate winning move for us?
+    for r, c in empties:
+        board[r][c] = 1
+        if check_winner(board) == 1:
+            board[r][c] = 0
+            return (r, c)
+        board[r][c] = 0
+
+    # block immediate opponent win
+    for r, c in empties:
+        board[r][c] = -1
+        if check_winner(board) == -1:
+            board[r][c] = 0
+            return (r, c)
+        board[r][c] = 0
+
+    # Prepare negamax with alpha-beta and memoization
+    # We'll use a depth limit: if few empties left, search full depth; otherwise cap to keep runtime reasonable.
+    max_full_search = 7  # if empties <= this, search completely
+    depth_limit = len(empties) if len(empties) <= max_full_search else max(5, max_full_search)
+
+    # Convert board to a tuple key
+    def board_key(bd: List[List[int]]) -> Tuple[int, ...]:
+        return tuple(bd[r][c] for r in range(4) for c in range(4))
+
+    from functools import lru_cache
+
+    # Pre-generate lines as tuples of indices (0..15) for fast access
+    coord_to_index = {(r, c): 4 * r + c for r in range(4) for c in range(4)}
+    lines_idx = []
+    for line in lines_indices():
+        lines_idx.append(tuple(coord_to_index[(r, c)] for r, c in line))
+
+    # Helper to check winner from flat tuple
+    def check_winner_flat(flat):
+        # flat is tuple of 16 ints
+        for line in lines_idx:
+            s = sum(flat[i] for i in line)
+            if s == 4:
+                return 1
+            if s == -4:
+                return -1
+        return 0
+
+    @lru_cache(maxsize=200000)
+    def negamax(flat_board: Tuple[int, ...], player: int, depth: int, alpha: int, beta: int) -> int:
+        # player is 1 or -1 indicating who is to move
+        winner = check_winner_flat(flat_board)
+        if winner != 0:
+            # if someone already won, return winner from current player's perspective
+            return winner * INF
+        empties_local = [i for i, v in enumerate(flat_board) if v == 0]
+        if not empties_local:
+            return 0  # draw
+        if depth == 0:
+            # heuristic value from perspective of player 1; convert for current player
+            # build 2D view for heuristic function or compute directly over lines
+            # reuse lines_idx
+            val = 0
+            base = 10
+            for line in lines_idx:
+                cnt1 = 0
+                cntm1 = 0
+                for i in line:
+                    if flat_board[i] == 1:
+                        cnt1 += 1
+                    elif flat_board[i] == -1:
+                        cntm1 += 1
+                if cnt1 > 0 and cntm1 > 0:
+                    continue
+                if cnt1 > 0:
+                    val += base ** cnt1
+                elif cntm1 > 0:
+                    val -= base ** cntm1
+            return val * player  # convert to current player's perspective
+
+        # move ordering: try moves that make immediate win for 'player' first
+        # also try center-ish moves earlier: prefer index 5,6,9,10 (central) then corners
+        preferred_order = [5,6,9,10,0,3,12,15,1,2,4,7,8,11,13,14]
+        moves = empties_local
+        # sort by whether move is immediate win for player
+        def move_key(i):
+            # simulate
+            lst = list(flat_board)
+            lst[i] = player
+            if check_winner_flat(tuple(lst)) == player:
+                return (0, 0)  # best
+            # else prefer preferred_order index
+            try:
+                ordpos = preferred_order.index(i)
+            except ValueError:
+                ordpos = 100
+            return (1, ordpos)
+        moves.sort(key=move_key)
+
+        best = -INF
+        for i in moves:
+            lst = list(flat_board)
+            lst[i] = player
+            val = -negamax(tuple(lst), -player, depth - 1, -beta, -alpha)
+            if val > best:
+                best = val
+            if best > alpha:
+                alpha = best
+            if alpha >= beta:
+                break  # beta cutoff
+        return best
+
+    # Top-level: try iterative deepening from small depth to depth_limit (if depth_limit is small it's quick)
+    flat0 = board_key(board)
+    best_move = empties[0]
+    best_val = -INF
+    top_player = 1
+    # choose search_depth: if empties small search full, else limited
+    if len(empties) <= max_full_search:
+        search_depth = len(empties)
+    else:
+        search_depth = depth_limit
+
+    # Try to find best move by calling negamax; we evaluate each move
+    # we will search each candidate move to the chosen depth-1 (since we play it)
+    # Also check immediate wins already done above
+    empties_idx = [coord_to_index[(r, c)] for (r, c) in empties]
+    # order moves for top-level similarly
+    preferred_order = [5,6,9,10,0,3,12,15,1,2,4,7,8,11,13,14]
+    def top_key(i):
+        lst = list(flat0)
+        lst[i] = 1
+        if check_winner_flat(tuple(lst)) == 1:
+            return (0, 0)
+        try:
+            ordpos = preferred_order.index(i)
+        except ValueError:
+            ordpos = 100
+        return (1, ordpos)
+    empties_idx.sort(key=top_key)
+
+    for i in empties_idx:
+        lst = list(flat0)
+        lst[i] = 1
+        val = -negamax(tuple(lst), -1, search_depth - 1, -INF, INF)
+        if val > best_val:
+            best_val = val
+            best_move = (i // 4, i % 4)
+        # small optimization: if we find a forced win, return it
+        if best_val >= INF // 2:
+            break
+
+    # If everything failed (shouldn't), return first empty
+    if board[best_move[0]][best_move[1]] != 0:
+        for r, c in empties:
+            if board[r][c] == 0:
+                return (r, c)
+    return best_move
+
+# If this module is run, provide a trivial test.
+if __name__ == "__main__":
+    # empty board test
+    b = [[0]*4 for _ in range(4)]
+    print(policy(b))

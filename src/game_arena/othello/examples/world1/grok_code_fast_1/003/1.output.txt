@@ -1,0 +1,119 @@
+The strategy for this policy uses a minimax algorithm with alpha-beta pruning to evaluate moves up to a depth of 4 plies (to fit within the 1-second time limit). It employs a heuristic evaluation function that assigns higher values to positions near corners and edges (where discs are harder to flip), while favoring the direct disc count as a secondary tie-breaker. This approach prioritizes stable positions and long-term control, making it competitive against basic greedy strategies while being computationally feasible. It also includes move ordering (evaluating corner moves first) for better pruning efficiency.
+
+<code>
+import numpy as np
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    # Directions for checking flips: (dr, dc)
+    DIRECTIONS = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+    
+    def is_on_board(r, c):
+        return 0 <= r < 8 and 0 <= c < 8
+    
+    def find_flips(board_you, board_opp, r, c, dr, dc):
+        # Check if placing at (r, c) flips in direction (dr, dc)
+        my_flips = []
+        nr, nc = r + dr, c + dc
+        while is_on_board(nr, nc) and board_opp[nr, nc] == 1:
+            my_flips.append((nr, nc))
+            nr += dr
+            nc += dc
+        if my_flips and is_on_board(nr, nc) and board_you[nr, nc] == 1:
+            return my_flips
+        return []
+    
+    def is_valid_move(board_you, board_opp, r, c):
+        if board_you[r, c] == 1 or board_opp[r, c] == 1:
+            return False
+        for dr, dc in DIRECTIONS:
+            if find_flips(board_you, board_opp, r, c, dr, dc):
+                return True
+        return False
+    
+    def get_all_moves(board_you, board_opp):
+        moves = []
+        for r in range(8):
+            for c in range(8):
+                if is_valid_move(board_you, board_opp, r, c):
+                    # Order moves: prioritize corners and edges
+                    score = 0
+                    if r in [0, 7] and c in [0, 7]:
+                        score = 100  # Corners
+                    elif r in [0, 7] or c in [0, 7]:
+                        score = 50   # Edges
+                    moves.append((score, r, c))
+        moves.sort(reverse=True)  # Highest priority first
+        return [f"{chr(c + 97)}{r + 1}" for _, r, c in moves]
+    
+    def apply_move(board_you, board_opp, r, c):
+        new_you = board_you.copy()
+        new_opp = board_opp.copy()
+        new_you[r, c] = 1
+        for dr, dc in DIRECTIONS:
+            flips = find_flips(board_you, board_opp, r, c, dr, dc)
+            for fr, fc in flips:
+                new_you[fr, fc] = 1
+                new_opp[fr, fc] = 0
+        return new_you, new_opp
+    
+    # Evaluation function: positional score + disc difference
+    def evaluate(board_you, board_opp):
+        # Positional weights: higher for corners and edges
+        weights = np.array([
+            [100, -20, 10, 5, 5, 10, -20, 100],
+            [-20, -40, -2, -2, -2, -2, -40, -20],
+            [10, -2, 5, 1, 1, 5, -2, 10],
+            [5, -2, 1, 1, 1, 1, -2, 5],
+            [5, -2, 1, 1, 1, 1, -2, 5],
+            [10, -2, 5, 1, 1, 5, -2, 10],
+            [-20, -40, -2, -2, -2, -2, -40, -20],
+            [100, -20, 10, 5, 5, 10, -20, 100]
+        ])
+        pos_score = np.sum(board_you * weights) - np.sum(board_opp * weights)
+        disc_diff = np.sum(board_you) - np.sum(board_opp)
+        return pos_score + disc_diff
+    
+    def minimax(board_you, board_opp, depth, maximizing_player, alpha, beta):
+        if depth == 0:
+            return evaluate(board_you, board_opp), None
+        moves = get_all_moves(board_you, board_opp) if maximizing_player else get_all_moves(board_opp, board_you)
+        if not moves:
+            return evaluate(board_you, board_opp), None
+        best_move = None
+        if maximizing_player:
+            max_eval = -float('inf')
+            for move in moves:
+                c, r = move[0], int(move[1]) - 1
+                c = ord(c) - 97
+                new_you, new_opp = apply_move(board_you, board_opp, r, c)
+                eval_score, _ = minimax(new_opp, new_you, depth - 1, False, alpha, beta)
+                eval_score = -eval_score  # Since opponent is minimizing
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_move = move
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            for move in moves:
+                c, r = move[0], int(move[1]) - 1
+                c = ord(c) - 97
+                new_you, new_opp = apply_move(board_opp, board_you, r, c)
+                eval_score, _ = minimax(new_opp, new_you, depth - 1, True, alpha, beta)
+                eval_score = -eval_score
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval, best_move
+    
+    moves = get_all_moves(you, opponent)
+    if not moves:
+        return "pass"
+    
+    # Use minimax with depth 4
+    _, best_move = minimax(you, opponent, 4, True, -float('inf'), float('inf'))
+    return best_move
+</code>

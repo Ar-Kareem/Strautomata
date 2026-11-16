@@ -1,0 +1,62 @@
+
+import numpy as np
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    # Static board valuation matrix (8x8)
+    # Corners are extremely valuable, edges good, adjacent to corners bad.
+    WEIGHTS = np.array([
+        [ 50, -10,   5,   3,   3,   5, -10,  50],
+        [-10, -20,  -3,  -2,  -2,  -3, -20, -10],
+        [  5,  -3,   1,   0,   0,   1,  -3,   5],
+        [  3,  -2,   0,   0,   0,   0,  -2,   3],
+        [  3,  -2,   0,   0,   0,   0,  -2,   3],
+        [  5,  -3,   1,   0,   0,   1,  -3,   5],
+        [-10, -20,  -3,  -2,  -2,  -3, -20, -10],
+        [ 50, -10,   5,   3,   3,   5, -10,  50]
+    ])
+
+    # 8 directions: (dr, dc)
+    DIRECTIONS = [(-1, -1), (-1, 0), (-1, 1),
+                  (0, -1),          (0, 1),
+                  (1, -1),  (1, 0),  (1, 1)]
+
+    def is_inside(r, c):
+        return 0 <= r < 8 and 0 <= c < 8
+
+    def flips_if_played(r, c):
+        """Return the number of opponent discs that would be flipped
+        if you play at (r, c). Returns 0 if move is illegal."""
+        if you[r, c] == 1 or opponent[r, c] == 1:
+            return 0
+        total_flips = 0
+        for dr, dc in DIRECTIONS:
+            nr, nc = r + dr, c + dc
+            count = 0
+            while is_inside(nr, nc) and opponent[nr, nc] == 1:
+                count += 1
+                nr += dr
+                nc += dc
+            if is_inside(nr, nc) and you[nr, nc] == 1 and count > 0:
+                total_flips += count
+        return total_flips
+
+    legal_moves = []
+    for r in range(8):
+        for c in range(8):
+            f = flips_if_played(r, c)
+            if f > 0:
+                # Score = flips + positional weight
+                score = f + WEIGHTS[r, c]
+                legal_moves.append((score, r, c))
+
+    if not legal_moves:
+        return "pass"
+
+    # Choose move with highest score
+    legal_moves.sort(key=lambda x: x[0], reverse=True)
+    best_score, best_r, best_c = legal_moves[0]
+
+    # Convert to algebraic notation
+    col_letter = chr(best_c + ord('a'))
+    row_number = best_r + 1
+    return f"{col_letter}{row_number}"

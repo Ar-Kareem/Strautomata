@@ -1,0 +1,104 @@
+
+import heapq
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    BOARD_SIZE = 11
+    all_occupied = set(me) | set(opp)
+
+    def get_neighbors(r, c):
+        for dr, dc in [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE:
+                yield nr, nc
+
+    def get_shortest_path(player_stones, opponent_stones, player_color):
+        # Dijkstra to find the shortest path from side to side
+        # Black: Top (r=-1) to Bottom (r=11), White: Left (c=-1) to Right (c=11)
+        target_dist = BOARD_SIZE + 1
+        pq = [] # (distance, r, c)
+        dist = {}
+
+        opp_set = set(opponent_stones)
+        me_set = set(player_stones)
+
+        if player_color == 'b':
+            for c in range(BOARD_SIZE):
+                if (0, c) not in opp_set:
+                    d = 0 if (0, c) in me_set else 1
+                    pq.append((d, 0, c))
+                    dist[(0, c)] = d
+        else:
+            for r in range(BOARD_SIZE):
+                if (r, 0) not in opp_set:
+                    d = 0 if (r, 0) in me_set else 1
+                    pq.append((d, r, 0))
+                    dist[(r, 0)] = d
+        
+        heapq.heapify(pq)
+        visited = set()
+
+        while pq:
+            d, r, c = heapq.heappop(pq)
+            if (r, c) in visited: continue
+            visited.add((r, c))
+
+            # Check win condition
+            if player_color == 'b' and r == BOARD_SIZE - 1: return d
+            if player_color == 'w' and c == BOARD_SIZE - 1: return d
+
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) in opp_set: continue
+                weight = 0 if (nr, nc) in me_set else 1
+                new_dist = d + weight
+                if new_dist < dist.get((nr, nc), target_dist):
+                    dist[(nr, nc)] = new_dist
+                    heapq.heappush(pq, (new_dist, nr, nc))
+        
+        return target_dist
+
+    # Early game: take the center
+    if not me and not opp:
+        return (BOARD_SIZE // 2, BOARD_SIZE // 2)
+    if len(me) + len(opp) < 2:
+        if (5, 5) not in all_occupied: return (5, 5)
+        if (5, 6) not in all_occupied: return (5, 6)
+
+    best_move = None
+    max_score = -float('inf')
+
+    # Heuristic: Evaluate moves near existing stones
+    possible_moves = []
+    if not me:
+        possible_moves = [(r, c) for r in range(BOARD_SIZE) for c in range(BOARD_SIZE) if (r, c) not in all_occupied]
+    else:
+        search_area = set()
+        for r, c in all_occupied:
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) not in all_occupied:
+                    search_area.add((nr, nc))
+        # If board is sparse, ensure we look at the middle
+        if len(all_occupied) < 10:
+            for i in range(4, 7):
+                for j in range(4, 7):
+                    if (i, j) not in all_occupied: search_area.add((i, j))
+        possible_moves = list(search_area)
+
+    base_me = get_shortest_path(me, opp, color)
+    base_opp = get_shortest_path(opp, me, 'w' if color == 'b' else 'b')
+
+    for move in possible_moves:
+        # Score = (My reduction in path) + (Opponent increase in path)
+        new_me = get_shortest_path(me + [move], opp, color)
+        new_opp = get_shortest_path(opp + [move], me, 'w' if color == 'b' else 'b')
+        
+        # We want to minimize our path and maximize opponent's path
+        score = (base_me - new_me) * 1.5 + (new_opp - base_opp)
+        
+        # Tie-breaker: prefer center
+        score += (5 - abs(5 - move[0]) + 5 - abs(5 - move[1])) * 0.01
+
+        if score > max_score:
+            max_score = score
+            best_move = move
+
+    return best_move if best_move else (0, 0)

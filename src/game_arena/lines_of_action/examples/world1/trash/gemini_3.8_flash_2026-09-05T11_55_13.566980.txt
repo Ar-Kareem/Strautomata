@@ -1,0 +1,322 @@
+An explanation of the strategy is detailed below, followed by the complete Python implementation.
+
+### Strategy
+
+The AI employs an enhanced Alpha-Beta Minimax search with Iterative Deepening designed specifically for **Lines of Action (LOA)**:
+
+1. **Move Generation Optimization**:
+   - The total piece count along each of the 4 lines (horizontal, vertical, main diagonal, anti-diagonal) is computed once per board state. This allows $O(1)$ lookup for the required jump distance for any piece in any direction.
+   - Intermediate paths are verified to ensure friendly pieces can be leaped over while enemy pieces block movement. Moves that capture opponent pieces or land on empty squares are collected.
+
+2. **Terminal State Recognition**:
+   - Immediate winning moves (connecting all friendly pieces into a single 8-connected component) are detected during move generation and immediately prioritized.
+   - Per LOA rules, if a move results in both players being simultaneously connected, the moving player wins.
+
+3. **Evaluation Function**:
+   - **Compactness & Dispersion**: The primary heuristic for LOA. Pieces calculate their Chebyshev distance to the group's center of mass. A more concentrated group is closer to victory.
+   - **Connected Components**: Evaluated via flood-fill / BFS. Fewer components and a larger primary component give a massive positional bonus.
+   - **Centrality**: Pieces near the center of the board have higher mobility and greater control over intersecting lines.
+   - **Material Control**: Capturing opponent pieces reduces their line interference and ability to bridge components.
+
+4. **Iterative Deepening & Time Management**:
+   - The policy executes search depths progressively (Depth 1, 2, 3...) while respecting a safe time budget (0.85s limit), ensuring that a high-quality move is always ready without risking a timeout.
+
+---
+
+<code>
+import time
+import math
+from collections import deque
+
+def policy(board) -> str:
+    start_time = time.time()
+    time_limit = 0.85  # Conservative budget under 1.0 second limit
+
+    # Ensure board is in list of lists format
+    b = [[int(cell) for cell in row] for row in board]
+
+    # Directions: (dr, dc)
+    DIRECTIONS = [
+        (-1, 0), (1, 0),    # Vertical (col constant)
+        (0, -1), (0, 1),    # Horizontal (row constant)
+        (-1, -1), (1, 1),   # Main diagonal (r - c constant)
+        (-1, 1), (1, -1)    # Anti diagonal (r + c constant)
+    ]
+
+    def get_line_counts(grid):
+        row_cnt = [0] * 8
+        col_cnt = [0] * 8
+        diag_cnt = [0] * 15      # r - c + 7
+        antidiag_cnt = [0] * 15  # r + c
+        for r in range(8):
+            for c in range(8):
+                if grid[r][c] != 0:
+                    row_cnt[r] += 1
+                    col_cnt[c] += 1
+                    diag_cnt[r - c + 7] += 1
+                    antidiag_cnt[r + c] += 1
+        return row_cnt, col_cnt, diag_cnt, antidiag_cnt
+
+    def get_pieces(grid, player):
+        return [(r, c) for r in range(8) for c in range(8) if grid[r][c] == player]
+
+    def is_connected(grid, player):
+        pieces = get_pieces(grid, player)
+        n = len(pieces)
+        if n <= 1:
+            return True
+
+        visited = set()
+        queue = deque([pieces[0]])
+        visited.add(pieces[0])
+
+        while queue:
+            r, c = queue.popleft()
+            for dr in (-1, 0, 1):
+                for dc in (-1, 0, 1):
+                    if dr == 0 and dc == 0:
+                        continue
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 8 and 0 <= nc < 8 and grid[nr][nc] == player:
+                        if (nr, nc) not in visited:
+                            visited.add((nr, nc))
+                            queue.append((nr, nc))
+
+        return len(visited) == n
+
+    def get_legal_moves(grid, player):
+        row_cnt, col_cnt, diag_cnt, antidiag_cnt = get_line_counts(grid)
+        moves = []
+        pieces = get_pieces(grid, player)
+
+        for r, c in pieces:
+            # 4 lines corresponding to the 4 pairs of directions
+            line_lens = [
+                col_cnt[c],                # Vertical
+                row_cnt[r],                # Horizontal
+                diag_cnt[r - c + 7],       # Main diagonal
+                antidiag_cnt[r + c]        # Anti diagonal
+            ]
+
+            for idx, (dr, dc) in enumerate(DIRECTIONS):
+                dist = line_lens[idx // 2]
+                nr = r + dr * dist
+                nc = c + dc * dist
+
+                # Must land within board
+                if not (0 <= nr < 8 and 0 <= nc < 8):
+                    continue
+                # Cannot land on friendly piece
+                if grid[nr][nc] == player:
+                    continue
+
+                # Check intermediate squares: cannot jump over opponent
+                blocked = False
+                for step in range(1, dist):
+                    ir = r + dr * step
+                    ic = c + dc * step
+                    if grid[ir][ic] == -player:
+                        blocked = True
+                        break
+
+                if not blocked:
+                    moves.append((r, c, nr, nc))
+        return moves
+
+    def evaluate_components(grid, player):
+        pieces = get_pieces(grid, player)
+        n = len(pieces)
+        if n <= 1:
+            return 1, n, 0.0
+
+        visited = set()
+        comp_count = 0
+        max_comp_size = 0
+
+        # Center of mass
+        cr = sum(r for r, c in pieces) / n
+        cc = sum(c for r, c in pieces) / n
+
+        # Dispersion: sum of Chebyshev distances to center of mass
+        dispersion = sum(max(abs(r - cr), abs(c - cc)) for r, c in pieces)
+
+        for p in pieces:
+            if p not in visited:
+                comp_count += 1
+                comp_size = 0
+                q = deque([p])
+                visited.add(p)
+                while q:
+                    r, c = q.popleft()
+                    comp_size += 1
+                    for dr in (-1, 0, 1):
+                        for dc in (-1, 0, 1):
+                            if dr == 0 and dc == 0:
+                                continue
+                            nr, nc = r + dr, c + dc
+                            if 0 <= nr < 8 and 0 <= nc < 8 and grid[nr][nc] == player:
+                                if (nr, nc) not in visited:
+                                    visited.add((nr, nc))
+                                    q.append((nr, nc))
+                if comp_size > max_comp_size:
+                    max_comp_size = comp_size
+
+        return comp_count, max_comp_size, dispersion
+
+    def evaluate(grid):
+        p1_conn = is_connected(grid, 1)
+        p2_conn = is_connected(grid, -1)
+
+        if p1_conn and not p2_conn:
+            return 100000.0
+        if p2_conn and not p1_conn:
+            return -100000.0
+        if p1_conn and p2_conn:
+            return 100000.0  # Moving player preference
+
+        c1, m1, d1 = evaluate_components(grid, 1)
+        c2, m2, d2 = evaluate_components(grid, -1)
+
+        # Lower dispersion is better; fewer components is better; larger main component is better
+        score = 0.0
+        score += (d2 - d1) * 15.0
+        score += (c2 - c1) * 35.0
+        score += (m1 - m2) * 10.0
+
+        return score
+
+    # Check for direct winning move first
+    legal_moves = get_legal_moves(b, 1)
+    if not legal_moves:
+        return "0,0:0,0"
+
+    for r1, c1, r2, c2 in legal_moves:
+        captured = b[r2][c2]
+        b[r2][c2] = 1
+        b[r1][c1] = 0
+        if is_connected(b, 1):
+            b[r1][c1] = 1
+            b[r2][c2] = captured
+            return f"{r1},{c1}:{r2},{c2}"
+        b[r1][c1] = 1
+        b[r2][c2] = captured
+
+    def order_moves(grid, moves, player):
+        def move_heuristic(move):
+            r1, c1, r2, c2 = move
+            score = 0
+            # Captures are generally good
+            if grid[r2][c2] == -player:
+                score += 50
+            # Moving towards center
+            score -= (abs(3.5 - r2) + abs(3.5 - nc_col := c2)) * 2
+            return score
+        return sorted(moves, key=move_heuristic, reverse=True)
+
+    best_move = legal_moves[0]
+    best_move_formatted = f"{best_move[0]},{best_move[1]}:{best_move[2]},{best_move[3]}"
+
+    # Iterative deepening Alpha-Beta Minimax
+    def minimax(grid, depth, alpha, beta, is_max):
+        if time.time() - start_time > time_limit:
+            raise TimeoutError()
+
+        if is_max:
+            # Check if opponent is already connected
+            if is_connected(grid, -1):
+                return -100000.0
+        else:
+            if is_connected(grid, 1):
+                return 100000.0
+
+        if depth == 0:
+            return evaluate(grid)
+
+        curr_player = 1 if is_max else -1
+        moves = get_legal_moves(grid, curr_player)
+        if not moves:
+            return -50000.0 if is_max else 50000.0
+
+        moves = order_moves(grid, moves, curr_player)
+
+        if is_max:
+            val = -float('inf')
+            for r1, c1, r2, c2 in moves:
+                captured = grid[r2][c2]
+                grid[r2][c2] = 1
+                grid[r1][c1] = 0
+
+                # Instant win check
+                if is_connected(grid, 1):
+                    grid[r1][c1] = 1
+                    grid[r2][c2] = captured
+                    return 100000.0
+
+                score = minimax(grid, depth - 1, alpha, beta, False)
+                grid[r1][c1] = 1
+                grid[r2][c2] = captured
+
+                val = max(val, score)
+                alpha = max(alpha, val)
+                if beta <= alpha:
+                    break
+            return val
+        else:
+            val = float('inf')
+            for r1, c1, r2, c2 in moves:
+                captured = grid[r2][c2]
+                grid[r2][c2] = -1
+                grid[r1][c1] = 0
+
+                # Instant opponent win check
+                if is_connected(grid, -1):
+                    grid[r1][c1] = -1
+                    grid[r2][c2] = captured
+                    return -100000.0
+
+                score = minimax(grid, depth - 1, alpha, beta, True)
+                grid[r1][c1] = -1
+                grid[r2][c2] = captured
+
+                val = min(val, score)
+                beta = min(beta, val)
+                if beta <= alpha:
+                    break
+            return val
+
+    # Search up to depth 3 (or 4 if fast) within time limit
+    ordered_initial_moves = order_moves(b, legal_moves, 1)
+
+    for current_depth in range(1, 5):
+        best_val = -float('inf')
+        current_best = None
+        try:
+            for r1, c1, r2, c2 in ordered_initial_moves:
+                captured = b[r2][c2]
+                b[r2][c2] = 1
+                b[r1][c1] = 0
+
+                if is_connected(b, 1):
+                    b[r1][c1] = 1
+                    b[r2][c2] = captured
+                    return f"{r1},{c1}:{r2},{c2}"
+
+                move_score = minimax(b, current_depth - 1, -float('inf'), float('inf'), False)
+                b[r1][c1] = 1
+                b[r2][c2] = captured
+
+                if move_score > best_val:
+                    best_val = move_score
+                    current_best = (r1, c1, r2, c2)
+
+            if current_best is not None:
+                best_move = current_best
+                best_move_formatted = f"{best_move[0]},{best_move[1]}:{best_move[2]},{best_move[3]}"
+
+            if best_val >= 90000.0:
+                break
+        except TimeoutError:
+            break
+
+    return best_move_formatted
+</code>

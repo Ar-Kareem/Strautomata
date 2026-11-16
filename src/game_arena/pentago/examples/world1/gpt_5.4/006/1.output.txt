@@ -1,0 +1,421 @@
+The strategy for this policy is:
+
+1. Enumerate all legal Pentago moves: place on any empty square, then rotate any quadrant either left or right.
+2. Immediately play a winning move if one exists.
+3. Otherwise, avoid moves that allow the opponent to win immediately on their next turn whenever possible.
+4. Score remaining moves with a fast heuristic based on:
+   - whether the move creates strong lines for us,
+   - whether it weakens or limits the opponent,
+   - center preference,
+   - open-ended 2/3/4-in-a-row potential across all rows, columns, and diagonals of length at least 5.
+5. Use a small tactical lookahead:
+   - evaluate our move,
+   - then assume the opponent replies with their strongest move,
+   - choose the move with the best resulting worst-case evaluation.
+6. Always return a legal move string, with a safe fallback if anything unexpected happens.
+
+This gives a solid balance of tactics and speed under the time limit.
+
+<code>
+import math
+
+def policy(you, opponent) -> str:
+    try:
+        Y = [[1 if you[r][c] else 0 for c in range(6)] for r in range(6)]
+        O = [[1 if opponent[r][c] else 0 for c in range(6)] for r in range(6)]
+
+        def empty_cells(y, o):
+            out = []
+            for r in range(6):
+                yr = y[r]
+                orow = o[r]
+                for c in range(6):
+                    if yr[c] == 0 and orow[c] == 0:
+                        out.append((r, c))
+            return out
+
+        def rotate_pos_in_quad(rr, cc, q, d):
+            if q == 0:
+                r0, c0 = 0, 0
+            elif q == 1:
+                r0, c0 = 0, 3
+            elif q == 2:
+                r0, c0 = 3, 0
+            else:
+                r0, c0 = 3, 3
+
+            if not (r0 <= rr < r0 + 3 and c0 <= cc < c0 + 3):
+                return rr, cc
+
+            lr, lc = rr - r0, cc - c0
+            if d == 'R':
+                nr, nc = lc, 2 - lr
+            else:
+                nr, nc = 2 - lc, lr
+            return r0 + nr, c0 + nc
+
+        def apply_move(y, o, move, me=True):
+            r, c, q, d = move
+            ny = [row[:] for row in y]
+            no = [row[:] for row in o]
+
+            if me:
+                ny[r][c] = 1
+            else:
+                no[r][c] = 1
+
+            if q == 0:
+                r0, c0 = 0, 0
+            elif q == 1:
+                r0, c0 = 0, 3
+            elif q == 2:
+                r0, c0 = 3, 0
+            else:
+                r0, c0 = 3, 3
+
+            sy = [[ny[r0 + i][c0 + j] for j in range(3)] for i in range(3)]
+            so = [[no[r0 + i][c0 + j] for j in range(3)] for i in range(3)]
+
+            if d == 'R':
+                ry = [[sy[2 - j][i] for j in range(3)] for i in range(3)]
+                ro = [[so[2 - j][i] for j in range(3)] for i in range(3)]
+            else:
+                ry = [[sy[j][2 - i] for j in range(3)] for i in range(3)]
+                ro = [[so[j][2 - i] for j in range(3)] for i in range(3)]
+
+            for i in range(3):
+                for j in range(3):
+                    ny[r0 + i][c0 + j] = ry[i][j]
+                    no[r0 + i][c0 + j] = ro[i][j]
+
+            return ny, no
+
+        def gen_lines():
+            lines = []
+
+            for r in range(6):
+                lines.append([(r, c) for c in range(6)])
+            for c in range(6):
+                lines.append([(r, c) for r in range(6)])
+
+            # diagonals down-right
+            for start_c in range(6):
+                line = []
+                r, c = 0, start_c
+                while r < 6 and c < 6:
+                    line.append((r, c))
+                    r += 1
+                    c += 1
+                if len(line) >= 5:
+                    lines.append(line)
+            for start_r in range(1, 6):
+                line = []
+                r, c = start_r, 0
+                while r < 6 and c < 6:
+                    line.append((r, c))
+                    r += 1
+                    c += 1
+                if len(line) >= 5:
+                    lines.append(line)
+
+            # diagonals down-left
+            for start_c in range(6):
+                line = []
+                r, c = 0, start_c
+                while r < 6 and c >= 0:
+                    line.append((r, c))
+                    r += 1
+                    c -= 1
+                if len(line) >= 5:
+                    lines.append(line)
+            for start_r in range(1, 6):
+                line = []
+                r, c = start_r, 5
+                while r < 6 and c >= 0:
+                    line.append((r, c))
+                    r += 1
+                    c -= 1
+                if len(line) >= 5:
+                    lines.append(line)
+
+            uniq = []
+            seen = set()
+            for line in lines:
+                t = tuple(line)
+                if t not in seen:
+                    seen.add(t)
+                    uniq.append(line)
+            return uniq
+
+        LINES = gen_lines()
+
+        def has_five(board):
+            for line in LINES:
+                cnt = 0
+                for r, c in line:
+                    if board[r][c]:
+                        cnt += 1
+                        if cnt >= 5:
+                            return True
+                    else:
+                        cnt = 0
+            return False
+
+        def terminal_value(y, o):
+            yw = has_five(y)
+            ow = has_five(o)
+            if yw and ow:
+                return 0
+            if yw:
+                return 1
+            if ow:
+                return -1
+            full = True
+            for r in range(6):
+                for c in range(6):
+                    if y[r][c] == 0 and o[r][c] == 0:
+                        full = False
+                        break
+                if not full:
+                    break
+            if full:
+                return 0
+            return None
+
+        def all_moves(y, o):
+            empties = empty_cells(y, o)
+            moves = []
+            for r, c in empties:
+                for q in range(4):
+                    moves.append((r, c, q, 'L'))
+                    moves.append((r, c, q, 'R'))
+            return moves
+
+        def immediate_winning_moves(y, o, me=True):
+            wins = []
+            for mv in all_moves(y, o):
+                ny, no = apply_move(y, o, mv, me=me)
+                tv = terminal_value(ny, no)
+                if me:
+                    if tv == 1:
+                        wins.append(mv)
+                else:
+                    if tv == -1:
+                        wins.append(mv)
+            return wins
+
+        center_weights = [
+            [0, 1, 1, 1, 1, 0],
+            [1, 2, 2, 2, 2, 1],
+            [1, 2, 3, 3, 2, 1],
+            [1, 2, 3, 3, 2, 1],
+            [1, 2, 2, 2, 2, 1],
+            [0, 1, 1, 1, 1, 0],
+        ]
+
+        def line_score(vals):
+            n = len(vals)
+            score = 0.0
+            for w in (5, 6):
+                if n < w:
+                    continue
+                for i in range(n - w + 1):
+                    seg = vals[i:i + w]
+                    myc = sum(1 for v in seg if v == 1)
+                    opc = sum(1 for v in seg if v == -1)
+                    emp = w - myc - opc
+                    if myc and opc:
+                        continue
+                    if myc:
+                        if w == 5:
+                            if myc == 5:
+                                score += 100000.0
+                            elif myc == 4 and emp == 1:
+                                score += 1200.0
+                            elif myc == 3 and emp == 2:
+                                score += 120.0
+                            elif myc == 2 and emp == 3:
+                                score += 12.0
+                            elif myc == 1 and emp == 4:
+                                score += 1.5
+                        else:
+                            if myc == 5 and emp == 1:
+                                score += 6000.0
+                            elif myc == 4 and emp == 2:
+                                score += 500.0
+                            elif myc == 3 and emp == 3:
+                                score += 45.0
+                            elif myc == 2 and emp == 4:
+                                score += 4.0
+                    elif opc:
+                        if w == 5:
+                            if opc == 5:
+                                score -= 100000.0
+                            elif opc == 4 and emp == 1:
+                                score -= 1400.0
+                            elif opc == 3 and emp == 2:
+                                score -= 140.0
+                            elif opc == 2 and emp == 3:
+                                score -= 14.0
+                            elif opc == 1 and emp == 4:
+                                score -= 1.5
+                        else:
+                            if opc == 5 and emp == 1:
+                                score -= 6500.0
+                            elif opc == 4 and emp == 2:
+                                score -= 550.0
+                            elif opc == 3 and emp == 3:
+                                score -= 50.0
+                            elif opc == 2 and emp == 4:
+                                score -= 4.0
+            return score
+
+        def evaluate(y, o):
+            tv = terminal_value(y, o)
+            if tv == 1:
+                return 1e9
+            if tv == -1:
+                return -1e9
+            if tv == 0:
+                return 0.0
+
+            score = 0.0
+            for r in range(6):
+                for c in range(6):
+                    if y[r][c]:
+                        score += 3.0 + center_weights[r][c]
+                    elif o[r][c]:
+                        score -= 3.0 + center_weights[r][c]
+
+            for line in LINES:
+                vals = []
+                for r, c in line:
+                    if y[r][c]:
+                        vals.append(1)
+                    elif o[r][c]:
+                        vals.append(-1)
+                    else:
+                        vals.append(0)
+                score += line_score(vals)
+
+            return score
+
+        def move_order_key(mv):
+            r, c, q, d = mv
+            base = center_weights[r][c] * 10
+            if q in (0, 3):
+                base += 1
+            if d == 'R':
+                base += 0.1
+            return -base
+
+        legal = all_moves(Y, O)
+        if not legal:
+            return "1,1,0,L"
+
+        # 1) Immediate winning move
+        wins = immediate_winning_moves(Y, O, me=True)
+        if wins:
+            best = None
+            best_score = -10**18
+            for mv in wins:
+                ny, no = apply_move(Y, O, mv, me=True)
+                sc = evaluate(ny, no)
+                if sc > best_score:
+                    best_score = sc
+                    best = mv
+            r, c, q, d = best
+            return f"{r+1},{c+1},{q},{d}"
+
+        # 2) Candidate filtering: avoid moves giving opponent immediate win
+        ordered = sorted(legal, key=move_order_key)
+        if len(ordered) > 80:
+            ordered = ordered[:80]
+
+        safe_moves = []
+        risky_moves = []
+
+        for mv in ordered:
+            ny, no = apply_move(Y, O, mv, me=True)
+            tv = terminal_value(ny, no)
+            if tv == 1:
+                r, c, q, d = mv
+                return f"{r+1},{c+1},{q},{d}"
+            opp_wins = immediate_winning_moves(ny, no, me=False)
+            if opp_wins:
+                risky_moves.append((mv, len(opp_wins), evaluate(ny, no)))
+            else:
+                safe_moves.append((mv, evaluate(ny, no)))
+
+        candidates = []
+        if safe_moves:
+            safe_moves.sort(key=lambda x: -x[1])
+            candidates = [mv for mv, _ in safe_moves[:18]]
+        else:
+            risky_moves.sort(key=lambda x: (x[1], -x[2]))
+            candidates = [mv for mv, _, _ in risky_moves[:12]]
+
+        if not candidates:
+            candidates = ordered[:10]
+
+        # 3) One-ply opponent reply search on candidates
+        best_mv = candidates[0]
+        best_val = -10**18
+
+        for mv in candidates:
+            ny, no = apply_move(Y, O, mv, me=True)
+            tv = terminal_value(ny, no)
+            if tv == 1:
+                best_mv = mv
+                best_val = 1e9
+                break
+            if tv == 0:
+                val = 0.0
+            else:
+                opp_moves = all_moves(ny, no)
+                opp_moves = sorted(opp_moves, key=move_order_key)
+                if len(opp_moves) > 24:
+                    opp_moves = opp_moves[:24]
+
+                worst = 10**18
+                found_forced_loss = False
+
+                for omv in opp_moves:
+                    y2, o2 = apply_move(ny, no, omv, me=False)
+                    tv2 = terminal_value(y2, o2)
+                    if tv2 == -1:
+                        worst = -1e9
+                        found_forced_loss = True
+                        break
+                    if tv2 == 0:
+                        sc = 0.0
+                    else:
+                        sc = evaluate(y2, o2)
+                    if sc < worst:
+                        worst = sc
+
+                val = worst
+                if found_forced_loss:
+                    val = -1e9
+
+            # slight tie-break by immediate eval
+            val += 0.001 * evaluate(ny, no)
+
+            if val > best_val:
+                best_val = val
+                best_mv = mv
+
+        r, c, q, d = best_mv
+        return f"{r+1},{c+1},{q},{d}"
+
+    except Exception:
+        # Guaranteed legal fallback
+        try:
+            for r in range(6):
+                for c in range(6):
+                    if int(you[r][c]) == 0 and int(opponent[r][c]) == 0:
+                        return f"{r+1},{c+1},0,L"
+        except Exception:
+            pass
+        return "1,1,0,L"
+</code>

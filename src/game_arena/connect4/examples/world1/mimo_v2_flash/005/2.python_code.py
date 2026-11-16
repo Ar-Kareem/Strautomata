@@ -1,0 +1,216 @@
+
+import sys
+import numpy as np
+
+# Define constants
+ROWS = 6
+COLS = 7
+PLAYER = 1
+OPPONENT = -1
+EMPTY = 0
+
+# Evaluation weights
+WIN_SCORE = 1000000
+THREE_SCORE = 1000
+TWO_SCORE = 10
+CENTER_WEIGHT = 5
+
+def policy(board: list[list[int]]) -> int:
+    """
+    Determines the best move for the current player using Minimax with Alpha-Beta pruning.
+    """
+    # Convert list of lists to numpy array for easier manipulation
+    b = np.array(board)
+    
+    # Get valid columns
+    valid_cols = [c for c in range(COLS) if b[0][c] == EMPTY]
+    
+    # Basic Heuristic: If center is open, it's often a good starting move or tie-breaker
+    # This also helps move ordering later
+    if 3 in valid_cols:
+        # We don't return immediately, but we will prioritize it in the search
+        pass
+
+    # Search Depth: Adjusted for performance. 
+    # A depth of 6-7 is usually feasible within 1s on a modern CPU for Connect 4.
+    # Given the 6x7 grid, depth 6 is a safe bet.
+    max_depth = 6
+
+    best_score = -float('inf')
+    best_col = valid_cols[0]
+
+    # Move Ordering: Try center columns first, then move outwards
+    # This maximizes alpha-beta pruning efficiency
+    ordered_cols = sorted(valid_cols, key=lambda x: -abs(3 - x))
+
+    for col in ordered_cols:
+        # Make the move
+        row = get_next_open_row(b, col)
+        if row == -1:
+            continue
+            
+        b[row][col] = PLAYER
+        
+        # Recursive Minimax
+        # We minimize the opponent's score
+        score = minimax(b, max_depth - 1, -float('inf'), float('int'), False)
+        
+        # Undo the move
+        b[row][col] = EMPTY
+        
+        if score > best_score:
+            best_score = score
+            best_col = col
+            
+    return best_col
+
+def get_next_open_row(board, col):
+    """Finds the lowest empty row in a column."""
+    for r in range(ROWS - 1, -1, -1):
+        if board[r][col] == EMPTY:
+            return r
+    return -1
+
+def minimax(board, depth, alpha, beta, maximizing_player):
+    """
+    Minimax algorithm with Alpha-Beta pruning.
+    maximizing_player=True means it's the AI's turn.
+    """
+    # Check terminal states or depth limit
+    if depth == 0 or is_terminal_node(board):
+        if is_terminal_node(board):
+            if check_win(board, PLAYER):
+                return WIN_SCORE
+            elif check_win(board, OPPONENT):
+                return -WIN_SCORE
+            else:
+                return 0 # Draw
+        return score_position(board, PLAYER)
+
+    valid_cols = [c for c in range(COLS) if board[0][c] == EMPTY]
+    # Order moves for pruning efficiency
+    ordered_cols = sorted(valid_cols, key=lambda x: -abs(3 - x))
+
+    if maximizing_player:
+        value = -float('inf')
+        for col in ordered_cols:
+            row = get_next_open_row(board, col)
+            if row == -1: continue
+            
+            board[row][col] = PLAYER
+            new_score = minimax(board, depth - 1, alpha, beta, False)
+            board[row][col] = EMPTY
+            
+            value = max(value, new_score)
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+        return value
+    else:
+        value = float('inf')
+        for col in ordered_cols:
+            row = get_next_open_row(board, col)
+            if row == -1: continue
+            
+            board[row][col] = OPPONENT
+            new_score = minimax(board, depth - 1, alpha, beta, True)
+            board[row][col] = EMPTY
+            
+            value = min(value, new_score)
+            beta = min(beta, value)
+            if alpha >= beta:
+                break
+        return value
+
+def is_terminal_node(board):
+    """Checks if the game is over (win or full board)."""
+    return check_win(board, PLAYER) or check_win(board, OPPONENT) or len([c for c in range(COLS) if board[0][c] == EMPTY]) == 0
+
+def check_win(board, piece):
+    """Check if the given piece has won the game."""
+    # Check horizontal locations
+    for c in range(COLS - 3):
+        for r in range(ROWS):
+            if board[r][c] == piece and board[r][c+1] == piece and board[r][c+2] == piece and board[r][c+3] == piece:
+                return True
+
+    # Check vertical locations
+    for c in range(COLS):
+        for r in range(ROWS - 3):
+            if board[r][c] == piece and board[r+1][c] == piece and board[r+2][c] == piece and board[r+3][c] == piece:
+                return True
+
+    # Check positively sloped diagonals
+    for c in range(COLS - 3):
+        for r in range(ROWS - 3):
+            if board[r][c] == piece and board[r+1][c+1] == piece and board[r+2][c+2] == piece and board[r+3][c+3] == piece:
+                return True
+
+    # Check negatively sloped diagonals
+    for c in range(COLS - 3):
+        for r in range(3, ROWS):
+            if board[r][c] == piece and board[r-1][c+1] == piece and board[r-2][c+2] == piece and board[r-3][c+3] == piece:
+                return True
+    return False
+
+def score_position(board, piece):
+    """
+    Heuristic evaluation of the board state.
+    Assigns a score based on potential winning lines and center control.
+    """
+    score = 0
+    
+    # Prefer center column
+    center_array = [int(r[3]) for r in board]
+    center_count = center_array.count(piece)
+    score += center_count * CENTER_WEIGHT
+
+    # Score Horizontal
+    for r in range(ROWS):
+        row_array = [int(x) for x in board[r]]
+        for c in range(COLS - 3):
+            window = row_array[c:c+4]
+            score += evaluate_window(window, piece)
+
+    # Score Vertical
+    for c in range(COLS):
+        col_array = [int(r[c]) for r in board]
+        for r in range(ROWS - 3):
+            window = col_array[r:r+4]
+            score += evaluate_window(window, piece)
+
+    # Score Positive Sloped Diagonal
+    for r in range(ROWS - 3):
+        for c in range(COLS - 3):
+            window = [board[r+i][c+i] for i in range(4)]
+            score += evaluate_window(window, piece)
+
+    # Score Negative Sloped Diagonal
+    for r in range(3, ROWS):
+        for c in range(COLS - 3):
+            window = [board[r-i][c+i] for i in range(4)]
+            score += evaluate_window(window, piece)
+
+    return score
+
+def evaluate_window(window, piece):
+    """Evaluates a window of 4 cells."""
+    score = 0
+    opp_piece = -piece
+    
+    count_piece = window.count(piece)
+    count_empty = window.count(EMPTY)
+    count_opp = window.count(opp_piece)
+
+    if count_piece == 4:
+        score += 100
+    elif count_piece == 3 and count_empty == 1:
+        score += 5
+    elif count_piece == 2 and count_empty == 2:
+        score += 2
+
+    # Block opponent's winning moves is crucial
+    if count_opp == 3 and count_empty == 1:
+        score -= 4
+
+    return score

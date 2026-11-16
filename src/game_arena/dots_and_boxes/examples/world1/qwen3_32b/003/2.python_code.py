@@ -1,0 +1,107 @@
+
+import numpy as np
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    def find_captures_after_move(h, v, cap, r, c, d):
+        captures = []
+        if d == 'H':
+            for (br, bc) in [(r-1, c), (r, c)]:
+                if 0 <= br < 4 and 0 <= bc < 4:
+                    top_h = h[br][bc]
+                    bottom_h = h[br + 1][bc]
+                    left_v = v[br][bc]
+                    right_v = v[br][bc + 1]
+                    if top_h != 0 and bottom_h != 0 and left_v != 0 and right_v != 0:
+                        if cap[br][bc] == 0:
+                            captures.append((br, bc))
+        else:
+            for (br, bc) in [(r, c-1), (r, c)]:
+                if 0 <= br < 4 and 0 <= bc < 4:
+                    top_h = h[br][bc]
+                    bottom_h = h[br + 1][bc]
+                    left_v = v[br][bc]
+                    right_v = v[br][bc + 1]
+                    if top_h != 0 and bottom_h != 0 and left_v != 0 and right_v != 0:
+                        if cap[br][bc] == 0:
+                            captures.append((br, bc))
+        return captures
+
+    # Generate all legal moves
+    legal_moves = []
+    for row in range(5):
+        for col in range(5):
+            if horizontal[row, col] == 0:
+                legal_moves.append((row, col, 'H'))
+            if vertical[row, col] == 0:
+                legal_moves.append((row, col, 'V'))
+
+    # Evaluate capturing moves
+    capturing_moves = []
+    for move in legal_moves:
+        row, col, d = move
+        is_h = d == 'H' and horizontal[row, col] == 0
+        is_v = d == 'V' and vertical[row, col] == 0
+        if (d == 'H' and not is_h) or (d == 'V' and not is_v):
+            continue
+
+        if d == 'H':
+            h_tmp = horizontal.copy()
+            h_tmp[row, col] = 1
+            v_tmp = vertical.copy()
+        else:
+            v_tmp = vertical.copy()
+            v_tmp[row, col] = 1
+            h_tmp = horizontal.copy()
+
+        captures = find_captures_after_move(h_tmp, v_tmp, capture, row, col, d)
+        if len(captures) > 0:
+            capturing_moves.append((move, len(captures)))
+
+    if capturing_moves:
+        capturing_moves.sort(key=lambda x: -x[1])
+        best_move = capturing_moves[0][0]
+        return f"{best_move[0]},{best_move[1]},{best_move[2]}"
+
+    else:
+        best_minimax_value = float('inf')
+        best_move = legal_moves[0]
+        for candidate_move in legal_moves:
+            row_c, col_c, d_c = candidate_move
+            if d_c == 'H':
+                h_candidate = horizontal.copy()
+                h_candidate[row_c, col_c] = 1
+                v_candidate = vertical.copy()
+            else:
+                v_candidate = vertical.copy()
+                v_candidate[row_c, col_c] = 1
+                h_candidate = horizontal.copy()
+
+            opponent_max_captures = 0
+            for opp_move in legal_moves:
+                if opp_move == candidate_move:
+                    continue
+                opp_row, opp_col, d_opp = opp_move
+                if d_opp == 'H' and h_candidate[opp_row, opp_col] != 0:
+                    continue
+                if d_opp == 'V' and v_candidate[opp_row, opp_col] != 0:
+                    continue
+
+                if d_opp == 'H':
+                    h_opp = h_candidate.copy()
+                    h_opp[opp_row, opp_col] = 1
+                    v_opp = v_candidate.copy()
+                else:
+                    v_opp = v_candidate.copy()
+                    v_opp[opp_row, opp_col] = 1
+                    h_opp = h_candidate.copy()
+
+                opp_captures = find_captures_after_move(h_opp, v_opp, capture, opp_row, opp_col, d_opp)
+                opponent_max_captures = max(opponent_max_captures, len(opp_captures))
+
+            if opponent_max_captures < best_minimax_value:
+                best_minimax_value = opponent_max_captures
+                best_move = candidate_move
+            elif opponent_max_captures == best_minimax_value:
+                pass  # Keep the first move encountered to break ties
+
+        return f"{best_move[0]},{best_move[1]},{best_move[2]}"

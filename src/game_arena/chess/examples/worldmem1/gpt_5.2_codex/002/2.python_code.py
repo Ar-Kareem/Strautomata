@@ -1,0 +1,95 @@
+
+import random
+
+piece_values = {
+    'P': 1,
+    'N': 3,
+    'B': 3,
+    'R': 5,
+    'Q': 9,
+    'K': 0
+}
+
+def evaluate_move(move, pieces, to_play):
+    # Immediate mate
+    if move.endswith('#'):
+        return 100000
+
+    score = 0
+
+    # Check bonus
+    if move.endswith('+'):
+        score += 50
+
+    # Strip check/mate symbols
+    m = move
+    while m and m[-1] in '+#':
+        m = m[:-1]
+
+    # Castling
+    if m in ('O-O', 'O-O-O'):
+        score += 30
+        return score
+
+    promoted_piece = None
+    if '=' in m:
+        base, promo = m.split('=')
+        promoted_piece = promo
+        m_base = base
+    else:
+        m_base = m
+
+    # Determine moving piece
+    if m_base[0] in "KQRBN":
+        moving_piece = m_base[0]
+    else:
+        moving_piece = 'P'
+
+    # Capture detection
+    capture = 'x' in m_base
+
+    # Target square is last two chars of base move
+    target = m_base[-2:]
+
+    if capture:
+        captured_value = 0
+        cap_piece = pieces.get(target)
+
+        # Handle en passant (target empty but pawn capture)
+        if not cap_piece and moving_piece == 'P':
+            file = target[0]
+            rank = int(target[1])
+            if to_play == 'white':
+                cap_sq = file + str(rank - 1)
+            else:
+                cap_sq = file + str(rank + 1)
+            cap_piece = pieces.get(cap_sq)
+
+        if cap_piece:
+            captured_value = piece_values[cap_piece[1]]
+        else:
+            captured_value = 1  # assume pawn if unknown
+
+        score += captured_value * 10 - piece_values[moving_piece] * 2
+
+    # Promotion bonus
+    if promoted_piece:
+        score += (piece_values[promoted_piece] - 1) * 10
+
+    # King move penalty (unless castling already handled)
+    if moving_piece == 'K':
+        score -= 5
+
+    return score
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str], memory: dict) -> tuple[str, dict]:
+    best_move = legal_moves[0]
+    best_score = -1e9
+
+    for move in legal_moves:
+        score = evaluate_move(move, pieces, to_play)
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return best_move, memory

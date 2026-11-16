@@ -1,0 +1,238 @@
+The strategy for this policy is a hybrid hunt/target Battleship solver:
+
+- In **target mode**, if there are known hits that are not yet fully resolved, it aggressively shoots nearby cells to finish the ship.
+  - It finds connected components of hit cells.
+  - If a component is aligned horizontally or vertically, it extends along that line first.
+  - If a component is a single hit, it tries its neighbors.
+  - Candidate target cells are scored, preferring moves that are consistent with more possible remaining ship placements.
+
+- In **hunt mode**, it evaluates every unknown cell by counting how many valid placements of the remaining ship lengths could include that cell, given current misses and hits.
+  - Placements cannot cross misses.
+  - Placements that overlap known hits are strongly favored.
+  - This creates a heatmap over the board.
+  - A parity bias is added in the early game to improve search efficiency.
+
+- It always returns a legal unknown cell, with safe fallbacks.
+
+This policy is strong because it combines probabilistic placement counting with deterministic ship-finishing behavior, which is a standard high-performance approach for Battleship.
+
+<code>
+from typing import List, Tuple
+from collections import deque
+
+N = 10
+SHIP_LENGTHS = [5, 4, 3, 3, 2]
+
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    unknowns = [(r, c) for r in range(N) for c in range(N) if board[r][c] == 0]
+    if not unknowns:
+        return (0, 0)
+
+    hit_components = _get_hit_components(board)
+
+    # Target mode: if there are unresolved hits, prioritize finishing ships.
+    if hit_components:
+        move = _target_move(board, hit_components)
+        if move is not None and board[move[0]][move[1]] == 0:
+            return move
+
+    # Hunt mode: probabilistic heatmap over all legal placements.
+    move = _hunt_move(board)
+    if move is not None and board[move[0]][move[1]] == 0:
+        return move
+
+    # Safe fallback: first unknown cell.
+    return unknowns[0]
+
+
+def _neighbors(r: int, c: int):
+    for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        rr, cc = r + dr, c + dc
+        if 0 <= rr < N and 0 <= cc < N:
+            yield rr, cc
+
+
+def _get_hit_components(board: List[List[int]]):
+    seen = [[False] * N for _ in range(N)]
+    comps = []
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 1 and not seen[r][c]:
+                q = deque([(r, c)])
+                seen[r][c] = True
+                comp = []
+                while q:
+                    x, y = q.popleft()
+                    comp.append((x, y))
+                    for nx, ny in _neighbors(x, y):
+                        if board[nx][ny] == 1 and not seen[nx][ny]:
+                            seen[nx][ny] = True
+                            q.append((nx, ny))
+                comps.append(comp)
+    return comps
+
+
+def _placement_valid(board: List[List[int]], cells):
+    # Valid if no miss cells are used.
+    for r, c in cells:
+        if board[r][c] == -1:
+            return False
+    return True
+
+
+def _placement_score(board: List[List[int]], cells):
+    # Prefer placements that explain known hits.
+    hits = 0
+    unknowns = 0
+    for r, c in cells:
+        if board[r][c] == 1:
+            hits += 1
+        elif board[r][c] == 0:
+            unknowns += 1
+    # Strongly reward covering hits.
+    return (10 ** hits) if hits > 0 else 1
+
+
+def _all_placements_scores(board: List[List[int]]):
+    heat = [[0] * N for _ in range(N)]
+
+    for L in SHIP_LENGTHS:
+        # Horizontal
+        for r in range(N):
+            for c in range(N - L + 1):
+                cells = [(r, c + k) for k in range(L)]
+                if not _placement_valid(board, cells):
+                    continue
+                s = _placement_score(board, cells)
+                for rr, cc in cells:
+                    if board[rr][cc] == 0:
+                        heat[rr][cc] += s
+
+        # Vertical
+        for r in range(N - L + 1):
+            for c in range(N):
+                cells = [(r + k, c) for k in range(L)]
+                if not _placement_valid(board, cells):
+                    continue
+                s = _placement_score(board, cells)
+                for rr, cc in cells:
+                    if board[rr][cc] == 0:
+                        heat[rr][cc] += s
+
+    return heat
+
+
+def _component_orientation(comp):
+    rows = {r for r, _ in comp}
+    cols = {c for _, c in comp}
+    if len(rows) == 1 and len(comp) >= 2:
+        return "H"
+    if len(cols) == 1 and len(comp) >= 2:
+        return "V"
+    return None
+
+
+def _target_move(board: List[List[int]], hit_components):
+    heat = _all_placements_scores(board)
+
+    # Prioritize larger hit groups first.
+    hit_components = sorted(hit_components, key=lambda x: -len(x))
+
+    best = None
+    best_score = -1
+
+    for comp in hit_components:
+        orient = _component_orientation(comp)
+
+        candidates = []
+
+        if orient == "H":
+            r = comp[0][0]
+            cols = sorted(c for _, c in comp)
+            left = (r, cols[0] - 1)
+            right = (r, cols[-1] + 1)
+            for rr, cc in (left, right):
+                if 0 <= rr < N and 0 <= cc < N and board[rr][cc] == 0:
+                    candidates.append((rr, cc))
+        elif orient == "V":
+            c = comp[0][1]
+            rows = sorted(r for r, _ in comp)
+            up = (rows[0] - 1, c)
+            down = (rows[-1] + 1, c)
+            for rr, cc in (up, down):
+                if 0 <= rr < N and 0 <= cc < N and board[rr][cc] == 0:
+                    candidates.append((rr, cc))
+        else:
+            # Single hit or irregular cluster: try all neighbors.
+            for r, c in comp:
+                for rr, cc in _neighbors(r, c):
+                    if board[rr][cc] == 0:
+                        candidates.append((rr, cc))
+
+        # Deduplicate
+        seen = set()
+        uniq = []
+        for cell in candidates:
+            if cell not in seen:
+                seen.add(cell)
+                uniq.append(cell)
+
+        # Score candidates by heat plus adjacency to hits.
+        for rr, cc in uniq:
+            score = heat[rr][cc]
+            adj_hits = 0
+            for nr, nc in _neighbors(rr, cc):
+                if board[nr][nc] == 1:
+                    adj_hits += 1
+            score = score * 100 + adj_hits * 10
+
+            # Slight centrality tiebreak.
+            score -= abs(rr - 4.5) + abs(cc - 4.5)
+
+            if score > best_score:
+                best_score = score
+                best = (rr, cc)
+
+    return best
+
+
+def _hunt_move(board: List[List[int]]):
+    heat = _all_placements_scores(board)
+
+    shots_taken = sum(1 for r in range(N) for c in range(N) if board[r][c] != 0)
+
+    best = None
+    best_score = -1
+
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] != 0:
+                continue
+
+            score = heat[r][c]
+
+            # Early/mid game parity preference improves coverage.
+            if shots_taken < 60:
+                if (r + c) % 2 == 0:
+                    score *= 1.15
+                else:
+                    score *= 0.95
+
+            # Centrality tiebreak.
+            score -= 0.01 * (abs(r - 4.5) + abs(c - 4.5))
+
+            if score > best_score:
+                best_score = score
+                best = (r, c)
+
+    if best is not None:
+        return best
+
+    # Fallback: first unknown
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 0:
+                return (r, c)
+    return None
+</code>

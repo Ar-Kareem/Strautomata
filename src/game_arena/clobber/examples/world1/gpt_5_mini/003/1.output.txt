@@ -1,0 +1,154 @@
+My plan: enumerate all legal captures, simulate each resulting position, and pick a move that minimizes the opponent's number of legal captures on the following turn (tie-broken by maximizing our subsequent mobility). The implementation is defensive about input shapes (accepts nested lists, flat lists, or numpy arrays) and always returns a legal move string in the required "row,col,dir" format.
+
+<code>
+#!/usr/bin/env python3
+from typing import List, Tuple
+import copy
+
+# Board dimensions
+ROWS = 5
+COLS = 6
+
+DIRS = {
+    'U': (-1, 0),
+    'R': (0, 1),
+    'D': (1, 0),
+    'L': (0, -1)
+}
+
+def _to_grid(arr) -> List[List[int]]:
+    """
+    Normalize input to a 5x6 list of lists of ints.
+    Accepts nested lists, flat lists of length 30, or numpy arrays.
+    """
+    # If numpy array, convert to list
+    try:
+        import numpy as _np
+        if isinstance(arr, _np.ndarray):
+            arr = arr.tolist()
+    except Exception:
+        pass
+
+    if isinstance(arr, list):
+        # Nested 5x6
+        if len(arr) == ROWS and all(isinstance(row, list) and len(row) == COLS for row in arr):
+            return [[int(v) for v in row] for row in arr]
+        # Flat list of 30 elements
+        if len(arr) == ROWS * COLS and all(not isinstance(x, list) for x in arr):
+            it = iter(arr)
+            return [[int(next(it)) for _ in range(COLS)] for _ in range(ROWS)]
+    # As a fallback, try to index
+    grid = [[0]*COLS for _ in range(ROWS)]
+    try:
+        for r in range(ROWS):
+            for c in range(COLS):
+                grid[r][c] = int(arr[r][c])
+        return grid
+    except Exception:
+        # Last resort: return empty board
+        return grid
+
+def _in_bounds(r: int, c: int) -> bool:
+    return 0 <= r < ROWS and 0 <= c < COLS
+
+def _list_legal_moves(you: List[List[int]], opp: List[List[int]]) -> List[Tuple[int,int,str]]:
+    moves = []
+    for r in range(ROWS):
+        for c in range(COLS):
+            if you[r][c] != 1:
+                continue
+            for dch, (dr, dc) in DIRS.items():
+                nr, nc = r + dr, c + dc
+                if _in_bounds(nr, nc) and opp[nr][nc] == 1:
+                    moves.append((r, c, dch))
+    return moves
+
+def _count_moves(you: List[List[int]], opp: List[List[int]]) -> int:
+    # Number of legal captures for 'you' given boards you and opp
+    cnt = 0
+    for r in range(ROWS):
+        for c in range(COLS):
+            if you[r][c] != 1:
+                continue
+            # any adjacent opponent piece counts as a legal move (one per direction)
+            for dr, dc in DIRS.values():
+                nr, nc = r + dr, c + dc
+                if _in_bounds(nr, nc) and opp[nr][nc] == 1:
+                    cnt += 1
+    return cnt
+
+def _apply_move(you: List[List[int]], opp: List[List[int]], move: Tuple[int,int,str]) -> Tuple[List[List[int]], List[List[int]]]:
+    r, c, dch = move
+    dr, dc = DIRS[dch]
+    nr, nc = r + dr, c + dc
+    new_you = [row[:] for row in you]
+    new_opp = [row[:] for row in opp]
+    # Move: our piece goes to destination, opponent piece removed, start becomes empty
+    new_you[r][c] = 0
+    new_opp[nr][nc] = 0
+    new_you[nr][nc] = 1
+    return new_you, new_opp
+
+def policy(you: list[int], opponent: list[int]) -> str:
+    """
+    Return a legal move string 'row,col,dir'.
+    Strategy: evaluate all legal captures, simulate each, and pick the move that
+    minimizes the opponent's number of legal captures on their next turn.
+    Tie-break by maximizing our number of captures after the move, and then by a deterministic order.
+    """
+    you_g = _to_grid(you)
+    opp_g = _to_grid(opponent)
+
+    legal_moves = _list_legal_moves(you_g, opp_g)
+    if not legal_moves:
+        # According to the problem this should not happen, but provide a safe fallback.
+        # Find any cell where we have a piece and any adjacent opponent piece and return it.
+        for r in range(ROWS):
+            for c in range(COLS):
+                if you_g[r][c] != 1:
+                    continue
+                for dch, (dr, dc) in DIRS.items():
+                    nr, nc = r + dr, c + dc
+                    if _in_bounds(nr, nc) and opp_g[nr][nc] == 1:
+                        return f"{r},{c},{dch}"
+        # If still nothing, return a fixed move (shouldn't be used)
+        return "0,0,R"
+
+    best_move = None
+    best_score = None
+    # Evaluate each legal move
+    for move in legal_moves:
+        new_you, new_opp = _apply_move(you_g, opp_g, move)
+        # After our move it will be opponent's turn
+        opp_moves_after = _count_moves(new_opp, new_you)
+        our_moves_after = _count_moves(new_you, new_opp)
+        # Score: primary minimize opponent moves, secondary maximize our moves
+        score = (-10 * opp_moves_after) + our_moves_after
+        # Deterministic tie-breaker: keep earlier move in list if equal score
+        if (best_score is None) or (score > best_score):
+            best_score = score
+            best_move = move
+
+    # Format result
+    r, c, dch = best_move
+    return f"{r},{c},{dch}"
+
+# For simple manual testing when run as a script (not used by the grader)
+if __name__ == "__main__":
+    # Example: single possible move
+    you = [
+        [1,0,0,0,0,0],
+        [0,0,0,0,0,0],
+        [0,1,0,0,0,0],
+        [0,0,0,0,0,0],
+        [0,0,0,0,0,1]
+    ]
+    opp = [
+        [0,1,0,0,0,0],
+        [0,0,0,1,0,0],
+        [0,0,0,0,1,0],
+        [0,0,1,0,0,0],
+        [0,0,0,0,0,0]
+    ]
+    print(policy(you, opp))
+</code>

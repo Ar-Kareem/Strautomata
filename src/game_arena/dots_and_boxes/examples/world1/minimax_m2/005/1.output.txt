@@ -1,0 +1,211 @@
+The strategy for this policy is to use a heuristic approach for the early game when there are many empty edges and a minimax search for the endgame when the number of empty edges is low. The heuristic prioritizes moves that capture boxes immediately, then avoids creating boxes with three sides filled to prevent the opponent from capturing them easily. The minimax search uses alpha-beta pruning with caching to efficiently find the best move in the endgame by considering the capture value and turn-taking behavior.
+
+Here's the Python implementation:
+<code>
+import numpy as np
+from functools import lru_cache
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    # Compute number of empty edges
+    horiz_empties = np.sum(horizontal[0:5, 0:4] == 0)  # Valid horizontal edges: rows 0-4, cols 0-3
+    vert_empties = np.sum(vertical[0:4, 0:5] == 0)    # Valid vertical edges: rows 0-3, cols 0-4
+    total_empties = horiz_empties + vert_empties
+    
+    # If endgame, use minimax search
+    if total_empties <= 10:
+        move = minimax_move(horizontal, vertical, capture)
+    else:
+        move = heuristic_move(horizontal, vertical, capture)
+    return move
+
+def heuristic_move(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    # Get all legal moves
+    legal_moves = []
+    for i in range(5):
+        for j in range(4):  # For horizontal, j from 0 to 3
+            if horizontal[i, j] == 0:
+                legal_moves.append((i, j, 'H'))
+    for i in range(4):  # For vertical, i from 0 to 3
+        for j in range(5):
+            if vertical[i, j] == 0:
+                legal_moves.append((i, j, 'V'))
+    
+    if not legal_moves:
+        return '0,0,H'  # Fallback, should not happen
+    
+    # First, check for moves that capture boxes
+    captures = []
+    for move in legal_moves:
+        _, _, _ = simulate_move(horizontal, vertical, capture, move, simulate=True)  # Get number of captures
+        captures.append(simulate_move(horizontal, vertical, capture, move)[1])  # Number of captures
+    
+    max_captures = max(captures)
+    if max_captures > 0:
+        # Choose a move that captures the most boxes
+        best_moves = [move for i, move in enumerate(legal_moves) if captures[i] == max_captures]
+        return format_move(random.choice(best_moves))
+    
+    # If no move captures, find moves that minimize dangerous boxes
+    dangers = []
+    for move in legal_moves:
+        _, _, new_capture = simulate_move(horizontal, vertical, capture, move, simulate=True)
+        danger_count = count_dangerous_boxes(new_capture)
+        dangers.append(danger_count)
+    
+    min_danger = min(dangers)
+    best_moves = [move for i, move in enumerate(legal_moves) if dangers[i] == min_danger]
+    return format_move(random.choice(best_moves))
+
+def simulate_move(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray, move: tuple, simulate: bool=False) -> tuple:
+    i, j, dir = move
+    new_horizontal = horizontal.copy()
+    new_vertical = vertical.copy()
+    new_capture = capture.copy()
+    
+    if dir == 'H':
+        new_horizontal[i, j] = 1
+        # Check boxes affected by this edge
+        if i > 0:  # Box above
+            box = (i-1, j)
+            if new_capture[box] == 0 and check_box_complete(new_horizontal, new_vertical, box):
+                new_capture[box] = 1
+        if i < 4:  # Box below
+            box = (i, j)
+            if new_capture[box] == 0 and check_box_complete(new_horizontal, new_vertical, box):
+                new_capture[box] = 1
+        captures = count_new_captures(capture, new_capture)
+    else:  # V
+        new_vertical[i, j] = 1
+        if j > 0:  # Box left
+            box = (i, j-1)
+            if new_capture[box] == 0 and check_box_complete(new_horizontal, new_vertical, box):
+                new_capture[box] = 1
+        if j < 4:  # Box right
+            box = (i, j)
+            if new_capture[box] == 0 and check_box_complete(new_horizontal, new_vertical, box):
+                new_capture[box] = 1
+        captures = count_new_captures(capture, new_capture)
+    
+    if simulate:
+        return new_horizontal, new_vertical, new_capture, captures
+    else:
+        return new_horizontal, new_vertical, new_capture, captures
+
+def check_box_complete(horizontal: np.ndarray, vertical: np.ndarray, box: tuple) -> bool:
+    a, b = box
+    # Check if all four edges are drawn
+    if horizontal[a, b] != 0 and horizontal[a+1, b] != 0 and vertical[a, b] != 0 and vertical[a, b+1] != 0:
+        return True
+    return False
+
+def count_new_captures(old_capture: np.ndarray, new_capture: np.ndarray) -> int:
+    # Count number of boxes newly captured by player 1
+    count = 0
+    for i in range(4):
+        for j in range(4):
+            if old_capture[i, j] == 0 and new_capture[i, j] == 1:
+                count += 1
+    return count
+
+def count_dangerous_boxes(capture: np.ndarray) -> int:
+    # Count boxes with exactly three sides drawn and unclaimed
+    count = 0
+    for i in range(4):
+        for j in range(4):
+            if capture[i, j] == 0:  # Unclaimed
+                sides = 0
+                if horizontal[i, j] != 0: sides += 1
+                if horizontal[i+1, j] != 0: sides += 1
+                if vertical[i, j] != 0: sides += 1
+                if vertical[i, j+1] != 0: sides += 1
+                if sides == 3:
+                    count += 1
+    return count
+
+def format_move(move: tuple) -> str:
+    return f"{move[0]},{move[1]},{move[2]}"
+
+def minimax_move(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    best_value, best_move = minimax(horizontal, vertical, capture, player=1, alpha=-np.inf, beta=np.inf)
+    return format_move(best_move)
+
+def minimax(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray, player: int, alpha: float, beta: float) -> tuple:
+    # Check base case: if no legal moves, return the capture value
+    legal_moves = get_legal_moves(horizontal, vertical)
+    if not legal_moves:
+        value = capture_value(capture, player)
+        return value, None
+    
+    key = (tuple(horizontal.flatten()), tuple(vertical.flatten()), tuple(capture.flatten()), player)
+    if key in minimax.cache:
+        return minimax.cache[key]
+    
+    if player == 1:  # Maximize
+        best_value = -np.inf
+        best_move = None
+        for move in legal_moves:
+            new_horizontal, new_vertical, new_capture, captures = simulate_move(horizontal, vertical, capture, move)
+            # Determine next player
+            if captures > 0:
+                next_player = 1
+            else:
+                next_player = -1
+            value, _ = minimax(new_horizontal, new_vertical, new_capture, next_player, alpha, beta)
+            if value > best_value:
+                best_value = value
+                best_move = move
+            alpha = max(alpha, best_value)
+            if beta <= alpha:
+                break  # Beta cutoff
+        minimax.cache[key] = (best_value, best_move)
+        return best_value, best_move
+    else:  # player == -1, minimize
+        best_value = np.inf
+        best_move = None
+        for move in legal_moves:
+            new_horizontal, new_vertical, new_capture, captures = simulate_move(horizontal, vertical, capture, move)
+            if captures > 0:
+                next_player = -1
+            else:
+                next_player = 1
+            value, _ = minimax(new_horizontal, new_vertical, new_capture, next_player, alpha, beta)
+            if value < best_value:
+                best_value = value
+                best_move = move
+            beta = min(beta, best_value)
+            if beta <= alpha:
+                break  # Alpha cutoff
+        minimax.cache[key] = (best_value, best_move)
+        return best_value, best_move
+
+def capture_value(capture: np.ndarray, player: int) -> float:
+    # Compute the net value for the player
+    value = 0
+    for i in range(4):
+        for j in range(4):
+            if capture[i, j] == 1:
+                value += 1
+            elif capture[i, j] == -1:
+                value -= 1
+    if player == 1:
+        return value
+    else:
+        return -value
+
+def get_legal_moves(horizontal: np.ndarray, vertical: np.ndarray) -> list:
+    moves = []
+    for i in range(5):
+        for j in range(4):
+            if horizontal[i, j] == 0:
+                moves.append((i, j, 'H'))
+    for i in range(4):
+        for j in range(5):
+            if vertical[i, j] == 0:
+                moves.append((i, j, 'V'))
+    return moves
+
+# Cache for minimax
+minimax.cache = {}
+
+import random
+</code>

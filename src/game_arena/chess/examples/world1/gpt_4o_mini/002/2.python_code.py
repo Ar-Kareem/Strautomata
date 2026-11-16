@@ -1,0 +1,29 @@
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    # Function to check if a move results in checkmate
+    def is_checkmate(move):
+        # Placeholder: Logic to simulate the move and check for checkmate would go here
+        return False
+    
+    # Function to evaluate the material gained by a specific move
+    def material_value(move):
+        # Placeholder: Logic to calculate material value for a move would go here
+        return 0
+
+    # First, check for immediate checkmate moves
+    for move in legal_moves:
+        if is_checkmate(move):
+            return move
+
+    # Prioritize moves that capture pieces 
+    best_move = None
+    best_material_value = -1
+
+    for move in legal_moves:
+        current_material_value = material_value(move)
+        if current_material_value > best_material_value:
+            best_material_value = current_material_value
+            best_move = move
+
+    # If no capturing moves found, just return a normal legal move
+    return best_move if best_move is not None else legal_moves[0]

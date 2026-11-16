@@ -1,0 +1,313 @@
+The strategy for this policy is to **enumerate every legal action** available for the current dice (including both dice orders), **respecting all mandatory-move rules** (bar entry priority, must-play-both-if-possible, and must-play-higher-if-only-one-die-can-be-played). It then **simulates each candidate move sequence** and chooses the one with the best heuristic evaluation:
+- In **contact positions** (checkers can still hit each other), it prioritizes **hitting**, **making points**, **building primes/anchors**, and **reducing vulnerable blots**, while still valuing pip improvement.
+- In **race positions** (no contact), it prioritizes **pip reduction** and **bearing off** efficiency.
+
+It always returns a move from its internally-generated legal list, ensuring the move string is legal.
+
+<code>
+from __future__ import annotations
+
+from typing import Dict, List, Tuple, Optional
+
+
+def policy(state: dict) -> str:
+    """
+    Returns a legal backgammon move string in format:
+      <ORDER>:<FROM1>,<FROM2>
+    ORDER is 'H' (higher die first) or 'L' (lower die first)
+    FROM tokens: 'A0'..'A23', 'B' (bar), 'P' (pass)
+    """
+    # ---- Helpers: parsing / copying ----
+    def copy_state(s: dict) -> dict:
+        return {
+            "my_pts": list(s["my_pts"]),
+            "opp_pts": list(s["opp_pts"]),
+            "my_bar": int(s["my_bar"]),
+            "opp_bar": int(s["opp_bar"]),
+            "my_off": int(s["my_off"]),
+            "opp_off": int(s["opp_off"]),
+            "dice": list(s.get("dice", [])),
+        }
+
+    def tok_A(i: int) -> str:
+        return f"A{i}"
+
+    def can_bear_off(s: dict) -> bool:
+        if s["my_bar"] > 0:
+            return False
+        # all checkers must be in home board A0..A5
+        return sum(s["my_pts"][6:]) == 0
+
+    def entry_point_for_die(d: int) -> int:
+        # We move from 23 down to 0, so bar entry is into indices 23..18 for die 1..6
+        return 24 - d  # d=1->23, d=6->18
+
+    def is_blocked(s: dict, dest: int) -> bool:
+        return s["opp_pts"][dest] >= 2
+
+    def bear_off_allowed_from_point(s: dict, i: int, d: int) -> bool:
+        # i in 0..5, d in 1..6, assuming can_bear_off(s) is True
+        dist = i + 1
+        if d == dist:
+            return True
+        if d > dist:
+            # allowed only if no checkers on higher points (further from bear off)
+            return sum(s["my_pts"][i + 1 : 6]) == 0
+        return False
+
+    def move_is_legal(s: dict, from_tok: str, d: int) -> bool:
+        if from_tok == "P":
+            return False
+        if d < 1 or d > 6:
+            return False
+
+        # Bar priority
+        if s["my_bar"] > 0 and from_tok != "B":
+            return False
+
+        if from_tok == "B":
+            if s["my_bar"] <= 0:
+                return False
+            dest = entry_point_for_die(d)
+            if is_blocked(s, dest):
+                return False
+            return True
+
+        if not from_tok.startswith("A"):
+            return False
+        try:
+            i = int(from_tok[1:])
+        except Exception:
+            return False
+        if i < 0 or i > 23:
+            return False
+        if s["my_pts"][i] <= 0:
+            return False
+
+        dest = i - d
+        if dest >= 0:
+            if is_blocked(s, dest):
+                return False
+            return True
+
+        # dest < 0 => bearing off attempt
+        if not can_bear_off(s):
+            return False
+        if i > 5:
+            return False
+        return bear_off_allowed_from_point(s, i, d)
+
+    def legal_sources(s: dict, d: int) -> List[str]:
+        # Must move from bar if any on bar
+        if s["my_bar"] > 0:
+            return ["B"] if move_is_legal(s, "B", d) else []
+        out: List[str] = []
+        # scan points
+        for i in range(24):
+            if s["my_pts"][i] > 0:
+                t = tok_A(i)
+                if move_is_legal(s, t, d):
+                    out.append(t)
+        return out
+
+    def apply_one_move(s: dict, from_tok: str, d: int) -> Tuple[dict, int, int]:
+        """
+        Apply a single checker move. Assumes it's legal.
+        Returns (new_state, hits, borne_off)
+        """
+        ns = copy_state(s)
+        hits = 0
+        borne_off = 0
+
+        if from_tok == "B":
+            ns["my_bar"] -= 1
+            dest = entry_point_for_die(d)
+            # handle hit
+            if ns["opp_pts"][dest] == 1:
+                ns["opp_pts"][dest] = 0
+                ns["opp_bar"] += 1
+                hits = 1
+            ns["my_pts"][dest] += 1
+            return ns, hits, borne_off
+
+        # A-point
+        i = int(from_tok[1:])
+        ns["my_pts"][i] -= 1
+        dest = i - d
+
+        if dest >= 0:
+            if ns["opp_pts"][dest] == 1:
+                ns["opp_pts"][dest] = 0
+                ns["opp_bar"] += 1
+                hits = 1
+            ns["my_pts"][dest] += 1
+            return ns, hits, borne_off
+
+        # bearing off
+        ns["my_off"] += 1
+        borne_off = 1
+        return ns, hits, borne_off
+
+    # ---- Candidate generation with mandatory-move rules ----
+    dice = list(state.get("dice", []))
+    if len(dice) == 0:
+        return "H:P,P"
+
+    # Single die convenience
+    if len(dice) == 1:
+        d = dice[0]
+        sources = legal_sources(state, d)
+        if not sources:
+            return "H:P,P"
+        # Choose best by evaluation among single moves
+        best = None
+        best_score = -10**18
+        for f1 in sources:
+            s1, h1, o1 = apply_one_move(state, f1, d)
+            sc = _evaluate(state, s1, hits=h1, borne_off=o1)
+            if sc > best_score:
+                best_score = sc
+                best = f"H:{f1},P"
+        return best if best is not None else "H:P,P"
+
+    # Two dice
+    d1, d2 = dice[0], dice[1]
+    hi, lo = (d1, d2) if d1 >= d2 else (d2, d1)
+
+    # Generate all 2-move sequences for both orders
+    candidates_2: List[Tuple[str, str, str, dict, int, int]] = []
+
+    def gen_two(order: str, first_die: int, second_die: int) -> None:
+        s0 = state
+        for f1 in legal_sources(s0, first_die):
+            s1, h1, o1 = apply_one_move(s0, f1, first_die)
+            for f2 in legal_sources(s1, second_die):
+                s2, h2, o2 = apply_one_move(s1, f2, second_die)
+                candidates_2.append((order, f1, f2, s2, h1 + h2, o1 + o2))
+
+    # If dice equal, H/L equivalent; still safe to generate both (or just H).
+    gen_two("H", hi, lo)
+    if hi != lo:
+        gen_two("L", lo, hi)
+
+    if candidates_2:
+        # Must play both dice if possible: choose best evaluated resulting state
+        best_move = None
+        best_score = -10**18
+        for order, f1, f2, s2, hits, borne_off in candidates_2:
+            sc = _evaluate(state, s2, hits=hits, borne_off=borne_off)
+            if sc > best_score:
+                best_score = sc
+                best_move = f"{order}:{f1},{f2}"
+        return best_move if best_move is not None else f"H:{candidates_2[0][1]},{candidates_2[0][2]}"
+
+    # No 2-move sequences exist: must play one die if possible, and must play higher if possible.
+    sources_hi = legal_sources(state, hi)
+    if sources_hi:
+        best_move = None
+        best_score = -10**18
+        for f1 in sources_hi:
+            s1, h1, o1 = apply_one_move(state, f1, hi)
+            sc = _evaluate(state, s1, hits=h1, borne_off=o1)
+            if sc > best_score:
+                best_score = sc
+                best_move = f"H:{f1},P"
+        return best_move if best_move is not None else f"H:{sources_hi[0]},P"
+
+    sources_lo = legal_sources(state, lo)
+    if sources_lo:
+        best_move = None
+        best_score = -10**18
+        for f1 in sources_lo:
+            s1, h1, o1 = apply_one_move(state, f1, lo)
+            sc = _evaluate(state, s1, hits=h1, borne_off=o1)
+            if sc > best_score:
+                best_score = sc
+                best_move = f"L:{f1},P"
+        return best_move if best_move is not None else f"L:{sources_lo[0]},P"
+
+    return "H:P,P"
+
+
+def _evaluate(s0: dict, s1: dict, hits: int = 0, borne_off: int = 0) -> float:
+    """
+    Heuristic evaluation of resulting position from the perspective of the player to move.
+    Higher is better.
+    """
+    my_pts = s1["my_pts"]
+    opp_pts = s1["opp_pts"]
+
+    # Pip counts (approx race metric)
+    pip_my = sum(my_pts[i] * (i + 1) for i in range(24)) + s1["my_bar"] * 25
+    pip_opp = sum(opp_pts[i] * (24 - i) for i in range(24)) + s1["opp_bar"] * 25
+    pip_adv = pip_opp - pip_my  # positive is good
+
+    # Contact detection (rough): overlap of zones
+    my_min = None
+    for i in range(24):
+        if my_pts[i] > 0:
+            my_min = i
+            break
+    opp_max = None
+    for i in range(23, -1, -1):
+        if opp_pts[i] > 0:
+            opp_max = i
+            break
+    if my_min is None:
+        my_min = 0
+    if opp_max is None:
+        opp_max = 23
+    contact = (my_min <= opp_max)
+
+    # Structure features
+    blots = sum(1 for i in range(24) if my_pts[i] == 1)
+    made = sum(1 for i in range(24) if my_pts[i] >= 2)
+    made_home = sum(1 for i in range(6) if my_pts[i] >= 2)
+    anchors = sum(1 for i in range(18, 24) if my_pts[i] >= 2)  # opponent home board anchors
+
+    # Prime length (max consecutive made points anywhere)
+    max_prime = 0
+    cur = 0
+    for i in range(24):
+        if my_pts[i] >= 2:
+            cur += 1
+            if cur > max_prime:
+                max_prime = cur
+        else:
+            cur = 0
+
+    # Off / bar
+    off_adv = (s1["my_off"] - s1["opp_off"])
+    bar_term = -18.0 * s1["my_bar"] + 12.0 * s1["opp_bar"]
+
+    # Reward/penalize changes (hits and bearing off on this move)
+    tactical = 55.0 * hits + 18.0 * borne_off
+
+    if contact:
+        # Contact game: value hits, points, anchors, primes; reduce blots
+        score = 0.0
+        score += tactical
+        score += bar_term
+        score += 0.55 * pip_adv
+        score += 6.0 * made
+        score += 7.5 * anchors
+        score += 2.5 * max_prime
+        if max_prime >= 4:
+            score += 10.0
+        # Blots are risky in contact
+        score -= 4.5 * blots
+        # Small value for off advantage early
+        score += 10.0 * off_adv
+        return score
+    else:
+        # Pure race: maximize pip advantage and bearing off; structure less important
+        score = 0.0
+        score += tactical
+        score += bar_term
+        score += 1.25 * pip_adv
+        score += 20.0 * off_adv
+        score += 3.0 * made_home
+        # Blots mostly irrelevant in race, slight penalty
+        score -= 1.0 * blots
+        return score
+</code>

@@ -1,0 +1,276 @@
+
+import math
+import random
+from collections import deque
+
+# Global cache for board geometry
+_CACHE = {}
+
+def _init_cache(valid_mask):
+    global _CACHE
+    N = len(valid_mask)
+    total = sum(1 for r in range(N) for c in range(N) if valid_mask[r][c])
+    if _CACHE.get("N") == N and _CACHE.get("total") == total:
+        return
+
+    valid_set = {(r, c) for r in range(N) for c in range(N) if valid_mask[r][c]}
+    dirs = [(1, 0), (-1, 0), (0, 1), (0, -1), (-1, 1), (-1, -1)]
+
+    neighbors = {}
+    for cell in valid_set:
+        r, c = cell
+        neigh = []
+        for dr, dc in dirs:
+            n = (r + dr, c + dc)
+            if n in valid_set:
+                neigh.append(n)
+        neighbors[cell] = neigh
+
+    boundary_set = {cell for cell in valid_set if len(neighbors[cell]) < 6}
+    corners = [cell for cell in valid_set if len(neighbors[cell]) == 3]
+
+    # Traverse boundary to order corners and define edges
+    boundary_neighbors = {cell: [n for n in neighbors[cell] if n in boundary_set] for cell in boundary_set}
+    start = corners[0]
+    order = [start]
+    prev = None
+    curr = start
+    while True:
+        nb = boundary_neighbors[curr]
+        if prev is None:
+            nxt = nb[0]
+        else:
+            nxt = nb[0] if nb[1] == prev else nb[1]
+        if nxt == start:
+            break
+        order.append(nxt)
+        prev, curr = curr, nxt
+        if len(order) > len(boundary_set) + 5:
+            break
+
+    corner_indices = [i for i, cell in enumerate(order) if cell in corners]
+    corner_indices.sort()
+    corners_in_order = [order[i] for i in corner_indices]
+
+    # If something went wrong, fall back to angle sort
+    if len(corners_in_order) != 6:
+        center_r = sum(r for r, c in valid_set) / len(valid_set)
+        center_c = sum(c for r, c in valid_set) / len(valid_set)
+        corners_in_order = sorted(
+            corners,
+            key=lambda cell: math.atan2(cell[0] - center_r, cell[1] - center_c),
+        )
+        corner_indices = [order.index(c) for c in corners_in_order]
+
+    edge_sets = []
+    for i in range(6):
+        start_idx = corner_indices[i]
+        end_idx = corner_indices[(i + 1) % 6]
+        if start_idx < end_idx:
+            cells = order[start_idx + 1 : end_idx]
+        else:
+            cells = order[start_idx + 1 :] + order[:end_idx]
+        edge_sets.append(set(cells))
+
+    corner_id = {cell: i for i, cell in enumerate(corners_in_order)}
+    edge_id = {}
+    for i, es in enumerate(edge_sets):
+        for cell in es:
+            edge_id[cell] = i
+
+    # BFS distances
+    def bfs_distance(starts):
+        dist = {cell: 0 for cell in starts}
+        q = deque(starts)
+        while q:
+            cell = q.popleft()
+            for n in neighbors[cell]:
+                if n not in dist:
+                    dist[n] = dist[cell] + 1
+                    q.append(n)
+        return dist
+
+    dist_edges = [bfs_distance(es) for es in edge_sets]
+    dist_corners = [bfs_distance({c}) for c in corners_in_order]
+
+    # Center
+    center_r = sum(r for r, c in valid_set) / len(valid_set)
+    center_c = sum(c for r, c in valid_set) / len(valid_set)
+    center = min(valid_set, key=lambda cell: (cell[0] - center_r) ** 2 + (cell[1] - center_c) ** 2)
+    dist_center = bfs_distance({center})
+    max_center_dist = max(dist_center.values()) if dist_center else 1
+
+    _CACHE = {
+        "N": N,
+        "total": total,
+        "valid_set": valid_set,
+        "neighbors": neighbors,
+        "boundary_set": boundary_set,
+        "corners": corners_in_order,
+        "corner_id": corner_id,
+        "edge_id": edge_id,
+        "dist_edges": dist_edges,
+        "dist_corners": dist_corners,
+        "dist_center": dist_center,
+        "max_center_dist": max_center_dist,
+    }
+
+def _has_ring(stones_set):
+    valid_set = _CACHE["valid_set"]
+    neighbors = _CACHE["neighbors"]
+    boundary_set = _CACHE["boundary_set"]
+
+    open_cells = valid_set - stones_set
+    if not open_cells:
+        return False
+
+    boundary_open = [cell for cell in open_cells if cell in boundary_set]
+    if not boundary_open:
+        return True
+
+    visited = set(boundary_open)
+    q = deque(boundary_open)
+    while q:
+        cell = q.popleft()
+        for n in neighbors[cell]:
+            if n in open_cells and n not in visited:
+                visited.add(n)
+                q.append(n)
+    return len(visited) != len(open_cells)
+
+def _is_win(stones_set):
+    neighbors = _CACHE["neighbors"]
+    corner_id = _CACHE["corner_id"]
+    edge_id = _CACHE["edge_id"]
+
+    visited = set()
+    for cell in stones_set:
+        if cell in visited:
+            continue
+        edges = set()
+        corners = set()
+        q = deque([cell])
+        while q:
+            cur = q.popleft()
+            if cur in visited:
+                continue
+            visited.add(cur)
+            if cur in corner_id:
+                corners.add(corner_id[cur])
+            elif cur in edge_id:
+                edges.add(edge_id[cur])
+            for n in neighbors[cur]:
+                if n in stones_set and n not in visited:
+                    q.append(n)
+        if len(corners) >= 2 or len(edges) >= 3:
+            return True
+    return _has_ring(stones_set)
+
+def _evaluate_move(move, me_set, opp_set):
+    neighbors = _CACHE["neighbors"]
+    corner_id = _CACHE["corner_id"]
+    edge_id = _CACHE["edge_id"]
+
+    new_set = me_set | {move}
+    comp = set()
+    q = deque([move])
+    edges_touched = set()
+    corners_touched = set()
+    size = 0
+    while q:
+        cur = q.popleft()
+        if cur in comp:
+            continue
+        comp.add(cur)
+        size += 1
+        if cur in corner_id:
+            corners_touched.add(corner_id[cur])
+        elif cur in edge_id:
+            edges_touched.add(edge_id[cur])
+        for n in neighbors[cur]:
+            if n in new_set and n not in comp:
+                q.append(n)
+
+    adj_own = sum(1 for n in neighbors[move] if n in me_set)
+    adj_opp = sum(1 for n in neighbors[move] if n in opp_set)
+
+    dist_center = _CACHE["dist_center"].get(move, 0)
+    max_center = _CACHE["max_center_dist"] or 1
+    center_score = (max_center - dist_center) / max_center
+
+    edge_pot = 0.0
+    for i in range(6):
+        if i not in edges_touched:
+            d = _CACHE["dist_edges"][i].get(move, max_center)
+            edge_pot += 1.0 / (d + 1)
+
+    corner_pot = 0.0
+    for i in range(6):
+        if i not in corners_touched:
+            d = _CACHE["dist_corners"][i].get(move, max_center)
+            corner_pot += 1.0 / (d + 1)
+
+    total_cells = _CACHE["total"]
+    phase = (len(me_set) + len(opp_set)) / total_cells
+
+    center_weight = 3.0 * (1 - phase) + 0.5
+    edge_weight = 2.0 + 3.0 * phase
+    corner_weight = 2.5 + 3.5 * phase
+    adj_own_weight = 1.8
+    adj_opp_weight = 1.2
+    comp_weight = 0.1
+    pot_edge_weight = 1.2
+    pot_corner_weight = 1.4
+
+    score = (
+        center_weight * center_score
+        + adj_own_weight * adj_own
+        + adj_opp_weight * adj_opp
+        + edge_weight * len(edges_touched)
+        + corner_weight * len(corners_touched)
+        + comp_weight * size
+        + pot_edge_weight * edge_pot
+        + pot_corner_weight * corner_pot
+    )
+    return score
+
+def policy(me, opp, valid_mask):
+    _init_cache(valid_mask)
+    valid_set = _CACHE["valid_set"]
+
+    me_set = set(me)
+    opp_set = set(opp)
+    empty_cells = [cell for cell in valid_set if cell not in me_set and cell not in opp_set]
+
+    if not empty_cells:
+        # Fallback (should never happen)
+        return next(iter(valid_set))
+
+    # Opening move: take center if board empty
+    if len(me_set) + len(opp_set) == 0:
+        center = min(empty_cells, key=lambda cell: _CACHE["dist_center"].get(cell, 0))
+        return center
+
+    # Immediate win
+    for move in empty_cells:
+        if _is_win(me_set | {move}):
+            return move
+
+    # Block opponent immediate win
+    blocking_moves = []
+    for move in empty_cells:
+        if _is_win(opp_set | {move}):
+            blocking_moves.append(move)
+    if blocking_moves:
+        best = max(blocking_moves, key=lambda m: _evaluate_move(m, me_set, opp_set))
+        return best
+
+    # Heuristic evaluation
+    scored = []
+    for move in empty_cells:
+        scored.append((_evaluate_move(move, me_set, opp_set), move))
+    scored.sort(reverse=True, key=lambda x: x[0])
+
+    best_score = scored[0][0]
+    top_moves = [mv for sc, mv in scored if sc >= best_score - 1e-6]
+    return random.choice(top_moves)

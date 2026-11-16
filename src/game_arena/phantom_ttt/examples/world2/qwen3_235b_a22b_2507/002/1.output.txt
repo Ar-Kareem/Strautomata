@@ -1,0 +1,93 @@
+The strategy for this policy is to balance exploration and exploitation using a combination of rule-based heuristics and a simulation-inspired prioritization. Since this is Phantom Tic Tac Toe with imperfect information, we cannot observe the opponent's moves directly. Thus, we must avoid assuming occupancy but also avoid attempting cells we already own.
+
+Our approach:
+
+1. **Never re-attempt confirmed owned cells** (`board[i][j] == 1`).
+2. Prefer moves that complete a line (row, column, or diagonal) of our known marks (i.e., potential winning move).
+3. Block potential opponent winning lines — although we cannot observe them, we infer risk by checking if the opponent could complete a line in one move, assuming symmetry and randomness.
+4. Use a heuristic score for each empty-appearing cell (`board[i][j] == 0`) based on:
+   - Number of lines (rows, cols, diags) it participates in that contain our marks.
+   - Number of lines it blocks that could otherwise lead the opponent to win.
+5. Prioritize center, then corners, then edges if no immediate tactical move is found (standard Tic Tac Toe opening heuristic).
+6. Since we can’t observe opponent moves, if a move fails, we learn that the cell was occupied — but in this policy, we only act on current board knowledge.
+
+To approximate opponent threat without visibility, we assume that any line with two opponent marks (inferred from our observations and move failures over time) is dangerous — but since we don't have historical memory in this function, we instead **simulate danger indirectly** by preferring control of key cells and creating our own threats.
+
+Since the function is stateless (no memory between calls), we cannot track past failed attempts. Therefore, this policy assumes `0` means unknown (possibly ours, opponent's, or empty) but avoids redundancy by not replaying confirmed moves (`1`).
+
+Final decision: score each available cell using a handcrafted evaluation function combining offensive and positional value.
+
+<code>
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    import numpy as np
+
+    b = np.array(board)
+    
+    # Available moves: cells that are not confirmed as ours
+    # Note: We never want to re-place on our confirmed cell (value 1)
+    available_moves = []
+    for i in range(3):
+        for j in range(3):
+            if b[i][j] != 1:
+                available_moves.append((i, j))
+    
+    # If no move available (shouldn't happen), return center
+    if not available_moves:
+        return (1, 1)
+    
+    # Check for winning move: place our mark to complete a line
+    for (i, j) in available_moves:
+        b[i][j] = 1
+        if (b[i].sum() == 3 or b[:, j].sum() == 3 or 
+            (i == j and np.diag(b).sum() == 3) or 
+            (i + j == 2 and np.diag(np.fliplr(b)).sum() == 3)):
+            b[i][j] = 0  # restore
+            return (i, j)
+        b[i][j] = 0  # restore
+    
+    # No perfect win; now score each move
+    scores = np.zeros((3, 3))
+    
+    # Base scores: center=3, corners=2, edges=1
+    position_value = np.array([
+        [2, 1, 2],
+        [1, 3, 1],
+        [2, 1, 2]
+    ])
+    
+    for (i, j) in available_moves:
+        # Add positional preference
+        scores[i][j] += position_value[i][j]
+        
+        # Simulate placing our mark and count how many lines get two of our marks (close to win)
+        b[i][j] = 1
+        for line in [
+            b[i],              # row
+            b[:, j],           # col
+            np.diag(b) if i == j else [],          # diag
+            np.diag(np.fliplr(b)) if i + j == 2 else []
+        ]:
+            if len(line) > 0:
+                if np.sum(line) == 2:
+                    scores[i][j] += 10  # Strong incentive to create a near-win
+        b[i][j] = 0
+    
+    # Additionally, try to block potential opponent wins
+    # Since we can't see opponent marks, we assume symmetry and penalize cells that would complete opponent lines
+    # But without memory, we use a proxy: if two non-our cells in a line, and we're the only other one, then maybe opponent is there
+    # Instead: we use a defensive heuristic — avoid leaving lines open
+    # Alternate idea: encourage moves that intersect opponent-heavy lines, but again, hidden information.
+
+    # Approximate defense: in any line with 0 of our marks, if it has many '0's (unknown), assume opponent might be building
+    # But we can't be sure. So keep focus on offense.
+
+    # Find move with highest score
+    best_move = available_moves[0]
+    best_score = -1
+    for (i, j) in available_moves:
+        if scores[i][j] > best_score:
+            best_score = scores[i][j]
+            best_move = (i, j)
+    
+    return best_move
+</code>

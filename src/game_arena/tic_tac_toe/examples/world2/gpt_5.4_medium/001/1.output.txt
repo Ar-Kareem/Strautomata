@@ -1,0 +1,414 @@
+The strategy for this policy is:
+
+1. **Always play legal moves** with a safe fallback.
+2. **Handle tactics first**:
+   - play an immediate winning move if available,
+   - otherwise block the opponent’s immediate win.
+3. **Use bitboards** for fast 4x4 game-state handling.
+4. **Search with iterative deepening alpha-beta pruning** so the policy gets stronger when time allows, but still returns a move before the limit.
+5. **Use a heuristic evaluation** based on:
+   - open winning lines,
+   - threat creation,
+   - good board locations.
+6. **Use move ordering** to search strong tactical moves first, which improves alpha-beta pruning and practical strength.
+
+<code>
+import time
+
+# ============================================================
+# 4x4 Tic-Tac-Toe policy
+# Board values:
+#   0  = empty
+#   1  = us
+#  -1  = opponent
+# Returns:
+#   (row, col)
+# ============================================================
+
+FULL_MASK = (1 << 16) - 1
+WIN_SCORE = 1_000_000
+INF = 10**18
+
+# Line masks: 4 rows, 4 cols, 2 diagonals
+LINE_MASKS = []
+
+# Rows
+for r in range(4):
+    mask = 0
+    for c in range(4):
+        mask |= 1 << (4 * r + c)
+    LINE_MASKS.append(mask)
+
+# Cols
+for c in range(4):
+    mask = 0
+    for r in range(4):
+        mask |= 1 << (4 * r + c)
+    LINE_MASKS.append(mask)
+
+# Main diagonal
+mask = 0
+for i in range(4):
+    mask |= 1 << (4 * i + i)
+LINE_MASKS.append(mask)
+
+# Anti-diagonal
+mask = 0
+for i in range(4):
+    mask |= 1 << (4 * i + (3 - i))
+LINE_MASKS.append(mask)
+
+# For faster local move scoring
+CELL_TO_LINES = [[] for _ in range(16)]
+for idx in range(16):
+    bit = 1 << idx
+    for lm in LINE_MASKS:
+        if lm & bit:
+            CELL_TO_LINES[idx].append(lm)
+
+# Slight preference for strong structural cells.
+# Inner 2x2 is best, corners next, edges after.
+POS_WEIGHTS = [
+    5, 3, 3, 5,
+    3, 6, 6, 3,
+    3, 6, 6, 3,
+    5, 3, 3, 5,
+]
+
+# Static line evaluation weights
+LINE_EVAL_WEIGHTS = [0, 4, 18, 120, WIN_SCORE]
+
+# Preferred tie-break order: inner cells, corners, then edges
+PREFERRED_ORDER = [5, 6, 9, 10, 0, 3, 12, 15, 1, 2, 4, 7, 8, 11, 13, 14]
+
+DEADLINE = 0.0
+NODE_COUNT = 0
+TT = {}
+
+
+def idx_to_rc(idx: int) -> tuple[int, int]:
+    return idx // 4, idx % 4
+
+
+def win_for(mask: int) -> bool:
+    for lm in LINE_MASKS:
+        if (mask & lm) == lm:
+            return True
+    return False
+
+
+def winning_cells(player_mask: int, opp_mask: int) -> int:
+    """Bitmask of empty cells where player can win immediately."""
+    occ = player_mask | opp_mask
+    cells = 0
+    for lm in LINE_MASKS:
+        if opp_mask & lm:
+            continue
+        if (player_mask & lm).bit_count() == 3:
+            cells |= lm & ~occ
+    return cells & FULL_MASK
+
+
+def evaluate(my: int, opp: int) -> int:
+    """Heuristic evaluation from our perspective."""
+    if win_for(my):
+        return WIN_SCORE
+    if win_for(opp):
+        return -WIN_SCORE
+
+    score = 0
+
+    # Open-line value
+    for lm in LINE_MASKS:
+        mc = (my & lm).bit_count()
+        oc = (opp & lm).bit_count()
+
+        if mc and oc:
+            continue
+        if mc:
+            score += LINE_EVAL_WEIGHTS[mc]
+        elif oc:
+            score -= LINE_EVAL_WEIGHTS[oc]
+
+    # Positional value
+    mm = my
+    while mm:
+        bit = mm & -mm
+        score += POS_WEIGHTS[bit.bit_length() - 1]
+        mm ^= bit
+
+    om = opp
+    while om:
+        bit = om & -om
+        score -= POS_WEIGHTS[bit.bit_length() - 1]
+        om ^= bit
+
+    return score
+
+
+def move_priority(my: int, opp: int, idx: int, turn: int,
+                  mover_wins: int | None = None,
+                  other_wins: int | None = None) -> int:
+    """
+    Order moves so alpha-beta sees tactical moves first.
+    Score is 'good for side to move', not absolute evaluation.
+    """
+    bit = 1 << idx
+    mover, other = (my, opp) if turn == 1 else (opp, my)
+
+    if mover_wins is None:
+        mover_wins = winning_cells(mover, other)
+    if other_wins is None:
+        other_wins = winning_cells(other, mover)
+
+    score = POS_WEIGHTS[idx] * 4
+
+    # Immediate win / urgent block
+    if mover_wins & bit:
+        score += 1_000_000
+    if other_wins & bit:
+        score += 300_000
+
+    # Local line-building / threat-creation
+    new_mover = mover | bit
+    occ = new_mover | other
+    threat_lines = 0
+
+    for lm in CELL_TO_LINES[idx]:
+        if other & lm:
+            continue
+        cnt = (new_mover & lm).bit_count()
+        if cnt == 1:
+            score += 8
+        elif cnt == 2:
+            score += 30
+        elif cnt == 3:
+            score += 220
+            if lm & ~occ:
+                threat_lines += 1
+
+    # Fork bonus
+    if threat_lines >= 2:
+        score += 60_000
+    elif threat_lines == 1:
+        score += 4_000
+
+    return score
+
+
+def ordered_moves(my: int, opp: int, turn: int) -> list[int]:
+    occ = my | opp
+    empties = FULL_MASK ^ occ
+
+    mover, other = (my, opp) if turn == 1 else (opp, my)
+    mover_wins = winning_cells(mover, other)
+    other_wins = winning_cells(other, mover)
+
+    scored = []
+    while empties:
+        bit = empties & -empties
+        empties ^= bit
+        idx = bit.bit_length() - 1
+        scored.append((
+            move_priority(my, opp, idx, turn, mover_wins, other_wins),
+            idx
+        ))
+
+    scored.sort(reverse=True)
+    return [idx for _, idx in scored]
+
+
+def check_timeout() -> None:
+    global NODE_COUNT
+    NODE_COUNT += 1
+    if (NODE_COUNT & 511) == 0 and time.perf_counter() >= DEADLINE:
+        raise TimeoutError
+
+
+def search(my: int, opp: int, turn: int, depth: int, alpha: int, beta: int, ply: int) -> int:
+    """
+    Alpha-beta search.
+    Returns value from our perspective.
+    turn = 1 means our turn, -1 means opponent turn.
+    """
+    check_timeout()
+
+    if win_for(my):
+        return WIN_SCORE - ply
+    if win_for(opp):
+        return -WIN_SCORE + ply
+
+    occ = my | opp
+    if occ == FULL_MASK:
+        return 0
+
+    my_wins = winning_cells(my, opp)
+    opp_wins = winning_cells(opp, my)
+
+    # Small tactical extension so immediate threats aren't cut off too early
+    if depth <= 0:
+        if my_wins or opp_wins:
+            depth = 1
+        else:
+            return evaluate(my, opp)
+
+    key = (my, opp, turn, depth)
+    cached = TT.get(key)
+    if cached is not None:
+        return cached
+
+    if turn == 1:
+        value = -INF
+        for idx in ordered_moves(my, opp, 1):
+            bit = 1 << idx
+            score = search(my | bit, opp, -1, depth - 1, alpha, beta, ply + 1)
+            if score > value:
+                value = score
+            if value > alpha:
+                alpha = value
+            if alpha >= beta:
+                break
+    else:
+        value = INF
+        for idx in ordered_moves(my, opp, -1):
+            bit = 1 << idx
+            score = search(my, opp | bit, 1, depth - 1, alpha, beta, ply + 1)
+            if score < value:
+                value = score
+            if value < beta:
+                beta = value
+            if alpha >= beta:
+                break
+
+    TT[key] = value
+    return value
+
+
+def best_from_mask(mask: int, my: int, opp: int, turn: int) -> int:
+    """Choose the best move among a subset of legal moves."""
+    best_idx = None
+    best_score = -INF
+
+    mover, other = (my, opp) if turn == 1 else (opp, my)
+    mover_wins = winning_cells(mover, other)
+    other_wins = winning_cells(other, mover)
+
+    for idx in PREFERRED_ORDER:
+        bit = 1 << idx
+        if mask & bit:
+            score = move_priority(my, opp, idx, turn, mover_wins, other_wins)
+            if score > best_score:
+                best_score = score
+                best_idx = idx
+
+    if best_idx is not None:
+        return best_idx
+
+    # Fallback
+    for idx in range(16):
+        if mask & (1 << idx):
+            return idx
+    return 0
+
+
+def fallback_move(board: list[list[int]]) -> tuple[int, int]:
+    for idx in PREFERRED_ORDER:
+        r, c = idx_to_rc(idx)
+        if board[r][c] == 0:
+            return (r, c)
+    for r in range(4):
+        for c in range(4):
+            if board[r][c] == 0:
+                return (r, c)
+    return (0, 0)
+
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    global DEADLINE, NODE_COUNT, TT
+
+    my = 0
+    opp = 0
+    occupied = 0
+    empties = []
+
+    for r in range(4):
+        for c in range(4):
+            v = board[r][c]
+            idx = 4 * r + c
+            if v == 1:
+                my |= 1 << idx
+                occupied += 1
+            elif v == -1:
+                opp |= 1 << idx
+                occupied += 1
+            else:
+                empties.append(idx)
+
+    if not empties:
+        return (0, 0)
+
+    # Very early opening book
+    if occupied == 0:
+        return (1, 1)
+
+    if my == 0 and opp.bit_count() == 1:
+        for idx in [5, 6, 9, 10, 0, 3, 12, 15]:
+            if ((my | opp) & (1 << idx)) == 0:
+                return idx_to_rc(idx)
+
+    # Immediate tactics first
+    my_wins = winning_cells(my, opp)
+    if my_wins:
+        return idx_to_rc(best_from_mask(my_wins, my, opp, 1))
+
+    opp_wins = winning_cells(opp, my)
+    if opp_wins:
+        return idx_to_rc(best_from_mask(opp_wins, my, opp, 1))
+
+    # Search
+    DEADLINE = time.perf_counter() + 0.93
+    NODE_COUNT = 0
+    TT = {}
+
+    initial_moves = ordered_moves(my, opp, 1)
+    best_idx = initial_moves[0] if initial_moves else empties[0]
+    best_score = -INF
+    max_depth = len(empties)
+
+    depth = 1
+    try:
+        while depth <= max_depth:
+            current_best_idx = best_idx
+            current_best_score = -INF
+            alpha = -INF
+            beta = INF
+
+            for idx in ordered_moves(my, opp, 1):
+                bit = 1 << idx
+                score = search(my | bit, opp, -1, depth - 1, alpha, beta, 1)
+
+                if score > current_best_score:
+                    current_best_score = score
+                    current_best_idx = idx
+
+                if current_best_score > alpha:
+                    alpha = current_best_score
+
+            best_idx = current_best_idx
+            best_score = current_best_score
+
+            # If a forced result is already found, stop early
+            if abs(best_score) >= WIN_SCORE - 32:
+                break
+
+            depth += 1
+
+    except TimeoutError:
+        pass
+
+    r, c = idx_to_rc(best_idx)
+    if board[r][c] == 0:
+        return (r, c)
+
+    return fallback_move(board)
+</code>

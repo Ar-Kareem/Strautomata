@@ -1,0 +1,104 @@
+**Strategy Overview**
+
+The policy evaluates every legal move (provided in the global list `legal_moves`) and assigns it a simple heuristic score:
+
+1. **Capture value** – captures are valued by the material of the captured piece (queen = 9, rook = 5, bishop/knight = 3, pawn = 1).  
+2. **Promotion bonus** – a pawn promotion to a queen receives an extra bonus.  
+3. **Piece development** – when no capture is available, the move is scored by how far a piece advances toward the opponent’s side (greater rank gain for White, greater rank loss for Black).  
+4. **Tie‑breaking** – if several moves share the highest score, one of them is chosen at random.
+
+The move with the highest total score is returned. The function works for any legal‑move set supplied by the arena and never produces an illegal move.
+
+```python
+import random
+
+# piece values for material evaluation
+_PIECE_VALUES = {
+    'P': 1,
+    'N': 3,
+    'B': 3,
+    'R': 5,
+    'Q': 9,
+    'K': 0
+}
+
+def _square_to_coords(sq: str):
+    """Convert algebraic square (e.g. 'e4') to (file, rank) indices 0‑based."""
+    file = ord(sq[0]) - ord('a')
+    rank = int(sq[1]) - 1
+    return file, rank
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    """
+    Choose a move from the globally‑provided `legal_moves` list.
+
+    Parameters
+    ----------
+    pieces : dict
+        Mapping from square names to piece codes, e.g. {'e2': 'wP', 'e7': 'bP'}.
+    to_play : str
+        Either 'white' or 'black'.
+
+    Returns
+    -------
+    str
+        A legal UCI move string.
+    """
+    # `legal_moves` is expected to be defined by the surrounding environment.
+    try:
+        moves = list(legal_moves)          # type: ignore[name-defined]
+    except NameError:
+        # If the environment does not provide it, we cannot act.
+        raise RuntimeError("global variable `legal_moves` is required.")
+
+    best_score = -float('inf')
+    best_moves = []
+
+    # direction for advancement: White moves to higher ranks, Black to lower.
+    advancing = 1 if to_play == 'white' else -1
+
+    for mv in moves:
+        src = mv[:2]
+        dst = mv[2:4]
+        promo = mv[4:] if len(mv) > 4 else ''
+
+        moving_piece = pieces.get(src)
+        if not moving_piece:
+            # malformed move; skip it
+            continue
+        moving_val = _PIECE_VALUES.get(moving_piece[1], 0)
+
+        # Capture detection
+        captured_piece = pieces.get(dst)
+        capture_val = _PIECE_VALUES.get(captured_piece[1], 0) if captured_piece else 0
+
+        score = capture_val  # material gain from a capture
+
+        # Promotion handling – treat promotion to queen as extra value
+        if promo:
+            promo_val = _PIECE_VALUES.get(promo.upper(), 0)
+            # We add the value of the promoted piece and a small bonus for queen.
+            score += promo_val
+            if promo.lower() == 'q':
+                score += 0.5  # tiny preference for queen promotions
+
+        # If no capture, favour advancement/development
+        if capture_val == 0:
+            src_file, src_rank = _square_to_coords(src)
+            dst_file, dst_rank = _square_to_coords(dst)
+            rank_gain = (dst_rank - src_rank) * advancing
+            # small weight for moving a piece off its back rank (development)
+            back_rank = 0 if to_play == 'white' else 7
+            dev_bonus = 0.2 if src_rank == back_rank else 0
+            score += rank_gain * 0.1 + dev_bonus
+
+        # Keep track of the best moves
+        if score > best_score:
+            best_score = score
+            best_moves = [mv]
+        elif score == best_score:
+            best_moves.append(mv)
+
+    # Randomly choose among equally good moves
+    return random.choice(best_moves) if best_moves else moves[0]
+```

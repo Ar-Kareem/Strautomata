@@ -1,0 +1,138 @@
+**Strategy:**
+
+1. **Information tracking:** We maintain internal estimates of which cells are likely occupied by the opponent.  
+   - Each time we attempt a move and it fails (no change in board after our turn), we infer the cell was already occupied (likely by opponent).  
+   - We store `opponent_marks` as a set of such cells.
+
+2. **Two-phase logic:**  
+   **Phase 1 (probing):** When few confirmed opponent marks are known, try to maximize information gain while targeting winning positions.  
+   **Phase 2 (exploitation):** Once we have a likely model of opponent marks, we treat it like a normal Tic-Tac-Toe with hidden obstacles, avoiding known opponent cells and prioritizing win/block.
+
+3. **Move selection priorities:**  
+   a. If we have two in a row and the third cell is free and not known opponent → win.  
+   b. If opponent has two in a row (inferred) and we can block (cell not known opponent) → block.  
+   c. Try center (1,1) if free and not known opponent.  
+   d. Try corners if free and not known opponent.  
+   e. Try edges.  
+   f. Fallback: pick any free cell (not confirmed ours and not known opponent).  
+   g. If all else fails, pick any cell not confirmed ours (even if likely opponent — last resort).
+
+4. **Updating known opponent cells:** We’ll track failures via persistent storage across calls (using a global variable reset only when board resets — detect by all cells 0).  
+   In Phantom Tic Tac Toe, if we attempt (r,c) and next turn board[r][c] is still 0 (not 1), then we failed → opponent likely there.
+
+Implementation will use a global dictionary to track game state across turns.
+
+---
+
+<code>
+import itertools
+
+# Persistent memory across turns
+_opponent_marks = set()
+_last_move = None
+_move_count = 0
+
+def policy(board):
+    global _opponent_marks, _last_move, _move_count
+    
+    # Helper: Check if board is fresh (all zeros except maybe our confirmed 1's)
+    # If total number of 1's is less than move_count/2, but simpler: detect reset by move_count.
+    # We'll detect reset if all cells are 0.
+    all_zero = all(board[r][c] == 0 for r in range(3) for c in range(3))
+    if all_zero and _move_count > 0:
+        # new game
+        _opponent_marks.clear()
+        _last_move = None
+        _move_count = 0
+    
+    # Update opponent marks from last move failure
+    if _last_move is not None:
+        r, c = _last_move
+        if board[r][c] == 0:  # we attempted here last time but it's still 0 → failed → opponent there
+            _opponent_marks.add((r, c))
+    
+    # Find confirmed my marks
+    my_marks = [(r, c) for r in range(3) for c in range(3) if board[r][c] == 1]
+    
+    # All possible cells
+    all_cells = [(r, c) for r in range(3) for c in range(3)]
+    
+    # Cells that are not confirmed mine and not known opponent
+    free_cells = [cell for cell in all_cells if board[cell[0]][cell[1]] == 0 and cell not in _opponent_marks]
+    
+    # If no such free cells, fallback to not confirmed mine only
+    fallback_cells = [cell for cell in all_cells if board[cell[0]][cell[1]] == 0]
+    
+    # Winning lines
+    lines = [
+        # rows
+        [(0,0),(0,1),(0,2)], [(1,0),(1,1),(1,2)], [(2,0),(2,1),(2,2)],
+        # cols
+        [(0,0),(1,0),(2,0)], [(0,1),(1,1),(2,1)], [(0,2),(1,2),(2,2)],
+        # diags
+        [(0,0),(1,1),(2,2)], [(0,2),(1,1),(2,0)]
+    ]
+    
+    # 1. Win move
+    for line in lines:
+        mine_in_line = [cell for cell in line if cell in my_marks]
+        if len(mine_in_line) == 2:
+            third_cell = [cell for cell in line if cell not in my_marks][0]
+            if third_cell in free_cells:
+                _last_move = third_cell
+                _move_count += 1
+                return third_cell
+    
+    # 2. Block opponent (inferred opponent two in a row)
+    # Infer opponent marks: known opponent marks + cells that are not mine and not free? Actually we only have known opponent marks.
+    # Assume opponent could have any cell not mine and not free? Let's just block if a line has 2 known opponent marks and third is free.
+    for line in lines:
+        opp_in_line = [cell for cell in line if cell in _opponent_marks]
+        if len(opp_in_line) == 2:
+            third_cell = [cell for cell in line if cell not in _opponent_marks][0]
+            if third_cell in free_cells:
+                _last_move = third_cell
+                _move_count += 1
+                return third_cell
+    
+    # 3. Center
+    center = (1, 1)
+    if center in free_cells:
+        _last_move = center
+        _move_count += 1
+        return center
+    
+    # 4. Corners
+    corners = [(0,0), (0,2), (2,0), (2,2)]
+    for corner in corners:
+        if corner in free_cells:
+            _last_move = corner
+            _move_count += 1
+            return corner
+    
+    # 5. Edges
+    edges = [(0,1), (1,0), (1,2), (2,1)]
+    for edge in edges:
+        if edge in free_cells:
+            _last_move = edge
+            _move_count += 1
+            return edge
+    
+    # 6. Fallback: any cell not confirmed mine
+    if fallback_cells:
+        chosen = fallback_cells[0]
+        _last_move = chosen
+        _move_count += 1
+        return chosen
+    
+    # 7. Ultimate fallback: any cell (should not happen)
+    for r in range(3):
+        for c in range(3):
+            if (r, c) not in my_marks:
+                _last_move = (r, c)
+                _move_count += 1
+                return (r, c)
+    
+    # Should never reach here
+    return (0, 0)
+</code>

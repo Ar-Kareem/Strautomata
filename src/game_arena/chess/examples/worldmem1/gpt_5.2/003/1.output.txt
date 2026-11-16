@@ -1,0 +1,614 @@
+The strategy for this policy is to play a fast “tactical-static” chess: always take immediate checkmates if available; otherwise heavily prioritize forcing moves (checks, promotions, high-value captures), while avoiding simple blunders by simulating each legal move on the given board, evaluating the resulting position with a material + piece-square-table score, and applying a safety filter that penalizes leaving the moved piece (or king) en prise. The policy parses SAN-like legal moves, reconstructs origins when needed, applies the move to the board, checks king legality, and selects the highest-scoring legal move with deterministic tie-breaks.
+
+<code>
+import re
+from typing import Dict, List, Tuple, Optional, Set
+
+# Piece values (centipawns-ish)
+VAL = {"P": 100, "N": 320, "B": 330, "R": 500, "Q": 900, "K": 0}
+
+FILES = "abcdefgh"
+RANKS = "12345678"
+
+# Simple PSTs (white perspective), indexed by (file, rank) -> 0..63 with rank 1 at bottom.
+# These are lightweight, not perfect; good enough to steer play.
+PST = {
+    "P": [
+         0,  0,  0,  0,  0,  0,  0,  0,
+        50, 50, 50, 50, 50, 50, 50, 50,
+        10, 10, 20, 30, 30, 20, 10, 10,
+         5,  5, 10, 25, 25, 10,  5,  5,
+         0,  0,  0, 20, 20,  0,  0,  0,
+         5, -5,-10,  0,  0,-10, -5,  5,
+         5, 10, 10,-20,-20, 10, 10,  5,
+         0,  0,  0,  0,  0,  0,  0,  0,
+    ],
+    "N": [
+        -50,-40,-30,-30,-30,-30,-40,-50,
+        -40,-20,  0,  0,  0,  0,-20,-40,
+        -30,  0, 10, 15, 15, 10,  0,-30,
+        -30,  5, 15, 20, 20, 15,  5,-30,
+        -30,  0, 15, 20, 20, 15,  0,-30,
+        -30,  5, 10, 15, 15, 10,  5,-30,
+        -40,-20,  0,  5,  5,  0,-20,-40,
+        -50,-40,-30,-30,-30,-30,-40,-50,
+    ],
+    "B": [
+        -20,-10,-10,-10,-10,-10,-10,-20,
+        -10,  0,  0,  0,  0,  0,  0,-10,
+        -10,  0,  5, 10, 10,  5,  0,-10,
+        -10,  5,  5, 10, 10,  5,  5,-10,
+        -10,  0, 10, 10, 10, 10,  0,-10,
+        -10, 10, 10, 10, 10, 10, 10,-10,
+        -10,  5,  0,  0,  0,  0,  5,-10,
+        -20,-10,-10,-10,-10,-10,-10,-20,
+    ],
+    "R": [
+         0,  0,  0,  5,  5,  0,  0,  0,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+         5, 10, 10, 10, 10, 10, 10,  5,
+         0,  0,  0,  0,  0,  0,  0,  0,
+    ],
+    "Q": [
+        -20,-10,-10, -5, -5,-10,-10,-20,
+        -10,  0,  0,  0,  0,  0,  0,-10,
+        -10,  0,  5,  5,  5,  5,  0,-10,
+         -5,  0,  5,  5,  5,  5,  0, -5,
+          0,  0,  5,  5,  5,  5,  0, -5,
+        -10,  5,  5,  5,  5,  5,  0,-10,
+        -10,  0,  5,  0,  0,  0,  0,-10,
+        -20,-10,-10, -5, -5,-10,-10,-20,
+    ],
+    "K": [
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -20,-30,-30,-40,-40,-30,-30,-20,
+        -10,-20,-20,-20,-20,-20,-20,-10,
+         20, 20,  0,  0,  0,  0, 20, 20,
+         20, 30, 10,  0,  0, 10, 30, 20,
+    ],
+}
+
+
+def sq_to_xy(sq: str) -> Tuple[int, int]:
+    return FILES.index(sq[0]), RANKS.index(sq[1])
+
+
+def xy_to_sq(x: int, y: int) -> str:
+    return f"{FILES[x]}{RANKS[y]}"
+
+
+def in_bounds(x: int, y: int) -> bool:
+    return 0 &lt;= x &lt; 8 and 0 &lt;= y &lt; 8
+
+
+def color_of(piece_code: str) -> str:
+    return piece_code[0]  # 'w' or 'b'
+
+
+def type_of(piece_code: str) -> str:
+    return piece_code[1]  # 'PNBRQK'
+
+
+def other_color(c: str) -> str:
+    return "b" if c == "w" else "w"
+
+
+def pst_value(pt: str, sq: str, piece_color: str) -> int:
+    x, y = sq_to_xy(sq)
+    idx = y * 8 + x
+    table = PST.get(pt)
+    if table is None:
+        return 0
+    if piece_color == "w":
+        return table[idx]
+    # mirror vertically for black
+    midx = (7 - y) * 8 + x
+    return table[midx]
+
+
+def attacked_squares(board: Dict[str, str], attacker_color: str) -> Set[str]:
+    att: Set[str] = set()
+    for sq, pc in board.items():
+        if color_of(pc) != attacker_color:
+            continue
+        pt = type_of(pc)
+        x, y = sq_to_xy(sq)
+
+        if pt == "P":
+            dy = 1 if attacker_color == "w" else -1
+            for dx in (-1, 1):
+                nx, ny = x + dx, y + dy
+                if in_bounds(nx, ny):
+                    att.add(xy_to_sq(nx, ny))
+
+        elif pt == "N":
+            for dx, dy in [(1, 2), (2, 1), (2, -1), (1, -2), (-1, -2), (-2, -1), (-2, 1), (-1, 2)]:
+                nx, ny = x + dx, y + dy
+                if in_bounds(nx, ny):
+                    att.add(xy_to_sq(nx, ny))
+
+        elif pt in ("B", "R", "Q"):
+            dirs = []
+            if pt in ("B", "Q"):
+                dirs += [(1, 1), (1, -1), (-1, 1), (-1, -1)]
+            if pt in ("R", "Q"):
+                dirs += [(1, 0), (-1, 0), (0, 1), (0, -1)]
+            for dx, dy in dirs:
+                nx, ny = x + dx, y + dy
+                while in_bounds(nx, ny):
+                    nsq = xy_to_sq(nx, ny)
+                    att.add(nsq)
+                    if nsq in board:
+                        break
+                    nx += dx
+                    ny += dy
+
+        elif pt == "K":
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    if dx == 0 and dy == 0:
+                        continue
+                    nx, ny = x + dx, y + dy
+                    if in_bounds(nx, ny):
+                        att.add(xy_to_sq(nx, ny))
+    return att
+
+
+def find_king(board: Dict[str, str], c: str) -> Optional[str]:
+    target = c + "K"
+    for sq, pc in board.items():
+        if pc == target:
+            return sq
+    return None
+
+
+def is_in_check(board: Dict[str, str], c: str) -> bool:
+    ksq = find_king(board, c)
+    if not ksq:
+        return False
+    return ksq in attacked_squares(board, other_color(c))
+
+
+_SAN_DEST_RE = re.compile(r"([a-h][1-8])$")
+
+
+def parse_san(move: str) -> Dict:
+    original = move
+    check = original.endswith("+") or original.endswith("++")
+    mate = original.endswith("#")
+    s = original.rstrip("+").rstrip("#")
+
+    if s in ("O-O", "O-O-O"):
+        return {
+            "original": original,
+            "castle": s,
+            "check": check,
+            "mate": mate,
+        }
+
+    promo = None
+    if "=" in s:
+        base, prom = s.split("=", 1)
+        promo = prom[0]
+        s = base
+
+    m = _SAN_DEST_RE.search(s)
+    if not m:
+        # Fallback; should not happen with legal move list.
+        return {"original": original, "invalid": True}
+
+    dest = m.group(1)
+    pre = s[:-2]
+
+    capture = "x" in pre
+
+    piece = "P"
+    rest = pre
+    if rest and rest[0] in "KQRBN":
+        piece = rest[0]
+        rest = rest[1:]
+
+    # rest contains disambiguation and maybe 'x'
+    dis = rest.replace("x", "")
+
+    # Pawn captures: origin file is before 'x', e.g. exd5, axb8=Q
+    pawn_from_file = None
+    if piece == "P" and capture:
+        if rest and rest[0] in FILES:
+            pawn_from_file = rest[0]
+
+    dis_file = None
+    dis_rank = None
+    if piece != "P":
+        if len(dis) == 1:
+            if dis in FILES:
+                dis_file = dis
+            elif dis in RANKS:
+                dis_rank = dis
+        elif len(dis) == 2:
+            if dis[0] in FILES:
+                dis_file = dis[0]
+            if dis[1] in RANKS:
+                dis_rank = dis[1]
+
+    return {
+        "original": original,
+        "piece": piece,
+        "dest": dest,
+        "capture": capture,
+        "promo": promo,
+        "check": check,
+        "mate": mate,
+        "dis_file": dis_file,
+        "dis_rank": dis_rank,
+        "pawn_from_file": pawn_from_file,
+    }
+
+
+def path_clear(board: Dict[str, str], src: str, dst: str, step: Tuple[int, int]) -> bool:
+    x, y = sq_to_xy(src)
+    dx, dy = step
+    nx, ny = x + dx, y + dy
+    tx, ty = sq_to_xy(dst)
+    while (nx, ny) != (tx, ty):
+        if xy_to_sq(nx, ny) in board:
+            return False
+        nx += dx
+        ny += dy
+    return True
+
+
+def can_piece_reach(board: Dict[str, str], src: str, dst: str, pt: str, c: str, capture: bool) -> bool:
+    if src == dst:
+        return False
+    sx, sy = sq_to_xy(src)
+    dx, dy = sq_to_xy(dst)
+    vx, vy = dx - sx, dy - sy
+
+    if pt == "N":
+        return (abs(vx), abs(vy)) in {(1, 2), (2, 1)}
+
+    if pt == "K":
+        return max(abs(vx), abs(vy)) == 1
+
+    if pt == "B":
+        if abs(vx) != abs(vy) or vx == 0:
+            return False
+        step = (1 if vx &gt; 0 else -1, 1 if vy &gt; 0 else -1)
+        return path_clear(board, src, dst, step)
+
+    if pt == "R":
+        if vx != 0 and vy != 0:
+            return False
+        if vx == 0 and vy == 0:
+            return False
+        step = (0 if vx == 0 else (1 if vx &gt; 0 else -1),
+                0 if vy == 0 else (1 if vy &gt; 0 else -1))
+        return path_clear(board, src, dst, step)
+
+    if pt == "Q":
+        if vx == 0 and vy == 0:
+            return False
+        if vx == 0 or vy == 0:
+            step = (0 if vx == 0 else (1 if vx &gt; 0 else -1),
+                    0 if vy == 0 else (1 if vy &gt; 0 else -1))
+            return path_clear(board, src, dst, step)
+        if abs(vx) == abs(vy):
+            step = (1 if vx &gt; 0 else -1, 1 if vy &gt; 0 else -1)
+            return path_clear(board, src, dst, step)
+        return False
+
+    if pt == "P":
+        # handled elsewhere (pawn move rules depend on capture/push)
+        return False
+
+    return False
+
+
+def apply_move(board: Dict[str, str], to_play_color: str, move: str) -&gt; Tuple[Optional[Dict[str, str]], Dict]:
+    """
+    Returns (new_board, info). If parsing/application fails, returns (None, info).
+    info includes: moved_piece_type, moved_from, moved_to, captured_piece_type, was_ep, was_castle.
+    """
+    info = {
+        "moved_piece_type": None,
+        "moved_from": None,
+        "moved_to": None,
+        "captured_piece_type": None,
+        "was_ep": False,
+        "was_castle": False,
+        "promo": None,
+        "check": False,
+        "mate": False,
+    }
+
+    parsed = parse_san(move)
+    if parsed.get("invalid"):
+        return None, info
+    info["check"] = parsed.get("check", False)
+    info["mate"] = parsed.get("mate", False)
+
+    c = to_play_color  # 'w' or 'b'
+    oc = other_color(c)
+
+    newb = dict(board)
+
+    # Castling
+    if "castle" in parsed:
+        info["was_castle"] = True
+        if c == "w":
+            k_from = "e1"
+            if parsed["castle"] == "O-O":
+                k_to, r_from, r_to = "g1", "h1", "f1"
+            else:
+                k_to, r_from, r_to = "c1", "a1", "d1"
+        else:
+            k_from = "e8"
+            if parsed["castle"] == "O-O":
+                k_to, r_from, r_to = "g8", "h8", "f8"
+            else:
+                k_to, r_from, r_to = "c8", "a8", "d8"
+
+        if newb.get(k_from) != c + "K" or newb.get(r_from) != c + "R":
+            # If representation differs, still try to proceed; but likely invalid.
+            return None, info
+
+        del newb[k_from]
+        del newb[r_from]
+        newb[k_to] = c + "K"
+        newb[r_to] = c + "R"
+
+        info["moved_piece_type"] = "K"
+        info["moved_from"] = k_from
+        info["moved_to"] = k_to
+
+        if is_in_check(newb, c):
+            return None, info
+        return newb, info
+
+    pt = parsed["piece"]
+    dst = parsed["dest"]
+    capture = parsed["capture"]
+    promo = parsed["promo"]
+    info["promo"] = promo
+
+    # Determine captured piece (normal capture)
+    captured = None
+    if capture and dst in newb and color_of(newb[dst]) == oc:
+        captured = newb[dst]
+        info["captured_piece_type"] = type_of(captured)
+
+    # Find origin square
+    src_candidates: List[str] = []
+    if pt == "P":
+        dx, dy = sq_to_xy(dst)
+        diry = 1 if c == "w" else -1
+
+        if capture:
+            from_file = parsed.get("pawn_from_file")
+            if from_file is None:
+                return None, info
+            fx = FILES.index(from_file)
+            # origin rank is one step behind destination
+            sy = dy - diry
+            if not (0 &lt;= sy &lt; 8):
+                return None, info
+            src = xy_to_sq(fx, sy)
+            if newb.get(src) != c + "P":
+                # Might still be a SAN variant; fail.
+                return None, info
+            # En passant if destination empty but capture move
+            if dst not in newb:
+                # Captured pawn is behind destination
+                ep_y = dy - diry
+                ep_sq = xy_to_sq(dx, ep_y)
+                if newb.get(ep_sq) == oc + "P":
+                    info["was_ep"] = True
+                    info["captured_piece_type"] = "P"
+                else:
+                    return None, info
+            else:
+                # Normal capture must be opponent
+                if color_of(newb[dst]) != oc:
+                    return None, info
+            src_candidates = [src]
+        else:
+            # single/double push
+            src1 = xy_to_sq(dx, dy - diry)
+            src2 = xy_to_sq(dx, dy - 2 * diry) if (0 &lt;= dy - 2 * diry &lt; 8) else None
+            if newb.get(src1) == c + "P" and dst not in newb:
+                src_candidates.append(src1)
+            # double push from start rank
+            start_rank = 1 if c == "w" else 6
+            if dy == (start_rank + 2 * diry) and src2:
+                if newb.get(src2) == c + "P" and dst not in newb:
+                    mid = xy_to_sq(dx, dy - diry)
+                    if mid not in newb:
+                        src_candidates.append(src2)
+
+    else:
+        dis_file = parsed.get("dis_file")
+        dis_rank = parsed.get("dis_rank")
+        for sq, pc in newb.items():
+            if pc != c + pt:
+                continue
+            if dis_file and sq[0] != dis_file:
+                continue
+            if dis_rank and sq[1] != dis_rank:
+                continue
+            # Destination occupancy constraint
+            if dst in newb:
+                if color_of(newb[dst]) == c:
+                    continue
+                if not capture:
+                    continue
+            else:
+                if capture:
+                    # could still be a rare notation; assume no (except EP which is pawn-only)
+                    continue
+            if can_piece_reach(newb, sq, dst, pt, c, capture):
+                src_candidates.append(sq)
+
+    if not src_candidates:
+        return None, info
+
+    # If ambiguous in pseudo-legal sense, pick the one that doesn't leave king in check.
+    chosen_src = None
+    for src in src_candidates:
+        tb = dict(newb)
+        # remove captured
+        if capture:
+            if info["was_ep"]:
+                dx, dy = sq_to_xy(dst)
+                diry = 1 if c == "w" else -1
+                ep_sq = xy_to_sq(dx, dy - diry)
+                if ep_sq in tb:
+                    del tb[ep_sq]
+            else:
+                if dst in tb:
+                    del tb[dst]
+        # move piece
+        moving_code = tb.get(src)
+        if moving_code is None:
+            continue
+        del tb[src]
+        # promotion
+        if pt == "P" and promo:
+            tb[dst] = c + promo
+        else:
+            tb[dst] = moving_code
+
+        if not is_in_check(tb, c):
+            chosen_src = src
+            newb = tb
+            break
+
+    if chosen_src is None:
+        return None, info
+
+    info["moved_piece_type"] = pt
+    info["moved_from"] = chosen_src
+    info["moved_to"] = dst
+
+    # Fill captured piece type for normal capture if not yet determined
+    if capture and not info["was_ep"] and info["captured_piece_type"] is None:
+        # It was removed during apply; try original board
+        if dst in board and color_of(board[dst]) == oc:
+            info["captured_piece_type"] = type_of(board[dst])
+
+    return newb, info
+
+
+def evaluate_board(board: Dict[str, str], perspective: str) -&gt; int:
+    """
+    perspective: 'w' or 'b' ; positive means good for perspective.
+    """
+    score = 0
+    for sq, pc in board.items():
+        c = color_of(pc)
+        pt = type_of(pc)
+        v = VAL[pt] + pst_value(pt, sq, c)
+        if c == perspective:
+            score += v
+        else:
+            score -= v
+    # Small bonus for not being in check
+    if is_in_check(board, perspective):
+        score -= 40
+    if is_in_check(board, other_color(perspective)):
+        score += 25
+    return score
+
+
+def move_priority_flags(move: str) -&gt; Tuple[int, int, int, int, int]:
+    # Deterministic tie-breaks: mate &gt; check &gt; promotion &gt; capture &gt; castle
+    mate = 1 if move.endswith("#") else 0
+    check = 1 if move.endswith("+") or move.endswith("++") else 0
+    promo = 1 if "=" in move else 0
+    cap = 1 if "x" in move else 0
+    castle = 1 if move.rstrip("+").rstrip("#") in ("O-O", "O-O-O") else 0
+    return (mate, check, promo, cap, castle)
+
+
+def policy(pieces: Dict[str, str], to_play: str, legal_moves: List[str], memory: Dict) -&gt; Tuple[str, Dict]:
+    # Must always return a legal move
+    if not legal_moves:
+        return "", memory
+
+    myc = "w" if to_play == "white" else "b"
+
+    # 1) Immediate mates (trust SAN marker)
+    mates = [m for m in legal_moves if m.endswith("#")]
+    if mates:
+        # prefer also captures/promotions among mates deterministically
+        mates.sort(key=lambda m: (move_priority_flags(m), m), reverse=True)
+        return mates[0], memory
+
+    best_move = legal_moves[0]
+    best_score = -10**18
+    best_flags = move_priority_flags(best_move)
+
+    # Precompute current attacked sets for quick “do not hang king” heuristics (optional)
+    # We'll compute per-move after apply for moved piece safety.
+    for mv in legal_moves:
+        nb, info = apply_move(pieces, myc, mv)
+        if nb is None:
+            # Fallback: still legal according to input, but parsing failed; give it a low score.
+            # Ensure we can still return something legal.
+            score = -10**9
+            flags = move_priority_flags(mv)
+        else:
+            flags = move_priority_flags(mv)
+            score = evaluate_board(nb, myc)
+
+            # Forcing move bonuses
+            if info.get("mate"):
+                score += 10**6
+            elif info.get("check"):
+                score += 60
+
+            # Promotion bonus
+            if info.get("promo"):
+                score += 700  # encourage converting
+
+            # Capture heuristics (MVV-LVA-ish)
+            if info.get("captured_piece_type"):
+                capv = VAL.get(info["captured_piece_type"], 0)
+                attv = VAL.get(info.get("moved_piece_type") or "P", 100)
+                score += capv * 2 - attv // 10
+
+            # Castling bonus
+            if info.get("was_castle"):
+                score += 45
+
+            # Moved piece safety (avoid hanging pieces)
+            moved_to = info.get("moved_to")
+            moved_pt = info.get("moved_piece_type")
+            if moved_to and moved_pt:
+                opp_att = attacked_squares(nb, other_color(myc))
+                my_att = attacked_squares(nb, myc)
+                if moved_to in opp_att:
+                    v = VAL.get(moved_pt, 0)
+                    if moved_to in my_att:
+                        score -= int(0.20 * v)
+                    else:
+                        score -= int(0.80 * v)
+                    # Extra caution: king into attack is terrible
+                    if moved_pt == "K":
+                        score -= 5000
+
+        # Tie-break: higher score, then better forcing flags, then lexicographic
+        if (score &gt; best_score) or (score == best_score and (flags &gt; best_flags or (flags == best_flags and mv &lt; best_move))):
+            best_score = score
+            best_move = mv
+            best_flags = flags
+
+    return best_move, memory
+</code>

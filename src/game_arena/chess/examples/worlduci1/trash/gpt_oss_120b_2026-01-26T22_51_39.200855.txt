@@ -1,0 +1,114 @@
+**Strategy Overview**
+
+The policy builds a full chess board using the `python‑chess` library, generates all legal moves for the side to play, and then selects the most promising move using a simple but effective evaluation:
+
+1. **Checkmate Search** – If any legal move immediately mates the opponent, that move is chosen.
+2. **Capture & Promotion Prioritisation** – Each move is scored based on material gain:
+   * Capturing a piece adds the value of the captured piece.
+   * Promotion adds the value of the promoted piece minus a pawn’s value.
+3. **Activity Bonus** – Non‑captures that land on a central square (d4‑e5‑d5‑e4‑c4‑f4‑c5‑f5) get a small bonus to encourage piece development.
+4. **Best Move Selection** – The move with the highest score is returned. If no moves are found (should only happen in checkmate/stalemate), a dummy “0000” move is returned to keep the interface safe.
+
+The evaluation is lightweight, runs well under the time limit, and leverages the powerful move‑generation capabilities of `python‑chess`, ensuring that every returned move is legal.
+
+```python
+<code>
+import chess
+
+# piece values for a simple material evaluation (in centipawns)
+PIECE_VALUES = {
+    chess.PAWN:   100,
+    chess.KNIGHT: 320,
+    chess.BISHOP: 330,
+    chess.ROOK:   500,
+    chess.QUEEN:  900,
+    chess.KING:   0   # king capture never occurs; value is irrelevant
+}
+
+def _board_from_state(pieces: dict[str, str], to_play: str) -> chess.Board:
+    """
+    Construct a python‑chess Board from the given piece dictionary.
+    """
+    board = chess.Board(empty=True)
+
+    for sq, code in pieces.items():
+        color = chess.WHITE if code[0] == 'w' else chess.BLACK
+        piece_type = {
+            'K': chess.KING,
+            'Q': chess.QUEEN,
+            'R': chess.ROOK,
+            'B': chess.BISHOP,
+            'N': chess.KNIGHT,
+            'P': chess.PAWN
+        }[code[1]]
+        board.set_piece_at(chess.parse_square(sq), chess.Piece(piece_type, color))
+
+    board.turn = chess.WHITE if to_play == 'white' else chess.BLACK
+    return board
+
+def _score_move(board: chess.Board, move: chess.Move) -> int:
+    """
+    Simple static evaluation for a single move.
+    - Captures: value of captured piece.
+    - Promotions: value of promoted piece minus pawn.
+    - Centralisation bonus for non‑captures.
+    """
+    score = 0
+
+    # capture value
+    if board.is_capture(move):
+        captured = board.piece_at(move.to_square)
+        if captured:
+            score += PIECE_VALUES[captured.piece_type]
+
+    # promotion value
+    if move.promotion:
+        score += PIECE_VALUES[move.promotion] - PIECE_VALUES[chess.PAWN]
+
+    # centralisation bonus for quiet moves
+    if not board.is_capture(move):
+        file = chess.square_file(move.to_square)
+        rank = chess.square_rank(move.to_square)
+        # squares d4, e4, d5, e5, c4, f4, c5, f5 are considered central
+        if (2 <= file <= 5) and (2 <= rank <= 5):
+            score += 10
+
+    return score
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    """
+    Choose a legal move for the side to play.
+    """
+    board = _board_from_state(pieces, to_play)
+
+    legal_moves = list(board.legal_moves)
+
+    # No legal moves – return a dummy string to keep the contract.
+    if not legal_moves:
+        return "0000"
+
+    # 1. Immediate checkmate detection
+    for mv in legal_moves:
+        board.push(mv)
+        if board.is_checkmate():
+            board.pop()
+            return mv.uci()
+        board.pop()
+
+    # 2. Evaluate remaining moves
+    best_move = None
+    best_score = -10**9
+
+    for mv in legal_moves:
+        sc = _score_move(board, mv)
+        if sc > best_score:
+            best_score = sc
+            best_move = mv
+
+    # Fallback (should never happen)
+    if best_move is None:
+        best_move = legal_moves[0]
+
+    return best_move.uci()
+</code>
+```

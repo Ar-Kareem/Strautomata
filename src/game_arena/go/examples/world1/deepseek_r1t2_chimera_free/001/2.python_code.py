@@ -1,0 +1,183 @@
+
+def create_board(me_list, opp_list):
+    board = [[0] * 20 for _ in range(20)]  # rows 0-19 unused
+    for r, c in me_list:
+        board[r][c] = 1
+    for r, c in opp_list:
+        board[r][c] = 2
+    return board
+
+def find_groups(board, player):
+    visited = set()
+    groups = []
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if board[r][c] == player and (r, c) not in visited:
+                queue = [(r, c)]
+                visited.add((r, c))
+                stones = set()
+                liberties = set()
+                while queue:
+                    cr, cc = queue.pop(0)
+                    stones.add((cr, cc))
+                    for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+                        nr, nc = cr + dr, cc + dc
+                        if 1 <= nr <= 19 and 1 <= nc <= 19:
+                            if board[nr][nc] == 0:
+                                liberties.add((nr, nc))
+                            elif board[nr][nc] == player and (nr, nc) not in visited:
+                                visited.add((nr, nc))
+                                queue.append((nr, nc))
+                groups.append({'stones': stones, 'liberties': liberties})
+    return groups
+
+def is_legal_move(board, r, c, player):
+    if board[r][c] != 0:
+        return False
+    opponent = 3 - player
+    board[r][c] = player
+    
+    # Check adjacent liberties
+    for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+        nr, nc = r + dr, c + dc
+        if 1 <= nr <= 19 and 1 <= nc <= 19 and board[nr][nc] == 0:
+            board[r][c] = 0
+            return True
+    
+    # Check opponent captures
+    for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+        nr, nc = r + dr, c + dc
+        if 1 <= nr <= 19 and 1 <= nc <= 19 and board[nr][nc] == opponent:
+            visited = set()
+            queue = [(nr, nc)]
+            visited.add((nr, nc))
+            captured = True
+            while queue:
+                cr, cc = queue.pop(0)
+                for ddr, ddc in [(-1,0), (1,0), (0,-1), (0,1)]:
+                    nnr, nnc = cr + ddr, cc + ddc
+                    if 1 <= nnr <=19 and 1 <= nnc <=19:
+                        if board[nnr][nnc] == 0 and (nnr, nnc) != (r, c):
+                            captured = False
+                            break
+                        if board[nnr][nnc] == opponent and (nnr, nnc) not in visited:
+                            visited.add((nnr, nnc))
+                            queue.append((nnr, nnc))
+                if not captured:
+                    break
+            if captured:
+                board[r][c] = 0
+                return True
+    
+    # Check own liberties
+    visited = set()
+    queue = [(r, c)]
+    visited.add((r, c))
+    has_liberty = False
+    while queue:
+        cr, cc = queue.pop(0)
+        for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+            nr, nc = cr + dr, cc + dc
+            if 1 <= nr <=19 and 1 <= nc <=19:
+                if board[nr][nc] == 0:
+                    has_liberty = True
+                    break
+                elif board[nr][nc] == player and (nr, nc) not in visited:
+                    visited.add((nr, nc))
+                    queue.append((nr, nc))
+        if has_liberty:
+            break
+    board[r][c] = 0
+    return has_liberty
+
+def policy(me, opponent):
+    board = create_board(me, opponent)
+    my_groups = find_groups(board, 1)
+    opp_groups = find_groups(board, 2)
+    
+    total_stones = len(me) + len(opponent)
+    
+    # Priority 1: Capture moves
+    capture_moves = []
+    for group in opp_groups:
+        if len(group['liberties']) == 1:
+            liberty = next(iter(group['liberties']))
+            r, c = liberty
+            if board[r][c] == 0:
+                capture_moves.append((r, c))
+    if capture_moves:
+        cap_scores = []
+        for move in capture_moves:
+            for group in opp_groups:
+                if move in group['liberties'] and len(group['liberties']) == 1:
+                    cap_scores.append( (move, len(group['stones'])) )
+                    break
+        cap_scores.sort(key=lambda x: x[1], reverse=True)
+        for move, _ in cap_scores:
+            if is_legal_move(board, move[0], move[1], 1):
+                return move
+    
+    # Priority 2: Defend own atari groups
+    defend_moves = []
+    for group in my_groups:
+        if len(group['liberties']) == 1:
+            atari_pt = next(iter(group['liberties']))
+            for stone in group['stones']:
+                sr, sc = stone
+                for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+                    nr, nc = sr + dr, sc + dc
+                    if 1 <= nr <=19 and 1 <= nc <=19 and board[nr][nc] == 0 and (nr, nc) != atari_pt:
+                        defend_moves.append((nr, nc))
+    
+    seen = set()
+    legal_defend = []
+    for move in defend_moves:
+        if move not in seen:
+            seen.add(move)
+            if is_legal_move(board, move[0], move[1], 1):
+                legal_defend.append(move)
+    if legal_defend:
+        legal_defend.sort(key=lambda m: min(m[0]-1, 19-m[0], m[1]-1, 19-m[1]))
+        return legal_defend[0]
+    
+    # Priority 3: Opening moves
+    if total_stones < 6:
+        for move in [(4,4), (4,16), (16,4), (16,16), (10,10), (4,10), (10,4), (16,10), (10,16)]:
+            r, c = move
+            if board[r][c] == 0 and is_legal_move(board, r, c, 1):
+                return move
+    
+    # Priority 4: Heuristic expansion
+    candidate_moves = []
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if board[r][c] == 0:
+                for dr in [-2,-1,0,1,2]:
+                    for dc in [-2,-1,0,1,2]:
+                        if dr == 0 and dc == 0: continue
+                        nr, nc = r + dr, c + dc
+                        if 1<=nr<=19 and 1<=nc<=19 and board[nr][nc] == 1:
+                            candidate_moves.append((r, c))
+                            break
+    
+    if not candidate_moves:
+        candidate_moves = [(r, c) for r in range(1,20) for c in range(1,20) if board[r][c] == 0]
+    
+    scored_moves = []
+    for (r, c) in candidate_moves:
+        my_n, opp_n = 0, 0
+        for dr in [-1,0,1]:
+            for dc in [-1,0,1]:
+                if dr ==0 and dc ==0: continue
+                nr, nc = r + dr, c + dc
+                if 1<=nr<=19 and 1<=nc<=19:
+                    if board[nr][nc] == 1: my_n += 1
+                    elif board[nr][nc] == 2: opp_n += 1
+        scored_moves.append( (my_n - opp_n, r, c) )
+    scored_moves.sort(reverse=True)
+    
+    for score, r, c in scored_moves:
+        if is_legal_move(board, r, c, 1):
+            return (r, c)
+    
+    return (0, 0)

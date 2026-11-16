@@ -1,0 +1,182 @@
+To solve this problem, we need to determine the optimal next move in a 3x3x3 3D Tic Tac Toe game. The solution involves analyzing the current board state to find a move that maximizes the player's chances of winning, while also considering potential blocking moves against the opponent.
+
+### Approach
+1. **Board Representation**: The board is represented as a 3D list where each element is 0 (empty), 1 (current player), or -1 (opponent). We flatten this 3D board into a 1D list for easier manipulation.
+2. **Immediate Win Check**: Before performing a deeper search, we first check if the current player can win in the next move by placing their mark in any empty cell that completes a winning line.
+3. **Blocking Move Check**: Next, we check if any empty cell, if occupied by the opponent, would result in an opponent win. If so, we block that move.
+4. **Minimax Algorithm with Alpha-Beta Pruning**: If neither immediate win nor blocking move is found, we use the minimax algorithm with alpha-beta pruning to a depth of 3. This involves:
+   - **Evaluation Function**: Assign scores based on potential winning lines for both players. Lines with more of the current player's marks score higher, while lines with more opponent marks score lower.
+   - **Recursive Search**: The algorithm alternates between maximizing (current player) and minimizing (opponent) moves, exploring possible moves up to a depth of 3. Alpha-beta pruning helps reduce the search space by cutting off branches that cannot improve the current result.
+5. **Result Conversion**: The best move from the minimax search (if found) is converted back from a 1D index to (x, y, z) coordinates.
+
+### Solution Code
+```python
+def index(z, y, x):
+    return z * 9 + y * 3 + x
+
+def generate_lines():
+    lines = []
+    for z in range(3):
+        for y in range(3):
+            line = [index(z, y, x) for x in range(3)]
+            lines.append(line)
+    for z in range(3):
+        for x in range(3):
+            line = [index(z, y, x) for y in range(3)]
+            lines.append(line)
+    for x in range(3):
+        for y in range(3):
+            line = [index(z, y, x) for z in range(3)]
+            lines.append(line)
+    for z in range(3):
+        line1 = [index(z, x, x) for x in range(3)]
+        line2 = [index(z, 2 - x, x) for x in range(3)]
+        lines.append(line1)
+        lines.append(line2)
+    for y in range(3):
+        line1 = [index(x, y, x) for x in range(3)]
+        line2 = [index(2 - x, y, x) for x in range(3)]
+        lines.append(line1)
+        lines.append(line2)
+    for x in range(3):
+        line1 = [index(y, y, x) for y in range(3)]
+        line2 = [index(2 - y, y, x) for y in range(3)]
+        lines.append(line1)
+        lines.append(line2)
+    lines.append([index(0,0,0), index(1,1,1), index(2,2,2)])
+    lines.append([index(0,0,2), index(1,1,1), index(2,2,0)])
+    lines.append([index(0,2,0), index(1,1,1), index(2,0,2)])
+    lines.append([index(0,2,2), index(1,1,1), index(2,0,0)])
+    return lines
+
+def policy(board):
+    flat_board = [board[z][y][x] for z in range(3) for y in range(3) for x in range(3)]
+    lines = generate_lines()
+    
+    def has_won(player):
+        for line in lines:
+            if all(flat_board[idx] == player for idx in line):
+                return True
+        return False
+    
+    def evaluate():
+        score = 0
+        for line in lines:
+            ones = sum(1 for idx in line if flat_board[idx] == 1)
+            minus_ones = sum(1 for idx in line if flat_board[idx] == -1)
+            if ones > 0 and minus_ones > 0:
+                score += (ones - minus_ones) * 0.1
+            else:
+                if ones == 2:
+                    score += 10
+                elif ones == 1:
+                    score += 1
+                elif minus_ones == 2:
+                    score -= 10
+                elif minus_ones == 1:
+                    score -= 1
+        return score
+    
+    for i in range(27):
+        if flat_board[i] == 0:
+            flat_board[i] = 1
+            if has_won(1):
+                flat_board[i] = 0
+                x = i % 3
+                y = (i // 3) % 3
+                z = i // 9
+                return (x, y, z)
+            flat_board[i] = 0
+    
+    for i in range(27):
+        if flat_board[i] == 0:
+            flat_board[i] = -1
+            if has_won(-1):
+                flat_board[i] = 0
+                x = i % 3
+                y = (i // 3) % 3
+                z = i // 9
+                return (x, y, z)
+            flat_board[i] = 0
+    
+    best_move = None
+    best_score = -10**9
+    alpha = -10**9
+    beta = 10**9
+    
+    for i in range(27):
+        if flat_board[i] == 0:
+            flat_board[i] = 1
+            score = minimax(1, alpha, beta)
+            flat_board[i] = 0
+            if score > best_score:
+                best_score = score
+                best_move = i
+            alpha = max(alpha, score)
+            if alpha >= beta:
+                break
+    
+    if best_move is None:
+        for i in range(27):
+            if flat_board[i] == 0:
+                x = i % 3
+                y = (i // 3) % 3
+                z = i // 9
+                return (x, y, z)
+        return (0, 0, 0)
+    else:
+        x = best_move % 3
+        y = (best_move // 3) % 3
+        z = best_move // 9
+        return (x, y, z)
+    
+    def minimax(depth, alpha, beta):
+        if has_won(1):
+            return 10000
+        if has_won(-1):
+            return -10000
+        if depth == 3:
+            return evaluate()
+        
+        current_player = 1 if depth % 2 == 0 else -1
+        available_moves = [i for i in range(27) if flat_board[i] == 0]
+        
+        if not available_moves:
+            return 0
+        
+        if current_player == 1:
+            best = -10**9
+            for i in available_moves:
+                flat_board[i] = 1
+                score = minimax(depth + 1, alpha, beta)
+                flat_board[i] = 0
+                best = max(best, score)
+                alpha = max(alpha, best)
+                if beta <= alpha:
+                    break
+            return best
+        else:
+            best = 10**9
+            for i in available_moves:
+                flat_board[i] = -1
+                score = minimax(depth + 1, alpha, beta)
+                flat_board[i] = 0
+                best = min(best, score)
+                beta = min(beta, best)
+                if beta <= alpha:
+                    break
+            return best
+```
+
+### Explanation
+1. **Helper Functions**:
+   - `index(z, y, x)`: Converts 3D coordinates to a 1D index.
+   - `generate_lines()`: Generates all possible winning lines (49 lines) in the 3x3x3 board.
+2. **Policy Function**:
+   - **Flattening the Board**: The 3D board is converted to a 1D list for easier access.
+   - **Immediate Win Check**: Simulates placing the current player's mark in each empty cell to check for an immediate win.
+   - **Blocking Move Check**: Simulates the opponent's move in each empty cell to block any potential win.
+   - **Minimax Search**: Uses a recursive search with alpha-beta pruning to evaluate moves up to a depth of 3. The evaluation function scores lines based on the number of marks from both players.
+   - **Result Conversion**: Converts the best move's 1D index back to (x, y, z) coordinates.
+
+This approach efficiently determines the optimal move by first checking for immediate wins or necessary blocks, then leveraging a heuristic search with pruning to handle more complex board states.

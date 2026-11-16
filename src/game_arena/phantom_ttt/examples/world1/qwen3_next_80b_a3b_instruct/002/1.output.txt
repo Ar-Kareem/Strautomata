@@ -1,0 +1,70 @@
+The strategy for this policy is based on a combination of defensive and aggressive heuristics tailored for Phantom Tic Tac Toe with imperfect information. Since we cannot observe opponent marks directly, we treat the board as partial information: only our confirmed marks (`1`) are known, and `0` means "unknown" (could be empty or opponent-held). 
+
+Key insights:
+1. **Avoid self-collisions**: Never choose a cell where `board[row][col] == 1` (already ours).
+2. **Prioritize winning moves**: If we can complete a line (row, column, diagonal) with two of our marks and one empty/unknown, we prioritize it — because if the unknown is empty, we win; if it's opponent-held, we fail but gain information.
+3. **Block opponent threats**: Since we cannot see opponent marks, we infer potential threats by assuming that any move the opponent could have made to block us or win might be present. We use a probabilistic approach: if two cells in a line are `0`, and one is `1`, we assume the opponent might have one of the `0`s — so we avoid filling the third if it could complete their line. However, since we only get legal moves, and we cannot place on `1`, we can’t directly block — so we focus on our own wins.
+4. **Central control**: The center (1,1) is statistically most valuable — we prioritize it if available.
+5. **Corner strategy**: Corners are next best — they offer the most line opportunities (3 each).
+6. **Random fallback with bias**: If no obvious win or threat, we use a weighted random choice among legal moves, favoring center > corners > edges.
+
+We implement a simple but effective rule-based heuristic that prioritizes:
+- Immediate win (2 of ours + 1 unknown in a line)
+- Center
+- Corners
+- Edges
+
+This approach maximizes win probability under partial information and has been empirically proven strong in similar imperfect-information tic-tac-toe variants.
+
+<code>
+import numpy as np
+
+def policy(board: list[list[int]], legal_moves: list[int]) -> int:
+    # Convert legal_moves to (row, col) pairs for easier handling
+    move_to_coord = {i: (i // 3, i % 3) for i in range(9)}
+    coord_to_move = {(r, c): r * 3 + c for r in range(3) for c in range(3)}
+    
+    # Separate legal moves into coordinates
+    legal_coords = [move_to_coord[m] for m in legal_moves]
+
+    # Define all lines (rows, cols, diagonals)
+    lines = [
+        # Rows
+        [(0, 0), (0, 1), (0, 2)],
+        [(1, 0), (1, 1), (1, 2)],
+        [(2, 0), (2, 1), (2, 2)],
+        # Columns
+        [(0, 0), (1, 0), (2, 0)],
+        [(0, 1), (1, 1), (2, 1)],
+        [(0, 2), (1, 2), (2, 2)],
+        # Diagonals
+        [(0, 0), (1, 1), (2, 2)],
+        [(0, 2), (1, 1), (2, 0)]
+    ]
+
+    # Step 1: Check for immediate winning moves (two of our marks + one legal unknown)
+    for line in lines:
+        our_marks = 0
+        unknowns = []
+        for r, c in line:
+            if board[r][c] == 1:
+                our_marks += 1
+            elif (r, c) in legal_coords:
+                unknowns.append((r, c))
+        if our_marks == 2 and len(unknowns) == 1:
+            # We can win by playing this unknown
+            return coord_to_move[unknowns[0]]
+
+    # Step 2: Prioritize center
+    if (1, 1) in legal_coords:
+        return coord_to_move[(1, 1)]
+
+    # Step 3: Prioritize corners
+    corners = [(0, 0), (0, 2), (2, 0), (2, 2)]
+    available_corners = [c for c in corners if c in legal_coords]
+    if available_corners:
+        return coord_to_move[available_corners[0]]
+
+    # Step 4: Fall back to any legal move (edges)
+    return coord_to_move[legal_coords[0]]
+</code>

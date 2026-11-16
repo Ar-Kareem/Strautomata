@@ -1,0 +1,328 @@
+The strategy for this policy is a fast tactical Hex player with these priorities:
+
+1. Play any immediate winning move.
+2. Block any immediate opponent winning move.
+3. Prefer strong central and bridge-forming moves.
+4. Use shortest-path evaluation to estimate how close each side is to connecting.
+5. Score candidate moves by:
+   - improving our connection cost,
+   - worsening the opponent's connection cost,
+   - creating friendly adjacencies and bridge-like patterns,
+   - occupying central, flexible cells.
+6. Restrict expensive evaluation to the most promising candidate moves so it stays within time limits.
+7. Always return a legal empty move.
+
+It uses Hex adjacency correctly for the 11x11 board:
+neighbors of `(r, c)` are
+`(r, c-1), (r, c+1), (r-1, c), (r-1, c+1), (r+1, c), (r+1, c-1)`.
+
+<code>
+from heapq import heappush, heappop
+
+N = 11
+
+# Correct Hex neighbors for the coordinate system in the prompt:
+# same row: (r, c-1), (r, c+1)
+# top row: (r-1, c), (r-1, c+1)
+# bottom row: (r+1, c), (r+1, c-1)
+DIRS = [(0, -1), (0, 1), (-1, 0), (-1, 1), (1, 0), (1, -1)]
+
+CENTER = (N - 1) / 2.0
+
+
+def inb(r, c):
+    return 0 <= r < N and 0 <= c < N
+
+
+def neighbors(r, c):
+    for dr, dc in DIRS:
+        nr, nc = r + dr, c + dc
+        if inb(nr, nc):
+            yield nr, nc
+
+
+def side_distance(color, cell):
+    r, c = cell
+    if color == 'b':
+        return min(r, N - 1 - r)
+    else:
+        return min(c, N - 1 - c)
+
+
+def center_score(cell):
+    r, c = cell
+    # Larger is better
+    return -((r - CENTER) ** 2 + (c - CENTER) ** 2)
+
+
+def connected_to_both_sides(stones, color):
+    s = set(stones)
+    if not s:
+        return False
+    stack = []
+    seen = set()
+    if color == 'b':
+        for r, c in s:
+            if r == 0:
+                stack.append((r, c))
+                seen.add((r, c))
+        while stack:
+            x = stack.pop()
+            if x[0] == N - 1:
+                return True
+            for y in neighbors(*x):
+                if y in s and y not in seen:
+                    seen.add(y)
+                    stack.append(y)
+    else:
+        for r, c in s:
+            if c == 0:
+                stack.append((r, c))
+                seen.add((r, c))
+        while stack:
+            x = stack.pop()
+            if x[1] == N - 1:
+                return True
+            for y in neighbors(*x):
+                if y in s and y not in seen:
+                    seen.add(y)
+                    stack.append(y)
+    return False
+
+
+def shortest_connection_cost(me_set, opp_set, color):
+    """
+    Dijkstra on cells:
+    own cell cost = 0
+    empty cell cost = 1
+    opponent cell blocked
+    Returns min number of empty cells still needed to connect sides.
+    """
+    INF = 10**9
+    dist = [[INF] * N for _ in range(N)]
+    pq = []
+
+    if color == 'b':
+        for c in range(N):
+            if (0, c) in opp_set:
+                continue
+            w = 0 if (0, c) in me_set else 1
+            dist[0][c] = w
+            heappush(pq, (w, 0, c))
+        target_check = lambda r, c: r == N - 1
+    else:
+        for r in range(N):
+            if (r, 0) in opp_set:
+                continue
+            w = 0 if (r, 0) in me_set else 1
+            dist[r][0] = w
+            heappush(pq, (w, r, 0))
+        target_check = lambda r, c: c == N - 1
+
+    while pq:
+        d, r, c = heappop(pq)
+        if d != dist[r][c]:
+            continue
+        if target_check(r, c):
+            return d
+        for nr, nc in neighbors(r, c):
+            if (nr, nc) in opp_set:
+                continue
+            w = 0 if (nr, nc) in me_set else 1
+            nd = d + w
+            if nd < dist[nr][nc]:
+                dist[nr][nc] = nd
+                heappush(pq, (nd, nr, nc))
+    return INF
+
+
+def immediate_win(move, me_set, opp_set, color):
+    if move in me_set or move in opp_set:
+        return False
+    s = set(me_set)
+    s.add(move)
+    return connected_to_both_sides(s, color)
+
+
+def bridge_bonus(move, me_set, opp_set):
+    """
+    Lightweight local structural heuristic:
+    reward moves adjacent to own stones and moves that help link pairs
+    with one-step separation.
+    """
+    r, c = move
+    bonus = 0.0
+
+    adj_me = 0
+    adj_opp = 0
+    for nb in neighbors(r, c):
+        if nb in me_set:
+            adj_me += 1
+        elif nb in opp_set:
+            adj_opp += 1
+
+    bonus += 2.2 * adj_me
+    bonus += 0.4 * adj_opp  # contested cells matter
+
+    # Second-ring patterns: if move shares common neighboring empties/links with own stones,
+    # it's often useful in Hex.
+    second_patterns = [
+        [(-1, 0), (0, -1)],
+        [(-1, 1), (0, 1)],
+        [(1, 0), (0, 1)],
+        [(1, -1), (0, -1)],
+        [(-1, 0), (-1, 1)],
+        [(1, 0), (1, -1)],
+    ]
+    for pair in second_patterns:
+        cnt = 0
+        for dr, dc in pair:
+            rr, cc = r + dr, c + dc
+            if inb(rr, cc) and (rr, cc) in me_set:
+                cnt += 1
+        if cnt == 2:
+            bonus += 1.5
+        elif cnt == 1:
+            bonus += 0.4
+
+    return bonus
+
+
+def axis_progress(move, color):
+    r, c = move
+    if color == 'b':
+        # prefer central columns while progressing vertically
+        return 1.2 * (N - 1 - abs(c - CENTER)) - 0.15 * abs(r - CENTER)
+    else:
+        return 1.2 * (N - 1 - abs(r - CENTER)) - 0.15 * abs(c - CENTER)
+
+
+def candidate_moves(me_set, opp_set, color):
+    empties = []
+    occupied = me_set | opp_set
+    if not occupied:
+        return [(N // 2, N // 2)]
+
+    fringe = set()
+    for s in occupied:
+        fringe.add(s)
+        for nb in neighbors(*s):
+            if nb not in occupied:
+                fringe.add(nb)
+
+    cand = []
+    for cell in fringe:
+        if cell in occupied:
+            continue
+        score = 0.0
+        score += 0.8 * center_score(cell)
+        score += 3.0 * bridge_bonus(cell, me_set, opp_set)
+        score += 1.3 * axis_progress(cell, color)
+        score -= 1.0 * side_distance(color, cell)
+        # Slight preference for blocking opponent's center/progress too
+        opp_color = 'w' if color == 'b' else 'b'
+        score += 0.5 * axis_progress(cell, opp_color)
+        cand.append((score, cell))
+
+    if not cand:
+        for r in range(N):
+            for c in range(N):
+                if (r, c) not in occupied:
+                    empties.append((r, c))
+        if empties:
+            empties.sort(key=lambda x: center_score(x), reverse=True)
+            return empties[:12]
+        return [(0, 0)]
+
+    cand.sort(reverse=True)
+    return [cell for _, cell in cand[:18]]
+
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    me_set = set(me)
+    opp_set = set(opp)
+    occupied = me_set | opp_set
+
+    # Always have a legal fallback
+    fallback = None
+    best_center = -10**18
+    for r in range(N):
+        for c in range(N):
+            if (r, c) not in occupied:
+                sc = center_score((r, c))
+                if fallback is None or sc > best_center:
+                    best_center = sc
+                    fallback = (r, c)
+    if fallback is None:
+        return (0, 0)
+
+    # Opening
+    if not me_set and not opp_set:
+        return (N // 2, N // 2)
+
+    # Immediate win
+    for r in range(N):
+        for c in range(N):
+            mv = (r, c)
+            if mv not in occupied and immediate_win(mv, me_set, opp_set, color):
+                return mv
+
+    # Immediate block
+    opp_color = 'w' if color == 'b' else 'b'
+    for r in range(N):
+        for c in range(N):
+            mv = (r, c)
+            if mv not in occupied and immediate_win(mv, opp_set, me_set, opp_color):
+                return mv
+
+    my_base = shortest_connection_cost(me_set, opp_set, color)
+    opp_base = shortest_connection_cost(opp_set, me_set, opp_color)
+
+    cands = candidate_moves(me_set, opp_set, color)
+
+    best_move = fallback
+    best_score = -10**18
+
+    for mv in cands:
+        if mv in occupied:
+            continue
+
+        my2 = set(me_set)
+        my2.add(mv)
+
+        # Main strategic terms
+        my_cost = shortest_connection_cost(my2, opp_set, color)
+        opp_cost_if_ignore = shortest_connection_cost(opp_set, my2, opp_color)
+
+        score = 0.0
+        score += 18.0 * (my_base - my_cost)
+        score += 14.0 * (opp_cost_if_ignore - opp_base)  # if positive, we hurt opponent
+        score += 3.0 * bridge_bonus(mv, me_set, opp_set)
+        score += 0.6 * center_score(mv)
+        score += 1.5 * axis_progress(mv, color)
+
+        # Extra tactical pressure: if move touches many own stones and at least one frontier
+        own_adj = 0
+        opp_adj = 0
+        for nb in neighbors(*mv):
+            if nb in me_set:
+                own_adj += 1
+            elif nb in opp_set:
+                opp_adj += 1
+        score += 1.7 * own_adj + 0.9 * opp_adj
+
+        # Side reachability
+        if color == 'b':
+            score += 0.7 * (min(mv[0], N - 1 - mv[0]) == 0)
+        else:
+            score += 0.7 * (min(mv[1], N - 1 - mv[1]) == 0)
+
+        if score > best_score:
+            best_score = score
+            best_move = mv
+
+    # Safety: ensure legal
+    if best_move in occupied or not inb(*best_move):
+        return fallback
+    return best_move
+</code>

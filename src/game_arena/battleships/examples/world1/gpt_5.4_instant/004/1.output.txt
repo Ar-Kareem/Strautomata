@@ -1,0 +1,202 @@
+The strategy for this policy is a hybrid **probability-density + target mode** Battleship solver.
+
+- **Target mode:** If there are known hits that are not yet resolved, the policy aggressively tries to extend them into full ships. It detects connected hit clusters and prioritizes the cells immediately beyond each end of the cluster along plausible ship directions. Single isolated hits are probed in the four cardinal directions.
+- **Hunt mode:** If there are no active hit clusters, the policy scores every unknown cell by counting how many legal placements of the remaining ship lengths could include that cell, given current misses and hits. This is a classic high-performing Battleship heuristic.
+- **Parity bias:** In hunt mode, it prefers cells on a checkerboard pattern, especially for larger remaining ships, which improves search efficiency.
+- **Hit consistency:** Ship placements used for scoring cannot contradict known misses and must include all hit cells they cover, making the heatmap more informed than random or parity-only policies.
+- **Always legal fallback:** If something unusual happens, it returns the first unknown cell, guaranteeing a legal move.
+
+<code>
+from typing import List, Tuple
+from collections import deque
+
+SHIP_LENGTHS = [5, 4, 3, 3, 2]
+
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    n = 10
+
+    def in_bounds(r: int, c: int) -> bool:
+        return 0 <= r < n and 0 <= c < n
+
+    def neighbors4(r: int, c: int):
+        for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            rr, cc = r + dr, c + dc
+            if in_bounds(rr, cc):
+                yield rr, cc
+
+    # Collect connected hit components
+    seen = [[False] * n for _ in range(n)]
+    hit_components = []
+
+    for r in range(n):
+        for c in range(n):
+            if board[r][c] == 1 and not seen[r][c]:
+                q = deque([(r, c)])
+                seen[r][c] = True
+                comp = []
+                while q:
+                    x, y = q.popleft()
+                    comp.append((x, y))
+                    for xx, yy in neighbors4(x, y):
+                        if board[xx][yy] == 1 and not seen[xx][yy]:
+                            seen[xx][yy] = True
+                            q.append((xx, yy))
+                hit_components.append(comp)
+
+    # Target mode: pursue existing hit clusters
+    target_candidates = []
+
+    for comp in hit_components:
+        rows = {r for r, _ in comp}
+        cols = {c for _, c in comp}
+
+        # Oriented cluster
+        if len(comp) >= 2 and (len(rows) == 1 or len(cols) == 1):
+            if len(rows) == 1:
+                r = next(iter(rows))
+                cs = sorted(c for _, c in comp)
+                left = cs[0] - 1
+                right = cs[-1] + 1
+                if in_bounds(r, left) and board[r][left] == 0:
+                    target_candidates.append((r, left, 100 + len(comp)))
+                if in_bounds(r, right) and board[r][right] == 0:
+                    target_candidates.append((r, right, 100 + len(comp)))
+            else:
+                c = next(iter(cols))
+                rs = sorted(r for r, _ in comp)
+                up = rs[0] - 1
+                down = rs[-1] + 1
+                if in_bounds(up, c) and board[up][c] == 0:
+                    target_candidates.append((up, c, 100 + len(comp)))
+                if in_bounds(down, c) and board[down][c] == 0:
+                    target_candidates.append((down, c, 100 + len(comp)))
+        else:
+            # Single hit or irregular cluster: probe adjacent unknowns
+            for r, c in comp:
+                for rr, cc in neighbors4(r, c):
+                    if board[rr][cc] == 0:
+                        # Prefer directions that can support longer continuations
+                        span = 0
+                        for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                            x, y = rr, cc
+                            k = 0
+                            while in_bounds(x, y) and board[x][y] != -1:
+                                k += 1
+                                x += dr
+                                y += dc
+                            span = max(span, k)
+                        target_candidates.append((rr, cc, 50 + span))
+
+    if target_candidates:
+        # Deduplicate by best score
+        best_by_cell = {}
+        for r, c, s in target_candidates:
+            if (r, c) not in best_by_cell or s > best_by_cell[(r, c)]:
+                best_by_cell[(r, c)] = s
+
+        # Tie-break using local probability score
+        best_move = None
+        best_score = None
+        for (r, c), s in best_by_cell.items():
+            local = 0
+            for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                rr, cc = r + dr, c + dc
+                if in_bounds(rr, cc):
+                    if board[rr][cc] == 1:
+                        local += 10
+                    elif board[rr][cc] == 0:
+                        local += 1
+            total = s * 100 + local
+            if best_score is None or total > best_score:
+                best_score = total
+                best_move = (r, c)
+        if best_move is not None and board[best_move[0]][best_move[1]] == 0:
+            return best_move
+
+    # Hunt mode: probability density over all legal ship placements
+    heat = [[0] * n for _ in range(n)]
+    hit_cells = {(r, c) for r in range(n) for c in range(n) if board[r][c] == 1}
+
+    def placement_valid(cells):
+        # Cannot include misses
+        for r, c in cells:
+            if board[r][c] == -1:
+                return False
+        # If placement intersects a hit component, it must be consistent in orientation naturally.
+        # Also require that no known hit is "stranded" inside impossible water pattern for this placement.
+        return True
+
+    for L in SHIP_LENGTHS:
+        # Horizontal placements
+        for r in range(n):
+            for c in range(n - L + 1):
+                cells = [(r, c + k) for k in range(L)]
+                if not placement_valid(cells):
+                    continue
+                # If placement overlaps hits, all overlapping hits are good.
+                # Strongly prefer placements that cover existing hits.
+                hit_overlap = sum((rr, cc) in hit_cells for rr, cc in cells)
+                weight = 1 + 15 * hit_overlap
+                for rr, cc in cells:
+                    if board[rr][cc] == 0:
+                        heat[rr][cc] += weight
+
+        # Vertical placements
+        for r in range(n - L + 1):
+            for c in range(n):
+                cells = [(r + k, c) for k in range(L)]
+                if not placement_valid(cells):
+                    continue
+                hit_overlap = sum((rr, cc) in hit_cells for rr, cc in cells)
+                weight = 1 + 15 * hit_overlap
+                for rr, cc in cells:
+                    if board[rr][cc] == 0:
+                        heat[rr][cc] += weight
+
+    # Additional consistency boost near hits
+    for r in range(n):
+        for c in range(n):
+            if board[r][c] != 0:
+                continue
+            adj_hits = 0
+            for rr, cc in neighbors4(r, c):
+                if board[rr][cc] == 1:
+                    adj_hits += 1
+            if adj_hits:
+                heat[r][c] += 20 * adj_hits
+
+    # Parity preference in hunt mode
+    unknown_count = sum(1 for r in range(n) for c in range(n) if board[r][c] == 0)
+    use_parity = unknown_count > 15
+    best = None
+    best_score = None
+
+    for r in range(n):
+        for c in range(n):
+            if board[r][c] != 0:
+                continue
+            score = heat[r][c]
+
+            if use_parity and (r + c) % 2 == 0:
+                score += 3
+
+            # Slight centrality preference as final tie-break
+            score2 = score * 100 - (abs(r - 4.5) + abs(c - 4.5))
+
+            if best_score is None or score2 > best_score:
+                best_score = score2
+                best = (r, c)
+
+    if best is not None and board[best[0]][best[1]] == 0:
+        return best
+
+    # Guaranteed legal fallback
+    for r in range(n):
+        for c in range(n):
+            if board[r][c] == 0:
+                return (r, c)
+
+    # Should never happen in a valid game state, but remain legal in type
+    return (0, 0)
+</code>

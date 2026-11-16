@@ -1,0 +1,188 @@
+
+import math
+from typing import List, Dict
+
+def policy(state: dict) -> str:
+    # Extract state information
+    private_cards = state['private_cards']
+    public_cards = state['public_cards']
+    pot = state['pot']
+    my_spent = state['my_spent']
+    opponent_spent = state['opponent_spent']
+    to_call = state['to_call']
+    allowed_actions = state['allowed_actions']
+    
+    # Calculate hand strength
+    hand_strength = evaluate_hand_strength(private_cards, public_cards)
+    
+    # Calculate pot odds
+    pot_odds = to_call / (pot + to_call) if (pot + to_call) > 0 else 0
+    
+    # Number of cards seen
+    total_cards = len(private_cards) + len(public_cards)
+    
+    # Preflop strategy (only private card)
+    if total_cards == 1:
+        return preflop_strategy(private_cards[0], to_call, pot, allowed_actions, pot_odds)
+    
+    # Postflop strategy
+    else:
+        return postflop_strategy(hand_strength, to_call, pot, allowed_actions, pot_odds, public_cards)
+
+def evaluate_hand_strength(private_cards: List[Dict], public_cards: List[Dict]) -> float:
+    """Estimate the strength of our hand"""
+    # For simplicity, we'll use a basic hand evaluator
+    # In a real implementation, this would be more sophisticated
+    
+    all_cards = private_cards + public_cards
+    if len(all_cards) == 1:
+        # Preflop - just rank of our card
+        return all_cards[0]['rank'] / 13.0
+    
+    # Simple strength based on pairs, high cards, etc.
+    ranks = [card['rank'] for card in all_cards]
+    suits = [card['suit'] for card in all_cards]
+    
+    # Count pairs
+    rank_counts = {}
+    for rank in ranks:
+        rank_counts[rank] = rank_counts.get(rank, 0) + 1
+    
+    max_pair = max(rank_counts.values()) if rank_counts else 0
+    pair_count = sum(1 for count in rank_counts.values() if count >= 2)
+    
+    # Flush potential
+    suit_counts = {}
+    for suit in suits:
+        suit_counts[suit] = suit_counts.get(suit, 0) + 1
+    
+    flush_potential = max(suit_counts.values()) if suit_counts else 0
+    
+    # Straight potential
+    unique_ranks = sorted(set(ranks))
+    straight_potential = 0
+    if len(unique_ranks) >= 4:
+        consecutive = 1
+        max_consecutive = 1
+        for i in range(1, len(unique_ranks)):
+            if unique_ranks[i] == unique_ranks[i-1] + 1:
+                consecutive += 1
+                max_consecutive = max(max_consecutive, consecutive)
+            else:
+                consecutive = 1
+        straight_potential = max_consecutive
+    
+    # Calculate strength (0-1)
+    strength = 0.0
+    
+    # High card value
+    high_card = max(ranks) if ranks else 0
+    strength += high_card / 13 * 0.2
+    
+    # Pair value
+    if max_pair >= 2:
+        strength += 0.3 * (max_pair - 1)
+    
+    # Multiple pairs
+    if pair_count >= 2:
+        strength += 0.2
+    
+    # Flush potential
+    if flush_potential >= 4:
+        strength += 0.2
+    elif flush_potential >= 3:
+        strength += 0.1
+    
+    # Straight potential
+    if straight_potential >= 4:
+        strength += 0.2
+    elif straight_potential >= 3:
+        strength += 0.1
+    
+    return min(strength, 1.0)
+
+def preflop_strategy(card: Dict, to_call: int, pot: int, allowed_actions: List[str], pot_odds: float) -> str:
+    rank = card['rank']
+    
+    # Premium hands
+    if rank >= 10:  # Jack or higher
+        if to_call == 0 and 'raise' in allowed_actions:
+            return 'raise'
+        elif to_call > 0 and 'call' in allowed_actions:
+            # Call if pot odds are reasonable or hand is very strong
+            if pot_odds <= 0.3 or rank >= 12:  # Queen or higher
+                return 'call'
+            elif 'fold' in allowed_actions:
+                return 'fold'
+            else:
+                return 'call'
+        else:
+            return 'call' if 'call' in allowed_actions else 'raise'
+    
+    # Medium hands
+    elif rank >= 6:  # 6 through 10
+        if to_call == 0 and 'raise' in allowed_actions:
+            # Occasionally raise with medium cards
+            return 'raise' if rank >= 8 else 'call'
+        elif to_call > 0:
+            # Call if pot odds are good
+            if pot_odds <= 0.2:
+                return 'call'
+            elif 'fold' in allowed_actions:
+                return 'fold'
+            else:
+                return 'call'
+        else:
+            return 'call'
+    
+    # Weak hands
+    else:  # 2 through 5
+        if to_call == 0:
+            return 'call'  # See a cheap flop
+        else:
+            # Fold unless pot odds are very good
+            if pot_odds <= 0.1 and 'call' in allowed_actions:
+                return 'call'
+            elif 'fold' in allowed_actions:
+                return 'fold'
+            else:
+                return 'call'
+
+def postflop_strategy(hand_strength: float, to_call: int, pot: int, allowed_actions: List[str], pot_odds: float, public_cards: List[Dict]) -> str:
+    # If we have a strong hand
+    if hand_strength >= 0.7:
+        if to_call == 0 and 'raise' in allowed_actions:
+            return 'raise'
+        elif to_call > 0 and 'call' in allowed_actions:
+            return 'call'
+        else:
+            return 'call' if 'call' in allowed_actions else 'raise'
+    
+    # If we have a decent hand
+    elif hand_strength >= 0.4:
+        if to_call == 0:
+            return 'call'
+        elif pot_odds <= hand_strength and 'call' in allowed_actions:
+            return 'call'
+        elif 'fold' in allowed_actions:
+            return 'fold'
+        else:
+            return 'call'
+    
+    # If we have a weak hand
+    else:
+        # Bluff occasionally with weak hands when we have position (no bet yet)
+        if to_call == 0 and 'raise' in allowed_actions and len(public_cards) >= 3:
+            # 10% chance to bluff
+            import random
+            if random.random() < 0.1:
+                return 'raise'
+        
+        if to_call == 0:
+            return 'call'
+        elif pot_odds <= 0.1 and 'call' in allowed_actions:
+            return 'call'
+        elif 'fold' in allowed_actions:
+            return 'fold'
+        else:
+            return 'call'

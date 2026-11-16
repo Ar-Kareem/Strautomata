@@ -1,0 +1,318 @@
+The strategy for this policy is a time-bounded alpha-beta *negamax* search with iterative deepening and a transposition table (Zobrist hashing). It always plays immediate tactical moves first (win now, otherwise block opponent’s win), then searches deeper with strong move ordering (tactical + positional preference for center/corners). The evaluation scores all 49 winning lines by how close they are to completion (two-in-a-row is heavily rewarded/penalized) plus a small positional bias. If time runs out, it falls back to the best move found so far and always returns a legal empty cell.
+
+<code>
+import time
+import random
+from typing import List, Tuple, Optional, Dict
+
+# -----------------------------
+# Precompute winning lines (3x3x3)
+# -----------------------------
+
+def _idx(i: int, j: int, k: int) -> int:
+    return i * 9 + j * 3 + k
+
+def _coord(index: int) -> Tuple[int, int, int]:
+    return index // 9, (index % 9) // 3, index % 3
+
+def _generate_lines() -> List[Tuple[int, int, int]]:
+    # Generate all unique length-3 lines in a 3x3x3 cube by scanning directions.
+    dirs = []
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            for dz in (-1, 0, 1):
+                if dx == 0 and dy == 0 and dz == 0:
+                    continue
+                # Keep one orientation per line (avoid opposite duplicates)
+                if (dx, dy, dz) &lt; (0, 0, 0):
+                    continue
+                dirs.append((dx, dy, dz))
+
+    lines_set = set()
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                for dx, dy, dz in dirs:
+                    i2, j2, k2 = i + 2 * dx, j + 2 * dy, k + 2 * dz
+                    if 0 &lt;= i2 &lt; 3 and 0 &lt;= j2 &lt; 3 and 0 &lt;= k2 &lt; 3:
+                        coords = (
+                            _idx(i, j, k),
+                            _idx(i + dx, j + dy, k + dz),
+                            _idx(i2, j2, k2),
+                        )
+                        # Canonicalize by sorting indices to avoid duplicates
+                        coords_sorted = tuple(sorted(coords))
+                        lines_set.add(coords_sorted)
+
+    lines = sorted(lines_set)
+    # Sanity: known count is 49 for 3x3x3
+    # (we won't assert in case of environment differences, but this should be 49)
+    return lines
+
+LINES: List[Tuple[int, int, int]] = _generate_lines()
+
+# -----------------------------
+# Zobrist hashing (for TT)
+# -----------------------------
+
+_rng = random.Random(1337)
+ZOBRIST = [[_rng.getrandbits(64) for _ in range(2)] for __ in range(27)]
+# piece index: 0 for -1, 1 for +1
+
+def _zobrist_hash(state: List[int]) -&gt; int:
+    h = 0
+    for p, v in enumerate(state):
+        if v == 1:
+            h ^= ZOBRIST[p][1]
+        elif v == -1:
+            h ^= ZOBRIST[p][0]
+    return h
+
+# -----------------------------
+# Heuristics / evaluation
+# -----------------------------
+
+INF = 10**9
+
+# Positional weights: center &gt; corners &gt; edges &gt; face-centers
+POS_W = [0] * 27
+for i in range(3):
+    for j in range(3):
+        for k in range(3):
+            idx = _idx(i, j, k)
+            if (i, j, k) == (1, 1, 1):
+                POS_W[idx] = 5
+            else:
+                on0 = (i in (0, 2)) + (j in (0, 2)) + (k in (0, 2))
+                if on0 == 3:      # corner
+                    POS_W[idx] = 4
+                elif on0 == 2:    # edge (two coords on boundary)
+                    POS_W[idx] = 3
+                elif on0 == 1:    # face center-ish
+                    POS_W[idx] = 2
+                else:             # internal face edge (actually none in 3x3x3 besides center)
+                    POS_W[idx] = 2
+
+LINE_W = [0, 1, 12, 0]  # 2-in-line is important; 3 handled as terminal
+
+def _winner(state: List[int]) -&gt; int:
+    # returns 1 if we have won, -1 if opponent has won, 0 otherwise
+    for a, b, c in LINES:
+        s = state[a] + state[b] + state[c]
+        if s == 3:
+            return 1
+        if s == -3:
+            return -1
+    return 0
+
+def _static_eval(state: List[int]) -&gt; int:
+    # Positive means good for player +1.
+    score = 0
+
+    # Positional bias
+    for idx, v in enumerate(state):
+        if v != 0:
+            score += v * POS_W[idx]
+
+    # Line potential
+    for a, b, c in LINES:
+        va, vb, vc = state[a], state[b], state[c]
+        cnt_p = (va == 1) + (vb == 1) + (vc == 1)
+        cnt_o = (va == -1) + (vb == -1) + (vc == -1)
+        if cnt_p and cnt_o:
+            continue
+        if cnt_o == 0 and cnt_p &gt; 0:
+            score += LINE_W[cnt_p]
+        elif cnt_p == 0 and cnt_o &gt; 0:
+            score -= LINE_W[cnt_o]
+
+    return score
+
+def _winning_moves(state: List[int], player: int) -&gt; set:
+    # Moves that complete a 3-in-a-row for 'player'
+    res = set()
+    for a, b, c in LINES:
+        va, vb, vc = state[a], state[b], state[c]
+        s = va + vb + vc
+        if s == 2 * player:
+            # find empty in line
+            if va == 0:
+                res.add(a)
+            elif vb == 0:
+                res.add(b)
+            elif vc == 0:
+                res.add(c)
+    return res
+
+# -----------------------------
+# Negamax with alpha-beta + TT
+# -----------------------------
+
+class _TimeUp(Exception):
+    pass
+
+def _move_order(state: List[int], player: int) -&gt; List[int]:
+    empties = [i for i, v in enumerate(state) if v == 0]
+    if not empties:
+        return []
+
+    wins = _winning_moves(state, player)
+    blocks = _winning_moves(state, -player)
+
+    # Order: immediate wins, immediate blocks, then positional &amp; heuristic.
+    def key(m: int):
+        if m in wins:
+            return (3, POS_W[m])
+        if m in blocks:
+            return (2, POS_W[m])
+        return (1, POS_W[m])
+
+    empties.sort(key=key, reverse=True)
+    return empties
+
+def _negamax(state: List[int],
+             depth: int,
+             alpha: int,
+             beta: int,
+             player: int,
+             h: int,
+             tt: Dict[int, Tuple[int, int, Optional[int]]],
+             end_time: float) -&gt; Tuple[int, Optional[int]]:
+    # Returns (score_from_current_player_perspective, best_move_index)
+
+    if time.perf_counter() &gt;= end_time:
+        raise _TimeUp()
+
+    w = _winner(state)
+    if w != 0:
+        # If someone already won, current player is losing if winner != player.
+        return (INF if w == player else -INF), None
+
+    empties_left = state.count(0)
+    if empties_left == 0:
+        return 0, None
+    if depth == 0:
+        return player * _static_eval(state), None
+
+    # Transposition lookup
+    entry = tt.get(h)
+    if entry is not None:
+        entry_depth, entry_score, entry_move = entry
+        if entry_depth &gt;= depth:
+            return entry_score, entry_move
+
+    best_move = None
+    best_score = -INF
+
+    moves = _move_order(state, player)
+
+    # Small tactical cutoff: if we can win immediately, do it.
+    # (This also improves pruning.)
+    wins = _winning_moves(state, player)
+    if wins:
+        m = next(iter(wins))
+        tt[h] = (depth, INF, m)
+        return INF, m
+
+    for m in moves:
+        # play move
+        state[m] = player
+        h2 = h ^ ZOBRIST[m][1 if player == 1 else 0]
+
+        score_child, _ = _negamax(state, depth - 1, -beta, -alpha, -player, h2, tt, end_time)
+        score = -score_child
+
+        # undo
+        state[m] = 0
+
+        if score &gt; best_score:
+            best_score = score
+            best_move = m
+
+        if best_score &gt; alpha:
+            alpha = best_score
+        if alpha &gt;= beta:
+            break
+
+    tt[h] = (depth, best_score, best_move)
+    return best_score, best_move
+
+# -----------------------------
+# Public API
+# -----------------------------
+
+def policy(board: List[List[List[int]]]) -&gt; Tuple[int, int, int]:
+    # Flatten board
+    state = [0] * 27
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                state[_idx(i, j, k)] = board[i][j][k]
+
+    empties = [p for p, v in enumerate(state) if v == 0]
+    if not empties:
+        # No legal move; return something syntactically valid.
+        return (0, 0, 0)
+
+    # Hard tactical rules first
+    # 1) Win now if possible
+    wins = _winning_moves(state, 1)
+    if wins:
+        m = max(wins, key=lambda x: POS_W[x])
+        return _coord(m)
+
+    # 2) Block opponent win if necessary
+    blocks = _winning_moves(state, -1)
+    if blocks:
+        m = max(blocks, key=lambda x: POS_W[x])
+        return _coord(m)
+
+    # 3) Strong opening preference: take center if available
+    center = _idx(1, 1, 1)
+    if state[center] == 0:
+        return (1, 1, 1)
+
+    # Time-bounded iterative deepening negamax
+    start = time.perf_counter()
+    # Keep some margin for Python overhead
+    end_time = start + 0.92
+
+    h = _zobrist_hash(state)
+    tt: Dict[int, Tuple[int, int, Optional[int]]] = {}
+
+    # Choose depth cap by game phase; still iterative deepening within time.
+    empties_left = len(empties)
+    if empties_left &lt;= 10:
+        max_depth = empties_left  # try to solve
+    elif empties_left &lt;= 16:
+        max_depth = 8
+    else:
+        max_depth = 6
+
+    best_move = None
+    best_score = -INF
+
+    # Move ordering at root
+    root_moves = _move_order(state, 1)
+
+    # If something goes wrong, fall back to best positional move.
+    fallback = max(root_moves, key=lambda m: POS_W[m]) if root_moves else empties[0]
+
+    for depth in range(1, max_depth + 1):
+        if time.perf_counter() &gt;= end_time:
+            break
+        try:
+            # aspiration-like window could be used, but keep robust
+            score, move = _negamax(state, depth, -INF, INF, 1, h, tt, end_time)
+            if move is not None:
+                best_move, best_score = move, score
+        except _TimeUp:
+            break
+
+    chosen = best_move if best_move is not None else fallback
+    # Ensure legal
+    if state[chosen] != 0:
+        chosen = next((m for m in empties if state[m] == 0), empties[0])
+
+    return _coord(chosen)
+</code>

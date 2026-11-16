@@ -1,0 +1,159 @@
+
+import sys
+from typing import List, Tuple
+
+# Constants
+SIZE = 10
+DIRECTIONS = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+SHIP_LENGTHS = [5, 4, 3, 3, 2]   # two ships of length 3
+
+def update_candidate(cand: dict, key: Tuple[int, int],
+                     comp_size: int, is_endpoint: int) -> None:
+    """Keep the best (larger component, then larger endpoint flag) for a cell."""
+    existing = cand.get(key)
+    if existing is None:
+        cand[key] = (comp_size, is_endpoint)
+    else:
+        if comp_size > existing[0] or (comp_size == existing[0] and is_endpoint > existing[1]):
+            cand[key] = (comp_size, is_endpoint)
+
+def get_target(board: List[List[int]]) -> Tuple[int, int] or None:
+    """Return the best target cell based on existing hits, or None."""
+    # Collect all hits
+    hits = [(r, c) for r in range(SIZE) for c in range(SIZE) if board[r][c] == 1]
+    if not hits:
+        return None
+
+    # Find connected components of hits (orthogonal adjacency)
+    visited = set()
+    components = []
+    for hit in hits:
+        if hit in visited:
+            continue
+        stack = [hit]
+        comp = []
+        while stack:
+            r, c = stack.pop()
+            if (r, c) in visited:
+                continue
+            visited.add((r, c))
+            comp.append((r, c))
+            for dr, dc in DIRECTIONS:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < SIZE and 0 <= nc < SIZE and board[nr][nc] == 1 and (nr, nc) not in visited:
+                    stack.append((nr, nc))
+        components.append(comp)
+
+    # Build candidate dictionary
+    cand = {}
+    for comp in components:
+        comp_size = len(comp)
+        if comp_size == 1:          # single hit -> all four directions
+            r, c = comp[0]
+            for dr, dc in DIRECTIONS:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < SIZE and 0 <= nc < SIZE and board[nr][nc] == 0:
+                    update_candidate(cand, (nr, nc), comp_size, 0)
+        else:
+            # Check if all cells share the same row or column
+            rows = {r for r, c in comp}
+            cols = {c for r, c in comp}
+            if len(rows) == 1:      # horizontal line
+                row = next(iter(rows))
+                cols_sorted = sorted(cols)
+                min_c, max_c = cols_sorted[0], cols_sorted[-1]
+                # left endpoint
+                if min_c - 1 >= 0 and board[row][min_c - 1] == 0:
+                    update_candidate(cand, (row, min_c - 1), comp_size, 1)
+                # right endpoint
+                if max_c + 1 < SIZE and board[row][max_c + 1] == 0:
+                    update_candidate(cand, (row, max_c + 1), comp_size, 1)
+            elif len(cols) == 1:    # vertical line
+                col = next(iter(cols))
+                rows_sorted = sorted(rows)
+                min_r, max_r = rows_sorted[0], rows_sorted[-1]
+                # above endpoint
+                if min_r - 1 >= 0 and board[min_r - 1][col] == 0:
+                    update_candidate(cand, (min_r - 1, col), comp_size, 1)
+                # below endpoint
+                if max_r + 1 < SIZE and board[max_r + 1][col] == 0:
+                    update_candidate(cand, (max_r + 1, col), comp_size, 1)
+            else:                   # non‑linear (e.g., L‑shape)
+                for r, c in comp:
+                    for dr, dc in DIRECTIONS:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < SIZE and 0 <= nc < SIZE and board[nr][nc] == 0:
+                            update_candidate(cand, (nr, nc), comp_size, 0)
+
+    if not cand:
+        return None
+
+    # Choose the best candidate: larger component, then endpoint flag, then smallest row/col
+    best_cell = None
+    best_score = None
+    for (r, c), (comp_size, is_endpoint) in cand.items():
+        score = (-comp_size, -is_endpoint, r, c)   # negative for descending order
+        if best_score is None or score < best_score:
+            best_cell = (r, c)
+            best_score = score
+    return best_cell
+
+def hunt(board: List[List[int]]) -> Tuple[int, int]:
+    """Return the best cell to shoot at when no obvious target exists."""
+    # Compute heatmap: number of ways each cell can be covered by a ship placement
+    heat = [[0] * SIZE for _ in range(SIZE)]
+    for L in SHIP_LENGTHS:
+        # Horizontal placements
+        for r in range(SIZE):
+            for c_start in range(SIZE - L + 1):
+                valid = True
+                for k in range(L):
+                    if board[r][c_start + k] != 0:
+                        valid = False
+                        break
+                if valid:
+                    for k in range(L):
+                        heat[r][c_start + k] += 1
+        # Vertical placements
+        for c in range(SIZE):
+            for r_start in range(SIZE - L + 1):
+                valid = True
+                for k in range(L):
+                    if board[r_start + k][c] != 0:
+                        valid = False
+                        break
+                if valid:
+                    for k in range(L):
+                        heat[r_start + k][c] += 1
+
+    # Prefer even‑parity cells (ships always cover at least one even cell)
+    best_cell = None
+    best_heat = -1
+    for r in range(SIZE):
+        for c in range(SIZE):
+            if board[r][c] == 0 and (r + c) % 2 == 0:
+                h = heat[r][c]
+                if h > best_heat or (h == best_heat and (best_cell is None or (r, c) < best_cell)):
+                    best_heat = h
+                    best_cell = (r, c)
+    if best_cell is not None:
+        return best_cell
+
+    # Fallback to any unknown cell (should rarely be needed)
+    for r in range(SIZE):
+        for c in range(SIZE):
+            if board[r][c] == 0:
+                h = heat[r][c]
+                if h > best_heat or (h == best_heat and (best_cell is None or (r, c) < best_cell)):
+                    best_heat = h
+                    best_cell = (r, c)
+
+    # In the extremely unlikely case that no unknown cell exists, return (0,0)
+    return best_cell or (0, 0)
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """Main entry point: returns (row, col) for the next shot."""
+    target = get_target(board)
+    if target is not None:
+        return target
+    return hunt(board)

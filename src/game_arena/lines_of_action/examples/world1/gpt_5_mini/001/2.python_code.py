@@ -1,0 +1,297 @@
+
+import time
+import copy
+import math
+import random
+from collections import deque
+
+# Policy entry point
+def policy(board) -> str:
+    """
+    board: 8x8 list of lists with values {1 = our piece, -1 = opponent, 0 = empty}
+    Returns a move string "r1,c1:r2,c2"
+    """
+    start_time = time.time()
+    TIME_LIMIT = 0.95  # seconds
+
+    # Directions: 8 neighbors
+    DIRS = [(-1, -1), (-1, 0), (-1, 1),
+            (0, -1),          (0, 1),
+            (1, -1),  (1, 0), (1, 1)]
+
+    # Helpers
+    def in_bounds(r, c):
+        return 0 <= r < 8 and 0 <= c < 8
+
+    def count_pieces_in_line(bd, r, c, dr, dc):
+        # Count non-zero pieces in the row/col/diagonal that the direction uses.
+        # For horizontal (dr==0): count row r.
+        # For vertical (dc==0): count column c.
+        # For main diag (dr==dc): count cells with same r-c.
+        # For anti-diag (dr==-dc): count cells with same r+c.
+        cnt = 0
+        if dr == 0:
+            for cc in range(8):
+                if bd[r][cc] != 0:
+                    cnt += 1
+        elif dc == 0:
+            for rr in range(8):
+                if bd[rr][c] != 0:
+                    cnt += 1
+        elif dr == dc:
+            key = r - c
+            for rr in range(8):
+                cc = rr - key
+                if 0 <= cc < 8 and bd[rr][cc] != 0:
+                    cnt += 1
+        else:
+            # anti-diagonal r+c constant
+            key = r + c
+            for rr in range(8):
+                cc = key - rr
+                if 0 <= cc < 8 and bd[rr][cc] != 0:
+                    cnt += 1
+        return cnt
+
+    def generate_moves(bd):
+        moves = []
+        for r in range(8):
+            for c in range(8):
+                if bd[r][c] == 1:
+                    for (dr, dc) in DIRS:
+                        dist = count_pieces_in_line(bd, r, c, dr, dc)
+                        if dist == 0:
+                            continue
+                        nr = r + dr * dist
+                        nc = c + dc * dist
+                        if not in_bounds(nr, nc):
+                            continue
+                        # cannot land on own piece
+                        if bd[nr][nc] == 1:
+                            continue
+                        # cannot jump over opponent pieces
+                        blocked = False
+                        for t in range(1, dist):
+                            ir = r + dr * t
+                            ic = c + dc * t
+                            if bd[ir][ic] == -1:
+                                blocked = True
+                                break
+                        if blocked:
+                            continue
+                        # move is legal
+                        moves.append((r, c, nr, nc))
+        return moves
+
+    def apply_move(bd, move):
+        r1, c1, r2, c2 = move
+        newb = [row[:] for row in bd]
+        newb[r1][c1] = 0
+        newb[r2][c2] = 1  # capture if there was -1
+        return newb
+
+    def flip_board(bd):
+        # swap perspectives: opponent becomes our pieces
+        return [[-cell for cell in row] for row in bd]
+
+    # Connectivity utilities
+    def components_and_largest(bd):
+        visited = [[False]*8 for _ in range(8)]
+        comps = 0
+        largest = 0
+        for r in range(8):
+            for c in range(8):
+                if bd[r][c] == 1 and not visited[r][c]:
+                    comps += 1
+                    # BFS
+                    q = deque()
+                    q.append((r,c))
+                    visited[r][c] = True
+                    size = 0
+                    while q:
+                        x,y = q.popleft()
+                        size += 1
+                        for dr in (-1,0,1):
+                            for dc in (-1,0,1):
+                                if dr == 0 and dc == 0:
+                                    continue
+                                nx, ny = x+dr, y+dc
+                                if 0 <= nx < 8 and 0 <= ny < 8 and not visited[nx][ny] and bd[nx][ny] == 1:
+                                    visited[nx][ny] = True
+                                    q.append((nx,ny))
+                    if size > largest:
+                        largest = size
+        return comps, largest
+
+    def piece_count(bd, player=1):
+        cnt = 0
+        for r in range(8):
+            for c in range(8):
+                if bd[r][c] == player:
+                    cnt += 1
+        return cnt
+
+    # Heuristic evaluation (higher is better for current player)
+    def evaluate(bd):
+        # Immediate terminal checks
+        my_comps, my_largest = components_and_largest(bd)
+        if my_comps == 1:
+            return 1e6  # win
+        # Flip perspective to evaluate opponent's components
+        opp_bd = flip_board(bd)
+        opp_comps, opp_largest = components_and_largest(opp_bd)
+        if opp_comps == 1:
+            return -1e6  # opponent already connected -> losing
+
+        my_pieces = piece_count(bd, 1)
+        opp_pieces = piece_count(bd, -1)
+
+        # Heuristic: prefer fewer my components, more opp components, larger clusters, centralization
+        score = 0.0
+        score += (opp_comps - my_comps) * 200.0
+        score += (my_largest - opp_largest) * 30.0
+        score += (my_pieces - opp_pieces) * 5.0
+
+        # Centralization: reward pieces closer to center
+        center_score = 0.0
+        for r in range(8):
+            for c in range(8):
+                if bd[r][c] == 1:
+                    # distance to center (3.5,3.5)
+                    d = math.hypot(r - 3.5, c - 3.5)
+                    center_score -= d * 0.5
+        score += center_score
+
+        return score
+
+    # Negamax with alpha-beta, flipping perspective after each move
+    nodes = 0
+    def negamax(bd, depth, alpha, beta):
+        nonlocal nodes, start_time
+        nodes += 1
+        # Time cutoff
+        if time.time() - start_time > TIME_LIMIT:
+            raise TimeoutError()
+
+        # Terminal / depth 0
+        my_comps, _ = components_and_largest(bd)
+        if my_comps == 1:
+            return 1e6
+        # Check opponent win by flipping
+        oppbd = flip_board(bd)
+        opp_comps, _ = components_and_largest(oppbd)
+        if opp_comps == 1:
+            return -1e6
+
+        if depth == 0:
+            return evaluate(bd)
+
+        moves = generate_moves(bd)
+        if not moves:
+            # No legal moves: treat as bad
+            return -1e5
+
+        # move ordering: evaluate resulting boards shallowly
+        scored_moves = []
+        for m in moves:
+            nb = apply_move(bd, m)
+            nb_flipped = flip_board(nb)
+            # evaluate from next player's perspective; we want to order moves
+            val = evaluate(nb_flipped)
+            scored_moves.append((val, m))
+        scored_moves.sort(reverse=True, key=lambda x: x[0])
+        best = -1e9
+        for _, m in scored_moves:
+            nb = apply_move(bd, m)
+            # After our move, it's opponent's turn; flip perspective so we can call negamax
+            nb_flipped = flip_board(nb)
+            try:
+                val = -negamax(nb_flipped, depth-1, -beta, -alpha)
+            except TimeoutError:
+                raise
+            if val > best:
+                best = val
+            if best > alpha:
+                alpha = best
+            if alpha >= beta:
+                break
+        return best
+
+    # Main search control: adapt depth based on branching factor and time
+    initial_moves = generate_moves(board)
+    if not initial_moves:
+        # No legal moves: return a dummy (shouldn't happen normally)
+        return "0,0:0,0"
+
+    # If only one move, return it
+    if len(initial_moves) == 1:
+        r1,c1,r2,c2 = initial_moves[0]
+        return f"{r1},{c1}:{r2},{c2}"
+
+    # Decide depth
+    branching = len(initial_moves)
+    if branching <= 20:
+        max_depth = 4
+    elif branching <= 40:
+        max_depth = 3
+    else:
+        max_depth = 2
+
+    best_move = random.choice(initial_moves)
+    best_value = -1e9
+
+    # Iterative deepening
+    try:
+        for depth in range(1, max_depth+1):
+            # try to find best move at this depth
+            nodes = 0
+            moves = initial_moves
+            # order initial moves by shallow evaluate
+            scored = []
+            for m in moves:
+                nb = apply_move(board, m)
+                nb_flipped = flip_board(nb)
+                scored.append((evaluate(nb_flipped), m))
+            scored.sort(reverse=True, key=lambda x: x[0])
+            current_best = None
+            current_best_value = -1e9
+            alpha = -1e9
+            beta = 1e9
+            for _, m in scored:
+                if time.time() - start_time > TIME_LIMIT:
+                    raise TimeoutError()
+                nb = apply_move(board, m)
+                nb_flipped = flip_board(nb)
+                try:
+                    val = -negamax(nb_flipped, depth-1, -beta, -alpha)
+                except TimeoutError:
+                    raise
+                if val > current_best_value:
+                    current_best_value = val
+                    current_best = m
+                if val > alpha:
+                    alpha = val
+                # aspiration pruning could be used here but kept simple
+            if current_best is not None:
+                best_move = current_best
+                best_value = current_best_value
+            # time check before deeper iteration
+            if time.time() - start_time > TIME_LIMIT * 0.9:
+                break
+    except TimeoutError:
+        # Time ran out; fall back to best found so far
+        pass
+    except Exception:
+        # Any unexpected error: fallback
+        pass
+
+    r1, c1, r2, c2 = best_move
+    return f"{r1},{c1}:{r2},{c2}"
+
+# For module testing (not executed in arena), one could add tests here.
+if __name__ == "__main__":
+    # simple random board test
+    bd = [[0]*8 for _ in range(8)]
+    bd[0][0] = 1
+    bd[7][7] = -1
+    print(policy(bd))

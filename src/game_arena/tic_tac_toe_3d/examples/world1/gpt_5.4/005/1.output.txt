@@ -1,0 +1,225 @@
+The strategy for this policy is a strong tactical 3D Tic Tac Toe player with guaranteed legal fallback behavior.
+
+It works as follows:
+
+1. Enumerate all 49 winning lines in a 3x3x3 cube.
+2. First, play any immediate winning move.
+3. Otherwise, block any immediate opponent winning move.
+4. Otherwise, score each legal move using strong heuristics:
+   - prefer moves that create many future winning chances,
+   - prefer moves that block opponent line potential,
+   - prefer center, face-centers, edges, then corners based on how many winning lines pass through the cell,
+   - prefer moves that create forks,
+   - avoid moves that allow the opponent an immediate win if possible.
+5. If several moves tie, use a deterministic tie-breaker based on line participation.
+6. Always return a legal empty cell, even in unusual positions.
+
+This policy is fast, deterministic, and robust, with strong tactical play suitable for a competitive arena.
+
+<code>
+from typing import List, Tuple
+
+# Precompute all 49 winning lines in 3x3x3 tic tac toe.
+def _generate_lines():
+    lines = []
+
+    # Rows in each layer/plane direction
+    for i in range(3):
+        for j in range(3):
+            lines.append([(i, j, k) for k in range(3)])  # along k
+    for i in range(3):
+        for k in range(3):
+            lines.append([(i, j, k) for j in range(3)])  # along j
+    for j in range(3):
+        for k in range(3):
+            lines.append([(i, j, k) for i in range(3)])  # along i
+
+    # Diagonals in constant i planes
+    for i in range(3):
+        lines.append([(i, d, d) for d in range(3)])
+        lines.append([(i, d, 2 - d) for d in range(3)])
+
+    # Diagonals in constant j planes
+    for j in range(3):
+        lines.append([(d, j, d) for d in range(3)])
+        lines.append([(d, j, 2 - d) for d in range(3)])
+
+    # Diagonals in constant k planes
+    for k in range(3):
+        lines.append([(d, d, k) for d in range(3)])
+        lines.append([(d, 2 - d, k) for d in range(3)])
+
+    # 4 space diagonals
+    lines.append([(d, d, d) for d in range(3)])
+    lines.append([(d, d, 2 - d) for d in range(3)])
+    lines.append([(d, 2 - d, d) for d in range(3)])
+    lines.append([(d, 2 - d, 2 - d) for d in range(3)])
+
+    return lines
+
+LINES = _generate_lines()
+
+# For each cell, which winning lines include it.
+CELL_TO_LINES = {(i, j, k): [] for i in range(3) for j in range(3) for k in range(3)}
+for idx, line in enumerate(LINES):
+    for cell in line:
+        CELL_TO_LINES[cell].append(idx)
+
+# Number of winning lines through each cell: useful positional value.
+CELL_LINE_COUNT = {cell: len(CELL_TO_LINES[cell]) for cell in CELL_TO_LINES}
+
+
+def _empty_cells(board):
+    res = []
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board[i][j][k] == 0:
+                    res.append((i, j, k))
+    return res
+
+
+def _find_immediate_wins(board, player):
+    wins = []
+    for line in LINES:
+        vals = [board[i][j][k] for (i, j, k) in line]
+        if vals.count(player) == 2 and vals.count(0) == 1:
+            idx = vals.index(0)
+            wins.append(line[idx])
+    # Deduplicate while preserving order
+    seen = set()
+    out = []
+    for w in wins:
+        if w not in seen:
+            seen.add(w)
+            out.append(w)
+    return out
+
+
+def _line_score(count_self, count_opp, count_empty):
+    # Only one side can benefit from an unblocked line.
+    if count_self > 0 and count_opp > 0:
+        return 0
+    if count_self == 2 and count_empty == 1:
+        return 120
+    if count_self == 1 and count_empty == 2:
+        return 18
+    if count_self == 0 and count_empty == 3:
+        return 4
+    if count_opp == 2 and count_empty == 1:
+        return 90
+    if count_opp == 1 and count_empty == 2:
+        return 10
+    return 0
+
+
+def _count_future_wins(board, player):
+    # Number of immediate winning moves currently available to player.
+    return len(_find_immediate_wins(board, player))
+
+
+def _safe_move_score(board, move):
+    i, j, k = move
+    board[i][j][k] = 1
+
+    opp_immediate = _find_immediate_wins(board, -1)
+    my_immediate = _find_immediate_wins(board, 1)
+
+    # If move gives opponent immediate win(s), penalize strongly.
+    # If move creates own immediate wins/fork, reward.
+    score = 0
+    score += 80 * len(my_immediate)
+    score -= 140 * len(opp_immediate)
+
+    # Extra reward for a fork: 2+ winning threats.
+    if len(my_immediate) >= 2:
+        score += 200
+
+    board[i][j][k] = 0
+    return score
+
+
+def _evaluate_move(board, move):
+    i, j, k = move
+    score = 0
+
+    # Positional prior by line participation.
+    score += 6 * CELL_LINE_COUNT[move]
+
+    # Simulate move.
+    board[i][j][k] = 1
+
+    # Evaluate affected lines and global line potential.
+    for line in LINES:
+        vals = [board[a][b][c] for (a, b, c) in line]
+        c_self = vals.count(1)
+        c_opp = vals.count(-1)
+        c_emp = vals.count(0)
+        score += _line_score(c_self, c_opp, c_emp)
+
+    # Tactical safety / fork bonus.
+    score += _safe_move_score(board, move)
+
+    # Mild preference for reducing opponent future options after our move.
+    opp_wins = len(_find_immediate_wins(board, -1))
+    score -= 25 * opp_wins
+
+    # Mild preference for increasing our future options.
+    my_wins = len(_find_immediate_wins(board, 1))
+    score += 20 * my_wins
+
+    board[i][j][k] = 0
+
+    return score
+
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    legal = _empty_cells(board)
+    if not legal:
+        # Should not happen in a valid game, but return a valid tuple.
+        return (0, 0, 0)
+
+    # 1. Immediate win.
+    my_wins = _find_immediate_wins(board, 1)
+    for move in my_wins:
+        if board[move[0]][move[1]][move[2]] == 0:
+            return move
+
+    # 2. Immediate block.
+    opp_wins = _find_immediate_wins(board, -1)
+    if opp_wins:
+        # If multiple blocks exist, choose the one with best follow-up.
+        best_block = None
+        best_score = None
+        for move in opp_wins:
+            if board[move[0]][move[1]][move[2]] != 0:
+                continue
+            s = CELL_LINE_COUNT[move]
+            # Prefer blocks that also create our own threats.
+            s += _evaluate_move(board, move)
+            if best_score is None or s > best_score:
+                best_score = s
+                best_block = move
+        if best_block is not None:
+            return best_block
+
+    # 3. Heuristic best move.
+    best_move = None
+    best_score = None
+    for move in legal:
+        s = _evaluate_move(board, move)
+        # Deterministic tie-breakers:
+        # prefer more line participation, then lexicographically smaller.
+        tie = (CELL_LINE_COUNT[move], -move[0], -move[1], -move[2])
+        key = (s, tie)
+        if best_score is None or key > best_score:
+            best_score = key
+            best_move = move
+
+    if best_move is not None and board[best_move[0]][best_move[1]][best_move[2]] == 0:
+        return best_move
+
+    # 4. Guaranteed legal fallback: choose legal move with highest line count.
+    legal.sort(key=lambda m: (CELL_LINE_COUNT[m], -m[0], -m[1], -m[2]), reverse=True)
+    return legal[0]
+</code>

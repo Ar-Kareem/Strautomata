@@ -1,0 +1,265 @@
+
+def policy(pieces: dict[str, str], to_play: str, memory: dict) -> tuple[str, dict]:
+    # Define piece values
+    piece_values = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}  # King value not used for capture
+    
+    # Helper: Convert square string to (file, rank) tuple
+    def square_to_coord(square):
+        return (ord(square[0]) - ord('a'), int(square[1]) - 1)
+    
+    # Helper: Create a copy of the pieces dictionary
+    def copy_board(board):
+        return {sq: piece for sq, piece in board.items()}
+    
+    # Helper: Apply a move to the board and return new board state
+    def apply_move(board, move):
+        # Move format: 'a2a4' or 'a7a8q' for promotion
+        from_sq = move[0:2]
+        to_sq = move[2:4]
+        new_board = copy_board(board)
+        
+        if from_sq not in new_board:
+            return new_board  # Invalid move, but shouldn't happen
+        
+        piece = new_board[from_sq]
+        color = piece[0]
+        piece_type = piece[1]
+        
+        # Remove piece from source
+        del new_board[from_sq]
+        
+        # Handle capture
+        if to_sq in new_board:
+            del new_board[to_sq]
+        
+        # Handle promotion
+        if len(move) == 5 and piece_type == 'P':
+            promoted_piece = move[4]
+            new_board[to_sq] = color + promoted_piece.upper()
+        else:
+            new_board[to_sq] = piece
+        
+        return new_board
+
+    # Helper: Check if king is under attack in a board state by opponent
+    def is_in_check(board, color):
+        opponent_color = 'w' if color == 'b' else 'b'
+        king_pos = None
+        king_code = color + 'K'
+        for sq, piece in board.items():
+            if piece == king_code:
+                king_pos = sq
+                break
+        if not king_pos:
+            return False  # Should not happen
+        
+        # Check all opponent moves to see if they can capture the king
+        for from_sq, piece in board.items():
+            if piece[0] != opponent_color:
+                continue
+            piece_type = piece[1]
+            if attacks_square(board, from_sq, king_pos, piece_type):
+                return True
+        return False
+
+    # Helper: Check if a piece on from_sq attacks to_sq
+    def attacks_square(board, from_sq, to_sq, piece_type):
+        fx, fy = square_to_coord(from_sq)
+        tx, ty = square_to_coord(to_sq)
+        dx, dy = tx - fx, ty - fy
+        
+        # Pawn
+        if piece_type == 'P':
+            direction = 1 if board[from_sq][0] == 'w' else -1
+            return dy == direction and abs(dx) == 1
+        
+        # Knight
+        if piece_type == 'N':
+            return (abs(dx), abs(dy)) in [(1,2), (2,1)]
+        
+        # King
+        if piece_type == 'K':
+            return abs(dx) <= 1 and abs(dy) <= 1 and (dx != 0 or dy != 0)
+        
+        # Bishop: diagonal
+        if piece_type == 'B':
+            if abs(dx) == abs(dy) and dx != 0:
+                return path_is_clear(board, from_sq, to_sq)
+        
+        # Rook: horizontal/vertical
+        if piece_type == 'R':
+            if dx == 0 or dy == 0:
+                return path_is_clear(board, from_sq, to_sq)
+        
+        # Queen: either
+        if piece_type == 'Q':
+            if (dx == 0 or dy == 0 or abs(dx) == abs(dy)) and (dx != 0 or dy != 0):
+                return path_is_clear(board, from_sq, to_sq)
+        
+        return False
+
+    # Helper: Check if the path between two squares is clear (only for sliding pieces)
+    def path_is_clear(board, from_sq, to_sq):
+        fx, fy = square_to_coord(from_sq)
+        tx, ty = square_to_coord(to_sq)
+        step_x = 0 if fx == tx else (1 if tx > fx else -1)
+        step_y = 0 if fy == ty else (1 if ty > fy else -1)
+        
+        x, y = fx + step_x, fy + step_y
+        while (x, y) != (tx, ty):
+            sqr = chr(ord('a') + x) + str(y + 1)
+            if sqr in board:
+                return False
+            x += step_x
+            y += step_y
+        return True
+
+    # Get legal moves (this is provided, but in simulation we assume we get them externally)
+    # However, in this evaluation, we are only scoring given legal moves, so no need to generate
+    # But in simulation we need to generate opponent responses
+    def get_all_possible_moves(board, color):
+        moves = []
+        for sq, piece in board.items():
+            if piece[0] != color:
+                continue
+            piece_type = piece[1]
+            x, y = square_to_coord(sq)
+            # Try all 64 squares
+            for file in 'abcdefgh':
+                for rank in '12345678':
+                    to_sq = file + rank
+                    if sq == to_sq:
+                        continue
+                    # See if piece can move legally
+                    if can_move(board, sq, to_sq, piece_type):
+                        # Check if move leaves king in check
+                        sim_board = apply_move(board, sq + to_sq)
+                        if not is_in_check(sim_board, color):
+                            # Handle promotion
+                            if piece_type == 'P' and ((color == 'w' and rank == '8') or (color == 'b' and rank == '7')):
+                                for promo in 'qrbn':
+                                    moves.append(sq + to_sq + promo)
+                            else:
+                                moves.append(sq + to_sq)
+        return moves
+
+    # Simplified move pseudo-legal move possibility check
+    def can_move(board, from_sq, to_sq, piece_type):
+        if from_sq == to_sq:
+            return False
+        fx, fy = square_to_coord(from_sq)
+        tx, ty = square_to_coord(to_sq)
+        dx, dy = tx - fx, ty - fy
+        
+        # General attack check without blocking consideration
+        piece = board[from_sq]
+        color = piece[0]
+        
+        # Sliding moves cannot jump over pieces
+        if piece_type in 'BRQ':
+            if not path_is_clear_except(board, from_sq, to_sq):
+                return False
+        
+        return attacks_square(board, from_sq, to_sq, piece_type)
+
+    # Check path is clear except possibly enemy at destination
+    def path_is_clear_except(board, from_sq, to_sq):
+        fx, fy = square_to_coord(from_sq)
+        tx, ty = square_to_coord(to_sq)
+        step_x = 0 if fx == tx else (1 if tx > fx else -1)
+        step_y = 0 if fy == ty else (1 if ty > fy else -1)
+        
+        x, y = fx + step_x, fy + step_y
+        while (x, y) != (tx, ty):
+            sqr = chr(ord('a') + x) + str(y + 1)
+            if sqr in board:
+                return False
+            x += step_x
+            y += step_y
+        return True
+
+    # Assign a score to a move
+    def evaluate_move(move):
+        score = 0
+        
+        # Apply move to get next board
+        next_board = apply_move(pieces, move)
+        
+        # Get my color
+        my_color = 'w' if to_play == 'white' else 'b'
+        opp_color = 'b' if to_play == 'white' else 'w'
+        
+        # 1. Check if this move gives checkmate
+        if is_in_check(next_board, opp_color) and len(get_all_possible_moves(next_board, opp_color)) == 0:
+            score += 100000
+            return score
+        
+        # 2. Material gain
+        from_sq = move[0:2]
+        to_sq = move[2:4]
+        if to_sq in pieces:
+            captured_piece = pieces[to_sq]
+            if captured_piece[0] == opp_color:
+                score += piece_values[captured_piece[1]]
+        
+        # 3. Promotion
+        if len(move) == 5 and move[4] == 'q':
+            score += 9  # Best promotion
+        elif len(move) == 5:
+            score += piece_values[move[4].upper()]
+        
+        # 4. Avoid giving away the piece next move: simulate opponent's response
+        # If opponent can capture the moved piece with a lower value piece (or for free), penalize
+        moved_piece = pieces[from_sq]
+        moved_type = moved_piece[1]
+        value_of_moved = piece_values[moved_type]
+        
+        # See if opponent can capture on to_sq in the next move with a "profitable" trade
+        any_capture_threat = False
+        if len(move) < 5:  # Not a promotion move
+            opp_moves = get_all_possible_moves(next_board, opp_color)
+            for opp_move in opp_moves:
+                if opp_move[2:4] == to_sq:  # Opponent captures on to_sq
+                    capturer_piece = next_board[opp_move[0:2]]
+                    capturer_value = piece_values[capturer_piece[1]]
+                    if capturer_value < value_of_moved:
+                        # We lose material
+                        score -= (value_of_moved - capturer_value) * 2
+                    elif capturer_value > value_of_moved or capturer_value == value_of_moved:
+                        # Even trade or worse — still a threat
+                        any_capture_threat = True
+        
+        # If no threat, slightly reward moving away from attack
+        # But we don't penalize all captures due to trading logic
+        if any_capture_threat:
+            # But if we also captured something valuable, still good
+            pass
+        else:
+            score += 0.1  # Small bonus for safe move
+        
+        # 5. Bonus for giving check
+        if is_in_check(next_board, opp_color):
+            score += 0.5
+        
+        return score
+
+    # Main: Iterate through legal_moves and pick highest score
+    legal_moves = memory.get('legal_moves', [])
+    
+    # Sanity: if no legal moves, take first (should not happen)
+    if not legal_moves:
+        return 'a1a1', memory
+    
+    # Evaluate each move
+    move_scores = []
+    for move in legal_moves:
+        score = evaluate_move(move)
+        move_scores.append((score, move))
+    
+    # Sort by score descending
+    move_scores.sort(reverse=True)
+    
+    best_move = move_scores[0][1]
+    
+    # Return best move and (possibly updated) memory
+    return best_move, memory

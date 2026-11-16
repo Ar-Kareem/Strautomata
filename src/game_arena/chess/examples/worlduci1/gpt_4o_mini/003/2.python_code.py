@@ -1,0 +1,60 @@
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    def move_score(move: str) -> int:
+        # Score parameters
+        score = 0
+        start_square = move[:2]
+        end_square = move[2:4]
+
+        # Determine the moving piece and target piece
+        moving_piece = pieces.get(start_square, '')
+        target_piece = pieces.get(end_square, '')
+
+        # Score based on the type of piece and the outcome of the move
+        if moving_piece[0] == ('w' if to_play == 'white' else 'b'):  # Validate that the piece belongs to the current player
+            piece_value = piece_values[moving_piece[1]] if moving_piece else 0
+            target_value = piece_values[target_piece[1]] if target_piece else 0
+
+            # Check for potential checkmate
+            if is_checkmate_end_move(moving_piece, target_piece):
+                score += 1000  # Prioritize checkmate
+
+            # Material gain
+            score += target_value - piece_value
+
+            # Additional scores for improving position, king safety, etc.
+            if is_safe_square(end_square, pieces) and target_piece == '':
+                score += 10  # Score for moving to a safe square
+        
+        return score
+
+    def is_checkmate_end_move(moving_piece, target_piece):
+        # Simplified logic for detecting checkmate situation (not complete)
+        return False  # Placeholder, implement actual checkmate detection
+
+    def is_safe_square(square, pieces):
+        # Placeholder for checking if a square is safe from attack
+        return True  # For now, assume all squares are safe
+
+    # Piece value mapping, higher value for more valuable pieces
+    piece_values = {
+        'K': 0,  # King is invaluable
+        'Q': 9,
+        'R': 5,
+        'B': 3,
+        'N': 3,
+        'P': 1
+    }
+
+    # Generate scores for all legal moves
+    legal_moves = []
+    best_move = ''
+    best_score = float('-inf')
+
+    for move in legal_moves:
+        score = move_score(move)
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return best_move

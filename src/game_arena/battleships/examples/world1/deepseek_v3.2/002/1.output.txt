@@ -1,0 +1,559 @@
+<thinking>
+We need to implement a Battleship targeting policy. The game is 10x10, ships lengths: 5, 4, 3, 3, 2. The board is given as a 10x10 list of ints with 0=unknown, -1=miss, 1=hit.
+
+We need to design an AI that:
+1. Keeps track of which cells have been fired at (0 means not fired, -1/1 means fired).
+2. Chooses a target based on current knowledge.
+
+We should implement a probability-based approach or a Hunt/Target algorithm. The classic efficient algorithm is:
+- "Hunt" mode: when no hits, fire randomly but with parity (since ships are at least length 2, we can skip some cells to improve).
+- "Target" mode: when we have a hit but not sunk, we try adjacent cells to find the orientation and sink the ship.
+
+We need to track hits that are not yet sunk. In board, hits (1) are marked, but we don't know if the ship is sunk. However, if a ship is sunk, the game will still show 1 for those cells. But we can infer sunk status if all cells around a hit are misses or edges, but that's tricky. Better: we can track hits and when we hit, we try to sink that ship by exploring adjacent cells. If we hit and then later all adjacent cells are misses, maybe ship is sunk? Not necessarily, ship could be longer and extend in opposite direction.
+
+We can maintain our own state: list of unsunk hits. But we need to detect when a ship is sunk. We can do this by checking if a hit cell has no adjacent unknown cells that could continue the ship. However, if we have multiple hits in a line, we need to know the orientation.
+
+Simpler approach: implement a target mode that, when we have a hit, we try to sink that ship by exploring in the four directions. We need to remember which ship we're currently targeting. If we have multiple hits, we should pick one and continue.
+
+We'll implement:
+- A queue of target cells: when we hit a cell, we add its neighbors to a queue (priority for continuing direction).
+- If we hit, we add adjacent cells to queue.
+- If we miss, we continue with queue.
+- If queue empty, we go to hunt mode.
+
+Hunt mode: fire randomly but with parity. Since smallest ship is length 2, we can use a checkerboard pattern to improve hit probability. We can generate all unknown cells and pick one randomly, but with a bias towards cells that have higher chance based on ship placements (probability density). However, for simplicity, we can implement probability map.
+
+But we have 1 second execution time, we can compute a probability map for each unknown cell based on possible ship placements. That is more accurate but computationally heavier. However, 10x10 board, ships lengths [5,4,3,3,2], we can enumerate all possible placements for each ship, but that's many. For each ship length L, number of placements = (10)*(10-L+1)*2 (horizontal and vertical). Sum over lengths: 5: 10*6*2=120, 4: 10*7*2=140, 3: 10*8*2=160, 3: same 160, 2: 10*9*2=180. Total 760 placements. That's fine.
+
+We can generate all possible placements for each ship, then filter out those that conflict with known misses (since ship can't be on miss) and must cover all hits (but we don't know which ship is which). Actually, we need to consider combinations of ships, which is combinatorial explosion. However, we can approximate by computing for each cell the number of ways a ship could occupy it given the current board.
+
+We can compute a probability density: for each unknown cell, count how many placements (for each ship length) that include that cell and are consistent with the board (no conflicts with misses, and must cover all hits? Actually, we cannot require covering hits because we don't know which ship they belong to. But we can treat hits as required: a placement must include all hits? No, that's wrong because a placement is for a single ship, and we have multiple ships. Instead, we can compute for each cell the probability that it contains a ship given the current board and the set of all possible configurations of the fleet. That's too heavy.
+
+Simpler: use the parity hunt with target queue. That's classic and works well.
+
+We'll implement:
+- Maintain a set of untried cells.
+- When we have a hit, we add its four neighbors (if unknown and within bounds) to a queue.
+- When we hit, we also track the direction: if we have multiple hits in a line, we should prioritize cells along that line.
+- We need to detect when a ship is sunk: if we have a hit and all adjacent cells are either miss, edge, or already hit, then the ship might be sunk. But if we have multiple hits in a line, we need to check both ends.
+
+Better: we can maintain a list of "ship segments" that are hits not yet sunk. When we get a hit, we check if it's adjacent to any existing segment; if yes, we merge. Then for each segment, we can try to extend it.
+
+Let's design:
+- unsunk_hits: list of lists of coordinates (each list is a connected component of hits).
+- When we get a hit at (r,c), check if it's adjacent (manhattan distance 1) to any existing unsunk hit component. If yes, add to that component. If adjacent to multiple, merge them (since they become connected). If not, create new component.
+- For each component, we can determine possible extensions: if the component is horizontal (all same row) or vertical (all same col). If not, it could be L-shaped? But ships are straight, so if we have two hits not in same row/col, they must be from different ships? Actually, if we have hits that are not colinear, they cannot be from the same ship because ships are straight. So if we have two hits with different rows and cols, they belong to different ships. So we can treat each component as either horizontal, vertical, or single point.
+
+Thus, for each component:
+  - If size = 1: we can try four directions.
+  - If size > 1: determine orientation (horizontal if all same row, vertical if same column). Then we have two ends: min and max along that axis. Try to extend at both ends.
+
+We'll have a priority list of target cells from these extensions. We'll also have a set of already targeted cells (those we've fired at, i.e., board not 0).
+
+Algorithm:
+1. Initialize: all cells unknown.
+2. On each call:
+   - Update unsunk_hits based on board: we can scan board for hits (1) that are not in our unsunk_hits set. But we also need to remove sunk ships: if a component is fully sunk, we should remove it. How to know? If a component has no possible extensions (all adjacent cells are miss or edge), then it's sunk. However, if the ship is longer than the component, but we haven't hit the rest because it's elsewhere? That can't happen because ships are contiguous. So if we have a component and we cannot find any adjacent unknown cell along the line (both ends blocked by miss or edge), then the ship is sunk. Also, we need to know if the component length equals the ship length, but we don't know which ship. However, if both ends are blocked, the ship cannot extend further, so it's sunk.
+
+   So we can maintain unsunk_hits as components that still have at least one adjacent unknown cell along the line.
+
+3. If there are unsunk_hits components, pick the first one (or best) and generate target cells from its extensions.
+4. If no unsunk_hits, go to hunt mode: choose a cell from unknown cells with parity (maybe prefer cells that have high probability). We can implement probability map or simple parity.
+
+We'll implement parity: since smallest ship is length 2, we can fire only on cells where (row+col)%2 == 0 (even parity) initially. But once we have hits, we might need to fire on odd parity. Actually, classic algorithm uses checkerboard only in hunt mode.
+
+We'll maintain a set of candidate cells for hunt mode: all unknown cells. We can filter by parity: we can compute density of unknown cells per parity and choose the parity with more cells? Or just pick randomly.
+
+But we need to be deterministic? Not necessarily, but we should avoid randomness for reproducibility. However, we can use random seed but that's not good for competition. We can use deterministic ordering: e.g., scan rows and columns in a pattern.
+
+Better: generate all unknown cells, then sort by some heuristic: number of adjacent hits? Or use probability map.
+
+Given time, let's implement a simple probability map: for each unknown cell, compute how many ways a ship of each length could be placed covering that cell without overlapping misses. We'll sum over all ship lengths, but we need to consider that ships are placed without overlapping each other, which is complex. But we can approximate by assuming independence, which is okay for a heuristic.
+
+We'll compute for each unknown cell (r,c):
+   total = 0
+   for each ship length L in [5,4,3,3,2]:
+        count placements of length L that include (r,c) and do not conflict with misses (-1).
+   We'll sum these counts.
+
+Then in hunt mode, pick the cell with highest total. If tie, pick the one with smallest row, then col.
+
+This is similar to the "probability density" approach used in many Battleship AIs.
+
+We need to be careful: we should also consider that hits (1) must be covered by some ship, but we can ignore that for simplicity because hits are already accounted (they are ship cells). Actually, if we have hits, we should be in target mode, not hunt mode. So hunt mode only when no unsunk hits? Actually, we might have unsunk hits but we might still need to hunt for other ships. But target mode should handle those hits. So hunt mode only when no unsunk hits.
+
+But what if we have unsunk hits but we've exhausted their extensions? Then they are sunk? Actually, if we have a component and both ends are blocked (by miss or edge), then the ship is sunk. So we should remove that component. So unsunk_hits only contains components that have at least one possible extension.
+
+Thus, hunt mode when unsunk_hits is empty.
+
+Now, let's design data structures.
+
+We'll have global variables to maintain state across calls: unsunk_hits (list of sets), and maybe a set of all fired cells (but we can infer from board). However, board is given each call, so we can recompute everything from board. That's simpler: stateless except we need to remember previous state to know which hits are new? Not necessary: we can recompute unsunk_hits from board each time.
+
+So in policy(board):
+  1. Find all hit cells (board[r][c] == 1).
+  2. Group them into connected components (adjacent horizontally or vertically, since ships are straight, diagonal not considered adjacent for connection).
+  3. For each component, determine if it's sunk: check both ends along its orientation (if single, check all four directions). If both ends are blocked (out of bounds or board value == -1), then sunk. Also, if the component length equals the maximum possible ship length? Not needed.
+  4. Filter out sunk components (those with no possible extensions). The remaining are unsunk.
+  5. If unsunk not empty:
+        Pick the largest unsunk component (or the one with most hits) to target.
+        For that component, generate possible target cells: 
+            If component size == 1:
+                directions = [(0,1),(0,-1),(1,0),(-1,0)]
+                for each direction, check if the cell is unknown (0) and within bounds. Add to candidate list.
+            Else:
+                Determine orientation: if all same row -> horizontal, else vertical.
+                Let sorted_coords = sorted by col (if horizontal) or row (if vertical).
+                Two ends: left and right (or top and bottom). For each end, check the next cell in that direction: if unknown, add to candidates.
+        If candidates not empty, pick the one with highest probability (or just first). We can also prioritize direction that has more adjacent hits? For simplicity, we can pick the first candidate.
+  6. Else (no unsunk hits):
+        Hunt mode: compute probability map for all unknown cells (board == 0). Choose the cell with highest probability.
+
+We also need to ensure we don't fire at the same cell twice. Our candidates will only include cells with board == 0, so that's fine.
+
+Now, probability map computation:
+   For each unknown cell (r,c):
+        total = 0
+        for L in [5,4,3,3,2]:
+            count horizontal placements: for offset in range(L): if c - offset >=0 and c - offset + L -1 < 10, then check if the segment from (r, c-offset) to (r, c-offset+L-1) contains only hits or unknowns (no misses). Actually, we require that the segment does not contain any misses (-1), because ship cannot be on miss. But it can contain hits (1) because that's part of ship. However, if we have hits, they might be from other ships, but we cannot guarantee. To simplify, we allow hits as well. So condition: for each cell in the segment, board value != -1. Also, we must ensure the segment is within bounds.
+            Similarly for vertical placements.
+        Sum counts for all L.
+   However, this double-counts because a cell could be part of multiple placements of different ships. That's okay for heuristic.
+
+But we need to consider that ships cannot overlap. However, since we are counting placements independently for each ship length, and we are not considering other ships, this is an approximation.
+
+We can improve by weighting each ship length equally. Since there are 5 ships, we can sum over all placements of all ships.
+
+Alternatively, we can generate all possible placements for all ships combined, but that's combinatorial. Too heavy.
+
+We'll stick with the simple per-ship-length count.
+
+Implementation details:
+- We'll precompute for each L the number of ways to place a ship of length L on the board given the current board constraints. But we need per cell.
+
+We can compute for each cell (r,c):
+   total = 0
+   for L in [5,4,3,3,2]:
+        for orientation in ['H','V']:
+            if orientation == 'H':
+                # ship occupies (r, c0) to (r, c0+L-1) for some c0 such that c0 <= c <= c0+L-1
+                # For each possible start column c0 where c0 <= c <= c0+L-1, i.e., c0 in [c-L+1, c]
+                for c0 in range(max(0, c-L+1), min(c, 10-L)+1):
+                    # check segment (r, c0) to (r, c0+L-1) for no misses
+                    valid = True
+                    for k in range(L):
+                        if board[r][c0+k] == -1:
+                            valid = False
+                            break
+                    if valid:
+                        total += 1
+            else: # vertical
+                for r0 in range(max(0, r-L+1), min(r, 10-L)+1):
+                    valid = True
+                    for k in range(L):
+                        if board[r0+k][c] == -1:
+                            valid = False
+                            break
+                    if valid:
+                        total += 1
+
+This is O(10*10*5*10) = O(5000) per cell, which is 100 cells => 500k operations, which is fine within 1 second.
+
+But we can optimize by precomputing for each row and column the runs of non-miss cells.
+
+However, we'll keep it simple.
+
+Now, we need to choose a target cell. In hunt mode, we pick the unknown cell with highest total probability. If tie, pick the one with smallest row, then col.
+
+In target mode, we pick from candidates of the chosen unsunk component. Among candidates, we might also pick the one with highest probability? Or we can just pick the first candidate. To be more intelligent, we can evaluate probability of hit for each candidate (but that's similar to probability map but restricted to local area). Since we are already in target mode, we know there's a ship there, so we should just try to sink it. So we can pick candidates in order: first extend in the direction we have already hit (if we have multiple hits in a line, we know orientation). For single hit, we can try all four directions, but we might want to prioritize directions that are not blocked.
+
+We'll implement:
+   For single hit: generate four directions, filter valid, then pick the one with highest probability (or just first).
+   For line: generate two ends, pick the one that is valid.
+
+If both ends valid, we can pick randomly? But we want deterministic. We can pick the one with higher probability (based on probability map) or just pick the one with smaller row/col.
+
+Let's implement: for target mode, we'll collect all candidate cells from all unsunk components (maybe prioritize the largest component). Then among candidates, we'll pick the one with highest probability (computed as above). That way we combine local targeting with global probability.
+
+But computing probability for each candidate might be expensive if we compute for all unknown cells. We can compute probability map for all unknown cells once and then lookup.
+
+So algorithm:
+  1. Compute probability map for all unknown cells (if needed).
+  2. Find unsunk components.
+  3. If unsunk components exist:
+        candidates = []
+        for each component (sorted by size descending):
+            generate target cells for that component (as described).
+            candidates.extend(list of (cell, priority?) )
+        Then pick the candidate with highest probability (from precomputed map). If tie, pick by row then col.
+  4. Else:
+        candidates = all unknown cells.
+        pick the one with highest probability.
+
+We need to ensure we don't pick a cell that is already fired at. Our candidates are only unknown cells.
+
+Now, we need to implement grouping hits into components.
+
+We'll write helper functions.
+
+Let's outline code:
+
+def policy(board):
+    # board is 10x10 list of int
+    # find all hit cells
+    hits = [(r,c) for r in range(10) for c in range(10) if board[r][c] == 1]
+    # group connected hits (adjacent horizontally or vertically)
+    visited = set()
+    components = []
+    for hit in hits:
+        if hit in visited:
+            continue
+        # BFS
+        stack = [hit]
+        component = []
+        while stack:
+            r,c = stack.pop()
+            if (r,c) in visited:
+                continue
+            visited.add((r,c))
+            component.append((r,c))
+            # neighbors
+            for dr,dc in [(0,1),(0,-1),(1,0),(-1,0)]:
+                nr,nc = r+dr, c+dc
+                if 0<=nr<10 and 0<=nc<10 and board[nr][nc]==1 and (nr,nc) not in visited:
+                    stack.append((nr,nc))
+        components.append(component)
+    # filter out sunk components
+    unsunk = []
+    for comp in components:
+        # determine if sunk
+        if len(comp) == 1:
+            r,c = comp[0]
+            # check if all adjacent cells are either miss, edge, or hit (but hit is part of comp)
+            # Actually, if all adjacent cells are not unknown, then ship is sunk.
+            # But we need to consider that a ship of length 1 is possible? Smallest ship is length 2, so single hit could be part of a longer ship that hasn't been fully hit.
+            # So we cannot assume sunk. Instead, we check if there is any unknown cell adjacent that could extend the ship.
+            # So for single hit, we check four directions: if any adjacent cell is unknown, then not sunk.
+            sunk = True
+            for dr,dc in [(0,1),(0,-1),(1,0),(-1,0)]:
+                nr,nc = r+dr, c+dc
+                if 0<=nr<10 and 0<=nc<10:
+                    if board[nr][nc] == 0:
+                        sunk = False
+                        break
+            if sunk:
+                continue
+        else:
+            # check orientation
+            rows = set(r for r,c in comp)
+            cols = set(c for r,c in comp)
+            if len(rows) == 1:
+                # horizontal
+                row = list(rows)[0]
+                cols_sorted = sorted(c for r,c in comp)
+                left_end = cols_sorted[0]
+                right_end = cols_sorted[-1]
+                # check left extension
+                left_ext = left_end - 1
+                right_ext = right_end + 1
+                # if any extension cell is within bounds and unknown, then not sunk
+                sunk = True
+                if left_ext >=0 and board[row][left_ext] == 0:
+                    sunk = False
+                if right_ext <10 and board[row][right_ext] == 0:
+                    sunk = False
+                # also, if there are gaps? Ships are contiguous, so comp should be contiguous. But if there is a gap, then it's two separate ships? Actually, our grouping would not group non-adjacent hits. So fine.
+            elif len(cols) == 1:
+                col = list(cols)[0]
+                rows_sorted = sorted(r for r,c in comp)
+                top_end = rows_sorted[0]
+                bottom_end = rows_sorted[-1]
+                top_ext = top_end - 1
+                bottom_ext = bottom_end + 1
+                sunk = True
+                if top_ext >=0 and board[top_ext][col] == 0:
+                    sunk = False
+                if bottom_ext <10 and board[bottom_ext][col] == 0:
+                    sunk = False
+            else:
+                # L-shaped? Should not happen for single ship. So treat as multiple ships incorrectly grouped? Actually, if two ships are adjacent diagonally, they might be grouped by our BFS? No, because diagonal not considered adjacent. So this case shouldn't occur. But if it does, treat as unsunk.
+                sunk = False
+            if sunk:
+                continue
+        unsunk.append(comp)
+    # if unsunk not empty
+    if unsunk:
+        # sort unsunk by size descending
+        unsunk.sort(key=lambda comp: len(comp), reverse=True)
+        # generate candidates from unsunk components
+        candidates = []
+        for comp in unsunk:
+            if len(comp) == 1:
+                r,c = comp[0]
+                for dr,dc in [(0,1),(0,-1),(1,0),(-1,0)]:
+                    nr,nc = r+dr, c+dc
+                    if 0<=nr<10 and 0<=nc<10 and board[nr][nc]==0:
+                        candidates.append((nr,nc))
+            else:
+                rows = set(r for r,c in comp)
+                cols = set(c for r,c in comp)
+                if len(rows) == 1:
+                    row = list(rows)[0]
+                    cols_sorted = sorted(c for r,c in comp)
+                    left_end = cols_sorted[0]
+                    right_end = cols_sorted[-1]
+                    # left extension
+                    if left_end-1 >=0 and board[row][left_end-1]==0:
+                        candidates.append((row, left_end-1))
+                    # right extension
+                    if right_end+1 <10 and board[row][right_end+1]==0:
+                        candidates.append((row, right_end+1))
+                elif len(cols) == 1:
+                    col = list(cols)[0]
+                    rows_sorted = sorted(r for r,c in comp)
+                    top_end = rows_sorted[0]
+                    bottom_end = rows_sorted[-1]
+                    # top extension
+                    if top_end-1 >=0 and board[top_end-1][col]==0:
+                        candidates.append((top_end-1, col))
+                    # bottom extension
+                    if bottom_end+1 <10 and board[bottom_end+1][col]==0:
+                        candidates.append((bottom_end+1, col))
+                # else: ignore (shouldn't happen)
+        if candidates:
+            # compute probability for each candidate (or precompute for all unknown cells)
+            # We'll compute probability map for all unknown cells
+            prob_map = compute_probability_map(board)
+            # pick candidate with highest prob
+            best_cell = max(candidates, key=lambda cell: prob_map[cell[0]][cell[1]])
+            return best_cell
+    # else hunt mode
+    # compute probability map for all unknown cells
+    prob_map = compute_probability_map(board)
+    unknown_cells = [(r,c) for r in range(10) for c in range(10) if board[r][c]==0]
+    # pick cell with highest probability
+    best_cell = max(unknown_cells, key=lambda cell: prob_map[cell[0]][cell[1]])
+    return best_cell
+
+Now we need to implement compute_probability_map(board):
+   prob = [[0]*10 for _ in range(10)]
+   ship_lengths = [5,4,3,3,2]
+   for r in range(10):
+        for c in range(10):
+            if board[r][c] != 0:
+                continue
+            total = 0
+            for L in ship_lengths:
+                # horizontal placements
+                for c0 in range(max(0, c-L+1), min(c, 10-L)+1):
+                    valid = True
+                    for k in range(L):
+                        if board[r][c0+k] == -1:
+                            valid = False
+                            break
+                    if valid:
+                        total += 1
+                # vertical placements
+                for r0 in range(max(0, r-L+1), min(r, 10-L)+1):
+                    valid = True
+                    for k in range(L):
+                        if board[r0+k][c] == -1:
+                            valid = False
+                            break
+                    if valid:
+                        total += 1
+            prob[r][c] = total
+   return prob
+
+But note: we are counting each placement for each ship length separately, but there are 5 ships. However, we are not accounting that ships cannot overlap. But this is an approximation.
+
+We can improve by weighting each ship length equally, but we already are.
+
+One issue: when there are hits, the probability map might be skewed because hits are already occupied by a ship, but we still count placements that include hits as valid. That's okay because hits are part of ships, but we should not double-count: a placement that includes a hit is valid only if that hit is part of that ship. However, we don't know which ship. So our approximation might overestimate probability around hits. But since we are in target mode when there are hits, we don't use probability map for targeting (except to break ties). So it's fine.
+
+We need to ensure we don't fire at cells that are already hit or miss. Our candidates only include board==0.
+
+We should also consider parity in hunt mode? Probability map already captures that because ships have length >=2, so placements tend to favor certain cells. So we can rely on probability map.
+
+We'll implement the above.
+
+Edge cases:
+- If no unknown cells? Should not happen because game ends when all ships sunk.
+- If candidates list empty but unsunk not empty? That could happen if all extensions are already fired at (miss or hit). Then those components are actually sunk but we didn't detect? Actually, if all extensions are misses, then ship is sunk. But we already filtered sunk components by checking extensions. However, our check for sunk might have missed if there are unknown cells not adjacent? For a line ship, if both ends are blocked by misses, then sunk. But what if there are unknown cells adjacent but not along the line? For a straight ship, only cells along the line are possible extensions. So our check is sufficient. So if candidates empty, then unsunk should be empty. So we can fallback to hunt mode.
+
+We'll add a check: if candidates empty, go to hunt mode.
+
+Now, we need to test with some scenarios.
+
+But we must output the code.
+
+We'll write the full Python file with the function and helper functions.
+
+We'll include necessary imports: none needed.
+
+We'll make sure the code runs within 1 second.
+
+Potential optimization: probability map computation might be called twice (once in target mode and once in hunt mode). We can compute it once and reuse.
+
+We'll modify: compute prob_map only when needed, and store it in a variable.
+
+But since policy is called multiple times, we cannot store across calls? Actually, we can use global variables to cache, but board changes each call. So we need to compute each call.
+
+We'll compute prob_map in hunt mode and in target mode if candidates exist. We can compute it before picking candidate.
+
+We'll write compute_probability_map as inner function.
+
+Now, we need to ensure that we don't have any infinite loops.
+
+We'll output the code.
+
+</thinking>
+<code>
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Helper to compute probability map for unknown cells
+    def compute_probability_map(board):
+        prob = [[0]*10 for _ in range(10)]
+        ship_lengths = [5, 4, 3, 3, 2]
+        for r in range(10):
+            for c in range(10):
+                if board[r][c] != 0:
+                    continue
+                total = 0
+                for L in ship_lengths:
+                    # Horizontal placements that include (r,c)
+                    # c0 is the start column, must satisfy c0 <= c <= c0+L-1
+                    for c0 in range(max(0, c - L + 1), min(c, 10 - L) + 1):
+                        valid = True
+                        for k in range(L):
+                            if board[r][c0 + k] == -1:
+                                valid = False
+                                break
+                        if valid:
+                            total += 1
+                    # Vertical placements
+                    for r0 in range(max(0, r - L + 1), min(r, 10 - L) + 1):
+                        valid = True
+                        for k in range(L):
+                            if board[r0 + k][c] == -1:
+                                valid = False
+                                break
+                        if valid:
+                            total += 1
+                prob[r][c] = total
+        return prob
+
+    # Collect all hits
+    hits = [(r, c) for r in range(10) for c in range(10) if board[r][c] == 1]
+
+    # Group hits into connected components (adjacent horizontally/vertically)
+    visited = set()
+    components = []
+    for hit in hits:
+        if hit in visited:
+            continue
+        stack = [hit]
+        comp = []
+        while stack:
+            r, c = stack.pop()
+            if (r, c) in visited:
+                continue
+            visited.add((r, c))
+            comp.append((r, c))
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 1 and (nr, nc) not in visited:
+                    stack.append((nr, nc))
+        components.append(comp)
+
+    # Filter out components that are already sunk (no possible extensions)
+    unsunk = []
+    for comp in components:
+        if len(comp) == 1:
+            r, c = comp[0]
+            # Check if any adjacent cell is unknown
+            has_unknown = False
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                    has_unknown = True
+                    break
+            if not has_unknown:
+                continue  # sunk
+        else:
+            # Determine orientation
+            rows = {r for r, _ in comp}
+            cols = {c for _, c in comp}
+            if len(rows) == 1:
+                # horizontal
+                row = next(iter(rows))
+                cols_sorted = sorted(c for _, c in comp)
+                left = cols_sorted[0]
+                right = cols_sorted[-1]
+                # Check left extension
+                left_unknown = left - 1 >= 0 and board[row][left - 1] == 0
+                # Check right extension
+                right_unknown = right + 1 < 10 and board[row][right + 1] == 0
+                if not left_unknown and not right_unknown:
+                    continue  # sunk
+            elif len(cols) == 1:
+                # vertical
+                col = next(iter(cols))
+                rows_sorted = sorted(r for r, _ in comp)
+                top = rows_sorted[0]
+                bottom = rows_sorted[-1]
+                top_unknown = top - 1 >= 0 and board[top - 1][col] == 0
+                bottom_unknown = bottom + 1 < 10 and board[bottom + 1][col] == 0
+                if not top_unknown and not bottom_unknown:
+                    continue  # sunk
+            else:
+                # Should not happen for a single ship; treat as not sunk
+                pass
+        unsunk.append(comp)
+
+    # If there are unsunk ships, generate target candidates
+    if unsunk:
+        # Sort by size (largest first)
+        unsunk.sort(key=lambda c: len(c), reverse=True)
+        candidates = []
+        for comp in unsunk:
+            if len(comp) == 1:
+                r, c = comp[0]
+                for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                        candidates.append((nr, nc))
+            else:
+                rows = {r for r, _ in comp}
+                cols = {c for _, c in comp}
+                if len(rows) == 1:
+                    row = next(iter(rows))
+                    cols_sorted = sorted(c for _, c in comp)
+                    left = cols_sorted[0]
+                    right = cols_sorted[-1]
+                    if left - 1 >= 0 and board[row][left - 1] == 0:
+                        candidates.append((row, left - 1))
+                    if right + 1 < 10 and board[row][right + 1] == 0:
+                        candidates.append((row, right + 1))
+                elif len(cols) == 1:
+                    col = next(iter(cols))
+                    rows_sorted = sorted(r for r, _ in comp)
+                    top = rows_sorted[0]
+                    bottom = rows_sorted[-1]
+                    if top - 1 >= 0 and board[top - 1][col] == 0:
+                        candidates.append((top - 1, col))
+                    if bottom + 1 < 10 and board[bottom + 1][col] == 0:
+                        candidates.append((bottom + 1, col))
+        if candidates:
+            # Compute probability map for all unknown cells
+            prob_map = compute_probability_map(board)
+            # Pick the candidate with highest probability
+            best = max(candidates, key=lambda cell: prob_map[cell[0]][cell[1]])
+            return best
+
+    # Hunt mode: no unsunk ships or no candidates
+    prob_map = compute_probability_map(board)
+    unknown_cells = [(r, c) for r in range(10) for c in range(10) if board[r][c] == 0]
+    # Pick the cell with highest probability; break ties by row then column
+    best = max(unknown_cells, key=lambda cell: (prob_map[cell[0]][cell[1]], -cell[0], -cell[1]))
+    return best
+</code>

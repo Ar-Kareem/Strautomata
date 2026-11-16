@@ -1,0 +1,56 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    def has_won(b, player: int) -> bool:
+        # Check rows
+        for row in range(4):
+            if all(b[row][col] == player for col in range(4)):
+                return True
+        # Check columns
+        for col in range(4):
+            if all(b[row][col] == player for row in range(4)):
+                return True
+        # Check main diagonal
+        if all(b[i][i] == player for i in range(4)):
+            return True
+        # Check anti-diagonal
+        if all(b[i][3 - i] == player for i in range(4)):
+            return True
+        return False
+
+    # Step 1: Check for an immediate winning move
+    for row in range(4):
+        for col in range(4):
+            if board[row][col] == 0:
+                board[row][col] = 1
+                if has_won(board, 1):
+                    board[row][col] = 0
+                    return (row, col)
+                board[row][col] = 0
+
+    # Step 2: Check for opponent's winning move to block
+    for row in range(4):
+        for col in range(4):
+            if board[row][col] == 0:
+                board[row][col] = -1
+                if has_won(board, -1):
+                    board[row][col] = 0
+                    return (row, col)
+                board[row][col] = 0
+
+    # Step 3: Choose the best available position based on priority
+    priority_order = [
+        (1, 1), (1, 2), (2, 1), (2, 2),  # Center cells
+        (0, 0), (0, 3), (3, 0), (3, 3),  # Corner cells
+        (0, 1), (0, 2), (1, 0), (1, 3),
+        (2, 0), (2, 3), (3, 1), (3, 2)   # Edge cells
+    ]
+    for row, col in priority_order:
+        if board[row][col] == 0:
+            return (row, col)
+
+    # Fallback: Return the first available cell (shouldn't be called on a full board)
+    for row in range(4):
+        for col in range(4):
+            if board[row][col] == 0:
+                return (row, col)
+    return (0, 0)  # Safety return

@@ -1,0 +1,152 @@
+# Strategy:
+We aim to make decisions based on the strength of our current hand. We evaluate all possible 5-card combinations from our hole cards and the public cards, selecting the strongest hand. Based on the hand strength and pot dynamics, we choose between folding, calling, or raising.
+
+The evaluation prioritizes strong hands like straights and flushes, especially in later game stages. We also consider pot odds, preferring to raise when we have a strong hand and the pot can be increased. In weaker positions, we fold to avoid unnecessary risk.
+
+<code>
+import itertools
+import collections
+
+def evaluate_hand(cards):
+    # Convert ranks to integers and handle Ace-low straight
+    ranks = []
+    suits = []
+    for card in cards:
+        ranks.append(card['rank'])
+        suits.append(card['suit'])
+    
+    # Check for flush
+    flush = len(set(suits)) == 1
+    flush_ranks = []
+    for rank, suit in zip(ranks, suits):
+        if suit == flush:
+            flush_ranks.append(rank)
+    
+    # Check for straight
+    def is_straight(ranks):
+        sorted_ranks = sorted(ranks)
+        unique = list(set(sorted_ranks))
+        if len(unique) < 5:
+            return False
+        for i in range(len(unique) - 4):
+            if unique[i+4] - unique[i] == 4 and all(unique[i+j] == unique[i] + j for j in range(1,5)):
+                return True
+        # Handle Ace-low straight (wheel)
+        if 14 in unique and set(ranks) & {2,3,4,5}:
+            return True
+        return False
+    
+    # Evaluate hand strength
+    rank_counts = collections.Counter(ranks)
+    counts = sorted(rank_counts.items(), key=lambda x: (-x[1], -x[0]))
+    
+    # Straight flush check
+    if flush and is_straight(ranks):
+        unique_ranks = sorted(list(set(ranks)), reverse=True)
+        if unique_ranks == [14, 13, 12, 11, 10]: # Royal flush
+            return (8, 14)
+        max_rank = max(ranks) if not set(ranks) == {2,3,4,5,14} else 5
+        return (8, max_rank)
+    
+    # Handle full house and four of a kind
+    if counts[0][1] == 4:
+        kicker = max( [r for r in ranks if r != counts[0][0]] )
+        return (7, counts[0][0], kicker)
+    if counts[0][1] == 3 and counts[1][1] == 2:
+        return (6, counts[0][0], counts[1][0])
+    
+    # Handle flush or straight
+    if flush:
+        flush_ranks.sort(reverse=True)
+        return (5, flush_ranks[0], flush_ranks[1], flush_ranks[2], flush_ranks[3], flush_ranks[4])
+    if is_straight(ranks):
+        # Create a list of unique ranks and check for straight
+        unique_ranks = sorted(list(set(ranks)), reverse=True)
+        if set(ranks) == {2,3,4,5,14}:
+            highest = 5
+        else:
+            highest = ranks[-1]
+        return (4, highest)
+    
+    # Handle other hand types
+    if counts[0][1] == 3:
+        trip_rank = counts[0][0]
+        kickers = sorted([r for r in ranks if r != trip_rank], reverse=True)
+        return (3, trip_rank, kickers[0], kickers[1])
+    if counts[0][1] == 2 and counts[1][1] == 2:
+        pairs = [counts[0][0], counts[1][0]]
+        pairs.sort(reverse=True)
+        kicker = max( [r for r in ranks if r not in pairs] )
+        return (2, pairs[0], pairs[1], kicker)
+    if counts[0][1] == 2:
+        pair_rank = counts[0][0]
+        kickers = sorted([r for r in ranks if r != pair_rank], reverse=True)
+        return (1, pair_rank, kickers[0], kickers[1], kickers[2])
+    # High card
+    highest_ranks = sorted(ranks, reverse=True)[:5]
+    return (0, highest_ranks[0], highest_ranks[1], highest_ranks[2], highest_ranks[3], highest_ranks[4])
+
+def policy(state):
+    action = 'fold'
+    my_cards = state['private_cards']
+    public_cards = state['public_cards']
+    all_cards = my_cards + public_cards
+    allow_fold = 'fold' in state['allowed_actions']
+    
+    # Early rounds (pre-flop, flop) with fewer public cards
+    num_public = len(public_cards)
+    hand_type = 0
+    
+    # Pre-flop case (no public cards)
+    if num_public == 0:
+        # Early game strategy: aggressive with top pairs or better
+        my_ranks = sorted([c['rank'] for c in my_cards], reverse=True)
+        if my_ranks[0] >= 10:
+            return 'raise'
+        return 'fold'
+    
+    # Evaluate best possible hand
+    best_score = (-1,)
+    for combo in itertools.combinations(all_cards, 5):
+        try:
+            score = evaluate_hand(list(combo))
+            if score > best_score:
+                best_score = score
+        except:
+            pass
+    
+    if not best_score:
+        return 'fold'
+    
+    hand_type = best_score[0]
+    # Pot control strategy
+    to_call = state['to_call']
+    pot = state['pot']
+    my_stack = state['my_spent'] + state['opponent_spent'] + pot
+    
+    if hand_type in [6, 7, 8]:
+        # Best hands: full house, four-of-a-kind, straight flush
+        return 'raise'
+    
+    if hand_type == 5: # Flush
+        if num_public == 5: # River
+            return 'raise'
+        return 'call'
+    
+    if hand_type == 4: # Straight
+        if num_public == 5: # River
+            return 'raise'
+        return 'call'
+    
+    if hand_type >= 1 and num_public < 3: # Early rounds with pair
+        return 'raise'
+    
+    # Handle fold based on odds
+    odds = (pot + to_call) / state['my_spent'] if state['my_spent'] > 0 else 0
+    if hand_type < 2:
+        if to_call > (pot * 1.5):
+            return 'fold'
+        return 'call'
+    
+    return 'call'
+</code>

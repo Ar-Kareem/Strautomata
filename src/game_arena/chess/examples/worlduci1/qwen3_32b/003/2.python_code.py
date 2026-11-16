@@ -1,0 +1,80 @@
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    def square_to_coords(square):
+        x = ord(square[0]) - ord('a')
+        y = int(square[1]) - 1
+        return (x, y)
+    
+    def coords_to_square(x, y):
+        return chr(ord('a') + x) + str(y + 1)
+    
+    def get_value(piece):
+        p_type = piece[1]
+        if p_type == 'P':
+            return 1
+        elif p_type in 'NB':
+            return 3
+        elif p_type == 'R':
+            return 5
+        elif p_type == 'Q':
+            return 9
+        else:
+            return 0
+    
+    all_moves = []
+    player_color = 'w' if to_play == 'white' else 'b'
+    
+    for square, piece in pieces.items():
+        color, piece_type = piece[0], piece[1]
+        if color != player_color:
+            continue
+        
+        x, y = square_to_coords(square)
+        
+        if piece_type == 'P':
+            if color == 'w':
+                forward_1 = coords_to_square(x, y+1)
+                if forward_1 not in pieces:
+                    if y+1 < 7:
+                        all_moves.append(f"{square}{forward_1}")
+                    else:
+                        for promo in ['q','r','b','n']:
+                            all_moves.append(f"{square}{forward_1}{promo}")
+                    if y == 1:
+                        forward_2 = coords_to_square(x, y+2)
+                        if forward_2 not in pieces:
+                            if y+2 < 7:
+                                all_moves.append(f"{square}{forward_2}")
+                            else:
+                                for promo in ['q','r','b','n']:
+                                    all_moves.append(f"{square}{forward_2}{promo}")
+                if x > 0:
+                    capture_left = coords_to_square(x-1, y+1)
+                    if capture_left in pieces and pieces[capture_left][0] != color:
+                        if y+1 == 7:
+                            for promo in ['q','r','b','n']:
+                                all_moves.append(f"{square}{capture_left}{promo}")
+                        else:
+                            all_moves.append(f"{square}{capture_left}")
+                if x < 7:
+                    capture_right = coords_to_square(x+1, y+1)
+                    if capture_right in pieces and pieces[capture_right][0] != color:
+                        if y+1 == 7:
+                            for promo in ['q','r','b','n']:
+                                all_moves.append(f"{square}{capture_right}{promo}")
+                        else:
+                            all_moves.append(f"{square}{capture_right}")
+            else:
+                forward_1 = coords_to_square(x, y-1)
+                if forward_1 not in pieces:
+                    if y-1 > 0:
+                        all_moves.append(f"{square}{forward_1}")
+                    else:
+                        for promo in ['q','r','b','n']:
+                            all_moves.append(f"{square}{forward_1}{promo}")
+                    if y == 6:
+                        forward_2 = coords_to_square(x, y-2)
+                        if forward_2 not in pieces:
+                            if y-2 > 0:
+                                all_moves.append(f"{square}{forward_2}")
+                           

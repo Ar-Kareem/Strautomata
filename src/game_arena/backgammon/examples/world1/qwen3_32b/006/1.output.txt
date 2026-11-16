@@ -1,0 +1,169 @@
+The strategy for this policy is to prioritize moves that bear off checkers, hit opponent blots, build points, and reduce the number of checkers in the outer board. When there are checkers on the bar, the policy focuses on re-entering them efficiently. For regular moves, it evaluates all legal combinations and selects the one with the highest heuristic score based on the above priorities.
+
+<code>
+import copy
+
+def policy(state):
+    def is_valid_move(from_point, die, s):
+        if from_point == 'P':
+            return True
+        if from_point == 'B':
+            if s['my_bar'] == 0:
+                return False
+            dest = 24 - die
+            if dest < 0 or dest >= 24:
+                return False
+            if s['opp_pts'][dest] >= 2:
+                return False
+            return True
+        else:
+            idx = int(from_point[1:])
+            if s['my_pts'][idx] == 0:
+                return False
+            all_in_home = all(s['my_pts'][j] == 0 for j in range(6, 24))
+            if all_in_home and s['my_bar'] == 0:
+                if idx - die <= 0:
+                    return True
+                else:
+                    return False
+            else:
+                dest = idx - die
+                if dest < 0 or dest >= 24:
+                    return False
+                if s['opp_pts'][dest] >= 2:
+                    return False
+                return True
+
+    def copy_state(s):
+        return {
+            'my_pts': s['my_pts'][:],
+            'opp_pts': s['opp_pts'][:],
+            'my_bar': s['my_bar'],
+            'opp_bar': s['opp_bar'],
+            'my_off': s['my_off'],
+            'opp_off': s['opp_off'],
+            'dice': s['dice'][:]
+        }
+
+    def generate_regular_moves(s, dice):
+        if not dice:
+            return ['H:P,P']
+        moves = []
+        if len(dice) == 1:
+            d1 = dice[0]
+            for from1 in get_from_options(s, d1):
+                moves.append(f'H:{from1},P')
+        else:
+            d1, d2 = (dice[0], dice[1]) if dice[0] > dice[1] else (dice[1], dice[0])
+            # Order H: higher first
+            for from1 in get_from_options(s, d1):
+                new_s = copy_state(s)
+                apply_move(new_s, from1, d1)
+                for from2 in get_from_options(new_s, d2):
+                    moves.append(f'H:{from1},{from2}')
+            # Order L: lower first
+            for from1 in get_from_options(s, d2):
+                new_s = copy_state(s)
+                apply_move(new_s, from1, d2)
+                for from2 in get_from_options(new_s, d1):
+                    moves.append(f'L:{from1},{from2}')
+        return moves if moves else ['H:P,P']
+
+    def get_from_options(s, die):
+        from_list = []
+        if s['my_bar'] > 0 and is_valid_move('B', die, s):
+            from_list.append('B')
+        for i in range(24):
+            if s['my_pts'][i] > 0 and is_valid_move(f'A{i}', die, s):
+                from_list.append(f'A{i}')
+        return from_list
+
+    def apply_move(s, from_point, die):
+        if from_point == 'B':
+            dest = 24 - die
+            s['my_bar'] -= 1
+            s['my_pts'][dest] += 1
+            if s['opp_pts'][dest] == 1:
+                s['opp_bar'] += 1
+                s['opp_pts'][dest] = 0
+        else:
+            idx = int(from_point[1:])
+            s['my_pts'][idx] -= 1
+            dest = idx - die
+            if dest < 0:
+                s['my_off'] += 1
+            else:
+                s['my_pts'][dest] += 1
+                if s['opp_pts'][dest] == 1:
+                    s['opp_bar'] += 1
+                    s['opp_pts'][dest] = 0
+
+    def evaluate_move(move_str, s, dice):
+        order, rest = move_str.split(':')
+        from1, from2 = rest.split(',')
+        if len(dice) == 1:
+            die_sequence = [dice[0]]
+        else:
+            die1, die2 = (dice[0], dice[1]) if order == 'H' else (dice[1], dice[0])
+            die_sequence = [die1, die2]
+        score = 0
+        new_s = copy_state(s)
+        for from_point, die in zip([from1, from2], die_sequence):
+            if from_point == 'P':
+                continue
+            if not is_valid_move(from_point, die, new_s):
+                return float('-inf')
+            apply_move(new_s, from_point, die)
+            if from_point == 'B':
+                score += 50
+            else:
+                idx = int(from_point[1:])
+                if idx - die <= 0:
+                    score += 100
+                else:
+                    dest = idx - die
+                    if new_s['opp_pts'][dest] == 0 and s['opp_pts'][dest] == 1:
+                        score += 50
+                    if new_s['my_pts'][dest] >= 2:
+                        score += 5
+                    if idx > 5:
+                        score += 1
+        return score
+
+    dice = state['dice']
+    if state['my_bar'] > 0:
+        valid_dice = [d for d in dice if is_valid_move('B', d, state)]
+        if not valid_dice:
+            return 'H:P,P'
+        bar_moves = []
+        if len(dice) == 1:
+            d = dice[0]
+            if is_valid_move('B', d, state):
+                bar_moves.append('H:B,P')
+        else:
+            d1, d2 = (dice[0], dice[1]) if dice[0] > dice[1] else (dice[1], dice[0])
+            if is_valid_move('B', d1, state):
+                bar_moves.append('H:B,P')
+            if state['my_bar'] >= 2 and is_valid_move('B', d1, state) and is_valid_move('B', d2, state):
+                bar_moves.append('H:B,B')
+        best_score = float('-inf')
+        best_move = 'H:P,P'
+        for move in bar_moves:
+            score = evaluate_move(move, state, dice)
+            if score > best_score:
+                best_score = score
+                best_move = move
+        return best_move
+    else:
+        moves = generate_regular_moves(state, dice)
+        if not moves:
+            return 'H:P,P'
+        best_score = float('-inf')
+        best_move = moves[0]
+        for move in moves:
+            score = evaluate_move(move, state, dice)
+            if score > best_score:
+                best_score = score
+                best_move = move
+        return best_move
+</code>

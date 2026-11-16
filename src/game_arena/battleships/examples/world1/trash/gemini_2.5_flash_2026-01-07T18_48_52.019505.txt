@@ -1,0 +1,957 @@
+<thinking>
+The user wants a Python function `policy(board)` that determines the next shot in a Battleship game.
+The board is 10x10.
+Ships are lengths 5, 4, 3, 3, 2.
+States: `0` (unknown), `-1` (miss), `1` (hit).
+The function should return `(row, col)` for an unfired cell.
+
+I need a strategy to maximize the sinking of opponent ships.
+
+Common Battleship strategies:
+1.  **Random Shot:** Simplest, but inefficient.
+2.  **Checkerboard Pattern (Hunting Mode):** Fire at alternating cells (e.g., all (row+col) % 2 == 0) to guarantee hitting any ship of length 2 or more with at least one shot. Once a ship is hit, switch to "targeting mode".
+3.  **Targeting Mode:** Once a hit (`1`) is registered, try to determine the ship's orientation (horizontal/vertical) and sink it by firing at adjacent unshot cells.
+4.  **Probability Map:** Calculate the probability of a ship being in each cell based on all possible ship placements and current board state. Fire at the cell with the highest probability.
+
+Let's combine checkerboard with targeting.
+
+**State Management:**
+The `policy` function is called repeatedly. I need to maintain state across calls. This can be done by using global variables or by passing state around (not possible here, as `policy` only takes `board`). Global variables are appropriate for a single-game agent.
+
+**Global State:**
+*   `hits_to_process`: A list of `(row, col)` tuples where a hit was registered but the ship hasn't been sunk yet.
+*   `last_shot`: The `(row, col)` of the previous shot. This might be useful to determine if the last hit was part of a sequence.
+*   `sunk_ships_count`: To track progress, though not directly used for targeting, it's good for debugging/analysis.
+*   `ships_remaining`: A list of ship lengths not yet sunk. This is crucial for probability mapping, but for a simpler targeting strategy, it can inform when to switch back to hunting.
+
+**Strategy Breakdown:**
+
+**Phase 1: Hunting**
+*   If `hits_to_process` is empty, we are in hunting mode.
+*   Use a checkerboard pattern. For example, prioritize cells `(r, c)` where `(r + c) % 2 == 0`.
+*   Choose the next unshot cell `(r, c)` in this pattern.
+*   If all cells in the current checkerboard pattern are shot, expand to the other pattern or just go for any remaining unknown cell.
+
+**Phase 2: Targeting**
+*   If `hits_to_process` is not empty, there's at least one ship segment hit.
+*   Take the first hit `(r_hit, c_hit)` from `hits_to_process`.
+*   **Attempt to Extend:**
+    *   Try firing horizontally from `(r_hit, c_hit)`. Check `(r_hit, c_hit - 1)` and `(r_hit, c_hit + 1)`.
+    *   If a hit is registered in one direction, prioritize extending in *that* direction.
+    *   If hits form a line (e.g., `(r, c-1)`, `(r, c)`, `(r, c+1)` are all `1`), then we know the orientation. Continue firing along that line until a miss or board edge is reached.
+    *   If no clear direction (only one hit, or hits are isolated), try all four adjacent cells (`up`, `down`, `left`, `right`) one by one until a hit or an unshot cell is found.
+*   **Managing `hits_to_process`:**
+    *   When I fire at `(r, c)`:
+        *   If it's a `1`: Add `(r, c)` to `hits_to_process`. If this new hit connects to existing hits, the ship might be getting extended.
+        *   If `hits_to_process` contains multiple hits that form a continuous line *and* all adjacent cells to that line have been shot (either hit another ship, missed, or are out of bounds), then the ship is likely sunk. Remove these hits from `hits_to_process`. This part is hard to implement accurately without knowing ship lengths.
+
+**Refined Targeting Logic:**
+
+Let's simplify the targeting.
+`hits_to_process` will store all positive hits found so far that haven't been "accounted for" as part of a sunk ship.
+
+When `policy` is called:
+1.  **Update `hits_to_process` based on `board`:** Iterate through previous `hits_to_process`. If any cell `(r, c)` in `hits_to_process` no longer has a `1` on the `board` (meaning it's now `-1`, implies the ship was sunk and then the cell was overwritten? No, that's not how Battleship works. `1` means a hit, it stays `1`. This means `hits_to_process` should only store *confirmed hits* not yet part of a fully sunk ship).
+    A better approach for targeting:
+    *   `last_hit_coord`: `None` or `(r, c)`
+    *   `sunk_ship_cells`: A set of `(r, c)` coordinates that belong to sunk ships.
+
+Let's maintain a global `_hit_coords` list to store all cells that have returned a `1`.
+When policy is called, we look at `_hit_coords`.
+
+**Strategy v2: Simpler Targeting**
+1.  **Initialization:**
+    *   `_hit_coords`: A list of `(r, c)` where `board[r][c] == 1`. This needs to be refreshed or maintained carefully.
+    *   `_potential_sunk_ships`: A list of lists of coordinates, e.g., `[[(r1,c1), (r2,c2)], [(r3,c3)]]` etc., representing segments of ships discovered. This will be tricky.
+
+A much simpler `_targeting_mode` concept:
+*   `_target_stack`: A LIFO stack of `(r, c)` cells identified as "hits to investigate".
+*   `_ship_segments`: A dictionary mapping an initial hit `(r, c)` to a list of subsequent hits forming a segment, e.g., `{(r,c): [(r,c), (r,c+1), (r,c+2)]}`. This is overly complex.
+
+Let's simplify with just `_active_hits`. This will be a queue of hits that need follow-up.
+
+```python
+_active_hits = [] # Stores (r, c) of hits that we haven't confirmed sunk yet
+_last_fired_at = None # To detect if it was a hit or a miss
+_ships_to_sink = [5, 4, 3, 3, 2] # Remaining ship lengths, for a more advanced prob model later
+_sunk_cells = set() # Coordinates of cells belonging to sunk ships
+```
+
+**Revised `policy` function logic:**
+
+1.  **Update State based on `board` and `_last_fired_at`:**
+    *   If `_last_fired_at` is not `None`:
+        *   Let `(lr, lc) = _last_fired_at`.
+        *   If `board[lr][lc] == 1`:
+            *   Add `(lr, lc)` to `_active_hits`.
+            *   <How to detect sunk ships and remove from `_active_hits`?>
+                This is the hardest part. If we have a sequence of hits like `(r,c), (r,c+1), (r,c+2)` and surrounding cells are misses or out of bounds, and the length matches one of `_ships_to_sink`, then it's sunk. This is too complex for a first pass.
+                A simpler approach is to treat `_active_hits` as just a list of hits discovered, and when we need to target, we pick one and try to extend it.
+
+2.  **Targeting Mode (if `_active_hits` is not empty):**
+    *   Pick a hit from `_active_hits`. Prioritize more recent hits or hits that are part of a developing line.
+    *   Let's just iterate through `_active_hits` and try to extend *any* of them.
+    *   For each `(hr, hc)` in `_active_hits`:
+        *   Check adjacent cells `(hr-1, hc)`, `(hr+1, hc)`, `(hr, hc-1)`, `(hr, hc+1)`.
+        *   If an adjacent cell `(nr, nc)` is `0` (unknown), fire there. Return `(nr, nc)`.
+        *   If an adjacent cell `(nr, nc)` is `1`, it means we've hit another part of the same ship (or a different ship adjacent, which is less likely given no overlaps). This reinforces a direction. We should try to extend from `(nr, nc)` or `(hr, hc)` in the determined direction.
+        *   If all adjacent unshot cells for `(hr, hc)` have been tried or missed, this `(hr, hc)` becomes "stuck". We might need to remove it from `_active_hits` if we believe its ship is sunk or its surroundings are exhausted.
+    *   **Problem:** If `_active_hits` grows due to a long ship, we might be hitting a second ship nearby and treating it as part of the first.
+    *   **Better Tracking A Hit Sequence:**
+        *   Instead of just `_active_hits`, let's track "segments". A segment is a list of `(r, c)` hits that are contiguous.
+        *   `_known_segments_to_extend`: A list of lists of coordinates, where each inner list is a contiguous sequence of hits.
+        *   When a new hit `(r, c)` occurs:
+            *   Check if it connects to any existing segment in `_known_segments_to_extend`. If it does, extend that segment.
+            *   If it doesn't, start a new segment `[(r, c)]`.
+            *   Sort/merge segments as needed.
+        *   When choosing a shot:
+            *   Iterate through `_known_segments_to_extend`. For each segment `S`:
+                *   Find the "ends" of the segment.
+                *   Try to shoot at the unknown cells adjacent to the ends.
+                *   If we manage to extend a segment, update it. If we miss, we know that direction is blocked.
+                *   If a segment has length 5, 4, 3, or 2 and all its potential extensions are either `-1` or out-of-bounds, consider it sunk and remove its cells from `_known_segments_to_extend`.
+
+This segment tracking is getting complicated for a single `policy` function.
+
+**Simpler approach for targeting:**
+
+`_last_hit_coords = []` : A list of `(r, c)` coordinates that were *actual hits* (value `1` on the board).
+`_is_hunting_mode = True`
+
+When `policy` is called:
+
+1.  **Check for new hits / update `_last_hit_coords`:**
+    *   Iterate through the entire board. Any cell `(r, c)` where `board[r][c] == 1` and `(r, c)` is not in `_last_hit_coords` means a new hit. Add `(r, c)` to `_last_hit_coords`.
+    *   Any cell `(r, c)` in `_last_hit_coords` that no longer holds a `1` on `board` should be removed (this shouldn't happen in Battleship, a hit stays a hit).
+
+2.  **Determine if we should transition to hunting or targeting:**
+    *   If `_last_hit_coords` is empty, or all hits are "isolated" (no adjacent hits yet), we are in hunting mode.
+
+3.  **Targeting Mode (if `_last_hit_coords` has hits to investigate):**
+    *   Search for a confirmed hit `(r, c)` from `_last_hit_coords` that has an adjacent *unknown* cell `(nr, nc)`.
+    *   Prioritize hits that are *part of a line*.
+    *   To find a line: iterate through `_last_hit_coords`. Take a hit `(hr, hc)`. Check its neighbors.
+        *   If `board[hr-1][hc] == 1` or `board[hr+1][hc] == 1`, we suspect vertical.
+        *   If `board[hr][hc-1] == 1` or `board[hr][hc+1] == 1`, we suspect horizontal.
+    *   If a strong direction is found (e.g., `(hr, hc)` and `(hr, hc+1)` are both hits):
+        *   Try to extend in that direction: `(hr, hc+2)` or `(hr, hc-1)`. Keep extending until a miss or unknown.
+        *   If we hit `(hr, hc-1)` and `(hr, hc)` and `(hr, hc+1)`, we know the orientation is horizontal. We should then try both ends.
+    *   This logic needs to handle cases where a single hit is the only one found. In that case, just try all four directions.
+
+**Data structure for targeting:**
+Instead of `_last_hit_coords`, let's track "known ship segments".
+`_ship_segments: list[list[tuple[int, int]]]`
+Each inner list represents a sequence of `1`s on the board that are adjacent.
+
+Example: `_ship_segments = [[(1,2), (1,3)], [(5,5)]]`
+
+**Policy on `_ship_segments`:**
+
+1.  **`_ship_segments` Update:** Needs to scan the board *after* a shot is made (or passed).
+    When `policy` is called, `board` is the current state.
+    I can reconstruct `_ship_segments` from the board. This is expensive but ensures consistency. A more efficient way is to only update when a new hit is identified in `_last_fired_at`.
+
+2.  **`target_mode_queue`:** A list of `(r, c)` to target.
+    If `_last_fired_at` was `(r, c)` and `board[r][c] == 1`:
+        *   Add `(r, c)` to `target_mode_queue`.
+        *   Try to remove hits that are part of sunk ships. This is the main challenge.
+            A ship is sunk if its length is "known" (e.g., 5, 4, 3, 3, 2) and all adjacent cells (including diagonals for battleship rules) are either hit, missed, or off-board. This is too complicated for the time limit.
+
+Let's maintain `_active_targets`: a list of `(r, c)` coordinates that are hits that haven't been 'cleared' as part of a sunk ship.
+
+```python
+import random
+
+_DIRECTIONS = [(0, 1), (0, -1), (1, 0), (-1, 0)] # Right, Left, Down, Up
+_active_targets = [] # Stack of (r, c) hits to investigate
+_sunk_ships_cells = set() # Cells that are part of confirmed sunk ships (to avoid re-targeting)
+_consecutive_hits = [] # Used to track current potential ship during targeting
+_hunting_pattern_index = 0 # To cycle through hunting patterns
+```
+
+**Policy `(board)`:**
+
+1.  **Initial Scan / Update `_active_targets`:**
+    *   Clear `_active_targets` at the start of each turn. Rebuild it from the board.
+    *   Scan the board for all `(r, c)` where `board[r][c] == 1` and `(r, c)` not in `_sunk_ships_cells`. Add these to `_active_targets`.
+    *   This guarantees `_active_targets` always contains current hits.
+
+2.  **Attempt Sinking (The hardest part):**
+    How to determine a ship is sunk?
+    Let's find contiguous sequences of hits `(h1, h2, ..., hn)`.
+    For each such sequence:
+        *   If its length `n` is one of `_available_ship_lengths` (e.g., 5, 4, 3, 3, 2).
+        *   And all cells *around* this sequence (excluding diagonals for simple rules, but typically surrounding rectangle for general battleship) are either `-1` or out of bounds.
+        *   Then the ship is sunk. Add all `(h1, ..., hn)` to `_sunk_ships_cells`. Remove them from `_active_targets` (if `_active_targets` was rebuilt, this is implicitly handled).
+
+    This "surrounding cells" check is still complex.
+    A simpler version: If we have `X-111-X`, where `1` is a hit, `X` is a miss or boundary. If the length of `1`'s is 3, then it's a sunk 3-length ship.
+
+Let's avoid explicitly tracking sunk ships for now, and just rely on `_active_targets` and the shooting strategy. The problem statement says "sink all opponent ships", not explicitly to detect them. We want to shoot effectively.
+
+**Simplified strategy:**
+1.  **If `_active_targets` is not empty (targeting mode):**
+    *   Iterate through `_active_targets`. Sort them, prioritize hits that already have adjacent hits to confirm a line.
+    *   Pick a hit `(hr, hc)` from `_active_targets`.
+    *   Check its neighbors: `(nr, nc)` for `_DIRECTIONS`.
+        *   If `board[nr][nc] == 0`: return `(nr, nc)`. This is the most straightforward targeting.
+        *   If `board[nr][nc] == 1`: this hit is part of a sequence. Try to extend *from that sequence*.
+            *   Let's find the contiguous `1`s that include `(hr, hc)`.
+            *   Example: if `board[hr][hc-1] == 1` and `board[hr][hc+1] == 1`, we know it's horizontal. Try `(hr, hc+2)` or `(hr, hc-2)`.
+    *   This requires finding the full contiguous segment.
+
+**Function to find contiguous segment:**
+```python
+def _get_segment(board, r, c, visited):
+    segment = []
+    stack = [(r, c)]
+    visited.add((r, c))
+
+    while stack:
+        curr_r, curr_c = stack.pop()
+        segment.append((curr_r, curr_c))
+
+        for dr, dc in _DIRECTIONS:
+            nr, nc = curr_r + dr, curr_c + dc
+            if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 1 and (nr, nc) not in visited:
+                visited.add((nr, nc))
+                stack.append((nr, nc))
+    return sorted(segment) # Sort for consistent representation
+```
+
+**Revised Policy `(board)`:**
+
+1.  **Collect all hit cells:**
+    `all_hits = set()`
+    For `r` in `0-9`, `c` in `0-9`:
+        If `board[r][c] == 1`: `all_hits.add((r, c))`
+
+2.  **Find and process segments:**
+    `segments = []`
+    `visited_for_segments = set()`
+    For `hr, hc` in `all_hits`:
+        If `(hr, hc)` not in `visited_for_segments`:
+            `segment = _get_segment(board, hr, hc, visited_for_segments)`
+            `segments.append(segment)`
+
+3.  **Targeting (if `segments` exist):**
+    *   Prioritize segments that are longer, or have a clear direction.
+    *   For each `segment` in `segments`:
+        *   Determine orientation (horizontal or vertical) if length > 1.
+        *   If horizontal: `(r, c_start), ..., (r, c_end)`
+            *   Try `(r, c_start - 1)` (if `0`)
+            *   Try `(r, c_end + 1)` (if `0`)
+        *   If vertical: `(r_start, c), ..., (r_end, c)`
+            *   Try `(r_start - 1, c)` (if `0`)
+            *   Try `(r_end + 1, c)` (if `0`)
+        *   If single hit `(r, c)`: try all 4 adjacent cells `(nr, nc)` (if `0`). Randomize order.
+
+    *   This gives multiple options. Which one to choose?
+        *   Let's create a list of `potential_shots` and pick one.
+        *   Iterate segments. For each segment, calculate potential shots.
+            *   If `len(segment) == 1`:
+                `r, c = segment[0]`
+                `potential_shots.extend([(r+dr, c+dc) for dr,dc in _DIRECTIONS if 0<=r+dr<10 and 0<=c+dc<10 and board[r+dr][c+dc] == 0])`
+            *   If `len(segment) > 1`:
+                `is_horizontal = segment[0][0] == segment[1][0]`
+                `if is_horizontal:`
+                    `r = segment[0][0]`
+                    `min_c = min(s[1] for s in segment)`
+                    `max_c = max(s[1] for s in segment)`
+                    `if min_c - 1 >= 0 and board[r][min_c - 1] == 0: potential_shots.append((r, min_c - 1))`
+                    `if max_c + 1 < 10 and board[r][max_c + 1] == 0: potential_shots.append((r, max_c + 1))`
+                `else: # Vertical`
+                    `c = segment[0][1]`
+                    `min_r = min(s[0] for s in segment)`
+                    `max_r = max(s[0] for s in segment)`
+                    `if min_r - 1 >= 0 and board[min_r - 1][c] == 0: potential_shots.append((min_r - 1, c))`
+                    `if max_r + 1 < 10 and board[max_r + 1][c] == 0: potential_shots.append((max_r + 1, c))`
+    *   If `potential_shots` is not empty, `return random.choice(potential_shots)`.
+
+4.  **Hunting Mode (if no segments to extend):**
+    *   Use a checkerboard pattern.
+    *   Prioritize `(r+c)%2 == 0` cells first.
+    *   Iterate `(r, c)` from `0,0` to `9,9`.
+    *   If `(r+c)%2 == _hunting_pattern_index` and `board[r][c] == 0`: return `(r, c)`.
+    *   If no such cell found, switch `_hunting_pattern_index` and try again.
+    *   If still nothing (all cells are shot), just pick any `0`.
+
+**Global variables needed again:**
+```python
+import random
+
+_DIRECTIONS = [(0, 1), (0, -1), (1, 0), (-1, 0)] # Right, Left, Down, Up
+_hunting_pattern_phase = 0 # 0 for even sum, 1 for odd sum
+```
+
+**`policy` structure:**
+
+```python
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    global _hunting_pattern_phase
+
+    # 1. Collect all hit cells and identify segments
+    all_hits = set()
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1:
+                all_hits.add((r, c))
+
+    segments = []
+    visited_for_segments = set()
+    for hr, hc in all_hits:  # Iterate over all hits
+        if (hr, hc) not in visited_for_segments:
+            # Start a new segment search from an unvisited hit
+            current_segment = []
+            stack = [(hr, hc)]
+            visited_for_segments.add((hr, hc))
+
+            while stack:
+                curr_r, curr_c = stack.pop()
+                current_segment.append((curr_r, curr_c))
+
+                for dr, dc in _DIRECTIONS:
+                    nr, nc = curr_r + dr, curr_c + dc
+                    if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 1 and (nr, nc) not in visited_for_segments:
+                        visited_for_segments.add((nr, nc))
+                        stack.append((nr, nc))
+            segments.append(current_segment)
+
+    # 2. Prioritized Targeting
+    potential_shots = []
+
+    # Iterate through segments, prioritizing longer ones or those with clear direction first.
+    # Sorting segments might help, e.g., by length descending.
+    segments.sort(key=len, reverse=True)
+
+    for segment in segments:
+        if len(segment) == 1:
+            r, c = segment[0]
+            # Try all 4 directions around a single hit
+            for dr, dc in _DIRECTIONS:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                    potential_shots.append((nr, nc))
+        else:
+            # Determine orientation for segments with multiple hits
+            # Assuming segment cells are guaranteed to be contiguous due to _get_segment logic
+            is_horizontal = False
+            first_hit = segment[0]
+            second_hit = segment[1]
+            if first_hit[0] == second_hit[0]: # Same row implies horizontal
+                is_horizontal = True
+
+            if is_horizontal:
+                r = segment[0][0]
+                min_c = min(s[1] for s in segment)
+                max_c = max(s[1] for s in segment)
+
+                # Try extending left
+                if min_c - 1 >= 0 and board[r][min_c - 1] == 0:
+                    potential_shots.append((r, min_c - 1))
+                # Try extending right
+                if max_c + 1 < 10 and board[r][max_c + 1] == 0:
+                    potential_shots.append((r, max_c + 1))
+            else: # Vertical
+                c = segment[0][1]
+                min_r = min(s[0] for s in segment)
+                max_r = max(s[0] for s in segment)
+
+                # Try extending up
+                if min_r - 1 >= 0 and board[min_r - 1][c] == 0:
+                    potential_shots.append((min_r - 1, c))
+                # Try extending down
+                if max_r + 1 < 10 and board[max_r + 1][c] == 0:
+                    potential_shots.append((max_r + 1, c))
+    
+    if potential_shots:
+        # Sort potential shots to prioritize extensions of existing lines (more hits)
+        # This will need scoring: a shot that will extend a segment of length 3 is better than length 1.
+        # But this is already somewhat handled by prioritizing segments by length.
+        # Let's add a random choice to avoid deterministic patterns if multiple options exist.
+        return random.choice(potential_shots)
+
+
+    # 3. Hunting Mode (if no segments to extend, or all extensions are blocked/missed)
+    # Checkerboard pattern
+    # Phase 0: target cells where (r+c)%2 == 0
+    # Phase 1: target cells where (r+c)%2 == 1 (if phase 0 exhausted)
+
+    for phase in range(2):
+        current_phase_pattern = (_hunting_pattern_phase + phase) % 2
+        for r in range(10):
+            for c in range(10):
+                if board[r][c] == 0 and (r + c) % 2 == current_phase_pattern:
+                    if phase == 0: # Update _hunting_pattern_phase only if we actually found a shot in the primary phase
+                        _hunting_pattern_phase = current_phase_pattern
+                    return (r, c)
+    
+    # Fallback: if all checkerboard cells are checked, just pick any unknown cell
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0:
+                _hunting_pattern_phase = (_hunting_pattern_phase + 1) % 2 # Reset/rechoose phase
+                return (r, c)
+    
+    # Should not happen in a correctly implemented game, implies no unknown cells left (game over)
+    return (0, 0) # Default if somehow no cells are left (e.g. all 100 cells shot)
+
+```
+
+**Refinement on `_get_segment` and segment processing:**
+My segment finding logic is within the `policy` function, which means `visited_for_segments` needs to be initialized correctly each call. This is fine.
+Also, the `_get_segment` logic is effectively inlined.
+
+The `segments.sort(key=len, reverse=True)` is okay, but `random.choice(potential_shots)` means we might pick a shot from a length-1 segment even if a length-4 segment has an extension option.
+A better way:
+Generate all potential shots from all segments. Prioritize by some score.
+Score for a shot:
+*   Higher if it extends a longer segment.
+*   Randomize otherwise.
+
+Let's modify the potential shots generation to include the segment length.
+`potential_shots = [] # List of (segment_length, (r,c))`
+
+```python
+# ... Inside policy ...
+
+    # 2. Prioritized Targeting
+    scored_potential_shots = []
+
+    # Iterate through segments.
+    for segment in segments:
+        segment_len = len(segment)
+        current_segment_shots = []
+
+        if segment_len == 1:
+            r, c = segment[0]
+            # Try all 4 directions around a single hit
+            for dr, dc in _DIRECTIONS:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                    current_segment_shots.append((nr, nc))
+        else:
+            # Determine orientation
+            is_horizontal = False
+            # Check if all row coords are the same, or all col coords are the same
+            # Since it's a contiguous segment, if the first two have same row, it's horizontal, else vertical.
+            # This assumes a properly formed segment of at least length 2.
+            # For robustness, we could check if max_r - min_r == 0 or max_c - min_c == 0 for all elements before determining direction
+            
+            # Simple check based on first two points in segment for orientation
+            # This logic assumes cells in segment are sorted. _get_segment adds to current_segment then sorts.
+            # Let's ensure segment is sorted by (r,c) to make this reliable.
+            # current_segment.append((curr_r, curr_c)) -> then sorted(segment) in original _get_segment concept
+            # Oh, _get_segment was an idea, not implemented directly. I have inlined its logic.
+            # The current_segment needs to be sorted for reliable first/second hit access
+            # So, after `current_segment.append((curr_r, curr_c))`, after the while loop:
+            # `segments.append(sorted(current_segment))`
+
+            segment_sorted = sorted(segment) # Make sure it's sorted for consistent `segment[0]` and `segment[1]`
+            first_point = segment_sorted[0]
+            second_point = segment_sorted[1] if len(segment_sorted) > 1 else None
+
+            if second_point and first_point[0] == second_point[0]: # Same row implies horizontal
+                is_horizontal = True
+            
+            if is_horizontal:
+                r = first_point[0] # All hits in segment are on this row
+                min_c = min(s[1] for s in segment_sorted)
+                max_c = max(s[1] for s in segment_sorted)
+
+                if min_c - 1 >= 0 and board[r][min_c - 1] == 0:
+                    current_segment_shots.append((r, min_c - 1))
+                if max_c + 1 < 10 and board[r][max_c + 1] == 0:
+                    current_segment_shots.append((r, max_c + 1))
+            else: # Vertical or single point (handled above, but for safety in case of non-contiguous segment logic bug)
+                c = first_point[1] # All hits in segment are on this column
+                min_r = min(s[0] for s in segment_sorted)
+                max_r = max(s[0] for s in segment_sorted)
+
+                if min_r - 1 >= 0 and board[min_r - 1][c] == 0:
+                    current_segment_shots.append((min_r - 1, c))
+                if max_r + 1 < 10 and board[max_r + 1][c] == 0:
+                    current_segment_shots.append((max_r + 1, c))
+        
+        # Add shots from this segment with their segment_len score
+        for shot_coord in current_segment_shots:
+            scored_potential_shots.append((segment_len, shot_coord))
+            
+    if scored_potential_shots:
+        # Sort to prioritize longer segments, then pick a random one among top scores
+        scored_potential_shots.sort(key=lambda x: x[0], reverse=True)
+        
+        # Filter for top scores
+        max_score = scored_potential_shots[0][0]
+        top_shots = [s[1] for s in scored_potential_shots if s[0] == max_score]
+        
+        return random.choice(top_shots)
+```
+
+**Final check on segment sorting and orientation:**
+The segment finding loop populates `current_segment` with `(r, c)` tuples. If I `segments.append(sorted(current_segment))`, then when I iterate `segment in segments`, `segment[0]` and `segment[1]` (if it exists) will be correctly ordered. This makes the `is_horizontal` check reliable.
+
+One edge case: if `board` changes such that a segment that was length 2 becomes length 1 (e.g. one part was sunk, or hit was part of another ship and somehow removed, which shouldn't happen with given rules).
+My segment finding `_get_segment` implicitly handles this, as it just collects current `1`s. So `all_hits` is the current source of truth.
+
+The "Should not happen" return `(0,0)` if no cells are left is okay. In practice, the game would end.
+
+The strategy seems solid:
+1.  Identify all contiguous 'hit' segments on the board.
+2.  If segments exist, try to extend the longest ones first. If multiple longest segments, choose randomly. If a single-hit segment, try all 4 cardinal directions.
+3.  If no segments are found or extended, switch to hunting using a checkerboard pattern. Alternate patterns if one is exhausted.
+4.  If all cells are shot, return (0,0) as a fallback.
+
+This logic makes sense for Battleship. It prioritizes sinking identified ships and then reverts to an efficient hunting pattern.
+A `random.shuffle` on `_DIRECTIONS` in the single-hit case might make it less predictable/exploitable if an opponent could guess my pattern. Let's add that for single hits.
+
+```python
+import random
+
+_DIRECTIONS = [(0, 1), (0, -1), (1, 0), (-1, 0)] # Right, Left, Down, Up
+_hunting_pattern_phase = 0 # 0 for even sum, 1 for odd sum
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    global _hunting_pattern_phase
+
+    # 1. Collect all hit cells and identify segments
+    all_hits = set()
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1:
+                all_hits.add((r, c))
+
+    segments = []
+    visited_for_segments = set()
+    for hr, hc in all_hits:  # Iterate over all hits
+        if (hr, hc) not in visited_for_segments:
+            # Start a new segment search from an unvisited hit
+            current_segment = []
+            stack = [(hr, hc)]
+            visited_for_segments.add((hr, hc))
+
+            while stack:
+                curr_r, curr_c = stack.pop()
+                current_segment.append((curr_r, curr_c))
+
+                # Shuffle directions to avoid predictable search patterns around a hit
+                random.shuffle(_DIRECTIONS) 
+                for dr, dc in _DIRECTIONS:
+                    nr, nc = curr_r + dr, curr_c + dc
+                    if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 1 and (nr, nc) not in visited_for_segments:
+                        visited_for_segments.add((nr, nc))
+                        stack.append((nr, nc))
+            segments.append(sorted(current_segment)) # Store sorted segment
+
+    # 2. Prioritized Targeting
+    scored_potential_shots = []
+
+    # Iterate through segments.
+    for segment in segments:
+        segment_len = len(segment)
+        current_segment_shots = []
+
+        if segment_len == 1:
+            r, c = segment[0]
+            # Try all 4 directions around a single hit (shuffled earlier)
+            for dr, dc in _DIRECTIONS:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                    current_segment_shots.append((nr, nc))
+        else:
+            # Determine orientation for segments with multiple hits
+            # Segment is already sorted due to `segments.append(sorted(current_segment))`
+            first_point = segment[0]
+            second_point = segment[1] if segment_len > 1 else None # Should always be > 1 here
+
+            is_horizontal = False
+            if first_point[0] == second_point[0]: # Same row implies horizontal
+                is_horizontal = True
+            
+            if is_horizontal:
+                r = first_point[0]
+                min_c = min(s[1] for s in segment)
+                max_c = max(s[1] for s in segment)
+
+                if min_c - 1 >= 0 and board[r][min_c - 1] == 0:
+                    current_segment_shots.append((r, min_c - 1))
+                if max_c + 1 < 10 and board[r][max_c + 1] == 0:
+                    current_segment_shots.append((r, max_c + 1))
+            else: # Vertical
+                c = first_point[1]
+                min_r = min(s[0] for s in segment)
+                max_r = max(s[0] for s in segment)
+
+                if min_r - 1 >= 0 and board[min_r - 1][c] == 0:
+                    current_segment_shots.append((min_r - 1, c))
+                if max_r + 1 < 10 and board[max_r + 1][c] == 0:
+                    current_segment_shots.append((max_r + 1, c))
+        
+        # Add shots from this segment with their segment_len score
+        for shot_coord in current_segment_shots:
+            scored_potential_shots.append((segment_len, shot_coord))
+            
+    if scored_potential_shots:
+        # Sort to prioritize longer segments, then pick a random one among top scores
+        scored_potential_shots.sort(key=lambda x: x[0], reverse=True)
+        
+        # Filter for top scores
+        max_score = scored_potential_shots[0][0]
+        top_shots = [s[1] for s in scored_potential_shots if s[0] == max_score]
+        
+        return random.choice(top_shots)
+
+
+    # 3. Hunting Mode (if no segments to extend, or all extensions are blocked/missed)
+    # Checkerboard pattern
+    
+    # Try current phase pattern first
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0 and (r + c) % 2 == _hunting_pattern_phase:
+                return (r, c)
+    
+    # If primary phase exhausted, switch to the other phase
+    _hunting_pattern_phase = (_hunting_pattern_phase + 1) % 2
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0 and (r + c) % 2 == _hunting_pattern_phase:
+                return (r, c)
+    
+    # Fallback: if all cells are shot (should not happen)
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0:
+                return (r, c)
+    
+    return (0, 0) # Game over or unexpected state
+```
+The random.shuffle(_DIRECTIONS) inside the `current_segment` loop will affect how the segment itself is built, but here it's okay because the order of adding to `current_segment` doesn't matter, only the final set of points. The impact is negligible. A better place to shuffle for single-hit targeting is in the loop where it is used. Although, for extending a detected segment, the order does not matter that much.
+
+The current code shuffles `_DIRECTIONS` for each point in the segment scan, this might be slightly overdoing it but won't hurt correctness. The actual target selection for single-hit segments uses `_DIRECTIONS` after they have been shuffled. This is fine. Okay, the shuffle within the inner loop is actually good for path exploration when building the segment.
+
+One final check on potential issues:
+*   Global state is fine for this context: one game, one agent.
+*   Time complexity:
+    *   Scanning board: O(N^2) where N=10, so O(100), constant.
+    *   Segment finding: Each '1' cell and its neighbours visited constant times. Max 100 cells, so O(N^2), constant.
+    *   Targeting loop: Iterates through segments (max 5 ships, max 17 hits at a time). Looks at O(1) neighbors. So O(1).
+    *   Hunting loop: O(N^2), constant.
+    *   Overall: O(100) per call, very fast.
+
+Looks good to go.
+```python
+import random
+
+# Global variables to maintain state across calls
+# _DIRECTIONS is defined globally to avoid re-creating it on each call.
+# Shuffling it here makes sense for the overall strategy's randomness in certain exploration paths.
+_DIRECTIONS = [(0, 1), (0, -1), (1, 0), (-1, 0)]  # Right, Left, Down, Up
+
+# _hunting_pattern_phase determines which checkerboard pattern to prioritize.
+# 0 for cells where (r + c) is even, 1 for cells where (r + c) is odd.
+_hunting_pattern_phase = 0 
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Determines the next shot in a Battleship game on a 10x10 grid.
+
+    The policy prioritizes sinking identified ship segments over hunting.
+    When hunting, it uses a checkerboard pattern.
+
+    Args:
+        board: A 10x10 list of lists representing the current knowledge of the
+               opponent's grid.
+               0: Unknown cell (not fired at)
+               -1: Miss (fired here and hit water)
+               1: Hit (fired here and hit a ship cell)
+
+    Returns:
+        A tuple (row, col) with integers in the range 0-9, representing the
+        next cell to fire at.
+    """
+    global _hunting_pattern_phase
+
+    # 1. Collect all current hit cells and group them into contiguous segments.
+    # This helps identify ships or parts of ships.
+    all_hits = set()
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1:
+                all_hits.add((r, c))
+
+    segments = []
+    # visited_for_segments tracks cells already processed into a segment to avoid redundant work.
+    visited_for_segments = set() 
+    
+    for hr, hc in all_hits:
+        if (hr, hc) not in visited_for_segments:
+            # Start a new segment search from an unvisited hit
+            current_segment = []
+            stack = [(hr, hc)]
+            visited_for_segments.add((hr, hc))
+
+            while stack:
+                curr_r, curr_c = stack.pop()
+                current_segment.append((curr_r, curr_c))
+
+                # Shuffle directions to explore adjacent cells in a less predictable order
+                random.shuffle(_DIRECTIONS) 
+                for dr, dc in _DIRECTIONS:
+                    nr, nc = curr_r + dr, curr_c + dc
+                    # Check bounds, if it's a hit, and not yet visited
+                    if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 1 and (nr, nc) not in visited_for_segments:
+                        visited_for_segments.add((nr, nc))
+                        stack.append((nr, nc))
+            segments.append(sorted(current_segment)) # Store the sorted segment for consistent ordering
+
+    # 2. Prioritized Targeting Mode: Explore extensions of identified ship segments.
+    scored_potential_shots = []
+
+    for segment in segments:
+        segment_len = len(segment)
+        current_segment_shots = []
+
+        if segment_len == 1:
+            # For a single hit, try all four cardinal directions.
+            r, c = segment[0]
+            random.shuffle(_DIRECTIONS) # Shuffle again for randomness in choosing direction for isolated hits
+            for dr, dc in _DIRECTIONS:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0: # Only target unknown cells
+                    current_segment_shots.append((nr, nc))
+        else:
+            # For segments with multiple hits, determine orientation and try to extend.
+            first_point = segment[0]
+            second_point = segment[1] 
+
+            is_horizontal = False
+            # If row coordinates are the same, it's a horizontal segment.
+            if first_point[0] == second_point[0]: 
+                is_horizontal = True
+            
+            if is_horizontal:
+                r = first_point[0]
+                min_c = min(s[1] for s in segment)
+                max_c = max(s[1] for s in segment)
+
+                # Try extending to the left
+                if min_c - 1 >= 0 and board[r][min_c - 1] == 0:
+                    current_segment_shots.append((r, min_c - 1))
+                # Try extending to the right
+                if max_c + 1 < 10 and board[r][max_c + 1] == 0:
+                    current_segment_shots.append((r, max_c + 1))
+            else: # Vertical segment
+                c = first_point[1]
+                min_r = min(s[0] for s in segment)
+                max_r = max(s[0] for s in segment)
+
+                # Try extending upwards
+                if min_r - 1 >= 0 and board[min_r - 1][c] == 0:
+                    current_segment_shots.append((min_r - 1, c))
+                # Try extending downwards
+                if max_r + 1 < 10 and board[max_r + 1][c] == 0:
+                    current_segment_shots.append((max_r + 1, c))
+        
+        # Add all potential shots from this segment, paired with its length as a score.
+        for shot_coord in current_segment_shots:
+            scored_potential_shots.append((segment_len, shot_coord))
+            
+    if scored_potential_shots:
+        # Sort shots to prioritize extending longer segments first.
+        # If multiple shots have the same highest score, choose one randomly.
+        scored_potential_shots.sort(key=lambda x: x[0], reverse=True)
+        
+        max_score = scored_potential_shots[0][0]
+        top_shots = [s[1] for s in scored_potential_shots if s[0] == max_score]
+        
+        return random.choice(top_shots)
+
+    # 3. Hunting Mode: No active ship segments to extend, or all extensions are blocked.
+    # Use a checkerboard pattern to efficiently find new ships.
+    # We alternate between two checkerboard patterns if one is exhausted.
+
+    # First, try the current _hunting_pattern_phase (e.g., (r+c)%2 == 0)
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0 and (r + c) % 2 == _hunting_pattern_phase:
+                return (r, c)
+    
+    # If all cells in the current pattern are shot, switch to the other pattern.
+    _hunting_pattern_phase = (_hunting_pattern_phase + 1) % 2
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0 and (r + c) % 2 == _hunting_pattern_phase:
+                return (r, c)
+    
+    # Fallback: If for some reason all checkerboard cells are exhausted,
+    # just pick any remaining unknown cell. This should rarely happen in practice
+    # as the game would likely be over.
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0:
+                # Reset phase for future calls if game continues unexpectedly
+                _hunting_pattern_phase = (_hunting_pattern_phase + 1) % 2 
+                return (r, c)
+    
+    # If no unknown cells are found (game is over), return (0,0) as a default.
+    return (0, 0)
+```</thinking>
+```python
+import random
+
+# Global variables to maintain state across calls
+# _DIRECTIONS is defined globally to avoid re-creating it on each call.
+# Shuffling it here makes sense for the overall strategy's randomness in certain exploration paths.
+_DIRECTIONS = [(0, 1), (0, -1), (1, 0), (-1, 0)]  # Right, Left, Down, Up
+
+# _hunting_pattern_phase determines which checkerboard pattern to prioritize.
+# 0 for cells where (r + c) is even, 1 for cells where (r + c) is odd.
+_hunting_pattern_phase = 0 
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Determines the next shot in a Battleship game on a 10x10 grid.
+
+    The policy prioritizes sinking identified ship segments over hunting.
+    When hunting, it uses a checkerboard pattern.
+
+    Args:
+        board: A 10x10 list of lists representing the current knowledge of the
+               opponent's grid.
+               0: Unknown cell (not fired at)
+               -1: Miss (fired here and hit water)
+               1: Hit (fired here and hit a ship cell)
+
+    Returns:
+        A tuple (row, col) with integers in the range 0-9, representing the
+        next cell to fire at.
+    """
+    global _hunting_pattern_phase
+
+    # 1. Collect all current hit cells and group them into contiguous segments.
+    # This helps identify ships or parts of ships.
+    all_hits = set()
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1:
+                all_hits.add((r, c))
+
+    segments = []
+    # visited_for_segments tracks cells already processed into a segment to avoid redundant work.
+    visited_for_segments = set() 
+    
+    for hr, hc in all_hits:
+        if (hr, hc) not in visited_for_segments:
+            # Start a new segment search from an unvisited hit
+            current_segment = []
+            stack = [(hr, hc)]
+            visited_for_segments.add((hr, hc))
+
+            while stack:
+                curr_r, curr_c = stack.pop()
+                current_segment.append((curr_r, curr_c))
+
+                # Shuffle directions to explore adjacent cells in a less predictable order
+                random.shuffle(_DIRECTIONS) 
+                for dr, dc in _DIRECTIONS:
+                    nr, nc = curr_r + dr, curr_c + dc
+                    # Check bounds, if it's a hit, and not yet visited
+                    if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 1 and (nr, nc) not in visited_for_segments:
+                        visited_for_segments.add((nr, nc))
+                        stack.append((nr, nc))
+            segments.append(sorted(current_segment)) # Store the sorted segment for consistent ordering
+
+    # 2. Prioritized Targeting Mode: Explore extensions of identified ship segments.
+    scored_potential_shots = []
+
+    for segment in segments:
+        segment_len = len(segment)
+        current_segment_shots = []
+
+        if segment_len == 1:
+            # For a single hit, try all four cardinal directions.
+            r, c = segment[0]
+            random.shuffle(_DIRECTIONS) # Shuffle again for randomness in choosing direction for isolated hits
+            for dr, dc in _DIRECTIONS:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0: # Only target unknown cells
+                    current_segment_shots.append((nr, nc))
+        else:
+            # For segments with multiple hits, determine orientation and try to extend.
+            # Segment is guaranteed to have at least two points and be sorted.
+            first_point = segment[0]
+            second_point = segment[1] 
+
+            is_horizontal = False
+            # If row coordinates are the same, it's a horizontal segment.
+            if first_point[0] == second_point[0]: 
+                is_horizontal = True
+            
+            if is_horizontal:
+                r = first_point[0]
+                min_c = min(s[1] for s in segment)
+                max_c = max(s[1] for s in segment)
+
+                # Try extending to the left
+                if min_c - 1 >= 0 and board[r][min_c - 1] == 0:
+                    current_segment_shots.append((r, min_c - 1))
+                # Try extending to the right
+                if max_c + 1 < 10 and board[r][max_c + 1] == 0:
+                    current_segment_shots.append((r, max_c + 1))
+            else: # Vertical segment
+                c = first_point[1]
+                min_r = min(s[0] for s in segment)
+                max_r = max(s[0] for s in segment)
+
+                # Try extending upwards
+                if min_r - 1 >= 0 and board[min_r - 1][c] == 0:
+                    current_segment_shots.append((min_r - 1, c))
+                # Try extending downwards
+                if max_r + 1 < 10 and board[max_r + 1][c] == 0:
+                    current_segment_shots.append((max_r + 1, c))
+        
+        # Add all potential shots from this segment, paired with its length as a score.
+        for shot_coord in current_segment_shots:
+            scored_potential_shots.append((segment_len, shot_coord))
+            
+    if scored_potential_shots:
+        # Sort shots to prioritize extending longer segments first.
+        # If multiple shots have the same highest score, choose one randomly.
+        scored_potential_shots.sort(key=lambda x: x[0], reverse=True)
+        
+        max_score = scored_potential_shots[0][0]
+        top_shots = [s[1] for s in scored_potential_shots if s[0] == max_score]
+        
+        return random.choice(top_shots)
+
+    # 3. Hunting Mode: No active ship segments to extend, or all extensions are blocked.
+    # Use a checkerboard pattern to efficiently find new ships.
+    # We alternate between two checkerboard patterns if one is exhausted.
+
+    # First, try the current _hunting_pattern_phase (e.g., (r+c)%2 == 0)
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0 and (r + c) % 2 == _hunting_pattern_phase:
+                return (r, c)
+    
+    # If all cells in the current pattern are shot, switch to the other pattern.
+    _hunting_pattern_phase = (_hunting_pattern_phase + 1) % 2
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0 and (r + c) % 2 == _hunting_pattern_phase:
+                return (r, c)
+    
+    # Fallback: If for some reason all checkerboard cells are exhausted,
+    # just pick any remaining unknown cell. This should rarely happen in practice
+    # as the game would likely be over.
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0:
+                # Reset phase for future calls if game continues unexpectedly
+                _hunting_pattern_phase = (_hunting_pattern_phase + 1) % 2 
+                return (r, c)
+    
+    # If no unknown cells are found (game is over), return (0,0) as a default.
+    return (0, 0)
+```

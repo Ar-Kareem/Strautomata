@@ -1,0 +1,90 @@
+The strategy for this policy is based on a simplified evaluation function that considers material balance, checkmate opportunities, checks, captures, and basic piece activity.  The policy prioritizes checkmate, then winning material (captures with higher-value pieces), followed by delivering checks, then potentially moving pieces based on simple heuristics. In the absence of obvious tactical advantages, it will select the first legal move it finds.  The evaluation function is not sophisticated and only considers a few key features.
+
+```python
+import chess
+
+def evaluate_board(board, to_play):
+    """A simple evaluation function."""
+    score = 0
+
+    # Material balance
+    piece_values = {
+        chess.PAWN: 1,
+        chess.KNIGHT: 3,
+        chess.BISHOP: 3,
+        chess.ROOK: 5,
+        chess.QUEEN: 9,
+        chess.KING: 0  # King value doesn't usually contribute to material score
+    }
+    for piece_type in piece_values:
+        score += (len(board.pieces(piece_type, chess.WHITE)) - len(board.pieces(piece_type, chess.BLACK))) * piece_values[piece_type]
+
+    # Adjust score based on the player to move
+    if to_play == "black":
+        score = -score
+
+    return score
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str], memory: dict) -> tuple[str, dict]:
+    """
+    Chooses the best move from the legal moves based on a simple heuristic.
+    """
+
+    board = chess.Board()
+    fen = ""
+    # Construct FEN string from pieces
+    piece_placement = ""
+    for rank in range(8, 0, -1):
+        empty_count = 0
+        for file in range(ord('a'), ord('h') + 1):
+            square = chr(file) + str(rank)
+            if square in pieces:
+                if empty_count > 0:
+                    piece_placement += str(empty_count)
+                    empty_count = 0
+                piece_code = pieces[square]
+                piece_placement += piece_code[1].upper() if piece_code[0] == 'w' else piece_code[1].lower()
+            else:
+                empty_count += 1
+        if empty_count > 0:
+            piece_placement += str(empty_count)
+        if rank > 1:
+            piece_placement += "/"
+
+    fen += piece_placement + " "
+    fen += "w " if to_play == "white" else "b "  # Active color
+    fen += "- "  # Castling rights
+    fen += "- "  # En passant target square
+    fen += "0 1" # Halfmove clock and fullmove number - these don't affect move generation
+    board.set_fen(fen)
+
+
+    best_move = None
+    best_score = float('-inf') if to_play == "white" else float('inf')
+
+    for move_str in legal_moves:
+        try:
+            move = board.parse_uci(move_str)
+        except ValueError:
+            #print(f"Invalid move string: {move_str}")
+            continue # Skip invalid move strings
+        
+        board.push(move)
+        score = evaluate_board(board, to_play)
+        board.pop()  # Undo the move
+
+        if to_play == "white":
+            if score > best_score:
+                best_score = score
+                best_move = move_str
+        else:
+            if score < best_score:
+                best_score = score
+                best_move = move_str
+
+    if best_move is not None:
+        return best_move, memory
+
+    # If no best move based on score is found, return the first available legal move
+    return legal_moves[0], memory
+```

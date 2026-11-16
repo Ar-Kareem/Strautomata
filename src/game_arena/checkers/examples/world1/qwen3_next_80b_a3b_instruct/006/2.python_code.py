@@ -1,0 +1,777 @@
+
+import numpy as np
+from collections import defaultdict
+import time
+
+def policy(my_men, my_kings, opp_men, opp_kings, color) -> tuple[tuple[int, int], tuple[int, int]]:
+    """
+    Implements a minimax with alpha-beta pruning and heuristic evaluation for Checkers.
+    Prioritizes mandatory captures, then strategic positioning.
+    """
+    # Convert lists to sets for faster lookup
+    my_pieces = set(my_men + my_kings)
+    opp_pieces = set(opp_men + opp_kings)
+    
+    # Determine direction of movement
+    direction = -1 if color == 'b' else 1  # black moves down (row decreases), white moves up (row increases)
+    
+    # Check for mandatory captures first
+    capture_moves = get_all_possible_captures(my_pieces, opp_pieces, direction, color)
+    if capture_moves:
+        # Return the first longest capture sequence found
+        # In practice, we could evaluate all capture sequences and choose best, but for speed, take first valid
+        return capture_moves[0]
+    
+    # No captures, use minimax to find best strategic move
+    # Use a shallow search for speed (depth 4)
+    # Use transposition table to cache states
+    transposition_table = {}
+    
+    start_time = time.time()
+    
+    best_move = None
+    best_score = float('-inf')
+    
+    # Generate all possible non-capture moves
+    normal_moves = get_normal_moves(my_pieces, opp_pieces, direction, color)
+    
+    # If no moves, return empty (shouldn't happen in legal play)
+    if not normal_moves:
+        return ((0, 0), (0, 0))  # Fallback, though shouldn't occur
+    
+    # Order moves: prioritize king moves and center moves
+    def move_priority(move):
+        from_pos, to_pos = move
+        # Check if we're moving to a king row
+        to_king_row = 0 if color == 'w' else 7
+        is_king_promotion = (to_pos[0] == to_king_row and from_pos in my_men)
+        
+        # Center control: center squares are (3,3), (3,4), (4,3), (4,4)
+        center_value = 0
+        if to_pos[0] in [3, 4] and to_pos[1] in [3, 4]:
+            center_value = 1.5
+        elif to_pos[0] in [2, 5] and to_pos[1] in [2, 3, 4, 5]:
+            center_value = 1.0
+            
+        # Prefer king moves
+        if from_pos in my_kings:
+            king_bonus = 1.0
+        else:
+            king_bonus = 0.1
+            
+        # Prefer moves toward opponent's side
+        progress = abs(to_pos[0] - from_pos[0]) * direction
+        
+        # Combine factors
+        return (is_king_promotion * 10 + center_value + king_bonus + progress * 0.5)
+    
+    # Sort moves by priority
+    sorted_moves = sorted(normal_moves, key=move_priority, reverse=True)
+    
+    # If there are many moves, limit to top 10 for speed
+    if len(sorted_moves) > 10:
+        sorted_moves = sorted_moves[:10]
+    
+    # Use minimax with limited depth
+    for move in sorted_moves:
+        if time.time() - start_time > 0.8:  # Leave some buffer
+            break
+            
+        from_pos, to_pos = move
+        # Simulate move
+        new_my_pieces = my_pieces.copy()
+        new_opp_pieces = opp_pieces.copy()
+        
+        # Update piece positions
+        new_my_pieces.remove(from_pos)
+        new_my_pieces.add(to_pos)
+        
+        # Promote to king if necessary
+        to_king_row = 0 if color == 'w' else 7
+        if from_pos in my_men and to_pos[0] == to_king_row:
+            # Remove from men, add to kings (conceptually)
+            pass  # We don't need to track kings separately in simulation, we can handle it in eval
+            
+        # Evaluate position
+        score = minimax(new_my_pieces, new_opp_pieces, direction, color, depth=3, alpha=float('-inf'), beta=float('inf'), 
+                       maximizing_player=False, transposition_table=transposition_table, start_time=start_time, color=color)
+        score = -score  # Flip because we're evaluating from opponent's perspective after our move
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+            
+    # Fallback: if no best move found, return first valid normal move
+    if best_move is None:
+        best_move = sorted_moves[0] if sorted_moves else ((0, 0), (0, 0))
+        
+    return best_move
+
+def get_all_possible_captures(my_pieces, opp_pieces, direction, color):
+    """
+    Returns a list of possible capture move chains (sequence of to/from coordinates).
+    Returns only the first complete capture chain (for speed; optimal chain selection could be added).
+    """
+    capture_sequences = []
+    
+    # For each of our pieces, try to find capture sequences
+    for piece in my_pieces:
+        # Use recursive helper to find capture chains
+        chains = find_capture_chains(piece, my_pieces, opp_pieces, direction, color, set())
+        capture_sequences.extend(chains)
+    
+    # Return the longest capture sequence (if any)
+    if not capture_sequences:
+        return []
+    
+    # Find the longest sequence (in terms of number of captures)
+    max_length = max(len(chain) for chain in capture_sequences)
+    longest_sequences = [seq for seq in capture_sequences if len(seq) == max_length]
+    
+    # For simplicity, return the first longest
+    return [longest_sequences[0]]
+
+def find_capture_chains(pos, my_pieces, opp_pieces, direction, color, visited):
+    """
+    Recursively find all possible capture chains from a position.
+    Returns a list of complete capture sequences (each is a tuple of (from, to) tuples).
+    """
+    row, col = pos
+    capture_sequences = []
+    
+    # Define directions for regular pieces and kings
+    if pos in my_pieces and pos in get_kings_from_color(color, my_pieces):
+        # King can move in all diagonal directions
+        directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+    else:
+        # Regular piece moves in only one direction (for black: down = negative row, for white: up = positive row)
+        if color == 'b':
+            directions = [(1, -1), (1, 1)]
+        else:
+            directions = [(-1, -1), (-1, 1)]
+    
+    for dr, dc in directions:
+        # Check if we can jump over an opponent piece
+        mid_row, mid_col = row + dr, col + dc
+        landing_row, landing_col = row + 2*dr, col + 2*dc
+        
+        # Check boundaries
+        if not (0 <= landing_row <= 7 and 0 <= landing_col <= 7):
+            continue
+            
+        # Check if middle square has opponent piece and landing square is empty
+        if (mid_row, mid_col) in opp_pieces and (landing_row, landing_col) not in my_pieces and (landing_row, landing_col) not in opp_pieces:
+            # Check if this jump has been visited already in this chain to avoid cycles
+            new_visited = visited | {(mid_row, mid_col)}
+            
+            # Base capture: from pos to landing
+            capture = ((row, col), (landing_row, landing_col))
+            
+            # Now recursively try to extend the chain
+            extended_chains = find_capture_chains((landing_row, landing_col), my_pieces, opp_pieces, direction, color, new_visited)
+            
+            if extended_chains:
+                # Extend the chain
+                for chain in extended_chains:
+                    capture_sequences.append([capture] + chain)
+            else:
+                # This is a terminal capture
+                capture_sequences.append([capture])
+    
+    return capture_sequences
+
+def get_kings_from_color(color, my_pieces):
+    """Helper to check what pieces are kings - this is a simplification based on position."""
+    # In this implementation, we're using the fact that kings are stored in my_kings list
+    # We need to determine which pieces in my_pieces are kings
+    pass
+
+def get_normal_moves(my_pieces, opp_pieces, direction, color):
+    """
+    Returns list of possible normal (non-capture) moves.
+    """
+    moves = []
+    
+    for piece in my_pieces:
+        row, col = piece
+        
+        # Determine possible directions
+        if piece in get_kings_from_color(color, my_pieces):
+            # King can move in all four diagonals
+            directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+        else:
+            # Regular piece moves in one direction only
+            if color == 'b':  # black moves down (row decreases)
+                directions = [(-1, -1), (-1, 1)]
+            else:  # white moves up (row increases)
+                directions = [(1, -1), (1, 1)]
+        
+        for dr, dc in directions:
+            new_row, new_col = row + dr, col + dc
+            
+            # Check if within bounds
+            if 0 <= new_row <= 7 and 0 <= new_col <= 7:
+                # Check if the square is dark and unoccupied
+                if (new_row + new_col) % 2 == 1:  # dark square
+                    if (new_row, new_col) not in my_pieces and (new_row, new_col) not in opp_pieces:
+                        moves.append(((row, col), (new_row, new_col)))
+    
+    return moves
+
+def get_kings_from_color(color, my_pieces):
+    """Simple stub - will be replaced"""
+    return set()  # This is a placeholder, we'll handle king status via color and position
+
+def minimax(my_pieces, opp_pieces, direction, color, depth, alpha, beta, maximizing_player, transposition_table, start_time, color_param):
+    """
+    Minimax algorithm with alpha-beta pruning.
+    """
+    if time.time() - start_time > 0.9:  # 900ms budget
+        # Return heuristic evaluation as a fallback
+        return evaluate_position(my_pieces, opp_pieces, color_param)
+    
+    if depth == 0:
+        return evaluate_position(my_pieces, opp_pieces, color_param)
+    
+    # Create a state key for transposition table
+    state_key = (tuple(sorted(my_pieces)), tuple(sorted(opp_pieces)), maximizing_player, depth)
+    if state_key in transposition_table:
+        return transposition_table[state_key]
+    
+    # If max player, it's our turn, otherwise opponent's turn
+    if maximizing_player:
+        max_eval = float('-inf')
+        # Generate moves for our side
+        my_moves = get_normal_moves(my_pieces, opp_pieces, direction, color_param)
+        
+        # Add captures (for higher priority) - we should check if captures are available
+        capture_moves = get_all_possible_captures(my_pieces, opp_pieces, direction, color_param)
+        if capture_moves:
+            my_moves = capture_moves
+            
+        best_move = None
+        
+        for move in my_moves:
+            from_pos, to_pos = move
+            # Simulate move
+            new_my_pieces = my_pieces.copy()
+            new_opp_pieces = opp_pieces.copy()
+            
+            # Remove from old position and add to new one
+            new_my_pieces.remove(from_pos)
+            to_king_row = 0 if color_param == 'w' else 7
+            if from_pos in my_pieces and not (from_pos in get_kings_from_color(color_param, my_pieces)) and to_pos[0] == to_king_row:
+                # Promote to king (not tracked directly, handled in evaluate)
+                pass
+            
+            new_my_pieces.add(to_pos)
+            
+            # Remove captured piece if it was a capture
+            # We need to check if this is a capture move
+            if abs(move[0][0] - move[1][0]) > 1:
+                # It's a jump, so we need to remove opponent piece in between
+                mid_row = (move[0][0] + move[1][0]) // 2
+                mid_col = (move[0][1] + move[1][1]) // 2
+                if (mid_row, mid_col) in new_opp_pieces:
+                    new_opp_pieces.remove((mid_row, mid_col))
+            
+            # Recursively call minimax
+            eval_score = minimax(new_my_pieces, new_opp_pieces, direction, color_param, depth - 1, alpha, beta, False, transposition_table, start_time, color_param)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            
+            if beta <= alpha:
+                break  # Beta cutoff
+            
+        transposition_table[state_key] = max_eval
+        return max_eval
+        
+    else:
+        # Opponent's turn
+        min_eval = float('inf')
+        # Generate moves for opponent's side
+        opp_moves = get_normal_moves(opp_pieces, my_pieces, -direction, 'w' if color_param == 'b' else 'b')
+        
+        # Check for opponent captures
+        opp_capture_moves = get_all_possible_captures(opp_pieces, my_pieces, -direction, 'w' if color_param == 'b' else 'b')
+        if opp_capture_moves:
+            opp_moves = opp_capture_moves
+            
+        for move in opp_moves:
+            from_pos, to_pos = move
+            # Simulate opponent's move
+            new_opp_pieces = opp_pieces.copy()
+            new_my_pieces = my_pieces.copy()
+            
+            # Remove from old position and add to new
+            new_opp_pieces.remove(from_pos)
+            to_king_row = 0 if color_param == 'w' else 7
+            if from_pos in opp_pieces and to_pos[0] == to_king_row:
+                # Promote opponent to king
+                pass
+            
+            new_opp_pieces.add(to_pos)
+            
+            # Remove captured piece if it was a capture
+            if abs(move[0][0] - move[1][0]) > 1:
+                mid_row = (move[0][0] + move[1][0]) // 2
+                mid_col = (move[0][1] + move[1][1]) // 2
+                if (mid_row, mid_col) in new_my_pieces:
+                    new_my_pieces.remove((mid_row, mid_col))
+            
+            eval_score = minimax(new_my_pieces, new_opp_pieces, direction, color_param, depth - 1, alpha, beta, True, transposition_table, start_time, color_param)
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            
+            if beta <= alpha:
+                break  # Alpha cutoff
+                
+        transposition_table[state_key] = min_eval
+        return min_eval
+
+def evaluate_position(my_pieces, opp_pieces, color):
+    """
+    Heuristic evaluation function for Checkers position.
+    
+    Heuristic factors:
+    - Piece counts (each piece = 10)
+    - Kings are worth 15 each
+    - Board position bonuses (control center = higher value)
+    - Mobility bonus (more possible moves = better))
+    - King potential (men on advancement row = bonus)
+    - Edge avoidance
+    """
+    score = 0
+    
+    # Basic material count
+    my_men_count = len([p for p in my_pieces if p[0] not in [0, 7]])  # Not on king row
+    my_king_count = len([p for p in my_pieces if p[0] in [0, 7]])  # Assuming kings are on the end row
+    opp_men_count = len([p for p in opp_pieces if p[0] not in [0, 7]])
+    opp_king_count = len([p for p in opp_pieces if p[0] in [0, 7]])
+    
+    # Basic material value
+    score += my_men_count * 10
+    score += my_king_count * 15
+    score -= opp_men_count * 10
+    score -= opp_king_count * 15
+    
+    # Mobility: number of possible moves
+    direction = -1 if color == 'b' else 1
+    my_moves = len(get_normal_moves(my_pieces, opp_pieces, direction, color))
+    opp_moves = len(get_normal_moves(opp_pieces, my_pieces, -direction, 'w' if color == 'b' else 'b'))
+    score += my_moves * 0.5
+    score -= opp_moves * 0.5
+    
+    # Center control
+    center_bonus = 0
+    for piece in my_pieces:
+        row, col = piece
+        if row in [3, 4] and col in [3, 4]:
+            center_bonus += 2
+        elif row in [2, 5] and col in [2, 3, 4, 5]:
+            center_bonus += 1
+        # Avoid edges
+        if row in [0, 7] or col in [0, 7] or row in [1, 6] or col in [1, 6]:
+            center_bonus -= 0.5
+    score += center_bonus
+    
+    # King potential: men that can become kings
+    king_row = 0 if color == 'w' else 7
+    men_on_promotion_row = len([p for p in my_pieces if p[0] == king_row-1 and p[0] != king_row])
+    score += men_on_promotion_row * 3
+    
+    # Opponent king potential (penalty)
+    opp_king_row = 7 if color == 'w' else 0
+    opp_men_on_promotion_row = len([p for p in opp_pieces if p[0] == opp_king_row+1 and p[0] != opp_king_row])
+    score -= opp_men_on_promotion_row * 2
+    
+    # Safety: avoid being on row 1 and 6 (vulnerable)
+    for piece in my_pieces:
+        row, col = piece
+        if row in [1, 6]:
+            score -= 0.5
+    
+    return score
+
+# The following is a helper to determine what pieces are kings - we'll use position-based logic for simplicity since
+# the problem doesn't provide a separate kings list in the simulation, but assumes my_kings are provided in input.
+# For now, we'll assume my_kings are stored as a separate list and integrate with the board state.
+# But in our policy, we have the input: my_men, my_kings. So we'll use that directly in get_kings_from_color.
+
+# Updated version of get_kings_from_color to use provided input
+# We need to restructure the code to properly use the input
+
+# Since we're called with my_men, my_kings, etc., we need to modify our approach slightly:
+# We'll re-implement the policy with the full input context
+
+# Actually, let me restructure the code to use the exact input format
+
+# Re-implement policy using direct parameters
+
+def policy(my_men, my_kings, opp_men, opp_kings, color) -> tuple[tuple[int, int], tuple[int, int]]:
+    """
+    Implements a minimax with alpha-beta pruning and heuristic evaluation for Checkers.
+    Prioritizes mandatory captures, then strategic positioning.
+    """
+    # Convert lists to sets for faster lookup
+    my_pieces = set(my_men + my_kings)
+    opp_pieces = set(opp_men + opp_kings)
+    my_king_set = set(my_kings)
+    opp_king_set = set(opp_kings)
+    
+    # Determine direction of movement
+    direction = -1 if color == 'b' else 1  # black moves down (row decreases), white moves up (row increases)
+    
+    # Check for mandatory captures first
+    capture_moves = get_all_possible_captures_v2(my_pieces, my_king_set, opp_pieces, opp_king_set, direction, color)
+    if capture_moves:
+        # Return the first longest capture sequence found
+        return capture_moves[0]
+    
+    # No captures, use minimax to find best strategic move
+    transposition_table = {}
+    
+    start_time = time.time()
+    
+    best_move = None
+    best_score = float('-inf')
+    
+    # Generate all possible non-capture moves
+    normal_moves = get_normal_moves_v2(my_pieces, my_king_set, opp_pieces, opp_king_set, direction, color)
+    
+    if not normal_moves:
+        return ((0, 0), (0, 0))  # Fallback, though shouldn't occur
+    
+    # Order moves: prioritize king moves and center moves
+    def move_priority(move):
+        from_pos, to_pos = move
+        # Check if we're moving to a king row
+        to_king_row = 0 if color == 'w' else 7
+        is_king_promotion = (to_pos[0] == to_king_row and from_pos in my_men)
+        
+        # Center control: center squares are (3,3), (3,4), (4,3), (4,4)
+        center_value = 0
+        if to_pos[0] in [3, 4] and to_pos[1] in [3, 4]:
+            center_value = 1.5
+        elif to_pos[0] in [2, 5] and to_pos[1] in [2, 3, 4, 5]:
+            center_value = 1.0
+            
+        # Prefer king moves
+        if from_pos in my_king_set:
+            king_bonus = 1.0
+        else:
+            king_bonus = 0.1
+            
+        # Prefer moves toward opponent's side
+        progress = abs(to_pos[0] - from_pos[0]) * direction
+        
+        # Combine factors
+        return (is_king_promotion * 10 + center_value + king_bonus + progress * 0.5)
+    
+    sorted_moves = sorted(normal_moves, key=move_priority, reverse=True)
+    
+    if len(sorted_moves) > 10:
+        sorted_moves = sorted_moves[:10]
+    
+    for move in sorted_moves:
+        if time.time() - start_time > 0.8:
+            break
+            
+        from_pos, to_pos = move
+        # Simulate move
+        new_my_pieces = my_pieces.copy()
+        new_opp_pieces = opp_pieces.copy()
+        new_my_king_set = my_king_set.copy()
+        new_opp_king_set = opp_king_set.copy()
+        
+        # Update piece positions
+        new_my_pieces.remove(from_pos)
+        new_my_pieces.add(to_pos)
+        
+        # Promote to king if necessary
+        to_king_row = 0 if color == 'w' else 7
+        if from_pos in my_men and to_pos[0] == to_king_row:
+            new_my_king_set.add(to_pos)
+            if from_pos in new_my_king_set:
+                new_my_king_set.remove(from_pos)  # This shouldn't happen since from_pos is in my_men, not my_kings
+        
+        # No captures in normal moves, so no opponent pieces removed
+        
+        # Evaluate position
+        score = minimax_v2(new_my_pieces, new_my_king_set, new_opp_pieces, new_opp_king_set, direction, color, depth=4, alpha=float('-inf'), beta=float('inf'), 
+                       maximizing_player=False, transposition_table=transposition_table, start_time=start_time, color_param=color)
+        score = -score  # Flip because we're evaluating from opponent's perspective after our move
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+            
+    if best_move is None:
+        best_move = sorted_moves[0] if sorted_moves else ((0, 0), (0, 0))
+        
+    return best_move
+
+def get_all_possible_captures_v2(my_pieces, my_king_set, opp_pieces, opp_king_set, direction, color):
+    """
+    Returns a list of possible capture move chains (sequence of to/from coordinates).
+    """
+    capture_sequences = []
+    
+    for piece in my_pieces:
+        # Use recursive helper to find capture chains
+        chains = find_capture_chains_v2(piece, my_pieces, my_king_set, opp_pieces, opp_king_set, direction, color, set())
+        capture_sequences.extend(chains)
+    
+    if not capture_sequences:
+        return []
+    
+    # Find the longest sequence
+    max_length = max(len(chain) for chain in capture_sequences)
+    longest_sequences = [seq for seq in capture_sequences if len(seq) == max_length]
+    
+    return [longest_sequences[0]]
+
+def find_capture_chains_v2(pos, my_pieces, my_king_set, opp_pieces, opp_king_set, direction, color, visited):
+    """
+    Recursively find all possible capture chains from a position.
+    Returns a list of complete capture sequences.
+    """
+    row, col = pos
+    capture_sequences = []
+    
+    # Determine directions
+    if pos in my_king_set:
+        # King can move in all four diagonals
+        directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+    else:
+        # Regular piece moves in only one direction
+        if color == 'b':  # black
+            directions = [(1, -1), (1, 1)]  # down
+        else:  # white
+            directions = [(-1, -1), (-1, 1)]  # up
+    
+    for dr, dc in directions:
+        mid_row, mid_col = row + dr, col + dc
+        landing_row, landing_col = row + 2*dr, col + 2*dc
+        
+        # Check boundaries
+        if not (0 <= landing_row <= 7 and 0 <= landing_col <= 7):
+            continue
+            
+        # Check if middle square has opponent piece and landing square is empty
+        mid_pos = (mid_row, mid_col)
+        landing_pos = (landing_row, landing_col)
+        
+        if ((mid_pos in opp_pieces and mid_pos not in opp_king_set) or 
+            (mid_pos in opp_king_set)) and \
+           (landing_pos not in my_pieces) and \
+           (landing_pos not in opp_pieces) and \
+           (mid_pos not in visited):
+            # This is a valid jump
+            new_visited = visited | {mid_pos}
+            
+            capture = ((row, col), (landing_row, landing_col))
+            
+            # Recursively extend
+            extended_chains = find_capture_chains_v2(landing_pos, my_pieces, my_king_set, opp_pieces, opp_king_set, direction, color, new_visited)
+            
+            if extended_chains:
+                for chain in extended_chains:
+                    capture_sequences.append([capture] + chain)
+            else:
+                capture_sequences.append([capture])
+    
+    return capture_sequences
+
+def get_normal_moves_v2(my_pieces, my_king_set, opp_pieces, opp_king_set, direction, color):
+    """
+    Returns list of possible normal (non-capture) moves.
+    """
+    moves = []
+    
+    for piece in my_pieces:
+        row, col = piece
+        
+        # Determine possible directions
+        if piece in my_king_set:
+            # King can move in all four diagonals
+            directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+        else:
+            # Regular piece moves in one direction
+            if color == 'b':  # black moves down (row decreases)
+                directions = [(-1, -1), (-1, 1)]
+            else:  # white moves up (row increases)
+                directions = [(1, -1), (1, 1)]
+        
+        for dr, dc in directions:
+            new_row, new_col = row + dr, col + dc
+            
+            # Check if within bounds
+            if 0 <= new_row <= 7 and 0 <= new_col <= 7:
+                # Check if the square is dark and unoccupied
+                if (new_row + new_col) % 2 == 1:  # dark square
+                    if (new_row, new_col) not in my_pieces and (new_row, new_col) not in opp_pieces:
+                        moves.append(((row, col), (new_row, new_col)))
+    
+    return moves
+
+def minimax_v2(my_pieces, my_king_set, opp_pieces, opp_king_set, direction, color, depth, alpha, beta, maximizing_player, transposition_table, start_time, color_param):
+    """
+    Minimax algorithm with alpha-beta pruning.
+    """
+    if time.time() - start_time > 0.9:
+        return evaluate_position_v2(my_pieces, my_king_set, opp_pieces, opp_king_set, color_param)
+    
+    if depth == 0:
+        return evaluate_position_v2(my_pieces, my_king_set, opp_pieces, opp_king_set, color_param)
+    
+    # Create a state key for transposition table
+    state_key = (tuple(sorted(my_pieces)), tuple(sorted(my_king_set)), tuple(sorted(opp_pieces)), tuple(sorted(opp_king_set)), maximizing_player, depth)
+    if state_key in transposition_table:
+        return transposition_table[state_key]
+    
+    if maximizing_player:
+        max_eval = float('-inf')
+        
+        # Generate moves for our side
+        my_moves = get_normal_moves_v2(my_pieces, my_king_set, opp_pieces, opp_king_set, direction, color_param)
+        capture_moves = get_all_possible_captures_v2(my_pieces, my_king_set, opp_pieces, opp_king_set, direction, color_param)
+        
+        if capture_moves:
+            my_moves = capture_moves
+            
+        for move in my_moves:
+            from_pos, to_pos = move
+            new_my_pieces = my_pieces.copy()
+            new_my_king_set = my_king_set.copy()
+            new_opp_pieces = opp_pieces.copy()
+            new_opp_king_set = opp_king_set.copy()
+            
+            new_my_pieces.remove(from_pos)
+            new_my_pieces.add(to_pos)
+            
+            # Handle promotion
+            to_king_row = 0 if color_param == 'w' else 7
+            if from_pos in my_pieces and from_pos not in my_king_set and to_pos[0] == to_king_row:
+                new_my_king_set.add(to_pos)
+                
+            # Handle capture
+            if abs(from_pos[0] - to_pos[0]) > 1:
+                mid_row = (from_pos[0] + to_pos[0]) // 2
+                mid_col = (from_pos[1] + to_pos[1]) // 2
+                mid_pos = (mid_row, mid_col)
+                if mid_pos in new_opp_pieces:
+                    new_opp_pieces.remove(mid_pos)
+                elif mid_pos in new_opp_king_set:
+                    new_opp_king_set.remove(mid_pos)
+            
+            eval_score = minimax_v2(new_my_pieces, new_my_king_set, new_opp_pieces, new_opp_king_set, direction, color_param, depth - 1, alpha, beta, False, transposition_table, start_time, color_param)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            
+            if beta <= alpha:
+                break
+                
+        transposition_table[state_key] = max_eval
+        return max_eval
+        
+    else:
+        min_eval = float('inf')
+        
+        # Generate moves for opponent's side
+        opp_moves = get_normal_moves_v2(opp_pieces, opp_king_set, my_pieces, my_king_set, -direction, 'w' if color_param == 'b' else 'b')
+        opp_capture_moves = get_all_possible_captures_v2(opp_pieces, opp_king_set, my_pieces, my_king_set, -direction, 'w' if color_param == 'b' else 'b')
+        
+        if opp_capture_moves:
+            opp_moves = opp_capture_moves
+            
+        for move in opp_moves:
+            from_pos, to_pos = move
+            new_opp_pieces = opp_pieces.copy()
+            new_opp_king_set = opp_king_set.copy()
+            new_my_pieces = my_pieces.copy()
+            new_my_king_set = my_king_set.copy()
+            
+            new_opp_pieces.remove(from_pos)
+            new_opp_pieces.add(to_pos)
+            
+            # Handle promotion
+            opp_king_row = 7 if color_param == 'w' else 0
+            if from_pos in opp_pieces and from_pos not in opp_king_set and to_pos[0] == opp_king_row:
+                new_opp_king_set.add(to_pos)
+                
+            # Handle capture
+            if abs(from_pos[0] - to_pos[0]) > 1:
+                mid_row = (from_pos[0] + to_pos[0]) // 2
+                mid_col = (from_pos[1] + to_pos[1]) // 2
+                mid_pos = (mid_row, mid_col)
+                if mid_pos in new_my_pieces:
+                    new_my_pieces.remove(mid_pos)
+                elif mid_pos in new_my_king_set:
+                    new_my_king_set.remove(mid_pos)
+            
+            eval_score = minimax_v2(new_my_pieces, new_my_king_set, new_opp_pieces, new_opp_king_set, direction, color_param, depth - 1, alpha, beta, True, transposition_table, start_time, color_param)
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            
+            if beta <= alpha:
+                break
+                
+        transposition_table[state_key] = min_eval
+        return min_eval
+
+def evaluate_position_v2(my_pieces, my_king_set, opp_pieces, opp_king_set, color):
+    """
+    Heuristic evaluation function for Checkers position.
+    """
+    score = 0
+    
+    # Basic material count
+    my_men_count = len(my_pieces) - len(my_king_set)
+    my_king_count = len(my_king_set)
+    opp_men_count = len(opp_pieces) - len(opp_king_set)
+    opp_king_count = len(opp_king_set)
+    
+    # Basic material value
+    score += my_men_count * 10
+    score += my_king_count * 15
+    score -= opp_men_count * 10
+    score -= opp_king_count * 15
+    
+    # Mobility
+    direction = -1 if color == 'b' else 1
+    my_moves = len(get_normal_moves_v2(my_pieces, my_king_set, opp_pieces, opp_king_set, direction, color))
+    opp_moves = len(get_normal_moves_v2(opp_pieces, opp_king_set, my_pieces, my_king_set, -direction, 'w' if color == 'b' else 'b'))
+    score += my_moves * 0.5
+    score -= opp_moves * 0.5
+    
+    # Center control
+    center_bonus = 0
+    for piece in my_pieces:
+        row, col = piece
+        if row in [3, 4] and col in [3, 4]:
+            center_bonus += 2
+        elif row in [2, 5] and col in [2, 3, 4, 5]:
+            center_bonus += 1
+        # Avoid edges
+        if row in [0, 7] or col in [0, 7] or row in [1, 6] or col in [1, 6]:
+            center_bonus -= 0.5
+    score += center_bonus
+    
+    # King potential: men that can become kings
+    king_row = 0 if color == 'w' else 7
+    men_on_promotion_row = len([p for p in my_pieces if p not in my_king_set and p[0] == king_row-1])
+    score += men_on_promotion_row * 3
+    
+    # Opponent king potential (penalty)
+    opp_king_row = 7 if color == 'w' else 0
+    opp_men_on_promotion_row = len([p for p in opp_pieces if p not in opp_king_set and p[0] == opp_king_row+1])
+    score -= opp_men_on_promotion_row * 2
+    
+    # Safety: avoid being on row 1 and 6 (vulnerable)
+    for piece in my_pieces:
+        row, col = piece
+        if row in [1, 6]:
+            score -= 0.5
+    
+    return score

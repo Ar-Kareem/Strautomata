@@ -1,0 +1,190 @@
+The strategy for this policy is based on a greedy 1-ply search (evaluating the board state after one complete move) combined with a territory-based evaluation function. Given the short time limit (1 second) and the high branching factor of Amazons (Movement × Arrow Shot), a full Minimax search is risky. Instead, we generate all legal Move+Arrow combinations and score them using a "Voronoi" territory heuristic. This heuristic runs a Breadth-First Search (BFS) from all Amazons to calculate the "King's Move" distance to every square. A square is considered "owned" by the player closest to it. The final score maximizes the difference between my territory and the opponent's territory, effectively trying to box the opponent in while maximizing my own space. If time runs low, the search aborts early and returns the best move found so far.
+
+<code>
+import time
+import numpy as np
+
+def policy(board) -> str:
+    # Constants
+    MY_ID = 1
+    OPP_ID = 2
+    BLOCKED = -1 # Arrows (-1) or arbitrary blocked markers
+    EMPTY = 0
+    TIME_LIMIT = 0.95  # Seconds, leaving buffer for overhead
+    
+    start_time = time.time()
+    
+    h, w = board.shape
+    
+    # Identify positions
+    my_amazons = np.argwhere(board == MY_ID)
+    opp_amazons = np.argwhere(board == OPP_ID)
+    
+    # Directions: orthogonal and diagonal (Queen moves)
+    directions = [
+        (-1, 0), (1, 0), (0, -1), (0, 1), 
+        (-1, -1), (-1, 1), (1, -1), (1, 1)
+    ]
+    
+    # Generate all legal Queen slides first
+    # Format: (r_from, c_from, r_to, c_to)
+    queen_moves = []
+    
+    for r0, c0 in my_amazons:
+        for dr, dc in directions:
+            r, c = r0 + dr, c0 + dc
+            # Slide until out of bounds or blocked
+            while 0 <= r < h and 0 <= c < w and board[r, c] == EMPTY:
+                queen_moves.append((r0, c0, r, c))
+                r += dr
+                c += dc
+                
+    # Randomize order to ensure variety if scores are tied and to avoid bias in partial searches
+    np.random.shuffle(queen_moves)
+    
+    best_move_str = None
+    best_score = -float('inf')
+    abort = False
+    
+    # Iterate through all combinations of Move + Arrow
+    for r0, c0, r1, c1 in queen_moves:
+        if abort: break
+        
+        # 1. Execute Queen Move
+        board[r0, c0] = EMPTY
+        board[r1, c1] = MY_ID
+        
+        # 2. Generate valid arrow shots from new position (r1, c1)
+        # Note: Arrows can pass through the now empty (r0, c0)
+        valid_arrows = []
+        for dr, dc in directions:
+            ar, ac = r1 + dr, c1 + dc
+            while 0 <= ar < h and 0 <= ac < w:
+                if board[ar, ac] == EMPTY:
+                    valid_arrows.append((ar, ac))
+                else:
+                    break # Blocked
+                ar += dr
+                ac += dc
+        
+        # 3. Evaluate each arrow shot
+        for ar, ac in valid_arrows:
+            # Periodic time check (check every few iterations to reduce syscall overhead)
+            if (ar + ac) % 10 == 0:
+                if time.time() - start_time > TIME_LIMIT:
+                    abort = True
+                    break
+            
+            # Execute Arrow
+            board[ar, ac] = BLOCKED
+            
+            # Evaluate Board
+            score = evaluate_territory(board, MY_ID, OPP_ID, opp_amazons)
+            
+            if score > best_score:
+                best_score = score
+                best_move_str = f"{r0},{c0}:{r1},{c1}:{ar},{ac}"
+            
+            # Revert Arrow
+            board[ar, ac] = EMPTY
+        
+        # Revert Queen Move
+        board[r1, c1] = EMPTY
+        board[r0, c0] = MY_ID
+        
+        if time.time() - start_time > TIME_LIMIT:
+            break
+            
+    # Fallback: if timeout occurred immediately or no moves found (unlikely), ensure legality
+    if best_move_str is None and queen_moves:
+        r0, c0, r1, c1 = queen_moves[0]
+        # Find any legal arrow
+        board[r0, c0] = EMPTY
+        board[r1, c1] = MY_ID
+        for dr, dc in directions:
+            ar, ac = r1 + dr, c1 + dc
+            if 0 <= ar < h and 0 <= ac < w and board[ar, ac] == EMPTY:
+                best_move_str = f"{r0},{c0}:{r1},{c1}:{ar},{ac}"
+                break
+            if best_move_str: break
+        # No need to revert as we are returning
+    
+    return best_move_str if best_move_str else ""
+
+def evaluate_territory(board, my_id, opp_id, opp_amazons_static):
+    """
+    Calculates a score based on 'Chamber' territory control.
+    Uses BFS to determine the minimum King-move distance from any Amazon to empty squares.
+    Score = (Uncontested My Territory - Uncontested Opp Territory)
+    """
+    h, w = board.shape
+    inf = 127 # Max dist on 6x6 is 36, so 127 is sufficient
+    
+    # Identify my current positions (since one moved)
+    my_amazons = np.argwhere(board == my_id)
+    
+    # Distance grids
+    # Initialize with 'inf'
+    d_my = np.full((h, w), inf, dtype=np.int8)
+    d_opp = np.full((h, w), inf, dtype=np.int8)
+    
+    # BFS for My Amazons
+    queue = []
+    for r, c in my_amazons:
+        d_my[r, c] = 0
+        queue.append((r, c))
+    
+    head = 0
+    while head < len(queue):
+        r, c = queue[head]; head += 1
+        dist = d_my[r, c] + 1
+        # Neighbors (King's move logic for territory reachability)
+        r_min, r_max = max(0, r-1), min(h, r+2)
+        c_min, c_max = max(0, c-1), min(w, c+2)
+        
+        for nr in range(r_min, r_max):
+            for nc in range(c_min, c_max):
+                if board[nr, nc] == 0: # Can only step into empty squares (walls block)
+                    if d_my[nr, nc] == inf:
+                        d_my[nr, nc] = dist
+                        queue.append((nr, nc))
+                        
+    # BFS for Opponent Amazons (static positions, but board obstacles changed)
+    queue = []
+    for r, c in opp_amazons_static:
+        d_opp[r, c] = 0
+        queue.append((r, c))
+        
+    head = 0
+    while head < len(queue):
+        r, c = queue[head]; head += 1
+        dist = d_opp[r, c] + 1
+        r_min, r_max = max(0, r-1), min(h, r+2)
+        c_min, c_max = max(0, c-1), min(w, c+2)
+        
+        for nr in range(r_min, r_max):
+            for nc in range(c_min, c_max):
+                if board[nr, nc] == 0:
+                    if d_opp[nr, nc] == inf:
+                        d_opp[nr, nc] = dist
+                        queue.append((nr, nc))
+    
+    # Calculate difference
+    # A square is 'owned' if dist_me < dist_opp
+    empty_mask = (board == 0)
+    
+    # Masks for reachable squares
+    reach_my = (d_my < inf)
+    reach_opp = (d_opp < inf)
+    
+    my_terr = np.sum((d_my < d_opp) & empty_mask & reach_my)
+    opp_terr = np.sum((d_opp < d_my) & empty_mask & reach_opp)
+    
+    # Secondary metric: Mobility (raw count of reachable squares)
+    # This helps in early game or blocked scenarios to prefer openness
+    mob_my = np.sum(reach_my & empty_mask)
+    mob_opp = np.sum(reach_opp & empty_mask)
+    
+    # Primary: Territory diff, Secondary: Mobility diff
+    return (my_terr - opp_terr) * 10.0 + (mob_my - mob_opp) * 0.1
+</code>

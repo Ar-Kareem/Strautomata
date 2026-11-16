@@ -1,0 +1,84 @@
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    legal_moves = [i for i in range(6) if you[i] > 0]
+    if not legal_moves:
+        return -1  # This case should not occur as per problem statement
+    
+    best_move = legal_moves[0]
+    best_score = -float('inf')
+    
+    def simulate_move(move):
+        new_you = list(you)
+        new_opponent = list(opponent)
+        initial_seeds = new_you[move]
+        new_you[move] = 0
+        
+        if move == 5:
+            current_code = 6
+        else:
+            current_code = move + 1
+        
+        seeds_left = initial_seeds
+        last_code = None
+        
+        while seeds_left > 0:
+            last_code = current_code
+            
+            # Sow the seed
+            if last_code == 6:  # player's store
+                new_you[6] += 1
+            elif 0 <= last_code <= 5:  # player's houses
+                new_you[last_code] += 1
+            elif 7 <= last_code <= 12:  # opponent's houses
+                new_opponent[last_code - 7] += 1
+                
+            # Compute next code
+            if last_code == 6:
+                next_code = 7
+            elif last_code < 6:
+                if last_code < 5:
+                    next_code = last_code + 1
+                else:
+                    next_code = 6
+            elif 7 <= last_code <= 11:
+                next_code = last_code + 1
+            elif last_code == 12:
+                next_code = 0
+            else:
+                next_code = last_code  # shouldn't happen
+                print(f"Unexpected code: {last_code}")
+                
+            seeds_left -= 1
+            current_code = next_code
+        
+        # Check for extra turn
+        extra_turn = False
+        if last_code == 6:
+            extra_turn = True
+        
+        # Check for capture
+        capture_occurred = False
+        if 0 <= last_code <= 5:
+            if new_you[last_code] == 1 and new_opponent[5 - last_code] > 0:
+                captured_seeds = new_you[last_code] + new_opponent[5 - last_code]
+                new_you[6] += captured_seeds
+                new_you[last_code] = 0
+                new_opponent[5 - last_code] = 0
+                capture_occurred = True
+        
+        return new_you, new_opponent, extra_turn, capture_occurred
+    
+    for move in legal_moves:
+        new_you, new_opponent, extra_turn, capture_occurred = simulate_move(move)
+        store_diff = new_you[6] - new_opponent[6]
+        score = store_diff
+        if extra_turn:
+            score += 100  # High priority for extra turn
+        if capture_occurred:
+            score += 1  # Small bonus for capture
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move

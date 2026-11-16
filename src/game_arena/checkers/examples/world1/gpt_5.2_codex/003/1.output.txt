@@ -1,0 +1,129 @@
+The strategy for this policy is a fast tactical evaluator: it always generates all legal moves, enforces mandatory captures, explores full multi-jump capture sequences, and then chooses the move that maximizes a simple heuristic (material advantage, capture count, and kinging). This ensures legality and decent strength while remaining efficient.
+
+<code>
+from typing import List, Tuple, Set
+
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    # Convert lists to sets for fast lookup
+    my_men = set(tuple(x) for x in my_men)
+    my_kings = set(tuple(x) for x in my_kings)
+    opp_men = set(tuple(x) for x in opp_men)
+    opp_kings = set(tuple(x) for x in opp_kings)
+
+    def in_bounds(r, c):
+        return 0 <= r < 8 and 0 <= c < 8
+
+    def is_king_row(r):
+        return (color == 'b' and r == 0) or (color == 'w' and r == 7)
+
+    # Directions
+    if color == 'b':
+        man_dirs = [(-1, -1), (-1, 1)]
+    else:
+        man_dirs = [(1, -1), (1, 1)]
+    king_dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+    all_moves = []
+
+    # Generate capture sequences for a piece
+    def gen_captures(pos, is_king, my_men_set, my_kings_set, opp_men_set, opp_kings_set, start_pos):
+        r, c = pos
+        dirs = king_dirs if is_king else man_dirs
+        found = False
+        results = []
+
+        for dr, dc in dirs:
+            mid = (r + dr, c + dc)
+            landing = (r + 2*dr, c + 2*dc)
+            if not in_bounds(*landing):
+                continue
+            if mid in opp_men_set or mid in opp_kings_set:
+                if landing not in my_men_set and landing not in my_kings_set and landing not in opp_men_set and landing not in opp_kings_set:
+                    found = True
+                    # simulate capture
+                    new_my_men = set(my_men_set)
+                    new_my_kings = set(my_kings_set)
+                    new_opp_men = set(opp_men_set)
+                    new_opp_kings = set(opp_kings_set)
+
+                    # remove opponent
+                    if mid in new_opp_men:
+                        new_opp_men.remove(mid)
+                    else:
+                        new_opp_kings.remove(mid)
+
+                    # move piece
+                    if is_king:
+                        new_my_kings.remove(pos)
+                        new_my_kings.add(landing)
+                        next_is_king = True
+                    else:
+                        new_my_men.remove(pos)
+                        # if reaches king row, move ends
+                        if is_king_row(landing[0]):
+                            new_my_kings.add(landing)
+                            next_is_king = True
+                            # stop here (no further captures as per standard rules)
+                            results.append((start_pos, landing, new_my_men, new_my_kings, new_opp_men, new_opp_kings, 1))
+                            continue
+                        else:
+                            new_my_men.add(landing)
+                            next_is_king = False
+
+                    # continue captures
+                    cont = gen_captures(landing, next_is_king, new_my_men, new_my_kings, new_opp_men, new_opp_kings, start_pos)
+                    if cont:
+                        for mv in cont:
+                            results.append((mv[0], mv[1], mv[2], mv[3], mv[4], mv[5], mv[6] + 1))
+                    else:
+                        results.append((start_pos, landing, new_my_men, new_my_kings, new_opp_men, new_opp_kings, 1))
+
+        return results
+
+    # Generate all capture moves
+    capture_moves = []
+    for p in my_men:
+        capture_moves.extend(gen_captures(p, False, my_men, my_kings, opp_men, opp_kings, p))
+    for p in my_kings:
+        capture_moves.extend(gen_captures(p, True, my_men, my_kings, opp_men, opp_kings, p))
+
+    if capture_moves:
+        all_moves = capture_moves
+    else:
+        # generate simple moves
+        for p in my_men:
+            r, c = p
+            for dr, dc in man_dirs:
+                nr, nc = r + dr, c + dc
+                if in_bounds(nr, nc) and (nr, nc) not in my_men and (nr, nc) not in my_kings and (nr, nc) not in opp_men and (nr, nc) not in opp_kings:
+                    new_my_men = set(my_men)
+                    new_my_kings = set(my_kings)
+                    new_my_men.remove(p)
+                    if is_king_row(nr):
+                        new_my_kings.add((nr, nc))
+                    else:
+                        new_my_men.add((nr, nc))
+                    all_moves.append((p, (nr, nc), new_my_men, new_my_kings, opp_men, opp_kings, 0))
+        for p in my_kings:
+            r, c = p
+            for dr, dc in king_dirs:
+                nr, nc = r + dr, c + dc
+                if in_bounds(nr, nc) and (nr, nc) not in my_men and (nr, nc) not in my_kings and (nr, nc) not in opp_men and (nr, nc) not in opp_kings:
+                    new_my_men = set(my_men)
+                    new_my_kings = set(my_kings)
+                    new_my_kings.remove(p)
+                    new_my_kings.add((nr, nc))
+                    all_moves.append((p, (nr, nc), new_my_men, new_my_kings, opp_men, opp_kings, 0))
+
+    # Evaluate moves
+    def evaluate(move):
+        _, _, nm, nk, om, ok, caps = move
+        material = len(nm) + 1.5 * len(nk) - (len(om) + 1.5 * len(ok))
+        king_bonus = (len(nk) - len(my_kings)) * 0.5
+        return material + caps * 2.0 + king_bonus
+
+    # Choose best move
+    best_move = max(all_moves, key=evaluate)
+
+    return (best_move[0], best_move[1])
+</code>

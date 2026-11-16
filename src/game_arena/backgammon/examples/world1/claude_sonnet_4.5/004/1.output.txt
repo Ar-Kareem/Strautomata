@@ -1,0 +1,265 @@
+I'll create a competitive Backgammon policy that balances offense and defense with strategic positioning.
+
+## Strategy
+
+My policy uses a multi-faceted evaluation approach:
+
+1. **Priority Management**: Handle forced moves (bar re-entry) first
+2. **Strategic Evaluation**: 
+   - **Racing**: When ahead, focus on advancing checkers quickly
+   - **Blocking**: Create prime positions to trap opponent checkers
+   - **Safety**: Avoid leaving blots (single checkers) vulnerable to hits
+   - **Anchor**: Maintain defensive anchor points in opponent's home board
+   - **Bearing Off**: Efficiently remove checkers when in home board
+
+3. **Move Scoring**: Each potential move is scored based on:
+   - Pip count improvement (distance to bear off)
+   - Block building (consecutive occupied points)
+   - Blot exposure penalty (vulnerable checkers)
+   - Hitting opponent blots (bonus)
+   - Home board control
+   - Strategic anchors in opponent territory
+
+4. **Tactical Decisions**:
+   - Prefer hitting opponent blots when safe
+   - Build consecutive blocking points (primes)
+   - Minimize exposure when behind
+   - Race aggressively when clearly ahead
+
+<code>
+def policy(state: dict) -> str:
+    import itertools
+    
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    dice = state['dice']
+    my_off = state['my_off']
+    
+    if not dice:
+        return "H:P,P"
+    
+    # Generate all legal moves
+    legal_moves = generate_legal_moves(state)
+    
+    if not legal_moves:
+        return "H:P,P"
+    
+    # Evaluate and pick best move
+    best_move = max(legal_moves, key=lambda m: evaluate_move(state, m))
+    return format_move(best_move, dice)
+
+
+def generate_legal_moves(state):
+    my_pts = state['my_pts'][:]
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    my_off = state['my_off']
+    dice = state['dice']
+    
+    if not dice:
+        return []
+    
+    dice_sorted = sorted(dice, reverse=True)
+    is_doubles = len(dice) == 2 and dice[0] == dice[1]
+    
+    if is_doubles:
+        # Handle doubles (4 moves)
+        return generate_doubles_moves(my_pts, opp_pts, my_bar, my_off, dice[0])
+    
+    moves = []
+    high, low = dice_sorted[0], dice_sorted[1]
+    
+    # Try high then low
+    for from1 in get_possible_froms(my_pts, my_bar, my_off, high):
+        new_pts1, new_bar1, new_off1 = apply_move(my_pts, opp_pts, my_bar, my_off, from1, high)
+        for from2 in get_possible_froms(new_pts1, new_bar1, new_off1, low):
+            if can_apply_move(new_pts1, opp_pts, new_bar1, new_off1, from2, low):
+                moves.append(('H', from1, from2))
+    
+    # Try low then high
+    for from1 in get_possible_froms(my_pts, my_bar, my_off, low):
+        new_pts1, new_bar1, new_off1 = apply_move(my_pts, opp_pts, my_bar, my_off, from1, low)
+        for from2 in get_possible_froms(new_pts1, new_bar1, new_off1, high):
+            if can_apply_move(new_pts1, opp_pts, new_bar1, new_off1, from2, high):
+                moves.append(('L', from1, from2))
+    
+    # Single move with higher die only
+    if not moves:
+        for from1 in get_possible_froms(my_pts, my_bar, my_off, high):
+            if can_apply_move(my_pts, opp_pts, my_bar, my_off, from1, high):
+                moves.append(('H', from1, -1))
+        
+        # Single move with lower die only (if high not possible)
+        if not moves:
+            for from1 in get_possible_froms(my_pts, my_bar, my_off, low):
+                if can_apply_move(my_pts, opp_pts, my_bar, my_off, from1, low):
+                    moves.append(('L', from1, -1))
+    
+    return moves if moves else [('H', -1, -1)]
+
+
+def generate_doubles_moves(my_pts, opp_pts, my_bar, my_off, die):
+    moves = []
+    
+    # Try to make all 4 moves
+    for froms in itertools.combinations_with_replacement(range(-1, 24), 4):
+        if try_doubles_sequence(my_pts, opp_pts, my_bar, my_off, die, froms):
+            moves.append(('H', froms[0], froms[1]))  # Store first 2 moves
+    
+    return moves if moves else [('H', -1, -1)]
+
+
+def try_doubles_sequence(my_pts, opp_pts, my_bar, my_off, die, froms):
+    pts, bar, off = my_pts[:], my_bar, my_off
+    for from_pt in froms:
+        if from_pt == -1:
+            continue
+        if not can_apply_move(pts, opp_pts, bar, off, from_pt, die):
+            return False
+        pts, bar, off = apply_move(pts, opp_pts, bar, off, from_pt, die)
+    return True
+
+
+def get_possible_froms(my_pts, my_bar, my_off, die):
+    froms = []
+    if my_bar > 0:
+        froms.append(-1)  # Bar
+    else:
+        for pt in range(24):
+            if my_pts[pt] > 0:
+                froms.append(pt)
+    return froms
+
+
+def can_apply_move(my_pts, opp_pts, my_bar, my_off, from_pt, die):
+    if from_pt == -1:  # From bar
+        if my_bar == 0:
+            return False
+        to_pt = 24 - die
+        return opp_pts[to_pt] < 2
+    
+    if my_pts[from_pt] == 0:
+        return False
+    
+    to_pt = from_pt - die
+    
+    if to_pt < 0:  # Bearing off
+        return can_bear_off(my_pts, my_bar, from_pt, die)
+    
+    return opp_pts[to_pt] < 2
+
+
+def can_bear_off(my_pts, my_bar, from_pt, die):
+    if my_bar > 0:
+        return False
+    
+    # All checkers must be in home board (0-5)
+    for pt in range(6, 24):
+        if my_pts[pt] > 0:
+            return False
+    
+    to_pt = from_pt - die
+    if to_pt < 0:
+        # Exact or from highest point
+        if to_pt == -die + from_pt:
+            return True
+        # Check if no checkers on higher points
+        for pt in range(from_pt + 1, 6):
+            if my_pts[pt] > 0:
+                return False
+        return True
+    
+    return True
+
+
+def apply_move(my_pts, opp_pts, my_bar, my_off, from_pt, die):
+    new_pts = my_pts[:]
+    new_bar = my_bar
+    new_off = my_off
+    
+    if from_pt == -1:
+        new_bar -= 1
+        to_pt = 24 - die
+        new_pts[to_pt] += 1
+    else:
+        new_pts[from_pt] -= 1
+        to_pt = from_pt - die
+        if to_pt < 0:
+            new_off += 1
+        else:
+            new_pts[to_pt] += 1
+    
+    return new_pts, new_bar, new_off
+
+
+def evaluate_move(state, move):
+    order, from1, from2 = move
+    my_pts = state['my_pts'][:]
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    my_off = state['my_off']
+    dice = sorted(state['dice'], reverse=True)
+    
+    # Apply the move
+    if order == 'H':
+        dice_order = dice
+    else:
+        dice_order = [dice[1], dice[0]]
+    
+    if from1 != -1:
+        my_pts, my_bar, my_off = apply_move(my_pts, opp_pts, my_bar, my_off, from1, dice_order[0])
+    if from2 != -1:
+        my_pts, my_bar, my_off = apply_move(my_pts, opp_pts, my_bar, my_off, from2, dice_order[1])
+    
+    score = 0
+    
+    # Pip count (lower is better)
+    pip_count = sum((23 - i) * my_pts[i] for i in range(24)) + my_bar * 25
+    score -= pip_count * 2
+    
+    # Penalize blots heavily
+    for i in range(24):
+        if my_pts[i] == 1:
+            exposure = min(6, 23 - i)  # More dangerous closer to opponent
+            score -= exposure * 15
+    
+    # Reward made points (2+ checkers)
+    for i in range(24):
+        if my_pts[i] >= 2:
+            score += 20
+            if i >= 18:  # Home board points are valuable
+                score += 10
+    
+    # Reward consecutive points (primes)
+    for i in range(19):
+        consecutive = 0
+        for j in range(i, min(i + 6, 24)):
+            if my_pts[j] >= 2:
+                consecutive += 1
+            else:
+                break
+        score += consecutive ** 2 * 10
+    
+    # Borne off checkers
+    score += my_off * 100
+    
+    # Penalize bar
+    score -= my_bar * 50
+    
+    return score
+
+
+def format_move(move, dice):
+    order, from1, from2 = move
+    
+    def fmt(f):
+        if f == -1:
+            return 'B' if from1 == -1 or from2 == -1 else 'P'
+        return f'A{f}'
+    
+    f1 = fmt(from1) if from1 != -1 else ('B' if move[1] == -1 else 'P')
+    f2 = fmt(from2) if from2 != -1 else ('B' if move[2] == -1 else 'P')
+    
+    return f"{order}:{f1},{f2}"
+</code>

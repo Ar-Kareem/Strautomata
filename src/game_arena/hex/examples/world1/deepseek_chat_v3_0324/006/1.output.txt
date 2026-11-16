@@ -1,0 +1,112 @@
+I'll create a strategy that combines several effective Hex game approaches:
+
+1. **Prioritize critical paths**: Identify the most urgent connections needed between my sides
+2. **Block opponent's progress**: Detect opponent's potential winning paths and interrupt them
+3. **Bridge building**: Create multiple potential paths to victory
+4. **Center control**: Favor central positions which offer more connection possibilities
+
+The policy will:
+1. First check if there's an immediate winning move for either player (play it if winning, block if opponent is winning)
+2. Otherwise, use a heuristic evaluation of board positions based on distance to both sides
+3. Prefer moves that both advance our position and block the opponent
+
+Here's the implementation:
+
+<code>
+import heapq
+from collections import deque
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    # Check for immediate winning moves for either player
+    board = [[0 for _ in range(11)] for _ in range(11)]
+    for (i, j) in me:
+        board[i][j] = 1
+    for (i, j) in opp:
+        board[i][j] = -1
+        
+    # Get all empty cells
+    empty_cells = []
+    for i in range(11):
+        for j in range(11):
+            if board[i][j] == 0:
+                empty_cells.append((i, j))
+    
+    # Check immediate wins
+    for cell in empty_cells:
+        board[cell[0]][cell[1]] = 1
+        if has_winning_path(board, color, 1):
+            board[cell[0]][cell[1]] = 0
+            return cell
+        board[cell[0]][cell[1]] = 0
+        
+    for cell in empty_cells:
+        board[cell[0]][cell[1]] = -1
+        if has_winning_path(board, opp_color(color), -1):
+            board[cell[0]][cell[1]] = 0
+            return cell  # Block opponent
+        board[cell[0]][cell[1]] = 0
+    
+    # Use heuristic evaluation of positions
+    best_move = None
+    best_score = -float('inf')
+    
+    for cell in empty_cells:
+        # Potential distance to both sides
+        my_score = cell_score(cell, color) 
+        opp_block_score = cell_score(cell, opp_color(color))
+        
+        # Centrality bonus (center is at (5,5))
+        centrality = 10 - (abs(cell[0] - 5) + abs(cell[1] - 5))
+        
+        total_score = my_score + 0.8 * opp_block_score + 0.3 * centrality
+        
+        if total_score > best_score:
+            best_score = total_score
+            best_move = cell
+    
+    return best_move if best_move else empty_cells[0]  # fallback
+
+def opp_color(color):
+    return 'w' if color == 'b' else 'b'
+
+def has_winning_path(board, color, player_value):
+    # BFS to check if there's a connecting path
+    if color == 'b':  # top-bottom
+        top = [(0, j) for j in range(11) if board[0][j] == player_value]
+        visited = set(top)
+        queue = deque(top)
+        directions = [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0)]
+        
+        while queue:
+            i, j = queue.popleft()
+            if i == 10:
+                return True
+            for di, dj in directions:
+                ni, nj = i + di, j + dj
+                if 0 <= ni < 11 and 0 <= nj < 11 and board[ni][nj] == player_value and (ni, nj) not in visited:
+                    visited.add((ni, nj))
+                    queue.append((ni, nj))
+    else:  # left-right
+        left = [(i, 0) for i in range(11) if board[i][0] == player_value]
+        visited = set(left)
+        queue = deque(left)
+        directions = [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0)]
+        
+        while queue:
+            i, j = queue.popleft()
+            if j == 10:
+                return True
+            for di, dj in directions:
+                ni, nj = i + di, j + dj
+                if 0 <= ni < 11 and 0 <= nj < 11 and board[ni][nj] == player_value and (ni, nj) not in visited:
+                    visited.add((ni, nj))
+                    queue.append((ni, nj))
+    return False
+
+def cell_score(cell, color):
+    # Calculate how much this cell advances toward both sides
+    if color == 'b':
+        return (10 - cell[0]) + cell[0]  # distance to bottom + distance to top
+    else:
+        return (10 - cell[1]) + cell[1]  # distance to right + distance to left
+</code>

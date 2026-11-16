@@ -1,0 +1,1830 @@
+<thinking>
+The user wants me to implement a strong AI policy for the game Lines of Action (LoA) on an 8x8 board.
+The game rules:
+- 8x8 board.
+- Player 1: 1, Player 2: -1 (I am 1).
+- Move: A piece moves in 8 directions (horizontal, vertical, diagonal).
+- Movement distance: Must equal the number of pieces (both colors) in the line of movement.
+- Captures: Can land on and capture enemy pieces.
+- Connectivity: Goal is to connect all pieces.
+- No jumping over enemy pieces.
+
+I need to write a `policy(board)` function that returns a move string "r1,c1:r2,c2".
+The move must be legal.
+
+The policy needs to be "smart" to beat other policies.
+Given the 1-second time limit, I can afford some search, but it must be efficient.
+This is a two-player zero-sum game.
+I will implement a Minimax search with Alpha-Beta pruning.
+Depth will be limited (maybe 2-4 plies depending on complexity).
+Since the branching factor can be high, I need efficient move generation.
+
+Move Generation Logic:
+1. Identify all my pieces (1).
+2. For each piece, consider 8 directions: Up, Down, Left, Right, Up-Left, Up-Right, Down-Left, Down-Right.
+3. Calculate "line count" for each direction: number of pieces (1 + -1) encountered in that line starting from the piece's position and extending to the board edge.
+   - Wait, the rule says "as many squares as there are pieces (both players) in the line of movement".
+   - This usually means the total count of pieces in that line (row, col, or diagonal).
+   - Example: In a row, if there are 3 pieces total (my pieces and opponent pieces), the move distance is 3.
+   - The piece moves exactly `count` squares.
+   - It must not jump over enemy pieces *unless* it lands on them? No, "may not jump over enemy pieces".
+   - Wait, let's re-read: "A piece may jump over friendly pieces but may not jump over enemy pieces."
+   - This implies the path must be clear of enemy pieces.
+   - However, the distance is fixed by the line count.
+   - So, if I want to move distance `D`, and the line count is `C`, I must have `D == C`.
+   - I must check if the destination square `pos + dir * D` is valid.
+   - I must check if the path is clear (except for friendly pieces? No, "jump over friendly pieces" implies they are skipped).
+   - Actually, "jump over" usually implies moving through a square occupied by a piece.
+   - In LoA, pieces move along the line. If the destination is occupied by an enemy, it is captured.
+   - The "no jump over enemy" rule means I cannot pass through an enemy piece to get to the destination.
+   - So, between the start and the destination (exclusive), there must be no enemy pieces.
+   - Friendly pieces in between don't block the move (they are jumped over).
+
+Efficient Move Generation:
+- Pre-calculate piece counts per row, col, diag, anti-diag for every cell?
+- Or just iterate.
+
+Minimax/Alpha-Beta:
+- Evaluation function: Connectivity + Piece count + Mobility + Centrality.
+- Goal: Connect all pieces.
+- Terminal states: All pieces connected (Win), No moves (Loss/Limit?).
+
+Heuristics:
+1. Connectivity: Measure the size of the largest cluster of my pieces vs opponent. Or simply: number of connected components of my pieces.
+   - We want to minimize the number of connected components.
+   - If `num_components == 1`, it's a win.
+   - Evaluation: `100 - (num_components * 10)`.
+2. Piece Count: `my_pieces - opp_pieces`.
+3. Mobility: Number of legal moves available.
+4. Centrality: Distance from center (prefer center).
+
+Time Management:
+- Python can do roughly millions of operations per second.
+- Move generation is the bottleneck.
+- I need to optimize the move generation.
+- Board size is small (64 cells).
+- I can use bitboards or numpy arrays. Numpy is easier and likely fast enough if vectorized, but loops in Python are slow.
+- Let's stick to simple lists for portability, or numpy if it simplifies line counts.
+
+Actually, standard LoA rules:
+- Count includes all pieces in the row/col/diag *of the moving piece*.
+- The distance is exactly that count.
+- If the move lands on an enemy, it captures.
+- If the destination is blocked by an enemy (in the path), it's invalid.
+- If the destination is blocked by a friendly (landing on it), it's invalid unless capturing? No, landing on friendly is invalid.
+
+Let's refine the move generation for one piece `(r, c)`:
+Directions `dr, dc` in `[(-1,0), (1,0), (0,-1), (0,1), (-1,-1), (-1,1), (1,-1), (1,1)]`.
+1. Calculate line count `C`.
+   - Count pieces in the line.
+   - Wait, "as many squares as there are pieces (both players) in the line of movement".
+   - Does this mean the number of pieces *excluding* the moving piece?
+   - Usually, it includes the moving piece. Let's verify standard rules.
+   - Standard LoA: "The piece moves a number of squares equal to the number of pieces (both black and white) in the row, column, or diagonal it is moving along."
+   - Yes, includes itself.
+   - So `count = number of pieces on the line`.
+2. Destination `(tr, tc) = (r + dr * count, c + dc * count)`.
+3. Check if `(tr, tc)` is on board.
+4. Check path.
+   - Path squares: `t = 1 to count-1`.
+   - `cr = r + dr * t`, `cc = c + dc * t`.
+   - If `board[cr][cc] == -1` (enemy), invalid (cannot jump over).
+   - If `board[cr][cc] == 1` (friendly), valid (jump over).
+   - If `count == 1`, path check is trivial.
+5. Check landing square `(tr, tc)`.
+   - If `board[tr][tc] == 1` (friendly), invalid (cannot land on friendly).
+   - If `board[tr][tc] == -1` (enemy), valid (capture).
+   - If `board[tr][tc] == 0` (empty), valid.
+
+Wait, if the path contains an enemy, we cannot jump over it. But what if the enemy is at the destination? We capture it.
+So the path check is `for t in 1...count-1`.
+If `board[r+dr*t][c+dc*t]` is an enemy, break (invalid).
+
+Board representation:
+`board` is a list of lists of ints (or numpy array).
+Indices: `board[row][col]`.
+
+Search Strategy:
+- Negamax (simpler implementation of Alpha-Beta for zero-sum).
+- Depth: 3 or 4. With 1 second limit, Python might struggle with depth 4 if move generation is not very optimized.
+- Let's aim for depth 3 initially. If I have time, I'll optimize or increase depth.
+
+Optimization:
+- Use `numpy` for board if allowed. It allows vectorized operations for counting pieces in lines? Maybe not easily for arbitrary lines.
+- Simple loops are fine for 64 cells.
+- Generating moves: Iterate 64 cells, for each 8 directions. 64 * 8 = 512 checks. Very fast.
+- Counting pieces in line: Iterate outwards. Max 7 steps. Total operations per move gen: < 5000. Very fast.
+- So I can probably do depth 4 or 5 easily within 1s.
+
+Evaluation Function:
+- `heuristic = 0`
+- `my_pieces`, `opp_pieces` count.
+- `my_components`, `opp_components`: Count connected components (8-way BFS/DFS).
+  - If `my_components == 1`: Win. Return large positive value (e.g., 10000).
+  - If `opp_components == 1`: Loss. Return large negative value (e.g., -10000).
+- `heuristic += (opp_components - my_components) * 10` (prefer fewer components for self, more for opponent).
+- `heuristic += (my_pieces - opp_pieces) * 5` (material advantage).
+- `heuristic += mobility * 0.1` (move options).
+- `heuristic += centrality` (e.g., 4 - distance to center).
+
+Connecting Components:
+- This is the most important part.
+- My evaluation should heavily penalize having many components.
+
+Edge Cases:
+- What if I have 0 pieces? Game over.
+- What if opponent has 0 pieces? I won (unlikely).
+- What if no moves? Pass? Standard LoA is no-pass. If no moves, you lose. Or maybe you just skip? Usually if a player cannot move, the game continues? No, in LoA if you have pieces, you usually have a move because distance is determined by line count. If line count is 0 (no pieces in line), you can't move? No, the line *must* contain the moving piece, so count is at least 1.
+- Wait, "number of pieces in the line". If you are alone in the row/col/diag, count=1. Distance 1. Move adjacent.
+- So a move is always possible unless the piece is trapped (adjacent squares blocked by friendly or enemy, and distance 1 moves are blocked).
+- Or if the calculated destination is off-board.
+
+Implementation Details:
+- `policy(board)` function.
+- Parse board.
+- Find my pieces.
+- Generate moves.
+- If only one move, return it.
+- Run Negamax search to find best move.
+- Return best move.
+
+Negamax:
+- `negamax(board, depth, alpha, beta, color)`
+- `color` is 1 for me, -1 for opponent.
+- Swap board colors for opponent turn.
+
+Board representation for search:
+- I should use a flat list or list of lists.
+- Copying the board for recursion is expensive.
+- I can use a mutable board and undo moves.
+- Python recursion depth might be an issue if depth > 10. 3-5 is fine.
+- Move format: `(r1, c1, r2, c2)`.
+
+Optimizing Evaluation:
+- Connectivity check is expensive if done via BFS every time.
+- But board is small (64). BFS visits max 64 cells.
+- Max depth 5. Max nodes: Branching factor?
+- Branching factor: Average moves per piece * num_pieces.
+- Pieces: Starts at 12 each. Max 24.
+- Moves per piece: 8 directions, but distance constraint. Average maybe 2-3.
+- Total moves: ~50-100.
+- At depth 5, full tree is huge. We need pruning.
+- Alpha-beta should prune heavily if evaluation is sharp.
+
+Connectivity Heuristic Optimization:
+- Instead of full BFS for components every time, maybe just "number of pairs of adjacent pieces"?
+- `adjacent_pairs`: Sum of neighbors of my pieces / 2.
+- This correlates with connectivity.
+- If `adjacent_pairs == total_pieces - 1`, it's a tree (connected graph).
+- Actually, for a single group, edges >= vertices - 1.
+- But we need 8-way connectivity.
+- Let's use a simple DFS count of components. It's fine.
+
+Time check:
+- I need to ensure I don't exceed 1 second.
+- I can use `time.time()` to check elapsed time and adjust depth dynamically.
+- Or just hardcode depth based on number of pieces.
+- If pieces < 6, depth can be higher.
+- If pieces > 16, depth must be low (1-2).
+
+Plan:
+1. Helper: `get_moves(board, player)`. Returns list of `(r1,c1,r2,c2)`.
+2. Helper: `apply_move(board, move)`. Returns new board.
+   - Or `apply` and `undo` for speed.
+3. Helper: `evaluate(board, player)`.
+   - Check win/loss.
+   - Heuristic score.
+4. Main: `policy(board)`.
+   - Get all moves for me.
+   - If 0 moves: ? Should not happen in valid LoA until capture/end. But if it does, maybe pass? The rules say "move".
+   - If 1 move: return it.
+   - Run iterative deepening or fixed depth minimax.
+   - Use `time` to limit execution.
+
+Let's refine `get_moves`:
+For `r` in 0..7, `c` in 0..7:
+  if `board[r][c] == player`:
+    for `dr, dc` in directions:
+      count = 0
+      # Count pieces in line
+      # We need to count ALL pieces in the row/col/diag starting from (r,c)?
+      # "in the line of movement".
+      # Usually means the entire row, col, or diagonal.
+      # But the piece is part of it. So we count from the piece outwards to edges?
+      # Yes, we scan the line in both directions from the piece?
+      # No, the rule says "in the line of movement".
+      # The line of movement is the specific line (row, col, diag) the piece is on.
+      # We need the count of pieces *in that line*.
+      # Example: Piece at (0,0). Row 0 has 3 pieces. Col 0 has 2 pieces. Diag has 4 pieces.
+      # If moving right, count = 3. If moving down, count = 2. If moving down-right, count = 4.
+      # So we need to count pieces in the specific line (row, col, or diagonal) the piece is on.
+      # This is a fixed property of the cell and board.
+      # However, count changes if capture happens. So must be calculated dynamically or updated.
+      # Calculating dynamically is safer and not too expensive.
+
+      # Let's implement counting:
+      # Row: scan (r, 0..7)
+      # Col: scan (0..7, c)
+      # Diag: scan (r-d, c-d) to (r+d, c+d) -> depends on direction.
+      
+      # Optimization: Count total pieces in line.
+      # If direction is horizontal: count = sum(board[r])
+      # If vertical: sum(board[i][c] for i in 0..7)
+      # If diagonal (dr!=0, dc!=0): count pieces on that diagonal.
+      
+      # Wait, if I move `count` squares, I might jump over the *entire* group?
+      # Yes.
+      
+      # Let's implement `count_line_pieces(board, r, c, dr, dc)`.
+      # If horizontal: sum(board[r])
+      # If vertical: sum(board[i][c])
+      # If diagonal: iterate along diagonal.
+      
+      # Then dest_r = r + dr * count, dest_c = c + dc * count.
+      # Check bounds.
+      # Check path: if dr != 0 or dc != 0:
+      #   for t in range(1, count):
+      #     if board[r+dr*t][c+dc*t] == -player: invalid.
+      # Check dest: if board[dest_r][dest_c] == player: invalid.
+      # Else: valid.
+
+Wait, `count` must be calculated specifically for the line of movement.
+If moving horizontally, count = pieces in row.
+If moving vertically, count = pieces in column.
+If moving diagonally, count = pieces in that diagonal.
+
+This is correct.
+
+Let's refine the evaluation.
+- Win condition: All pieces connected.
+- I should check this first.
+- Then, `components` difference.
+- `material` difference.
+- `mobility` difference.
+- `density` (sum of distances from center? Or centrality).
+
+Connectivity check:
+BFS to find connected components of `player`.
+Count components `C`.
+If `C == 1`: Win.
+If `C == 0`: No pieces? Should be handled.
+
+Score:
+`score = 0`
+`score += (opp_components - my_components) * 100` (Large weight to connectivity).
+`score += (my_pieces - opp_pieces) * 10`.
+`score += (my_mobility - opp_mobility) * 0.1`.
+
+This looks solid.
+
+Time Management Implementation:
+- I'll do Iterative Deepening.
+- Start depth 1, 2, 3...
+- At each depth, run Minimax.
+- If time > 0.9s, stop and return best move found so far.
+- Or fixed depth based on phase.
+- Phase 1 (early game): High connectivity needed, fewer pieces, search deeper.
+- Phase 2 (late game): High piece count, chaos, search wider but maybe shallower?
+- Actually, late game is tactical, so deeper is better.
+- But branching factor increases as pieces spread out?
+- Actually, pieces clump up in LoA.
+- Let's stick to fixed depth 4, or 5 if time permits.
+
+Let's use Negamax with Alpha-Beta.
+Transposition table might be useful but complicates code. For 64 cells, we can just use Zobrist hashing if needed, but maybe overkill.
+State caching: Board is `8x8`. Python `tuple` of `tuples` is hashable. Can use LRU cache.
+But with depth search, we re-evaluate states often.
+However, with captures, states are unique mostly.
+Let's skip TT for simplicity but keep evaluation efficient.
+
+Let's write the code.
+
+Board representation:
+`board` is list of lists.
+To pass to recursion, I need to copy.
+`new_board = [row[:] for row in board]` is fast enough for 64 elements.
+Or I can use `numpy`. `np.copy(board)` is very fast if it's a numpy array.
+The prompt says "You may use any standard Python imports, including numpy."
+The input `board` *might* be a numpy array or list of lists.
+I should handle both or convert to my preferred format.
+Let's assume it's a list of lists of ints.
+I will use a list of lists for internal processing.
+To optimize, I might convert to numpy internally if I need speed, but loops are likely fine for 64x64 nodes.
+
+Wait, `time limit is 1 second`.
+At depth 5, branching factor ~50.
+Nodes at depth 5: 50^5 = 312,500,000. Too many.
+But pruning reduces this drastically.
+Effective branching factor with Alpha-Beta: ~6-10?
+If branching factor 10, depth 5 is 100,000 nodes. Python can do 100k evaluations in <1s if evaluation is cheap.
+Evaluation needs to be cheap.
+BFS for connectivity is expensive (64 ops).
+100k * 64 = 6.4 million ops. Plus move generation.
+This should be okay.
+But if branching factor is 50, it's 312M. Too slow.
+So I must limit depth or optimize heavily.
+Depth 3: 125k nodes. Very safe.
+Depth 4: 1.25M nodes. Probably okay.
+Let's try to hit depth 4.
+
+Optimization for `count_line_pieces`:
+Calculate row counts, col counts, diag counts, anti-diag counts once per board state?
+Row counts: `sum(board[r])`. Fast.
+Col counts: `sum(board[i][c] for i in range(8))`. Fast.
+Diag counts: Precompute dictionary `diag_counts[r, c]`? No, dynamic.
+Actually, for a move, we only need count for *one* line.
+Calculating `sum(board[r])` is 8 adds. Very fast.
+Calculating diagonal sum is max 8 adds.
+So `count_line_pieces` is negligible.
+
+Main bottleneck: Move generation loop (64 cells * 8 dirs).
+64*8 = 512 checks.
+Check path: loop `count` (max 8).
+So ~4000 operations per move generation.
+If we generate moves for 50 nodes per depth, depth 5:
+50 * 5 * 4000 = 1,000,000 operations. Very fast.
+Wait, at root we generate moves once.
+In recursion, we generate moves for each node.
+If we have 100 nodes at depth 1, 50 at depth 2...
+Total nodes visited = N.
+Total operations = N * (move_gen_cost + eval_cost).
+Move gen cost: ~5000 ops (let's be pessimistic).
+Eval cost: BFS (64 ops).
+Total ops: N * 5000.
+If N = 50,000, ops = 250,000,000. Might be slow in Python.
+If N = 5,000, ops = 25,000,000. Fast.
+We need to prune well.
+
+Heuristic order:
+Sort moves?
+- Captures first.
+- Moves that reduce my components (connecting) first.
+- Moves that increase opponent components (splitting) first.
+This improves alpha-beta pruning.
+
+Implementation details for move generation:
+- Directions: `dirs = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]`
+- For `(r, c)` where `board[r][c] == player`:
+  - Row count: `count = sum(board[r])`
+  - ... and so on.
+
+Wait, row count is independent of direction.
+If moving horizontally: count = row_sum.
+If moving vertically: count = col_sum.
+If moving diagonally: count = diag_sum.
+
+The piece moves `count` squares.
+So for horizontal: `c_dest = c + sign(dc) * count`.
+Check bounds.
+Check path.
+Check dest.
+
+Let's code the helper functions first.
+
+Structure:
+```python
+import time
+import numpy as np (maybe not needed, standard lists are fine)
+
+def policy(board):
+    start_time = time.time()
+    # Convert board to standard format if needed
+    # ...
+    
+    # Find my moves
+    root_moves = generate_moves(board, 1)
+    
+    if not root_moves:
+        # No moves? Should not happen.
+        # Maybe return a dummy move or pass? Let's try to find a move.
+        # If truly no moves, we lose. Just return first move or raise?
+        # Let's return "0,0:0,0" or similar invalid? No, must be legal.
+        # If no legal moves, what does LoA do? Usually if you have pieces, you can move.
+        # Maybe I am trapped.
+        # Let's just return a random move from empty list -> error.
+        # Let's handle it gracefully.
+        return "0,0:0,0" # Just in case, though legal engine shouldn't call this if no moves.
+    
+    if len(root_moves) == 1:
+        return format_move(root_moves[0])
+    
+    best_move = root_moves[0]
+    
+    # Iterative Deepening
+    depth = 1
+    while True:
+        if time.time() - start_time > 0.5:
+            break
+            
+        # Alpha-Beta search for this depth
+        # ...
+        depth += 1
+        if depth > 6: # Cap
+            break
+            
+    return format_move(best_move)
+```
+
+Need `negamax(board, depth, alpha, beta, player, start_time)`.
+
+Move generation details:
+How to count line pieces?
+- `row_sum = sum(board[r])`
+- `col_sum = sum(board[i][c] for i in range(8))`
+- `diag_sum`: Diagonal containing `(r,c)`. `r - c` is constant. Iterate `r from max(0, r-c) to min(7, 7+r-c)`? Actually, just iterate `i` such that `0 <= r + i < 8` and `0 <= c + i < 8`.
+- `anti_diag_sum`: `r + c` is constant. `r` goes down, `c` goes up.
+
+Wait, `sum(board[r])` includes `board[r][c]` (the piece itself).
+`col_sum` includes `board[r][c]`.
+`diag_sum` includes `board[r][c]`.
+This is correct per rules.
+
+Path check:
+`dest_r = r + dr * count`
+`dest_c = c + dc * count`
+Path squares: `t` from 1 to `count - 1`.
+`curr_r = r + dr * t`
+`curr_c = c + dc * t`
+If `board[curr_r][curr_c] == -player`: blocked. Return False.
+If `board[curr_r][curr_c] == player`: jumped over. OK.
+If `board[curr_r][curr_c] == 0`: empty. OK.
+
+Destination check:
+If `dest_r, dest_c` not in bounds: Invalid.
+If `board[dest_r][dest_c] == player`: Invalid.
+Else: Valid.
+
+Capture:
+If `board[dest_r][dest_c] == -player`: capture happens.
+This is handled naturally by `apply_move`.
+
+`apply_move(board, move)`:
+`r1, c1, r2, c2 = move`
+`player = board[r1][c1]`
+`board[r2][c2] = player` (capture or move)
+`board[r1][c1] = 0`
+Return new board.
+
+Evaluation:
+`heuristic = 0`
+`my_pieces = count(1)`
+`opp_pieces = count(-1)`
+`my_comp = count_components(1)`
+`opp_comp = count_components(-1)`
+
+If `my_comp == 1`: return `10000` (Win)
+If `opp_comp == 1`: return `-10000` (Loss)
+
+`heuristic += (opp_comp - my_comp) * 100` (Connectivity is key)
+`heuristic += (my_pieces - opp_pieces) * 10`
+`heuristic += (mobility_1 - mobility_-1) * 0.1`
+
+For `mobility`, I can just count `len(generate_moves(board, player))`. This is expensive.
+Do I need mobility?
+Connectivity is the most important.
+Maybe `my_pieces` is enough.
+Let's stick to:
+- `score = (opp_comp - my_comp) * 100`
+- `score += (my_pieces - opp_pieces) * 10`
+- `score += centrality(player) - centrality(-player)`
+
+Centrality:
+Sum of `dist((r,c), (3.5, 3.5))` for pieces.
+Small distance -> higher score.
+`score += (dist_opp - dist_me)`.
+
+This heuristic is simple and fast.
+
+Connectivity implementation:
+BFS/DFS.
+Iterate board, find first piece of `player`.
+BFS to mark connected pieces.
+Count how many times we start a BFS.
+This is O(N) where N=64. Fast.
+
+Time Check:
+In `negamax`, check `time.time()` occasionally.
+If time exceeded, raise exception or return early.
+Or better, use iterative deepening. At start of depth loop, check time.
+If `time > limit`, stop.
+The previous depth's result is the best move found.
+
+Actually, for `policy`, we just need to return a move.
+Iterative deepening is good.
+We run depth 1, store best.
+Run depth 2, store best...
+Stop when time runs out.
+Return the best from the last completed depth.
+
+Edge case: What if I have 1 piece?
+Connectivity is 1.
+Move: Count pieces in line.
+Dest check.
+If I land on opponent, capture.
+Goal is to connect. With 1 piece, I just survive until I capture or join.
+
+Edge case: What if my pieces are already connected?
+Heuristic `opp_comp - my_comp` is positive if opponent has more components.
+If I am connected (my_comp=1), `opp_comp` is usually > 1.
+So score > 0. Good.
+
+Let's refine the connectivity logic.
+If I am connected (1 component), I want to minimize opponent's connectivity?
+No, I want to win. If I am connected, I win immediately.
+Wait, the prompt says "Objective is to connect all your pieces".
+So if `my_comp == 1`, it's a win.
+If `opp_comp == 1`, it's a loss.
+So the evaluation should reflect this.
+
+Code structure:
+```python
+import time
+
+# Constants
+DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+def policy(board):
+    # ... implementation
+```
+
+Need to handle board format.
+`board` is `8x8 grid of ints`.
+Can be list of lists, or numpy array.
+I'll treat it as list of lists. If numpy, I can convert or use `tolist()`.
+`if hasattr(board, 'tolist'): board = board.tolist()`
+But `board[0][0]` works for both.
+`sum(board[r])` works for list, but for numpy it sums the row.
+Let's assume standard list behavior. If numpy, `board[r]` is a numpy array, `sum(board[r])` works.
+
+Wait, `board` is passed as argument.
+I should make a copy to a standard list of lists to be safe? No, passed by reference if it's a list.
+If I modify board in recursion, I need to undo changes.
+So I should use `apply_move` and `undo_move` or copy.
+Copying `8x8` list is fast.
+`new_board = [row[:] for row in board]`
+If I do this at every node, it adds overhead.
+But it's safer and simpler for correct alpha-beta.
+Time check: 10,000 nodes * copying 64 ints = 640,000 copies. Negligible.
+Let's go with copying to keep code clean and bug-free.
+
+Wait, 100,000 nodes?
+Copying 100k * 64 = 6.4 million integers.
+Python integer creation is expensive.
+Maybe in-place modification with undo is better.
+Let's try to optimize.
+`apply_move`: modifies board.
+`undo_move`: restores board.
+We need to store captured piece info.
+
+```python
+def apply_move(board, r1, c1, r2, c2):
+    player = board[r1][c1]
+    captured = board[r2][c2]
+    board[r2][c2] = player
+    board[r1][c1] = 0
+    return captured
+
+def undo_move(board, r1, c1, r2, c2, captured):
+    player = board[r2][c2]
+    board[r1][c1] = player
+    board[r2][c2] = captured
+```
+
+This is much more memory efficient and likely faster.
+
+Let's put it all together.
+
+Details on `count_line_pieces`:
+- Horizontal: `sum(board[r])`
+- Vertical: `sum(board[i][c] for i in range(8))`
+- Diagonal (dr=-1, dc=-1 or dr=1, dc=1): `r - c` const. Iterate `i`:
+  `r_start = max(0, r - c)`? No, simpler:
+  Iterate `k` from -7 to 7.
+  `curr_r = r + k * dr`, `curr_c = c + k * dc`.
+  Check bounds. Sum.
+- Anti-diagonal (dr=-1, dc=1 or dr=1, dc=-1): `r + c` const.
+  Similar iteration.
+
+Optimization: We don't need to sum the whole line if we only need the count.
+But we do need the count to calculate destination.
+And we need to check path anyway.
+Wait, path check is `for t in 1...count-1`.
+If we calculate count first, then check path.
+If path fails, we discard move.
+Calculating count is cheap.
+
+One detail: The line count includes the moving piece.
+If `sum(board[r])` returns 3, and I am moving, my piece is included.
+Correct.
+
+Let's write the code.
+
+Check for "jump over friendly pieces".
+Path check: `board[curr_r][curr_c] == -player` -> invalid.
+If `board[curr_r][curr_c] == player` -> OK.
+If `board[curr_r][curr_c] == 0` -> OK.
+
+Check for "landing on enemy".
+`board[dest_r][dest_c] == -player` -> Valid (capture).
+`board[dest_r][dest_c] == 0` -> Valid.
+`board[dest_r][dest_c] == player` -> Invalid.
+
+What if `count` is 0? Impossible, at least 1 (the piece itself).
+What if `count` is 1? `dest` is `adjacent`. Path loop range(1,1) is empty. No path check.
+Dest check: `adjacent`.
+
+Final check: `time.time() - start_time > 0.9`.
+I'll implement iterative deepening.
+Root search:
+At depth `d`, `negamax` returns score.
+I store the move corresponding to max score.
+I must track the best move at root level.
+Inside `negamax`, if `depth == 0`, return eval.
+If `depth > 0`, generate moves, loop, recurse.
+
+For root node, I need to select the best move.
+Standard iterative deepening:
+Loop `depth` 1..max:
+  `best_score = -inf`
+  `best_move = None`
+  For each `move` in `moves`:
+    `apply`
+    `score = -negamax(..., depth-1, -beta, -alpha)`
+    `undo`
+    If `score > best_score`: update.
+    Update `alpha`.
+  If `time out`: break.
+
+This structure is correct.
+
+One thing: `negamax` returns score from current player's perspective.
+So `score = -negamax(...)`.
+
+Let's code the components.
+
+Check `count_line_pieces` again.
+For diagonal:
+`dr, dc` in `(-1, -1), (1, 1)`:
+Iterate `k`:
+  `r_k = r + k * dr`, `c_k = c + k * dc`
+  While `0 <= r_k < 8` and `0 <= c_k < 8`:
+    count += `abs(board[r_k][c_k])` (or `1` if != 0)
+    `r_k += dr`, `c_k += dc`
+
+Yes.
+
+One catch: `sum(board[r])` counts 1 and -1.
+Correct.
+
+Let's refine the board modification strategy to be super fast.
+I'll use a single global board list and modify it in place with undo.
+To avoid race conditions (though single thread), it's fine.
+Need to be careful with recursion.
+`apply_move` modifies the board.
+`negamax` calls itself.
+When it returns, `undo_move` is called.
+
+Board indices:
+`board[row][col]`
+Row 0 is top.
+Row 7 is bottom.
+Directions: `(-1, 0)` is Up.
+
+The user is Player 1 (`1`).
+Opponent is `-1`.
+
+Implementation:
+```python
+import time
+
+# Directions: Up, Down, Left, Right, UPL, UPR, DNL, DNR
+DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+# Global variable to store the board to avoid passing it around?
+# Or pass as argument. Let's use a class or closure.
+# Actually, just functions with `board` argument is cleaner.
+# But for speed, let's use a mutable board passed by reference.
+# Python lists are mutable.
+# So `board` in `negamax` is the same object.
+# We must undo moves.
+```
+
+Let's write the helper functions.
+
+1. `count_line(board, r, c, dr, dc)`:
+   Returns integer count.
+   Handles horizontal/vertical/diagonal.
+   Note: `dr, dc` determines the line.
+   - If `dr == 0` (horizontal): sum row.
+   - If `dc == 0` (vertical): sum col.
+   - If `dr != 0` and `dc != 0` (diagonal): sum diag/anti-diag.
+   Wait, for diagonal, we just sum the line.
+   If `dr == -1, dc == -1` or `1, 1`: `r - c` constant.
+   If `dr == -1, dc == 1` or `1, -1`: `r + c` constant.
+   Actually, we don't need to distinguish 1,1 vs 1,-1? No, the line is the same line regardless of direction we move along it.
+   But the line is defined by the direction of movement.
+   Wait. If I move `(-1, 1)`, I am on the diagonal `r + c = const`.
+   So `count_line` should return the count of pieces on that specific line.
+   So if `dr == 0`, horizontal.
+   If `dc == 0`, vertical.
+   If `dr != 0` and `dc != 0`:
+     If `dr * dc > 0` (both same sign): `r - c` const.
+     If `dr * dc < 0` (different sign): `r + c` const.
+
+   Correct.
+
+2. `get_moves(board, player)`:
+   List of `(r1, c1, r2, c2)`.
+   Iterate `r`, `c`.
+   If `board[r][c] == player`:
+     For `dr, dc` in `DIRS`:
+       `count = count_line(board, r, c, dr, dc)`
+       `dest_r = r + dr * count`, `dest_c = c + dc * count`
+       Check bounds `0 <= dest_r < 8`, `0 <= dest_c < 8`.
+       If yes:
+         `path_ok = True`
+         `for t in range(1, count):`
+           `check_r = r + dr * t`, `check_c = c + dc * t`
+           If `board[check_r][check_c] == -player`: `path_ok = False; break`
+         If `path_ok`:
+           `dest_val = board[dest_r][dest_c]`
+           If `dest_val != player`: # Can't land on friendly
+             `(r1, c1, r2, c2)`.
+   
+   Optimization: Calculate count once per direction.
+   Loop `count` for path check.
+
+3. `evaluate(board, player)`:
+   `my_pieces = 0`, `opp_pieces = 0`
+   `my_comp = 0`, `opp_comp = 0`
+   Use `visited` array or set for BFS.
+   BFS for connectivity.
+   Also calculate `centrality`.
+
+   Win check:
+   If `my_comp == 1`: return `INF`
+   If `opp_comp == 1`: return `-INF`
+   
+   Score:
+   `score = (opp_comp - my_comp) * 100`
+   `score += (my_pieces - opp_pieces) * 10`
+   `score += centrality`
+
+   Return `score`.
+
+   Note: `evaluate` returns score for `player`.
+   So `evaluate(board, 1)` is for me.
+   `evaluate(board, -1)` is for opponent.
+   In Negamax, we always evaluate from perspective of `player`.
+   Wait. Negamax `negamax(player)` returns value for `player`.
+   Eval function should return value for `player`.
+   So if `player` is 1, return `score_1`.
+   If `player` is -1, return `score_-1`.
+   Since the board state is static, `my` vs `opp` depends on `player`.
+   In `evaluate(board, player)`:
+   `my_pieces`: count `player`
+   `opp_pieces`: count `-player`
+   `my_comp`: count components of `player`
+   `opp_comp`: count components of `-player`
+
+4. `negamax(board, depth, alpha, beta, player, start_time)`:
+   `time_limit = 1.0`
+   If `time.time() - start_time > time_limit`: return 0 (or raise).
+   
+   `score = evaluate(board, player)`
+   If `depth == 0` or terminal: return score.
+   
+   `max_score = -INF`
+   `moves = get_moves(board, player)`
+   
+   (Move ordering: maybe sort moves? Hard to do without searching them first.
+    Capture moves first is good heuristic.
+    Check if destination has enemy.)
+   
+   `for move in moves`: # (r1, c1, r2, c2)
+     `captured = apply_move(board, r1, c1, r2, c2)`
+     `score = -negamax(board, depth - 1, -beta, -alpha, -player, start_time)`
+     `undo_move(board, r1, c1, r2, c2, captured)`
+     
+     `if score > max_score`: `max_score = score`
+     `if max_score > alpha`: `alpha = max_score`
+     `if alpha >= beta`: `break`
+     
+   return `max_score`.
+
+   Root call:
+   `best_move = None`
+   `max_score = -INF`
+   `for move in root_moves`:
+     `apply`
+     `score = -negamax(..., depth-1, ...)`
+     `undo`
+     `if score > max_score`: `best_move = move`, `max_score = score`
+   
+   Return `best_move`.
+
+Wait, `negamax` returns score for `player`.
+In root, `player` is 1.
+We want to maximize `score`.
+Loop: `val = -negamax(...)`.
+If `val > max_score`, update.
+Correct.
+
+One detail: `evaluate` must be fast.
+BFS for connectivity:
+```python
+def count_components(board, player):
+    visited = set()
+    components = 0
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == player and (r,c) not in visited:
+                components += 1
+                # BFS
+                q = [(r,c)]
+                visited.add((r,c))
+                while q:
+                    curr_r, curr_c = q.pop()
+                    for dr, dc in DIRS:
+                        nr, nc = curr_r + dr, curr_c + dc
+                        if 0 <= nr < 8 and 0 <= nc < 8:
+                            if board[nr][nc] == player and (nr, nc) not in visited:
+                                visited.add((nr, nc))
+                                q.append((nr, nc))
+    return components
+```
+This is O(64) per evaluation.
+If we have many nodes, this is the heavy part.
+Can we approximate connectivity?
+Maybe "number of adjacent friendly neighbors"?
+Sum of neighbors / 2.
+If `num_pieces - 1 == edges`, it's a tree (connected).
+If `edges >= num_pieces - 1`, likely connected.
+But it's possible to have cycles and multiple components.
+However, "connected components" is the exact metric.
+Let's stick to it. It's robust.
+
+Centrality:
+`(4 - |r - 3.5|) + (4 - |c - 3.5|)`
+Center is around (3.5, 3.5).
+Max distance is ~5.
+So range is roughly 0 to 10.
+Weight: `0.1`?
+
+`INF` should be large enough.
+`10000` is good.
+`10000 + remaining_pieces` to prioritize capture or win?
+
+Wait, if I win (connect), I return `INF`.
+If I lose (opp connects), return `-INF`.
+In Negamax, `INF` is propagated up.
+We need to ensure we pick the winning move even if it means depth limit.
+Alpha-Beta handles this.
+
+What if `time` is exceeded?
+`negamax` should return immediately.
+In `policy`, we run depth loop.
+Inside `negamax`, check time.
+If `time > limit`, return `evaluate`.
+This might return a value that is not accurate for the depth, but it prevents timeout.
+If timeout happens at root, we have the best move from previous depth.
+So it's safe.
+
+Let's write the code.
+
+One minor thing: `board` type.
+If `board` is numpy array, `board[r][c]` works.
+`sum(board[r])` works for list, for numpy `np.sum(board[r])` or `board[r].sum()`.
+`board[r][c]` is 1 or -1.
+`sum(board[r])` works if `board[r]` is a list.
+If it's numpy array, `sum(board[r])` might sum as Python sum or numpy sum.
+Python `sum` on numpy array iterates elements. It works.
+But `numpy` arrays are not lists. `board[r][c]` works.
+`len(board)` is 8.
+
+Let's assume `board` is indexable `board[r][c]`.
+To be safe, I'll convert to standard list of lists if it's numpy.
+`if hasattr(board, 'shape'): board = board.tolist()`
+But inside recursion, I modify the board.
+If I convert at root, I pass the converted list.
+That's fine.
+
+Wait, `apply_move` modifies in-place.
+So `board` must be a mutable list.
+If input is numpy, `board.tolist()` creates a new list.
+If input is list, `board` is already list.
+So `board = board.tolist() if hasattr(board, 'shape') else board`.
+Or just `if not isinstance(board[0], list): board = [list(row) for row in board]`.
+Checking `isinstance(board, list)` might fail if it's a tuple of lists?
+Prompt says "8x8 grid of ints". Usually list of lists.
+I'll just treat it as mutable. If it's numpy, `board[r][c] = x` works.
+`sum(board[r])` might need `np.sum(board[r])` to be efficient, but Python sum works on numpy arrays.
+Let's just use `sum(board[r])` and hope it's fast enough or works.
+Actually, `numpy` arrays support `len` and iteration.
+`board[r]` is a 1D numpy array.
+`sum(board[r])` calls python sum on it.
+It's fine.
+
+What if `board` is a tuple of tuples? Immutable.
+Then I must convert to list at the start.
+I'll do `board = [list(row) for row in board]`.
+This handles both list of lists and tuple of tuples.
+And numpy? `board.tolist()` if numpy.
+Let's combine:
+```python
+    try:
+        if hasattr(board, 'tolist'):
+            board = board.tolist()
+        else:
+            board = [list(row) for row in board]
+    except TypeError:
+        pass # Already list of lists?
+```
+If `board` is list of lists, `list(row)` copies it. Good.
+If `board` is tuple of tuples, `list(row)` makes list. Good.
+If `board` is numpy, `board.tolist()` makes list of lists. Good.
+
+Now `board` is a list of lists of ints. Mutable.
+
+Let's code.
+
+Check `count_line` logic again.
+`r, c` is the position.
+`dr, dc` is direction.
+If `dr == 0`:
+  `sum(board[r])`
+If `dc == 0`:
+  `sum(row[c] for row in board)`
+If `dr != 0` and `dc != 0`:
+  `count = 0`
+  `curr_r, curr_c = r, c`
+  # We need to scan the *entire* line.
+  # Step 1: Find start of line.
+  `while 0 <= curr_r - dr < 8 and 0 <= curr_c - dc < 8:`
+    `curr_r -= dr`, `curr_c -= dc`
+  # Step 2: Count from start.
+  `while 0 <= curr_r < 8 and 0 <= curr_c < 8:`
+    `if board[curr_r][curr_c] != 0: count += 1`
+    `curr_r += dr`, `curr_c += dc`
+  Return `count`
+
+Wait, `sum(board[r])` sums 1 and -1. That's correct.
+`sum(row[c] for row in board)` sums 1 and -1.
+The diagonal scan:
+Iterate until start, then count.
+This is correct.
+
+What about `dr, dc` such that `abs(dr) + abs(dc) == 2`? Diagonal.
+What if `abs(dr) == 2`? Not possible. Only 8 directions.
+
+Path check:
+`for t in range(1, count):`
+  `check_r = r + dr * t`, `check_c = c + dc * t`
+  If `board[check_r][check_c] == -player`: invalid.
+
+Destination:
+`dest_r = r + dr * count`, `dest_c = c + dc * count`
+If `board[dest_r][dest_c] == player`: invalid.
+
+All looks correct.
+
+Let's refine `evaluate`.
+`my_pieces`: count `player`.
+`opp_pieces`: count `-player`.
+`my_comp`: count components `player`.
+`opp_comp`: count components `-player`.
+
+Score:
+`if my_comp == 1`: return `INF`
+`if opp_comp == 1`: return `-INF`
+`score = (opp_comp - my_comp) * 100`
+`score += (my_pieces - opp_pieces) * 10`
+`score += centrality`
+
+Centrality:
+`dist = abs(r - 3.5) + abs(c - 3.5)`
+`my_centrality += (5 - dist)` (max dist ~5).
+`score += my_centrality * 0.1 - opp_centrality * 0.1`
+
+Connectivity is the dominant factor.
+`score += (opp_comp - my_comp) * 100` is good.
+If `my_comp` is 2 and `opp_comp` is 3, score is +100. Good.
+If `my_comp` is 2 and `opp_comp` is 5, score is +300. Good.
+
+Time Check:
+`if time.time() - start_time > 0.9: return 0`
+`0` is neutral. We want to stop searching and return current best.
+Returning 0 might mess up alpha-beta.
+Better to raise an exception or use a flag.
+Or just check at the start of `negamax`.
+If timeout, we can return `evaluate` (which is fast).
+But `evaluate` might not be accurate for depth.
+However, if we time out, we just need to stop.
+We can use a global variable `TIMEOUT`.
+Or just check `start_time` passed in.
+If `time.time() - start_time > limit`:
+  Return `evaluate(board, player)` immediately. (Best effort).
+This works.
+
+Root level:
+Iterate depth.
+Store `best_move`.
+If time limit reached, break and return `best_move`.
+
+One issue: `get_moves` might be expensive if called many times.
+But it's needed.
+
+Let's put it all together.
+
+Final check on `count_line`.
+`dr, dc` in `(-1, 0)`.
+`sum(board[r])`.
+This counts all pieces in the row.
+Correct.
+If I am at `(r, c)` and move `(-1, 0)` (Up), I move `count` squares.
+Wait. If `dr, dc` is `(-1, 0)`, I move UP.
+The line is the row.
+`sum(board[r])` is the count.
+Correct.
+
+What if I am at `(r, c)` and `dr, dc` is `(1, 1)` (Down-Right).
+Line is `r-c` diagonal.
+`count` is number of pieces on that diagonal.
+Correct.
+
+One subtlety: `sum(board[r])` is `sum(1, 1, -1, 0) = 1`. Correct.
+
+Okay, I'm confident in the logic.
+
+One more optimization: `evaluate` calculates components.
+If I calculate components for `player` and `-player`, I call BFS twice.
+If I do one pass BFS that labels components for both?
+Hard.
+Just call twice. It's 2*64 operations. Fine.
+
+Let's write the Python code.
+
+```python
+import time
+
+# 8 directions
+DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+def policy(board):
+    # ... wrapper ...
+```
+
+Wait, `board` might be numpy.
+`if type(board).__module__ == 'numpy': board = board.tolist()`
+Or more robust:
+```python
+    if hasattr(board, 'tolist'):
+        board = board.tolist()
+    # Ensure deep copy and mutability
+    board = [list(row) for row in board]
+```
+This handles numpy, list of lists, tuple of tuples.
+
+`policy` implementation:
+- Setup.
+- Get root moves.
+- If 0 moves: handle. (Maybe return "0,0:0,0" - error? Or just pass. If no moves, game might be lost. Let's check rules. If a player has pieces but no legal moves, I think they skip? Or lose? LoA rules usually: If you have pieces, you can always move? No, if you are completely surrounded or trapped.
+  If `get_moves` returns empty, we must return something. Let's return "0,0:0,0" and hope it's handled or crashed. But we should check if we have pieces.
+  If we have pieces and no moves, it's a stuck position.
+  In LoA, if you cannot move, you pass? Usually no-passing.
+  If I have no moves, I lose.
+  So if `get_moves` empty, I should just return a random move? No, I lose.
+  But the function *must* return a move string.
+  I'll return "0,0:0,0" which is likely illegal (if 0,0 is empty or enemy).
+  This signals "no move".
+  If I have 0 pieces, I already lost. `get_moves` will be empty.
+  I should check `my_pieces` count first.
+  If `my_pieces == 0`: return "0,0:0,0".
+  
+  Actually, let's just run the search. If `root_moves` is empty, return "0,0:0,0".
+
+- Loop depth 1 to 6.
+  `best_move` initialized to `root_moves[0]`.
+  For each `move` in `root_moves`:
+    `apply_move`
+    `score = -negamax(..., depth-1, ...)`
+    `undo_move`
+    Track `best_move`.
+  Check time.
+
+`negamax`:
+`if time.time() - start > 0.9: return 0`
+
+Let's code.
+
+One detail: `count_line`.
+`sum(board[r])` for horizontal.
+`sum(row[c] for row in board)` for vertical.
+`sum` on numpy row is slow? `board[r].sum()` is faster.
+Let's use `board[r].sum()` if it's a numpy array, else `sum(board[r])`.
+Actually, `board` is now a list of lists (after conversion).
+So `sum(board[r])`.
+Wait, `board` is `list of lists`. `board[r]` is `list`.
+`sum(board[r])` works.
+
+If `board` was numpy and I converted to list, `board[r]` is list.
+Good.
+
+Connectivity `count_components`:
+```python
+def count_components(board, player):
+    visited = [[False]*8 for _ in range(8)]
+    components = 0
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == player and not visited[r][c]:
+                components += 1
+                # BFS
+                stack = [(r, c)]
+                visited[r][c] = True
+                while stack:
+                    cr, cc = stack.pop()
+                    for dr, dc in DIRS:
+                        nr, nc = cr + dr, cc + dc
+                        if 0 <= nr < 8 and 0 <= nc < 8:
+                            if board[nr][nc] == player and not visited[nr][nc]:
+                                visited[nr][nc] = True
+                                stack.append((nr, nc))
+    return components
+```
+This is clean and fast.
+
+Centrality:
+```python
+def get_centrality(board, player):
+    score = 0
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == player:
+                dist = abs(r - 3.5) + abs(c - 3.5)
+                score += (5.0 - dist) # 5.0 is max manhattan dist roughly
+    return score
+```
+
+`evaluate`:
+```python
+def evaluate(board, player):
+    my_pieces = 0
+    opp_pieces = 0
+    for r in range(8):
+        for c in range(8):
+            val = board[r][c]
+            if val == player: my_pieces += 1
+            elif val == -player: opp_pieces += 1
+    
+    if my_pieces == 0: return -INF # Lost
+    if opp_pieces == 0: return INF # Won (should be caught by connectivity, but just in case)
+    
+    my_comp = count_components(board, player)
+    opp_comp = count_components(board, -player)
+    
+    if my_comp == 1: return INF
+    if opp_comp == 1: return -INF
+    
+    # Weights
+    w_comp = 100
+    w_mat = 5
+    w_cen = 0.1
+    
+    # Score: I want high my_comp (so opp_comp - my_comp is negative if I am connected? No)
+    # Wait. My components should be LOW.
+    # Opp components should be HIGH.
+    # Score = (opp_comp - my_comp) * w_comp + (my_pieces - opp_pieces) * w_mat ...
+    # If I am 1 comp, opp 3: 3 - 1 = 2. Score += 200. Good.
+    # If I am 3 comp, opp 1: 1 - 3 = -2. Score -= 200. Good.
+    
+    # Centrality
+    cen_me = get_centrality(board, player)
+    cen_opp = get_centrality(board, -player)
+    
+    score = (opp_comp - my_comp) * w_comp
+    score += (my_pieces - opp_pieces) * w_mat
+    score += (cen_me - cen_opp) * w_cen
+    
+    return score
+```
+
+Wait, `count_components` is expensive.
+It iterates the whole board twice (once for each player).
+Inside `negamax`, this is heavy.
+Let's optimize `count_components` to be `O(64)`.
+BFS is `O(64)`.
+Total evaluation cost: `O(64)` for pieces + `O(64)` for components * 2.
+It is acceptable.
+
+One more check on `count_line`.
+If I am at `(r, c)` and move `(-1, 0)`.
+`sum(board[r])` counts me.
+If there are 3 pieces in row, `count=3`.
+`dest = r - 3`.
+Path check `t=1, 2`.
+If `board[r-1][c]` is enemy -> blocked.
+If `board[r-2][c]` is enemy -> blocked.
+This is correct.
+
+What if `count` is such that `dest` is off board?
+`0 <= dest < 8` check handles it.
+
+What if `count` is 0? Impossible.
+
+Let's write the full code block.
+
+Structure:
+```python
+import time
+
+DIRS = ...
+INF = 100000
+
+def count_line(board, r, c, dr, dc):
+    ...
+def count_components(board, player):
+    ...
+def get_centrality(board, player):
+    ...
+def evaluate(board, player):
+    ...
+def get_moves(board, player):
+    ...
+def apply_move(board, r1, c1, r2, c2):
+    ...
+def undo_move(board, r1, c1, r2, c2, captured):
+    ...
+def negamax(board, depth, alpha, beta, player, start_time):
+    ...
+def policy(board):
+    ...
+```
+
+Wait, `apply_move` and `undo_move` are simple enough to inline?
+No, keep them separate for clarity.
+
+One detail: `count_line`:
+For horizontal: `sum(board[r])`
+For vertical: `sum(row[c] for row in board)`
+For diagonal:
+`count = 0`
+`curr_r, curr_c = r, c`
+# Find start
+`while 0 <= curr_r - dr < 8 and 0 <= curr_c - dc < 8:`
+  `curr_r -= dr`, `curr_c -= dc`
+# Count
+`while 0 <= curr_r < 8 and 0 <= curr_c < 8:`
+  `if board[curr_r][curr_c] != 0: count += 1`
+  `curr_r += dr`, `curr_c += dc`
+Return `count`
+
+This handles all diagonal directions correctly.
+
+Let's double check `negamax` recursion.
+`negamax(board, d, alpha, beta, player, start_time)`:
+  `score = evaluate(board, player)`
+  `if d == 0 or score >= INF or score <= -INF: return score`
+  `moves = get_moves(board, player)`
+  `if not moves: return score` (No moves -> terminal state evaluation)
+  `max_score = -INF`
+  `for move in moves`:
+    `...`
+    `val = -negamax(..., -player, ...)`
+    `if val > max_score: max_score = val`
+    `if max_score > alpha: alpha = max_score`
+    `if alpha >= beta: break`
+  `return max_score`
+
+Root call in `policy`:
+`best_move = moves[0]`
+`best_score = -INF`
+`for move in moves`:
+  `apply_move`
+  `score = -negamax(..., depth-1, ...)`
+  `undo_move`
+  `if score > best_score: best_score = score; best_move = move`
+
+This looks correct.
+
+Time check in `policy`:
+`start_time = time.time()`
+`for depth in range(1, 7):`
+  `# search`
+  `if time.time() - start_time > 0.8: break`
+
+Depth 6 is likely too much.
+Max depth 5?
+Let's do `range(1, 6)`.
+
+What if `board` is `None`? No, `board` is passed.
+
+What if I have only 1 piece?
+`my_comp = 1`.
+`evaluate` returns `INF` immediately? No.
+`evaluate` checks `my_comp == 1`.
+So if I am already connected, I win.
+If I am not connected, `my_comp > 1`.
+
+If I am 1 piece, `my_comp = 1`. I win immediately.
+Wait, the game ends when all pieces are connected.
+If I have 1 piece, is 1 piece connected? Yes.
+If opponent has pieces, is it a win?
+Yes, "Objective is to connect all your pieces".
+So if `my_comp == 1`, I have achieved the objective.
+So `evaluate` returning `INF` is correct.
+
+If `my_comp == 1` and `opp_comp == 1`? Draw? Unlikely.
+If I have 1 piece and opponent has 1 piece, we both meet condition.
+Usually, the player who moves and connects wins.
+So if it's my turn and I am already connected, I should have won already.
+The `policy` function is called only if the game is ongoing.
+So `my_comp == 1` should not happen inside `evaluate` if the game is valid.
+However, if my previous move connected me, the game ended.
+So `policy` is called only for non-terminal states.
+Unless the opponent just disconnected me? No.
+So `my_comp == 1` is a winning move or state.
+If I am about to move and `my_comp == 1`, I should just return a move (or the game should have ended).
+But `evaluate` is for *after* a move or for states.
+In `negamax`, we evaluate the state *after* the move is made?
+No, `negamax` starts with the current state.
+So `evaluate(board, player)` is called on the current state.
+If `board` is the current state and `my_comp == 1`, I have already won.
+The prompt says "You are always the player to move".
+If I have won, I shouldn't be moving.
+So `my_comp != 1` at the start of `policy`.
+But inside recursion, `negamax` will call `evaluate` on states *after* my move.
+If I make a move that connects me, `my_comp` becomes 1.
+`evaluate` returns `INF`.
+`negamax` returns `INF` (or -INF depending on perspective).
+This propagates back to root. Good.
+
+Same for `opp_comp == 1`.
+If I make a move that connects opponent, that's bad.
+Wait, opponent connects on *their* turn.
+I can't make a move that connects opponent.
+Unless I capture one of my pieces to join two groups? No, I can't capture my own pieces.
+Opponent connects on their turn.
+So inside recursion, when `negamax` calls `evaluate` on the state passed to it (which is after the current player's move), `player` is the one who just moved.
+So if `player` is me, `my_comp` might be 1.
+If `player` is opponent, `opp_comp` (relative to me) might be 1?
+No, `evaluate(board, player)` calculates `player`'s components.
+So in `negamax(board, ..., player)`:
+If `player == 1` (my turn, state after my move):
+  Check `my_comp`.
+If `player == -1` (opp turn, state after opp move):
+  Check `opp_comp` (relative to me).
+  In `evaluate(board, -1)`:
+    `my_pieces` counts `-1`. (Opponent's pieces relative to -1).
+    `opp_pieces` counts `1`.
+    `my_comp` counts components of `-1`.
+    `opp_comp` counts components of `1`.
+    
+    `if my_comp == 1`: return `INF` (which means -1 wins).
+    `if opp_comp == 1`: return `-INF` (which means 1 wins).
+    
+    So the logic `if my_comp == 1: return INF` works correctly for both players if we pass `player` to `evaluate`.
+    Because `my_comp` in `evaluate` means `player`'s components.
+    
+    So if `player == -1` and `opp_comp == 1` (relative to me, 1):
+    In `evaluate(board, -1)`: `opp_comp` is `count_components(board, 1)`.
+    If that is 1, `evaluate` returns `-INF`.
+    This is correct: If opponent connects, I lose.
+
+    So `evaluate(board, player)` logic:
+    `my_comp = count_components(board, player)`
+    `opp_comp = count_components(board, -player)`
+    `if my_comp == 1: return INF`
+    `if opp_comp == 1: return -INF`
+    This is correct.
+
+    Wait.
+    `evaluate(board, player)`:
+      If `player == 1`:
+        `my_comp` = comps of 1.
+        `opp_comp` = comps of -1.
+        If `my_comp == 1`: Win for 1 -> return `INF`.
+        If `opp_comp == 1`: Win for -1 -> return `-INF`.
+      If `player == -1`:
+        `my_comp` = comps of -1.
+        `opp_comp` = comps of 1.
+        If `my_comp == 1`: Win for -1 -> return `INF`.
+        If `opp_comp == 1`: Win for 1 -> return `-INF`.
+
+    Correct.
+
+    One edge: `count_components` might return 0 if no pieces.
+    `if my_comp == 0`: No pieces. Lost?
+    Or if `my_pieces == 0`, `my_comp == 0`.
+    Then `my_comp == 1` is false.
+    `opp_comp == 1` might be true.
+    If `opp_comp == 1` and `my_comp == 0`:
+      `evaluate` returns `-INF` (if player is 1).
+      Correct, opponent won.
+
+    If `my_pieces == 0` and `opp_pieces > 0`:
+      `my_comp == 0`.
+      `opp_comp >= 1`.
+      If `opp_comp > 1`: Score is calculated.
+      `score = (opp_comp - my_comp) * 100` -> Large positive for opponent.
+      This is fine.
+
+    If `my_pieces == 0` and `opp_comp == 1`:
+      `evaluate` returns `-INF`. Correct.
+
+    So `evaluate` handles "no pieces" gracefully.
+
+    Final check on `get_moves`.
+    `count = count_line(...)`
+    `dest = (r+dr*count, c+dc*count)`
+    Check path.
+    Check `board[dest] != player`.
+    This handles capture and empty.
+    
+    What if `count` is very large? No, max 8.
+    
+    Time check.
+    `if time.time() - start_time > 0.95: raise TimeoutError()`
+    But we can't raise in `negamax` if we want to keep best move.
+    Better to return a value that stops recursion?
+    Or just check `if time > limit: return evaluate`.
+    
+    Let's use a global `TIMES_UP` flag or just return `0` and check in loop.
+    If `negamax` returns `0` due to timeout, the root node might think it's a neutral score.
+    If all moves score `0`, it picks first.
+    It's better than crashing.
+    
+    However, if `negamax` times out, the score is inaccurate.
+    But we will just break the root loop and return the best from previous depth.
+    So `negamax` itself doesn't need to be super graceful with time, except not to hang.
+    If `negamax` runs slightly over, it's okay as long as `policy` returns in < 1s.
+    So I'll check time in `policy` loop.
+    `negamax` will just run to completion.
+    If `negamax` is too deep, `policy` will break the loop and return previous best.
+    
+    Wait, `negamax` is recursive. It might take 0.5s.
+    If I don't check time inside `negamax`, I might get stuck in a deep recursion that exceeds 1s.
+    So `negamax` must check time.
+    `if time.time() - start_time > 1.0: return 0`
+    This aborts the subtree.
+    Returning `0` (neutral) from a subtree is safe for alpha-beta (it won't affect bounds much if it's a timeout).
+    
+    Actually, if `negamax` returns `0` early, the parent might think this branch is neutral.
+    If the true value was `+INF`, returning `0` is bad.
+    But we can't wait.
+    So `negamax` should stop and return a safe value.
+    Returning `evaluate(board, player)` is the "best guess" for the current node.
+    If we time out, we can't search deeper.
+    So `return evaluate(board, player)` is better than `0`.
+    
+    So `negamax`:
+    `if time.time() - start_time > 1.0: return evaluate(board, player)`
+    
+    This ensures we always return a score based on current state if we run out of time.
+    
+    This seems robust.
+
+    Let's code.
+    
+    One final detail: `count_line` for vertical/row.
+    `sum(row[c] for row in board)` is slow.
+    `count = 0`
+    `for i in range(8): if board[i][c] != 0: count += 1`
+    This is faster than generator expression.
+    
+    Same for `sum(board[r])`.
+    `count = 0`
+    `for i in range(8): if board[r][i] != 0: count += 1`
+    
+    Let's use explicit loops.
+    
+    `count_line`:
+    ```python
+    if dr == 0: # Horizontal
+        count = 0
+        for i in range(8):
+            if board[r][i] != 0: count += 1
+        return count
+    if dc == 0: # Vertical
+        count = 0
+        for i in range(8):
+            if board[i][c] != 0: count += 1
+        return count
+    # Diagonal
+    # Find start
+    curr_r, curr_c = r, c
+    while 0 <= curr_r - dr < 8 and 0 <= curr_c - dc < 8:
+        curr_r -= dr
+        curr_c -= dc
+    # Count
+    count = 0
+    while 0 <= curr_r < 8 and 0 <= curr_c < 8:
+        if board[curr_r][curr_c] != 0: count += 1
+        curr_r += dr
+        curr_c += dc
+    return count
+    ```
+    
+    This looks solid.
+
+    Code structure:
+    ```python
+    import time
+    
+    # Constants
+    INF = 100000
+    DIRS = [...]
+    
+    def policy(board):
+        # ... logic ...
+        return f"{r1},{c1}:{r2},{c2}"
+    ```
+    
+    I need to define `policy` at the top level.
+    The helper functions can be inside or outside.
+    Inside `policy` to avoid global namespace pollution?
+    No, standard Python. Define them outside.
+    
+    Let's write the final code.
+    
+    Wait, `get_moves` also needs to be fast.
+    It calls `count_line`.
+    It loops `r, c`.
+    `count_line` loops `8`.
+    `get_moves`: 64 * 8 * 8 (max) = 4096 operations. Very fast.
+    
+    `evaluate`: loops `64` (pieces) + BFS (max 64) * 2.
+    BFS might be expensive if many pieces.
+    But `visited` check prevents revisiting.
+    Total ops < 500.
+    
+    `negamax` with depth 4:
+    Nodes: Estimate 2000.
+    Ops: 2000 * 500 = 1,000,000. Very fast.
+    So depth 4 is safe. Depth 5 maybe.
+    
+    Let's set depth limit to 6 but break on time.
+    
+    `policy` logic:
+    1. Normalize board.
+    2. `root_moves = get_moves(board, 1)`.
+    3. If empty: return "0,0:0,0".
+    4. `best_move = root_moves[0]`.
+    5. `start_time = time.time()`.
+    6. Loop `depth` 1 to 6:
+       - `current_best_move = best_move`
+       - `current_best_score = -INF`
+       - `alpha = -INF`
+       - `beta = INF`
+       - For `move` in `root_moves`:
+         - `apply_move`
+         - `score = -negamax(board, depth-1, -beta, -alpha, -1, start_time)`
+         - `undo_move`
+         - `if score > current_best_score`: update.
+         - `if current_best_score > alpha`: alpha = current_best_score
+         - `if alpha >= beta`: break (root pruning? unlikely but possible)
+       - `best_move = current_best_move`
+       - `if time.time() - start_time > 0.8`: break
+    7. Return `best_move`.
+
+    Correct.
+
+    Let's write it.```python
+import time
+
+# Constants
+INF = 100000
+DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+def count_line(board, r, c, dr, dc):
+    """Count pieces in the line (row, col, or diagonal) defined by dr, dc."""
+    # Horizontal
+    if dr == 0:
+        count = 0
+        for i in range(8):
+            if board[r][i] != 0:
+                count += 1
+        return count
+    # Vertical
+    if dc == 0:
+        count = 0
+        for i in range(8):
+            if board[i][c] != 0:
+                count += 1
+        return count
+    # Diagonal (find start then count)
+    curr_r, curr_c = r, c
+    while 0 <= curr_r - dr < 8 and 0 <= curr_c - dc < 8:
+        curr_r -= dr
+        curr_c -= dc
+    count = 0
+    while 0 <= curr_r < 8 and 0 <= curr_c < 8:
+        if board[curr_r][curr_c] != 0:
+            count += 1
+        curr_r += dr
+        curr_c += dc
+    return count
+
+def count_components(board, player):
+    """Count connected components of player pieces (8-way connectivity)."""
+    visited = [[False] * 8 for _ in range(8)]
+    components = 0
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == player and not visited[r][c]:
+                components += 1
+                # BFS
+                stack = [(r, c)]
+                visited[r][c] = True
+                while stack:
+                    cr, cc = stack.pop()
+                    for dr, dc in DIRS:
+                        nr, nc = cr + dr, cc + dc
+                        if 0 <= nr < 8 and 0 <= nc < 8:
+                            if board[nr][nc] == player and not visited[nr][nc]:
+                                visited[nr][nc] = True
+                                stack.append((nr, nc))
+    return components
+
+def get_centrality(board, player):
+    """Calculate sum of centrality scores for player's pieces."""
+    score = 0.0
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == player:
+                # Manhattan distance to center (3.5, 3.5) approx 0 to 5
+                dist = abs(r - 3.5) + abs(c - 3.5)
+                score += (5.0 - dist)
+    return score
+
+def evaluate(board, player):
+    """Evaluate board state for the given player."""
+    my_pieces = 0
+    opp_pieces = 0
+    for r in range(8):
+        for c in range(8):
+            val = board[r][c]
+            if val == player: my_pieces += 1
+            elif val == -player: opp_pieces += 1
+
+    if my_pieces == 0: return -INF
+    if opp_pieces == 0: return INF
+
+    my_comp = count_components(board, player)
+    opp_comp = count_components(board, -player)
+
+    if my_comp == 1: return INF
+    if opp_comp == 1: return -INF
+
+    # Weights
+    w_comp = 100.0
+    w_mat = 5.0
+    w_cen = 0.1
+
+    score = (opp_comp - my_comp) * w_comp
+    score += (my_pieces - opp_pieces) * w_mat
+    
+    cen_me = get_centrality(board, player)
+    cen_opp = get_centrality(board, -player)
+    score += (cen_me - cen_opp) * w_cen
+
+    return score
+
+def get_moves(board, player):
+    """Generate all legal moves for player."""
+    moves = []
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == player:
+                for dr, dc in DIRS:
+                    count = count_line(board, r, c, dr, dc)
+                    dest_r = r + dr * count
+                    dest_c = c + dc * count
+                    
+                    # Check bounds
+                    if not (0 <= dest_r < 8 and 0 <= dest_c < 8):
+                        continue
+                    
+                    # Check path (no jumping over enemies)
+                    blocked = False
+                    for t in range(1, count):
+                        check_r = r + dr * t
+                        check_c = c + dc * t
+                        if board[check_r][check_c] == -player:
+                            blocked = True
+                            break
+                    if blocked:
+                        continue
+                    
+                    # Check destination (cannot land on friendly)
+                    if board[dest_r][dest_c] == player:
+                        continue
+                    
+                    moves.append((r, c, dest_r, dest_c))
+    return moves
+
+def apply_move(board, r1, c1, r2, c2):
+    """Apply move and return captured piece."""
+    player = board[r1][c1]
+    captured = board[r2][c2]
+    board[r2][c2] = player
+    board[r1][c1] = 0
+    return captured
+
+def undo_move(board, r1, c1, r2, c2, captured):
+    """Undo move."""
+    player = board[r2][c2]
+    board[r1][c1] = player
+    board[r2][c2] = captured
+
+def negamax(board, depth, alpha, beta, player, start_time):
+    """Negamax search with Alpha-Beta pruning."""
+    # Time check (aborts subtree)
+    if time.time() - start_time > 0.95:
+        return evaluate(board, player)
+
+    current_eval = evaluate(board, player)
+    if depth == 0 or abs(current_eval) >= INF:
+        return current_eval
+
+    moves = get_moves(board, player)
+    if not moves:
+        return current_eval
+
+    max_score = -INF
+    for move in moves:
+        r1, c1, r2, c2 = move
+        captured = apply_move(board, r1, c1, r2, c2)
+        
+        # Recurse
+        score = -negamax(board, depth - 1, -beta, -alpha, -player, start_time)
+        
+        undo_move(board, r1, c1, r2, c2, captured)
+
+        if score > max_score:
+            max_score = score
+        if max_score > alpha:
+            alpha = max_score
+        if alpha >= beta:
+            break
+            
+    return max_score
+
+def policy(board):
+    # 1. Normalize board to mutable list of lists
+    if hasattr(board, 'tolist'):
+        board = board.tolist()
+    board = [list(row) for row in board]
+
+    # 2. Generate root moves
+    root_moves = get_moves(board, 1)
+    
+    if not root_moves:
+        return "0,0:0,0"  # No legal moves (should not happen in active game)
+
+    if len(root_moves) == 1:
+        r1, c1, r2, c2 = root_moves[0]
+        return f"{r1},{c1}:{r2},{c2}"
+
+    # 3. Iterative Deepening
+    best_move = root_moves[0]
+    start_time = time.time()
+    
+    # Depth limit: 1 to 6, dynamic based on time
+    for depth in range(1, 7):
+        current_best_move = best_move
+        current_best_score = -INF
+        alpha = -INF
+        beta = INF
+        
+        for move in root_moves:
+            r1, c1, r2, c2 = move
+            captured = apply_move(board, r1, c1, r2, c2)
+            
+            # Root search: player is 1, opponent is -1
+            score = -negamax(board, depth - 1, -beta, -alpha, -1, start_time)
+            
+            undo_move(board, r1, c1, r2, c2, captured)
+            
+            if score > current_best_score:
+                current_best_score = score
+                current_best_move = move
+            
+            if current_best_score > alpha:
+                alpha = current_best_score
+            
+            # Root pruning is rare but possible
+            if alpha >= beta:
+                break
+        
+        # Update best move for this depth
+        best_move = current_best_move
+        
+        # Time management: stop if approaching limit
+        if time.time() - start_time > 0.8:
+            break
+
+    # Format output
+    r1, c1, r2, c2 = best_move
+    return f"{r1},{c1}:{r2},{c2}"
+```

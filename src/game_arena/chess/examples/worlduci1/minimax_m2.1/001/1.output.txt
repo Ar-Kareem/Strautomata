@@ -1,0 +1,330 @@
+I will implement a chess move selection policy that uses a combination of move generation, legality checking, and a simple evaluation function to choose the best move. The strategy involves generating all legal moves for the current player, simulating each move to evaluate the resulting board position, and selecting the move with the highest evaluation score. The evaluation considers material advantage, center control, and check/checkmate conditions.
+
+```python
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    import copy
+    
+    # Define piece values
+    piece_values = {
+        'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0
+    }
+    
+    # Define center squares and their values
+    center_squares = {'e4': 1, 'd4': 1, 'e5': 1, 'd5': 1}
+    next_center = {'d3': 0.5, 'e3': 0.5, 'd6': 0.5, 'e6': 0.5}
+    
+    # Convert square string to (x, y) coordinates
+    def to_xy(square):
+        x = ord(square[0]) - ord('a')
+        y = int(square[1]) - 1
+        return x, y
+    
+    # Convert (x, y) to square string
+    def to_square(x, y):
+        return chr(ord('a') + x) + str(y + 1)
+    
+    # Check if coordinates are on board
+    def on_board(x, y):
+        return 0 <= x < 8 and 0 <= y < 8
+    
+    # Get piece at a given square
+    def get_piece(board, square):
+        return board.get(square)
+    
+    # Check if a square is attacked by the opponent
+    def is_square_attacked(board, square, attacker_color):
+        x, y = to_xy(square)
+        opponent_color = 'b' if attacker_color == 'w' else 'w'
+        
+        # Pawn attacks
+        pawn_dir = -1 if attacker_color == 'w' else 1
+        for dx in [-1, 1]:
+            nx, ny = x + dx, y + pawn_dir
+            if on_board(nx, ny):
+                s = to_square(nx, ny)
+                p = get_piece(board, s)
+                if p and p[0] == attacker_color and p[1] == 'P':
+                    return True
+        
+        # Knight attacks
+        knight_moves = [(2,1), (1,2), (-1,2), (-2,1), (-2,-1), (-1,-2), (1,-2), (2,-1)]
+        for dx, dy in knight_moves:
+            nx, ny = x + dx, y + dy
+            if on_board(nx, ny):
+                s = to_square(nx, ny)
+                p = get_piece(board, s)
+                if p and p[0] == attacker_color and p[1] == 'N':
+                    return True
+        
+        # Diagonal attacks (bishop and queen)
+        diagonals = [(1,1), (1,-1), (-1,1), (-1,-1)]
+        for dx, dy in diagonals:
+            nx, ny = x + dx, y + dy
+            while on_board(nx, ny):
+                s = to_square(nx, ny)
+                p = get_piece(board, s)
+                if p:
+                    if p[0] == attacker_color and p[1] in ['B', 'Q']:
+                        return True
+                    break
+                nx += dx
+                ny += dy
+        
+        # Straight attacks (rook and queen)
+        straights = [(1,0), (-1,0), (0,1), (0,-1)]
+        for dx, dy in straights:
+            nx, ny = x + dx, y + dy
+            while on_board(nx, ny):
+                s = to_square(nx, ny)
+                p = get_piece(board, s)
+                if p:
+                    if p[0] == attacker_color and p[1] in ['R', 'Q']:
+                        return True
+                    break
+                nx += dx
+                ny += dy
+        
+        # King attacks
+        for dx in [-1, 0, 1]:
+            for dy in [-1, 0, 1]:
+                if dx == 0 and dy == 0:
+                    continue
+                nx, ny = x + dx, y + dy
+                if on_board(nx, ny):
+                    s = to_square(nx, ny)
+                    p = get_piece(board, s)
+                    if p and p[0] == attacker_color and p[1] == 'K':
+                        return True
+        
+        return False
+    
+    # Find the king's position
+    def find_king(board, color):
+        for square, piece in board.items():
+            if piece[0] == color and piece[1] == 'K':
+                return square
+        return None
+    
+    # Generate pseudo-legal moves for a piece
+    def generate_pseudo_legal_moves(board, square, piece):
+        x, y = to_xy(square)
+        color = piece[0]
+        ptype = piece[1]
+        moves = []
+        opponent_color = 'b' if color == 'w' else 'w'
+        
+        if ptype == 'P':
+            direction = 1 if color == 'w' else -1
+            start_rank = 1 if color == 'w' else 6
+            
+            # Forward move
+            nx, ny = x, y + direction
+            if on_board(nx, ny) and not get_piece(board, to_square(nx, ny)):
+                moves.append((square, to_square(nx, ny)))
+                # Double move
+                if y == start_rank:
+                    nx2, ny2 = x, y + 2*direction
+                    if on_board(nx2, ny2) and not get_piece(board, to_square(nx2, ny2)):
+                        moves.append((square, to_square(nx2, ny2)))
+            
+            # Captures
+            for dx in [-1, 1]:
+                nx, ny = x + dx, y + direction
+                if on_board(nx, ny):
+                    target = to_square(nx, ny)
+                    p = get_piece(board, target)
+                    if p and p[0] == opponent_color:
+                        moves.append((square, target))
+        
+        elif ptype == 'N':
+            knight_moves = [(2,1), (1,2), (-1,2), (-2,1), (-2,-1), (-1,-2), (1,-2), (2,-1)]
+            for dx, dy in knight_moves:
+                nx, ny = x + dx, y + dy
+                if on_board(nx, ny):
+                    target = to_square(nx, ny)
+                    p = get_piece(board, target)
+                    if p is None or p[0] == opponent_color:
+                        moves.append((square, target))
+        
+        elif ptype == 'B':
+            diagonals = [(1,1), (1,-1), (-1,1), (-1,-1)]
+            for dx, dy in diagonals:
+                nx, ny = x + dx, y + dy
+                while on_board(nx, ny):
+                    target = to_square(nx, ny)
+                    p = get_piece(board, target)
+                    if p is None:
+                        moves.append((square, target))
+                    else:
+                        if p[0] == opponent_color:
+                            moves.append((square, target))
+                        break
+                    nx += dx
+                    ny += dy
+        
+        elif ptype == 'R':
+            straights = [(1,0), (-1,0), (0,1), (0,-1)]
+            for dx, dy in straights:
+                nx, ny = x + dx, y + dy
+                while on_board(nx, ny):
+                    target = to_square(nx, ny)
+                    p = get_piece(board, target)
+                    if p is None:
+                        moves.append((square, target))
+                    else:
+                        if p[0] == opponent_color:
+                            moves.append((square, target))
+                        break
+                    nx += dx
+                    ny += dy
+        
+        elif ptype == 'Q':
+            diagonals = [(1,1), (1,-1), (-1,1), (-1,-1)]
+            straights = [(1,0), (-1,0), (0,1), (0,-1)]
+            for dx, dy in diagonals + straights:
+                nx, ny = x + dx, y + dy
+                while on_board(nx, ny):
+                    target = to_square(nx, ny)
+                    p = get_piece(board, target)
+                    if p is None:
+                        moves.append((square, target))
+                    else:
+                        if p[0] == opponent_color:
+                            moves.append((square, target))
+                        break
+                    nx += dx
+                    ny += dy
+        
+        elif ptype == 'K':
+            for dx in [-1, 0, 1]:
+                for dy in [-1, 0, 1]:
+                    if dx == 0 and dy == 0:
+                        continue
+                    nx, ny = x + dx, y + dy
+                    if on_board(nx, ny):
+                        target = to_square(nx, ny)
+                        p = get_piece(board, target)
+                        if p is None or p[0] == opponent_color:
+                            moves.append((square, target))
+        
+        return moves
+    
+    # Apply a move to the board
+    def apply_move(board, move):
+        new_board = copy.deepcopy(board)
+        from_square = move[:2]
+        to_square_move = move[2:4]
+        piece = new_board.pop(from_square)
+        new_board[to_square_move] = piece
+        
+        # Handle promotion
+        if len(move) == 5:
+            new_board[to_square_move] = piece[0] + move[4]
+        
+        return new_board
+    
+    # Check if a move is legal
+    def is_legal_move(board, move, color):
+        new_board = apply_move(board, move)
+        king_square = find_king(new_board, color)
+        if king_square is None:
+            return False
+        return not is_square_attacked(new_board, king_square, 'b' if color == 'w' else 'w')
+    
+    # Generate all legal moves
+    def generate_legal_moves(board, color):
+        legal_moves = []
+        for square, piece in board.items():
+            if piece[0] == color:
+                pseudo_moves = generate_pseudo_legal_moves(board, square, piece)
+                for move in pseudo_moves:
+                    move_str = ''.join(move)
+                    if is_legal_move(board, move_str, color):
+                        # Handle promotion: if pawn reaches last rank, generate queen promotion
+                        if len(move_str) == 4:
+                            to_sq = move_str[2:4]
+                            x, y = to_xy(to_sq)
+                            if (y == 7 and color == 'w') or (y == 0 and color == 'b'):
+                                # Add all promotions for simplicity, but we'll use queen in evaluation
+                                for promo in ['q', 'r', 'b', 'n']:
+                                    move_promo = move_str + promo
+                                    if is_legal_move(board, move_promo, color):
+                                        legal_moves.append(move_promo)
+                            else:
+                                legal_moves.append(move_str)
+                        else:
+                            legal_moves.append(move_str)
+        return legal_moves
+    
+    # Evaluate a board state
+    def evaluate_board(board, color):
+        material_advantage = 0
+        center_control = 0
+        our_color = color[0]
+        
+        for square, piece in board.items():
+            ptype = piece[1]
+            value = piece_values.get(ptype, 0)
+            if piece[0] == our_color:
+                material_advantage += value
+                if square in center_squares:
+                    center_control += center_squares[square]
+                elif square in next_center:
+                    center_control += next_center[square]
+            else:
+                material_advantage -= value
+                if square in center_squares:
+                    center_control -= center_squares[square]
+                elif square in next_center:
+                    center_control -= next_center[square]
+        
+        return material_advantage + center_control
+    
+    # Check if a move is checkmate
+    def is_checkmate(board, move, color):
+        new_board = apply_move(board, move)
+        opponent_color = 'black' if color == 'white' else 'white'
+        opponent_king_square = find_king(new_board, opponent_color[0])
+        if opponent_king_square is None:
+            return False
+        if not is_square_attacked(new_board, opponent_king_square, our_color=color[0]):
+            return False
+        opponent_moves = generate_legal_moves(new_board, opponent_color[0])
+        return len(opponent_moves) == 0
+    
+    # Main logic
+    color = 'w' if to_play == 'white' else 'b'
+    legal_moves = generate_legal_moves(pieces, color)
+    
+    if not legal_moves:
+        # No legal moves, return any move (shouldn't happen in valid chess positions)
+        return 'a1a1'
+    
+    best_move = None
+    best_eval = float('-inf')
+    
+    for move in legal_moves:
+        new_board = apply_move(pieces, move)
+        
+        # Check for checkmate
+        if is_checkmate(pieces, move, color):
+            return move  # Immediate checkmate
+        
+        # Check for check
+        new_board = apply_move(pieces, move)
+        opponent_color = 'black' if color == 'w' else 'w'
+        opponent_king_square = find_king(new_board, opponent_color[0])
+        is_check = False
+        if opponent_king_square:
+            is_check = is_square_attacked(new_board, opponent_king_square, color[0])
+        
+        eval_score = evaluate_board(new_board, color)
+        if is_check:
+            eval_score += 1000
+        
+        if eval_score > best_eval:
+            best_eval = eval_score
+            best_move = move
+    
+    return best_move
+```

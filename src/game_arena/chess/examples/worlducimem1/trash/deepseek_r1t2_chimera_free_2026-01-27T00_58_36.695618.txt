@@ -1,0 +1,142 @@
+
+
+The strategy for this policy is to prioritize moves that maximize immediate material gain, promote pawns to queens, castle for king safety, and develop pieces to central squares. Moves are evaluated based on captured piece value, promotion bonus, castling bonus, a centralization score, and penalized if the moved piece can be captured by a lower-value opponent piece. This balance of offensive and defensive considerations aims to achieve a strong positional advantage while avoiding unnecessary risks.
+
+<code>
+import numpy as np
+
+piece_values = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 100}
+
+def minimal_attacker_value(square, pieces, attacker_color):
+    min_value = float('inf')
+    col = ord(square[0]) - ord('a')
+    row = int(square[1]) - 1
+
+    # Check pawns
+    if attacker_color == 'w':
+        attacks = [(col-1, row+1), (col+1, row+1)]
+    else:
+        attacks = [(col-1, row-1), (col+1, row-1)]
+    for a_col, a_row in attacks:
+        if 0 <= a_col < 8 and 0 <= a_row < 8:
+            a_sq = chr(a_col + ord('a')) + str(a_row+1)
+            if a_sq in pieces and pieces[a_sq] == attacker_color + 'P':
+                min_value = min(min_value, piece_values['P'])
+
+    # Knights
+    knight_moves = [(2,1), (2,-1), (-2,1), (-2,-1), (1,2), (1,-2), (-1,2), (-1,-2)]
+    for dcol, drow in knight_moves:
+        a_col = col + dcol
+        a_row = row + drow
+        if 0 <= a_col < 8 and 0 <= a_row < 8:
+            a_sq = chr(a_col + ord('a')) + str(a_row+1)
+            if a_sq in pieces and pieces[a_sq][0] == attacker_color and pieces[a_sq][1] == 'N':
+                min_value = min(min_value, piece_values['N'])
+
+    # Bishop directions (diagonal)
+    bishop_dirs = [(1,1), (1,-1), -1,1), (-1,-1)]
+    for dx, dy in bishop_dirs:
+        for step in range(1, 8):
+            a_col = col + dx * step
+            a_row = row + dy * step
+            if not (0 <= a_col < 8 and 0 <= a_row < 8):
+                break
+            a_sq = chr(a_col + ord('a')) + str(a_row+1)
+            if a_sq in pieces:
+                piece = pieces[a_sq]
+                if piece[0] == attacker_color:
+                    ptype = piece[1]
+                    if ptype in ['B', 'Q']:
+                        min_value = min(min_value, piece_values[ptype])
+                    elif step == 1 and ptype == 'K':
+                        min_value = min(min_value, piece_values[ptype])
+                break
+
+    # Rook directions (horizontal/vertical)
+    rook_dirs = [(1,0), (-1,0), (0,1), (0,-1)]
+    for dx, dy in rook_dirs:
+        for step in range(1, 8):
+            a_col = col + dx * step
+            a_row = row + dy * step
+            if not (0 <= a_col < 8 and 0 <= a_row < 8):
+                break
+            a_sq = chr(a_col + ord('a')) + str(a_row+1)
+            if a_sq in pieces:
+                piece = pieces[a_sq]
+                if piece[0] == attacker_color:
+                    ptype = piece[1]
+                    if ptype in ['R', 'Q']:
+                        min_value = min(min_value, piece_values[ptype])
+                    elif step == 1 and ptype == 'K':
+                        min_value = min(min_value, piece_values[ptype])
+                break
+
+    return min_value if min_value != float('inf') else 0
+
+def evaluate_move(move, pieces, to_play_color):
+    new_pieces = pieces.copy()
+    from_sq = move[:2]
+    to_sq = move[2:4]
+    promo = move[4] if len(move) == 5 else None
+    
+    if from_sq not in new_pieces:
+        return -99999
+    
+    piece_code = new_pieces[from_sq]
+    piece_type = piece_code[1]
+    
+    # Remove captured piece
+    capture_value = 0
+    if to_sq in new_pieces:
+        captured_piece = new_pieces[to_sq]
+        if captured_piece[0] != to_play_color:
+            capture_value = piece_values.get(captured_piece[1], 0)
+            del new_pieces[to_sq]
+    
+    # Move the piece
+    del new_pieces[from_sq]
+    if promo:
+        new_pieces[to_sq] = to_play_color + promo.upper()
+    else:
+        new_pieces[to_sq] = piece_code
+    
+    # Promotion bonus
+    promo_bonus = 8 if promo == 'q' else 0
+    
+    # Castling bonus
+    castling_bonus = 0
+    if piece_type == 'K' and abs(ord(from_sq[0]) - ord(to_sq[0])) == 2:
+        castling_bonus = 3
+    
+    # Centralization bonus
+    file = ord(to_sq[0]) - ord('a')
+    rank = int(to_sq[1]) - 1
+    center_dist = abs(file - 3.5) + abs(rank - 3.5)
+    central_bonus = (4 - center_dist) * 0.5 if piece_type in ['P', 'N', 'B'] else 0
+    
+    # Safety penalty
+    opponent_color = 'b' if to_play_color == 'w' else 'w'
+    attacker_val = minimal_attacker_value(to_sq, new_pieces, opponent_color)
+    penalty = max(0, piece_values.get(piece_type, 1) - attacker_val) if attacker_val > 0 else 0
+    
+    total = capture_value + promo_bonus + castling_bonus + central_bonus - penalty
+    return total
+
+def policy(pieces: dict[str, str], to_play: str, memory: dict) -> tuple[str, dict]:
+    to_play_color = 'w' if to_play == 'white' else 'b'
+    legal_moves = memory.get('legal_moves', [])
+    
+    if not legal_moves:
+        return ('', memory)  # Fallback if no moves
+    
+    best_move = legal_moves[0]
+    best_score = -99999
+    
+    for move in legal_moves:
+        score = evaluate_move(move, pieces, to_play_color)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return (best_move, memory)
+</code>

@@ -1,0 +1,151 @@
+<thinking>
+We need a deterministic policy for a 4×4 tic‑tac‑toe (also called “Qubic” on a 2‑D board).  
+Because the board size is tiny (max 16 cells) we can afford a full minimax search with
+alpha‑beta pruning.  
+The algorithm:
+
+1. Detect terminal states – a win for player 1, a win for player -1, or a full board.
+2. If terminal, return a large positive/negative score (±10 000) so the search prefers wins/losses.
+3. Otherwise evaluate the board with a simple heuristic:
+   * For each of the 10 possible lines (4 rows, 4 columns, 2 diagonals) count how many
+     of our pieces and opponent pieces appear.
+   * If a line contains both players it cannot become a win → score 0.
+   * If a line contains only our pieces (and empties) add `10**count_ours`.
+   * If a line contains only opponent pieces add `-10**count_theirs`.
+   This gives higher weight to longer “open” lines.
+4. Run minimax with alpha‑beta. The search depth never exceeds 16, so it easily fits
+   the 1‑second limit.
+5. Return the move (row, column) that yields the best score for us (`player = 1`).
+
+The code below follows this plan, uses only the standard library, and defines the
+required `policy(board)` function. It also caches board evaluations to avoid
+re‑computing identical positions during recursion. The function is pure – it does
+not modify the input board.
+</thinking>
+<code>
+import copy
+from functools import lru_cache
+from typing import List, Tuple
+
+# Pre‑compute all winning lines for a 4×4 board
+_LINES = []
+
+# rows
+for r in range(4):
+    _LINES.append([(r, c) for c in range(4)])
+# columns
+for c in range(4):
+    _LINES.append([(r, c) for r in range(4)])
+# main diagonal
+_LINES.append([(i, i) for i in range(4)])
+# anti diagonal
+_LINES.append([(i, 3 - i) for i in range(4)])
+
+
+def _check_winner(board: List[List[int]]) -> int:
+    """Return 1 if player 1 wins, -1 if player -1 wins, 0 otherwise."""
+    for line in _LINES:
+        vals = [board[r][c] for r, c in line]
+        if all(v == 1 for v in vals):
+            return 1
+        if all(v == -1 for v in vals):
+            return -1
+    return 0
+
+
+def _is_full(board: List[List[int]]) -> bool:
+    return all(cell != 0 for row in board for cell in row)
+
+
+def _heuristic(board: List[List[int]]) -> int:
+    """Simple evaluation – open lines are valued exponentially."""
+    score = 0
+    for line in _LINES:
+        vals = [board[r][c] for r, c in line]
+        if 1 in vals and -1 in vals:
+            continue            # blocked line, no contribution
+        count_1 = vals.count(1)
+        count_m1 = vals.count(-1)
+        if count_1:
+            score += 10 ** count_1
+        elif count_m1:
+            score -= 10 ** count_m1
+    return score
+
+
+def _board_to_key(board: List[List[int]]) -> Tuple[int, ...]:
+    # flatten to a tuple for caching
+    return tuple(cell for row in board for cell in row)
+
+
+@lru_cache(maxsize=None)
+def _minimax(key: Tuple[int, ...], player: int, alpha: int, beta: int) -> Tuple[int, Tuple[int, int]]:
+    """Return (score, best_move) for the current player."""
+    # reconstruct board from key
+    board = [list(key[i * 4:(i + 1) * 4]) for i in range(4)]
+
+    winner = _check_winner(board)
+    if winner != 0:
+        # terminal win/loss
+        return (10000 if winner == 1 else -10000, (-1, -1))
+
+    if _is_full(board):
+        return (0, (-1, -1))  # draw
+
+    best_move = (-1, -1)
+
+    if player == 1:
+        max_eval = -float('inf')
+        for r in range(4):
+            for c in range(4):
+                if board[r][c] == 0:
+                    board[r][c] = 1
+                    new_key = _board_to_key(board)
+                    eval_score, _ = _minimax(new_key, -1, alpha, beta)
+                    board[r][c] = 0
+                    if eval_score > max_eval:
+                        max_eval = eval_score
+                        best_move = (r, c)
+                    alpha = max(alpha, eval_score)
+                    if beta <= alpha:
+                        break
+        # fallback to heuristic if no move (should not happen)
+        if best_move == (-1, -1):
+            max_eval = _heuristic(board)
+        return (max_eval, best_move)
+    else:
+        min_eval = float('inf')
+        for r in range(4):
+            for c in range(4):
+                if board[r][c] == 0:
+                    board[r][c] = -1
+                    new_key = _board_to_key(board)
+                    eval_score, _ = _minimax(new_key, 1, alpha, beta)
+                    board[r][c] = 0
+                    if eval_score < min_eval:
+                        min_eval = eval_score
+                        best_move = (r, c)
+                    beta = min(beta, eval_score)
+                    if beta <= alpha:
+                        break
+        if best_move == (-1, -1):
+            min_eval = _heuristic(board)
+        return (min_eval, best_move)
+
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Choose the next move for player 1 (our marker) on a 4×4 tic‑tac‑toe board.
+    Returns a tuple (row, column) with 0‑based indices.
+    """
+    key = _board_to_key(board)
+    _, move = _minimax(key, 1, -float('inf'), float('inf'))
+    # If minimax returned an invalid placeholder (should not happen on a non‑terminal board)
+    if move == (-1, -1):
+        # pick first empty cell as a safe fallback
+        for r in range(4):
+            for c in range(4):
+                if board[r][c] == 0:
+                    return (r, c)
+    return move
+</code>

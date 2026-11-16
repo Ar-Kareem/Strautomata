@@ -1,0 +1,268 @@
+
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    import time
+    
+    start_time = time.time()
+    
+    # State: (my_men_frozenset, my_kings_frozenset, opp_men_frozenset, opp_kings_frozenset)
+    my_men_s = frozenset(my_men)
+    my_kings_s = frozenset(my_kings)
+    opp_men_s = frozenset(opp_men)
+    opp_kings_s = frozenset(opp_kings)
+    
+    # Directions
+    if color == 'w':
+        my_forward = [(1, -1), (1, 1)]
+        opp_forward = [(-1, -1), (-1, 1)]
+        my_promo_row = 7
+        opp_promo_row = 0
+    else:
+        my_forward = [(-1, -1), (-1, 1)]
+        opp_forward = [(1, -1), (1, 1)]
+        my_promo_row = 0
+        opp_promo_row = 7
+    
+    all_dirs = [(1, -1), (1, 1), (-1, -1), (-1, 1)]
+    
+    def in_bounds(r, c):
+        return 0 <= r <= 7 and 0 <= c <= 7
+    
+    def get_captures(men, kings, o_men, o_kings, forward_dirs, promo_row):
+        """Get all capture moves. Returns list of (from_sq, to_sq, new_state) for the full jump sequence."""
+        occupied_mine = men | kings
+        occupied_opp = o_men | o_kings
+        
+        captures = []
+        
+        def find_jumps(pos, is_king, visited_captured, current_men, current_kings, current_o_men, current_o_kings, origin):
+            dirs = all_dirs if is_king else forward_dirs
+            found_jump = False
+            for dr, dc in dirs:
+                mr, mc = pos[0] + dr, pos[1] + dc
+                lr, lc = pos[0] + 2*dr, pos[1] + 2*dc
+                mid = (mr, mc)
+                land = (lr, lc)
+                if not in_bounds(lr, lc):
+                    continue
+                if mid in visited_captured:
+                    continue
+                if mid not in (current_o_men | current_o_kings):
+                    continue
+                # Check land is empty (not occupied by any piece except the moving piece which we already removed)
+                all_occupied = current_men | current_kings | current_o_men | current_o_kings
+                if land in all_occupied:
+                    continue
+                
+                found_jump = True
+                new_visited = visited_captured | {mid}
+                new_o_men = current_o_men - {mid}
+                new_o_kings = current_o_kings - {mid}
+                
+                # Check promotion
+                promoted = False
+                new_men = current_men
+                new_kings = current_kings
+                if not is_king and lr == promo_row:
+                    promoted = True
+                    new_men = current_men - {pos}
+                    new_kings = current_kings | {land}
+                    # After promotion, stop jumping (standard checkers rule)
+                    captures.append((origin, land, (new_men, new_kings, new_o_men, new_o_kings)))
+                else:
+                    if is_king:
+                        new_kings = (current_kings - {pos}) | {land}
+                        new_men = current_men
+                    else:
+                        new_men = (current_men - {pos}) | {land}
+                        new_kings = current_kings
+                    
+                    find_jumps(land, is_king, new_visited, new_men, new_kings, new_o_men, new_o_kings, origin)
+            
+            if not found_jump and visited_captured:
+                captures.append((origin, pos, (current_men, current_kings, current_o_men, current_o_kings)))
+        
+        for p in men:
+            find_jumps(p, False, frozenset(), men, kings, o_men, o_kings, p)
+        for p in kings:
+            find_jumps(p, True, frozenset(), men, kings, o_men, o_kings, p)
+        
+        return captures
+    
+    def get_simple_moves(men, kings, o_men, o_kings, forward_dirs):
+        occupied = men | kings | o_men | o_kings
+        moves = []
+        for p in men:
+            for dr, dc in forward_dirs:
+                nr, nc = p[0] + dr, p[1] + dc
+                if in_bounds(nr, nc) and (nr, nc) not in occupied:
+                    new_men = men - {p}
+                    new_kings = kings
+                    dest = (nr, nc)
+                    # Promotion check
+                    promo_row = my_promo_row  # This is a closure issue - we'll fix
+                    # We can't easily know promo row here, pass it
+                    moves.append((p, dest, new_men, new_kings, o_men, o_kings, False))
+        for p in kings:
+            for dr, dc in all_dirs:
+                nr, nc = p[0] + dr, p[1] + dc
+                if in_bounds(nr, nc) and (nr, nc) not in occupied:
+                    new_kings = (kings - {p}) | {(nr, nc)}
+                    moves.append((p, (nr, nc), men, new_kings, o_men, o_kings, True))
+        return moves
+    
+    def get_all_moves(men, kings, o_men, o_kings, forward_dirs, promo_row, is_my_turn):
+        """Returns list of (from_sq, to_sq, new_men, new_kings, new_o_men, new_o_kings)"""
+        caps = get_captures(men, kings, o_men, o_kings, forward_dirs, promo_row)
+        if caps:
+            result = []
+            for (frm, to, (nm, nk, nom, nok)) in caps:
+                result.append((frm, to, nm, nk, nom, nok))
+            return result
+        
+        occupied = men | kings | o_men | o_kings
+        moves = []
+        for p in men:
+            for dr, dc in forward_dirs:
+                nr, nc = p[0] + dr, p[1] + dc
+                if in_bounds(nr, nc) and (nr, nc) not in occupied:
+                    dest = (nr, nc)
+                    new_men = (men - {p})
+                    new_kings = kings
+                    if nr == promo_row:
+                        new_kings = new_kings | {dest}
+                    else:
+                        new_men = new_men | {dest}
+                    moves.append((p, dest, new_men, new_kings, o_men, o_kings))
+        for p in kings:
+            for dr, dc in all_dirs:
+                nr, nc = p[0] + dr, p[1] + dc
+                if in_bounds(nr, nc) and (nr, nc) not in occupied:
+                    new_kings = (kings - {p}) | {(nr, nc)}
+                    moves.append((p, (nr, nc), men, new_kings, o_men, o_kings))
+        return moves
+    
+    def evaluate(m_men, m_kings, o_men, o_kings):
+        """Evaluate from my perspective."""
+        num_my = len(m_men) + len(m_kings)
+        num_opp = len(o_men) + len(o_kings)
+        
+        if num_my == 0:
+            return -1000
+        if num_opp == 0:
+            return 1000
+        
+        score = 0.0
+        
+        # Material
+        score += len(m_men) * 100 + len(m_kings) * 160
+        score -= len(o_men) * 100 - len(o_kings) * 160
+        score -= (len(o_men) * 100 + len(o_kings) * 160)
+        score += (len(m_men) * 100 + len(m_kings) * 160)
+        # Simplify: already double counted, let me redo
+        score = 0.0
+        my_mat = len(m_men) * 100 + len(m_kings) * 160
+        opp_mat = len(o_men) * 100 + len(o_kings) * 160
+        score = my_mat - opp_mat
+        
+        # Positional bonuses
+        for r, c in m_men:
+            # Advancement
+            if color == 'w':
+                score += r * 3
+            else:
+                score += (7 - r) * 3
+            # Center control
+            if 2 <= c <= 5 and 2 <= r <= 5:
+                score += 5
+            # Back row
+            if color == 'w' and r == 0:
+                score += 4
+            elif color == 'b' and r == 7:
+                score += 4
+        
+        for r, c in m_kings:
+            if 2 <= c <= 5 and 2 <= r <= 5:
+                score += 8
+        
+        for r, c in o_men:
+            if color == 'w':
+                score -= (7 - r) * 3
+            else:
+                score -= r * 3
+            if 2 <= c <= 5 and 2 <= r <= 5:
+                score -= 5
+        
+        for r, c in o_kings:
+            if 2 <= c <= 5 and 2 <= r <= 5:
+                score -= 8
+        
+        return score
+    
+    def minimax(m_men, m_kings, o_men, o_kings, depth, alpha, beta, maximizing):
+        if depth == 0:
+            return evaluate(m_men, m_kings, o_men, o_kings), None
+        
+        if maximizing:
+            fwd = my_forward
+            promo = my_promo_row
+            moves = get_all_moves(m_men, m_kings, o_men, o_kings, fwd, promo, True)
+            if not moves:
+                return -1000, None
+            
+            best_val = -10000
+            best_move = None
+            for mv in moves:
+                frm, to, nm, nk, nom, nok = mv
+                val, _ = minimax(nm, nk, nom, nok, depth - 1, alpha, beta, False)
+                if val > best_val:
+                    best_val = val
+                    best_move = (frm, to)
+                alpha = max(alpha, val)
+                if alpha >= beta:
+                    break
+                if time.time() - start_time > 0.85:
+                    break
+            return best_val, best_move
+        else:
+            fwd = opp_forward
+            promo = opp_promo_row
+            # Opponent moves: swap perspective for move gen
+            moves = get_all_moves(o_men, o_kings, m_men, m_kings, fwd, promo, False)
+            if not moves:
+                return 1000, None
+            
+            best_val = 10000
+            best_move = None
+            for mv in moves:
+                frm, to, no_men, no_kings, nm_men, nm_kings = mv
+                # After opponent moves: no_men/no_kings are new opp pieces, nm_men/nm_kings are my pieces
+                val, _ = minimax(nm_men, nm_kings, no_men, no_kings, depth - 1, alpha, beta, True)
+                if val < best_val:
+                    best_val = val
+                    best_move = (frm, to)
+                beta = min(beta, val)
+                if alpha >= beta:
+                    break
+                if time.time() - start_time > 0.85:
+                    break
+            return best_val, best_move
+    
+    # Iterative deepening
+    total_pieces = len(my_men) + len(my_kings) + len(opp_men) + len(opp_kings)
+    max_depth = 6 if total_pieces > 8 else 10
+    
+    best_move = None
+    
+    # Get legal moves first for fallback
+    all_moves = get_all_moves(my_men_s, my_kings_s, opp_men_s, opp_kings_s, my_forward, my_promo_row, True)
+    if all_moves:
+        best_move = (all_moves[0][0], all_moves[0][1])
+    
+    for depth in range(1, max_depth + 1):
+        if time.time() - start_time > 0.7:
+            break
+        val, mv = minimax(my_men_s, my_kings_s, opp_men_s, opp_kings_s, depth, -10000, 10000, True)
+        if mv is not None:
+            best_move = mv
+    
+    return best_move

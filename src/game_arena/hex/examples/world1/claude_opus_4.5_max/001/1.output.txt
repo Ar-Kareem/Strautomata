@@ -1,0 +1,114 @@
+Looking at this problem, I need to create a Hex policy that can compete effectively on an 11x11 board.
+
+## Strategy
+
+My approach combines several key techniques:
+
+1. **Shortest Path Evaluation**: Use Dijkstra's algorithm to compute the minimum number of additional stones needed for each player to connect their sides. This efficiently measures how "close" each player is to winning.
+
+2. **Move Scoring**: For each candidate move, evaluate:
+   - How much it reduces my path cost (offensive value)
+   - How much it increases opponent's path cost (defensive value)
+   - Whether it blocks an immediate winning move for opponent
+
+3. **Adaptive Weighting**: When ahead (lower path cost), prioritize offense; when behind, prioritize defense.
+
+4. **Opening Book**: Prefer center positions early in the game, as they offer maximum connectivity options.
+
+5. **Immediate Win/Block Detection**: Always take winning moves when available, and heavily prioritize blocking opponent's winning moves.
+
+The Dijkstra approach is elegant because it implicitly understands virtual connections like bridges - if two stones can connect through multiple paths, the algorithm naturally recognizes this as zero additional cost.
+
+<code>
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    import heapq
+    
+    SIZE = 11
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    def neighbors(r, c):
+        for dr, dc in [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < SIZE and 0 <= nc < SIZE:
+                yield (nr, nc)
+    
+    def path_cost(stones, blocked, is_black):
+        pq = []
+        visited = set()
+        
+        if is_black:
+            for c in range(SIZE):
+                if (0, c) not in blocked:
+                    cost = 0 if (0, c) in stones else 1
+                    heapq.heappush(pq, (cost, 0, c))
+        else:
+            for r in range(SIZE):
+                if (r, 0) not in blocked:
+                    cost = 0 if (r, 0) in stones else 1
+                    heapq.heappush(pq, (cost, r, 0))
+        
+        while pq:
+            cost, r, c = heapq.heappop(pq)
+            if (r, c) in visited:
+                continue
+            visited.add((r, c))
+            
+            if (is_black and r == SIZE - 1) or (not is_black and c == SIZE - 1):
+                return cost
+            
+            for nr, nc in neighbors(r, c):
+                if (nr, nc) not in visited and (nr, nc) not in blocked:
+                    ncost = cost + (0 if (nr, nc) in stones else 1)
+                    heapq.heappush(pq, (ncost, nr, nc))
+        
+        return 1000
+    
+    is_black = color == 'b'
+    empty = [(r, c) for r in range(SIZE) for c in range(SIZE) 
+             if (r, c) not in me_set and (r, c) not in opp_set]
+    
+    if not empty:
+        return (0, 0)
+    
+    if len(me) + len(opp) < 3:
+        for cell in [(5, 5), (5, 4), (4, 5), (4, 6), (6, 4), (6, 5), (5, 6)]:
+            if cell in empty:
+                return cell
+    
+    my_cost = path_cost(me_set, opp_set, is_black)
+    opp_cost = path_cost(opp_set, me_set, not is_black)
+    
+    best = empty[0]
+    best_score = float('-inf')
+    
+    for cell in empty:
+        new_me = me_set | {cell}
+        
+        new_my_cost = path_cost(new_me, opp_set, is_black)
+        if new_my_cost == 0:
+            return cell
+        
+        new_opp_cost = path_cost(opp_set, new_me, not is_black)
+        
+        opp_wins = opp_cost == 1 and path_cost(opp_set | {cell}, me_set, not is_black) == 0
+        
+        improve = my_cost - new_my_cost
+        block = new_opp_cost - opp_cost
+        
+        if my_cost <= opp_cost:
+            score = improve * 1.3 + block * 0.7
+        else:
+            score = improve * 0.7 + block * 1.3
+        
+        if opp_wins:
+            score += 50
+        
+        score += 0.01 * (10 - abs(cell[0] - 5) - abs(cell[1] - 5))
+        
+        if score > best_score:
+            best_score = score
+            best = cell
+    
+    return best
+</code>

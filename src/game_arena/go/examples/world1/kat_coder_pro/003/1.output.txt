@@ -1,0 +1,129 @@
+# Strategy
+
+The strategy for this policy is to play conservatively and defensively, focusing on capturing opponent stones and protecting our own groups. The policy will:
+
+1. First, check if there are any immediate captures available (atari moves) that can capture opponent stones.
+2. If no captures are available, check if any of our own stones are in atari (one liberty left) and try to save them.
+3. If no immediate threats exist, evaluate the board by looking for good empty points that:
+   - Connect to our existing stones
+   - Are not in atari after placement
+   - Have good potential for forming eyes or territory
+4. Among the evaluated moves, choose the one with the highest score.
+
+<code>
+import random
+from collections import deque
+
+def count_liberties(board, row, col, player):
+    """Count liberties for a single stone or connected group."""
+    visited = set()
+    queue = deque([(row, col)])
+    liberties = 0
+    
+    opponent = 3 - player
+    
+    while queue:
+        r, c = queue.popleft()
+        
+        if (r, c) in visited:
+            continue
+            
+        visited.add((r, c))
+        
+        # Check all four directions
+        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nr, nc = r + dr, c + dc
+            
+            # Check if position is on board
+            if 1 <= nr <= 19 and 1 <= nc <= 19:
+                if (nr, nc) not in board:
+                    liberties += 1
+                elif board.get((nr, nc)) == player and (nr, nc) not in visited:
+                    queue.append((nr, nc))
+    
+    return liberties
+
+def is_valid_move(board, row, col):
+    """Check if a move is valid (within board and not occupied)."""
+    return 1 <= row <= 19 and 1 <= col <= 19 and (row, col) not in board
+
+def has_liberties_after_move(board, row, col, player):
+    """Check if placing a stone would have liberties after the move."""
+    new_board = board.copy()
+    new_board[(row, col)] = player
+    
+    # Check liberties for the placed stone
+    liberties = count_liberties(new_board, row, col, player)
+    return liberties > 0
+
+def get_score_for_move(board, row, col, player):
+    """Calculate a score for placing a stone at (row, col)."""
+    score = 0
+    opponent = 3 - player
+    
+    # Check if move is suicide
+    if not has_liberties_after_move(board, row, col, player):
+        return -1000
+    
+    # Count liberties for the placed stone
+    liberties = count_liberties(board, row, col, player)
+    if liberties == 1:
+        score -= 100  # Avoid atari
+    elif liberties == 2:
+        score += 10
+    else:
+        score += liberties * 5
+    
+    # Check if move captures opponent stones
+    captures = 0
+    for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+        nr, nc = row + dr, col + dc
+        if 1 <= nr <= 19 and 1 <= nc <= 19:
+            if board.get((nr, nc)) == opponent:
+                if count_liberties(board, nr, nc, opponent) == 1:
+                    captures += 1
+    score += captures * 100
+    
+    # Check if move connects to our stones
+    connections = 0
+    for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+        nr, nc = row + dr, col + dc
+        if 1 <= nr <= 19 and 1 <= nc <= 19:
+            if board.get((nr, nc)) == player:
+                connections += 1
+    score += connections * 20
+    
+    # Bonus for central positions
+    center_dist = abs(row - 10) + abs(col - 10)
+    score += max(0, 10 - center_dist) * 2
+    
+    return score
+
+def policy(me, opponent):
+    # Build board representation
+    board = {}
+    for r, c in me:
+        board[(r, c)] = 1
+    for r, c in opponent:
+        board[(r, c)] = 2
+    
+    player = 1  # We are player 1
+    
+    # First, look for immediate captures (atari moves)
+    best_score = -10000
+    best_move = None
+    
+    # Check all empty points
+    for row in range(1, 20):
+        for col in range(1, 20):
+            if (row, col) not in board:
+                score = get_score_for_move(board, row, col, player)
+                if score > best_score:
+                    best_score = score
+                    best_move = (row, col)
+    
+    if best_move is None:
+        return (0, 0)  # Pass if no valid moves found
+    
+    return best_move
+</code>

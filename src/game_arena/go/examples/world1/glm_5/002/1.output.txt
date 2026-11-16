@@ -1,0 +1,157 @@
+The strategy for this policy is to analyze the board state using a heuristic scoring system to determine the best move. It prioritizes immediate tactical gains:
+1.  **Capturing**: The policy assigns a very high score to moves that capture opponent stones.
+2.  **Saving**: It identifies if any of the current player's groups are in "atari" (one liberty away from capture) and prioritizes moves that save these groups.
+3.  **Legal Play**: It strictly filters out suicide moves (moves that result in 0 liberties without capturing) to ensure compliance with game rules.
+4.  **Positional Play**: It evaluates the number of liberties a move generates and prefers moves on the 3rd or 4th lines (standard strategic lines in Go) while avoiding filling in one's own eyes unnecessarily.
+
+<code>
+import random
+from typing import List, Tuple, Set
+
+def policy(me: List[Tuple[int, int]], opponent: List[Tuple[int, int]]) -> Tuple[int, int]:
+    me_set: Set[Tuple[int, int]] = set(me)
+    opp_set: Set[Tuple[int, int]] = set(opponent)
+    occupied: Set[Tuple[int, int]] = me_set | opp_set
+    board_size = 19
+    
+    # Directions for neighbor checking
+    directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    
+    def get_neighbors(r: int, c: int):
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            if 1 <= nr <= board_size and 1 <= nc <= board_size:
+                yield nr, nc
+
+    # If the board is empty, play a standard opening move (Star point)
+    if not occupied:
+        return (4, 4)
+
+    def get_group_info(start_r: int, start_c: int, player_set: Set[Tuple[int, int]]):
+        """Returns (group_stones, liberties) for the group containing the start stone."""
+        if (start_r, start_c) not in player_set:
+            return set(), set()
+            
+        group = set()
+        liberties = set()
+        stack = [(start_r, start_c)]
+        group.add((start_r, start_c))
+        
+        while stack:
+            r, c = stack.pop()
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) in player_set:
+                    if (nr, nc) not in group:
+                        group.add((nr, nc))
+                        stack.append((nr, nc))
+                elif (nr, nc) not in occupied:
+                    liberties.add((nr, nc))
+                    
+        return group, liberties
+
+    best_move = None
+    best_score = -float('inf')
+    
+    # Identify all empty points on the board
+    empty_points = []
+    for r in range(1, board_size + 1):
+        for c in range(1, board_size + 1):
+            if (r, c) not in occupied:
+                empty_points.append((r, c))
+    
+    # If no empty points, pass
+    if not empty_points:
+        return (0, 0)
+
+    for r, c in empty_points:
+        # --- 1. Check Captures ---
+        captured_stones_count = 0
+        captured_stones_set = set()
+        
+        for nr, nc in get_neighbors(r, c):
+            if (nr, nc) in opp_set:
+                opp_group, opp_liberties = get_group_info(nr, nc, opp_set)
+                # If the opponent group has exactly 1 liberty, and that liberty is (r, c)
+                if len(opp_liberties) == 1 and (r, c) in opp_liberties:
+                    captured_stones_count += len(opp_group)
+                    captured_stones_set.update(opp_group)
+
+        # --- 2. Check Suicide ---
+        # Simulate the board state after placing the stone and removing captured stones
+        # New occupied set for simulation
+        virtual_occupied = (occupied - captured_stones_set) | {(r, c)}
+        
+        # Find connected component of the new stone
+        # We need to check liberties of the new group formed by (r, c)
+        # The new group includes (r, c) and any connected friendly groups
+        
+        new_group = {(r, c)}
+        new_liberties = set()
+        
+        # We assume the stone is placed, so neighbors that are not occupied (or were captured) are liberties
+        for nr, nc in get_neighbors(r, c):
+            if (nr, nc) not in virtual_occupied:
+                new_liberties.add((nr, nc))
+        
+        # Check connections to existing friendly groups
+        visited_groups = set()
+        for nr, nc in get_neighbors(r, c):
+            if (nr, nc) in me_set and (nr, nc) not in visited_groups:
+                friend_group, friend_libs = get_group_info(nr, nc, me_set)
+                visited_groups.update(friend_group)
+                new_group.update(friend_group)
+                # Add liberties of the connected group, excluding the current move point
+                for lib in friend_libs:
+                    if lib != (r, c):
+                        new_liberties.add(lib)
+        
+        # Suicide check: if no captures made and new group has 0 liberties
+        if captured_stones_count == 0 and len(new_liberties) == 0:
+            continue # Illegal move (Suicide)
+            
+        # --- 3. Scoring ---
+        score = 0
+        
+        # High priority: Capture stones
+        score += captured_stones_count * 100
+        
+        # High priority: Save own groups in Atari
+        # We need to check if any neighbor friendly group was in Atari BEFORE this move
+        for nr, nc in get_neighbors(r, c):
+            if (nr, nc) in me_set:
+                friend_group, friend_libs = get_group_info(nr, nc, me_set)
+                # If friend was in Atari (1 liberty) and that liberty was (r, c) (Wait, usually atari liberty is the empty spot)
+                # Actually, if friend_group has 1 liberty (which must be r,c or somewhere else)
+                # If the group had 1 liberty total, it was in atari.
+                if len(friend_libs) == 1:
+                    # Does this move save it?
+                    # If the new group has > 1 liberties, it is saved.
+                    if len(new_liberties) > 1:
+                        score += len(friend_group) * 50
+                elif len(friend_libs) == 2:
+                    # Connecting to a weak group (2 libs) is also good
+                    score += 5
+
+        # Positional heuristics
+        # Prefer moves with more liberties (shape)
+        score += len(new_liberties) * 2
+        
+        # Avoid playing inside own eye (surrounded by own stones) unless necessary
+        neighbors_list = list(get_neighbors(r, c))
+        is_surrounded_by_me = all((nr, nc) in me_set for nr, nc in neighbors_list)
+        if is_surrounded_by_me:
+            score -= 50 # Penalty for filling own eye
+            
+        # Prefer 3rd and 4th lines
+        if r in [3, 4, 16, 17] or c in [3, 4, 16, 17]:
+            score += 1
+            
+        # Random tie-breaker
+        score += random.random() * 0.1
+        
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+            
+    return best_move if best_move else (0, 0)
+</code>

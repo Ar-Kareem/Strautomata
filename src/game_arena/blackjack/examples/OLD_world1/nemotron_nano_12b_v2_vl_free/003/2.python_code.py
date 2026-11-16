@@ -1,0 +1,43 @@
+
+from typing import List
+
+def calculate_hand_value(hand: List[str], target: int) -> (int, bool):
+    sum_non_ace = 0
+    num_aces = 0
+    for card in hand:
+        if card == 'A':
+            num_aces += 1
+        else:
+            val = 10 if (card in {'J', 'Q', 'K', '10'}) else int(card)
+            sum_non_ace += val
+    max_sum_with_aces = sum_non_ace + num_aces * 11
+    if max_sum_with_aces <= target:
+        return (max_sum_with_aces, False)
+    sum_min = sum_non_ace + num_aces
+    if sum_min > target:
+        return (sum_min, True)
+    max_convertible = num_aces
+    add_amount = (target - sum_min) // 10
+    addable = min(num_aces, add_amount)
+    final_sum = sum_min + 10 * addable
+    return (final_sum, sum_final > target)
+
+def policy(hand: List[str], target: int) -> str:
+    current_sum, is_busted = calculate_hand_value(hand, target)
+    if is_busted:
+        return "STAY"
+    remaining_cards = 13 - len(hand)
+    if remaining_cards == 0:
+        return "STAY"
+    remaining_card_set = set(['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K']) - set(hand)
+    bust_count = 0
+    for new_card in remaining_card_set:
+        new_hand = hand + [new_card]
+        _, new_bust = calculate_hand_value(new_hand, target)
+        if new_bust:
+            bust_count += 1
+    bust_prob = bust_count / len(remaining_card_set)
+    if bust_prob < 0.5:
+        return "HIT"
+    else:
+        return "STAY"

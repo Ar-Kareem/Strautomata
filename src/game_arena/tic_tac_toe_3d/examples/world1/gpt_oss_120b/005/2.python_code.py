@@ -1,0 +1,129 @@
+
+import random
+from typing import List, Tuple
+
+# Pre‑compute all 49 winning lines and a mapping from each cell to the lines it belongs to.
+_LINES: List[List[Tuple[int, int, int]]] = []
+_CELL_TO_LINES: List[List[List[int]]] = [[[[] for _ in range(3)] for _ in range(3)] for _ in range(3)]
+
+def _init_lines() -> None:
+    """Populate _LINES and _CELL_TO_LINES."""
+    # rows (vary x)
+    for z in range(3):
+        for y in range(3):
+            line = [(x, y, z) for x in range(3)]
+            _add_line(line)
+
+    # columns (vary y)
+    for z in range(3):
+        for x in range(3):
+            line = [(x, y, z) for y in range(3)]
+            _add_line(line)
+
+    # pillars (vary z)
+    for x in range(3):
+        for y in range(3):
+            line = [(x, y, z) for z in range(3)]
+            _add_line(line)
+
+    # face diagonals on xy planes (z fixed)
+    for z in range(3):
+        _add_line([(0, 0, z), (1, 1, z), (2, 2, z)])
+        _add_line([(0, 2, z), (1, 1, z), (2, 0, z)])
+
+    # face diagonals on xz planes (y fixed)
+    for y in range(3):
+        _add_line([(0, y, 0), (1, y, 1), (2, y, 2)])
+        _add_line([(0, y, 2), (1, y, 1), (2, y, 0)])
+
+    # face diagonals on yz planes (x fixed)
+    for x in range(3):
+        _add_line([(x, 0, 0), (x, 1, 1), (x, 2, 2)])
+        _add_line([(x, 0, 2), (x, 1, 1), (x, 2, 0)])
+
+    # space diagonals
+    _add_line([(0, 0, 0), (1, 1, 1), (2, 2, 2)])
+    _add_line([(0, 0, 2), (1, 1, 1), (2, 2, 0)])
+    _add_line([(0, 2, 0), (1, 1, 1), (2, 0, 2)])
+    _add_line([(0, 2, 2), (1, 1, 1), (2, 0, 0)])
+
+def _add_line(line: List[Tuple[int, int, int]]) -> None:
+    """Add a line to the global structures."""
+    idx = len(_LINES)
+    _LINES.append(line)
+    for (i, j, k) in line:
+        _CELL_TO_LINES[i][j][k].append(idx)
+
+# Initialise at import time
+_init_lines()
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    """
+    Choose the next move for the player (value 1) on a 3x3x3 tic‑tac‑toe board.
+
+    Parameters
+    ----------
+    board : list[list[list[int]]]
+        3‑dimensional list with values:
+        0  – empty cell
+        1  – our mark
+       -1  – opponent's mark
+
+    Returns
+    -------
+    tuple[int, int, int]
+        (i, j, k) indices of a legal empty cell.
+    """
+    best_score = -float('inf')
+    best_moves = []
+
+    # Scan every empty cell and compute its score.
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board[i][j][k] != 0:
+                    continue  # not empty
+
+                score = 0
+
+                # Bonus for the central cell.
+                if (i, j, k) == (1, 1, 1):
+                    score += 5
+
+                # Evaluate each line that passes through (i, j, k).
+                for line_idx in _CELL_TO_LINES[i][j][k]:
+                    line = _LINES[line_idx]
+                    my_cnt = opp_cnt = 0
+                    for (x, y, z) in line:
+                        if (x, y, z) == (i, j, k):
+                            continue  # this cell is empty now
+                        val = board[x][y][z]
+                        if val == 1:
+                            my_cnt += 1
+                        elif val == -1:
+                            opp_cnt += 1
+
+                    # Determine contribution based on counts.
+                    if my_cnt == 2 and opp_cnt == 0:
+                        score += 10000          # immediate winning move
+                    elif opp_cnt == 2 and my_cnt == 0:
+                        score += 9000           # block opponent's win
+                    elif my_cnt == 1 and opp_cnt == 0:
+                        score += 10
+                    elif opp_cnt == 1 and my_cnt == 0:
+                        score += 9
+                    # mixed lines give no extra value.
+
+                # Update best move list.
+                if score > best_score:
+                    best_score = score
+                    best_moves = [(i, j, k)]
+                elif score == best_score:
+                    best_moves.append((i, j, k))
+
+    # In the unlikely event there is no empty cell (should not happen), pick (0,0,0).
+    if not best_moves:
+        return (0, 0, 0)
+
+    # Random tie‑break for variety.
+    return random.choice(best_moves)

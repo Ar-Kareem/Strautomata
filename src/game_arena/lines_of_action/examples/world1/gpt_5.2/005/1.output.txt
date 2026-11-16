@@ -1,0 +1,357 @@
+The strategy for this policy is to play a fast, tactical version of Lines of Action using **legal-move generation + iterative-deepening alpha-beta (negamax)**. It prioritizes:
+- **Immediate wins** (moving to make all our pieces connected).
+- **Avoiding immediate losses** (not allowing the opponent to connect next move when possible).
+- A heuristic that favors **fewer connected components**, **tighter formation (smaller bounding box)**, **more local adjacency**, and mild **centralization**, with light **mobility** consideration at leaf nodes.
+- **Move ordering** (captures and centralizing moves first) to make alpha-beta effective within the 1-second limit.
+
+<code>
+import time
+from collections import deque
+from typing import List, Tuple, Optional
+
+# Lines of Action policy for 8x8 board
+# board[r][c] in {0, 1, -1}, and "we" are always the player to move at root (player=1).
+
+
+Move = Tuple[int, int, int, int]  # fr, fc, tr, tc
+
+DIRS = [
+    (-1, 0), (1, 0), (0, -1), (0, 1),
+    (-1, -1), (-1, 1), (1, -1), (1, 1)
+]
+
+WIN_SCORE = 1_000_000
+INF = 10**18
+
+
+def policy(board) -> str:
+    # Flatten to 1D list for speed
+    b = [board[r][c] for r in range(8) for c in range(8)]
+
+    start_time = time.perf_counter()
+    time_limit = 0.97  # seconds; leave safety margin
+
+    def in_bounds(r: int, c: int) -> bool:
+        return 0 <= r < 8 and 0 <= c < 8
+
+    def idx(r: int, c: int) -> int:
+        return (r << 3) + c
+
+    def rc(i: int) -> Tuple[int, int]:
+        return (i >> 3), (i & 7)
+
+    def piece_count(board1d: List[int], player: int) -> int:
+        return sum(1 for v in board1d if v == player)
+
+    def compute_line_counts(board1d: List[int]):
+        row = [0] * 8
+        col = [0] * 8
+        diag = [0] * 15      # r - c + 7 in [0..14]
+        adiag = [0] * 15     # r + c in [0..14]
+        for r in range(8):
+            base = r << 3
+            for c in range(8):
+                v = board1d[base + c]
+                if v != 0:
+                    row[r] += 1
+                    col[c] += 1
+                    diag[r - c + 7] += 1
+                    adiag[r + c] += 1
+        return row, col, diag, adiag
+
+    def group_count(board1d: List[int], player: int) -> int:
+        # Count connected components in 8-neighborhood
+        positions = [i for i, v in enumerate(board1d) if v == player]
+        n = len(positions)
+        if n <= 1:
+            return 1 if n == 1 else 0  # 0 pieces => 0 groups (treated as losing in eval)
+        visited = [False] * 64
+        groups = 0
+        for i in positions:
+            if visited[i]:
+                continue
+            groups += 1
+            q = deque([i])
+            visited[i] = True
+            while q:
+                cur = q.popleft()
+                r0, c0 = rc(cur)
+                for dr in (-1, 0, 1):
+                    rr = r0 + dr
+                    if rr < 0 or rr > 7:
+                        continue
+                    for dc in (-1, 0, 1):
+                        if dr == 0 and dc == 0:
+                            continue
+                        cc = c0 + dc
+                        if cc < 0 or cc > 7:
+                            continue
+                        j = idx(rr, cc)
+                        if not visited[j] and board1d[j] == player:
+                            visited[j] = True
+                            q.append(j)
+        return groups
+
+    def bbox_score(board1d: List[int], player: int) -> int:
+        # Smaller is better: (height-1)+(width-1) + area term lightly
+        rs = []
+        cs = []
+        for i, v in enumerate(board1d):
+            if v == player:
+                r0, c0 = rc(i)
+                rs.append(r0)
+                cs.append(c0)
+        if not rs:
+            return 10_000
+        minr, maxr = min(rs), max(rs)
+        minc, maxc = min(cs), max(cs)
+        h = maxr - minr + 1
+        w = maxc - minc + 1
+        area = h * w
+        span = (h - 1) + (w - 1)
+        return span * 10 + area  # span dominates
+
+    def adjacency_pairs(board1d: List[int], player: int) -> int:
+        # Count undirected adjacent friendly pairs (8-neighborhood), each pair once
+        pairs = 0
+        for i, v in enumerate(board1d):
+            if v != player:
+                continue
+            r0, c0 = rc(i)
+            for dr in (-1, 0, 1):
+                rr = r0 + dr
+                if rr < 0 or rr > 7:
+                    continue
+                for dc in (-1, 0, 1):
+                    if dr == 0 and dc == 0:
+                        continue
+                    cc = c0 + dc
+                    if cc < 0 or cc > 7:
+                        continue
+                    j = idx(rr, cc)
+                    if j > i and board1d[j] == player:
+                        pairs += 1
+        return pairs
+
+    def center_score_dest(tr: int, tc: int) -> float:
+        # Higher is better (closer to center 3.5,3.5)
+        return -((tr - 3.5) ** 2 + (tc - 3.5) ** 2)
+
+    def legal_moves(board1d: List[int], player: int) -> List[Move]:
+        row, col, diag, adiag = compute_line_counts(board1d)
+        opp = -player
+        moves: List[Move] = []
+        for i, v in enumerate(board1d):
+            if v != player:
+                continue
+            r0, c0 = rc(i)
+            for dr, dc in DIRS:
+                # Determine step length based on line
+                if dr == 0:
+                    step = row[r0]
+                elif dc == 0:
+                    step = col[c0]
+                elif dr == dc:
+                    step = diag[r0 - c0 + 7]
+                else:  # dr == -dc
+                    step = adiag[r0 + c0]
+
+                tr = r0 + dr * step
+                tc = c0 + dc * step
+                if not in_bounds(tr, tc):
+                    continue
+
+                dest = board1d[idx(tr, tc)]
+                if dest == player:
+                    continue  # can't land on own piece
+
+                # Check for enemy pieces in between (can't jump over enemies)
+                blocked = False
+                for k in range(1, step):
+                    rr = r0 + dr * k
+                    cc = c0 + dc * k
+                    midv = board1d[idx(rr, cc)]
+                    if midv == opp:
+                        blocked = True
+                        break
+                if blocked:
+                    continue
+
+                moves.append((r0, c0, tr, tc))
+        return moves
+
+    def make_move(board1d: List[int], mv: Move, player: int) -> int:
+        fr, fc, tr, tc = mv
+        f = idx(fr, fc)
+        t = idx(tr, tc)
+        captured = board1d[t]
+        board1d[t] = player
+        board1d[f] = 0
+        return captured
+
+    def undo_move(board1d: List[int], mv: Move, player: int, captured: int) -> None:
+        fr, fc, tr, tc = mv
+        f = idx(fr, fc)
+        t = idx(tr, tc)
+        board1d[f] = player
+        board1d[t] = captured
+
+    def is_win(board1d: List[int], player: int) -> bool:
+        pc = piece_count(board1d, player)
+        if pc <= 1:
+            # In LOA, 0 shouldn't happen in normal play; 1 is trivially connected.
+            return pc == 1
+        return group_count(board1d, player) == 1
+
+    def evaluate(board1d: List[int], player: int) -> float:
+        # Return score from perspective of 'player'
+        my_pc = piece_count(board1d, player)
+        opp_pc = piece_count(board1d, -player)
+        if my_pc == 0:
+            return -WIN_SCORE
+        if opp_pc == 0:
+            return WIN_SCORE
+
+        my_groups = group_count(board1d, player)
+        opp_groups = group_count(board1d, -player)
+
+        if my_groups == 1:
+            return WIN_SCORE
+        if opp_groups == 1:
+            return -WIN_SCORE
+
+        # Heuristic terms
+        my_bbox = bbox_score(board1d, player)
+        opp_bbox = bbox_score(board1d, -player)
+        my_adj = adjacency_pairs(board1d, player)
+        opp_adj = adjacency_pairs(board1d, -player)
+
+        # Mobility at leaf (some cost; acceptable at depth leaves)
+        my_mob = len(legal_moves(board1d, player))
+        opp_mob = len(legal_moves(board1d, -player))
+
+        # Combine: prioritize connecting self / disrupting opponent
+        score = 0.0
+        score += (opp_groups - my_groups) * 400.0
+        score += (opp_bbox - my_bbox) * 1.2
+        score += (my_adj - opp_adj) * 35.0
+        score += (my_mob - opp_mob) * 2.0
+        # Slightly prefer having more pieces (can matter after captures)
+        score += (my_pc - opp_pc) * 15.0
+        return score
+
+    class TimeUp(Exception):
+        pass
+
+    def ordered_moves(board1d: List[int], player: int, moves: List[Move]) -> List[Move]:
+        # Move ordering: captures first, then moves towards center
+        opp = -player
+        scored = []
+        for mv in moves:
+            fr, fc, tr, tc = mv
+            cap = 1 if board1d[idx(tr, tc)] == opp else 0
+            cent = center_score_dest(tr, tc)
+            scored.append((cap, cent, mv))
+        scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        return [m for _, _, m in scored]
+
+    def negamax(board1d: List[int], player: int, depth: int, alpha: float, beta: float) -> float:
+        if time.perf_counter() - start_time > time_limit:
+            raise TimeUp
+
+        # Terminal checks (connectedness)
+        my_pc = piece_count(board1d, player)
+        opp_pc = piece_count(board1d, -player)
+        if my_pc == 0:
+            return -WIN_SCORE
+        if opp_pc == 0:
+            return WIN_SCORE
+        if my_pc > 1 and group_count(board1d, player) == 1:
+            return WIN_SCORE - (10 - depth)  # prefer faster wins
+        if opp_pc > 1 and group_count(board1d, -player) == 1:
+            return -WIN_SCORE + (10 - depth)  # prefer delaying losses
+
+        if depth <= 0:
+            return evaluate(board1d, player)
+
+        moves = legal_moves(board1d, player)
+        if not moves:
+            # No legal moves: treat as losing (should be rare/nonexistent in LOA positions)
+            return -WIN_SCORE + 100
+
+        moves = ordered_moves(board1d, player, moves)
+
+        best = -INF
+        for mv in moves:
+            captured = make_move(board1d, mv, player)
+            val = -negamax(board1d, -player, depth - 1, -beta, -alpha)
+            undo_move(board1d, mv, player, captured)
+
+            if val > best:
+                best = val
+            if best > alpha:
+                alpha = best
+            if alpha >= beta:
+                break
+        return best
+
+    # Root: iterative deepening
+    root_moves = legal_moves(b, 1)
+    if not root_moves:
+        # Extremely unlikely in LOA; but must return something syntactically valid.
+        # Try to find any piece and any move-like coordinate; fallback.
+        for i, v in enumerate(b):
+            if v == 1:
+                r0, c0 = rc(i)
+                return f"{r0},{c0}:{r0},{c0}"
+        return "0,0:0,0"
+
+    root_moves = ordered_moves(b, 1, root_moves)
+    best_move = root_moves[0]
+
+    # If any immediate winning move exists, play it
+    for mv in root_moves:
+        cap = make_move(b, mv, 1)
+        win_now = is_win(b, 1)
+        undo_move(b, mv, 1, cap)
+        if win_now:
+            fr, fc, tr, tc = mv
+            return f"{fr},{fc}:{tr},{tc}"
+
+    # Otherwise search
+    max_depth = 4
+    aspiration_alpha, aspiration_beta = -INF, INF
+
+    for depth in range(1, max_depth + 1):
+        if time.perf_counter() - start_time > time_limit:
+            break
+        best_val = -INF
+        local_best = best_move
+        try:
+            # Search all root moves at this depth (with alpha-beta)
+            alpha = aspiration_alpha
+            beta = aspiration_beta
+            for mv in root_moves:
+                if time.perf_counter() - start_time > time_limit:
+                    raise TimeUp
+                captured = make_move(b, mv, 1)
+                val = -negamax(b, -1, depth - 1, -beta, -alpha)
+                undo_move(b, mv, 1, captured)
+
+                if val > best_val:
+                    best_val = val
+                    local_best = mv
+                if val > alpha:
+                    alpha = val
+            best_move = local_best
+
+            # Update aspiration window around best_val
+            aspiration_alpha = best_val - 150.0
+            aspiration_beta = best_val + 150.0
+
+        except TimeUp:
+            break
+
+    fr, fc, tr, tc = best_move
+    return f"{fr},{fc}:{tr},{tc}"
+</code>

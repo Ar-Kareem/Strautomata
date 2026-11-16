@@ -1,0 +1,68 @@
+
+from typing import List, Tuple
+import copy
+
+def is_win(board: List[List[int]], player: int) -> bool:
+    # Check rows
+    for row in board:
+        if all(cell == player for cell in row):
+            return True
+    # Check columns
+    for col in range(3):
+        if all(board[row][col] == player for row in range(3)):
+            return True
+    # Check diagonals
+    if all(board[i][i] == player for i in range(3)) or all(board[i][2 - i] == player for i in range(3)):
+        return True
+    return False
+
+def is_game_over(board: List[List[int]]) -> bool:
+    # Check if either player has won
+    if is_win(board, 1) or is_win(board, -1):
+        return True
+    # Check if the board is full (draw)
+    return all(all(cell != 0 for cell in row) for row in board)
+
+def minimax(board: List[List[int]], depth: int, is_maximizing: bool) -> int:
+    if is_win(board, 1):
+        return 10 - depth
+    if is_win(board, -1):
+        return depth - 10
+    if is_game_over(board):
+        return 0
+
+    if is_maximizing:
+        best_score = -float('inf')
+        for i in range(3):
+            for j in range(3):
+                if board[i][j] == 0:
+                    board[i][j] = 1
+                    score = minimax(board, depth + 1, False)
+                    board[i][j] = 0
+                    best_score = max(score, best_score)
+        return best_score
+    else:
+        best_score = float('inf')
+        for i in range(3):
+            for j in range(3):
+                if board[i][j] == 0:
+                    board[i][j] = -1
+                    score = minimax(board, depth + 1, True)
+                    board[i][j] = 0
+                    best_score = min(score, best_score)
+        return best_score
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    best_move = None
+    best_score = -float('inf')
+
+    for i in range(3):
+        for j in range(3):
+            if board[i][j] == 0:
+                new_board = copy.deepcopy(board)
+                new_board[i][j] = 1
+                score = minimax(new_board, 0, False)
+                if score > best_score:
+                    best_score = score
+                    best_move = (i, j)
+    return best_move

@@ -1,0 +1,374 @@
+The strategy for this policy is based on a Minimax search algorithm with Alpha-Beta pruning to a depth of 4. This allows the AI to look ahead several moves, anticipating opponent captures and tactical opportunities. The evaluation function prioritizes material balance (counting men and kings, with kings weighted higher), positional advancement (pieces closer to promotion are valued higher), and center control. The move generation strictly enforces checkers rules, including mandatory captures and multi-jump sequences. To optimize for the 1-second time limit, the AI uses efficient board representations and alpha-beta cutoffs.
+
+<code>
+import copy
+
+# Constants
+EMPTY = 0
+MY_MAN = 1
+MY_KING = 2
+OPP_MAN = -1
+OPP_KING = -2
+
+# Evaluation Weights
+W_MAN = 100
+W_KING = 300
+W_ADVANCE = 5  # Bonus for moving forward
+W_CENTER = 2   # Bonus for being in central columns
+
+class CheckersAI:
+    def __init__(self):
+        self.board_size = 8
+        self.max_depth = 4 # Search depth
+
+    def _create_board(self, my_men, my_kings, opp_men, opp_kings, color):
+        """Initializes the internal board representation."""
+        board = [[EMPTY for _ in range(8)] for _ in range(8)]
+        
+        # Place my pieces
+        for r, c in my_men:
+            board[r][c] = MY_MAN
+        for r, c in my_kings:
+            board[r][c] = MY_KING
+            
+        # Place opponent pieces
+        for r, c in opp_men:
+            board[r][c] = OPP_MAN
+        for r, c in opp_kings:
+            board[r][c] = OPP_KING
+            
+        self.color = color
+        self.direction = -1 if color == 'b' else 1 # Black moves down (-1), White moves up (+1)
+        return board
+
+    def _get_piece_val(self, r, c, board):
+        return board[r][c]
+
+    def _is_on_board(self, r, c):
+        return 0 <= r < 8 and 0 <= c < 8
+
+    def _get_all_moves(self, board, is_my_turn):
+        """
+        Generates all legal moves for the current player.
+        Returns a list of tuples: ((from_r, from_c), (to_r, to_c))
+        """
+        moves = []
+        captures = []
+        
+        # Define piece types for the current player
+        my_piece_val = MY_MAN if is_my_turn else OPP_MAN
+        my_king_val = MY_KING if is_my_turn else OPP_KING
+        
+        # Scan board for pieces
+        pieces = []
+        for r in range(8):
+            for c in range(8):
+                if board[r][c] == my_piece_val or board[r][c] == my_king_val:
+                    pieces.append((r, c, board[r][c]))
+        
+        # 1. Check for Captures (Jumps)
+        # A piece must jump if it can. We must check ALL pieces before deciding simple moves are valid.
+        
+        def get_jumps_recursive(r, c, piece_type, current_board, path_captures, start_pos):
+            """Recursively find all multi-jump sequences."""
+            found_jumps = []
+            
+            # Determine move directions based on piece type and whose turn it is
+            # My turn: I move forward. Opp turn: They move forward relative to them.
+            # Logic: piece_type determines if it's a king.
+            
+            is_king = (abs(piece_type) == 2)
+            
+            # Calculate directions.
+            # If is_my_turn:
+            #   Black ('b') moves -1 row. White ('w') moves +1 row.
+            #   If is_king, add both.
+            # If not is_my_turn:
+            #   Opponent moves opposite to my direction.
+            #   My direction is -1 (b) or +1 (w). Opp is +1 or -1.
+            
+            dirs = []
+            
+            if is_my_turn:
+                forward = self.direction
+                if is_king:
+                    dirs = [forward, -forward]
+                else:
+                    dirs = [forward]
+            else:
+                forward = -self.direction
+                if is_king:
+                    dirs = [forward, -forward]
+                else:
+                    dirs = [forward]
+            
+            for d_row in dirs:
+                for d_col in [-1, 1]:
+                    # Check for capture: land 2 squares away, jumping over 1
+                    mid_r, mid_c = r + d_row, c + d_col
+                    dest_r, dest_c = r + 2*d_row, c + 2*d_col
+                    
+                    if self._is_on_board(dest_r, dest_c):
+                        # Check if middle square has opponent
+                        mid_piece = current_board[mid_r][mid_c]
+                        is_opponent = False
+                        if is_my_turn:
+                            if mid_piece in [OPP_MAN, OPP_KING]: is_opponent = True
+                        else:
+                            if mid_piece in [MY_MAN, MY_KING]: is_opponent = True
+                            
+                        if is_opponent:
+                            # Check if dest is empty
+                            if current_board[dest_r][dest_c] == EMPTY:
+                                # Check if we already captured this piece (to prevent cycles in multi-jump)
+                                if (mid_r, mid_c) not in path_captures:
+                                    # Valid Jump
+                                    new_captures = set(path_captures)
+                                    new_captures.add((mid_r, mid_c))
+                                    
+                                    # Check for promotion - does it stop the jump?
+                                    # Standard rule: If a man reaches the king row, jump stops.
+                                    # Promotion rows: Black(white moving up) -> 7. White(black moving down) -> 0.
+                                    # Wait, prompt: Black moves downwards (to lower row values) -> row 0.
+                                    # White moves upwards (to higher row values) -> row 7.
+                                    
+                                    promoted = False
+                                    if abs(piece_type) == 1: # If it was a man
+                                        if is_my_turn:
+                                            if self.color == 'b' and dest_r == 0: promoted = True
+                                            if self.color == 'w' and dest_r == 7: promoted = True
+                                        else: # Opponent's turn
+                                            opp_color = 'w' if self.color == 'b' else 'b'
+                                            if opp_color == 'b' and dest_r == 0: promoted = True
+                                            if opp_color == 'w' and dest_r == 7: promoted = True
+                                    
+                                    if promoted:
+                                        found_jumps.append((start_pos, (dest_r, dest_c)))
+                                    else:
+                                        # Continue searching for more jumps from dest
+                                        found_jumps.extend(
+                                            get_jumps_recursive(dest_r, dest_c, piece_type, current_board, new_captures, start_pos)
+                                        )
+            
+            return found_jumps
+
+        # Check all pieces for capture moves
+        for r, c, p_type in pieces:
+            jumps = get_jumps_recursive(r, c, p_type, board, set(), (r, c))
+            captures.extend(jumps)
+            
+        # Remove duplicates (can happen if different paths lead to same end in theory, 
+        # though with set logic for captured pieces usually unique start-end is sufficient)
+        # For move return format, we just need (start, end).
+        
+        if captures:
+            return list(set(captures))
+
+        # 2. No captures, generate simple moves
+        for r, c, p_type in pieces:
+            is_king = (abs(p_type) == 2)
+            
+            if is_my_turn:
+                forward = self.direction
+                if is_king:
+                    dirs = [forward, -forward]
+                else:
+                    dirs = [forward]
+            else:
+                forward = -self.direction
+                if is_king:
+                    dirs = [forward, -forward]
+                else:
+                    dirs = [forward]
+            
+            for d_row in dirs:
+                for d_col in [-1, 1]:
+                    dest_r, dest_c = r + d_row, c + d_col
+                    if self._is_on_board(dest_r, dest_c):
+                        if board[dest_r][dest_c] == EMPTY:
+                            moves.append(((r, c), (dest_r, dest_c)))
+                            
+        return moves
+
+    def _apply_move(self, board, move, is_my_turn):
+        """
+        Applies a move to the board and returns a new board.
+        Handles captures and promotions.
+        """
+        new_board = [row[:] for row in board]
+        (from_r, from_c), (to_r, to_c) = move
+        
+        piece = new_board[from_r][from_c]
+        new_board[from_r][from_c] = EMPTY
+        new_board[to_r][to_c] = piece
+        
+        # Check for capture
+        # Calculate distance to see if it was a jump
+        dr = to_r - from_r
+        dc = to_c - from_c
+        
+        if abs(dr) == 2:
+            # It was a jump, remove the middle piece
+            mid_r = from_r + dr // 2
+            mid_c = from_c + dc // 2
+            new_board[mid_r][mid_c] = EMPTY
+            
+        # Check for promotion
+        # Man turns to King
+        if abs(piece) == 1:
+            promoted = False
+            if is_my_turn:
+                if self.color == 'b' and to_r == 0: promoted = True
+                if self.color == 'w' and to_r == 7: promoted = True
+            else:
+                # Opponent move logic
+                opp_color = 'w' if self.color == 'b' else 'b'
+                if opp_color == 'b' and to_r == 0: promoted = True
+                if opp_color == 'w' and to_r == 7: promoted = True
+            
+            if promoted:
+                new_board[to_r][to_c] = MY_KING if is_my_turn else OPP_KING
+                
+        return new_board
+
+    def _evaluate(self, board):
+        """
+        Evaluates the board state.
+        Positive score is good for AI (My pieces).
+        """
+        score = 0
+        
+        for r in range(8):
+            for c in range(8):
+                p = board[r][c]
+                if p == EMPTY:
+                    continue
+                
+                # Material
+                if p == MY_MAN:
+                    score += W_MAN
+                    # Advancement
+                    if self.color == 'b':
+                        score += (7 - r) * W_ADVANCE
+                    else:
+                        score += r * W_ADVANCE
+                    # Center Control
+                    if 2 <= c <= 5: score += W_CENTER
+                        
+                elif p == MY_KING:
+                    score += W_KING
+                    if 2 <= c <= 5: score += W_CENTER
+                    
+                elif p == OPP_MAN:
+                    score -= W_MAN
+                    # Opponent Advancement (bad for me)
+                    if self.color == 'b': # Opp is White (moves up)
+                        score -= r * W_ADVANCE
+                    else: # Opp is Black (moves down)
+                        score -= (7 - r) * W_ADVANCE
+                        
+                elif p == OPP_KING:
+                    score -= W_KING
+                    
+        return score
+
+    def _minimax(self, board, depth, alpha, beta, is_maximizing):
+        if depth == 0:
+            return self._evaluate(board)
+        
+        moves = self._get_all_moves(board, is_maximizing)
+        
+        if not moves:
+            # No moves means game over (or stuck, but in checkers stuck = loss)
+            if is_maximizing:
+                return -10000 # I lose
+            else:
+                return 10000 # Opponent loses
+                
+        if is_maximizing:
+            max_eval = -float('inf')
+            for move in moves:
+                new_board = self._apply_move(board, move, True)
+                eval_val = self._minimax(new_board, depth - 1, alpha, beta, False)
+                max_eval = max(max_eval, eval_val)
+                alpha = max(alpha, eval_val)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for move in moves:
+                new_board = self._apply_move(board, move, False)
+                eval_val = self._minimax(new_board, depth - 1, alpha, beta, True)
+                min_eval = min(min_eval, eval_val)
+                beta = min(beta, eval_val)
+                if beta <= alpha:
+                    break
+            return min_eval
+
+    def get_best_move(self, my_men, my_kings, opp_men, opp_kings, color):
+        board = self._create_board(my_men, my_kings, opp_men, opp_kings, color)
+        
+        legal_moves = self._get_all_moves(board, True)
+        
+        if not legal_moves:
+            return None # Should not happen unless game over
+        
+        # If only one move, return it immediately (saves time)
+        if len(legal_moves) == 1:
+            return legal_moves[0]
+        
+        best_move = None
+        best_value = -float('inf')
+        
+        # Alpha-Beta Search
+        alpha = -float('inf')
+        beta = float('inf')
+        
+        # Sorting moves for better pruning: Captures first (though get_all_moves separates them)
+        # Prioritize moves that look good heuristically
+        def sort_key(move):
+            (fr, fc), (tr, tc) = move
+            # Prioritize jumps (distance is 2)
+            dist = abs(tr - fr)
+            return -dist
+
+        # Note: legal_moves contains only captures if they exist, or only steps if not.
+        # So sorting by distance helps if there are multiple capture options.
+        legal_moves.sort(key=sort_key)
+        
+        for move in legal_moves:
+            new_board = self._apply_move(board, move, True)
+            move_value = self._minimax(new_board, self.max_depth - 1, alpha, beta, False)
+            
+            if move_value > best_value:
+                best_value = move_value
+                best_move = move
+            
+            alpha = max(alpha, best_value)
+            
+        return best_move
+
+# Global instance for the API
+ai = CheckersAI()
+
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    """
+    API Function.
+    Returns the next move as a tuple ((from_row, from_col), (to_row, to_col)).
+    """
+    # Convert lists of lists to lists of tuples for consistency if needed
+    # The prompt says lists of squares (tuples), so assuming input format is correct.
+    
+    move = ai.get_best_move(my_men, my_kings, opp_men, opp_kings, color)
+    
+    # Fallback in case of error (should not happen with legal move generation)
+    if move is None:
+        # Return a random valid move if search failed (disqualification prevention)
+        board = ai._create_board(my_men, my_kings, opp_men, opp_kings, color)
+        moves = ai._get_all_moves(board, True)
+        if moves:
+            return moves[0]
+            
+    return move
+</code>

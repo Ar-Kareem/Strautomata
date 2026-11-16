@@ -1,0 +1,453 @@
+
+import time
+import random
+from typing import List, Tuple, Optional, Dict
+
+# Lines of Action policy for 8x8.
+# Board encoding:
+#  0 empty
+#  1 current player
+# -1 opponent
+#
+# Return move string: "from_row,from_col:to_row,to_col"
+
+
+Move = Tuple[int, int, int, int]  # fr, fc, tr, tc
+
+
+BOARD_N = 8
+DIRS = [
+    (-1, 0), (1, 0), (0, -1), (0, 1),
+    (-1, -1), (-1, 1), (1, -1), (1, 1)
+]
+
+INF = 10**18
+MATE = 10**15
+
+# Zobrist hashing (initialized once)
+_rng = random.Random(0xC0FFEE)
+_Z_PIECE = [[_rng.getrandbits(64) for _ in range(2)] for __ in range(64)]  # 0: piece=1, 1: piece=-1
+_Z_SIDE = _rng.getrandbits(64)  # xor when side-to-move is -1
+
+# Transposition table entry: (depth, flag, value, best_move)
+# flag: 0 exact, 1 lowerbound, 2 upperbound
+TTEntry = Tuple[int, int, int, Optional[Move]]
+
+
+def _inb(r: int, c: int) -> bool:
+    return 0 <= r < BOARD_N and 0 <= c < BOARD_N
+
+
+def _piece_index(v: int) -> int:
+    # v is 1 or -1
+    return 0 if v == 1 else 1
+
+
+def _compute_hash(board: List[List[int]], turn: int) -> int:
+    h = 0
+    idx = 0
+    for r in range(BOARD_N):
+        row = board[r]
+        for c in range(BOARD_N):
+            v = row[c]
+            if v != 0:
+                h ^= _Z_PIECE[idx][_piece_index(v)]
+            idx += 1
+    if turn == -1:
+        h ^= _Z_SIDE
+    return h
+
+
+def _counts(board: List[List[int]]):
+    # Precompute line counts for LOA move distance rule.
+    rowc = [0] * BOARD_N
+    colc = [0] * BOARD_N
+    diag1 = [0] * (2 * BOARD_N - 1)  # r-c in [-7..7] shifted by +7
+    diag2 = [0] * (2 * BOARD_N - 1)  # r+c in [0..14]
+    for r in range(BOARD_N):
+        for c in range(BOARD_N):
+            if board[r][c] != 0:
+                rowc[r] += 1
+                colc[c] += 1
+                diag1[r - c + (BOARD_N - 1)] += 1
+                diag2[r + c] += 1
+    return rowc, colc, diag1, diag2
+
+
+def _line_count(rowc, colc, diag1, diag2, r: int, c: int, dr: int, dc: int) -> int:
+    if dr == 0 and dc != 0:
+        return rowc[r]
+    if dc == 0 and dr != 0:
+        return colc[c]
+    if dr == dc:
+        return diag1[r - c + (BOARD_N - 1)]
+    # dr == -dc
+    return diag2[r + c]
+
+
+def _gen_moves(board: List[List[int]], turn: int) -> List[Tuple[Move, bool]]:
+    # Returns list of (move, is_capture)
+    rowc, colc, diag1, diag2 = _counts(board)
+    moves: List[Tuple[Move, bool]] = []
+    for r in range(BOARD_N):
+        for c in range(BOARD_N):
+            if board[r][c] != turn:
+                continue
+            for dr, dc in DIRS:
+                dist = _line_count(rowc, colc, diag1, diag2, r, c, dr, dc)
+                if dist <= 0:
+                    continue
+                tr = r + dr * dist
+                tc = c + dc * dist
+                if not _inb(tr, tc):
+                    continue
+                dest = board[tr][tc]
+                if dest == turn:
+                    continue  # cannot land on friendly
+                # cannot jump over enemy pieces
+                blocked = False
+                sr, sc = r, c
+                for k in range(1, dist):
+                    rr = sr + dr * k
+                    cc = sc + dc * k
+                    if board[rr][cc] == -turn:
+                        blocked = True
+                        break
+                if blocked:
+                    continue
+                moves.append(((r, c, tr, tc), dest == -turn))
+    return moves
+
+
+def _pieces(board: List[List[int]], player: int) -> List[Tuple[int, int]]:
+    out = []
+    for r in range(BOARD_N):
+        for c in range(BOARD_N):
+            if board[r][c] == player:
+                out.append((r, c))
+    return out
+
+
+def _group_stats(board: List[List[int]], player: int) -> Tuple[int, int, int]:
+    # returns: (num_groups, largest_group_size, piece_count)
+    ps = _pieces(board, player)
+    n = len(ps)
+    if n == 0:
+        return 0, 0, 0
+
+    seen = [[False] * BOARD_N for _ in range(BOARD_N)]
+    groups = 0
+    largest = 0
+
+    for (sr, sc) in ps:
+        if seen[sr][sc]:
+            continue
+        groups += 1
+        stack = [(sr, sc)]
+        seen[sr][sc] = True
+        size = 0
+        while stack:
+            r, c = stack.pop()
+            size += 1
+            for dr, dc in DIRS:
+                rr, cc = r + dr, c + dc
+                if _inb(rr, cc) and not seen[rr][cc] and board[rr][cc] == player:
+                    seen[rr][cc] = True
+                    stack.append((rr, cc))
+        if size > largest:
+            largest = size
+    return groups, largest, n
+
+
+def _is_connected(board: List[List[int]], player: int) -> bool:
+    g, _, n = _group_stats(board, player)
+    return n > 0 and g == 1
+
+
+def _adjacency_pairs(board: List[List[int]], player: int) -> int:
+    # count adjacent friendly pairs (each pair counted once)
+    cnt = 0
+    for r in range(BOARD_N):
+        for c in range(BOARD_N):
+            if board[r][c] != player:
+                continue
+            # check a subset of directions to avoid double counting
+            for dr, dc in [(0, 1), (1, 0), (1, 1), (1, -1), (0, -1), (-1, 0), (-1, -1), (-1, 1)]:
+                rr, cc = r + dr, c + dc
+                if _inb(rr, cc) and board[rr][cc] == player:
+                    cnt += 1
+    # Each undirected pair counted twice in the full 8 directions above.
+    return cnt // 2
+
+
+def _dispersion_centroid(board: List[List[int]], player: int) -> float:
+    ps = _pieces(board, player)
+    if not ps:
+        return 0.0
+    cr = sum(r for r, _ in ps) / len(ps)
+    cc = sum(c for _, c in ps) / len(ps)
+    # sum of Chebyshev distances to centroid (compactness proxy)
+    d = 0.0
+    for r, c in ps:
+        d += max(abs(r - cr), abs(c - cc))
+    return d
+
+
+def _evaluate(board: List[List[int]], turn: int) -> int:
+    # Score from the perspective of 'turn' (side to move in node).
+    if _is_connected(board, turn):
+        return MATE
+    if _is_connected(board, -turn):
+        return -MATE
+
+    og, _, on = _group_stats(board, turn)
+    eg, _, en = _group_stats(board, -turn)
+
+    # Primary: connected components (fewer is better).
+    score = 0
+    score += (eg - og) * 900
+
+    # Secondary: adjacency (clumping).
+    adj_o = _adjacency_pairs(board, turn)
+    adj_e = _adjacency_pairs(board, -turn)
+    score += (adj_o - adj_e) * 25
+
+    # Dispersion: we want ours compact, theirs dispersed.
+    disp_o = _dispersion_centroid(board, turn)
+    disp_e = _dispersion_centroid(board, -turn)
+    score += int((disp_e - disp_o) * 18)
+
+    # Material: small effect (captures can help connectivity).
+    score += (on - en) * 35
+
+    return score
+
+
+def _move_heuristic(board: List[List[int]], turn: int, move: Move, is_capture: bool) -> int:
+    fr, fc, tr, tc = move
+
+    # Favor captures a lot.
+    h = 0
+    if is_capture:
+        h += 5000
+
+    # Favor moving isolated pieces (low local degree).
+    deg = 0
+    for dr, dc in DIRS:
+        rr, cc = fr + dr, fc + dc
+        if _inb(rr, cc) and board[rr][cc] == turn:
+            deg += 1
+    h += (4 - deg) * 80  # isolated piece => bigger bonus
+
+    # Favor moving toward current centroid (compactness).
+    ps = _pieces(board, turn)
+    if ps:
+        cr = sum(r for r, _ in ps) / len(ps)
+        cc = sum(c for _, c in ps) / len(ps)
+        before = max(abs(fr - cr), abs(fc - cc))
+        after = max(abs(tr - cr), abs(tc - cc))
+        h += int((before - after) * 120)
+
+    # Slight preference toward center squares.
+    center_r, center_c = 3.5, 3.5
+    before_c = abs(fr - center_r) + abs(fc - center_c)
+    after_c = abs(tr - center_r) + abs(tc - center_c)
+    h += int((before_c - after_c) * 12)
+
+    return h
+
+
+class _Timeout(Exception):
+    pass
+
+
+def policy(board) -> str:
+    # Convert board to mutable list-of-lists of ints.
+    b: List[List[int]] = [list(map(int, row)) for row in board]
+
+    # Always current player is 1 at entry.
+    root_turn = 1
+
+    # Generate legal moves immediately (for guaranteed fallback).
+    root_moves = _gen_moves(b, root_turn)
+    if not root_moves:
+        # Should not happen in normal LOA; safety fallback.
+        # Try to find any legal move via brute force (still using generator for correctness).
+        # If still none, return a syntactically valid move (may be illegal) as last resort.
+        for r in range(BOARD_N):
+            for c in range(BOARD_N):
+                if b[r][c] == 1:
+                    for tr in range(BOARD_N):
+                        for tc in range(BOARD_N):
+                            if (r, c) != (tr, tc):
+                                pass
+        return "0,0:0,0"
+
+    start = time.perf_counter()
+    time_limit = 0.92  # keep margin under 1s
+
+    # Transposition table per call.
+    tt: Dict[int, TTEntry] = {}
+
+    # Precompute initial hash
+    root_hash = _compute_hash(b, root_turn)
+
+    def make_move(board_: List[List[int]], h: int, turn_: int, mv: Move) -> Tuple[int, int]:
+        fr, fc, tr, tc = mv
+        cap = board_[tr][tc]
+        # hash updates
+        from_idx = fr * BOARD_N + fc
+        to_idx = tr * BOARD_N + tc
+        h ^= _Z_PIECE[from_idx][_piece_index(turn_)]  # remove moving piece
+        if cap != 0:
+            h ^= _Z_PIECE[to_idx][_piece_index(cap)]  # remove captured
+        h ^= _Z_PIECE[to_idx][_piece_index(turn_)]  # add moving piece
+
+        board_[fr][fc] = 0
+        board_[tr][tc] = turn_
+        return cap, h
+
+    def unmake_move(board_: List[List[int]], h: int, turn_: int, mv: Move, cap: int) -> int:
+        fr, fc, tr, tc = mv
+        from_idx = fr * BOARD_N + fc
+        to_idx = tr * BOARD_N + tc
+
+        # reverse board
+        board_[tr][tc] = cap
+        board_[fr][fc] = turn_
+
+        # reverse hash
+        h ^= _Z_PIECE[to_idx][_piece_index(turn_)]  # remove moving piece from dest
+        if cap != 0:
+            h ^= _Z_PIECE[to_idx][_piece_index(cap)]  # restore captured
+        h ^= _Z_PIECE[from_idx][_piece_index(turn_)]  # restore moving piece at source
+        return h
+
+    def negamax(board_: List[List[int]], turn_: int, depth: int, alpha: int, beta: int, h: int) -> int:
+        if time.perf_counter() - start > time_limit:
+            raise _Timeout
+
+        # Terminal-ish checks
+        if _is_connected(board_, turn_):
+            return MATE - (5 - depth)  # prefer faster wins
+        if _is_connected(board_, -turn_):
+            return -MATE + (5 - depth)  # prefer slower losses
+        if depth == 0:
+            return _evaluate(board_, turn_)
+
+        # TT probe
+        entry = tt.get(h)
+        if entry is not None:
+            e_depth, flag, val, _bm = entry
+            if e_depth >= depth:
+                if flag == 0:
+                    return val
+                if flag == 1 and val > alpha:
+                    alpha = val
+                elif flag == 2 and val < beta:
+                    beta = val
+                if alpha >= beta:
+                    return val
+
+        moves = _gen_moves(board_, turn_)
+        if not moves:
+            # No legal moves: treat as very bad.
+            return -MATE // 2
+
+        # Move ordering: TT best first, then heuristic
+        tt_best = entry[3] if entry is not None else None
+        ordered: List[Tuple[int, Move, bool]] = []
+        for mv, is_cap in moves:
+            if tt_best is not None and mv == tt_best:
+                key = 10**9
+            else:
+                key = _move_heuristic(board_, turn_, mv, is_cap)
+            ordered.append((key, mv, is_cap))
+        ordered.sort(key=lambda x: x[0], reverse=True)
+
+        best_val = -INF
+        best_mv: Optional[Move] = None
+        a0 = alpha
+
+        for _, mv, _is_cap in ordered:
+            cap, h2 = make_move(board_, h, turn_, mv)
+            # switch side: toggle side-to-move in hash via _Z_SIDE
+            h2 ^= _Z_SIDE
+            val = -negamax(board_, -turn_, depth - 1, -beta, -alpha, h2)
+            # untoggle (unmake expects current hash pre-toggle state is restored by undoing exactly)
+            h2 ^= _Z_SIDE
+            h = unmake_move(board_, h2, turn_, mv, cap)
+
+            if val > best_val:
+                best_val = val
+                best_mv = mv
+            if val > alpha:
+                alpha = val
+            if alpha >= beta:
+                break
+
+        # Store TT
+        flag = 0
+        if best_val <= a0:
+            flag = 2  # upperbound
+        elif best_val >= beta:
+            flag = 1  # lowerbound
+        tt[h] = (depth, flag, int(best_val), best_mv)
+        return int(best_val)
+
+    def search_root(max_depth: int) -> Move:
+        # Root move ordering
+        ordered_root: List[Tuple[int, Move, bool]] = []
+        for mv, is_cap in root_moves:
+            ordered_root.append((_move_heuristic(b, root_turn, mv, is_cap), mv, is_cap))
+        ordered_root.sort(key=lambda x: x[0], reverse=True)
+
+        best_mv = ordered_root[0][1]
+        alpha, beta = -INF, INF
+        best_val = -INF
+
+        for _, mv, _is_cap in ordered_root:
+            if time.perf_counter() - start > time_limit:
+                break
+            cap, h2 = make_move(b, root_hash, root_turn, mv)
+            h2 ^= _Z_SIDE
+            try:
+                val = -negamax(b, -root_turn, max_depth - 1, -beta, -alpha, h2)
+            finally:
+                h2 ^= _Z_SIDE
+                _ = unmake_move(b, h2, root_turn, mv, cap)
+
+            if val > best_val:
+                best_val = val
+                best_mv = mv
+            if val > alpha:
+                alpha = val
+
+            # If found a forced win, you can stop early.
+            if best_val >= MATE - 1000:
+                break
+
+        return best_mv
+
+    # Iterative deepening
+    best = root_moves[0][0]
+    try:
+        # Depths chosen for 1s constraint; LOA branching can be large.
+        for d in range(1, 6):
+            if time.perf_counter() - start > time_limit:
+                break
+            best = search_root(d)
+    except _Timeout:
+        pass
+    except Exception:
+        # Absolute safety: fall back to first legal move.
+        best = root_moves[0][0]
+
+    fr, fc, tr, tc = best
+    # Final legality guard: if something went wrong, return a known legal move.
+    # (Shouldn't happen, but avoids disqualification.)
+    if b[fr][fc] != 1:
+        best = root_moves[0][0]
+        fr, fc, tr, tc = best
+
+    return f"{fr},{fc}:{tr},{tc}"

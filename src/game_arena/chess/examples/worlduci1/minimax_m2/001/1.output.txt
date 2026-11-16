@@ -1,0 +1,367 @@
+The strategy for this policy is to implement a one-ply minimax search with material evaluation. The algorithm:
+1. Generates all legal moves for the current player
+2. For each move, simulates the opponent's best reply (minimizing our evaluation)
+3. Chooses the move that maximizes the minimum evaluation
+4. Uses material values for pieces (Pawn=100, Knight=320, Bishop=330, Rook=500, Queen=900, King=0)
+5. Handles special cases like checkmate with high priority
+
+The move generation considers all piece types (pawn, knight, bishop, rook, queen, king) with appropriate move patterns, castling, and promotions. The king safety is checked after each move to ensure legality.
+
+```python
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    # Convert pieces dictionary to 8x8 board
+    board = [[None for _ in range(8)] for _ in range(8)]
+    for square, piece in pieces.items():
+        file = ord(square[0]) - ord('a')
+        rank = 8 - int(square[1])
+        board[rank][file] = piece
+    
+    original_player = to_play
+    
+    # Generate all legal moves for the current player
+    legal_moves = generate_legal_moves(board, to_play)
+    
+    # If no legal moves, return first available (shouldn't happen)
+    if not legal_moves:
+        return list(pieces.keys())[0] + list(pieces.keys())[0]
+    
+    best_move = None
+    best_eval = -float('inf')
+    
+    for move in legal_moves:
+        # Simulate the move
+        board1 = make_move(board, move)
+        opponent = 'black' if to_play == 'white' else 'white'
+        
+        # Check if opponent is checkmated
+        if is_checkmate(board1, opponent):
+            return move_to_uci(move)
+        
+        # Generate opponent's legal moves
+        opponent_moves = generate_legal_moves(board1, opponent)
+        
+        # If opponent has no moves, stalemate
+        if not opponent_moves:
+            opponent_eval = 0
+        else:
+            # Find the opponent's best move (minimizes our evaluation)
+            min_eval = float('inf')
+            for opp_move in opponent_moves:
+                board2 = make_move(board1, opp_move)
+                eval_score = evaluate_board(board2, original_player)
+                min_eval = min(min_eval, eval_score)
+            opponent_eval = min_eval
+        
+        # If this move is better, update best move
+        if opponent_eval > best_eval:
+            best_eval = opponent_eval
+            best_move = move
+    
+    return move_to_uci(best_move)
+
+def generate_legal_moves(board, player):
+    legal_moves = []
+    for row in range(8):
+        for col in range(8):
+            piece = board[row][col]
+            if piece and piece[0] == ('w' if player == 'white' else 'b'):
+                pseudo_moves = get_piece_moves(board, row, col, piece)
+                for move in pseudo_moves:
+                    # Simulate move
+                    new_board = make_move(board, move)
+                    # Check if own king is safe
+                    if not is_in_check(new_board, player):
+                        legal_moves.append(move)
+    return legal_moves
+
+def get_piece_moves(board, row, col, piece):
+    moves = []
+    piece_type = piece[1]
+    color = piece[0]
+    opponent = 'b' if color == 'w' else 'w'
+    
+    if piece_type == 'P':
+        direction = -1 if color == 'w' else 1
+        start_row = 6 if color == 'w' else 1
+        
+        # Forward move
+        new_row = row + direction
+        if 0 <= new_row < 8 and board[new_row][col] is None:
+            # Promotion
+            if (color == 'w' and new_row == 0) or (color == 'b' and new_row == 7):
+                for promo in ['Q', 'R', 'B', 'N']:
+                    moves.append((row, col, new_row, col, promo))
+            else:
+                moves.append((row, col, new_row, col, None))
+            
+            # Double move
+            if row == start_row:
+                new_row2 = row + 2*direction
+                if 0 <= new_row2 < 8 and board[new_row2][col] is None:
+                    moves.append((row, col, new_row2, col, None))
+        
+        # Captures
+        for dc in [-1, 1]:
+            new_col = col + dc
+            new_row = row + direction
+            if 0 <= new_row < 8 and 0 <= new_col < 8:
+                target = board[new_row][new_col]
+                if target and target[0] == opponent:
+                    # Promotion
+                    if (color == 'w' and new_row == 0) or (color == 'b' and new_row == 7):
+                        for promo in ['Q', 'R', 'B', 'N']:
+                            moves.append((row, col, new_row, new_col, promo))
+                    else:
+                        moves.append((row, col, new_row, new_col, None))
+    
+    elif piece_type == 'N':
+        knight_moves = [(-2,-1), (-2,1), (-1,-2), (-1,2), (1,-2), (1,2), (2,-1), (2,1)]
+        for dr, dc in knight_moves:
+            new_row = row + dr
+            new_col = col + dc
+            if 0 <= new_row < 8 and 0 <= new_col < 8:
+                target = board[new_row][new_col]
+                if not target or target[0] == opponent:
+                    moves.append((row, col, new_row, new_col, None))
+    
+    elif piece_type == 'B':
+        for dr, dc in [(-1,-1), (-1,1), (1,-1), (1,1)]:
+            new_row, new_col = row + dr, col + dc
+            while 0 <= new_row < 8 and 0 <= new_col < 8:
+                target = board[new_row][new_col]
+                if target:
+                    if target[0] == opponent:
+                        moves.append((row, col, new_row, new_col, None))
+                    break
+                moves.append((row, col, new_row, new_col, None))
+                new_row += dr
+                new_col += dc
+    
+    elif piece_type == 'R':
+        for dr, dc in [(-1,0), (0,-1), (0,1), (1,0)]:
+            new_row, new_col = row + dr, col + dc
+            while 0 <= new_row < 8 and 0 <= new_col < 8:
+                target = board[new_row][new_col]
+                if target:
+                    if target[0] == opponent:
+                        moves.append((row, col, new_row, new_col, None))
+                    break
+                moves.append((row, col, new_row, new_col, None))
+                new_row += dr
+                new_col += dc
+    
+    elif piece_type == 'Q':
+        # Bishop moves
+        for dr, dc in [(-1,-1), (-1,1), (1,-1), (1,1)]:
+            new_row, new_col = row + dr, col + dc
+            while 0 <= new_row < 8 and 0 <= new_col < 8:
+                target = board[new_row][new_col]
+                if target:
+                    if target[0] == opponent:
+                        moves.append((row, col, new_row, new_col, None))
+                    break
+                moves.append((row, col, new_row, new_col, None))
+                new_row += dr
+                new_col += dc
+        # Rook moves
+        for dr, dc in [(-1,0), (0,-1), (0,1), (1,0)]:
+            new_row, new_col = row + dr, col + dc
+            while 0 <= new_row < 8 and 0 <= new_col < 8:
+                target = board[new_row][new_col]
+                if target:
+                    if target[0] == opponent:
+                        moves.append((row, col, new_row, new_col, None))
+                    break
+                moves.append((row, col, new_row, new_col, None))
+                new_row += dr
+                new_col += dc
+    
+    elif piece_type == 'K':
+        for dr in [-1, 0, 1]:
+            for dc in [-1, 0, 1]:
+                if dr == 0 and dc == 0:
+                    continue
+                new_row, new_col = row + dr, col + dc
+                if 0 <= new_row < 8 and 0 <= new_col < 8:
+                    target = board[new_row][new_col]
+                    if not target or target[0] == opponent:
+                        moves.append((row, col, new_row, new_col, None))
+        
+        # Castling
+        if color == 'w' and row == 7 and col == 4:
+            # King-side
+            if board[7][5] is None and board[7][6] is None:
+                rook = board[7][7]
+                if rook == 'wR':
+                    # Check squares not under attack
+                    if not is_square_attacked(board, (7,4), 'b') and \
+                       not is_square_attacked(board, (7,5), 'b') and \
+                       not is_square_attacked(board, (7,6), 'b'):
+                        moves.append((7,4,7,6,None))
+            # Queen-side
+            if board[7][1] is None and board[7][2] is None and board[7][3] is None:
+                rook = board[7][0]
+                if rook == 'wR':
+                    if not is_square_attacked(board, (7,4), 'b') and \
+                       not is_square_attacked(board, (7,3), 'b') and \
+                       not is_square_attacked(board, (7,2), 'b'):
+                        moves.append((7,4,7,2,None))
+        elif color == 'b' and row == 0 and col == 4:
+            # King-side
+            if board[0][5] is None and board[0][6] is None:
+                rook = board[0][7]
+                if rook == 'bR':
+                    if not is_square_attacked(board, (0,4), 'w') and \
+                       not is_square_attacked(board, (0,5), 'w') and \
+                       not is_square_attacked(board, (0,6), 'w'):
+                        moves.append((0,4,0,6,None))
+            # Queen-side
+            if board[0][1] is None and board[0][2] is None and board[0][3] is None:
+                rook = board[0][0]
+                if rook == 'bR':
+                    if not is_square_attacked(board, (0,4), 'w') and \
+                       not is_square_attacked(board, (0,3), 'w') and \
+                       not is_square_attacked(board, (0,2), 'w'):
+                        moves.append((0,4,0,2,None))
+    
+    return moves
+
+def make_move(board, move):
+    new_board = [row[:] for row in board]
+    from_r, from_c, to_r, to_c, promo = move
+    
+    piece = new_board[from_r][from_c]
+    new_board[to_r][to_c] = piece
+    
+    # Handle promotion
+    if promo:
+        new_board[to_r][to_c] = piece[0] + promo
+    
+    new_board[from_r][from_c] = None
+    
+    # Handle castling
+    if piece and piece[1] == 'K' and abs(to_c - from_c) == 2:
+        if to_c > from_c:  # King-side
+            new_board[from_r][5] = new_board[from_r][7]
+            new_board[from_r][7] = None
+        else:  # Queen-side
+            new_board[from_r][3] = new_board[from_r][0]
+            new_board[from_r][0] = None
+    
+    return new_board
+
+def is_in_check(board, player):
+    # Find the king's position
+    king_pos = None
+    for row in range(8):
+        for col in range(8):
+            piece = board[row][col]
+            if piece and piece[0] == ('w' if player == 'white' else 'b') and piece[1] == 'K':
+                king_pos = (row, col)
+                break
+        if king_pos:
+            break
+    
+    if king_pos is None:
+        return False
+    
+    opponent = 'b' if player == 'white' else 'w'
+    return is_square_attacked(board, king_pos, opponent)
+
+def is_square_attacked(board, square, by_player):
+    r, c = square
+    color = 'w' if by_player == 'white' else 'b'
+    
+    # Pawn attacks
+    if by_player == 'white':
+        if 0 <= r+1 < 8 and 0 <= c-1 < 8:
+            if board[r+1][c-1] and board[r+1][c-1][0] == 'w' and board[r+1][c-1][1] == 'P':
+                return True
+        if 0 <= r+1 < 8 and 0 <= c+1 < 8:
+            if board[r+1][c+1] and board[r+1][c+1][0] == 'w' and board[r+1][c+1][1] == 'P':
+                return True
+    else:
+        if 0 <= r-1 < 8 and 0 <= c-1 < 8:
+            if board[r-1][c-1] and board[r-1][c-1][0] == 'b' and board[r-1][c-1][1] == 'P':
+                return True
+        if 0 <= r-1 < 8 and 0 <= c+1 < 8:
+            if board[r-1][c+1] and board[r-1][c+1][0] == 'b' and board[r-1][c+1][1] == 'P':
+                return True
+    
+    # Knight attacks
+    knight_moves = [(-2,-1), (-2,1), (-1,-2), (-1,2), (1,-2), (1,2), (2,-1), (2,1)]
+    for dr, dc in knight_moves:
+        nr, nc = r+dr, c+dc
+        if 0 <= nr < 8 and 0 <= nc < 8:
+            piece = board[nr][nc]
+            if piece and piece[0] == color and piece[1] == 'N':
+                return True
+    
+    # Bishop/Queen attacks (diagonals)
+    for dr, dc in [(-1,-1), (-1,1), (1,-1), (1,1)]:
+        nr, nc = r+dr, c+dc
+        while 0 <= nr < 8 and 0 <= nc < 8:
+            piece = board[nr][nc]
+            if piece:
+                if piece[0] == color and piece[1] in ['B', 'Q']:
+                    return True
+                break
+            nr += dr
+            nc += dc
+    
+    # Rook/Queen attacks (orthogonals)
+    for dr, dc in [(-1,0), (0,-1), (0,1), (1,0)]:
+        nr, nc = r+dr, c+dc
+        while 0 <= nr < 8 and 0 <= nc < 8:
+            piece = board[nr][nc]
+            if piece:
+                if piece[0] == color and piece[1] in ['R', 'Q']:
+                    return True
+                break
+            nr += dr
+            nc += dc
+    
+    # King attacks
+    for dr in [-1, 0, 1]:
+        for dc in [-1, 0, 1]:
+            if dr == 0 and dc == 0:
+                continue
+            nr, nc = r+dr, c+dc
+            if 0 <= nr < 8 and 0 <= nc < 8:
+                piece = board[nr][nc]
+                if piece and piece[0] == color and piece[1] == 'K':
+                    return True
+    
+    return False
+
+def is_checkmate(board, player):
+    # Check if player is in check and has no legal moves
+    if not is_in_check(board, player):
+        return False
+    legal_moves = generate_legal_moves(board, player)
+    return len(legal_moves) == 0
+
+def evaluate_board(board, player):
+    # Material evaluation
+    values = {'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 0}
+    total = 0
+    for row in range(8):
+        for col in range(8):
+            piece = board[row][col]
+            if piece:
+                piece_value = values.get(piece[1], 0)
+                if piece[0] == ('w' if player == 'white' else 'b'):
+                    total += piece_value
+                else:
+                    total -= piece_value
+    return total
+
+def move_to_uci(move):
+    from_r, from_c, to_r, to_c, promo = move
+    files = 'abcdefgh'
+    ranks = '87654321'
+    uci_move = files[from_c] + ranks[from_r] + files[to_c] + ranks[to_r]
+    if promo:
+        uci_move += promo.lower()
+    return uci_move
+```

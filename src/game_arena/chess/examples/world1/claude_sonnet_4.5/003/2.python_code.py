@@ -1,0 +1,149 @@
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    import re
+    
+    # Piece values for material evaluation
+    PIECE_VALUES = {'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 0}
+    
+    # Center squares bonus
+    CENTER_SQUARES = {'e4', 'd4', 'e5', 'd5'}
+    EXTENDED_CENTER = {'c3', 'd3', 'e3', 'f3', 'c4', 'f4', 'c5', 'f5', 'c6', 'd6', 'e6', 'f6'}
+    
+    color_prefix = 'w' if to_play == 'white' else 'b'
+    opponent_prefix = 'b' if to_play == 'white' else 'w'
+    
+    def parse_move(move_str):
+        """Extract information from move string"""
+        info = {
+            'is_castle': False,
+            'is_capture': 'x' in move_str,
+            'is_check': '+' in move_str or '#' in move_str,
+            'is_checkmate': '#' in move_str,
+            'is_promotion': '=' in move_str,
+            'piece_type': 'P',
+            'to_square': None,
+            'from_file': None,
+            'from_rank': None
+        }
+        
+        # Castling
+        if move_str in ['O-O', 'O-O-O']:
+            info['is_castle'] = True
+            return info
+        
+        # Promotion
+        if '=' in move_str:
+            info['promotion_piece'] = move_str.split('=')[1][0]
+        
+        # Remove check/mate symbols
+        clean_move = move_str.replace('+', '').replace('#', '')
+        
+        # Extract destination square (last 2 chars, or before =)
+        if '=' in clean_move:
+            info['to_square'] = clean_move.split('=')[0][-2:]
+        else:
+            info['to_square'] = clean_move[-2:]
+        
+        # Determine piece type
+        if clean_move[0].isupper() and clean_move[0] in 'KQRBN':
+            info['piece_type'] = clean_move[0]
+            # Disambiguiation
+            middle = clean_move[1:-2].replace('x', '')
+            if middle:
+                if middle[0] in 'abcdefgh':
+                    info['from_file'] = middle[0]
+                if middle[-1] in '12345678':
+                    info['from_rank'] = middle[-1]
+        
+        return info
+    
+    def find_piece_at_square(square):
+        """Find piece at given square"""
+        return pieces.get(square, '')
+    
+    def evaluate_move(move_str):
+        """Evaluate a move and return a score"""
+        score = 0
+        move_info = parse_move(move_str)
+        
+        # Checkmate is best
+        if move_info['is_checkmate']:
+            return 100000
+        
+        # Check is good
+        if move_info['is_check']:
+            score += 50
+        
+        # Castling is valuable for king safety
+        if move_info['is_castle']:
+            score += 80
+        
+        # Promotions (always to Queen in our moves)
+        if move_info['is_promotion']:
+            score += 800
+        
+        # Captures
+        if move_info['is_capture']:
+            to_sq = move_info['to_square']
+            captured_piece = find_piece_at_square(to_sq)
+            if captured_piece and captured_piece[0] == opponent_prefix:
+                captured_type = captured_piece[1]
+                score += PIECE_VALUES.get(captured_type, 0)
+                
+                # Bonus for capturing with lower value piece
+                attacker_value = PIECE_VALUES.get(move_info['piece_type'], 100)
+                defender_value = PIECE_VALUES.get(captured_type, 100)
+                if attacker_value < defender_value:
+                    score += 50
+        
+        # Positional bonuses
+        to_square = move_info['to_square']
+        if to_square:
+            # Center control
+            if to_square in CENTER_SQUARES:
+                score += 30
+            elif to_square in EXTENDED_CENTER:
+                score += 15
+            
+            # Piece development (moving pieces off back rank early)
+            if move_info['piece_type'] in ['N', 'B']:
+                if to_play == 'white' and to_square[1] not in ['1', '2']:
+                    score += 20
+                elif to_play == 'black' and to_square[1] not in ['7', '8']:
+                    score += 20
+            
+            # Queen development penalty (don't bring out too early)
+            if move_info['piece_type'] == 'Q':
+                move_number = len(pieces) // 2
+                if move_number > 20:  # Endgame
+                    score += 10
+                else:
+                    score -= 10
+        
+        # Pawn advancement
+        if move_info['piece_type'] == 'P' and to_square:
+            if to_play == 'white':
+                rank = int(to_square[1])
+                score += rank * 5
+            else:
+                rank = int(to_square[1])
+                score += (9 - rank) * 5
+        
+        return score
+    
+    # Prioritize checkmate moves
+    for move in legal_moves:
+        if '#' in move:
+            return move
+    
+    # Evaluate all moves
+    best_move = legal_moves[0]
+    best_score = -999999
+    
+    for move in legal_moves:
+        score = evaluate_move(move)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move

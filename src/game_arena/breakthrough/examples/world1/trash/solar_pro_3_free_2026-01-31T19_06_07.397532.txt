@@ -1,0 +1,179 @@
+**Strategy**
+
+Our policy implements a shallow minimax search (depth ≈ 4) with alpha‑beta pruning.  
+* **Capture‑first** – legal moves that capture an opponent piece are evaluated before simple forward moves.  
+* **Immediate win check** – before searching we look for a move that puts a piece on the opponent’s home row (the winning row); such a move is returned instantly.  
+* **Simple distance heuristic** – the leaf evaluation rewards pieces that are closer to the opponent’s home row (sum of row‑distances) and penalises opponent pieces that are far away.  
+* **Opponent‑no‑move win** – if after our move the opponent has no legal moves (including the case where all opponent pieces are gone), the current player is declared the winner, yielding a large positive/negative value.  
+
+Depth 4 with alpha‑beta usually fits comfortably within 1 s on a modern CPU and is strong enough to defeat naïve random, greedy‑capture, and forward‑only policies in the arena.
+
+**Python source**
+
+<code>
+from typing import List, Tuple, Optional
+from collections import namedtuple
+
+# Helper type for a move tuple
+Move = Tuple[Tuple[int, int], Tuple[int, int]]
+
+def generate_legal_moves(my: List[Tuple[int, int]],
+                        opp: List[Tuple[int, int]],
+                        color: str) -> List[Move]:
+    """
+    Return all legal moves for `color` given the current piece sets.
+    Moves are either a straight forward step or a forward diagonal capture.
+    The board is 8×8 with rows 0 (bottom) … 7 (top).
+    """
+    # Forward direction: white moves upward (+1), black moves downward (-1)
+    direction = 1 if color == 'w' else -1
+    goal_row = 7 if color == 'w' else 0
+
+    moves: List[Move] = []
+    for (r, c) in my:
+        # ---- straight forward ----
+        forward = (r + direction, c)
+        if forward not in my and forward not in opp:
+            # Could already be a winning move
+            moves.append(((r, c), forward))
+
+        # ---- diagonal left ----
+        dl = (r + direction, c - 1)
+        if 0 <= dl[1] <= 7:
+            if dl in opp:
+                # Capture, may be a winning capture
+                if dl[0] == goal_row:
+                    return [( (r, c), dl )]          # immediate win capture
+                moves.append(((r, c), dl))
+            else:
+                # capture not possible – ignore
+
+        # ---- diagonal right ----
+        dr = (r + direction, c + 1)
+        if 0 <= dr[1] <= 7:
+            if dr in opp:
+                if dr[0] == goal_row:
+                    return [( (r, c), dr )]          # immediate win capture
+                moves.append(((r, c), dr))
+            else:
+                # capture not possible – ignore
+
+    return moves
+
+
+def evaluate_position(my: List[Tuple[int, int]],
+                     opp: List[Tuple[int, int]],
+                     color: str) -> float:
+    """
+    Simple heuristic:
+    * Pieces on the opponent’s home row give a large advantage (+inf/-inf).
+    * Otherwise, each piece contributes a value proportional to its distance
+      from that home row (smaller distance = better).
+    * The sum of the own‑pieces distances minus the opponent‑pieces distances
+      yields a positive score for the player to move.
+    """
+    goal_row = 7 if color == 'w' else 0
+
+    # Immediate win/loss
+    if any(r == goal_row for r, _ in my):
+        return float('inf')
+    if any(r == goal_row for r, _ in opp):
+        return float('-inf')
+
+    # Opponent cannot move → current player wins
+    opp_color = 'b' if color == 'w' else 'w'
+    opp_moves = generate_legal_moves(opp, my, opp_color)
+    if not opp_moves:
+        return float('inf') if color == 'w' else float('-inf')
+
+    # Distance scores
+    own_dist = sum((goal_row - r) if color == 'w' else r for r, c in my)
+    opp_dist = sum((goal_row - r) if color == 'w' else r for r, c in opp)
+    return own_dist - opp_dist
+
+
+def minimax(me: List[Tuple[int, int]],
+           opp: List[Tuple[int, int]],
+           color: str,
+           depth: int,
+           max_depth: int,
+           alpha: float,
+           beta: float) -> Tuple[Optional[Move], float]:
+    """
+    Returns (best_move, score) for the player whose turn it is (`color`).
+    If depth == max_depth we evaluate the leaf with the heuristic above.
+    Alpha‑beta pruning is applied.
+    """
+    # Early termination when we are at the depth limit or when no moves exist
+    legal_moves = generate_legal_moves(me, opp, color)
+    if depth == max_depth or not legal_moves:
+        score = evaluate_position(me, opp, color)
+        return (None, score)
+
+    best_move: Optional[Move] = None
+    if color == 'w':
+        best_score = -float('inf')
+    else:
+        best_score = float('inf')
+
+    opp_color = 'b' if color == 'w' else 'w'
+
+    for move in legal_moves:
+        from_r, from_c = move[0]
+        to_r,   to_c   = move[1]
+
+        # Apply the move
+        new_me = set(me) - {(from_r, from_c)} | {(to_r, to_c)}
+        if (to_r, to_c) in opp:
+            new_opp = set(opp) - {(to_r, to_c)}
+        else:
+            new_opp = set(opp)
+
+        # Recursively search opponent's best response
+        _, opp_score = minimax(list(new_opp), list(new_me), opp_color,
+                               depth + 1, max_depth, alpha, beta)
+
+        # Invert the score because the opponent's best value is from their perspective
+        cur_score = -opp_score
+
+        # Update best move and prune
+        if (color == 'w' and cur_score > best_score) or (color == 'b' and cur_score < best_score):
+            best_score = cur_score
+            best_move = move
+
+        if color == 'w':
+            alpha = max(alpha, cur_score)
+        else:
+            beta = min(beta, cur_score)
+
+        if (color == 'w' and alpha >= beta) or (color == 'b' and beta <= alpha):
+            break  # prune
+
+    return (best_move, best_score)
+
+
+def policy(me: List[Tuple[int, int]],
+          opp: List[Tuple[int, int]],
+          color: str) -> Move:
+    """
+    Main entry point required by the arena. Returns the next legal move.
+    """
+    # Quick win/lose detection when opponent already has no pieces
+    if not opp:
+        # Opponent has already lost – any forward move is legal
+        return generate_legal_moves(me, [], color)[0]
+
+    # Try to find an immediate winning move
+    moves = generate_legal_moves(me, opp, color)
+    for m in moves:
+        if m[1][0] == (7 if color == 'w' else 0):
+            return m
+
+    # Otherwise perform a shallow minimax search
+    _, best_move = minimax(me, opp, color,
+                           depth=0,
+                           max_depth=4,
+                           alpha=-float('inf'),
+                           beta=float('inf'))
+    return best_move
+</code>

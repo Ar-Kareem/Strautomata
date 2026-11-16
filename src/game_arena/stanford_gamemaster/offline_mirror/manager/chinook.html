@@ -1,0 +1,1178 @@
+<html>
+
+<!--=======================================================================-->
+
+<head>
+  <title>Manager</title>
+  <script type='text/javascript' src='../assets/epilog.js'></script>
+  <script type='text/javascript'>
+//==============================================================================
+// Initialization//==============================================================================
+
+indexing = true;
+dataindexing = false;
+ruleindexing = true;
+
+var manager = 'manager';
+var players = 'anonymous';
+var game = 'buttonsandlights';
+var startclock = 10;
+var playclock = 10;
+
+var library = [];
+var ruleset = [];
+var roles = [];
+var state = [];
+var move = nil;
+var errors = {};
+
+var player = 'anonymous';
+var actives = [];
+var messageid = 0;
+var waiter = 'load';
+var timekeeper;
+
+//==============================================================================
+
+function doinitialize ()
+ {window.addEventListener("storage",handlestorage,false);
+  definerules(library,readdata(document.getElementById('library').value));
+  ruleset = readdata(document.getElementById('ruleset').value);
+  roles = findroles(library);
+  state = findinits(library);
+  errors = createerrors();
+  createscoreboard();
+  showstate(state);
+  showscore(state);
+  return true}
+
+function reinitialize ()
+ {state = findinits(library);
+  errors = createerrors();
+  createscoreboard();
+  showstate(state);
+  showscore(state);
+  return true}
+
+function createerrors ()
+ {var errors = {};
+  for (var i=0; i<roles.length; i++)
+      {errors[roles[i]] = 0};
+  return errors}
+
+function createscoreboard ()
+ {var scoreboard = document.getElementById('scoreboard');
+  var n = scoreboard.rows.length;
+  for (var i=0; i<n; i++) {scoreboard.deleteRow(0)};
+
+  var row = scoreboard.insertRow(0);
+  cell = row.insertCell(0);
+  cell.innerHTML = 'Roles';
+  cell.setAttribute('width','120');
+  cell.setAttribute('align','center');
+  cell.setAttribute('style','font-weight:bold');
+  cell.setAttribute('bgcolor','#f4f8f8');
+  for (var i=0; i<roles.length; i++)
+      {cell = row.insertCell(i+1);
+       cell.innerHTML = roles[i];
+       cell.setAttribute('width','120');
+       cell.setAttribute('align','center');
+       cell.setAttribute('style','font-weight:bold');
+       cell.setAttribute('bgcolor','#f4f8f8')};
+
+  row = scoreboard.insertRow(1);
+  cell = row.insertCell(0);
+  cell.innerHTML = 'Players';
+  cell.setAttribute('style','font-weight:bold');
+  cell.setAttribute('bgcolor','#f4f8f8');
+  cell.setAttribute('align','center');
+  for (var i=0; i<roles.length; i++)
+      {cell = row.insertCell(i+1);
+       cell.setAttribute('align','center');
+       cell.setAttribute('bgcolor','#f4f8f8');
+       cell.setAttribute('onclick','changeplayer(this)');
+       cell.style.cursor = 'pointer';
+       cell.innerHTML = players[i] ? players[i] : 'anonymous'};
+
+  row = scoreboard.insertRow(2);
+  cell = row.insertCell(0);
+  cell.innerHTML = 'Score';
+  cell.setAttribute('style','font-weight:bold');
+  cell.setAttribute('bgcolor','#f4f8f8');
+  cell.setAttribute('align','center');
+  for (var i=0; i<roles.length; i++)
+      {cell = row.insertCell(i+1);
+       cell.setAttribute('align','center');
+       cell.innerHTML = '&nbsp;'};
+
+  row = scoreboard.insertRow(3);
+  cell = row.insertCell(0);
+  cell.innerHTML = 'Errors';
+  cell.setAttribute('style','font-weight:bold');
+  cell.setAttribute('bgcolor','#f4f8f8');
+  cell.setAttribute('align','center');
+  for (var i=0; i<roles.length; i++)
+      {cell = row.insertCell(i+1);
+       cell.setAttribute('align','center');
+       cell.innerHTML = '0'};
+
+  return true}
+
+function changeplayer (node)
+ {var scoreboard = document.getElementById('scoreboard');
+  var row = scoreboard.rows[1];
+  for (var i=1; i<row.cells.length; i++)
+      {if (row.cells[i]===node)
+          {var newplayer = prompt("Player name:");
+           players[i-1] = newplayer;
+           row.cells[i].innerHTML = newplayer;
+           return true}};
+  return false}
+
+function getrole (player)
+ {for (var i=0; i<players.length; i++)
+      {if (player===players[i]) {return roles[i]}};
+  return 'robot'}
+
+function getplayer (role)
+ {for (var i=0; i<roles.length; i++)
+      {if (role===roles[i]) {return players[i]}};
+  return 'anonymous'}
+
+//==============================================================================
+// Display//==============================================================================
+
+function showstate (state)
+ {var stateholder = document.getElementById('stateholder');
+  var n = stateholder.childNodes.length;
+  for (var i=0; i<n; i++) {stateholder.removeChild(stateholder.childNodes[0])};
+  stateholder.appendChild(renderstate(state));
+  return true}
+
+function showscore (state)
+ {var scoreboard = document.getElementById('scoreboard');
+  var row = scoreboard.rows[2];
+  for (var i=0; i<roles.length; i++)
+      {row.cells[i+1].innerHTML = findreward(roles[i],state,library)};
+  return true}
+
+function showerrors ()
+ {var scoreboard = document.getElementById('scoreboard');
+  var row = scoreboard.rows[3];
+  for (var i=0; i<roles.length; i++)
+      {row.cells[i+1].innerHTML = errors[roles[i]]};
+  return true}
+
+//==============================================================================
+// Controls//==============================================================================
+
+function dopinger ()
+ {document.getElementById('pinger').disabled = false;
+  document.getElementById('starter').disabled = false;
+  document.getElementById('aborter').disabled = true;
+  doping();
+  return true}
+
+function dorunner ()
+ {document.getElementById('pinger').disabled = true;
+  document.getElementById('starter').disabled = true;
+  document.getElementById('aborter').disabled = false;
+  dostart();
+  return true}
+
+function doaborter ()
+ {document.getElementById('pinger').disabled = false;
+  document.getElementById('starter').disabled = false;
+  document.getElementById('aborter').disabled = true;
+  doabort();
+  return true}
+
+//==============================================================================
+// Operations//==============================================================================
+
+function doping ()
+ {waiter = 'ping';
+  messageid++;
+  actives = [];
+  for (var i=0; i<roles.length; i++)
+      {send(seq('ping'),players[i])};
+  timekeeper = beginclock(5);
+  return true}
+
+function handleping (sender,message)
+ {if (message!=='ready') {return false};
+  actives = adjoin(getrole(sender),actives);
+  if (actives.length===roles.length) {clearclock(); return endping()};
+  return true}
+
+function endping ()
+ {waiter = 'load';
+  alert(actives.length + "/" + roles.length + " ready.");
+  return true}
+
+//==============================================================================
+
+function dostart ()
+ {waiter = 'start';
+  messageid++;
+  reinitialize();
+  actives = [];
+  move = nil;
+  var rules = seq('ruleset').concat(ruleset);
+  var sc = stringize(startclock);
+  var pc = stringize(playclock);
+  for (var i=0; i<roles.length; i++)
+      {var message = grind(seq('start',roles[i],rules,sc,pc));
+       send(message,players[i])};
+  timekeeper = beginclock(startclock);
+  return true}
+
+function handlestart (sender,message)
+ {if (message!=='ready') {return false};
+  actives = adjoin(getrole(sender),actives);
+  if (actives.length===roles.length) {clearclock(); return endstart()};
+  return true}
+
+function endstart ()
+ {waiter = 'load';
+  setTimeout(doplay,1000);
+  return true}
+
+//==============================================================================
+
+function doplay ()
+ {waiter = 'play';
+  messageid++;
+  for (var i=0; i<roles.length; i++)
+      {var message = grind(seq('play',move));
+       send(message,players[i])};
+  timekeeper = beginclock(playclock);
+  return true}
+
+function handleplay (sender,message)
+ {var role = getrole(sender);
+  if (role!==findcontrol(state,library)) {return false};
+  move = message;
+  if (!findlegalp(move,state,library)) {playerror(role)};
+  clearclock();
+  endplay();
+  return true};
+
+function playerror (role)
+ {var actions=findlegals(state,library);
+  var ind = Math.floor(Math.random()*actions.length);
+  var newmove = actions[ind];
+  errors[role] = errors[role]+1;
+  console.log("Error: " + move + ".  Playing " + grind(newmove));
+  move = newmove;
+  return true}
+
+function playdefault ()
+ {var role = findcontrol(state,library);
+  var actions=findlegals(state,library);
+  var ind = Math.floor(Math.random()*actions.length);
+  move = actions[ind];
+  errors[role] = errors[role]+1;
+  console.log("Timeout.  Playing " + grind(move));
+  endplay();
+  return true}
+
+function endplay ()
+ {waiter = 'load';
+  state = simulate(move,state,library);
+  showstate(state);
+  showscore(state);
+  showerrors();
+  if (findterminalp(state,library)) {dostop(); return true};
+  setTimeout(doplay,1000);
+  return true}
+
+//==============================================================================
+
+function dostop ()
+ {waiter = 'load';
+  messageid++;
+  var message = grind(seq('stop',move));
+  for (var i=0; i<roles.length; i++)
+      {send(message,players[i])};
+  document.getElementById('pinger').disabled = false;
+  document.getElementById('starter').disabled = false;
+  document.getElementById('aborter').disabled = true;
+  return false}
+
+//==============================================================================
+
+function doabort ()
+ {waiter = 'load';
+  messageid++;
+  var message = grind(seq('abort'));
+  for (var i=0; i<roles.length; i++)
+      {send(message,players[i])};
+  return true}
+
+//==============================================================================
+// Timer//==============================================================================
+
+function beginclock (n)
+ {if (n===Infinity) {return false};
+  document.getElementById('timer').value = n;
+  return setInterval(updateclock,1000)}
+
+function updateclock ()
+ {var timer = document.getElementById('timer');
+  var time = timer.value - 1;
+  timer.value = time;
+  if (time<=0) {endclock()};
+  return true}
+
+function endclock ()
+ {clearclock();
+  if (waiter==='ping') {return endping()};
+  if (waiter==='start') {return endstart()};
+  if (waiter==='play') {return playdefault()};
+  return true}
+
+function clearclock ()
+ {document.getElementById('timer').value = '';
+  clearInterval(timekeeper);
+  return true}
+
+//==============================================================================
+// Basics
+//==============================================================================
+
+function findroles (rules)
+ {return compfinds('R',seq('role','R'),seq(),rules)}
+
+function findbases (rules)
+ {return compfinds('P',seq('base','P'),seq(),rules)}
+
+function findactions (rules)
+ {return compfinds('A',seq('action','A'),seq(),rules)}
+
+function findinits (rules)
+ {return compfinds('P',seq('init','P'),seq(),rules)}
+
+function findcontrol (facts,rules)
+ {return compfindx('X',seq('control','X'),facts,rules)}
+
+function findlegalp (move,facts,rules)
+ {return compfindp(seq('legal',move),facts,rules)}
+
+function findlegalx (facts,rules)
+ {return compfindx('X',seq('legal','X'),facts,rules)}
+
+function findlegals (facts,rules)
+ {return compfinds('X',seq('legal','X'),facts,rules)}
+
+function findreward (role,facts,rules)
+ {var value = compfindx('R',seq('goal',role,'R'),facts,rules);
+  if (value) {return value};
+  return 0}
+
+function findterminalp (facts,rules)
+ {return compfindp('terminal',facts,rules)}
+
+//------------------------------------------------------------------------------
+
+function simulate (move,state,rules)
+ {var deltas = compexpand(move,state,rules);
+  var additions = [];
+  var deletions = [];
+  for (var i=0; i<deltas.length; i++)
+      {if (symbolp(deltas[i])) {additions.push(deltas[i]); continue};
+       if (deltas[i][0]==='not') {deletions.push(deltas[i][1]); continue};
+       additions.push(deltas[i])};
+  var newstate = [];
+  for (i = 0; i<state.length; i++)
+      {if (find(state[i],additions)) {continue};
+       if (find(state[i],deletions)) {continue};
+       newstate.push(state[i])};
+  return newstate.concat(additions)}
+
+//==============================================================================
+// Communication
+//==============================================================================
+
+function send (msg,player)
+ {var response = grind(seq('message',messageid.toString(),manager,player,msg));
+  var transcript = document.getElementById('transcript');
+  transcript.value = transcript.value + response + "\n";
+  localStorage[player] = response;
+  return true}
+
+function handlestorage (ev)
+ {//console.log(ev);
+  if (ev.key!==manager) {return false};
+  var transcript = document.getElementById('transcript');
+  transcript.value = transcript.value + ev.newValue + "\n";
+
+  envelope = read(ev.newValue);
+  var msgid = envelope[1];
+  var sender = envelope[2];
+  var receiver = envelope[3];
+  var message = envelope[4];
+  if (parseInt(msgid)!==messageid) {return false};
+  if (waiter==='ping') {return handleping(sender,message)};
+  if (waiter==='start') {return handlestart(sender,message)};
+  if (waiter==='play') {return handleplay(sender,message)};
+
+  return true}
+
+//==============================================================================
+// End of manager//==============================================================================
+  </script>
+
+  <script type='text/javascript'>
+//==============================================================================
+// Game parameters
+//==============================================================================
+
+var manager = 'manager';
+var players = 'anonymous'.split(' ');
+var game = 'chinook';
+var startclock = 10;
+var playclock = 10;
+
+//==============================================================================
+
+function domanager ()
+ {manager = read(prompt("What is your manager's identifier?"));
+  location.href = makeurl();
+  return true}
+
+function dogame ()
+ {game = prompt("What game do you want to play?");
+  location.href = makeurl();
+  return true}
+
+function dostartclock ()
+ {startclock = prompt("How many seconds on the start clock?");
+  location.href = makeurl();
+  return true}
+
+function doplayclock ()
+ {playclock = prompt("How many seconds on the play clock?");
+  location.href = makeurl();
+  return true}
+
+function makeurl ()
+ {return "manager.php" +
+         "?manager=" + manager +
+         "&players=" + players.join('+') +
+         "&game=" + game +
+         "&startclock=" + startclock  +
+         "&playclock=" + playclock}
+
+//==============================================================================
+// End of Game parameters
+//==============================================================================
+ </script>
+
+  <script type='text/javascript'>
+//------------------------------------------------------------------------------
+// Chinook
+//------------------------------------------------------------------------------
+
+function renderstate (state)
+ {var step = compfindx('N',seq('step','N'),state,library);
+  var role = compfindx('R',seq('control','R'),state,library);
+  var table = document.createElement('table');
+  table.setAttribute('border','0');
+  var row = table.insertRow(0);
+  var cell = row.insertCell(0);
+  cell.setAttribute('align','center');
+  cell.setAttribute('style','font-size:20px');
+  cell.innerHTML = 'Step:  ' + step;
+  row = table.insertRow(1);
+  var cell = row.insertCell(0);
+  var board = renderboard(state);
+  cell.appendChild(board);
+  row = table.insertRow(2);
+  var cell = row.insertCell(0);
+  cell.setAttribute('align','center');
+  cell.setAttribute('style','font-size:20px');
+  if (compfindp('terminal',state,library))
+     {cell.innerHTML = 'Game over'}
+     else {cell.innerHTML = 'Control:  ' + role};
+  return table}
+
+function renderboard (state)
+ {var table = document.createElement('table');
+  table.setAttribute('cellspacing','2');
+  table.setAttribute('bgcolor','#cccccc');
+  table.setAttribute('border','4');
+  for (var i=8; i>0; i=i-2)
+      {var row = table.insertRow(8-i);
+       var rank = stringize(i);
+       addcell(row,'a',rank,state);
+       addcell(row,'b',rank,state);
+       addcell(row,'c',rank,state);
+       addcell(row,'d',rank,state);
+       //addcell(row,'e',rank,state);
+       //addcell(row,'f',rank,state);
+       //addcell(row,'g',rank,state);
+       //addcell(row,'h',rank,state);
+       row = table.insertRow(8-i+1);
+       var rank = stringize(i-1);
+       addcell(row,'a',rank,state);
+       addcell(row,'b',rank,state);
+       addcell(row,'c',rank,state);
+       addcell(row,'d',rank,state);
+       //addcell(row,'e',rank,state);
+       //addcell(row,'f',rank,state);
+       //addcell(row,'g',rank,state);
+       //addcell(row,'h',rank,state)
+};
+  return table}
+
+function addcell (row,file,rank,state)
+ {var cell = row.insertCell(row.cells.length);
+  cell.setAttribute('bgcolor','#cccccc');
+  cell.setAttribute('width','50');
+  cell.setAttribute('height','50');
+  cell.setAttribute('align','center');
+  cell.setAttribute('valign','center');
+  var image = getimage(file,rank,state);
+  if (image)
+     {var widget = document.createElement('img');
+      widget.setAttribute('width','40');
+      widget.setAttribute('height','40');
+      widget.setAttribute('src',image);
+      cell.appendChild(widget)}
+     else {cell.innerHTML = '&nbsp;'};
+  return true}
+
+function getimage (file,rank,state)
+ {var color = compfindx('Piece',seq('cell',file,rank,'Piece'),state,library);
+  if (color==='red') {return '../library/chinook/red.png'};
+  if (color==='blue') {return '../library/chinook/blue.png'};
+  return false}
+
+//------------------------------------------------------------------------------
+//------------------------------------------------------------------------------
+//------------------------------------------------------------------------------
+  </script>
+</head>
+
+<!--=======================================================================-->
+
+<body bgcolor='#aabbbb' onload='doinitialize()'>  <center>    <table width='720' cellspacing='0' cellpadding='40' bgcolor='#ffffff'>
+      <tr>
+        <td>
+
+<!--=======================================================================-->
+
+<center>
+  <table width='640' cellpadding='0'>
+    <tr>
+      <td width='180' align='center' valign='center'>
+        <a href='../index.html'><img width='130' src='../assets/ggp.jpg'/></a>
+      </td>
+      <td align='center'>
+        <span style='font-size:18pt'>&nbsp;</span>
+        <span style='font-size:32pt'>Gamemaster</span><br/>
+      </td>
+      <td width='180' align='center' style='color:#000066;font-size:18px'>
+        <a href='signin.php' style='color:#000066;text-decoration:none;cursor:pointer'>Sign In</a>      </td>
+    </tr>
+  </table>
+</center>
+<!--=======================================================================-->
+
+<br/>
+<table width='640' cellpadding='8' cellspacing='0' bgcolor='#f4f8f8' border='1'>  <tr height='40'>
+     <td align='center'>
+<table style='color:#000066;font-size:18px'>
+  <tr>
+    <td width='180' valign='top'>
+Protocol: localstorage<br/>
+Strategy: manager<br/>
+Identifier: manager <img src="../assets/pencil.gif" onclick='domanager()'/>
+    </td>
+    <td width='20'>&nbsp;</td>
+    <td>
+Game: chinook <img src="../assets/pencil.gif" onclick='dogame()'/><br/>
+Startclock: 10 <img src="../assets/pencil.gif" onclick='dostartclock()'/><br/>
+Playclock: 10 <img src="../assets/pencil.gif" onclick='doplayclock()'/>
+    </td>
+  </tr>
+</table>
+    </td>
+  </tr></table>
+<br/>
+
+<!--=======================================================================-->
+
+<center>
+  <br/>
+  <div id='stateholder'></div>
+  <br/>
+  <input id='timer' type='text' size='4' style='font-size:36px;text-align:center;' disabled='true'/>
+  <br/>
+  <br/>
+  <table id='scoreboard' cellpadding='4' cellspacing='0' border='1'></table>
+  <br/>
+  <br/>
+  <input type='button' id='pinger' value='Ping' onclick='dopinger()'/>
+  <input type='button' id='starter' value='Run' onclick='dorunner()'/>
+  <input type='button' id='aborter' value='Abort' onclick='doaborter()' disabled/>
+  <br/>
+  <br/>
+
+  <textarea id='transcript' style='font-family:courier' rows='30' cols='80' readonly></textarea>
+</center>
+
+<!--=======================================================================-->
+
+        </td>
+      </tr>
+    </table>
+  </center>
+</body>
+
+<!--=======================================================================-->
+
+<textarea id='library' style='display:none'>
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% chinook
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% metadata
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+role(red)
+role(blue)
+
+base(cell(F,R,red)) :- isaodd(F,R)
+base(cell(F,R,blue)) :- isaeven(F,R)
+base(cell(F,R,b)) :- isaodd(F,R)
+base(cell(F,R,b)) :- isaeven(F,R)
+base(score(W,0)) :- role(W)
+base(score(W,N)) :- role(W) & scoreplus(M,N)
+base(control(W)) :- role(W)
+base(step(1))
+base(step(N)) :- succ(M,N)
+
+action(move(U,V,X,Y)) :- isaodd(U,V) & forward(U,V,X,Y)
+action(move(X,Y,U,V)) :- isaeven(U,V) & forward(U,V,X,Y)
+action(jump(U,V,C,D,X,Y)) :- isaodd(U,V) & jumpable(U,V,C,D,X,Y)
+action(jump(X,Y,C,D,U,V)) :- isaeven(U,V) & jumpable(U,V,C,D,X,Y)
+action(update(red,U,V,X,Y)) :- isaodd(U,V) & forward(U,V,X,Y)
+action(update(blue,X,Y,U,V)) :- isaeven(U,V) & forward(U,V,X,Y)
+action(kerchunk)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% init
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+init(cell(a,1,red))
+init(cell(a,2,b))
+init(cell(a,3,red))
+init(cell(a,4,b))
+init(cell(a,5,b))
+init(cell(a,6,blue))
+init(cell(a,7,b))
+init(cell(a,8,blue))
+
+init(cell(b,1,b))
+init(cell(b,2,red))
+init(cell(b,3,b))
+init(cell(b,4,b))
+init(cell(b,5,b))
+init(cell(b,6,b))
+init(cell(b,7,blue))
+init(cell(b,8,b))
+
+init(cell(c,1,red))
+init(cell(c,2,b))
+init(cell(c,3,red))
+init(cell(c,4,b))
+init(cell(c,5,b))
+init(cell(c,6,blue))
+init(cell(c,7,b))
+init(cell(c,8,blue))
+
+init(cell(d,1,b))
+init(cell(d,2,red))
+init(cell(d,3,b))
+init(cell(d,4,b))
+init(cell(d,5,b))
+init(cell(d,6,b))
+init(cell(d,7,blue))
+init(cell(d,8,b))
+
+init(score(red,0))
+init(score(blue,0))
+init(control(red))
+init(step(1))
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% legal
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+legal(move(U,V,X,Y)) :-
+  control(red) &
+  cell(U,V,red) &
+  forward(U,V,X,Y) &
+  cell(X,Y,b)
+
+legal(move(X,Y,U,V)) :-
+  control(blue) &
+  cell(X,Y,blue) &
+  forward(U,V,X,Y) &
+  cell(U,V,b)
+
+legal(jump(U,V,C,D,X,Y)) :-
+  control(red) &
+  cell(U,V,red) &
+  jumpable(U,V,C,D,X,Y) &
+  cell(C,D,red) &
+  cell(X,Y,b)
+
+legal(jump(X,Y,C,D,U,V)) :-
+  control(blue) &
+  cell(X,Y,blue) &
+  jumpable(U,V,C,D,X,Y) &
+  cell(C,D,blue) &
+  cell(U,V,b)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% operations
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+move(U,V,X,Y) :: control(W) ==>
+  ~cell(U,V,W) & ~cell(X,Y,b) & cell(U,V,b) & cell(X,Y,W) & kerchunk & update(W,U,V,X,Y)
+
+jump(U,V,C,D,X,Y) :: control(W) ==>
+  ~cell(U,V,W) & ~cell(X,Y,b) & cell(U,V,b) & cell(X,Y,W) & kerchunk & update(W,U,V,X,Y)
+
+
+update(W,U,V,X,Y) ::
+  ~home(W,U,V) & home(W,X,Y) & score(W,M) & scoreplus(M,N)
+  ==> ~score(W,M) & score(W,N)
+
+update(W,U,V,X,Y) ::
+  home(W,U,V) & ~home(W,X,Y) & score(W,N) & scoreplus(M,N)
+  ==> ~score(W,N) & score(W,M)
+
+
+kerchunk :: step(M) & succ(M,N) ==> ~step(M) & step(N)
+kerchunk :: control(red) ==> ~control(red) & control(blue)
+kerchunk :: control(blue) ==> ~control(blue) & control(red)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% goal
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+goal(red,Score) :- score(red,Score)
+goal(blue,Score) :- score(blue,Score)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% terminal
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+terminal :- score(Player,100)
+terminal :- step(41)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% Views
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+forward(U,V,X,Y) :- nextrank(V,Y) & nextfile(U,X)
+forward(U,V,X,Y) :- nextrank(V,Y) & nextfile(X,U)
+
+jumpable(U,V,C,D,X,Y) :- nextrank(V,D) & nextrank(D,Y) & nextfile(U,C) & nextfile(C,X)
+jumpable(U,V,C,D,X,Y) :- nextrank(V,D) & nextrank(D,Y) & nextfile(X,C) & nextfile(C,U)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% Facts
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+nextrank(1,2)
+nextrank(2,3)
+nextrank(3,4)
+nextrank(4,5)
+nextrank(5,6)
+nextrank(6,7)
+nextrank(7,8)
+%%nextrank(8,1)
+
+nextfile(a,b)
+nextfile(b,c)
+nextfile(c,d)
+nextfile(d,a)
+
+isaodd(a,1)
+isaeven(a,2)
+isaodd(a,3)
+isaeven(a,4)
+isaodd(a,5)
+isaeven(a,6)
+isaodd(a,7)
+isaeven(a,8)
+isaeven(b,1)
+isaodd(b,2)
+isaeven(b,3)
+isaodd(b,4)
+isaeven(b,5)
+isaodd(b,6)
+isaeven(b,7)
+isaodd(b,8)
+isaodd(c,1)
+isaeven(c,2)
+isaodd(c,3)
+isaeven(c,4)
+isaodd(c,5)
+isaeven(c,6)
+isaodd(c,7)
+isaeven(c,8)
+isaeven(d,1)
+isaodd(d,2)
+isaeven(d,3)
+isaodd(d,4)
+isaeven(d,5)
+isaodd(d,6)
+isaeven(d,7)
+isaodd(d,8)
+
+home(red,b,8)
+home(red,d,8)
+home(red,a,7)
+home(red,c,7)
+home(red,b,6)
+home(red,d,6)
+
+home(blue,b,3)
+home(blue,d,3)
+home(blue,a,2)
+home(blue,c,2)
+home(blue,b,1)
+home(blue,d,1)
+
+scoreplus(0,16)
+scoreplus(16,32)
+scoreplus(32,48)
+scoreplus(48,64)
+scoreplus(64,80)
+scoreplus(80,100)
+
+succ(1,2)
+succ(2,3)
+succ(3,4)
+succ(4,5)
+succ(5,6)
+succ(6,7)
+succ(7,8)
+succ(8,9)
+succ(9,10)
+succ(10,11)
+succ(11,12)
+succ(12,13)
+succ(13,14)
+succ(14,15)
+succ(15,16)
+succ(16,17)
+succ(17,18)
+succ(18,19)
+succ(19,20)
+succ(20,21)
+succ(21,22)
+succ(22,23)
+succ(23,24)
+succ(24,25)
+succ(25,26)
+succ(26,27)
+succ(27,28)
+succ(28,29)
+succ(29,30)
+succ(30,31)
+succ(31,32)
+succ(32,33)
+succ(33,34)
+succ(34,35)
+succ(35,36)
+succ(36,37)
+succ(37,38)
+succ(38,39)
+succ(39,40)
+succ(40,41)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+</textarea>
+
+<textarea id='ruleset' style='display:none'>
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% chinook
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% metadata
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+role(red)
+role(blue)
+
+base(cell(F,R,red)) :- isaodd(F,R)
+base(cell(F,R,blue)) :- isaeven(F,R)
+base(cell(F,R,b)) :- isaodd(F,R)
+base(cell(F,R,b)) :- isaeven(F,R)
+base(score(W,0)) :- role(W)
+base(score(W,N)) :- role(W) & scoreplus(M,N)
+base(control(W)) :- role(W)
+base(step(1))
+base(step(N)) :- succ(M,N)
+
+action(move(U,V,X,Y)) :- isaodd(U,V) & forward(U,V,X,Y)
+action(move(X,Y,U,V)) :- isaeven(U,V) & forward(U,V,X,Y)
+action(jump(U,V,C,D,X,Y)) :- isaodd(U,V) & jumpable(U,V,C,D,X,Y)
+action(jump(X,Y,C,D,U,V)) :- isaeven(U,V) & jumpable(U,V,C,D,X,Y)
+action(update(red,U,V,X,Y)) :- isaodd(U,V) & forward(U,V,X,Y)
+action(update(blue,X,Y,U,V)) :- isaeven(U,V) & forward(U,V,X,Y)
+action(kerchunk)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% init
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+init(cell(a,1,red))
+init(cell(a,2,b))
+init(cell(a,3,red))
+init(cell(a,4,b))
+init(cell(a,5,b))
+init(cell(a,6,blue))
+init(cell(a,7,b))
+init(cell(a,8,blue))
+
+init(cell(b,1,b))
+init(cell(b,2,red))
+init(cell(b,3,b))
+init(cell(b,4,b))
+init(cell(b,5,b))
+init(cell(b,6,b))
+init(cell(b,7,blue))
+init(cell(b,8,b))
+
+init(cell(c,1,red))
+init(cell(c,2,b))
+init(cell(c,3,red))
+init(cell(c,4,b))
+init(cell(c,5,b))
+init(cell(c,6,blue))
+init(cell(c,7,b))
+init(cell(c,8,blue))
+
+init(cell(d,1,b))
+init(cell(d,2,red))
+init(cell(d,3,b))
+init(cell(d,4,b))
+init(cell(d,5,b))
+init(cell(d,6,b))
+init(cell(d,7,blue))
+init(cell(d,8,b))
+
+init(score(red,0))
+init(score(blue,0))
+init(control(red))
+init(step(1))
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% legal
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+legal(move(U,V,X,Y)) :-
+  control(red) &
+  cell(U,V,red) &
+  forward(U,V,X,Y) &
+  cell(X,Y,b)
+
+legal(move(X,Y,U,V)) :-
+  control(blue) &
+  cell(X,Y,blue) &
+  forward(U,V,X,Y) &
+  cell(U,V,b)
+
+legal(jump(U,V,C,D,X,Y)) :-
+  control(red) &
+  cell(U,V,red) &
+  jumpable(U,V,C,D,X,Y) &
+  cell(C,D,red) &
+  cell(X,Y,b)
+
+legal(jump(X,Y,C,D,U,V)) :-
+  control(blue) &
+  cell(X,Y,blue) &
+  jumpable(U,V,C,D,X,Y) &
+  cell(C,D,blue) &
+  cell(U,V,b)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% operations
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+move(U,V,X,Y) :: control(W) ==>
+  ~cell(U,V,W) & ~cell(X,Y,b) & cell(U,V,b) & cell(X,Y,W) & kerchunk & update(W,U,V,X,Y)
+
+jump(U,V,C,D,X,Y) :: control(W) ==>
+  ~cell(U,V,W) & ~cell(X,Y,b) & cell(U,V,b) & cell(X,Y,W) & kerchunk & update(W,U,V,X,Y)
+
+
+update(W,U,V,X,Y) ::
+  ~home(W,U,V) & home(W,X,Y) & score(W,M) & scoreplus(M,N)
+  ==> ~score(W,M) & score(W,N)
+
+update(W,U,V,X,Y) ::
+  home(W,U,V) & ~home(W,X,Y) & score(W,N) & scoreplus(M,N)
+  ==> ~score(W,N) & score(W,M)
+
+
+kerchunk :: step(M) & succ(M,N) ==> ~step(M) & step(N)
+kerchunk :: control(red) ==> ~control(red) & control(blue)
+kerchunk :: control(blue) ==> ~control(blue) & control(red)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% goal
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+goal(red,Score) :- score(red,Score)
+goal(blue,Score) :- score(blue,Score)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% terminal
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+terminal :- score(Player,100)
+terminal :- step(41)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% Views
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+forward(U,V,X,Y) :- nextrank(V,Y) & nextfile(U,X)
+forward(U,V,X,Y) :- nextrank(V,Y) & nextfile(X,U)
+
+jumpable(U,V,C,D,X,Y) :- nextrank(V,D) & nextrank(D,Y) & nextfile(U,C) & nextfile(C,X)
+jumpable(U,V,C,D,X,Y) :- nextrank(V,D) & nextrank(D,Y) & nextfile(X,C) & nextfile(C,U)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% Facts
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+nextrank(1,2)
+nextrank(2,3)
+nextrank(3,4)
+nextrank(4,5)
+nextrank(5,6)
+nextrank(6,7)
+nextrank(7,8)
+%%nextrank(8,1)
+
+nextfile(a,b)
+nextfile(b,c)
+nextfile(c,d)
+nextfile(d,a)
+
+isaodd(a,1)
+isaeven(a,2)
+isaodd(a,3)
+isaeven(a,4)
+isaodd(a,5)
+isaeven(a,6)
+isaodd(a,7)
+isaeven(a,8)
+isaeven(b,1)
+isaodd(b,2)
+isaeven(b,3)
+isaodd(b,4)
+isaeven(b,5)
+isaodd(b,6)
+isaeven(b,7)
+isaodd(b,8)
+isaodd(c,1)
+isaeven(c,2)
+isaodd(c,3)
+isaeven(c,4)
+isaodd(c,5)
+isaeven(c,6)
+isaodd(c,7)
+isaeven(c,8)
+isaeven(d,1)
+isaodd(d,2)
+isaeven(d,3)
+isaodd(d,4)
+isaeven(d,5)
+isaodd(d,6)
+isaeven(d,7)
+isaodd(d,8)
+
+home(red,b,8)
+home(red,d,8)
+home(red,a,7)
+home(red,c,7)
+home(red,b,6)
+home(red,d,6)
+
+home(blue,b,3)
+home(blue,d,3)
+home(blue,a,2)
+home(blue,c,2)
+home(blue,b,1)
+home(blue,d,1)
+
+scoreplus(0,16)
+scoreplus(16,32)
+scoreplus(32,48)
+scoreplus(48,64)
+scoreplus(64,80)
+scoreplus(80,100)
+
+succ(1,2)
+succ(2,3)
+succ(3,4)
+succ(4,5)
+succ(5,6)
+succ(6,7)
+succ(7,8)
+succ(8,9)
+succ(9,10)
+succ(10,11)
+succ(11,12)
+succ(12,13)
+succ(13,14)
+succ(14,15)
+succ(15,16)
+succ(16,17)
+succ(17,18)
+succ(18,19)
+succ(19,20)
+succ(20,21)
+succ(21,22)
+succ(22,23)
+succ(23,24)
+succ(24,25)
+succ(25,26)
+succ(26,27)
+succ(27,28)
+succ(28,29)
+succ(29,30)
+succ(30,31)
+succ(31,32)
+succ(32,33)
+succ(33,34)
+succ(34,35)
+succ(35,36)
+succ(36,37)
+succ(37,38)
+succ(38,39)
+succ(39,40)
+succ(40,41)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+</textarea>
+
+<!--=======================================================================-->
+
+</html>

@@ -1,0 +1,169 @@
+
+import numpy as np
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    N = 4  # 4x4 boxes, edges arrays are 5x5
+
+    def box_sides(h, v, r, c):
+        return (
+            1 if h[r, c] != 0 else 0,
+            1 if h[r + 1, c] != 0 else 0,
+            1 if v[r, c] != 0 else 0,
+            1 if v[r, c + 1] != 0 else 0,
+        )
+
+    def box_count(h, v, r, c):
+        a, b, d, e = box_sides(h, v, r, c)
+        return a + b + d + e
+
+    def adjacent_boxes(move):
+        r, c, d = move
+        out = []
+        if d == 'H':
+            if r > 0 and c < N:
+                out.append((r - 1, c))
+            if r < N and c < N:
+                out.append((r, c))
+        else:  # 'V'
+            if c > 0 and r < N:
+                out.append((r, c - 1))
+            if c < N and r < N:
+                out.append((r, c))
+        return out
+
+    def legal_moves(h, v):
+        moves = []
+        for r in range(5):
+            for c in range(5):
+                if h[r, c] == 0:
+                    moves.append((r, c, 'H'))
+                if v[r, c] == 0:
+                    moves.append((r, c, 'V'))
+        return moves
+
+    def apply_move(h, v, cap, move, player=1):
+        r, c, d = move
+        h2 = h.copy()
+        v2 = v.copy()
+        cap2 = cap.copy()
+        if d == 'H':
+            h2[r, c] = player
+        else:
+            v2[r, c] = player
+        gained = 0
+        for br, bc in adjacent_boxes(move):
+            if cap2[br, bc] == 0 and box_count(h2, v2, br, bc) == 4:
+                cap2[br, bc] = player
+                gained += 1
+        return h2, v2, cap2, gained
+
+    def completes_box(h, v, cap, move):
+        for br, bc in adjacent_boxes(move):
+            if cap[br, bc] == 0 and box_count(h, v, br, bc) == 3:
+                return True
+        return False
+
+    def creates_third_side(h, v, cap, move):
+        h2, v2, _, _ = apply_move(h, v, cap, move, player=1)
+        for br, bc in adjacent_boxes(move):
+            if cap[br, bc] == 0 and box_count(h2, v2, br, bc) == 3:
+                return True
+        return False
+
+    def count_new_third_sides(h, v, cap, move):
+        h2, v2, _, _ = apply_move(h, v, cap, move, player=1)
+        cnt = 0
+        seen = set()
+        for br, bc in adjacent_boxes(move):
+            if (br, bc) not in seen and cap[br, bc] == 0 and box_count(h2, v2, br, bc) == 3:
+                cnt += 1
+                seen.add((br, bc))
+        return cnt
+
+    def move_centrality(move):
+        r, c, d = move
+        boxes = adjacent_boxes(move)
+        if not boxes:
+            return -10.0
+        vals = []
+        for br, bc in boxes:
+            vals.append(-abs(br - 1.5) - abs(bc - 1.5))
+        return sum(vals) / len(vals)
+
+    def available_capture_moves(h, v, cap):
+        return [m for m in legal_moves(h, v) if completes_box(h, v, cap, m)]
+
+    def forced_capture_chain_size(h, v, cap):
+        total = 0
+        while True:
+            caps = available_capture_moves(h, v, cap)
+            if not caps:
+                break
+            best = None
+            best_gain = -1
+            for m in caps:
+                h2, v2, cap2, gain = apply_move(h, v, cap, m, player=-1)
+                if gain > best_gain:
+                    best_gain = gain
+                    best = (h2, v2, cap2, gain)
+            h, v, cap, gain = best
+            total += gain
+        return total
+
+    moves = legal_moves(horizontal, vertical)
+    if not moves:
+        return "0,0,H"  # fallback; should never happen in nonterminal states
+
+    # 1. Immediate captures first
+    capture_moves = [m for m in moves if completes_box(horizontal, vertical, capture, m)]
+    if capture_moves:
+        best_move = None
+        best_score = None
+        for m in capture_moves:
+            h2, v2, cap2, gain = apply_move(horizontal, vertical, capture, m, player=1)
+            next_caps = len(available_capture_moves(h2, v2, cap2))
+            danger = sum(
+                1
+                for m2 in legal_moves(h2, v2)
+                if creates_third_side(h2, v2, cap2, m2)
+            )
+            score = (gain, next_caps, -danger, move_centrality(m))
+            if best_score is None or score > best_score:
+                best_score = score
+                best_move = m
+        r, c, d = best_move
+        return f"{r},{c},{d}"
+
+    # 2. Safe moves: do not create a 3-sided box
+    safe_moves = [m for m in moves if not creates_third_side(horizontal, vertical, capture, m)]
+    if safe_moves:
+        best_move = None
+        best_score = None
+        for m in safe_moves:
+            h2, v2, cap2, _ = apply_move(horizontal, vertical, capture, m, player=1)
+            opp_caps = len(available_capture_moves(h2, v2, cap2))
+            future_risk = 0
+            for m2 in legal_moves(h2, v2):
+                future_risk += count_new_third_sides(h2, v2, cap2, m2)
+            score = (-opp_caps, -future_risk, move_centrality(m))
+            if best_score is None or score > best_score:
+                best_score = score
+                best_move = m
+        r, c, d = best_move
+        return f"{r},{c},{d}"
+
+    # 3. All moves are risky: minimize what opponent can force
+    best_move = None
+    best_score = None
+    for m in moves:
+        h2, v2, cap2, _ = apply_move(horizontal, vertical, capture, m, player=1)
+        immediate_opp = len(available_capture_moves(h2, v2, cap2))
+        forced = forced_capture_chain_size(h2, v2, cap2)
+        new_thirds = count_new_third_sides(horizontal, vertical, capture, m)
+        score = (-forced, -immediate_opp, -new_thirds, move_centrality(m))
+        if best_score is None or score > best_score:
+            best_score = score
+            best_move = m
+
+    r, c, d = best_move
+    return f"{r},{c},{d}"

@@ -1,0 +1,126 @@
+
+import random
+from typing import Dict, List, Tuple
+
+def policy(pieces: Dict[str, str], to_play: str, legal_moves: List[str], memory: Dict) -> Tuple[str, Dict]:
+    # Helper functions for board state analysis
+    def is_king_in_check(board_state, color):
+        # Simplified version - just check if king is attacked
+        king_pos = None
+        for pos, piece in board_state.items():
+            if piece[1] == 'K' and piece[0] == color:
+                king_pos = pos
+                break
+        # This is a simplistic check - would need full attack detection in real engine
+        return False
+    
+    def material_value(piece_code):
+        if not piece_code:
+            return 0
+        piece_type = piece_code[1]
+        values = {'Q': 9, 'R': 5, 'B': 3, 'N': 3, 'P': 1}
+        return values.get(piece_type, 0)
+    
+    def get_piece_type(piece_code):
+        return piece_code[1] if piece_code else None
+    
+    def get_piece_color(piece_code):
+        return piece_code[0] if piece_code else None
+    
+    # Precompute board state
+    white_pieces = {pos: piece for pos, piece in pieces.items() if piece[0] == 'w'}
+    black_pieces = {pos: piece for pos, piece in pieces.items() if piece[0] == 'b'}
+    
+    # Prioritize checkmate or winning moves
+    for move in legal_moves:
+        # Check for checkmate or queen promotion (likely to be strong)
+        if 'x' in move or '=' in move:
+            # Promotion moves or captures are generally good
+            move_score = 100
+            # Add bonus for queen promotion
+            if '=Q' in move:
+                move_score += 50
+            elif '=R' in move or '=B' in move or '=N' in move:
+                move_score += 20
+            # Check if it's a capture
+            if 'x' in move:
+                captured_piece = None
+                # Get the piece being captured
+                if move[-1] in 'KQRBNP':
+                    # Promotion capture
+                    captured_pos = move[2:-1] if move[2] in 'abcdefgh' else move[1:-1]
+                else:
+                    captured_pos = move[2:] if move[2] in 'abcdefgh' else move[1:]
+                # If we can capture a valuable piece, it's strong
+                if captured_pos in pieces:
+                    captured_piece = pieces[captured_pos]
+                    # Check if it's a high-value capture
+                    captured_value = material_value(captured_piece)
+                    move_score += captured_value * 10
+            # Prefer moves that result in checkmate/force
+            if move in legal_moves:  # Double check for safety
+                return (move, memory)
+    
+    # If no immediate win found, evaluate all moves with a heuristic
+    best_move = random.choice(legal_moves)
+    best_score = -float('inf')
+    
+    # Prefer simple strategies: checkmate > captures > tactical > positional
+    for move in legal_moves:
+        score = 0
+        
+        # Check for checkmate or mate-in-one triggers
+        if 'x' in move:
+            # Simple capture evaluation
+            capture_target = move[2:]  # Simplified capture target
+            if capture_target in pieces:
+                captured_value = material_value(pieces[capture_target])
+                score += captured_value * 10  # Weight captures heavily
+                
+        # Prefer queen promotion
+        if '=Q' in move:
+            score += 50
+            
+        # Prefer rook/queen/bishop captures (these deal high damage)
+        if '=R' in move or '=B' in move or '=N' in move:
+            score += 10
+            
+        # Try to avoid losing pieces unnecessarily
+        if move.startswith('x'):
+            if len(move) > 2:
+                # If promoting and capturing, prefer higher capture
+                score += 50
+                
+        # Evaluate pawn moves and central control
+        if move[0] == 'c' or move[0] == 'd' or move[0] == 'e' or move[0] == 'f':
+            # Center control moves
+            score += 5
+            
+        # Try to get rid of pawns if they're on the back rank
+        if move[1] in '12' and move[0] in 'abcdefgh':
+            # Avoid getting pawns stuck
+            score -= 3
+            
+        if move == 'O-O' or move == 'O-O-O':
+            # Castling is good for king safety
+            score += 15
+            
+        # Prefer moves that could restrict opponent mobility
+        # (basic idea: target squares with more pieces)
+        if len(move) >= 2 and move[1] in '12345678':
+            # Eval a simple position (center squares)
+            if move[1] in '456' and move[0] in 'def':
+                score += 3
+                
+        # Prefer moves that don't make obvious blunders
+        # Not checking for check or mate, just avoiding losing material
+        # If this is your turn and target square is opponent piece, increase score
+        if any(pos == move[-2:] for pos in pieces):
+            # If terminal square is occupied by opponent (not necessarily a capture, but indicating presence), evaluate it
+            score += 1
+                
+        if score > best_score:
+            best_score = score
+            best_move = move
+            
+    return (best_move, memory)

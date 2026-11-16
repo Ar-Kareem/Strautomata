@@ -1,0 +1,68 @@
+
+def is_winner(board: list[list[int]], player: int) -> bool:
+    # Check rows
+    for row in board:
+        if row[0] == player and row[1] == player and row[2] == player:
+            return True
+    # Check columns
+    for c in range(3):
+        if board[0][c] == player and board[1][c] == player and board[2][c] == player:
+            return True
+    # Check diagonals
+    if board[0][0] == player and board[1][1] == player and board[2][2] == player:
+        return True
+    if board[0][2] == player and board[1][1] == player and board[2][0] == player:
+        return True
+    return False
+
+
+def minimax(board: list[list[int]], is_maximizing: bool, alpha: float, beta: float) -> int:
+    if is_winner(board, 1):
+        return 1
+    if is_winner(board, -1):
+        return -1
+    if all(cell != 0 for row in board for cell in row):
+        return 0
+
+    if is_maximizing:
+        value = -float('inf')
+        for i in range(3):
+            for j in range(3):
+                if board[i][j] == 0:
+                    board[i][j] = 1
+                    value = max(value, minimax(board, False, alpha, beta))
+                    board[i][j] = 0
+                    alpha = max(alpha, value)
+                    if alpha >= beta:
+                        return value
+        return value
+    else:
+        value = float('inf')
+        for i in range(3):
+            for j in range(3):
+                if board[i][j] == 0:
+                    board[i][j] = -1
+                    value = min(value, minimax(board, True, alpha, beta))
+                    board[i][j] = 0
+                    beta = min(beta, value)
+                    if alpha >= beta:
+                        return value
+        return value
+
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    best_value = -float('inf')
+    best_move = None
+    for i in range(3):
+        for j in range(3):
+            if board[i][j] == 0:
+                board[i][j] = 1
+                board_value = minimax(board, False, -float('inf'), float('inf'))
+                board[i][j] = 0
+                if board_value > best_value:
+                    best_value = board_value
+                    best_move = (i, j)
+    # If no moves available (should not happen on valid call), return arbitrary valid index
+    if best_move is None:
+        return (0, 0)
+    return best_move

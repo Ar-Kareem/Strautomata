@@ -1,0 +1,439 @@
+# Strategy
+
+This policy is a bitboard Pentago engine built around **inverse-rotation threat analysis** — the key insight that a player can complete a 5-window `W` with move (place `p`, rotate quadrant `q`, dir `d`) **iff** the pre-image `W'` of `W` under that rotation contains none of the opponent's stones and misses at most one of the mover's stones. This exactly captures Pentago's trademark "bent shape straightens into a line" wins, including cases where blocking marbles rotate *out* of the way.
+
+Pipeline (all time-boxed, always returns a legal move):
+
+1. **Immediate win**: simulate every legal move (empty cell × 8 rotations); play any move giving me 5-in-row without giving the opponent one (both = draw, kept as fallback).
+2. **Full move classification**: every move is simulated and the resulting position scanned with the 256 transformed windows (8 rotations × 32 windows). Moves are bucketed into: *lose-now* (my rotation completes their line), *draw-now* (both lines / board fills), *losing* (opponent has a verified pure immediate reply), *draw-after* (their only 5-completing replies also give me 5), or *safe*.
+3. **Forced-win search (mate in 3)**: safe moves that leave a *verified* immediate threat are tested against **all** opponent replies; if every reply still leaves me a verified pure win, the move is played.
+4. **Depth-2 alpha-beta**: safe moves are ordered by a rotation-aware evaluation (pattern scores over all 8 rotation pre-images + hanging-threat/latent-threat counts), then a minimax over the opponent's best reply (with pruning) picks the final move. Verified opponent counter-forks are heavily penalized; if every line looks lost, a certain draw is preferred.
+5. Bitboards are 36-bit ints; win tests use shift chains, quadrant rotation uses precomputed 512-entry 9-bit tables. Opening move: quadrant center.
+
+```python
+# Pentago policy: bitboards + inverse-rotation threat analysis.
+import time
+
+FULL36 = (1 << 36) - 1
+BASE = (0, 3, 18, 21)
+_QMASK = [29127 << b for b in BASE]
+QINV = [FULL36 ^ m for m in _QMASK]
+
+
+def _build_rot():
+    cw = [0] * 512
+    ccw = [0] * 512
+    for s in range(512):
+        nc = 0
+        ncc = 0
+        for i in range(3):
+            for j in range(3):
+                if (s >> (i * 3 + j)) & 1:
+                    nc |= 1 << (j * 3 + 2 - i)
+                    ncc |= 1 << ((2 - j) * 3 + i)
+        cw[s] = nc
+        ccw[s] = ncc
+    return cw, ccw
+
+
+ROT_CW, ROT_CCW = _build_rot()
+
+
+def _windows():
+    ws = []
+    for r in range(6):
+        for c in range(2):
+            m = 0
+            for k in range(5):
+                m |= 1 << (r * 6 + c + k)
+            ws.append(m)
+    for c in range(6):
+        for r in range(2):
+            m = 0
+            for k in range(5):
+                m |= 1 << ((r + k) * 6 + c)
+            ws.append(m)
+    for r, c in ((0, 0), (0, 1), (1, 0), (1, 1)):
+        m = 0
+        for k in range(5):
+            m |= 1 << ((r + k) * 6 + c + k)
+        ws.append(m)
+    for r, c in ((0, 4), (0, 5), (1, 4), (1, 5)):
+        m = 0
+        for k in range(5):
+            m |= 1 << ((r + k) * 6 + c - k)
+        ws.append(m)
+    return ws
+
+
+WINDOWS = _windows()
+
+
+def _inv_bit(q, d, r, c):
+    # pre-image of cell (r,c) under rotation of quadrant q (d=1 CW/'R', d=0 CCW/'L')
+    if (r // 3) * 2 + (c // 3) != q:
+        return 1 << (r * 6 + c)
+    i = r % 3
+    j = c % 3
+    if d:
+        i, j = 2 - j, i
+    else:
+        i, j = j, 2 - i
+    return 1 << ((3 * (q // 2) + i) * 6 + 3 * (q % 2) + j)
+
+
+def _build_flat():
+    flat = []
+    for qd in range(8):
+        q = qd >> 1
+        d = qd & 1
+        for W in WINDOWS:
+            Wp = 0
+            for p in range(36):
+                if (W >> p) & 1:
+                    Wp |= _inv_bit(q, d, p // 6, p % 6)
+            flat.append((Wp, qd))
+    return flat
+
+
+FLAT = _build_flat()
+
+START_H = 0
+for _r in range(6):
+    START_H |= 3 << (6 * _r)
+START_D1 = 3 | (3 << 6)
+START_D2 = (3 << 4) | (3 << 10)
+
+
+def has5(B, SH=START_H, S1=START_D1, S2=START_D2):
+    if (B & (B >> 1) & (B >> 2) & (B >> 3) & (B >> 4)) & SH:
+        return True
+    if B & (B >> 6) & (B >> 12) & (B >> 18) & (B >> 24):
+        return True
+    if (B & (B >> 7) & (B >> 14) & (B >> 21) & (B >> 28)) & S1:
+        return True
+    if (B & (B >> 5) & (B >> 10) & (B >> 15) & (B >> 20)) & S2:
+        return True
+    return False
+
+
+def rotB(B, q, d, _BASE=BASE, _QINV=QINV, _CW=ROT_CW, _CCW=ROT_CCW):
+    b = _BASE[q]
+    E = (B >> b) & 29127
+    s = (E & 7) | (((E >> 6) & 7) << 3) | (((E >> 12) & 7) << 6)
+    s = _CW[s] if d else _CCW[s]
+    E2 = (s & 7) | (((s >> 3) & 7) << 6) | (((s >> 6) & 7) << 12)
+    return (B & _QINV[q]) | (E2 << b)
+
+
+def apply_move(me, opp, p, q, d):
+    return rotB(me | (1 << p), q, d), rotB(opp, q, d)
+
+
+def _feb(me_b, opp_b):
+    e = FULL36 & ~(me_b | opp_b)
+    return (e & -e).bit_length() - 1
+
+
+_PC = {}
+_VAL = (0, 1, 4, 16, 64)
+_POP8 = [bin(i).count('1') for i in range(256)]
+
+
+def scan(me_b, opp_b):
+    # returns (my immediate-win patterns, opp immediate-win patterns,
+    #          my 3-patterns, opp 3-patterns, pattern score, qd masks)
+    myc = []
+    oppc = []
+    myk3 = 0
+    oppk3 = 0
+    score = 0
+    myq3 = 0
+    oppq3 = 0
+    pcg = _PC.get
+    pc = _PC
+    val = _VAL
+    for W, qd in FLAT:
+        x = W & me_b
+        if x:
+            if W & opp_b:
+                continue
+            c = pcg(x, 9)
+            if c == 9:
+                c = pc[x] = bin(x).count('1')
+            if c >= 4:
+                myc.append((qd, W, x))
+            else:
+                score += val[c]
+                if c == 3:
+                    myk3 += 1
+                    myq3 |= 1 << qd
+        else:
+            y = W & opp_b
+            if y:
+                c = pcg(y, 9)
+                if c == 9:
+                    c = pc[y] = bin(y).count('1')
+                if c >= 4:
+                    oppc.append((qd, W, y))
+                else:
+                    score -= val[c]
+                    if c == 3:
+                        oppk3 += 1
+                        oppq3 |= 1 << qd
+    return myc, oppc, myk3, oppk3, score, myq3, oppq3
+
+
+def _fmt(p, q, d):
+    return "%d,%d,%d,%s" % (p // 6 + 1, p % 6 + 1, q, "R" if d else "L")
+
+
+def _forced_win_after(me2, opp2, dl):
+    # True iff EVERY opponent reply still leaves me a verified pure immediate win.
+    occ2 = me2 | opp2
+    empts2 = [x for x in range(36) if not (occ2 >> x) & 1]
+    n2 = len(empts2)
+    for p2 in empts2:
+        for q2 in range(4):
+            for d2 in (0, 1):
+                if time.time() > dl:
+                    return None
+                o3 = rotB(opp2 | (1 << p2), q2, d2)
+                if has5(o3):
+                    return False
+                m3 = rotB(me2, q2, d2)
+                if has5(m3):
+                    continue
+                if n2 == 1:
+                    return False
+                myc = scan(m3, o3)[0]
+                ok = False
+                if myc:
+                    for (qd, W, x) in myc[:8]:
+                        qq = qd >> 1
+                        dd = qd & 1
+                        miss = W ^ x
+                        if miss:
+                            pp = miss.bit_length() - 1
+                        else:
+                            pp = _feb(m3, o3)
+                        m4, o4 = apply_move(m3, o3, pp, qq, dd)
+                        if has5(m4) and not has5(o4):
+                            ok = True
+                            break
+                if not ok:
+                    return False
+    return True
+
+
+def _eval_after_reply(me2, opp2, p2, q2, d2, n2):
+    o3 = rotB(opp2 | (1 << p2), q2, d2)
+    m3 = rotB(me2, q2, d2)
+    if has5(m3):
+        if has5(o3):
+            return 0
+        return 10000000
+    if has5(o3):
+        return -10000000
+    if n2 == 1:
+        return 0
+    myc, oppc, myk3, oppk3, score, myq3, oppq3 = scan(m3, o3)
+    v = score + 8 * myk3 + 4 * _POP8[myq3] - 6 * oppk3 - 3 * _POP8[oppq3]
+    have_draw = False
+    if myc:
+        for (qd, W, x) in myc[:8]:
+            qq = qd >> 1
+            dd = qd & 1
+            miss = W ^ x
+            if miss:
+                pp = miss.bit_length() - 1
+            else:
+                pp = _feb(m3, o3)
+            m4, o4 = apply_move(m3, o3, pp, qq, dd)
+            if has5(m4) and not has5(o4):
+                return 10000000
+        have_draw = True
+    n_opp = len(oppc)
+    if n_opp:
+        pure = 0
+        for (qd, W, y) in oppc[:3]:
+            qq = qd >> 1
+            dd = qd & 1
+            miss = W ^ y
+            if miss:
+                p3 = miss.bit_length() - 1
+            else:
+                p3 = _feb(m3, o3)
+            o4 = rotB(o3 | (1 << p3), qq, dd)
+            if has5(o4) and not has5(rotB(m3, qq, dd)):
+                pure += 1
+        if n_opp > 3:
+            pure += n_opp - 3
+        if pure > 1:
+            v -= 4000 * (pure - 1)
+        v -= 500 * pure
+        rest = n_opp - pure
+        if rest > 0:
+            v -= 150 * rest
+    if have_draw and v < 0:
+        v = 0
+    return v
+
+
+def _min_reply(me2, opp2, alpha, dl):
+    occ2 = me2 | opp2
+    empts2 = [x for x in range(36) if not (occ2 >> x) & 1]
+    n2 = len(empts2)
+    val = 10 ** 9
+    for p2 in empts2:
+        for q2 in range(4):
+            for d2 in (0, 1):
+                if time.time() > dl:
+                    return None
+                v = _eval_after_reply(me2, opp2, p2, q2, d2, n2)
+                if v < val:
+                    val = v
+                    if val <= alpha:
+                        return val
+    return val
+
+
+def _policy(you, opponent):
+    t0 = time.time()
+    DL = t0 + 0.72
+    DL_A = t0 + 0.45
+    DL_C = t0 + 0.46
+
+    me = 0
+    opp = 0
+    for r in range(6):
+        ry = you[r]
+        ro = opponent[r]
+        b = 6 * r
+        for c in range(6):
+            if int(ry[c]):
+                me |= 1 << (b + c)
+            elif int(ro[c]):
+                opp |= 1 << (b + c)
+
+    occ = me | opp
+    if not occ:
+        return "2,2,0,L"
+
+    empties = [p for p in range(36) if not (occ >> p) & 1]
+    E = len(empties)
+
+    safe = []
+    draw_now = []
+    lose_now = []
+    draw_after = []
+    losing = []
+    tnow = time.time()
+
+    for p in empties:
+        if tnow > DL_A:
+            break
+        for q in range(4):
+            for d in (0, 1):
+                me2, opp2 = apply_move(me, opp, p, q, d)
+                if has5(me2):
+                    if not has5(opp2):
+                        return _fmt(p, q, d)
+                    draw_now.append((0, p, q, d))
+                    continue
+                if has5(opp2):
+                    lose_now.append((0, p, q, d))
+                    continue
+                if E == 1:
+                    draw_now.append((0, p, q, d))
+                    continue
+                myc, oppc, myk3, oppk3, score, myq3, oppq3 = scan(me2, opp2)
+                m4m = 0
+                for it in myc:
+                    m4m |= 1 << it[0]
+                quick = (score + 80 * len(myc) + 40 * _POP8[m4m] + 8 * myk3
+                         + 4 * _POP8[myq3] - 60 * oppk3 - 35 * _POP8[oppq3])
+                bad = False
+                daf = False
+                if oppc:
+                    if len(oppc) > 48:
+                        bad = True
+                    else:
+                        for (qd, W, y) in oppc:
+                            qq = qd >> 1
+                            dd = qd & 1
+                            miss = W ^ y
+                            if miss:
+                                p2 = miss.bit_length() - 1
+                            else:
+                                p2 = _feb(me2, opp2)
+                            o3 = rotB(opp2 | (1 << p2), qq, dd)
+                            if has5(o3):
+                                if not has5(rotB(me2, qq, dd)):
+                                    bad = True
+                                    break
+                                daf = True
+                            else:
+                                bad = True
+                                break
+                if bad:
+                    losing.append((quick, p, q, d))
+                    continue
+                if daf:
+                    draw_after.append((quick, p, q, d))
+                    continue
+                mypure = 0
+                for (qd, W, x) in myc[:12]:
+                    qq = qd >> 1
+                    dd = qd & 1
+                    miss = W ^ x
+                    if miss:
+                        pp = miss.bit_length() - 1
+                    else:
+                        pp = _feb(me2, opp2)
+                    m4, o4 = apply_move(me2, opp2, pp, qq, dd)
+                    if has5(m4) and not has5(o4):
+                        mypure += 1
+                safe.append((quick, p, q, d, me2, opp2, mypure))
+        tnow = time.time()
+
+    if not safe:
+        for bucket in (draw_now, draw_after, losing, lose_now):
+            if bucket:
+                bucket.sort(key=lambda t: -t[0])
+                _, p, q, d = bucket[0]
+                return _fmt(p, q, d)
+        return _fmt(empties[0], 0, 0)
+
+    # ---- forced-win search (mate in 3) ----
+    if E <= 4:
+        cands = safe[:]
+    else:
+        cands = [s for s in safe if s[6] > 0]
+    if cands:
+        cands.sort(key=lambda s: (-s[6], -s[0]))
+        for s in cands:
+            if time.time() > DL_C:
+                break
+            r = _forced_win_after(s[4], s[5], DL_C)
+            if r is None:
+                break
+            if r:
+                return _fmt(s[1], s[2], s[3])
+
+    # ---- depth-2 minimax with pruning ----
+    safe.sort(key=lambda s: -s[0])
+    alpha = -100000000
+    best = None
+    for s in safe:
+        if time.time() > DL:
+            break
+        v = _min_reply(s[4], s[5], alpha, DL)
+        if v is None:
+            break
+        if v > alpha:
+            alpha = v
+            best = s
+            if v >= 9999999:
+                return _fmt(s[1], s[2], s[3])
+    if best

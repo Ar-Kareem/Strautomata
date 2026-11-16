@@ -1,0 +1,268 @@
+
+import itertools
+
+def policy(state: dict) -> str:
+    my_pts = list(state['my_pts'])
+    opp_pts = list(state['opp_pts'])
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+    dice = list(state['dice'])
+    
+    if not dice:
+        return "H:P,P"
+    
+    if len(dice) == 1:
+        dice = [dice[0]]
+    
+    def is_blocked(point, o_pts):
+        """Check if a point is blocked by opponent (2+ checkers)."""
+        if point < 0 or point > 23:
+            return False
+        return o_pts[point] >= 2
+    
+    def can_bear_off(m_pts, m_bar):
+        """Check if all checkers are in home board (points 0-5)."""
+        if m_bar > 0:
+            return False
+        for i in range(6, 24):
+            if m_pts[i] > 0:
+                return False
+        return True
+    
+    def apply_single_move(m_pts, o_pts, m_bar, o_bar, m_off, frm, die_val):
+        """Apply a single checker move. Returns new state or None if illegal."""
+        mp = list(m_pts)
+        op = list(o_pts)
+        mb = m_bar
+        ob = o_bar
+        mo = m_off
+        
+        if frm == 'B':
+            if mb <= 0:
+                return None
+            dest = 24 - die_val  # entering from bar
+            if dest < 0 or dest > 23:
+                return None
+            if op[dest] >= 2:
+                return None
+            mb -= 1
+            if op[dest] == 1:
+                op[dest] = 0
+                ob += 1
+            mp[dest] += 1
+        elif frm == 'P':
+            return (mp, op, mb, ob, mo)
+        else:
+            pt = frm
+            if mp[pt] <= 0:
+                return None
+            if mb > 0:
+                return None  # must move from bar first
+            dest = pt - die_val
+            if dest < 0:
+                # bearing off
+                if not can_bear_off(mp, mb):
+                    return None
+                if dest < -0:
+                    # Check if exact or highest checker
+                    if dest < -0:
+                        # dest is negative, meaning overshoot
+                        # Only allowed if no checkers on higher points
+                        for i in range(pt + 1, 6):
+                            if mp[i] > 0:
+                                return None
+                mp[pt] -= 1
+                mo += 1
+            else:
+                if op[dest] >= 2:
+                    return None
+                mp[pt] -= 1
+                hit = False
+                if op[dest] == 1:
+                    op[dest] = 0
+                    ob += 1
+                    hit = True
+                mp[dest] += 1
+            
+        return (mp, op, mb, ob, mo)
+    
+    def get_possible_froms(m_pts, m_bar, die_val):
+        """Get all possible from locations for a die value."""
+        froms = []
+        if m_bar > 0:
+            froms.append('B')
+            return froms  # Must move from bar
+        
+        for i in range(24):
+            if m_pts[i] > 0:
+                froms.append(i)
+        
+        return froms
+    
+    def evaluate(mp, op, mb, ob, mo, oo):
+        """Evaluate position - higher is better for me."""
+        score = 0.0
+        
+        # Borne off
+        score += mo * 50
+        score -= oo * 50
+        
+        # Bar penalty
+        score -= mb * 80
+        score += ob * 40  # opponent on bar is good
+        
+        # Pip count (lower is better)
+        my_pips = sum((i + 1) * mp[i] for i in range(24)) + mb * 25
+        opp_pips = sum((24 - i) * op[i] for i in range(24)) + ob * 25
+        score -= my_pips * 0.5
+        score += opp_pips * 0.2
+        
+        # Home board made points
+        home_made = 0
+        for i in range(6):
+            if mp[i] >= 2:
+                home_made += 1
+                score += 8
+                if i <= 4:
+                    score += 3  # inner home board points more valuable
+        
+        # Prime detection (consecutive blocked points)
+        max_prime = 0
+        curr_prime = 0
+        for i in range(24):
+            if mp[i] >= 2:
+                curr_prime += 1
+                max_prime = max(max_prime, curr_prime)
+            else:
+                curr_prime = 0
+        if max_prime >= 3:
+            score += max_prime * 10
+        if max_prime >= 6:
+            score += 50
+        
+        # Blots (single checkers) - penalize
+        for i in range(24):
+            if mp[i] == 1:
+                # More dangerous if in opponent's home or mid board
+                if i >= 18:
+                    score -= 15  # deep in opponent territory
+                elif i >= 12:
+                    score -= 10
+                elif i >= 6:
+                    score -= 6
+                else:
+                    score -= 3  # home board blot less dangerous
+        
+        # Anchors in opponent's home board (points 18-23)
+        for i in range(18, 24):
+            if mp[i] >= 2:
+                score += 7
+                if i >= 20:
+                    score += 5  # advanced anchor
+        
+        # Distribution - avoid stacking too many on one point
+        for i in range(24):
+            if mp[i] > 3:
+                score -= (mp[i] - 3) * 2
+        
+        return score
+    
+    def generate_all_moves():
+        """Generate all legal move strings and their resulting states."""
+        moves = []
+        
+        if len(dice) == 0:
+            return [("H:P,P", my_pts, opp_pts, my_bar, opp_bar, my_off)]
+        
+        if len(dice) == 1:
+            d = dice[0]
+            froms1 = get_possible_froms(my_pts, my_bar, d)
+            found = False
+            for f1 in froms1:
+                res = apply_single_move(my_pts, opp_pts, my_bar, opp_bar, my_off, f1, d)
+                if res is not None:
+                    found = True
+                    f1_str = 'B' if f1 == 'B' else f'A{f1}'
+                    move_str = f"H:{f1_str},P"
+                    moves.append((move_str, res[0], res[1], res[2], res[3], res[4]))
+            if not found:
+                moves.append(("H:P,P", my_pts, opp_pts, my_bar, opp_bar, my_off))
+            return moves
+        
+        d1, d2 = dice[0], dice[1]
+        high = max(d1, d2)
+        low = min(d1, d2)
+        
+        orders = []
+        if d1 != d2:
+            orders = [('H', high, low), ('L', low, high)]
+        else:
+            orders = [('H', d1, d2)]
+        
+        seen = set()
+        found_two = False
+        found_one = []
+        
+        for order_char, first_die, second_die in orders:
+            froms1 = get_possible_froms(my_pts, my_bar, first_die)
+            for f1 in froms1:
+                res1 = apply_single_move(my_pts, opp_pts, my_bar, opp_bar, my_off, f1, first_die)
+                if res1 is None:
+                    continue
+                mp1, op1, mb1, ob1, mo1 = res1
+                froms2 = get_possible_froms(mp1, mb1, second_die)
+                moved_second = False
+                for f2 in froms2:
+                    res2 = apply_single_move(mp1, op1, mb1, ob1, mo1, f2, second_die)
+                    if res2 is None:
+                        continue
+                    moved_second = True
+                    found_two = True
+                    f1_str = 'B' if f1 == 'B' else f'A{f1}'
+                    f2_str = 'B' if f2 == 'B' else f'A{f2}'
+                    move_str = f"{order_char}:{f1_str},{f2_str}"
+                    key = (order_char, f1_str, f2_str)
+                    if key not in seen:
+                        seen.add(key)
+                        mp2, op2, mb2, ob2, mo2 = res2
+                        moves.append((move_str, mp2, op2, mb2, ob2, mo2))
+                
+                if not moved_second:
+                    f1_str = 'B' if f1 == 'B' else f'A{f1}'
+                    found_one.append((f"{order_char}:{f1_str},P", mp1, op1, mb1, ob1, mo1, first_die))
+        
+        if found_two:
+            return moves
+        
+        if found_one:
+            # Must play the higher die if possible
+            high_moves = [m for m in found_one if m[6] == high]
+            low_moves = [m for m in found_one if m[6] == low]
+            if high_moves:
+                return [(m[0], m[1], m[2], m[3], m[4], m[5]) for m in high_moves]
+            elif low_moves:
+                return [(m[0], m[1], m[2], m[3], m[4], m[5]) for m in low_moves]
+            else:
+                return [(m[0], m[1], m[2], m[3], m[4], m[5]) for m in found_one]
+        
+        return [("H:P,P", my_pts, opp_pts, my_bar, opp_bar, my_off)]
+    
+    all_moves = generate_all_moves()
+    
+    if not all_moves:
+        return "H:P,P"
+    
+    best_score = -999999
+    best_move = all_moves[0][0]
+    
+    for move_data in all_moves:
+        move_str = move_data[0]
+        mp, op, mb, ob, mo = move_data[1], move_data[2], move_data[3], move_data[4], move_data[5]
+        score = evaluate(mp, op, mb, ob, mo, opp_off)
+        if score > best_score:
+            best_score = score
+            best_move = move_str
+    
+    return best_move

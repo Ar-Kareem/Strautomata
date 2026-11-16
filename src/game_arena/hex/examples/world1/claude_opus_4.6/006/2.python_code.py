@@ -1,0 +1,106 @@
+
+import time
+import random
+import math
+
+def policy(me, opp, color):
+    SIZE = 11
+    me_set = set(me)
+    opp_set = set(opp)
+    occupied = me_set | opp_set
+    empty = [(r, c) for r in range(SIZE) for c in range(SIZE) if (r, c) not in occupied]
+    
+    if not empty:
+        return me[0]  # shouldn't happen
+    
+    # First move: play center
+    if len(me) == 0 and (5, 5) not in occupied:
+        return (5, 5)
+    if len(me) == 0:
+        for rc in [(5,4),(5,6),(4,5),(6,5),(4,6),(6,4)]:
+            if rc not in occupied:
+                return rc
+    
+    def neighbors(r, c):
+        for dr, dc in [(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0)]:
+            nr, nc = r+dr, c+dc
+            if 0 <= nr < SIZE and 0 <= nc < SIZE:
+                yield (nr, nc)
+    
+    def check_win(stones, clr):
+        if len(stones) < SIZE:
+            return False
+        parent = {}
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+        def union(a, b):
+            a, b = find(a), find(b)
+            if a != b:
+                parent[a] = b
+        SIDE1, SIDE2 = (-1,-1), (-2,-2)
+        parent[SIDE1] = SIDE1
+        parent[SIDE2] = SIDE2
+        for s in stones:
+            parent[s] = s
+        for (r,c) in stones:
+            for nr, nc in neighbors(r, c):
+                if (nr, nc) in stones:
+                    union((r,c),(nr,nc))
+            if clr == 'b':
+                if r == 0: union((r,c), SIDE1)
+                if r == SIZE-1: union((r,c), SIDE2)
+            else:
+                if c == 0: union((r,c), SIDE1)
+                if c == SIZE-1: union((r,c), SIDE2)
+        return find(SIDE1) == find(SIDE2)
+    
+    # MCTS
+    wins = {}
+    visits = {}
+    for m in empty:
+        wins[m] = 0
+        visits[m] = 0
+    
+    deadline = time.time() + 0.85
+    total_sims = 0
+    
+    while time.time() < deadline:
+        # Select move with UCB1
+        log_total = math.log(total_sims + 1)
+        best_score = -1
+        best_move = empty[0]
+        for m in empty:
+            if visits[m] == 0:
+                best_move = m
+                break
+            score = wins[m]/visits[m] + 1.414 * math.sqrt(log_total / visits[m])
+            if score > best_score:
+                best_score = score
+                best_move = m
+        
+        # Simulate
+        my_stones = me_set | {best_move}
+        opp_stones = set(opp_set)
+        remaining = [m for m in empty if m != best_move]
+        random.shuffle(remaining)
+        turn_is_opp = True
+        for cell in remaining:
+            if turn_is_opp:
+                opp_stones.add(cell)
+            else:
+                my_stones.add(cell)
+            turn_is_opp = not turn_is_opp
+        
+        opp_color = 'w' if color == 'b' else 'b'
+        i_win = check_win(my_stones, color)
+        
+        visits[best_move] += 1
+        if i_win:
+            wins[best_move] += 1
+        total_sims += 1
+    
+    best_move = max(empty, key=lambda m: visits.get(m, 0))
+    return best_move

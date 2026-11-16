@@ -1,0 +1,361 @@
+
+import numpy as np
+from typing import List, Tuple, Set, Dict, Optional
+import time
+
+# Precomputed move tables
+JUMP_DIRECTIONS = [(2, 2), (2, -2), (-2, 2), (-2, -2)]
+MOVE_DIRECTIONS = [(1, 1), (1, -1), (-1, 1), (-1, -1)]
+
+# Board representation using bitboards (64 bits)
+class BitBoard:
+    def __init__(self, my_men: List[Tuple[int, int]], my_kings: List[Tuple[int, int]], 
+                 opp_men: List[Tuple[int, int]], opp_kings: List[Tuple[int, int]]):
+        self.my_men = 0
+        self.my_kings = 0
+        self.opp_men = 0
+        self.opp_kings = 0
+        
+        for (r, c) in my_men:
+            self.my_men |= 1 << (r * 8 + c)
+        for (r, c) in my_kings:
+            self.my_kings |= 1 << (r * 8 + c)
+        for (r, c) in opp_men:
+            self.opp_men |= 1 << (r * 8 + c)
+        for (r, c) in opp_kings:
+            self.opp_kings |= 1 << (r * 8 + c)
+            
+        self.all_pieces = self.my_men | self.my_kings | self.opp_men | self.opp_kings
+        self.my_all = self.my_men | self.my_kings
+        self.opp_all = self.opp_men | self.opp_kings
+        
+    def get_piece_at(self, r: int, c: int) -> str:
+        pos = 1 << (r * 8 + c)
+        if pos & self.my_men: return 'my_men'
+        if pos & self.my_kings: return 'my_kings'
+        if pos & self.opp_men: return 'opp_men'
+        if pos & self.opp_kings: return 'opp_kings'
+        return 'empty'
+        
+    def move_piece(self, from_pos: int, to_pos: int, piece_type: str):
+        if piece_type == 'my_men':
+            self.my_men ^= from_pos
+            self.my_men |= to_pos
+        elif piece_type == 'my_kings':
+            self.my_kings ^= from_pos
+            self.my_kings |= to_pos
+        elif piece_type == 'opp_men':
+            self.opp_men ^= from_pos
+            self.opp_men |= to_pos
+        elif piece_type == 'opp_kings':
+            self.opp_kings ^= from_pos
+            self.opp_kings |= to_pos
+        
+        self.all_pieces ^= from_pos
+        self.all_pieces |= to_pos
+        self.my_all = self.my_men | self.my_kings
+        self.opp_all = self.opp_men | self.opp_kings
+
+class CheckersPolicy:
+    def __init__(self):
+        self.start_time = time.time()
+        self.time_limit = 0.95  # 95% of 1 second
+        self.cache = {}
+        self.max_depth = 3
+        
+    def is_valid_square(self, r: int, c: int) -> bool:
+        return 0 <= r < 8 and 0 <= c < 8 and (r + c) % 2 == 1
+        
+    def get_all_legal_moves(self, bb: BitBoard, color: str, my_turn: bool = True) -> List[Tuple[Tuple[int, int], Tuple[int, int]]]:
+        moves = []
+        captures = []
+        
+        # Determine which pieces to move
+        if my_turn:
+            men_pieces = bb.my_men
+            kings_pieces = bb.my_kings
+            opp_pieces = bb.opp_all
+        else:
+            men_pieces = bb.opp_men
+            kings_pieces = bb.opp_kings
+            opp_pieces = bb.my_all
+            
+        # Check for capture moves first
+        for piece_idx in range(64):
+            piece_mask = 1 << piece_idx
+            if piece_mask & (men_pieces | kings_pieces):
+                r, c = divmod(piece_idx, 8)
+                is_king = bool(piece_mask & kings_pieces)
+                
+                # Check captures
+                capture_moves = self.get_capture_moves_from(bb, r, c, is_king, my_turn)
+                if capture_moves:
+                    captures.extend(capture_moves)
+        
+        if captures:
+            return captures
+            
+        # Regular moves only if no captures
+        for piece_idx in range(64):
+            piece_mask = 1 << piece_idx
+            if piece_mask & (men_pieces | kings_pieces):
+                r, c = divmod(piece_idx, 8)
+                is_king = bool(piece_mask & kings_pieces)
+                
+                # Determine move direction based on color and king status
+                if my_turn:
+                    move_dirs = [(1, 1), (1, -1), (-1, 1), (-1, -1)] if is_king else \
+                                [(1, 1), (1, -1)] if color == 'b' else [(-1, 1), (-1, -1)]
+                else:
+                    # For opponent
+                    opp_color = 'w' if color == 'b' else 'b'
+                    move_dirs = [(1, 1), (1, -1), (-1, 1), (-1, -1)] if is_king else \
+                                [(1, 1), (1, -1)] if opp_color == 'b' else [(-1, 1), (-1, -1)]
+                
+                for dr, dc in move_dirs:
+                    nr, nc = r + dr, c + dc
+                    if self.is_valid_square(nr, nc) and not (bb.all_pieces & (1 << (nr * 8 + nc))):
+                        moves.append(((r, c), (nr, nc)))
+        
+        return moves
+    
+    def get_capture_moves_from(self, bb: BitBoard, r: int, c: int, is_king: bool, my_turn: bool) -> List[Tuple[Tuple[int, int], Tuple[int, int]]]:
+        moves = []
+        
+        # Determine which pieces are opponents
+        if my_turn:
+            opp_pieces = bb.opp_all
+        else:
+            opp_pieces = bb.my_all
+            
+        # Jump directions for kings or all directions for kings
+        jump_dirs = JUMP_DIRECTIONS if is_king else \
+                   [(2, 2), (2, -2)] if (my_turn and bb.my_men & (1 << (r * 8 + c))) else \
+                   [(-2, 2), (-2, -2)]
+        
+        for dr, dc in jump_dirs:
+            nr, nc = r + dr, c + dc
+            mr, mc = r + dr//2, c + dc//2  # Middle square
+            
+            if self.is_valid_square(nr, nc) and not (bb.all_pieces & (1 << (nr * 8 + nc))):
+                middle_mask = 1 << (mr * 8 + mc)
+                if middle_mask & opp_pieces:
+                    moves.append(((r, c), (nr, nc)))
+        
+        return moves
+    
+    def evaluate_position(self, bb: BitBoard, color: str) -> float:
+        score = 0
+        
+        # Material evaluation
+        my_pieces = bin(bb.my_men).count('1')
+        my_kings = bin(bb.my_kings).count('1')
+        opp_pieces = bin(bb.opp_men).count('1')
+        opp_kings = bin(bb.opp_kings).count('1')
+        
+        score += (my_pieces - opp_pieces) * 100
+        score += (my_kings - opp_kings) * 300
+        
+        # Positional evaluation
+        for i in range(64):
+            piece_mask = 1 << i
+            if piece_mask & bb.my_all:
+                r, c = divmod(i, 8)
+                # Center control
+                if 2 <= c <= 5:
+                    score += 10
+                # Advancement toward king promotion
+                if color == 'b' and r > 3:
+                    score += (7 - r) * 5
+                elif color == 'w' and r < 4:
+                    score += r * 5
+                # Safe squares (back row for men)
+                if (color == 'b' and r == 7) or (color == 'w' and r == 0):
+                    score += 15
+                    
+            elif piece_mask & bb.opp_all:
+                r, c = divmod(i, 8)
+                # Penalize opponent center control
+                if 2 <= c <= 5:
+                    score -= 10
+        
+        # Mobility evaluation
+        my_moves = len(self.get_all_legal_moves(bb, color, True))
+        opp_moves = len(self.get_all_legal_moves(bb, color, False))
+        score += (my_moves - opp_moves) * 5
+        
+        # King safety
+        my_kings_count = my_kings
+        opp_kings_count = opp_kings
+        if my_kings_count > opp_kings_count:
+            score += 50 * (my_kings_count - opp_kings_count)
+        
+        return score
+    
+    def minimax(self, bb: BitBoard, color: str, depth: int, alpha: float, beta: float, maximizing: bool) -> float:
+        if depth == 0 or time.time() - self.start_time > self.time_limit:
+            return self.evaluate_position(bb, color)
+        
+        moves = self.get_all_legal_moves(bb, color, maximizing)
+        if not moves:
+            # No moves available
+            return -1000 if maximizing else 1000
+        
+        if maximizing:
+            max_eval = -float('inf')
+            for move in moves:
+                new_bb = self.apply_move(bb, move, color, True)
+                eval_score = self.minimax(new_bb, color, depth-1, alpha, beta, False)
+                max_eval = max(max_eval, eval_score)
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for move in moves:
+                new_bb = self.apply_move(bb, move, color, False)
+                eval_score = self.minimax(new_bb, color, depth-1, alpha, beta, True)
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval
+    
+    def apply_move(self, bb: BitBoard, move: Tuple[Tuple[int, int], Tuple[int, int]], 
+                  color: str, my_turn: bool) -> BitBoard:
+        # Create a deep copy of the bitboard
+        from_r, from_c = move[0]
+        to_r, to_c = move[1]
+        
+        from_idx = from_r * 8 + from_c
+        to_idx = to_r * 8 + to_c
+        
+        from_mask = 1 << from_idx
+        to_mask = 1 << to_idx
+        
+        # Determine piece type
+        piece_type = bb.get_piece_at(from_r, from_c)
+        
+        # Create new bitboard
+        new_bb = BitBoard([], [], [], [])
+        new_bb.my_men = bb.my_men
+        new_bb.my_kings = bb.my_kings
+        new_bb.opp_men = bb.opp_men
+        new_bb.opp_kings = bb.opp_kings
+        new_bb.all_pieces = bb.all_pieces
+        new_bb.my_all = bb.my_all
+        new_bb.opp_all = bb.opp_all
+        
+        # Move the piece
+        new_bb.move_piece(from_mask, to_mask, piece_type)
+        
+        # Check for capture
+        if abs(to_r - from_r) == 2:  # It's a capture
+            mr, mc = (from_r + to_r) // 2, (from_c + to_c) // 2
+            middle_mask = 1 << (mr * 8 + mc)
+            
+            # Remove captured piece
+            if middle_mask & new_bb.opp_men:
+                new_bb.opp_men ^= middle_mask
+            elif middle_mask & new_bb.opp_kings:
+                new_bb.opp_kings ^= middle_mask
+            elif middle_mask & new_bb.my_men:
+                new_bb.my_men ^= middle_mask
+            elif middle_mask & new_bb.my_kings:
+                new_bb.my_kings ^= middle_mask
+            
+            new_bb.all_pieces ^= middle_mask
+            new_bb.my_all = new_bb.my_men | new_bb.my_kings
+            new_bb.opp_all = new_bb.opp_men | new_bb.opp_kings
+        
+        # Check for king promotion
+        if piece_type == 'my_men' and to_r == (0 if color == 'b' else 7):
+            new_bb.my_men ^= to_mask
+            new_bb.my_kings |= to_mask
+        elif piece_type == 'opp_men' and to_r == (7 if color == 'b' else 0):
+            new_bb.opp_men ^= to_mask
+            new_bb.opp_kings |= to_mask
+        
+        return new_bb
+
+def policy(my_men: List[Tuple[int, int]], my_kings: List[Tuple[int, int]], 
+           opp_men: List[Tuple[int, int]], opp_kings: List[Tuple[int, int]], 
+           color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    """
+    Main policy function that returns the next move.
+    """
+    policy_engine = CheckersPolicy()
+    bb = BitBoard(my_men, my_kings, opp_men, opp_kings)
+    
+    # Get all legal moves
+    all_moves = policy_engine.get_all_legal_moves(bb, color, True)
+    
+    if not all_moves:
+        # Fallback: return any move (shouldn't happen in valid position)
+        for piece in my_men + my_kings:
+            r, c = piece
+            possible = [(r+1, c+1), (r+1, c-1), (r-1, c+1), (r-1, c-1)]
+            for nr, nc in possible:
+                if policy_engine.is_valid_square(nr, nc) and not any(p == (nr, nc) for p in my_men+my_kings+opp_men+opp_kings):
+                    return ((r, c), (nr, nc))
+        # Last resort
+        return ((0, 1), (1, 0)) if policy_engine.is_valid_square(1, 0) else ((0, 1), (1, 2))
+    
+    # If there are capture moves, choose the best one
+    capture_moves = []
+    for move in all_moves:
+        if abs(move[1][0] - move[0][0]) == 2:
+            capture_moves.append(move)
+    
+    if capture_moves:
+        # Choose the capture that captures the most valuable pieces
+        best_capture = None
+        best_score = -float('inf')
+        
+        for move in capture_moves:
+            # Quick evaluation: prefer captures that take kings
+            from_r, from_c = move[0]
+            to_r, to_c = move[1]
+            mr, mc = (from_r + to_r) // 2, (from_c + to_c) // 2
+            
+            captured_value = 0
+            if (mr, mc) in opp_kings:
+                captured_value = 3
+            elif (mr, mc) in opp_men:
+                captured_value = 1
+            
+            # Also consider promotion
+            move_score = captured_value
+            piece_type = 'my_kings' if (from_r, from_c) in my_kings else 'my_men'
+            if piece_type == 'my_men' and to_r == (0 if color == 'b' else 7):
+                move_score += 2
+            
+            if move_score > best_score:
+                best_score = move_score
+                best_capture = move
+        
+        if best_capture:
+            return best_capture
+    
+    # Use minimax to find the best non-capture move
+    best_move = None
+    best_eval = -float('inf')
+    
+    for move in all_moves:
+        if abs(move[1][0] - move[0][0]) == 2:
+            continue  # Already processed captures
+            
+        new_bb = policy_engine.apply_move(bb, move, color, True)
+        eval_score = policy_engine.minimax(new_bb, color, policy_engine.max_depth - 1, 
+                                          -float('inf'), float('inf'), False)
+        
+        if eval_score > best_eval:
+            best_eval = eval_score
+            best_move = move
+    
+    # If no move selected (shouldn't happen), pick first legal move
+    if best_move is None and all_moves:
+        best_move = all_moves[0]
+    
+    return best_move if best_move else all_moves[0]

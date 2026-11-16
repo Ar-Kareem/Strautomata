@@ -1,0 +1,222 @@
+
+import numpy as np
+import time
+from collections import deque
+
+def policy(board) -> str:
+    board = np.array(board)
+    start_time = time.time()
+    time_limit = 0.85  # seconds, leave margin
+    
+    DIRS = [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)]
+    
+    def get_pieces(bd, player):
+        return list(zip(*np.where(bd == player)))
+    
+    def count_components(bd, player):
+        pieces = set(get_pieces(bd, player))
+        if not pieces:
+            return 0
+        visited = set()
+        components = 0
+        for p in pieces:
+            if p not in visited:
+                components += 1
+                queue = deque([p])
+                visited.add(p)
+                while queue:
+                    r, c = queue.popleft()
+                    for dr, dc in DIRS:
+                        nr, nc = r+dr, c+dc
+                        if (nr, nc) in pieces and (nr, nc) not in visited:
+                            visited.add((nr, nc))
+                            queue.append((nr, nc))
+        return components
+    
+    def get_legal_moves(bd, player):
+        moves = []
+        pieces = get_pieces(bd, player)
+        for r, c in pieces:
+            for dr, dc in DIRS:
+                # Count pieces in line
+                count = 0
+                for i in range(8):
+                    if dr == 0 and dc == 0:
+                        break
+                    if dr != 0:
+                        lr = r + dr * i if dr != 0 else r
+                    else:
+                        lr = r
+                    if dc != 0:
+                        lc = c + dc * i if dc != 0 else c
+                    else:
+                        lc = c
+                # Recount properly along the full line
+                count = 0
+                # Count all pieces along the line through (r,c) in direction (dr,dc)
+                if dr == 0 and dc == 0:
+                    continue
+                # Travel both directions along the line
+                count = 0
+                # For row direction
+                if dr == 0:  # horizontal
+                    for cc in range(8):
+                        if bd[r][cc] != 0:
+                            count += 1
+                elif dc == 0:  # vertical
+                    for rr in range(8):
+                        if bd[rr][c] != 0:
+                            count += 1
+                else:  # diagonal
+                    # find start of diagonal
+                    tr, tc = r, c
+                    while 0 <= tr-dr <= 7 and 0 <= tc-dc <= 7:
+                        tr -= dr
+                        tc -= dc
+                    while 0 <= tr <= 7 and 0 <= tc <= 7:
+                        if bd[tr][tc] != 0:
+                            count += 1
+                        tr += dr
+                        tc += dc
+                
+                nr, nc = r + dr*count, c + dc*count
+                if not (0 <= nr <= 7 and 0 <= nc <= 7):
+                    continue
+                # Check path for enemy pieces (can't jump over)
+                blocked = False
+                for step in range(1, count):
+                    mr, mc = r + dr*step, c + dc*step
+                    if bd[mr][mc] == -player:
+                        blocked = True
+                        break
+                if blocked:
+                    continue
+                # Can't land on own piece
+                if bd[nr][nc] == player:
+                    continue
+                moves.append((r, c, nr, nc))
+        return moves
+    
+    def evaluate(bd):
+        my_pieces = get_pieces(bd, 1)
+        opp_pieces = get_pieces(bd, -1)
+        
+        if len(my_pieces) <= 1:
+            return 100000
+        if len(opp_pieces) <= 1:
+            return -100000
+        
+        my_comp = count_components(bd, 1)
+        opp_comp = count_components(bd, -1)
+        
+        if my_comp == 1:
+            return 100000
+        if opp_comp == 1:
+            return -100000
+        
+        # Center of mass distance for my pieces
+        my_r = sum(p[0] for p in my_pieces) / len(my_pieces)
+        my_c = sum(p[1] for p in my_pieces) / len(my_pieces)
+        my_dist = sum(abs(p[0]-my_r) + abs(p[1]-my_c) for p in my_pieces)
+        
+        opp_r = sum(p[0] for p in opp_pieces) / len(opp_pieces)
+        opp_c = sum(p[1] for p in opp_pieces) / len(opp_pieces)
+        opp_dist = sum(abs(p[0]-opp_r) + abs(p[1]-opp_c) for p in opp_pieces)
+        
+        # Adjacency count
+        my_adj = 0
+        my_set = set(my_pieces)
+        for r, c in my_pieces:
+            for dr, dc in DIRS:
+                if (r+dr, c+dc) in my_set:
+                    my_adj += 1
+        
+        opp_adj = 0
+        opp_set = set(opp_pieces)
+        for r, c in opp_pieces:
+            for dr, dc in DIRS:
+                if (r+dr, c+dc) in opp_set:
+                    opp_adj += 1
+        
+        score = 0
+        score -= 30 * my_comp  # fewer components better
+        score += 30 * opp_comp
+        score -= 3 * my_dist   # tighter cluster better
+        score += 3 * opp_dist
+        score += 5 * my_adj    # more adjacency better
+        score -= 5 * opp_adj
+        
+        return score
+    
+    def make_move(bd, move, player):
+        new_bd = bd.copy()
+        r, c, nr, nc = move
+        new_bd[r][c] = 0
+        new_bd[nr][nc] = player
+        return new_bd
+    
+    def minimax(bd, depth, alpha, beta, maximizing, deadline):
+        if time.time() > deadline:
+            return evaluate(bd), None
+        
+        if depth == 0:
+            return evaluate(bd), None
+        
+        player = 1 if maximizing else -1
+        moves = get_legal_moves(bd, player)
+        
+        if not moves:
+            return evaluate(bd), None
+        
+        best_move = moves[0]
+        
+        if maximizing:
+            max_eval = -float('inf')
+            for move in moves:
+                new_bd = make_move(bd, move, player)
+                ev, _ = minimax(new_bd, depth-1, alpha, beta, False, deadline)
+                if ev > max_eval:
+                    max_eval = ev
+                    best_move = move
+                alpha = max(alpha, ev)
+                if beta <= alpha:
+                    break
+                if time.time() > deadline:
+                    break
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            for move in moves:
+                new_bd = make_move(bd, move, player)
+                ev, _ = minimax(new_bd, depth-1, alpha, beta, True, deadline)
+                if ev < min_eval:
+                    min_eval = ev
+                    best_move = move
+                beta = min(beta, ev)
+                if beta <= alpha:
+                    break
+                if time.time() > deadline:
+                    break
+            return min_eval, best_move
+    
+    deadline = start_time + time_limit
+    legal_moves = get_legal_moves(board, 1)
+    
+    if not legal_moves:
+        # Should not happen but fallback
+        return "0,0:0,0"
+    
+    best_move = legal_moves[0]
+    
+    for depth in range(1, 20):
+        if time.time() > deadline - 0.05:
+            break
+        score, move = minimax(board, depth, -float('inf'), float('inf'), True, deadline - 0.05)
+        if move is not None:
+            best_move = move
+        if abs(score) >= 99000:
+            break
+        if time.time() > deadline - 0.05:
+            break
+    
+    return f"{best_move[0]},{best_move[1]}:{best_move[2]},{best_move[3]}"

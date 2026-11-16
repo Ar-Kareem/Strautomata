@@ -1,0 +1,161 @@
+
+import numpy as np
+
+def policy(board):
+    player = 1
+    opponent = 2
+    
+    def is_legal_move(from_pos, to_pos, board):
+        if board[from_pos] != player:
+            return False
+        if board[to_pos] != 0:
+            return False
+        
+        dx = to_pos[1] - from_pos[1]
+        dy = to_pos[0] - from_pos[0]
+        
+        if dx == 0 and dy == 0:
+            return False
+        
+        if dx != 0 and dy !=0 and abs(dx) != abs(dy):
+            return False
+        
+        step_x = 0 if dx == 0 else 1 if dx > 0 else -1
+        step_y = 0 if dy == 0 else 1 if dy > 0 else -1
+        
+        x, y = from_pos[1], from_pos[0]
+        while x != to_pos[1] or y != to_pos[0]:
+            if (y, x) != from_pos and board[y, x] != 0:
+                return False
+            x += step_x
+            y += step_y
+        
+        return True
+    
+    def is_legal_arrow(from_pos, arrow_pos, old_amazon_pos, board):
+        if board[arrow_pos] != 0:
+            return False
+        
+        dx = arrow_pos[1] - from_pos[1]
+        dy = arrow_pos[0] - from_pos[0]
+        
+        if dx == 0 and dy == 0:
+            return False
+        
+        if dx != 0 and dy !=0 and abs(dx) != abs(dy):
+            return False
+        
+        step_x = 0 if dx == 0 else 1 if dx > 0 else -1
+        step_y = 0 if dy == 0 else 1 if dy > 0 else -1
+        
+        x, y = from_pos[1], from_pos[0]
+        while x != arrow_pos[1] or y != arrow_pos[0]:
+            if (y, x) != old_amazon_pos and board[y, x] != 0:
+                return False
+            x += step_x
+            y += step_y
+        
+        return True
+    
+    def count_mobility(b, pl):
+        mobility = 0
+        amazon_positions = [(i, j) for i in range(6) for j in range(6) if b[i, j] == pl]
+        
+        for pos in amazon_positions:
+            # Count possible moves
+            for di in [-1, 0, 1]:
+                for dj in [-1, 0, 1]:
+                    if di == 0 and dj == 0:
+                        continue
+                    for step in range(1, 6):
+                        ni, nj = pos[0] + di * step, pos[1] + dj * step
+                        if 0 <= ni < 6 and 0 <= nj < 6:
+                            if b[ni, nj] == 0:
+                                mobility += 1
+                            else:
+                                break
+                        else:
+                            break
+        return mobility
+    
+    best_score = -float('inf')
+    best_move = None
+    
+    amazon_positions = [(i, j) for i in range(6) for j in range(6) if board[i, j] == player]
+    
+    for from_pos in amazon_positions:
+        from_row, from_col = from_pos
+        
+        # Check all possible moves
+        for di in [-1, 0, 1]:
+            for dj in [-1, 0, 1]:
+                if di == 0 and dj == 0:
+                    continue
+                for step in range(1, 6):
+                    to_row, to_col = from_row + di * step, from_col + dj * step
+                    if 0 <= to_row < 6 and 0 <= to_col < 6 and board[to_row, to_col] == 0:
+                        if is_legal_move(from_pos, (to_row, to_col), board):
+                            # Simulate the move (temporarily)
+                            board[from_row, from_col] = 0
+                            board[to_row, to_col] = player
+                            
+                            # Now check all possible arrow shots from new position
+                            for adi in [-1, 0, 1]:
+                                for adj in [-1, 0, 1]:
+                                    if adi == 0 and adj == 0:
+                                        continue
+                                    for a_step in range(1, 6):
+                                        arrow_row = to_row + adi * a_step
+                                        arrow_col = to_col + adj * a_step
+                                        if 0 <= arrow_row < 6 and 0 <= arrow_col < 6:
+                                            if board[arrow_row, arrow_col] == 0:
+                                                if is_legal_arrow((to_row, to_col), (arrow_row, arrow_col), from_pos, board):
+                                                    # Simulate arrow shot
+                                                    board[arrow_row, arrow_col] = -1
+                                                    
+                                                    # Evaluate the board
+                                                    my_mobility = count_mobility(board, player)
+                                                    opp_mobility = count_mobility(board, opponent)
+                                                    score_diff = my_mobility - opp_mobility
+                                                    
+                                                    if score_diff > best_score:
+                                                        best_score = score_diff
+                                                        best_move = f"{from_row},{from_col}:{to_row},{to_col}:{arrow_row},{arrow_col}"
+                                                    
+                                                    # Undo arrow shot
+                                                    board[arrow_row, arrow_col] = 0
+                                            else:
+                                                break
+                                        else:
+                                            break
+                            # Undo the move
+                            board[to_row, to_col] = 0
+                            board[from_row, from_col] = player
+                    else:
+                        break
+    
+    if best_move is None:
+        # Default to first legal move if no evaluation worked
+        for from_pos in amazon_positions:
+            from_row, from_col = from_pos
+            for di in [-1, 0, 1]:
+                for dj in [-1, 0, 1]:
+                    if di == 0 and dj == 0:
+                        continue
+                    for step in range(1, 6):
+                        to_row, to_col = from_row + di * step, from_col + dj * step
+                        if 0 <= to_row < 6 and 0 <= to_col < 6 and board[to_row, to_col] == 0:
+                            if is_legal_move(from_pos, (to_row, to_col), board):
+                                # Check any arrow shot from new position
+                                for adi in [-1, 0, 1]:
+                                    for adj in [-1, 0, 1]:
+                                        if adi == 0 and adj == 0:
+                                            continue
+                                        for a_step in range(1, 6):
+                                            arrow_row = to_row + adi * a_step
+                                            arrow_col = to_col + adj * a_step
+                                            if 0 <= arrow_row < 6 and 0 <= arrow_col < 6 and board[arrow_row, arrow_col] == 0:
+                                                if is_legal_arrow((to_row, to_col), (arrow_row, arrow_col), from_pos, board):
+                                                    return f"{from_row},{from_col}:{to_row},{to_col}:{arrow_row},{arrow_col}"
+    
+    return best_move  # guaranteed to be legal or found in fallback

@@ -1,0 +1,201 @@
+The strategy for this policy is a shallow search using Alpha-Beta pruning with a heuristic evaluation function.
+1.  **Evaluation Function**: The board is scored by summing the value of all possible 5-cell lines. A line containing only my pieces is worth $10^k$ where $k$ is the count. Mixed lines are worthless. Terminal states (5-in-a-row) have very high values.
+2.  **Search**: The policy uses an iterative approach limited to Depth 2 (my move, opponent's response).
+    -   First, all possible moves for the current player are generated and evaluated greedily to sort them. Immediate wins are prioritized and returned instantly.
+    -   Then, for the top 30 candidate moves, the policy simulates all possible opponent responses.
+    -   It assumes the opponent will play optimally to minimize the player's score.
+    -   The move that yields the highest guaranteed score after the opponent's best response is chosen.
+3.  **Pruning**: By sorting moves based on a quick greedy evaluation and limiting the search to the most promising candidates, the policy fits within the time constraints while avoiding immediate traps.
+
+<code>
+import time
+
+# Constants
+INF = 10000000
+WIN_SCORE = 10000000
+
+# Precomputed lines: 32 segments of length 5
+LINES = []
+# Rows
+for r in range(6):
+    for c in range(2):
+        LINES.append([(r, c+i) for i in range(5)])
+# Cols
+for c in range(6):
+    for r in range(2):
+        LINES.append([(r+i, c) for i in range(5)])
+# Diagonals \
+for r, c in [(0,0), (0,1), (1,0), (1,1)]:
+    LINES.append([(r+i, c+i) for i in range(5)])
+# Diagonals /
+for r, c in [(0,5), (0,4), (1,5), (1,4)]:
+    LINES.append([(r+i, c-i) for i in range(5)])
+
+# Quadrant definitions for rotation
+# quad 0: rows 0-2, cols 0-2 (Top-Left)
+# quad 1: rows 0-2, cols 3-5 (Top-Right)
+# quad 2: rows 3-5, cols 0-2 (Bottom-Left)
+# quad 3: rows 3-5, cols 3-5 (Bottom-Right)
+QUAD_OFFSETS = {0: (0,0), 1: (0,3), 2: (3,0), 3: (3,3)}
+
+def rotate_board(board, quad, direction):
+    """Rotates a 3x3 quadrant of the board in place."""
+    r_off, c_off = QUAD_OFFSETS[quad]
+    # Extract subgrid
+    sub = [[board[r_off+i][c_off+j] for j in range(3)] for i in range(3)]
+    
+    if direction == 'R': # Clockwise
+        for i in range(3):
+            for j in range(3):
+                board[r_off+i][c_off+j] = sub[2-j][i]
+    else: # Counter-Clockwise ('L')
+        for i in range(3):
+            for j in range(3):
+                board[r_off+i][c_off+j] = sub[j][2-i]
+
+def evaluate(board):
+    """
+    Calculates the heuristic score of the board state.
+    Player is 1, Opponent is 2.
+    """
+    me_5 = False
+    opp_5 = False
+    score = 0
+    
+    for line in LINES:
+        c_me = 0
+        c_opp = 0
+        for r, c in line:
+            val = board[r][c]
+            if val == 1:
+                c_me += 1
+            elif val == 2:
+                c_opp += 1
+        
+        if c_me == 5: me_5 = True
+        if c_opp == 5: opp_5 = True
+        
+        if c_me > 0 and c_opp > 0:
+            continue
+        elif c_me > 0:
+            score += 10 ** c_me
+        elif c_opp > 0:
+            score -= 10 ** c_opp
+            
+    if me_5 and opp_5: return 0 # Draw
+    if me_5: return WIN_SCORE
+    if opp_5: return -WIN_SCORE
+    return score
+
+def policy(you, opponent):
+    start_time = time.time()
+    
+    # Initialize board: 0=empty, 1=me, 2=opp
+    board = [[0]*6 for _ in range(6)]
+    for r in range(6):
+        for c in range(6):
+            if you[r][c] == 1:
+                board[r][c] = 1
+            elif opponent[r][c] == 1:
+                board[r][c] = 2
+    
+    empty_cells = []
+    for r in range(6):
+        for c in range(6):
+            if board[r][c] == 0:
+                empty_cells.append((r, c))
+                
+    # Generate all possible moves (placement + rotation)
+    # Format: (r, c, quad, dir)
+    candidates = []
+    for r, c in empty_cells:
+        for q in range(4):
+            for d in ['L', 'R']:
+                candidates.append((r, c, q, d))
+    
+    # Depth 1 Evaluation (Greedy)
+    move_scores = []
+    for r, c, q, d in candidates:
+        # Apply move
+        board[r][c] = 1
+        rotate_board(board, q, d)
+        
+        sc = evaluate(board)
+        move_scores.append((sc, r, c, q, d))
+        
+        # Undo move
+        rotate_board(board, q, 'L' if d == 'R' else 'R')
+        board[r][c] = 0
+        
+    # Sort moves descending by score
+    move_scores.sort(key=lambda x: x[0], reverse=True)
+    
+    # If immediate win found, play it
+    if move_scores[0][0] >= WIN_SCORE:
+        _, r, c, q, d = move_scores[0]
+        return f"{r+1},{c+1},{q},{d}"
+    
+    # Depth 2 Search (Minimax)
+    # We analyze top N candidates to save time
+    best_move = move_scores[0][1:] # Default to best greedy
+    best_score = -INF - 1
+    
+    search_limit = 30 # Number of candidates to expand
+    if len(move_scores) < search_limit:
+        search_limit = len(move_scores)
+        
+    for i in range(search_limit):
+        val1, r, c, q, d = move_scores[i]
+        
+        # Apply my move
+        board[r][c] = 1
+        rotate_board(board, q, d)
+        
+        # Opponent turn (Minimizing my score)
+        # Generate opponent moves
+        opp_empty = []
+        for rr in range(6):
+            for cc in range(6):
+                if board[rr][cc] == 0:
+                    opp_empty.append((rr, cc))
+        
+        current_worst = INF
+        
+        # Optimization: If we are winning after our move, check if opponent can steal win
+        # But normally evaluate returns WIN_SCORE if we have 5.
+        
+        opp_moves = []
+        for rr, cc in opp_empty:
+            for qq in range(4):
+                for dd in ['L', 'R']:
+                    # Simulate opponent move
+                    board[rr][cc] = 2
+                    rotate_board(board, qq, dd)
+                    
+                    sc = evaluate(board)
+                    opp_moves.append((sc, rr, cc, qq, dd))
+                    
+                    # Undo
+                    rotate_board(board, qq, 'L' if dd == 'R' else 'R')
+                    board[rr][cc] = 0
+        
+        # Opponent picks the move minimizing my score (worst for me)
+        if opp_moves:
+            # We only need the minimum score
+            min_score = min(m[0] for m in opp_moves)
+            current_worst = min_score
+        else:
+            # Board full (draw)
+            current_worst = evaluate(board)
+            
+        # Undo my move
+        rotate_board(board, q, 'L' if d == 'R' else 'R')
+        board[r][c] = 0
+        
+        if current_worst > best_score:
+            best_score = current_worst
+            best_move = (r, c, q, d)
+            
+    r, c, q, d = best_move
+    return f"{r+1},{c+1},{q},{d}"
+</code>

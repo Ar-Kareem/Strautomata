@@ -1,0 +1,181 @@
+**Strategy Overview**
+
+The game is a race: each player must move all of their pieces into the three rows opposite the starting rows (the “target rows”).  
+- Red’s target rows are **5, 6, 7** (since red starts on rows 1‑3 and moves toward larger row numbers).  
+- Blue’s target rows are **2, 3, 4** (blue starts on rows 6‑8 and moves toward smaller row numbers).  
+
+A piece scores **8 points** the first time it ever occupies a target row; the total score is the sum of such points for all pieces (max = 48).  
+Because there is no capture and pieces never interfere with the opponent, the optimal policy is to bring each of our pieces into a target row as quickly as possible.  
+
+We use a **greedy heuristic**:
+
+1. **Generate all legal moves** for the current player (simple diagonal steps and forward jumps over own pieces).  
+2. **Evaluate each move** by the resulting number of pieces that are in target rows after the move.  
+3. **Break ties** by preferring moves that give the largest reduction in distance to a target row (jumps are better than simple steps).  
+4. **Further tie‑break** by moving the piece that is farthest from a target row, which helps bring all pieces into target rows early.
+
+The algorithm runs in negligible time (≤ 12 candidate moves per turn) and always returns a legal move.
+
+<code>
+import typing
+
+# Mapping between column letters and indices 0‑3
+COL_TO_IDX = {'a': 0, 'b': 1, 'c': 2, 'd': 3}
+IDX_TO_COL = {v: k for k, v in COL_TO_IDX.items()}
+
+# Target rows for each colour
+TARGET_ROWS = {
+    'red': {5, 6, 7},
+    'blue': {2, 3, 4}
+}
+
+def next_row(row: int, forward: int) -> int:
+    """
+    Return the next row after moving forward.
+    forward = +1 for red (increase row), -1 for blue (decrease row).
+    The board wraps: rows are 1‑8.
+    """
+    if forward == 1:
+        return row + 1 if row < 8 else 1
+    else:
+        return row - 1 if row > 1 else 8
+
+def wrap_col(col_idx: int) -> int:
+    """Wrap column index modulo 4."""
+    return col_idx % 4
+
+def distance_to_target(row: int, role: str) -> int:
+    """
+    Minimal number of forward moves needed to reach any target row.
+    For red we move forward (+1), for blue forward (-1).
+    Returns 0 if already on a target row.
+    """
+    target = TARGET_ROWS[role]
+    if role == 'red':
+        # forward steps are (t - row) mod 8
+        return min((t - row) % 8 for t in target)
+    else:
+        # forward steps are (row - t) mod 8
+        return min((row - t) % 8 for t in target)
+
+def parse_state(state: list) -> dict:
+    """
+    Convert the list of propositions into a dictionary:
+    key = (col_idx, row_int), value = colour string ('red', 'blue', 'b').
+    """
+    board = {}
+    for prop in state:
+        if prop[0] == 'cell':
+            col = COL_TO_IDX[prop[1]]
+            row = int(prop[2])
+            colour = prop[3]
+            board[(col, row)] = colour
+    return board
+
+def generate_moves(board: dict, role: str) -> list:
+    """
+    Return a list of possible moves for the given role.
+    Each move is a tuple:
+      ('move', (start_col, start_row), (dest_col, dest_row))
+    or
+      ('jump', (start_col, start_row), (inter_col, inter_row), (land_col, land_row))
+    """
+    forward = 1 if role == 'red' else -1
+    target = TARGET_ROWS[role]
+    own_colour = role
+    moves = []
+
+    # Collect own pieces
+    own_pieces = [(col, row) for (col, row), c in board.items() if c == own_colour]
+
+    for col, row in own_pieces:
+        for dx in (-1, 1):
+            # --- simple move ---
+            dest_col = wrap_col(col + dx)
+            dest_row = next_row(row, forward)
+            if board.get((dest_col, dest_row)) == 'b':
+                moves.append(('move', (col, row), (dest_col, dest_row)))
+
+            # --- jump ---
+            inter_col = wrap_col(col + dx)
+            inter_row = next_row(row, forward)
+            if board.get((inter_col, inter_row)) == own_colour:
+                land_col = wrap_col(col + 2 * dx)
+                land_row = next_row(next_row(row, forward), forward)
+                if board.get((land_col, land_row)) == 'b':
+                    moves.append(('jump', (col, row), (inter_col, inter_row), (land_col, land_row)))
+
+    return moves
+
+def evaluate_move(move, board, role, current_target_count):
+    """
+    Score a move.
+    Returns a tuple (new_target_count, distance_reduction, is_jump, distance_before)
+    Larger is better.
+    """
+    forward = 1 if role == 'red' else -1
+    target = TARGET_ROWS[role]
+    start_col, start_row = move[1]
+
+    # Determine destination row after the move
+    if move[0] == 'move':
+        dest_col, dest_row = move[2]
+    else:  # jump
+        dest_col, dest_row = move[3]
+
+    # Compute new target count
+    start_in_target = start_row in target
+    dest_in_target = dest_row in target
+    new_target_count = current_target_count - (1 if start_in_target else 0) + (1 if dest_in_target else 0)
+
+    # Distance reduction
+    dist_before = distance_to_target(start_row, role)
+    dist_after = distance_to_target(dest_row, role)
+    reduction = dist_before - dist_after
+
+    is_jump = 1 if move[0] == 'jump' else 0
+
+    # Prefer larger reduction, jumps, and farther pieces
+    return (new_target_count, reduction, is_jump, dist_before)
+
+def policy(state: list, role: str) -> str:
+    # Parse board
+    board = parse_state(state)
+
+    # Current number of pieces in target rows
+    current_count = sum(1 for (col, row), c in board.items() if c == role and row in TARGET_ROWS[role])
+
+    # Generate all legal moves
+    all_moves = generate_moves(board, role)
+
+    # Evaluate each move
+    best_move = None
+    best_score = (-1, -1, -1, -1)  # (new_target_count, reduction, is_jump, distance_before)
+
+    for move in all_moves:
+        score = evaluate_move(move, board, role, current_count)
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    # As a fallback (should never happen because moves exist), return a dummy legal move
+    if best_move is None:
+        # Find any own piece and any empty neighbour (should not be needed)
+        for (col, row), c in board.items():
+            if c == role:
+                for dx in (-1, 1):
+                    dest_col = wrap_col(col + dx)
+                    dest_row = next_row(row, 1 if role == 'red' else -1)
+                    if board.get((dest_col, dest_row)) == 'b':
+                        best_move = ('move', (col, row), (dest_col, dest_row))
+                        break
+                break
+
+    # Format the chosen move into Stanford syntax
+    if best_move[0] == 'move':
+        _, (sc, sr), (dc, dr) = best_move
+        return f"move({IDX_TO_COL[sc]},{sr},{IDX_TO_COL[dc]},{dr})"
+    else:  # jump
+        _, (sc, sr), (ic, ir), (lc, lr) = best_move
+        return f"jump({IDX_TO_COL[sc]},{sr},{IDX_TO_COL[ic]},{ir},{IDX_TO_COL[lc]},{lr})"
+</code>

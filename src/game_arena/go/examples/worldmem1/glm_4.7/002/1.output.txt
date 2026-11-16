@@ -1,0 +1,182 @@
+The strategy for this policy is a greedy heuristic search combined with strict rule enforcement. It prioritizes immediate tactical gains (capturing opponent stones and saving its own stones from capture) while adhering to the rules of Go (illegal moves, suicide, and Ko).
+
+Specifically:
+1.  **Candidate Generation**: It identifies legal moves by looking at empty intersections adjacent to existing stones (local interactions). In the opening phase (empty board), it prioritizes star points.
+2.  **Simulation & Validation**: For each candidate, it simulates the move on a temporary board. It checks for suicide (a move that leaves the placed stone with no liberties and captures nothing) and Ko (repeating the previous board state).
+3.  **Scoring Heuristics**: Valid moves are scored based on:
+    *   **Capture Bonus**: High reward for capturing opponent stones.
+    *   **Defense Bonus**: Significant reward for extending the liberties of a friendly group that is in atari (about to be captured).
+    *   **Liberty Count**: Positive score based on the number of liberties the resulting group has.
+    *   **Position**: Slight preference for the 3rd and 4th lines (standard opening theory) over the 1st line (edge).
+4.  **Selection**: The move with the highest score is selected. If no legal move yields a positive score, it passes.
+
+<code>
+import random
+
+def get_group_and_liberties(board, r, c):
+    """
+    Flood fill to find the group of stones at (r, c) and their liberties.
+    Returns: (group_set, liberties_set)
+    """
+    color = board[r][c]
+    if color == 0:
+        return set(), 0
+    
+    group = set()
+    liberties = set()
+    stack = [(r, c)]
+    group.add((r, c))
+    
+    while stack:
+        cr, cc = stack.pop()
+        # Check 4 neighbors
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = cr + dr, cc + dc
+            if 1 <= nr <= 19 and 1 <= nc <= 19:
+                if board[nr][nc] == 0:
+                    liberties.add((nr, nc))
+                elif board[nr][nc] == color and (nr, nc) not in group:
+                    group.add((nr, nc))
+                    stack.append((nr, nc))
+    return group, liberties
+
+def policy(me, opponent, memory):
+    # Board representation: 19x19, 1-indexed. 
+    # 0: Empty, 1: Me, 2: Opponent
+    board = [[0] * 20 for _ in range(20)]
+    
+    for r, c in me:
+        if 1 <= r <= 19 and 1 <= c <= 19:
+            board[r][c] = 1
+    for r, c in opponent:
+        if 1 <= r <= 19 and 1 <= c <= 19:
+            board[r][c] = 2
+            
+    prev_hash = memory.get("prev_hash")
+    
+    # 1. Identify Candidates
+    candidates = set()
+    occupied = me + opponent
+    
+    # Special case: Empty board (Opening)
+    if not occupied:
+        # Play a standard star point or Tengen
+        opening_moves = [(4, 4), (4, 16), (16, 4), (16, 16), (10, 10)]
+        move = random.choice(opening_moves)
+        
+        # Update memory for Ko check (though impossible in opening)
+        board[move[0]][move[1]] = 1
+        new_hash = hash(tuple(tuple(row) for row in board))
+        memory["prev_hash"] = new_hash
+        return (move, memory)
+
+    # Collect neighbors of existing stones (radius 2 to include tactical jumps)
+    for r, c in occupied:
+        for dr in range(-2, 3):
+            for dc in range(-2, 3):
+                nr, nc = r + dr, c + dc
+                if 1 <= nr <= 19 and 1 <= nc <= 19 and board[nr][nc] == 0:
+                    candidates.add((nr, nc))
+                    
+    # Add star points if game is just starting to encourage good shape
+    if len(occupied) < 10:
+        stars = [(4,4), (4,16), (16,4), (16,16), (10,10), (4,10), (16,10), (10,4), (10,16)]
+        for s in stars:
+            if board[s[0]][s[1]] == 0:
+                candidates.add(s)
+
+    best_move = (0, 0) # Default to Pass
+    max_score = -100000
+    next_hash = None
+    
+    candidate_list = list(candidates)
+    random.shuffle(candidate_list) # Randomize order to avoid repetitive play
+    
+    for r, c in candidate_list:
+        # A. Simulate Move
+        temp_board = [row[:] for row in board]
+        temp_board[r][c] = 1
+        opp_color = 2
+        
+        # B. Handle Captures
+        captured_stones = []
+        neighbors = [(-1,0), (1,0), (0,-1), (0,1)]
+        for dr, dc in neighbors:
+            nr, nc = r + dr, c + dc
+            if 1 <= nr <= 19 and 1 <= nc <= 19 and temp_board[nr][nc] == opp_color:
+                grp, libs = get_group_and_liberties(temp_board, nr, nc)
+                if len(libs) == 0:
+                    captured_stones.append(grp)
+        
+        total_captured = 0
+        for grp in captured_stones:
+            for cr, cc in grp:
+                temp_board[cr][cc] = 0
+                total_captured += 1
+        
+        # C. Check Suicide (Illegal if I have 0 liberties and captured nothing)
+        my_grp, my_libs = get_group_and_liberties(temp_board, r, c)
+        if len(my_libs) == 0:
+            continue
+            
+        # D. Check Ko (Only possible if we captured stones)
+        is_ko = False
+        if total_captured > 0:
+            curr_hash = hash(tuple(tuple(row) for row in temp_board))
+            if curr_hash == prev_hash:
+                is_ko = True
+            else:
+                # Valid candidate, save hash if it becomes the best move
+                potential_hash = curr_hash
+        
+        if is_ko:
+            continue
+            
+        # E. Score the Move
+        score = 0
+        
+        # Capture priority
+        score += total_captured * 100
+        
+        # Liberty preservation
+        score += len(my_libs) * 2
+        
+        # Tactical Defense: Did I save a friendly group from Atari?
+        for dr, dc in neighbors:
+            nr, nc = r + dr, c + dc
+            if 1 <= nr <= 19 and 1 <= nc <= 19 and board[nr][nc] == 1:
+                # Check state BEFORE move
+                grp, old_libs = get_group_and_liberties(board, nr, nc)
+                if len(old_libs) == 1:
+                    # We connected to a group in Atari. 
+                    # If new liberties > 1, we saved it.
+                    if len(my_libs) > 1:
+                        score += 50
+                    else:
+                        # Still in Atari, risky
+                        score -= 20
+                        
+        # Positional heuristic (avoid 1st line unless necessary)
+        edge_dist = min(r-1, 19-r, c-1, 19-c)
+        if edge_dist == 0: score -= 5
+        elif edge_dist == 2 or edge_dist == 3: score += 2
+        
+        # Slight preference for center control
+        dist_center = abs(r - 10) + abs(c - 10)
+        score -= dist_center * 0.1
+
+        if score > max_score:
+            max_score = score
+            best_move = (r, c)
+            if total_captured > 0:
+                next_hash = potential_hash
+            else:
+                # Compute hash for moves with no captures just in case
+                next_hash = hash(tuple(tuple(row) for row in temp_board))
+
+    if best_move != (0, 0):
+        memory["prev_hash"] = next_hash
+        return (best_move, memory)
+    
+    return ((0, 0), memory)
+</code>

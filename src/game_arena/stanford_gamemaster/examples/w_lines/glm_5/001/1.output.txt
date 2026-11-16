@@ -1,0 +1,128 @@
+Looking at this game, I can see it's a hex board game called "Lines" where players compete to have majority in lines (letter lines, number lines, and diagonal lines).
+
+**Key observations from the trajectory:**
+1. Board has 55 playable cells across columns a-i with 6 blocked cells (b8, d6, e2, e4, f5, h5)
+2. Each cell belongs to 3 lines: one letter line, one number line, and one diagonal (vertical) line
+3. Players win lines by having majority when the line is full
+4. Vertical/diagonal lines are named by their starting cell (a5, a6, a7, a8, a9, b9, c9, d9, e9)
+5. The vertical line formula: `sum = letter_index + (number - 1)`, mapping to names
+
+**Strategy:**
+- Prioritize moves that secure winning positions on lines we lead
+- Block opponent's winning threats
+- Prefer center cells (more strategic value, affect more key lines)
+- Score each move by its impact on all 3 lines it touches
+
+```python
+def policy(state: list[list[object]], role: str) -> str:
+    letters = 'abcdefghi'
+    
+    valid_cells = {
+        'a': [5, 6, 7, 8, 9],
+        'b': [4, 5, 6, 7, 9],
+        'c': [3, 4, 5, 6, 7, 8, 9],
+        'd': [2, 3, 4, 5, 7, 8, 9],
+        'e': [1, 3, 5, 6, 7, 8, 9],
+        'f': [1, 2, 3, 4, 6, 7, 8],
+        'g': [1, 2, 3, 4, 5, 6, 7],
+        'h': [1, 2, 3, 4, 6],
+        'i': [1, 2, 3, 4, 5]
+    }
+    
+    occupied = set()
+    line_counts = {}
+    
+    for prop in state:
+        if prop[0] == "cell":
+            letter, number = prop[1], int(prop[2])
+            occupied.add((letter, number))
+        elif prop[0] == "line_count":
+            line_id, color, count = prop[1], prop[2], int(prop[3])
+            line_counts[(line_id, color)] = count
+    
+    legal_moves = []
+    for letter in letters:
+        for number in valid_cells[letter]:
+            if (letter, number) not in occupied:
+                legal_moves.append((letter, number))
+    
+    if not legal_moves:
+        return "place(a,5)"
+    
+    opponent = "blue" if role == "red" else "red"
+    best_move = legal_moves[0]
+    best_score = float('-inf')
+    
+    filled = len(occupied)
+    early_game = filled < 15
+    
+    for letter, number in legal_moves:
+        score = 0.0
+        vertical = get_vertical_line(letter, number)
+        lines = [letter, str(number), vertical]
+        
+        for line_id in lines:
+            if line_id is None:
+                continue
+            
+            my_count = line_counts.get((line_id, role), 0)
+            opp_count = line_counts.get((line_id, opponent), 0)
+            length = get_line_length(line_id, valid_cells)
+            
+            new_my = my_count + 1
+            total_filled = my_count + opp_count + 1
+            remaining = length - total_filled
+            
+            if remaining < 0:
+                continue
+            
+            if new_my > opp_count:
+                lead = new_my - opp_count
+                if remaining == 0:
+                    score += 1000
+                elif lead > remaining:
+                    score += 100
+                elif remaining <= 2:
+                    score += 30 + lead * 5
+                else:
+                    score += 8 + lead * 3
+            elif new_my == opp_count:
+                if remaining > 0:
+                    score += 4
+            else:
+                deficit = opp_count - new_my
+                if deficit <= remaining:
+                    if remaining == 0:
+                        score += 500
+                    elif deficit == remaining:
+                        score += 25
+                    else:
+                        score += 5
+        
+        if early_game:
+            if letter in 'def':
+                score += 3
+            if 4 <= number <= 6:
+                score += 2
+            if letter in 'de' and 4 <= number <= 6:
+                score += 2
+        
+        if score > best_score:
+            best_score = score
+            best_move = (letter, number)
+    
+    return f"place({best_move[0]},{best_move[1]})"
+
+def get_vertical_line(letter, number):
+    total = ord(letter) - ord('a') + number - 1
+    names = {4: 'a5', 5: 'a6', 6: 'a7', 7: 'a8', 8: 'a9', 9: 'b9', 10: 'c9', 11: 'd9', 12: 'e9'}
+    return names.get(total)
+
+def get_line_length(line_id, valid_cells):
+    if line_id in 'abcdefghi':
+        return len(valid_cells[line_id])
+    elif line_id.isdigit():
+        return sum(1 for l in 'abcdefghi' if int(line_id) in valid_cells[l])
+    else:
+        return 7 if line_id in ['a7', 'a8', 'b9', 'c9', 'd9', 'e9'] else 5
+```

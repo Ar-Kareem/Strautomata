@@ -1,0 +1,199 @@
+<thinking>
+I need to create a policy function for 4x4 Tic Tac Toe. Let me think through this step by step:
+
+1. **Game Analysis**: 4x4 Tic Tac Toe requires 4 in a row (horizontally, vertically, or diagonally) to win.
+2. **Strategy**: I should prioritize:
+   - Winning moves (if I can get 4 in a row)
+   - Blocking opponent wins (prevent them from getting 4 in a row)
+   - Creating good positions (setting up future wins)
+   - Controlling the center (generally better positions)
+
+3. **Implementation Plan**:
+   - First check if I can win immediately
+   - Then check if opponent can win and block them
+   - Otherwise, use a heuristic to evaluate positions
+   - For the heuristic, consider:
+     - Number of my pieces in lines
+     - Number of opponent pieces in lines
+     - Center control
+     - Mobility (number of available moves)
+
+4. **Move Selection**: 
+   - Check all empty positions
+   - Evaluate each position based on immediate wins/blocks
+   - If no immediate win/block, use heuristic evaluation
+
+Let me implement a minimax approach with a simple evaluation function, but limit the depth to ensure it runs quickly.
+</thinking>
+
+<code>
+import numpy as np
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    # Convert to numpy array for easier manipulation
+    board_np = np.array(board)
+    
+    # Check for winning move
+    move = find_winning_move(board_np, 1)
+    if move:
+        return move
+    
+    # Check for blocking opponent's winning move
+    move = find_winning_move(board_np, -1)
+    if move:
+        return move
+    
+    # Use minimax with limited depth for best move
+    _, move = minimax(board_np, 3, True, -float('inf'), float('inf'), 1)
+    if move:
+        return move
+    
+    # Fallback: return first available move
+    for i in range(4):
+        for j in range(4):
+            if board_np[i, j] == 0:
+                return (i, j)
+    
+    # Should never reach here, but just in case
+    return (0, 0)
+
+def check_winner(board: np.ndarray) -> int:
+    # Check rows
+    for i in range(4):
+        if abs(board[i, 0]) == abs(board[i, 1]) == abs(board[i, 2]) == abs(board[i, 3]) != 0:
+            return board[i, 0]
+    
+    # Check columns
+    for j in range(4):
+        if abs(board[0, j]) == abs(board[1, j]) == abs(board[2, j]) == abs(board[3, j]) != 0:
+            return board[0, j]
+    
+    # Check diagonals
+    if abs(board[0, 0]) == abs(board[1, 1]) == abs(board[2, 2]) == abs(board[3, 3]) != 0:
+        return board[0, 0]
+    if abs(board[0, 3]) == abs(board[1, 2]) == abs(board[2, 1]) == abs(board[3, 0]) != 0:
+        return board[0, 3]
+    
+    return 0
+
+def find_winning_move(board: np.ndarray, player: int) -> Tuple[int, int] | None:
+    for i in range(4):
+        for j in range(4):
+            if board[i, j] == 0:
+                board[i, j] = player
+                if check_winner(board) == player:
+                    board[i, j] = 0  # Undo move
+                    return (i, j)
+                board[i, j] = 0  # Undo move
+    return None
+
+def evaluate_board(board: np.ndarray, player: int) -> float:
+    # Check if there's a winner
+    winner = check_winner(board)
+    if winner == player:
+        return 1000
+    elif winner == -player:
+        return -1000
+    
+    score = 0
+    
+    # Evaluate rows
+    for i in range(4):
+        row = board[i, :]
+        my_count = np.sum(row == player)
+        opp_count = np.sum(row == -player)
+        empty_count = np.sum(row == 0)
+        
+        if opp_count == 0 and my_count > 0:
+            score += 10 ** my_count
+        elif my_count == 0 and opp_count > 0:
+            score -= 10 ** opp_count
+    
+    # Evaluate columns
+    for j in range(4):
+        col = board[:, j]
+        my_count = np.sum(col == player)
+        opp_count = np.sum(col == -player)
+        empty_count = np.sum(col == 0)
+        
+        if opp_count == 0 and my_count > 0:
+            score += 10 ** my_count
+        elif my_count == 0 and opp_count > 0:
+            score -= 10 ** opp_count
+    
+    # Evaluate diagonals
+    diagonals = [
+        [board[0, 0], board[1, 1], board[2, 2], board[3, 3]],
+        [board[0, 3], board[1, 2], board[2, 1], board[3, 0]]
+    ]
+    
+    for diag in diagonals:
+        diag_array = np.array(diag)
+        my_count = np.sum(diag_array == player)
+        opp_count = np.sum(diag_array == -player)
+        
+        if opp_count == 0 and my_count > 0:
+            score += 10 ** my_count
+        elif my_count == 0 and opp_count > 0:
+            score -= 10 ** opp_count
+    
+    # Center control (positions (1,1), (1,2), (2,1), (2,2) are more valuable)
+    center_positions = [(1, 1), (1, 2), (2, 1), (2, 2)]
+    for pos in center_positions:
+        if board[pos[0], pos[1]] == player:
+            score += 2
+        elif board[pos[0], pos[1]] == -player:
+            score -= 2
+    
+    return score
+
+def minimax(board: np.ndarray, depth: int, is_maximizing: bool, alpha: float, beta: float, player: int) -> Tuple[float, Tuple[int, int] | None]:
+    winner = check_winner(board)
+    if winner != 0:
+        return (1000 * winner * player, None)
+    
+    if depth == 0 or np.sum(board == 0) == 0:
+        return (evaluate_board(board, player), None)
+    
+    best_move = None
+    
+    if is_maximizing:
+        max_eval = -float('inf')
+        for i in range(4):
+            for j in range(4):
+                if board[i, j] == 0:
+                    board[i, j] = player
+                    eval_score, _ = minimax(board, depth - 1, False, alpha, beta, player)
+                    board[i, j] = 0
+                    
+                    if eval_score > max_eval:
+                        max_eval = eval_score
+                        best_move = (i, j)
+                    
+                    alpha = max(alpha, eval_score)
+                    if beta <= alpha:
+                        break
+            if beta <= alpha:
+                break
+        return (max_eval, best_move)
+    else:
+        min_eval = float('inf')
+        for i in range(4):
+            for j in range(4):
+                if board[i, j] == 0:
+                    board[i, j] = -player
+                    eval_score, _ = minimax(board, depth - 1, True, alpha, beta, player)
+                    board[i, j] = 0
+                    
+                    if eval_score < min_eval:
+                        min_eval = eval_score
+                        best_move = (i, j)
+                    
+                    beta = min(beta, eval_score)
+                    if beta <= alpha:
+                        break
+            if beta <= alpha:
+                break
+        return (min_eval, best_move)
+</code>

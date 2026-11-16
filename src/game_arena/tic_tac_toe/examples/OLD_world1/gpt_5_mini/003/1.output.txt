@@ -1,0 +1,130 @@
+```python
+from typing import List, Tuple, Optional
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Choose next move for player 1 on a 3x3 tic-tac-toe board.
+    board: 3x3 list of lists with 0 (empty), 1 (us), -1 (opponent).
+    Returns (row, col) with 0 <= row,col <= 2.
+    Uses minimax with alpha-beta pruning and a fixed move ordering (center, corners, edges).
+    """
+
+    # Helpers
+    def is_win(b: List[List[int]], player: int) -> bool:
+        # rows and columns
+        for i in range(3):
+            if b[i][0] + b[i][1] + b[i][2] == 3 * player:
+                return True
+            if b[0][i] + b[1][i] + b[2][i] == 3 * player:
+                return True
+        # diagonals
+        if b[0][0] + b[1][1] + b[2][2] == 3 * player:
+            return True
+        if b[0][2] + b[1][1] + b[2][0] == 3 * player:
+            return True
+        return False
+
+    def is_full(b: List[List[int]]) -> bool:
+        for r in range(3):
+            for c in range(3):
+                if b[r][c] == 0:
+                    return False
+        return True
+
+    # Preferred move order: center, corners, edges
+    PREFERRED = [(1,1), (0,0), (0,2), (2,0), (2,2), (0,1), (1,0), (1,2), (2,1)]
+
+    # Convert board to a tuple for memoization
+    def board_to_key(b: List[List[int]]) -> Tuple[int, ...]:
+        return tuple(b[r][c] for r in range(3) for c in range(3))
+
+    from functools import lru_cache
+
+    # We'll implement minimax with alpha-beta. Returns score in {-1,0,1}
+    # maximizing for player 1, minimizing for player -1.
+    @lru_cache(maxsize=None)
+    def minimax_key(key: Tuple[int, ...], player: int, alpha: int, beta: int) -> int:
+        # reconstruct board view from key
+        b = [[key[3*r + c] for c in range(3)] for r in range(3)]
+
+        if is_win(b, 1):
+            return 1
+        if is_win(b, -1):
+            return -1
+        if is_full(b):
+            return 0
+
+        # generate moves in preferred order
+        moves = []
+        for (r, c) in PREFERRED:
+            if b[r][c] == 0:
+                moves.append((r, c))
+
+        if player == 1:
+            value = -2  # less than minimum
+            for (r, c) in moves:
+                b[r][c] = 1
+                new_key = tuple(b[r2][c2] for r2 in range(3) for c2 in range(3))
+                score = minimax_key(new_key, -1, alpha, beta)
+                b[r][c] = 0
+                if score > value:
+                    value = score
+                if value > alpha:
+                    alpha = value
+                if alpha >= beta:
+                    break
+            return value
+        else:
+            value = 2
+            for (r, c) in moves:
+                b[r][c] = -1
+                new_key = tuple(b[r2][c2] for r2 in range(3) for c2 in range(3))
+                score = minimax_key(new_key, 1, alpha, beta)
+                b[r][c] = 0
+                if score < value:
+                    value = score
+                if value < beta:
+                    beta = value
+                if alpha >= beta:
+                    break
+            return value
+
+    # Main logic: if board already terminal or full, return any empty cell or (0,0)
+    if is_win(board, 1) or is_win(board, -1) or is_full(board):
+        for r in range(3):
+            for c in range(3):
+                if board[r][c] == 0:
+                    return (r, c)
+        return (0, 0)
+
+    # Evaluate best move
+    key0 = board_to_key(board)
+    best_score = -2
+    best_move: Optional[Tuple[int, int]] = None
+
+    # Consider moves in preferred order to break ties nicely
+    for (r, c) in PREFERRED:
+        if board[r][c] != 0:
+            continue
+        # play move
+        board[r][c] = 1
+        new_key = board_to_key(board)
+        score = minimax_key(new_key, -1, -2, 2)
+        board[r][c] = 0
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+            # immediate winning move
+            if best_score == 1:
+                break
+
+    if best_move is None:
+        # fallback: first empty
+        for r in range(3):
+            for c in range(3):
+                if board[r][c] == 0:
+                    return (r, c)
+        return (0, 0)
+
+    return best_move
+```

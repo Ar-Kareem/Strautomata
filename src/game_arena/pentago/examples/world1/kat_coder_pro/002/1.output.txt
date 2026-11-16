@@ -1,0 +1,260 @@
+# Strategy
+
+My strategy is to implement a minimax algorithm with alpha-beta pruning to look several moves ahead, combined with a heuristic evaluation function that weighs various board states. The policy will:
+
+1. First check if I can win immediately with any move
+2. Then check if I need to block the opponent from winning
+3. Otherwise, use minimax to find the best move by looking ahead 3-4 ply
+4. Use a heuristic that evaluates:
+   - Number of potential 5-in-a-row lines for each player
+   - Control of the center squares (which are more valuable for creating lines)
+   - Mobility (number of available moves)
+   - Threats (potential winning lines that are nearly complete)
+
+The algorithm will prioritize winning moves, blocking moves, and then moves that maximize my advantage while minimizing the opponent's.
+
+<code>
+import numpy as np
+from typing import List, Tuple
+
+def policy(you: List[List[int]], opponent: List[List[int]]) -> str:
+    # Convert to numpy arrays for easier manipulation
+    you_board = np.array(you, dtype=int)
+    opp_board = np.array(opponent, dtype=int)
+    
+    # Find all valid moves (empty cells)
+    empty_cells = [(r+1, c+1) for r in range(6) for c in range(6) 
+                   if not (you_board[r][c] or opp_board[r][c])]
+    
+    # Try to find an immediate winning move
+    for (r, c) in empty_cells:
+        for quad in range(4):
+            for dir in ['L', 'R']:
+                if is_winning_move(you_board, opp_board, r, c, quad, dir, True):
+                    return f"{r},{c},{quad},{dir}"
+    
+    # Try to find a blocking move
+    for (r, c) in empty_cells:
+        for quad in range(4):
+            for dir in ['L', 'R']:
+                if is_winning_move(opp_board, you_board, r, c, quad, dir, False):
+                    # Try to find any move that prevents this
+                    return f"{r},{c},{quad},{dir}"
+    
+    # Use minimax to find best move
+    best_move = None
+    best_score = float('-inf')
+    
+    # Look ahead 3-4 moves depending on available time
+    depth = 3 if len(empty_cells) > 18 else 4
+    
+    for (r, c) in empty_cells:
+        for quad in range(4):
+            for dir in ['L', 'R']:
+                # Make the move
+                new_you, new_opp = make_move(you_board.copy(), opp_board.copy(), r, c, quad, dir)
+                
+                # Evaluate the position
+                score = -minimax(new_opp, new_you, depth - 1, float('-inf'), float('inf'), False)
+                
+                if score > best_score:
+                    best_score = score
+                    best_move = f"{r},{c},{quad},{dir}"
+    
+    return best_move if best_move else f"{empty_cells[0][0]},{empty_cells[0][1]},0,L"
+
+def make_move(you_board: np.ndarray, opp_board: np.ndarray, 
+              r: int, c: int, quad: int, dir: str) -> Tuple[np.ndarray, np.ndarray]:
+    """Make a move and return the resulting boards"""
+    # Place the marble
+    you_board[r-1][c-1] = 1
+    
+    # Rotate the quadrant
+    you_board, opp_board = rotate_quadrant(you_board, opp_board, quad, dir)
+    
+    return you_board, opp_board
+
+def rotate_quadrant(you_board: np.ndarray, opp_board: np.ndarray, 
+                   quad: int, dir: str) -> Tuple[np.ndarray, np.ndarray]:
+    """Rotate a 3x3 quadrant 90 degrees"""
+    # Determine the rows and columns for this quadrant
+    if quad == 0:  # Top-left
+        rows = slice(0, 3)
+        cols = slice(0, 3)
+    elif quad == 1:  # Top-right
+        rows = slice(0, 3)
+        cols = slice(3, 6)
+    elif quad == 2:  # Bottom-left
+        rows = slice(3, 6)
+        cols = slice(0, 3)
+    else:  # Bottom-right
+        rows = slice(3, 6)
+        cols = slice(3, 6)
+    
+    # Extract the quadrant
+    you_quad = you_board[rows, cols].copy()
+    opp_quad = opp_board[rows, cols].copy()
+    
+    # Rotate
+    if dir == 'L':  # Counter-clockwise
+        you_board[rows, cols] = np.rot90(you_quad, 1)
+        opp_board[rows, cols] = np.rot90(opp_quad, 1)
+    else:  # Clockwise
+        you_board[rows, cols] = np.rot90(you_quad, 3)
+        opp_board[rows, cols] = np.rot90(opp_quad, 3)
+    
+    return you_board, opp_board
+
+def is_winning_move(you_board: np.ndarray, opp_board: np.ndarray, 
+                   r: int, c: int, quad: int, dir: str, is_player: bool) -> bool:
+    """Check if this move creates a 5-in-a-row"""
+    temp_you = you_board.copy()
+    temp_opp = opp_board.copy()
+    
+    # Place the marble
+    if is_player:
+        temp_you[r-1][c-1] = 1
+    else:
+        temp_opp[r-1][c-1] = 1
+    
+    # Rotate the quadrant
+    temp_you, temp_opp = rotate_quadrant(temp_you, temp_opp, quad, dir)
+    
+    # Check for 5-in-a-row
+    return has_five_in_a_row(temp_you if is_player else temp_opp)
+
+def has_five_in_a_row(board: np.ndarray) -> bool:
+    """Check if the board has a 5-in-a-row"""
+    # Check horizontal
+    for r in range(6):
+        for c in range(2):  # Only need to check starting positions 0-1
+            if all(board[r][c+i] == 1 for i in range(5)):
+                return True
+    
+    # Check vertical  
+    for c in range(6):
+        for r in range(2):  # Only need to check starting positions 0-1
+            if all(board[r+i][c] == 1 for i in range(5)):
+                return True
+    
+    # Check diagonal (top-left to bottom-right)
+    for r in range(2):
+        for c in range(2):
+            if all(board[r+i][c+i] == 1 for i in range(5)):
+                return True
+    
+    # Check diagonal (top-right to bottom-left)
+    for r in range(2):
+        for c in range(4, 6):
+            if all(board[r+i][c-i] == 1 for i in range(5)):
+                return True
+    
+    return False
+
+def evaluate_position(you_board: np.ndarray, opp_board: np.ndarray) -> int:
+    """Heuristic evaluation of board position"""
+    score = 0
+    
+    # Check for winning condition
+    if has_five_in_a_row(you_board):
+        return 10000
+    if has_five_in_a_row(opp_board):
+        return -10000
+    
+    # Count potential lines
+    score += count_potential_lines(you_board, True) * 10
+    score -= count_potential_lines(opp_board, False) * 10
+    
+    # Center control bonus
+    center_weight = np.array([
+        [1, 1, 2, 2, 1, 1],
+        [1, 2, 3, 3, 2, 1],
+        [2, 3, 4, 4, 3, 2],
+        [2, 3, 4, 4, 3, 2],
+        [1, 2, 3, 3, 2, 1],
+        [1, 1, 2, 2, 1, 1]
+    ])
+    
+    score += np.sum(you_board * center_weight)
+    score -= np.sum(opp_board * center_weight)
+    
+    # Mobility (number of empty cells)
+    empty_count = np.sum(1 - (you_board | opp_board))
+    score += empty_count
+    
+    return score
+
+def count_potential_lines(board: np.ndarray, is_player: bool) -> int:
+    """Count potential 5-in-a-row lines"""
+    count = 0
+    
+    # Check horizontal
+    for r in range(6):
+        for c in range(2):
+            line = board[r, c:c+5]
+            if np.sum(line) >= 3:  # At least 3 marbles in line
+                count += 1
+    
+    # Check vertical
+    for c in range(6):
+        for r in range(2):
+            line = board[r:r+5, c]
+            if np.sum(line) >= 3:
+                count += 1
+    
+    # Check diagonal (top-left to bottom-right)
+    for r in range(2):
+        for c in range(2):
+            line = np.array([board[r+i][c+i] for i in range(5)])
+            if np.sum(line) >= 3:
+                count += 1
+    
+    # Check diagonal (top-right to bottom-left)
+    for r in range(2):
+        for c in range(4, 6):
+            line = np.array([board[r+i][c-i] for i in range(5)])
+            if np.sum(line) >= 3:
+                count += 1
+    
+    return count
+
+def minimax(you_board: np.ndarray, opp_board: np.ndarray, 
+           depth: int, alpha: float, beta: float, is_maximizing: bool) -> int:
+    """Minimax algorithm with alpha-beta pruning"""
+    if depth == 0:
+        return evaluate_position(you_board, opp_board)
+    
+    # Check for terminal states
+    if has_five_in_a_row(you_board):
+        return 10000 - depth  # Depth bonus for faster wins
+    if has_five_in_a_row(opp_board):
+        return -10000 + depth  # Depth penalty for faster losses
+    
+    empty_cells = [(r+1, c+1) for r in range(6) for c in range(6) 
+                   if not (you_board[r][c] or opp_board[r][c])]
+    
+    if is_maximizing:
+        max_eval = float('-inf')
+        for (r, c) in empty_cells:
+            for quad in range(4):
+                for dir in ['L', 'R']:
+                    new_you, new_opp = make_move(you_board.copy(), opp_board.copy(), r, c, quad, dir)
+                    eval = minimax(new_opp, new_you, depth - 1, alpha, beta, False)
+                    max_eval = max(max_eval, eval)
+                    alpha = max(alpha, eval)
+                    if beta <= alpha:
+                        break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for (r, c) in empty_cells:
+            for quad in range(4):
+                for dir in ['L', 'R']:
+                    new_you, new_opp = make_move(opp_board.copy(), you_board.copy(), r, c, quad, dir)
+                    eval = minimax(new_you, new_opp, depth - 1, alpha, beta, True)
+                    min_eval = min(min_eval, eval)
+                    beta = min(beta, eval)
+                    if beta <= alpha:
+                        break
+        return min_eval
+</code>

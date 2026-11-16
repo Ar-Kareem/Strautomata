@@ -1,0 +1,513 @@
+The strategy for this policy is:
+
+- Use a fast **bitboard** representation internally for efficient legal move generation and move application.
+- Run **iterative deepening alpha-beta negamax** with a transposition table, so the policy keeps a valid best move even if time runs short.
+- Search deeper in the endgame, including **exact search** when the number of empty squares is small enough.
+- Use a strong Othello heuristic in non-terminal positions:
+  - prioritize **corners**
+  - value **mobility**
+  - penalize dangerous **X-squares / C-squares** when the adjacent corner is empty
+  - prefer lower **frontier exposure**
+  - include a **positional square table**
+  - reward some **edge stability from owned corners**
+- Always return a **legal move**, and return `"pass"` only when there are no legal moves.
+
+<code>
+import time
+import numpy as np
+
+FULL = (1 << 64) - 1
+
+FILE_A = 0x0101010101010101
+FILE_H = 0x8080808080808080
+NOT_A = FULL ^ FILE_A
+NOT_H = FULL ^ FILE_H
+
+A1 = 1 << 0
+H1 = 1 << 7
+A8 = 1 << 56
+H8 = 1 << 63
+CORNERS = A1 | H1 | A8 | H8
+
+# Adjacent-to-corner masks
+CLOSE_A1 = (1 << 1) | (1 << 8) | (1 << 9)
+CLOSE_H1 = (1 << 6) | (1 << 14) | (1 << 15)
+CLOSE_A8 = (1 << 48) | (1 << 49) | (1 << 57)
+CLOSE_H8 = (1 << 54) | (1 << 55) | (1 << 62)
+
+# Common Othello positional weights
+PST = [
+    120, -20,  20,   5,   5,  20, -20, 120,
+    -20, -40,  -5,  -5,  -5,  -5, -40, -20,
+     20,  -5,  15,   3,   3,  15,  -5,  20,
+      5,  -5,   3,   3,   3,   3,  -5,   5,
+      5,  -5,   3,   3,   3,   3,  -5,   5,
+     20,  -5,  15,   3,   3,  15,  -5,  20,
+    -20, -40,  -5,  -5,  -5,  -5, -40, -20,
+    120, -20,  20,   5,   5,  20, -20, 120,
+]
+
+# Move ordering helpers: X- and C-squares mapped to their vulnerable corner
+X_TO_CORNER = {
+    9: 0,    # b2 -> a1
+    14: 7,   # g2 -> h1
+    49: 56,  # b7 -> a8
+    54: 63,  # g7 -> h8
+}
+C_TO_CORNER = {
+    1: 0, 8: 0,
+    6: 7, 15: 7,
+    48: 56, 57: 56,
+    55: 63, 62: 63,
+}
+
+INF = 10**9
+EXACT, LOWER, UPPER = 0, 1, 2
+
+TT = {}
+START_TIME = 0.0
+TIME_LIMIT = 0.92
+NODES = 0
+
+
+class SearchTimeout(Exception):
+    pass
+
+
+def sh_n(x):  return x >> 8
+def sh_s(x):  return (x << 8) & FULL
+def sh_e(x):  return ((x & NOT_H) << 1) & FULL
+def sh_w(x):  return (x & NOT_A) >> 1
+def sh_ne(x): return (x & NOT_H) >> 7
+def sh_nw(x): return (x & NOT_A) >> 9
+def sh_se(x): return ((x & NOT_H) << 9) & FULL
+def sh_sw(x): return ((x & NOT_A) << 7) & FULL
+
+SHIFTS = (sh_n, sh_s, sh_e, sh_w, sh_ne, sh_nw, sh_se, sh_sw)
+
+
+def check_time():
+    global NODES
+    NODES += 1
+    if (NODES & 1023) == 0:
+        if time.perf_counter() - START_TIME > TIME_LIMIT:
+            raise SearchTimeout
+
+
+def gen_moves(P, O):
+    empty = FULL ^ (P | O)
+    moves = 0
+
+    x = sh_n(P) & O
+    x |= sh_n(x) & O
+    x |= sh_n(x) & O
+    x |= sh_n(x) & O
+    x |= sh_n(x) & O
+    x |= sh_n(x) & O
+    moves |= sh_n(x) & empty
+
+    x = sh_s(P) & O
+    x |= sh_s(x) & O
+    x |= sh_s(x) & O
+    x |= sh_s(x) & O
+    x |= sh_s(x) & O
+    x |= sh_s(x) & O
+    moves |= sh_s(x) & empty
+
+    x = sh_e(P) & O
+    x |= sh_e(x) & O
+    x |= sh_e(x) & O
+    x |= sh_e(x) & O
+    x |= sh_e(x) & O
+    x |= sh_e(x) & O
+    moves |= sh_e(x) & empty
+
+    x = sh_w(P) & O
+    x |= sh_w(x) & O
+    x |= sh_w(x) & O
+    x |= sh_w(x) & O
+    x |= sh_w(x) & O
+    x |= sh_w(x) & O
+    moves |= sh_w(x) & empty
+
+    x = sh_ne(P) & O
+    x |= sh_ne(x) & O
+    x |= sh_ne(x) & O
+    x |= sh_ne(x) & O
+    x |= sh_ne(x) & O
+    x |= sh_ne(x) & O
+    moves |= sh_ne(x) & empty
+
+    x = sh_nw(P) & O
+    x |= sh_nw(x) & O
+    x |= sh_nw(x) & O
+    x |= sh_nw(x) & O
+    x |= sh_nw(x) & O
+    x |= sh_nw(x) & O
+    moves |= sh_nw(x) & empty
+
+    x = sh_se(P) & O
+    x |= sh_se(x) & O
+    x |= sh_se(x) & O
+    x |= sh_se(x) & O
+    x |= sh_se(x) & O
+    x |= sh_se(x) & O
+    moves |= sh_se(x) & empty
+
+    x = sh_sw(P) & O
+    x |= sh_sw(x) & O
+    x |= sh_sw(x) & O
+    x |= sh_sw(x) & O
+    x |= sh_sw(x) & O
+    x |= sh_sw(x) & O
+    moves |= sh_sw(x) & empty
+
+    return moves
+
+
+def get_flips(P, O, move):
+    flips = 0
+    for shift in SHIFTS:
+        b = shift(move)
+        captured = 0
+        while b and (b & O):
+            captured |= b
+            b = shift(b)
+        if b & P:
+            flips |= captured
+    return flips
+
+
+def apply_move(P, O, move):
+    flips = get_flips(P, O, move)
+    P2 = P | move | flips
+    O2 = O & ~flips
+    return P2, O2
+
+
+def bitboard_from_arrays(arr):
+    b = 0
+    for r in range(8):
+        base = r * 8
+        for c in range(8):
+            if arr[r][c]:
+                b |= 1 << (base + c)
+    return b
+
+
+def move_to_str(move):
+    idx = move.bit_length() - 1
+    c = idx & 7
+    r = idx >> 3
+    return chr(ord('a') + c) + str(r + 1)
+
+
+def bit_sum(B):
+    s = 0
+    while B:
+        lsb = B & -B
+        s += PST[lsb.bit_length() - 1]
+        B ^= lsb
+    return s
+
+
+def corner_closeness(B, occupied):
+    s = 0
+    if not (occupied & A1):
+        s += (B & CLOSE_A1).bit_count()
+    if not (occupied & H1):
+        s += (B & CLOSE_H1).bit_count()
+    if not (occupied & A8):
+        s += (B & CLOSE_A8).bit_count()
+    if not (occupied & H8):
+        s += (B & CLOSE_H8).bit_count()
+    return s
+
+
+def frontier_count(B, empty):
+    adj_empty = (
+        sh_n(empty) | sh_s(empty) | sh_e(empty) | sh_w(empty) |
+        sh_ne(empty) | sh_nw(empty) | sh_se(empty) | sh_sw(empty)
+    )
+    return (B & adj_empty).bit_count()
+
+
+def stable_edge_count(B):
+    s = 0
+
+    if B & A1:
+        i = 1
+        while i < 8 and (B & (1 << i)):
+            s += 1
+            i += 1
+        i = 8
+        while i < 64 and (B & (1 << i)):
+            s += 1
+            i += 8
+
+    if B & H1:
+        i = 6
+        while i >= 0 and (B & (1 << i)):
+            s += 1
+            i -= 1
+        i = 15
+        while i < 64 and (B & (1 << i)):
+            s += 1
+            i += 8
+
+    if B & A8:
+        i = 57
+        while i < 64 and (B & (1 << i)):
+            s += 1
+            i += 1
+        i = 48
+        while i >= 0 and (B & (1 << i)):
+            s += 1
+            i -= 8
+
+    if B & H8:
+        i = 62
+        while i >= 56 and (B & (1 << i)):
+            s += 1
+            i -= 1
+        i = 55
+        while i >= 0 and (B & (1 << i)):
+            s += 1
+            i -= 8
+
+    return s
+
+
+def evaluate(P, O, my_moves=None):
+    occupied = P | O
+    empty = FULL ^ occupied
+    empties = 64 - occupied.bit_count()
+
+    if my_moves is None:
+        my_moves = gen_moves(P, O)
+    opp_moves = gen_moves(O, P)
+
+    my_mob = my_moves.bit_count()
+    opp_mob = opp_moves.bit_count()
+    mob_diff = my_mob - opp_mob
+
+    corner_diff = (P & CORNERS).bit_count() - (O & CORNERS).bit_count()
+    close_diff = corner_closeness(P, occupied) - corner_closeness(O, occupied)
+    front_diff = frontier_count(O, empty) - frontier_count(P, empty)
+    pos_diff = bit_sum(P) - bit_sum(O)
+    disc_diff = P.bit_count() - O.bit_count()
+    stab_diff = stable_edge_count(P) - stable_edge_count(O)
+
+    if empties > 40:
+        return (
+            14 * mob_diff +
+            120 * corner_diff -
+            35 * close_diff +
+            4 * front_diff +
+            1 * pos_diff +
+            10 * stab_diff
+        )
+    elif empties > 16:
+        return (
+            12 * mob_diff +
+            140 * corner_diff -
+            30 * close_diff +
+            5 * front_diff +
+            1 * pos_diff +
+            14 * stab_diff +
+            2 * disc_diff
+        )
+    else:
+        return (
+            8 * mob_diff +
+            180 * corner_diff -
+            20 * close_diff +
+            3 * front_diff +
+            1 * pos_diff +
+            20 * stab_diff +
+            15 * disc_diff
+        )
+
+
+def static_move_score(move, occupied):
+    idx = move.bit_length() - 1
+    sc = PST[idx]
+
+    if move & CORNERS:
+        sc += 10000
+
+    corner_idx = X_TO_CORNER.get(idx)
+    if corner_idx is not None and not (occupied & (1 << corner_idx)):
+        sc -= 500
+
+    corner_idx = C_TO_CORNER.get(idx)
+    if corner_idx is not None and not (occupied & (1 << corner_idx)):
+        sc -= 180
+
+    r = idx >> 3
+    c = idx & 7
+    if r == 0 or r == 7 or c == 0 or c == 7:
+        sc += 20
+
+    return sc
+
+
+def order_moves(moves, occupied, tt_move=0):
+    lst = []
+    while moves:
+        m = moves & -moves
+        moves ^= m
+        sc = static_move_score(m, occupied)
+        if m == tt_move:
+            sc += 20000
+        lst.append((sc, m))
+    lst.sort(reverse=True)
+    return [m for _, m in lst]
+
+
+def negamax(P, O, depth, alpha, beta):
+    check_time()
+    alpha0, beta0 = alpha, beta
+    key = (P, O)
+
+    tt_move = 0
+    entry = TT.get(key)
+    if entry is not None:
+        edepth, escore, eflag, emove = entry
+        tt_move = emove
+        if edepth >= depth:
+            if eflag == EXACT:
+                return escore
+            elif eflag == LOWER:
+                alpha = max(alpha, escore)
+            else:
+                beta = min(beta, escore)
+            if alpha >= beta:
+                return escore
+
+    moves = gen_moves(P, O)
+    if not moves:
+        opp_moves = gen_moves(O, P)
+        if not opp_moves:
+            return 10000 * (P.bit_count() - O.bit_count())
+        return -negamax(O, P, depth, -beta, -alpha)
+
+    if depth == 0:
+        return evaluate(P, O, moves)
+
+    occupied = P | O
+    best = -INF
+    best_move = 0
+
+    for move in order_moves(moves, occupied, tt_move):
+        P2, O2 = apply_move(P, O, move)
+        score = -negamax(O2, P2, depth - 1, -beta, -alpha)
+
+        if score > best:
+            best = score
+            best_move = move
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+
+    flag = EXACT
+    if best <= alpha0:
+        flag = UPPER
+    elif best >= beta0:
+        flag = LOWER
+    TT[key] = (depth, best, flag, best_move)
+    return best
+
+
+def root_search(P, O, depth, pv_move=0):
+    moves = gen_moves(P, O)
+    if not moves:
+        return None, 0
+
+    occupied = P | O
+    ordered = order_moves(moves, occupied, pv_move)
+
+    best_move = ordered[0]
+    best_score = -INF
+    alpha = -INF
+    beta = INF
+
+    for move in ordered:
+        check_time()
+        P2, O2 = apply_move(P, O, move)
+        score = -negamax(O2, P2, depth - 1, -beta, -alpha)
+
+        if score > best_score:
+            best_score = score
+            best_move = move
+        if score > alpha:
+            alpha = score
+
+    return best_move, best_score
+
+
+def choose_max_depth(empties):
+    if empties <= 12:
+        return empties          # exact search
+    if empties <= 18:
+        return 10
+    if empties <= 26:
+        return 8
+    if empties <= 44:
+        return 6
+    return 5
+
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    global START_TIME, NODES, TT
+
+    START_TIME = time.perf_counter()
+    NODES = 0
+
+    # Prevent the transposition table from growing without bound across games
+    if len(TT) > 300000:
+        TT.clear()
+
+    P = bitboard_from_arrays(you)
+    O = bitboard_from_arrays(opponent)
+
+    moves = gen_moves(P, O)
+    if not moves:
+        return "pass"
+
+    # Fallback: first legal move
+    first_move = moves & -moves
+    best_move = first_move
+
+    # If a corner is available, keep searching, but this already gives a strong fallback
+    corner_moves = moves & CORNERS
+    if corner_moves:
+        best_move = corner_moves & -corner_moves
+
+    if moves & (moves - 1) == 0:
+        return move_to_str(best_move)
+
+    empties = 64 - (P | O).bit_count()
+    max_depth = choose_max_depth(empties)
+
+    pv_move = best_move
+    for depth in range(1, max_depth + 1):
+        try:
+            move, score = root_search(P, O, depth, pv_move)
+            if move is not None:
+                best_move = move
+                pv_move = move
+
+            # If exact endgame search has effectively finished, no need to continue
+            if empties <= 12 and depth >= empties:
+                break
+
+            # Small safety margin
+            if time.perf_counter() - START_TIME > TIME_LIMIT:
+                break
+        except SearchTimeout:
+            break
+
+    return move_to_str(best_move)
+</code>

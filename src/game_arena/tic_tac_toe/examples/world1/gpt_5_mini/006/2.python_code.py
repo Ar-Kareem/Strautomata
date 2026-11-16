@@ -1,0 +1,102 @@
+
+from typing import List, Tuple, Optional
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Choose the next move for player 1 on a 3x3 Tic Tac Toe board.
+
+    board: 3x3 list of lists with values:
+        0  -> empty
+        1  -> our moves
+       -1  -> opponent moves
+
+    Returns (row, col) with 0 <= row,col <= 2
+    """
+    def winner(b: List[List[int]]) -> Optional[int]:
+        # return 1 if we win, -1 if opponent wins, 0 if draw, None if not terminal
+        lines = []
+        # rows and cols
+        for i in range(3):
+            lines.append(b[i][0] + b[i][1] + b[i][2])
+            lines.append(b[0][i] + b[1][i] + b[2][i])
+        # diagonals
+        lines.append(b[0][0] + b[1][1] + b[2][2])
+        lines.append(b[0][2] + b[1][1] + b[2][0])
+        if 3 in lines:
+            return 1
+        if -3 in lines:
+            return -1
+        # any empties?
+        for r in range(3):
+            for c in range(3):
+                if b[r][c] == 0:
+                    return None
+        return 0  # draw
+
+    def legal_moves(b: List[List[int]]) -> List[Tuple[int,int]]:
+        moves = []
+        for r in range(3):
+            for c in range(3):
+                if b[r][c] == 0:
+                    moves.append((r, c))
+        return moves
+
+    # Minimax with alpha-beta pruning. Scores are from perspective of player 1.
+    def minimax(b: List[List[int]], player: int, alpha: int, beta: int) -> Tuple[int, Optional[Tuple[int,int]]]:
+        w = winner(b)
+        if w is not None:
+            return w, None  # w is 1 (we win), -1 (opp wins), or 0 (draw)
+
+        moves = legal_moves(b)
+        best_move: Optional[Tuple[int,int]] = None
+
+        if player == 1:
+            # maximize
+            max_eval = -2  # lower than minimal possible (-1)
+            for (r, c) in moves:
+                b[r][c] = player
+                eval_score, _ = minimax(b, -player, alpha, beta)
+                b[r][c] = 0
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_move = (r, c)
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break  # beta cut-off
+            return max_eval, best_move
+        else:
+            # minimize
+            min_eval = 2  # higher than maximal possible (1)
+            for (r, c) in moves:
+                b[r][c] = player
+                eval_score, _ = minimax(b, -player, alpha, beta)
+                b[r][c] = 0
+                if eval_score < min_eval:
+                    min_eval = eval_score
+                    best_move = (r, c)
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break  # alpha cut-off
+            return min_eval, best_move
+
+    # If board already terminal or no moves, return first empty or (0,0)
+    initial_moves = [(r,c) for r in range(3) for c in range(3) if board[r][c] == 0]
+    if not initial_moves:
+        return (0, 0)
+
+    # Assume it's our (player 1) turn to play.
+    _, move = minimax(board, 1, -2, 2)
+    if move is None:
+        # If no move found (shouldn't happen unless terminal), return first empty
+        return initial_moves[0]
+    return move
+
+# If this module is run directly, provide a simple test scenario (not executed on import).
+if __name__ == "__main__":
+    # Example board: we are 1, opponent -1
+    b = [
+        [ 1, -1,  0],
+        [ 0,  1, -1],
+        [ 0,  0,  0]
+    ]
+    print(policy(b))  # prints chosen (row, col)

@@ -1,0 +1,111 @@
+
+import random
+from collections import deque
+from typing import List, Tuple, Set
+
+N = 11  # board size 11x11
+
+# neighbour offsets for a hex board in offset coordinates
+NEIGHBOURS = [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, 0), (1, -1)]
+
+def inside(r: int, c: int) -> bool:
+    """Check board bounds."""
+    return 0 <= r < N and 0 <= c < N
+
+def bfs(starts: List[Tuple[int, int]],
+        blocked: Set[Tuple[int, int]],
+        allowed: Set[Tuple[int, int]]) -> dict:
+    """
+    Bread‑first search returning the distance from the nearest start cell
+    to every reachable cell.  Cells in `blocked` are never entered.
+    Cells in `allowed` (empty + our own stones) are traversable.
+    """
+    dist = {}
+    q = deque()
+    for s in starts:
+        if s in blocked:
+            continue
+        dist[s] = 0
+        q.append(s)
+
+    while q:
+        r, c = q.popleft()
+        d = dist[(r, c)]
+        for dr, dc in NEIGHBOURS:
+            nr, nc = r + dr, c + dc
+            if not inside(nr, nc):
+                continue
+            nxt = (nr, nc)
+            if nxt in blocked:
+                continue
+            if nxt in dist:
+                continue
+            # we may walk through empty cells and our own stones
+            if nxt not in allowed:
+                continue
+            dist[nxt] = d + 1
+            q.append(nxt)
+    return dist
+
+def border_cells(color: str) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
+    """
+    Return the two lists of border cells for the given colour.
+    For Black: top row (row 0) and bottom row (row N‑1).
+    For White: left column (col 0) and right column (col N‑1).
+    """
+    if color == 'b':  # Black connects top ↔ bottom
+        side1 = [(0, c) for c in range(N)]
+        side2 = [(N - 1, c) for c in range(N)]
+    else:            # White connects left ↔ right
+        side1 = [(r, 0) for r in range(N)]
+        side2 = [(r, N - 1) for r in range(N)]
+    return side1, side2
+
+def policy(me: List[Tuple[int, int]],
+           opp: List[Tuple[int, int]],
+           color: str) -> Tuple[int, int]:
+    """
+    Choose a legal move for Hex on an 11×11 board.
+    `me`  – list of our stones,
+    `opp` – list of opponent stones,
+    `color` – 'b' (black) or 'w' (white).
+    """
+    occupied = set(me) | set(opp)
+    # cells we are allowed to walk through: empty + our own stones
+    allowed = set(me) | (set((r, c) for r in range(N) for c in range(N)) - occupied)
+
+    # borders for our colour
+    side1, side2 = border_cells(color)
+
+    # distances from each border, treating opponent stones as walls
+    dist1 = bfs(side1, blocked=set(opp), allowed=allowed)
+    dist2 = bfs(side2, blocked=set(opp), allowed=allowed)
+
+    # collect all empty cells
+    empty_cells = [(r, c) for r in range(N) for c in range(N) if (r, c) not in occupied]
+
+    best_move = None
+    best_score = float('inf')
+
+    for cell in empty_cells:
+        d1 = dist1.get(cell, None)
+        d2 = dist2.get(cell, None)
+        # cell must be reachable from both sides to be useful
+        if d1 is None or d2 is None:
+            continue
+        # small bonus for being adjacent to our own stones (creates bridges)
+        adj_bonus = 0
+        for dr, dc in NEIGHBOURS:
+            nr, nc = cell[0] + dr, cell[1] + dc
+            if inside(nr, nc) and (nr, nc) in me:
+                adj_bonus += 0.5
+        score = d1 + d2 - adj_bonus
+        if score < best_score:
+            best_score = score
+            best_move = cell
+
+    # Fallback: if no reachable cell (very unlikely), pick any empty cell
+    if best_move is None:
+        best_move = random.choice(empty_cells)
+
+    return best_move

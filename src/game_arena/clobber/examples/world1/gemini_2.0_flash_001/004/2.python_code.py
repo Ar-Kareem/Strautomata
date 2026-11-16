@@ -1,0 +1,79 @@
+
+import numpy as np
+import random
+
+def policy(you: list[int], opponent: list[int]) -> str:
+    you = np.array(you).reshape(5, 6)
+    opponent = np.array(opponent).reshape(5, 6)
+    
+    def get_legal_moves(board, player, opponent):
+        moves = []
+        for r in range(5):
+            for c in range(6):
+                if player[r, c] == 1:
+                    # Check up
+                    if r > 0 and opponent[r-1, c] == 1:
+                        moves.append((r, c, 'U'))
+                    # Check down
+                    if r < 4 and opponent[r+1, c] == 1:
+                        moves.append((r, c, 'D'))
+                    # Check left
+                    if c > 0 and opponent[r, c-1] == 1:
+                        moves.append((r, c, 'L'))
+                    # Check right
+                    if c < 5 and opponent[r, c+1] == 1:
+                        moves.append((r, c, 'R'))
+        return moves
+    
+    def count_opponent_moves(board, player, opponent):
+        return len(get_legal_moves(board, opponent, player))
+
+    legal_moves = get_legal_moves(you, you, opponent)
+    
+    if not legal_moves:
+        print("No legal moves available.")
+        return "0,0,U" # Return a default move as specified in the problem description so the program doesn't error out due to not returning a move
+
+    best_move = None
+    max_move_diff = float('-inf')
+
+    for move in legal_moves:
+        r, c, direction = move
+
+        temp_you = you.copy()
+        temp_opponent = opponent.copy()
+
+        # Simulate the move
+        temp_you[r, c] = 0
+        if direction == 'U':
+            temp_you[r-1, c] = 1
+            temp_opponent[r-1, c] = 0
+        elif direction == 'D':
+            temp_you[r+1, c] = 1
+            temp_opponent[r+1, c] = 0
+        elif direction == 'L':
+            temp_you[r, c-1] = 1
+            temp_opponent[r, c-1] = 0
+        elif direction == 'R':
+            temp_you[r, c+1] = 1
+            temp_opponent[r, c+1] = 0
+        
+        opponent_moves_before = count_opponent_moves(you, opponent, you)
+        opponent_moves_after = count_opponent_moves(you, temp_opponent, temp_you) #count opp moves after move
+
+        move_diff = opponent_moves_before - opponent_moves_after #check moves_before and moves_after
+
+        if move_diff > max_move_diff:
+            max_move_diff = move_diff
+            best_move = move
+        elif move_diff == max_move_diff and random.random() < 0.5:
+            best_move = move #to choose between equally good moves arbitrarily
+            
+
+    if best_move:
+        r, c, direction = best_move
+        return f"{r},{c},{direction}"
+    else:
+        # If no "best" move found, pick a random legal move
+        r, c, direction = random.choice(legal_moves)
+        return f"{r},{c},{direction}"

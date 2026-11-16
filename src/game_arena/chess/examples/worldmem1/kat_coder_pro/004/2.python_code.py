@@ -1,0 +1,167 @@
+
+import numpy as np
+from collections import defaultdict
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str], memory: dict) -> tuple[str, dict]:
+    # Piece values
+    values = {'K': 2000, 'Q': 9, 'R': 5, 'B': 3, 'N': 3, 'P': 1}
+    
+    # Convert board to coordinate format
+    board = {}
+    for sq, pc in pieces.items():
+        file, rank = sq[0], sq[1]
+        board[(file, rank)] = pc
+    
+    def get_color(piece):
+        return 'white' if piece[0] == 'w' else 'black'
+    
+    def is_capture(move):
+        return 'x' in move
+    
+    def get_target_square(move):
+        # Extract target square from move notation (e.g., 'Bxe5' -> 'e5')
+        # Handle castling, promotions, etc.
+        if move.startswith('O-O'):
+            return None
+        # Remove check/mate markers and promotion
+        clean = move.replace('+', '').replace('#', '').replace('=', '')
+        # Find last occurrence of file letter followed by rank digit
+        for i in range(len(clean)-1, -1, -1):
+            if clean[i] in 'abcdefgh' and i+1 < len(clean) and clean[i+1] in '12345678':
+                return clean[i:i+2]
+        return None
+    
+    def get_piece_type(move):
+        # Extract piece type from move (e.g., 'Nf3' -> 'N')
+        if move.startswith(('O-O', 'K', 'Q', 'R', 'B', 'N')):
+            # If starts with letter, that's the piece (except pawn)
+            if move[0] in 'KQRBN':
+                return move[0]
+            # Castling implies King
+            return 'K'
+        # Pawn move (no letter prefix for pawns except captures)
+        return 'P'
+    
+    def get_start_square(move, color):
+        # Derive start square from move notation (simplified)
+        # This is complex for disambiguation, so we'll use a heuristic
+        target = get_target_square(move)
+        if not target:
+            return None
+        
+        # Determine piece type and color
+        piece_type = get_piece_type(move)
+        color_prefix = 'w' if color == 'white' else 'b'
+        
+        # Look for matching piece on board
+        for sq, pc in pieces.items():
+            if pc[0] == color_prefix and pc[1] == piece_type:
+                # Check if this piece could legally move to target
+                # (We assume the move is legal, so one of the pieces is correct)
+                return sq
+        return None
+    
+    def get_attacked_squares(color):
+        # Calculate squares attacked by a color
+        attacked = set()
+        color_prefix = 'w' if color == 'white' else 'b'
+        
+        for sq, pc in pieces.items():
+            if pc[0] == color_prefix:
+                file, rank = sq[0], sq[1]
+                piece_type = pc[1]
+                f_idx = 'abcdefgh'.index(file)
+                r_idx = int(rank) - 1
+                
+                if piece_type == 'P':
+                    # Pawn attacks
+                    dir = 1 if color == 'white' else -1
+                    for df in [-1, 1]:
+                        nf = f_idx + df
+                        nr = r_idx + dir
+                        if 0 <= nf < 8 and 0 <= nr < 8:
+                            attacked.add(f"{'abcdefgh'[nf]}{nr+1}")
+                
+                elif piece_type == 'N':
+                    # Knight moves
+                    for df, dr in [(-2,-1), (-2,1), (-1,-2), (-1,2), (1,-2), (1,2), (2,-1), (2,1)]:
+                        nf = f_idx + df
+                        nr = r_idx + dr
+                        if 0 <= nf < 8 and 0 <= nr < 8:
+                            attacked.add(f"{'abcdefgh'[nf]}{nr+1}")
+                
+                elif piece_type in ['B', 'R', 'Q']:
+                    # Sliding pieces
+                    directions = []
+                    if piece_type in ['B', 'Q']:
+                        directions.extend([(-1,-1), (-1,1), (1,-1), (1,1)])
+                    if piece_type in ['R', 'Q']:
+                        directions.extend([(-1,0), (1,0), (0,-1), (0,1)])
+                    
+                    for df, dr in directions:
+                        nf, nr = f_idx, r_idx
+                        while True:
+                            nf += df
+                            nr += dr
+                            if 0 <= nf < 8 and 0 <= nr < 8:
+                                attacked.add(f"{'abcdefgh'[nf]}{nr+1}")
+                                # Stop if there's a piece in the way
+                                if f"{'abcdefgh'[nf]}{nr+1}" in pieces:
+                                    break
+                            else:
+                                break
+        
+        return attacked
+    
+    # Evaluate each move
+    best_move = legal_moves[0]
+    best_score = -9999
+    
+    own_attacked = get_attacked_squares(to_play)
+    opp_attacked = get_attacked_squares('black' if to_play == 'white' else 'white')
+    
+    for move in legal_moves:
+        score = 0
+        
+        target = get_target_square(move)
+        if target:
+            # Material gain
+            if target in pieces:
+                captured_piece = pieces[target]
+                if captured_piece[0] != ('w' if to_play == 'white' else 'b'):
+                    score += values[captured_piece[1]]
+            
+            # Safety of target square
+            if target not in opp_attacked:
+                score += 0.5
+            else:
+                # Penalize moving into attacked square
+                score -= 0.5
+            
+            # Avoid traps (moving into attack without capturing)
+            if target in opp_attacked and target not in pieces:
+                score -= 1.0
+        
+        # Prefer captures
+        if is_capture(move):
+            score += 0.5
+        
+        # Prefer developing pieces (moving away from back rank for non-pawns)
+        start = get_start_square(move, to_play)
+        if start:
+            rank = int(start[1])
+            if to_play == 'white':
+                if rank == 1 and get_piece_type(move) != 'P':
+                    score += 0.3
+            else:
+                if rank == 8 and get_piece_type(move) != 'P':
+                    score += 0.3
+        
+        # Simple mobility bonus (encourage piece activity)
+        score += 0.1
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return (best_move, memory)

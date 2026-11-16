@@ -1,0 +1,216 @@
+
+import numpy as np
+import time
+
+def policy(you, opponent) -> str:
+    you_arr = np.array(you, dtype=np.int8)
+    opp_arr = np.array(opponent, dtype=np.int8)
+    
+    # Convert to bitboards (bit i = row*6+col)
+    def to_bb(arr):
+        bb = 0
+        for r in range(6):
+            for c in range(6):
+                if arr[r][c]:
+                    bb |= 1 << (r * 6 + c)
+        return bb
+    
+    my_bb = to_bb(you_arr)
+    op_bb = to_bb(opp_arr)
+    
+    # Precompute win lines (all 5-in-a-row patterns)
+    win_lines = []
+    for r in range(6):
+        for c in range(2):
+            mask = 0
+            for i in range(5):
+                mask |= 1 << (r * 6 + c + i)
+            win_lines.append(mask)
+    for c in range(6):
+        for r in range(2):
+            mask = 0
+            for i in range(5):
+                mask |= 1 << ((r + i) * 6 + c)
+            win_lines.append(mask)
+    for r in range(2):
+        for c in range(2):
+            mask = 0
+            for i in range(5):
+                mask |= 1 << ((r + i) * 6 + c + i)
+            win_lines.append(mask)
+    for r in range(2):
+        for c in range(4, 6):
+            mask = 0
+            for i in range(5):
+                mask |= 1 << ((r + i) * 6 + c - i)
+            win_lines.append(mask)
+    
+    def has_win(bb):
+        for wl in win_lines:
+            if (bb & wl) == wl:
+                return True
+        return False
+    
+    # Quadrant definitions: (row_start, col_start) in 0-indexed
+    quad_defs = [(0, 0), (0, 3), (3, 0), (3, 3)]
+    
+    # Precompute rotation mappings as bit operations
+    # For each quadrant and direction, precompute source->dest bit mappings
+    def make_rot_table(q, direction):
+        rs, cs = quad_defs[q]
+        mapping = {}
+        for r in range(3):
+            for c in range(3):
+                if direction == 'L':  # CCW: (r,c) -> (2-c, r)
+                    nr, nc = 2 - c, r
+                else:  # CW: (r,c) -> (c, 2-r)
+                    nr, nc = c, 2 - r
+                src = (rs + r) * 6 + (cs + c)
+                dst = (rs + nr) * 6 + (cs + nc)
+                mapping[src] = dst
+        return mapping
+    
+    rot_tables = {}
+    for q in range(4):
+        for d in ['L', 'R']:
+            rot_tables[(q, d)] = make_rot_table(q, d)
+    
+    # Precompute quad masks
+    quad_masks = []
+    for q in range(4):
+        rs, cs = quad_defs[q]
+        mask = 0
+        for r in range(3):
+            for c in range(3):
+                mask |= 1 << ((rs + r) * 6 + (cs + c))
+        quad_masks.append(mask)
+    
+    def rotate_bb(bb, q, d):
+        table = rot_tables[(q, d)]
+        qmask = quad_masks[q]
+        quad_bits = bb & qmask
+        rest = bb & ~qmask
+        new_quad = 0
+        while quad_bits:
+            bit = quad_bits & (-quad_bits)
+            src = bit.bit_length() - 1
+            new_quad |= 1 << table[src]
+            quad_bits ^= bit
+        return rest | new_quad
+    
+    def apply_move(my, op, r, c, q, d):
+        pos = r * 6 + c
+        new_my = my | (1 << pos)
+        new_my = rotate_bb(new_my, q, d)
+        new_op = rotate_bb(op, q, d)
+        return new_my, new_op
+    
+    # Scoring heuristic
+    def line_score(bb, opp_bb):
+        score = 0
+        for wl in win_lines:
+            my_count = bin(bb & wl).count('1')
+            opp_count = bin(opp_bb & wl).count('1')
+            if opp_count == 0:
+                if my_count == 5:
+                    score += 100000
+                elif my_count == 4:
+                    score += 1000
+                elif my_count == 3:
+                    score += 50
+                elif my_count == 2:
+                    score += 5
+                elif my_count == 1:
+                    score += 1
+            if my_count == 0:
+                if opp_count == 5:
+                    score -= 100000
+                elif opp_count == 4:
+                    score -= 800
+                elif opp_count == 3:
+                    score -= 40
+                elif opp_count == 2:
+                    score -= 4
+        return score
+    
+    def evaluate(my, op):
+        return line_score(my, op)
+    
+    # Get all empty cells
+    occupied = my_bb | op_bb
+    empty_cells = []
+    for r in range(6):
+        for c in range(6):
+            if not (occupied & (1 << (r * 6 + c))):
+                empty_cells.append((r, c))
+    
+    rotations = [(q, d) for q in range(4) for d in ['L', 'R']]
+    
+    start_time = time.time()
+    
+    best_move = None
+    best_score = -float('inf')
+    
+    # First pass: check for immediate wins
+    for r, c in empty_cells:
+        for q, d in rotations:
+            nm, no = apply_move(my_bb, op_bb, r, c, q, d)
+            my_win = has_win(nm)
+            op_win = has_win(no)
+            if my_win and not op_win:
+                return f"{r+1},{c+1},{q},{d}"
+    
+    # Generate all moves with scores for ordering
+    moves_with_scores = []
+    for r, c in empty_cells:
+        for q, d in rotations:
+            nm, no = apply_move(my_bb, op_bb, r, c, q, d)
+            if has_win(no) and not has_win(nm):
+                continue  # Skip losing moves unless forced
+            sc = evaluate(nm, no)
+            moves_with_scores.append((sc, r, c, q, d, nm, no))
+    
+    if not moves_with_scores:
+        # All moves lose, just pick one
+        r, c = empty_cells[0]
+        return f"{r+1},{c+1},0,L"
+    
+    moves_with_scores.sort(key=lambda x: -x[0])
+    
+    # Depth-1 search with opponent response
+    best_score = -float('inf')
+    best_move = moves_with_scores[0]
+    
+    limit = min(len(moves_with_scores), 40)
+    
+    for i in range(limit):
+        if time.time() - start_time > 0.7:
+            break
+        sc, r, c, q, d, nm, no = moves_with_scores[i]
+        
+        # Opponent's best response (depth 1)
+        opp_occupied = nm | no
+        worst = float('inf')
+        opp_empty = [pos for pos in range(36) if not (opp_occupied & (1 << pos))]
+        
+        sampled = opp_empty[:15]
+        for pos in sampled:
+            or2, oc2 = pos // 6, pos % 6
+            for q2, d2 in rotations:
+                ono, onm = apply_move(no, nm, or2, oc2, q2, d2)
+                if has_win(ono) and not has_win(onm):
+                    worst = -100000
+                    break
+                s2 = evaluate(onm, ono)
+                if -s2 < worst:
+                    worst = -s2
+            if worst == -100000:
+                break
+        
+        final_sc = worst if opp_empty else sc
+        if final_sc > best_score:
+            best_score = final_sc
+            best_move = moves_with_scores[i]
+    
+    _, r, c, q, d, _, _ = best_move
+    return f"{r+1},{c+1},{q},{d}"

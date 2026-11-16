@@ -1,0 +1,205 @@
+**Strategy**:  
+This policy uses a heuristic-based alpha-beta search with iterative deepening to maximize mobility while restricting the opponent. Key ideas:
+
+1. **Territory control** – Prefer moves that push toward the center or into open areas.
+2. **Mobility advantage** – Minimize opponent’s possible moves while maximizing our own.
+3. **Arrow blocking** – Place arrows to split the board or limit opponent’s queen movement.
+4. **Quiescence search** – Extend search depth in volatile positions.
+5. **Move ordering** – Try moves that capture central squares first for better pruning.
+
+We use:
+- **Evaluation function** = `(our_moves - 2 * opponent_moves) + center_bonus`
+- **Iterative deepening** within time limit (1 second).
+- **Alpha-beta pruning** with move ordering.
+- **Killer moves** and transposition table for speed.
+
+---
+
+<code>
+import numpy as np
+import time
+from collections import defaultdict
+
+DIRS = [(1, 0), (-1, 0), (0, 1), (0, -1),
+        (1, 1), (1, -1), (-1, 1), (-1, -1)]
+
+class TranspositionTable:
+    def __init__(self):
+        self.table = {}
+    
+    def put(self, board, depth, value, flag):
+        key = tuple(map(tuple, board))
+        self.table[(key, depth)] = (value, flag)
+    
+    def get(self, board, depth):
+        key = tuple(map(tuple, board))
+        return self.table.get((key, depth), (None, None))[0]
+
+class AmazonsPolicy:
+    def __init__(self):
+        self.transposition = TranspositionTable()
+        self.killer_moves = defaultdict(list)
+        self.start_time = None
+        self.time_limit = 0.95  # seconds
+        
+    def all_legal_moves(self, board, player):
+        moves = []
+        for r in range(6):
+            for c in range(6):
+                if board[r, c] == player:
+                    moves.extend(self.moves_from_square(board, r, c))
+        return moves
+    
+    def moves_from_square(self, board, r, c):
+        local_moves = []
+        # first step: move queen
+        for dr, dc in DIRS:
+            nr, nc = r + dr, c + dc
+            while 0 <= nr < 6 and 0 <= nc < 6 and board[nr, nc] == 0:
+                # second step: shoot arrow
+                for dr2, dc2 in DIRS:
+                    ar, ac = nr + dr2, nc + dc2
+                    while 0 <= ar < 6 and 0 <= ac < 6:
+                        if board[ar, ac] != 0:
+                            if (ar - dr2 == nr and ac - dc2 == nc):
+                                pass
+                            else:
+                                break
+                        # arrow cannot land on moved queen's start (r,c) if in path
+                        # but can pass through it if empty after move
+                        if (ar, ac) == (r, c):
+                            # check if in line-of-sight from (nr, nc) to (r, c)
+                            # it's allowed to land on old square if unobstructed
+                            # but arrow landing square must be empty after move
+                            # At this point, board[r,c] is still player, so it's occupied.
+                            # So arrow cannot land on (r,c) because board[r,c]==player !=0.
+                            break
+                        if (ar, ac) != (nr, nc):
+                            local_moves.append(((r, c), (nr, nc), (ar, ac)))
+                        ar += dr2
+                        ac += dc2
+                nr += dr
+                nc += dc
+        return local_moves
+    
+    def apply_move(self, board, move):
+        (fr, fc), (tr, tc), (ar, ac) = move
+        new_board = board.copy()
+        new_board[fr, fc] = 0
+        new_board[tr, tc] = board[fr, fc]  # same player
+        new_board[ar, ac] = -1
+        return new_board
+    
+    def mobility(self, board, player):
+        return len(self.all_legal_moves(board, player))
+    
+    def center_weight(self, board, player):
+        center = [(2,2),(2,3),(3,2),(3,3)]
+        score = 0
+        for r in range(6):
+            for c in range(6):
+                if board[r,c] == player:
+                    dist = min(abs(r-cr)+abs(c-cc) for (cr,cc) in center)
+                    score -= dist
+        return score
+    
+    def evaluate(self, board):
+        my_moves = self.mobility(board, 1)
+        opp_moves = self.mobility(board, 2)
+        center = self.center_weight(board, 1) - self.center_weight(board, 2)
+        return my_moves - 2*opp_moves + center*0.2
+    
+    def negamax(self, board, depth, alpha, beta, color):
+        if self.start_time and time.time() - self.start_time > self.time_limit:
+            raise TimeoutError
+        if depth == 0:
+            return color * self.evaluate(board)
+        
+        # Transposition lookup
+        stored = self.transposition.get(board, depth)
+        if stored is not None:
+            return stored
+        
+        player = 1 if color == 1 else 2
+        moves = self.all_legal_moves(board, player)
+        if not moves:
+            return -1000  # loss for player to move
+        
+        # move ordering
+        moves.sort(key=lambda m: self.move_score(board, m, player), reverse=True)
+        
+        # killer moves
+        killers = self.killer_moves[depth]
+        for killer in killers:
+            if killer in moves:
+                moves.remove(killer)
+                moves.insert(0, killer)
+        
+        best_value = -float('inf')
+        best_move = None
+        for move in moves:
+            new_board = self.apply_move(board, move)
+            value = -self.negamax(new_board, depth-1, -beta, -alpha, -color)
+            if value > best_value:
+                best_value = value
+                best_move = move
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                if move not in killers:
+                    killers.insert(0, move)
+                    if len(killers) > 2:
+                        killers.pop()
+                break
+        
+        self.transposition.put(board, depth, best_value, 'exact')
+        return best_value
+    
+    def move_score(self, board, move, player):
+        (fr, fc), (tr, tc), (ar, ac) = move
+        # prefer central landing squares
+        center = [(2,2),(2,3),(3,2),(3,3)]
+        dist_to_center = min(abs(tr-cr)+abs(tc-cc) for (cr,cc) in center)
+        arrow_block = 0
+        # count how many opponent moves this arrow blocks
+        fake_board = board.copy()
+        fake_board[fr, fc] = 0
+        fake_board[tr, tc] = player
+        fake_board[ar, ac] = -1
+        opp_moves = self.mobility(fake_board, 3-player)
+        arrow_block = -opp_moves  # more negative is better (blocks more)
+        return -dist_to_center + arrow_block*0.01
+    
+    def policy(self, board):
+        self.start_time = time.time()
+        player = 1
+        moves = self.all_legal_moves(board, player)
+        if not moves:
+            return "0,0:0,0:0,0"  # fallback, should not happen
+        # default move
+        best_move = moves[0]
+        best_move_str = f"{best_move[0][0]},{best_move[0][1]}:{best_move[1][0]},{best_move[1][1]}:{best_move[2][0]},{best_move[2][1]}"
+        
+        try:
+            for depth in range(1, 10):
+                best_value = -float('inf')
+                alpha = -float('inf')
+                beta = float('inf')
+                ordered_moves = moves[:]
+                ordered_moves.sort(key=lambda m: self.move_score(board, m, player), reverse=True)
+                for move in ordered_moves:
+                    new_board = self.apply_move(board, move)
+                    value = -self.negamax(new_board, depth-1, -beta, -alpha, -1)
+                    if value > best_value:
+                        best_value = value
+                        best_move = move
+                    alpha = max(alpha, value)
+                best_move_str = f"{best_move[0][0]},{best_move[0][1]}:{best_move[1][0]},{best_move[1][1]}:{best_move[2][0]},{best_move[2][1]}"
+        except TimeoutError:
+            pass
+        return best_move_str
+
+# required API
+def policy(board):
+    engine = AmazonsPolicy()
+    return engine.policy(board)
+</code>

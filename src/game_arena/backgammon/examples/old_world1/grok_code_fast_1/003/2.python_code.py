@@ -1,0 +1,122 @@
+
+import copy
+
+def policy(state: dict) -> str:
+    def possible_FROM(st, d):
+        poss = []
+        if st['my_bar'] > 0:
+            FROM = 'B'
+            if apply(st, FROM, d) is not None:
+                poss.append(FROM)
+        else:
+            for p in range(24):
+                if st['my_pts'][p] > 0:
+                    FROM = 'A' + str(p)
+                    if apply(st, FROM, d) is not None:
+                        poss.append(FROM)
+        return poss
+    
+    def apply(st, FROM, d):
+        state_copy = copy.deepcopy(st)
+        my_pts = state_copy['my_pts']
+        opp_pts = state_copy['opp_pts']
+        my_bar = state_copy['my_bar']
+        opp_bar = state_copy['opp_bar']
+        my_off = state_copy['my_off']
+        
+        if FROM == 'B':
+            if my_bar == 0:
+                return None
+            dest = 23 - d
+            if dest < 0 or opp_pts[dest] >= 2:
+                return None
+            if opp_pts[dest] == 1:
+                opp_pts[dest] = 0
+                opp_bar += 1
+            my_pts[dest] += 1
+            my_bar -= 1
+        elif FROM.startswith('A'):
+            p = int(FROM[1:])
+            if my_pts[p] == 0:
+                return None
+            dest = p - d
+            my_pts[p] -= 1
+            if dest >= 0:
+                if opp_pts[dest] >= 2:
+                    return None
+                if opp_pts[dest] == 1:
+                    opp_pts[dest] = 0
+                    opp_bar += 1
+                my_pts[dest] += 1
+            else:
+                # Bearing off: must be all in home (0-5) and bar empty
+                if p > 5 or any(my_pts[i] > 0 for i in range(6, 24)) or my_bar > 0:
+                    return None
+                my_off += 1
+        return state_copy
+    
+    def compute_pip(st):
+        return sum(i * st['my_pts'][i] for i in range(24)) + 24 * st['my_bar']
+    
+    st = copy.deepcopy(state)
+    dice = state['dice']
+    if len(dice) == 0:
+        return "H:P,P"
+    if len(dice) == 1:
+        d = dice[0]
+        frs = possible_FROM(st, d)
+        if not frs:
+            return "H:P,P"
+        best = None
+        min_pip = float('inf')
+        for FROM in frs:
+            ns = apply(st, FROM, d)
+            if ns is None:
+                continue
+            pip = compute_pip(ns)
+            if pip < min_pip:
+                min_pip = pip
+                best = FROM
+        if best:
+            return "H:" + best + ",P"
+        return "H:P,P"
+    
+    # len(dice) == 2
+    d1, d2 = sorted(dice)
+    candidates = []
+    if d1 == d2:
+        # Double roll
+        order = 'H' if dice[0] == dice[1] else 'L'  # Assuming format uses first die as "higher" if tie
+        fr1s = possible_FROM(st, d1)
+        for fr1 in fr1s:
+            ns = apply(st, fr1, d1)
+            if ns is None:
+                continue
+            fr2s = possible_FROM(ns, d2)
+            for fr2 in fr2s:
+                nns = apply(ns, fr2, d2)
+                if nns is None:
+                    continue
+                pip = compute_pip(nns)
+                candidates.append((pip, order + ":" + fr1 + "," + fr2))
+    else:
+        # Different dice
+        orders = [(d1, d2, 'L'), (d2, d1, 'H')]
+        for d_first, d_second, ord in orders:
+            fr1s = possible_FROM(st, d_first)
+            for fr1 in fr1s:
+                ns = apply(st, fr1, d_first)
+                if ns is None:
+                    continue
+                fr2s = possible_FROM(ns, d_second)
+                for fr2 in fr2s:
+                    nns = apply(ns, fr2, d_second)
+                    if nns is None:
+                        continue
+                    pip = compute_pip(nns)
+                    candidates.append((pip, ord + ":" + fr1 + "," + fr2))
+    
+    if candidates:
+        candidates.sort()
+        return candidates[0][1]
+    return "H:P,P"

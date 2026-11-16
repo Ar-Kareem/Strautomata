@@ -1,0 +1,198 @@
+
+import time
+import random
+
+# Board constants
+ROWS = 5
+COLS = 6
+CELLS = ROWS * COLS
+
+# Precompute neighbor bitmasks for each cell (0-29)
+NEIGHBOR_MASK = [0] * CELLS
+for r in range(ROWS):
+    for c in range(COLS):
+        idx = r * COLS + c
+        mask = 0
+        if r > 0:
+            mask |= 1 << (idx - COLS)  # Up
+        if r < ROWS - 1:
+            mask |= 1 << (idx + COLS)  # Down
+        if c > 0:
+            mask |= 1 << (idx - 1)     # Left
+        if c < COLS - 1:
+            mask |= 1 << (idx + 1)     # Right
+        NEIGHBOR_MASK[idx] = mask
+
+def get_moves(my_mask, opp_mask):
+    """Generate all legal moves as list of (from_idx, to_idx, direction)."""
+    moves = []
+    m = my_mask
+    while m:
+        lsb = m & -m
+        f = (lsb.bit_length() - 1)
+        m ^= lsb
+        targets = NEIGHBOR_MASK[f] & opp_mask
+        while targets:
+            lsb_t = targets & -targets
+            t = (lsb_t.bit_length() - 1)
+            targets ^= lsb_t
+            diff = t - f
+            if diff == -COLS:
+                d = 'U'
+            elif diff == COLS:
+                d = 'D'
+            elif diff == -1:
+                d = 'L'
+            else:
+                d = 'R'
+            moves.append((f, t, d))
+    return moves
+
+def count_mobility(my_mask, opp_mask):
+    """Count number of legal moves (mobility)."""
+    count = 0
+    m = my_mask
+    while m:
+        lsb = m & -m
+        f = (lsb.bit_length() - 1)
+        m ^= lsb
+        count += (NEIGHBOR_MASK[f] & opp_mask).bit_count()
+    return count
+
+def evaluate(my_mask, opp_mask):
+    """Evaluate board state from perspective of player to move."""
+    my_mob = count_mobility(my_mask, opp_mask)
+    if my_mob == 0:
+        return -10000  # Loss
+    opp_mob = count_mobility(opp_mask, my_mask)
+    return my_mob - opp_mob
+
+def apply_move(my_mask, opp_mask, f, t):
+    """Apply move f->t. Returns (new_opponent_mask, new_player_mask) for next turn."""
+    new_my = (my_mask & ~(1 << f)) | (1 << t)
+    new_opp = opp_mask & ~(1 << t)
+    return new_opp, new_my
+
+# Transposition table: (my_mask, opp_mask) -> (depth, score, best_move)
+TT = {}
+
+def search(my_mask, opp_mask, depth, alpha, beta, start_time, time_limit, nodes):
+    """Negamax search with alpha-beta pruning."""
+    nodes[0] += 1
+    if nodes[0] % 2000 == 0:
+        if time.time() - start_time > time_limit:
+            raise TimeoutError
+
+    key = (my_mask, opp_mask)
+    
+    # Transposition table lookup
+    if key in TT:
+        stored_depth, stored_score, stored_move = TT[key]
+        if stored_depth >= depth:
+            return stored_score, stored_move
+
+    moves = get_moves(my_mask, opp_mask)
+    if not moves:
+        return -10000, None  # No moves = loss
+    
+    if depth == 0:
+        return evaluate(my_mask, opp_mask), None
+
+    # Move ordering: try cached best move first
+    best_move = None
+    if key in TT:
+        _, _, stored_move = TT[key]
+        if stored_move is not None:
+            # Move stored move to front if it exists in current moves
+            for i, m in enumerate(moves):
+                if m[0] == stored_move[0] and m[1] == stored_move[1]:
+                    moves[i], moves[0] = moves[0], moves[i]
+                    break
+
+    best_score = -100000
+    for f, t, d in moves:
+        new_opp, new_my = apply_move(my_mask, opp_mask, f, t)
+        score, _ = search(new_my, new_opp, depth - 1, -beta, -alpha, start_time, time_limit, nodes)
+        score = -score
+        
+        if score > best_score:
+            best_score = score
+            best_move = (f, t, d)
+            if score > alpha:
+                alpha = score
+                if alpha >= beta:
+                    break
+    
+    TT[key] = (depth, best_score, best_move)
+    return best_score, best_move
+
+def policy(you, opponent):
+    """Main policy function."""
+    # Convert input to bitmasks
+    you_mask = 0
+    opp_mask = 0
+    
+    # Handle different input formats (flat list or list of lists)
+    try:
+        if len(you) == CELLS:
+            # Flat list
+            for i in range(CELLS):
+                if you[i]:
+                    you_mask |= (1 << i)
+                if opponent[i]:
+                    opp_mask |= (1 << i)
+        elif len(you) == ROWS and len(you[0]) == COLS:
+            # List of lists
+            for r in range(ROWS):
+                for c in range(COLS):
+                    idx = r * COLS + c
+                    if you[r][c]:
+                        you_mask |= (1 << idx)
+                    if opponent[r][c]:
+                        opp_mask |= (1 << idx)
+        else:
+            # Try generic iteration
+            for i, v in enumerate(you):
+                if v:
+                    you_mask |= (1 << i)
+            for i, v in enumerate(opponent):
+                if v:
+                    opp_mask |= (1 << i)
+    except Exception:
+        pass
+    
+    # Quick return if only one move
+    moves = get_moves(you_mask, opp_mask)
+    if not moves:
+        return "0,0,U"  # Should not happen per problem statement
+    if len(moves) == 1:
+        f, t, d = moves[0]
+        return f"{f//COLS},{f%COLS},{d}"
+    
+    # Iterative deepening
+    start_time = time.time()
+    time_limit = 0.9  # 900ms safety margin
+    best_move = moves[0]
+    nodes = [0]
+    
+    # Clear TT for new search
+    TT.clear()
+    
+    for depth in range(1, 15):  # Max depth 14 should be safe
+        try:
+            score, move = search(you_mask, opp_mask, depth, -100000, 100000, 
+                               start_time, time_limit, nodes)
+            if move is not None:
+                best_move = move
+            # If found winning position, stop
+            if score > 9000:
+                break
+        except TimeoutError:
+            break
+        except RecursionError:
+            break
+    
+    f, t, d = best_move
+    r = f // COLS
+    c = f % COLS
+    return f"{r},{c},{d}"

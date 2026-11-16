@@ -1,0 +1,183 @@
+
+import numpy as np
+from typing import List, Tuple
+
+def policy(board: List[List[int]], legal_moves: List[int]) -> Tuple[int, int]:
+    """
+    Phantom Tic Tac Toe AI policy using probabilistic opponent modeling and minimax search.
+
+    Args:
+        board: 3x3 list of lists where:
+            -1: empty cell
+            0: cell not confirmed (could be empty or opponent's)
+            1: our confirmed mark
+        legal_moves: list of integers 0-8 representing allowed actions (row*3 + col).
+
+    Returns:
+        (row, col): best move to attempt (0-2).
+    """
+    # Convert board to a numpy array for easier manipulation
+    board_np = np.array(board, dtype=int)
+
+    # Flatten legal_moves to (row, col) pairs
+    legal_actions = [(move // 3, move % 3) for move in legal_moves]
+
+    # Generate all plausible opponent boards (where 0 is treated as empty or opponent's)
+    plausible_opponent_boards = generate_plausible_boards(board_np)
+
+    # Evaluate each plausible board and compute expected score
+    best_score = -np.inf
+    best_move = None
+
+    for (row, col) in legal_actions:
+        if board_np[row, col] == 1:
+            continue  # Skip cells already confirmed as ours
+
+        # Simulate placing our mark in (row, col)
+        temp_board = board_np.copy()
+        temp_board[row, col] = 1
+
+        # Compute expected score across all plausible opponent boards
+        expected_score = 0.0
+        for opponent_board in plausible_opponent_boards:
+            # Assume opponent's board is fixed; compute minimax score
+            score = minimax(opponent_board, temp_board, True)
+            expected_score += score
+
+        # Normalize by number of plausible boards (simplified)
+        avg_score = expected_score / len(plausible_opponent_boards)
+
+        if avg_score > best_score:
+            best_score = avg_score
+            best_move = (row, col)
+
+    # Fallback: if no plausible boards, use standard minimax
+    if best_move is None:
+        best_move = standard_minimax(board_np, legal_actions)
+
+    return best_move
+
+def generate_plausible_boards(board: np.ndarray) -> List[np.ndarray]:
+    """
+    Generate plausible opponent boards by treating 0s as either empty or opponent's marks.
+    """
+    plausible_boards = []
+
+    # Identify cells not confirmed (0) and empty cells (-1)
+    uncertain_cells = np.argwhere(board == 0)
+    empty_cells = np.argwhere(board == -1)
+
+    # For each uncertain cell, assume it's either empty or opponent's mark
+    for mask in range(1 << len(uncertain_cells)):
+        temp_board = board.copy()
+        for i, (row, col) in enumerate(uncertain_cells):
+            if mask & (1 << i):
+                temp_board[row, col] = 2  # Opponent's mark
+            else:
+                temp_board[row, col] = -1  # Empty
+
+        plausible_boards.append(temp_board)
+
+    return plausible_boards
+
+def minimax(opponent_board: np.ndarray, our_board: np.ndarray, is_maximizing: bool) -> float:
+    """
+    Minimax search with imperfect information.
+    opponent_board: fixed opponent state (2 = opponent's mark, -1 = empty)
+    our_board: current board with our marks (1) and uncertain cells (0)
+    """
+    if check_win(our_board, 1):
+        return 1.0
+    if check_win(opponent_board, 2):
+        return -1.0
+    if np.all(our_board != -1) and np.all(opponent_board != -1):
+        return 0.0  # Draw
+
+    if is_maximizing:
+        best_score = -np.inf
+        for (row, col) in get_legal_moves(our_board):
+            if our_board[row, col] == 1:
+                continue  # Skip our confirmed marks
+            our_board[row, col] = 1
+            score = minimax(opponent_board, our_board, False)
+            our_board[row, col] = -1  # Undo
+            best_score = max(score, best_score)
+        return best_score
+    else:
+        best_score = np.inf
+        for (row, col) in get_legal_moves(opponent_board):
+            if opponent_board[row, col] == 2:
+                continue  # Skip opponent's confirmed marks
+            opponent_board[row, col] = 2
+            score = minimax(opponent_board, our_board, True)
+            opponent_board[row, col] = -1  # Undo
+            best_score = min(score, best_score)
+        return best_score
+
+def check_win(board: np.ndarray, player: int) -> bool:
+    """
+    Check if a player has won on a given board.
+    """
+    # Check rows and columns
+    for i in range(3):
+        if np.all(board[i, :] == player) or np.all(board[:, i] == player):
+            return True
+
+    # Check diagonals
+    if np.all(np.diag(board) == player) or np.all(np.diag(np.fliplr(board)) == player):
+        return True
+
+    return False
+
+def get_legal_moves(board: np.ndarray) -> List[Tuple[int, int]]:
+    """
+    Get all legal (empty) moves on a board.
+    """
+    return [(row, col) for row in range(3) for col in range(3) if board[row, col] == -1]
+
+def standard_minimax(board: np.ndarray, legal_actions: List[Tuple[int, int]]) -> Tuple[int, int]:
+    """
+    Fallback to standard minimax if no plausible opponent boards.
+    """
+    best_score = -np.inf
+    best_move = None
+
+    for (row, col) in legal_actions:
+        if board[row, col] == 1:
+            continue
+        temp_board = board.copy()
+        temp_board[row, col] = 1
+        score = minimax_fallback(temp_board, True)
+        if score > best_score:
+            best_score = score
+            best_move = (row, col)
+
+    return best_move
+
+def minimax_fallback(board: np.ndarray, is_maximizing: bool) -> float:
+    """
+    Standard minimax for fallback (no uncertainty).
+    """
+    if check_win(board, 1):
+        return 1.0
+    if check_win(board, 2):
+        return -1.0
+    if np.all(board != -1):
+        return 0.0
+
+    if is_maximizing:
+        best_score = -np.inf
+        for (row, col) in get_legal_moves(board):
+            board[row, col] = 1
+            score = minimax_fallback(board, False)
+            board[row, col] = -1
+            best_score = max(score, best_score)
+        return best_score
+    else:
+        best_score = np.inf
+        for (row, col) in get_legal_moves(board):
+            board[row, col] = 2
+            score = minimax_fallback(board, True)
+            board[row, col] = -1
+            best_score = min(score, best_score)
+        return best_score

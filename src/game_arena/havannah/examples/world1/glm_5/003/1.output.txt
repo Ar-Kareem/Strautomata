@@ -1,0 +1,458 @@
+My strategy involves implementing a Monte Carlo Tree Search (MCTS) to determine the best move. Given the complexity of Havannah's win conditions (Fork, Bridge, Ring) and the 1-second time limit, the policy focuses on:
+1.  **Geometry Processing**: Mapping the 2D array to hex coordinates to correctly identify neighbors, corners, and edges.
+2.  **Dynamic Analysis**: Identifying corners (cells with 2 neighbors) and edges (cells with 3 neighbors) based on the `valid_mask`.
+3.  **Monte Carlo Tree Search**: Simulating games to evaluate positions.
+    *   **Win Detection**: Using Disjoint Set Union (DSU) with path compression to efficiently track connected components and detect wins (Bridge: 2 corners, Fork: 3 edges, Ring: cycle formation).
+    *   **Simulation Policy**: Prioritizing winning moves and blocking opponent wins during random playouts to improve simulation quality.
+    *   **Time Management**: Running simulations until the time budget is exhausted.
+
+The strategy prioritizes valid moves and attempts to build towards the specific winning structures of Havannah while blocking the opponent.
+
+<code>
+import numpy as np
+import math
+import time
+import random
+from collections import defaultdict
+
+# Constants
+BOARD_SIZE = 15
+TIME_LIMIT = 0.95  # seconds
+
+# ---------------------------------------------------------
+# Helper Classes and Functions
+# ---------------------------------------------------------
+
+class HavannahGame:
+    def __init__(self, valid_mask):
+        self.N = 0
+        self.coords = []  # index -> (r, c)
+        self.idx_map = {} # (r, c) -> index
+        self.neighbors = [] # index -> list of neighbor indices
+        self.is_corner = []
+        self.edge_id = []
+        
+        self._build_geometry(valid_mask)
+        
+    def _build_geometry(self, valid_mask):
+        # 1. Map valid cells to indices
+        for r in range(BOARD_SIZE):
+            for c in range(BOARD_SIZE):
+                if valid_mask[r][c]:
+                    idx = len(self.coords)
+                    self.idx_map[(r, c)] = idx
+                    self.coords.append((r, c))
+        
+        self.N = len(self.coords)
+        
+        # 2. Neighbors
+        # Offsets for the specific hex grid described:
+        # (dr, dc)
+        offsets = [(-1, 0), (1, 0), (-1, -1), (0, -1), (-1, 1), (0, 1)]
+        
+        self.neighbors = [[] for _ in range(self.N)]
+        degrees = [0] * self.N
+        
+        for i, (r, c) in enumerate(self.coords):
+            for dr, dc in offsets:
+                nr, nc = r + dr, c + dc
+                if (nr, nc) in self.idx_map:
+                    self.neighbors[i].append(self.idx_map[(nr, nc)])
+            degrees[i] = len(self.neighbors[i])
+            
+        # 3. Identify Corners and Edges
+        # Corners have degree 2.
+        # Edges have degree 3 (but are not corners).
+        # Inner cells have degree 6.
+        
+        corner_indices = [i for i, deg in enumerate(degrees) if deg == 2]
+        self.is_corner = [False] * self.N
+        for i in corner_indices:
+            self.is_corner[i] = True
+            
+        # Identify Edges by walking the perimeter or using angles from centroid
+        self.edge_id = [-1] * self.N # -1 means not an edge
+        
+        if len(corner_indices) >= 2:
+            # Calculate centroid
+            c_r = sum(c[0] for c in self.coords) / self.N
+            c_c = sum(c[1] for c in self.coords) / self.N
+            
+            # Sort corners by angle
+            c_angles = []
+            for idx in corner_indices:
+                r, c = self.coords[idx]
+                angle = math.atan2(r - c_r, c - c_c)
+                c_angles.append((angle, idx))
+            c_angles.sort()
+            
+            # Assign edge IDs to edge cells (degree 3) based on angular sectors
+            # defined by corners.
+            edge_candidate_indices = [i for i, deg in enumerate(degrees) if deg == 3]
+            
+            # Create edge segments
+            num_edges = len(c_angles)
+            
+            for idx in edge_candidate_indices:
+                r, c = self.coords[idx]
+                angle = math.atan2(r - c_r, c - c_c)
+                
+                # Find which sector this point falls into
+                for k in range(num_edges):
+                    a1, _ = c_angles[k]
+                    a2, _ = c_angles[(k + 1) % num_edges]
+                    
+                    # Check if angle is between a1 and a2
+                    # Handle wrap-around
+                    if a1 > a2: # Wrap around case (last segment)
+                        if angle >= a1 or angle <= a2:
+                            self.edge_id[idx] = k
+                            break
+                    else:
+                        if a1 <= angle <= a2:
+                            self.edge_id[idx] = k
+                            break
+
+    # ---------------------------------------------------------
+    # State Management for MCTS
+    # ---------------------------------------------------------
+    
+    def get_initial_state(self, me, opp):
+        # Board: 0 empty, 1 me, 2 opp
+        board = [0] * self.N
+        for r, c in me:
+            board[self.idx_map[(r, c)]] = 1
+        for r, c in opp:
+            board[self.idx_map[(r, c)]] = 2
+        return board
+
+    def get_moves(self, board):
+        return [i for i, val in enumerate(board) if val == 0]
+
+    def check_win(self, board, last_move_idx, player):
+        # We use a simplified DSU check or a localized property check?
+        # For simulation speed, we can use a lightweight DSU or incremental check.
+        # Since we need to check win *after* a move, let's use a fast DSU check
+        # initiated from the last move.
+        
+        # BFS/DFS from last_move_idx to check properties
+        # 1. Bridge: Check if connected component has >= 2 corners
+        # 2. Fork: Check if connected component has >= 3 distinct edge_ids
+        # 3. Ring: Check if the move closed a cycle.
+        
+        # We can detect Ring by checking if the neighbor we are connecting to
+        # was already connected to another neighbor of the current cell.
+        # Or simply: if the move connects two nodes already in the same component.
+        
+        # Let's do a BFS to find component properties.
+        # This is O(Size of Component). Fast enough.
+        
+        q = [last_move_idx]
+        visited = {last_move_idx}
+        
+        corner_count = 0
+        edge_mask = 0
+        # For Ring: if we encounter a neighbor that is part of the component 
+        # but not through the expanding frontier, it implies a cycle.
+        # Actually, simpler Ring check:
+        # If placing this stone connects to N neighbors (N>=2), and those neighbors
+        # are already connected to each other via some path NOT through this stone,
+        # then we formed a cycle.
+        
+        # Efficient Cycle Detection:
+        # Check neighbors of last_move_idx. 
+        # If >= 2 neighbors belong to the same player, check if they are connected
+        # WITHOUT using last_move_idx.
+        # Since we don't maintain full DSU in the simulator, we can do a quick BFS
+        # from one neighbor to see if we reach another neighbor.
+        
+        neighbors = [n for n in self.neighbors[last_move_idx] if board[n] == player]
+        
+        # Bridge/Fork checks via BFS
+        if self.is_corner[last_move_idx]:
+            corner_count = 1
+        if self.edge_id[last_move_idx] != -1:
+            edge_mask = 1 << self.edge_id[last_move_idx]
+            
+        # BFS
+        head = 0
+        while head < len(q):
+            curr = q[head]
+            head += 1
+            
+            for n in self.neighbors[curr]:
+                if board[n] == player and n not in visited:
+                    visited.add(n)
+                    q.append(n)
+                    if self.is_corner[n]:
+                        corner_count += 1
+                    if self.edge_id[n] != -1:
+                        edge_mask |= (1 << self.edge_id[n])
+        
+        # Check Win Conditions
+        if corner_count >= 2:
+            return True # Bridge
+        
+        if bin(edge_mask).count('1') >= 3:
+            return True # Fork
+        
+        # Ring Check
+        # Did this move connect two already connected nodes?
+        if len(neighbors) >= 2:
+            # Check connectivity between neighbors
+            # Try to reach neighbor[1] starting from neighbor[0] avoiding last_move_idx
+            # (Since last_move_idx was empty before, the path must exist via other stones)
+            
+            # We only need to check if ANY pair of neighbors were already connected.
+            # Subset check:
+            start_node = neighbors[0]
+            target_nodes = set(neighbors[1:])
+            
+            # Mini BFS
+            q_ring = [start_node]
+            seen_ring = {start_node, last_move_idx} # Don't go back through the stone just placed
+            
+            # But wait, if we BFS from start_node, we explore the component AS IT EXISTS NOW (including last_move_idx).
+            # We must exclude last_move_idx from traversal.
+            
+            # Actually, if neighbors are in the same component, a Ring is formed.
+            # My BFS above `visited` constructs the component including the new stone.
+            # If `start_node` can reach `target_node` without using `last_move_idx`, they were already connected.
+            
+            # Since `last_move_idx` is the only NEW node, standard BFS connectivity between neighbors
+            # implies they were connected before.
+            
+            # Optimization: Only do this BFS if a cycle is plausible.
+            # BFS from neighbor[0] avoiding last_move_idx to see if we hit any other neighbor.
+            
+            # Use a local queue for ring check
+            q_r = [neighbors[0]]
+            seen_r = {neighbors[0], last_move_idx}
+            ri = 0
+            found_cycle = False
+            while ri < len(q_r):
+                cur_r = q_r[ri]
+                ri += 1
+                for nr in self.neighbors[cur_r]:
+                    if board[nr] == player and nr not in seen_r:
+                        if nr in target_nodes:
+                            found_cycle = True
+                            break
+                        seen_r.add(nr)
+                        q_r.append(nr)
+                if found_cycle:
+                    return True # Ring
+        
+        return False
+
+# ---------------------------------------------------------
+# MCTS Node
+# ---------------------------------------------------------
+
+class Node:
+    def __init__(self, move_idx, parent):
+        self.move_idx = move_idx
+        self.parent = parent
+        self.children = []
+        self.wins = 0
+        self.visits = 0
+        self.untried_moves = None # Lazy init
+
+    def ucb_score(self, c=1.41):
+        if self.visits == 0:
+            return float('inf')
+        return (self.wins / self.visits) + c * math.sqrt(math.log(self.parent.visits) / self.visits)
+
+    def select_child(self):
+        return max(self.children, key=lambda n: n.ucb_score())
+
+    def expand(self, move_idx, game, state):
+        child = Node(move_idx, self)
+        self.children.append(child)
+        return child
+
+    def update(self, result):
+        self.visits += 1
+        self.wins += result
+
+# ---------------------------------------------------------
+# Policy
+# ---------------------------------------------------------
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    start_time = time.time()
+    
+    game = HavannahGame(valid_mask)
+    
+    # Initial state
+    # Player 1 is 'me' (maximizing), Player 2 is 'opp'
+    # MCTS Root assumes it is 'me's turn.
+    
+    current_state = game.get_initial_state(me, opp)
+    valid_moves = game.get_moves(current_state)
+    
+    if not valid_moves:
+        # Should not happen
+        return (0, 0)
+
+    # Opening Book: if empty board, play center or near center
+    if len(me) == 0 and len(opp) == 0:
+        # Try to play center of valid mask
+        r_sum, c_sum = 0, 0
+        for r, c in game.coords:
+            r_sum += r
+            c_sum += c
+        target_r = round(r_sum / game.N)
+        target_c = round(c_sum / game.N)
+        
+        # Find closest valid cell
+        best_dist = 1000
+        best_move = valid_moves[0]
+        for idx in valid_moves:
+            r, c = game.coords[idx]
+            dist = abs(r - target_r) + abs(c - target_c)
+            if dist < best_dist:
+                best_dist = dist
+                best_move = idx
+        return game.coords[best_move]
+
+    root = Node(None, None)
+    root.untried_moves = valid_moves
+    
+    simulations = 0
+    
+    # Time-limited MCTS
+    while time.time() - start_time < TIME_LIMIT:
+        node = root
+        state = current_state[:] # Copy board
+        player = 1 # Me
+        
+        # 1. Selection
+        while node.untried_moves is None or (node.untried_moves == [] and node.children):
+            if node.untried_moves is None:
+                 # First time visiting this node in selection? No, untried_moves populated on expand
+                 # If we are here, node is fully expanded.
+                 pass
+                 
+            if not node.children:
+                break # Terminal or empty root
+                
+            node = node.select_child()
+            
+            # Apply move
+            # Need to know whose turn it was when this node was created.
+            # We alternate.
+            # If root is depth 0 (My turn), child is depth 1 (Opp turn).
+            
+            # Let's track player in the loop
+            # Root: Player 1 (Me)
+            # Move is made by `player`.
+            state[node.move_idx] = player
+            player = 3 - player # Switch player
+            
+        # 2. Expansion
+        if node.untried_moves is None:
+            node.untried_moves = game.get_moves(state)
+            
+        if node.untried_moves:
+            move_idx = random.choice(node.untried_moves)
+            node.untried_moves.remove(move_idx)
+            
+            # Apply move
+            state[move_idx] = player
+            next_player = 3 - player
+            
+            # Expand
+            node = node.expand(move_idx, game, state)
+            node.untried_moves = game.get_moves(state) # Populate for future
+            player = next_player
+            
+        # 3. Simulation (Rollout)
+        # `state` is current state. `player` is to move.
+        
+        winner = 0
+        sim_moves = game.get_moves(state)
+        curr_player = player
+        
+        # Heuristic: Check for immediate wins in simulation
+        # To speed up, we don't check win for EVERY move, only potentially winning ones.
+        # But for correctness, we need to know if the last move won.
+        
+        last_move_won = False
+        
+        # Copy state for random playout
+        sim_state = state[:]
+        sim_valid = sim_moves[:]
+        
+        # Check if previous move (the one leading to this state) was a win?
+        # The node creation move.
+        # We need to check if `node.parent.move_idx` won for `3-player`.
+        # This is complex. Let's just play out.
+        
+        # Limit playout length
+        playout_len = 0
+        max_playout = 60 
+        
+        # Who just moved to get to `sim_state`?
+        # If we just expanded `node` with `move_idx`, `player` (before switch) moved.
+        # That move is `move_idx`.
+        # Did it win?
+        prev_player = 3 - player
+        # Check win for the move that created this node
+        if node.parent is not None:
+             if game.check_win(sim_state, node.move_idx, prev_player):
+                 winner = prev_player
+                 last_move_won = True
+        
+        if not last_move_won:
+            while sim_valid and playout_len < max_playout:
+                # Play random
+                # Priority: Win if possible, Block if possible
+                move = -1
+                
+                # Fast check: can current player win?
+                # (Skip for speed in 1s constraint, random is safer to avoid timeout)
+                
+                # Standard random
+                move = random.choice(sim_valid)
+                
+                sim_state[move] = curr_player
+                
+                # Check win
+                if game.check_win(sim_state, move, curr_player):
+                    winner = curr_player
+                    break
+                
+                sim_valid.remove(move)
+                curr_player = 3 - curr_player
+                playout_len += 1
+        
+        # 4. Backpropagation
+        # Result: 1 if I win, 0 if draw/loss
+        # `winner` is 1 or 2. `root` is player 1.
+        result = 1.0 if winner == 1 else 0.0
+        
+        while node:
+            node.update(result)
+            node = node.parent
+            # If we are backpropagating, we flip result for opponent nodes?
+            # Standard MCTS: store wins from perspective of player to move at node.
+            # If I win (Player 1), Node at depth 0 (Me) gets +1.
+            # Node at depth 1 (Opp) gets +0.
+            # Node at depth 2 (Me) gets +1.
+            result = 1.0 - result
+            
+        simulations += 1
+        if simulations > 5000: break # Safety break
+
+    # Best Move Selection
+    if not root.children:
+        # Fallback if no time
+        move_idx = random.choice(valid_moves)
+    else:
+        # Select most visited
+        best_node = max(root.children, key=lambda n: n.visits)
+        move_idx = best_node.move_idx
+        
+    return game.coords[move_idx]
+</code>

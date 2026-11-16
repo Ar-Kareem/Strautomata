@@ -1,0 +1,118 @@
+
+
+Thestrategy for this policy is to prioritize moves that achieve checkmate if available, then maximize material advantage, improve king safety, and prevent immediate threats. The evaluation function assigns piece values (pawn=1, knight=3, bishop=3, rook=5, queen=9) and assesses king safety by checking for checks and safe squares. Center control is evaluated by counting pawns on d4/e4/d5/e5. Piece activity is measured by the number of squares attacked. Moves are scored based on material gain, king safety improvement, and center control. The highest-scoring legal move is selected.
+
+<code>
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    # Helper functions
+    def is_square_on_board(sq: str) -> bool:
+        return 0 <= ord(sq[0]) - ord('a') < 8 and 0 <= int(sq[1]) - 1 < 8
+    
+    def get_piece_value(piece: str) -> int:
+        return {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 10}[piece[1]]
+    
+    def get_piece_color(piece: str) -> str:
+        return piece[0]
+    
+    def generate_moves(color: str) -> list[str]:
+        moves = []
+        for square, piece in pieces.items():
+            if get_piece_color(piece) != color:
+                continue
+            piece_type = piece[1]
+            if piece_type == 'P':
+                # Pawn moves
+                file, rank = ord(square[0]) - ord('a'), int(square[1]) - 1
+                # Forward moves
+                for step in [1, 2] if rank == 6 * (color == 'w') - 1 else [1]:
+                    target = chr(file + ord('a')) + str(rank + step)
+                    if is_square_on_board(target) and target not in pieces:
+                        moves.append(f"{square}{target}")
+                    # Captures
+                    for offset in [-1, 1]:
+                        target = chr(file + offset + ord('a')) + str(rank + step)
+                        if is_square_on_board(target) and target in pieces and get_piece_color(pieces[target]) != color:
+                            moves.append(f"{square}{target}")
+            elif piece_type == 'N':
+                # Knight moves
+                for dx, dy in [(-2, -1), (-2, 1), (-1, -2), (-1, 2), (1, -2), (1, 2), (2, -1), (2, 1)]:
+                    target = chr(file + dx + ord('a')) + str(rank + dy)
+                    if is_square_on_board(target) and target not in pieces or (target in pieces and get_piece_color(pieces[target]) != color):
+                        moves.append(f"{square}{target}")
+            elif piece_type in 'BRQ':
+                # Sliding pieces
+                directions = {'R': [(0, 1), (0, -1), (1, 0), (-1, 0)],
+                              'B': [(1, 1), (1, -1), (-1, 1), (-1, -1)],
+                              'Q': [(0, 1), (0, -1), (1, 0), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1)]}
+                for dx, dy in directions[piece_type]:
+                    for step in range(1, 8):
+                        target = chr(file + dx * step + ord('a')) + str(rank + dy * step)
+                        if not is_square_on_board(target):
+                            break
+                        if target not in pieces:
+                            moves.append(f"{square}{target}")
+                        elif get_piece_color(pieces[target]) != color:
+                            moves.append(f"{square}{target}")
+                            break
+                        else:
+                            break
+        return moves
+    
+    # Evaluate position
+    def evaluate_position() -> int:
+        material = 0
+        king_safe = 0
+        center_control = 0
+        for square, piece in pieces.items():
+            color = get_piece_color(piece)
+            if color != to_play:
+                continue
+            material += get_piece_value(piece)
+            # Center control (d4/e4/d5/e5)
+            if square in ['d4', 'e4', 'd5', 'e5']:
+                center_control += 1
+            # King safety
+            if piece == 'wK':
+                # Check for checks
+                for sq, p in pieces.items():
+                    if get_piece_color(p) != color:
+                        continue
+                    if p[1] == 'N':
+                        if abs(ord(sq[0]) - ord(square[0])) == 2 and abs(int(sq[1]) - int(square[1])) == 1:
+                            king_safe -= 5
+                    elif p[1] in 'RB':
+                        if (abs(ord(sq[0]) - ord(square[0])) == 0 and abs(int(sq[1]) - int(square[1])) > 0) or \
+                           (abs(int(sq[1]) - int(square[1])) == 0 and abs(ord(sq[0]) - ord(square[0])) > 0):
+                            king_safe -= 3
+                    elif p[1] == 'Q':
+                        if (abs(ord(sq[0]) - ord(square[0])) == 0 and abs(int(sq[1]) - int(square[1])) > 0) or \
+                           (abs(int(sq[1]) - int(square[1])) == 0 and abs(ord(sq[0]) - ord(square[0])) > 0) or \
+                           (abs(ord(sq[0]) - ord(square[0])) == abs(int(sq[1]) - int(square[1])) > 0):
+                            king_safe -= 2
+        return material + king_safe + center_control
+    
+    # Generate legal moves
+    color = 'w' if to_play == 'white' else 'b'
+    legal_moves = generate_moves(color)
+    
+    # Evaluate each move
+    best_score = -10**9
+    best_move = None
+    for move in legal_moves:
+        # Simulate move
+        new_pieces = pieces.copy()
+        target = move[2:]
+        # Handle promotion
+        if len(move) == 5:
+            promote_to = move[3]
+            new_pieces[target] = f"{color}{promote_to}"
+        else:
+            new_pieces[target] = new_pieces.pop(move[:2])
+        # Evaluate new position
+        score = evaluate_position()
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move
+</code>

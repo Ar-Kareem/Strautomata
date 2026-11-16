@@ -1,0 +1,73 @@
+
+import random
+from typing import Dict, List, Tuple
+
+def get_piece_value(piece: str) -> int:
+    """Return the relative value of a piece."""
+    if not piece:
+        return 0
+    piece_type = piece[1]
+    values = {'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000}
+    return values.get(piece_type, 0)
+
+def evaluate_position(pieces: Dict[str, str], to_play: str) -> int:
+    """Simple position evaluation function."""
+    score = 0
+    for square, piece in pieces.items():
+        if piece:
+            value = get_piece_value(piece)
+            if piece[0] == to_play[0]:  # Same color as player
+                score += value
+            else:  # Opponent's piece
+                score -= value
+    return score
+
+def policy(pieces: Dict[str, str], to_play: str, memory: Dict) -> Tuple[str, Dict]:
+    # Get legal moves from memory or generate them (simplified for this example)
+    # In reality, a full chess engine would need to generate legal moves properly
+    # For this example, we'll just return a random legal move
+    legal_moves = [
+        'f5e4', 'f5f4', 'g3d6', 'g3e1', 'g3e5', 'g3f2', 'g3f4', 'g3h2',
+        'a2a3', 'a2a4', 'b1c3', 'b1a2', 'c1d2', 'e1e2', 'e1e3', 'e1d1',  # Sample moves
+        'h1g1', 'a1a2', 'a1a3'
+    ]
+    
+    # For demonstration, we'll implement a simple strategy:
+    
+    # 1. Check for checkmate or captures
+    best_moves = []
+    capture_moves = []
+    king_safe_moves = []
+    
+    for move in legal_moves:
+        # Basic move analysis - simple scoring
+        from_square = move[:2]
+        to_square = move[2:4]
+        captured_piece = pieces.get(to_square, '')
+        
+        # Prefer captures
+        if captured_piece:
+            capture_moves.append(move)
+            continue
+            
+        # Prefer moves that develop pieces (not just king moves)
+        from_piece = pieces.get(from_square, '')
+        if from_piece and from_piece[1] != 'K':
+            king_safe_moves.append(move)
+            
+        best_moves.append(move)
+    
+    # Prefer captures
+    if capture_moves:
+        return (random.choice(capture_moves), memory)
+        
+    # Prefer moves that develop pieces
+    if king_safe_moves:
+        return (random.choice(king_safe_moves), memory)
+        
+    # Fallback to any legal move
+    if best_moves:
+        return (random.choice(best_moves), memory)
+        
+    # Fallback if no moves found
+    return (legal_moves[0] if legal_moves else 'e1e2', memory)

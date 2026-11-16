@@ -1,0 +1,240 @@
+The strategy for this policy is to use a 1-ply lookahead search with a custom heuristic evaluation function to determine the best move. The AI generates all legal moves for the given dice roll, simulates the resulting game state for each move, and scores the outcome. The scoring heuristic prioritizes bearing off checkers, minimizing the pip count (race), maintaining safe points (anchors) in the opponent's home board, blocking points in the home board, and penalizing loose blots (vulnerable single checkers). The AI strictly adheres to the rules, such as moving from the bar first, playing the higher die if only one move is possible, and bearing off only when legal.
+
+<code>
+import copy
+
+def policy(state: dict) -> str:
+    """
+    Returns a move string for the given Backgammon state.
+    Format: <ORDER>:<FROM1>,<FROM2>
+    """
+
+    # Helper: Evaluate the strength of a state
+    def evaluate(s):
+        score = 0
+        
+        # 1. Bear off priority (Scored points)
+        score += s['my_off'] * 1000
+        
+        # 2. Pip count (Distance to bear off) - lower is better
+        # Calculate sum of indices * checkers. We move 23->0.
+        # High index is far from home (0).
+        my_pip = sum(i * s['my_pts'][i] for i in range(24))
+        score -= my_pip
+        
+        # 3. Bar penalty (Checkers on bar are costly)
+        score -= s['my_bar'] * 200
+        
+        # 4. Blot penalty (Single checkers are vulnerable)
+        blots = 0
+        for i in range(24):
+            if s['my_pts'][i] == 1:
+                if 6 <= i <= 17: # Mid board is dangerous
+                    blots += 3
+                elif 18 <= i <= 23: # Opponent home board (anchoring is usually good, but blots are bad)
+                    blots += 1
+                else: # Home board blots are less dangerous
+                    blots += 1
+        score -= blots * 20
+        
+        # 5. Anchors (Points with >=2 checkers in opponent home)
+        anchors = sum(1 for i in range(18, 24) if s['my_pts'][i] >= 2)
+        score += anchors * 50
+        
+        # 6. Primes/Blocks (Points with >=2 checkers in my home)
+        blocks = sum(1 for i in range(6) if s['my_pts'][i] >= 2)
+        score += blocks * 30
+        
+        # 7. Hitting opponent (Implicit: fewer opponent checkers on board is good)
+        # We can't track hits explicitly without delta, but reducing opponent pips is good
+        opp_pip = sum((23 - i) * s['opp_pts'][i] for i in range(24)) # Opp moves 0->23
+        score -= opp_pip * 2 # Slight bias to hinder opponent
+
+        return score
+
+    # Helper: Check legality and apply move
+    def apply_move(s, die_val, from_loc):
+        new_s = {
+            'my_pts': s['my_pts'][:],
+            'opp_pts': s['opp_pts'][:],
+            'my_bar': s['my_bar'],
+            'my_off': s['my_off']
+        }
+        
+        start_pt_idx = -1
+        
+        # Identify source
+        if from_loc == 'B':
+            if new_s['my_bar'] == 0:
+                return None
+            start_pt_idx = 24 # Virtual point for calculation
+        elif from_loc == 'P':
+            return None # Pass should not reach here via loop logic
+        else:
+            # A0..A23
+            try:
+                idx = int(from_loc[1:])
+            except:
+                return None
+            if 0 <= idx <= 23 and new_s['my_pts'][idx] > 0:
+                start_pt_idx = idx
+            else:
+                return None
+
+        # Calculate destination
+        dest_idx = start_pt_idx - die_val
+        
+        # Check block or bear off conditions
+        if 0 <= dest_idx <= 23:
+            # Moving within board
+            if new_s['opp_pts'][dest_idx] >= 2:
+                return None # Blocked
+            
+            # Execute Move
+            if from_loc == 'B':
+                new_s['my_bar'] -= 1
+            else:
+                new_s['my_pts'][start_pt_idx] -= 1
+            
+            # Land
+            new_s['my_pts'][dest_idx] += 1
+            
+            # Check Hit
+            if new_s['opp_pts'][dest_idx] == 1:
+                new_s['opp_pts'][dest_idx] = 0 # Hit (Opponent to bar - handled by engine, reflected in opp_pts)
+                
+        elif dest_idx < 0:
+            # Bearing off
+            # Condition: All checkers in home board (0-5)
+            if sum(new_s['my_pts'][6:]) > 0:
+                return None
+            
+            # Exact or over-shoot
+            if dest_idx == -1:
+                # Exact
+                if from_loc == 'B':
+                    new_s['my_bar'] -= 1
+                else:
+                    new_s['my_pts'][start_pt_idx] -= 1
+                new_s['my_off'] += 1
+            else:
+                # Over-shoot: allowed if no checkers on higher points
+                # Higher points are those > start_pt_idx up to 5
+                if any(new_s['my_pts'][i] > 0 for i in range(start_pt_idx + 1, 6)):
+                    return None
+                
+                if from_loc == 'B':
+                    new_s['my_bar'] -= 1
+                else:
+                    new_s['my_pts'][start_pt_idx] -= 1
+                new_s['my_off'] += 1
+        else:
+            return None # Should not happen for my move direction
+            
+        return new_s
+
+    # Main Policy Logic
+    dice = state['dice']
+    if not dice:
+        return "H:P,P"
+    
+    # Prepare dice values
+    # Handle 1 or 2 dice. If 1, we treat it as one move + pass.
+    # If 2, we can play both.
+    sorted_dice = sorted(dice)
+    # Note: engine can provide [3,3] for doubles. 
+    
+    possible_moves = []
+    
+    # Determine valid sources
+    # If bar has checkers, ONLY bar or pass is valid source
+    if state['my_bar'] > 0:
+        sources = ['B']
+    else:
+        sources = [f'A{i}' for i in range(24) if state['my_pts'][i] > 0]
+    sources.append('P')
+    
+    # Iterate permutations
+    # Order H: first die is max, second is min
+    # Order L: first die is min, second is max
+    for order in ['H', 'L']:
+        # Setup dice values based on order
+        if order == 'H':
+            d1 = sorted_dice[-1]
+            d2 = sorted_dice[0] if len(sorted_dice) > 1 else sorted_dice[0]
+        else:
+            d1 = sorted_dice[0]
+            d2 = sorted_dice[-1] if len(sorted_dice) > 1 else sorted_dice[0]
+
+        # If only 1 die in input, d1 == d2 effectively, but we constraint to one move
+        
+        for f1 in sources:
+            # Try first move
+            if f1 == 'P':
+                s1 = state
+                used_d1 = False
+            else:
+                s1 = apply_move(state, d1, f1)
+                if s1 is None:
+                    continue
+                used_d1 = True
+            
+            for f2 in sources:
+                # Constraint: if only 1 die provided, we cannot make a second move (must be P)
+                if len(dice) == 1 and f2 != 'P':
+                    continue
+                
+                if f2 == 'P':
+                    # Second move is pass
+                    if not used_d1:
+                        # Both passed
+                        possible_moves.append((evaluate(state), f"{order}:P,P", state))
+                    else:
+                        # Only first die used
+                        possible_moves.append((evaluate(s1), f"{order}:{f1},P", s1))
+                else:
+                    # Try second move
+                    s2 = apply_move(s1, d2, f2)
+                    if s2 is None:
+                        continue
+                    possible_moves.append((evaluate(s2), f"{order}:{f1},{f2}", s2))
+
+    # Filter and Select Best
+    if not possible_moves:
+        return "H:P,P"
+    
+    # Sort by score descending
+    possible_moves.sort(key=lambda x: x[0], reverse=True)
+    
+    # Apply game rules to filter candidates
+    # 1. If both dice can be played, MUST play both.
+    # 2. If only one die can be played, MUST play higher.
+    
+    # Identify categories
+    # A move string uses both dice if it doesn't contain 'P'
+    both_dice_moves = [m for m in possible_moves if ',P' not in m[1] and 'P,' not in m[1]]
+    one_die_moves = [m for m in possible_moves if ',P' in m[1] or 'P,' in m[1]]
+    
+    if len(dice) == 2:
+        if both_dice_moves:
+            return both_dice_moves[0][1]
+        else:
+            # Only one die playable logic
+            # "Play higher die when possible"
+            # Check if any move in one_die_moves plays the higher die
+            # H:From,P plays higher die (d1 in H is max)
+            # L:From,P plays lower die (d1 in L is min)
+            
+            higher_playable = [m for m in one_die_moves if m[1].startswith('H:') and m[1] != "H:P,P"]
+            lower_playable = [m for m in one_die_moves if m[1].startswith('L:') and m[1] != "L:P,P"]
+            
+            if higher_playable:
+                return higher_playable[0][1]
+            elif lower_playable:
+                return lower_playable[0][1]
+            else:
+                return "H:P,P"
+    else:
+        # Single die input, just return best move found
+        return possible_moves[0][1]
+</code>

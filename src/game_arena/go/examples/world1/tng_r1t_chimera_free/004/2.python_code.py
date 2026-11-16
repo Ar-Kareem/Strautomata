@@ -1,0 +1,113 @@
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    def create_board():
+        return [[0]*19 for _ in range(19)]
+
+    def place_stones(board, stones, player_id):
+        for r, c in stones:
+            board[r-1][c-1] = player_id
+
+    def get_empty_cells(board):
+        return [(r+1, c+1) for r in range(19) for c in range(19) if board[r][c] == 0]
+
+    def find_groups(board, player_id):
+        visited = set()
+        groups = []
+        for r in range(19):
+            for c in range(19):
+                if board[r][c] == player_id and (r, c) not in visited:
+                    stack = [(r, c)]
+                    group = []
+                    while stack:
+                        x, y = stack.pop()
+                        if (x, y) not in visited:
+                            visited.add((x, y))
+                            group.append((x, y))
+                            for dx, dy in [(-1,0),(1,0),(0,-1),(0,1)]:
+                                nx, ny = x+dx, y+dy
+                                if 0 <= nx < 19 and 0 <= ny < 19:
+                                    if board[nx][ny] == player_id:
+                                        stack.append((nx, ny))
+                    groups.append(group)
+        return groups
+
+    def count_liberties(board, group):
+        liberties = set()
+        for r, c in group:
+            for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                nr, nc = r+dr, c+dc
+                if 0 <= nr < 19 and 0 <= nc < 19 and board[nr][nc] == 0:
+                    liberties.add((nr, nc))
+        return len(liberties)
+
+    board = create_board()
+    place_stones(board, me, 1)
+    place_stones(board, opponent, 2)
+    empty = get_empty_cells(board)
+    if not empty:
+        return (0, 0)
+
+    # Capture opponent groups with 1 liberty
+    for group in find_groups(board, 2):
+        if count_liberties(board, group) == 1:
+            for r, c in group:
+                for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                    nr, nc = r+dr, c+dc
+                    if 0 <= nr < 19 and 0 <= nc < 19 and board[nr][nc] == 0:
+                        move = (nr+1, nc+1)
+                        if move in empty:
+                            return move
+
+    # Protect our groups with 1 liberty
+    for group in find_groups(board, 1):
+        if count_liberties(board, group) == 1:
+            for r, c in group:
+                for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                    nr, nc = r+dr, c+dc
+                    if 0 <= nr < 19 and 0 <= nc < 19 and board[nr][nc] == 0:
+                        move = (nr+1, nc+1)
+                        if move in empty:
+                            return move
+
+    # Claim corners/star points early
+    if len(me) + len(opponent) < 4:
+        strategic = [(1,1), (1,19), (19,1), (19,19),
+                    (4,4), (4,16), (16,4), (16,16), (10,10)]
+        for point in strategic:
+            if point in empty:
+                return point
+
+    # Maximize influence and liberties
+    best_score = -1
+    best_move = None
+    for (r, c) in empty:
+        rr, cc = r-1, c-1
+        score = 0
+        has_liberty = False
+        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+            nr, nc = rr+dr, cc+dc
+            if 0 <= nr < 19 and 0 <= nc < 19:
+                if board[nr][nc] == 1:
+                    score += 2
+                elif board[nr][nc] == 2:
+                    score -= 1
+                else:
+                    score += 1
+                    has_liberty = True
+        
+        if has_liberty and score > best_score:
+            best_score = score
+            best_move = (r, c)
+
+    if best_move:
+        return best_move
+
+    # Fallback to first available move with liberty
+    for move in empty:
+        r, c = move[0]-1, move[1]-1
+        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+            nr, nc = r+dr, c+dc
+            if 0 <= nr < 19 and 0 <= nc < 19 and board[nr][nc] == 0:
+                return move
+
+    return (0, 0)

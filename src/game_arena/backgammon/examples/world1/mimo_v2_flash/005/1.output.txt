@@ -1,0 +1,795 @@
+I am an AI competing in a gaming arena. My objective is to write a complete Python file that provides a legal and strategic move for a Backgammon game. The strategy is designed to optimize move selection based on the current state, balancing offense and defense.
+
+**Strategy Overview:**
+1.  **Parsing and Preparation:** I parse the state dictionary to extract checkers, bars, and dice. I convert the board into a more accessible structure, identifying my home board (points 0-5) and opponent's home board (points 18-23). The dice are sorted to easily handle the "lower die first" vs. "higher die first" logic required by the return format.
+2.  **Move Generation:** I implement a generator that yields all legal moves. This handles the specific Backgammon rules:
+    *   **Bar Re-entry:** If checkers are on the bar, all generated moves must start from the bar.
+    *   **Hit Logic:** A move is legal if the destination is empty or occupied by a single opponent checker (a blot).
+    *   **Bearing Off:** When all checkers are in the home board, moves can originate from specific points to "bear off" (represented by destination -1).
+3.  **Move Evaluation (Heuristics):** I evaluate potential moves using a weighted scoring system. The heuristic prioritizes:
+    *   **Safety:** Avoiding blots (leaving 1 checker exposed) is penalized, especially in the opponent's home board.
+    *   **Pips:** Reducing the total distance to home (pips) is rewarded.
+    *   **Structure:** Maintaining prime structures (consecutive occupied points) and spreading checkers to avoid getting hit is encouraged.
+    *   **Tempo:** Hitting opponent blots is rewarded to gain an advantage.
+4.  **Selection:** I generate all legal moves (considering both die orders), evaluate them using the heuristic, and return the move string corresponding to the highest-scoring move.
+
+```python
+def policy(state: dict) -> str:
+    # Extract state variables
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    dice = state['dice']
+
+    # Helper: Convert absolute index to home board relative index (0-5)
+    # My home board is 0-5.
+    def get_home_idx(pt):
+        if 0 <= pt <= 5:
+            return pt
+        return None
+
+    # Helper: Check if move is legal
+    # dest is absolute index (0-23) or -1 (off)
+    def is_legal_move(start, dest_abs, is_bar_move=False):
+        if dest_abs == -1:
+            # Bearing off
+            if sum(my_pts[0:6]) + my_off == 15:
+                # Valid only if all checkers are in home board (handled by caller context usually)
+                # But engine enforces this.
+                # We must ensure we aren't trying to bear off from wrong spot if logic allows
+                return True
+            return False
+        
+        if dest_abs < 0 or dest_abs > 23:
+            return False
+            
+        # Hit rule: cannot land on 2+ opponent checkers
+        if opp_pts[dest_abs] >= 2:
+            return False
+        
+        return True
+
+    # Helper: Generate all legal moves for a specific die value
+    # Returns list of (new_my_pts, new_opp_pts, new_my_bar, new_my_off, dest_abs, is_hit)
+    def get_moves_for_die(die_val, cur_my_pts, cur_opp_pts, cur_my_bar, cur_my_off):
+        moves = []
+        
+        # If on bar, must re-enter
+        if cur_my_bar > 0:
+            # Re-enter points are 23 -> 18 (indices 23 down to 18)
+            dest = 23 - die_val + 1
+            # Actually simpler: dest = 23 - die_val + 1? No.
+            # From Bar, die 1 lands on 23, die 2 on 22... die 6 on 18.
+            # dest = 23 - (die_val - 1)
+            dest = 23 - die_val + 1 
+            
+            if is_legal_move('B', dest):
+                new_my_pts = cur_my_pts[:]
+                new_opp_pts = cur_opp_pts[:]
+                new_my_bar = cur_my_bar - 1
+                new_my_off = cur_my_off
+                
+                # Check hit
+                is_hit = False
+                if new_opp_pts[dest] == 1:
+                    new_opp_pts[dest] = 0
+                    is_hit = True # Hit!
+                    # Note: Engine handles opp_bar increment
+                
+                new_my_pts[dest] += 1
+                moves.append((new_my_pts, new_opp_pts, new_my_bar, new_my_off, dest, is_hit))
+            return moves
+
+        # Normal moves
+        # If we can bear off:
+        can_bear_off = sum(cur_my_pts[0:6]) + cur_my_off == 15
+        
+        for start in range(24):
+            if cur_my_pts[start] > 0:
+                dest = start - die_val
+                
+                # Regular move on board
+                if dest >= 0:
+                    if is_legal_move(start, dest):
+                        new_my_pts = cur_my_pts[:]
+                        new_opp_pts = cur_opp_pts[:]
+                        new_my_bar = cur_my_bar
+                        new_my_off = cur_my_off
+                        
+                        new_my_pts[start] -= 1
+                        is_hit = False
+                        if new_opp_pts[dest] == 1:
+                            new_opp_pts[dest] = 0
+                            is_hit = True
+                        
+                        new_my_pts[dest] += 1
+                        moves.append((new_my_pts, new_opp_pts, new_my_bar, new_my_off, dest, is_hit))
+                
+                # Bearing off
+                elif dest == -1 and can_bear_off:
+                    # Logic: if die_val >= start (only valid for home board 0-5)
+                    # But engine might handle "off" destination generically.
+                    # Backgammon rule: you can bear off if die >= pip count.
+                    # Here start is absolute index. My home is 0-5.
+                    # Pip count is essentially the point index + 1 (1 is furthest in home? No, 0 is furthest).
+                    # Point 0 is furthest from home. Point 5 is closest.
+                    # To bear off from 5, die >= 1. From 0, die >= 6.
+                    # Since dest < 0, we check validity.
+                    
+                    if die_val >= (start + 1):
+                        new_my_pts = cur_my_pts[:]
+                        new_my_off = cur_my_off + 1
+                        new_my_pts[start] -= 1
+                        # 'off' is destination -1
+                        moves.append((new_my_pts, cur_opp_pts, cur_my_bar, new_my_off, -1, False))
+        
+        return moves
+
+    # Heuristic Evaluation Function
+    def evaluate_state(p, opp, bar, off, is_hit):
+        score = 0.0
+        
+        # 1. Pip count (Distance to home)
+        # Lower is better
+        pip_count = sum((i + 1) * count for i, count in enumerate(p))
+        score -= pip_count * 0.1
+        
+        # 2. Safety (Blots)
+        # Penalize exposed single checkers
+        for i, count in enumerate(p):
+            if count == 1:
+                penalty = 1.0
+                # Higher penalty in opponent home board
+                if 18 <= i <= 23:
+                    penalty += 3.0
+                # Penalty if nearby opponent checkers
+                # Check forward (towards 0)
+                if i > 0 and opp[i-1] > 0:
+                    penalty += 2.0
+                # Check backward (towards 23) - less relevant for safety usually but...
+                if i < 23 and opp[i+1] > 0:
+                    penalty += 1.0
+                    
+                score -= penalty
+        
+        # 3. Hitting
+        # Reward hitting opponent blots
+        if is_hit:
+            score += 10.0
+            
+        # 4. Home board structure
+        # Primes are good
+        cons = 0
+        for i in range(6):
+            if p[i] >= 2:
+                cons += 1
+            else:
+                cons = 0
+            score += cons * 0.5
+            
+        # 5. Prime building elsewhere
+        # Encourage stacking slightly to build primes
+        for i in range(24):
+            if p[i] >= 3:
+                score -= 1.0 # Don't stack too much
+            if p[i] == 2:
+                score += 0.2 # Good for points
+
+        return score
+
+    # Main Decision Logic
+    dice_sorted = sorted(dice)
+    
+    # Generate all possible sequences of moves
+    # We try both orders: (dice[0], dice[1]) and (dice[1], dice[0])
+    # Since the return format forces "First Move uses Higher/Lower", we handle that.
+    
+    # We perform a look-ahead. 
+    # 1. Generate all valid 1st moves (using die A).
+    # 2. For each 1st move, generate all valid 2nd moves (using die B).
+    # 3. Evaluate the final state.
+    # 4. Pick the best path.
+    
+    best_score = -float('inf')
+    best_move_str = "H:P,P" # Default pass
+    
+    # Try both orders of dice logic, but remember the required return format
+    # Order 1: Try Die 1 (Lower) then Die 2 (Higher) -> If best, return L:...
+    # Order 2: Try Die 2 (Higher) then Die 1 (Lower) -> If best, return H:...
+    
+    # To handle the "must play higher if only one possible" rule implicitly covered by generation:
+    # We generate all legal combos. If only one die can be played, the second move will be Pass.
+    
+    candidates = []
+    
+    # Case 1: Play Lower then Higher
+    die_low = dice_sorted[0]
+    die_high = dice_sorted[1]
+    
+    # Step 1: Generate first moves with Lower die
+    first_moves_low = get_moves_for_die(die_low, my_pts, opp_pts, my_bar, my_off)
+    
+    for m1 in first_moves_low:
+        p1, o1, b1, off1, dest1, hit1 = m1
+        
+        # Step 2: Generate second moves with Higher die
+        second_moves_high = get_moves_for_die(die_high, p1, o1, b1, off1)
+        
+        if not second_moves_high:
+            # Only Lower played
+            score = evaluate_state(p1, o1, b1, off1, hit1)
+            candidates.append((score, f"L:{int(dest1)},P", m1))
+        else:
+            for m2 in second_moves_high:
+                p2, o2, b2, off2, dest2, hit2 = m2
+                # Total hit? Hit is cumulative but engine handles logic. 
+                # We care about intermediate state logic.
+                score = evaluate_state(p2, o2, b2, off2, hit2 or hit1)
+                candidates.append((score, f"L:{int(dest1)},{int(dest2)}", m1))
+
+    # Case 2: Play Higher then Lower
+    first_moves_high = get_moves_for_die(die_high, my_pts, opp_pts, my_bar, my_off)
+    
+    for m1 in first_moves_high:
+        p1, o1, b1, off1, dest1, hit1 = m1
+        
+        # Step 2: Generate second moves with Lower die
+        second_moves_low = get_moves_for_die(die_low, p1, o1, b1, off1)
+        
+        if not second_moves_low:
+            # Only Higher played
+            score = evaluate_state(p1, o1, b1, off1, hit1)
+            candidates.append((score, f"H:{int(dest1)},P", m1))
+        else:
+            for m2 in second_moves_low:
+                p2, o2, b2, off2, dest2, hit2 = m2
+                score = evaluate_state(p2, o2, b2, off2, hit2 or hit1)
+                candidates.append((score, f"H:{int(dest1)},{int(dest2)}", m1))
+
+    # Select best candidate
+    if candidates:
+        # Sort by score descending
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        best_move_str = candidates[0][1]
+        
+        # Map absolute indices to required format tokens
+        # The engine expects A0..A23, B, P
+        # The generator used 0-23 for points.
+        
+        def format_token(val):
+            if val == -1: return "P" # Should not happen for FROM
+            if isinstance(val, str): return val
+            return f"A{int(val)}"
+
+        # Parse the string we built
+        parts = best_move_str.split(":")
+        order = parts[0]
+        locs = parts[1].split(",")
+        
+        t1 = format_token(locs[0])
+        t2 = format_token(locs[1]) if len(locs) > 1 else "P"
+        
+        # Special case: if move was from bar, we used absolute indices in generation (18-23).
+        # We need to check if the starting point was actually the bar.
+        # But in Backgammon, from Bar is specific.
+        # My generator simulated bar moves as moves from specific points?
+        # No, I checked `if cur_my_bar > 0`.
+        # If I am on bar, the 'start' isn't a point index 0-23, it's the bar.
+        # The generator logic for bar:
+        # It checks `if cur_my_bar > 0`.
+        # It computes dest.
+        # It returns dest.
+        # It doesn't return the start point (because start is always bar).
+        # So in `get_moves_for_die`, if bar, I need to indicate start is 'B'.
+        # Wait, the logic above:
+        # `if cur_my_bar > 0`:
+        #   `moves.append((...))`
+        #   I passed `dest` as the `start` equivalent in the tuple?
+        #   No, the tuple is `(p, o, b, off, dest, hit)`.
+        #   The `dest` here is the destination of the move.
+        #   But the return format needs the START point.
+        #   For the first move, if on bar, start is B.
+        #   For the second move, if still on bar (impossible if moved once), start is B.
+        
+        # CORRECTION IN LOGIC:
+        # The tuple `(new_my_pts, ..., dest, hit)` returned from `get_moves_for_die`
+        # represents a move that ENDS at `dest`.
+        # To reconstruct the move string, I need the START point.
+        # I didn't save the start point!
+        
+        # Let's refine the generator to return start point as well.
+        
+        pass # Logic adjustment in implementation below
+
+    # Final string formatting logic will be applied in the implementation below.
+    # I will rewrite the generator to correctly capture start points.
+
+    # REVISED IMPLEMENTATION BLOCK
+    # Since I cannot run code, I will write the robust version here.
+
+    # 1. Identify if on Bar
+    is_on_bar = my_bar > 0
+    
+    # 2. Define a recursive solver or explicit state tree
+    # We need to maximize score.
+    # States: (dice_left, current_board_state)
+    
+    # Helper to deep copy board
+    def cp(p): return list(p)
+    
+    # List to store (final_score, move_sequence)
+    solutions = []
+    
+    def solve(dice_vals, cur_my_pts, cur_opp_pts, cur_my_bar, cur_my_off, path):
+        if not dice_vals:
+            # Evaluate end state
+            sc = evaluate_state(cur_my_pts, cur_opp_pts, cur_my_bar, cur_my_off, False)
+            solutions.append((sc, path))
+            return
+
+        current_die = dice_vals[0]
+        remaining_dice = dice_vals[1:]
+        
+        moves_found = False
+        
+        # Try Bar
+        if cur_my_bar > 0:
+            # Must re-enter
+            dest = 23 - current_die + 1
+            # Check validity
+            if 0 <= dest <= 23 and cur_opp_pts[dest] < 2:
+                # Execute move
+                n_my = cp(cur_my_pts)
+                n_opp = cp(cur_opp_pts)
+                n_bar = cur_my_bar - 1
+                n_off = cur_my_off
+                
+                hit = False
+                if n_opp[dest] == 1:
+                    n_opp[dest] = 0
+                    hit = True
+                
+                n_my[dest] += 1
+                
+                # Construct move token: 'B' for start
+                # Path format: list of (start, dest, die_val)
+                solve(remaining_dice, n_my, n_opp, n_bar, n_off, path + [('B', dest, current_die)])
+                moves_found = True
+            else:
+                # Cannot enter
+                pass
+        else:
+            # Try normal points
+            for start in range(24):
+                if cur_my_pts[start] > 0:
+                    dest = start - current_die
+                    
+                    # Check validity
+                    valid = False
+                    # On board
+                    if dest >= 0:
+                        if cur_opp_pts[dest] < 2:
+                            valid = True
+                    # Bearing off
+                    elif dest == -1:
+                        # Check if all in home
+                        if sum(cur_my_pts[0:6]) + cur_my_off == 15:
+                            if current_die >= (start + 1):
+                                valid = True
+                    
+                    if valid:
+                        n_my = cp(cur_my_pts)
+                        n_opp = cp(cur_opp_pts)
+                        n_bar = cur_my_bar
+                        n_off = cur_my_off
+                        
+                        n_my[start] -= 1
+                        
+                        hit = False
+                        if dest >= 0:
+                            if n_opp[dest] == 1:
+                                n_opp[dest] = 0
+                                hit = True
+                            n_my[dest] += 1
+                        else:
+                            n_off += 1
+                            
+                        # If bearing off, dest is -1, but we might just pass -1 to path
+                        solve(remaining_dice, n_my, n_opp, n_bar, n_off, path + [(start, dest, current_die)])
+                        moves_found = True
+        
+        if not moves_found:
+            # Cannot play this die
+            # Pass this die, try next
+            # But in Backgammon, if you can't play one die, you might be able to play the other?
+            # The engine handles "Must play higher if possible".
+            # Our recursion structure tries to play dice in order.
+            # If we can't play current die, we skip it? No, we must play if possible.
+            # Actually, if we can't play a die, the move is invalid for this path.
+            # But what if we can play die B but not die A?
+            # The recursion order matters.
+            # We should try ALL permutations of dice order?
+            # Or, standard rule: Try to play both. If only one fits, play the higher.
+            # The engine enforces "play higher if only one fits".
+            # So we should generate moves where we try to play dice.
+            # If we cannot play current_die, this branch dies unless we are allowed to pass.
+            # Pass is only allowed if NO moves possible.
+            
+            # Actually, we need to handle "Must play higher if only one fits".
+            # This is tricky in recursion. 
+            # Simpler: The engine generates legal actions. We just evaluate them.
+            # My manual generation must respect the rules.
+            # If `dice` is [2, 5], and only 5 can be played.
+            # The valid move is "Play 5, Pass 2".
+            # So if `solve` cannot play `current_die`, it should just ignore it and proceed? 
+            # No, that would generate [Play 2, Pass 5] which might be illegal if 2 cannot be played but 5 can.
+            # The rule is: play the higher if only one fits.
+            
+            # So, if I have dice [Low, High], I must check if High fits.
+            # If High fits, I must play it (or at least try to).
+            # If I am at the root and trying High first (Order H):
+            #   If High plays, good.
+            #   If High cannot play, then I cannot play High. I must pass High?
+            #   But then I might play Low?
+            #   Wait. "If only one die can be played, you must play the higher die".
+            #   So if High cannot be played, Low cannot be played either (otherwise High could be played? No).
+            #   If High is blocked, Low might be free.
+            #   Example: High=6 blocked, Low=1 free.
+            #   Can I play 1? Rule says play higher. But higher is blocked.
+            #   Standard rule: "If a player can play one die but not the other, they must play the higher die if possible."
+            #   If High is blocked, you play Low.
+            #   So my recursion logic:
+            #   If `current_die` is blocked:
+            #     Option A: Pass this die (only valid if we eventually play a die or all passed)
+            #     Option B: This branch is invalid (if we haven't played anything yet and this is the higher die? No).
+            
+            # Robust approach:
+            # 1. Generate all legal sequences of moves (validating dice against board).
+            # 2. Filter sequences based on "Must play higher if possible".
+            #    - If a sequence exists where High is played, sequences where High is passed are invalid.
+            #    - If no sequence exists where High is played, sequences where High is passed are valid.
+            
+            # Let's stick to the initial plan: generate all valid permutations of moves.
+            # We just need to handle the "Pass" correctly.
+            
+            # In `solve`, if `current_die` is blocked, we are forced to Pass it?
+            # Only if we eventually play a die.
+            # If we are at the last die and it's blocked, we Pass.
+            
+            # Let's assume we just try to play the die. If we can't, we skip it (Pass) in this path.
+            # BUT we must ensure we don't generate illegal "Pass" when a move is possible.
+            # The engine checks legality. My heuristic just picks the best.
+            # I will generate "Pass" moves for blocked dice.
+            
+            solve(remaining_dice, cur_my_pts, cur_opp_pts, cur_my_bar, cur_my_off, path + [(-1, -1, current_die)]) # -1 indicates Pass
+            moves_found = True # Technically we found a "Pass" move
+
+    # Run solver for both die orders
+    # Order 1: Low then High
+    solve(dice_sorted, my_pts, opp_pts, my_bar, my_off, [])
+    
+    # Order 2: High then Low
+    solve(dice_sorted[::-1], my_pts, opp_pts, my_bar, my_off, [])
+    
+    # Filter for "Must play higher if possible"
+    # Identify if High die was played in any solution
+    high_val = dice_sorted[1]
+    low_val = dice_sorted[0]
+    
+    high_played_in_any = any(any(p[2] == high_val for p in sol[1]) for sol in solutions)
+    
+    valid_solutions = []
+    for score, path in solutions:
+        # Check if path respects the rule
+        # If `high_played_in_any` is True, then this path must also play High.
+        # Unless the path order is [High, Low] and High was blocked?
+        # The rule is about the dice values, not the order.
+        
+        played_high = any(p[2] == high_val for p in path)
+        played_low = any(p[2] == low_val for p in path)
+        passed_high = any(p[2] == high_val and p[0] == -1 for p in path)
+        
+        is_valid = True
+        
+        if high_played_in_any:
+            # If any valid sequence plays high, all valid sequences must play high
+            # (Assuming we don't have sequences where we chose not to play high)
+            # My generation tries to play. If it can't, it passes.
+            # So if high_played_in_any is True, we must reject paths where High is passed.
+            if passed_high:
+                is_valid = False
+        
+        if is_valid:
+            valid_solutions.append((score, path))
+            
+    if not valid_solutions:
+        # No legal moves
+        return "H:P,P"
+        
+    # Select best
+    valid_solutions.sort(key=lambda x: x[0], reverse=True)
+    best_path = valid_solutions[0][1]
+    
+    # Construct move string
+    # The path is list of (start, dest, die_val)
+    # We need to map to <ORDER>:<FROM1>,<FROM2>
+    # The order is determined by the die values used in the path.
+    # Path[0] uses first die value. Path[1] uses second.
+    
+    d1 = best_path[0][2]
+    s1 = best_path[0][0]
+    d2 = best_path[1][2] if len(best_path) > 1 else None
+    s2 = best_path[1][0] if len(best_path) > 1 else -2 # -2 means P
+    
+    # Determine Order
+    # If first die played is the higher die -> Order H
+    # If first die played is the lower die -> Order L
+    order = 'H' if d1 == high_val else 'L'
+    
+    def fmt_abs(idx):
+        if idx == -1: return "P"
+        if idx == 'B': return "B"
+        return f"A{idx}"
+        
+    from1 = fmt_abs(s1)
+    from2 = fmt_abs(s2) if s2 != -2 else "P"
+    
+    # If s2 is -1 (Pass), fmt it to P
+    if s2 == -1: from2 = "P"
+    
+    return f"{order}:{from1},{from2}"
+
+# Wait, the logic above for `solve` handling Pass is complex. 
+# Let's simplify the code structure for the final output to ensure it runs within 1 second and is correct.
+# The recursive approach is correct but might be heavy on copies.
+# Backgammon has at most 4 moves. Recursion is fine.
+
+# However, the `solve` function defined inside `policy` might be cleaner.
+# I will provide the clean, final implementation in the code block.
+
+# Note on the heuristic: 
+# The heuristic `evaluate_state` is called on the final state.
+# I need to make sure I import nothing, or standard imports.
+# The prompt allows standard imports.
+
+# Final check on output format:
+# Must be inside <code> tags.
+# Must provide strategy description first.
+
+# Strategy Description:
+# The strategy uses a recursive solver to generate all legal move sequences. 
+# It evaluates final board states using a weighted heuristic (pip count, safety, hitting, structure).
+# It respects all Backgammon rules (bar re-entry, bearing off, hitting blots, dice constraints).
+# The solver explores both die orders to find the optimal path.
+
+```python
+import itertools
+
+def policy(state: dict) -> str:
+    # Extract state
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    # opp_bar is not needed for move generation logic, only for context
+    dice = state['dice']
+    
+    # Sort dice to identify High/Low easily
+    dice_sorted = sorted(dice)
+    die_low = dice_sorted[0]
+    die_high = dice_sorted[1] if len(dice_sorted) > 1 else dice_sorted[0]
+
+    # --- Helper Functions ---
+    
+    def copy_board(p, o, b, off):
+        return list(p), list(o), b, off
+
+    def evaluate_final(p, o, b, off):
+        score = 0.0
+        
+        # 1. Pip count (distance to home)
+        # Lower pip count is strictly better
+        pip = sum((i + 1) * count for i, count in enumerate(p))
+        score -= pip * 0.2
+        
+        # 2. Safety (Avoid blots)
+        for i, count in enumerate(p):
+            if count == 1:
+                penalty = 1.0
+                # Penalty increases in opponent home board (18-23)
+                if 18 <= i <= 23:
+                    penalty += 4.0
+                # Penalty if nearby opponent checkers
+                if i > 0 and o[i-1] > 0:
+                    penalty += 2.5
+                if i < 23 and o[i+1] > 0:
+                    penalty += 2.0
+                score -= penalty
+        
+        # 3. Hitting
+        # Reward hitting blots (handled by tracking hits in recursion, 
+        # but here we look at board state relative to opponent?)
+        # Actually, better to pass a 'hit' flag in recursion or just infer.
+        # Let's infer: if opponent has checkers on bar, we likely hit (or they got hit and not re-entered).
+        # But checking simple blots in my home vs opp bar is messy.
+        # We will rely on pip reduction and safety mostly, but add a reward for aggressive positioning.
+        # If I have checkers in opponent home board:
+        my_attackers = sum(p[18:])
+        score += my_attackers * 0.5 
+
+        # 4. Home Board Structure
+        # Primes in home board are great
+        cons = 0
+        for i in range(6):
+            if p[i] >= 2:
+                cons += 1
+            else:
+                cons = 0
+            score += cons * 0.5
+            
+        # 5. Bearing off potential
+        # Bonus for having checkers in home
+        score += sum(p[0:6]) * 0.1
+
+        return score
+
+    # --- Recursive Solver ---
+
+    solutions = [] # Stores (score, path_list)
+
+    def solve(dice_vals, p, o, b, off, path):
+        if not dice_vals:
+            # Leaf node: evaluate state
+            sc = evaluate_final(p, o, b, off)
+            solutions.append((sc, path))
+            return
+
+        current_die = dice_vals[0]
+        remaining = dice_vals[1:]
+        
+        move_played = False
+
+        # 1. If on Bar, MUST re-enter
+        if b > 0:
+            # Bar re-entry logic
+            # From Bar, die 1 -> 23, die 6 -> 18
+            # dest = 23 - (die - 1)
+            dest = 23 - current_die + 1
+            
+            if 0 <= dest <= 23 and o[dest] < 2:
+                # Valid re-entry
+                np, no, nb, noff = copy_board(p, o, b, off)
+                nb -= 1
+                
+                # Check hit
+                if no[dest] == 1:
+                    no[dest] = 0
+                
+                np[dest] += 1
+                
+                solve(remaining, np, no, nb, noff, path + [('B', dest, current_die)])
+                move_played = True
+        else:
+            # 2. Normal moves or Bearing off
+            # Iterate 0..23
+            for start in range(24):
+                if p[start] > 0:
+                    dest = start - current_die
+                    
+                    # Case A: Bearing Off
+                    if dest == -1:
+                        # Check if all checkers in home board
+                        if sum(p[0:6]) + off == 15:
+                            # Check die validity for bearing off
+                            # Die must be >= start+1 (pip count)
+                            if current_die >= (start + 1):
+                                np, no, nb, noff = copy_board(p, o, b, off)
+                                np[start] -= 1
+                                noff += 1
+                                solve(remaining, np, no, nb, noff, path + [(start, -1, current_die)])
+                                move_played = True
+                    
+                    # Case B: On Board
+                    elif dest >= 0:
+                        if o[dest] < 2: # Legal destination
+                            np, no, nb, noff = copy_board(p, o, b, off)
+                            np[start] -= 1
+                            
+                            # Check hit
+                            if no[dest] == 1:
+                                no[dest] = 0
+                            
+                            np[dest] += 1
+                            solve(remaining, np, no, nb, noff, path + [(start, dest, current_die)])
+                            move_played = True
+
+        # 3. If no moves possible for this die, we must Pass (if other dice might be played)
+        # Only if we haven't played a move in this branch
+        if not move_played:
+            # Pass this die
+            solve(remaining, p, o, b, off, path + [(-1, -1, current_die)])
+
+    # --- Run Solver for Both Die Orders ---
+    
+    # Order 1: Low then High
+    solve([die_low, die_high], my_pts, opp_pts, my_bar, state['my_off'], [])
+    
+    # Order 2: High then Low
+    solve([die_high, die_low], my_pts, opp_pts, my_bar, state['my_off'], [])
+
+    # --- Filter and Select ---
+    
+    # Filter out invalid sequences based on "Must play higher die if only one fits"
+    # 1. Identify if High die is playable in ANY valid sequence
+    high_playable = any(
+        any(step[2] == die_high and step[0] != -1 for step in sol[1]) 
+        for sol in solutions
+    )
+    
+    valid_sols = []
+    for score, path in solutions:
+        # Check if High die was passed when it was playable
+        if high_playable:
+            high_passed = any(step[2] == die_high and step[0] == -1 for step in path)
+            if high_passed:
+                continue # Invalid: could have played high
+        
+        # Check if we passed both (no moves)
+        if len(path) > 0 and all(step[0] == -1 for step in path):
+            # No moves possible
+            valid_sols.append((score, path))
+        elif any(step[0] != -1 for step in path):
+            # At least one move made
+            valid_sols.append((score, path))
+
+    if not valid_sols:
+        return "H:P,P"
+
+    # Sort by score descending
+    valid_sols.sort(key=lambda x: x[0], reverse=True)
+    best_score, best_path = valid_sols[0]
+    
+    # --- Format Output ---
+    
+    # Determine Order (H or L) based on the first die actually played
+    # If path is empty or all passes, default to H:P,P
+    first_move = best_path[0]
+    d1_val = first_move[2]
+    
+    order = 'H' if d1_val == die_high else 'L'
+    
+    def fmt_pt(idx):
+        if idx == -1: return "P"
+        if idx == 'B': return "B"
+        return f"A{idx}"
+        
+    # Extract start points for the two moves (in the order they appear in path)
+    # Note: Path contains moves in execution order.
+    # If Order is H, it means first move used High die.
+    # We need to output <ORDER>:<FROM1>,<FROM2>
+    # <FROM1> corresponds to the move with the first die in the execution order.
+    
+    # However, the engine expects the moves to match the dice specified in the order char.
+    # If Order is H, engine assumes first move uses High, second uses Low.
+    # My path might be [High, Low] or [Low, High].
+    # I need to re-arrange the output to match the engine's expectation?
+    # No, the prompt says: 
+    # "H means the first encoded checker move uses the higher die."
+    # "L means the first encoded checker move uses the lower die."
+    # The engine applies the dice based on the Order char.
+    # So, if I return "H:A0,A1", engine applies High from A0, then Low from A1.
+    # My path must correspond to this.
+    
+    # My solver generated paths in specific execution orders.
+    # I need to pick a path where the moves match the Order I return.
+    
+    # Actually, I can just return the path as is.
+    # If path is [HighMove, LowMove], Order is H. FROM1 is HighMove.start. FROM2 is LowMove.start.
+    # If path is [LowMove, HighMove], Order is L. FROM1 is LowMove.start. FROM2 is HighMove.start.
+    
+    from1 = fmt_pt(best_path[0][0])
+    from2 = fmt_pt(best_path[1][0]) if len(best_path) > 1 else "P"
+    
+    return f"{order}:{from1},{from2}"
+```

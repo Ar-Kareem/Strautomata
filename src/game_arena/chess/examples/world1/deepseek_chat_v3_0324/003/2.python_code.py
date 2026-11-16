@@ -1,0 +1,180 @@
+
+import numpy as np
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    # Piece values
+    PIECE_VALUES = {'K': 0, 'Q': 9, 'R': 5, 'B': 3, 'N': 3, 'P': 1}
+    
+    # Position bonuses for each piece type
+    POSITION_BONUS = {
+        'P': np.array([
+            [0,  0,  0,  0,  0,  0,  0,  0],
+            [5,  5,  5,  5,  5,  5,  5,  5],
+            [1,  1,  2,  3,  3,  2,  1,  1],
+            [0,  0,  0,  2,  2,  0,  0,  0],
+            [0,  0,  0,  1,  1,  0,  0,  0],
+            [0,  0,  0,  0,  0,  0,  0,  0],
+            [-1,-1,-1,-1,-1,-1,-1,-1],
+            [0,  0,  0,  0,  0,  0,  0,  0]
+        ]),
+        'N': np.array([
+            [-5,-4,-3,-3,-3,-3,-4,-5],
+            [-4,-2,  0,  0,  0,  0,-2,-4],
+            [-3,  0,  1,  1,  1,  1,  0,-3],
+            [-3,  0,  1,  2,  2,  1,  0,-3],
+            [-3,  0,  1,  2,  2,  1,  0,-3],
+            [-3,  0,  1,  1,  1,  1,  0,-3],
+            [-4,-2,  0,  0,  0,  0,-2,-4],
+            [-5,-4,-3,-3,-3,-3,-4,-5]
+        ]),
+        'B': np.array([
+            [-2,-1,-1,-1,-1,-1,-1,-2],
+            [-1,  0,  0,  0,  0,  0,  0,-1],
+            [-1,  0,  0,  1,  1,  0,  0,-1],
+            [-1,  0,  1,  1,  1,  1,  0,-1],
+            [-1,  0,  1,  1,  1,  1,  0,-1],
+            [-1,  0,  0,  1,  1,  0,  0,-1],
+            [-1,  0,  0,  0,  0,  0,  0,-1],
+            [-2,-1,-1,-1,-1,-1,-1,-2]
+        ]),
+        'R': np.array([
+            [0,  0,  0,  0,  0,  0,  0,  0],
+            [0,  0,  0,  0,  0,  0,  0,  0],
+            [0,  0,  0,  0,  0,  0,  0,  0],
+            [0,  0,  0,  0,  0,  0,  0,  0],
+            [0,  0,  0,  0,  0,  0,  0,  0],
+            [0,  0,  0,  0,  0,  0,  0,  0],
+            [1,  1,  1,  1,  1,  1,  1,  1],
+            [0,  0,  0,  0,  0,  0,  0,  0]
+        ]),
+        'Q': np.array([
+            [-2,-1,-1, 0, 0,-1,-1,-2],
+            [-1,  0,  0, 0, 0,  0,  0,-1],
+            [-1,  0,  1, 1, 1,  1,  0,-1],
+            [0,  0,  1, 1, 1,  1,  0, 0],
+            [0,  0,  1, 1, 1,  1,  0, 0],
+            [-1,  0,  1, 1, 1,  1,  0,-1],
+            [-1,  0,  0, 0, 0,  0,  0,-1],
+            [-2,-1,-1, 0, 0,-1,-1,-2]
+        ]),
+        'K': np.array([
+            [2,  3,  1,  0,  0,  1,  3,  2],
+            [2,  2,  0,  0,  0,  0,  2,  2],
+            [-1,-2,-2,-2,-2,-2,-2,-1],
+            [-2,-3,-3,-4,-4,-3,-3,-2],
+            [-3,-4,-4,-5,-5,-4,-4,-3],
+            [-3,-4,-4,-5,-5,-4,-4,-3],
+            [-3,-4,-4,-5,-5,-4,-4,-3],
+            [-3,-4,-4,-5,-5,-4,-4,-3]
+        ])
+    }
+    
+    # Get current player prefix
+    prefix = 'w' if to_play == 'white' else 'b'
+    opponent_prefix = 'b' if prefix == 'w' else 'w'
+    
+    def evaluate_position(pieces):
+        score = 0
+        
+        # Material score
+        for square, piece in pieces.items():
+            piece_type = piece[1]
+            value = PIECE_VALUES[piece_type]
+            if piece[0] == prefix:
+                score += value
+            else:
+                score -= value
+                
+            # Positional score
+            x = ord(square[0]) - ord('a')
+            y = 8 - int(square[1])
+            
+            # Flip board perspective for black
+            if piece[0] == 'b':
+                y = 7 - y
+                
+            if piece[1] in POSITION_BONUS:
+                position_score = POSITION_BONUS[piece[1]][y][x]
+                if piece[0] == prefix:
+                    score += position_score * 0.1
+                else:
+                    score -= position_score * 0.1
+        
+        # King safety - count adjacent squares controlled by opponent
+        king_square = None
+        opponent_pieces = [p for s,p in pieces.items() if p.startswith(opponent_prefix)]
+        
+        for square, piece in pieces.items():
+            if piece == prefix + 'K':
+                king_square = square
+                break
+                
+        if king_square:
+            x = ord(king_square[0]) - ord('a')
+            y = 8 - int(king_square[1])
+            if prefix == 'b':
+                y = 7 - y
+                
+            king_danger = -5 * POSITION_BONUS['K'][y][x] * 0.1
+            score += king_danger
+            
+        return score
+    
+    best_move = None
+    best_score = -9999
+    
+    for move in legal_moves:
+        # Make a copy of the board to simulate the move
+        new_pieces = pieces.copy()
+        from_square = move[:2]
+        
+        # Handle castling
+        if move in ['O-O', 'O-O-O']:
+            rank = '1' if prefix == 'w' else '8'
+            rook_from = 'h' + rank if move == 'O-O' else 'a' + rank
+            rook_to = 'f' + rank if move == 'O-O' else 'd' + rank
+            king_to = 'g' + rank if move == 'O-O' else 'c' + rank
+            
+            new_pieces[king_to] = prefix + 'K'
+            new_pieces[rook_to] = prefix + 'R'
+            del new_pieces['e' + rank]
+            del new_pieces[rook_from]
+            
+        # Handle pawn promotion
+        elif '=' in move:
+            from_square = move.split('=')[0][-2:]
+            to_square = move.split('=')[0][-2:]
+            piece_type = move.split('=')[1]
+            new_pieces[to_square] = prefix + piece_type
+            del new_pieces[from_square]
+            
+        # Handle captures
+        elif 'x' in move:
+            to_square = move.split('x')[1][-2:]
+            piece = new_pieces[from_square]
+            del new_pieces[from_square]
+            new_pieces[to_square] = piece
+            
+        # Handle simple moves
+        else:
+            to_square = move[-2:]
+            piece = new_pieces[from_square]
+            del new_pieces[from_square]
+            new_pieces[to_square] = piece
+            
+        # Evaluate the resulting position
+        current_score = evaluate_position(new_pieces)
+        
+        # Prioritize moves that threaten opponent pieces
+        if 'x' in move:
+            captured_piece = pieces.get(move.split('x')[1][-2:], None)
+            if captured_piece and captured_piece[1] != 'K':
+                captured_value = PIECE_VALUES[captured_piece[1]]
+                current_score += captured_value * 0.5
+                
+        # Check if this is the best move so far
+        if current_score > best_score or best_move is None:
+            best_score = current_score
+            best_move = move
+    
+    return best_move if best_move is not None else legal_moves[0]

@@ -1,0 +1,87 @@
+
+import numpy as np
+
+def check_win(board):
+    """ Check if there are 5 in a row for either player. """
+    for r in range(6):
+        for c in range(6):
+            if board[r][c] == 1:
+                # Check right
+                if c <= 1 and all(board[r][c+i] == 1 for i in range(5)):
+                    return True
+                # Check down
+                if r <= 1 and all(board[r+i][c] == 1 for i in range(5)):
+                    return True
+                # Check diagonal down-right
+                if r <= 1 and c <= 1 and all(board[r+i][c+i] == 1 for i in range(5)):
+                    return True
+                # Check diagonal down-left
+                if r <= 1 and c >= 4 and all(board[r+i][c-i] == 1 for i in range(5)):
+                    return True
+    return False
+
+def rotate_quad(board, quad, direction):
+    """ Rotate the specified quadrant in the given direction. """
+    if direction == 'L':
+        # 90 degrees anticlockwise rotation
+        if quad == 0:
+            board[0:3, 0:3] = np.rot90(board[0:3, 0:3], k=1)
+        elif quad == 1:
+            board[0:3, 3:6] = np.rot90(board[0:3, 3:6], k=1)
+        elif quad == 2:
+            board[3:6, 0:3] = np.rot90(board[3:6, 0:3], k=1)
+        elif quad == 3:
+            board[3:6, 3:6] = np.rot90(board[3:6, 3:6], k=1)
+    else:
+        # 90 degrees clockwise rotation
+        if quad == 0:
+            board[0:3, 0:3] = np.rot90(board[0:3, 0:3], k=3)
+        elif quad == 1:
+            board[0:3, 3:6] = np.rot90(board[0:3, 3:6], k=3)
+        elif quad == 2:
+            board[3:6, 0:3] = np.rot90(board[3:6, 0:3], k=3)
+        elif quad == 3:
+            board[3:6, 3:6] = np.rot90(board[3:6, 3:6], k=3)
+    return board
+
+def policy(you, opponent) -> str:
+    you = np.array(you)
+    opponent = np.array(opponent)
+    board = you + opponent  # Create a board representation
+    legal_moves = []
+    for r in range(6):
+        for c in range(6):
+            if board[r][c] == 0:  # Check for an empty cell
+                # Try placing our marble here
+                board[r][c] = 1
+                
+                # Check for immediate win
+                if check_win(board):
+                    move = f"{r+1},{c+1},0,L"  # this is a placeholder, will choose quadrant and direction later
+                    board[r][c] = 0  # undo the move
+                    return move  # return immediate winning move
+                
+                # Check all quadrant rotations
+                for quad in range(4):
+                    for direction in ('L', 'R'):
+                        temp_board = np.copy(board)  # Copy board to restore after rotation
+                        temp_board = rotate_quad(temp_board, quad, direction)
+                        
+                        # Check if opponent can win thereafter and block
+                        if check_win(temp_board):
+                            move = f"{r+1},{c+1},{quad},{direction}"
+                            board[r][c] = 0  # undo the move
+                            return move  # return blocking move
+
+                # Revert the placement after checking
+                board[r][c] = 0
+                legal_moves.append((r, c))
+    
+    # If no immediate winning or blocking moves, just do the first found legal move
+    if legal_moves:
+        r, c = legal_moves[0]  # Take the first legal move found
+        move = f"{r+1},{c+1},0,L"  # Again, this is just a placeholder
+        return move
+    
+    return ""  # In case of an unforeseen situation (shouldn't happen per problem description)
+

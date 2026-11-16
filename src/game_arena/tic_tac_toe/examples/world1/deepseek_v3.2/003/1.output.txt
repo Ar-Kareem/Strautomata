@@ -1,0 +1,344 @@
+<thinking>
+We are playing Tic Tac Toe. We are player 1 (represented by 1 on the board). The opponent is -1. Empty cells are 0.
+
+We need to implement a policy function that returns the best move as (row, col) indices (0-2). The board is a 3x3 list of lists.
+
+We want to win, so we need to implement a strategy. Since the board is small, we can implement a minimax algorithm with alpha-beta pruning. However, we must ensure execution time is within 1 second on a modern CPU. Minimax is perfectly fine for 3x3 Tic Tac Toe.
+
+We can also implement a simple heuristic: first check if we can win in one move, then check if opponent can win in one move (block), then take center, then corners, then edges.
+
+But to be more robust and optimal, we can use minimax.
+
+We'll write a minimax function that returns the best move for the current player (maximizing for us, minimizing for opponent). Since we are player 1, we maximize our score.
+
+We can assign scores: win for us = +10, win for opponent = -10, draw = 0.
+
+Because the board is small, we can implement depth-limited minimax, but depth can be up to 9 moves, which is fine.
+
+Alternatively, we can use iterative deepening but not necessary.
+
+We need to handle the board state, generate possible moves, and evaluate terminal states.
+
+Implementation steps:
+
+1. Check if the board is terminal: someone wins or board full.
+2. Evaluate terminal: if we win, return +10; if opponent wins, return -10; if draw, return 0.
+3. For non-terminal, generate list of empty cells.
+4. For each empty cell, make the move (set to current player), call minimax recursively for the other player, then undo move.
+5. If it's maximizing player's turn, choose the move with highest score.
+6. If minimizing player's turn, choose the move with lowest score.
+
+We need to keep track of depth to maybe prefer quicker wins/longer losses? But not necessary because scores are based on win/lose/draw. However, we might want to win faster or lose slower. We can adjust score by depth: for maximizer, score = +10 - depth, for minimizer, score = -10 + depth. This ensures that if multiple winning moves exist, we choose the fastest win, and if multiple losing moves, we choose the slowest loss.
+
+But we can also just use the base score because all wins are equally good.
+
+Let's implement minimax with depth adjustment.
+
+We also need to decide who is the current player: we are 1, opponent is -1. In recursive calls, we switch.
+
+We'll write a helper function minimax(board, depth, is_maximizing) that returns the evaluation score for the current board state.
+
+Then policy will call minimax for each possible move and choose the move with the highest score.
+
+But we need to return the move coordinates, not just the score.
+
+We can have a separate function best_move that loops through empty cells, makes move, calls minimax for opponent, and picks the move with highest score.
+
+Because minimax returns score for the resulting position after the move, we need to interpret correctly: if we make a move, then we call minimax with is_maximizing=False (opponent's turn). The score returned is from the perspective of the maximizing player (us). So higher score is better.
+
+We'll implement:
+
+def minimax(board, depth, is_maximizing):
+    Check terminal:
+        if win for 1: return 10 - depth
+        if win for -1: return depth - 10
+        if no empty cells: return 0
+
+    if is_maximizing:
+        best = -inf
+        for each empty cell:
+            place 1
+            score = minimax(board, depth+1, False)
+            undo
+            best = max(best, score)
+        return best
+    else:
+        best = +inf
+        for each empty cell:
+            place -1
+            score = minimax(board, depth+1, True)
+            undo
+            best = min(best, score)
+        return best
+
+Then in policy:
+    best_score = -inf
+    best_move = None
+    for each empty cell:
+        place 1
+        score = minimax(board, depth=1, is_maximizing=False)
+        undo
+        if score > best_score:
+            best_score = score
+            best_move = (row, col)
+    return best_move
+
+But we must handle the case when board is full? Actually, policy is only called when it's our turn, so there must be at least one empty cell. However, if board is full and we are called? The game should be over. But we can return a default move like (0,0) if no empty cells.
+
+Now we need to write a function to check winner.
+
+Check winner: rows, columns, diagonals.
+
+We'll implement:
+
+def check_winner(board):
+    # rows
+    for i in range(3):
+        if board[i][0] == board[i][1] == board[i][2] != 0:
+            return board[i][0]
+    # columns
+    for j in range(3):
+        if board[0][j] == board[1][j] == board[2][j] != 0:
+            return board[0][j]
+    # diagonals
+    if board[0][0] == board[1][1] == board[2][2] != 0:
+        return board[0][0]
+    if board[0][2] == board[1][1] == board[2][0] != 0:
+        return board[0][2]
+    return 0  # no winner
+
+Now we have everything.
+
+We must ensure speed: minimax explores at most 9! = 362880 nodes, which is fine within 1 second. Actually, with pruning it's even faster.
+
+We'll implement alpha-beta pruning to speed up.
+
+Add alpha, beta parameters.
+
+Let's code.
+
+We'll also add a cache? For 3x3, maybe not needed.
+
+We'll implement:
+
+def minimax(board, depth, alpha, beta, is_maximizing):
+    winner = check_winner(board)
+    if winner == 1:
+        return 10 - depth
+    if winner == -1:
+        return depth - 10
+    # if board full
+    if all(board[i][j] != 0 for i in range(3) for j in range(3)):
+        return 0
+
+    if is_maximizing:
+        max_eval = -float('inf')
+        for i in range(3):
+            for j in range(3):
+                if board[i][j] == 0:
+                    board[i][j] = 1
+                    eval = minimax(board, depth+1, alpha, beta, False)
+                    board[i][j] = 0
+                    max_eval = max(max_eval, eval)
+                    alpha = max(alpha, eval)
+                    if beta <= alpha:
+                        break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for i in range(3):
+            for j in range(3):
+                if board[i][j] == 0:
+                    board[i][j] = -1
+                    eval = minimax(board, depth+1, alpha, beta, True)
+                    board[i][j] = 0
+                    min_eval = min(min_eval, eval)
+                    beta = min(beta, eval)
+                    if beta <= alpha:
+                        break
+        return min_eval
+
+But note: the break only breaks inner loop, not outer. We need to break out of both loops. We can use a flag.
+
+Alternatively, we can generate list of empty cells and iterate.
+
+Let's generate list of empty cells.
+
+We'll change loops:
+
+empty_cells = [(i,j) for i in range(3) for j in range(3) if board[i][j]==0]
+
+Then iterate over empty_cells.
+
+Now for alpha-beta pruning, we need to break out of the loop when pruning condition met.
+
+We'll implement:
+
+if is_maximizing:
+    for (i,j) in empty_cells:
+        board[i][j] = 1
+        eval = minimax(...)
+        board[i][j] = 0
+        max_eval = max(...)
+        alpha = max(alpha, eval)
+        if beta <= alpha:
+            break
+    return max_eval
+
+Similarly for minimizing.
+
+Now policy:
+
+def policy(board):
+    best_score = -float('inf')
+    best_move = None
+    empty_cells = [(i,j) for i in range(3) for j in range(3) if board[i][j]==0]
+    if not empty_cells:
+        return (0,0)  # shouldn't happen
+    for (i,j) in empty_cells:
+        board[i][j] = 1
+        score = minimax(board, depth=1, alpha=-float('inf'), beta=float('inf'), is_maximizing=False)
+        board[i][j] = 0
+        if score > best_score:
+            best_score = score
+            best_move = (i,j)
+    return best_move
+
+This should work.
+
+We'll also add a check: if it's the first move, we can choose center or corner deterministically? But minimax will handle.
+
+We can also add a simple heuristic: if center is empty, take it. But minimax already does that.
+
+Let's test in mind:
+
+Empty board: 
+All moves are symmetric, minimax will return same score for each. So best_move could be any, but we want deterministic. Our loop picks first empty cell in order (0,0), (0,1), ... So it will pick (0,0). That's fine.
+
+But we might want to pick center for optimal play. However, minimax will evaluate all moves; since all moves are equally good (draw with optimal play), we might as well pick center. But our algorithm picks (0,0). That's okay, but we can adjust: if multiple moves have same score, we can pick the one with priority: center, corners, edges.
+
+We can modify policy: after computing scores for each move, if multiple moves have the same best_score, we can choose according to a predefined order of preference: center (1,1), corners (0,0), (0,2), (2,0), (2,2), then edges.
+
+Let's implement that.
+
+We'll compute a score for each move, store in a list, then choose the one with highest score, and tie-break by preference.
+
+Preference order: we can assign a priority value: center = 5, corners = 4, edges = 3.
+
+Then compare: if scores equal, pick higher priority.
+
+We'll compute priority for each cell:
+
+priority_map = {
+    (1,1): 5,
+    (0,0): 4, (0,2): 4, (2,0): 4, (2,2): 4,
+    (0,1): 3, (1,0): 3, (1,2): 3, (2,1): 3
+}
+
+Then:
+
+if score > best_score or (score == best_score and priority_map[(i,j)] > priority_map[best_move]):
+    best_score = score
+    best_move = (i,j)
+
+But need to handle best_move initially None.
+
+Let's do:
+
+if best_move is None or score > best_score or (score == best_score and priority_map[(i,j)] > priority_map[best_move]):
+    best_score = score
+    best_move = (i,j)
+
+We need to define priority_map.
+
+Now code.
+
+We also need to import math? No.
+
+We'll write the entire code in one file.
+
+Let's write the final code.
+
+</thinking>
+<code>
+import math
+
+def check_winner(board):
+    """Return 1 if player 1 wins, -1 if player -1 wins, 0 otherwise."""
+    # rows
+    for i in range(3):
+        if board[i][0] == board[i][1] == board[i][2] != 0:
+            return board[i][0]
+    # columns
+    for j in range(3):
+        if board[0][j] == board[1][j] == board[2][j] != 0:
+            return board[0][j]
+    # diagonals
+    if board[0][0] == board[1][1] == board[2][2] != 0:
+        return board[0][0]
+    if board[0][2] == board[1][1] == board[2][0] != 0:
+        return board[0][2]
+    return 0
+
+def minimax(board, depth, alpha, beta, is_maximizing):
+    """Minimax with alpha-beta pruning."""
+    winner = check_winner(board)
+    if winner == 1:
+        return 10 - depth
+    if winner == -1:
+        return depth - 10
+    # board full?
+    if all(board[i][j] != 0 for i in range(3) for j in range(3)):
+        return 0
+
+    empty_cells = [(i, j) for i in range(3) for j in range(3) if board[i][j] == 0]
+    if is_maximizing:
+        max_eval = -math.inf
+        for (i, j) in empty_cells:
+            board[i][j] = 1
+            eval = minimax(board, depth + 1, alpha, beta, False)
+            board[i][j] = 0
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = math.inf
+        for (i, j) in empty_cells:
+            board[i][j] = -1
+            eval = minimax(board, depth + 1, alpha, beta, True)
+            board[i][j] = 0
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def policy(board):
+    """Return the next move (row, col) for player 1."""
+    best_score = -math.inf
+    best_move = None
+    empty_cells = [(i, j) for i in range(3) for j in range(3) if board[i][j] == 0]
+    if not empty_cells:
+        return (0, 0)  # should not happen in a valid game
+
+    # preference order: center, corners, edges
+    priority_map = {
+        (1, 1): 5,
+        (0, 0): 4, (0, 2): 4, (2, 0): 4, (2, 2): 4,
+        (0, 1): 3, (1, 0): 3, (1, 2): 3, (2, 1): 3
+    }
+
+    for (i, j) in empty_cells:
+        board[i][j] = 1
+        score = minimax(board, depth=1, alpha=-math.inf, beta=math.inf, is_maximizing=False)
+        board[i][j] = 0
+        if (best_move is None or
+            score > best_score or
+            (score == best_score and priority_map[(i, j)] > priority_map[best_move])):
+            best_score = score
+            best_move = (i, j)
+
+    return best_move
+</code>

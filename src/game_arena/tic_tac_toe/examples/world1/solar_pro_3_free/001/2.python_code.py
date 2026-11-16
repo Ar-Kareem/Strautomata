@@ -1,0 +1,83 @@
+
+import copy
+from math import inf
+
+def policy(board):
+    """
+    Returns the best legal move (row, col) for the current player (value 1).
+    The board is a 3×3 list of lists with 0 for empty, 1 for our marks,
+    and -1 for the opponent's marks.
+    """
+    # Define all winning lines as tuples of (row, col) indices
+    lines = [
+        [(0,0), (0,1), (0,2)], [(1,0), (1,1), (1,2)], [(2,0), (2,1), (2,2)],
+        [(0,0), (1,0), (2,0)], [(0,1), (1,1), (2,1)], [(0,2), (1,2), (2,2)],
+        [(0,0), (1,1), (2,2)], [(0,2), (1,1), (2,0)]
+    ]
+
+    # Helper: evaluate a terminal board
+    def evaluate(state):
+        # +10 for a win, -10 for a loss, 0 for a draw
+        for line in lines:
+            s = sum(state[i][j] for (i,j) in line)
+            if s == 3:
+                return 10
+            if s == -3:
+                return -10
+        return 0
+
+    # Alpha‑beta minimax
+    def alphabeta(state, depth, alpha, beta, maximizing):
+        # Check terminal conditions
+        eval_score = evaluate(state)
+        if eval_score != 0:
+            return eval_score - depth   # bias toward quicker wins/losses
+
+        # Generate legal moves
+        moves = [(i, j) for i in range(3) for j in range(3) if state[i][j] == 0]
+        if not moves:
+            return 0   # draw (will never happen due to evaluation)
+
+        if maximizing:
+            best = -inf
+            for i, j in moves:
+                copy_state = copy.deepcopy(state)
+                copy_state[i][j] = 1
+                score = alphabeta(copy_state, depth + 1, alpha, beta, False)
+                if score > best:
+                    best = score
+                    best_move = (i, j)
+                alpha = max(alpha, best)
+                if alpha >= beta:
+                    break   # prune
+            return best
+        else:
+            best = +inf
+            for i, j in moves:
+                copy_state = copy.deepcopy(state)
+                copy_state[i][j] = -1
+                score = alphabeta(copy_state, depth + 1, alpha, beta, True)
+                if score < best:
+                    best = score
+                    best_move = (i, j)
+                beta = min(beta, best)
+                if beta <= alpha:
+                    break   # prune
+            return best
+
+    # Search for the optimal move among all empty squares
+    best_score = -inf
+    best_move = None
+    empty_moves = [(i, j) for i in range(3) for j in range(3) if board[i][j] == 0]
+
+    for i, j in empty_moves:
+        copy_board = copy.deepcopy(board)
+        copy_board[i][j] = 1
+        score = alphabeta(copy_board, 0, -inf, +inf, False)
+        copy_board[i][j] = 0
+        if score > best_score:
+            best_score = score
+            best_move = (i, j)
+
+    # If for some reason no move was found (should never happen), return (0,0)
+    return best_move if best_move is not None else (0, 0)

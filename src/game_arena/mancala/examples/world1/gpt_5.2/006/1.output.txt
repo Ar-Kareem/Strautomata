@@ -1,0 +1,376 @@
+The strategy for this policy is a time-limited iterative-deepening **alpha–beta negamax** search with a **transposition table** and strong **move ordering** (prioritizing extra turns, captures, and immediate store gain). It searches deeper when possible (within a strict time budget) and falls back safely to the best known legal move. Evaluation combines store difference (with endgame scaling), side seed balance, mobility, and “tactical potential” (best immediate capture/extra-turn opportunities for both sides).
+
+<code>
+# kalah_policy.py
+from __future__ import annotations
+
+from dataclasses import dataclass
+import time
+import sys
+from typing import List, Tuple, Dict, Optional
+
+sys.setrecursionlimit(10000)
+
+INF = 10**18
+
+# Transposition table entry flags
+EXACT, LOWER, UPPER = 0, 1, 2
+
+
+@dataclass
+class TTEntry:
+    depth: int
+    value: int
+    flag: int
+
+
+def _legal_moves(you: List[int]) -> List[int]:
+    return [i for i in range(6) if you[i] > 0]
+
+
+def _is_terminal(you: List[int], opp: List[int]) -> bool:
+    return (you[0] + you[1] + you[2] + you[3] + you[4] + you[5] == 0) or \
+           (opp[0] + opp[1] + opp[2] + opp[3] + opp[4] + opp[5] == 0)
+
+
+def _collect_if_terminal(you: List[int], opp: List[int]) -> None:
+    """If terminal position (one side empty), collect remaining seeds to stores."""
+    you_side = you[0] + you[1] + you[2] + you[3] + you[4] + you[5]
+    opp_side = opp[0] + opp[1] + opp[2] + opp[3] + opp[4] + opp[5]
+    if you_side == 0 and opp_side > 0:
+        opp[6] += opp_side
+        for i in range(6):
+            opp[i] = 0
+    elif opp_side == 0 and you_side > 0:
+        you[6] += you_side
+        for i in range(6):
+            you[i] = 0
+
+
+def _apply_move(you: List[int], opp: List[int], move: int) -> Tuple[List[int], List[int], bool, bool]:
+    """
+    Apply move for current player (you). Returns (new_you, new_opp, extra_turn, terminal_after).
+    Sowing uses 13 positions: you[0..5], you_store(6), opp[0..5] mapped to 7..12; opp store is skipped.
+    """
+    ny = you[:]  # copy
+    no = opp[:]
+
+    seeds = ny[move]
+    ny[move] = 0
+
+    pos = move  # last sown position in 0..12 space
+    for _ in range(seeds):
+        pos = (pos + 1) % 13
+        if pos <= 5:
+            ny[pos] += 1
+        elif pos == 6:
+            ny[6] += 1
+        else:
+            no[pos - 7] += 1
+
+    extra = (pos == 6)
+
+    # Capture: last seed landed in your house, and that house was empty before last drop -> now equals 1
+    if 0 <= pos <= 5 and ny[pos] == 1:
+        opp_idx = 5 - pos
+        if no[opp_idx] > 0:
+            captured = no[opp_idx] + 1
+            no[opp_idx] = 0
+            ny[pos] = 0
+            ny[6] += captured
+
+    terminal = _is_terminal(ny, no)
+    if terminal:
+        _collect_if_terminal(ny, no)
+
+    return ny, no, extra, terminal
+
+
+def _final_value(you: List[int], opp: List[int]) -> int:
+    """Exact terminal value from current player's perspective."""
+    return (you[6] - opp[6]) * 10000
+
+
+def _move_lands_in_store(i: int, seeds: int) -> bool:
+    # Using 13-step ring where store is index 6.
+    # Last position index = (i + seeds) % 13
+    return ((i + seeds) % 13) == 6
+
+
+def _static_eval(you: List[int], opp: List[int]) -> int:
+    """
+    Heuristic evaluation from current player's perspective.
+    Emphasizes store diff (more in endgame), side seed balance, mobility, and tactical potential.
+    """
+    you_side = you[0] + you[1] + you[2] + you[3] + you[4] + you[5]
+    opp_side = opp[0] + opp[1] + opp[2] + opp[3] + opp[4] + opp[5]
+    total_side = you_side + opp_side
+
+    # Endgame scaling: when fewer seeds remain on the board, store diff is more decisive.
+    if total_side <= 12:
+        w_store = 60
+        w_side = 1
+    elif total_side <= 24:
+        w_store = 45
+        w_side = 1
+    else:
+        w_store = 35
+        w_side = 1
+
+    store_diff = you[6] - opp[6]
+    side_diff = you_side - opp_side
+
+    # Mobility
+    my_moves = 0
+    opp_moves = 0
+    my_extra = 0
+    opp_extra = 0
+    for i in range(6):
+        if you[i] > 0:
+            my_moves += 1
+            if _move_lands_in_store(i, you[i]):
+                my_extra += 1
+        if opp[i] > 0:
+            opp_moves += 1
+            if _move_lands_in_store(i, opp[i]):
+                opp_extra += 1
+
+    # Tactical potential: best immediate (capture + store gain) for both sides (small branching: <=6)
+    my_tactical_best = 0
+    for i in range(6):
+        if you[i] == 0:
+            continue
+        ny, no, extra, terminal = _apply_move(you, opp, i)
+        gain = ny[6] - you[6]
+        # Captures/extra-turns are very important tactically
+        score = gain * 15 + (50 if extra else 0)
+        # Terminal positions should be favored heavily
+        if terminal:
+            score += 200 + (ny[6] - no[6]) * 5
+        if score > my_tactical_best:
+            my_tactical_best = score
+
+    opp_tactical_best = 0
+    # Evaluate opponent potential by swapping perspective: opponent to move
+    for i in range(6):
+        if opp[i] == 0:
+            continue
+        ny, no, extra, terminal = _apply_move(opp, you, i)  # opponent acts as "you" here
+        gain = ny[6] - opp[6]
+        score = gain * 15 + (50 if extra else 0)
+        if terminal:
+            score += 200 + (ny[6] - no[6]) * 5
+        if score > opp_tactical_best:
+            opp_tactical_best = score
+
+    # Combine
+    val = 0
+    val += w_store * store_diff
+    val += w_side * side_diff
+    val += 6 * (my_moves - opp_moves)
+    val += 10 * (my_extra - opp_extra)
+    val += 1 * (my_tactical_best - opp_tactical_best)
+
+    return val
+
+
+def _order_moves(you: List[int], opp: List[int], moves: List[int]) -> List[int]:
+    """
+    Strong move ordering:
+    - extra turn first
+    - then higher immediate store gain (captures included)
+    - then larger capture opportunity
+    """
+    scored = []
+    ystore = you[6]
+    for m in moves:
+        ny, no, extra, terminal = _apply_move(you, opp, m)
+        gain = ny[6] - ystore
+        # Rough proxy for capture: store gain beyond what sowing might do is still fine as a heuristic.
+        score = 0
+        if extra:
+            score += 1_000_000
+        score += gain * 10_000
+        if terminal:
+            score += 100_000 + (ny[6] - no[6]) * 100
+        # Prefer moves that empty a pit late-game can be bad; mild penalty for scattering:
+        score += you[m]
+        scored.append((score, m))
+    scored.sort(reverse=True)
+    return [m for _, m in scored]
+
+
+class _Searcher:
+    def __init__(self, time_limit_s: float):
+        self.time_limit_s = time_limit_s
+        self.end_time = 0.0
+        self.tt: Dict[Tuple[Tuple[int, ...], Tuple[int, ...]], TTEntry] = {}
+        self.nodes = 0
+
+    def _time_up(self) -> bool:
+        return time.perf_counter() >= self.end_time
+
+    def negamax(self, you: List[int], opp: List[int], depth: int, alpha: int, beta: int) -> int:
+        self.nodes += 1
+        if self._time_up():
+            # Time cutoff: return static eval to keep a bounded value
+            return _static_eval(you, opp)
+
+        # Terminal
+        if _is_terminal(you, opp):
+            y = you[:]
+            o = opp[:]
+            _collect_if_terminal(y, o)
+            return _final_value(y, o)
+
+        if depth <= 0:
+            return _static_eval(you, opp)
+
+        key = (tuple(you), tuple(opp))
+        entry = self.tt.get(key)
+        if entry is not None and entry.depth >= depth:
+            if entry.flag == EXACT:
+                return entry.value
+            if entry.flag == LOWER:
+                alpha = max(alpha, entry.value)
+            elif entry.flag == UPPER:
+                beta = min(beta, entry.value)
+            if alpha >= beta:
+                return entry.value
+
+        moves = _legal_moves(you)
+        # Policy guarantee says there is always at least one legal move.
+        moves = _order_moves(you, opp, moves)
+
+        best = -INF
+        orig_alpha = alpha
+
+        for m in moves:
+            ny, no, extra, terminal = _apply_move(you, opp, m)
+            if terminal:
+                val = _final_value(ny, no)
+            else:
+                if extra:
+                    val = self.negamax(ny, no, depth - 1, alpha, beta)
+                else:
+                    val = -self.negamax(no, ny, depth - 1, -beta, -alpha)
+
+            if val > best:
+                best = val
+            if val > alpha:
+                alpha = val
+            if alpha >= beta:
+                break
+
+        # Store to TT
+        flag = EXACT
+        if best <= orig_alpha:
+            flag = UPPER
+        elif best >= beta:
+            flag = LOWER
+        self.tt[key] = TTEntry(depth=depth, value=best, flag=flag)
+        return best
+
+    def find_best_move(self, you: List[int], opp: List[int]) -> int:
+        moves = _legal_moves(you)
+        if not moves:
+            # Should not happen per problem statement, but keep safe.
+            return 0
+
+        # Good default: highest ordered move by heuristic
+        ordered = _order_moves(you, opp, moves)
+        best_move = ordered[0]
+
+        self.end_time = time.perf_counter() + self.time_limit_s
+
+        # Iterative deepening
+        depth = 1
+        # In practice, 12-16 is often reachable with alpha-beta due to small branching.
+        max_depth = 18
+
+        # Aspiration window around previous best; start wide.
+        last_val = None
+
+        while depth <= max_depth and not self._time_up():
+            alpha, beta = -INF, INF
+            if last_val is not None:
+                # Modest aspiration to speed up; if it fails, we re-search wide.
+                window = 300
+                alpha, beta = last_val - window, last_val + window
+
+            cur_best = -INF
+            cur_best_move = best_move
+
+            for m in ordered:
+                if self._time_up():
+                    break
+                ny, no, extra, terminal = _apply_move(you, opp, m)
+                if terminal:
+                    val = _final_value(ny, no)
+                else:
+                    if extra:
+                        val = self.negamax(ny, no, depth - 1, alpha, beta)
+                    else:
+                        val = -self.negamax(no, ny, depth - 1, -beta, -alpha)
+
+                if val > cur_best:
+                    cur_best = val
+                    cur_best_move = m
+                if val > alpha:
+                    alpha = val
+
+            # If aspiration failed badly, redo once with full window at same depth (time permitting)
+            if last_val is not None and (cur_best <= last_val - 300 or cur_best >= last_val + 300) and not self._time_up():
+                alpha, beta = -INF, INF
+                cur_best = -INF
+                cur_best_move = best_move
+                for m in ordered:
+                    if self._time_up():
+                        break
+                    ny, no, extra, terminal = _apply_move(you, opp, m)
+                    if terminal:
+                        val = _final_value(ny, no)
+                    else:
+                        if extra:
+                            val = self.negamax(ny, no, depth - 1, alpha, beta)
+                        else:
+                            val = -self.negamax(no, ny, depth - 1, -beta, -alpha)
+
+                    if val > cur_best:
+                        cur_best = val
+                        cur_best_move = m
+                    if val > alpha:
+                        alpha = val
+
+            if not self._time_up():
+                best_move = cur_best_move
+                last_val = cur_best
+                depth += 1
+            else:
+                break
+
+        return best_move
+
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    """
+    Return a legal move index 0..5 with you[i] > 0.
+    Uses time-limited iterative deepening alpha-beta negamax.
+    """
+    # Safety: ensure we always return a legal move quickly if anything goes wrong.
+    legal = [i for i in range(6) if you[i] > 0]
+    if not legal:
+        return 0
+
+    # Time budget: keep under 1s; allow overhead margin.
+    searcher = _Searcher(time_limit_s=0.90)
+
+    try:
+        m = searcher.find_best_move(you, opponent)
+        if 0 <= m <= 5 and you[m] > 0:
+            return m
+        # Fallback if something odd happens
+        return legal[0]
+    except Exception:
+        return legal[0]
+</code>

@@ -1,0 +1,460 @@
+The strategy for this policy is a bitboard-based Othello engine with iterative-deepening alpha-beta search. It combines:
+
+- exact legal-move generation and guaranteed legal fallback
+- transposition-table caching
+- strong move ordering, especially favoring corners and avoiding risky X/C squares when corners are empty
+- a phase-aware evaluation using mobility, corners, frontier discs, positional weights, edge stability from owned corners, and disc count in the late game
+- deeper exact search in the endgame when the board is sparse
+
+This gives solid tactical strength while staying comfortably within the time limit and always returning a legal move or `"pass"`.
+
+<code>
+import time
+import numpy as np
+
+FULL_MASK = (1 << 64) - 1
+INF = 10**9
+
+BITS = [1 << i for i in range(64)]
+
+DIRS = [
+    (-1, -1), (-1, 0), (-1, 1),
+    (0, -1),           (0, 1),
+    (1, -1),  (1, 0),  (1, 1),
+]
+
+# Precompute rays and adjacency masks
+RAYS = [[[] for _ in range(8)] for _ in range(64)]
+ADJ_MASK = [0] * 64
+for r in range(8):
+    for c in range(8):
+        idx = r * 8 + c
+        for d, (dr, dc) in enumerate(DIRS):
+            rr, cc = r + dr, c + dc
+            ray = []
+            while 0 <= rr < 8 and 0 <= cc < 8:
+                j = rr * 8 + cc
+                ray.append(BITS[j])
+                ADJ_MASK[idx] |= BITS[j]
+                rr += dr
+                cc += dc
+            RAYS[idx][d] = ray
+
+# Standard positional table
+_POS_MATRIX = [
+    [120, -20,  20,   5,   5,  20, -20, 120],
+    [-20, -40,  -5,  -5,  -5,  -5, -40, -20],
+    [ 20,  -5,  15,   3,   3,  15,  -5,  20],
+    [  5,  -5,   3,   3,   3,   3,  -5,   5],
+    [  5,  -5,   3,   3,   3,   3,  -5,   5],
+    [ 20,  -5,  15,   3,   3,  15,  -5,  20],
+    [-20, -40,  -5,  -5,  -5,  -5, -40, -20],
+    [120, -20,  20,   5,   5,  20, -20, 120],
+]
+POS_WEIGHTS = [0] * 64
+for r in range(8):
+    for c in range(8):
+        POS_WEIGHTS[r * 8 + c] = _POS_MATRIX[r][c]
+
+CORNER_IDXS = (0, 7, 56, 63)
+CORNER_SET = set(CORNER_IDXS)
+CORNER_MASK = BITS[0] | BITS[7] | BITS[56] | BITS[63]
+
+# (corner_bit, x_bit, c1_bit, c2_bit)
+CORNER_NEIGHBORS = [
+    (BITS[0],  BITS[9],  BITS[1],  BITS[8]),
+    (BITS[7],  BITS[14], BITS[6],  BITS[15]),
+    (BITS[56], BITS[49], BITS[48], BITS[57]),
+    (BITS[63], BITS[54], BITS[55], BITS[62]),
+]
+
+# Dynamic move-order penalties when the corresponding corner is empty
+# value is added to move score
+DANGER_BY_IDX = {
+    9:  ((BITS[0],  -800),),
+    1:  ((BITS[0],  -250),),
+    8:  ((BITS[0],  -250),),
+
+    14: ((BITS[7],  -800),),
+    6:  ((BITS[7],  -250),),
+    15: ((BITS[7],  -250),),
+
+    49: ((BITS[56], -800),),
+    48: ((BITS[56], -250),),
+    57: ((BITS[56], -250),),
+
+    54: ((BITS[63], -800),),
+    55: ((BITS[63], -250),),
+    62: ((BITS[63], -250),),
+}
+
+# Rays from each corner along edges, for cheap edge-stability approximation
+CORNER_EDGE_RAYS = [
+    (0,
+     [BITS[i] for i in (1, 2, 3, 4, 5, 6, 7)],
+     [BITS[i] for i in (8, 16, 24, 32, 40, 48, 56)]),
+    (7,
+     [BITS[i] for i in (6, 5, 4, 3, 2, 1, 0)],
+     [BITS[i] for i in (15, 23, 31, 39, 47, 55, 63)]),
+    (56,
+     [BITS[i] for i in (57, 58, 59, 60, 61, 62, 63)],
+     [BITS[i] for i in (48, 40, 32, 24, 16, 8, 0)]),
+    (63,
+     [BITS[i] for i in (62, 61, 60, 59, 58, 57, 56)],
+     [BITS[i] for i in (55, 47, 39, 31, 23, 15, 7)]),
+]
+
+
+def idx_to_move(idx: int) -> str:
+    return chr(ord('a') + (idx % 8)) + str((idx // 8) + 1)
+
+
+def board_to_bits(you: np.ndarray, opponent: np.ndarray):
+    me = 0
+    opp = 0
+    for r in range(8):
+        for c in range(8):
+            if you[r][c]:
+                me |= BITS[r * 8 + c]
+            elif opponent[r][c]:
+                opp |= BITS[r * 8 + c]
+    return me, opp
+
+
+def legal_moves(me: int, opp: int):
+    moves = []
+    occupied = me | opp
+    empties = FULL_MASK ^ occupied
+
+    while empties:
+        sq = empties & -empties
+        idx = sq.bit_length() - 1
+        empties ^= sq
+
+        if (ADJ_MASK[idx] & opp) == 0:
+            continue
+
+        flips = 0
+        for ray in RAYS[idx]:
+            if not ray:
+                continue
+            if (ray[0] & opp) == 0:
+                continue
+
+            line = ray[0]
+            k = 1
+            n = len(ray)
+            while k < n and (ray[k] & opp):
+                line |= ray[k]
+                k += 1
+
+            if k < n and (ray[k] & me):
+                flips |= line
+
+        if flips:
+            moves.append((idx, flips))
+    return moves
+
+
+def apply_move(me: int, opp: int, idx: int, flips: int):
+    me2 = me | BITS[idx] | flips
+    opp2 = opp & ~flips
+    return me2, opp2
+
+
+def terminal_score(me: int, opp: int) -> int:
+    diff = me.bit_count() - opp.bit_count()
+    if diff > 0:
+        return 1_000_000 + diff
+    if diff < 0:
+        return -1_000_000 + diff
+    return 0
+
+
+def positional_score(me: int, opp: int) -> int:
+    score = 0
+    x = me
+    while x:
+        b = x & -x
+        score += POS_WEIGHTS[b.bit_length() - 1]
+        x ^= b
+    x = opp
+    while x:
+        b = x & -x
+        score -= POS_WEIGHTS[b.bit_length() - 1]
+        x ^= b
+    return score
+
+
+def corner_adj_score(me: int, opp: int, occupied: int) -> int:
+    score = 0
+    for corner, x_sq, c1, c2 in CORNER_NEIGHBORS:
+        if occupied & corner:
+            continue
+        if me & x_sq:
+            score -= 25
+        if opp & x_sq:
+            score += 25
+        if me & c1:
+            score -= 12
+        if opp & c1:
+            score += 12
+        if me & c2:
+            score -= 12
+        if opp & c2:
+            score += 12
+    return score
+
+
+def frontier_score(me: int, opp: int, occupied: int) -> int:
+    empties = FULL_MASK ^ occupied
+    frontier_zone = 0
+    x = empties
+    while x:
+        b = x & -x
+        frontier_zone |= ADJ_MASK[b.bit_length() - 1]
+        x ^= b
+    my_frontier = (me & frontier_zone).bit_count()
+    opp_frontier = (opp & frontier_zone).bit_count()
+    return opp_frontier - my_frontier
+
+
+def edge_stability_score(me: int, opp: int) -> int:
+    score = 0
+    for corner_idx, ray1, ray2 in CORNER_EDGE_RAYS:
+        corner_bit = BITS[corner_idx]
+        if me & corner_bit:
+            own = me
+            sign = 1
+        elif opp & corner_bit:
+            own = opp
+            sign = -1
+        else:
+            continue
+
+        for ray in (ray1, ray2):
+            for b in ray:
+                if own & b:
+                    score += 8 * sign
+                else:
+                    break
+    return score
+
+
+def move_order_score(idx: int, flips: int, occupied: int, tt_move: int, empties_count: int) -> int:
+    score = POS_WEIGHTS[idx] * 4
+
+    if idx in CORNER_SET:
+        score += 100_000
+
+    for corner_bit, penalty in DANGER_BY_IDX.get(idx, ()):
+        if (occupied & corner_bit) == 0:
+            score += penalty
+
+    # Slight endgame preference for higher immediate gain
+    fc = flips.bit_count()
+    score += fc if empties_count > 12 else 3 * fc
+
+    if tt_move is not None and idx == tt_move:
+        score += 1_000_000
+
+    return score
+
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    me, opp = board_to_bits(you, opponent)
+    root_moves = legal_moves(me, opp)
+
+    if not root_moves:
+        return "pass"
+    if len(root_moves) == 1:
+        return idx_to_move(root_moves[0][0])
+
+    occupied = me | opp
+    empties_count = 64 - occupied.bit_count()
+
+    deadline = time.perf_counter() + 0.95
+    tt = {}
+    node_counter = 0
+
+    class SearchTimeout(Exception):
+        pass
+
+    def check_time():
+        nonlocal node_counter
+        node_counter += 1
+        if (node_counter & 255) == 0 and time.perf_counter() > deadline:
+            raise SearchTimeout
+
+    def evaluate(cur_me: int, cur_opp: int) -> int:
+        occ = cur_me | cur_opp
+        empties = 64 - occ.bit_count()
+
+        pos = positional_score(cur_me, cur_opp)
+
+        corners = (cur_me & CORNER_MASK).bit_count() - (cur_opp & CORNER_MASK).bit_count()
+        cadj = corner_adj_score(cur_me, cur_opp, occ)
+
+        my_mob = len(legal_moves(cur_me, cur_opp))
+        opp_mob = len(legal_moves(cur_opp, cur_me))
+        mobility = my_mob - opp_mob
+
+        frontier = frontier_score(cur_me, cur_opp, occ)
+        stable = edge_stability_score(cur_me, cur_opp)
+        disc_diff = cur_me.bit_count() - cur_opp.bit_count()
+
+        parity = 0
+        if empties <= 14:
+            parity = 6 if (empties & 1) else -6
+
+        if empties > 44:
+            return (
+                2 * pos +
+                28 * mobility +
+                220 * corners +
+                cadj +
+                5 * frontier +
+                stable
+            )
+        elif empties > 20:
+            return (
+                2 * pos +
+                32 * mobility +
+                260 * corners +
+                cadj +
+                7 * frontier +
+                stable +
+                2 * disc_diff
+            )
+        else:
+            return (
+                pos +
+                18 * mobility +
+                320 * corners +
+                cadj +
+                9 * frontier +
+                stable +
+                18 * disc_diff +
+                parity
+            )
+
+    def order_moves(moves, cur_me: int, cur_opp: int, tt_move=None):
+        occ = cur_me | cur_opp
+        empties = 64 - occ.bit_count()
+        scored = []
+        for idx, flips in moves:
+            s = move_order_score(idx, flips, occ, tt_move, empties)
+            scored.append((s, idx, flips))
+        scored.sort(reverse=True)
+        return [(idx, flips) for s, idx, flips in scored]
+
+    def negamax(cur_me: int, cur_opp: int, depth: int, alpha: int, beta: int, passed: bool) -> int:
+        check_time()
+
+        key = (cur_me, cur_opp, passed)
+        entry = tt.get(key)
+        tt_move = None
+        if entry is not None:
+            entry_depth, flag, val, best_move = entry
+            tt_move = best_move
+            if entry_depth >= depth:
+                if flag == 0:
+                    return val
+                elif flag > 0:
+                    alpha = max(alpha, val)
+                else:
+                    beta = min(beta, val)
+                if alpha >= beta:
+                    return val
+
+        moves = legal_moves(cur_me, cur_opp)
+
+        if not moves:
+            if passed or (cur_me | cur_opp) == FULL_MASK:
+                val = terminal_score(cur_me, cur_opp)
+                tt[key] = (depth, 0, val, None)
+                return val
+            val = -negamax(cur_opp, cur_me, depth, -beta, -alpha, True)
+            tt[key] = (depth, 0, val, None)
+            return val
+
+        if depth == 0:
+            val = evaluate(cur_me, cur_opp)
+            tt[key] = (depth, 0, val, None)
+            return val
+
+        ordered = order_moves(moves, cur_me, cur_opp, tt_move)
+        orig_alpha = alpha
+        best_val = -INF
+        best_move = ordered[0][0]
+
+        for idx, flips in ordered:
+            me2, opp2 = apply_move(cur_me, cur_opp, idx, flips)
+            val = -negamax(opp2, me2, depth - 1, -beta, -alpha, False)
+
+            if val > best_val:
+                best_val = val
+                best_move = idx
+            if val > alpha:
+                alpha = val
+            if alpha >= beta:
+                break
+
+        flag = 0
+        if best_val <= orig_alpha:
+            flag = -1
+        elif best_val >= beta:
+            flag = 1
+
+        tt[key] = (depth, flag, best_val, best_move)
+        return best_val
+
+    def search_root(depth: int, previous_best=None):
+        root_key = (me, opp, False)
+        entry = tt.get(root_key)
+        tt_move = previous_best
+        if entry is not None and entry[3] is not None:
+            tt_move = entry[3]
+
+        ordered = order_moves(root_moves, me, opp, tt_move)
+        alpha = -INF
+        beta = INF
+        best_move = ordered[0][0]
+
+        for idx, flips in ordered:
+            me2, opp2 = apply_move(me, opp, idx, flips)
+            val = -negamax(opp2, me2, depth - 1, -beta, -alpha, False)
+            if val > alpha:
+                alpha = val
+                best_move = idx
+
+        tt[root_key] = (depth, 0, alpha, best_move)
+        return alpha, best_move
+
+    # Conservative depth cap; iterative deepening will stop early if time runs out.
+    if empties_count <= 12:
+        max_depth = empties_count + 2
+    elif empties_count <= 16:
+        max_depth = 12
+    elif empties_count <= 22:
+        max_depth = 10
+    elif empties_count <= 32:
+        max_depth = 8
+    elif empties_count <= 44:
+        max_depth = 7
+    else:
+        max_depth = 6
+
+    # Safe fallback: best ordered legal move
+    fallback = order_moves(root_moves, me, opp, None)[0][0]
+    best_move = fallback
+
+    try:
+        for depth in range(2, max_depth + 1):
+            _, mv = search_root(depth, best_move)
+            best_move = mv
+    except SearchTimeout:
+        pass
+
+    return idx_to_move(best_move)
+</code>

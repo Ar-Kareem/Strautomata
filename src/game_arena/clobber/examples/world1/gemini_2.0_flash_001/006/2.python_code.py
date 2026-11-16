@@ -1,0 +1,135 @@
+
+import numpy as np
+import random
+
+def policy(you: list[int], opponent: list[int]) -> str:
+    """
+    Chooses the best move for Clobber on a 5x6 board.
+
+    Args:
+        you: A 5x6 list representing your pieces (1) and empty cells (0).
+        opponent: A 5x6 list representing the opponent's pieces (1) and empty cells (0).
+
+    Returns:
+        A string representing the move in the format 'row,col,dir'.
+    """
+
+    you = np.array(you)
+    opponent = np.array(opponent)
+
+    def get_legal_moves(board, player, opponent):
+        """
+        Finds all legal moves for a given player on the board.
+
+        Args:
+            board: The combined board (player + opponent).
+            player: The player's board (1 for pieces, 0 otherwise).
+            opponent: The opponent's board (1 for pieces, 0 otherwise).
+
+        Returns:
+            A list of legal moves in the format [(row, col, dir)].
+        """
+        moves = []
+        rows, cols = board.shape
+        for row in range(rows):
+            for col in range(cols):
+                if player[row, col] == 1:
+                    # Check up
+                    if row > 0 and opponent[row - 1, col] == 1:
+                        moves.append((row, col, 'U'))
+                    # Check down
+                    if row < rows - 1 and opponent[row + 1, col] == 1:
+                        moves.append((row, col, 'D'))
+                    # Check left
+                    if col > 0 and opponent[row, col - 1] == 1:
+                        moves.append((row, col, 'L'))
+                    # Check right
+                    if col < cols - 1 and opponent[row, col + 1] == 1:
+                        moves.append((row, col, 'R'))
+        return moves
+
+    def apply_move(board, player, opponent, move):
+        """
+        Applies a move to the board and updates player/opponent positions.
+
+        Args:
+            board: The combined board.
+            player: The player's board.
+            opponent: The opponent's board.
+            move: The move to apply (row, col, dir).
+
+        Returns:
+            A tuple: (new_board, new_player, new_opponent) after applying the move.
+        """
+        row, col, direction = move
+        new_board = board.copy()
+        new_player = player.copy()
+        new_opponent = opponent.copy()
+
+        new_player[row, col] = 0  # Remove piece from starting position
+        new_opponent[row, col] = 0
+
+        if direction == 'U':
+            new_player[row - 1, col] = 1
+            new_opponent[row - 1, col] = 0
+            new_board[row, col] = 0
+            new_board[row-1, col] = 1
+
+        elif direction == 'D':
+            new_player[row + 1, col] = 1
+            new_opponent[row + 1, col] = 0
+            new_board[row, col] = 0
+            new_board[row+1, col] = 1
+
+        elif direction == 'L':
+            new_player[row, col - 1] = 1
+            new_opponent[row, col - 1] = 0
+            new_board[row, col] = 0
+            new_board[row, col-1] = 1
+
+        elif direction == 'R':
+            new_player[row, col + 1] = 1
+            new_opponent[row, col + 1] = 0
+            new_board[row, col] = 0
+            new_board[row, col+1] = 1
+        
+        return new_board, new_player, new_opponent
+
+    def evaluate_move(board, player, opponent, move):
+        """
+        Evaluates a move by estimating the opponent's potential moves after it.
+
+        Args:
+            board: The combined board.
+            player: The player's board.
+            opponent: The opponent's board.
+            move: The move to evaluate (row, col, dir).
+
+        Returns:
+            The estimated number of opponent's moves after applying this move. Lower is better.
+        """
+        new_board, new_player, new_opponent = apply_move(board, player, opponent, move)
+        opponent_moves = get_legal_moves(new_board, new_opponent, new_player)
+        return len(opponent_moves)
+
+    board = you + opponent
+    legal_moves = get_legal_moves(board, you, opponent)
+
+    if not legal_moves:
+        return "0,0,U"
+
+    best_move = None
+    min_opponent_moves = float('inf')
+
+    for move in legal_moves:
+        opponent_moves = evaluate_move(board, you, opponent, move)
+        if opponent_moves < min_opponent_moves:
+            min_opponent_moves = opponent_moves
+            best_move = move
+
+    if best_move:
+        row, col, direction = best_move
+        return f"{row},{col},{direction}"
+    else: # If no "best" moves based on minimizing the opponent moves, return a random legal move
+        row, col, direction = random.choice(legal_moves)
+        return f"{row},{col},{direction}"

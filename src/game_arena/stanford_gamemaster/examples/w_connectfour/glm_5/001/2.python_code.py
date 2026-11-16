@@ -1,0 +1,181 @@
+
+def policy(state: list[list[object]], role: str) -> str:
+    ROWS = 6
+    COLS = 7
+    
+    # Parse board: board[col][row], row 0 is bottom
+    board = [[None for _ in range(ROWS)] for _ in range(COLS)]
+    for prop in state:
+        if prop[0] == "cell":
+            col = int(prop[1]) - 1
+            row = int(prop[2]) - 1
+            board[col][row] = prop[3]
+    
+    opponent = "black" if role == "red" else "red"
+    
+    def get_valid_cols(b):
+        return [c for c in range(COLS) if b[c][ROWS-1] is None]
+    
+    def get_drop_row(b, col):
+        for r in range(ROWS):
+            if b[col][r] is None:
+                return r
+        return -1
+    
+    def check_win_at(b, col, row, color):
+        for dc, dr in [(1, 0), (0, 1), (1, 1), (1, -1)]:
+            count = 1
+            for sign in [1, -1]:
+                c, r = col + sign*dc, row + sign*dr
+                while 0 <= c < COLS and 0 <= r < ROWS and b[c][r] == color:
+                    count += 1
+                    c += sign*dc
+                    r += sign*dr
+            if count >= 4:
+                return True
+        return False
+    
+    def check_win(b, color):
+        for c in range(COLS):
+            for r in range(ROWS):
+                if b[c][r] == color and check_win_at(b, c, r, color):
+                    return True
+        return False
+    
+    def copy_board(b):
+        return [col[:] for col in b]
+    
+    def evaluate_window(window, my_color, opp_color):
+        my_count = window.count(my_color)
+        opp_count = window.count(opp_color)
+        empty_count = window.count(None)
+        
+        if my_count == 4:
+            return 100
+        elif my_count == 3 and empty_count == 1:
+            return 5
+        elif my_count == 2 and empty_count == 2:
+            return 2
+        if opp_count == 4:
+            return -100
+        elif opp_count == 3 and empty_count == 1:
+            return -4
+        elif opp_count == 2 and empty_count == 2:
+            return -1
+        return 0
+    
+    def evaluate_board(b, my_color, opp_color):
+        score = 0
+        for r in range(ROWS):
+            if b[3][r] == my_color:
+                score += 3
+            elif b[3][r] == opp_color:
+                score -= 3
+        for r in range(ROWS):
+            for c in range(COLS - 3):
+                window = [b[c+i][r] for i in range(4)]
+                score += evaluate_window(window, my_color, opp_color)
+        for c in range(COLS):
+            for r in range(ROWS - 3):
+                window = [b[c][r+i] for i in range(4)]
+                score += evaluate_window(window, my_color, opp_color)
+        for c in range(COLS - 3):
+            for r in range(ROWS - 3):
+                window = [b[c+i][r+i] for i in range(4)]
+                score += evaluate_window(window, my_color, opp_color)
+        for c in range(COLS - 3):
+            for r in range(3, ROWS):
+                window = [b[c+i][r-i] for i in range(4)]
+                score += evaluate_window(window, my_color, opp_color)
+        return score
+    
+    COLUMN_ORDER = [3, 2, 4, 1, 5, 0, 6]
+    
+    def get_ordered_valid_cols(b):
+        valid = set(c for c in range(COLS) if b[c][ROWS-1] is None)
+        return [c for c in COLUMN_ORDER if c in valid]
+    
+    def minimax(b, depth, alpha, beta, is_maximizing):
+        if check_win(b, role):
+            return 10000 + depth
+        if check_win(b, opponent):
+            return -10000 - depth
+        valid = get_ordered_valid_cols(b)
+        if not valid:
+            return 0
+        if depth == 0:
+            return evaluate_board(b, role, opponent)
+        if is_maximizing:
+            max_eval = float('-inf')
+            for col in valid:
+                new_b = copy_board(b)
+                row = get_drop_row(new_b, col)
+                new_b[col][row] = role
+                eval_score = minimax(new_b, depth - 1, alpha, beta, False)
+                max_eval = max(max_eval, eval_score)
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for col in valid:
+                new_b = copy_board(b)
+                row = get_drop_row(new_b, col)
+                new_b[col][row] = opponent
+                eval_score = minimax(new_b, depth - 1, alpha, beta, True)
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval
+    
+    valid_cols = get_valid_cols(board)
+    if not valid_cols:
+        return "drop(1)"
+    if len(valid_cols) == 1:
+        return f"drop({valid_cols[0] + 1})"
+    
+    for col in valid_cols:
+        new_b = copy_board(board)
+        row = get_drop_row(new_b, col)
+        new_b[col][row] = role
+        if check_win_at(new_b, col, row, role):
+            return f"drop({col + 1})"
+    
+    for col in valid_cols:
+        new_b = copy_board(board)
+        row = get_drop_row(new_b, col)
+        new_b[col][row] = opponent
+        if check_win_at(new_b, col, row, opponent):
+            return f"drop({col + 1})"
+    
+    dangerous = set()
+    for col in valid_cols:
+        row = get_drop_row(board, col)
+        if row < ROWS - 1:
+            test_b = copy_board(board)
+            test_b[col][row] = role
+            test_b[col][row + 1] = opponent
+            if check_win_at(test_b, col, row + 1, opponent):
+                dangerous.add(col)
+    
+    safe_cols = [c for c in valid_cols if c not in dangerous]
+    if not safe_cols:
+        safe_cols = valid_cols
+    safe_cols_ordered = sorted(safe_cols, key=lambda c: abs(c - 3))
+    
+    best_col = safe_cols_ordered[0]
+    best_score = float('-inf')
+    depth = 6
+    
+    for col in safe_cols_ordered:
+        new_b = copy_board(board)
+        row = get_drop_row(new_b, col)
+        new_b[col][row] = role
+        score = minimax(new_b, depth, float('-inf'), float('inf'), False)
+        if score > best_score:
+            best_score = score
+            best_col = col
+    
+    return f"drop({best_col + 1})"

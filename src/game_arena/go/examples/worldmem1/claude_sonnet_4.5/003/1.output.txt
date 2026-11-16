@@ -1,0 +1,187 @@
+I'll create a competitive Go policy that balances strategic play with efficient computation.
+
+## Strategy
+
+My policy will use the following approach:
+
+1. **Opening Play**: Use common opening patterns (star points, 3-4 points) for the first few moves
+2. **Tactical Evaluation**: For each legal move, evaluate based on:
+   - Liberty counting (avoid self-atari, create eye space)
+   - Capture opportunities (immediate captures of opponent stones)
+   - Territory building (distance from own stones vs opponent stones)
+   - Strategic positions (corners > edges > center in early game)
+3. **Pattern Recognition**: Favor common good shapes and avoid bad ones
+4. **Endgame**: Prioritize filling opponent territory and securing own territory
+
+The policy uses a scoring system that weights these factors and selects the highest-scoring legal move.
+
+<code>
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    import random
+    
+    BOARD_SIZE = 19
+    me_set = set(me)
+    opponent_set = set(opponent)
+    occupied = me_set | opponent_set
+    
+    def is_valid(r, c):
+        return 1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE
+    
+    def get_neighbors(r, c):
+        neighbors = []
+        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nr, nc = r + dr, c + dc
+            if is_valid(nr, nc):
+                neighbors.append((nr, nc))
+        return neighbors
+    
+    def count_liberties(r, c, stones, temp_occupied):
+        """Count liberties of a group containing stone at (r, c)"""
+        if (r, c) not in stones:
+            return 0
+        
+        visited = set()
+        to_check = [(r, c)]
+        liberties = set()
+        
+        while to_check:
+            pos = to_check.pop()
+            if pos in visited:
+                continue
+            visited.add(pos)
+            
+            for neighbor in get_neighbors(pos[0], pos[1]):
+                if neighbor not in temp_occupied:
+                    liberties.add(neighbor)
+                elif neighbor in stones and neighbor not in visited:
+                    to_check.append(neighbor)
+        
+        return len(liberties)
+    
+    def would_capture(r, c):
+        """Check if placing at (r, c) would capture opponent stones"""
+        captured = 0
+        temp_occupied = occupied | {(r, c)}
+        
+        for neighbor in get_neighbors(r, c):
+            if neighbor in opponent_set:
+                if count_liberties(neighbor[0], neighbor[1], opponent_set, temp_occupied) == 0:
+                    captured += 1
+        
+        return captured
+    
+    def is_legal_move(r, c):
+        """Check if move is legal (not occupied, not suicide)"""
+        if (r, c) in occupied:
+            return False
+        
+        temp_occupied = occupied | {(r, c)}
+        
+        # If it captures opponent stones, it's legal
+        if would_capture(r, c) > 0:
+            return True
+        
+        # Check if we have liberties
+        liberties = 0
+        friendly_neighbors = []
+        
+        for neighbor in get_neighbors(r, c):
+            if neighbor not in temp_occupied:
+                liberties += 1
+            elif neighbor in me_set:
+                friendly_neighbors.append(neighbor)
+        
+        # Direct liberty
+        if liberties > 0:
+            return True
+        
+        # Check if any friendly neighbor group has liberties
+        for neighbor in friendly_neighbors:
+            if count_liberties(neighbor[0], neighbor[1], me_set, temp_occupied) > 0:
+                return True
+        
+        return False
+    
+    def evaluate_move(r, c):
+        """Evaluate the quality of a move"""
+        score = 0.0
+        
+        # Capture opponent stones (very high value)
+        captures = would_capture(r, c)
+        score += captures * 50
+        
+        # Count our liberties after placing
+        temp_me = me_set | {(r, c)}
+        temp_occupied = occupied | {(r, c)}
+        our_libs = count_liberties(r, c, temp_me, temp_occupied)
+        score += our_libs * 2
+        
+        # Avoid self-atari (placing with only 1 liberty unless capturing)
+        if our_libs == 1 and captures == 0:
+            score -= 30
+        
+        # Distance-based territory evaluation
+        min_dist_to_me = float('inf')
+        min_dist_to_opp = float('inf')
+        
+        for mr, mc in me:
+            dist = abs(r - mr) + abs(c - mc)
+            min_dist_to_me = min(min_dist_to_me, dist)
+        
+        for opr, opc in opponent:
+            dist = abs(r - opr) + abs(c - opc)
+            min_dist_to_opp = min(min_dist_to_opp, dist)
+        
+        if me:
+            # Prefer extending from our stones but not too close
+            if min_dist_to_me == 1:
+                score += 15
+            elif min_dist_to_me == 2:
+                score += 10
+            elif min_dist_to_me >= 10:
+                score -= 5
+        
+        if opponent:
+            # Invade opponent's territory
+            if min_dist_to_opp <= 2:
+                score += 8
+        
+        # Strategic positions (corners and edges in early game)
+        total_stones = len(me) + len(opponent)
+        if total_stones < 20:
+            # Star points and 3-4 points
+            star_points = [(4, 4), (4, 16), (16, 4), (16, 16), (10, 10), (4, 10), (10, 4), (16, 10), (10, 16)]
+            if (r, c) in star_points:
+                score += 25
+            
+            # Corner influence
+            corner_dist = min(r, BOARD_SIZE - r + 1, c, BOARD_SIZE - c + 1)
+            if corner_dist <= 4:
+                score += 15 - corner_dist * 2
+        
+        # Add small random noise to break ties
+        score += random.random() * 0.1
+        
+        return score
+    
+    # Opening book
+    total_stones = len(me) + len(opponent)
+    if total_stones == 0:
+        return ((4, 4), memory)
+    
+    # Find all legal moves
+    legal_moves = []
+    for r in range(1, BOARD_SIZE + 1):
+        for c in range(1, BOARD_SIZE + 1):
+            if is_legal_move(r, c):
+                legal_moves.append((r, c))
+    
+    # If no legal moves, pass
+    if not legal_moves:
+        return ((0, 0), memory)
+    
+    # Evaluate and choose best move
+    best_move = max(legal_moves, key=lambda pos: evaluate_move(pos[0], pos[1]))
+    
+    return (best_move, memory)
+</code>

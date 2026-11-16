@@ -1,0 +1,209 @@
+The strategy for this policy is to look ahead one turn by simulating all legal moves and evaluating the resulting board states. The evaluation function prioritizes bearing off checkers, hitting opponent blots (especially in their home board), building points (anchors), and advancing the furthest back checkers. The policy strictly adheres to the rules of Backgammon, forcing moves from the bar first and prioritizing the use of both dice or the higher die when possible.
+
+<code>
+import copy
+
+def policy(state: dict) -> str:
+    """
+    Calculates the best move for the current Backgammon state.
+    """
+    # Extract state variables
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+    dice = state['dice']
+
+    # If no dice, pass
+    if not dice:
+        return "H:P,P"
+
+    # Determine dice values
+    d1, d2 = (dice[0], dice[0]) if len(dice) == 1 else (dice[0], dice[1])
+    high, low = max(d1, d2), min(d1, d2)
+    
+    # Helper to simulate a single move
+    def apply_move(s, from_loc, die):
+        new_s = copy.deepcopy(s)
+        m_pts = new_s['my_pts']
+        o_pts = new_s['opp_pts']
+        
+        dest = -1
+        
+        if from_loc == 'B':
+            new_s['my_bar'] -= 1
+            dest = 24 - die
+        else:
+            m_pts[from_loc] -= 1
+            dest = from_loc - die
+        
+        # Bearing off
+        if dest < 0:
+            # Check validity: all in home (0-5)
+            if sum(m_pts[6:]) == 0 and new_s['my_bar'] == 0:
+                # Exact or higher bear off
+                if dest == -1 or die > from_loc + 1:
+                    # Check if we aren't skipping a checker for inexact bear off
+                    if dest == -1 or die == from_loc + 1 or sum(m_pts[from_loc+1:6]) == 0:
+                        new_s['my_off'] += 1
+                        return new_s, True
+            # Invalid bear off, revert concept (shouldn't happen if generated legally)
+            return None, False
+
+        # Regular move
+        if dest >= 0:
+            if o_pts[dest] >= 2:
+                return None, False # Blocked
+            
+            m_pts[dest] += 1
+            
+            # Hit
+            if o_pts[dest] == 1:
+                o_pts[dest] = 0
+                new_s['opp_bar'] += 1
+                return new_s, True
+            
+            return new_s, True
+            
+        return None, False
+
+    # Generate valid first moves for a specific die
+    def get_moves_for_die(s, die):
+        moves = []
+        # Must move from bar first
+        if s['my_bar'] > 0:
+            dest = 24 - die
+            if dest >= 0 and dest < 24:
+                if s['opp_pts'][dest] < 2:
+                    moves.append('B')
+        else:
+            # Can bear off?
+            all_in_home = sum(s['my_pts'][6:]) == 0
+            for i in range(5, -1, -1):
+                if s['my_pts'][i] > 0:
+                    dest = i - die
+                    # Standard move within board
+                    if dest >= 0:
+                        if s['opp_pts'][dest] < 2:
+                            moves.append(i)
+                    # Bearing off
+                    elif all_in_home:
+                         # Exact match
+                         if dest == -1:
+                             moves.append(i)
+                         # Inexact (die > distance)
+                         # Valid only if no checkers on higher points
+                         elif die > i + 1:
+                             if sum(s['my_pts'][i+1:6]) == 0:
+                                 moves.append(i)
+            
+            # Check regular moves if we looked at home board but have checkers outside
+            if not all_in_home:
+                for i in range(23, 5, -1):
+                    if s['my_pts'][i] > 0:
+                        dest = i - die
+                        if dest >= 0:
+                            if s['opp_pts'][dest] < 2:
+                                moves.append(i)
+        return moves
+
+    # Heuristic Evaluation
+    def evaluate(s):
+        score = 0
+        # Pip count difference (lower is better for me)
+        my_pip = sum((i+1) * c for i, c in enumerate(s['my_pts'])) + 25 * s['my_bar']
+        opp_pip = sum((24-i) * c for i, c in enumerate(s['opp_pts'])) + 25 * s['opp_bar']
+        score += (opp_pip - my_pip) * 0.1
+        
+        # Off checkers
+        score += s['my_off'] * 100
+        
+        # Anchors and Blots
+        for i in range(24):
+            if s['my_pts'][i] >= 2:
+                score += 10 # Anchor
+            if s['my_pts'][i] == 1:
+                score -= 5 # Blot
+            
+            # Opponent blots are good (potential hits)
+            if s['opp_pts'][i] == 1:
+                score += 5
+        
+        # Bar penalties
+        score -= s['my_bar'] * 30
+        score += s['opp_bar'] * 20
+        
+        return score
+
+    # Search for best move
+    best_move_str = "H:P,P"
+    best_score = -float('inf')
+    
+    found_full_move = False
+    candidates = []
+    
+    # Try High then Low
+    mvs_h = get_moves_for_die(state, high)
+    for m1 in mvs_h:
+        s2, ok1 = apply_move(state, m1, high)
+        if ok1:
+            mvs_l = get_moves_for_die(s2, low)
+            if mvs_l:
+                for m2 in mvs_l:
+                    s3, ok2 = apply_move(s2, m2, low)
+                    if ok2:
+                        found_full_move = True
+                        sc = evaluate(s3)
+                        f1 = "B" if m1 == 'B' else f"A{m1}"
+                        f2 = "B" if m2 == 'B' else f"A{m2}"
+                        candidates.append((sc, f"H:{f1},{f2}"))
+
+    # Try Low then High
+    mvs_l = get_moves_for_die(state, low)
+    for m1 in mvs_l:
+        s2, ok1 = apply_move(state, m1, low)
+        if ok1:
+            mvs_h = get_moves_for_die(s2, high)
+            if mvs_h:
+                for m2 in mvs_h:
+                    s3, ok2 = apply_move(s2, m2, high)
+                    if ok2:
+                        found_full_move = True
+                        sc = evaluate(s3)
+                        f1 = "B" if m1 == 'B' else f"A{m1}"
+                        f2 = "B" if m2 == 'B' else f"A{m2}"
+                        candidates.append((sc, f"L:{f1},{f2}"))
+
+    if found_full_move:
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        return candidates[0][1]
+    
+    # If no full move, try single moves. Must play higher die if possible.
+    # Higher die moves
+    mvs_h = get_moves_for_die(state, high)
+    if mvs_h:
+        for m in mvs_h:
+            s2, ok = apply_move(state, m, high)
+            if ok:
+                sc = evaluate(s2)
+                f = "B" if m == 'B' else f"A{m}"
+                candidates.append((sc, f"H:{f},P"))
+    
+    # Lower die moves (only if higher was not possible)
+    if not mvs_h:
+        mvs_l = get_moves_for_die(state, low)
+        for m in mvs_l:
+            s2, ok = apply_move(state, m, low)
+            if ok:
+                sc = evaluate(s2)
+                f = "B" if m == 'B' else f"A{m}"
+                candidates.append((sc, f"L:{f},P"))
+
+    if candidates:
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        return candidates[0][1]
+        
+    return "H:P,P"
+</code>

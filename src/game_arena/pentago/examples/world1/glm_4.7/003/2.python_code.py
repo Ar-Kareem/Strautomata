@@ -1,0 +1,264 @@
+
+import numpy as np
+
+# --- Constants ---
+BOARD_SIZE = 6
+WIN_LENGTH = 5
+DEPTH = 3  # Search depth: 3 is a good balance of speed and strength
+INF = 1000000
+
+# Quadrant definitions: (start_row, end_row, start_col, end_col) in 0-indexed slices
+QUADRANTS = [
+    (0, 3, 0, 3), # Top-Left (0)
+    (0, 3, 3, 6), # Top-Right (1)
+    (3, 6, 0, 3), # Bottom-Left (2)
+    (3, 6, 3, 6)  # Bottom-Right (3)
+]
+
+# Heuristic weights
+WEIGHTS = {
+    5: 100000,
+    4: 10000,
+    3: 1000,
+    2: 100,
+    1: 10
+}
+
+def rotate_subgrid(board, quad_idx, direction):
+    """Rotates a quadrant of the board in place."""
+    sr, er, sc, ec = QUADRANTS[quad_idx]
+    subgrid = board[sr:er, sc:ec].copy()
+    
+    # np.rot90(k=1) is Counter-Clockwise (L), k=3 is Clockwise (R)
+    k = 1 if direction == 'L' else 3
+    new_subgrid = np.rot90(subgrid, k=k)
+    
+    board[sr:er, sc:ec] = new_subgrid
+    return board
+
+def check_win(board):
+    """
+    Checks if there is a 5-in-a-row.
+    Returns True if win, False otherwise.
+    Optimized for 6x6 board.
+    """
+    # Horizontal & Vertical
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE - WIN_LENGTH + 1):
+            if np.all(board[r, c:c+WIN_LENGTH]): return True
+    for c in range(BOARD_SIZE):
+        for r in range(BOARD_SIZE - WIN_LENGTH + 1):
+            if np.all(board[r:r+WIN_LENGTH, c]): return True
+            
+    # Diagonals (Top-Left to Bottom-Right)
+    # Only checking start positions that allow a length-5 line
+    for r in range(BOARD_SIZE - WIN_LENGTH + 1):
+        for c in range(BOARD_SIZE - WIN_LENGTH + 1):
+            if np.all([board[r+i, c+i] for i in range(WIN_LENGTH)]): return True
+            
+    # Diagonals (Top-Right to Bottom-Left)
+    for r in range(BOARD_SIZE - WIN_LENGTH + 1):
+        for c in range(WIN_LENGTH - 1, BOARD_SIZE):
+            if np.all([board[r+i, c-i] for i in range(WIN_LENGTH)]): return True
+            
+    return False
+
+def evaluate_board(you, opp):
+    """
+    Heuristic evaluation of the board state.
+    Returns a score (positive for you, negative for opponent).
+    """
+    score = 0
+    
+    # Center control bonus (cells 2,2 to 3,3)
+    center_mask = np.zeros((6,6), dtype=int)
+    center_mask[2:4, 2:4] = 1
+    score += np.sum(you * center_mask) * 5
+    score -= np.sum(opp * center_mask) * 5
+    
+    # Check lines for patterns
+    # We define "lines" as rows, cols, and main diagonals
+    lines = []
+    
+    # Rows
+    for r in range(6): lines.append(you[r,:]); lines.append(opp[r,:])
+    # Cols
+    for c in range(6): lines.append(you[:,c]); lines.append(opp[:,c])
+    # Diagonals (length 5 or 6)
+    for r in range(2): lines.append(np.diag(you, r-r)); lines.append(np.diag(opp, r-r))
+    for c in range(1, 2): lines.append(np.diag(you, c)); lines.append(np.diag(opp, c))
+    for r in range(2): lines.append(np.diag(np.fliplr(you), r-r)); lines.append(np.diag(np.fliplr(opp), r-r))
+    for c in range(1, 2): lines.append(np.diag(np.fliplr(you), c)); lines.append(np.diag(np.fliplr(opp), c))
+
+    # Evaluate patterns in lines
+    for i, line in enumerate(lines):
+        player_sign = 1 if i % 2 == 0 else -1
+        
+        # Count consecutive sequences
+        # Simple approximation: iterate through line
+        count = 0
+        for val in line:
+            if val == 1:
+                count += 1
+            else:
+                if count >= 2 and count < 5:
+                    score += player_sign * WEIGHTS.get(count, 0)
+                count = 0
+        if count >= 2 and count < 5:
+            score += player_sign * WEIGHTS.get(count, 0)
+            
+    return score
+
+def get_legal_moves_mask(you, opp):
+    """
+    Returns a boolean mask of valid placements.
+    Filters moves to those near existing pieces or center to reduce branching factor.
+    """
+    empty = (you + opp) == 0
+    
+    # If board is very empty, allow center
+    total_pieces = np.sum(you) + np.sum(opp)
+    if total_pieces < 4:
+        # Allow center 4 squares
+        mask = np.zeros((6,6), dtype=bool)
+        mask[2:4, 2:4] = True
+        return mask & empty
+        
+    # Otherwise, only cells adjacent to existing pieces
+    # Dilate occupied cells
+    from scipy.ndimage import binary_dilation # Standard library often doesn't have scipy. 
+    # Wait, prompt says "any standard Python imports, including numpy".
+    # Scipy is technically external but usually available in scientific stacks.
+    # To be safe (standard Python + numpy), let's implement a simple neighbor check manually.
+    
+    occupied = you + opp
+    relevant = np.zeros((6,6), dtype=bool)
+    
+    # Shift occupied matrix to find neighbors
+    for dr in [-1, 0, 1]:
+        for dc in [-1, 0, 1]:
+            if dr == 0 and dc == 0: continue
+            shifted = np.roll(occupied, (dr, dc), axis=(0,1))
+            # Handle wrapping issues of roll (edges shouldn't wrap)
+            if dr == 1: shifted[0, :] = 0
+            if dr == -1: shifted[-1, :] = 0
+            if dc == 1: shifted[:, 0] = 0
+            if dc == -1: shifted[:, -1] = 0
+            relevant |= (shifted > 0)
+            
+    return relevant & empty
+
+def get_move_list(you, opp):
+    """Generates a list of (r, c, quad, dir) tuples."""
+    placements = np.argwhere(get_legal_moves_mask(you, opp))
+    moves = []
+    for r, c in placements:
+        for q in range(4):
+            for d in ['L', 'R']:
+                moves.append((r, c, q, d))
+    return moves
+
+def minimax(you_board, opp_board, depth, alpha, beta, maximizing_player):
+    # Check terminal states or depth 0
+    you_win = check_win(you_board)
+    opp_win = check_win(opp_board)
+    
+    if you_win and opp_win: return 0 # Draw
+    if you_win: return INF
+    if opp_win: return -INF
+    if depth == 0: return evaluate_board(you_board, opp_board)
+    
+    # Generate moves
+    if maximizing_player:
+        moves = get_move_list(you_board, opp_board)
+        # If no moves (should not happen per rules unless full), return eval
+        if not moves: return evaluate_board(you_board, opp_board)
+
+        max_eval = -INF
+        for r, c, q, d in moves:
+            # Simulate move
+            n_you = you_board.copy()
+            n_opp = opp_board.copy()
+            n_you[r, c] = 1
+            rotate_subgrid(n_you, q, d)
+            rotate_subgrid(n_opp, q, d)
+            
+            eval = minimax(n_you, n_opp, depth - 1, alpha, beta, False)
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        # Opponent's turn. Note: perspective switches.
+        # In the recursive call, 'you_board' is technically the opponent of the current maximizer.
+        # So we swap roles.
+        moves = get_move_list(opp_board, you_board)
+        if not moves: return evaluate_board(you_board, opp_board)
+
+        min_eval = INF
+        for r, c, q, d in moves:
+            n_you = you_board.copy()
+            n_opp = opp_board.copy()
+            # Opponent places their marble (which is 1 in opp_board)
+            n_opp[r, c] = 1
+            rotate_subgrid(n_you, q, d)
+            rotate_subgrid(n_opp, q, d)
+            
+            # Next call is maximizing player (the original 'me')
+            eval = minimax(n_you, n_opp, depth - 1, alpha, beta, True)
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def policy(you, opponent):
+    # Convert to numpy arrays
+    you_board = np.array(you, dtype=int)
+    opp_board = np.array(opponent, dtype=int)
+    
+    best_move = None
+    best_score = -INF
+    alpha = -INF
+    beta = INF
+    
+    # Get legal moves
+    possible_moves = get_move_list(you_board, opp_board)
+    
+    # Order moves: heuristic to check promising moves first (e.g. center)
+    # Simple shuffle or center-priority helps alpha-beta
+    # Center priority: higher (r,c) sum closer to center? 
+    # Just iterating is usually fine for depth 3 with good alpha-beta.
+    
+    for r, c, q, d in possible_moves:
+        # Apply move
+        n_you = you_board.copy()
+        n_opp = opp_board.copy()
+        n_you[r, c] = 1
+        rotate_subgrid(n_you, q, d)
+        rotate_subgrid(n_opp, q, d)
+        
+        # Check for immediate win to save time
+        if check_win(n_you) and not check_win(n_opp):
+            return f"{r+1},{c+1},{q},{d}"
+            
+        # Recurse
+        score = minimax(n_you, n_opp, DEPTH - 1, alpha, beta, False)
+        
+        if score > best_score:
+            best_score = score
+            best_move = (r, c, q, d)
+            
+        alpha = max(alpha, score)
+    
+    # Fallback if something went wrong (should not happen with legal moves check)
+    if best_move is None:
+        # Pick random
+        import random
+        m = random.choice(possible_moves)
+        return f"{m[0]+1},{m[1]+1},{m[2]},{m[3]}"
+        
+    r, c, q, d = best_move
+    # Convert 0-indexed to 1-indexed for output
+    return f"{r+1},{c+1},{q},{d}"

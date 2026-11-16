@@ -1,0 +1,137 @@
+
+import numpy as np
+import random
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    # 1. Define Grid Constants (4x4 boxes)
+    ROWS, COLS = 4, 4
+    
+    # 2. Helper: Calculate degree of a specific box
+    # A box at (r,c) is bounded by:
+    # Top: H[r,c], Bottom: H[r+1,c], Left: V[r,c], Right: V[r,c+1]
+    def get_degree(r, c, h, v):
+        deg = 0
+        if h[r, c] != 0: deg += 1
+        if h[r+1, c] != 0: deg += 1
+        if v[r, c] != 0: deg += 1
+        if v[r, c+1] != 0: deg += 1
+        return deg
+
+    # 3. Identify and Classify Legal Moves
+    scoring_moves = []
+    safe_moves = []
+    bad_moves = []
+    
+    all_moves = []
+    
+    # Collect horizontal moves (5 rows x 4 cols)
+    for r in range(ROWS + 1):
+        for c in range(COLS):
+            if horizontal[r, c] == 0:
+                all_moves.append((r, c, 'H'))
+                
+    # Collect vertical moves (4 rows x 5 cols)
+    for r in range(ROWS):
+        for c in range(COLS + 1):
+            if vertical[r, c] == 0:
+                all_moves.append((r, c, 'V'))
+                
+    # Randomize order to avoid deterministic patterns
+    random.shuffle(all_moves)
+    
+    for r, c, orientation in all_moves:
+        move_str = f"{r},{c},{orientation}"
+        
+        # Identify adjacent boxes affected by this edge
+        adj_boxes = []
+        if orientation == 'H':
+            if r > 0: adj_boxes.append((r-1, c))       # Box above
+            if r < ROWS: adj_boxes.append((r, c))      # Box below
+        else: # 'V'
+            if c > 0: adj_boxes.append((r, c-1))       # Box left
+            if c < COLS: adj_boxes.append((r, c))      # Box right
+            
+        is_scoring = False
+        gives_opening = False
+        safe_cost = 0 # Heuristic cost for safe moves
+        
+        for br, bc in adj_boxes:
+            d = get_degree(br, bc, horizontal, vertical)
+            
+            if d == 3:
+                is_scoring = True
+            elif d == 2:
+                gives_opening = True
+            
+            # Heuristic: Prefer moves that touch boxes with lower degrees
+            # Touching a degree-0 box makes it degree 1 (Cost 1)
+            # Touching a degree-1 box makes it degree 2 (Cost 10 - risky)
+            if d == 0: safe_cost += 1
+            elif d == 1: safe_cost += 10
+            
+        if is_scoring:
+            scoring_moves.append(move_str)
+        elif gives_opening:
+            bad_moves.append(((r, c, orientation), move_str))
+        else:
+            safe_moves.append((safe_cost, move_str))
+            
+    # 4. Strategy Execution
+    
+    # Priority 1: Take Boxes (Greedy)
+    if scoring_moves:
+        return scoring_moves[0]
+        
+    # Priority 2: Safe Moves
+    # Pick the safe move that minimizes the risk of creating future chains
+    if safe_moves:
+        safe_moves.sort(key=lambda x: x[0])
+        return safe_moves[0][1]
+        
+    # Priority 3: Minimizing Sacrifice
+    # If forced to open a chain, simulate to find the shortest chain.
+    best_bad_move = None
+    min_chain_loss = 1000
+    
+    # Default to the first bad move if valid
+    if bad_moves:
+        best_bad_move = bad_moves[0][1]
+
+    for (r, c, o), m_str in bad_moves:
+        # Create a simulation board
+        sim_h = horizontal.copy()
+        sim_v = vertical.copy()
+        
+        # Apply the candidate move
+        if o == 'H': sim_h[r, c] = 1
+        else: sim_v[r, c] = 1
+        
+        # Simulate greedy opponent taking the chain
+        loss = 0
+        while True:
+            captured_this_round = False
+            # Find any box with degree 3 (which opponent captures immediately)
+            for br in range(ROWS):
+                for bc in range(COLS):
+                    if get_degree(br, bc, sim_h, sim_v) == 3:
+                        captured_this_round = True
+                        loss += 1
+                        
+                        # Opponent fills the remaining edge to complete the box
+                        if sim_h[br, bc] == 0: sim_h[br, bc] = -1
+                        elif sim_h[br+1, bc] == 0: sim_h[br+1, bc] = -1
+                        elif sim_v[br, bc] == 0: sim_v[br, bc] = -1
+                        elif sim_v[br, bc+1] == 0: sim_v[br, bc+1] = -1
+                        
+                        # Break inner loops to restart search as state changed
+                        break
+                if captured_this_round: break
+            
+            if not captured_this_round:
+                break
+                
+        if loss < min_chain_loss:
+            min_chain_loss = loss
+            best_bad_move = m_str
+            
+    return best_bad_move

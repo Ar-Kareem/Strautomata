@@ -1,0 +1,166 @@
+
+
+The strategy for this policy is to prioritize moves that:
+1. Capture opponent pieces to reduce their options.
+2. Move towards the center of the board for better control.
+3. Position pieces adjacent to friendly units to enhance connectivity.
+4. Reduce the distance to the centroid of friendly pieces for faster grouping.
+
+Heuristic scoring balances these factors to select the highest-value legal move efficiently.
+
+<code>
+def policy(board) -> str:
+    my_pieces = [(i, j) for i in range(8) for j in range(8) if board[i][j] == 1]
+    if not my_pieces:
+        return "0,0:0,0"  # Fallback, should never occur
+    
+    sum_r = sum(i for i, j in my_pieces)
+    sum_c = sum(j for i, j in my_pieces)
+    count = len(my_pieces)
+    centroid_r = sum_r / count
+    centroid_c = sum_c / count
+    moves = []
+    
+    for r, c in my_pieces:
+        # Row moves
+        count_row = sum(1 for cell in board[r] if cell != 0)
+        # Left
+        new_c = c - count_row
+        if new_c >= 0:
+            valid = True
+            for step in range(1, count_row):
+                if board[r][c - step] == -1:
+                    valid = False
+                    break
+            if valid and board[r][new_c] != 1:
+                moves.append((r, c, r, new_c))
+        # Right
+        new_c = c + count_row
+        if new_c < 8:
+            valid = True
+            for step in range(1, count_row):
+                if board[r][c + step] == -1:
+                    valid = False
+                    break
+            if valid and board[r][new_c] != 1:
+                moves.append((r, c, r, new_c))
+        
+        # Column moves
+        count_col = sum(1 for i in range(8) if board[i][c] != 0)
+        # Up
+        new_r = r - count_col
+        if new_r >= 0:
+            valid = True
+            for step in range(1, count_col):
+                if board[r - step][c] == -1:
+                    valid = False
+                    break
+            if valid and board[new_r][c] != 1:
+                moves.append((r, c, new_r, c))
+        # Down
+        new_r = r + count_col
+        if new_r < 8:
+            valid = True
+            for step in range(1, count_col):
+                if board[r + step][c] == -1:
+                    valid = False
+                    break
+            if valid and board[new_r][c] != 1:
+                moves.append((r, c, new_r, c))
+        
+        # Diagonal / (top-left to bottom-right)
+        line = []
+        x, y = r, c
+        while x >= 0 and y < 8:
+            line.append((x, y))
+            x -= 1
+            y += 1
+        x, y = r + 1, c - 1
+        while x < 8 and y >= 0:
+            line.append((x, y))
+            x += 1
+            y -= 1
+        count_diag1 = sum(1 for x, y in line if board[x][y] != 0)
+        # NE
+        new_r, new_c = r - count_diag1, c + count_diag1
+        if new_r >= 0 and new_c < 8:
+            valid = True
+            for step in range(1, count_diag1):
+                if board[r - step][c + step] == -1:
+                    valid = False
+                    break
+            if valid and board[new_r][new_c] != 1:
+                moves.append((r, c, new_r, new_c))
+        # SW
+        new_r, new_c = r + count_diag1, c - count_diag1
+        if new_r < 8 and new_c >= 0:
+            valid = True
+            for step in range(1, count_diag1):
+                if board[r + step][c - step] == -1:
+                    valid = False
+                    break
+            if valid and board[new_r][new_c] != 1:
+                moves.append((r, c, new_r, new_c))
+        
+        # Diagonal \ (top-right to bottom-left)
+        line = []
+        x, y = r, c
+        while x >= 0 and y >= 0:
+            line.append((x, y))
+            x -= 1
+            y -= 1
+        x, y = r + 1, c + 1
+        while x < 8 and y < 8:
+            line.append((x, y))
+            x += 1
+            y += 1
+        count_diag2 = sum(1 for x, y in line if board[x][y] != 0)
+        # NW
+        new_r, new_c = r - count_diag2, c - count_diag2
+        if new_r >= 0 and new_c >= 0:
+            valid = True
+            for step in range(1, count_diag2):
+                if board[r - step][c - step] == -1:
+                    valid = False
+                    break
+            if valid and board[new_r][new_c] != 1:
+                moves.append((r, c, new_r, new_c))
+        # SE
+        new_r, new_c = r + count_diag2, c + count_diag2
+        if new_r < 8 and new_c < 8:
+            valid = True
+            for step in range(1, count_diag2):
+                if board[r + step][c + step] == -1:
+                    valid = False
+                    break
+            if valid and board[new_r][new_c] != 1:
+                moves.append((r, c, new_r, new_c))
+    
+    if not moves:
+        return f"{my_pieces[0][0]},{my_pieces[0][1]}:{my_pieces[0][0]},{my_pieces[0][1]}"  # No moves, shouldn't happen
+    
+    best_score = float('-inf')
+    best_move = None
+    for move in moves:
+        from_r, from_c, to_r, to_c = move
+        capture = 1 if board[to_r][to_c] == -1 else 0
+        adjacency = 0
+        for dr in (-1, 0, 1):
+            for dc in (-1, 0, 1):
+                if dr == 0 and dc == 0:
+                    continue
+                nr, nc = to_r + dr, to_c + dc
+                if 0 <= nr < 8 and 0 <= nc < 8 and board[nr][nc] == 1:
+                    adjacency += 1
+        center_score = 14 - (abs(to_r - 3.5) + abs(to_c - 3.5))
+        from_dist = abs(from_r - centroid_r) + abs(from_c - centroid_c)
+        to_dist = abs(to_r - centroid_r) + abs(to_c - centroid_c)
+        dist_diff = from_dist - to_dist
+        score = adjacency * 10 + capture * 15 + center_score + dist_diff * 5
+        
+        if score > best_score or (score == best_score and not best_move):
+            best_score = score
+            best_move = f"{from_r},{from_c}:{to_r},{to_c}"
+    
+    return best_move if best_move else f"{moves[0][0]},{moves[0][1]}:{moves[0][2]},{moves[0][3]}"
+</code>

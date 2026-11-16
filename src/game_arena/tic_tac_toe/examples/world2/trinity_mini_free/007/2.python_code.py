@@ -1,0 +1,52 @@
+
+def policy(board):
+    # Define all possible winning lines (rows, columns, diagonals)
+    lines = [
+        [(0,0), (0,1), (0,2), (0,3)],  # Row 0
+        [(1,0), (1,1), (1,2), (1,3)],  # Row 1
+        [(2,0), (2,1), (2,2), (2,3)],  # Row 2
+        [(3,0), (3,1), (3,2), (3,3)],  # Row 3
+        [(0,0), (1,0), (2,0), (3,0)],  # Column 0
+        [(0,1), (1,1), (2,1), (3,1)],  # Column 1
+        [(0,2), (1,2), (2,2), (3,2)],  # Column 2
+        [(0,3), (1,3), (2,3), (3,3)],  # Column 3
+        [(0,0), (1,1), (2,2), (3,3)],  # Main diagonal
+        [(0,3), (1,2), (2,1), (3,0)]   # Anti-diagonal
+    ]
+    
+    # Check for winning moves (3 of your marks + 1 empty)
+    for line in lines:
+        count1 = 0  # Your marks
+        count_opp = 0  # Opponent's marks
+        empty_cells = []
+        for (r, c) in line:
+            if board[r][c] == 1:
+                count1 += 1
+            elif board[r][c] == -1:
+                count_opp += 1
+            else:  # Empty cell
+                empty_cells.append((r, c))
+        # If you have 3 marks and 1 empty cell, take the winning move
+        if count1 == 3 and len(empty_cells) == 1:
+            return empty_cells[0]
+        # If opponent has 3 marks and 1 empty cell, block them
+        if count_opp == 3 and len(empty_cells) == 1:
+            return empty_cells[0]
+    
+    # Prioritize center cells (strategic positions)
+    center_cells = [(1,1), (1,2), (2,1), (2,2)]
+    for cell in center_cells:
+        if board[cell[0]][cell[1]] == 0:
+            return cell
+    
+    # Prioritize corners (high-value positions)
+    corners = [(0,0), (0,3), (3,0), (3,3)]
+    for cell in corners:
+        if board[cell[0]][cell[1]] == 0:
+            return cell
+    
+    # Fallback: any available move
+    for r in range(4):
+        for c in range(4):
+            if board[r][c] == 0:
+                return (r, c)

@@ -1,0 +1,53 @@
+
+def policy(you, opponent):
+    """
+    Returns the optimal move for the current state.
+    
+    Args:
+        you: 8x8 numpy array representing your discs (1) and empty spaces (0).
+        opponent: 8x8 numpy array representing opponent's discs (1) and empty spaces (0).
+    
+    Returns:
+        str: Algebraic notation of the move (e.g., "d3") or "pass".
+    """
+    # Helper function to count flips in a direction
+    def count_flips(r, c):
+        total = 0
+        directions = [(-1,-1), (-1,0), (-1,1),
+                     (0,-1),           (0,1),
+                     (1,-1),  (1,0),   (1,1)]
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            # Skip if out of bounds or empty
+            if not (0 <= nr < 8 and 0 <= nc < 8) or opponent[nr][nc] == 0:
+                continue
+            flips = 0
+            while True:
+                nr += dr
+                nc += dc
+                if not (0 <= nr < 8 and 0 <= nc < 8):
+                    break
+                if you[nr][nc] == 1:
+                    total += flips
+                    break
+                if opponent[nr][nc] == 0:
+                    break
+                flips += 1
+        return total
+
+    # Generate all legal moves
+    moves = []
+    for r in range(8):
+        for c in range(8):
+            if you[r][c] == 0 and opponent[r][c] == 0:
+                if count_flips(r, c) > 0:
+                    moves.append((r, c))
+    
+    # Select best move (highest flip count)
+    if not moves:
+        return "pass"
+    
+    best_move = max(moves, key=lambda pos: count_flips(*pos))
+    file_letter = chr(ord('a') + best_move[1])
+    rank = best_move[0] + 1
+    return f"{file_letter}{rank}"

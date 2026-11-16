@@ -1,0 +1,75 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Define all possible winning lines (rows, columns, diagonals)
+    lines = [
+        [(0,0), (0,1), (0,2)],  # Row 0
+        [(1,0), (1,1), (1,2)],  # Row 1
+        [(2,0), (2,1), (2,2)],  # Row 2
+        [(0,0), (1,0), (2,0)],  # Column 0
+        [(0,1), (1,1), (2,1)],  # Column 1
+        [(0,2), (1,2), (2,2)],  # Column 2
+        [(0,0), (1,1), (2,2)],  # Diagonal 1
+        [(0,2), (1,1), (2,0)]   # Diagonal 2
+    ]
+    
+    # Check for winning moves (my marks that can win)
+    for line in lines:
+        count1 = 0  # Count of my marks (1)
+        count2 = 0  # Count of opponent marks (-1)
+        empty_pos = None
+        for pos in line:
+            r, c = pos
+            if board[r][c] == 1:
+                count1 += 1
+            elif board[r][c] == -1:
+                count2 += 1
+            else:
+                empty_pos = pos
+        # If two of my marks and one empty, this is a winning move
+        if count1 == 2 and empty_pos is not None:
+            return empty_pos
+    
+    # Check for blocking moves (opponent's winning threats)
+    for line in lines:
+        count1 = 0
+        count2 = 0
+        empty_pos = None
+        for pos in line:
+            r, c = pos
+            if board[r][c] == 1:
+                count1 += 1
+            elif board[r][c] == -1:
+                count2 += 1
+            else:
+                empty_pos = pos
+        # If two opponent marks and one empty, block this move
+        if count2 == 2 and empty_pos is not None:
+            return empty_pos
+    
+    # Prioritize center if available
+    if board[1][1] == 0:
+        return (1, 1)
+    
+    # Check opposite corners (if opponent is in a corner, take opposite)
+    corners = [(0,0), (0,2), (2,0), (2,2)]
+    opposite = {(0,0): (2,2), (0,2): (2,0), (2,0): (0,2), (2,2): (0,0)}
+    for corner in corners:
+        r, c = corner
+        if board[r][c] == -1:
+            opp = opposite[corner]
+            if board[opp[0]][opp[1]] == 0:
+                return opp
+    
+    # Take any available corner
+    for corner in corners:
+        if board[corner[0]][corner[1]] == 0:
+            return corner
+    
+    # Take any available edge
+    edges = [(0,1), (1,0), (1,2), (2,1)]
+    for edge in edges:
+        if board[edge[0]][edge[1]] == 0:
+            return edge
+    
+    # Default move if no better options (should not happen in valid game)
+    return (0, 0)

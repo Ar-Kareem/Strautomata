@@ -1,0 +1,53 @@
+### Strategy Description
+My strategy for this Havannah policy is a heuristic-based greedy approach designed to balance proactive play (building connections towards potential winning structures like rings, bridges, or forks) with defensive blocking, while favoring central control early in the game. The policy evaluates each legal move by scoring positions based on:
+
+- **My adjacency bonus**: +2 for each existing stone of mine directly adjacent (hexagonal neighbors), encouraging connection to my groups.
+- **Opponent adjacency penalty**: -1 for each adjacent enemy stone, to block potential opponent progress.
+- **Center preference**: -0.1 * Manhattan distance to (7,7) to prioritize central control, which is crucial for rings and overall board influence.
+- **Early game override**: If no stones are placed yet, force-play the center (7,7) if valid, as it's a strong opening.
+- **Tie-breaking**: Among ties, choose the lexicographically smallest (row, col) for repeatability.
+
+This heuristic is simple, fast (under 1 second even on a large board), and aims to exploit the spatial reasoning of the hexagonal grid without full win detection. It should perform well against random or naive policies by making "smart" local moves, while avoiding complex search that could time out.
+
+```
+import itertools
+
+def policy(me, opp, valid_mask):
+    # Decimal scores to avoid integer ties
+    best_score = float('-inf')
+    best_move = None
+    
+    # Set of all occupied positions for quick lookup
+    occupied = set(me) | set(opp)
+    
+    # Define hexagonal neighbors deltas
+    deltas = [(1,0), (-1,0), (0,1), (0,-1), (-1,1), (1,-1)]
+    
+    # If no stones yet, try center
+    if not me and not opp and valid_mask[7][7] and (7,7) not in occupied:
+        return (7, 7)
+    
+    # Evaluate all legal moves
+    for r, c in itertools.product(range(15), range(15)):
+        if valid_mask[r][c] and (r, c) not in occupied:
+            score = 0
+            adj_me = 0
+            adj_opp = 0
+            for dr, dc in deltas:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 15 and 0 <= nc < 15 and valid_mask[nr][nc]:
+                    if (nr, nc) in me:
+                        adj_me += 2
+                    elif (nr, nc) in opp:
+                        adj_opp += 1
+            dist = abs(r - 7) + abs(c - 7)
+            score = adj_me - adj_opp - 0.1 * dist
+            
+            # Update best move (tie break by smallest r,c)
+            if score > best_score or (score == best_score and (r < best_move[0] or (r == best_move[0] and c < best_move[1]))):
+                best_score = score
+                best_move = (r, c)
+    
+    # Guaranteed to find a move since valid_mask has at least one True
+    return best_move
+```

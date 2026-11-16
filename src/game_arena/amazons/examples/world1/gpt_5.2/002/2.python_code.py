@@ -1,0 +1,330 @@
+
+import numpy as np
+from collections import deque
+from typing import List, Tuple, Optional
+
+# Move tuple: (fr, fc, tr, tc, ar, ac)
+Move = Tuple[int, int, int, int, int, int]
+
+DIRS = (
+    (-1, 0), (1, 0), (0, -1), (0, 1),
+    (-1, -1), (-1, 1), (1, -1), (1, 1)
+)
+
+N = 6
+
+def _in_bounds(r: int, c: int) -> bool:
+    return 0 <= r < N and 0 <= c < N
+
+def _ray_squares(board: np.ndarray, r: int, c: int) -> List[Tuple[int, int]]:
+    """All empty squares reachable by queen move from (r,c) on current board."""
+    out = []
+    for dr, dc in DIRS:
+        rr, cc = r + dr, c + dc
+        while _in_bounds(rr, cc) and board[rr, cc] == 0:
+            out.append((rr, cc))
+            rr += dr
+            cc += dc
+    return out
+
+def _ray_squares_from_with_vacated(board: np.ndarray, r: int, c: int, vacated: Tuple[int, int]) -> List[Tuple[int, int]]:
+    """
+    Ray squares treating `vacated` as empty (used for arrow after moving).
+    Assumes landing square is occupied by the mover, as in the post-move board.
+    """
+    vr, vc = vacated
+    out = []
+    for dr, dc in DIRS:
+        rr, cc = r + dr, c + dc
+        while _in_bounds(rr, cc):
+            if rr == vr and cc == vc:
+                # treat as empty, continue
+                out.append((rr, cc))
+                rr += dr
+                cc += dc
+                continue
+            if board[rr, cc] != 0:
+                break
+            out.append((rr, cc))
+            rr += dr
+            cc += dc
+    return out
+
+def _apply_move(board: np.ndarray, move: Move, player: int) -> np.ndarray:
+    fr, fc, tr, tc, ar, ac = move
+    b2 = board.copy()
+    b2[fr, fc] = 0
+    b2[tr, tc] = player
+    b2[ar, ac] = -1
+    return b2
+
+def _mobility(board: np.ndarray, player: int) -> int:
+    pos = np.argwhere(board == player)
+    total = 0
+    for r, c in pos:
+        total += len(_ray_squares(board, int(r), int(c)))
+    return total
+
+def _queen_distance_map(board: np.ndarray, player: int) -> np.ndarray:
+    """
+    Multi-source BFS where each edge is a single queen move (slide any distance).
+    Distances computed to empty squares (0). Non-empty are treated as blocked.
+    """
+    dist = np.full((N, N), 10**9, dtype=np.int32)
+    q = deque()
+
+    starts = np.argwhere(board == player)
+    for r, c in starts:
+        r = int(r); c = int(c)
+        dist[r, c] = 0
+        q.append((r, c))
+
+    while q:
+        r, c = q.popleft()
+        d = int(dist[r, c])
+        # From (r,c), can reach empties by sliding; each slide is cost +1
+        for dr, dc in DIRS:
+            rr, cc = r + dr, c + dc
+            while _in_bounds(rr, cc) and board[rr, cc] == 0:
+                if dist[rr, cc] > d + 1:
+                    dist[rr, cc] = d + 1
+                    q.append((rr, cc))
+                rr += dr
+                cc += dc
+
+    return dist
+
+def _territory_score(board: np.ndarray) -> int:
+    """
+    Voronoi-like territory: for each empty cell, whoever reaches in fewer queen-moves gets it.
+    Returns (my_territory - opp_territory).
+    """
+    d1 = _queen_distance_map(board, 1)
+    d2 = _queen_distance_map(board, 2)
+    score = 0
+    empties = np.argwhere(board == 0)
+    for r, c in empties:
+        r = int(r); c = int(c)
+        a = int(d1[r, c]); b = int(d2[r, c])
+        if a < b:
+            score += 1
+        elif b < a:
+            score -= 1
+    return score
+
+def _static_eval(board: np.ndarray) -> float:
+    """
+    Evaluate from player 1's perspective.
+    """
+    m1 = _mobility(board, 1)
+    m2 = _mobility(board, 2)
+    terr = _territory_score(board)
+    # Weights tuned for 6x6 speed/strength balance.
+    return 2.2 * (m1 - m2) + 1.0 * terr
+
+def _center_bonus(r: int, c: int) -> float:
+    # Center of 6x6 is around (2.5,2.5)
+    return -((r - 2.5) ** 2 + (c - 2.5) ** 2)
+
+def _adjacent_to_opponent(board: np.ndarray, r: int, c: int) -> int:
+    cnt = 0
+    for dr in (-1, 0, 1):
+        for dc in (-1, 0, 1):
+            if dr == 0 and dc == 0:
+                continue
+            rr, cc = r + dr, c + dc
+            if _in_bounds(rr, cc) and board[rr, cc] == 2:
+                cnt += 1
+    return cnt
+
+def _opponent_reachable_squares(board: np.ndarray) -> set:
+    """Union of all empty squares reachable by opponent in one move."""
+    s = set()
+    opp = np.argwhere(board == 2)
+    for r, c in opp:
+        r = int(r); c = int(c)
+        for sq in _ray_squares(board, r, c):
+            s.add(sq)
+    return s
+
+def _generate_all_moves(board: np.ndarray, player: int) -> List[Move]:
+    moves: List[Move] = []
+    amaz = np.argwhere(board == player)
+    for r, c in amaz:
+        fr, fc = int(r), int(c)
+        tos = _ray_squares(board, fr, fc)
+        for tr, tc in tos:
+            b2 = board.copy()
+            b2[fr, fc] = 0
+            b2[tr, tc] = player
+            # Arrow from landing square; may pass through vacated (fr,fc) naturally since now empty
+            arrows = _ray_squares(b2, tr, tc)
+            for ar, ac in arrows:
+                moves.append((fr, fc, tr, tc, ar, ac))
+    return moves
+
+def _generate_limited_moves(board: np.ndarray, player: int,
+                            max_tos_per_amazon: int = 10,
+                            max_arrows_per_to: int = 8,
+                            max_total: int = 40) -> List[Move]:
+    """
+    Pruned move generator:
+      - keep top to-squares per amazon by a cheap heuristic
+      - keep top arrows per to-square by a cheap heuristic (blocking opponent reach + centrality)
+      - cap total moves
+    Always produces legal moves (subset).
+    """
+    moves: List[Tuple[float, Move]] = []
+
+    opp_reach = _opponent_reachable_squares(board) if player == 1 else set()
+    # If player==2 (not used by top-level policy), we could similarly compute for player1,
+    # but minimax here is from player1 perspective; we still generate opponent replies
+    # and can compute their "block my reach" set for ordering.
+    my_reach = _opponent_reachable_squares(board) if player == 2 else set()
+
+    amaz = np.argwhere(board == player)
+    for r, c in amaz:
+        fr, fc = int(r), int(c)
+        tos = _ray_squares(board, fr, fc)
+        if not tos:
+            continue
+
+        # Score to-squares (cheap): center + slightly prefer being near opponent
+        scored_tos = []
+        for tr, tc in tos:
+            sc = 0.9 * _center_bonus(tr, tc) + 0.6 * _adjacent_to_opponent(board, tr, tc)
+            scored_tos.append((sc, tr, tc))
+        scored_tos.sort(reverse=True, key=lambda x: x[0])
+        scored_tos = scored_tos[:max_tos_per_amazon]
+
+        for _, tr, tc in scored_tos:
+            b2 = board.copy()
+            b2[fr, fc] = 0
+            b2[tr, tc] = player
+
+            arrows = _ray_squares(b2, tr, tc)
+            if not arrows:
+                continue
+
+            scored_arrows = []
+            reach_set = opp_reach if player == 1 else my_reach
+            for ar, ac in arrows:
+                sca = 0.0
+                # Prefer arrows that land on squares reachable by the enemy (blocking future mobility)
+                if (ar, ac) in reach_set:
+                    sca += 2.5
+                sca += 0.7 * _center_bonus(ar, ac)
+                sca += 0.4 * _adjacent_to_opponent(board, ar, ac)
+                # Prefer shorter shots slightly to reduce self-trapping volatility
+                sca -= 0.05 * ((ar - tr) ** 2 + (ac - tc) ** 2)
+                scored_arrows.append((sca, ar, ac))
+            scored_arrows.sort(reverse=True, key=lambda x: x[0])
+            scored_arrows = scored_arrows[:max_arrows_per_to]
+
+            for sca, ar, ac in scored_arrows:
+                mv = (fr, fc, tr, tc, ar, ac)
+                # Move ordering score (cheap)
+                sc = sca + 0.5 * _center_bonus(tr, tc)
+                moves.append((sc, mv))
+
+    moves.sort(reverse=True, key=lambda x: x[0])
+    out = [mv for _, mv in moves[:max_total]]
+    return out
+
+def _has_any_move(board: np.ndarray, player: int) -> bool:
+    amaz = np.argwhere(board == player)
+    for r, c in amaz:
+        if _ray_squares(board, int(r), int(c)):
+            return True
+    return False
+
+def _minimax_depth2(board: np.ndarray) -> Optional[Move]:
+    """
+    Depth-2: my move (1) then opponent best reply (2). Returns best move for player 1.
+    """
+    # Root moves
+    root_moves = _generate_limited_moves(board, 1, max_tos_per_amazon=10, max_arrows_per_to=8, max_total=45)
+    if not root_moves:
+        # fallback to all legal
+        allm = _generate_all_moves(board, 1)
+        return allm[0] if allm else None
+
+    best_move = root_moves[0]
+    best_score = -1e18
+
+    alpha = -1e18
+    beta = 1e18
+
+    for mv in root_moves:
+        b1 = _apply_move(board, mv, 1)
+
+        # If opponent has no moves, this is immediately winning.
+        if not _has_any_move(b1, 2):
+            return mv
+
+        # Opponent replies (pruned)
+        opp_moves = _generate_limited_moves(b1, 2, max_tos_per_amazon=10, max_arrows_per_to=7, max_total=28)
+        if not opp_moves:
+            # fallback check: if truly none, winning; else generate all
+            all_opp = _generate_all_moves(b1, 2)
+            if not all_opp:
+                return mv
+            opp_moves = all_opp[:28]
+
+        # Opponent chooses move minimizing our eval
+        worst_for_us = 1e18
+
+        # simple ordering: evaluate a few quickly (still static)
+        for omv in opp_moves:
+            b2 = _apply_move(b1, omv, 2)
+
+            # If I have no moves after opponent reply, very bad.
+            if not _has_any_move(b2, 1):
+                val = -1e9
+            else:
+                val = _static_eval(b2)
+
+            if val < worst_for_us:
+                worst_for_us = val
+
+            # alpha-beta: opponent minimizing, so compare with alpha cutoff
+            # If opponent can force <= alpha, no need to continue
+            if worst_for_us <= alpha:
+                break
+
+        # My move score is opponent's best minimization result
+        score = worst_for_us
+
+        if score > best_score:
+            best_score = score
+            best_move = mv
+
+        if score > alpha:
+            alpha = score
+        if alpha >= beta:
+            break
+
+    return best_move
+
+def _format_move(mv: Move) -> str:
+    fr, fc, tr, tc, ar, ac = mv
+    return f"{fr},{fc}:{tr},{tc}:{ar},{ac}"
+
+def policy(board) -> str:
+    """
+    Required API: returns a legal move string for player 1.
+    """
+    b = np.array(board, copy=False)
+
+    mv = _minimax_depth2(b)
+    if mv is not None:
+        return _format_move(mv)
+
+    # Extremely unlikely fallback: try to find *any* legal move exhaustively
+    allm = _generate_all_moves(b, 1)
+    if allm:
+        return _format_move(allm[0])
+
+    # If truly no legal move (environment says it won't happen), return a syntactically valid string.
+    # (Cannot guarantee legality if no move exists.)
+    return "0,0:0,0:0,0"

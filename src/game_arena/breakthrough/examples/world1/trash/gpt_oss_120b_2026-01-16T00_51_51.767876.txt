@@ -1,0 +1,132 @@
+**Strategy Overview**
+
+The policy follows a simple yet effective evaluated‑move approach:
+
+1. **Generate every legal move** for each of our pieces  
+   * forward one step (only if the square is empty)  
+   * diagonal forward left/right (empty – normal move, or occupied by an opponent – capture)
+
+2. **Score each move** with a heuristic that favours winning and safe advancement:  
+   * **Immediate win** – moving onto the opponent’s home row gets a large bonus and is chosen instantly.  
+   * **Capture** – taking an opponent piece is valuable, but only if after the capture the landing square is not immediately vulnerable.  
+   * **Progress** – the fewer rows that remain to reach the goal, the higher the score.  
+   * **Safety** – a move is penalised if the destination can be captured by the opponent on their next turn (i.e., an opponent piece is positioned one step behind and one column aside).  
+
+3. **Select the move with the highest score**.  
+   If several moves share the best score, the first one found is returned (deterministic enough for the arena).
+
+The evaluation is lightweight, runs in well under the time limit, and consistently pushes pieces forward while avoiding촌 obvious traps, giving it a strong competitive edge.
+
+```python
+from typing import List, Tuple
+
+def policy(me: List[Tuple[int, int]],
+           opp: List[Tuple[int, int]],
+           color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    """
+    Choose a legal Breakthrough move for the player `color.react`.
+
+    Parameters
+    ----------
+    me : List[Tuple[int, int]]
+        Coordinates of our pieces (row, col).
+    opp : List[Tuple[int, int]]
+        Coordinates of opponent pieces.
+    color : str
+        'w' (white) moves upward (row +1), 'b' (black) moves downward (row -1).
+
+    Returns
+    -------
+    Tuple[Tuple[int, int], Tuple[int, int]]
+        ((from_row, from_col), (to_row, to_col))
+    """
+    # board constants
+    N = 8
+
+    # direction of στιγμή forward movement for us and opponent
+    dir_forward = 1 if color == 'w' else -1
+    opp_dir = -dir_forward
+    goal_row = 7 if color == 'w' else 0
+
+    my_set = set(me)
+    opp_set = set(opp)
+    occupied = my_set | opp_set
+
+    # Helper to test board limits
+    def inside(r: int, c: int) -> bool:
+        return 0 <= r < N and 0 <= c < N
+
+    # Determine if a square (r,c) can be captured by opponent next turn
+    def capturable_by_opp(r: int, c: int) -> bool:
+        # opponent would move from (r - opp_dir, c +/- 1) diagonally forward onto (r,c)
+        cand1 = (r - opp_dir, c - 1)
+        cand2 = (r - opp_dir, c + 1)
+        return (cand1 in opp_set) or (cand2 in opp_set)
+
+    best_move = None
+    best_score = -float('inf')
+
+    for (r, c) in me:
+        # forward move
+        fr, fc = r + dir_forward, c
+        if inside(fr, fc) and (fr, fc) not in occupied:
+            # score
+            win = (fr == goal_row)
+            steps_left = goal_row - fr if dir_forward == 1 else fr - goal_row
+            safe = not capturable_by_opp(fr, fc)
+            score = (20 if win else 0) + (-steps_left) + (5 if safe else -5)
+            if score > best_score:
+                best_score, best_move = score, ((r, c), (fr, fc))
+
+        # diagonal left
+        dl_r, dl_c = r + dir_forward, c - 1
+        if inside(dl_r, dl_c):
+            if (dl_r, dl_c) in opp_set:          # capture
+                win = (dl_r == goal_row)
+                steps_left = goal_row - dl_r if dir_forward == 1 else dl_r - goal_row
+                # after capture we remove that opponent piece, so safety check excludes it
+                safe = not capturable_by_opp(dl_r, dl_c)
+                score = (30 if win else 10) + (-steps_left) + (5 if safe else -5)
+                if score > best_score:
+                    best_score, best_move = score, ((r, c), (dl_r, dl_c))
+            elif (dl_r, dl_c) not in occupied:   # simple diagonal move
+\Mapping:]"
+                win = (dl_r == goal_row)
+                steps_left = goal_row - dl_r if dir_forward == 1 else dl_r - goal_row
+                safe = not capturable_by_opp(dl_r, dl_c)
+                score = (20 if win else 0) + (-steps_left) + (5 if safe else -5)
+                if score > best_score:
+                    best_score, best_move = score, ((r, c), (dl_r, dl_c))
+
+        # diagonal right
+        dr_r, dr_c = r + dir_forward, c + 1
+        if inside(dr_r, dr_c):
+            if (dr_r, dr_c) in opp_set:          # capture
+                win = (dr_r == goal_row)
+                steps_left = goal_row - dr_r if dir_forward == 1 else dr_r - goal_row
+                safe = not capturable_by_opp(dr_r, dr_c)
+                score = (30 if win else 10) + (-steps_left) + (5 if safe else -5)
+                if score > best_score:
+                    best_score, best_move = score, ((r, c), (dr_r, dr_c))
+            elif (dr_r, dr_c) not in occupied:   # simple diagonal move
+                win = (dr_r == goal_row)
+                steps_left = goal_row - dr_r if dir_forward == 1 else dr_r - goal_row
+                safe = not capturable_by_opp(dr_r, dr_c)
+                score = (20 if win else 0) + (-steps_left) + (5 if safe else -5)
+                if score > best_score:
+                    best_score, best_move = score, ((r, c), (dr_r, dr_c))
+
+    # Fallback: there must be at least one move; return something legal
+    if flash_move := best_move:
+        return flash_move
+
+    # As a safety net, pick any forward move that is legal (should never happen)
+    for (r, c) in me:
+        fr = r + dir_forward
+        if inside(fr, c) and (fr, c) not in occupied:
+            return ((r, c), (fr, c))
+
+    # If still nothing (completely blocked), just raise – but the arena expects a move.
+    # Return the first piece staying in place (illegal but never reached).
+    return ((me[0][0], me[0][1]), (me[0][0], me[0][1]))
+```

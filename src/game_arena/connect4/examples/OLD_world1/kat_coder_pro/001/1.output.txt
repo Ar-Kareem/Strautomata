@@ -1,0 +1,138 @@
+```python
+from typing import Tuple
+import numpy as np
+
+# Connect 4 implementation for the arena
+# - 6x7 board
+# - 0 = empty, 1 = current player (you), -1 = opponent
+# - `policy(board)` returns a column index 0..6 to drop your disc
+# - You must return a valid, non-full column
+# - 1 second limit per call
+
+# Example board shape: 6 rows x 7 cols
+# Rows: 0 (top) .. 5 (bottom)
+# You are always the current player when `policy` is called
+
+def policy(board: list[list[int]]) -> int:
+    """
+    Connect 4 targeting policy.
+    
+    Args:
+        board: 6x7 grid of ints (0=empty, 1=your disc, -1=opponent disc)
+    
+    Returns:
+        Column index 0..6 to drop your disc (must be non-full)
+    """
+    # Convert to numpy array for easier manipulation
+    # arena uses lists, but numpy is allowed
+    np_board = np.array(board, dtype=np.int8)
+    
+    # Identify valid columns (not full)
+    valid_cols = [c for c in range(7) if np_board[0, c] == 0]
+    if not valid_cols:
+        # Shouldn't happen but fallback
+        return 0
+    
+    # Helper to drop a disc in a column and get the resulting board
+    def drop_disc(board: np.ndarray, col: int, player: int) -> Tuple[np.ndarray, int, int]:
+        """Returns new board, row, col of placed disc"""
+        new_board = board.copy()
+        # Find lowest empty row in column
+        for r in range(5, -1, -1):
+            if new_board[r, col] == 0:
+                new_board[r, col] = player
+                return new_board, r, col
+        raise ValueError("Column is full")
+    
+    # Helper to check if a move wins
+    def is_winning_move(board: np.ndarray, col: int, player: int) -> bool:
+        """Check if dropping in col gives player a win"""
+        try:
+            new_board, r, c = drop_disc(board, col, player)
+            return check_winner_fast(new_board, r, c) == player
+        except ValueError:
+            return False
+    
+    # Fast win check from a placed position (r,c)
+    def check_winner_fast(board: np.ndarray, r: int, c: int) -> int:
+        """Check if the disc at (r,c) completes a 4-in-a-row"""
+        player = board[r, c]
+        if player == 0:
+            return 0
+        
+        # Directions: (dr, dc)
+        # horizontal, vertical, diag /, diag \
+        dirs = [(0, 1), (1, 0), (1, 1), (1, -1)]
+        
+        for dr, dc in dirs:
+            count = 1
+            # Forward direction
+            nr, nc = r + dr, c + dc
+            while 0 <= nr < 6 and 0 <= nc < 7 and board[nr, nc] == player:
+                count += 1
+                nr, nc = nr + dr, nc + dc
+            
+            # Backward direction
+            nr, nc = r - dr, c - dc
+            while 0 <= nr < 6 and 0 <= nc < 7 and board[nr, nc] == player:
+                count += 1
+                nr, nc = nr - dr, nc - dc
+            
+            if count >= 4:
+                return player
+        return 0
+    
+    # 1. Win if possible
+    for col in valid_cols:
+        if is_winning_move(np_board, col, 1):
+            return col
+    
+    # 2. Block opponent's immediate win
+    for col in valid_cols:
+        if is_winning_move(np_board, col, -1):
+            return col
+    
+    # 3. Prefer center column and avoid edges slightly
+    # Score columns for positional preference
+    col_scores = [0] * 7
+    for col in valid_cols:
+        # Center preference: col 3 is best, then 2,4, then 1,5, then 0,6
+        center_dist = abs(col - 3)
+        col_scores[col] = 3 - center_dist
+    
+    # 4. Try to create threats (3-in-a-row with open ends)
+    # Look for your 3-in-a-row with empty space at either end
+    for col in valid_cols:
+        # Simulate placing your disc
+        new_board, r, c = drop_disc(np_board, col, 1)
+        # Check if this creates a potential 4 with open ends
+        # (We won't implement full threat detection here for brevity)
+        pass
+    
+    # 5. Avoid creating immediate wins for opponent
+    # Check if placing here would allow opponent to win next turn
+    safe_cols = []
+    for col in valid_cols:
+        new_board, r, c = drop_disc(np_board, col, 1)
+        # Check if opponent can win in response
+        opponent_can_win = False
+        for opp_col in [c2 for c2 in range(7) if new_board[0, c2] == 0]:
+            if is_winning_move(new_board, opp_col, -1):
+                opponent_can_win = True
+                break
+        if not opponent_can_win:
+            safe_cols.append(col)
+    
+    # Prefer safe columns, otherwise fall back to center preference
+    candidate_cols = safe_cols if safe_cols else valid_cols
+    
+    # Choose best candidate by column score
+    best_score = -1
+    best_col = candidate_cols[0]
+    for col in candidate_cols:
+        if col_scores[col] > best_score:
+            best_score = col_scores[col]
+            best_col = col
+    
+    return best_col
+```

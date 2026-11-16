@@ -1,0 +1,58 @@
+
+def winner(board):
+    # Check rows
+    for i in range(3):
+        if board[i][0] == board[i][1] == board[i][2] != 0:
+            return board[i][0]
+    # Check columns
+    for j in range(3):
+        if board[0][j] == board[1][j] == board[2][j] != 0:
+            return board[0][j]
+    # Check diagonals
+    if board[0][0] == board[1][1] == board[2][2] != 0:
+        return board[0][0]
+    if board[0][2] == board[1][1] == board[2][0] != 0:
+        return board[0][2]
+    return 0
+
+def is_full(board):
+    return all(board[i][j] != 0 for i in range(3) for j in range(3))
+
+def minimax(board, is_maximizing):
+    score = winner(board)
+    if score != 0:
+        return score
+    if is_full(board):
+        return 0
+    if is_maximizing:
+        best = -2
+        for i in range(3):
+            for j in range(3):
+                if board[i][j] == 0:
+                    board[i][j] = 1
+                    best = max(best, minimax(board, False))
+                    board[i][j] = 0
+        return best
+    else:
+        best = 2
+        for i in range(3):
+            for j in range(3):
+                if board[i][j] == 0:
+                    board[i][j] = -1
+                    best = min(best, minimax(board, True))
+                    board[i][j] = 0
+        return best
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    best_score = -2
+    best_move = (-1, -1)
+    for i in range(3):
+        for j in range(3):
+            if board[i][j] == 0:
+                board[i][j] = 1
+                score = minimax(board, False)
+                board[i][j] = 0
+                if score > best_score:
+                    best_score = score
+                    best_move = (i, j)
+    return best_move

@@ -1,0 +1,119 @@
+
+def policy(board: list[list[int]]) -> int:
+    import numpy as np
+    
+    def drop_piece(board, col, player):
+        """Drop a piece in the given column and return new board"""
+        new_board = [row[:] for row in board]  # deep copy
+        for row in range(5, -1, -1):  # start from bottom
+            if new_board[row][col] == 0:
+                new_board[row][col] = player
+                return new_board
+        return new_board  # Column is full (shouldn't happen if called properly)
+    
+    def check_winner(board, player):
+        """Check if player has won"""
+        # Check horizontal
+        for row in range(6):
+            for col in range(4):
+                if all(board[row][col+i] == player for i in range(4)):
+                    return True
+        
+        # Check vertical
+        for row in range(3):
+            for col in range(7):
+                if all(board[row+i][col] == player for i in range(4)):
+                    return True
+        
+        # Check diagonal (top-left to bottom-right)
+        for row in range(3):
+            for col in range(4):
+                if all(board[row+i][col+i] == player for i in range(4)):
+                    return True
+        
+        # Check diagonal (bottom-left to top-right)
+        for row in range(3, 6):
+            for col in range(4):
+                if all(board[row-i][col+i] == player for i in range(4)):
+                    return True
+        
+        return False
+    
+    def evaluate_position(board, player):
+        """Evaluate how good the position is for player"""
+        score = 0
+        # Evaluate center column more heavily
+        center_array = [board[row][3] for row in range(6)]
+        center_count = center_array.count(player)
+        score += center_count * 3
+        
+        # Evaluate horizontal
+        for row in range(6):
+            row_array = board[row]
+            for col in range(4):
+                window = row_array[col:col+4]
+                score += evaluate_window(window, player)
+        
+        # Evaluate vertical
+        for col in range(7):
+            col_array = [board[row][col] for row in range(6)]
+            for row in range(3):
+                window = col_array[row:row+4]
+                score += evaluate_window(window, player)
+        
+        # Evaluate positive diagonal
+        for row in range(3):
+            for col in range(4):
+                window = [board[row+i][col+i] for i in range(4)]
+                score += evaluate_window(window, player)
+        
+        # Evaluate negative diagonal
+        for row in range(3, 6):
+            for col in range(4):
+                window = [board[row-i][col+i] for i in range(4)]
+                score += evaluate_window(window, player)
+                
+        return score
+    
+    def evaluate_window(window, player):
+        """Evaluate a 4-length window"""
+        score = 0
+        opponent = -player
+        
+        if window.count(player) == 4:
+            score += 100
+        elif window.count(player) == 3 and window.count(0) == 1:
+            score += 10
+        elif window.count(player) == 2 and window.count(0) == 2:
+            score += 2
+        elif window.count(opponent) == 3 and window.count(0) == 1:
+            score -= 80
+        
+        return score
+    
+    # Check for immediate win
+    for col in range(7):
+        if board[0][col] == 0:  # Column not full
+            new_board = drop_piece(board, col, 1)
+            if check_winner(new_board, 1):
+                return col
+    
+    # Check for immediate block
+    for col in range(7):
+        if board[0][col] == 0:  # Column not full
+            new_board = drop_piece(board, col, -1)
+            if check_winner(new_board, -1):
+                return col
+    
+    # Use heuristic evaluation
+    best_score = -float('inf')
+    best_col = 3  # Default to center column if no other column is better
+    for col in range(7):
+        if board[0][col] == 0:  # Column not full
+            new_board = drop_piece(board, col, 1)
+            score = evaluate_position(new_board, 1)
+            if score > best_score:
+                best_score = score
+                best_col = col
+    
+    return best_col

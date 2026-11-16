@@ -1,0 +1,191 @@
+
+import numpy as np
+import time
+from typing import List, Tuple
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    # Board size
+    SIZE = 8
+    
+    # Positional values for the board
+    # Corners have high value, edges medium value, center low value
+    POSITION_VALUES = np.array([
+        [100, -20, 10, 5, 5, 10, -20, 100],
+        [-20, -50, -2, -2, -2, -2, -50, -20],
+        [10, -2, -1, -1, -1, -1, -2, 10],
+        [5, -2, -1, -1, -1, -1, -2, 5],
+        [5, -2, -1, -1, -1, -1, -2, 5],
+        [10, -2, -1, -1, -1, -1, -2, 10],
+        [-20, -50, -2, -2, -2, -2, -50, -20],
+        [100, -20, 10, 5, 5, 10, -20, 100]
+    ])
+    
+    def get_legal_moves(board_you, board_opponent):
+        """Get all legal moves for the current player."""
+        moves = []
+        for r in range(SIZE):
+            for c in range(SIZE):
+                if board_you[r][c] == 0 and board_opponent[r][c] == 0:
+                    if is_valid_move(board_you, board_opponent, r, c):
+                        moves.append((r, c))
+        return moves
+    
+    def is_valid_move(board_you, board_opponent, r, c):
+        """Check if placing a piece at (r, c) is valid."""
+        if board_you[r][c] != 0 or board_opponent[r][c] != 0:
+            return False
+        
+        # Check all 8 directions
+        directions = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+        
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            found_opponent = False
+            
+            while 0 <= nr < SIZE and 0 <= nc < SIZE:
+                if board_opponent[nr][nc] == 1:
+                    found_opponent = True
+                elif board_you[nr][nc] == 1:
+                    if found_opponent:
+                        return True
+                    break
+                else:
+                    break
+                nr += dr
+                nc += dc
+        
+        return False
+    
+    def make_move(board_you, board_opponent, r, c):
+        """Make a move and return new board states."""
+        new_you = board_you.copy()
+        new_opponent = board_opponent.copy()
+        
+        # Place the piece
+        new_you[r][c] = 1
+        
+        # Flip opponent pieces
+        directions = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+        
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            to_flip = []
+            
+            while 0 <= nr < SIZE and 0 <= nc < SIZE:
+                if new_opponent[nr][nc] == 1:
+                    to_flip.append((nr, nc))
+                elif new_you[nr][nc] == 1:
+                    # Flip all pieces in between
+                    for fr, fc in to_flip:
+                        new_you[fr][fc] = 1
+                        new_opponent[fr][fc] = 0
+                    break
+                else:
+                    break
+                nr += dr
+                nc += dc
+        
+        return new_you, new_opponent
+    
+    def count_pieces(board):
+        """Count the number of pieces on the board."""
+        return np.sum(board)
+    
+    def evaluate(board_you, board_opponent):
+        """Evaluate the board position."""
+        # Count material
+        you_count = count_pieces(board_you)
+        opponent_count = count_pieces(board_opponent)
+        
+        # Material difference
+        material = you_count - opponent_count
+        
+        # Positional value
+        positional = 0
+        for r in range(SIZE):
+            for c in range(SIZE):
+                if board_you[r][c] == 1:
+                    positional += POSITION_VALUES[r][c]
+                elif board_opponent[r][c] == 1:
+                    positional -= POSITION_VALUES[r][c]
+        
+        # Mobility (number of legal moves)
+        you_moves = len(get_legal_moves(board_you, board_opponent))
+        opponent_moves = len(get_legal_moves(board_opponent, board_you))
+        mobility = you_moves - opponent_moves
+        
+        # Combine factors
+        return material * 10 + positional * 2 + mobility * 5
+    
+    def alphabeta(board_you, board_opponent, depth, alpha, beta, maximizing):
+        """Alpha-beta pruning search."""
+        if depth == 0:
+            return evaluate(board_you, board_opponent)
+        
+        if maximizing:
+            max_eval = float('-inf')
+            moves = get_legal_moves(board_you, board_opponent)
+            
+            if not moves:
+                # If no moves available, pass
+                return evaluate(board_you, board_opponent)
+            
+            for r, c in moves:
+                new_you, new_opponent = make_move(board_you, board_opponent, r, c)
+                eval = alphabeta(new_opponent, new_you, depth - 1, alpha, beta, False)
+                max_eval = max(max_eval, eval)
+                alpha = max(alpha, eval)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            moves = get_legal_moves(board_opponent, board_you)
+            
+            if not moves:
+                # If no moves available, pass
+                return evaluate(board_you, board_opponent)
+            
+            for r, c in moves:
+                new_opponent, new_you = make_move(board_opponent, board_you, r, c)
+                eval = alphabeta(new_you, new_opponent, depth - 1, alpha, beta, True)
+                min_eval = min(min_eval, eval)
+                beta = min(beta, eval)
+                if beta <= alpha:
+                    break
+            return min_eval
+    
+    # Start timing
+    start_time = time.time()
+    
+    # Get legal moves
+    legal_moves = get_legal_moves(you, opponent)
+    
+    # If no legal moves, pass
+    if not legal_moves:
+        return "pass"
+    
+    # If only one legal move, take it
+    if len(legal_moves) == 1:
+        r, c = legal_moves[0]
+        return chr(ord('a') + c) + str(r + 1)
+    
+    # Try different search depths based on available time
+    best_move = legal_moves[0]
+    best_score = float('-inf')
+    
+    for depth in [4, 6, 8]:
+        if time.time() - start_time > 0.9:
+            break
+            
+        for r, c in legal_moves:
+            new_you, new_opponent = make_move(you, opponent, r, c)
+            score = alphabeta(new_opponent, new_you, depth - 1, float('-inf'), float('inf'), False)
+            
+            if score > best_score:
+                best_score = score
+                best_move = (r, c)
+    
+    # Convert move to string
+    r, c = best_move
+    return chr(ord('a') + c) + str(r + 1)

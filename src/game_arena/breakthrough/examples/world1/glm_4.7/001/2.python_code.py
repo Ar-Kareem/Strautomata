@@ -1,0 +1,202 @@
+
+import random
+from typing import List, Tuple, Set
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    """
+    Determines the next move for a Breakthrough game using Minimax with Alpha-Beta pruning.
+    """
+    
+    # --- Configuration ---
+    DEPTH = 3
+    ROWS, COLS = 8, 8
+    
+    # Determine movement direction and target row based on color
+    # 'w' (White) moves UP (row index increases: 0 -> 7)
+    # 'b' (Black) moves DOWN (row index decreases: 7 -> 0)
+    dr = 1 if color == 'w' else -1
+    target_row = 7 if color == 'w' else 0
+    opp_color = 'b' if color == 'w' else 'w'
+
+    # Convert lists to sets for O(1) lookups
+    me_set = set(me)
+    opp_set = set(opp)
+
+    # --- Helper Functions ---
+
+    def get_moves(my_pieces: Set[Tuple[int, int]], opponent_pieces: Set[Tuple[int, int]], direction: int) -> List[Tuple[Tuple[int, int], Tuple[int, int]]]:
+        """
+        Generates all legal moves for the current player.
+        Returns a list of moves: ((from_r, from_c), (to_r, to_c)).
+        Captures are placed at the beginning of the list for move ordering optimization.
+        """
+        moves = []
+        captures = []
+        
+        for r, c in my_pieces:
+            # 1. Straight forward move
+            nr, nc = r + direction, c
+            if 0 <= nr < ROWS:
+                # Target must be empty
+                if (nr, nc) not in my_pieces and (nr, nc) not in opponent_pieces:
+                    moves.append(((r, c), (nr, nc)))
+            
+            # 2. Diagonal forward moves
+            for dc in [-1, 1]:
+                nr, nc = r + direction, c + dc
+                if 0 <= nr < ROWS and 0 <= nc < COLS:
+                    # Target must not be my own piece
+                    if (nr, nc) not in my_pieces:
+                        if (nr, nc) in opponent_pieces:
+                            captures.append(((r, c), (nr, nc)))
+                        else:
+                            moves.append(((r, c), (nr, nc)))
+        
+        # Return captures first to improve Alpha-Beta pruning efficiency
+        return captures + moves
+
+    def evaluate(my_pieces: Set, opponent_pieces: Set) -> float:
+        """
+        Heuristic evaluation of the board state from the perspective of 'color'.
+        Positive score is good for the current player.
+        """
+        # Material score: each piece is worth 100
+        score = (len(my_pieces) - len(opponent_pieces)) * 100
+        
+        # Positional score: advancement towards goal
+        # 'w' wants to reach row 7, 'b' wants to reach row 0
+        for r, c in my_pieces:
+            advancement = r if color == 'w' else (7 - r)
+            score += advancement * 5
+            
+            # Center control bonus (columns 3 and 4)
+            if 3 <= c <= 4:
+                score += 2
+
+        # Opponent advancement (penalty)
+        for r, c in opponent_pieces:
+            advancement = r if opp_color == 'w' else (7 - r)
+            score -= advancement * 5
+            
+            if 3 <= c <= 4:
+                score -= 2
+                
+        return score
+
+    def minimax(current_me: Set, current_opp: Set, depth: int, is_maximizing: bool, alpha: float, beta: float) -> float:
+        """
+        Recursive Minimax search with Alpha-Beta pruning.
+        """
+        if depth == 0:
+            return evaluate(current_me, current_opp)
+        
+        # Determine perspective of the current move
+        current_color = color if is_maximizing else opp_color
+        current_dr = 1 if current_color == 'w' else -1
+        current_target = 7 if current_color == 'w' else 0
+        
+        # Identify which pieces are moving
+        pieces_moving = current_me if is_maximizing else current_opp
+        pieces_static = current_opp if is_maximizing else current_me
+        
+        possible_moves = get_moves(pieces_moving, pieces_static, current_dr)
+        
+        # Terminal condition: No moves available
+        if not possible_moves:
+            return -float('inf') if is_maximizing else float('inf')
+
+        # Check for immediate win in this simulation branch
+        for move in possible_moves:
+            _, (tr, tc) = move
+            if tr == current_target:
+                return float('inf') if is_maximizing else -float('inf')
+
+        if is_maximizing:
+            max_eval = -float('inf')
+            for (fr, fc), (tr, tc) in possible_moves:
+                # Create new state sets
+                new_me = current_me.copy()
+                new_opp = current_opp.copy()
+                
+                # Update 'me' (the moving player in this branch)
+                new_me.remove((fr, fc))
+                new_me.add((tr, tc))
+                
+                # Check capture
+                if (tr, tc) in current_opp:
+                    new_opp.remove((tr, tc))
+                
+                eval_val = minimax(new_me, new_opp, depth - 1, False, alpha, beta)
+                max_eval = max(max_eval, eval_val)
+                alpha = max(alpha, eval_val)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for (fr, fc), (tr, tc) in possible_moves:
+                # Create new state sets
+                new_me = current_me.copy()
+                new_opp = current_opp.copy()
+                
+                # Update 'opp' (the moving player in this branch)
+                new_opp.remove((fr, fc))
+                new_opp.add((tr, tc))
+                
+                # Check capture (capturing 'me')
+                if (tr, tc) in current_me:
+                    new_me.remove((tr, tc))
+                
+                eval_val = minimax(new_me, new_opp, depth - 1, True, alpha, beta)
+                min_eval = min(min_eval, eval_val)
+                beta = min(beta, eval_val)
+                if beta <= alpha:
+                    break
+            return min_eval
+
+    # --- Main Policy Logic ---
+    
+    # Generate all valid moves for the current state
+    all_moves = get_moves(me_set, opp_set, dr)
+    
+    # 1. Immediate Win Check: If a move reaches the target row, take it immediately.
+    for move in all_moves:
+        if move[1][0] == target_row:
+            return move
+
+    # 2. Search for the best move using Minimax
+    best_move = None
+    best_val = -float('inf')
+    alpha = -float('inf')
+    beta = float('inf')
+    
+    # Iterate through moves to find the optimal one
+    for move in all_moves:
+        (fr, fc), (tr, tc) = move
+        
+        # Simulate move
+        new_me = me_set.copy()
+        new_opp = opp_set.copy()
+        
+        new_me.remove((fr, fc))
+        new_me.add((tr, tc))
+        if (tr, tc) in opp_set:
+            new_opp.remove((tr, tc))
+        
+        # Run search from the resulting state
+        val = minimax(new_me, new_opp, DEPTH - 1, False, alpha, beta)
+        
+        if val > best_val:
+            best_val = val
+            best_move = move
+        
+        # Update alpha for pruning at root level
+        alpha = max(alpha, val)
+        if beta <= alpha:
+            break
+
+    # Fallback if no move was selected (should not happen if all_moves is not empty)
+    if best_move is None and all_moves:
+        return all_moves[0]
+        
+    return best_move

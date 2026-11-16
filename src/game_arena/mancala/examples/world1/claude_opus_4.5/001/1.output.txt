@@ -1,0 +1,764 @@
+<thinking>
+Let me understand the Kalah game and implement a good policy.
+
+First, let me understand the rules:
+1. I pick a house (0-5) that has seeds
+2. I distribute seeds counter-clockwise, skipping opponent's store
+3. If last seed lands in my store, I get another turn
+4. If last seed lands in an empty house on my side and opposite house has seeds, I capture both
+
+Let me think about the board layout:
+- My houses: you[0] to you[5]
+- My store: you[6]
+- Opponent houses: opponent[0] to opponent[5]
+- Opponent store: opponent[6]
+
+The distribution goes: my houses (i+1 to 5) -> my store -> opponent houses (0 to 5) -> back to my houses (0 to 5) -> ... skipping opponent's store
+
+Let me implement a simulation of a move first, then use minimax with alpha-beta pruning.
+
+For the distribution:
+- Starting from house i with seeds = you[i]
+- We distribute to positions in order: you[i+1], ..., you[5], you[6](store), opponent[0], ..., opponent[5], you[0], ..., you[5], you[6], ...
+- Skip opponent[6]
+
+The total cycle length (excluding opponent store) is 13 positions.
+
+Let me code the move simulation:
+
+```python
+def simulate_move(you, opponent, move):
+    you = you[:]
+    opponent = opponent[:]
+    seeds = you[move]
+    you[move] = 0
+    pos = move + 1  # start distributing from next position
+    
+    while seeds > 0:
+        if pos <= 5:  # my houses
+            you[pos] += 1
+            seeds -= 1
+            last_pos = ('you', pos)
+        elif pos == 6:  # my store
+            you[6] += 1
+            seeds -= 1
+            last_pos = ('you', 6)
+        elif pos <= 12:  # opponent houses (7-12 maps to 0-5)
+            opponent[pos - 7] += 1
+            seeds -= 1
+            last_pos = ('opponent', pos - 7)
+        # pos == 13 would be opponent store, skip it
+        
+        pos = (pos + 1) % 14
+        if pos == 13:  # skip opponent store
+            pos = 0
+    
+    # Check for extra move
+    extra_move = (last_pos == ('you', 6))
+    
+    # Check for capture
+    if last_pos[0] == 'you' and last_pos[1] != 6:
+        house = last_pos[1]
+        if you[house] == 1:  # was empty before (now has 1)
+            opposite = 5 - house
+            if opponent[opposite] > 0:
+                you[6] += you[house] + opponent[opposite]
+                you[house] = 0
+                opponent[opposite] = 0
+    
+    return you, opponent, extra_move
+```
+
+Wait, I need to be more careful. The position mapping:
+- 0-5: my houses
+- 6: my store
+- 7-12: opponent houses 0-5
+- We skip 13 (opponent store)
+
+Actually let me reconsider. The problem says distribution goes:
+1. you[i+1] through you[5]
+2. you[6] (your store)
+3. opponent[0] through opponent[5]
+4. you[0] through you[5]
+... repeating and skipping opponent's store
+
+So the cycle is: my houses 0-5, my store, opponent houses 0-5, then back to my houses.
+Total = 6 + 1 + 6 = 13 positions per cycle.
+
+Let me implement minimax with alpha-beta pruning:
+
+```python
+def minimax(you, opponent, depth, alpha, beta, is_my_turn):
+    # Check terminal state
+    if sum(you[:6]) == 0 or sum(opponent[:6]) == 0:
+        # Game over
+        my_score = you[6] + sum(you[:6])
+        opp_score = opponent[6] + sum(opponent[:6])
+        return my_score - opp_score, None
+    
+    if depth == 0:
+        return evaluate(you, opponent), None
+    
+    if is_my_turn:
+        best_value = -float('inf')
+        best_move = None
+        for move in range(6):
+            if you[move] > 0:
+                new_you, new_opp, extra = simulate_move(you, opponent, move)
+                if extra:
+                    value, _ = minimax(new_you, new_opp, depth, alpha, beta, True)
+                else:
+                    value, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, False)
+                if value > best_value:
+                    best_value = value
+                    best_move = move
+                alpha = max(alpha, value)
+                if beta <= alpha:
+                    break
+        return best_value, best_move
+    else:
+        best_value = float('inf')
+        for move in range(6):
+            if opponent[move] > 0:
+                new_opp, new_you, extra = simulate_move(opponent, you, move)
+                if extra:
+                    value, _ = minimax(new_you, new_opp, depth, alpha, beta, False)
+                else:
+                    value, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, True)
+                if value < best_value:
+                    best_value = value
+                beta = min(beta, value)
+                if beta <= alpha:
+                    break
+        return best_value, None
+```
+
+For evaluation, I'll use difference in stores plus some heuristics.
+
+Let me refine the implementation:
+
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    def simulate_move(you, opponent, move):
+        you = you[:]
+        opponent = opponent[:]
+        seeds = you[move]
+        you[move] = 0
+        
+        # Distribution path: positions 0-5 are my houses, 6 is my store, 7-12 are opponent houses
+        pos = move
+        while seeds > 0:
+            pos = (pos + 1) % 13
+            if pos < 6:
+                you[pos] += 1
+            elif pos == 6:
+                you[6] += 1
+            else:  # 7-12
+                opponent[pos - 7] += 1
+            seeds -= 1
+        
+        # Determine last position
+        last_pos = pos
+        
+        # Check for extra move
+        extra_move = (last_pos == 6)
+        
+        # Check for capture
+        if last_pos < 6 and you[last_pos] == 1:
+            opposite = 5 - last_pos
+            if opponent[opposite] > 0:
+                you[6] += 1 + opponent[opposite]
+                you[last_pos] = 0
+                opponent[opposite] = 0
+        
+        return you, opponent, extra_move
+    
+    def evaluate(you, opponent):
+        return you[6] - opponent[6] + 0.5 * (sum(you[:6]) - sum(opponent[:6]))
+    
+    def minimax(you, opponent, depth, alpha, beta, is_my_turn):
+        if sum(you[:6]) == 0:
+            my_score = you[6]
+            opp_score = opponent[6] + sum(opponent[:6])
+            return (my_score - opp_score) * 100, None
+        if sum(opponent[:6]) == 0:
+            my_score = you[6] + sum(you[:6])
+            opp_score = opponent[6]
+            return (my_score - opp_score) * 100, None
+        
+        if depth == 0:
+            return evaluate(you, opponent), None
+        
+        if is_my_turn:
+            best_value = -float('inf')
+            best_move = None
+            for move in range(6):
+                if you[move] > 0:
+                    new_you, new_opp, extra = simulate_move(you, opponent, move)
+                    if extra:
+                        value, _ = minimax(new_you, new_opp, depth, alpha, beta, True)
+                    else:
+                        value, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, False)
+                    if value > best_value:
+                        best_value = value
+                        best_move = move
+                    alpha = max(alpha, value)
+                    if beta <= alpha:
+                        break
+            return best_value, best_move
+        else:
+            best_value = float('inf')
+            for move in range(6):
+                if opponent[move] > 0:
+                    new_opp, new_you, extra = simulate_move(opponent, you, move)
+                    if extra:
+                        value, _ = minimax(new_you, new_opp, depth, alpha, beta, False)
+                    else:
+                        value, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, True)
+                    if value < best_value:
+                        best_value = value
+                    beta = min(beta, value)
+                    if beta <= alpha:
+                        break
+            return best_value, None
+    
+    _, best_move = minimax(you, opponent, 8, -float('inf'), float('inf'), True)
+    return best_move
+```
+
+Let me double-check the simulation. Starting at house `move`, we pick up all seeds and start dropping at position `move + 1`.
+
+Actually wait, I need to reconsider the board layout and wrapping.
+
+Position sequence for distribution:
+- Start at house i, pick up seeds
+- Drop at positions: i+1, i+2, ..., 5 (my houses), 6 (my store), 7, 8, ..., 12 (opponent houses 0-5), then wrap to 0, 1, ... (my houses again)
+- Skip position 13 (opponent store) - but in my 0-12 cycle, there's no opponent store
+
+Actually, the cycle of 13 doesn't include opponent store naturally. Let me reconsider:
+- My houses: 0-5 (6 positions)
+- My store: position 6 (1 position)
+- Opponent houses: 7-12 (6 positions)
+- Opponent store: would be position 13, but we skip it
+
+So when wrapping, after position 12 we go back to position 0, skipping "13".
+
+Let me rewrite more carefully:
+
+```python
+def simulate_move(you, opponent, move):
+    you = you[:]
+    opponent = opponent[:]
+    seeds = you[move]
+    you[move] = 0
+    
+    pos = move  # current position before incrementing
+    
+    while seeds > 0:
+        pos = pos + 1
+        if pos == 13:  # Skip opponent's store and wrap
+            pos = 0
+        
+        if pos < 6:  # my houses
+            you[pos] += 1
+        elif pos == 6:  # my store
+            you[6] += 1
+        else:  # opponent houses 7-12 -> indices 0-5
+            opponent[pos - 7] += 1
+        
+        seeds -= 1
+    
+    # last_pos is the final value of pos
+    last_pos = pos
+    
+    # Check for extra move
+    extra_move = (last_pos == 6)
+    
+    # Check for capture: last seed in my house (0-5) that was empty
+    if last_pos < 6 and you[last_pos] == 1:
+        opposite = 5 - last_pos
+        if opponent[opposite] > 0:
+            you[6] += 1 + opponent[opposite]
+            you[last_pos] = 0
+            opponent[opposite] = 0
+    
+    return you, opponent, extra_move
+```
+
+Wait, I think there's an issue. If move is 5 and we have 8 seeds:
+- pos starts at 5
+- pos becomes 6 (my store), drop 1, seeds = 7
+- pos becomes 7 (opp house 0), drop 1, seeds = 6
+- ...
+- pos becomes 12 (opp house 5), drop 1, seeds = 1
+- pos becomes 13, but we set it to 0
+- pos = 0 (my house 0), drop 1, seeds = 0
+
+That looks correct.
+
+If move is 0 and we have 13 seeds:
+- pos starts at 0
+- pos = 1, drop at my house 1, seeds = 12
+- ...
+- pos = 5, drop at my house 5, seeds = 8
+- pos = 6, drop at my store, seeds = 7
+- pos = 7, drop at opp house 0, seeds = 6
+- ...
+- pos = 12, drop at opp house 5, seeds = 1
+- pos = 13 -> 0, drop at my house 0, seeds = 0
+
+That's correct too.
+
+Now let me think about iterative deepening to handle the time constraint:
+
+```python
+import time
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    start_time = time.time()
+    time_limit = 0.9  # Leave some margin
+    
+    def simulate_move(you, opponent, move):
+        # ... as above
+    
+    def evaluate(you, opponent):
+        return you[6] - opponent[6]
+    
+    def minimax(you, opponent, depth, alpha, beta, is_my_turn):
+        # Terminal check
+        # ...
+        # Minimax logic
+    
+    best_move = None
+    for depth in range(1, 20):
+        if time.time() - start_time > time_limit:
+            break
+        _, move = minimax(you, opponent, depth, -float('inf'), float('inf'), True)
+        if move is not None:
+            best_move = move
+    
+    return best_move
+```
+
+Actually for time management in minimax, I should check time periodically within the search. But for simplicity, let me start with a fixed depth and see if it's fast enough.
+
+Let me also add move ordering to improve alpha-beta pruning - prioritize moves that give extra turns or captures.
+
+Here's my refined implementation:
+
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    import time
+    
+    start_time = time.time()
+    time_limit = 0.9
+    
+    def simulate_move(you, opponent, move):
+        you = list(you)
+        opponent = list(opponent)
+        seeds = you[move]
+        you[move] = 0
+        
+        pos = move
+        while seeds > 0:
+            pos += 1
+            if pos == 13:
+                pos = 0
+            
+            if pos < 6:
+                you[pos] += 1
+            elif pos == 6:
+                you[6] += 1
+            else:
+                opponent[pos - 7] += 1
+            
+            seeds -= 1
+        
+        last_pos = pos
+        extra_move = (last_pos == 6)
+        
+        if last_pos < 6 and you[last_pos] == 1:
+            opposite = 5 - last_pos
+            if opponent[opposite] > 0:
+                you[6] += 1 + opponent[opposite]
+                you[last_pos] = 0
+                opponent[opposite] = 0
+        
+        return you, opponent, extra_move
+    
+    def evaluate(you, opponent):
+        my_seeds = sum(you[:6])
+        opp_seeds = sum(opponent[:6])
+        if my_seeds == 0 or opp_seeds == 0:
+            return (you[6] + my_seeds - opponent[6] - opp_seeds) * 1000
+        return you[6] - opponent[6] + 0.1 * (my_seeds - opp_seeds)
+    
+    def get_legal_moves(player):
+        return [i for i in range(6) if player[i] > 0]
+    
+    def order_moves(you, opponent, moves):
+        scored = []
+        for m in moves:
+            new_you, new_opp, extra = simulate_move(you, opponent, m)
+            score = new_you[6] - you[6]  # Immediate gain
+            if extra:
+                score += 10
+            scored.append((score, m))
+        scored.sort(reverse=True)
+        return [m for _, m in scored]
+    
+    def minimax(you, opponent, depth, alpha, beta, is_my_turn):
+        my_seeds = sum(you[:6])
+        opp_seeds = sum(opponent[:6])
+        
+        if my_seeds == 0 or opp_seeds == 0:
+            final_you = you[6] + my_seeds
+            final_opp = opponent[6] + opp_seeds
+            return (final_you - final_opp) * 1000, None
+        
+        if depth == 0:
+            return evaluate(you, opponent), None
+        
+        if is_my_turn:
+            moves = get_legal_moves(you)
+            if not moves:
+                return evaluate(you, opponent), None
+            moves = order_moves(you, opponent, moves)
+            
+            best_value = -float('inf')
+            best_move = moves[0]
+            for move in moves:
+                new_you, new_opp, extra = simulate_move(you, opponent, move)
+                if extra:
+                    value, _ = minimax(new_you, new_opp, depth, alpha, beta, True)
+                else:
+                    value, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, False)
+                if value > best_value:
+                    best_value = value
+                    best_move = move
+                alpha = max(alpha, value)
+                if beta <= alpha:
+                    break
+            return best_value, best_move
+        else:
+            moves = get_legal_moves(opponent)
+            if not moves:
+                return evaluate(you, opponent), None
+            moves = order_moves(opponent, you, moves)
+            
+            best_value = float('inf')
+            for move in moves:
+                new_opp, new_you, extra = simulate_move(opponent, you, move)
+                if extra:
+                    value, _ = minimax(new_you, new_opp, depth, alpha, beta, False)
+                else:
+                    value, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, True)
+                best_value = min(best_value, value)
+                beta = min(beta, value)
+                if beta <= alpha:
+                    break
+            return best_value, None
+    
+    # Iterative deepening
+    best_move = get_legal_moves(you)[0]  # Default to first legal move
+    for depth in range(1, 15):
+        if time.time() - start_time > time_limit:
+            break
+        _, move = minimax(you, opponent, depth, -float('inf'), float('inf'), True)
+        if move is not None:
+            best_move = move
+    
+    return best_move
+```
+
+Hmm, I realize move ordering inside minimax can be expensive. Let me optimize by doing move ordering only at shallow depths or cache results.
+
+Actually, let me simplify and use transposition table for better performance:
+
+Actually for a competition, let me just go with a simpler but robust implementation with good depth:
+
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    def simulate_move(you, opponent, move):
+        you = list(you)
+        opponent = list(opponent)
+        seeds = you[move]
+        you[move] = 0
+        
+        pos = move
+        while seeds > 0:
+            pos += 1
+            if pos == 13:
+                pos = 0
+            if pos < 6:
+                you[pos] += 1
+            elif pos == 6:
+                you[6] += 1
+            else:
+                opponent[pos - 7] += 1
+            seeds -= 1
+        
+        extra_move = (pos == 6)
+        
+        if pos < 6 and you[pos] == 1:
+            opposite = 5 - pos
+            if opponent[opposite] > 0:
+                you[6] += 1 + opponent[opposite]
+                you[pos] = 0
+                opponent[opposite] = 0
+        
+        return tuple(you), tuple(opponent), extra_move
+    
+    def evaluate(you, opponent):
+        return you[6] - opponent[6]
+    
+    def minimax(you, opponent, depth, alpha, beta, is_my_turn, memo):
+        key = (you, opponent, depth, is_my_turn)
+        if key in memo:
+            return memo[key]
+        
+        my_sum = sum(you[:6])
+        opp_sum = sum(opponent[:6])
+        
+        if my_sum == 0 or opp_sum == 0:
+            result = ((you[6] + my_sum - opponent[6] - opp_sum) * 1000, None)
+            memo[key] = result
+            return result
+        
+        if depth == 0:
+            result = (evaluate(you, opponent), None)
+            memo[key] = result
+            return result
+        
+        if is_my_turn:
+            best_value = -float('inf')
+            best_move = None
+            for move in range(6):
+                if you[move] > 0:
+                    new_you, new_opp, extra = simulate_move(you, opponent, move)
+                    if extra:
+                        value, _ = minimax(new_you, new_opp, depth, alpha, beta, True, memo)
+                    else:
+                        value, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, False, memo)
+                    if value > best_value:
+                        best_value = value
+                        best_move = move
+                    alpha = max(alpha, value)
+                    if beta <= alpha:
+                        break
+            if best_move is None:
+                best_move = 0
+            result = (best_value, best_move)
+        else:
+            best_value = float('inf')
+            for move in range(6):
+                if opponent[move] > 0:
+                    new_opp, new_you, extra = simulate_move(opponent, you, move)
+                    if extra:
+                        value, _ = minimax(new_you, new_opp, depth, alpha, beta, False, memo)
+                    else:
+                        value, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, True, memo)
+                    best_value = min(best_value, value)
+                    beta = min(beta, value)
+                    if beta <= alpha:
+                        break
+            result = (best_value, None)
+        
+        memo[key] = result
+        return result
+    
+    memo = {}
+    _, best_move = minimax(tuple(you), tuple(opponent), 10, -float('inf'), float('inf'), True, memo)
+    
+    if best_move is None or you[best_move] == 0:
+        for i in range(6):
+            if you[i] > 0:
+                return i
+    
+    return best_move
+```
+
+Let me trace through an edge case to make sure my logic is right. Standard Kalah starts with 4 seeds per house.
+
+Initial: you = [4,4,4,4,4,4,0], opponent = [4,4,4,4,4,4,0]
+
+Move 2 (picking house 2, 0-indexed):
+- Seeds = 4, you[2] = 0
+- pos = 2 -> 3, you[3] = 5, seeds = 3
+- pos = 3 -> 4, you[4] = 5, seeds = 2
+- pos = 4 -> 5, you[5] = 5, seeds = 1
+- pos = 5 -> 6, you[6] = 1, seeds = 0
+
+Last pos = 6 (my store), extra move!
+No capture (landed in store).
+
+Result: you = [4,4,0,5,5,5,1], opponent = [4,4,4,4,4,4,0], extra = True
+
+That looks correct.
+
+Let me also verify capture logic. Say you = [0,0,0,1,0,0,5], opponent = [3,2,1,0,0,0,3]
+
+Move 3 (house 3):
+- Seeds = 1, you[3] = 0
+- pos = 3 -> 4, you[4] = 1, seeds = 0
+
+Last pos = 4, you[4] = 1 (was empty before drop)
+Opposite = 5 - 4 = 1
+opponent[1] = 2 > 0, so capture!
+
+you[6] += 1 + 2 = 8
+you[4] = 0
+opponent[1] = 0
+
+Final: you = [0,0,0,0,0,0,8], opponent = [3,0,1,0,0,0,3]
+
+Looks right!
+
+Now let me consider the edge case of seeds wrapping around. Say you = [0,0,0,0,0,15,0], opponent = [0,0,0,0,0,0,0].
+
+Move 5:
+- Seeds = 15, you[5] = 0
+- pos = 5 -> 6, you[6] = 1, seeds = 14
+- pos = 6 -> 7, opponent[0] = 1, seeds = 13
+- ... opponent[5] = 1, seeds = 8
+- pos = 12 -> 13 -> 0, you[0] = 1, seeds = 7
+- ... you[5] = 1, seeds = 2
+- pos = 5 -> 6, you[6] = 2, seeds = 1
+- pos = 6 -> 7, opponent[0] = 2, seeds = 0
+
+Last pos = 7, which is opponent[0], no extra move, no capture (landed on opponent side)
+
+Actually wait, opponent side is empty initially so there's something wrong. Oh wait opponent[0] goes from 0 to 1, then in second pass from 1 to 2. That's correct!
+
+Let me finalize my solution. I think depth 10 with memoization should be good:
+</thinking>
+
+Looking at this Kalah problem, I need to implement a game-playing policy. Let me analyze:
+
+1. **Game mechanics**: Pick seeds from a house, distribute counter-clockwise, skip opponent's store
+2. **Extra move**: Last seed in my store = another turn
+3. **Capture**: Last seed in empty house on my side + opposite house has seeds = capture both
+
+I'll use minimax with alpha-beta pruning and memoization for efficient search.
+
+Key implementation details:
+- Position mapping: 0-5 (my houses), 6 (my store), 7-12 (opponent houses 0-5), skip 13 (opponent store)
+- Handle extra moves by not decrementing depth
+- Transposition table for caching states
+
+<code>
+def policy(you: list[int], opponent: list[int]) -> int:
+    def simulate_move(you, opponent, move):
+        you = list(you)
+        opponent = list(opponent)
+        seeds = you[move]
+        you[move] = 0
+        
+        pos = move
+        while seeds > 0:
+            pos += 1
+            if pos == 13:
+                pos = 0
+            if pos < 6:
+                you[pos] += 1
+            elif pos == 6:
+                you[6] += 1
+            else:
+                opponent[pos - 7] += 1
+            seeds -= 1
+        
+        extra_move = (pos == 6)
+        
+        # Capture: last seed in my empty house, opposite has seeds
+        if pos < 6 and you[pos] == 1:
+            opposite = 5 - pos
+            if opponent[opposite] > 0:
+                you[6] += 1 + opponent[opposite]
+                you[pos] = 0
+                opponent[opposite] = 0
+        
+        return tuple(you), tuple(opponent), extra_move
+    
+    def evaluate(you, opponent):
+        # Score difference plus small bonus for seeds on my side
+        return you[6] - opponent[6] + 0.1 * (sum(you[:6]) - sum(opponent[:6]))
+    
+    def minimax(you, opponent, depth, alpha, beta, is_my_turn, memo):
+        key = (you, opponent, depth, is_my_turn)
+        if key in memo:
+            return memo[key]
+        
+        my_sum = sum(you[:6])
+        opp_sum = sum(opponent[:6])
+        
+        # Terminal state
+        if my_sum == 0 or opp_sum == 0:
+            final_diff = (you[6] + my_sum) - (opponent[6] + opp_sum)
+            result = (final_diff * 1000, None)
+            memo[key] = result
+            return result
+        
+        if depth == 0:
+            result = (evaluate(you, opponent), None)
+            memo[key] = result
+            return result
+        
+        if is_my_turn:
+            best_value = -float('inf')
+            best_move = None
+            # Order moves: prefer moves that land in store (extra turn)
+            moves = [(you[i], -(6 - i - you[i] % 13), i) for i in range(6) if you[i] > 0]
+            moves.sort(reverse=True)
+            
+            for _, _, move in moves:
+                new_you, new_opp, extra = simulate_move(you, opponent, move)
+                if extra:
+                    value, _ = minimax(new_you, new_opp, depth, alpha, beta, True, memo)
+                else:
+                    value, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, False, memo)
+                if value > best_value:
+                    best_value = value
+                    best_move = move
+                alpha = max(alpha, value)
+                if beta <= alpha:
+                    break
+            result = (best_value, best_move)
+        else:
+            best_value = float('inf')
+            for move in range(6):
+                if opponent[move] > 0:
+                    new_opp, new_you, extra = simulate_move(opponent, you, move)
+                    if extra:
+                        value, _ = minimax(new_you, new_opp, depth, alpha, beta, False, memo)
+                    else:
+                        value, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, True, memo)
+                    best_value = min(best_value, value)
+                    beta = min(beta, value)
+                    if beta <= alpha:
+                        break
+            result = (best_value, None)
+        
+        memo[key] = result
+        return result
+    
+    # Iterative deepening with time limit
+    import time
+    start = time.time()
+    best_move = None
+    
+    # Find first legal move as fallback
+    for i in range(6):
+        if you[i] > 0:
+            best_move = i
+            break
+    
+    for depth in range(1, 16):
+        if time.time() - start > 0.85:
+            break
+        memo = {}
+        _, move = minimax(tuple(you), tuple(opponent), depth, -float('inf'), float('inf'), True, memo)
+        if move is not None:
+            best_move = move
+    
+    return best_move
+</code>

@@ -1,0 +1,336 @@
+
+import numpy as np
+
+# --- Constants and Bitboard Masks ---
+FULL_MASK = 0xFFFFFFFFFFFFFFFF
+# Column masks for wrap-around prevention
+MASK_A = 0x0101010101010101  # File A (column 0)
+MASK_H = 0x8080808080808080  # File H (column 7)
+
+# Strategic masks for evaluation
+CORNER_MASK = (1 << 0) | (1 << 7) | (1 << 56) | (1 << 63)
+X_SQUARE_MASK = (1 << 9) | (1 << 14) | (1 << 49) | (1 << 54)
+C_SQUARE_MASK = (1 << 1) | (1 << 6) | (1 << 8) | (1 << 15) | \
+                (1 << 48) | (1 << 55) | (1 << 57) | (1 << 62)
+
+# Weights for heuristic evaluation
+W_CORNER = 100
+W_X_SQUARE = -25
+W_C_SQUARE = -10
+W_MOBILITY = 10
+W_PIECE = 1
+
+def popcount(x):
+    """Count set bits."""
+    return x.bit_count()
+
+def to_bitboard(arr):
+    """Convert 8x8 numpy array (0/1) to 64-bit integer."""
+    b = 0
+    for r in range(8):
+        for c in range(8):
+            if arr[r][c]:
+                b |= 1 << (r * 8 + c)
+    return b
+
+def to_string(move_bit):
+    """Convert bit index to algebraic notation (e.g., 'd3')."""
+    if move_bit == 0:
+        return "pass"
+    idx = move_bit.bit_length() - 1
+    r, c = divmod(idx, 8)
+    return f"{chr(ord('a') + c)}{r + 1}"
+
+def get_valid_moves(my_b, opp_b):
+    """Generate a bitboard of all valid moves for the current player."""
+    empty = ~(my_b | opp_b) & FULL_MASK
+    moves = 0
+
+    # Directions: N, S, E, W, NE, NW, SE, SW
+    # Shifts: <<8, >>8, <<1, >>1, <<9, <<7, >>7, >>9
+    # Masks prevent wrapping across board edges.
+    
+    # North (<< 8)
+    candidates = opp_b & (my_b << 8)
+    candidates |= opp_b & (candidates << 8)
+    candidates |= opp_b & (candidates << 8)
+    candidates |= opp_b & (candidates << 8)
+    candidates |= opp_b & (candidates << 8)
+    candidates |= opp_b & (candidates << 8)
+    moves |= empty & (candidates << 8)
+
+    # South (>> 8)
+    candidates = opp_b & (my_b >> 8)
+    candidates |= opp_b & (candidates >> 8)
+    candidates |= opp_b & (candidates >> 8)
+    candidates |= opp_b & (candidates >> 8)
+    candidates |= opp_b & (candidates >> 8)
+    candidates |= opp_b & (candidates >> 8)
+    moves |= empty & (candidates >> 8)
+
+    # East (<< 1) - prevent wrap from col H to A
+    candidates = opp_b & ((my_b & ~MASK_H) << 1)
+    candidates |= opp_b & ((candidates & ~MASK_H) << 1)
+    candidates |= opp_b & ((candidates & ~MASK_H) << 1)
+    candidates |= opp_b & ((candidates & ~MASK_H) << 1)
+    candidates |= opp_b & ((candidates & ~MASK_H) << 1)
+    candidates |= opp_b & ((candidates & ~MASK_H) << 1)
+    moves |= empty & ((candidates & ~MASK_H) << 1)
+
+    # West (>> 1) - prevent wrap from col A to H
+    candidates = opp_b & ((my_b & ~MASK_A) >> 1)
+    candidates |= opp_b & ((candidates & ~MASK_A) >> 1)
+    candidates |= opp_b & ((candidates & ~MASK_A) >> 1)
+    candidates |= opp_b & ((candidates & ~MASK_A) >> 1)
+    candidates |= opp_b & ((candidates & ~MASK_A) >> 1)
+    candidates |= opp_b & ((candidates & ~MASK_A) >> 1)
+    moves |= empty & ((candidates & ~MASK_A) >> 1)
+
+    # NE (<< 9) - prevent wrap H->A
+    candidates = opp_b & ((my_b & ~MASK_H) << 9)
+    candidates |= opp_b & ((candidates & ~MASK_H) << 9)
+    candidates |= opp_b & ((candidates & ~MASK_H) << 9)
+    candidates |= opp_b & ((candidates & ~MASK_H) << 9)
+    candidates |= opp_b & ((candidates & ~MASK_H) << 9)
+    candidates |= opp_b & ((candidates & ~MASK_H) << 9)
+    moves |= empty & ((candidates & ~MASK_H) << 9)
+
+    # NW (<< 7) - prevent wrap A->H
+    candidates = opp_b & ((my_b & ~MASK_A) << 7)
+    candidates |= opp_b & ((candidates & ~MASK_A) << 7)
+    candidates |= opp_b & ((candidates & ~MASK_A) << 7)
+    candidates |= opp_b & ((candidates & ~MASK_A) << 7)
+    candidates |= opp_b & ((candidates & ~MASK_A) << 7)
+    candidates |= opp_b & ((candidates & ~MASK_A) << 7)
+    moves |= empty & ((candidates & ~MASK_A) << 7)
+
+    # SE (>> 7) - prevent wrap H->A
+    candidates = opp_b & ((my_b & ~MASK_H) >> 7)
+    candidates |= opp_b & ((candidates & ~MASK_H) >> 7)
+    candidates |= opp_b & ((candidates & ~MASK_H) >> 7)
+    candidates |= opp_b & ((candidates & ~MASK_H) >> 7)
+    candidates |= opp_b & ((candidates & ~MASK_H) >> 7)
+    candidates |= opp_b & ((candidates & ~MASK_H) >> 7)
+    moves |= empty & ((candidates & ~MASK_H) >> 7)
+
+    # SW (>> 9) - prevent wrap A->H
+    candidates = opp_b & ((my_b & ~MASK_A) >> 9)
+    candidates |= opp_b & ((candidates & ~MASK_A) >> 9)
+    candidates |= opp_b & ((candidates & ~MASK_A) >> 9)
+    candidates |= opp_b & ((candidates & ~MASK_A) >> 9)
+    candidates |= opp_b & ((candidates & ~MASK_A) >> 9)
+    candidates |= opp_b & ((candidates & ~MASK_A) >> 9)
+    moves |= empty & ((candidates & ~MASK_A) >> 9)
+
+    return moves
+
+def apply_move(my_b, opp_b, move):
+    """Apply a move and return the new (my_b, opp_b) tuple."""
+    if move == 0:
+        return my_b, opp_b
+
+    flipped = 0
+    my_b |= move
+
+    # North
+    line = opp_b & (move << 8)
+    line |= opp_b & (line << 8)
+    line |= opp_b & (line << 8)
+    line |= opp_b & (line << 8)
+    line |= opp_b & (line << 8)
+    line |= opp_b & (line << 8)
+    if my_b & (line << 8):
+        flipped |= line
+
+    # South
+    line = opp_b & (move >> 8)
+    line |= opp_b & (line >> 8)
+    line |= opp_b & (line >> 8)
+    line |= opp_b & (line >> 8)
+    line |= opp_b & (line >> 8)
+    line |= opp_b & (line >> 8)
+    if my_b & (line >> 8):
+        flipped |= line
+
+    # East
+    line = opp_b & ((move & ~MASK_H) << 1)
+    line |= opp_b & ((line & ~MASK_H) << 1)
+    line |= opp_b & ((line & ~MASK_H) << 1)
+    line |= opp_b & ((line & ~MASK_H) << 1)
+    line |= opp_b & ((line & ~MASK_H) << 1)
+    line |= opp_b & ((line & ~MASK_H) << 1)
+    if my_b & ((line & ~MASK_H) << 1):
+        flipped |= line
+
+    # West
+    line = opp_b & ((move & ~MASK_A) >> 1)
+    line |= opp_b & ((line & ~MASK_A) >> 1)
+    line |= opp_b & ((line & ~MASK_A) >> 1)
+    line |= opp_b & ((line & ~MASK_A) >> 1)
+    line |= opp_b & ((line & ~MASK_A) >> 1)
+    line |= opp_b & ((line & ~MASK_A) >> 1)
+    if my_b & ((line & ~MASK_A) >> 1):
+        flipped |= line
+
+    # NE
+    line = opp_b & ((move & ~MASK_H) << 9)
+    line |= opp_b & ((line & ~MASK_H) << 9)
+    line |= opp_b & ((line & ~MASK_H) << 9)
+    line |= opp_b & ((line & ~MASK_H) << 9)
+    line |= opp_b & ((line & ~MASK_H) << 9)
+    line |= opp_b & ((line & ~MASK_H) << 9)
+    if my_b & ((line & ~MASK_H) << 9):
+        flipped |= line
+
+    # NW
+    line = opp_b & ((move & ~MASK_A) << 7)
+    line |= opp_b & ((line & ~MASK_A) << 7)
+    line |= opp_b & ((line & ~MASK_A) << 7)
+    line |= opp_b & ((line & ~MASK_A) << 7)
+    line |= opp_b & ((line & ~MASK_A) << 7)
+    line |= opp_b & ((line & ~MASK_A) << 7)
+    if my_b & ((line & ~MASK_A) << 7):
+        flipped |= line
+
+    # SE
+    line = opp_b & ((move & ~MASK_H) >> 7)
+    line |= opp_b & ((line & ~MASK_H) >> 7)
+    line |= opp_b & ((line & ~MASK_H) >> 7)
+    line |= opp_b & ((line & ~MASK_H) >> 7)
+    line |= opp_b & ((line & ~MASK_H) >> 7)
+    line |= opp_b & ((line & ~MASK_H) >> 7)
+    if my_b & ((line & ~MASK_H) >> 7):
+        flipped |= line
+
+    # SW
+    line = opp_b & ((move & ~MASK_A) >> 9)
+    line |= opp_b & ((line & ~MASK_A) >> 9)
+    line |= opp_b & ((line & ~MASK_A) >> 9)
+    line |= opp_b & ((line & ~MASK_A) >> 9)
+    line |= opp_b & ((line & ~MASK_A) >> 9)
+    line |= opp_b & ((line & ~MASK_A) >> 9)
+    if my_b & ((line & ~MASK_A) >> 9):
+        flipped |= line
+
+    my_b |= flipped
+    opp_b &= ~flipped
+    return my_b, opp_b
+
+def evaluate(my_b, opp_b):
+    """Evaluate board position for the current player."""
+    my_pieces = popcount(my_b)
+    opp_pieces = popcount(opp_b)
+    
+    # 1. Piece count difference (important late game)
+    score = (my_pieces - opp_pieces) * W_PIECE
+    
+    # 2. Corner control
+    my_corners = popcount(my_b & CORNER_MASK)
+    opp_corners = popcount(opp_b & CORNER_MASK)
+    score += (my_corners - opp_corners) * W_CORNER
+    
+    # 3. Penalty for dangerous squares near empty corners
+    # X-Squares
+    score += (popcount(my_b & X_SQUARE_MASK) - popcount(opp_b & X_SQUARE_MASK)) * W_X_SQUARE
+    # C-Squares
+    score += (popcount(my_b & C_SQUARE_MASK) - popcount(opp_b & C_SQUARE_MASK)) * W_C_SQUARE
+    
+    # 4. Mobility (number of moves)
+    my_moves = popcount(get_valid_moves(my_b, opp_b))
+    opp_moves = popcount(get_valid_moves(opp_b, my_b))
+    score += (my_moves - opp_moves) * W_MOBILITY
+    
+    return score
+
+def negamax(my_b, opp_b, depth, alpha, beta):
+    """Negamax search with alpha-beta pruning."""
+    moves = get_valid_moves(my_b, opp_b)
+    
+    # Game Over or Depth reached
+    if depth == 0:
+        return evaluate(my_b, opp_b)
+    
+    if moves == 0:
+        # Pass
+        if get_valid_moves(opp_b, my_b) == 0:
+            # Both pass -> End of game
+            diff = popcount(my_b) - popcount(opp_b)
+            if diff > 0: return 10000 + diff
+            if diff < 0: return -10000 + diff
+            return 0
+        return -negamax(opp_b, my_b, depth, -beta, -alpha)
+    
+    best = -float('inf')
+    
+    # Move ordering: Check corners first for better pruning
+    corner_moves = moves & CORNER_MASK
+    other_moves = moves & ~CORNER_MASK
+    
+    # Combine for ordered iteration
+    # (Iterating corners first)
+    move_list = []
+    m = corner_moves
+    while m:
+        b = m & -m
+        move_list.append(b)
+        m -= b
+    m = other_moves
+    while m:
+        b = m & -m
+        move_list.append(b)
+        m -= b
+        
+    for move in move_list:
+        new_my, new_opp = apply_move(my_b, opp_b, move)
+        score = -negamax(new_opp, new_my, depth - 1, -beta, -alpha)
+        if score > best:
+            best = score
+        if score > alpha:
+            alpha = score
+        if alpha >= beta:
+            break
+            
+    return best
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    my_b = to_bitboard(you)
+    opp_b = to_bitboard(opponent)
+    
+    moves = get_valid_moves(my_b, opp_b)
+    if moves == 0:
+        return "pass"
+    
+    # Depth selection based on game progress
+    total_pieces = popcount(my_b) + popcount(opp_b)
+    if total_pieces >= 54:
+        depth = 8
+    elif total_pieces >= 50:
+        depth = 6
+    else:
+        depth = 4
+        
+    best_move = None
+    best_score = -float('inf')
+    
+    # Order root moves as well
+    corner_moves = moves & CORNER_MASK
+    other_moves = moves & ~CORNER_MASK
+    move_list = []
+    m = corner_moves
+    while m:
+        move_list.append(m & -m)
+        m -= m & -m
+    m = other_moves
+    while m:
+        move_list.append(m & -m)
+        m -= m & -m
+        
+    for move in move_list:
+        new_my, new_opp = apply_move(my_b, opp_b, move)
+        score = -negamax(new_opp, new_my, depth - 1, -float('inf'), float('inf'))
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+            
+    return to_string(best_move)

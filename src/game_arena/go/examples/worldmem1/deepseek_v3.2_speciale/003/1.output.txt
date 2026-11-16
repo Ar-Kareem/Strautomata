@@ -1,0 +1,252 @@
+We use a heuristic approach combining immediate tactical responses with an influence-based territorial evaluation. The policy evaluates all legal moves (excluding ko) by simulating the board after the move. For each candidate we compute:
+
+- **Capture bonus** for removing opponent stones.
+- **Defense bonus** for saving a friendly group in atari.
+- **Atari bonus** for putting an opponent group into atari.
+- **Penalty** for playing into self‑atari without capture.
+- **Influence map** built by summing \(1/(d+1)^2\) over all stones (Manhattan distance \(d\)). The map estimates control of empty points; a point is counted as territory if one player’s influence exceeds the other’s by a threshold (0.1). The final score combines stone difference, territory difference, and the tactical bonuses.
+
+A shallow board simulation ensures legality and provides the data needed for the bonuses. Simple ko detection is implemented by storing the board state after our last move and rejecting any move that would reproduce it. The move with the highest score is chosen; if none is found we pass.
+
+All data structures are optimized for speed (precomputed influence table, neighbor lists, set operations) to stay within the 1‑second limit even on a full 19×19 board.
+
+<code>
+import math
+
+BOARD_SIZE = 19
+TOTAL = BOARD_SIZE * BOARD_SIZE
+
+# Precompute neighbors for every board index (0‑based)
+neighbors = [[] for _ in range(TOTAL)]
+for r in range(BOARD_SIZE):
+    for c in range(BOARD_SIZE):
+        idx = r * BOARD_SIZE + c
+        if r > 0:
+            neighbors[idx].append((r - 1) * BOARD_SIZE + c)
+        if r < BOARD_SIZE - 1:
+            neighbors[idx].append((r + 1) * BOARD_SIZE + c)
+        if c > 0:
+            neighbors[idx].append(r * BOARD_SIZE + (c - 1))
+        if c < BOARD_SIZE - 1:
+            neighbors[idx].append(r * BOARD_SIZE + (c + 1))
+
+# Precompute influence table: influence of a stone at index s on point p
+# Using Manhattan distance: influence = 1 / ((d+1)^2)
+influence_table = [[0.0] * TOTAL for _ in range(TOTAL)]
+for s_r in range(BOARD_SIZE):
+    for s_c in range(BOARD_SIZE):
+        s_idx = s_r * BOARD_SIZE + s_c
+        for p_r in range(BOARD_SIZE):
+            for p_c in range(BOARD_SIZE):
+                d = abs(s_r - p_r) + abs(s_c - p_c)
+                influence = 1.0 / ((d + 1) ** 2)
+                p_idx = p_r * BOARD_SIZE + p_c
+                influence_table[s_idx][p_idx] = influence
+
+# Constants for scoring
+STONE_WEIGHT = 1.0
+TERRITORY_WEIGHT = 1.0
+CAPTURE_FACTOR = 5.0
+DEFENSE_FACTOR = 50.0
+ATARI_FACTOR = 10.0
+SELF_ATARI_PENALTY = -1000.0
+INFLUENCE_THRESH = 0.1
+
+def find_groups(own_set, other_set):
+    """
+    Return (groups, stone_to_group) for stones in own_set.
+    groups: list of dicts with 'stones' (set) and 'liberties' (set)
+    stone_to_group: mapping from stone index to group index
+    """
+    visited = set()
+    groups = []
+    stone_to_group = {}
+    for stone in own_set:
+        if stone in visited:
+            continue
+        stack = [stone]
+        group_stones = set()
+        liberties = set()
+        while stack:
+            cur = stack.pop()
+            if cur in visited:
+                continue
+            visited.add(cur)
+            group_stones.add(cur)
+            for nb in neighbors[cur]:
+                if nb not in own_set and nb not in other_set:
+                    liberties.add(nb)
+                elif nb in own_set and nb not in visited:
+                    stack.append(nb)
+        groups.append({'stones': group_stones, 'liberties': liberties})
+        g_idx = len(groups) - 1
+        for s in group_stones:
+            stone_to_group[s] = g_idx
+    return groups, stone_to_group
+
+def policy(me, opponent, memory):
+    # Convert to 0‑based index sets
+    my_set = set((r - 1) * BOARD_SIZE + (c - 1) for (r, c) in me)
+    opp_set = set((r - 1) * BOARD_SIZE + (c - 1) for (r, c) in opponent)
+
+    # Retrieve previous board (after our last move) for ko detection
+    prev_my = memory.get('prev_my')   # frozenset or None
+    prev_opp = memory.get('prev_opp')
+
+    # Precompute groups and mappings for current board
+    my_groups, my_stone_to_group = find_groups(my_set, opp_set)
+    opp_groups, opp_stone_to_group = find_groups(opp_set, my_set)
+
+    # Build a map from liberty to the atari group for my stones
+    my_atari = {}  # liberty index -> (group_idx, size)
+    for g_idx, grp in enumerate(my_groups):
+        libs = grp['liberties']
+        if len(libs) == 1:
+            lib = next(iter(libs))
+            my_atari[lib] = (g_idx, len(grp['stones']))
+
+    # Compute current influence arrays
+    my_inf = [0.0] * TOTAL
+    for s in my_set:
+        contrib = influence_table[s]
+        for i in range(TOTAL):
+            my_inf[i] += contrib[i]
+    opp_inf = [0.0] * TOTAL
+    for s in opp_set:
+        contrib = influence_table[s]
+        for i in range(TOTAL):
+            opp_inf[i] += contrib[i]
+
+    # List of empty points
+    empty_indices = [i for i in range(TOTAL) if i not in my_set and i not in opp_set]
+
+    best_score = -float('inf')
+    best_move_idx = None
+    best_new_my = None
+    best_new_opp = None
+
+    for p in empty_indices:
+        # ---- Capture detection ----
+        captured_groups = set()
+        for nb in neighbors[p]:
+            if nb in opp_set:
+                g_idx = opp_stone_to_group[nb]
+                if g_idx not in captured_groups:
+                    grp = opp_groups[g_idx]
+                    if p in grp['liberties'] and len(grp['liberties']) == 1:
+                        captured_groups.add(g_idx)
+        captured_stones = set()
+        for g_idx in captured_groups:
+            captured_stones.update(opp_groups[g_idx]['stones'])
+
+        new_my = my_set | {p}
+        new_opp = opp_set - captured_stones
+
+        # ---- Ko check ----
+        if prev_my is not None and prev_opp is not None:
+            if new_my == prev_my and new_opp == prev_opp:
+                continue
+
+        # ---- Suicide check and new group info ----
+        stack = [p]
+        visited = set()
+        libs = set()
+        while stack:
+            cur = stack.pop()
+            if cur in visited:
+                continue
+            visited.add(cur)
+            for nb in neighbors[cur]:
+                if nb in new_my and nb not in visited:
+                    stack.append(nb)
+                elif nb not in new_my and nb not in new_opp:
+                    libs.add(nb)
+        if not libs:   # suicide
+            continue
+
+        capture_size = len(captured_stones)
+        new_group_liberties = len(libs)
+        new_group_size = len(visited)   # not directly used
+
+        # ---- Tactical bonuses ----
+        defense_bonus = 0.0
+        if p in my_atari:
+            _, size = my_atari[p]
+            defense_bonus = DEFENSE_FACTOR * size
+
+        capture_bonus = CAPTURE_FACTOR * capture_size
+
+        self_atari_penalty = 0.0
+        if new_group_liberties == 1 and capture_size == 0:
+            self_atari_penalty = SELF_ATARI_PENALTY
+
+        atari_bonus = 0.0
+        # For opponent groups adjacent to p and not captured, compute new liberties
+        processed = set()
+        for nb in neighbors[p]:
+            if nb in opp_set and nb not in captured_stones:
+                g_idx = opp_stone_to_group[nb]
+                if g_idx in processed:
+                    continue
+                processed.add(g_idx)
+                grp_stones = opp_groups[g_idx]['stones']
+                new_libs = set()
+                for stone in grp_stones:
+                    for nb2 in neighbors[stone]:
+                        if nb2 not in new_my and nb2 not in new_opp:
+                            new_libs.add(nb2)
+                if len(new_libs) == 1:
+                    atari_bonus += ATARI_FACTOR * len(grp_stones)
+
+        # ---- Influence & territory evaluation ----
+        my_inf_new = my_inf[:]          # copy
+        opp_inf_new = opp_inf[:]
+
+        # add contribution of the new stone
+        contrib_p = influence_table[p]
+        for i in range(TOTAL):
+            my_inf_new[i] += contrib_p[i]
+
+        # remove contributions of captured opponent stones
+        for cap in captured_stones:
+            contrib_cap = influence_table[cap]
+            for i in range(TOTAL):
+                opp_inf_new[i] -= contrib_cap[i]
+
+        my_controlled = 0
+        opp_controlled = 0
+        for i in range(TOTAL):
+            if i in new_my or i in new_opp:
+                continue
+            if my_inf_new[i] > opp_inf_new[i] + INFLUENCE_THRESH:
+                my_controlled += 1
+            elif opp_inf_new[i] > my_inf_new[i] + INFLUENCE_THRESH:
+                opp_controlled += 1
+
+        stone_diff = len(new_my) - len(new_opp)
+        territory_diff = my_controlled - opp_controlled
+        base_score = stone_diff * STONE_WEIGHT + territory_diff * TERRITORY_WEIGHT
+        total_score = (base_score + defense_bonus + capture_bonus +
+                       atari_bonus + self_atari_penalty)
+
+        if total_score > best_score:
+            best_score = total_score
+            best_move_idx = p
+            best_new_my = new_my
+            best_new_opp = new_opp
+
+    # ---- Prepare return ----
+    if best_move_idx is None:   # no legal non‑pass move
+        action = (0, 0)
+        new_my, new_opp = my_set, opp_set   # board unchanged
+    else:
+        r = best_move_idx // BOARD_SIZE + 1
+        c = best_move_idx % BOARD_SIZE + 1
+        action = (r, c)
+
+    # Store board after our move for ko detection in next call
+    memory['prev_my'] = frozenset(best_new_my if best_move_idx is not None else my_set)
+    memory['prev_opp'] = frozenset(best_new_opp if best_move_idx is not None else opp_set)
+
+    return (action, memory)
+</code>

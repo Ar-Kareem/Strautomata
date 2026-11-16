@@ -1,0 +1,191 @@
+
+import numpy as np
+import time
+
+DIRS = [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)]
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    start_time = time.time()
+    
+    def get_legal_moves(me, opp):
+        moves = []
+        for r in range(8):
+            for c in range(8):
+                if me[r][c] or opp[r][c]:
+                    continue
+                if is_legal(me, opp, r, c):
+                    moves.append((r, c))
+        return moves
+    
+    def is_legal(me, opp, r, c):
+        for dr, dc in DIRS:
+            nr, nc = r+dr, c+dc
+            found_opp = False
+            while 0<=nr<8 and 0<=nc<8 and opp[nr][nc]:
+                nr += dr
+                nc += dc
+                found_opp = True
+            if found_opp and 0<=nr<8 and 0<=nc<8 and me[nr][nc]:
+                return True
+        return False
+    
+    def do_move(me, opp, r, c):
+        new_me = me.copy()
+        new_opp = opp.copy()
+        new_me[r][c] = 1
+        for dr, dc in DIRS:
+            nr, nc = r+dr, c+dc
+            flips = []
+            while 0<=nr<8 and 0<=nc<8 and opp[nr][nc]:
+                flips.append((nr, nc))
+                nr += dr
+                nc += dc
+            if flips and 0<=nr<8 and 0<=nc<8 and me[nr][nc]:
+                for fr, fc in flips:
+                    new_me[fr][fc] = 1
+                    new_opp[fr][fc] = 0
+        return new_me, new_opp
+    
+    CORNER = {(0,0),(0,7),(7,0),(7,7)}
+    XSQUARE = {(1,1):(0,0),(1,6):(0,7),(6,1):(7,0),(6,6):(7,7)}
+    CSQUARES = {
+        (0,0):[(0,1),(1,0)],
+        (0,7):[(0,6),(1,7)],
+        (7,0):[(6,0),(7,1)],
+        (7,7):[(6,7),(7,6)]
+    }
+    
+    WEIGHTS = np.array([
+        [100,-25, 10,  5,  5, 10,-25,100],
+        [-25,-45, -1, -1, -1, -1,-45,-25],
+        [ 10, -1,  3,  2,  2,  3, -1, 10],
+        [  5, -1,  2,  1,  1,  2, -1,  5],
+        [  5, -1,  2,  1,  1,  2, -1,  5],
+        [ 10, -1,  3,  2,  2,  3, -1, 10],
+        [-25,-45, -1, -1, -1, -1,-45,-25],
+        [100,-25, 10,  5,  5, 10,-25,100],
+    ], dtype=float)
+    
+    def evaluate(me, opp):
+        total = int(me.sum() + opp.sum())
+        empties = 64 - total
+        
+        if empties == 0 or (not get_legal_moves(me, opp) and not get_legal_moves(opp, me)):
+            diff = int(me.sum() - opp.sum())
+            if diff > 0: return 100000 + diff
+            elif diff < 0: return -100000 + diff
+            else: return 0
+        
+        # Positional
+        pos_score = float(np.sum(WEIGHTS * me) - np.sum(WEIGHTS * opp))
+        
+        # Mobility
+        my_moves = len(get_legal_moves(me, opp))
+        opp_moves = len(get_legal_moves(opp, me))
+        if my_moves + opp_moves > 0:
+            mob_score = 100.0 * (my_moves - opp_moves) / (my_moves + opp_moves + 1)
+        else:
+            mob_score = 0
+        
+        # Coin parity (more important late)
+        my_count = int(me.sum())
+        opp_count = int(opp.sum())
+        if my_count + opp_count > 0:
+            parity = 100.0 * (my_count - opp_count) / (my_count + opp_count)
+        else:
+            parity = 0
+        
+        # Corner
+        my_corners = sum(me[r][c] for r,c in CORNER)
+        opp_corners = sum(opp[r][c] for r,c in CORNER)
+        corner_score = 250.0 * (my_corners - opp_corners)
+        
+        # Phase weighting
+        if empties > 40:  # early
+            return pos_score * 1.0 + mob_score * 2.0 + corner_score + parity * 0.1
+        elif empties > 15:  # mid
+            return pos_score * 0.8 + mob_score * 1.5 + corner_score + parity * 0.5
+        else:  # late
+            return pos_score * 0.3 + mob_score * 0.5 + corner_score + parity * 3.0
+    
+    def move_order_key(move, me, opp):
+        r, c = move
+        if (r, c) in CORNER:
+            return -1000
+        score = WEIGHTS[r][c]
+        return -score
+    
+    def alphabeta(me, opp, depth, alpha, beta, maximizing, deadline):
+        if time.time() > deadline:
+            raise TimeoutError
+        
+        if depth == 0:
+            return evaluate(me, opp), None
+        
+        moves = get_legal_moves(me, opp)
+        
+        if not moves:
+            opp_moves = get_legal_moves(opp, me)
+            if not opp_moves:
+                return evaluate(me, opp), None
+            val, _ = alphabeta(opp, me, depth - 1, -beta, -alpha, not maximizing, deadline)
+            return -val, None
+        
+        moves.sort(key=lambda m: move_order_key(m, me, opp))
+        
+        best_move = moves[0]
+        if maximizing:
+            best_val = -float('inf')
+            for move in moves:
+                new_me, new_opp = do_move(me, opp, move[0], move[1])
+                val, _ = alphabeta(new_opp, new_me, depth-1, -beta, -alpha, False, deadline)
+                val = -val
+                if val > best_val:
+                    best_val = val
+                    best_move = move
+                alpha = max(alpha, val)
+                if alpha >= beta:
+                    break
+            return best_val, best_move
+        else:
+            best_val = -float('inf')
+            for move in moves:
+                new_me, new_opp = do_move(me, opp, move[0], move[1])
+                val, _ = alphabeta(new_opp, new_me, depth-1, -beta, -alpha, True, deadline)
+                val = -val
+                if val > best_val:
+                    best_val = val
+                    best_move = move
+                alpha = max(alpha, val)
+                if alpha >= beta:
+                    break
+            return best_val, best_move
+    
+    moves = get_legal_moves(you, opponent)
+    if not moves:
+        return "pass"
+    
+    if len(moves) == 1:
+        r, c = moves[0]
+        return chr(ord('a')+c) + str(r+1)
+    
+    deadline = start_time + 0.85
+    best_move = moves[0]
+    empties = 64 - int(you.sum() + opponent.sum())
+    
+    max_depth = min(empties, 20)
+    
+    for depth in range(1, max_depth + 1):
+        try:
+            val, move = alphabeta(you, opponent, depth, -float('inf'), float('inf'), True, deadline)
+            if move is not None:
+                best_move = move
+            if abs(val) > 50000:
+                break
+        except TimeoutError:
+            break
+        if time.time() > deadline:
+            break
+    
+    r, c = best_move
+    return chr(ord('a')+c) + str(r+1)

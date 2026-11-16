@@ -1,0 +1,371 @@
+<thinking>
+I will implement a Battleship targeting policy using a hunt/target approach with a probability-style placement scan. The policy:
+
+- Finds connected clusters of hit cells (1s).
+- Tries to "target" those clusters first: generate candidate unknown cells that could extend each cluster and score them by how many valid ship placements (given remaining ship lengths and known misses) would include both the cluster and the candidate. Choose the highest-scoring candidate (tie-break by smallest row, then col).
+- If no hits or no viable target candidate, run a "hunt" probability scan: enumerate all possible placements of remaining ships that do not overlap known misses and count how many placements cover each unknown cell; pick the cell with maximum count (tie-break by row,col).
+- It attempts simple sunk detection to remove sunk ship lengths from consideration: if a hit cluster is aligned, its length matches a ship length, and both ends are blocked (miss or boundary), the ship is considered sunk and removed from remaining ship lengths.
+
+This is deterministic and runs quickly for a 10x10 board. The function returns an unknown cell (board value 0).
+</thinking>
+<code>
+import collections
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Battleship targeting policy for a 10x10 board.
+    board: 10x10 list of ints where:
+      0 = unknown, -1 = miss, 1 = hit
+    Returns (row, col) of an unknown cell to fire at.
+    """
+    # Board dims
+    N = 10
+
+    # Ship lengths
+    base_ships = [5, 4, 3, 3, 2]
+
+    # Helper: get neighbors 4-connected
+    def neighbors(r, c):
+        for dr, dc in ((1,0),(-1,0),(0,1),(0,-1)):
+            rr, cc = r+dr, c+dc
+            if 0 <= rr < N and 0 <= cc < N:
+                yield rr, cc
+
+    # Convert to simple indexing
+    hits = [(r, c) for r in range(N) for c in range(N) if board[r][c] == 1]
+    misses = {(r, c) for r in range(N) for c in range(N) if board[r][c] == -1}
+    unknowns = {(r, c) for r in range(N) for c in range(N) if board[r][c] == 0}
+
+    # If no unknowns, return something (shouldn't happen)
+    if not unknowns:
+        return (0, 0)
+
+    # Find connected components of hits (4-connectivity)
+    hit_components = []
+    visited = set()
+    for h in hits:
+        if h in visited:
+            continue
+        # BFS
+        comp = []
+        dq = collections.deque([h])
+        visited.add(h)
+        while dq:
+            cur = dq.popleft()
+            comp.append(cur)
+            for nb in neighbors(*cur):
+                if nb not in visited and board[nb[0]][nb[1]] == 1:
+                    visited.add(nb)
+                    dq.append(nb)
+        hit_components.append(comp)
+
+    # Determine which ships appear sunk (simple heuristic)
+    remaining_ships = list(base_ships)
+    # For each component, if orientation known and both ends blocked, and length equals a ship length, consider it sunk
+    for comp in hit_components:
+        if not comp:
+            continue
+        if len(comp) == 1:
+            # single hit: only declare sunk if all four orth neighbors are misses or out-of-bounds,
+            # but this is very conservative, so usually we won't mark singletons as sunk.
+            r, c = comp[0]
+            blocked_count = 0
+            for dr, dc in ((1,0),(-1,0),(0,1),(0,-1)):
+                rr, cc = r+dr, c+dc
+                if not (0 <= rr < N and 0 <= cc < N):
+                    blocked_count += 1
+                elif board[rr][cc] == -1:
+                    blocked_count += 1
+            if blocked_count == 4:
+                L = 1
+                if L in remaining_ships:
+                    remaining_ships.remove(L)
+            continue
+        rows = {r for r, _ in comp}
+        cols = {c for _, c in comp}
+        if len(rows) == 1:
+            # horizontal
+            r = next(iter(rows))
+            comp_cs = sorted(c for _, c in comp)
+            left = comp_cs[0] - 1
+            right = comp_cs[-1] + 1
+            blocked_left = (left < 0) or (board[r][left] == -1)
+            blocked_right = (right >= N) or (board[r][right] == -1)
+            length = len(comp)
+            if blocked_left and blocked_right and length in remaining_ships:
+                remaining_ships.remove(length)
+        elif len(cols) == 1:
+            # vertical
+            c = next(iter(cols))
+            comp_rs = sorted(r for r, _ in comp)
+            up = comp_rs[0] - 1
+            down = comp_rs[-1] + 1
+            blocked_up = (up < 0) or (board[up][c] == -1)
+            blocked_down = (down >= N) or (board[down][c] == -1)
+            length = len(comp)
+            if blocked_up and blocked_down and length in remaining_ships:
+                remaining_ships.remove(length)
+        else:
+            # Non-linear cluster (shouldn't happen with straight ships); skip.
+            pass
+
+    # Utility: check if a hypothetical placement (list of coords) is valid:
+    # - No cell is a miss (-1).
+    # - It does not include any hit that belongs to another component (i.e., hits not in allowed_hits set).
+    def placement_valid(cells, allowed_hits_set=None):
+        for (r, c) in cells:
+            if (r, c) in misses:
+                return False
+        if allowed_hits_set is None:
+            allowed_hits_set = set()
+        for (r, c) in hits:
+            if (r, c) not in allowed_hits_set and (r, c) in cells:
+                # placement would claim a hit that is not allowed (belongs to other component)
+                # but we treat this as invalid to avoid assigning multiple components to same ship
+                return False
+        return True
+
+    # Helper: check if there exists a placement of ship length L in given orientation that covers all coords in required_set
+    # and includes candidate cell, and doesn't conflict with misses or other hits outside required_set.
+    def exists_placement_covering(required_set, candidate, L, orientation):
+        # orientation: 'H' or 'V'
+        # Compute required interval along the orientation axis
+        if orientation == 'H':
+            rows = {r for r, _ in required_set}
+            if len(rows) != 1:
+                return False
+            r = next(iter(rows))
+            req_cols = [c for _, c in required_set] + [candidate[1]]
+            min_req = min(req_cols)
+            max_req = max(req_cols)
+            # start must satisfy start <= min_req and start+L-1 >= max_req
+            start_low = max(0, max_req - L + 1)
+            start_high = min(min_req, N - L)
+            for start in range(start_low, start_high + 1):
+                cells = [(r, start + i) for i in range(L)]
+                # Ensure all required_set and candidate are included
+                ok = True
+                for req in required_set:
+                    if req not in cells:
+                        ok = False
+                        break
+                if candidate not in cells:
+                    ok = False
+                if not ok:
+                    continue
+                # placement must not cover hits from other components
+                if not placement_valid(cells, allowed_hits_set=set(required_set)):
+                    continue
+                return True
+            return False
+        else:  # 'V'
+            cols = {c for _, c in required_set}
+            if len(cols) != 1:
+                return False
+            c = next(iter(cols))
+            req_rows = [r for r, _ in required_set] + [candidate[0]]
+            min_req = min(req_rows)
+            max_req = max(req_rows)
+            start_low = max(0, max_req - L + 1)
+            start_high = min(min_req, N - L)
+            for start in range(start_low, start_high + 1):
+                cells = [(start + i, c) for i in range(L)]
+                ok = True
+                for req in required_set:
+                    if req not in cells:
+                        ok = False
+                        break
+                if candidate not in cells:
+                    ok = False
+                if not ok:
+                    continue
+                if not placement_valid(cells, allowed_hits_set=set(required_set)):
+                    continue
+                return True
+            return False
+
+    # TARGET MODE: If there are hit components (not all sunk), attempt to target cells that would extend them
+    target_candidates = {}  # (r,c) -> score
+    non_sunk_components = []
+    for comp in hit_components:
+        if not comp:
+            continue
+        # Check if component is already considered sunk (simple test above)
+        rows = {r for r, _ in comp}
+        cols = {c for _, c in comp}
+        sunk = False
+        if len(comp) > 0:
+            if len(rows) == 1:
+                # horizontal
+                comp_cs = sorted(c for _, c in comp)
+                left = comp_cs[0] - 1
+                right = comp_cs[-1] + 1
+                blocked_left = (left < 0) or (board[rows.pop()][left] == -1) if False else False  # not used
+            # Check by verifying component length matched and removed earlier
+            # If component length equals some removed ship length we assume sunk
+            # Simpler: if any hit component's coords are all misses-adjacent both ends, our earlier logic removed a length
+            # We'll simply re-check by verifying that at least one of its cells is not still in remaining ships coverage
+            # For simplicity, rely on earlier removal: if component length not present in remaining_ships in raw sense, it's sunk.
+        # Decide if we should attempt targeting this component:
+        comp_len = len(comp)
+        # If the component seems sunk (i.e., its length no longer possible because that length was removed), skip it
+        # But we must be careful: there could be multiple ships of same length (e.g., two 3's). We'll assume we removed only one instance.
+        # We'll conservatively treat a component as sunk only if it's clearly bounded on both ends (detected earlier).
+        non_sunk_components.append(comp)
+
+    # For each non-sunk component, generate candidates
+    # We'll pick candidates only if they are unknown (0) and feasible for at least one remaining ship length
+    # Determine maximum ship length for search bounds
+    max_ship_len = max(remaining_ships) if remaining_ships else 5
+
+    for comp in non_sunk_components:
+        if not comp:
+            continue
+        comp_set = set(comp)
+        # Determine orientation if >1
+        if len(comp) > 1:
+            rows = {r for r, _ in comp}
+            cols = {c for _, c in comp}
+            if len(rows) == 1:
+                orient = 'H'
+            elif len(cols) == 1:
+                orient = 'V'
+            else:
+                # malformed cluster; treat as singletons
+                orient = None
+        else:
+            orient = None  # single cell unknown orientation
+
+        if orient == 'H':
+            r = next(iter({r for r, _ in comp}))
+            comp_cs = sorted(c for _, c in comp)
+            min_c = comp_cs[0]
+            max_c = comp_cs[-1]
+            # search c range within max_ship_len extension
+            low = max(0, min_c - (max_ship_len - 1))
+            high = min(N - 1, max_c + (max_ship_len - 1))
+            for c in range(low, high + 1):
+                if board[r][c] != 0:
+                    continue
+                candidate = (r, c)
+                # For each remaining ship length, see if any placement horizontal can include comp and candidate
+                score = 0
+                for L in remaining_ships:
+                    if exists_placement_covering(comp_set, candidate, L, 'H'):
+                        score += 1
+                if score > 0:
+                    # don't allow placements that would cover hits from other components
+                    target_candidates[candidate] = target_candidates.get(candidate, 0) + score
+        elif orient == 'V':
+            c = next(iter({c for _, c in comp}))
+            comp_rs = sorted(r for r, _ in comp)
+            min_r = comp_rs[0]
+            max_r = comp_rs[-1]
+            low = max(0, min_r - (max_ship_len - 1))
+            high = min(N - 1, max_r + (max_ship_len - 1))
+            for r in range(low, high + 1):
+                if board[r][c] != 0:
+                    continue
+                candidate = (r, c)
+                score = 0
+                for L in remaining_ships:
+                    if exists_placement_covering(comp_set, candidate, L, 'V'):
+                        score += 1
+                if score > 0:
+                    target_candidates[candidate] = target_candidates.get(candidate, 0) + score
+        else:
+            # Single-cell component: prefer its 4 orth neighbors if unknown
+            r, c = comp[0]
+            for rr, cc in neighbors(r, c):
+                if board[rr][cc] != 0:
+                    continue
+                candidate = (rr, cc)
+                score = 0
+                # Try both orientations for each ship length
+                for L in remaining_ships:
+                    # Horizontal possibility: place a horizontal ship that includes both (r,c) and (rr,cc)
+                    # It only makes sense if rr == r or cc == c; neighbors guarantee this
+                    if rr == r:
+                        if exists_placement_covering(set(comp), candidate, L, 'H'):
+                            score += 1
+                    if cc == c:
+                        if exists_placement_covering(set(comp), candidate, L, 'V'):
+                            score += 1
+                if score > 0:
+                    target_candidates[candidate] = target_candidates.get(candidate, 0) + score
+
+    # If we have target candidates, pick the best
+    if target_candidates:
+        # pick candidate with highest score, tie break lexicographically by (r,c)
+        best_score = max(target_candidates.values())
+        best_cells = [cell for cell, sc in target_candidates.items() if sc == best_score]
+        best_cells.sort()
+        return best_cells[0]
+
+    # If no hits exist or targeting failed, perform hunt: probability scan over remaining ships
+    # Count how many placements cover each unknown cell
+    counts = [[0] * N for _ in range(N)]
+
+    # If no remaining ships (we might have removed all), revert to base ships
+    if not remaining_ships:
+        remaining_ships = list(base_ships)
+
+    # If there are hits but we couldn't find targets (rare), we prefer placements that include hits:
+    require_includes_hit = len(hits) > 0
+
+    for L in remaining_ships:
+        # horizontal placements
+        for r in range(N):
+            for start in range(0, N - L + 1):
+                placement = [(r, start + i) for i in range(L)]
+                # placement invalid if intersects a miss
+                if any(p in misses for p in placement):
+                    continue
+                # if require_includes_hit then placement must include at least one hit
+                if require_includes_hit:
+                    if not any(p in hits for p in placement):
+                        continue
+                # also ensure not to claim hits from other components incorrectly:
+                # A placement that includes a hit is fine; if it includes a hit that is inconsistent with its alignment
+                # (i.e., the placement spans and includes hits that are separated incompatible), we'd still accept — it's okay.
+                # Count only unknown cells
+                for (rr, cc) in placement:
+                    if board[rr][cc] == 0:
+                        counts[rr][cc] += 1
+        # vertical placements
+        for c in range(N):
+            for start in range(0, N - L + 1):
+                placement = [(start + i, c) for i in range(L)]
+                if any(p in misses for p in placement):
+                    continue
+                if require_includes_hit:
+                    if not any(p in hits for p in placement):
+                        continue
+                for (rr, cc) in placement:
+                    if board[rr][cc] == 0:
+                        counts[rr][cc] += 1
+
+    # Choose unknown cell with max count
+    best_val = -1
+    best_cell = None
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] != 0:
+                continue
+            val = counts[r][c]
+            if val > best_val:
+                best_val = val
+                best_cell = (r, c)
+            elif val == best_val and val >= 0 and best_cell is not None:
+                # tie-break lexicographically
+                if (r, c) < best_cell:
+                    best_cell = (r, c)
+
+    if best_cell is not None:
+        return best_cell
+
+    # As a last resort, pick first unknown lexicographically
+    unk_list = sorted(list(unknowns))
+    return unk_list[0] if unk_list else (0, 0)
+</code>

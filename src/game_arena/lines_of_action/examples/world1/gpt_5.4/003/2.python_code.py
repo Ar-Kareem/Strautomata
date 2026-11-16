@@ -1,0 +1,376 @@
+
+from typing import List, Tuple
+import math
+import time
+
+BOARD_N = 8
+DIRS8 = [(-1, -1), (-1, 0), (-1, 1),
+         (0, -1),           (0, 1),
+         (1, -1),  (1, 0),  (1, 1)]
+DIRS4DIAG = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+DIRS_MOVE = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+
+INF = 10**9
+
+
+def inside(r: int, c: int) -> bool:
+    return 0 <= r < BOARD_N and 0 <= c < BOARD_N
+
+
+def board_copy(board):
+    return [row[:] for row in board]
+
+
+def format_move(mv):
+    fr, fc, tr, tc = mv
+    return f"{fr},{fc}:{tr},{tc}"
+
+
+def pieces_of(board, side: int):
+    out = []
+    for r in range(8):
+        row = board[r]
+        for c in range(8):
+            if row[c] == side:
+                out.append((r, c))
+    return out
+
+
+def count_line_pieces(board, r, c, dr, dc):
+    cnt = 1
+    rr, cc = r + dr, c + dc
+    while inside(rr, cc):
+        if board[rr][cc] != 0:
+            cnt += 1
+        rr += dr
+        cc += dc
+    rr, cc = r - dr, c - dc
+    while inside(rr, cc):
+        if board[rr][cc] != 0:
+            cnt += 1
+        rr -= dr
+        cc -= dc
+    return cnt
+
+
+def is_legal_move(board, side, fr, fc, tr, tc):
+    if not (inside(fr, fc) and inside(tr, tc)):
+        return False
+    if board[fr][fc] != side:
+        return False
+    if fr == tr and fc == tc:
+        return False
+    if board[tr][tc] == side:
+        return False
+
+    dr = tr - fr
+    dc = tc - fc
+
+    sdr = 0 if dr == 0 else (1 if dr > 0 else -1)
+    sdc = 0 if dc == 0 else (1 if dc > 0 else -1)
+
+    if not ((dr == 0 and dc != 0) or (dc == 0 and dr != 0) or (abs(dr) == abs(dc))):
+        return False
+
+    dist = max(abs(dr), abs(dc))
+    required = count_line_pieces(board, fr, fc, sdr, sdc)
+    if dist != required:
+        return False
+
+    rr, cc = fr + sdr, fc + sdc
+    while (rr, cc) != (tr, tc):
+        if board[rr][cc] == -side:
+            return False
+        rr += sdr
+        cc += sdc
+
+    return True
+
+
+def generate_moves(board, side: int):
+    moves = []
+    my_pieces = pieces_of(board, side)
+    for r, c in my_pieces:
+        for dr, dc in DIRS_MOVE:
+            dist = count_line_pieces(board, r, c, dr, dc)
+            tr = r + dr * dist
+            tc = c + dc * dist
+            if not inside(tr, tc):
+                continue
+            if board[tr][tc] == side:
+                continue
+            rr, cc = r + dr, c + dc
+            blocked = False
+            while (rr, cc) != (tr, tc):
+                if board[rr][cc] == -side:
+                    blocked = True
+                    break
+                rr += dr
+                cc += dc
+            if blocked:
+                continue
+            moves.append((r, c, tr, tc))
+    return moves
+
+
+def apply_move(board, move, side: int):
+    fr, fc, tr, tc = move
+    nb = [row[:] for row in board]
+    nb[tr][tc] = side
+    nb[fr][fc] = 0
+    return nb
+
+
+def component_info(board, side: int):
+    pcs = pieces_of(board, side)
+    n = len(pcs)
+    if n == 0:
+        return (0, 0)
+    posset = set(pcs)
+    seen = set()
+    comps = 0
+    largest = 0
+    for p in pcs:
+        if p in seen:
+            continue
+        comps += 1
+        stack = [p]
+        seen.add(p)
+        sz = 0
+        while stack:
+            r, c = stack.pop()
+            sz += 1
+            for dr, dc in DIRS8:
+                nr, nc = r + dr, c + dc
+                if (nr, nc) in posset and (nr, nc) not in seen:
+                    seen.add((nr, nc))
+                    stack.append((nr, nc))
+        if sz > largest:
+            largest = sz
+    return comps, largest
+
+
+def is_connected(board, side: int):
+    pcs = pieces_of(board, side)
+    if len(pcs) <= 1:
+        return True
+    posset = set(pcs)
+    seen = {pcs[0]}
+    stack = [pcs[0]]
+    while stack:
+        r, c = stack.pop()
+        for dr, dc in DIRS8:
+            nr, nc = r + dr, c + dc
+            if (nr, nc) in posset and (nr, nc) not in seen:
+                seen.add((nr, nc))
+                stack.append((nr, nc))
+    return len(seen) == len(pcs)
+
+
+def adjacency_score(board, side: int):
+    pcs = pieces_of(board, side)
+    posset = set(pcs)
+    score = 0
+    for r, c in pcs:
+        local = 0
+        for dr, dc in DIRS8:
+            if (r + dr, c + dc) in posset:
+                local += 1
+        score += local
+    return score
+
+
+def centralization_score(board, side: int):
+    pcs = pieces_of(board, side)
+    score = 0.0
+    for r, c in pcs:
+        score -= (r - 3.5) * (r - 3.5) + (c - 3.5) * (c - 3.5)
+    return score
+
+
+def spread_score(board, side: int):
+    pcs = pieces_of(board, side)
+    if not pcs:
+        return -1000
+    n = len(pcs)
+    mr = sum(r for r, _ in pcs) / n
+    mc = sum(c for _, c in pcs) / n
+    s = 0.0
+    for r, c in pcs:
+        s += abs(r - mr) + abs(c - mc)
+    return -s
+
+
+def density_score(board, side: int):
+    pcs = pieces_of(board, side)
+    posset = set(pcs)
+    s = 0
+    for r, c in pcs:
+        for dr, dc in DIRS8:
+            nr, nc = r + dr, c + dc
+            if inside(nr, nc) and board[nr][nc] == side:
+                s += 1
+    return s
+
+
+def evaluate(board, side: int):
+    my_conn, my_largest = component_info(board, side)
+    op_conn, op_largest = component_info(board, -side)
+
+    if my_conn == 1:
+        return 500000
+    if op_conn == 1:
+        return -500000
+
+    my_count = len(pieces_of(board, side))
+    op_count = len(pieces_of(board, -side))
+
+    my_mob = len(generate_moves(board, side))
+    op_mob = len(generate_moves(board, -side))
+
+    score = 0
+    score += (op_conn - my_conn) * 12000
+    score += (my_largest - op_largest) * 1800
+    score += (my_count - op_count) * 200
+    score += (my_mob - op_mob) * 18
+    score += adjacency_score(board, side) * 45
+    score -= adjacency_score(board, -side) * 45
+    score += density_score(board, side) * 16
+    score -= density_score(board, -side) * 16
+    score += int(centralization_score(board, side) * 8)
+    score -= int(centralization_score(board, -side) * 8)
+    score += int(spread_score(board, side) * 20)
+    score -= int(spread_score(board, -side) * 20)
+    return score
+
+
+def immediate_winning_move(board, side: int):
+    for mv in generate_moves(board, side):
+        nb = apply_move(board, mv, side)
+        if is_connected(nb, side):
+            return mv
+    return None
+
+
+def move_order_key(board, side, mv):
+    fr, fc, tr, tc = mv
+    target = board[tr][tc]
+    nb = apply_move(board, mv, side)
+    my_conn, my_largest = component_info(nb, side)
+    op_conn, op_largest = component_info(nb, -side)
+    capture_bonus = 1 if target == -side else 0
+    center = -((tr - 3.5) ** 2 + (tc - 3.5) ** 2)
+    return (
+        100000 if my_conn == 1 else 0,
+        5000 * capture_bonus,
+        (op_conn - my_conn) * 500,
+        (my_largest - op_largest) * 50,
+        center,
+    )
+
+
+def negamax(board, side: int, depth: int, alpha: int, beta: int, end_time: float):
+    if time.time() >= end_time:
+        return evaluate(board, side), None
+
+    if is_connected(board, side):
+        return 500000 + depth, None
+    if is_connected(board, -side):
+        return -500000 - depth, None
+
+    moves = generate_moves(board, side)
+    if not moves:
+        return evaluate(board, side), None
+
+    if depth == 0:
+        return evaluate(board, side), None
+
+    moves.sort(key=lambda mv: move_order_key(board, side, mv), reverse=True)
+
+    best_move = moves[0]
+    best_score = -INF
+
+    for mv in moves:
+        if time.time() >= end_time:
+            break
+        nb = apply_move(board, mv, side)
+        score, _ = negamax(nb, -side, depth - 1, -beta, -alpha, end_time)
+        score = -score
+        if score > best_score:
+            best_score = score
+            best_move = mv
+        if score > alpha:
+            alpha = score
+        if alpha >= beta:
+            break
+
+    return best_score, best_move
+
+
+def choose_safe_move(board, side: int, moves):
+    if not moves:
+        return None
+
+    winning = []
+    safe = []
+    risky = []
+
+    for mv in moves:
+        nb = apply_move(board, mv, side)
+        if is_connected(nb, side):
+            winning.append(mv)
+            continue
+        opp_win = immediate_winning_move(nb, -side) is not None
+        if opp_win:
+            risky.append(mv)
+        else:
+            safe.append(mv)
+
+    pool = winning or safe or risky
+    pool.sort(key=lambda mv: move_order_key(board, side, mv), reverse=True)
+    return pool[0]
+
+
+def policy(board) -> str:
+    side = 1
+
+    legal_moves = generate_moves(board, side)
+    if not legal_moves:
+        # Should not normally happen, but return something legal-looking only if impossible.
+        # To remain robust, search for any legal move by brute force.
+        for fr in range(8):
+            for fc in range(8):
+                if board[fr][fc] != side:
+                    continue
+                for tr in range(8):
+                    for tc in range(8):
+                        if is_legal_move(board, side, fr, fc, tr, tc):
+                            return f"{fr},{fc}:{tr},{tc}"
+        return "0,0:0,0"
+
+    legal_moves.sort(key=lambda mv: move_order_key(board, side, mv), reverse=True)
+
+    mv = immediate_winning_move(board, side)
+    if mv is not None:
+        return format_move(mv)
+
+    start = time.time()
+    end_time = start + 0.92
+
+    candidate = choose_safe_move(board, side, legal_moves)
+    best_move = candidate if candidate is not None else legal_moves[0]
+
+    depth = 1
+    while depth <= 3 and time.time() < end_time:
+        score, mv = negamax(board, side, depth, -INF, INF, end_time)
+        if mv is not None and is_legal_move(board, side, *mv):
+            best_move = mv
+        depth += 1
+
+    if not is_legal_move(board, side, *best_move):
+        for mv in legal_moves:
+            if is_legal_move(board, side, *mv):
+                best_move = mv
+                break
+
+    return format_move(best_move)

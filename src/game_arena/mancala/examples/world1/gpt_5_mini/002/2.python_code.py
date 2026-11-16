@@ -1,0 +1,266 @@
+
+# Kalah policy implementation
+# Always returns a legal move index 0..5 for the current player ("you").
+
+from typing import List, Tuple
+import math
+import time
+
+def policy(you: List[int], opponent: List[int]) -> int:
+    """
+    Choose a move index i (0..5) where you[i] > 0.
+    Uses depth-limited minimax (alpha-beta) with a correct move simulator.
+    """
+    # Work on copies
+    root_you = list(you)
+    root_opp = list(opponent)
+
+    # Precompute total seeds to adapt search depth
+    total_seeds = sum(root_you[:6]) + sum(root_opp[:6])
+    # Adaptive depth: fewer seeds -> deeper search
+    if total_seeds <= 12:
+        max_depth = 12
+    elif total_seeds <= 24:
+        max_depth = 10
+    elif total_seeds <= 36:
+        max_depth = 8
+    else:
+        max_depth = 6
+
+    # Safety cap
+    max_depth = min(max_depth, 12)
+
+    # Timing safeguard
+    start_time = time.time()
+    time_limit = 0.9  # seconds
+
+    # Positions cycle mapping for sowing: indices 0..12:
+    # 0..5 -> mover's houses 0..5
+    # 6    -> mover's store
+    # 7..12-> opponent's houses 0..5
+    # When calling apply_move we treat the first arg as the mover's side ("you" in that function).
+    POS_COUNT = 13
+
+    def apply_move(m_you: List[int], m_opp: List[int], idx: int) -> Tuple[List[int], List[int], bool, bool]:
+        """
+        Apply move by the side m_you on house idx (0..5). Returns:
+        (new_m_you, new_m_opp, extra_turn, finished)
+        'm_you' and 'm_opp' are lists length 7 each (houses 0..5, store at 6).
+        finished is True if the game ended after this move (and final captures to stores applied).
+        """
+        you_c = m_you[:]  # mover's perspective
+        opp_c = m_opp[:]
+        seeds = you_c[idx]
+        you_c[idx] = 0
+        if seeds == 0:
+            # illegal but caller ensures legality
+            return you_c, opp_c, False, False
+
+        # start position in cycle is idx (we removed seeds from idx)
+        # place seeds one by one into positions (idx+1 ..) mod 13
+        last_pos = None
+        for k in range(1, seeds + 1):
+            dest = (idx + k) % POS_COUNT
+            # map dest to actual list and index
+            if dest <= 5:
+                # mover's house dest
+                you_c[dest] += 1
+            elif dest == 6:
+                # mover's store
+                you_c[6] += 1
+            else:
+                # opponent's house
+                opp_index = dest - 7  # 7 -> 0, 12 -> 5
+                opp_c[opp_index] += 1
+            last_pos = dest
+
+        # Determine extra turn
+        extra_turn = (last_pos == 6)
+
+        # Capture: only if last_pos is mover's house (0..5) and before placing it was empty,
+        # and opposite opponent house has seeds.
+        # To check "was empty before placing", we need to see its value just before placing last seed.
+        # We can recompute previous value: after sowing, you_c[last_pos] is current; previous was current-1.
+        finished = False
+        if last_pos is not None and 0 <= last_pos <= 5:
+            prev_val = you_c[last_pos] - 1
+            if prev_val == 0:
+                # Opposite opponent house index relative to mover's houses:
+                opp_opp_index = 5 - last_pos
+                if opp_c[opp_opp_index] > 0:
+                    # capture both the single seed just placed and all from opposite house
+                    captured = 1 + opp_c[opp_opp_index]
+                    you_c[6] += captured
+                    you_c[last_pos] = 0
+                    opp_c[opp_opp_index] = 0
+
+        # Check endgame: if either side's houses all zero, move remaining seeds into the other store
+        if all(h == 0 for h in you_c[:6]) or all(h == 0 for h in opp_c[:6]):
+            finished = True
+            # mover's side has you_c, opponent side opp_c. But the rule:
+            # "When one player has no seeds in houses, the other player moves all remaining seeds into their store."
+            if all(h == 0 for h in you_c[:6]) and any(h > 0 for h in opp_c[:6]):
+                opp_remaining = sum(opp_c[:6])
+                opp_c[6] += opp_remaining
+                for i in range(6):
+                    opp_c[i] = 0
+            elif all(h == 0 for h in opp_c[:6]) and any(h > 0 for h in you_c[:6]):
+                you_remaining = sum(you_c[:6])
+                you_c[6] += you_remaining
+                for i in range(6):
+                    you_c[i] = 0
+            # If both are zero or no remaining, nothing to move
+
+        return you_c, opp_c, extra_turn, finished
+
+    # Evaluation function: returns score from root player's perspective
+    def evaluate(root_you: List[int], root_opp: List[int]) -> float:
+        # Primary measure: store difference
+        store_diff = root_you[6] - root_opp[6]
+        # Secondary: material (remaining seeds)
+        material = sum(root_you[:6]) - sum(root_opp[:6])
+        # Weighted sum; give stores dominant weight
+        return float(store_diff) + 0.01 * float(material)
+
+    # Get legal moves for mover side (m_you list)
+    def legal_moves(m_you: List[int]) -> List[int]:
+        return [i for i in range(6) if m_you[i] > 0]
+
+    # Minimax with alpha-beta. root_turn indicates whether it's the root player's move now.
+    # We maintain arrays root_you and root_opp always in root orientation (root_you is original player's side).
+    # When current mover is root: call apply_move(root_you, root_opp, move)
+    # When current mover is opponent: call apply_move(root_opp, root_you, move) and swap results back.
+    def search(root_you_state: List[int], root_opp_state: List[int],
+               depth: int, is_root_to_move: bool,
+               alpha: float, beta: float) -> float:
+        # Time check to avoid overrunning
+        if time.time() - start_time > time_limit:
+            # Cut search; return heuristic evaluation
+            return evaluate(root_you_state, root_opp_state)
+
+        # Terminal or depth limit
+        if depth == 0 or all(h == 0 for h in root_you_state[:6]) or all(h == 0 for h in root_opp_state[:6]):
+            return evaluate(root_you_state, root_opp_state)
+
+        if is_root_to_move:
+            # Maximizer: root player's turn
+            best = -math.inf
+            moves = legal_moves(root_you_state)
+            if not moves:
+                # no moves (shouldn't normally happen as policy not called in that case)
+                return evaluate(root_you_state, root_opp_state)
+            for mv in moves:
+                new_you, new_opp, extra, finished = apply_move(root_you_state, root_opp_state, mv)
+                if finished:
+                    val = evaluate(new_you, new_opp)
+                else:
+                    if extra:
+                        val = search(new_you, new_opp, depth - 1, True, alpha, beta)
+                    else:
+                        val = search(new_you, new_opp, depth - 1, False, alpha, beta)
+                if val > best:
+                    best = val
+                if best > alpha:
+                    alpha = best
+                if alpha >= beta:
+                    break
+            return best
+        else:
+            # Minimizer: opponent's turn (we simulate opponent moves to minimize root's score)
+            worst = math.inf
+            moves = legal_moves(root_opp_state)
+            if not moves:
+                return evaluate(root_you_state, root_opp_state)
+            for mv in moves:
+                # apply_move on opponent side, which returns (new_opp, new_you)
+                new_opp, new_you, extra, finished = apply_move(root_opp_state, root_you_state, mv)
+                # Swap back to root orientation
+                if finished:
+                    val = evaluate(new_you, new_opp)
+                else:
+                    if extra:
+                        val = search(new_you, new_opp, depth - 1, False, alpha, beta)
+                    else:
+                        val = search(new_you, new_opp, depth - 1, True, alpha, beta)
+                if val < worst:
+                    worst = val
+                if worst < beta:
+                    beta = worst
+                if alpha >= beta:
+                    break
+            return worst
+
+    # At root: choose best move among legal moves
+    candidates = legal_moves(root_you)
+    # If only one candidate, return it
+    if len(candidates) == 1:
+        return candidates[0]
+
+    best_val = -math.inf
+    best_move = candidates[0]
+
+    # Order moves: try moves that give extra turn or capture first (simple heuristic)
+    def move_heuristic(mv):
+        # simulate quick to check if extra or capture
+        new_you, new_opp, extra, finished = apply_move(root_you, root_opp, mv)
+        score = 0
+        if extra:
+            score += 1000
+        # capture detection: if store increased relative to root
+        score += (new_you[6] - root_you[6]) * 10
+        # also prefer moves that increase material difference
+        score += (sum(new_you[:6]) - sum(root_you[:6])) - (sum(new_opp[:6]) - sum(root_opp[:6]))
+        return -score  # negative because we'll sort ascending
+
+    # Sort moves by heuristic (good moves first)
+    candidates.sort(key=move_heuristic)
+
+    # Iterative deepening to use time productively
+    best_for_depth = {}
+    for depth in range(1, max_depth + 1):
+        # small time check
+        if time.time() - start_time > time_limit:
+            break
+        local_best_val = -math.inf
+        local_best_move = candidates[0]
+        alpha = -math.inf
+        beta = math.inf
+        for mv in candidates:
+            if time.time() - start_time > time_limit:
+                break
+            new_you, new_opp, extra, finished = apply_move(root_you, root_opp, mv)
+            if finished:
+                val = evaluate(new_you, new_opp)
+            else:
+                if extra:
+                    val = search(new_you, new_opp, depth - 1, True, alpha, beta)
+                else:
+                    val = search(new_you, new_opp, depth - 1, False, alpha, beta)
+            # Tiebreaker: prefer smaller index on equal value
+            if val > local_best_val or (val == local_best_val and mv < local_best_move):
+                local_best_val = val
+                local_best_move = mv
+            if val > alpha:
+                alpha = val
+        if time.time() - start_time > time_limit:
+            break
+        # store best from this depth
+        best_for_depth[depth] = (local_best_val, local_best_move)
+        # update overall best
+        if local_best_val > best_val or (local_best_val == best_val and local_best_move < best_move):
+            best_val = local_best_val
+            best_move = local_best_move
+
+    # As a fallback, if search didn't run, choose heuristic best
+    if best_move not in candidates:
+        best_move = candidates[0]
+
+    return best_move
+
+# If run as a script, provide a trivial example (not required)
+if __name__ == "__main__":
+    # Simple test state: standard starting (4 seeds per house common variant uses 4, but rules allow any counts)
+    you = [4,4,4,4,4,4,0]
+    opp = [4,4,4,4,4,4,0]
+    mv = policy(you, opp)
+    print("Chosen move:", mv)

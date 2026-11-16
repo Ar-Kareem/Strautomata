@@ -1,0 +1,271 @@
+
+import numpy as np
+import random
+from copy import deepcopy
+
+# ------------------------------------------------------------
+# Constants
+# ------------------------------------------------------------
+DARK_SQUARES = {(r, c) for r in range(8) for c in range(8) if (r + c) % 2 == 0}
+CENTRAL_ROWS = {2, 3, 4, 5}
+CENTRAL_COLS = {2, 3, 4, 5}
+CENTRAL_SET = { (r, c) for r in CENTRAL_ROWS for c in CENTRAL_COLS if (r + c) % 2 == 0 }
+
+MEN_WEIGHT   = 10
+KING_WEIGHT  = 20
+CENTRAL_WEIGHT = 5
+
+MAX_CAPTURE_DEPTH = 10          # hard limit – avoids exponential blow‑up
+
+# ------------------------------------------------------------
+# Utility functions
+# ------------------------------------------------------------
+def is_square_dark(row, col):
+    return (row + col) % 2 == 0
+
+def make_board(men, kings, opp_men, opp_kings):
+    """Return a dict of 4 boolean numpy arrays."""
+    board = {
+        'my_men':   np.zeros((8,8), dtype=bool),
+        'my_king':  np.zeros((8,8), dtype=bool),
+        'opp_men':  np.zeros((8,8), dtype=bool),
+        'opp_king': np.zeros((8,8), dtype=bool),
+    }
+    for pos in men:
+        board['my_men'][pos] = True
+    for pos in kings:
+        board['my_king'][pos] = True
+    for pos in opp_men:
+        board['opp_men'][pos] = True
+    for pos in opp_kings:
+        board['opp_king'][pos] = True
+    return board
+
+def evaluate(board):
+    """Simple heuristic evaluation."""
+    score = 0
+    # piece count
+    my_men   = board['my_men'].sum()
+    my_king  = board['my_king'].sum()
+    opp_men  = board['opp_men'].sum()
+    opp_king = board['opp_king'].sum()
+    score += (my_men + my_king - opp_men - opp_king) * MEN_WEIGHT
+    # king bonus
+    score += (my_king - opp_king) * KING_WEIGHT
+
+    # central control
+    my_center = sum(board['my_men'][mask] + board['my_king'][mask])
+    opp_center = sum(board['opp_men'][mask] + board['opp_king'][mask])
+    score += (my_center - opp_center) * CENTRAL_WEIGHT
+    return score
+
+def board_set(board, dtype):
+    """Convert a boolean numpy slice to a set of coordinates."""
+    idx = np.argwhere(dtype)
+    return { (r, c) for r, c in zip(idx[:,0], idx[:,1]) }
+
+# ------------------------------------------------------------
+# Directional sets
+# ------------------------------------------------------------
+def forward_dirs(color):
+    """Forward diagonal directions for a non‑king."""
+    if color == 'b':
+        return [(-1, -1), (-1, 1)]   # moving downwards (toward row 0)
+    else:
+        return [(+1, -1), (+1, 1)]   # moving upwards (toward row 7)
+
+def all_dirs(color):
+    """All diagonal directions (used for kings)."""
+    fwd = forward_dirs(color)
+    return [(dr, dc) for dr, dc in fwd] + [(-dr, -dc) for dr, dc in fwd]
+
+# ------------------------------------------------------------
+# Capture recursion (max depth optional)
+# ------------------------------------------------------------
+def capture_sequence(board, start, is_king, depth=None, color=None):
+    """
+    Returns (final_board, first_capture_move, full_move_list, final_score).
+    Greedy depth‑limited search: at each step pick the capture that gives the
+    highest evaluation after the forced chain is completed.
+    """
+    if depth is not None and depth <= 0:
+        return board, None, [], evaluate(board)
+
+    # All possible immediate captures from this square
+    best_child = None
+    best_score = -float('inf')
+    best_first_move = None
+    best_full = []
+
+    if is_king:
+        dirs = all_dirs(color)
+    else:
+        dirs = forward_dirs(color)
+
+    for dr, dc in dirs:
+        mid = (start[0] + dr, start[1] + dc)
+        dest = (start[0] + 2*dr, start[1] + 2*dc)
+
+        # Board legality checks
+        if not (0 <= mid[0] <= 7 and 0 <= mid[1] <= 7):
+            continue
+        if not is_square_dark(mid[0], mid[1]):
+            continue
+        if not (0 <= dest[0] <= 7 and 0 <= dest[1] <= 7):
+            continue
+        if not is_square_dark(dest[0], dest[1]):
+            continue
+        # check opponent piece
+        if not (board['opp_men'][mid] or board['opp_king'][mid]):
+            continue
+        # destination cannot be occupied by our own piece
+        if (board['my_men'][dest] or board['my_king'][dest]):
+            continue
+
+        # Apply the single jump – create a copy of the board
+        new_board = deepcopy(board)
+        # remove our piece
+        if is_king:
+            new_board['my_king'][start] = False
+        else:
+            new_board['my_men'][start] = False
+        # remove opponent piece
+        if board['opp_king'][mid]:
+            new_board['opp_king'][mid] = False
+        else:
+            new_board['opp_men'][mid] = False
+        # determine final king status after landing
+        final_is_king = (dest[0] == (0 if color == 'b' else 7))
+        if final_is_king:
+            new_board['my_king'][dest] = True
+            new_board['my_men'][dest] = False
+        else:
+            new_board['my_men'][dest] = True
+            new_board['my_king'][dest] = False
+
+        # Recursively continue from the new position (depth decreased)
+        child_board, child_first, child_moves, child_score = capture_sequence(
+            new_board, dest, final_is_king,
+            depth=None if depth is None else depth-1,
+            color=color
+        )
+        full_move = [(start, dest)] + child_moves
+        if child_score > best_score:
+            best_score = child_score
+            best_child = child_board
+            best_first_move = (start, dest)
+            best_full = full_move
+
+    # No capture available from this square
+    if best_first_move is None:
+        # keep the board unchanged and return an empty move list
+        return board, None, [], evaluate(board)
+
+    # Choose best child (if several have same score, randomise)
+    if best_first_move is None:
+        return board, None, [], evaluate(board)
+
+    if best_child is not None:
+        # Random tie‑break for reproducibility
+        if random.random() < 0.5:
+            best_child = board
+            best_first_move = None
+            best_full = []
+    return best_child, best_first_move, best_full, best_score
+
+# ------------------------------------------------------------
+# Simple (non‑capture) move generation
+# ------------------------------------------------------------
+def simple_moves(board, color):
+    """Yield (first_move, resulting_board, resulting_score) for forward moves."""
+    moves = []
+    for typ, pieces in [('my_men', board['my_men']), ('my_king', board['my_king'])]:
+        piece_board = board[pieces].nonzero()[0]
+        if typ == 'my_king':
+            dirs = all_dirs(color)
+        else:
+            dirs = forward_dirs(color)
+
+        for r, c in piece_board:
+            for dr, dc in dirs:
+                dest = (r + dr, c + dc)
+                if not (0 <= dest[0] <= 7 and 0 <= dest[1] <= 7):
+                    continue
+                if not is_square_dark(dest[0], dest[1]):
+                    continue
+                if board[pieces][dest]:
+                    continue            # destination occupied
+
+                new_board = deepcopy(board)
+                # remove piece from start
+                if typ == 'my_king':
+                    new_board['my_king'][(r,c)] = False
+                else:
+                    new_board['my_men'][(r,c)] = False
+
+                # determine final king status after move
+                final_is_king = ((dest[0] == 0 and color == 'b') or
+                                (dest[0] == 7 and color == 'w'))
+                # set piece at destination
+                if final_is_king:
+                    new_board['my_king'][dest] = True
+                    new_board['my_men'][dest] = False
+                else:
+                    new_board['my_men'][dest] = True
+                    new_board['my_king'][dest] = False
+
+                # the move we will finally return is just (r,c) -> dest
+                move_score = evaluate(new_board)
+                moves.append(((r, c), dest, new_board, move_score))
+    return moves
+
+# ------------------------------------------------------------
+# Main policy function
+# ------------------------------------------------------------
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    # ----- Build initial board representation -----
+    board = make_board(my_men, my_kings, opp_men, opp_kings)
+
+    # Convert lists to sets for quick membership checks (used inside capture_sequence)
+    my_men_set = board_set(board['my_men'], board['my_men'])
+    my_king_set = board_set(board['my_king'], board['my_king'])
+    opp_men_set = board_set(board['opp_men'], board['opp_men'])
+    opp_king_set = board_set(board['opp_king'], board['opp_king'])
+
+    # ----- Capture moves (mandatory when they exist) -----
+    capture_candidates = []
+    for piece_type in ('my_men', 'my_king'):
+        pieces = my_men_set if piece_type == 'my_men' else my_king_set
+        for pos in pieces:
+            # decide if piece is a king
+            is_king = (piece_type == 'my_king')
+            best_board, first_move, _, best_score = capture_sequence(
+                board, pos, is_king, depth=MAX_CAPTURE_DEPTH, color=color
+            )
+            if first_move is not None:          # only if capture actually found
+                capture_candidates.append((best_score, first_move, best_board))
+
+    # ----- Simple moves (fallback) -----
+    simple_candidates = []
+    for _, best_score, best_board in capture_candidates:
+        if capture_candidates:
+            # keep only capture moves – ignore simple ones for now
+            pass
+    # If no capture is possible
+    if not capture_candidates:
+        simple_candidates = simple_moves(board, color)
+
+    # ----- Choose best move -----
+    best = None
+    if capture_candidates:
+        # Random tie‑break to avoid deterministic collisions
+        capture_candidates.sort(key=lambda x: (x[0], random.random()))
+        best = capture_candidates[0]
+    else:
+        simple_candidates.sort(key=lambda x: (x[2], random.random()))   # score then random
+        best = simple_candidates[0]
+
+    move = best[1]   # the first capture (or ordinary move)
+
+    # ----- Return a legal move tuple -----
+    return move

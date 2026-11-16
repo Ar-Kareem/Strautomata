@@ -1,0 +1,127 @@
+**Strategy Overview**
+
+The policy searches all legal moves, simulates each move and evaluates the resulting board with a fast static evaluation function.  
+The evaluation combines three classic Othello ideas:
+
+1. **Positional weights** – corners are worth a lot, squares next to corners are heavily penalised, edges are good, the centre is neutral.  
+2. **Disc difference** – the raw count of our discs versus the opponent’s discs after the move.  
+3. **Mobility** – the number of legal moves we will have after the move minus the opponent’s number of legal moves. A higher mobility is usually decisive in the mid‑game.
+
+The move with the highest evaluation is returned.  
+If no legal move exists the policy returns `"pass"`.
+
+All operations are implemented with NumPy for speed, and the whole search fits comfortably within the 1 second limit.
+
+
+
+```python
+import numpy as np
+
+# 8 directions: (dr, dc)
+DIRS = np.array([
+    (-1, -1), (-1, 0), (-1, 1),
+    (0, -1),           (0, 1),
+    (1, -1),  (1, 0),  (1, 1)
+], dtype=int)
+
+# Standard Othello positional weight matrix
+POS_WEIGHTS = np.array([
+    [120, -20,  20,   5,   5,  20, -20, 120],
+    [-20, -40,  -5,  -5,  -5,  -5, -40, -20],
+    [ 20,  -5,  15,   3,   3,  15,  -5,  20],
+    [  5,  -5,   3,   3,   3,   3,  -5,   5],
+    [  5,  -5,   3,   3,   3,   3,  -5,   5],
+    [ 20,  -5,  15,   3,   3,  15,  -5,  20],
+    [-20, -40,  -5,  -5,  -5,  -5, -40, -20],
+    [120, -20,  20,   5,   5,  20, -20, 120]
+], dtype=int)
+
+def _inside(r, c):
+    return 0 <= r < 8 and 0 <= c < 8
+
+def legal_moves(you: np.ndarray, opp: np.ndarray):
+    """Return a list of (r,c) tuples that are legal for the current player."""
+    empty = (you == 0) & (opp == 0)
+    moves = []
+    # locate empty squares quickly
+    empties = np.argwhere(empty)
+    for r, c in empties:
+        for dr, dc in DIRS:
+            nr, nc = r + dr, c + dc
+            if not _inside(nr, nc) or opp[nr, nc] == 0:
+                continue
+            # we have at least one opponent disc adjacent – keep stepping
+            while True:
+                nr += dr
+                nc += dc
+                if not _inside(nr, nc):
+                    break
+                if opp[nr, nc]:
+                    continue
+                if you[nr, nc]:
+                    moves.append((r, c))
+                    break
+                break
+            if (r, c) in moves:
+                break
+    return moves
+
+def apply_move(you: np.ndarray, opp: np.ndarray, r: int, c: int):
+    """Return new (you, opp) boards after playing at (r,c)."""
+    you2 = you.copy()
+    opp2 = opp.copy()
+    you2[r, c] = 1
+
+    for dr, dc in DIRS:
+        flips = []
+        nr, nc = r + dr, c + dc
+        while _inside(nr, nc) and opp2[nr, nc]:
+            flips.append((nr, nc))
+            nr += dr
+            nc += dc
+        if _inside(nr, nc) and you2[nr, nc]:
+            for fr, fc in flips:
+                you2[fr, fc] = 1
+                opp2[fr, fc] = 0
+    return you2, opp2
+
+def evaluate(you: np.ndarray, opp: np.ndarray, my_moves_cnt: int, opp_moves_cnt: int):
+    """Static evaluation of the board."""
+    # positional component
+    pos_score = int(np.sum(POS_WEIGHTS * you) - np.sum(POS_WEIGHTS * opp))
+
+    # disc difference component
+    disc_score = int(np.sum(you) - np.sum(opp))
+
+    # mobility component (scaled)
+    mob_score = 10 * (my_moves_cnt - opp_moves_cnt)
+
+    return pos_score + disc_score + mob_score
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    """
+    Choose a legal Othello move.
+    Return algebraic notation (e.g., "d3") or "pass" when no move exists.
+    """
+    moves = legal_moves(you, opponent)
+    if not moves:
+        return "pass"
+
+    best_move = None
+    best_value = -10 ** 9
+
+    for r, c in moves:
+        you2, opp2 = apply_move(you, opponent, r, c)
+        my_mob = len(legal_moves(you2, opp2))
+        opp_mob = len(legal_moves(opp2, you2))  # opponent's perspective after our move
+        val = evaluate(you2, opp2, my_mob, opp_mob)
+
+        if val > best_value:
+            best_value = val
+            best_move = (r, c)
+
+    # convert to algebraic notation
+    r, c = best_move
+    move_str = chr(ord('a') + c) + str(r + 1)
+    return move_str
+```

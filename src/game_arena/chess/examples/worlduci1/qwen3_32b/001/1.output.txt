@@ -1,0 +1,389 @@
+The strategy for this policy is to select the best possible move using a simple but effective evaluation function that prioritizes material gain, king safety, and immediate threats to the king. The policy scans all available legal moves, simulates them, and assigns a score to each based on the resulting board state. The move with the highest score is selected, ensuring all constraints are met:
+
+1. **Checkmate Priority:** If a move results in checkmate (i.e., the opponent's king has no legal moves after the move), it's selected immediately.
+2. **Material Gain:** Moves that capture a higher-value piece are preferred (Queen = 9, Rook = 5, Bishop = 3, Knight = 3, Pawn = 1).
+3. **King Safety:** Moves that improve the safety of the player’s king (especially by moving it out of threats) are valued.
+4. **Threat Avoidance:** Moves that protect the player's king or avoid immediate threats to the player's own king are prioritized.
+
+Now here is the corresponding Python source code.
+
+<code>
+```python
+import numpy as np
+from typing import Dict, List
+
+# Mapping of piece values for material evaluation
+PIECE_VALUES = {
+    'P': 1,
+    'N': 3,
+    'B': 3,
+    'R': 5,
+    'Q': 9,
+    'K': 0,
+}
+
+# String to color map
+COLOR_MAP = {'w': 'white', 'b': 'black'}
+
+def policy(pieces: Dict[str, str], to_play: str, legal_moves: List[str]) -> str:
+    best_move = None
+    best_score = -float('inf')
+    
+    for move in legal_moves:
+        # Move is in UCI format, e.g., 'e2e4' or 'a7a8q'
+        start, end = move[:2], move[2:4]
+        promotion = move[4:] if len(move) > 4 else None
+        
+        original_start_piece = pieces[start]
+        original_end_piece = pieces.get(end, None)
+        
+        # Simulate the move
+        new_pieces = pieces.copy()
+        new_pieces[end] = (original_start_piece if promotion is None 
+                           else original_start_piece[0] + move[4:])
+        if original_end_piece:
+            del new_pieces[end]  # We already added the new one
+        if start in new_pieces:
+            del new_pieces[start]  # Remove the original piece if it's moved
+        
+        # Calculate material gain
+        material_gain = 0
+        if original_end_piece:
+            # If capturing, subtract opponent's piece value and add to score
+            material_gain = PIECE_VALUES[original_end_piece[1]]
+        if promotion:
+            # For pawn promotions, add the value of the promoted piece
+            material_gain += PIECE_VALUES[promotion]
+        
+        # Calculate king safety (basis: number of surrounding pieces)
+        own_color = to_play[0]
+        opponent_color = 'b' if own_color == 'w' else 'w'
+        king_square = next(k for k, v in new_pieces.items() if v[0] == own_color and v[1] == 'K')
+        # Surrounding squares of the king
+        king_squares = [(chr(ord(king_square[0]) + di), king_square[1] + str(1 * (dr))) 
+                for di in [-1, 0, 1] for dr in [-1, 0, 1] 
+                if di == 0 and dr == 0]
+        # Number of friendly pieces that move to safety
+        safety_pieces = [v for sq in king_squares if sq in new_pieces and new_pieces[sq][0] == own_color]
+        safety_score = sum(PIECE_VALUES[p[1]] for p in safety_pieces) if safety_pieces else 0
+        
+        # Score this move: material gain - cost (early capture losses → not ideal) + safety
+        # (For simplicity, all non-attacking moves don’t cost anything here)
+        move_value = material_gain + safety_score
+        
+        # Check for immediate threats
+        # Opponent's king
+        opponent_king = next(k for k, v in new_pieces.items() if v[0] == opponent_color and v[1] == 'K')
+        
+        # Detect if the opposing king is in check due to this move
+        king_in_check = is_king_in_check(new_pieces, opponent_king, own_color)
+        if king_in_check:
+            # If a check is possible for the opponent, this move can be very valuable
+            move_value += 0.5  # Slight bonus for check potential
+            if is_checkmate(new_pieces, end):
+                # Checkmate is the highest priority move
+                return move
+        
+        if move_value > best_score:
+            best_score = move_value
+            best_move = move
+
+    return best_move
+
+def is_king_in_check(board: Dict[str, str], king_square: str, king_color: str) -> bool:
+    """Check if the king is in check by simulating any attacker to it."""
+    for position, piece in board.items():
+        if piece[0] != king_color:
+            if is_square_attacked(position, king_square, board):
+                return True
+    return False
+
+def is_checkmate(board: Dict[str, str], king_square: str) -> bool:
+    """Check if the king is in checkmate."""
+    if not is_king_in_check(board, king_square, king_square[0]):  # Not in check, not checkmate
+        return False
+    
+    king_color = king_square[0]
+    king_pos = king_square
+    legal_king_moves = get_king_moves(king_pos, board, king_color)
+    
+    if legal_king_moves:
+        return False  # King can escape
+    
+    # Find all other pieces of the same color
+    own_pieces = [pos for pos, piece in board.items() if piece[0] == king_color and piece[1] != 'K']
+    
+    for pos in own_pieces:
+        piece_type = board[pos][1]
+        possible_moves = get_piece_moves(pos, board, king_color, piece_type)
+        if any(is_move_legal(pos, move, board, king_color) for move in possible_moves):
+            return False  # At least one legal move exists
+    
+    # All possible ways to escape check failed
+    return True
+
+def get_king_moves(king_square: str, board: Dict[str, str], king_color: str) -> List[str]:
+    """Get all possible moves the king can make."""
+    directions = [(dc, dr) for dc in [-1, 0, 1] for dr in [-1, 0, 1] 
+                  if not (dc == 0 and dr == 0)]
+    
+    moves = []
+    for dc, dr in directions:
+        file, rank = king_square[0], int(king_square[1])
+        new_file = chr(ord(file) + dc)
+        new_rank = rank + dr
+        
+        # Validate file and rank
+        if new_file not in 'abcdefgh' or new_rank < 1 or new_rank > 8:
+            continue
+        
+        new_square = f"{new_file}{new_rank}"
+        if new_square not in board or board[new_square][0] != king_color:
+            moves.append(f"{king_square}{new_square}")
+    
+    return moves
+
+def get_piece_moves(pos: str, board: Dict[str, str], side: str, piece: str) -> List[str]:
+    """Generate all theoretically possible moves a piece can make, regardless of legality."""
+    if piece == 'N':
+        off_sets = [(2, 1), (1, 2), (-1, 2), (-2, 1), (-2, -1), (-1, -2), (1, -2), (2, -1)]
+    elif piece == 'R':
+        off_sets = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    elif piece == 'B':
+        off_sets = [(-1, -1), (1, -1), (-1, 1), (1, 1)]
+    elif piece == 'Q':
+        off_sets = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, -1), (-1, 1), (1, 1)]
+    elif piece == 'K':
+        off_sets = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, -1), (-1, 1), (1, 1)]
+    elif piece == 'P':
+        file, rank = pos[0], int(pos[1])
+        file_idx = ord(file) - ord('a')  # 'a' = 0, 'b' = 1, ..., 'h' = 7
+        # Direction depends on piece's color
+        move_dir = -1 if side == 'w' else 1
+        
+        moves = []
+        # Regular forward
+        r1 = rank + move_dir
+        if 1 <= r1 <= 8:
+            target_pos = f"{file}{r1}"
+            if target_pos not in board:
+                moves.append(f"{pos}{target_pos}")
+
+            # Diagonal captures
+            for f in [-1, 1]:
+                new_file = chr(ord(file) + f)
+                if new_file in 'abcdefgh':
+                    target_capture = f"{new_file}{r1}"
+                    if target_capture in board and board[target_capture][0] != side:
+                        moves.append(f"{pos}{target_capture}")
+        
+        # Double pawn move from starting position
+        if (side == 'w' and rank == 2 and file + str(r1 + 1) not in board 
+            and file + str(r1) not in board):
+            moves.append(f"{pos}{file}{r1 + 1}")
+        
+        if (side == 'b' and rank == 7 and file + str(r1 - 1) not in board 
+            and file + str(r1) not in board):
+            moves.append(f"{pos}{file}{r1 - 1}")
+        
+        # Promotion
+        if (r1 == 1 if side == 'w' else r1 == 8):
+            for promo_piece in ['q', 'r', 'n', 'b']:
+                moves.append(f"{pos}{file}{r1}{promo_piece}")
+        
+        return moves
+    
+    else:  # invalid or undefined piece
+        return []
+
+    moves = []
+    for dx, dy in off_sets:
+        if piece in ['R', 'B', 'Q']:
+            for step in range(1, 8):
+                new_file = chr(ord(king_square[0]) + dx * step)
+                new_rank = int(king_square[1]) + dy * step
+                if new_file not in 'abcdefgh' or new_rank < 1 or new_rank > 8:
+                    break
+                new_square = f"{new_file}{new_rank}"
+                if new_square in board and board[new_square][0] == king_color:
+                    break
+                if new_square not in board or board[new_square][0] != king_color:
+                    moves.append(f"{king_square}{new_square}")
+                if new_square in board:
+                    break
+        else:
+            new_file = chr(ord(king_square[0]) + dx)
+            new_rank = int(king_square[1]) + dy
+            if new_file not in 'abcdefgh' or new_rank < 1 or new_rank > 8:
+                continue
+            new_square = f"{new_file}{new_rank}"
+            if new_square not in board or board[new_square][0] != king_color:
+                moves.append(f"{king_square}{new_square}")
+    
+    return moves
+
+def is_move_legal(original_square: str, move: str, board: Dict[str, str], side: str):
+    """Check if the move is legal for the piece (ignoring castling or en passant)."""
+    start = original_square[:2]
+    end = move[2:4]
+    piece = board[start][1]
+    
+    if piece == 'P':
+        return is_pawn_legal(start, end, board, side)
+    elif piece == 'N':
+        return is_knight_legal(start, end, board, side)
+    elif piece == 'B':
+        return is_bishop_legal(start, end, board, side)
+    elif piece == 'R':
+        return is_rook_legal(start, end, board, side)
+    elif piece == 'Q':
+        return is_queen_legal(start, end, board, side)
+    elif piece == 'K':
+        return is_king_legal(start, end, board, side)
+    
+    return False
+
+def is_pawn_legal(start: str, end: str, board: Dict[str, str], side: str):
+    file, rank = start[0], int(start[1])
+    dest_file, dest_rank = end[0], int(end[1])
+    
+    file_diff = ord(dest_file) - ord(file)
+    rank_diff = dest_rank - rank
+    move_dir = -1 if side == 'w' else 1
+
+    # Regular forward move
+    if file == dest_file and rank_diff == move_dir:
+        return end not in board
+    # Double move from starting position
+    if (file == dest_file and abs(rank_diff) == 2 * move_dir and 
+        (rank == 2 if side == 'w' else rank == 7) and 
+        (f"{file}{rank + move_dir}" not in board) and (f"{file}{rank + 2 * move_dir}" not in board)):
+        return True
+    # Diagonal capture
+    if abs(file_diff) == 1 and rank_diff == move_dir:
+        return end in board and board[end][0] != side
+    # Promotion
+    if (rank + move_dir == 1 if side == 'w' else rank + move_dir == 8):
+        if file_diff == 0 and rank_diff == move_dir:
+            return True
+    return False
+
+def is_knight_legal(start: str, end: str, board: Dict[str, str], side: str):
+    file, rank = start[0], int(start[1])
+    dest_file, dest_rank = end[0], int(end[1])
+    
+    # Knight can move in an "L" shape (2 in one, 1 in other)
+    file_diff = abs(ord(dest_file) - ord(file))
+    rank_diff = abs(dest_rank - int(rank))
+    
+    return (file_diff == 2 and rank_diff == 1) or (file_diff == 1 and rank_diff == 2)
+
+def is_bishop_legal(start: str, end: str, board: Dict[str, str], side: str):
+    file, rank = start[0], int(start[1])
+    dest_file, dest_rank = end[0], int(end[1])
+    
+    file_diff = abs(ord(dest_file) - ord(file))
+    rank_diff = abs(dest_rank - int(rank))
+    
+    if file_diff != rank_diff:
+        return False
+    
+    # Check diagonal path is unobstructed
+    step = 1 if ord(dest_file) > ord(file) and (dest_rank - rank) > 0 else -1 if ord(dest_file) < ord(file) or (dest_rank - rank) < 0 else 0
+    for i in range(1, file_diff + 1):
+        f = chr(ord(file) + i * step)
+        r = rank + i * step
+        square = f"{f}{r}"
+        if square != end and square in board:
+            return False
+    return True
+
+def is_rook_legal(start: str, end: str, board: Dict[str, str], side: str):
+    file, rank = start[0], int(start[1])
+    dest_file, dest_rank = end[0], int(end[1])
+    
+    same_file = file == dest_file
+    same_rank = rank == dest_rank
+
+    if not (same_file or same_rank):
+        return False
+
+    # Check blocking along the straight path
+    step = 1
+    if same_file:
+        start_r, end_r = min(rank, dest_rank), max(rank, dest_rank)
+        for r in range(start_r + 1, end_r):
+            if f"{file}{r}" in board:
+                return False
+    else:
+        start_f, end_f = min(ord(file), ord(dest_file)), max(ord(file), ord(dest_file))
+        for f in range(start_f + 1, end_f):
+            if f"{chr(f)}{rank}" in board:
+                return False
+
+    return True
+
+def is_queen_legal(start: str, end: str, board: Dict[str, str], side: str):
+    return is_rook_legal(start, end, board, side) or is_bishop_legal(start, end, board, side)
+
+def is_king_legal(start: str, end: str, board: Dict[str, str], side: str):
+    file, rank = start[0], int(start[1])
+    dest_file, dest_rank = end[0], int(end[1])
+    
+    if abs(ord(dest_file) - ord(file)) <= 1 and abs(dest_rank - rank) <= 1:
+        if (end not in board) or (end in board and board[end][0] != side):
+            return True
+    return False
+
+def is_square_attacked(from_square: str, to_square: str, board: Dict[str, str]):
+    """Check if the to_square is under attack from from_square."""
+    from_piece = board[from_square]
+    from_color = from_piece[0]
+
+    if from_color == 'w':
+        return not is_square_safe_for_white_to_move(to_square, board)
+    else:
+        return not is_square_safe_for_black_to_move(to_square, board)
+
+def is_square_safe_for_white_to_move(target_square: str, board: Dict[str, str]):
+    from_color = 'b'
+    for square, piece in board.items():
+        if piece[0] == from_color:
+            if is_square_attacked_by_piece(square, target_square, board):
+                return False
+    return True
+
+def is_square_safe_for_black_to_move(target_square: str, board: Dict[str, str]):
+    from_color = 'w'
+    for square, piece in board.items():
+        if piece[0] == from_color:
+            if is_square_attacked_by_piece(square, target_square, board):
+                return False
+    return True
+
+def is_square_attacked_by_piece(from_square: str, to_square: str, board: Dict[str, str]):
+    from_piece = board[from_square]
+    from_color = from_piece[0]
+
+    file_delta = ord(to_square[0]) - ord(from_square[0])
+    rank_delta = int(to_square[1]) - int(from_square[1])
+
+    piece_type = from_piece[1]
+    if piece_type == 'P':
+        if from_color == 'w':
+            return abs(file_delta) == 1 and rank_delta == -1
+        else:
+            return abs(file_delta) == 1 and rank_delta == 1
+    elif piece_type == 'N':
+        return (abs(file_delta) == 2 and abs(rank_delta) == 1) or (abs(file_delta) == 1 and abs(rank_delta) == 2)
+    elif piece_type == 'B':
+        return abs(file_delta) == abs(rank_delta)
+    elif piece_type == 'R':
+        return (file_delta == 0 or rank_delta == 0)
+    elif piece_type == 'Q':
+        return (abs(file_delta) == abs(rank_delta)) or (file_delta == 0 or rank_delta == 0)
+    elif piece_type == 'K':
+        return abs(file_delta) <= 1 and abs(rank_delta) <= 1
+    return False
+```
+</code>

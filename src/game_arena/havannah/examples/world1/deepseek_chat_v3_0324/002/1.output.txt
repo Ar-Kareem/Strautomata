@@ -1,0 +1,287 @@
+# Strategy for Havannah AI
+
+This Havannah AI policy combines several strategic elements to create a competitive player:
+
+1. **Early Game Pattern**: Uses a predefined opening pattern for the first few moves to establish a strong position.
+
+2. **Win Condition Checking**: Actively checks for potential winning moves (ring, bridge, fork) for both players, prioritizing blocking opponent wins and completing our own.
+
+3. **Graph-Based Analysis**: Uses BFS to identify connected components and potential paths that could lead to winning structures.
+
+4. **Scoring System**: Evaluates potential moves based on multiple factors:
+   - Immediate win potential
+   - Threat of opponent winning next turn
+   - Connectivity to existing stones
+   - Potential to form multiple winning paths
+   - Corner and edge control for bridge and fork potential
+
+5. **Hexagonal Neighbor Awareness**: Properly handles hexagonal adjacency relationships when analyzing board positions.
+
+6. **Fallback Random Move**: If no strategic moves are found (shouldn't happen in normal play), selects a random valid move to ensure legality.
+
+The policy prioritizes defensive play (blocking opponent wins) over offensive play, while still looking for opportunities to create its own winning conditions.
+
+<code>
+import numpy as np
+from collections import deque
+import random
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    board_size = 15
+    all_moves = [(i, j) for i in range(board_size) for j in range(board_size) if valid_mask[i][j]]
+    
+    # Predefined opening moves for early game
+    if len(me) < 3 and len(opp) < 3:
+        center = board_size // 2
+        if (center, center) in all_moves:
+            return (center, center)
+        if len(me) == 1 and len(opp) == 1:
+            # Place near opponent's first move
+            opp_move = opp[0]
+            for dr, dc in [(0,1), (1,0), (1,1), (0,-1), (-1,0), (-1,-1)]:
+                new_r, new_c = opp_move[0] + dr, opp_move[1] + dc
+                if 0 <= new_r < board_size and 0 <= new_c < board_size and valid_mask[new_r][new_c]:
+                    return (new_r, new_c)
+    
+    # Check for immediate winning moves
+    for move in all_moves:
+        if is_winning_move(me + [move], opp, board_size):
+            return move
+    
+    # Check if opponent has immediate winning move and block it
+    for move in all_moves:
+        if is_winning_move(opp + [move], me, board_size):
+            return move
+    
+    # Evaluate all possible moves based on strategic value
+    best_move = None
+    best_score = -float('inf')
+    
+    for move in all_moves:
+        score = evaluate_move(move, me, opp, board_size)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move if best_move is not None else random.choice(all_moves)
+
+def is_winning_move(stones, opp_stones, board_size):
+    # Check for ring
+    if has_ring(stones, board_size):
+        return True
+    
+    # Check for bridge
+    if has_bridge(stones, board_size):
+        return True
+    
+    # Check for fork
+    if has_fork(stones, board_size):
+        return True
+    
+    return False
+
+def has_ring(stones, board_size):
+    if len(stones) < 6:
+        return False
+    
+    stone_set = set(stones)
+    visited = set()
+    
+    for stone in stones:
+        if stone in visited:
+            continue
+        
+        queue = deque()
+        queue.append(stone)
+        visited.add(stone)
+        ring_found = False
+        
+        while queue and not ring_found:
+            current = queue.popleft()
+            neighbors = get_hex_neighbors(current, board_size)
+            
+            for neighbor in neighbors:
+                if neighbor in stone_set:
+                    if neighbor in visited and neighbor != current:
+                        # Check if we've found a loop
+                        ring_found = True
+                        break
+                    if neighbor not in visited:
+                        visited.add(neighbor)
+                        queue.append(neighbor)
+        
+        if ring_found:
+            return True
+    
+    return False
+
+def has_bridge(stones, board_size):
+    corners = [(0,0), (0, board_size-1), (board_size-1, 0), (board_size-1, board_size-1)]
+    corner_stones = [s for s in stones if s in corners]
+    
+    if len(corner_stones) < 2:
+        return False
+    
+    # Check if any two corners are connected
+    stone_set = set(stones)
+    for i in range(len(corner_stones)):
+        for j in range(i+1, len(corner_stones)):
+            if are_connected(corner_stones[i], corner_stones[j], stone_set, board_size):
+                return True
+    return False
+
+def has_fork(stones, board_size):
+    edges = []
+    # Top edge (row 0, excluding corners)
+    edges.append([(0, c) for c in range(1, board_size-1)])
+    # Bottom edge (row board_size-1, excluding corners)
+    edges.append([(board_size-1, c) for c in range(1, board_size-1)])
+    # Left edge (column 0, excluding corners)
+    edges.append([(r, 0) for r in range(1, board_size-1)])
+    # Right edge (column board_size-1, excluding corners)
+    edges.append([(r, board_size-1) for r in range(1, board_size-1)])
+    
+    connected_edges = 0
+    stone_set = set(stones)
+    
+    # Check each edge for connected stones
+    for edge in edges:
+        edge_stones = [s for s in stones if s in edge]
+        if len(edge_stones) > 0:
+            # Check if all edge stones are connected
+            if all_connected(edge_stones, stone_set, board_size):
+                connected_edges += 1
+                if connected_edges >= 3:
+                    return True
+    return False
+
+def all_connected(stones, stone_set, board_size):
+    if len(stones) == 0:
+        return False
+    if len(stones) == 1:
+        return True
+    
+    visited = set()
+    queue = deque()
+    queue.append(stones[0])
+    visited.add(stones[0])
+    
+    while queue:
+        current = queue.popleft()
+        neighbors = get_hex_neighbors(current, board_size)
+        
+        for neighbor in neighbors:
+            if neighbor in stone_set and neighbor not in visited:
+                if neighbor in stones:
+                    visited.add(neighbor)
+                    queue.append(neighbor)
+    
+    return len(visited) == len(stones)
+
+def are_connected(stone1, stone2, stone_set, board_size):
+    if stone1 == stone2:
+        return True
+    
+    visited = set()
+    queue = deque()
+    queue.append(stone1)
+    visited.add(stone1)
+    
+    while queue:
+        current = queue.popleft()
+        neighbors = get_hex_neighbors(current, board_size)
+        
+        for neighbor in neighbors:
+            if neighbor == stone2:
+                return True
+            if neighbor in stone_set and neighbor not in visited:
+                visited.add(neighbor)
+                queue.append(neighbor)
+    
+    return False
+
+def get_hex_neighbors(pos, board_size):
+    r, c = pos
+    neighbors = []
+    
+    # Same column neighbors
+    if r > 0:
+        neighbors.append((r-1, c))
+    if r < board_size - 1:
+        neighbors.append((r+1, c))
+    
+    # Left column neighbors
+    if c > 0:
+        neighbors.append((r, c-1))
+        if r > 0:
+            neighbors.append((r-1, c-1))
+    
+    # Right column neighbors
+    if c < board_size - 1:
+        neighbors.append((r, c+1))
+        if r < board_size - 1:
+            neighbors.append((r+1, c+1))
+    
+    return neighbors
+
+def evaluate_move(move, me, opp, board_size):
+    score = 0
+    stone_set = set(me)
+    opp_set = set(opp)
+    
+    # Add the move to our stones temporarily
+    new_me = me + [move]
+    new_stone_set = stone_set.copy()
+    new_stone_set.add(move)
+    
+    # Score for potential to form a ring
+    if len(me) >= 5:
+        ring_score = 0
+        neighbors = get_hex_neighbors(move, board_size)
+        for neighbor in neighbors:
+            if neighbor in stone_set:
+                ring_score += 5
+        score += ring_score
+    
+    # Score for potential to form a bridge
+    corners = [(0,0), (0, board_size-1), (board_size-1, 0), (board_size-1, board_size-1)]
+    if move in corners:
+        score += 10
+    else:
+        for corner in corners:
+            if corner in stone_set:
+                if are_connected(move, corner, new_stone_set, board_size):
+                    score += 8
+    
+    # Score for potential to form a fork
+    edges = []
+    edges.append([(0, c) for c in range(1, board_size-1)])  # Top edge
+    edges.append([(board_size-1, c) for c in range(1, board_size-1)])  # Bottom edge
+    edges.append([(r, 0) for r in range(1, board_size-1)])  # Left edge
+    edges.append([(r, board_size-1) for r in range(1, board_size-1)])  # Right edge
+    
+    for edge in edges:
+        if move in edge:
+            score += 5
+        else:
+            for edge_pos in edge:
+                if edge_pos in stone_set and are_connected(move, edge_pos, new_stone_set, board_size):
+                    score += 3
+    
+    # Score for connectivity to existing stones
+    neighbors = get_hex_neighbors(move, board_size)
+    connected_stones = sum(1 for n in neighbors if n in stone_set)
+    score += connected_stones * 2
+    
+    # Penalize moves too close to opponent's stones
+    opp_neighbors = sum(1 for n in neighbors if n in opp_set)
+    score -= opp_neighbors * 1
+    
+    # Bonus for center control in early game
+    center = board_size // 2
+    distance_to_center = abs(move[0] - center) + abs(move[1] - center)
+    if len(me) + len(opp) < board_size:
+        score += (board_size - distance_to_center)
+    
+    return score
+</code>

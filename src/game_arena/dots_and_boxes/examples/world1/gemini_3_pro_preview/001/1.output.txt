@@ -1,0 +1,212 @@
+The strategy for this policy is based on a prioritized decision-making process common in Dots and Boxes:
+
+1.  **Greedy Capture**: First, the policy checks if any legal move can complete a box (i.e., the box currently has 3 sides drawn). If such a move exists, it is played immediately to score a point and gain another turn.
+2.  **Safe Play**: If no box can be completed, the policy looks for "safe" moves. A safe move is one that does not increase the number of drawn sides of any adjacent box to 3, thereby preventing the opponent from scoring on their next turn. Among safe moves, it uses a heuristic to minimize the complexity of the board (keeping adjacent boxes at low valency).
+3.  **Calculated Sacrifice**: If no safe moves are available (all moves would give the opponent a scoring opportunity), the policy employs a simulation strategy. It calculates the potential "chain length" (number of boxes the opponent would capture) for each possible move using a Breadth-First Search (BFS). It then chooses the move that results in the minimum number of captured boxes for the opponent, effectively limiting the damage in a losing position.
+
+<code>
+import numpy as np
+import random
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    """
+    Dots and Boxes Policy
+    1. Score if possible (Close boxes).
+    2. Play safely (don't create boxes with 3 sides) if possible.
+    3. If forced to sacrifice, pick move that gives smallest chain to opponent.
+    """
+
+    # ---------------- Helper Functions ----------------
+    
+    # The grid is 4x4 boxes
+    R_BOXES, C_BOXES = 4, 4
+
+    def count_sides(r, c, h_arr, v_arr):
+        """Counts drawn edges for box at (r, c)."""
+        # Boundary check for box coordinates
+        if not (0 <= r < R_BOXES and 0 <= c < C_BOXES):
+            return 0
+        
+        cnt = 0
+        if h_arr[r, c] != 0: cnt += 1      # Top
+        if h_arr[r+1, c] != 0: cnt += 1    # Bottom
+        if v_arr[r, c] != 0: cnt += 1      # Left
+        if v_arr[r, c+1] != 0: cnt += 1    # Right
+        return cnt
+
+    def get_adj_boxes(r, c, orientation):
+        """Returns list of valid box coords (br, bc) adjacent to a specific edge."""
+        boxes = []
+        if orientation == 'H':
+            # Horizontal edge at (r,c) separates box (r-1, c) and (r, c)
+            if r > 0: boxes.append((r-1, c))
+            if r < R_BOXES: boxes.append((r, c))
+        else:
+            # Vertical edge at (r,c) separates box (r, c-1) and (r, c)
+            if c > 0: boxes.append((r, c-1))
+            if c < C_BOXES: boxes.append((r, c))
+        return boxes
+
+    # ---------------- Move Generation ----------------
+
+    legal_moves = []
+    
+    # Horizontal edges: (N+1) rows, N cols -> 5 rows, 4 cols
+    for r in range(R_BOXES + 1):
+        for c in range(C_BOXES):
+            if horizontal[r, c] == 0:
+                legal_moves.append((r, c, 'H'))
+
+    # Vertical edges: N rows, (N+1) cols -> 4 rows, 5 cols
+    for r in range(R_BOXES):
+        for c in range(C_BOXES + 1):
+            if vertical[r, c] == 0:
+                legal_moves.append((r, c, 'V'))
+
+    random.shuffle(legal_moves) # Shuffle to make play non-deterministic for equal moves
+
+    # ---------------- Strategy Classification ----------------
+
+    scoring_moves = []
+    safe_moves = []
+    sacrifice_moves = []
+
+    for m in legal_moves:
+        r, c, ori = m
+        adj = get_adj_boxes(r, c, ori)
+        
+        makes_box = False
+        gives_box = False
+        
+        # Analyze impact on adjacent boxes
+        for (br, bc) in adj:
+            s = count_sides(br, bc, horizontal, vertical)
+            if s == 3:
+                makes_box = True
+            elif s == 2:
+                gives_box = True
+        
+        if makes_box:
+            scoring_moves.append(m)
+        elif not gives_box:
+            safe_moves.append(m)
+        else:
+            sacrifice_moves.append(m)
+
+    # ---------------- Decision Making ----------------
+
+    # 1. Greedy Capture
+    if scoring_moves:
+        # Take the first available capture. 
+        # (Since we get another turn, local greedy is generally optimal)
+        m = scoring_moves[0]
+        return f"{m[0]},{m[1]},{m[2]}"
+
+    # 2. Safe Moves
+    if safe_moves:
+        # Heuristic: Choose edge that leaves neighbors with lowest max-valency.
+        # We prefer neighbors to have 1 side drawn rather than 2 after our move.
+        best_safe = safe_moves[0]
+        min_max_sides = 5 
+        
+        for m in safe_moves:
+            r, c, ori = m
+            adj = get_adj_boxes(r, c, ori)
+            current_max = -1
+            for (br, bc) in adj:
+                # Calculate sides AFTER move (current sides + 1)
+                s = count_sides(br, bc, horizontal, vertical) + 1
+                if s > current_max:
+                    current_max = s
+            
+            if current_max < min_max_sides:
+                min_max_sides = current_max
+                best_safe = m
+            
+        return f"{best_safe[0]},{best_safe[1]},{best_safe[2]}"
+
+    # 3. Sacrifice (Loss Minimization)
+    if sacrifice_moves:
+        # We are forced to give the opponent a chain. 
+        # Identify the move that results in the shortest chain (fewest boxes lost).
+        
+        best_sac = sacrifice_moves[0]
+        min_chain_loss = 1000
+        
+        for m in sacrifice_moves:
+            # Create simulation environment
+            sim_h = horizontal.copy()
+            sim_v = vertical.copy()
+            
+            mr, mc, mori = m
+            # Play the move in sim
+            if mori == 'H': sim_h[mr, mc] = 1
+            else: sim_v[mr, mc] = 1
+            
+            # BFS to find chain length
+            # Identify initial triggers (neighbors that become 3-sided because of m)
+            queue = []
+            adj = get_adj_boxes(mr, mc, mori)
+            for (br, bc) in adj:
+                # Use original arrays to check initial state
+                if count_sides(br, bc, horizontal, vertical) == 2:
+                    queue.append((br, bc))
+            
+            boxes_taken = set()
+            chain_len = 0
+            
+            while queue:
+                curr = queue.pop(0)
+                if curr in boxes_taken: continue
+                
+                # Check current sides in simulation
+                s = count_sides(curr[0], curr[1], sim_h, sim_v)
+                
+                # Opponent takes box if sides >= 3 (Rational opponent behavior)
+                # s=3: they add 4th line. s=4: already full (via shared edge)
+                if s >= 3:
+                    boxes_taken.add(curr)
+                    chain_len += 1
+                    
+                    # If sides were 3, we must fill the missing edge to simulate capture
+                    # and check if that triggers neighbors
+                    if s == 3:
+                        row, col = curr
+                        # Identify the missing edge
+                        check_edges = [
+                            (row, col, 'H'), (row+1, col, 'H'),
+                            (row, col, 'V'), (row, col+1, 'V')
+                        ]
+                        
+                        filled_edge = None
+                        for (er, ec, eori) in check_edges:
+                            is_filled = (sim_h[er, ec] != 0) if eori == 'H' else (sim_v[er, ec] != 0)
+                            if not is_filled:
+                                # Play the edge for opponent
+                                if eori == 'H': sim_h[er, ec] = -1
+                                else: sim_v[er, ec] = -1
+                                filled_edge = (er, ec, eori)
+                                break
+                        
+                        # Check if the filled edge completes a neighbor
+                        if filled_edge:
+                            fr, fc, fori = filled_edge
+                            n_adj = get_adj_boxes(fr, fc, fori)
+                            for nb in n_adj:
+                                if nb not in boxes_taken:
+                                    if count_sides(nb[0], nb[1], sim_h, sim_v) >= 3:
+                                        queue.append(nb)
+
+            # Optimization: If we find a move giving only 1 box, it's the minimum possible.
+            if chain_len == 1:
+                return f"{m[0]},{m[1]},{m[2]}"
+
+            if chain_len < min_chain_loss:
+                min_chain_loss = chain_len
+                best_sac = m
+        
+        return f"{best_sac[0]},{best_sac[1]},{best_sac[2]}"
+
+    # Fallback (Should typically not be reached if board is not full)
+    return "0,0,H"
+</code>

@@ -1,0 +1,89 @@
+The strategy for this policy is a simplified chess engine. It prioritizes moves in the following order:
+
+1.  **Checkmate:** If a move leads to checkmate, play it immediately.
+2.  **Captures:** Evaluate captures based on piece value. Prefer capturing higher-value pieces with lower-value pieces.
+3.  **Checks:** Deliver checks to the opponent, especially if they restrict the opponent's king movement.
+4.  **King Safety:** Move the king to safer positions or block potential attacks.
+5.  **Piece Development:** Develop pieces to active squares, especially knights and bishops.
+6.  **Pawn Structure:** Advance pawns in the center of the board.
+7.  **Random Move:** If no other criteria are met, select a random legal move to ensure a valid move is always returned.
+
+This policy uses the `chess` library for move generation, validating moves and making SAN (Standard Algebraic Notation) to move determination easier.
+
+```python
+import chess
+import random
+
+def evaluate_move(board, move, to_play):
+    """
+    Evaluates a move based on material gain, checkmate, check, and king safety.
+    """
+    evaluation = 0
+    opponent = chess.BLACK if to_play == 'white' else chess.WHITE
+
+    # Checkmate
+    board.push(move)
+    if board.is_checkmate():
+        evaluation = float('inf')
+    else:
+        # Material Gain
+        for piece_type in chess.PIECE_TYPES:
+            evaluation += 100 * (len(board.pieces(piece_type, chess.WHITE)) - len(board.pieces(piece_type, chess.BLACK)))
+
+        # Check
+        if board.is_check():
+            evaluation += 5
+
+    board.pop()
+
+    return evaluation
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str], memory: dict) -> tuple[str, dict]:
+    """
+    Selects the best move based on a simple evaluation function.
+    """
+    board = chess.Board()
+    board.clear()
+
+    for square, piece in pieces.items():
+        square_index = chess.parse_square(square)
+        piece_type = piece[1]
+        color = chess.WHITE if piece[0] == 'w' else chess.BLACK
+
+        if piece_type == 'K': piece_type_num = chess.KING
+        elif piece_type == 'Q': piece_type_num = chess.QUEEN
+        elif piece_type == 'R': piece_type_num = chess.ROOK
+        elif piece_type == 'B': piece_type_num = chess.BISHOP
+        elif piece_type == 'N': piece_type_num = chess.KNIGHT
+        elif piece_type == 'P': piece_type_num = chess.PAWN
+        else: continue  # Should not happen
+
+        board.set_piece_at(square_index, chess.Piece(piece_type_num, color))
+
+    if to_play == 'white':
+        board.turn = chess.WHITE
+    else:
+        board.turn = chess.BLACK
+
+    best_move = None
+    best_evaluation = float('-inf')
+
+    for move_str in legal_moves:
+        try:
+             move = board.parse_san(move_str) # Use parse_san to correctly create a move instance
+        except ValueError:
+            # Move is invalid for current board state, skip it
+            continue
+
+        evaluation = evaluate_move(board, move, to_play)
+
+        if evaluation > best_evaluation:
+            best_evaluation = evaluation
+            best_move = move_str
+
+    if best_move is None:
+        # If everything fails, return a random legal move.
+        return random.choice(legal_moves), memory
+
+    return best_move, memory
+```

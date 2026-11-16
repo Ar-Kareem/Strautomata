@@ -1,0 +1,101 @@
+
+from typing import List, Dict
+
+def best_board_move(die: int,
+                    my_pts: List[int],
+                    opp_pts: List[int],
+                    is_home: bool) -> str:
+    """
+    Find the best legal move for a single die on the board (excluding bar moves).
+    Returns an absolute point token (e.g. "A12") or "P" for a pass.
+    """
+    # 1) Try to hit a blot (opponent point with exactly one checker)
+    for src in reversed(range(die, 24)):
+        if my_pts[src] <= 0:
+            continue
+        dst = src - die
+        if dst < 0:
+            continue
+        if opp_pts[dst] == 1:                 # hit
+            return f"A{src}"
+
+    # 2) Bearing‑off – only when we are already in the home board
+    if is_home and my_pts[die] > 0:
+        return f"A{die}"
+
+    # 3) Move onto an empty point (opponent has 0 checkers on the destination)
+    # Prefer landing in the home board (0‑5) because it brings checkers closer to bearing‑off.
+    for src in reversed(range(die, 24)):
+        if my_pts[src] <= 0:
+            continue
+        dst = src - die
+        if dst < 0:
+            continue
+        if opp_pts[dst] == 0:                 # open point
+            if dst <= 5:                       # home board point
+                return f"A{src}"
+            else:
+                # Any open point outside the home board is also legal
+                return f"A{src}"
+
+    # 4) No legal move for this die
+    return "P"
+
+
+def policy(state: Dict) -> str:
+    """
+    Return a legal move string for the current state.
+    Format: <ORDER>:<FROM1>,<FROM2>  where ORDER is 'H' or 'L'.
+    """
+    # unpack the board representation
+    my_pts = state.get('my_pts', [0] * 24)
+    opp_pts = state.get('opp_pts', [0] * 24)
+    my_bar = state.get('my_bar', 0)
+    dice = state.get('dice', [])
+    if len(dice) < 2:
+        dice = dice + [0] * (2 - len(dice))
+    hi, lo = sorted(dice, reverse=True)          # hi ≥ lo
+
+    # we are always in the home board if there are no checkers beyond point 5
+    is_home = all(my_pts[p] == 0 for p in range(6, 24))
+
+    froms = []
+
+    # ---------- first die (higher) ----------
+    if my_bar > 0 and 0 <= hi <= 23 and opp_pts[hi] <= 1:
+        # re‑enter from bar
+        froms.append('B')
+        my_bar -= 1
+    else:
+        from_move = best_board_move(hi, my_pts, opp_pts, is_home)
+        froms.append(from_move)
+
+    # ---------- second die (lower) ----------
+    if my_bar > 0 and 0 <= lo <= 23 and opp_pts[lo] <= 1:
+        # re‑enter from bar (still remaining bar checkers)
+        froms.append('B')
+        my_bar -= 1
+    else:
+        from_move = best_board_move(lo, my_pts, opp_pts, is_home)
+        froms.append(from_move)
+
+    # ---- enforce that we never ask for more checkers on a point than we have ----
+    # (this can happen when the same point is chosen for both dice but there is only one checker there)
+    orig_counts = list(my_pts)                     # copy of original board state
+    usage = {}                                    # count of how many dice want this point
+    for token in froms:
+        if token == 'P':
+            continue
+        if token.startswith('A'):
+            pt = int(token[1:])
+            usage[pt] = usage.get(pt, 0) + 1
+
+    # fix any over‑usage by turning excess dice into passes
+    for i, token in enumerate(froms):
+        if token.startswith('A'):
+            pt = int(token[1:])
+            if usage.get(pt, 0) > orig_counts[pt]:
+                froms[i] = 'P'
+
+    # The higher die is always the first token, so ORDER is 'H'
+    return f"H:{','.join(froms)}"

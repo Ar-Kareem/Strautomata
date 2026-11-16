@@ -1,0 +1,183 @@
+To solve the problem of selecting a legal move in the game of Pentago, we need to implement a policy function that returns a valid move string. The move consists of placing a marble on an empty cell and then rotating a 3x3 quadrant in either a clockwise (R) or anticlockwise (L) direction. The goal is to prioritize moves that result in an immediate win for the player, and if none are available, to choose a move that maximizes the player's chances of winning on subsequent turns.
+
+---
+
+### ✅ Key Requirements Recap
+
+- **Input**: Two 6x6 arrays representing the board state for both players (you and opponent).
+- **Output**: A move string of the format `"row,col,quad,dir"` where:
+  - `row` and `col` are 1-based indices (1–6)
+  - `quad` is an integer from 0 to 3
+  - `dir` is either 'L' (anticlockwise) or 'R' (clockwise)
+- **Legal Move**:
+  - Place one of your marbles on an empty cell (i.e., where both `you[r][c] == 0` and `opponent[r][c] == 0`)
+  - Choose a quadrant (0 to 3) and rotate it either 'L' or 'R'
+
+---
+
+### 🧠 Strategy Overview
+
+1. **Immediate Win Check**:
+   - Simulate placing a marble in each empty cell.
+   - For each placement, simulate rotating each of the 4 quadrants in both directions.
+   - After the rotation, check if this results in a win (5-in-a-row) for the player but not for the opponent.
+   - If such a move is found, return it immediately.
+
+2. **Heuristic Fallback**:
+   - If no immediate win is found, choose the first available empty cell using a row-major order.
+   - Place the marble and optionally rotate a quadrant (e.g., quadrant 0, direction 'R') as a fallback.
+
+3. **Helper Functions**:
+   - `check_win(board)`: Determines whether a given board has a 5-in-a-row for a player.
+   - `rotate_quadrant(you_board, opponent_board, quad, direction)`: Simulates rotating a 3x3 quadrant in the given direction.
+
+---
+
+### 🔁 Rotation Logic
+
+- **Quadrant Coordinates**:
+  - Quadrant 0: rows 0–2, columns 0–2
+  - Quadrant 1: rows 0–2, columns 3–5
+  - Quadrant 2: rows 3–5, columns 0–2
+  - Quadrant 3: rows 3–5, columns 3–5
+- **Rotation Logic**:
+  - **Clockwise (R)**: Transpose and reverse rows (`zip(*quad[::-1])`)
+  - **Anticlockwise (L)**: Transpose and reverse columns (`zip(*quad)` then reverse rows)
+
+---
+
+### 🧪 Check for 5-in-a-Row
+
+- Check all horizontal, vertical, and both diagonal directions for sequences of 5 consecutive 1s.
+- Use 0-based indexing for simplicity.
+
+---
+
+### ✅ Final Implementation
+
+```python
+def check_win(board):
+    # Check all horizontal lines
+    for row in range(6):
+        for col in range(2):
+            if all(board[row][col + x] for x in range(5)):
+                return True
+
+    # Check all vertical lines
+    for col in range(6):
+        for row in range(2):
+            if all(board[row + x][col] for x in range(5)):
+                return True
+
+    # Check main diagonal lines (top-left to bottom-right)
+    for row in range(2):
+        for col in range(2):
+            if all(board[row + x][col + x] for x in range(5)):
+                return True
+
+    # Check anti-diagonal lines (top-right to bottom-left)
+    for row in range(2):
+        for col in range(4, 6):
+            if all(board[row + x][col - x] for x in range(5)):
+                return True
+
+    return False
+
+def rotate_quadrant(you_copy, opponent_copy, quad, direction):
+    row_start, col_start = [(0, 0), (0, 3), (3, 0), (3, 3)][quad]
+
+    quad_you = [[you_copy[row_start + x][col_start + y] for y in range(3)] for x in range(3)]
+    quad_opp = [[opponent_copy[row_start + x][col_start + y] for y in range(3)] for x in range(3)]
+
+    if direction == 'R':
+        new_you = list(zip(*quad_you[::-1]))
+        new_opp = list(zip(*quad_opp[::-1]))
+    elif direction == 'L':
+        new_you = list(zip(*quad_you))[::-1]
+        new_opp = list(zip(*quad_opp))[::-1]
+    else:
+        raise ValueError("Invalid direction")
+
+    new_you = [list(row) for row in new_you]
+    new_opp = [list(row) for row in new_opp]
+
+    for i in range(3):
+        for j in range(3):
+            you_copy[row_start + i][col_start + j] = new_you[i][j]
+            opponent_copy[row_start + i][col_start + j] = new_opp[i][j]
+
+
+def policy(you, opponent):
+    # Convert to lists of lists if they are not already
+    you = [list(row) for row in you]
+    opponent = [list(row) for row in opponent]
+
+    # Check for immediate winning moves
+    for r in range(6):
+        for c in range(6):
+            if you[r][c] == 0 and opponent[r][c] == 0:
+                for quad in range(4):
+                    for direction in ['L', 'R']:
+                        you_copy = [list(row) for row in you]
+                        opp_copy = [list(row) for row in opponent]
+                        you_copy[r][c] = 1
+                        rotate_quadrant(you_copy, opp_copy, quad, direction)
+
+                        if check_win(you_copy) and not check_win(opp_copy):
+                            return f"{r+1},{c+1},{quad},{direction}"
+
+    # If no winning move found, choose the first available cell and a default quadrant and direction
+    for r in range(6):
+        for c in range(6):
+            if you[r][c] == 0 and opponent[r][c] == 0:
+                return f"{r+1},{c+1},0,R"
+```
+
+---
+
+### 🧩 Explanation of Strategy
+
+- **Winning Move Priority**: The code first checks all possible moves to see if any of them result in an immediate win. This is done by simulating the placement and rotation of each possible move.
+- **Fallback Heuristic**: If no immediate win is found, the code selects the first available empty cell in row-major order. It places the marble and rotates **quadrant 0** in the **clockwise** direction as a default. This is a safe fallback since the move is always legal.
+
+---
+
+### 🧪 Example Usage
+
+```python
+# Example input:
+you = [
+    [0, 1, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0]
+]
+
+opponent = [
+    [0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0]
+]
+
+# Output:
+print(policy(you, opponent))  # e.g., "1,1,0,R"
+```
+
+---
+
+### 🧠 Bonus: Possible Improvements
+
+- **Prioritize Center Cells**: Cells in the center (e.g., (2,2), (3,3)) may be more strategic.
+- **Threat Evaluation**: Prioritize cells that could form potential lines or be part of future rotations.
+- **Quadrant Strategy**: Rotate quadrants that currently contain a high concentration of your marbles.
+
+---
+
+### ✅ Final Note
+
+This implementation ensures legality and correctness, while also trying to maximize the player's chances of winning. It is a solid foundation for further enhancements and optimizations.

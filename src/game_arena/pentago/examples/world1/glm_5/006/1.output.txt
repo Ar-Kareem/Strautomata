@@ -1,0 +1,335 @@
+The strategy for this policy is to use a depth-limited Minimax search with Alpha-Beta pruning. The game state is represented using two 64-bit integers (bitboards) for the player and the opponent, allowing for extremely fast win checks and move generation. The search looks 2 moves ahead (my move, opponent's response). Move ordering is applied to prioritize winning moves and block opponent threats, which significantly improves pruning efficiency. The evaluation function scores the board based on the number of aligned marbles (patterns of length 2, 3, 4) and central control.
+
+<code>
+import numpy as np
+
+# Constants
+ROW, COL = 6, 6
+WINDIR = [(0, 1), (1, 0), (1, 1), (1, -1)]
+
+def policy(you, opponent):
+    # Convert input to bitboards
+    # bitboard: 64-bit integer. Bits 0..35 represent the 6x6 board.
+    # Bit index r*6 + c.
+    my_board = 0
+    opp_board = 0
+    for r in range(6):
+        for c in range(6):
+            idx = r * 6 + c
+            if you[r][c] == 1:
+                my_board |= (1 << idx)
+            elif opponent[r][c] == 1:
+                opp_board |= (1 << idx)
+    
+    empty_mask = (1 << 36) - 1
+    occupied = my_board | opp_board
+    empty_cells = [(r, c) for r in range(6) for c in range(6) if not (occupied & (1 << (r*6+c)))]
+    
+    # Precompute rotation LUTs
+    # Quad indices:
+    # 0: 0..2, 0..2
+    # 1: 0..2, 3..5
+    # 2: 3..5, 0..2
+    # 3: 3..5, 3..5
+    quad_indices = [
+        [r*6+c for r in range(3) for c in range(3)],
+        [r*6+c for r in range(3) for c in range(3, 6)],
+        [r*6+c for r in range(3, 6) for c in range(3)],
+        [r*6+c for r in range(3, 6) for c in range(3, 6)]
+    ]
+    
+    # Rotation mappings: LUT[q][dir][val] -> new_val
+    # dir: 0=L, 1=R
+    # We compute these on the fly or just use the bit manipulations.
+    # Since 9 bits, LUT is small enough.
+    
+    rot_lut = [[{}, {}] for _ in range(4)] # Not actually using LUT dict, but computing.
+    
+    # Helper to rotate
+    def rotate_quad(board, q, direction):
+        # Extract bits
+        bits = 0
+        indices = quad_indices[q]
+        k = 0
+        # Manual extraction
+        # Using a precomputed list of indices is faster than loops in Python?
+        # Let's try loop.
+        for i in range(9):
+            if board & (1 << indices[i]):
+                bits |= (1 << i)
+        
+        # Rotate bits
+        if direction == 1: # R (Clockwise)
+            # 0 1 2    6 3 0
+            # 3 4 5 -> 7 4 1
+            # 6 7 8    8 5 2
+            # new i = (2 - (i%3))*3 + (i//3) ? No.
+            # old (r, c) -> new (c, 2-r)
+            # idx i: r=i//3, c=i%3.
+            # new r = c, new c = 2-r.
+            # new idx = c*3 + (2-r) = c*3 + 2 - r = 4 - r + 3c ... simpler to map.
+            # Mapping:
+            # 0->2, 1->5, 2->8, 3->1, 4->4, 5->7, 6->0, 7->3, 8->6
+            rot_map = [2, 5, 8, 1, 4, 7, 0, 3, 6]
+        else: # L (Counter-Clockwise)
+            # old (r, c) -> new (2-c, r)
+            # Mapping:
+            # 0->6, 1->3, 2->0, 3->7, 4->4, 5->1, 6->8, 7->5, 8->2
+            rot_map = [6, 3, 0, 7, 4, 1, 8, 5, 2]
+            
+        new_bits = 0
+        for i in range(9):
+            if bits & (1 << i):
+                new_bits |= (1 << rot_map[i])
+        
+        # Place back
+        new_board = board
+        mask = 0
+        for i in range(9):
+            mask |= (1 << indices[i])
+        new_board &= ~mask
+        for i in range(9):
+            if new_bits & (1 << i):
+                new_board |= (1 << indices[i])
+        
+        return new_board
+
+    # Check win using bitboard logic
+    # Horizontal: shift 1, mask rows. 
+    # Rows are 6 wide.
+    # b & (b >> 1) & (b >> 2) & (b >> 3) & (b >> 4)
+    # Need to mask out wrapping. Valid starts are col 0, 1.
+    # Mask for valid starts: columns 0 and 1.
+    mask_h = 0
+    for r in range(6):
+        mask_h |= (3 << (r*6)) # 000011 in binary
+    
+    # Vertical: shift 6. Valid starts row 0, 1.
+    mask_v = (1 << 12) - 1 # rows 0 and 1 (bits 0..11)
+    
+    # Diag 1 (\): shift 7. Valid starts row 0,1 col 0,1.
+    mask_d1 = 0
+    for r in range(2):
+        for c in range(2):
+            mask_d1 |= (1 << (r*6+c))
+            
+    # Diag 2 (/): shift 5. Valid starts row 0,1 col 4,5.
+    mask_d2 = 0
+    for r in range(2):
+        for c in range(4, 6):
+            mask_d2 |= (1 << (r*6+c))
+
+    def check_win(b):
+        # Horizontal
+        if (b & (b >> 1) & (b >> 2) & (b >> 3) & (b >> 4)) & mask_h: return True
+        # Vertical
+        if (b & (b >> 6) & (b >> 12) & (b >> 18) & (b >> 24)) & mask_v: return True
+        # Diag \
+        if (b & (b >> 7) & (b >> 14) & (b >> 21) & (b >> 28)) & mask_d1: return True
+        # Diag /
+        if (b & (b >> 5) & (b >> 10) & (b >> 15) & (b >> 20)) & mask_d2: return True
+        return False
+
+    def evaluate(me, opp):
+        s = 0
+        # 4-in-a-row (potential win)
+        # Count number of 4-alignments
+        # Use same logic as win check but with 4 shifts
+        # Horizonal 4: shift 1,2,3. Mask cols 0,1,2.
+        mask_h4 = 0
+        for r in range(6):
+            mask_h4 |= (7 << (r*6)) # 000111
+        s += ((me & (me >> 1) & (me >> 2) & (me >> 3)) & mask_h4).bit_count()
+        s -= ((opp & (opp >> 1) & (opp >> 2) & (opp >> 3)) & mask_h4).bit_count()
+        
+        # Vertical 4: shift 6,12,18. Mask rows 0,1,2.
+        mask_v4 = (1 << 18) - 1
+        s += ((me & (me >> 6) & (me >> 12) & (me >> 18)) & mask_v4).bit_count()
+        s -= ((opp & (opp >> 6) & (opp >> 12) & (opp >> 18)) & mask_v4).bit_count()
+        
+        # Diagonals
+        mask_d1_4 = 0
+        for r in range(3):
+            for c in range(3):
+                mask_d1_4 |= (1 << (r*6+c))
+        s += ((me & (me >> 7) & (me >> 14) & (me >> 21)) & mask_d1_4).bit_count()
+        s -= ((opp & (opp >> 7) & (opp >> 14) & (opp >> 21)) & mask_d1_4).bit_count()
+
+        mask_d2_4 = 0
+        for r in range(3):
+            for c in range(3, 6):
+                mask_d2_4 |= (1 << (r*6+c))
+        s += ((me & (me >> 5) & (me >> 10) & (me >> 15)) & mask_d2_4).bit_count()
+        s -= ((opp & (opp >> 5) & (opp >> 10) & (opp >> 15)) & mask_d2_4).bit_count()
+
+        # 3-in-a-row
+        mask_h3 = 0
+        for r in range(6):
+            mask_h3 |= (0xF << (r*6)) # cols 0..3
+        s += ((me & (me >> 1) & (me >> 2)) & mask_h3).bit_count() * 0.1
+        s -= ((opp & (opp >> 1) & (opp >> 2)) & mask_h3).bit_count() * 0.1
+        
+        # Center control
+        center_mask = (1 << 14) | (1 << 15) | (1 << 20) | (1 << 21)
+        s += (me & center_mask).bit_count() * 0.05
+        
+        return s
+
+    # Minimax
+    def minimax(me, opp, depth, alpha, beta, maximizing):
+        if depth == 0:
+            return evaluate(me, opp), None
+            
+        # Generate moves
+        # We can iterate all empty cells, all quads, all dirs
+        # 36 * 4 * 2 = 288 max moves.
+        # Optimization: If a move wins, return immediately.
+        
+        occupied = me | opp
+        moves = []
+        
+        # Generate and simple sort (heuristic sort might be slow, but win check is vital)
+        # First, collect all placements
+        empty_cells_curr = []
+        for i in range(36):
+            if not (occupied & (1 << i)):
+                empty_cells_curr.append(i)
+                
+        for pos in empty_cells_curr:
+            r, c = pos // 6, pos % 6
+            # Determine which quadrants this cell belongs to?
+            # Rotation can be ANY quadrant.
+            for q in range(4):
+                for d in range(2):
+                    moves.append((r, c, q, d))
+        
+        # Move ordering:
+        # If we can win, do it.
+        # We apply move -> check win.
+        
+        best_move = None
+        
+        if maximizing:
+            max_eval = -float('inf')
+            # To optimize, we can't check all moves deeply.
+            # Just checking for immediate win.
+            for r, c, q, d in moves:
+                pos = r*6 + c
+                new_me = me | (1 << pos)
+                new_me = rotate_quad(new_me, q, d)
+                new_opp = rotate_quad(opp, q, d)
+                
+                if check_win(new_me):
+                    return 10000, (r, c, q, d)
+                
+            # No immediate win, recurse
+            # Sort by static eval? Too expensive.
+            # Just iterate.
+            for r, c, q, d in moves:
+                pos = r*6 + c
+                new_me = me | (1 << pos)
+                new_me = rotate_quad(new_me, q, d)
+                new_opp = rotate_quad(opp, q, d)
+                
+                # Check if opp wins after our move? (We shouldn't make it if so, unless we also win)
+                if check_win(new_opp):
+                    continue # Bad move
+                
+                eval_score, _ = minimax(new_me, new_opp, depth - 1, alpha, beta, False)
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_move = (r, c, q, d)
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            # Minimizing player (opponent)
+            for r, c, q, d in moves:
+                pos = r*6 + c
+                new_opp = opp | (1 << pos)
+                new_opp = rotate_quad(new_opp, q, d)
+                new_me = rotate_quad(me, q, d)
+                
+                if check_win(new_opp):
+                    return -10000, None # Opponent wins
+                
+            for r, c, q, d in moves:
+                pos = r*6 + c
+                new_opp = opp | (1 << pos)
+                new_opp = rotate_quad(new_opp, q, d)
+                new_me = rotate_quad(me, q, d)
+                
+                if check_win(new_me): # We win by opponent's move? Unlikely but possible if they are dumb
+                    continue
+                
+                eval_score, _ = minimax(new_me, new_opp, depth - 1, alpha, beta, True)
+                if eval_score < min_eval:
+                    min_eval = eval_score
+                    # best_move not needed for opponent simulation logic here
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval, None
+
+    # Run Minimax Depth 2
+    # For faster execution, we can inline the first level of search
+    # to easily apply the immediate win check.
+    
+    occupied = my_board | opp_board
+    empty_cells_curr = []
+    for i in range(36):
+        if not (occupied & (1 << i)):
+            empty_cells_curr.append(i)
+            
+    best_score = -float('inf')
+    best_move = None
+    
+    # Shuffle to avoid deterministic behavior if equal?
+    # No time.
+    
+    # Check immediate win first
+    for pos in empty_cells_curr:
+        r, c = pos // 6, pos % 6
+        for q in range(4):
+            for d in range(2):
+                new_me = my_board | (1 << pos)
+                new_me_rot = rotate_quad(new_me, q, d)
+                if check_win(new_me_rot):
+                    # Found winning move
+                    return f"{r+1},{c+1},{q},{'L' if d==0 else 'R'}"
+
+    # If no immediate win, run search
+    # We only need to run minimax for depth 1 (our move -> opp response -> eval)
+    # since we already checked depth 0 wins.
+    
+    # To avoid timeout, we limit depth to 2 (Move + Response).
+    
+    for pos in empty_cells_curr:
+        r, c = pos // 6, pos % 6
+        for q in range(4):
+            for d in range(2):
+                new_me = my_board | (1 << pos)
+                new_me_rot = rotate_quad(new_me, q, d)
+                new_opp_rot = rotate_quad(opp_board, q, d)
+                
+                # If this move lets opponent win, skip unless we also win (checked above)
+                if check_win(new_opp_rot):
+                    continue
+                
+                score, _ = minimax(new_me_rot, new_opp_rot, 1, -float('inf'), float('inf'), False)
+                
+                if score > best_score:
+                    best_score = score
+                    best_move = (r, c, q, d)
+
+    if best_move is None:
+        # All moves lead to opponent win or board full (unlikely)
+        # Return first valid
+        pos = empty_cells_curr[0]
+        return f"{pos//6+1},{pos%6+1},0,R"
+        
+    r, c, q, d = best_move
+    return f"{r+1},{c+1},{q},{'L' if d==0 else 'R'}"
+</code>

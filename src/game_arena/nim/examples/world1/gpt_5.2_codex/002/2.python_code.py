@@ -1,0 +1,35 @@
+
+def policy(piles: list[int]) -> str:
+    # Count non-zero piles and check max size
+    nonzero = [i for i, p in enumerate(piles) if p > 0]
+    if not nonzero:
+        return "0,0"  # should not happen in valid play
+    
+    max_pile = max(piles)
+    
+    # Case: all piles are size 1 (or 0)
+    if max_pile <= 1:
+        # Take 1 from the first non-empty pile
+        i = nonzero[0]
+        return f"{i},1"
+    
+    # Normal misère Nim play: use nim-sum
+    nim_sum = 0
+    for p in piles:
+        nim_sum ^= p
+    
+    if nim_sum == 0:
+        # No winning move, take 1 from first non-empty
+        i = nonzero[0]
+        return f"{i},1"
+    
+    # Find a pile to reduce to make nim-sum zero
+    for i, p in enumerate(piles):
+        target = p ^ nim_sum
+        if target < p:
+            take = p - target
+            return f"{i},{take}"
+    
+    # Fallback (should not occur)
+    i = nonzero[0]
+    return f"{i},1"

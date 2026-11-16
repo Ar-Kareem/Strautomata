@@ -1,0 +1,244 @@
+# Strategy
+
+I'll implement a Monte Carlo Tree Search (MCTS) based policy for Hex. This approach will be effective because:
+
+1. MCTS is well-suited for games with large search spaces and complex positional evaluation
+2. It can handle the strategic complexity of Hex where the goal is to form a connected path
+3. It will adapt to different board states and opponent behaviors
+4. The tree search can balance exploration and exploitation effectively
+
+For the implementation, I'll create:
+- A Hex-specific MCTS with proper board representation
+- Efficient neighbor finding for hexagonal grid
+- Simulation of random playouts to evaluate moves
+- A simple evaluation heuristic for early game positions
+- Fast move selection based on UCB1 formula
+
+Since the board is 11x11, I'll limit the search depth and simulations for performance, aiming for fast responses while still being competitive.
+
+<code>
+import random
+import math
+import numpy as np
+from collections import defaultdict
+
+def get_neighbors(row, col):
+    """Get all neighbors of a hex cell (excluding diagonals)"""
+    neighbors = []
+    # 6 neighbors in hex grid: up, up-right, down-right, down, down-left, up-left
+    directions = [(-1, 0), (-1, 1), (0, 1), (1, 0), (1, -1), (0, -1)]
+    for dr, dc in directions:
+        new_row, new_col = row + dr, col + dc
+        if 0 <= new_row < 11 and 0 <= new_col < 11:
+            neighbors.append((new_row, new_col))
+    return neighbors
+
+def get_winning_lines(color):
+    """Get winning line coordinates for each color"""
+    if color == 'b':  # black connects top to bottom
+        return set([(0, c) for c in range(11)]), set([(10, c) for c in range(11)])
+    else:  # white connects left to right
+        return set([(r, 0) for r in range(11)]), set([(r, 10) for r in range(11)])
+
+def is_connected(board, start_positions, end_positions, color):
+    """Check if there's a connected path from start to end positions"""
+    if not start_positions or not end_positions:
+        return False
+    
+    visited = set()
+    queue = list(start_positions)
+    
+    while queue:
+        pos = queue.pop(0)
+        if pos in end_positions:
+            return True
+        if pos in visited:
+            continue
+        visited.add(pos)
+        
+        # Check neighbors
+        for neighbor in get_neighbors(pos[0], pos[1]):
+            if (neighbor in board[color] or 
+                (color == 'b' and neighbor[0] == 0) or 
+                (color == 'w' and neighbor[1] == 0)) and neighbor not in visited:
+                queue.append(neighbor)
+    
+    return False
+
+class MCTSNode:
+    def __init__(self, parent=None, action=None, color=None):
+        self.parent = parent
+        self.action = action
+        self.color = color  # color of player who made this action
+        self.children = []
+        self.visits = 0
+        self.wins = 0
+        self.untried_actions = []
+        self.board_state = None
+        self.is_terminal = False
+        self.winner = None
+    
+    def expand(self, board_state, color):
+        """Add untried actions as children"""
+        self.board_state = board_state
+        self.untried_actions = []
+        
+        # Find all empty cells
+        for row in range(11):
+            for col in range(11):
+                if (row, col) not in board_state['b'] and (row, col) not in board_state['w']:
+                    self.untried_actions.append((row, col))
+        
+        # Create child nodes for each action
+        for action in self.untried_actions:
+            child = MCTSNode(parent=self, action=action, color=color)
+            self.children.append(child)
+    
+    def select_child(self):
+        """UCB1 selection for tree traversal"""
+        best_score = float('-inf')
+        best_child = None
+        
+        exploration_weight = 1.41  # sqrt(2)
+        
+        for child in self.children:
+            if child.visits == 0:
+                return child
+            
+            # UCB1 formula
+            exploitation = child.wins / child.visits
+            exploration = exploration_weight * math.sqrt(math.log(self.visits) / child.visits)
+            score = exploitation + exploration
+            
+            if score > best_score:
+                best_score = score
+                best_child = child
+        
+        return best_child
+    
+    def simulate(self, board_state):
+        """Random playout simulation"""
+        # Make a copy of the board state
+        current_board = {'b': set(board_state['b']), 'w': set(board_state['w'])}
+        
+        # Play random moves until terminal state
+        current_color = 'b'  # assume black starts
+        
+        while True:
+            # Check for terminal state
+            black_start, black_end = get_winning_lines('b')
+            white_start, white_end = get_winning_lines('w')
+            
+            # Check if black wins
+            if is_connected(current_board, black_start, black_end, 'b'):
+                return 'b'
+            
+            # Check if white wins
+            if is_connected(current_board, white_start, white_end, 'w'):
+                return 'w'
+            
+            # Find all possible moves
+            possible_moves = []
+            for r in range(11):
+                for c in range(11):
+                    if (r, c) not in current_board['b'] and (r, c) not in current_board['w']:
+                        possible_moves.append((r, c))
+            
+            if not possible_moves:
+                return None  # Draw
+            
+            # Make a random move
+            move = random.choice(possible_moves)
+            current_board[current_color].add(move)
+            
+            # Switch player
+            current_color = 'w' if current_color == 'b' else 'b'
+
+def mcts_search(board_state, color, iterations=500):
+    """Perform MCTS search for the best move"""
+    # Create root node
+    root = MCTSNode()
+    root.expand(board_state, color)
+    
+    # Select best child based on simulations
+    for _ in range(iterations):
+        node = root
+        current_board = {'b': set(board_state['b']), 'w': set(board_state['w'])}
+        
+        # Selection
+        while node.children and node.untried_actions == []:
+            node = node.select_child()
+            if node.action:
+                current_board[node.color].add(node.action)
+        
+        # Expansion
+        if node.untried_actions:
+            # Simulate random moves to get current board state
+            # This is simplified - we'll just expand one new node for now
+            action = random.choice(node.untried_actions)
+            node.untried_actions.remove(action)
+            child = MCTSNode(parent=node, action=action, color=color)
+            node.children.append(child)
+            node = child
+        
+        # Simulation
+        result = node.simulate(current_board)
+        
+        # Backpropagation
+        while node is not None:
+            node.visits += 1
+            if result == color:
+                node.wins += 1
+            node = node.parent
+    
+    # Select best move based on visits
+    best_move = max(root.children, key=lambda c: c.visits)
+    return best_move.action
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    """Main policy function for Hex"""
+    # Convert lists to sets for efficient lookup
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    # Create board state dictionary
+    board_state = {'b': me_set, 'w': opp_set}
+    
+    # Use MCTS to find best move
+    if len(me) + len(opp) < 10:  # Early game
+        # For early moves, we can be smarter - maybe center is good
+        if len(me) == 0 and len(opp) == 0:
+            # First move go center
+            return (5, 5)
+        elif len(me) == 1 and len(opp) == 0:
+            # Second move we want to block opponent
+            # Try center or nearby
+            center = (5, 5)
+            if center not in (me_set | opp_set):
+                return center
+            else:
+                # Find best neighbor to the first move
+                first_move = list(me_set)[0]
+                neighbors = get_neighbors(first_move[0], first_move[1])
+                for n in neighbors:
+                    if n not in (me_set | opp_set):
+                        return n
+                # If no good place, random
+                for r in range(11):
+                    for c in range(11):
+                        if (r, c) not in (me_set | opp_set):
+                            return (r, c)
+    
+    # Use MCTS for most positions
+    try:
+        return mcts_search(board_state, color, iterations=100)  # Keep it fast
+    except Exception as e:
+        # Fallback to random legal move if something goes wrong
+        for r in range(11):
+            for c in range(11):
+                if (r, c) not in me_set and (r, c) not in opp_set:
+                    return (r, c)
+        
+        # Shouldn't reach here but better safe than sorry
+        return (0, 0)
+</code>

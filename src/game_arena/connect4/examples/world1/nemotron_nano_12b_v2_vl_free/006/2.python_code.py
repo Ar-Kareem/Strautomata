@@ -1,0 +1,95 @@
+
+from copy import deepcopy
+
+def find_empty_row(board, col):
+    for i in reversed(range(6)):
+        if board[i][col] == 0:
+            return i
+    return -1
+
+def has_four_in_a_row(board, player):
+    for row in range(6):
+        for col in range(4):
+            if all(board[row][col+i] == player for i in range(4)):
+                return True
+    for col in range(7):
+        for row in range(3):
+            if all(board[row+i][col] == player for i in range(4)):
+                return True
+    for row in range(3):
+        for col in range(4):
+            if all(board[row+i][col+i] == player for i in range(4)):
+                return True
+    for row in range(3):
+        for col in range(3,7):
+            if all(board[row+i][col-i] == player for i in range(4)):
+                return True
+    return False
+
+def get_valid_columns(board):
+    valid = []
+    for col in range(7):
+        if any(board[row][col] == 0 for row in range(6)):
+            valid.append(col)
+    return valid
+
+def check_opponent_winning_moves(board):
+    valid_cols = get_valid_columns(board)
+    for col in valid_cols:
+        new_board = [row.copy() for row in board]
+        row = find_empty_row(new_board, col)
+        new_board[row][col] = -1
+        if has_four_in_a_row(new_board, -1):
+            return col
+    return -1
+
+def negamax_with_alpha_beta(board, depth, alpha, beta, player):
+    valid_cols = get_valid_columns(board)
+    current_max = -float('inf')
+    for col in valid_cols:
+        new_board = [r.copy() for r in board]
+        row = find_empty_row(new_board, col)
+        new_board[row][col] = player
+        if player == 1 and has_four_in_a_row(new_board, 1):
+            current_max = 10
+            break
+        if player == -1 and has_four_in_a_row(new_board, -1):
+            current_max = max(current_max, -10)
+            continue
+        score = -negamax_with_alpha_beta(new_board, depth-1, -beta, -alpha, -player)
+        if score > current_max:
+            current_max = score
+            alpha = current_max
+            if alpha >= beta:
+                break
+    return current_max
+
+def evaluate_board(board, player):
+    return 0  # Simplified heuristic for evaluation
+
+def policy(board):
+    valid_columns = get_valid_columns(board)
+    for col in valid_columns:
+        new_board = [row.copy() for row in board]
+        row = find_empty_row(new_board, col)
+        new_board[row][col] = 1
+        if has_four_in_a_row(new_board, 1):
+            return col
+    opponent_col = check_opponent_winning_moves(board)
+    if opponent_col != -1:
+        return opponent_col
+    best_score = -float('inf')
+    best_col = valid_columns[0]
+    for col in valid_columns:
+        new_board = [row.copy() for row in board]
+        row = find_empty_row(new_board, col)
+        if row == -1:
+            continue
+        new_board[row][col] = 1
+        score = negamax_with_alpha_beta(new_board, 4, -float('inf'), float('inf'), -1)
+        if score > best_score:
+            best_score = score
+            best_col = col
+        elif score == best_score and col < best_col:
+            best_col = col
+    return best_col

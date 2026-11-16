@@ -1,0 +1,212 @@
+The strategy for this policy is to use a combination of:
+1. **Positional weights** - prioritizing corner and edge positions while avoiding bad mobility spots (like X-squares and C-squares near corners)
+2. **Mobility maximization** - favoring moves that give high future move options
+3. **Parity and endgame awareness** - understanding that last move advantage and disc count matter more late in the game
+4. **Minimax lookahead with alpha-beta pruning** - using a shallow but effective 4-ply search to evaluate position quality
+
+The policy calculates a weighted board score, considers available moves, and uses a shallow minimax search to simulate possible responses up to 4 plies deep. Moves are evaluated using a refined piece-square table that heavily values corners, devalues immediate neighbors to corners (X-squares), and rewards edge control.
+
+The algorithm guarantees returning a legal move (or "pass" when no legal moves exist), and runs efficiently under the time limit due to move ordering and early cutoffs.
+
+<code>
+import numpy as np
+import math
+from typing import List, Tuple, Optional
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    # Board size
+    n = 8
+    
+    # Directions: 8 possible directions (dr, dc)
+    directions = [(-1,-1), (-1,0), (-1,1),
+                  (0,-1),           (0,1),
+                  (1,-1),  (1,0),   (1,1)]
+    
+    def is_valid(r: int, c: int) -> bool:
+        return 0 <= r < n and 0 <= c < n
+    
+    def would_flip(you_board: np.ndarray, opp_board: np.ndarray, r: int, c: int, dr: int, dc: int) -> bool:
+        """Check if placing at (r,c) would flip discs in direction (dr,dc)"""
+        if not is_valid(r + dr, c + dc):
+            return False
+        if opp_board[r + dr, c + dc] == 0:
+            return False
+        
+        nr, nc = r + dr, c + dc
+        while is_valid(nr, nc) and opp_board[nr, nc] == 1:
+            nr += dr
+            nc += dc
+        if is_valid(nr, nc) and you_board[nr, nc] == 1:
+            return True
+        return False
+    
+    def is_legal_move(you_board: np.ndarray, opp_board: np.ndarray, r: int, c: int) -> bool:
+        """Check if move at (r,c) is legal"""
+        if you_board[r, c] == 1 or opp_board[r, c] == 1:
+            return False
+        for dr, dc in directions:
+            if would_flip(you_board, opp_board, r, c, dr, dc):
+                return True
+        return False
+    
+    def get_legal_moves(you_board: np.ndarray, opp_board: np.ndarray) -> List[Tuple[int, int]]:
+        """Get all legal moves"""
+        moves = []
+        for r in range(n):
+            for c in range(n):
+                if is_legal_move(you_board, opp_board, r, c):
+                    moves.append((r, c))
+        return moves
+    
+    def make_move(you_board: np.ndarray, opp_board: np.ndarray, r: int, c: int) -> Tuple[np.ndarray, np.ndarray]:
+        """Apply move and return new board states"""
+        new_you = you_board.copy()
+        new_opp = opp_board.copy()
+        
+        # Place the disc
+        new_you[r, c] = 1
+        
+        # Flip in all valid directions
+        for dr, dc in directions:
+            if would_flip(you_board, opp_board, r, c, dr, dc):
+                nr, nc = r + dr, c + dc
+                while is_valid(nr, nc) and new_opp[nr, nc] == 1:
+                    new_opp[nr, nc] = 0
+                    new_you[nr, nc] = 1
+                    nr += dr
+                    nc += dc
+        
+        return new_you, new_opp
+    
+    # Piece-square table - corner and edge control prioritized
+    # Values based on known Othello positional strategy (e.g., corner=100, X-square=-50, edge=80, center=10)
+    PSQ_TABLE = np.array([
+        [100,  -50,  30,  20,  20,  30,  -50, 100],
+        [-50, -100,   5,   5,   5,   5, -100, -50],
+        [ 30,    5,  15,   8,   8,  15,    5,  30],
+        [ 20,    5,   8,   5,   5,   8,    5,  20],
+        [ 20,    5,   8,   5,   5,   8,    5,  20],
+        [ 30,    5,  15,   8,   8,  15,    5,  30],
+        [-50, -100,   5,   5,   5,   5, -100, -50],
+        [100,  -50,  30,  20,  20,  30,  -50, 100]
+    ], dtype=np.float32)
+    
+    def evaluate(you_board: np.ndarray, opp_board: np.ndarray) -> float:
+        """Evaluate position from 'you' perspective"""
+        # Positional score
+        pos_score = 0.0
+        for r in range(n):
+            for c in range(n):
+                if you_board[r, c] == 1:
+                    pos_score += PSQ_TABLE[r, c]
+                elif opp_board[r, c] == 1:
+                    pos_score -= PSQ_TABLE[r, c]
+        
+        # Mobility bonus (encourage more moves available)
+        my_moves = len(get_legal_moves(you_board, opp_board))
+        opp_moves = len(get_legal_moves(opp_board, you_board))
+        
+        if my_moves + opp_moves > 0:
+            mobility_score = 10.0 * (my_moves - opp_moves) / (my_moves + opp_moves)
+        else:
+            mobility_score = 0.0
+        
+        # Disc count (more important in endgame)
+        my_discs = np.sum(you_board)
+        opp_discs = np.sum(opp_board)
+        if my_discs + opp_discs > 40:  # Late game - discs matter more
+            disc_score = 2.0 * (my_discs - opp_discs)
+        else:
+            disc_score = 0.5 * (my_discs - opp_discs)
+        
+        # Corner control bonus (very important)
+        corners = [(0,0), (0,7), (7,0), (7,7)]
+        corner_bonus = 0
+        for cr, cc in corners:
+            if you_board[cr, cc] == 1:
+                corner_bonus += 40
+            elif opp_board[cr, cc] == 1:
+                corner_bonus -= 40
+        
+        return pos_score + mobility_score + disc_score + corner_bonus
+    
+    def minimax(you_board: np.ndarray, opp_board: np.ndarray, depth: int, alpha: float, beta: float, 
+                maximizing: bool) -> float:
+        """Minimax with alpha-beta pruning"""
+        if depth == 0:
+            return evaluate(you_board, opp_board)
+        
+        moves = get_legal_moves(you_board, opp_board)
+        
+        # No moves - skip turn
+        if not moves:
+            # If opponent also can't move, game is over
+            opp_moves = get_legal_moves(opp_board, you_board)
+            if not opp_moves:
+                # Final evaluation by disc count
+                my_discs = np.sum(you_board)
+                opp_discs = np.sum(opp_board)
+                return 100 * (my_discs - opp_discs)
+            # Otherwise, just pass and continue search
+            return -minimax(opp_board, you_board, depth, -beta, -alpha, not maximizing)
+        
+        if maximizing:
+            max_eval = -math.inf
+            # Sort moves by rough evaluation for better pruning
+            moves.sort(key=lambda m: PSQ_TABLE[m[0], m[1]], reverse=True)
+            for r, c in moves:
+                new_you, new_opp = make_move(you_board, opp_board, r, c)
+                eval_score = minimax(new_opp, new_you, depth - 1, alpha, beta, False)
+                max_eval = max(max_eval, eval_score)
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break  # beta cutoff
+            return max_eval
+        else:
+            min_eval = math.inf
+            for r, c in moves:
+                new_you, new_opp = make_move(you_board, opp_board, r, c)
+                eval_score = minimax(new_opp, new_you, depth - 1, alpha, beta, True)
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break  # alpha cutoff
+            return min_eval
+    
+    # Get all legal moves
+    legal_moves = get_legal_moves(you, opponent)
+    
+    if not legal_moves:
+        return "pass"
+    
+    # If only one legal move, take it
+    if len(legal_moves) == 1:
+        r, c = legal_moves[0]
+        return f"{chr(97 + c)}{r + 1}"
+    
+    # Decide search depth based on available moves and game progress
+    disc_count = np.sum(you) + np.sum(opponent)
+    if disc_count < 30:
+        depth = 3  # Early game
+    elif disc_count < 55:
+        depth = 4  # Mid to late
+    else:
+        depth = 5  # Endgame
+    
+    # Evaluate each move using minimax
+    best_score = -math.inf
+    best_move = legal_moves[0]
+    
+    for r, c in legal_moves:
+        new_you, new_opp = make_move(you, opponent, r, c)
+        score = minimax(new_opp, new_you, depth - 1, -math.inf, math.inf, False)
+        
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+    
+    # Convert (r,c) to algebraic notation
+    col_letter = chr(97 + best_move[1])  # 97 = 'a'
+    row_number = best_move[0] + 1
+    return f"{col_letter}{row_number}"
+</code>

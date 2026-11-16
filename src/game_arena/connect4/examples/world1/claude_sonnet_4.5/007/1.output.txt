@@ -1,0 +1,216 @@
+<thinking>
+I need to create a Connect 4 AI policy. Let me think through the strategy:
+
+1. **Win immediately if possible**: Check if I can win in one move
+2. **Block opponent's win**: Check if opponent can win in their next move and block it
+3. **Create threats**: Try to set up winning opportunities
+4. **Strategic positioning**: Prefer center columns, avoid giving opponent winning opportunities
+5. **Look ahead**: Use minimax or similar algorithm if time permits
+
+Given the 1-second time constraint, I'll implement:
+- Immediate win detection
+- Immediate threat blocking
+- A simple minimax with alpha-beta pruning (limited depth)
+- Heuristic evaluation for board positions
+
+Key helper functions needed:
+- `is_valid_move(board, col)`: Check if a column has space
+- `make_move(board, col, player)`: Simulate dropping a disc
+- `check_win(board, player)`: Check if a player has won
+- `evaluate_board(board)`: Heuristic evaluation
+- `minimax(board, depth, alpha, beta, maximizing)`: Game tree search
+
+The evaluation heuristic should consider:
+- Immediate wins/losses (highest priority)
+- Three in a row with one empty space
+- Two in a row with two empty spaces
+- Center control
+- Avoiding setups that let opponent win
+
+Let me code this:
+</thinking>
+
+<code>
+def policy(board: list[list[int]]) -> int:
+    """
+    Connect 4 policy using minimax with alpha-beta pruning.
+    Returns the best column to play.
+    """
+    
+    def is_valid_move(board, col):
+        """Check if column has space."""
+        return board[0][col] == 0
+    
+    def get_valid_moves(board):
+        """Get list of valid column indices."""
+        return [col for col in range(7) if is_valid_move(board, col)]
+    
+    def get_next_open_row(board, col):
+        """Find the lowest empty row in a column."""
+        for row in range(5, -1, -1):
+            if board[row][col] == 0:
+                return row
+        return -1
+    
+    def drop_piece(board, row, col, player):
+        """Place a piece on the board (modifies in place)."""
+        board[row][col] = player
+    
+    def check_win(board, player):
+        """Check if player has won."""
+        # Horizontal
+        for row in range(6):
+            for col in range(4):
+                if all(board[row][col+i] == player for i in range(4)):
+                    return True
+        
+        # Vertical
+        for row in range(3):
+            for col in range(7):
+                if all(board[row+i][col] == player for i in range(4)):
+                    return True
+        
+        # Diagonal (positive slope)
+        for row in range(3, 6):
+            for col in range(4):
+                if all(board[row-i][col+i] == player for i in range(4)):
+                    return True
+        
+        # Diagonal (negative slope)
+        for row in range(3):
+            for col in range(4):
+                if all(board[row+i][col+i] == player for i in range(4)):
+                    return True
+        
+        return False
+    
+    def evaluate_window(window, player):
+        """Evaluate a window of 4 positions."""
+        score = 0
+        opponent = -player
+        
+        player_count = window.count(player)
+        empty_count = window.count(0)
+        opponent_count = window.count(opponent)
+        
+        if player_count == 4:
+            score += 100
+        elif player_count == 3 and empty_count == 1:
+            score += 5
+        elif player_count == 2 and empty_count == 2:
+            score += 2
+        
+        if opponent_count == 3 and empty_count == 1:
+            score -= 4
+        
+        return score
+    
+    def evaluate_board(board, player):
+        """Heuristic evaluation of board state."""
+        score = 0
+        
+        # Center column preference
+        center_array = [board[row][3] for row in range(6)]
+        center_count = center_array.count(player)
+        score += center_count * 3
+        
+        # Horizontal
+        for row in range(6):
+            for col in range(4):
+                window = [board[row][col+i] for i in range(4)]
+                score += evaluate_window(window, player)
+        
+        # Vertical
+        for row in range(3):
+            for col in range(7):
+                window = [board[row+i][col] for i in range(4)]
+                score += evaluate_window(window, player)
+        
+        # Diagonal (positive slope)
+        for row in range(3, 6):
+            for col in range(4):
+                window = [board[row-i][col+i] for i in range(4)]
+                score += evaluate_window(window, player)
+        
+        # Diagonal (negative slope)
+        for row in range(3):
+            for col in range(4):
+                window = [board[row+i][col+i] for i in range(4)]
+                score += evaluate_window(window, player)
+        
+        return score
+    
+    def is_terminal(board):
+        """Check if game is over."""
+        return check_win(board, 1) or check_win(board, -1) or len(get_valid_moves(board)) == 0
+    
+    def minimax(board, depth, alpha, beta, maximizing_player, player):
+        """Minimax with alpha-beta pruning."""
+        valid_moves = get_valid_moves(board)
+        is_term = is_terminal(board)
+        
+        if depth == 0 or is_term:
+            if is_term:
+                if check_win(board, player):
+                    return (None, 100000)
+                elif check_win(board, -player):
+                    return (None, -100000)
+                else:  # No more valid moves
+                    return (None, 0)
+            else:  # Depth is 0
+                return (None, evaluate_board(board, player))
+        
+        if maximizing_player:
+            value = float('-inf')
+            best_col = valid_moves[0] if valid_moves else 0
+            
+            for col in valid_moves:
+                row = get_next_open_row(board, col)
+                board_copy = [row[:] for row in board]
+                drop_piece(board_copy, row, col, player)
+                
+                new_score = minimax(board_copy, depth-1, alpha, beta, False, player)[1]
+                
+                if new_score > value:
+                    value = new_score
+                    best_col = col
+                
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break
+            
+            return best_col, value
+        
+        else:  # Minimizing player
+            value = float('inf')
+            best_col = valid_moves[0] if valid_moves else 0
+            
+            for col in valid_moves:
+                row = get_next_open_row(board, col)
+                board_copy = [row[:] for row in board]
+                drop_piece(board_copy, row, col, -player)
+                
+                new_score = minimax(board_copy, depth-1, alpha, beta, True, player)[1]
+                
+                if new_score < value:
+                    value = new_score
+                    best_col = col
+                
+                beta = min(beta, value)
+                if alpha >= beta:
+                    break
+            
+            return best_col, value
+    
+    # Main logic
+    player = 1  # We are always player 1
+    valid_moves = get_valid_moves(board)
+    
+    if not valid_moves:
+        return 3  # Default to center if no valid moves (shouldn't happen)
+    
+    # Use minimax with depth 4
+    best_col, _ = minimax(board, 4, float('-inf'), float('inf'), True, player)
+    
+    return best_col if best_col is not None else valid_moves[0]
+</code>

@@ -1,0 +1,134 @@
+**Strategy Overview**
+
+The policy builds a full chess board from the provided `pieces` dictionary and evaluates each legal move with a simple but effective static‑evaluation function:
+
+1. **Checkmate detection** – if a move mates, it is selected immediately (huge score).  
+2. **Material gain** – captures and promotions are rewarded proportionally to the value of the captured/promoted piece.  
+3. **Check** – moves that give check receive a modest bonus.  
+4. **Resulting material balance** – after the move the total material (using classic piece values) is recomputed; the side to play tries to maximise its own material advantage.  
+5. **Opponent mobility** – the fewer legal moves the opponent has after our move, the better.  
+6. **Safety** – moving a piece onto a square that is attacked and not defended incurs a penalty.  
+
+All scores are combined, and the move with the highest total score is returned.  
+The policy stores no state between turns, but the `memory` argument is passed through unchanged so it complies with the required API.
+
+---  
+
+<code>
+import chess
+
+# piece values (in centipawns)
+PIECE_VALUE = {
+    chess.PAWN: 100,
+    chess.KNIGHT: 320,
+    chess.BISHOP: 330,
+    chess.ROOK: 500,
+    chess.QUEEN: 900,
+    chess.KING: 0,
+}
+
+
+def _material_score(board: chess.Board) -> int:
+    """Return white material – black material in centipawns."""
+    white, black = 0, 0
+    for sq in chess.SQUARES:
+        piece = board.piece_at(sq)
+        if piece:
+            val = PIECE_VALUE[piece.piece_type]
+            if piece.color == chess.WHITE:
+                white += val
+            else:
+                black += val
+    return white - black
+
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str], memory: dict) -> tuple[str, dict]:
+    """
+    Choose the best move from `legal_moves` using a lightweight static evaluation.
+    Returns (chosen_move, memory). `memory` is passed through unchanged.
+    """
+    # ---------- Build board ----------
+    board = chess.Board.empty()
+    board.turn = (to_play == "white")
+
+    for sq, code in pieces.items():
+        color = chess.WHITE if code[0] == "w" else chess.BLACK
+        piece_type = {
+            "K": chess.KING,
+            "Q": chess.QUEEN,
+            "R": chess.ROOK,
+            "B": chess.BISHOP,
+            "N": chess.KNIGHT,
+            "P": chess.PAWN,
+        }[code[1]]
+        board.set_piece_at(chess.SQUARE_NAMES.index(sq), chess.Piece(piece_type, color))
+
+    # ---------- Evaluation ----------
+    best_move_str = legal_moves[0]  # fallback
+    best_score = -10 ** 9
+
+    for move_str in legal_moves:
+        try:
+            move = board.parse_san(move_str)
+        except ValueError:
+            # illegal SAN – skip (should not happen)
+            continue
+
+        # capture value
+        capture_bonus = 0
+        if board.is_capture(move):
+            captured_piece = board.piece_at(move.to_square)
+            if captured_piece:
+                capture_bonus = PIECE_VALUE[captured_piece.piece_type]
+
+        # promotion value
+        promotion_bonus = 0
+        if move.promotion:
+            promotion_bonus = PIECE_VALUE[move.promotion]
+
+        # check bonus
+        check_bonus = 500 if board.gives_check(move) else 0
+
+        # push move to see consequences
+        board.push(move)
+
+        # checkmate?
+        if board.is_checkmate():
+            score = 100_000  # unbeatable
+        else:
+            # material after move (white – black)
+            material = _material_score(board)
+            # perspective: white wants high, black wants low
+            material_score = material if to_play == "white" else -material
+
+            # opponent mobility penalty
+            opponent_moves = len(list(board.legal_moves))
+            mobility_penalty = opponent_moves * 10
+
+            # safety penalty – moved piece landed on an attacked, undefended square
+            safety_penalty = 0
+            to_sq = move.to_square
+            opp_color = not board.turn  # after push it's opponent's turn
+            if board.is_attacked_by(opp_color, to_sq):
+                # defended? (if at least one friendly piece also attacks the square)
+                if not board.is_attacked_by(not opp_color, to_sq):
+                    safety_penalty = 300
+
+            # total score
+            score = (
+                material_score
+                + capture_bonus * 100
+                + promotion_bonus * 100
+                + check_bonus
+                - mobility_penalty
+                - safety_penalty
+            )
+
+        board.pop()  # undo move
+
+        if score > best_score:
+            best_score = score
+            best_move_str = move_str
+
+    return best_move_str, memory
+</code>

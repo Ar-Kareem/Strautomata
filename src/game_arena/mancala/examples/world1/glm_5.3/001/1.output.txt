@@ -1,0 +1,336 @@
+**Strategy**
+
+My policy plays real search, not a fixed heuristic:
+
+- **Exact rules engine**: the board is kept "mover‑relative" (my houses 0‑5, my store 6, opponent houses 7‑12, opponent store 13), so sowing is a simple 13‑pocket cycle that automatically skips the enemy store, extra turns (store landings) keep the *same* player to move, captures (landing in an own house that was empty, stealing the opposite house `12‑p`), immediate game‑end detection when either side's houses are empty, and the end‑of‑game sweep are all implemented exactly.
+- **Search**: iterative‑deepening negamax with alpha‑beta pruning. Each sowing is one ply; extra‑turn continuations are same‑player nodes (no sign flip), so whole multi‑sow turn chains are evaluated. A transposition table (depth‑flagged bounds + best move, reused across calls), history heuristic, and static move ordering (store landings → captures → immediate store gain) maximize pruning depth within a ~0.75 s time budget (checked periodically, well under the 1 s limit).
+- **Evaluation**: dominant store difference, plus distance‑weighted seed ownership (seeds nearer your store are worth more) and a tempo bonus for immediately available store‑landing moves.
+- **Terminal scoring**: the exact final margin after the sweep, offset by ±10000 so any proven win outranks every heuristic score; deepening stops early once a forced win/loss is proven (giving effectively exact play in endgames).
+- **Robustness**: forced moves returned instantly, partial deepening iterations accepted only when strictly better than the last completed depth, and layered fallbacks guarantee a legal move is always returned.
+
+<code>
+# Kalah AI policy: iterative-deepening negamax with alpha-beta pruning,
+# transposition table, history heuristic, and exact endgame handling.
+#
+# Internal board layout (always relative to the player to move):
+#   0..5   mover's houses
+#   6      mover's store
+#   7..12  opponent's houses (opponent house j lives at index 7+j)
+#   13     opponent's store
+# Sowing from house i visits pockets i+1, i+2, ... wrapping over the
+# 13 pockets 0..12, which automatically skips the opponent's store.
+# Switching the side to move is a rotation: b[7:] + b[:7].
+
+import time
+
+_BUDGET = 0.75
+_TT_CAP = 300000
+_INF = 1 << 30
+
+TT = {}
+HIST = [0, 0, 0, 0, 0, 0]
+NODES = 0
+DEADLINE = 0.0
+
+
+class _Timeout(Exception):
+    pass
+
+
+def _tval(d):
+    # Terminal value from the mover's perspective for final store diff d.
+    if d > 0:
+        return 10000 + 10 * d
+    if d < 0:
+        return -10000 + 10 * d
+    return 0
+
+
+def _evaluate(b):
+    s = 10 * (b[6] - b[13])
+    # seeds closer to the mover's store are worth more
+    s += 2 * b[0] + 3 * b[1] + 4 * b[2] + 5 * b[3] + 6 * b[4] + 7 * b[5]
+    s -= 2 * b[7] + 3 * b[8] + 4 * b[9] + 5 * b[10] + 6 * b[11] + 7 * b[12]
+    # tempo: available moves that land in the store (extra turns)
+    n = b[0]
+    if n and n % 13 == 6:
+        s += 12
+    n = b[1]
+    if n and (n + 1) % 13 == 6:
+        s += 12
+    n = b[2]
+    if n and (n + 2) % 13 == 6:
+        s += 12
+    n = b[3]
+    if n and (n + 3) % 13 == 6:
+        s += 12
+    n = b[4]
+    if n and (n + 4) % 13 == 6:
+        s += 12
+    n = b[5]
+    if n and (n + 5) % 13 == 6:
+        s += 12
+    n = b[7]
+    if n and n % 13 == 6:
+        s -= 12
+    n = b[8]
+    if n and (n + 1) % 13 == 6:
+        s -= 12
+    n = b[9]
+    if n and (n + 2) % 13 == 6:
+        s -= 12
+    n = b[10]
+    if n and (n + 3) % 13 == 6:
+        s -= 12
+    n = b[11]
+    if n and (n + 4) % 13 == 6:
+        s -= 12
+    n = b[12]
+    if n and (n + 5) % 13 == 6:
+        s -= 12
+    return s
+
+
+def _child(b, i):
+    # Play house i for the mover. Returns (board, game_over, extra_move).
+    n = b[i]
+    nb = list(b)
+    nb[i] = 0
+    p = i
+    if n >= 13:
+        q, r = divmod(n, 13)
+        for t in range(13):
+            nb[t] += q
+    else:
+        r = n
+    for _ in range(r):
+        p += 1
+        if p == 13:
+            p = 0
+        nb[p] += 1
+    if p < 6:
+        o = 12 - p
+        if nb[p] == 1 and nb[o] > 0:
+            nb[6] += 1 + nb[o]
+            nb[p] = 0
+            nb[o] = 0
+    t1 = nb[0] + nb[1] + nb[2] + nb[3] + nb[4] + nb[5]
+    t2 = nb[7] + nb[8] + nb[9] + nb[10] + nb[11] + nb[12]
+    if t1 == 0 or t2 == 0:
+        if t1 == 0:
+            nb[13] += t2
+            nb[7] = nb[8] = nb[9] = nb[10] = nb[11] = nb[12] = 0
+        else:
+            nb[6] += t1
+            nb[0] = nb[1] = nb[2] = nb[3] = nb[4] = nb[5] = 0
+        return nb, True, False
+    return nb, False, p == 6
+
+
+def _order_score(b, i, h):
+    n = b[i]
+    land = (i + n) % 13
+    sc = h
+    if land == 6:
+        sc += 100000
+    elif land < 6 and b[land] == 0 and b[12 - land] > 0:
+        sc += 50000 + 100 * b[12 - land]
+    if land >= 7:
+        sc -= 30
+    g = i + n - 6
+    if g >= 0:
+        sc += 100 + 100 * (g // 13)
+    return sc
+
+
+def _quick(b, legal):
+    # One-ply greedy fallback: prefer store landings, then captures,
+    # then immediate store gain.
+    best = legal[0]
+    bestsc = -_INF
+    for i in legal:
+        sc = _order_score(b, i, 0)
+        if sc > bestsc:
+            bestsc = sc
+            best = i
+    return best
+
+
+def _negamax(b, depth, alpha, beta):
+    global NODES
+    NODES += 1
+    if (NODES & 511) == 0 and time.perf_counter() > DEADLINE:
+        raise _Timeout()
+    if depth <= 0:
+        return _evaluate(b)
+    key = tuple(b)
+    e = TT.get(key)
+    tt_move = -1
+    if e is not None:
+        ed, ef, ev, em = e
+        if ed >= depth:
+            if ef == 0:
+                return ev
+            if ef == 1:
+                if ev > alpha:
+                    alpha = ev
+            elif ev < beta:
+                beta = ev
+            if alpha >= beta:
+                return ev
+        tt_move = em
+    ms = []
+    for i in range(6):
+        n = b[i]
+        if n:
+            sc = HIST[i]
+            land = i + n
+            if land > 12:
+                land %= 13
+            if land == 6:
+                sc += 100000
+            elif land < 6 and b[land] == 0 and b[12 - land] > 0:
+                sc += 50000 + 100 * b[12 - land]
+            if land >= 7:
+                sc -= 30
+            g = i + n - 6
+            if g >= 0:
+                sc += 100 + 100 * (g // 13)
+            if i == tt_move:
+                sc += 1000000
+            ms.append((sc, i))
+    if not ms:
+        # Defensive: mover cannot move -> game over, opponent sweeps.
+        return _tval(b[6] - b[13] - b[7] - b[8] - b[9] - b[10] - b[11] - b[12])
+    if len(ms) > 1:
+        ms.sort(reverse=True)
+    best = -_INF
+    best_move = -1
+    a0 = alpha
+    for _s, i in ms:
+        n = b[i]
+        nb = list(b)
+        nb[i] = 0
+        p = i
+        if n >= 13:
+            q, r = divmod(n, 13)
+            for t in range(13):
+                nb[t] += q
+        else:
+            r = n
+        for _ in range(r):
+            p += 1
+            if p == 13:
+                p = 0
+            nb[p] += 1
+        if p < 6:
+            o = 12 - p
+            if nb[p] == 1 and nb[o] > 0:
+                nb[6] += 1 + nb[o]
+                nb[p] = 0
+                nb[o] = 0
+        t1 = nb[0] + nb[1] + nb[2] + nb[3] + nb[4] + nb[5]
+        t2 = nb[7] + nb[8] + nb[9] + nb[10] + nb[11] + nb[12]
+        if t1 == 0 or t2 == 0:
+            if t1 == 0:
+                v = _tval(nb[6] - nb[13] - t2)
+            else:
+                v = _tval(nb[6] + t1 - nb[13])
+        elif p == 6:
+            # extra turn: same player keeps moving (no sign flip)
+            v = _negamax(nb, depth - 1, alpha, beta)
+        else:
+            v = -_negamax(nb[7:] + nb[:7], depth - 1, -beta, -alpha)
+        if v > best:
+            best = v
+            best_move = i
+            if v > alpha:
+                alpha = v
+                if alpha >= beta:
+                    if HIST[i] < 500000:
+                        HIST[i] += depth * depth
+                    break
+    if len(TT) < _TT_CAP:
+        if best >= beta:
+            f = 1
+        elif best > a0:
+            f = 0
+        else:
+            f = 2
+        TT[key] = (depth, f, best, best_move)
+    return best
+
+
+def _think(b0, legal):
+    global NODES, DEADLINE, HIST
+    t0 = time.perf_counter()
+    DEADLINE = t0 + _BUDGET
+    NODES = 0
+    HIST = [h >> 1 for h in HIST]
+    if len(TT) > _TT_CAP:
+        TT.clear()
+    best_mv = _quick(b0, legal)
+    best_val = -_INF
+    cand = None
+    alpha = -_INF
+    depth = 2
+    try:
+        while depth < 120:
+            alpha = -_INF
+            cand = None
+            scored = []
+            for i in legal:
+                sc = _order_score(b0, i, HIST[i])
+                if i == best_mv:
+                    sc += 100000000
+                scored.append((sc, i))
+            scored.sort(reverse=True)
+            for _s, i in scored:
+                nb, over, extra = _child(b0, i)
+                if over:
+                    v = _tval(nb[6] - nb[13])
+                elif extra:
+                    v = _negamax(nb, depth - 1, alpha, _INF)
+                else:
+                    v = -_negamax(nb[7:] + nb[:7], depth - 1, -_INF, -alpha)
+                if v > alpha:
+                    alpha = v
+                    cand = i
+            if cand is not None:
+                best_mv = cand
+                best_val = alpha
+            if alpha >= 10000 or alpha <= -10000:
+                break  # proven win or loss: no need to search deeper
+            if time.perf_counter() > DEADLINE - 0.02:
+                break
+            depth += 1
+    except _Timeout:
+        # keep partial-iteration result only if it strictly improves
+        if cand is not None and alpha > best_val:
+            best_mv = cand
+    except Exception:
+        pass
+    return best_mv
+
+
+def policy(you, opponent):
+    try:
+        b0 = [int(x) for x in you] + [int(x) for x in opponent]
+        legal = [i for i in range(6) if b0[i] > 0]
+        if not legal:
+            return 0
+        if len(legal) == 1:
+            return legal[0]
+        mv = _think(b0, legal)
+        if 0 <= mv <= 5 and b0[mv] > 0:
+            return mv
+        return legal[0]
+    except Exception:
+        try:
+            for i in range(6):
+                if you[i] > 0:
+                    return i
+            return 0
+        except Exception:
+            return 0
+</code>

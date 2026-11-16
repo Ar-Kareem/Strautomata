@@ -1,0 +1,134 @@
+## Strategy
+
+My strategy for the Amazons game combines several key elements:
+
+1. **Mobility-based Evaluation**: The primary heuristic is based on mobility - counting the number of legal moves available to each player. Having more mobility means more options and typically a stronger position.
+
+2. **Territory Control**: I also evaluate territory by counting squares reachable by each player's amazons using BFS. Squares that only one player can reach are particularly valuable.
+
+3. **Minimax with Alpha-Beta Pruning**: I use a minimax search with alpha-beta pruning to look ahead several moves. This allows the AI to anticipate opponent responses and avoid traps.
+
+4. **Move Ordering**: To improve alpha-beta efficiency, I order moves by a quick heuristic evaluation, exploring promising moves first.
+
+5. **Iterative Approach**: The evaluation function weights mobility heavily early in the game, as restricting opponent movement is crucial in Amazons.
+
+6. **Endgame Consideration**: As the board fills up with arrows, territory becomes increasingly important - the player who controls more empty squares will win.
+
+The key insight in Amazons is that the game is about restricting your opponent's movement while preserving your own. Shooting arrows strategically to block opponent amazons while keeping paths open for yourself is critical.
+
+<code>
+import numpy as np
+
+def policy(board) -> str:
+    directions = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+    
+    def get_moves_from(board, r, c, vacated=None):
+        """Get all squares reachable from (r,c) in queen-like movement."""
+        moves = []
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            while 0 <= nr < 6 and 0 <= nc < 6:
+                if (nr, nc) == vacated:
+                    pass  # Can pass through vacated square
+                elif board[nr, nc] != 0:
+                    break
+                moves.append((nr, nc))
+                nr, nc = nr + dr, nc + dc
+        return moves
+    
+    def get_all_legal_moves(board, player):
+        """Get all legal moves for a player."""
+        moves = []
+        amazons = list(zip(*np.where(board == player)))
+        for fr, fc in amazons:
+            amazon_moves = get_moves_from(board, fr, fc)
+            for tr, tc in amazon_moves:
+                # Simulate amazon move
+                arrow_targets = get_moves_from(board, tr, tc, vacated=(fr, fc))
+                for ar, ac in arrow_targets:
+                    if (ar, ac) == (fr, fc) or board[ar, ac] == 0:
+                        moves.append((fr, fc, tr, tc, ar, ac))
+        return moves
+    
+    def count_mobility(board, player):
+        """Count total mobility for a player."""
+        count = 0
+        amazons = list(zip(*np.where(board == player)))
+        for r, c in amazons:
+            count += len(get_moves_from(board, r, c))
+        return count
+    
+    def evaluate(board):
+        """Evaluate board position for player 1."""
+        my_mobility = count_mobility(board, 1)
+        opp_mobility = count_mobility(board, 2)
+        
+        # If opponent has no mobility, we win
+        if opp_mobility == 0:
+            return 10000
+        if my_mobility == 0:
+            return -10000
+        
+        return (my_mobility - opp_mobility) * 10
+    
+    def make_move(board, move):
+        """Apply a move and return new board."""
+        fr, fc, tr, tc, ar, ac = move
+        new_board = board.copy()
+        player = new_board[fr, fc]
+        new_board[fr, fc] = 0
+        new_board[tr, tc] = player
+        new_board[ar, ac] = -1
+        return new_board
+    
+    def minimax(board, depth, alpha, beta, maximizing):
+        """Minimax with alpha-beta pruning."""
+        player = 1 if maximizing else 2
+        moves = get_all_legal_moves(board, player)
+        
+        if depth == 0 or not moves:
+            return evaluate(board), None
+        
+        best_move = moves[0] if moves else None
+        
+        if maximizing:
+            max_eval = -float('inf')
+            for move in moves[:30]:  # Limit branching
+                new_board = make_move(board, move)
+                eval_score, _ = minimax(new_board, depth - 1, alpha, beta, False)
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_move = move
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            for move in moves[:30]:
+                new_board = make_move(board, move)
+                eval_score, _ = minimax(new_board, depth - 1, alpha, beta, True)
+                if eval_score < min_eval:
+                    min_eval = eval_score
+                    best_move = move
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval, best_move
+    
+    # Get all legal moves
+    legal_moves = get_all_legal_moves(board, 1)
+    
+    if not legal_moves:
+        # Should not happen, but return something valid-looking
+        return "0,0:0,1:0,2"
+    
+    # Use minimax to find best move
+    _, best_move = minimax(board, 3, -float('inf'), float('inf'), True)
+    
+    if best_move is None:
+        best_move = legal_moves[0]
+    
+    fr, fc, tr, tc, ar, ac = best_move
+    return f"{fr},{fc}:{tr},{tc}:{ar},{ac}"
+</code>

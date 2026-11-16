@@ -1,0 +1,117 @@
+The strategy for this policy is based on the following principles:
+
+1. **Legality:** Always return a legal move. This is paramount.
+2. **Material Advantage:** Focus on capturing opponent's pieces with low-valued pieces to gain a material advantage. Prefer captures with pawns.
+3. **Immediate Threats/Responses:** Prioritize responding to immediate threats (checks, attacks on undefended pieces).
+4. **Simplification:** Convert the input `pieces` dict into a standard position string for use with `chess` library. Utilize `chess` to generate legal moves efficiently and facilitate more complex analysis.
+5. **Limited Search**: Avoid complex search algorithms (like Alpha-Beta pruning) to satisfy execution constraints. Instead, use a heuristic evaluation function.
+6. **King Safety**: Move the king to safe squares.
+7. **Promote Pawns:** Prioritize pawn promotions to Queens.
+
+```python
+import chess
+
+def evaluate_move(board, move, to_play):
+    """Simple heuristic evaluation of a move."""
+    board.push(move)
+    score = 0
+
+    # Material advantage (simplified)
+    material_gain = 0
+    piece_values = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}  # Added 'K':0
+    for piece_type in piece_values:
+        material_gain += (len(board.pieces(chess.PieceType(chess.piece_symbol(piece_type).isupper() * (chess.piece_symbol(piece_type).isupper() != (to_play == 'white')) * (list(chess.PIECE_TYPES).index(piece_type) + 1)), bool(to_play == 'white'))) - len(board.pieces(chess.PieceType(chess.piece_symbol(piece_type).isupper() * (chess.piece_symbol(piece_type).isupper() != (to_play == 'black')) * (list(chess.PIECE_TYPES).index(piece_type) + 1)), bool(to_play == 'black')))) * piece_values[piece_type]
+
+    score += material_gain
+    if to_play == 'black':
+        score = - score
+
+    # Checkmate
+    if board.is_checkmate():
+        if board.turn == chess.WHITE:
+            score += 1000  # Good for white
+        else:
+            score -= 1000  # Good for black.
+
+    # Check
+    elif board.is_check():
+        if to_play == 'white':
+            score += 50
+        else:
+            score -= 50
+
+    board.pop()  # Undo the move
+
+    return score
+
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    """
+    Selects a move based on a simple heuristic policy.
+    """
+
+    # Convert the given state to a FEN string (required by the chess library)
+    board = chess.Board()
+    fen = board.fen().split(' ')
+    fen[0] = ''
+    for square, piece in pieces.items():
+        file = ord(square[0]) - ord('a')
+        rank = int(square[1]) - 1
+        index = (7 - rank) * 8 + file
+        fen[0] += piece
+        if index != 63:
+            fen[0] += ','
+    modified_fen = str(fen[0]).replace('wK,',     'K').replace('wQ,',     'Q').replace('wR,',     'R').replace('wB,',     'B').replace('wN,',     'N').replace('wP,',     'P').replace('bK,',     'k').replace('bQ,',     'q').replace('bR,',     'r').replace('bB,',     'b').replace('bN,',     'n').replace('bP,',     'p')
+    empty_fen = ''
+    counter = 0
+
+    for i in reversed(range(8)):
+        temp_fen = ''
+        for j in range(8):
+            current_element = modified_fen[i * 8 + j]
+            if current_element in ['K', 'Q', 'R', 'B', 'N', 'P', 'k', 'q', 'r', 'b', 'n', 'p']:
+                if counter > 0:
+                    temp_fen += str(counter)
+                temp_fen += current_element
+                counter = 0
+            else:
+                counter += 1
+        if counter > 0:
+            temp_fen += str(counter)
+        counter = 0
+        empty_fen += temp_fen + '/'
+
+    empty_fen = empty_fen[:-1]  # Remove trailing '/'
+    fen[0] = empty_fen
+    fen[1] = 'w' if to_play == 'white' else 'b'       # Side to move
+    fen[2] = '-'             # No castling avail.
+    fen[3] = '-'             # No en-passant
+    fen[4] = '0'              # Halfmove clock
+    fen[5] = '1'              # Fullmove counter
+
+    board = chess.Board(' '.join(fen))
+
+    legal_moves = list(board.legal_moves)
+
+    if not legal_moves:
+      return board.fen().split(" ")[0]
+
+    best_move = None
+    best_score = -float('inf') if to_play == 'white' else float('inf')
+
+    for move in legal_moves:
+        score = evaluate_move(board, move, to_play)
+        if to_play == 'white':
+            if score > best_score:
+                best_score = score
+                best_move = move
+        else:
+            if score < best_score:
+                best_score = score
+                best_move = move
+
+    if best_move is None:
+        return legal_moves[0].uci() # If no move improves the score, return first legal
+
+    return best_move.uci()
+```

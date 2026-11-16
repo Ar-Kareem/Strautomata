@@ -1,0 +1,160 @@
+
+import math
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Determines the next move for a 4x4 Tic Tac Toe game using Minimax with Alpha-Beta pruning.
+    Player is 1, Opponent is -1.
+    """
+    PLAYER = 1
+    OPPONENT = -1
+    EMPTY = 0
+    SIZE = 4
+    WIN_SCORE = 100000
+    
+    # Pre-calculated indices for all winning lines (rows, cols, diagonals)
+    # Using 1D logic for speed: index = row * 4 + col
+    lines = []
+    # Rows
+    for r in range(SIZE):
+        lines.append([r * SIZE + c for c in range(SIZE)])
+    # Cols
+    for c in range(SIZE):
+        lines.append([r * SIZE + c for r in range(SIZE)])
+    # Diagonals
+    lines.append([i * SIZE + i for i in range(SIZE)])
+    lines.append([i * SIZE + (SIZE - 1 - i) for i in range(SIZE)])
+
+    def get_valid_moves(flat_board):
+        return [i for i, x in enumerate(flat_board) if x == EMPTY]
+
+    def check_status(flat_board):
+        """Returns winner (1, -1) or 0 if draw/ongoing."""
+        for line in lines:
+            s = sum(flat_board[i] for i in line)
+            if s == 4:
+                return PLAYER
+            if s == -4:
+                return OPPONENT
+        return 0
+
+    def evaluate(flat_board):
+        """Heuristic evaluation of the board state."""
+        score = 0
+        for line in lines:
+            # Extract the values in this line
+            line_vals = [flat_board[i] for i in line]
+            p_count = line_vals.count(PLAYER)
+            o_count = line_vals.count(OPPONENT)
+            
+            if o_count == 0:
+                # Potential win for Player
+                if p_count == 4: return WIN_SCORE
+                if p_count == 3: score += 100
+                elif p_count == 2: score += 10
+                elif p_count == 1: score += 1
+            elif p_count == 0:
+                # Potential win for Opponent
+                if o_count == 4: return -WIN_SCORE
+                if o_count == 3: score -= 100
+                elif o_count == 2: score -= 10
+                elif o_count == 1: score -= 1
+            # If line has both, it's dead, score 0
+        return score
+
+    def minimax(flat_board, depth, alpha, beta, maximizing_player):
+        status = check_status(flat_board)
+        if status == PLAYER:
+            return WIN_SCORE - (10 - depth) # Prefer faster wins
+        if status == OPPONENT:
+            return -WIN_SCORE + (10 - depth) # Prefer slower losses
+        
+        valid_moves = get_valid_moves(flat_board)
+        if depth == 0 or not valid_moves:
+            return evaluate(flat_board)
+
+        if maximizing_player:
+            max_eval = -math.inf
+            # Heuristic sort: center moves are generally better
+            valid_moves.sort(key=lambda x: 0 if x in [5,6,9,10] else 1)
+            
+            for move in valid_moves:
+                flat_board[move] = PLAYER
+                eval_score = minimax(flat_board, depth - 1, alpha, beta, False)
+                flat_board[move] = EMPTY
+                max_eval = max(max_eval, eval_score)
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = math.inf
+            valid_moves.sort(key=lambda x: 0 if x in [5,6,9,10] else 1)
+
+            for move in valid_moves:
+                flat_board[move] = OPPONENT
+                eval_score = minimax(flat_board, depth - 1, alpha, beta, True)
+                flat_board[move] = EMPTY
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval
+
+    # --- Main Logic ---
+    
+    # Flatten board for easier processing
+    flat_board = [cell for row in board for cell in row]
+    valid_moves = get_valid_moves(flat_board)
+    
+    if not valid_moves:
+        return (0, 0) # Should not happen unless board full
+
+    # 1. Immediate Win/Block Check (Critical optimization)
+    # Check if we can win immediately
+    for move in valid_moves:
+        flat_board[move] = PLAYER
+        if check_status(flat_board) == PLAYER:
+            return (move // SIZE, move % SIZE)
+        flat_board[move] = EMPTY
+        
+    # Check if opponent can win immediately (Block)
+    for move in valid_moves:
+        flat_board[move] = OPPONENT
+        if check_status(flat_board) == OPPONENT:
+            return (move // SIZE, move % SIZE)
+        flat_board[move] = EMPTY
+
+    # 2. Minimax Search
+    best_score = -math.inf
+    best_move = valid_moves[0]
+    
+    # Determine depth based on remaining moves to manage time
+    # Full depth is too slow for empty board, but fine for late game
+    empty_spots = len(valid_moves)
+    if empty_spots > 12:
+        search_depth = 2
+    elif empty_spots > 8:
+        search_depth = 3
+    else:
+        search_depth = 4
+
+    # Optimize order: center > corners > sides
+    # Center indices for 4x4: 5, 6, 9, 10
+    prioritized_moves = sorted(valid_moves, key=lambda m: 0 if m in [5,6,9,10] else (1 if m in [0,3,12,15] else 2))
+
+    alpha = -math.inf
+    beta = math.inf
+
+    for move in prioritized_moves:
+        flat_board[move] = PLAYER
+        score = minimax(flat_board, search_depth, alpha, beta, False)
+        flat_board[move] = EMPTY
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+        
+        alpha = max(alpha, score)
+
+    return (best_move // SIZE, best_move % SIZE)

@@ -1,0 +1,205 @@
+ The strategy employs an alpha-beta search with a depth limit of 4 plies, optimized with move ordering to maximize pruning efficiency. The evaluation function prioritizes material (Kings valued at 3× men), advancement toward promotion, and centralization of Kings. When captures are mandatory, the algorithm explores all capture sequences (including multi-jumps and promotion-during-capture continuations) and selects the path yielding the best evaluated position. Non-capture moves are searched to minimize immediate loss and maximize positional advantage.
+
+<code>
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    # Normalize inputs to sets of tuples
+    def to_set(items):
+        return frozenset((tuple(x) if isinstance(x, (list, tuple)) else x) for x in items)
+    
+    my_men = to_set(my_men)
+    my_kings = to_set(my_kings)
+    opp_men = to_set(opp_men)
+    opp_kings = to_set(opp_kings)
+    
+    start_state = (my_men, my_kings, opp_men, opp_kings, color)
+    
+    # Generate all legal moves (returns list of (move, new_state))
+    moves = _get_all_moves(start_state)
+    
+    if not moves:
+        return ((0, 0), (0, 0))
+    if len(moves) == 1:
+        return moves[0][0]
+    
+    # Sort by heuristic for better alpha-beta pruning
+    moves.sort(key=lambda x: _evaluate(x[1]), reverse=True)
+    
+    best_move = moves[0][0]
+    best_val = -1000000
+    alpha = -1000000
+    beta = 1000000
+    depth = 4
+    
+    for move, new_state in moves:
+        val = -_alphabeta(new_state, depth - 1, -beta, -alpha)
+        if val > best_val:
+            best_val = val
+            best_move = move
+        alpha = max(alpha, val)
+        if alpha >= beta:
+            break
+    return best_move
+
+def _alphabeta(state, depth, alpha, beta):
+    if depth == 0:
+        return _evaluate(state)
+    
+    moves = _get_all_moves(state)
+    if not moves:
+        # No legal moves means a loss
+        return -10000
+    
+    for move, new_state in moves:
+        val = -_alphabeta(new_state, depth - 1, -beta, -alpha)
+        if val >= beta:
+            return beta
+        if val > alpha:
+            alpha = val
+    return alpha
+
+def _evaluate(state):
+    my_men, my_kings, opp_men, opp_kings, color = state
+    score = 0
+    # Material
+    score += len(my_men) * 100
+    score += len(my_kings) * 300
+    score -= len(opp_men) * 100
+    score -= len(opp_kings) * 300
+    
+    # Advancement for men
+    for r, c in my_men:
+        if color == 'w':
+            score += r * 8
+        else:
+            score += (7 - r) * 8
+    
+    for r, c in opp_men:
+        if color == 'w':  # opponent is black
+            score -= (7 - r) * 8
+        else:
+            score -= r * 8
+    
+    # King centralization
+    for r, c in my_kings:
+        score += (3.5 - abs(r - 3.5)) * 4
+        score += (3.5 - abs(c - 3.5)) * 4
+    
+    return score
+
+def _get_all_moves(state):
+    my_men, my_kings, opp_men, opp_kings, color = state
+    all_pieces = set(my_men | my_kings | opp_men | opp_kings)
+    opp_pieces = set(opp_men | opp_kings)
+    
+    moves = []
+    
+    # Captures are mandatory; check for captures first
+    for r, c in my_men:
+        moves.extend(_generate_captures((r, c), False, my_men, my_kings, opp_men, opp_kings, all_pieces, opp_pieces, color))
+    for r, c in my_kings:
+        moves.extend(_generate_captures((r, c), True, my_men, my_kings, opp_men, opp_kings, all_pieces, opp_pieces, color))
+    
+    if moves:
+        return moves
+    
+    # Regular moves (no captures available)
+    dr = 1 if color == 'w' else -1
+    next_color = 'b' if color == 'w' else 'w'
+    
+    for r, c in my_men:
+        for dc in (-1, 1):
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 8 and 0 <= nc < 8 and (nr, nc) not in all_pieces:
+                is_promo = (color == 'w' and nr == 7) or (color == 'b' and nr == 0)
+                new_my_men = set(my_men)
+                new_my_kings = set(my_kings)
+                new_my_men.discard((r, c))
+                if is_promo:
+                    new_my_kings.add((nr, nc))
+                else:
+                    new_my_men.add((nr, nc))
+                # Swap sides for next state
+                new_state = (opp_men, opp_kings, frozenset(new_my_men), frozenset(new_my_kings), next_color)
+                moves.append((((r, c), (nr, nc)), new_state))
+    
+    for r, c in my_kings:
+        for drs in (-1, 1):
+            for dc in (-1, 1):
+                nr, nc = r + drs, c + dc
+                if 0 <= nr < 8 and 0 <= nc < 8 and (nr, nc) not in all_pieces:
+                    new_my_kings = set(my_kings)
+                    new_my_kings.discard((r, c))
+                    new_my_kings.add((nr, nc))
+                    new_state = (opp_men, opp_kings, frozenset(my_men), frozenset(new_my_kings), next_color)
+                    moves.append((((r, c), (nr, nc)), new_state))
+    
+    return moves
+
+def _generate_captures(pos, is_king, my_men, my_kings, opp_men, opp_kings, all_pieces, opp_pieces, color):
+    r, c = pos
+    results = []
+    next_color = 'b' if color == 'w' else 'w'
+    
+    def dfs(curr_r, curr_c, curr_is_king, captured, path):
+        found = False
+        for dr, dc in ((-1, -1), (-1, 1), (1, -1), (1, 1)):
+            mid_r, mid_c = curr_r + dr, curr_c + dc
+            end_r, end_c = curr_r + 2*dr, curr_c + 2*dc
+            
+            if not (0 <= end_r < 8 and 0 <= end_c < 8):
+                continue
+            # Middle must have opponent not yet captured
+            if (mid_r, mid_c) not in (opp_pieces - captured):
+                continue
+            # End must be empty and not visited in current path
+            if (end_r, end_c) in all_pieces or (end_r, end_c) in path:
+                continue
+            
+            found = True
+            new_captured = captured | {(mid_r, mid_c)}
+            new_path = path | {(end_r, end_c)}
+            
+            # Check promotion during capture
+            new_is_king = curr_is_king
+            if not curr_is_king:
+                if (color == 'w' and end_r == 7) or (color == 'b' and end_r == 0):
+                    new_is_king = True
+            
+            dfs(end_r, end_c, new_is_king, new_captured, new_path)
+        
+        if not found and path:
+            # Build resulting state
+            new_my_men = set(my_men)
+            new_my_kings = set(my_kings)
+            new_opp_men = set(opp_men)
+            new_opp_kings = set(opp_kings)
+            
+            # Remove original piece
+            new_my_men.discard(pos)
+            new_my_kings.discard(pos)
+            
+            # Remove captured pieces
+            for cap in captured:
+                new_opp_men.discard(cap)
+                new_opp_kings.discard(cap)
+            
+            # Add piece at final position
+            final_pos = max(path)  # get one element; set is unordered but we just need the coordinates
+            # Actually path may have multiple, we need the last one in the sequence
+            # Since we don't store sequence order, we can use any, but the final position is the one from the last call
+            # Reconstruct: the last added is where we are now (curr_r, curr_c) when no further found
+            final_r, final_c = curr_r, curr_c
+            
+            if curr_is_king or ((color == 'w' and final_r == 7) or (color == 'b' and final_r == 0)):
+                new_my_kings.add((final_r, final_c))
+            else:
+                new_my_men.add((final_r, final_c))
+            
+            # Swap for opponent's turn
+            new_state = (frozenset(new_opp_men), frozenset(new_opp_kings),
+                        frozenset(new_my_men), frozenset(new_my_kings), next_color)
+            results.append(((pos, (final_r, final_c)), new_state))
+    
+    dfs(r, c, is_king, frozenset(), frozenset())
+    return results
+</code>

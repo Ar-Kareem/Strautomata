@@ -1,0 +1,249 @@
+The strategy for this policy is a depth‑limited minimax (alpha‑beta) search combined with a strong heuristic.  
+* First we look for an immediate forced win – any empty cell that completes a line of three 1s.  
+* If none exists we block any opponent forced win – an empty cell that completes a line of three ‑1s.  
+* Otherwise we run an alpha‑beta minimax to depth 9 (the full game) using the following evaluation:  
+
+  * +10 for a winning line of 1s, ‑10 for a winning line of ‑1s (found at leaf nodes).  
+  * +5/‑5 for a “threat” line that has two 1s/‑1s and one empty (gives a fast winning opportunity).  
+  * +2/‑2 for a line with two 1s/‑1s and one opponent/own marker (close to a win or block).  
+  * Small adjustments for mixed lines (e.g. one 1 and two ‑1 reduces the score).  
+
+* Move ordering: we sort possible moves by the static score after the move is simulated, trying to pick the most promising first. This gives the opponent few winning chances and lets us prioritize our own threats early.  
+* The search is fast enough (≤ a few hundred thousand nodes) and deterministic; a tie‑breaker random‑choice is used only when several moves have identical scores.
+
+The implementation uses NumPy for fast board handling, memoisation of terminal evaluations, and avoids illegal moves by always picking from the list of empty cells.
+
+<code>
+import numpy as np
+import random
+from typing import List, Tuple, Optional, Dict
+
+# ----------------------------------------------------------------------
+# Constants and pre‑computed winning lines (49 in total for 3×3×3 Qubic)
+# ----------------------------------------------------------------------
+WIN_LINES: List[Tuple[int, int, int]] = []
+
+# Axis‑aligned lines (vary one coordinate, keep the other two fixed)
+for j in range(3):
+    for k in range(3):
+        WIN_LINES.append([(i, j, k) for i in range(3)])          # i varies (rows)
+for i in range(3):
+    for k in range(3):
+        WIN_LINES.append([(i, j, k) for j in range(3)])          # j varies (columns)
+for i in range(3):
+    for j in range(3):
+        WIN_LINES.append([(i, j, k) for k in range(3)])          # k varies (pillars)
+
+# Planar diagonals (two coordinates vary, the third fixed)
+# XY slices – z fixed
+for z in range(3):
+    WIN_LINES.append([(i, i, z) for i in range(3)])              # main diagonal
+    WIN_LINES.append([(i, 2 - i, z) for i in range(3)])           # anti‑diagonal
+# XZ slices – y fixed
+for y in range(3):
+    WIN_LINES.append([(i, i, y) for i in range(3)])
+    WIN_LINES.append([(i, 2 - i, y) for i in range(3)])
+# YZ slices – x fixed
+for x in range(3):
+    WIN_LINES.append([(x, i, i) for i in range(3)])
+    WIN_LINES.append([(x, i, 2 - i) for i in range(3)])
+
+# Space diagonals (all three coordinates vary)
+WIN_LINES.append([(i, i, i) for i in range(3)])
+WIN_LINES.append([(i, i, 2 - i) for i in range(3)])
+WIN_LINES.append([(i, 2 - i, i) for i in range(3)])
+WIN_LINES.append([(i, 2 - i, 2 - i) for i in range(3)])
+
+# ----------------------------------------------------------------------
+# Helper conversion functions
+# ----------------------------------------------------------------------
+def board_to_tuple(board: List[List[List[int]]]) -> Tuple[Tuple[Tuple[int, ...], ...], ...]:
+    """Convert the nested Python list to a hashable nested tuple."""
+    return tuple(tuple(tuple(row) for row in layer) for layer in board)
+
+def board_to_np(board_tup: Tuple[Tuple[Tuple[int, ...], ...], ...]) -> np.ndarray:
+    """Convert a nested tuple back to a NumPy 3×3×3 array."""
+    return np.array(board_tup, dtype=np.int32)
+
+# ----------------------------------------------------------------------
+# Evaluation utilities
+# ----------------------------------------------------------------------
+MAX_DEPTH: int = 9          # full game search depth
+INF: int = 10**9
+
+def check_win(board_np: np.ndarray, player: int) -> bool:
+    """Return True if `player` (1 or -1) already has a line of three."""
+    for line in WIN_LINES:
+        if np.all(board_np[line] == player):
+            return True
+    return False
+
+def evaluate_terminal(board_np: np.ndarray) -> int:
+    """True terminal evaluation: +10 for AI win, -10 for opponent win, 0 otherwise."""
+    win_player = None
+    for line in WIN_LINES:
+        line_vals = board_np[line]
+        if np.all(line_vals == 1):
+            win_player = 1
+        elif np.all(line_vals == -1):
+            win_player = -1
+        if win_player is not None:
+            break
+    if win_player is None:
+        # No line of three yet – use heuristic value
+        return heuristic_score(board_np)
+    return 10 if win_player == 1 else -10
+
+def heuristic_score(board_np: np.ndarray) -> int:
+    """Static heuristic that counts potential winning and blocking lines."""
+    score = 0
+    for line in WIN_LINES:
+        vals = board_np[line]
+        player_count = np.sum(vals == 1)
+        opponent_count = np.sum(vals == -1)
+        empties = 3 - player_count - opponent_count
+        if player_count == 3:
+            return 1000                # early win, should have been caught before
+        if opponent_count == 3:
+            return -1000               # early loss
+        if player_count == 2 and empties == 1:
+            score += 2
+        if opponent_count == 2 and empties == 1:
+            score -= 2
+        if player_count == 1 and opponent_count == 2:
+            score -= 1
+        if player_count == 2 and opponent_count == 1:
+            score += 1
+    return score
+
+# ----------------------------------------------------------------------
+# Transposition table for caching leaf evaluations
+# ----------------------------------------------------------------------
+memo: Dict[Tuple[Tuple[Tuple[int, ...], ...], ...], ...] = {}
+
+def cached_terminal(board_tup: Tuple[Tuple[Tuple[int, ...], ...], ...]) -> int:
+    """Cache the heuristic evaluation of a terminal (or near‑terminal) board."""
+    key = board_tup
+    if key in memo:
+        return memo[key]
+    board_np = board_to_np(key)
+    memo[key] = evaluate_terminal(board_np)
+    return memo[key]
+
+# ----------------------------------------------------------------------
+# Alpha‑beta minimax
+# ----------------------------------------------------------------------
+def alphabeta(board_tup: Tuple[Tuple[Tuple[int, ...], ...], ...],
+              depth: int,
+              alpha: int,
+              beta: int,
+              maximizing: bool) -> Tuple[int, Optional[Tuple[int, int, int]]]:
+    """
+    Perform depth‑limited search.
+    Returns (best_score, best_move). `best_move` is None for leaf nodes.
+    """
+    empties = [(i, j, k) for i in range(3)
+                           for j in range(3)
+                           for k in range(3)
+                           if board_to_np(board_tup)[i, j, k] == 0]
+
+    # Cut‑off conditions
+    if not empties or depth >= MAX_DEPTH:
+        # Evaluate leaf (may be full or have a win)
+        return cached_terminal(board_tup), None
+
+    # Pre‑order move list by heuristic score after the move is made
+    move_scores = []
+    move_candidates = []
+    board_np = board_to_np(board_tup)
+    for move in empties:
+        board_tmp = board_np.copy()
+        player = 1 if maximizing else -1
+        board_tmp[move] = player
+        tmp_board = board_to_np(board_tmp)
+        move_scores.append(heuristic_score(tmp_board))
+        move_candidates.append(move)
+
+    # Sort: best scores first for maximizer, worst first for minimizer
+    if maximizing:
+        sorted_idx = sorted(range(len(move_candidates)),
+                            key=lambda i: move_scores[i],
+                            reverse=True)
+    else:
+        sorted_idx = sorted(range(len(move_candidates)),
+                            key=lambda i: move_scores[i])
+
+    best_score = -INF if maximizing else INF
+    best_move: Optional[Tuple[int, int, int]] = None
+    for idx in sorted_idx:
+        move = move_candidates[idx]
+        board_tmp = board_np.copy()
+        player = 1 if maximizing else -1
+        board_tmp[move] = player
+        tmp_board = board_to_np(board_tmp)
+
+        eval, _ = alphabeta(tmp_board, depth + 1, alpha, beta, not maximizing)
+        if maximizing:
+            if eval > best_score:
+                best_score = eval
+                best_move = move
+            alpha = max(alpha, best_score)
+        else:
+            if eval < best_score:
+                best_score = eval
+                best_move = move
+            beta = min(beta, best_score)
+        if beta <= alpha:
+            break
+
+    memo[(board_tup, depth, maximizing)] = best_score
+    return best_score, best_move
+
+
+# ----------------------------------------------------------------------
+# Strategy: immediate win, forced block, then minimax
+# ----------------------------------------------------------------------
+def policy(board: List[List[List[int]]) -> Tuple[int, int, int]:
+    """
+    Return the next legal move as a tuple (i, j, k).
+    The function is pure: it always returns an empty cell.
+    """
+    # Convert to tuple for easy hashing
+    board_tup = board_to_tuple(board)
+    board_np = board_to_np(board_tup)
+
+    # 1) Immediate forced win for us
+    empties = [(i, j, k) for i in range(3)
+                           for j in range(3)
+                           for k in range(3)
+                           if board_np[i, j, k] == 0]
+    for cell in empties:
+        tmp = board_np.copy()
+        tmp[cell] = 1
+        if check_win(tmp, 1):
+            return cell
+
+    # 2) Block opponent's forced win
+    for line in WIN_LINES:
+        line_vals = board_np[line]
+        if np.all(line_vals == -1):
+            # we already have three in a row – shouldn't happen on our turn
+            continue
+        opponent_counts = np.sum(line_vals == -1)
+        if opponent_counts == 2:
+            for coord in line:
+                if board_np[coord] == 0:
+                    return coord
+
+    # 3) Use alpha‑beta search to pick the best move
+    # The search always runs to depth 9 unless the board is exhausted earlier.
+    best_score, best_move = alphabeta(board_tup, depth=0,
+                                     alpha=-INF, beta=INF,
+                                     maximizing=True)
+
+    # In rare ties (all equal scores) we randomise to break symmetry.
+    if best_move is None:
+        # fallback to the first empty cell
+        return empties[0]
+    return best_move
+</code>

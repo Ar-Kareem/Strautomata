@@ -1,0 +1,415 @@
+
+from collections import deque, defaultdict
+import math
+
+N = 15
+
+# Havannah-on-array hex neighbors as specified in the prompt.
+DIRS = [(-1, -1), (-1, 0), (0, -1), (0, 1), (1, 0), (1, 1)]
+
+
+def neighbors(r, c, n):
+    for dr, dc in DIRS:
+        rr, cc = r + dr, c + dc
+        if 0 <= rr < n and 0 <= cc < n:
+            yield rr, cc
+
+
+def legal_cells(valid_mask):
+    n = len(valid_mask)
+    cells = []
+    for r in range(n):
+        row = valid_mask[r]
+        for c in range(n):
+            if row[c]:
+                cells.append((r, c))
+    return cells
+
+
+def build_occupied(me, opp):
+    occ = set(me)
+    occ.update(opp)
+    return occ
+
+
+def get_corners_and_edges(valid_mask):
+    n = len(valid_mask)
+    cells = legal_cells(valid_mask)
+
+    # Corner = valid cell with exactly 3 valid neighbors.
+    corners = []
+    valid_set = set(cells)
+    for r, c in cells:
+        deg = 0
+        for rr, cc in neighbors(r, c, n):
+            if (rr, cc) in valid_set:
+                deg += 1
+        if deg == 3:
+            corners.append((r, c))
+
+    # Edges are connected boundary segments excluding corners.
+    # Boundary = cells with degree < 6.
+    boundary = set()
+    for r, c in cells:
+        deg = 0
+        for rr, cc in neighbors(r, c, n):
+            if (rr, cc) in valid_set:
+                deg += 1
+        if deg < 6:
+            boundary.add((r, c))
+
+    corner_set = set(corners)
+    edge_nodes = boundary - corner_set
+
+    # Components of edge nodes form the 6 edges.
+    edges = []
+    seen = set()
+    for cell in edge_nodes:
+        if cell in seen:
+            continue
+        comp = set()
+        dq = [cell]
+        seen.add(cell)
+        while dq:
+            x = dq.pop()
+            comp.add(x)
+            for y in neighbors(x[0], x[1], n):
+                if y in edge_nodes and y not in seen:
+                    seen.add(y)
+                    dq.append(y)
+        edges.append(comp)
+
+    # If component count isn't 6 due to geometry quirks, keep what we found.
+    # The heuristics and fork detection still work reasonably.
+    return corners, edges
+
+
+def components_of_stones(stones, valid_mask):
+    stone_set = set(stones)
+    n = len(valid_mask)
+    comps = []
+    seen = set()
+    for s in stone_set:
+        if s in seen:
+            continue
+        comp = set()
+        dq = [s]
+        seen.add(s)
+        while dq:
+            x = dq.pop()
+            comp.add(x)
+            for y in neighbors(x[0], x[1], n):
+                if y in stone_set and y not in seen:
+                    seen.add(y)
+                    dq.append(y)
+        comps.append(comp)
+    return comps
+
+
+def component_map(stones, valid_mask):
+    comps = components_of_stones(stones, valid_mask)
+    mp = {}
+    for i, comp in enumerate(comps):
+        for x in comp:
+            mp[x] = i
+    return comps, mp
+
+
+def touches_corner(comp, corners):
+    corner_set = set(corners)
+    return {i for i, c in enumerate(corners) if c in comp}
+
+
+def touches_edges(comp, edges):
+    touched = set()
+    for i, e in enumerate(edges):
+        if comp & e:
+            touched.add(i)
+    return touched
+
+
+def detect_bridge_or_fork_after_move(stones, move, valid_mask, corners, edges):
+    new_stones = set(stones)
+    new_stones.add(move)
+
+    # Get component containing move.
+    dq = [move]
+    comp = set([move])
+    seen = {move}
+    while dq:
+        x = dq.pop()
+        for y in neighbors(x[0], x[1], len(valid_mask)):
+            if y in new_stones and y not in seen:
+                seen.add(y)
+                comp.add(y)
+                dq.append(y)
+
+    corner_touch = touches_corner(comp, corners)
+    if len(corner_touch) >= 2:
+        return True
+
+    edge_touch = touches_edges(comp, edges)
+    if len(edge_touch) >= 3:
+        return True
+
+    return False
+
+
+def ring_win_after_move(stones, move, valid_mask):
+    # Lightweight exact-enough ring detection:
+    # In Havannah, a ring encloses one or more cells. A robust practical test is:
+    # after adding move, check if there exists a connected empty/opponent region
+    # adjacent to move that becomes fully surrounded by our stones and does not touch boundary.
+    n = len(valid_mask)
+    my = set(stones)
+    my.add(move)
+
+    valid = set(legal_cells(valid_mask))
+    opp_or_empty = valid - my
+
+    # Only regions near move matter for a new ring.
+    candidates = set()
+    for nb in neighbors(move[0], move[1], n):
+        if nb in opp_or_empty:
+            candidates.add(nb)
+
+    seen_global = set()
+    for start in candidates:
+        if start in seen_global:
+            continue
+        dq = deque([start])
+        region = set([start])
+        seen_global.add(start)
+        touches_outside = False
+
+        while dq:
+            x = dq.popleft()
+            # If region reaches a boundary cell of the board shape, it is not enclosed.
+            # Boundary cell = has some invalid neighbor direction / degree<6 wrt valid set.
+            deg = 0
+            for y in neighbors(x[0], x[1], n):
+                if y in valid:
+                    deg += 1
+                    if y in opp_or_empty and y not in seen_global:
+                        seen_global.add(y)
+                        region.add(y)
+                        dq.append(y)
+            if deg < 6:
+                touches_outside = True
+
+        if not touches_outside:
+            # Ensure surrounding ring actually uses the new move in local neighborhood.
+            # This avoids some false positives in disconnected enclosed pockets.
+            for cell in region:
+                for nb in neighbors(cell[0], cell[1], n):
+                    if nb == move:
+                        return True
+    return False
+
+
+def is_immediate_win(stones, move, valid_mask, corners, edges):
+    if detect_bridge_or_fork_after_move(stones, move, valid_mask, corners, edges):
+        return True
+    if ring_win_after_move(stones, move, valid_mask):
+        return True
+    return False
+
+
+def shortest_hex_distance_to_set(start, targets, valid_mask):
+    # Geometric distance on valid cells ignoring occupancy.
+    if not targets:
+        return 99
+    if start in targets:
+        return 0
+    valid = set(legal_cells(valid_mask))
+    dq = deque([(start, 0)])
+    seen = {start}
+    n = len(valid_mask)
+    while dq:
+        x, d = dq.popleft()
+        for y in neighbors(x[0], x[1], n):
+            if y not in valid or y in seen:
+                continue
+            if y in targets:
+                return d + 1
+            seen.add(y)
+            dq.append((y, d + 1))
+    return 99
+
+
+def local_cycle_score(myset, move, valid_mask):
+    # Reward dense local ring-like structures around the move.
+    n = len(valid_mask)
+    nbs = [x for x in neighbors(move[0], move[1], n) if valid_mask[x[0]][x[1]]]
+    cnt = sum(1 for x in nbs if x in myset)
+
+    # Count adjacent neighbor pairs around move approximately by shared occupancy.
+    pair_score = 0
+    for a in nbs:
+        for b in neighbors(a[0], a[1], n):
+            if b in myset and b != move and b in nbs:
+                pair_score += 1
+    return 2 * cnt + 0.5 * pair_score
+
+
+def policy(me, opp, valid_mask):
+    n = len(valid_mask)
+    occ = build_occupied(me, opp)
+
+    legal = []
+    for r in range(n):
+        for c in range(n):
+            if valid_mask[r][c] and (r, c) not in occ:
+                legal.append((r, c))
+
+    # Guaranteed legal fallback.
+    if not legal:
+        # Should never happen, but return something valid if possible.
+        for r in range(n):
+            for c in range(n):
+                if valid_mask[r][c]:
+                    return (r, c)
+        return (0, 0)
+
+    corners, edges = get_corners_and_edges(valid_mask)
+
+    myset = set(me)
+    oppset = set(opp)
+
+    # 1. Immediate win.
+    for mv in legal:
+        if is_immediate_win(myset, mv, valid_mask, corners, edges):
+            return mv
+
+    # 2. Block opponent immediate win.
+    opp_wins = []
+    for mv in legal:
+        if is_immediate_win(oppset, mv, valid_mask, corners, edges):
+            opp_wins.append(mv)
+    if opp_wins:
+        # Among blocks, prefer one that also helps us locally.
+        best = None
+        best_score = -1e18
+        center = (n - 1) / 2.0
+        for mv in opp_wins:
+            r, c = mv
+            score = 0.0
+            score += local_cycle_score(myset, mv, valid_mask)
+            score -= 0.2 * ((r - center) ** 2 + (c - center) ** 2)
+            if best is None or score > best_score:
+                best = mv
+                best_score = score
+        return best
+
+    # Precompute components.
+    my_comps, my_comp_map = component_map(me, valid_mask)
+    opp_comps, opp_comp_map = component_map(opp, valid_mask)
+
+    valid_cells_set = set(legal_cells(valid_mask))
+    corner_set = set(corners)
+
+    # Build edge/corner distance targets.
+    edge_targets = [set(e) for e in edges]
+
+    center = (n - 1) / 2.0
+    best = None
+    best_score = -1e18
+
+    for mv in legal:
+        r, c = mv
+        score = 0.0
+
+        # Opening / centrality.
+        score -= 0.12 * ((r - center) ** 2 + (c - center) ** 2)
+
+        my_adj = 0
+        opp_adj = 0
+        adj_my_comps = set()
+        adj_opp_comps = set()
+
+        for nb in neighbors(r, c, n):
+            if not valid_mask[nb[0]][nb[1]]:
+                continue
+            if nb in myset:
+                my_adj += 1
+                if nb in my_comp_map:
+                    adj_my_comps.add(my_comp_map[nb])
+            elif nb in oppset:
+                opp_adj += 1
+                if nb in opp_comp_map:
+                    adj_opp_comps.add(opp_comp_map[nb])
+
+        # Connectivity and shape.
+        score += 2.8 * my_adj
+        score -= 1.2 * opp_adj
+        score += 4.0 * max(0, len(adj_my_comps) - 1)   # joining our groups
+        score += 1.4 * len(adj_opp_comps)              # good blocking/interference in contact
+        score += local_cycle_score(myset, mv, valid_mask)
+
+        # Bridge / fork potential by touching distinct strategic regions after move.
+        touched_corners = set()
+        touched_edges = set()
+        if mv in corner_set:
+            for i, cc in enumerate(corners):
+                if cc == mv:
+                    touched_corners.add(i)
+                    break
+        for i, e in enumerate(edges):
+            if mv in e:
+                touched_edges.add(i)
+
+        for ci in adj_my_comps:
+            comp = my_comps[ci]
+            touched_corners |= touches_corner(comp, corners)
+            touched_edges |= touches_edges(comp, edges)
+
+        score += 7.0 * len(touched_corners)
+        score += 2.5 * len(touched_edges)
+        if len(touched_corners) >= 2:
+            score += 50.0
+        if len(touched_edges) >= 3:
+            score += 40.0
+
+        # Distance-to-goals heuristic.
+        # Prefer moves that reduce distance to multiple corners/edges.
+        corner_dists = []
+        for cc in corners:
+            corner_dists.append(abs(r - cc[0]) + abs(c - cc[1]))
+        corner_dists.sort()
+        if len(corner_dists) >= 2:
+            score -= 0.15 * (corner_dists[0] + corner_dists[1])
+
+        edge_dists = []
+        for e in edge_targets:
+            edge_dists.append(shortest_hex_distance_to_set(mv, e, valid_mask))
+        edge_dists.sort()
+        if len(edge_dists) >= 3:
+            score -= 0.25 * (edge_dists[0] + edge_dists[1] + edge_dists[2])
+
+        # Contest key empty cells near opponent.
+        if opp_adj >= 2 and my_adj >= 1:
+            score += 2.0
+
+        # Slight preference for corners/edges when already connected.
+        if mv in corner_set:
+            score += 1.5 if my_adj > 0 else -1.0
+
+        # Avoid isolated edge drift in opening.
+        deg = 0
+        for nb in neighbors(r, c, n):
+            if nb in valid_cells_set:
+                deg += 1
+        if deg < 6 and my_adj == 0 and len(me) < 6:
+            score -= 2.0
+
+        # Tiny deterministic tie-break.
+        score += 1e-4 * (r * 17 + c)
+
+        if best is None or score > best_score:
+            best = mv
+            best_score = score
+
+    if best is not None:
+        return best
+
+    return legal[0]

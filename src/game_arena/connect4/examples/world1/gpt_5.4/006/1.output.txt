@@ -1,0 +1,310 @@
+The strategy for this policy is a strong Connect 4 search agent with these components:
+
+1. Immediate tactical safety:
+   - If we can win this move, do it.
+   - If the opponent can win next move, block it.
+   - Avoid moves that give the opponent an immediate winning reply when possible.
+
+2. Alpha-beta minimax search:
+   - Search several plies ahead within the time limit.
+   - Use move ordering biased toward the center columns, which are stronger in Connect 4 and improve pruning.
+
+3. Heuristic evaluation:
+   - Favor center control.
+   - Score 4-cell windows based on counts of our pieces, opponent pieces, and empties.
+   - Reward threats and penalize opponent threats.
+
+4. Always legal:
+   - If search fails for any reason, fall back to the first legal move.
+   - The returned move is always a non-full column.
+
+<code>
+import time
+from math import inf
+
+ROWS = 6
+COLS = 7
+CENTER_ORDER = [3, 2, 4, 1, 5, 0, 6]
+
+WIN_SCORE = 10**9
+LOSE_SCORE = -10**9
+
+def policy(board: list[list[int]]) -> int:
+    start = time.perf_counter()
+    time_limit = 0.92  # leave some margin
+
+    legal = legal_moves(board)
+    if not legal:
+        return 0
+
+    # 1) Immediate win
+    for c in ordered_moves(board):
+        if c in legal:
+            b2, r = apply_move(board, c, 1)
+            if is_winning_move(b2, r, c, 1):
+                return c
+
+    # 2) Immediate block of opponent win
+    opp_wins = []
+    for c in ordered_moves(board):
+        if c in legal:
+            b2, r = apply_move(board, c, -1)
+            if is_winning_move(b2, r, c, -1):
+                opp_wins.append(c)
+    if opp_wins:
+        for c in CENTER_ORDER:
+            if c in opp_wins and c in legal:
+                return c
+
+    # 3) Safe moves first: avoid giving opponent an immediate winning reply
+    safe = []
+    unsafe = []
+    for c in ordered_moves(board):
+        if c not in legal:
+            continue
+        b2, _, = apply_move(board, c, 1)
+        opp_can_win = False
+        for oc in ordered_moves(b2):
+            if oc in legal_moves(b2):
+                b3, rr = apply_move(b2, oc, -1)
+                if is_winning_move(b3, rr, oc, -1):
+                    opp_can_win = True
+                    break
+        if opp_can_win:
+            unsafe.append(c)
+        else:
+            safe.append(c)
+
+    candidates = safe if safe else [c for c in ordered_moves(board) if c in legal]
+
+    # 4) Iterative deepening alpha-beta
+    best_move = candidates[0] if candidates else legal[0]
+    best_score = -inf
+    depth = 1
+
+    while True:
+        if time.perf_counter() - start > time_limit:
+            break
+        try:
+            move, score = search_root(board, depth, start, time_limit, candidates)
+            if move is not None:
+                best_move, best_score = move, score
+            depth += 1
+        except TimeoutError:
+            break
+
+    if best_move in legal_moves(board):
+        return best_move
+    return legal[0]
+
+
+def legal_moves(board):
+    return [c for c in range(COLS) if board[0][c] == 0]
+
+
+def ordered_moves(board):
+    return [c for c in CENTER_ORDER if board[0][c] == 0]
+
+
+def apply_move(board, col, player):
+    new_board = [row[:] for row in board]
+    for r in range(ROWS - 1, -1, -1):
+        if new_board[r][col] == 0:
+            new_board[r][col] = player
+            return new_board, r
+    raise ValueError("Illegal move: column full")
+
+
+def is_winning_move(board, row, col, player):
+    directions = [(1, 0), (0, 1), (1, 1), (1, -1)]
+    for dr, dc in directions:
+        count = 1
+
+        rr, cc = row + dr, col + dc
+        while 0 <= rr < ROWS and 0 <= cc < COLS and board[rr][cc] == player:
+            count += 1
+            rr += dr
+            cc += dc
+
+        rr, cc = row - dr, col - dc
+        while 0 <= rr < ROWS and 0 <= cc < COLS and board[rr][cc] == player:
+            count += 1
+            rr -= dr
+            cc -= dc
+
+        if count >= 4:
+            return True
+    return False
+
+
+def search_root(board, depth, start, time_limit, candidates):
+    alpha = -inf
+    beta = inf
+    best_move = None
+    best_score = -inf
+
+    moves = order_by_heuristic(board, candidates, 1)
+
+    for c in moves:
+        if time.perf_counter() - start > time_limit:
+            raise TimeoutError
+
+        b2, r = apply_move(board, c, 1)
+        if is_winning_move(b2, r, c, 1):
+            return c, WIN_SCORE - 1
+
+        score = -negamax(b2, depth - 1, -beta, -alpha, -1, start, time_limit)
+
+        if score > best_score:
+            best_score = score
+            best_move = c
+        if score > alpha:
+            alpha = score
+
+    return best_move, best_score
+
+
+def negamax(board, depth, alpha, beta, player, start, time_limit):
+    if time.perf_counter() - start > time_limit:
+        raise TimeoutError
+
+    legal = legal_moves(board)
+    if not legal:
+        return 0
+
+    # Terminal checks: if side to move has an opponent who already just won, this
+    # will be detected through lack of better options in parent; here we rely on
+    # move-generated win checks plus static eval at depth 0.
+    if depth == 0:
+        return evaluate(board, player)
+
+    moves = order_by_heuristic(board, legal, player)
+
+    value = -inf
+    found_any = False
+
+    for c in moves:
+        b2, r = apply_move(board, c, player)
+        found_any = True
+
+        if is_winning_move(b2, r, c, player):
+            return WIN_SCORE - (10 - min(depth, 10))
+
+        score = -negamax(b2, depth - 1, -beta, -alpha, -player, start, time_limit)
+
+        if score > value:
+            value = score
+        if value > alpha:
+            alpha = value
+        if alpha >= beta:
+            break
+
+    if not found_any:
+        return 0
+    return value
+
+
+def order_by_heuristic(board, moves, player):
+    scored = []
+    for c in moves:
+        b2, r = apply_move(board, c, player)
+        if is_winning_move(b2, r, c, player):
+            s = WIN_SCORE // 2
+        else:
+            s = local_move_score(b2, player, c)
+        scored.append((s, c))
+    scored.sort(reverse=True)
+    return [c for _, c in scored]
+
+
+def local_move_score(board, player, col):
+    score = 0
+    # Strong center preference
+    score -= abs(3 - col) * 3
+    # Board heuristic from current player's perspective
+    score += evaluate(board, player) * 0.01
+    return score
+
+
+def evaluate(board, player):
+    # Evaluation from perspective of `player`
+    score = 0
+
+    # Center control
+    center_col = 3
+    center_count_self = sum(1 for r in range(ROWS) if board[r][center_col] == player)
+    center_count_opp = sum(1 for r in range(ROWS) if board[r][center_col] == -player)
+    score += center_count_self * 12
+    score -= center_count_opp * 12
+
+    # Score all windows of length 4
+    # Horizontal
+    for r in range(ROWS):
+        for c in range(COLS - 3):
+            window = [board[r][c + i] for i in range(4)]
+            score += evaluate_window(window, player)
+
+    # Vertical
+    for c in range(COLS):
+        for r in range(ROWS - 3):
+            window = [board[r + i][c] for i in range(4)]
+            score += evaluate_window(window, player)
+
+    # Diagonal down-right
+    for r in range(ROWS - 3):
+        for c in range(COLS - 3):
+            window = [board[r + i][c + i] for i in range(4)]
+            score += evaluate_window(window, player)
+
+    # Diagonal up-right
+    for r in range(3, ROWS):
+        for c in range(COLS - 3):
+            window = [board[r - i][c + i] for i in range(4)]
+            score += evaluate_window(window, player)
+
+    # Bonus/penalty for immediate winning threats next turn
+    self_threats = count_immediate_wins(board, player)
+    opp_threats = count_immediate_wins(board, -player)
+    score += self_threats * 80
+    score -= opp_threats * 100
+
+    return score
+
+
+def evaluate_window(window, player):
+    self_count = window.count(player)
+    opp_count = window.count(-player)
+    empty_count = window.count(0)
+
+    if self_count == 4:
+        return 100000
+    if opp_count == 4:
+        return -100000
+
+    if opp_count == 0:
+        if self_count == 3 and empty_count == 1:
+            return 120
+        if self_count == 2 and empty_count == 2:
+            return 18
+        if self_count == 1 and empty_count == 3:
+            return 2
+
+    if self_count == 0:
+        if opp_count == 3 and empty_count == 1:
+            return -140
+        if opp_count == 2 and empty_count == 2:
+            return -20
+        if opp_count == 1 and empty_count == 3:
+            return -2
+
+    return 0
+
+
+def count_immediate_wins(board, player):
+    cnt = 0
+    for c in legal_moves(board):
+        b2, r = apply_move(board, c, player)
+        if is_winning_move(b2, r, c, player):
+            cnt += 1
+    return cnt
+</code>

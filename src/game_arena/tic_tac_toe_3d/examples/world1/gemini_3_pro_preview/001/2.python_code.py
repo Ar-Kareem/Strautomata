@@ -1,0 +1,224 @@
+
+import random
+
+# --- Constants & Precomputations ---
+
+# Board dimensions
+SIZE = 3
+CELLS = 27
+
+# Precompute all 49 winning lines (indices 0..26)
+LINES = []
+
+# 1. Orthogonals (3 directions * 9 lines each = 27 lines)
+# x-axis (vary x)
+for z in range(SIZE):
+    for y in range(SIZE):
+        LINES.append(tuple(9 * z + 3 * y + x for x in range(SIZE)))
+# y-axis (vary y)
+for z in range(SIZE):
+    for x in range(SIZE):
+        LINES.append(tuple(9 * z + 3 * y + x for y in range(SIZE)))
+# z-axis (vary z)
+for y in range(SIZE):
+    for x in range(SIZE):
+        LINES.append(tuple(9 * z + 3 * y + x for z in range(SIZE)))
+
+# 2. Planar Diagonals (3 planes * 6 diagonals each = 18 lines)
+# z-planes (viewed from top, 2 diags per plane)
+for z in range(SIZE):
+    offset = 9 * z
+    LINES.append((offset + 0, offset + 4, offset + 8))
+    LINES.append((offset + 2, offset + 4, offset + 6))
+# y-planes (viewed from front, 2 diags per plane)
+for y in range(SIZE):
+    offset = 3 * y
+    LINES.append((offset + 0, offset + 10, offset + 20)) # (0,y,0)-(2,y,2)
+    LINES.append((offset + 2, offset + 10, offset + 18)) # (0,y,2)-(2,y,0)
+# x-planes (viewed from side, 2 diags per plane)
+for x in range(SIZE):
+    offset = x
+    LINES.append((offset + 0, offset + 12, offset + 24)) # (0,0,x)-(2,2,x)
+    LINES.append((offset + 6, offset + 12, offset + 18)) # (0,2,x)-(2,0,x)
+
+# 3. Space Diagonals (4 lines)
+LINES.append((0, 13, 26))
+LINES.append((2, 13, 24))
+LINES.append((6, 13, 20))
+LINES.append((8, 13, 18))
+
+# Priority order for move sorting: Center > Corners > Face Centers > Edge Centers
+PRIORITY_ORDER = [
+    13,                                      # Center (1)
+    0, 2, 6, 8, 18, 20, 24, 26,              # Corners (8)
+    4, 10, 12, 14, 16, 22,                   # Face Centers (6)
+    1, 3, 5, 7, 9, 11, 15, 17, 19, 21, 23, 25 # Edge Centers (12)
+]
+
+def get_winning_move_index(board_flat: list[int], player: int) -> None:
+    """Checks if 'player' has a winning move (2 in a row with 1 empty)."""
+    for line in LINES:
+        # Extract values
+        v0, v1, v2 = board_flat[line[0]], board_flat[line[1]], board_flat[line[2]]
+        
+        # Check counts
+        # We need sum to be 2*player and presence of 0
+        s = v0 + v1 + v2
+        if s == 2 * player:
+            # Confirm one is empty and others are player
+            if v0 == 0: return line[0]
+            if v1 == 0: return line[1]
+            if v2 == 0: return line[2]
+    return None
+
+def heuristic(board_flat: list[int]) -> int:
+    """Evaluates the board state from the perspective of Player 1."""
+    score = 0
+    
+    # Material / Line Strength
+    for line in LINES:
+        v0, v1, v2 = board_flat[line[0]], board_flat[line[1]], board_flat[line[2]]
+        
+        # Optimization: count players
+        p1 = (v0 == 1) + (v1 == 1) + (v2 == 1)
+        p2 = (v0 == -1) + (v1 == -1) + (v2 == -1)
+        
+        if p1 > 0 and p2 > 0:
+            continue # Blocked line has 0 potential
+        
+        if p1 > 0:
+            if p1 == 1: score += 10
+            elif p1 == 2: score += 100
+            elif p1 == 3: score += 10000
+        elif p2 > 0:
+            if p2 == 1: score -= 10
+            elif p2 == 2: score -= 100
+            elif p2 == 3: score -= 10000
+    
+    # Positional Bonus
+    # Center is worth more to control
+    if board_flat[13] == 1: score += 20
+    elif board_flat[13] == -1: score -= 20
+    
+    return score
+
+def alphabeta(board_flat: list[int], depth: int, alpha: float, beta: float, maximizing: bool) -> float:
+    # 1. Terminal Check (Win/Loss) implicit in heuristic or forced moves logic
+    # but to be safe/robust in recursion:
+    # (Actually expensive to check strict win every node, rely on heuristic for depth=0)
+    
+    if depth == 0:
+        return heuristic(board_flat)
+        
+    empties = [i for i in range(27) if board_flat[i] == 0]
+    if not empties:
+        return 0 # Draw
+        
+    if maximizing:
+        # Check Forced Win
+        win_idx = get_winning_move_index(board_flat, 1)
+        if win_idx is not None:
+            return 100000 + depth # Prefer faster win
+            
+        # Check Forced Block
+        block_idx = get_winning_move_index(board_flat, -1)
+        if block_idx is not None:
+            # Must play blocking move
+            moves = [block_idx]
+        else:
+            # Heuristic sort
+            moves = sorted(empties, key=lambda x: PRIORITY_ORDER.index(x) if x in PRIORITY_ORDER else 99)
+            
+        value = -float('inf')
+        for idx in moves:
+            board_flat[idx] = 1
+            value = max(value, alphabeta(board_flat, depth - 1, alpha, beta, False))
+            board_flat[idx] = 0
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+        return value
+        
+    else: # Minimizing
+        # Check Forced Win for Opponent
+        win_idx = get_winning_move_index(board_flat, -1)
+        if win_idx is not None:
+            return -100000 - depth # Prefer faster win for opp (so we avoid it)
+            
+        # Check Forced Block for Opponent (Opponent must block me)
+        block_idx = get_winning_move_index(board_flat, 1)
+        if block_idx is not None:
+            moves = [block_idx]
+        else:
+            moves = sorted(empties, key=lambda x: PRIORITY_ORDER.index(x) if x in PRIORITY_ORDER else 99)
+            
+        value = float('inf')
+        for idx in moves:
+            board_flat[idx] = -1
+            value = min(value, alphabeta(board_flat, depth - 1, alpha, beta, True))
+            board_flat[idx] = 0
+            beta = min(beta, value)
+            if beta <= alpha:
+                break
+        return value
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    """
+    Determines the next move for a 3x3x3 3D Tic Tac Toe game.
+    AI is Player 1.
+    """
+    # Flatten board
+    flat_board = [0] * 27
+    idx = 0
+    for z in range(3):
+        for y in range(3):
+            for x in range(3):
+                flat_board[idx] = board[z][y][x]
+                idx += 1
+                
+    empties = [i for i in range(27) if flat_board[i] == 0]
+    if not empties:
+        return (0, 0, 0) # Fallback
+        
+    # 1. Immediate Win
+    win_move = get_winning_move_index(flat_board, 1)
+    if win_move is not None:
+        best_move = win_move
+    else:
+        # 2. Immediate Block
+        block_move = get_winning_move_index(flat_board, -1)
+        if block_move is not None:
+            best_move = block_move
+        else:
+            # 3. Search
+            # Depth 2 implies: Me -> Opp -> Eval
+            # This is sufficient to see direct consequences and set up traps.
+            # Using Depth 2 ensures fast execution.
+            best_score = -float('inf')
+            best_move = empties[0]
+            
+            # Sort root moves
+            candidates = sorted(empties, key=lambda x: PRIORITY_ORDER.index(x) if x in PRIORITY_ORDER else 99)
+            
+            alpha = -float('inf')
+            beta = float('inf')
+            
+            for m in candidates:
+                flat_board[m] = 1
+                score = alphabeta(flat_board, 2, alpha, beta, False)
+                flat_board[m] = 0
+                
+                if score > best_score:
+                    best_score = score
+                    best_move = m
+                
+                alpha = max(alpha, best_score)
+                # No Beta cut at root
+
+    # Convert flat index back to (z, y, x)
+    z = best_move // 9
+    rem = best_move % 9
+    y = rem // 3
+    x = rem % 3
+    
+    return (z, y, x)

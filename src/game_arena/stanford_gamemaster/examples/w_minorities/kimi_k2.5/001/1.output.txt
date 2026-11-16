@@ -1,0 +1,150 @@
+ The strategy for this policy is to implement a heuristic-based approach for the Minorities game. The game is played on a hexagonal grid where cells are valid if they belong to three lines simultaneously: a letter line (a-i), a number line (1-9), and a diagonal line (determined by the sum of letter index and number). Valid cells have sums between 6 and 14, excluding six unusable cells (e2, b8, d6, f5, h5, and one other which we avoid by checking against known valid patterns from the trajectory).
+
+The policy evaluates each legal empty cell by:
+1. Checking immediate game-winning moves (securing a 2nd direction by winning a 5th line in that direction)
+2. Blocking opponent game-winning threats
+3. Scoring based on line advantage: preferring moves that win lines (gain majority), block opponent line wins, or improve the player's count advantage in lines
+4. Prioritizing lines in directions where the player is strong
+
+The evaluation calculates the advantage change in each of the three lines affected by a move, with bonuses for winning lines (+100), blocking opponent wins (+50), and winning the game (+10000).
+
+<code>
+def policy(state: list[list[object]], role: str) -> str:
+    # Parse state
+    occupied = set()  # (letter, num)
+    line_counts = {}  # line -> role -> count
+    dirs_won = {"letter": {}, "number": {}, "vertical": {}}
+    
+    # Direction mapping
+    dir_lines = {
+        "letter": set("abcdefghi"),
+        "number": set("123456789"),
+        "vertical": {"a5", "a6", "a7", "a8", "a9", "b9", "c9", "d9", "e9"}
+    }
+    line_to_dir = {}
+    for d, lines in dir_items(dir_lines.items()):
+        for line in lines:
+            line_to_dir[line] = d
+    
+    for fact in state:
+        if not fact:
+            continue
+        pred = fact[0]
+        if pred == "cell":
+            _, letter, num, r = fact
+            occupied.add((letter, str(num)))
+        elif pred == "line_count":
+            _, line, r, count = fact
+            if line not in line_counts:
+                line_counts[line] = {}
+            line_counts[line][r] = int(count)
+        elif pred == "num_letter_lines":
+            _, r, count = fact
+            dirs_won["letter"][r] = int(count)
+        elif pred == "num_number_lines":
+            _, r, count = fact
+            dirs_won["number"][r] = int(count)
+        elif pred == "num_vertical_lines":
+            _, r, count = fact
+            dirs_won["vertical"][r] = int(count)
+    
+    opp = "blue" if role == "red" else "red"
+    
+    # Unusable cells based on game description and trajectory analysis
+    unusable = {("e", "2"), ("b", "8"), ("d", "6"), ("f", "5"), ("h", "5")}
+    
+    def get_diag(letter, num):
+        """Get diagonal line name for a cell"""
+        idx = ord(letter) - ord('a') + 1
+        n = int(num)
+        s = idx + n
+        if s <= 10:
+            return f"a{s-1}"
+        else:
+            l = chr(ord('a') + (s - 11))
+            return f"{l}9"
+    
+    def is_valid(letter, num):
+        """Check if cell is valid and empty"""
+        if (letter, num) in occupied:
+            return False
+        if (letter, num) in unusable:
+            return False
+        idx = ord(letter) - ord('a') + 1
+        n = int(num)
+        s = idx + n
+        if s < 6 or s > 14:
+            return False
+        diag = get_diag(letter, num)
+        # Check all three lines exist in game
+        return (letter in dir_lines["letter"] and 
+                num in dir_lines["number"] and 
+                diag in dir_lines["vertical"])
+    
+    # Generate legal moves
+    legal = []
+    for letter in "abcdefghi":
+        for num in "123456789":
+            if is_valid(letter, num):
+                legal.append((letter, num))
+    
+    if not legal:
+        return "place(a,5)"  # Fallback
+    
+    def score_move(letter, num):
+        diag = get_diag(letter, num)
+        lines = [letter, num, diag]
+        score = 0
+        
+        # Check current directions won
+        my_dirs = {
+            "letter": dirs_won["letter"].get(role, 0),
+            "number": dirs_won["number"].get(role, 0),
+            "vertical": dirs_won["vertical"].get(role, 0)
+        }
+        
+        dirs_after = my_dirs.copy()
+        
+        for i, line in enumerate(lines):
+            if line not in line_counts:
+                continue
+            my_c = line_counts[line].get(role, 0)
+            opp_c = line_counts[line].get(opp, 0)
+            my_c_new = my_c + 1
+            
+            # Calculate advantage change
+            adv_before = my_c - opp_c
+            adv_after = my_c_new - opp_c
+            
+            # Base improvement value
+            score += (adv_after - adv_before) * 10
+            
+            # Winning a line bonus
+            if adv_after > 0 and adv_before <= 0:
+                score += 100
+                d = ["letter", "number", "vertical"][i]
+                dirs_after[d] += 1
+            
+            # Blocking opponent (if they would win this line)
+            if opp_c > my_c and my_c_new == opp_c:
+                score += 50
+        
+        # Game winning bonus (2 directions with 5+ lines)
+        won_count = sum(1 for v in dirs_after.values() if v >= 5)
+        if won_count >= 2:
+            score += 10000
+        
+        return score
+    
+    # Find best move
+    best_score = -float('inf')
+    best_move = legal[0]
+    
+    for letter, num in legal:
+        s = score_move(letter, num)
+        if s > best_score:
+            best_score = s
+            best_move = (letter, num)
+    
+    return f"place({best_move[0]},{best_move[1]})"
+</code>

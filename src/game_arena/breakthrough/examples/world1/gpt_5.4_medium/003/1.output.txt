@@ -1,0 +1,490 @@
+The strategy for this policy is:
+
+- Use a **bitboard representation** for speed.
+- Always check for an **immediate winning move** first.
+- If the opponent has an **immediate promotion threat**, restrict to moves that stop it when possible.
+- Then run **iterative-deepening alpha-beta negamax** with a transposition table.
+- Order moves aggressively by:
+  - immediate wins
+  - captures
+  - forward progress
+  - defended destinations
+  - avoiding obviously threatened squares
+  - creating passed runners
+- Evaluate positions using a mix of:
+  - material
+  - advancement toward promotion
+  - immediate promotion threats
+  - passed/clear runners
+  - support structures and phalanxes
+  - central files
+
+This makes the agent tactically safe while still pushing strong racing and breakthrough plans.
+
+<code>
+import time
+from typing import List, Tuple, Optional
+
+# ----------------------------
+# Precomputed board constants
+# ----------------------------
+
+ROWS = [i // 8 for i in range(64)]
+COLS = [i % 8 for i in range(64)]
+
+ROW_MASKS = []
+for r in range(8):
+    m = 0
+    for c in range(8):
+        m |= 1 << (r * 8 + c)
+    ROW_MASKS.append(m)
+
+GOAL_ROW = {'w': 7, 'b': 0}
+PREGOAL_ROW = {'w': 6, 'b': 1}
+GOAL_MASK = {'w': ROW_MASKS[7], 'b': ROW_MASKS[0]}
+OPP_COLOR = {'w': 'b', 'b': 'w'}
+
+PROGRESS = {
+    'w': [ROWS[i] for i in range(64)],
+    'b': [7 - ROWS[i] for i in range(64)],
+}
+
+FILE_CENTRALITY = [0, 1, 2, 3, 3, 2, 1, 0]
+CENTRAL = [FILE_CENTRALITY[COLS[i]] for i in range(64)]
+
+DEF_MASK = {'w': [0] * 64, 'b': [0] * 64}
+FRONT3_MASK = {'w': [0] * 64, 'b': [0] * 64}
+PHALANX_MASK = [0] * 64
+ATTACKERS_BY_OPP = {'w': [0] * 64, 'b': [0] * 64}
+
+for idx in range(64):
+    r = ROWS[idx]
+    c = COLS[idx]
+
+    # Defenders for white: pieces one row behind diagonally
+    m = 0
+    rr = r - 1
+    if rr >= 0:
+        if c - 1 >= 0:
+            m |= 1 << (rr * 8 + (c - 1))
+        if c + 1 < 8:
+            m |= 1 << (rr * 8 + (c + 1))
+    DEF_MASK['w'][idx] = m
+
+    # Defenders for black: pieces one row behind diagonally from black's perspective
+    m = 0
+    rr = r + 1
+    if rr < 8:
+        if c - 1 >= 0:
+            m |= 1 << (rr * 8 + (c - 1))
+        if c + 1 < 8:
+            m |= 1 << (rr * 8 + (c + 1))
+    DEF_MASK['b'][idx] = m
+
+    # Horizontal phalanx neighbors
+    m = 0
+    if c - 1 >= 0:
+        m |= 1 << (r * 8 + (c - 1))
+    if c + 1 < 8:
+        m |= 1 << (r * 8 + (c + 1))
+    PHALANX_MASK[idx] = m
+
+    # Front masks in same / adjacent files
+    m = 0
+    for rr in range(r + 1, 8):
+        for cc in range(max(0, c - 1), min(7, c + 1) + 1):
+            m |= 1 << (rr * 8 + cc)
+    FRONT3_MASK['w'][idx] = m
+
+    m = 0
+    for rr in range(0, r):
+        for cc in range(max(0, c - 1), min(7, c + 1) + 1):
+            m |= 1 << (rr * 8 + cc)
+    FRONT3_MASK['b'][idx] = m
+
+# Squares from which opponent could capture a piece on idx next turn
+# For a white piece on idx, black attackers are black defenders of idx, and vice versa.
+ATTACKERS_BY_OPP['w'] = DEF_MASK['b']
+ATTACKERS_BY_OPP['b'] = DEF_MASK['w']
+
+WIN_SCORE = 10_000_000
+INF = 10**18
+
+TT = {}
+DEADLINE = 0.0
+NODE_COUNT = 0
+
+
+class SearchTimeout(Exception):
+    pass
+
+
+def to_bitboard(pieces: List[Tuple[int, int]]) -> int:
+    bb = 0
+    for r, c in pieces:
+        bb |= 1 << (r * 8 + c)
+    return bb
+
+
+def idx_to_rc(idx: int) -> Tuple[int, int]:
+    return (idx // 8, idx % 8)
+
+
+def iter_bits(bb: int):
+    while bb:
+        lsb = bb & -bb
+        idx = lsb.bit_length() - 1
+        yield idx
+        bb ^= lsb
+
+
+def generate_moves(my: int, opp: int, color: str):
+    occ = my | opp
+    d = 1 if color == 'w' else -1
+    moves = []
+
+    for fr in iter_bits(my):
+        r = ROWS[fr]
+        c = COLS[fr]
+        nr = r + d
+        if not (0 <= nr < 8):
+            continue
+
+        # Straight
+        to = nr * 8 + c
+        if not (occ & (1 << to)):
+            moves.append((fr, to))
+
+        # Diagonal left
+        if c > 0:
+            to = nr * 8 + (c - 1)
+            if not (my & (1 << to)):
+                moves.append((fr, to))
+
+        # Diagonal right
+        if c < 7:
+            to = nr * 8 + (c + 1)
+            if not (my & (1 << to)):
+                moves.append((fr, to))
+
+    return moves
+
+
+def apply_move(my: int, opp: int, move):
+    fr, to = move
+    fr_mask = 1 << fr
+    to_mask = 1 << to
+    my2 = (my ^ fr_mask) | to_mask
+    opp2 = opp & ~to_mask
+    return my2, opp2
+
+
+def terminal_value(my: int, opp: int, color: str, ply: int) -> Optional[int]:
+    oc = OPP_COLOR[color]
+    if my & GOAL_MASK[color]:
+        return WIN_SCORE - ply
+    if opp & GOAL_MASK[oc]:
+        return -WIN_SCORE + ply
+    if opp == 0:
+        return WIN_SCORE - ply
+    if my == 0:
+        return -WIN_SCORE + ply
+    return None
+
+
+def has_immediate_goal_move(my: int, opp: int, color: str) -> bool:
+    if my & GOAL_MASK[color]:
+        return True
+
+    pre_row = PREGOAL_ROW[color]
+    bb = my & ROW_MASKS[pre_row]
+    if not bb:
+        return False
+
+    own = my
+    occ = my | opp
+    goal_row = GOAL_ROW[color]
+
+    while bb:
+        lsb = bb & -bb
+        idx = lsb.bit_length() - 1
+        bb ^= lsb
+        c = COLS[idx]
+
+        # Straight
+        to = goal_row * 8 + c
+        if not (occ & (1 << to)):
+            return True
+
+        # Diagonal left / right (empty or capture both legal; only own piece blocks)
+        if c > 0:
+            to = goal_row * 8 + (c - 1)
+            if not (own & (1 << to)):
+                return True
+        if c < 7:
+            to = goal_row * 8 + (c + 1)
+            if not (own & (1 << to)):
+                return True
+
+    return False
+
+
+def side_features(my: int, opp: int, color: str) -> int:
+    score = 0
+    bb = my
+
+    while bb:
+        lsb = bb & -bb
+        idx = lsb.bit_length() - 1
+        bb ^= lsb
+
+        prog = PROGRESS[color][idx]
+        score += 18 * prog + 3 * prog * prog
+        score += 4 * CENTRAL[idx]
+
+        if my & DEF_MASK[color][idx]:
+            score += 14
+        if my & PHALANX_MASK[idx]:
+            score += 8
+
+        # Advanced pieces matter a lot in Breakthrough
+        if prog == 6:
+            score += 120
+        elif prog == 5:
+            score += 45
+        elif prog == 4:
+            score += 18
+
+        # Local passed runner / clear lane heuristic
+        if (opp & FRONT3_MASK[color][idx]) == 0:
+            score += 35 + 12 * prog
+            if my & DEF_MASK[color][idx]:
+                score += 10
+
+    return score
+
+
+def evaluate(my: int, opp: int, color: str) -> int:
+    oc = OPP_COLOR[color]
+
+    term = terminal_value(my, opp, color, 0)
+    if term is not None:
+        return term
+
+    score = 0
+
+    # Material
+    score += 115 * (my.bit_count() - opp.bit_count())
+
+    # Structure / advancement
+    score += side_features(my, opp, color)
+    score -= side_features(opp, my, oc)
+
+    # Immediate promotion threats
+    if has_immediate_goal_move(my, opp, color):
+        score += 550
+    if has_immediate_goal_move(opp, my, oc):
+        score -= 650
+
+    return score
+
+
+def move_order_score(my: int, opp: int, color: str, move, tt_move) -> int:
+    fr, to = move
+    to_mask = 1 << to
+    score = 0
+
+    if tt_move is not None and move == tt_move:
+        score += 500_000
+
+    if ROWS[to] == GOAL_ROW[color]:
+        score += 200_000
+
+    if opp & to_mask:
+        score += 3_000
+
+    prog_gain = PROGRESS[color][to] - PROGRESS[color][fr]
+    score += 220 * prog_gain
+    score += 35 * PROGRESS[color][to]
+    score += 10 * CENTRAL[to]
+
+    my_after = ((my ^ (1 << fr)) | to_mask)
+
+    defended = 1 if (my_after & DEF_MASK[color][to]) else 0
+    threatened = 1 if (opp & ATTACKERS_BY_OPP[color][to]) else 0
+
+    if defended:
+        score += 120
+    if threatened:
+        score -= 150
+    if defended and threatened:
+        score += 80
+
+    if (opp & FRONT3_MASK[color][to]) == 0:
+        score += 90
+
+    return score
+
+
+def order_moves(my: int, opp: int, color: str, moves, tt_move=None):
+    scored = []
+    for mv in moves:
+        scored.append((move_order_score(my, opp, color, mv, tt_move), mv))
+    scored.sort(reverse=True)
+    return [mv for _, mv in scored]
+
+
+# TT flags
+EXACT = 0
+LOWER = 1
+UPPER = 2
+
+
+def negamax(my: int, opp: int, color: str, depth: int, alpha: int, beta: int, ply: int) -> int:
+    global NODE_COUNT, DEADLINE, TT
+
+    NODE_COUNT += 1
+    if (NODE_COUNT & 255) == 0 and time.perf_counter() > DEADLINE:
+        raise SearchTimeout
+
+    alpha_orig = alpha
+    beta_orig = beta
+    key = (my, opp, color)
+    tt_move = None
+
+    entry = TT.get(key)
+    if entry is not None:
+        edepth, eval_score, flag, best_move = entry
+        tt_move = best_move
+        if edepth >= depth:
+            if flag == EXACT:
+                return eval_score
+            elif flag == LOWER:
+                alpha = max(alpha, eval_score)
+            else:
+                beta = min(beta, eval_score)
+            if alpha >= beta:
+                return eval_score
+
+    term = terminal_value(my, opp, color, ply)
+    if term is not None:
+        return term
+
+    if depth == 0:
+        return evaluate(my, opp, color)
+
+    moves = generate_moves(my, opp, color)
+    if not moves:
+        # Should be rare; treat as losing.
+        return -WIN_SCORE + ply
+
+    moves = order_moves(my, opp, color, moves, tt_move)
+
+    oc = OPP_COLOR[color]
+    best_score = -INF
+    best_move = moves[0]
+
+    for mv in moves:
+        my2, opp2 = apply_move(my, opp, mv)
+        score = -negamax(opp2, my2, oc, depth - 1, -beta, -alpha, ply + 1)
+
+        if score > best_score:
+            best_score = score
+            best_move = mv
+        if score > alpha:
+            alpha = score
+        if alpha >= beta:
+            break
+
+    if best_score <= alpha_orig:
+        flag = UPPER
+    elif best_score >= beta_orig:
+        flag = LOWER
+    else:
+        flag = EXACT
+    TT[key] = (depth, best_score, flag, best_move)
+
+    return best_score
+
+
+def search_root(my: int, opp: int, color: str, depth: int, root_moves):
+    key = (my, opp, color)
+    tt_move = TT.get(key, (None, None, None, None))[3]
+
+    moves = order_moves(my, opp, color, root_moves, tt_move)
+    oc = OPP_COLOR[color]
+
+    alpha = -INF
+    beta = INF
+    best_score = -INF
+    best_move = moves[0]
+
+    for mv in moves:
+        if time.perf_counter() > DEADLINE:
+            raise SearchTimeout
+
+        my2, opp2 = apply_move(my, opp, mv)
+        score = -negamax(opp2, my2, oc, depth - 1, -beta, -alpha, 1)
+
+        if score > best_score:
+            best_score = score
+            best_move = mv
+        if score > alpha:
+            alpha = score
+
+    TT[key] = (depth, best_score, EXACT, best_move)
+    return best_score, best_move
+
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    global TT, DEADLINE, NODE_COUNT
+
+    my = to_bitboard(me)
+    op = to_bitboard(opp)
+    oc = OPP_COLOR[color]
+
+    TT = {}
+    NODE_COUNT = 0
+    DEADLINE = time.perf_counter() + 0.92
+
+    moves = generate_moves(my, op, color)
+
+    # Safety fallback: should normally never be needed if state is legal/nonterminal.
+    if not moves:
+        if me:
+            p = me[0]
+            return (p, p)
+        return ((0, 0), (0, 0))
+
+    # Immediate win
+    for mv in moves:
+        my2, op2 = apply_move(my, op, mv)
+        # After our move, opponent to play; if opponent is already lost, it was an immediate win.
+        tv = terminal_value(op2, my2, oc, 1)
+        if tv is not None and tv < 0:
+            return (idx_to_rc(mv[0]), idx_to_rc(mv[1]))
+
+    # If opponent has an immediate promotion threat, prefer moves that stop it.
+    if has_immediate_goal_move(op, my, oc):
+        safe = []
+        for mv in moves:
+            my2, op2 = apply_move(my, op, mv)
+            if not has_immediate_goal_move(op2, my2, oc):
+                safe.append(mv)
+        if safe:
+            moves = safe
+
+    # Good default fallback
+    moves = order_moves(my, op, color, moves, None)
+    best_move = moves[0]
+
+    # Iterative deepening
+    for depth in range(1, 10):
+        try:
+            _, mv = search_root(my, op, color, depth, moves)
+            best_move = mv
+        except SearchTimeout:
+            break
+
+    return (idx_to_rc(best_move[0]), idx_to_rc(best_move[1]))
+</code>

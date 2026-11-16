@@ -1,0 +1,263 @@
+### **Strategy for this Go Policy (19x19 Board)**
+This policy aims to **balance territorial control, influence, and local strength** while adapting to the opponent’s moves. The key principles are:
+
+1. **Opening Phase (First ~20 moves):**
+   - Play **fuzzy openings** (e.g., 3-4 point openings) to maximize flexibility.
+   - Prioritize **high-value board positions** (corners, sides, and key 3-3/3-4 points).
+   - Avoid overly rigid patterns; prefer **semi-open moves** (e.g., 3-4, 4-4) over standard joseki.
+
+2. **Middle Game (~20-80 moves):**
+   - **Expand territory** by filling large empty spaces near your stones.
+   - **Attack weak opponent groups** while defending your own.
+   - **Balance influence**—avoid overcommitting to one side; maintain options elsewhere.
+   - **Use liberties efficiently**—if a move creates a potential threat (e.g., a 2-space jump), consider it.
+
+3. **Endgame (Last ~80 moves):**
+   - **Secure seki (deadlocks)** if they benefit your overall position.
+   - **Fill eyes** (single-point enclosures) to ensure life.
+   - **Avoid unnecessary fights**—focus on reducing opponent’s potential while maximizing your own.
+
+4. **General Rules:**
+   - **Never play illegally** (e.g., into suicide, off-board, or ko violations).
+   - **Pass when no clear move exists** (e.g., in a fully filled board or when all moves are weak).
+   - **Prioritize board center** (rows 7-13, cols 7-13) for influence.
+   - **Avoid playing in opponent’s large territories** unless it forces a critical response.
+
+5. **Evaluation Metrics (Simplified):**
+   - **Territory:** Prefer moves that enclose more empty space.
+   - **Influence:** Prefer moves near opponent’s stones that disrupt their potential.
+   - **Liberty Control:** Avoid moves that give opponent a large local advantage.
+   - **Board Balance:** Distribute moves across the board to prevent opponent from dominating one side.
+
+6. **Move Selection:**
+   - **If opponent has a weak group (1-2 liberties):** Capture it immediately.
+   - **If my group is weak (1-2 liberties):** Defend it with a move that maintains balance.
+   - **Otherwise:** Play a **territorial or influence move** (e.g., extending, jumping, or filling).
+   - **If no strong move exists:** Pass (`(0, 0)`).
+
+---
+
+### **Python Implementation (Policy Function)**
+This policy uses a **rule-based approach with liberties, board influence, and territorial scoring** to select moves efficiently within the 1-second constraint.
+
+```python
+<code>
+import numpy as np
+from collections import defaultdict
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    # Convert to numpy arrays for easier manipulation (1-based to 0-based)
+    board = np.zeros((19, 19), dtype=int)
+    for r, c in me:
+        board[r-1, c-1] = 1
+    for r, c in opponent:
+        board[r-1, c-1] = 2
+
+    # Get all empty points (potential moves)
+    empty_points = [(r+1, c+1) for r in range(19) for c in range(19) if board[r, c] == 0]
+    empty_points.append((0, 0))  # Include pass
+
+    # If no opponent stones, play fuzzy opening
+    if not opponent:
+        return fuzzy_opening(board)
+
+    # Evaluate all possible moves
+    scores = []
+    for move in empty_points:
+        if move == (0, 0):  # Pass
+            scores.append((0, 0))  # Placeholder, will be handled later
+        else:
+            r, c = move[0]-1, move[1]-1
+            # Simulate the move
+            board[r, c] = 1
+            # Compute score based on liberties, influence, and territory
+            score = evaluate_move(board, me, opponent, r, c)
+            scores.append((score, move))
+            # Undo the move
+            board[r, c] = 0
+
+    # Sort moves by score (descending) and pick the best
+    scores.sort(reverse=True, key=lambda x: x[0])
+    best_move = scores[0][1]
+
+    # If best_move is pass and no other move is significantly better, return pass
+    if best_move == (0, 0):
+        for _, move in scores[1:]:
+            if move != (0, 0):
+                return move  # Return non-pass move if pass is not the only option
+    return best_move
+
+def fuzzy_opening(board: np.ndarray) -> tuple[int, int]:
+    """Play a fuzzy opening move (e.g., 3-4, 4-4, etc.)"""
+    # Predefined fuzzy opening sequence (simplified for 19x19)
+    fuzzy_moves = [
+        (3, 4), (13, 4), (4, 4), (16, 4),
+        (4, 13), (4, 16), (13, 13), (16, 13),
+        (13, 4), (4, 13), (13, 16), (16, 13),
+        (3, 13), (13, 13), (16, 13), (3, 4),
+        (13, 4), (4, 16), (16, 4),
+    ]
+    # Find the first move in the sequence that hasn't been played yet
+    for move in fuzzy_moves:
+        r, c = move[0]-1, move[1]-1
+        if board[r, c] == 0:
+            return move
+    return (4, 4)  # Default to center if all fuzzy moves are taken
+
+def evaluate_move(board: np.ndarray, me: list[tuple[int, int]], opponent: list[tuple[int, int]], r: int, c: int) -> float:
+    """Evaluate a move based on liberties, influence, and territory."""
+    # Check if move is illegal (suicide or ko)
+    if is_illegal(board, me, opponent, r, c):
+        return -float('inf')  # Penalize illegal moves heavily
+
+    # Compute liberties for opponent groups near this move
+    opponent_liberties = compute_liberties(board, opponent, r, c)
+    # Compute liberties for my groups near this move
+    my_liberties = compute_liberties(board, me, r, c)
+
+    # Influence score: penalize moves that give opponent liberties near their stones
+    influence_score = -sum(opponent_liberties)
+
+    # Territory score: reward moves that enclose empty space
+    territory_score = compute_territory(board, r, c)
+
+    # Liberty balance: prefer moves that don't leave my groups too weak
+    liberty_balance = sum(my_liberties) - sum(opponent_liberties)
+
+    # Total score (weighted heuristic)
+    total_score = (
+        0.4 * territory_score +
+        0.3 * influence_score +
+        0.3 * liberty_balance
+    )
+
+    return total_score
+
+def compute_liberties(board: np.ndarray, stones: list[tuple[int, int]], r: int, c: int) -> list[int]:
+    """Compute liberties for all stones of a player near a given move."""
+    liberties = []
+    for (sr, sc) in stones:
+        sr, sc = sr-1, sc-1  # Convert to 0-based
+        # Check if stone is adjacent to the move
+        if (abs(sr - r) <= 1 and abs(sc - c) <= 1 and (sr != r or sc != c)):
+            # Count liberties (empty adjacent points)
+            count = 0
+            for dr in [-1, 0, 1]:
+                for dc in [-1, 0, 1]:
+                    if dr == 0 and dc == 0:
+                        continue  # Skip the stone itself
+                    nr, nc = sr + dr, sc + dc
+                    if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == 0:
+                        count += 1
+            liberties.append(count)
+    return liberties
+
+def compute_territory(board: np.ndarray, r: int, c: int) -> float:
+    """Compute potential territory gained by playing at (r, c)."""
+    # Flood-fill to estimate enclosed territory (simplified)
+    visited = set()
+    stack = [(r, c)]
+    territory = 0
+
+    while stack:
+        x, y = stack.pop()
+        if (x, y) in visited or not (0 <= x < 19 and 0 <= y < 19) or board[x, y] != 0:
+            continue
+        visited.add((x, y))
+        territory += 1
+
+        # Add adjacent points
+        for dx in [-1, 0, 1]:
+            for dy in [-1, 0, 1]:
+                if dx == 0 and dy == 0:
+                    continue
+                nx, ny = x + dx, y + dy
+                if (nx, ny) not in visited and 0 <= nx < 19 and 0 <= ny < 19 and board[nx, ny] == 0:
+                    stack.append((nx, ny))
+
+    # Penalize if move is surrounded by opponent stones (bad territory)
+    opponent_adjacent = 0
+    for dr in [-1, 0, 1]:
+        for dc in [-1, 0, 1]:
+            if dr == 0 and dc == 0:
+                continue
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == 2:
+                opponent_adjacent += 1
+
+    # Adjust score based on opponent pressure
+    if opponent_adjacent >= 3:
+        territory *= 0.5  # Weak territory
+
+    return territory
+
+def is_illegal(board: np.ndarray, me: list[tuple[int, int]], opponent: list[tuple[int, int]], r: int, c: int) -> bool:
+    """Check if a move is illegal (suicide or ko)."""
+    # Simulate the move
+    temp_board = board.copy()
+    temp_board[r, c] = 1
+
+    # Check suicide (no liberties)
+    liberties = 0
+    for dr in [-1, 0, 1]:
+        for dc in [-1, 0, 1]:
+            if dr == 0 and dc == 0:
+                continue
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 19 and 0 <= nc < 19 and temp_board[nr, nc] == 0:
+                liberties += 1
+    if liberties == 0:
+        return True
+
+    # Check ko (single-point recapture)
+    # (Simplified: assume no ko if opponent has no single-point group)
+    opponent_single_point = False
+    for (sr, sc) in opponent:
+        sr, sc = sr-1, sc-1
+        if (abs(sr - r) <= 1 and abs(sc - c) <= 1 and (sr != r or sc != c)):
+            # Count opponent liberties
+            opp_liberties = 0
+            for dr in [-1, 0, 1]:
+                for dc in [-1, 0, 1]:
+                    if dr == 0 and dc == 0:
+                        continue
+                    nr, nc = sr + dr, sc + dc
+                    if 0 <= nr < 19 and 0 <= nc < 19 and temp_board[nr, nc] == 0:
+                        opp_liberties += 1
+            if opp_liberties == 1:
+                opponent_single_point = True
+                break
+
+    if opponent_single_point and liberties == 1:
+        return True  # Ko violation (simplified)
+
+    return False
+</code>
+```
+
+---
+### **Key Features of the Implementation:**
+1. **Fuzzy Opening Handling:**
+   - Uses a predefined sequence of high-value moves (e.g., 3-4, 4-4) to avoid rigid openings.
+   - Falls back to center if all fuzzy moves are taken.
+
+2. **Move Evaluation:**
+   - **Territory:** Flood-fill estimates how much empty space a move encloses.
+   - **Influence:** Penalizes moves that give opponent liberties near their stones.
+   - **Liberty Balance:** Ensures my groups don’t become too weak after the move.
+
+3. **Legality Checks:**
+   - Avoids suicide (no liberties) and ko violations (simplified check).
+
+4. **Efficiency:**
+   - Uses numpy for fast board operations.
+   - Liberties and territory are computed locally (near the move) to stay within time limits.
+
+---
+### **Limitations & Improvements (If Time Permits):**
+- **No full-board ko detection** (simplified for speed).
+- **No global pattern recognition** (e.g., no advanced shape evaluation).
+- **Territory estimation is basic** (could use more sophisticated methods like BFS with distance weighting).
+- **Opening moves are hardcoded** (could dynamically adjust based on opponent’s first move).
+
+Would you like any refinements (e.g., stronger opening, better ko detection)?

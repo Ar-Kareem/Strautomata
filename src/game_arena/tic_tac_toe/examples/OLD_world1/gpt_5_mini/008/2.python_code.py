@@ -1,0 +1,149 @@
+
+from typing import List, Tuple, Optional
+import math
+from functools import lru_cache
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Choose the next move for Tic Tac Toe (3x3).
+    board: 3x3 list of lists with 0 empty, 1 = us, -1 = opponent
+    Returns (row, col) with 0 <= row,col <= 2
+    """
+
+    # Helper: check for a winner. Returns 1 if we win, -1 if opponent wins, 0 otherwise.
+    def check_winner(b: List[List[int]]) -> int:
+        # rows and columns
+        for i in range(3):
+            s = b[i][0] + b[i][1] + b[i][2]
+            if s == 3:
+                return 1
+            if s == -3:
+                return -1
+            s = b[0][i] + b[1][i] + b[2][i]
+            if s == 3:
+                return 1
+            if s == -3:
+                return -1
+        # diagonals
+        s = b[0][0] + b[1][1] + b[2][2]
+        if s == 3:
+            return 1
+        if s == -3:
+            return -1
+        s = b[0][2] + b[1][1] + b[2][0]
+        if s == 3:
+            return 1
+        if s == -3:
+            return -1
+        return 0
+
+    # Flatten board to tuple for caching
+    def board_key(b: List[List[int]]) -> Tuple[int, ...]:
+        return (b[0][0], b[0][1], b[0][2],
+                b[1][0], b[1][1], b[1][2],
+                b[2][0], b[2][1], b[2][2])
+
+    # Priority ordering for moves: center, corners, edges (to make deterministic choices)
+    def move_priority(r: int, c: int) -> int:
+        if (r, c) == (1, 1):
+            return 3
+        if (r, c) in ((0, 0), (0, 2), (2, 0), (2, 2)):
+            return 2
+        return 1
+
+    # List available moves ordered by priority desc, then row/col asc for determinism
+    def legal_moves(b: List[List[int]]):
+        moves = []
+        for r in range(3):
+            for c in range(3):
+                if b[r][c] == 0:
+                    moves.append((move_priority(r, c), r, c))
+        # sort by priority descending, then row, col ascending
+        moves.sort(key=lambda x: (-x[0], x[1], x[2]))
+        return [(r, c) for _, r, c in moves]
+
+    # Minimax with alpha-beta and caching. Returns (score, move)
+    # score: positive is good for us, negative good for opponent
+    # We incorporate depth to prefer faster wins: winner*(10 - depth)
+    cache = {}
+
+    def minimax(b: List[List[int]], player: int, depth: int,
+                alpha: float, beta: float) -> Tuple[float, Optional[Tuple[int, int]]]:
+        key = (board_key(b), player)
+        if key in cache:
+            return cache[key]
+
+        w = check_winner(b)
+        if w != 0:
+            # winner found
+            score = w * (10 - depth)
+            cache[key] = (score, None)
+            return score, None
+        # check for draw
+        moves = legal_moves(b)
+        if not moves:
+            cache[key] = (0.0, None)
+            return 0.0, None
+
+        best_move: Optional[Tuple[int, int]] = None
+
+        if player == 1:
+            # maximizing (our turn)
+            best_score = -math.inf
+            for (r, c) in moves:
+                b[r][c] = 1
+                score, _ = minimax(b, -1, depth + 1, alpha, beta)
+                b[r][c] = 0
+                if score > best_score or (score == best_score and (best_move is None or (r, c) < best_move)):
+                    best_score = score
+                    best_move = (r, c)
+                alpha = max(alpha, best_score)
+                if beta <= alpha:
+                    break
+            cache[key] = (best_score, best_move)
+            return best_score, best_move
+        else:
+            # minimizing (opponent's turn)
+            best_score = math.inf
+            for (r, c) in moves:
+                b[r][c] = -1
+                score, _ = minimax(b, 1, depth + 1, alpha, beta)
+                b[r][c] = 0
+                if score < best_score or (score == best_score and (best_move is None or (r, c) < best_move)):
+                    best_score = score
+                    best_move = (r, c)
+                beta = min(beta, best_score)
+                if beta <= alpha:
+                    break
+            cache[key] = (best_score, best_move)
+            return best_score, best_move
+
+    # Ensure input is proper 3x3
+    if not (isinstance(board, list) and len(board) == 3 and all(isinstance(row, list) and len(row) == 3 for row in board)):
+        # fallback
+        return 0, 0
+
+    # If board already terminal, just return first empty cell (deterministic)
+    if check_winner(board) != 0:
+        for r in range(3):
+            for c in range(3):
+                if board[r][c] == 0:
+                    return r, c
+        return 0, 0
+
+    # Count to infer whose turn it is. Normally it's our turn when called, but infer anyway.
+    flat = sum(board, [])
+    our_moves = flat.count(1)
+    opp_moves = flat.count(-1)
+    # If it's actually opponent's turn, we still compute a move for us assuming it's our move.
+    # We'll call minimax with player = 1 (us).
+    _, best = minimax(board, 1, 0, -math.inf, math.inf)
+
+    if best is not None:
+        return best
+
+    # Fallback: pick first empty by priority
+    moves = legal_moves(board)
+    if moves:
+        return moves[0]
+    return 0, 0

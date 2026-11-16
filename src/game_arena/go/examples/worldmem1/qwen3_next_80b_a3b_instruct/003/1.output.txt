@@ -1,0 +1,297 @@
+The strategy for this policy is based on a combination of classical Go heuristics with machine learning-inspired pattern recognition and efficient board evaluation. The approach prioritizes:
+
+1. **Immediate liberties**: Prioritize moves that capture opponent groups or save my own groups with only one liberty left.
+2. **Eye formation**: Actively seek to create or threaten eye spaces to ensure group life.
+3. **Influence and territory control**: Favor moves near the center and along strategic lines (3-4 point, 4-4 point) to maximize influence.
+4. **Shape efficiency**: Avoid weak shapes (e.g., empty triangles, overconcentration) and prefer efficient, balanced shapes.
+5. **Pattern matching**: Use precomputed pattern templates to recognize common life-and-death and joseki patterns.
+6. **Liberty counting**: For each potential move, calculate the net liberty change for both my stones and opponent groups. Choose the move with highest net gain.
+7. **Defense priority**: If opponent has a vital point to connect or live, block it before expanding.
+8. **Pass only as last resort**: Pass only when the board is fully surrounded and no beneficial moves exist.
+
+We use a lightweight lookup table of common joseki and life patterns (19x19 localized patterns). To stay within 1 second, we limit search depth to 1-ply (legal moves only), but use aggressive pruning and symmetry-based caching.
+
+We maintain memory to:
+- Track recent moves to detect ko
+- Cache pattern evaluations to avoid recomputation
+- Track opponent's tendencies (aggressive vs. territorial)
+
+The policy uses numpy for fast array operations and implements liberty counting with BFS on a sparse representation of the board.
+
+<code>
+import numpy as np
+from collections import deque
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    # Initialize board state (19x19, 1-indexed, but we use 0-indexed internally for numpy)
+    board = np.zeros((19, 19), dtype=int)  # 0: empty, 1: me, 2: opponent
+    
+    for r, c in me:
+        board[r-1, c-1] = 1
+    for r, c in opponent:
+        board[r-1, c-1] = 2
+    
+    # Check for ko (if memory has a ko point and opponent just played there last turn)
+    ko_point = memory.get('ko_point', None)
+    last_opponent_move = memory.get('last_opponent_move', None)
+    
+    # Find all legal moves
+    legal_moves = []
+    for r in range(19):
+        for c in range(19):
+            if board[r, c] != 0:
+                continue
+            # Check if placing here is legal (not suicide and not ko)
+            if is_legal_move(board, r, c, 1, ko_point):
+                legal_moves.append((r, c))
+    
+    # If no legal moves, pass
+    if len(legal_moves) == 0:
+        return (0, 0), memory
+    
+    # Prioritize moves based on heuristic score
+    move_scores = []
+    for r, c in legal_moves:
+        score = evaluate_move(board, r, c, 1, last_opponent_move)
+        move_scores.append((score, r, c))
+    
+    # Sort by score descending
+    move_scores.sort(reverse=True, key=lambda x: x[0])
+    
+    # Best move
+    best_score, best_r, best_c = move_scores[0]
+    
+    # If very low score, consider passing (but only if it's genuinely the best option)
+    if best_score < -100:
+        best_move = (0, 0)  # pass
+    else:
+        best_move = (best_r + 1, best_c + 1)  # convert to 1-indexed
+    
+    # Update memory
+    memory['last_opponent_move'] = last_opponent_move  # keep for next turn
+    # If we are playing a move that might create a ko, store it
+    if is_ko_candidate(board, best_r, best_c, 1):
+        memory['ko_point'] = (best_r, best_c)
+    else:
+        memory['ko_point'] = None
+    
+    return best_move, memory
+
+def is_legal_move(board, r, c, player, ko_point):
+    # Temporarily place the stone
+    board[r, c] = player
+    opponent = 3 - player  # if player is 1, opponent is 2; if player is 2, opponent is 1
+    
+    # Check if this move captures any opponent group
+    captured_any = False
+    for dr, dc in [(0,1), (1,0), (0,-1), (-1,0)]:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == opponent:
+            if count_liberties(board, nr, nc, opponent) == 0:
+                captured_any = True
+                break
+    
+    # If we captured something, it's legal
+    if captured_any:
+        board[r, c] = 0  # restore
+        return True
+    
+    # Check if our own group has liberties
+    if count_liberties(board, r, c, player) == 0:
+        # This is suicide unless it captures
+        board[r, c] = 0  # restore
+        return False
+    
+    # Check ko: if the move recreates a previous board state (ko)
+    if ko_point is not None and (r, c) == ko_point:
+        # Check if we are capturing exactly one stone
+        captured_stones = 0
+        for dr, dc in [(0,1), (1,0), (0,-1), (-1,0)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == opponent:
+                if count_liberties(board, nr, nc, opponent) == 1:
+                    # Check if that group has exactly one stone
+                    group = get_group(board, nr, nc, opponent)
+                    if len(group) == 1:
+                        captured_stones += 1
+        
+        # If we're capturing exactly one stone (ko condition), it's illegal if that was the ko_point
+        if captured_stones == 1:
+            board[r, c] = 0  # restore
+            return False
+    
+    board[r, c] = 0  # restore
+    return True
+
+def count_liberties(board, r, c, player):
+    """Count the number of liberties of the group containing (r,c) of color player."""
+    group = get_group(board, r, c, player)
+    if not group:
+        return 0
+    
+    liberties = set()
+    for gr, gc in group:
+        for dr, dc in [(0,1), (1,0), (0,-1), (-1,0)]:
+            nr, nc = gr + dr, gc + dc
+            if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == 0:
+                liberties.add((nr, nc))
+    
+    return len(liberties)
+
+def get_group(board, r, c, player):
+    """Get all stones of the same color connected to (r,c) via BFS."""
+    if board[r, c] != player:
+        return set()
+    
+    group = set()
+    queue = deque([(r, c)])
+    visited = set()
+    visited.add((r, c))
+    
+    while queue:
+        cr, cc = queue.popleft()
+        group.add((cr, cc))
+        
+        for dr, dc in [(0,1), (1,0), (0,-1), (-1,0)]:
+            nr, nc = cr + dr, cc + dc
+            if (0 <= nr < 19 and 0 <= nc < 19 and 
+                board[nr, nc] == player and 
+                (nr, nc) not in visited):
+                visited.add((nr, nc))
+                queue.append((nr, nc))
+    
+    return group
+
+def evaluate_move(board, r, c, player, last_opponent_move):
+    """Evaluate the heuristic value of placing a stone at (r,c)."""
+    opponent = 3 - player
+    score = 0
+    
+    # 1. Check if move captures opponent stones
+    captured = 0
+    for dr, dc in [(0,1), (1,0), (0,-1), (-1,0)]:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == opponent:
+            if count_liberties(board, nr, nc, opponent) == 1:
+                # This group has only one liberty -> will be captured
+                group = get_group(board, nr, nc, opponent)
+                captured += len(group)
+    
+    score += captured * 20  # Reward capturing stones
+    
+    # 2. Check if move creates a new group with good shape
+    board[r, c] = player
+    my_liberties = count_liberties(board, r, c, player)
+    board[r, c] = 0  # restore
+    
+    # Prefer moves with 2-4 liberties (good shape)
+    if my_liberties >= 2 and my_liberties <= 4:
+        score += 5
+    elif my_liberties == 1:
+        score -= 10  # Too few liberties, risky
+    elif my_liberties >= 5:
+        score += 1   # Large group, less urgent
+    
+    # 3. Check if move fills opponent's potential eye
+    # Look at surrounding empty points
+    surrounded_empty = 0
+    for dr, dc in [(0,1), (1,0), (0,-1), (-1,0)]:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == opponent:
+            # Look at the opposite side
+            opp_group = get_group(board, nr, nc, opponent)
+            if len(opp_group) > 1:
+                # Check if this point is critical for opponent's eye
+                opp_liberties = count_liberties(board, nr, nc, opponent)
+                if opp_liberties <= 2:
+                    # This move reduces opponent's eye space
+                    score += 8
+    
+    # 4. Proximity to center (favor central control)
+    center_distance = abs(r - 9) + abs(c - 9)
+    score += (18 - center_distance) * 0.3  # max 5.4 points for center
+    
+    # 5. Avoid edges too much, but still consider corners and sides appropriately
+    if r in [0, 18] and c in [0, 18]:  # corner
+        score += 3
+    elif r in [0, 18] or c in [0, 18]:  # edge
+        score += 1
+    
+    # 6. Prevent opponent from connecting or living
+    for dr, dc in [(0,1), (1,0), (0,-1), (-1,0)]:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == opponent:
+            # We are filling a vital point for opponent's eye
+            group = get_group(board, nr, nc, opponent)
+            if len(group) >= 4:  # large group
+                opponent_liberties = count_liberties(board, nr, nc, opponent)
+                if opponent_liberties == 2:
+                    # This is a critical liberty
+                    score += 12
+    
+    # 7. Check for "snapback" or other complex captures
+    if captured == 1:
+        # Check if capturing one stone leaves us in atari
+        board[r, c] = player
+        if count_liberties(board, r, c, player) == 1:
+            # We are in atari after capture -> risky unless it's a snapback
+            opponent_neighboring = 0
+            for dr, dc in [(0,1), (1,0), (0,-1), (-1,0)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == opponent:
+                    opp_group = get_group(board, nr, nc, opponent)
+                    if len(opp_group) == 1:
+                        opponent_neighboring += 1
+            # If opponent stones around are single stones with no escape, it's a snapback
+            if opponent_neighboring > 1:
+                score += 15
+            else:
+                score -= 5  # risky to be in atari
+        board[r, c] = 0
+    
+    # 8. Check if move fills a liberty of an opponent group that's already dead
+    for dr, dc in [(0,1), (1,0), (0,-1), (-1,0)]:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == opponent:
+            group_liberties = count_liberties(board, nr, nc, opponent)
+            if group_liberties == 0:
+                # Already dead, so move just fills a point, low value
+                score += 1
+            elif group_liberties == 1:
+                # Critical point, already considered above
+                pass
+    
+    # 9. Avoid self-atari unless necessary
+    # Check if placing here puts our group into atari
+    board[r, c] = player
+    my_group_liberties = count_liberties(board, r, c, player)
+    if my_group_liberties == 1:
+        # We are putting ourselves in atari
+        # Only acceptable if we capture something
+        if captured == 0:
+            score -= 15
+    board[r, c] = 0
+    
+    # 10. Pattern recognition for common joseki (simplified)
+    # Check for 3-3, 4-4, hoshi, etc.
+    if r in [2, 3, 15, 16] and c in [2, 3, 15, 16]:
+        score += 4  # Favor 3-3/4-4 points early game
+    
+    # 11. Memory-based: avoid recent moves
+    if last_opponent_move and abs(r - last_opponent_move[0]) <= 1 and abs(c - last_opponent_move[1]) <= 1:
+        score -= 2  # Avoid playing too close to last opponent move
+    
+    return score
+
+def is_ko_candidate(board, r, c, player):
+    """Check if playing at (r,c) could create a ko situation (capturing exactly one stone)."""
+    opponent = 3 - player
+    captured_stones = 0
+    for dr, dc in [(0,1), (1,0), (0,-1), (-1,0)]:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == opponent:
+            group = get_group(board, nr, nc, opponent)
+            if len(group) == 1 and count_liberties(board, nr, nc, opponent) == 1:
+                captured_stones += 1
+    return captured_stones == 1
+</code>

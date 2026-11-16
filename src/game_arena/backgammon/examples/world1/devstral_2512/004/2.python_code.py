@@ -1,0 +1,131 @@
+
+def policy(state: dict) -> str:
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+    dice = state['dice']
+
+    # Check if we have checkers on the bar
+    if my_bar > 0:
+        # Must re-enter from the bar
+        # Try to re-enter using the higher die first
+        higher_die = max(dice)
+        lower_die = min(dice)
+        # Check if we can re-enter with the higher die
+        re_entry_point = 23 - higher_die
+        if opp_pts[re_entry_point] < 2:
+            # Can re-enter with higher die
+            # Check if we can also re-enter with the lower die
+            re_entry_point_lower = 23 - lower_die
+            if opp_pts[re_entry_point_lower] < 2 and len(dice) == 2:
+                return f"H:B,B"
+            else:
+                return f"H:B,P"
+        else:
+            # Try with the lower die
+            re_entry_point_lower = 23 - lower_die
+            if opp_pts[re_entry_point_lower] < 2:
+                return f"L:B,P"
+            else:
+                return "H:P,P"
+
+    # Check if all checkers are in the home board (points 0-5)
+    all_in_home = True
+    for i in range(6, 24):
+        if my_pts[i] > 0:
+            all_in_home = False
+            break
+
+    if all_in_home:
+        # Bearing off phase
+        # Try to bear off using the highest possible die
+        higher_die = max(dice)
+        lower_die = min(dice)
+        # Find the highest point with a checker
+        for i in range(5, -1, -1):
+            if my_pts[i] > 0:
+                if i + 1 <= higher_die:
+                    # Can bear off with higher die
+                    # Check if we can also bear off with the lower die
+                    remaining_checkers = my_pts.copy()
+                    remaining_checkers[i] -= 1
+                    for j in range(5, -1, -1):
+                        if remaining_checkers[j] > 0:
+                            if j + 1 <= lower_die:
+                                return f"H:A{i},A{j}"
+                            else:
+                                return f"H:A{i},P"
+                    return f"H:A{i},P"
+                elif i + 1 <= lower_die:
+                    # Can bear off with lower die
+                    return f"L:A{i},P"
+        return "H:P,P"
+
+    # Not in bearing off phase, try to hit opponent's blots or move forward
+    # Generate all possible moves
+    possible_moves = []
+    dice_sorted = sorted(dice, reverse=True)
+    higher_die = dice_sorted[0]
+    lower_die = dice_sorted[1] if len(dice_sorted) > 1 else 0
+
+    # Check for possible hits
+    for i in range(24):
+        if my_pts[i] > 0:
+            # Check higher die move
+            dest_higher = i - higher_die
+            if dest_higher >= 0 and opp_pts[dest_higher] == 1:
+                # Can hit with higher die
+                # Check if we can also move with lower die
+                for j in range(24):
+                    if j != i and my_pts[j] > 0:
+                        dest_lower = j - lower_die
+                        if dest_lower >= 0 and opp_pts[dest_lower] < 2:
+                            possible_moves.append((f"H:A{i},A{j}", 2))  # Priority 2 for hitting
+                possible_moves.append((f"H:A{i},P", 2))
+            # Check lower die move
+            dest_lower = i - lower_die
+            if dest_lower >= 0 and opp_pts[dest_lower] == 1:
+                # Can hit with lower die
+                # Check if we can also move with higher die
+                for j in range(24):
+                    if j != i and my_pts[j] > 0:
+                        dest_higher = j - higher_die
+                        if dest_higher >= 0 and opp_pts[dest_higher] < 2:
+                            possible_moves.append((f"L:A{i},A{j}", 2))
+                possible_moves.append((f"L:A{i},P", 2))
+
+    # If no hits, try to move forward
+    if not possible_moves:
+        for i in range(24):
+            if my_pts[i] > 0:
+                # Check higher die move
+                dest_higher = i - higher_die
+                if dest_higher >= 0 and opp_pts[dest_higher] < 2:
+                    # Check if we can also move with lower die
+                    for j in range(24):
+                        if j != i and my_pts[j] > 0:
+                            dest_lower = j - lower_die
+                            if dest_lower >= 0 and opp_pts[dest_lower] < 2:
+                                possible_moves.append((f"H:A{i},A{j}", 1))  # Priority 1 for moving
+                    possible_moves.append((f"H:A{i},P", 1))
+                # Check lower die move
+                dest_lower = i - lower_die
+                if dest_lower >= 0 and opp_pts[dest_lower] < 2:
+                    # Check if we can also move with higher die
+                    for j in range(24):
+                        if j != i and my_pts[j] > 0:
+                            dest_higher = j - higher_die
+                            if dest_higher >= 0 and opp_pts[dest_higher] < 2:
+                                possible_moves.append((f"L:A{i},A{j}", 1))
+                    possible_moves.append((f"L:A{i},P", 1))
+
+    # Select the best move based on priority
+    if possible_moves:
+        # Sort by priority (higher first) and then by the order of dice
+        possible_moves.sort(key=lambda x: (-x[1], x[0]))
+        return possible_moves[0][0]
+    else:
+        return "H:P,P"

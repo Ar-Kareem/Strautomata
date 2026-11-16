@@ -1,0 +1,101 @@
+
+import numpy as np
+from math import sqrt
+from collections import defaultdict
+
+def policy(board):
+    # Find all our pieces
+    my_pieces = [(i, j) for i in range(8) for j in range(8) if board[i][j] == 1]
+    
+    # Generate all possible legal moves
+    legal_moves = []
+    for (r, c) in my_pieces:
+        # Check all 8 possible directions
+        for dr, dc in [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]:
+            # Calculate pieces in this line
+            line_pieces = 0
+            nr, nc = r + dr, c + dc
+            while 0 <= nr < 8 and 0 <= nc < 8:
+                if board[nr][nc] != 0:
+                    line_pieces += 1
+                nr += dr
+                nc += dc
+            
+            if line_pieces == 0:
+                continue  # No pieces in this direction
+                
+            # Calculate target position
+            tr, tc = r + dr * line_pieces, c + dc * line_pieces
+            if 0 <= tr < 8 and 0 <= tc < 8:
+                # Check if path is clear (can't jump over opponent pieces)
+                valid = True
+                nr, nc = r, c
+                for _ in range(line_pieces):
+                    nr += dr
+                    nc += dc
+                    if board[nr][nc] == -1 and (nr != tr or nc != tc):
+                        valid = False
+                        break
+                
+                if valid:
+                    legal_moves.append((r, c, tr, tc))
+    
+    if not legal_moves:
+        return "0,0:0,0"  # Shouldn't happen in valid game
+    
+    # Evaluate each move
+    best_score = -float('inf')
+    best_move = None
+    
+    for (fr, fc, tr, tc) in legal_moves:
+        # Make a temporary board to evaluate the move
+        temp_board = [row[:] for row in board]
+        temp_board[fr][fc] = 0
+        temp_board[tr][tc] = 1
+        
+        # Calculate score components
+        score = 0
+        
+        # 1. Piece connectivity (distance between all our pieces)
+        new_pieces = [(i, j) for (i, j) in my_pieces if (i, j) != (fr, fc)] + [(tr, tc)]
+        total_distance = 0
+        for i in range(len(new_pieces)):
+            for j in range(i+1, len(new_pieces)):
+                r1, c1 = new_pieces[i]
+                r2, c2 = new_pieces[j]
+                distance = max(abs(r1 - r2), abs(c1 - c2))  # Chebyshev distance
+                total_distance += distance
+        
+        # Normalize and invert (smaller distance is better)
+        if len(new_pieces) > 1:
+            avg_distance = total_distance / (len(new_pieces) * (len(new_pieces) - 1) / 2)
+            score += 10 / (avg_distance + 1)
+        
+        # 2. Central control
+        center_score = (3.5 - abs(tr - 3.5)) + (3.5 - abs(tc - 3.5))
+        score += center_score * 0.5
+        
+        # 3. Capture opponent pieces
+        if board[tr][tc] == -1:
+            score += 3
+        
+        # 4. Connectedness (8-directional adjacency)
+        connected = 0
+        for dr, dc in [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]:
+            nr, nc = tr + dr, tc + dc
+            if 0 <= nr < 8 and 0 <= nc < 8 and temp_board[nr][nc] == 1:
+                connected += 1
+        score += connected * 0.5
+        
+        # 5. Opponent piece proximity (try to block them)
+        opponent_pieces = [(i, j) for i in range(8) for j in range(8) if temp_board[i][j] == -1]
+        if opponent_pieces:
+            min_opponent_dist = min(max(abs(tr - op[0]), abs(tc - op[1])) for op in opponent_pieces)
+            score += 2 / (min_opponent_dist + 1)
+        
+        # Update best move
+        if score > best_score:
+            best_score = score
+            best_move = (fr, fc, tr, tc)
+    
+    return f"{best_move[0]},{best_move[1]}:{best_move[2]},{best_move[3]}"

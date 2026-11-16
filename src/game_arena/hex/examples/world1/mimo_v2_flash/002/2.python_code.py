@@ -1,0 +1,203 @@
+
+import random
+import time
+from collections import deque
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    """
+    MCTS-based Hex player.
+    """
+    # --- Configuration ---
+    BOARD_SIZE = 11
+    TIME_LIMIT = 0.85  # Seconds (leave margin for overhead)
+    
+    # --- Helper Structures ---
+    me_set = set(me)
+    opp_set = set(opp)
+    all_stones = me_set.union(opp_set)
+    
+    # --- 1. Utility Functions ---
+    
+    def get_neighbors(r, c):
+        """Returns valid neighbors on the hexagonal grid."""
+        neighbors = []
+        # Hexagonal grid offsets (excluding (r-1, c-1) and (r+1, c+1))
+        deltas = [
+            (0, 1), (0, -1),  # Horizontal
+            (-1, 0), (1, 0),  # Vertical/Slant
+            (-1, 1), (1, -1)  # Diagonal
+        ]
+        for dr, dc in deltas:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE:
+                neighbors.append((nr, nc))
+        return neighbors
+
+    def check_win(player_stones, color):
+        """
+        Checks if the player has connected their sides.
+        Uses BFS on the virtual board.
+        """
+        visited = set()
+        queue = deque()
+        
+        if color == 'b':
+            # Black connects Top (row 0) to Bottom (row 10)
+            # Add all Black stones on the top row to queue
+            start_nodes = [s for s in player_stones if s[0] == 0]
+            target_check = lambda r, c: r == 10
+        else:
+            # White connects Left (col 0) to Right (col 10)
+            # Add all White stones on the left col to queue
+            start_nodes = [s for s in player_stones if s[1] == 0]
+            target_check = lambda r, c: c == 10
+
+        for node in start_nodes:
+            queue.append(node)
+            visited.add(node)
+
+        while queue:
+            r, c = queue.popleft()
+            
+            if target_check(r, c):
+                return True
+                
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) in player_stones and (nr, nc) not in visited:
+                    visited.add((nr, nc))
+                    queue.append((nr, nc))
+                    
+        return False
+
+    def get_valid_moves():
+        """Returns list of empty cells, prioritizing moves near stones."""
+        # If board is empty, play center
+        if not all_stones:
+            return [(5, 5)]
+            
+        moves = []
+        # Prioritize neighbors of existing stones (connected play)
+        candidates = set()
+        for r, c in all_stones:
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) not in all_stones:
+                    candidates.add((nr, nc))
+        
+        # If no neighbors (unlikely unless board is full), fallback to random empty
+        if not candidates:
+            for r in range(BOARD_SIZE):
+                for c in range(BOARD_SIZE):
+                    if (r, c) not in all_stones:
+                        candidates.add((r, c))
+        
+        return list(candidates)
+
+    # --- 2. Immediate Threat / Win Check ---
+    
+    valid_moves = get_valid_moves()
+    
+    # Check if we can win immediately
+    for move in valid_moves:
+        test_me = me_set.union({move})
+        if check_win(test_me, color):
+            return move
+            
+    # Check if opponent can win immediately (Block them)
+    # Optimization: Only check moves that are neighbors of opponent stones
+    # (A win must be connected to existing stones)
+    opp_candidates = set()
+    for r, c in opp_set:
+        for nr, nc in get_neighbors(r, c):
+            if (nr, nc) not in all_stones:
+                opp_candidates.add((nr, nc))
+                
+    for move in valid_moves:
+        if move in opp_candidates:
+            test_opp = opp_set.union({move})
+            if check_win(test_opp, 'w' if color == 'b' else 'b'):
+                return move
+
+    # --- 3. Monte Carlo Tree Search (Rollout Only) ---
+    
+    start_time = time.time()
+    best_move = valid_moves[0]
+    best_score = -float('inf')
+    
+    # Maps move -> (wins, total simulations)
+    stats = {m: [0, 0] for m in valid_moves}
+    
+    simulations = 0
+    while time.time() - start_time < TIME_LIMIT:
+        simulations += 1
+        
+        # Select a move to simulate
+        # Use UCT if we have stats, otherwise random
+        if simulations > len(valid_moves):
+            uct_move = max(
+                stats.keys(),
+                key=lambda m: (stats[m][0] / stats[m][1]) + (2 * (2 * math.log(simulations) / stats[m][1])**0.5) if stats[m][1] > 0 else float('inf')
+            )
+            move = uct_move
+        else:
+            move = random.choice(valid_moves)
+            
+        # Deep copy state for simulation
+        sim_me = set(me_set)
+        sim_opp = set(opp_set)
+        sim_me.add(move)
+        
+        # Simulate random game from this state
+        # To speed up, we generate a list of empty cells
+        # We use a 'pool' of moves nearby to keep it relevant, but allow some randomness
+        sim_empty = [c for c in get_neighbors(*move) if c not in sim_me and c not in sim_opp]
+        # If pool is too small, expand to general empty
+        if len(sim_empty) < 10:
+             sim_empty = [c for c in valid_moves if c != move]
+        
+        # If still small, fill rest
+        if len(sim_empty) < 10:
+            for r in range(BOARD_SIZE):
+                for c in range(BOARD_SIZE):
+                    cell = (r, c)
+                    if cell not in sim_me and cell not in sim_opp and cell != move:
+                        sim_empty.append(cell)
+        
+        random.shuffle(sim_empty)
+        
+        turn = 'opp' # Next turn is opponent
+        
+        # Limit simulation depth to speed up
+        # In Hex, the game usually ends before the board is full
+        for sim_move in sim_empty:
+            if turn == 'opp':
+                sim_opp.add(sim_move)
+                # Check if opponent won (we lost)
+                if check_win(sim_opp, 'w' if color == 'b' else 'b'):
+                    outcome = -1 # Loss
+                    break
+            else:
+                sim_me.add(sim_move)
+                # Check if we won
+                if check_win(sim_me, color):
+                    outcome = 1 # Win
+                    break
+            
+            turn = 'opp' if turn == 'me' else 'me'
+        else:
+            # Draw / Game ended without full connection (rare in MCTS, usually someone wins)
+            outcome = 0
+            
+        # Update Stats
+        stats[move][1] += 1
+        if outcome > 0:
+            stats[move][0] += 2 # Weight wins higher
+        elif outcome == 0:
+            stats[move][0] += 1 # Draw is slightly good
+            
+        # Update Best
+        current_score = stats[move][0] / stats[move][1]
+        if current_score > best_score:
+            best_score = current_score
+            best_move = move
+
+    return best_move

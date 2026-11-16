@@ -1,0 +1,731 @@
+### Strategy for Phantom Tic Tac Toe
+
+In Phantom Tic Tac Toe, the core challenge is dealing with uncertainty: we cannot see the opponent's moves directly, and attempting to place a mark on an occupied cell fails (wasting a turn). To address this, my strategy maintains a probabilistic model of the board. For each cell, I track a probability that it is empty (unoccupied).
+
+#### Key Components of the Strategy
+
+1.  **Probabilistic Board Tracking**:
+    *   I maintain a persistent internal state of the game, resetting it when a winning condition is met (detected via the `board` state showing 3 confirmed '1's in a row) or when the board resets.
+    *   I treat confirmed '1's (your marks) as fixed occupied cells.
+    *   I treat '0's as uncertain. I update the probabilities based on historical attempts.
+        *   **Lag Tracking**: If I attempt a move on a '0' cell and fail (the cell remains '0' in the next turn), the probability of that cell being empty decreases. If I succeed (it becomes '1'), it was empty.
+        *   **Opponent Move Inference**: Between my turns, the opponent makes one or more moves. Since the board doesn't show their marks, I infer their moves by looking for cells that were previously '0' (and thus likely empty) but are now occupied (or just generally look for changes). Actually, in Phantom Tic Tac Toe, the opponent's marks remain '0' to us. However, if I attempt a move on a '0' and it fails, I know that cell is occupied (likely by the opponent, or perhaps I missed a previous successful placement, though my logic tracks my own successes).
+    *   **Logic**: 
+        *   If a cell `X` is '0' and I have a record that I tried `X` `k` times and it never turned to '1' (or returned success), `P(Empty[X])` decreases.
+        *   If I try `X` and it succeeds (becomes '1'), `P(Empty[X]) = 0`.
+        *   If I try `X` and fail (stays '0'), `P(Empty[X])` is multiplied by a decay factor (e.g., 0.7).
+        *   I also infer opponent moves by noticing if the "potential empty space" count drops unexpectedly (i.e., the opponent occupied cells that I haven't tried yet).
+
+2.  **Move Selection Logic (Policy)**:
+    *   **Win Check**: First, check if I can win immediately with a confirmed '1'. If so, take the winning move.
+    *   **Block Check**: Check if the opponent has two '1's (Wait, opponent '1's are hidden. But wait, the problem says `1` indicates *your* successfully placed mark. It doesn't say I can see opponent marks. However, standard Phantom Tic Tac Toe usually shows *your* marks as '1' and empty as '0'. The opponent's marks are effectively invisible '0's. The prompt says "1 indicates a cell where **you** have successfully placed a mark. 0 indicates a cell that is not confirmed to be yours". This implies '0' is either empty or opponent.
+        *   *Correction*: The prompt says "Failed placement attempts may occur when you pick an occupied cell." This confirms '0' includes opponent marks.
+        *   *Implication*: I cannot directly see opponent threats. However, in Phantom Tic Tac Toe variants, sometimes "blocking" is done by attempting moves in potential winning lines of the opponent, hoping to catch them.
+    *   **Strategic Priorities**:
+        1.  **Secure Wins**: If a line has 2 of my '1's and 1 '0', attempt the '0'. (I know where my '1's are).
+        2.  **Force Wins/Setup**: Prioritize cells that complete a line of 3 '1's for me.
+        3.  **Avoid Confirmed Opponents**: If a cell has failed multiple times (very low probability of being empty), avoid it unless necessary.
+        4.  **Maximize Information/Position**: Choose '0' cells with the *highest* probability of being empty. If probabilities are equal, favor the center, then corners, then edges (standard Tic Tac Toe heuristics).
+        5.  **Exploration**: If stuck (all high-probability empty cells are already '1'), we must attempt lower probability cells to discover the true state.
+
+3.  **State Management**:
+    *   The `policy` function is called repeatedly. We use a global variable to store the internal probabilistic state and history.
+    *   We detect a "New Game" by checking if the number of '1's on the board has decreased or if the board is empty (which shouldn't happen mid-game unless the engine resets, but robustness is good).
+
+4.  **Code Structure**:
+    *   `get_internal_state()`: Singleton pattern to hold probabilities.
+    *   `update_state()`: Adjusts probabilities based on the latest board and my last move's outcome.
+    *   `choose_move()`: Selects the best action based on the strategy described.
+
+This approach balances exploiting known empty spaces (going for wins) with exploring unknown spaces (maintaining the map), while implicitly blocking opponent threats by occupying potential threat lines.
+
+```python
+<code>
+import itertools
+import random
+import numpy as np
+
+# Singleton class to maintain state across turns
+class GameMemory:
+    _instance = None
+    
+    def __init__(self):
+        # Probability that each cell (0-8) is empty
+        # Initialize assuming all are empty initially
+        self.empty_probs = [1.0] * 9
+        # History of attempts to calculate probabilities
+        # Map cell_index -> list of results (True for success, False for fail)
+        self.attempt_history = {}
+        # Track confirmed '1's to detect board resets or new games
+        self.last_board_state = None
+        # Track how many turns have passed to detect opponent moves
+        self.turn_count = 0
+
+    @classmethod
+    def get_instance(cls):
+        if cls._instance is None:
+            cls._instance = GameMemory()
+        return cls._instance
+
+def policy(board: list[list[int]], legal_moves: list[int]) -> int:
+    memory = GameMemory.get_instance()
+    
+    # --- 1. Board State Analysis ---
+    flat_board = [cell for row in board for cell in row]
+    
+    # Detect if the game has reset or a new game started
+    # Reset if the count of '1's decreased or if it's the very first turn
+    my_cells = [i for i, x in enumerate(flat_board) if x == 1]
+    prev_my_cells = [i for i, x in enumerate(memory.last_board_state) if x == 1] if memory.last_board_state else []
+    
+    if not memory.last_board_state or len(my_cells) < len(prev_my_cells):
+        # New game detected
+        memory.empty_probs = [1.0] * 9
+        memory.attempt_history = {}
+        memory.turn_count = 0
+
+    # --- 2. Update Probabilities based on History ---
+    # If we have a history of attempts on a cell, update probability
+    for cell_idx, attempts in memory.attempt_history.items():
+        # If we ever succeeded on this cell, it is now 1 (confirmed), probability is 0
+        if True in attempts:
+            memory.empty_probs[cell_idx] = 0.0
+            continue
+        
+        # If we have failed attempts, probability decreases
+        num_fails = attempts.count(False)
+        if num_fails > 0:
+            # Decay factor: Each failure makes it less likely to be empty
+            # Base probability is 0.0, or we can model it as:
+            # P(Empty | n fails) = P(Empty) * (P(Fail|Empty))^n / Total Probability
+            # But simpler: if we tried N times and failed, it's likely occupied.
+            # Let's use a simple decay.
+            prob = 1.0
+            for _ in range(num_fails):
+                prob *= 0.6  # If empty, success chance is high. If fail, it's likely occupied.
+            memory.empty_probs[cell_idx] = prob
+            
+            # Cap lower bound to avoid division by zero or total extinction if we just guess wrong
+            # But if we failed multiple times, it's almost certainly occupied.
+            if num_fails >= 2:
+                memory.empty_probs[cell_idx] = 0.05
+
+    # --- 3. Strategic Move Selection ---
+
+    # Helper: Check for immediate win for Me (Player 1)
+    def get_winning_move():
+        lines = [
+            [0, 1, 2], [3, 4, 5], [6, 7, 8], # Rows
+            [0, 3, 6], [1, 4, 7], [2, 5, 8], # Cols
+            [0, 4, 8], [2, 4, 6]             # Diagonals
+        ]
+        for line in lines:
+            cells = [flat_board[i] for i in line]
+            # If I have 2 confirmed '1's and the 3rd is '0' (unknown), I should try the 3rd
+            if cells.count(1) == 2 and cells.count(0) == 1:
+                target_idx = line[cells.index(0)]
+                if target_idx in legal_moves:
+                    return target_idx
+        return None
+
+    # Helper: Find potential lines to set up
+    def get_setup_move():
+        lines = [
+            [0, 1, 2], [3, 4, 5], [6, 7, 8], 
+            [0, 3, 6], [1, 4, 7], [2, 5, 8], 
+            [0, 4, 8], [2, 4, 6]
+        ]
+        # Find lines where I have 1 '1' and 2 '0's
+        candidates = []
+        for line in lines:
+            cells = [flat_board[i] for i in line]
+            if cells.count(1) == 1 and cells.count(0) == 2:
+                # Prioritize the '0's in this line
+                for idx in line:
+                    if flat_board[idx] == 0 and idx in legal_moves:
+                        candidates.append(idx)
+        return candidates
+
+    # 1. Immediate Win
+    win_move = get_winning_move()
+    if win_move is not None:
+        return (win_move // 3, win_move % 3)
+
+    # 2. Setup Move (Forks, etc)
+    # We can prioritize setup moves that are also high probability empty
+    setup_moves = get_setup_move()
+    
+    # 3. Select Best Move from Legal Moves
+    # We want to maximize (Probability of Empty + Heuristic Value)
+    # Heuristic: Center > Corners > Edges
+    
+    best_score = -1.0
+    best_move = None
+    
+    # If we have setup moves, consider them first
+    potential_moves = setup_moves if setup_moves else legal_moves
+    
+    # If potential_moves is empty (shouldn't happen if legal_moves is non-empty), fallback
+    if not potential_moves:
+        potential_moves = legal_moves
+
+    # Heuristic weights
+    cell_values = {
+        0: 0.9, 1: 0.0, 2: 0.9,
+        3: 0.0, 4: 1.0, 5: 0.0,
+        6: 0.9, 7: 0.0, 8: 0.9
+    }
+
+    for move in potential_moves:
+        # Base score is the probability the cell is empty
+        prob_empty = memory.empty_probs[move]
+        
+        # Add heuristic value (normalized to 0.1 scale so it doesn't overpower prob)
+        heuristic = cell_values.get(move, 0.0) * 0.1
+        
+        # If we have tried this cell before and failed, penalize heavily (unless it's the only option)
+        fails = memory.attempt_history.get(move, []).count(False)
+        if fails > 0:
+            # If we failed before, we only pick it if we have no other options (prob will be low)
+            # or if we are forced (e.g., last move).
+            pass 
+
+        total_score = prob_empty + heuristic
+        
+        # If it's a setup move, boost score slightly to encourage positional play
+        if move in setup_moves:
+            total_score += 0.15
+
+        # If we have 0 prob (confirmed occupied), don't pick unless forced
+        # However, if it's the only legal move, we must pick it (engine handles the fail)
+        
+        if total_score > best_score and move in legal_moves:
+            best_score = total_score
+            best_move = move
+
+    # Fallback: If best_score is 0 (all likely occupied), pick random legal move
+    # But prefer high heuristics (Center/Corners)
+    if best_move is None:
+        # Sort legal moves by heuristic value
+        sorted_legal = sorted(legal_moves, key=lambda x: cell_values.get(x, 0), reverse=True)
+        best_move = sorted_legal[0]
+
+    # --- 4. Record Attempt ---
+    # We are about to make 'best_move'. We don't know the result yet, 
+    # but we can initialize history if not present to track future failures.
+    if best_move not in memory.attempt_history:
+        memory.attempt_history[best_move] = []
+    
+    # We don't record success/fail here because we don't know the outcome.
+    # The next time policy() is called:
+    # - If board[best_move] becomes 1, we know success.
+    # - If board[best_move] stays 0, we know fail (assuming we didn't accidentally pick an already 1 cell, which we avoid).
+    # Wait, we need to update history *now* based on the *current* board state relative to *previous* attempts.
+    # Actually, the update logic at the top handles checking the board state against history.
+    # We need to log the attempt we are *about* to make so we can check it next turn? 
+    # No, simpler:
+    # We see the board NOW. 
+    # If I attempted X last turn:
+    #   - If board[X] is 1 -> Success -> Update history (add True).
+    #   - If board[X] is 0 -> Failure -> Update history (add False).
+    
+    # Let's look back to see the result of the previous move
+    if memory.last_board_state:
+        # Find which cell was attempted last turn by checking diffs?
+        # No, we store the last move we made.
+        # Actually, the update loop at the top needs the *result* of the previous move.
+        # Let's do it explicitly here.
+        # We need to know what we did last time. Let's store `last_move_made`.
+        # Since we can't easily store that in the global without `global` keyword inside a function (or class attribute),
+        # we can infer it by looking at `my_cells`.
+        # But `my_cells` only tells us successes.
+        # If we made a move on a '0' and it stayed '0', we failed.
+        
+        # We need a field in GameMemory to track the specific move made in the previous turn.
+        pass 
+
+    # --- Refining the Update Logic ---
+    # Since we can't easily inject "what I did last turn" without state, let's rely on `attempt_history`.
+    # Actually, the standard way in these environments is:
+    # 1. Analyze current board.
+    # 2. Deduce outcome of last action.
+    # 3. Update knowledge.
+    # 4. Pick new action.
+    
+    # Let's add `last_move_made` to GameMemory.
+    # I will modify the class dynamically in the code block below.
+
+    # ... (Continuing logic in the code block to ensure it runs)
+    
+    # Since I am writing the final code block, I will implement the complete logic there, including
+    # handling the `last_move_made` tracking correctly.
+
+    # Logic to deduce outcome of previous move:
+    # If memory.last_move_made is not None:
+    #   If flat_board[memory.last_move_made] == 1:
+    #       Success! Add True to history.
+    #   Else:
+    #       Failed. Add False to history.
+    
+    # Wait, if flat_board is 1, was it because of my current turn or previous?
+    # The `board` passed to `policy` is the state *before* I make my move for the *current* turn.
+    # So `board` represents the state *after* the opponent (and possibly me) have played.
+    # Actually, typically:
+    # Turn 1: I pick A. Result: A becomes 1.
+    # Turn 2: Opponent plays B. 
+    # Turn 3: I am called with board showing A=1, B=0 (since I can't see it).
+    # I need to know what I picked in Turn 1.
+    
+    # Let's assume `GameMemory` needs to store `last_move`.
+    
+    # To strictly adhere to the prompt's "Required API", I cannot rely on `global` variables being persistent 
+    # across distinct calls if the script is reloaded. However, in a Python process, globals persist.
+    # I will write the robust version.
+
+    # *Self-Correction on Opponent Blocking*:
+    # I cannot see opponent marks. So "blocking" is speculative.
+    # However, if I see a line like [1, 0, 0], I know two of mine are there.
+    # If I see [0, 0, 0], I don't know anything.
+    # The prompt says "You will be called when it is your turn".
+    # This is usually 1v1. So turns alternate.
+    # If I am called, the board has updated since my last call.
+    # Since I can't see opponent marks, I must rely on the fact that
+    # if I try to place a mark and it fails, it's occupied.
+    # If I try to place a mark and it succeeds, it was empty.
+    # If I don't try a cell, I assume it's empty until proven otherwise (or track probability).
+    
+    # The strategy is solid. I will now generate the final code block.
+    
+    return (0, 0) # Placeholder, replaced by actual code below
+```
+
+Wait, I need to ensure the "Output Format" is strictly followed.
+I must output the strategy *text* first, then the code block.
+
+The strategy text is generated above.
+The code below implements:
+1.  `GameMemory` singleton.
+2.  Handling of `last_move_made` to update probabilities correctly.
+3.  Win detection (only for my '1's, since opponent '1's are invisible).
+4.  Setup/Fork detection.
+5.  Probabilistic selection.
+
+One detail: `legal_moves` is provided. The engine handles the legality in terms of "is it within 0-8". My job is to pick one. If I pick an occupied cell, it fails. My strategy minimizes this.
+
+Let's refine the `GameMemory` implementation for the code block.
+
+```python
+class GameMemory:
+    _instance = None
+    def __init__(self):
+        self.empty_probs = [1.0] * 9
+        self.attempt_history = {} # cell_idx: [True/False, ...]
+        self.last_board_flat = None
+        self.last_move_made = None # The move I made in the PREVIOUS turn
+        
+    @classmethod
+    def get_instance(cls):
+        if cls._instance is None:
+            cls._instance = GameMemory()
+        return cls._instance
+```
+
+Inside `policy`:
+```python
+    mem = GameMemory.get_instance()
+    flat = [c for r in board for c in r]
+    
+    # 1. Detect Reset
+    if mem.last_board_flat is None or sum(flat) < sum(mem.last_board_flat):
+        mem.empty_probs = [1.0] * 9
+        mem.attempt_history = {}
+        mem.last_move_made = None
+
+    # 2. Update Probabilities based on Last Move
+    if mem.last_move_made is not None:
+        last_move = mem.last_move_made
+        # What was the result?
+        # If flat[last_move] is 1, I succeeded.
+        # If flat[last_move] is 0, I failed (it was occupied).
+        # Note: If I picked a cell that was already 1 (impossible if I check 0, but safe to check)
+        # If I picked a cell that was 0 and it became 1, success.
+        
+        if flat[last_move] == 1:
+            # Success
+            if last_move not in mem.attempt_history: mem.attempt_history[last_move] = []
+            mem.attempt_history[last_move].append(True)
+            mem.empty_probs[last_move] = 0.0 # Confirmed mine
+        else:
+            # Failure (remains 0)
+            if last_move not in mem.attempt_history: mem.attempt_history[last_move] = []
+            mem.attempt_history[last_move].append(False)
+            # Update prob logic:
+            fails = mem.attempt_history[last_move].count(False)
+            # If we failed, it's likely occupied.
+            # We don't reset to 0 immediately to allow for "fog of war" if we are wrong,
+            # but multiple fails is strong evidence.
+            prob = 1.0
+            for _ in range(fails):
+                prob *= 0.5
+            mem.empty_probs[last_move] = min(mem.empty_probs[last_move], prob)
+            
+            # Also, if I failed, it means the opponent moved there (or I missed it).
+            # We can slightly decrease prob of neighbors if we want complex heuristics,
+            # but sticking to cell-specific is safer.
+
+    # 3. Identify My Confirmed Cells (1s)
+    my_indices = [i for i, x in enumerate(flat) if x == 1]
+    for idx in my_indices:
+        mem.empty_probs[idx] = 0.0
+
+    # 4. Logic for choosing move (Win -> Setup -> Probability)
+    # ... (Implementation as described in strategy)
+    
+    # 5. Store current board and chosen move for next time
+    mem.last_board_flat = flat
+    mem.last_move_made = chosen_move_index
+    
+    return (chosen_move_index // 3, chosen_move_index % 3)
+```
+
+This logic seems complete and robust. It handles the imperfect information by updating a probability map. It uses standard Tic Tac Toe logic (win, then block/hinder, then center/corner).
+
+One subtle point: The prompt says "1 indicates a cell where **you** have successfully placed a mark". It does *not* say "1 indicates a cell that is currently yours". In Phantom games, usually, once you place a mark, it stays yours. But sometimes it's "Phantom" because the opponent can overwrite? No, usually "Phantom" means you can't see opponents. The prompt says "failed placement attempts may occur when you pick an occupied cell". This implies the board state `1` is persistent.
+However, there is a "Ghosts" variant where marks disappear. But the prompt implies standard Phantom Tic Tac Toe.
+The "Reset" logic checks if `sum(flat) < sum(last_flat)`. If my marks disappear, this triggers. The prompt says "Objectives... Win". This implies I need 3 in a row. If marks disappear, I need to track persistently.
+Wait, `board` is the input. It shows '1' for my confirmed marks.
+If I place a mark, it becomes '1'.
+If the opponent places a mark, it remains '0' (or '2' in other variants, but here it's '0').
+If I placed a mark, does it stay '1'?
+"Phantom Tic Tac Toe (imperfect information): you do not directly observe the opponent's marks".
+Yes, standard Phantom Tic Tac Toe (ICGA rules).
+My '1's stay '1'. Opponent's '1's (in standard board representation) are hidden, so they appear as '0' to me.
+Therefore, `flat[last_move] == 1` is a reliable success check.
+And `flat[last_move] == 0` is a reliable fail check.
+
+Edge case: What if the board resets to all 0s? My reset logic handles that (sum decreases).
+
+What if I pick a cell that was already '1'? `legal_moves` usually excludes confirmed '1's, but the prompt says "Prefer actions that are consistent... avoid cells where board[row][col] == 1". So `legal_moves` might include them if the engine is generic? No, usually `legal_moves` excludes occupied. But if the engine is "Phantom", maybe it includes everything?
+The prompt says `legal_moves` is "representing actions currently allowed by the engine". Usually, this excludes invalid moves. But to be safe, my code filters `legal_moves` to exclude `board[i][j] == 1` just in case.
+
+Wait, the return format is `(row, col)`.
+The input `board` is `list[list[int]]`.
+Access is `board[row][col]`.
+In the flattened logic, index `i` maps to `row = i // 3, col = i % 3`.
+
+Final check on constraints:
+- "You may use any standard Python imports".
+- "1 second execution time".
+- "Return legal move string" -> Actually, "Return a tuple of two integers". Wait, the `Action / Return Format` says "Return a tuple of two integers `(row, col)`". The "Output Format Requirements" says "return a legal move string". This is a contradiction.
+Let's re-read:
+"Output Format Requirements: Output your strategy... Output the Python source code..."
+"Action / Return Format: Return a tuple of two integers `(row, col)`".
+"Required API: `def policy(...) -> int`".
+Wait.
+`def policy(board: list[list[int]], legal_moves: list[int]) -> int:`
+The signature says `-> int`.
+But the text says "Return a tuple of two integers `(row, col)`".
+And "Output Format Requirements: You will be disqualified if you do not return a legal move string. Therefore, you must always return a legal move string."
+This is highly contradictory.
+1. API says `-> int`.
+2. Text says `return (row, col)`.
+3. Text says "return a legal move string".
+Maybe the API signature is just a placeholder and I should return `(row, col)`?
+Usually, Tic Tac Toe actions are 0-8 (int) or (row, col) (tuple).
+If `legal_moves` is `list[int]` (0-8), returning an `int` (0-8) makes sense.
+But the text explicitly says `(row, col)` and "string" (maybe "value" or "object"?).
+In Python, `(0,0)` is a tuple, not a string.
+If the engine expects a tuple, `-> int` is wrong.
+If the engine expects a string, `(row, col)` is wrong.
+Given "Action / Return Format: Return a tuple of two integers `(row, col)`", I will follow that.
+However, the "Required API" says `-> int`.
+Let's look at the prompt again.
+"You must define a smart policy... `def policy(...) -> int:`"
+"Return a tuple of two integers `(row, col)`"
+"You will be disqualified if you do not return a legal move string."
+This is likely a template error in the prompt.
+Given "Action / Return Format" is very specific ("Return a tuple"), I will return a tuple `(row, col)`.
+The "legal move string" might be a copy-paste error from a different game.
+Or, maybe they want a string like "0,0"?
+"Return a tuple of two integers" strongly suggests `(0, 0)`.
+Let's assume the `-> int` in the snippet is the error, and the text description of the return value is correct. If I return an `int` (0-8) and they expect a tuple, I fail. If I return a tuple and they expect an int, I fail.
+Wait, `legal_moves` is `list[int]`. So integers 0-8 are used for moves.
+If the return should be an integer 0-8, `(row, col)` is just an explanation of mapping.
+If the return should be a tuple, `-> int` is wrong.
+I will return an integer 0-8, as it matches `legal_moves`.
+But the text says "Return a tuple".
+Let's check the "Example Output" (it's missing, but usually these prompts follow standard formats).
+If this is a standard "AI Arena" prompt, usually:
+- `legal_moves`: list of valid integers 0-8.
+- Return: integer 0-8.
+However, "Return a tuple of two integers `(row, col)`" is very specific.
+Let's check the "State Representation".
+`board` is `list[list[int]]`.
+If I return `(row, col)`, it matches the board indexing.
+If I return `int`, I have to map `int` -> `(row, col)` inside the policy if I want to use board indexing, but usually the engine handles that.
+The prompt says "You will be disqualified if you do not return a legal move string".
+"String" is the most confusing part.
+Maybe they want `"(row, col)"`? e.g. `"(0, 0)"`?
+If they want a string, "Return a tuple" is wrong.
+If they want a tuple, "return a legal move string" is wrong.
+If they want an int, "Return a tuple" is wrong.
+I have to make a choice.
+Given "Action / Return Format" is a specific header, and it says "Return a tuple", I will return `(row, col)`.
+Regarding the `-> int` in the snippet, I will ignore it because the text description overrides it.
+Regarding "string", I'll ignore that as likely context pollution.
+
+Actually, let's look at the prompt source. It says:
+```python
+def policy(board: list[list[int]], legal_moves: list[int]) -> int:
+    ...
+```
+And "Action / Return Format: Return a tuple of two integers `(row, col)`".
+This is a direct conflict.
+If I return `(0,0)`, it is a `tuple`, not `int`.
+If I return `0`, it is `int`.
+If the prompt says "Return a tuple", I should return a tuple.
+I will return `(row, col)`.
+
+Final check on the code structure:
+I need to handle the `GameMemory` update correctly.
+I need to be careful about variable scope.
+I will put `class GameMemory` inside the `<code>` block.
+The `policy` function will use it.
+
+One more refinement: The prompt says "you do not directly observe the opponent's marks". This confirms my approach.
+If I place a mark and it becomes 1, it's mine.
+If I place a mark and it stays 0, it's occupied (opponent).
+If I haven't tried a cell, I assume it's potentially empty.
+
+Probabilities:
+If I try a cell and fail, `P(Empty)` drops.
+If `P(Empty)` drops below a threshold (e.g., 0.1), I should avoid it.
+If I haven't tried a cell, `P(Empty)` starts at 1.0.
+However, the opponent places marks too.
+The opponent places 1 mark per turn (usually).
+If there are 9 cells.
+Turn 0: Board all 0. Opponent places 1 (hidden).
+Turn 1: My turn. I see 9 zeros. One is occupied by opponent.
+If I pick randomly, I have 8/9 chance of success.
+If I pick center (best opening), I pick the best spot.
+If I fail (8/9 chance), I update that cell to "occupied".
+Next turn (Turn 3), opponent places another mark.
+Now 2 cells are occupied by opponent.
+My `empty_probs` for the failed cell is low (0.5 or 0).
+I should pick from the remaining 8 cells (high prob).
+This logic works.
+
+Code structure:
+```python
+class GameMemory:
+   ...
+
+def policy(board, legal_moves):
+    # 1. Get Memory
+    # 2. Flatten Board
+    # 3. Detect Reset
+    # 4. Update Probabilities (based on Last Move result)
+    # 5. Identify My '1's (set prob 0)
+    # 6. Filter Legal Moves (remove my '1's just in case)
+    # 7. Calculate Scores for each move
+        # Score = P(Empty) * (Heuristic boost)
+        # Heuristic: 4=1.0, 0,2,6,8=0.8, 1,3,5,7=0.0
+        # Boost for Setup moves (2 my '1's in line + this move)
+    # 8. Pick Best
+    # 9. Store Last Move
+    # 10. Return (row, col)
+```
+
+Let's write the code.The strategy for this policy is based on maintaining a probabilistic map of the board to navigate the imperfect information of Phantom Tic Tac Toe. Since the opponent's marks are hidden (represented as `0`), the policy tracks the probability that a cell is empty.
+
+1.  **State Management**: A singleton `GameMemory` class persists across turns. It stores the probability of each cell being empty (`empty_probs`) and a history of attempts (`attempt_history`).
+2.  **Updating Knowledge**: 
+    *   At the start of each turn, the policy analyzes the board.
+    *   It checks the result of the move made in the previous turn. If a cell attempted previously remains `0`, it is likely occupied (opponent mark), so its probability of being empty is decreased. If it became `1`, it is confirmed empty and occupied by us.
+    *   Confirmed `1` cells are always assigned 0 probability of being empty.
+3.  **Move Selection**:
+    *   **Immediate Win**: First, check if any line contains two of my confirmed `1`s and one `0`. If so, attempt the `0` to win.
+    *   **Strategic Setup**: If no immediate win, identify lines containing one of my `1`s and two `0`s. Prioritize moves that expand my territory in these lines to create forks or future wins.
+    *   **Probability & Heuristics**: For all legal moves, calculate a score based on the probability the cell is empty. Boost the score for strategic cells (Center > Corners > Edges).
+    *   **Selection**: Choose the move with the highest score. This effectively balances exploiting known empty spaces with exploring the unknown while avoiding confirmed occupied cells.
+
+```python
+<code>
+import itertools
+
+class GameMemory:
+    """
+    Singleton class to persist game state information across multiple policy calls.
+    Tracks probabilities of cells being empty and history of attempts.
+    """
+    _instance = None
+    
+    def __init__(self):
+        # Probability that each cell (0-8) is empty. Initialize with 1.0 (likely empty).
+        self.empty_probs = [1.0] * 9
+        # History of results for each cell index: list of booleans (True=Success, False=Fail).
+        self.attempt_history = {} 
+        # Store the flattened board state from the previous turn to detect changes.
+        self.last_board_flat = None
+        # Store the index of the move made in the previous turn.
+        self.last_move_made = None
+
+    @classmethod
+    def get_instance(cls):
+        if cls._instance is None:
+            cls._instance = GameMemory()
+        return cls._instance
+
+def policy(board: list[list[int]], legal_moves: list[int]) -> tuple[int, int]:
+    memory = GameMemory.get_instance()
+    
+    # 1. Flatten the board for easier access (0-8 indices)
+    # board[row][col] -> flat[row * 3 + col]
+    flat_board = [cell for row in board for cell in row]
+    
+    # 2. Detect Game Reset
+    # If the number of '1's decreased (or we have no history), reset memory.
+    # This handles cases where the engine resets the game.
+    if memory.last_board_flat is None:
+        # First call, just init
+        pass
+    else:
+        current_ones = sum(flat_board)
+        prev_ones = sum(memory.last_board_flat)
+        if current_ones < prev_ones:
+            # Game reset detected
+            memory.empty_probs = [1.0] * 9
+            memory.attempt_history = {}
+            memory.last_move_made = None
+
+    # 3. Update Probabilities based on the outcome of the previous move
+    if memory.last_move_made is not None:
+        move = memory.last_move_made
+        if 0 <= move < 9:
+            # Determine outcome: Did the cell become 1 (Success) or stay 0 (Fail)?
+            # Note: In Phantom Tic Tac Toe, you don't see opponent marks.
+            # If we placed successfully, it becomes 1. If we placed on occupied, it stays 0.
+            if flat_board[move] == 1:
+                # Success: The cell was empty. It is now confirmed ours (empty).
+                if move not in memory.attempt_history:
+                    memory.attempt_history[move] = []
+                memory.attempt_history[move].append(True)
+                memory.empty_probs[move] = 0.0  # Confirmed empty/owned
+            else:
+                # Failure: The cell was occupied (by opponent or previously missed).
+                if move not in memory.attempt_history:
+                    memory.attempt_history[move] = []
+                memory.attempt_history[move].append(False)
+                
+                # Decrease probability based on failure count
+                # If we failed once, 50% chance it's empty (uncertain).
+                # If failed twice, 25% chance, etc.
+                fails = memory.attempt_history[move].count(False)
+                new_prob = 1.0
+                for _ in range(fails):
+                    new_prob *= 0.5
+                # Keep the lower probability (don't increase if we previously thought it was low)
+                memory.empty_probs[move] = min(memory.empty_probs[move], new_prob)
+
+    # 4. Fix probabilities for cells that are currently '1' (confirmed ours)
+    # These are definitely empty (occupied by us).
+    for idx, cell in enumerate(flat_board):
+        if cell == 1:
+            memory.empty_probs[idx] = 0.0
+
+    # 5. Move Selection Logic
+    
+    # Helper: Get indices of our confirmed '1's
+    my_indices = [i for i, x in enumerate(flat_board) if x == 1]
+    
+    # Heuristic values for cells: Center (4) is best, Corners (0,2,6,8) next, Edges (1,3,5,7) last
+    cell_heuristics = {
+        0: 0.8, 1: 0.0, 2: 0.8,
+        3: 0.0, 4: 1.0, 5: 0.0,
+        6: 0.8, 7: 0.0, 8: 0.8
+    }
+
+    # Determine potential winning/setup lines
+    lines = [
+        [0, 1, 2], [3, 4, 5], [6, 7, 8], # Rows
+        [0, 3, 6], [1, 4, 7], [2, 5, 8], # Cols
+        [0, 4, 8], [2, 4, 6]             # Diagonals
+    ]
+
+    # 5a. Immediate Win Check
+    # Look for lines with 2 of my '1's and 1 '0'
+    winning_moves = []
+    for line in lines:
+        line_cells = [flat_board[i] for i in line]
+        if line_cells.count(1) == 2 and line_cells.count(0) == 1:
+            # Find the '0'
+            target_idx = line[line_cells.index(0)]
+            winning_moves.append(target_idx)
+    
+    # 5b. Setup/Threat Check
+    # Look for lines with 1 of my '1's and 2 '0's. Prioritize these moves.
+    setup_moves = []
+    for line in lines:
+        line_cells = [flat_board[i] for i in line]
+        if line_cells.count(1) == 1 and line_cells.count(0) == 2:
+            for idx in line:
+                if flat_board[idx] == 0:
+                    setup_moves.append(idx)
+
+    # 5c. Filter Legal Moves
+    # Remove moves that are already confirmed '1' (shouldn't be in legal_moves, but safe to check)
+    # Also remove moves that have very low probability of being empty (unless no other options)
+    candidates = []
+    for move in legal_moves:
+        if flat_board[move] == 1:
+            continue # Already confirmed mine
+        candidates.append(move)
+
+    # 5d. Scoring and Selection
+    # Prefer: 1. Immediate Win -> 2. Setup Moves -> 3. High Probability + Heuristic
+    best_score = -1.0
+    best_move = None
+    
+    # Prioritize immediate win
+    for move in candidates:
+        if move in winning_moves:
+            return (move // 3, move % 3)
+
+    # Score remaining candidates
+    # We want to explore (high probability of empty) and exploit (good heuristic value)
+    for move in candidates:
+        prob_empty = memory.empty_probs[move]
+        
+        # Base score is probability it is empty
+        score = prob_empty
+        
+        # Add heuristic boost (normalized)
+        score += cell_heuristics[move] * 0.1
+        
+        # Boost if it is a setup move (creates potential for future win)
+        if move in setup_moves:
+            score += 0.2
+        
+        # If we have failed this move before, it should have lower probability already,
+        # but we add a small penalty to break ties against untried moves if needed.
+        if move in memory.attempt_history:
+            if False in memory.attempt_history[move]:
+                score -= 0.05
+
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    # Fallback: If no move selected (e.g. candidates empty or scores very low), pick random legal
+    if best_move is None and candidates:
+        best_move = candidates[0] # Pick first available or random
+
+    # 6. Store State for Next Turn
+    memory.last_board_flat = flat_board
+    memory.last_move_made = best_move
+
+    # 7. Return Result
+    # Return (row, col) as requested
+    return (best_move // 3, best_move % 3)
+</code>
+```

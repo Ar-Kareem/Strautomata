@@ -1,0 +1,62 @@
+### Strategy
+The "knights" game is a variant of chess played on a 6x6 board where knights move forward only. The objective is to reach the opponent's baseline or capture pieces.
+1. **Movement Logic**: The policy calculates potential knight moves. Given a knight at $(x, y)$, a legal knight's move is $(\pm 1, \pm 2)$ or $(\pm 2, \pm 1)$. Since movement is restricted to forward-only (increasing for white, decreasing for black), we filter moves based on the role.
+2. **Move Prioritization**:
+    * **Winning Moves**: Prioritize any move that lands on the opponent's back row (6 for white, 1 for black) to end the game.
+    * **Capturing**: Identify moves that land on a square occupied by an opponent's piece.
+    * **Positional Advancement**: If no capture or immediate win exists, prioritize moving pieces forward towards the center or opponent's side to maintain pressure.
+3. **Safety**: Verify moves are within board boundaries ('a'-'f', 1-6).
+
+```python
+def policy(state: list[list[object]], role: str) -> str:
+    # Map letters to numbers for easier calculation
+    cols = {'a': 1, 'b': 2, 'c': 3, 'd': 4, 'e': 5, 'f': 6}
+    inv_cols = {v: k for k, v in cols.items()}
+    
+    board = {}
+    for fact in state:
+        if fact[0] == "cell":
+            board[(fact[1], int(fact[2]))] = fact[3]
+    
+    direction = 1 if role == "white" else -1
+    opponent = "black" if role == "white" else "white"
+    
+    possible_moves = []
+    
+    # Identify all current pieces belonging to the player
+    my_pieces = [pos for pos, owner in board.items() if owner == role]
+    
+    # Possible knight jump offsets
+    offsets = [(1, 2), (1, -2), (-1, 2), (-1, -2), (2, 1), (2, -1), (-2, 1), (-2, -1)]
+    
+    for (c, r) in my_pieces:
+        curr_c = cols[c]
+        for dc, dr in offsets:
+            # Game constraint: Cannot move backward
+            if (role == "white" and dr < 0) or (role == "black" and dr > 0):
+                continue
+                
+            nc, nr = curr_c + dc, r + dr
+            if 1 <= nc <= 6 and 1 <= nr <= 6:
+                target_col = inv_cols[nc]
+                # Cannot move to a square occupied by my own piece
+                if board.get((target_col, nr)) == role:
+                    continue
+                
+                # Evaluation: Check win, then capture, then utility
+                score = 0
+                if (role == "white" and nr == 6) or (role == "black" and nr == 1):
+                    score += 1000 # Winning move
+                if board.get((target_col, nr)) == opponent:
+                    score += 100  # Capture
+                
+                possible_moves.append((score, f"move({c},{r},{target_col},{nr})"))
+    
+    if not possible_moves:
+        # Fallback (should not happen in legal state)
+        return ""
+        
+    # Pick the move with the highest utility
+    possible_moves.sort(key=lambda x: x[0], reverse=True)
+    return possible_moves[0][1]
+```

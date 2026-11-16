@@ -1,0 +1,258 @@
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    import random
+    
+    # Piece values
+    values = {'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000}
+    
+    # Simplified Piece-Square Tables (PST) for White (mirrored for Black)
+    # Encourages centralization and pawn advancement
+    pst = {
+        'P': [
+             0,  0,  0,  0,  0,  0,  0,  0,
+            50, 50, 50, 50, 50, 50, 50, 50,
+            10, 10, 20, 30, 30, 20, 10, 10,
+             5,  5, 10, 25, 25, 10,  5,  5,
+             0,  0,  0, 20, 20,  0,  0,  0,
+             5, -5,-10,  0,  0,-10, -5,  5,
+             5, 10, 10,-20,-20, 10, 10,  5,
+             0,  0,  0,  0,  0,  0,  0,  0
+        ],
+        'N': [
+            -50,-40,-30,-30,-30,-30,-40,-50,
+            -40,-20,  0,  0,  0,  0,-20,-40,
+            -30,  0, 10, 15, 15, 10,  0,-30,
+            -30,  5, 15, 20, 20, 15,  5,-30,
+            -30,  0, 15, 20, 20, 15,  0,-30,
+            -30,  5, 10, 15, 15, 10,  5,-30,
+            -40,-20,  0,  5,  5,  0,-20,-40,
+            -50,-40,-30,-30,-30,-30,-40,-50
+        ],
+        'B': [
+            -20,-10,-10,-10,-10,-10,-10,-20,
+            -10,  0,  0,  0,  0,  0,  0,-10,
+            -10,  0,  5, 10, 10,  5,  0,-10,
+            -10,  5,  5, 10, 10,  5,  5,-10,
+            -10,  0, 10, 10, 10, 10,  0,-10,
+            -10, 10, 10, 10, 10, 10, 10,-10,
+            -10,  5,  0,  0,  0,  0,  5,-10,
+            -20,-10,-10,-10,-10,-10,-10,-20
+        ],
+        'R': [
+             0,  0,  0,  0,  0,  0,  0,  0,
+             5, 10, 10, 10, 10, 10, 10,  5,
+            -5,  0,  0,  0,  0,  0,  0, -5,
+            -5,  0,  0,  0,  0,  0,  0, -5,
+            -5,  0,  0,  0,  0,  0,  0, -5,
+            -5,  0,  0,  0,  0,  0,  0, -5,
+            -5,  0,  0,  0,  0,  0,  0, -5,
+             0,  0,  0,  5,  5,  0,  0,  0
+        ],
+        'Q': [
+            -20,-10,-10, -5, -5,-10,-10,-20,
+            -10,  0,  0,  0,  0,  0,  0,-10,
+            -10,  0,  5,  5,  5,  5,  0,-10,
+             -5,  0,  5,  5,  5,  5,  0, -5,
+              0,  0,  5,  5,  5,  5,  0, -5,
+            -10,  5,  5,  5,  5,  5,  0,-10,
+            -10,  0,  5,  0,  0,  0,  0,-10,
+            -20,-10,-10, -5, -5,-10,-10,-20
+        ],
+        'K': [
+            -30,-40,-40,-50,-50,-40,-40,-30,
+            -30,-40,-40,-50,-50,-40,-40,-30,
+            -30,-40,-40,-50,-50,-40,-40,-30,
+            -30,-40,-40,-50,-50,-40,-40,-30,
+            -20,-30,-30,-40,-40,-30,-30,-20,
+            -10,-20,-20,-20,-20,-20,-20,-10,
+             20, 20,  0,  0,  0,  0, 20, 20,
+             20, 30, 10,  0,  0, 10, 30, 20
+        ]
+    }
+
+    def get_file_rank(square):
+        return square[0], int(square[1])
+
+    def get_pst_score(piece, square, is_white):
+        # If black, mirror the rank (1->8, 2->7, etc.)
+        # and index 0-63 logic
+        file_char, rank = get_file_rank(square)
+        file = ord(file_char) - ord('a')
+        # 0-7 based on rank
+        rank_idx = rank - 1
+        
+        if not is_white:
+            rank_idx = 7 - rank_idx
+            
+        idx = rank_idx * 8 + file
+        
+        ptype = piece[1]
+        if ptype in pst:
+            # If black, PST values are inverted (positive for white, negative for black)
+            val = pst[ptype][idx]
+            return val if is_white else -val
+        return 0
+
+    def evaluate_board(current_pieces):
+        score = 0
+        for sq, piece in current_pieces.items():
+            pcolor = piece[0]
+            ptype = piece[1]
+            val = values[ptype]
+            is_white = pcolor == 'w'
+            
+            # Material
+            score += val if is_white else -val
+            
+            # Positional
+            score += get_pst_score(piece, sq, is_white)
+            
+        return score
+
+    def parse_move(move_str):
+        # Remove check/checkmate symbols
+        clean = move_str.replace('+', '').replace('#', '')
+        
+        # Handle Castling
+        if clean == 'O-O' or clean == 'O-O-O':
+            return None, None, None
+            
+        # Handle Promotions (e.g., e8=Q)
+        if '=' in clean:
+            clean = clean.split('=')[0]
+            
+        # Handle captures (x)
+        if 'x' in clean:
+            clean = clean.replace('x', '')
+            
+        # Disambiguation / Piece / Dest
+        # Format usually: [Piece][Disambiguation][Dest] or [Piece][Dest] or [Dest] (pawn)
+        
+        # If starts with lowercase, it's a pawn move (e.g., e4)
+        if clean[0].islower():
+            return 'P', None, clean
+            
+        # Starts with uppercase -> Piece type
+        ptype = clean[0]
+        rest = clean[1:]
+        
+        # If rest length is 2, likely no disambiguation (e.g., Nf3)
+        if len(rest) == 2:
+            return ptype, None, rest
+            
+        # If length > 2, likely disambiguation (e.g., Nbd2, R1e1)
+        # We don't strictly need to parse disambiguation for heuristic, 
+        # but we need the destination.
+        # The last 2 chars are usually the destination square.
+        dest = rest[-2:]
+        return ptype, None, dest
+
+    def is_tactical(move_str, current_pieces, turn_color):
+        # Check if capture or check
+        if 'x' in move_str:
+            return True
+        if '+' in move_str:
+            return True
+            
+        # Check if promotion to queen
+        if '=Q' in move_str:
+            return True
+            
+        # Check if we are taking a high value piece
+        # We can estimate this by looking at the destination square in the current board
+        ptype, _, dest = parse_move(move_str)
+        if dest and dest in current_pieces:
+            target = current_pieces[dest]
+            val = values[target[1]]
+            if val > 100: # Taking a minor piece or higher
+                return True
+                
+        return False
+
+    if not legal_moves:
+        return "" # Should not happen if it's our turn, but safe fallback
+
+    # Main Logic
+    best_move = random.choice(legal_moves)
+    
+    # 1. Immediate Win Detection
+    for move in legal_moves:
+        if move.endswith('#'):
+            return move
+            
+    # 2. Heuristic Search
+    max_score = -float('inf')
+    
+    # Pre-calculate current board score for reference
+    # current_score = evaluate_board(pieces)
+    
+    # We need to simulate the move to see the resulting board state?
+    # Since we don't have a simulator, we have to be clever.
+    # We will score based on:
+    # 1. Resulting Material (Estimated by move string)
+    # 2. Resulting Position (Estimated by destination square)
+    
+    for move in legal_moves:
+        # Calculate base score
+        # We need to simulate the board update to evaluate properly
+        # Since we can't easily simulate without a full engine logic (parsing en passant, castling rights, etc.),
+        # We will use a greedy heuristic based on the move string and static board state.
+        
+        score = 0
+        
+        ptype, _, dest = parse_move(move)
+        if ptype is None: # Castling
+            # Castling is usually good for safety, score slightly positive
+            score += 20 
+            # King safety bonus roughly
+            score += 10 
+        else:
+            # 1. Piece Position Bonus
+            # What is the quality of the square we are moving to?
+            # We don't know if it's occupied by our piece (illegal) or enemy (capture).
+            # We assume it's a valid destination.
+            
+            # Add bonus for destination square
+            # We need to construct a fake piece to check PST
+            # Since we don't know if it's a capture, we just score the square potential
+            
+            # If we are moving a pawn to rank 8, that's a promotion
+            if ptype == 'P' and dest[1] == '8' if to_play == 'white' else dest[1] == '1':
+                # Promotion bonus (already handled by '=Q' check usually, but just in case)
+                score += 800
+            
+            # Calculate PST score for the piece moving to that square
+            # Construct piece string for PST lookup
+            piece_str = ('w' if to_play == 'white' else 'b') + ptype
+            pst_val = get_pst_score(piece_str, dest, to_play == 'white')
+            score += pst_val
+            
+            # 2. Tactic Bonus
+            if 'x' in move:
+                # Estimate capture value
+                # If destination is occupied in current board, it's a capture
+                if dest in pieces:
+                    target = pieces[dest]
+                    score += values[target[1]] # Add material value of captured piece
+                    
+                    # Small bonus for capturing with a lower value piece (CXB)
+                    # We can't easily check source piece value without parsing disambiguation,
+                    # but Pawns are usually 'x' moves explicitly or explicit start square.
+                    # Let's just add a flat capture bonus.
+                    score += 20
+            
+            if '+' in move:
+                score += 30 # Check bonus
+            
+            # 3. Center Control (e4, d4, e5, d5)
+            if dest in ['d4', 'e4', 'd5', 'e5']:
+                score += 15
+                
+        # Randomize slightly to avoid repetitive play
+        score += random.randint(0, 5)
+        
+        if score > max_score:
+            max_score = score
+            best_move = move
+            
+    return best_move

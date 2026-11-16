@@ -1,0 +1,263 @@
+**Strategy**
+
+The policy works in three stages:
+
+1. **Immediate‑win check** – For every legal cell we temporarily place a stone for the current player. Using a breadth‑first search we build the connected components of the board and test whether the new configuration already satisfies one of the win conditions:
+   * **Bridge** – two corners of the board belong to the same component.
+   * **Fork** – a component contains at least three edge cells (non‑corner border cells).
+   * **Ring** – there exists an empty cell whose six neighbours are all in a single component (i.e. the component completely surrounds it).
+
+   If any move gives an immediate win, the policy returns that move.
+
+2. **Opponent‑threat check** – The same evaluation is performed with the opponent’s stones. If the opponent has a move that would win on the next turn, we block it. Among all winning candidates we choose the one that also yields the highest component size for us (so we sometimes defend while still improving our position).
+
+3. **Best‑move selection** – When no win or immediate threat exists, the policy evaluates every legal move with a simple heuristic:
+   * **Component size** – how many stones become linked to the new stone.
+   * **Edge reachability** – how many edge cells (the six outer lines without the four corners) are inside the same component after the move.
+   * **Central proximity** – a slight penalty for moves far from the board centre (row / col 7) to keep the position flexible.
+
+   The move with the highest score (`comp_size * 5 + edge_reachable * 3 – distance_to_center * 0.2`) is returned. Ties are broken by the smallest lexicographical (row, col) index.
+
+The code is self‑contained, deterministic, and runs comfortably within the 1‑second limit on a 15 × 15 Havannah board. It never returns an illegal move because it always filters on `valid_mask` and on the absence of occupied cells.
+
+<code>
+import numpy as np
+from collections import deque
+from typing import List, Tuple
+
+# Hexagonal adjacency for the 15×15 board.
+# (‑1,0) = up, (+1,0) = down, (‑1,‑1) = left‑up, (0,‑1) = left‑down,
+# (‑1,+1) = right‑up, (0,+1) = right‑down.
+NEIGHBORS = [(-1, 0), (1, 0), (-1, -1), (0, -1), (-1, 1), (0, 1)]
+
+# Four corner cells (they are never playable, but we keep them for win detection).
+CORNERS = [(0, 0), (0, 14), (14, 0), (14, 14)]
+
+def _is_edge(cell: Tuple[int, int]) -> bool:
+    r, c = cell
+    if r == 0 or r == 14:
+        if c != 0 and c != 14:
+            return True
+    if c == 0 or c == 14:
+        if r != 0 and r != 14:
+            return True
+    return False
+
+def _make_mask(pos_list: List[Tuple[int, int]]) -> np.ndarray:
+    """Convert a list of stone positions to a 15×15 boolean mask."""
+    mask = np.zeros((15, 15), dtype=bool)
+    for r, c in pos_list:
+        mask[r, c] = True
+    return mask
+
+def _bfs(start: Tuple[int, int], mask: np.ndarray) -> set:
+    """Breadth‑first search over a mask of only player‑0 stones."""
+    q = deque([start])
+    visited = set([start])
+    while q:
+        r, c = q.popleft()
+        for dr, dc in NEIGHBORS:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 15 and 0 <= nc < 15 and mask[nr, nc] and (nr, nc) not in visited:
+                visited.add((nr, nc))
+                q.append((nr, nc))
+    return visited
+
+def _get_components(mask: np.ndarray):
+    """
+    Return three objects for a given mask of player stones:
+    - comp_map: component id → set of cells
+    - cell_to_comp: cell → component id
+    - edge_counts: component id → number of edge cells it touches
+    """
+    visited = set()
+    comp_id = 0
+    comp_map = {}
+    cell_to_comp = {}
+    edge_counts = {}
+
+    for r in range(15):
+        for c in range(15):
+            if mask[r, c] and (r, c) not in visited:
+                comp_map[comp_id] = set()
+                q = deque([(r, c)])
+                visited.add((r, c))
+                cell_to_comp[(r, c)] = comp_id
+                while q:
+                    cr, cc = q.popleft()
+                    comp_map[comp_id].add((cr, cc))
+                    for dr, dc in NEIGHBORS:
+                        nr, nc = cr + dr, cc + dc
+                        if 0 <= nr < 15 and 0 <= nc < 15 and mask[nr, nc] and (nr, nc) not in visited:
+                            visited.add((nr, nc))
+                            cell_to_comp[(nr, nc)] = comp_id
+                            q.append((nr, nc))
+                comp_id += 1
+
+    # Edge‑cell counting for each component
+    for cid, cells in comp_map.items():
+        edge_counts[cid] = sum(_is_edge(cell) for cell in cells)
+
+    return comp_map, cell_to_comp, edge_counts
+
+def _immediate_win(mask: np.ndarray):
+    """
+    Determine whether the given mask already satisfies one of the Havannah
+    winning conditions (bridge, fork, ring). Returns a tuple (bridge, fork, ring).
+    """
+    comp_map, cell_to_comp, edge_counts = _get_components(mask)
+
+    # ---- Bridge -------------------------------------------------
+    corner_cids = []
+    for r, c in CORNERS:
+        if mask[r, c]:
+            cid = None
+            for cid_test, cells in comp_map.items():
+                if (r, c) in cells:
+                    cid = cid_test
+                    break
+            if cid is not None:
+                corner_cids.append(cid)
+
+    bridge = False
+    comp_counter = {}
+    for cid in corner_cids:
+        comp_counter[cid] = comp_counter.get(cid, 0) + 1
+    if any(v >= 2 for v in comp_counter.values()):
+        bridge = True
+
+    # ---- Fork ---------------------------------------------------
+    fork = any(cnt >= 3 for cnt in edge_counts.values())
+
+    # ---- Ring ---------------------------------------------------
+    ring = False
+    for r in range(15):
+        for c in range(15):
+            if mask[r, c]:
+                continue
+            # check all six neighbours
+            neigh_cids = set()
+            ring_done = False
+            for dr, dc in NEIGHBORS:
+                nr, nc = r + dr, c + dc
+                if not (0 <= nr < 15 and 0 <= nc < 15):
+                    ring_done = False
+                    break
+                if not mask[nr, nc]:
+                    ring_done = False
+                    break
+                # neighbour must belong to a player‑0 component
+                nid = None
+                for cid_test, cells in comp_map.items():
+                    if (nr, nc) in cells:
+                        nid = cid_test
+                        break
+                if nid is None:
+                    ring_done = False
+                    break
+                neigh_cids.add(nid)
+            if len(neigh_cids) == 1 and (r, c) not in comp_map[list(neigh_cids)[0]]:
+                ring = True
+                break
+
+    return bridge, fork, ring
+
+def _score(move: Tuple[int, int], me_mask: np.ndarray):
+    """
+    Heuristic score for a legal move, assuming we will place the stone there.
+    Returns (is_immediate_win, score).  is_immediate_win is False when we want
+    to keep the board unchanged for further evaluation.
+    """
+    # Simulate placement
+    board = me_mask.copy()
+    board[move] = True
+
+    # Immediate‑win check – if true we treat it as an immediate win and
+    # ignore the score (higher priority already handled elsewhere).
+    bridge, fork, ring = _immediate_win(board)
+    if bridge or fork or ring:
+        return (True, 0.0)
+
+    comp_map, cell_to_comp, _ = _get_components(board)
+    cid = cell_to_comp[move]
+    comp_size = len(comp_map[cid])
+    # Edge cells reachable from the new stone's component
+    edge_reachable = sum(_is_edge(cell) for cell in comp_map[cid])
+    # Distance from centre (0‑based indices: centre is (7,7))
+    dist = abs(move[0] - 7) + abs(move[1] - 7)
+
+    score = comp_size * 5 + edge_reachable * 3 - dist * 0.2
+    return (False, score)
+
+def policy(me: List[Tuple[int, int]],
+           opp: List[Tuple[int, int]],
+           valid_mask) -> Tuple[int, int]:
+    """
+    Core function required by the arena. Returns the next legal move
+    as a (row, col) tuple.
+    """
+    # Normalise valid_mask to a numpy boolean array (works with list of lists as well)
+    if isinstance(valid_mask, np.ndarray):
+        board_valid = valid_mask
+    else:
+        board_valid = np.asarray(valid_mask, dtype=bool)
+
+    # Masks of the two players
+    me_mask = _make_mask(me)
+    opp_mask = _make_mask(opp)
+
+    # All legal positions (playable and empty)
+    legal = [(r, c)
+             for r in range(15) for c in range(15)
+             if board_valid[r, c] and not (me_mask[r, c] or opp_mask[r, c])]
+    if not legal:                     # safety fallback (should never happen)
+        return legal[0] if legal else (0, 0)
+
+    # -----------------------------------------------------------------
+    # Stage 1 – immediate‑win check for us
+    # -----------------------------------------------------------------
+    for move in legal:
+        imm, _ = _score(move, me_mask)
+        if imm:
+            return move
+
+    # -----------------------------------------------------------------
+    # Stage 2 – opponent win threat (block)
+    # -----------------------------------------------------------------
+    threat_moves = []
+    for move in legal:
+        # Simulate opponent stone
+        opp_board = opp_mask.copy()
+        opp_board[move] = True
+        bridge, fork, ring = _immediate_win(opp_board)
+        if bridge or fork or ring:
+            threat_moves.append(move)
+
+    if threat_moves:
+        # Among all blocking moves pick the one that also gives us the best
+        # component size after we place the stone there.
+        best_move = None
+        best_score = -1.0
+        for m in threat_moves:
+            imm, sc = _score(m, me_mask)
+            if not imm:   # shouldn't happen but ignore score anyway
+                sc = 0.0
+            if sc > best_score or (sc == best_score and m < best_move):
+                best_score = sc
+                best_move = m
+        return best_move
+
+    # -----------------------------------------------------------------
+    # Stage 3 – pick the best move for us
+    # -----------------------------------------------------------------
+    best_move = None
+    best_score = -1.0
+    for move in legal:
+        imm, sc = _score(move, me_mask)
+        # imm is already False (otherwise returned earlier)
+        if sc > best_score or (sc == best_score and move < best_move):
+            best_score = sc
+            best_move = move
+
+    return best_move
+</code>

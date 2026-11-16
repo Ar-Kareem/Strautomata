@@ -1,0 +1,165 @@
+The strategy for this policy is based on a Minimax algorithm with Alpha-Beta pruning to efficiently search the game tree. The policy prioritizes immediate wins and blocks immediate losses to ensure survival. For strategic decisions, it uses a heuristic evaluation function that scores the board based on the potential of lines (rows, columns, and diagonals) to form a winning sequence of four. The search depth is dynamically adjusted based on the number of empty cells remaining to balance tactical reactivity with strategic planning within the time constraints.
+
+<code>
+import math
+import random
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Calculates the best move for 4x4 Tic Tac Toe using Minimax with Alpha-Beta pruning.
+    Player is 1, Opponent is -1.
+    """
+    PLAYER = 1
+    OPPONENT = -1
+    EMPTY = 0
+    SIZE = 4
+    
+    # Pre-calculate lines (rows, cols, diagonals)
+    lines = []
+    # Rows and Cols
+    for i in range(SIZE):
+        lines.append([(i, j) for j in range(SIZE)]) # Row
+        lines.append([(j, i) for j in range(SIZE)]) # Col
+    # Diagonals
+    lines.append([(i, i) for i in range(SIZE)])
+    lines.append([(i, SIZE - 1 - i) for i in range(SIZE)])
+
+    def check_win(b, player):
+        for line in lines:
+            if sum(b[r][c] for r, c in line) == player * SIZE:
+                return True
+        return False
+
+    def get_empty_cells(b):
+        return [(r, c) for r in range(SIZE) for c in range(SIZE) if b[r][c] == EMPTY]
+
+    def evaluate(b):
+        score = 0
+        for line in lines:
+            line_vals = [b[r][c] for r, c in line]
+            player_count = line_vals.count(PLAYER)
+            opp_count = line_vals.count(OPPONENT)
+            
+            if player_count > 0 and opp_count > 0:
+                continue # Mixed line, worthless
+            
+            # Weight lines based on how many markers they contain
+            if player_count == 3:
+                score += 100
+            elif player_count == 2:
+                score += 10
+            elif player_count == 1:
+                score += 1
+            
+            if opp_count == 3:
+                score -= 100
+            elif opp_count == 2:
+                score -= 10
+            elif opp_count == 1:
+                score -= 1
+        return score
+
+    def minimax(b, depth, alpha, beta, is_maximizing):
+        if check_win(b, PLAYER):
+            return 10000 + depth
+        if check_win(b, OPPONENT):
+            return -10000 - depth
+        
+        empty = get_empty_cells(b)
+        if not empty:
+            return 0 # Draw
+        
+        if depth == 0:
+            return evaluate(b)
+        
+        # Move ordering: prioritize center and adjacent squares
+        # This significantly speeds up alpha-beta pruning
+        def sort_key(move):
+            r, c = move
+            # Distance from center (1.5, 1.5)
+            return -((r - 1.5)**2 + (c - 1.5)**2)
+        
+        empty.sort(key=sort_key)
+
+        if is_maximizing:
+            max_eval = -math.inf
+            for r, c in empty:
+                b[r][c] = PLAYER
+                eval_val = minimax(b, depth - 1, alpha, beta, False)
+                b[r][c] = EMPTY
+                max_eval = max(max_eval, eval_val)
+                alpha = max(alpha, eval_val)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = math.inf
+            for r, c in empty:
+                b[r][c] = OPPONENT
+                eval_val = minimax(b, depth - 1, alpha, beta, True)
+                b[r][c] = EMPTY
+                min_eval = min(min_eval, eval_val)
+                beta = min(beta, eval_val)
+                if beta <= alpha:
+                    break
+            return min_eval
+
+    # 1. Check for immediate win
+    for r in range(SIZE):
+        for c in range(SIZE):
+            if board[r][c] == EMPTY:
+                board[r][c] = PLAYER
+                if check_win(board, PLAYER):
+                    board[r][c] = EMPTY
+                    return (r, c)
+                board[r][c] = EMPTY
+
+    # 2. Check for immediate block
+    for r in range(SIZE):
+        for c in range(SIZE):
+            if board[r][c] == EMPTY:
+                board[r][c] = OPPONENT
+                if check_win(board, OPPONENT):
+                    board[r][c] = EMPTY
+                    return (r, c)
+                board[r][c] = EMPTY
+
+    # 3. Opening moves
+    empty_count = sum(row.count(EMPTY) for row in board)
+    if empty_count == SIZE * SIZE:
+        return (0, 0) # Start in a corner
+    
+    # If opponent just played center, take a corner
+    # if empty_count == SIZE * SIZE - 1 and board[1][1] == OPPONENT:
+    #     return (0, 0)
+
+    # 4. Minimax Search
+    # Adjust depth based on game progress
+    depth_limit = 4
+    if empty_count <= 10:
+        depth_limit = 6
+    if empty_count <= 6:
+        depth_limit = 8
+
+    best_move = None
+    best_val = -math.inf
+    
+    moves = get_empty_cells(board)
+    # Order moves for root search
+    moves.sort(key=lambda m: -((m[0]-1.5)**2 + (m[1]-1.5)**2))
+
+    for r, c in moves:
+        board[r][c] = PLAYER
+        move_val = minimax(board, depth_limit, -math.inf, math.inf, False)
+        board[r][c] = EMPTY
+        
+        if move_val > best_val:
+            best_val = move_val
+            best_move = (r, c)
+
+    if best_move is None:
+        # Fallback, should not be reached if board has empty cells
+        return moves[0]
+
+    return best_move
+</code>

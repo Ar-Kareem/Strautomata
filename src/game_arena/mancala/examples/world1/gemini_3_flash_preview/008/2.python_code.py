@@ -1,0 +1,129 @@
+
+import copy
+
+def simulate_move(you, opponent, move_idx):
+    """
+    Simulates a move and returns (new_you, new_opponent, extra_move, game_over)
+    """
+    you = list(you)
+    opponent = list(opponent)
+    
+    seeds = you[move_idx]
+    you[move_idx] = 0
+    
+    curr_side = 'you'
+    curr_idx = move_idx + 1
+    
+    extra_move = False
+    
+    while seeds > 0:
+        if curr_side == 'you':
+            if curr_idx < 7:
+                you[curr_idx] += 1
+                seeds -= 1
+                if seeds == 0:
+                    if curr_idx == 6:
+                        extra_move = True
+                    elif you[curr_idx] == 1 and opponent[5 - curr_idx] > 0:
+                        # Capture rule
+                        you[6] += you[curr_idx] + opponent[5 - curr_idx]
+                        you[curr_idx] = 0
+                        opponent[5 - curr_idx] = 0
+                curr_idx += 1
+            else:
+                curr_side = 'opp'
+                curr_idx = 0
+        else:
+            if curr_idx < 6:
+                opponent[curr_idx] += 1
+                seeds -= 1
+                if seeds == 0:
+                    pass # Landed in opponent house, no special rule
+                curr_idx += 1
+            else:
+                curr_side = 'you'
+                curr_idx = 0
+                
+    # Check for game end
+    if sum(you[:6]) == 0 or sum(opponent[:6]) == 0:
+        you[6] += sum(you[:6])
+        opponent[6] += sum(opponent[:6])
+        for i in range(6):
+            you[i] = 0
+            opponent[i] = 0
+        return you, opponent, False, True
+        
+    return you, opponent, extra_move, False
+
+def evaluate(you, opponent):
+    # Basic heuristic: score difference + seeds on board
+    return (you[6] - opponent[6]) * 10 + sum(you[:6]) - sum(opponent[:6])
+
+def minimax(you, opponent, depth, alpha, beta, maximizing):
+    if depth == 0 or sum(you[:6]) == 0 or sum(opponent[:6]) == 0:
+        return evaluate(you, opponent)
+    
+    if maximizing:
+        max_eval = float('-inf')
+        for i in range(6):
+            if you[i] > 0:
+                new_you, new_opp, extra, over = simulate_move(you, opponent, i)
+                if over:
+                    eval = evaluate(new_you, new_opp)
+                elif extra:
+                    eval = minimax(new_you, new_opp, depth - 1, alpha, beta, True)
+                else:
+                    # After move, switch sides for the next perspective
+                    eval = -minimax(new_opp, new_you, depth - 1, -beta, -alpha, True)
+                
+                max_eval = max(max_eval, eval)
+                alpha = max(alpha, eval)
+                if beta <= alpha:
+                    break
+        return max_eval
+    else:
+        # This part technically handled by the recursion flip above, 
+        # but required for standard structure.
+        return evaluate(you, opponent)
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    best_move = -1
+    best_val = float('-inf')
+    
+    # Priority 1: Moves that give extra turns
+    # Priority 2: Standard minimax search
+    
+    legal_moves = [i for i in range(6) if you[i] > 0]
+    if not legal_moves:
+        return 0 # Should not happen based on prompt
+
+    # Search depth 8 is usually fast enough for Python 1-second limits
+    depth = 8 
+    
+    alpha = float('-inf')
+    beta = float('inf')
+    
+    # Simple move ordering: try moves that result in extra turns first
+    ordered_moves = []
+    for i in legal_moves:
+        if (you[i] % 13) == (6 - i):
+            ordered_moves.insert(0, i)
+        else:
+            ordered_moves.append(i)
+
+    for i in ordered_moves:
+        new_you, new_opp, extra, over = simulate_move(you, opponent, i)
+        if over:
+            val = evaluate(new_you, new_opp)
+        elif extra:
+            val = minimax(new_you, new_opp, depth - 1, alpha, beta, True)
+        else:
+            val = -minimax(new_opp, new_you, depth - 1, -beta, -alpha, True)
+            
+        if val > best_val:
+            best_val = val
+            best_move = i
+        alpha = max(alpha, val)
+            
+    return best_move if best_move != -1 else legal_moves[0]
+

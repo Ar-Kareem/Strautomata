@@ -1,0 +1,184 @@
+To address the problem of implementing a competitive move for the game of **Pentago**, we must design a policy that selects the best move based on a combination of immediate win detection and a heuristic scoring system for optimal play.
+
+---
+
+### ✅ Problem Summary
+
+- **Game Board**: 6x6 grid.
+- **Move Format**: `row,col,quad,dir`, where:
+  - `row`, `col`: 1-indexed placement of your marble (must be empty).
+  - `quad`: 0–3 (quadrant index), each being a 3x3 sub-board.
+  - `dir`: `'L'` or `'R'` (rotate quadrant accordingly).
+- **Goal**: Win by forming **5 or more consecutive marbles** in a straight line (horizontal, vertical, or diagonal) after placement and rotation.
+- **Heuristics**: If no immediate win is found, we should prioritize moves that increase our chances of forming such lines in the future, possibly by aligning existing marbles or setting up potential threats.
+
+---
+
+### 🧠 Core Strategy
+
+1. **Immediate Win Check**:
+   - For each empty cell:
+     - Place your marble.
+     - Try rotating each quadrant in both directions.
+     - If any combination results in a 5-in-a-row for you, return that move.
+
+2. **Heuristic Evaluation**:
+   - If no winning move is found, evaluate each possible move based on:
+     - Number of my marbles in potential 4-in-a-row lines (which could be extended to 5).
+     - Number of opponent's 4-in-a-row lines (to block them).
+   - Choose the move with the highest score.
+
+---
+
+### ✅ Implementation
+
+```python
+import numpy as np
+
+def has_win(board, player):
+    # Check rows
+    for r in range(6):
+        for c in range(2):  # 0 and 1 are valid starting columns
+            if np.all(board[r, c:c+5] == player):
+                return True
+
+    # Check columns
+    for c in range(6):
+        for r in range(2):  # 0 and 1 are valid starting rows
+            if np.all(board[r:r+5, c] == player):
+                return True
+
+    # Check main diagonal (top-left to bottom-right)
+    for r in range(2):
+        for c in range(2):
+            if np.all(np.diag(board[r:r+5, c:c+5]) == player):
+                return True
+
+    # Check anti-diagonal (top-right to bottom-left)
+    for r in range(2):
+        for c in range(4, 6):  # columns 4 and 5 are valid starting points
+            matrix = board[r:r+5, c-4:c+1]
+            flipped = np.flip(flip(matrix, axis=1))
+            if np.all(np.diag(flipped) == player):
+                return True
+
+    return False
+
+def policy(you, opponent):
+    you = np.array(you, dtype=int)
+    opp = np.array(opponent)
+    empty = np.argwhere((you == 0) & (opp == 0))
+
+    if empty.size == 0:
+        raise ValueError("No empty cells available")
+
+    # Step 1: Check for immediate win
+    for (r, c) in empty:
+        for quad in range(4):
+            if quad == 0:
+                sr, sc = 0, 0
+            elif quad == 1:
+                sr, sc = 0, 3
+            elif quad == 2:
+                sr, sc = 3, 0
+            else:
+                sr, sc = 3, 3
+
+            for direction in ['L', 'R']:
+                temp_you = you.copy()
+                temp_opp = opp.copy()
+
+                temp_you[r][c] = 1  # Place my marble
+
+                # Extract quadrant content
+                quad_you = temp_you[sr:sr+3, sc:sc+3]
+                quad_opp = temp_opp[sr:sr+3, sc:sc+3]
+
+                # Rotate quadrant
+                if direction == 'R':
+                    rotated_you = np.rot90(quad_you, k=-1)
+                    rotated_opp = np.rot90(quad_opp, k=-1)
+                else:
+                    rotated_you = np.rot90(quad_you, k=1)
+                    rotated_opp = np.rot90(quad_opp, k=1)
+
+                # Apply rotation to the board
+                temp_you[sr:sr+3, sc:sc+3] = rotated_you
+                temp_opp[sr:sr+3, sc:sc+3] = rotated_opp
+
+                if has_win(temp_you, 1):
+                    return f"{r+1},{c+1},{quad},{direction}"
+
+    # Step 2: If no immediate win, evaluate all moves using a heuristic
+    max_score = -np.inf
+    best_move = None
+
+    for (r, c) in empty:
+        placement_score = 0
+        for quad in range(4):
+            if quad == 0:
+                sr, sc = 0, 0
+            elif quad == 1:
+                sr, sc = 0, 3
+            elif quad == 2:
+                sr, sc = 3, 0
+            else:
+                sr, sc = 3, 3
+
+            for direction in ['R', 'L']:
+                temp_you = you.copy()
+                temp_opp = opp.copy()
+                temp_you[r][c] = 1
+                quad_you = temp_you[sr:sr+3, sc:sc+3]
+                quad_opp = temp_opp[sr:sr+3, sc:sc+3]
+
+                if direction == 'R':
+                    rotated_you = np.rot90(quad_you, k=-1)
+                    rotated_opp = np.rot90(quad_opp, k=-1)
+                else:
+                    rotated_you = np.rot90(quad_you, k=1)
+                    rotated_opp = np.rot90(quad_opp, k=1)
+
+                temp_you[sr:sr+3, sc:sc+3] = rotated_you
+                temp_opp[sr:sr+3, sc:sc+3] = rotated_opp
+
+                # Evaluate score
+                my_lines = sum(1 for _ in range(4) if all(temp_you[i, j:j+2] == 1 for j in range(5)))
+                opp_lines = sum(1 for _ in range(4) if all(temp_opp[i, j:j+2] == 1 for j in range(5)))
+
+                current_score = my_lines - opp_lines
+
+                if current_score > max_score:
+                    max_score = current_score
+                    best_move = f"{r+1},{c+1},{quad},{direction}"
+
+    return best_move or f"{empty[0][0]+1},{empty[0][1]+1},0,R"
+```
+
+---
+
+### 🧠 Strategy Overview
+
+- **Immediate Win Check**: We simulate placing a marble and rotating each quadrant in both directions to see if it creates a 5-in-a-row. If such a move exists, it is returned immediately.
+- **Heuristic Fallback**: If no winning moves are found, we simulate placing a marble in every possible empty cell, and for each, simulate all possible quadrant rotations. We compute a score based on how many 4-in-a-rows we create (which can be extended to 5 in the next move) and how many we block for the opponent. The move with the highest score is selected.
+
+---
+
+### 🔍 Key Considerations
+
+- **Rotation Direction**: `R` (clockwise) and `L` (anticlockwise) affect the position of marbles in the quadrant.
+- **Check for Wins**: We check for 5-in-a-row in all directions using NumPy's slicing and `np.all` for efficient comparisons.
+- **Touching the Board State**: After placing a marble and rotating a quadrant, we update the board state and check for a win condition.
+- **Heuristic**: This evaluates the resulting board configuration after a move and ranks it based on how many potential winning lines it creates for me and blocks for the opponent.
+
+---
+
+### 🧪 Example Move
+
+Given the board state, if the best move is placing a marble at row 6, column 5, and then rotating quadrant 2 clockwise, the function would return:
+
+```
+6,5,2,R
+```
+
+This format ensures the move is valid and follows the game's rules.

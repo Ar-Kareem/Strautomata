@@ -1,0 +1,123 @@
+<thinking>
+I will provide a short, non-sensitive summary of the decision algorithm (no internal chain-of-thought). The policy searches all winning lines in the 3x3x3 board, plays an immediate winning move if available, blocks an immediate opponent win if needed, takes the center if free, otherwise scores each empty cell by how promising its lines are (favoring lines where we already have a mark or where the opponent has marks to block) and picks a highest-scoring empty cell (random tie-break).
+</thinking>
+<code>
+import random
+from typing import List, Tuple
+
+def generate_lines() -> List[List[Tuple[int,int,int]]]:
+    lines = []
+    seen = set()
+    def add_line(coords):
+        key = frozenset(coords)
+        if key not in seen:
+            seen.add(key)
+            lines.append(coords)
+
+    # Layer lines and diagonals (z fixed)
+    for z in range(3):
+        for y in range(3):
+            add_line([(z, y, x) for x in range(3)])  # rows
+        for x in range(3):
+            add_line([(z, y, x) for y in range(3)])  # cols
+        add_line([(z, i, i) for i in range(3)])      # diag in layer
+        add_line([(z, i, 2 - i) for i in range(3)])  # anti-diag in layer
+
+    # Pillars (y,x fixed, z varies)
+    for y in range(3):
+        for x in range(3):
+            add_line([(z, y, x) for z in range(3)])
+
+    # Diagonals through z-y planes (x fixed)
+    for x in range(3):
+        add_line([(z, z, x) for z in range(3)])
+        add_line([(z, 2 - z, x) for z in range(3)])
+
+    # Diagonals through z-x planes (y fixed)
+    for y in range(3):
+        add_line([(z, y, z) for z in range(3)])
+        add_line([(z, y, 2 - z) for z in range(3)])
+
+    # The four main space diagonals
+    add_line([(i, i, i) for i in range(3)])
+    add_line([(i, i, 2 - i) for i in range(3)])
+    add_line([(i, 2 - i, i) for i in range(3)])
+    add_line([(i, 2 - i, 2 - i) for i in range(3)])
+
+    return lines
+
+_LINES = generate_lines()
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    """
+    Choose a move (z, y, x) on a 3x3x3 tic-tac-toe board.
+    board[z][y][x] == 0 empty, 1 = us, -1 = opponent
+    """
+    # Find immediate wins first, then immediate blocks
+    empty_cells = []
+    for z in range(3):
+        for y in range(3):
+            for x in range(3):
+                if board[z][y][x] == 0:
+                    empty_cells.append((z, y, x))
+
+    # Immediate win
+    for line in _LINES:
+        vals = [board[z][y][x] for (z, y, x) in line]
+        if sum(vals) == 2:  # two of ours and one empty
+            for coord in line:
+                z, y, x = coord
+                if board[z][y][x] == 0:
+                    return (z, y, x)
+
+    # Immediate block
+    for line in _LINES:
+        vals = [board[z][y][x] for (z, y, x) in line]
+        if sum(vals) == -2:  # opponent has two, we must block
+            for coord in line:
+                z, y, x = coord
+                if board[z][y][x] == 0:
+                    return (z, y, x)
+
+    # Take center if available
+    if board[1][1][1] == 0:
+        return (1, 1, 1)
+
+    # Heuristic scoring of empty cells
+    scores = {cell: 0 for cell in empty_cells}
+    for line in _LINES:
+        vals = [board[z][y][x] for (z, y, x) in line]
+        zeros = [coord for coord in line if board[coord[0]][coord[1]][coord[2]] == 0]
+        count_our = vals.count(1)
+        count_opp = vals.count(-1)
+        # If both players present in this line, it's not immediately useful
+        if count_our > 0 and count_opp > 0:
+            continue
+        # Reward lines where we already have marks (potential win)
+        if count_our > 0:
+            for coord in zeros:
+                scores[coord] = scores.get(coord, 0) + 5 * count_our
+        # Prioritize blocking opponent's progress (single opp mark) and neutral lines
+        elif count_opp > 0:
+            for coord in zeros:
+                # If opponent has two we would have already blocked; here it's one
+                scores[coord] = scores.get(coord, 0) + 3 * count_opp
+        else:
+            for coord in zeros:
+                scores[coord] = scores.get(coord, 0) + 1
+
+    # If no scoring info (shouldn't happen), pick a random empty
+    if not scores:
+        return random.choice(empty_cells)
+
+    # Choose best-scoring cell (random tie-break)
+    max_score = max(scores.values())
+    best = [coord for coord, sc in scores.items() if sc == max_score]
+    return random.choice(best)
+
+
+# If run as a script, provide a random legal move on an empty board (for quick smoke test)
+if __name__ == "__main__":
+    empty_board = [[[0 for _ in range(3)] for _ in range(3)] for _ in range(3)]
+    print(policy(empty_board))
+</code>

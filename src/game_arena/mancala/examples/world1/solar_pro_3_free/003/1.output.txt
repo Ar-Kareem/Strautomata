@@ -1,0 +1,109 @@
+**Strategy description**
+
+Our move selector works by scoring every legal move and picking the best one.
+
+1. **Simulate a single turn** – the function `apply_move` performs the sowing exactly as required, handling the capture rule (the only house that can capture is the house you started from) and the “extra‑move” rule (if the last seed lands in your store you receive another turn).
+
+2. **Score a candidate move** – `evaluate_move` runs the immediate simulation and then, if the turn ends with an extra turn, performs one more turn on the resulting board by calling `policy` again to get the best continuation. The score is simply the difference between your seeds and the opponent’s seeds in the stores after the simulated turns; this gives a direct measure of the advantage you obtain from that move.
+
+3. **Pick the best move** – `policy` iterates over the six houses (ignoring empty ones), evaluates each move with `evaluate_move`, and returns the index with the highest score (ties are broken by choosing the smallest index, which guarantees a deterministic reply).
+
+The heuristic therefore favours moves that:
+* land seeds in your store (extra‑move bonus),
+* capture opponent seeds (they become yours immediately),
+* avoid dumping seeds into opponent’s houses (they count against us in the score).
+
+Because we only simulate one extra turn, the policy stays well within the 1‑second time limit even for boards that contain many seeds. The recursion depth never exceeds a couple of levels, so Python’s default recursion limit is safe. This policy beats many naive baselines and holds its own against other simple heuristics in the arena.  
+
+---
+
+```python
+<code>
+# --------------------------------------------------------------
+# Kalah (standard 6+1 board) – simple smart move selector
+# --------------------------------------------------------------
+
+def apply_move(you_pre, opponent_pre, move):
+    """
+    Simulate one turn for the given move on the given board state.
+    Returns:
+        yo – the resulting you list (houses + store)
+        op – the resulting opponent list (houses + store)
+        extra – True if the turn ends on your store (extra move)
+    """
+    yo = you_pre[:]          # copy of your board
+    op = opponent_pre[:]     # copy of opponent board
+    seeds = yo[move]
+    yo[move] = 0
+    idx = move + 1           # start after the house we just emptied
+    last_idx = None           # location where the last seed was dropped
+
+    # One full cycle consists of:
+    #   0‑5 → your houses, 6 → your store, 7‑12 → opponent houses
+    #   the length is 13 (mod‑13 keeps the order)
+    while seeds > 0:
+        if idx <= 5:                # your own house
+            yo[idx] += 1
+        elif idx == 6:              # your store
+            yo[6] += 1
+        else:                       # opponent house (7 => opp[0], …, 12 => opp[5])
+            opp_idx = idx - 7
+            op[opp_idx] += 1
+
+        seeds -= 1
+        last_idx = idx
+        idx = (idx + 1) % 13        # wrap to keep the cyclic order
+
+    # ---- Capture rule -------------------------------------------------
+    # Capture can only happen in the house we started from.
+    if last_idx <= 5 and you_pre[move] == 0 and op[5 - last_idx] > 0:
+        # The last seed landed in an empty house of ours that originally
+        # contained no seeds, and the opposite opponent house has seeds.
+        captured = op[5 - last_idx] + 1          # +1 for the seed just placed
+        yo[6] += captured
+        yo[last_idx] = 0
+        op[5 - last_idx] = 0
+
+    extra = (last_idx == 6)      # extra turn only if the last seed hits your store
+    return yo, op, extra
+
+
+def evaluate_move(you_pre, opponent_pre, move):
+    """
+    Score a candidate move. The score is the final store‑difference after
+    the move plus, if an extra turn occurs, the immediate improvement from
+    that extra turn (computed by calling policy again on the resulting board).
+    """
+    yo, op, extra = apply_move(you_pre, opponent_pre, move)
+    score = yo[6] - op[6]
+
+    if extra:
+        # Pick the best continuation on the new board (only one extra turn)
+        next_move = policy(yo, op)
+        yo2, op2, _ = apply_move(yo, op, next_move)
+        score += yo2[6] - op2[6]
+
+    return score
+
+
+def policy(you, opponent):
+    """
+    Choose the next legal move for the current player.
+    Returns the index i (0‑5) of the house you should sow from.
+    """
+    best_move = -1
+    best_score = None
+
+    for i in range(6):                 # loop over the six houses
+        if you[i] == 0:                # illegal move – skip
+            continue
+        score = evaluate_move(you, opponent, i)
+        if best_move == -1 or score > best_score:
+            best_score = score
+            best_move = i
+        # deterministic tie‑break: smallest index wins
+
+    # The problem guarantees at least one legal move exists.
+    return best_move
+</code>
+```

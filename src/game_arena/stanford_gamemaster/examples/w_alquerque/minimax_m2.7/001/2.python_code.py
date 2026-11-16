@@ -1,0 +1,206 @@
+
+import time
+import random
+from copy import deepcopy
+
+# ----------------------------------------------------------------------
+# Board utilities
+# ----------------------------------------------------------------------
+# board indices are 1‑based (rows 1‑5, cols 1‑5). 0 = empty, 1 = red, 2 = black
+EMPTY, RED, BLACK = 0, 1, 2
+OPPONENT = {RED: BLACK, BLACK: RED}
+
+DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1),
+        (-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+def parse_state(state):
+    """Convert the list‑of‑facts representation into a 6×6 int board."""
+    board = [[EMPTY] * 6 for _ in range(6)]
+    for prop in state:
+        if not prop:
+            continue
+        if prop[0] == 'cell':
+            r = int(prop[1])
+            c = int(prop[2])
+            colour = prop[3]
+            if colour == 'red':
+                board[r][c] = RED
+            elif colour == 'black':
+                board[r][c] = BLACK
+            else:               # blank
+                board[r][c] = EMPTY
+        # scores and control are not needed for the heuristic
+    return board
+
+def generate_moves(board, player):
+    """Return a list of legal moves for *player*.
+       Each move is a tuple:
+         ('move', (r1,c1), (r2,c2))
+         ('jump', (r1,c1), (r2,c2), (r3,c3))
+       If any jump exists, only jumps are returned (mandatory capture)."""
+    opp = OPPONENT[player]
+    jumps, simple = [], []
+    for r in range(1, 6):
+        for c in range(1, 6):
+            if board[r][c] != player:
+                continue
+            for dr, dc in DIRS:
+                nr, nc = r + dr, c + dc
+                if not (1 <= nr <= 5 and 1 <= nc <= 5):
+                    continue
+                if board[nr][nc] == opp:
+                    # possible jump
+                    jr, jc = nr, nc
+                    lr, lc = nr + dr, nc + dc
+                    if 1 <= lr <= 5 and 1 <= lc <= 5 and board[lr][lc] == EMPTY:
+                        jumps.append(('jump', (r, c), (jr, jc), (lr, lc)))
+                elif board[nr][nc] == EMPTY:
+                    simple.append(('move', (r, c), (nr, nc)))
+    # mandatory capture
+    return jumps if jumps else simple
+
+def apply_move(board, move):
+    """Return a new board after performing *move*."""
+    new_board = [row[:] for row in board]
+    typ = move[0]
+    if typ == 'move':
+        _, (r1, c1), (r2, c2) = move
+        new_board[r1][c1] = EMPTY
+        new_board[r2][c2] = board[r1][c1]
+    else:  # jump
+        _, (r1, c1), (jr, jc), (r2, c2) = move
+        new_board[r1][c1] = EMPTY
+        new_board[jr][jc] = EMPTY
+        new_board[r2][c2] = board[r1][c1]
+    return new_board
+
+# ----------------------------------------------------------------------
+# Evaluation heuristic (higher is better for the original player)
+# ----------------------------------------------------------------------
+def evaluate(board, player):
+    """Simple weighted heuristic: material + centre + advancement."""
+    opp = OPPONENT[player]
+    my_cnt = opp_cnt = 0
+    my_center = opp_center = 0
+    my_adv = opp_adv = 0
+    target_row = 1 if player == RED else 5
+
+    centre_cells = {(2, 2), (2, 3), (2, 4),
+                    (3, 2), (3, 3), (3, 4),
+                    (4, 2), (4, 3), (4, 4)}
+
+    for r in range(1, 6):
+        for c in range(1, 6):
+            piece = board[r][c]
+            if piece == player:
+                my_cnt += 1
+                if (r, c) in centre_cells:
+                    my_center += 1
+                my_adv += abs(r - target_row)
+            elif piece == opp:
+                opp_cnt += 1
+                if (r, c) in centre_cells:
+                    opp_center += 1
+                opp_adv += abs(r - target_row)
+
+    # Terminal positions
+    if opp_cnt == 0:
+        return 1000 + (my_cnt - opp_cnt)
+    if my_cnt == 0:
+        return -1000 + (my_cnt - opp_cnt)
+
+    piece_diff = my_cnt - opp_cnt
+    center_diff = my_center - opp_center
+    adv_score = (opp_adv - my_adv) * 0.5
+
+    return 10 * piece_diff + 1 * center_diff + adv_score
+
+# ----------------------------------------------------------------------
+# Alpha‑beta search
+# ----------------------------------------------------------------------
+def alpha_beta(board, player, depth, alpha, beta, maximizing, original):
+    """Return the minimax value for the given board."""
+    if depth == 0:
+        return evaluate(board, original)
+
+    moves = generate_moves(board, player)
+    if not moves:                         # no legal actions – very bad
+        return evaluate(board, original)
+
+    opp = OPPONENT[player]
+    if maximizing:
+        value = -float('inf')
+        for m in moves:
+            nb = apply_move(board, m)
+            value = max(value, alpha_beta(nb, opp, depth - 1, alpha, beta, False, original))
+            alpha = max(alpha, value)
+            if beta <= alpha:
+                break
+        return value
+    else:
+        value = float('inf')
+        for m in moves:
+            nb = apply_move(board, m)
+            value = min(value, alpha_beta(nb, opp, depth - 1, alpha, beta, True, original))
+            beta = min(beta, value)
+            if beta <= alpha:
+                break
+        return value
+
+# ----------------------------------------------------------------------
+# Iterative deepening driver
+# ----------------------------------------------------------------------
+def best_move(board, player):
+    """Perform iterative deepening and return the best legal move as a string."""
+    start = time.time()
+    limit = 0.90                     # seconds
+    best = None
+    max_depth = 5
+
+    # ordering: jumps first (they are already first in generate_moves)
+    root_moves = generate_moves(board, player)
+
+    for depth in range(1, max_depth + 1):
+        if time.time() - start > limit:
+            break
+        alpha = -float('inf')
+        beta = float('inf')
+        current_best = None
+        best_value = -float('inf')
+
+        for mv in root_moves:
+            nb = apply_move(board, mv)
+            val = alpha_beta(nb, OPPONENT[player], depth - 1, alpha, beta, False, player)
+            if val > best_value:
+                best_value = val
+                current_best = mv
+                alpha = max(alpha, val)
+
+        if current_best is not None:
+            best = current_best
+            # winning capture – no need to search deeper
+            if best_value > 900:
+                break
+
+    # Fallback: if something went wrong, pick first legal move
+    if best is None:
+        best = root_moves[0] if root_moves else None
+    return best
+
+# ----------------------------------------------------------------------
+# Public API
+# ----------------------------------------------------------------------
+def policy(state, role):
+    """Choose a legal move for the given role in the current state."""
+    board = parse_state(state)
+    player = RED if role == 'red' else BLACK
+    move = best_move(board, player)
+    if move is None:
+        raise RuntimeError("No legal move found!")
+    # Format the move string
+    if move[0] == 'move':
+        _, (r1, c1), (r2, c2) = move
+        return f"move({r1},{c1},{r2},{c2})"
+    else:  # jump
+        _, (r1, c1), (jr, jc), (r2, c2) = move
+        return f"jump({r1},{c1},{jr},{jc},{r2},{c2})"

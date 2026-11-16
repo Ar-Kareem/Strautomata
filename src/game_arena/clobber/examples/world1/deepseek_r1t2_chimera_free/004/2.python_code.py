@@ -1,0 +1,79 @@
+
+import numpy as np
+
+def policy(you, opponent):
+    # Helper function to count legal moves for a player
+    def count_legal_moves(player, opponent_arr):
+        count = 0
+        rows, cols = player.shape
+        directions = [(-1,0), (0,1), (1,0), (0,-1)]  # U, R, D, L
+        for r in range(rows):
+            for c in range(cols):
+                if player[r, c] == 1:
+                    for dr, dc in directions:
+                        nr = r + dr
+                        nc = c + dc
+                        if 0 <= nr < rows and 0 <= nc < cols:
+                            if opponent_arr[nr, nc] == 1:
+                                count += 1
+        return count
+
+    you_arr = np.array(you)
+    opp_arr = np.array(opponent)
+    
+    # Generate all legal moves
+    legal_moves = []
+    for r in range(5):
+        for c in range(6):
+            if you_arr[r, c] == 1:
+                if r > 0 and opp_arr[r-1, c] == 1:
+                    legal_moves.append((r, c, 'U'))
+                if c < 5 and opp_arr[r, c+1] == 1:
+                    legal_moves.append((r, c, 'R'))
+                if r < 4 and opp_arr[r+1, c] == 1:
+                    legal_moves.append((r, c, 'D'))
+                if c > 0 and opp_arr[r, c-1] == 1:
+                    legal_moves.append((r, c, 'L'))
+    
+    if not legal_moves:
+        return ""  # Should not occur as per game rules
+    
+    best_move = None
+    min_opp_moves = float('inf')
+    
+    for move in legal_moves:
+        r, c, d = move
+        new_you = you_arr.copy()
+        new_opp = opp_arr.copy()
+        
+        # Calculate destination based on direction
+        if d == 'U':
+            dr, dc = (-1, 0)
+        elif d == 'R':
+            dr, dc = (0, 1)
+        elif d == 'D':
+            dr, dc = (1, 0)
+        else:  # 'L'
+            dr, dc = (0, -1)
+        dest_r = r + dr
+        dest_c = c + dc
+        
+        # Apply the move
+        new_you[r, c] = 0
+        new_you[dest_r, dest_c] = 1
+        new_opp[dest_r, dest_c] = 0
+        
+        # Count opponent's possible moves after this move
+        opp_move_count = count_legal_moves(new_opp, new_you)
+        
+        # Immediate win case
+        if opp_move_count == 0:
+            return f"{r},{c},{d}"
+        
+        # Update best move
+        if opp_move_count < min_opp_moves:
+            min_opp_moves = opp_move_count
+            best_move = move
+    
+    r, c, d = best_move
+    return f"{r},{c},{d}"

@@ -1,0 +1,275 @@
+The strategy for this policy is to use a Minimax algorithm with Alpha-Beta pruning to search for the optimal move. The policy evaluates the board state by counting captured boxes and uses a specialized heuristic for "safe" moves to determine who will be forced to open the next chain. The search depth dynamically adjusts based on the number of remaining moves to ensure performance within the time limit. Moves are prioritized: captures first, then safe moves (that do not grant the opponent an immediate box), and finally moves that concede boxes.
+
+<code>
+import numpy as np
+import sys
+
+# Set recursion limit higher just in case, though depth is controlled
+sys.setrecursionlimit(2000)
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    """
+    Calculates the best move for the current Dots and Boxes state.
+    """
+    H = horizontal.copy()
+    V = vertical.copy()
+    C = capture.copy()
+    
+    # Dimensions
+    ROWS, COLS = 5, 5
+    BOX_R, BOX_C = 4, 4
+    
+    def get_boxes_affected(r, c, d):
+        """Yields box coordinates (br, bc) adjacent to edge (r,c,d)."""
+        if d == 'H':
+            if r < BOX_R: yield (r, c)
+            if r > 0: yield (r - 1, c)
+        else: # 'V'
+            if c < BOX_C: yield (r, c)
+            if c > 0: yield (r, c - 1)
+
+    def count_sides(br, bc):
+        """Counts drawn sides for box (br, bc)."""
+        # H[br, bc] is top edge, H[br+1, bc] is bottom edge
+        # V[br, bc] is left edge, V[br, bc+1] is right edge
+        return (H[br, bc] != 0) + (H[br+1, bc] != 0) + \
+               (V[br, bc] != 0) + (V[br, bc+1] != 0)
+
+    def get_legal_moves():
+        """Returns a list of all legal moves as (r, c, d)."""
+        moves = []
+        # Horizontal edges: valid c is 0..3
+        for r in range(ROWS):
+            for c in range(COLS - 1):
+                if H[r, c] == 0:
+                    moves.append((r, c, 'H'))
+        # Vertical edges: valid r is 0..3
+        for r in range(ROWS - 1):
+            for c in range(COLS):
+                if V[r, c] == 0:
+                    moves.append((r, c, 'V'))
+        return moves
+
+    def minimax(depth, alpha, beta, maximizing_player):
+        """
+        Minimax with Alpha-Beta pruning.
+        maximizing_player: True if it's our turn (1), False if opponent (-1).
+        Returns the score difference (my_boxes - opp_boxes).
+        """
+        moves = get_legal_moves()
+        
+        # Terminal condition: no moves left
+        if not moves:
+            return np.sum(C == 1) - np.sum(C == -1)
+            
+        # Depth limit reached
+        if depth == 0:
+            # Heuristic evaluation
+            score = np.sum(C == 1) - np.sum(C == -1)
+            
+            # Check if we are in the 'filling' phase (no immediate captures)
+            # If so, use parity of safe moves to estimate who opens the next chain
+            has_capture = False
+            for r in range(BOX_R):
+                for c in range(BOX_C):
+                    if C[r, c] == 0 and count_sides(r, c) == 3:
+                        has_capture = True
+                        break
+                if has_capture: break
+            
+            if not has_capture:
+                # Count safe moves
+                safe_count = 0
+                for r, c, d in moves:
+                    is_unsafe = False
+                    for br, bc in get_boxes_affected(r, c, d):
+                        if count_sides(br, bc) == 2: # Creates a 3-side box
+                            is_unsafe = True
+                            break
+                    if not is_unsafe:
+                        safe_count += 1
+                
+                # If safe_count is odd, the current player takes the last safe move,
+                # forcing the opponent to open the next chain.
+                # Opening a chain is typically a disadvantage (loses approx 2 boxes).
+                chain_advantage = 2.0 if safe_count % 2 == 1 else -2.0
+                if not maximizing_player:
+                    chain_advantage = -chain_advantage
+                
+                score += chain_advantage
+            
+            return score
+
+        # Move ordering: Captures > Safe > Unsafe
+        # 1. Check captures
+        capture_moves = []
+        safe_moves = []
+        unsafe_moves = []
+        
+        for move in moves:
+            r, c, d = move
+            is_capture = False
+            is_unsafe = False
+            
+            # Temporarily check effects
+            # We can't modify state yet, just look
+            boxes = list(get_boxes_affected(r, c, d))
+            
+            for br, bc in boxes:
+                sides = count_sides(br, bc)
+                if sides == 3:
+                    is_capture = True
+                elif sides == 2:
+                    is_unsafe = True
+            
+            if is_capture:
+                capture_moves.append(move)
+            elif not is_unsafe:
+                safe_moves.append(move)
+            else:
+                unsafe_moves.append(move)
+        
+        ordered_moves = capture_moves + safe_moves + unsafe_moves
+
+        if maximizing_player:
+            max_eval = -1000
+            for move in ordered_moves:
+                r, c, d = move
+                
+                # Apply move
+                captured_boxes = []
+                if d == 'H': H[r, c] = 1
+                else: V[r, c] = 1
+                
+                for br, bc in get_boxes_affected(r, c, d):
+                    if C[br, bc] == 0 and count_sides(br, bc) == 4:
+                        C[br, bc] = 1
+                        captured_boxes.append((br, bc))
+                
+                # If captured, same player moves again (maximizing), else switch
+                next_player_max = True if captured_boxes else False
+                
+                eval_val = minimax(depth - 1, alpha, beta, next_player_max)
+                max_eval = max(max_eval, eval_val)
+                
+                # Undo move
+                if d == 'H': H[r, c] = 0
+                else: V[r, c] = 0
+                for br, bc in captured_boxes:
+                    C[br, bc] = 0
+                
+                alpha = max(alpha, eval_val)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = 1000
+            for move in ordered_moves:
+                r, c, d = move
+                
+                # Apply move (Opponent is -1)
+                captured_boxes = []
+                if d == 'H': H[r, c] = -1
+                else: V[r, c] = -1
+                
+                for br, bc in get_boxes_affected(r, c, d):
+                    if C[br, bc] == 0 and count_sides(br, bc) == 4:
+                        C[br, bc] = -1
+                        captured_boxes.append((br, bc))
+                
+                next_player_max = False if captured_boxes else True
+                
+                eval_val = minimax(depth - 1, alpha, beta, next_player_max)
+                min_eval = min(min_eval, eval_val)
+                
+                # Undo move
+                if d == 'H': H[r, c] = 0
+                else: V[r, c] = 0
+                for br, bc in captured_boxes:
+                    C[br, bc] = 0
+                
+                beta = min(beta, eval_val)
+                if beta <= alpha:
+                    break
+            return min_eval
+
+    # --- Main Execution ---
+    moves = get_legal_moves()
+    if not moves:
+        return "0,0,H" # Fallback
+
+    # Dynamic Depth
+    # 4x4 boxes -> 40 max edges.
+    # Early game: depth 6. Mid/End: deeper.
+    n_moves = len(moves)
+    if n_moves > 25: depth = 6
+    elif n_moves > 15: depth = 8
+    elif n_moves > 8: depth = 10
+    else: depth = 12 # Endgame
+
+    best_move = None
+    best_val = -1000
+    
+    # Initial Move Ordering
+    capture_moves = []
+    safe_moves = []
+    unsafe_moves = []
+    
+    for move in moves:
+        r, c, d = move
+        is_capture = False
+        is_unsafe = False
+        boxes = list(get_boxes_affected(r, c, d))
+        for br, bc in boxes:
+            sides = count_sides(br, bc)
+            if sides == 3: is_capture = True
+            elif sides == 2: is_unsafe = True
+        
+        if is_capture: capture_moves.append(move)
+        elif not is_unsafe: safe_moves.append(move)
+        else: unsafe_moves.append(move)
+        
+    ordered_moves = capture_moves + safe_moves + unsafe_moves
+
+    alpha = -1000
+    beta = 1000
+    
+    # If we have captures, we prioritize them. 
+    # The recursion handles the chain of captures.
+    
+    for move in ordered_moves:
+        r, c, d = move
+        
+        # Apply move
+        captured_boxes = []
+        if d == 'H': H[r, c] = 1
+        else: V[r, c] = 1
+        
+        for br, bc in get_boxes_affected(r, c, d):
+            if C[br, bc] == 0 and count_sides(br, bc) == 4:
+                C[br, bc] = 1
+                captured_boxes.append((br, bc))
+        
+        # If we captured, we continue maximizing. If not, opponent minimizes.
+        next_player_max = True if captured_boxes else False
+        
+        val = minimax(depth - 1, alpha, beta, next_player_max)
+        
+        # Undo
+        if d == 'H': H[r, c] = 0
+        else: V[r, c] = 0
+        for br, bc in captured_boxes:
+            C[br, bc] = 0
+            
+        if val > best_val:
+            best_val = val
+            best_move = move
+        
+        alpha = max(alpha, val)
+
+    if best_move is None:
+        # Fallback, should ideally not be reached if logic is correct
+        best_move = moves[0]
+
+    return f"{best_move[0]},{best_move[1]},{best_move[2]}"
+</code>

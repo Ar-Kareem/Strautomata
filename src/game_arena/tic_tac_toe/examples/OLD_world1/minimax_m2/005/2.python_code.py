@@ -1,0 +1,137 @@
+
+from functools import lru_cache
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Return the best next move for player 1 (you) on a 3x3 tic-tac-toe board.
+    Board uses: 0 = empty, 1 = you, -1 = opponent.
+    Coordinates are (row, col) in 0..2.
+    """
+    # Quick validation
+    if not (isinstance(board, list) and len(board) == 3 and all(isinstance(r, list) and len(r) == 3 for r in board)):
+        raise ValueError("Board must be a 3x3 list of lists.")
+
+    # If no empty cells, return a valid default (shouldn't happen in real play)
+    empties = [(r, c) for r in range(3) for c in range(3) if board[r][c] == 0]
+    if not empties:
+        return (0, 0)
+
+    # Heuristic order to prune search quickly
+    move_order = [(1, 1), (0, 0), (0, 2), (2, 0), (2, 2), (0, 1), (1, 0), (1, 2), (2, 1)]
+
+    # Helper: check if placing 'player' at (r,c) wins immediately
+    def would_win(player: int, r: int, c: int) -> bool:
+        if board[r][c] != 0:
+            return False
+        # Row
+        if all(board[r][j] == player for j in range(3)):
+            return True
+        # Col
+        if all(board[i][c] == player for i in range(3)):
+            return True
+        # Diagonals
+        if r == c and all(board[d][d] == player for d in range(3)):
+            return True
+        if r + c == 2 and all(board[d][2 - d] == player for d in range(3)):
+            return True
+        return False
+
+    # 1) Immediate winning move
+    for r, c in move_order:
+        if board[r][c] == 0 and would_win(1, r, c):
+            return (r, c)
+
+    # 2) Block opponent's immediate win
+    for r, c in move_order:
+        if board[r][c] == 0 and would_win(-1, r, c):
+            return (r, c)
+
+    # 3) Perfect play via minimax with memoization (tiny search space)
+    @lru_cache(maxsize=None)
+    def board_to_tuple(b: Tuple[Tuple[int, ...], ...]) -> Tuple[Tuple[int, ...], ...]:
+        return b
+
+    # Convert to immutable tuple for caching
+    state = board_to_tuple(tuple(tuple(row) for row in board))
+
+    def winner_of(b: Tuple[Tuple[int, ...], ...]) -> int:
+        # Returns 1 if player 1 wins, -1 if player -1 wins, 0 otherwise
+        for p in (1, -1):
+            # rows and cols
+            for i in range(3):
+                if all(b[i][j] == p for j in range(3)):
+                    return p
+                if all(b[j][i] == p for j in range(3)):
+                    return p
+            # diagonals
+            if all(b[d][d] == p for d in range(3)):
+                return p
+            if all(b[d][2 - d] == p for d in range(3)):
+                return p
+        return 0
+
+    def is_full(b: Tuple[Tuple[int, ...], ...]) -> bool:
+        return all(b[i][j] != 0 for i in range(3) for j in range(3))
+
+    @lru_cache(maxsize=None)
+    def minimax(b: Tuple[Tuple[int, ...], ...], player: int) -> None:
+        """
+        Minimax for player 1 (+) and player -1 (-).
+        Returns (score, best_move) where best_move is (r,c) or None if terminal.
+        """
+        w = winner_of(b)
+        if w == 1:
+            return 1, None
+        if w == -1:
+            return -1, None
+        if is_full(b):
+            return 0, None
+
+        # Collect empty cells (preserve a stable move order)
+        empties = [(i, j) for i in range(3) for j in range(3) if b[i][j] == 0]
+
+        if player == 1:  # maximize
+            best_score = -2
+            best_moves = []
+            for r, c in empties:
+                nb = list(list(row) for row in b)
+                nb[r][c] = 1
+                nb_t = tuple(tuple(row) for row in nb)
+                score, _ = minimax(nb_t, -1)
+                if score > best_score:
+                    best_score = score
+                    best_moves = [(r, c)]
+                elif score == best_score:
+                    best_moves.append((r, c))
+            # Tie-breaker using heuristic move order
+            for r, c in move_order:
+                if (r, c) in best_moves:
+                    return best_score, (r, c)
+            # Fallback (should not happen often)
+            return best_score, best_moves[0]
+        else:  # minimize for player -1
+            best_score = 2
+            best_moves = []
+            for r, c in empties:
+                nb = list(list(row) for row in b)
+                nb[r][c] = -1
+                nb_t = tuple(tuple(row) for row in nb)
+                score, _ = minimax(nb_t, 1)
+                if score < best_score:
+                    best_score = score
+                    best_moves = [(r, c)]
+                elif score == best_score:
+                    best_moves.append((r, c))
+            # Tie-breaker using heuristic move order
+            for r, c in move_order:
+                if (r, c) in best_moves:
+                    return best_score, (r, c)
+            return best_score, best_moves[0]
+
+    _, move = minimax(state, 1)
+    if move is not None:
+        return move
+
+    # Fallback: any legal move
+    return empties[0]

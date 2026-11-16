@@ -1,0 +1,91 @@
+
+def policy(hand: list[str], target: int) -> str:
+    all_cards = frozenset(['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'])
+    
+    def hand_value(h):
+        """Calculate hand value with Aces as 11 or 1 to maximize value without exceeding target."""
+        base = 0
+        aces = 0
+        for card in h:
+            if card == 'A':
+                aces += 1
+            elif card in ['J', 'Q', 'K']:
+                base += 10
+            else:
+                base += int(card)
+        
+        # Start with all aces as 11
+        val = base + aces * 11
+        if val <= target:
+            return val
+        
+        # Convert aces from 11 to 1 (reduce by 10) until <= target or no more aces
+        for _ in range(aces):
+            val -= 10
+            if val <= target:
+                return val
+        return val
+    
+    current_val = hand_value(hand)
+    
+    # If busted or no cards left, must stay
+    if current_val > target:
+        return "STAY"
+    
+    remaining = all_cards - frozenset(hand)
+    if not remaining:
+        return "STAY"
+    
+    from functools import lru_cache
+    
+    @lru_cache(maxsize=None)
+    def expected_value(rem):
+        """Expected value of optimal play from state with remaining cards rem (frozenset)."""
+        rem_set = set(rem)
+        current_hand = list(all_cards - rem_set)
+        val = hand_value(current_hand)
+        
+        if val > target:
+            return 0.0
+        
+        # Option 1: Stay
+        stay_val = val
+        
+        # Option 2: Hit
+        if not rem:
+            return stay_val
+            
+        total = 0.0
+        for card in rem:
+            new_rem = rem_set - {card}
+            new_hand = list(all_cards - new_rem)
+            new_val = hand_value(new_hand)
+            if new_val > target:
+                # Bust, value is 0
+                total += 0.0
+            else:
+                # Continue optimally from new state
+                total += expected_value(frozenset(new_rem))
+        
+        hit_val = total / len(rem)
+        return max(stay_val, hit_val)
+    
+    # Calculate expected value of hitting now and continuing optimally
+    hit_ev = 0.0
+    rem_set = set(remaining)
+    for card in remaining:
+        new_rem = rem_set - {card}
+        new_hand = list(all_cards - new_rem)
+        new_val = hand_value(new_hand)
+        if new_val > target:
+            hit_ev += 0.0
+        else:
+            hit_ev += expected_value(frozenset(new_rem))
+    
+    hit_ev /= len(remaining)
+    
+    # Hit only if expected value is strictly greater (avoid unnecessary risk if equal)
+    if hit_ev > current_val:
+        return "HIT"
+    else:
+        return "STAY"

@@ -1,0 +1,90 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Check for winning move
+    for i in range(3):
+        if sum(board[i]) == 2:
+            if board[i][0] == 0:
+                return (i, 0)
+            elif board[i][1] == 0:
+                return (i, 1)
+            elif board[i][2] == 0:
+                return (i, 2)
+    for j in range(3):
+        col_sum = board[0][j] + board[1][j] + board[2][j]
+        if col_sum == 2:
+            if board[0][j] == 0:
+                return (0, j)
+            elif board[1][j] == 0:
+                return (1, j)
+            elif board[2][j] == 0:
+                return (2, j)
+    diag1 = board[0][0] + board[1][1] + board[2][2]
+    if diag1 == 2:
+        if board[0][0] == 0:
+            return (0, 0)
+        elif board[1][1] == 0:
+            return (1, 1)
+        elif board[2][2] == 0:
+            return (2, 2)
+    diag2 = board[0][2] + board[1][1] + board[2][0]
+    if diag2 == 2:
+        if board[0][2] == 0:
+            return (0, 2)
+        elif board[1][1] == 0:
+            return (1, 1)
+        elif board[2][0] == 0:
+            return (2, 0)
+    
+    # Check for blocking move
+    for i in range(3):
+        if sum(board[i]) == -2:
+            if board[i][0] == 0:
+                return (i, 0)
+            elif board[i][1] == 0:
+                return (i, 1)
+            elif board[i][2] == 0:
+                return (i, 2)
+    for j in range(3):
+        col_sum = board[0][j] + board[1][j] + board[2][j]
+        if col_sum == -2:
+            if board[0][j] == 0:
+                return (0, j)
+            elif board[1][j] == 0:
+                return (1, j)
+            elif board[2][j] == 0:
+                return (2, j)
+    diag1 = board[0][0] + board[1][1] + board[2][2]
+    if diag1 == -2:
+        if board[0][0] == 0:
+            return (0, 0)
+        elif board[1][1] == 0:
+            return (1, 1)
+        elif board[2][2] == 0:
+            return (2, 2)
+    diag2 = board[0][2] + board[1][1] + board[2][0]
+    if diag2 == -2:
+        if board[0][2] == 0:
+            return (0, 2)
+        elif board[1][1] == 0:
+            return (1, 1)
+        elif board[2][0] == 0:
+            return (2, 0)
+    
+    # Check center
+    if board[1][1] == 0:
+        return (1, 1)
+    
+    # Check corners
+    corners = [(0, 0), (0, 2), (2, 0), (2, 2)]
+    for i, j in corners:
+        if board[i][j] == 0:
+            return (i, j)
+    
+    # Check edges
+    edges = [(0, 1), (1, 0), (1, 2), (2, 1)]
+    for i, j in edges:
+        if board[i][j] == 0:
+            return (i, j)
+    
+    # Fallback (should not occur in valid game)
+    return (0, 0)

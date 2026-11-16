@@ -1,0 +1,92 @@
+
+import random
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Strategic Battleship AI:
+    1. If there's a hit with adjacent unknowns, target those (Targeting Mode).
+    2. Otherwise, use a heat map based on possible ship placements (Hunting Mode).
+    """
+    SIZE = 10
+    SHIP_SIZES = [5, 4, 3, 3, 2]
+
+    # Find all hit coordinates
+    hits = []
+    for r in range(SIZE):
+        for c in range(SIZE):
+            if board[r][c] == 1:
+                hits.append((r, c))
+
+    # --- Targeting Mode ---
+    # If there are hits, try to finish the ship
+    candidates = []
+    for r, c in hits:
+        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < SIZE and 0 <= nc < SIZE and board[nr][nc] == 0:
+                # Weight moves that continue a line of hits
+                weight = 1
+                pr, pc = r - dr, c - dc
+                if 0 <= pr < SIZE and 0 <= pc < SIZE and board[pr][pc] == 1:
+                    weight = 10  # Higher priority for maintaining direction
+                candidates.append((weight, nr, nc))
+
+    if candidates:
+        # Pick the best candidate based on weight, then random choice
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        best_weight = candidates[0][0]
+        best_moves = [c for c in candidates if c[0] == best_weight]
+        _, fr, fc = random.choice(best_moves)
+        return (fr, fc)
+
+    # --- Hunting Mode ---
+    # Calculate a heat map of possible ship placements
+    heatmap = [[0 for _ in range(SIZE)] for _ in range(SIZE)]
+    
+    # We'll use the smallest ship for the most granular hunting
+    # but could iterate all SHIP_SIZES for a better heatmap.
+    for ship_len in [2, 3, 4]: 
+        for r in range(SIZE):
+            for c in range(SIZE):
+                # Horizontal
+                if c + ship_len <= SIZE:
+                    segment = [board[r][c+i] for i in range(ship_len)]
+                    if all(cell >= 0 for cell in segment): # No misses (-1)
+                        for i in range(ship_len):
+                            if board[r][c+i] == 0:
+                                heatmap[r][c+i] += 1
+                # Vertical
+                if r + ship_len <= SIZE:
+                    segment = [board[r+i][c] for i in range(ship_len)]
+                    if all(cell >= 0 for cell in segment): # No misses (-1)
+                        for i in range(ship_len):
+                            if board[r+i][c] == 0:
+                                heatmap[r+i][c] += 1
+
+    # Parity: focus on a checkerboard pattern to find ships faster
+    max_val = -1
+    best_locs = []
+    for r in range(SIZE):
+        for c in range(SIZE):
+            if board[r][c] == 0:
+                val = heatmap[r][c]
+                # Parity boost: encourages a checkerboard pattern (even/odd)
+                if (r + c) % 2 == 0:
+                    val += 1
+                
+                if val > max_val:
+                    max_val = val
+                    best_locs = [(r, c)]
+                elif val == max_val:
+                    best_locs.append((r, c))
+
+    if best_locs:
+        return random.choice(best_locs)
+
+    # Fallback to any random valid move
+    for r in range(SIZE):
+        for c in range(SIZE):
+            if board[r][c] == 0:
+                return (r, c)
+
+    return (0, 0)

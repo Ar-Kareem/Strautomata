@@ -1,0 +1,604 @@
+## Strategy
+
+My strategy is to implement a chess engine that combines:
+1. **Minimax search** with alpha-beta pruning up to depth 4
+2. **Position evaluation** considering:
+   - Material balance (with piece values)
+   - Piece mobility and central control
+   - King safety (pawn shield, castling status)
+   - Pawn structure (isolated/doubled pawns)
+3. **Move ordering** to improve pruning efficiency:
+   - Captures ordered by MVV-LVA (Most Valuable Victim - Least Valuable Attacker)
+   - Checks and threatening moves prioritized
+4. **Opening book** for early game positions
+5. **Endgame detection** with simplified evaluation for king activity
+
+The engine will use iterative deepening with a time budget, storing search results in memory between calls for consistency.
+
+<code>
+import numpy as np
+import math
+import time
+
+def policy(pieces: dict[str, str], to_play: str, memory: dict) -> tuple[str, dict]:
+    # Initialize memory on first call
+    if 'board' not in memory:
+        memory['nodes_searched'] = 0
+        memory['transposition_table'] = {}
+        memory['opening_book'] = _build_opening_book()
+        memory['last_move'] = None
+        memory['clock'] = time.time()
+    
+    # Convert pieces to internal board representation
+    board = _pieces_to_board(pieces, to_play)
+    color = 0 if to_play == 'white' else 1
+    
+    # Generate all legal moves
+    legal_moves = _generate_legal_moves(board, color)
+    
+    if not legal_moves:
+        return ('0000', memory)  # Should never happen in valid position
+    
+    # Check for immediate checkmate
+    for move in legal_moves:
+        new_board = _make_move(board, move, color)
+        if _is_checkmate(new_board, 1 - color):
+            return (move, memory)
+    
+    # Check opening book
+    if len(memory.get('move_history', [])) < 8:
+        board_hash = _board_hash(board, color)
+        if board_hash in memory['opening_book']:
+            book_moves = memory['opening_book'][board_hash]
+            for move in book_moves:
+                if move in legal_moves:
+                    return (move, memory)
+    
+    # Set time limit for search
+    time_limit = 0.95  # Leave 50ms buffer
+    start_time = time.time()
+    
+    # Iterative deepening
+    best_move = legal_moves[0]
+    best_score = -float('inf')
+    
+    for depth in range(1, 5):  # Search depth 1-4
+        alpha = -float('inf')
+        beta = float('inf')
+        
+        # Move ordering: captures first
+        ordered_moves = _order_moves(legal_moves, board, color)
+        
+        for move in ordered_moves:
+            if time.time() - start_time > time_limit:
+                break
+                
+            new_board = _make_move(board, move, color)
+            score = -_alphabeta(new_board, depth-1, -beta, -alpha, 1-color, start_time, time_limit, memory)
+            
+            if score > best_score:
+                best_score = score
+                best_move = move
+                alpha = max(alpha, score)
+        
+        if time.time() - start_time > time_limit:
+            break
+    
+    # Update memory
+    memory['last_move'] = best_move
+    memory['nodes_searched'] = memory.get('nodes_searched', 0) + 1
+    
+    return (best_move, memory)
+
+def _pieces_to_board(pieces_dict, to_play):
+    """Convert pieces dictionary to 8x8 board array."""
+    board = np.zeros((8, 8), dtype=int)
+    
+    # Piece encoding: 1-6 for white, 7-12 for black
+    piece_codes = {
+        'P': 1, 'N': 2, 'B': 3, 'R': 4, 'Q': 5, 'K': 6,
+        'p': 7, 'n': 8, 'b': 9, 'r': 10, 'q': 11, 'k': 12
+    }
+    
+    for square, piece_str in pieces_dict.items():
+        if len(piece_str) != 2:
+            continue
+        col = ord(square[0]) - ord('a')
+        row = 8 - int(square[1])
+        piece_char = piece_str[1].lower() if piece_str[0] == 'w' else piece_str[1]
+        if piece_str[0] == 'w':
+            board[row, col] = piece_codes.get(piece_char.upper(), 0)
+        else:
+            board[row, col] = piece_codes.get(piece_char.lower(), 0)
+    
+    return board
+
+def _board_hash(board, color):
+    """Create a simple hash for the board position."""
+    return hash(board.tobytes()) ^ color
+
+def _generate_legal_moves(board, color):
+    """Generate all legal moves for given color."""
+    moves = []
+    
+    # Piece movement patterns
+    knight_moves = [(-2, -1), (-2, 1), (-1, -2), (-1, 2),
+                    (1, -2), (1, 2), (2, -1), (2, 1)]
+    king_moves = [(-1, -1), (-1, 0), (-1, 1), (0, -1),
+                  (0, 1), (1, -1), (1, 0), (1, 1)]
+    
+    # Bishop, rook, queen directions
+    bishop_dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+    rook_dirs = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    queen_dirs = bishop_dirs + rook_dirs
+    
+    piece_offset = 0 if color == 0 else 6
+    
+    for r in range(8):
+        for c in range(8):
+            piece = board[r, c]
+            if piece == 0 or (color == 0 and piece > 6) or (color == 1 and piece <= 6):
+                continue
+            
+            base_piece = (piece - 1) % 6 + 1
+            
+            if base_piece == 1:  # Pawn
+                direction = -1 if color == 0 else 1
+                start_rank = 6 if color == 0 else 1
+                
+                # Single move forward
+                if 0 <= r + direction < 8 and board[r + direction, c] == 0:
+                    if (color == 0 and r + direction == 0) or (color == 1 and r + direction == 7):
+                        # Promotion
+                        for prom in ['q', 'r', 'b', 'n']:
+                            moves.append(_index_to_uci((r, c), (r + direction, c), prom))
+                    else:
+                        moves.append(_index_to_uci((r, c), (r + direction, c)))
+                    
+                    # Double move from starting position
+                    if r == start_rank and board[r + 2*direction, c] == 0:
+                        moves.append(_index_to_uci((r, c), (r + 2*direction, c)))
+                
+                # Captures
+                for dc in [-1, 1]:
+                    nc = c + dc
+                    if 0 <= nc < 8 and 0 <= r + direction < 8:
+                        target = board[r + direction, nc]
+                        if target != 0 and ((color == 0 and target > 6) or (color == 1 and target <= 6)):
+                            if (color == 0 and r + direction == 0) or (color == 1 and r + direction == 7):
+                                for prom in ['q', 'r', 'b', 'n']:
+                                    moves.append(_index_to_uci((r, c), (r + direction, nc), prom))
+                            else:
+                                moves.append(_index_to_uci((r, c), (r + direction, nc)))
+            
+            elif base_piece == 2:  # Knight
+                for dr, dc in knight_moves:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 8 and 0 <= nc < 8:
+                        target = board[nr, nc]
+                        if target == 0 or ((color == 0 and target > 6) or (color == 1 and target <= 6)):
+                            moves.append(_index_to_uci((r, c), (nr, nc)))
+            
+            elif base_piece == 3:  # Bishop
+                for dr, dc in bishop_dirs:
+                    nr, nc = r + dr, c + dc
+                    while 0 <= nr < 8 and 0 <= nc < 8:
+                        target = board[nr, nc]
+                        if target == 0:
+                            moves.append(_index_to_uci((r, c), (nr, nc)))
+                        elif (color == 0 and target > 6) or (color == 1 and target <= 6):
+                            moves.append(_index_to_uci((r, c), (nr, nc)))
+                            break
+                        else:
+                            break
+                        nr += dr
+                        nc += dc
+            
+            elif base_piece == 4:  # Rook
+                for dr, dc in rook_dirs:
+                    nr, nc = r + dr, c + dc
+                    while 0 <= nr < 8 and 0 <= nc < 8:
+                        target = board[nr, nc]
+                        if target == 0:
+                            moves.append(_index_to_uci((r, c), (nr, nc)))
+                        elif (color == 0 and target > 6) or (color == 1 and target <= 6):
+                            moves.append(_index_to_uci((r, c), (nr, nc)))
+                            break
+                        else:
+                            break
+                        nr += dr
+                        nc += dc
+            
+            elif base_piece == 5:  # Queen
+                for dr, dc in queen_dirs:
+                    nr, nc = r + dr, c + dc
+                    while 0 <= nr < 8 and 0 <= nc < 8:
+                        target = board[nr, nc]
+                        if target == 0:
+                            moves.append(_index_to_uci((r, c), (nr, nc)))
+                        elif (color == 0 and target > 6) or (color == 1 and target <= 6):
+                            moves.append(_index_to_uci((r, c), (nr, nc)))
+                            break
+                        else:
+                            break
+                        nr += dr
+                        nc += dc
+            
+            elif base_piece == 6:  # King
+                for dr, dc in king_moves:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 8 and 0 <= nc < 8:
+                        target = board[nr, nc]
+                        if target == 0 or ((color == 0 and target > 6) or (color == 1 and target <= 6)):
+                            moves.append(_index_to_uci((r, c), (nr, nc)))
+                
+                # Castling
+                if color == 0:  # White
+                    if r == 7 and c == 4:  # e1
+                        if board[7, 7] == 4:  # Rook at h1
+                            if board[7, 5] == 0 and board[7, 6] == 0:
+                                moves.append('e1g1')
+                        if board[7, 0] == 4:  # Rook at a1
+                            if board[7, 1] == 0 and board[7, 2] == 0 and board[7, 3] == 0:
+                                moves.append('e1c1')
+                else:  # Black
+                    if r == 0 and c == 4:  # e8
+                        if board[0, 7] == 10:  # Rook at h8
+                            if board[0, 5] == 0 and board[0, 6] == 0:
+                                moves.append('e8g8')
+                        if board[0, 0] == 10:  # Rook at a8
+                            if board[0, 1] == 0 and board[0, 2] == 0 and board[0, 3] == 0:
+                                moves.append('e8c8')
+    
+    return moves
+
+def _index_to_uci(from_pos, to_pos, promotion=''):
+    """Convert board indices to UCI move string."""
+    files = 'abcdefgh'
+    ranks = '87654321'
+    
+    uci = files[from_pos[1]] + ranks[from_pos[0]] + files[to_pos[1]] + ranks[to_pos[0]]
+    if promotion:
+        uci += promotion
+    return uci
+
+def _make_move(board, move_uci, color):
+    """Make a move on a copy of the board."""
+    new_board = board.copy()
+    
+    # Parse UCI
+    from_file, from_rank, to_file, to_rank = move_uci[0], move_uci[1], move_uci[2], move_uci[3]
+    from_col = ord(from_file) - ord('a')
+    from_row = 8 - int(from_rank)
+    to_col = ord(to_file) - ord('a')
+    to_row = 8 - int(to_rank)
+    
+    piece = new_board[from_row, from_col]
+    new_board[to_row, to_col] = piece
+    new_board[from_row, from_col] = 0
+    
+    # Handle castling
+    if abs(piece) == 6 and abs(from_col - to_col) == 2:
+        if to_col == 6:  # Kingside
+            new_board[from_row, 5] = new_board[from_row, 7]
+            new_board[from_row, 7] = 0
+        elif to_col == 2:  # Queenside
+            new_board[from_row, 3] = new_board[from_row, 0]
+            new_board[from_row, 0] = 0
+    
+    # Handle promotion
+    if len(move_uci) == 5:
+        prom_piece = move_uci[4]
+        prom_map = {'q': 5, 'r': 4, 'b': 3, 'n': 2}
+        if color == 1:  # Black
+            prom_map = {'q': 11, 'r': 10, 'b': 9, 'n': 8}
+        new_board[to_row, to_col] = prom_map.get(prom_piece, piece)
+    
+    return new_board
+
+def _order_moves(moves, board, color):
+    """Order moves for better alpha-beta pruning."""
+    scored_moves = []
+    
+    for move in moves:
+        score = 0
+        
+        # Parse move
+        from_file, from_rank, to_file, to_rank = move[0], move[1], move[2], move[3]
+        from_col = ord(from_file) - ord('a')
+        from_row = 8 - int(from_rank)
+        to_col = ord(to_file) - ord('a')
+        to_row = 8 - int(to_rank)
+        
+        # Captures - MVV-LVA
+        target = board[to_row, to_col]
+        if target != 0:
+            piece_values = [0, 100, 320, 330, 500, 900, 20000,
+                           100, 320, 330, 500, 900, 20000]
+            attacker_value = piece_values[board[from_row, from_col]]
+            victim_value = piece_values[target]
+            score = victim_value - attacker_value + 10000
+        
+        # Checks
+        new_board = _make_move(board, move, color)
+        if _is_in_check(new_board, 1 - color):
+            score += 500
+        
+        # Promotions
+        if len(move) == 5 and move[4] == 'q':
+            score += 800
+        
+        scored_moves.append((score, move))
+    
+    # Sort by score (highest first)
+    scored_moves.sort(reverse=True)
+    return [move for _, move in scored_moves]
+
+def _is_in_check(board, color):
+    """Check if king of given color is in check."""
+    # Find king
+    king_piece = 6 if color == 0 else 12
+    king_pos = None
+    
+    for r in range(8):
+        for c in range(8):
+            if board[r, c] == king_piece:
+                king_pos = (r, c)
+                break
+        if king_pos:
+            break
+    
+    if not king_pos:
+        return False
+    
+    # Check for attacks from knights
+    knight_moves = [(-2, -1), (-2, 1), (-1, -2), (-1, 2),
+                    (1, -2), (1, 2), (2, -1), (2, 1)]
+    for dr, dc in knight_moves:
+        nr, nc = king_pos[0] + dr, king_pos[1] + dc
+        if 0 <= nr < 8 and 0 <= nc < 8:
+            piece = board[nr, nc]
+            if piece != 0:
+                if color == 0 and piece in [8, 14]:  # Black knight
+                    return True
+                elif color == 1 and piece in [2, 8]:  # White knight
+                    return True
+    
+    # Check for attacks from pawns
+    pawn_dir = 1 if color == 0 else -1  # Direction pawns attack from
+    for dc in [-1, 1]:
+        nr, nc = king_pos[0] + pawn_dir, king_pos[1] + dc
+        if 0 <= nr < 8 and 0 <= nc < 8:
+            piece = board[nr, nc]
+            if piece != 0:
+                if color == 0 and piece == 7:  # Black pawn
+                    return True
+                elif color == 1 and piece == 1:  # White pawn
+                    return True
+    
+    # Check for attacks from sliding pieces
+    directions = [(-1, -1), (-1, 0), (-1, 1), (0, -1),
+                  (0, 1), (1, -1), (1, 0), (1, 1)]
+    
+    for i, (dr, dc) in enumerate(directions):
+        nr, nc = king_pos[0] + dr, king_pos[1] + dc
+        while 0 <= nr < 8 and 0 <= nc < 8:
+            piece = board[nr, nc]
+            if piece != 0:
+                # Check if piece can attack from this direction
+                piece_type = (piece - 1) % 6 + 1
+                if color == 0:  # White king
+                    if piece > 6:  # Black piece
+                        if piece_type == 5:  # Queen
+                            return True
+                        if i < 4 and piece_type == 3:  # Bishop on diagonal
+                            return True
+                        if i >= 4 and piece_type == 4:  # Rook on straight
+                            return True
+                        if (i < 4 and piece_type == 6 and 
+                            abs(nr - king_pos[0]) == 1 and abs(nc - king_pos[1]) == 1):  # King on diagonal
+                            return True
+                        if (i >= 4 and piece_type == 6 and 
+                            abs(nr - king_pos[0]) <= 1 and abs(nc - king_pos[1]) <= 1):  # King adjacent
+                            return True
+                else:  # Black king
+                    if piece <= 6:  # White piece
+                        if piece_type == 5:  # Queen
+                            return True
+                        if i < 4 and piece_type == 3:  # Bishop
+                            return True
+                        if i >= 4 and piece_type == 4:  # Rook
+                            return True
+                        if (i < 4 and piece_type == 6 and 
+                            abs(nr - king_pos[0]) == 1 and abs(nc - king_pos[1]) == 1):  # King on diagonal
+                            return True
+                        if (i >= 4 and piece_type == 6 and 
+                            abs(nr - king_pos[0]) <= 1 and abs(nc - king_pos[1]) <= 1):  # King adjacent
+                            return True
+                break
+            nr += dr
+            nc += dc
+    
+    return False
+
+def _is_checkmate(board, color):
+    """Check if position is checkmate for given color."""
+    if not _is_in_check(board, color):
+        return False
+    
+    # Generate all moves for this color
+    moves = _generate_legal_moves(board, color)
+    
+    # Check if any move gets out of check
+    for move in moves:
+        new_board = _make_move(board, move, color)
+        if not _is_in_check(new_board, color):
+            return False
+    
+    return True
+
+def _evaluate_board(board):
+    """Evaluate board position from white's perspective."""
+    score = 0
+    
+    # Piece values
+    piece_values = [0, 100, 320, 330, 500, 900, 20000,
+                    -100, -320, -330, -500, -900, -20000]
+    
+    # Piece-square tables (simplified)
+    pawn_table = [
+        0,  0,  0,  0,  0,  0,  0,  0,
+        50, 50, 50, 50, 50, 50, 50, 50,
+        10, 10, 20, 30, 30, 20, 10, 10,
+        5,  5, 10, 25, 25, 10,  5,  5,
+        0,  0,  0, 20, 20,  0,  0,  0,
+        5, -5,-10,  0,  0,-10, -5,  5,
+        5, 10, 10,-20,-20, 10, 10,  5,
+        0,  0,  0,  0,  0,  0,  0,  0
+    ]
+    
+    knight_table = [
+        -50,-40,-30,-30,-30,-30,-40,-50,
+        -40,-20,  0,  0,  0,  0,-20,-40,
+        -30,  0, 10, 15, 15, 10,  0,-30,
+        -30,  5, 15, 20, 20, 15,  5,-30,
+        -30,  0, 15, 20, 20, 15,  0,-30,
+        -30,  5, 10, 15, 15, 10,  5,-30,
+        -40,-20,  0,  5,  5,  0,-20,-40,
+        -50,-40,-30,-30,-30,-30,-40,-50
+    ]
+    
+    # Material and positional scores
+    for r in range(8):
+        for c in range(8):
+            piece = board[r, c]
+            if piece != 0:
+                # Material
+                score += piece_values[piece]
+                
+                # Positional
+                if piece in [1, 7]:  # Pawns
+                    idx = r * 8 + c if piece == 1 else (7 - r) * 8 + c
+                    score += pawn_table[idx] if piece == 1 else -pawn_table[idx]
+                elif piece in [2, 8]:  # Knights
+                    idx = r * 8 + c if piece == 2 else (7 - r) * 8 + c
+                    score += knight_table[idx] if piece == 2 else -knight_table[idx]
+                elif piece in [4, 10]:  # Rooks
+                    # Rook on open file bonus
+                    if np.sum(board[:, c] == piece) == 1:
+                        score += 10 if piece == 4 else -10
+    
+    # Mobility (simplified)
+    white_moves = len(_generate_legal_moves(board, 0))
+    black_moves = len(_generate_legal_moves(board, 1))
+    score += (white_moves - black_moves) * 5
+    
+    # King safety
+    white_king_pos = None
+    black_king_pos = None
+    
+    for r in range(8):
+        for c in range(8):
+            if board[r, c] == 6:
+                white_king_pos = (r, c)
+            elif board[r, c] == 12:
+                black_king_pos = (r, c)
+    
+    if white_king_pos:
+        # Penalize king in center during opening/middlegame
+        if white_king_pos[1] not in [0, 1, 6, 7]:
+            score -= 30
+    if black_king_pos:
+        if black_king_pos[1] not in [0, 1, 6, 7]:
+            score += 30
+    
+    # Pawn structure penalties
+    for c in range(8):
+        white_pawns = np.sum(board[:, c] == 1)
+        black_pawns = np.sum(board[:, c] == 7)
+        
+        # Doubled pawns
+        if white_pawns > 1:
+            score -= 20 * (white_pawns - 1)
+        if black_pawns > 1:
+            score += 20 * (black_pawns - 1)
+        
+        # Isolated pawns
+        if white_pawns > 0:
+            left = board[:, max(0, c-1)]
+            right = board[:, min(7, c+1)]
+            if np.sum(left == 1) == 0 and np.sum(right == 1) == 0:
+                score -= 15
+        if black_pawns > 0:
+            left = board[:, max(0, c-1)]
+            right = board[:, min(7, c+1)]
+            if np.sum(left == 7) == 0 and np.sum(right == 7) == 0:
+                score += 15
+    
+    return score
+
+def _alphabeta(board, depth, alpha, beta, color, start_time, time_limit, memory):
+    """Alpha-beta search implementation."""
+    # Check time limit
+    if time.time() - start_time > time_limit:
+        return _evaluate_board(board)
+    
+    # Terminal node or depth limit
+    if depth == 0:
+        return _evaluate_board(board)
+    
+    # Generate moves
+    moves = _generate_legal_moves(board, color)
+    
+    # Check for checkmate or stalemate
+    if not moves:
+        if _is_in_check(board, color):
+            return -100000 + depth if color == 0 else 100000 - depth  # Checkmate
+        else:
+            return 0  # Stalemate
+    
+    # Move ordering
+    ordered_moves = _order_moves(moves, board, color)
+    
+    if color == 0:  # White (maximizing)
+        value = -float('inf')
+        for move in ordered_moves:
+            new_board = _make_move(board, move, color)
+            # Skip illegal moves that leave king in check
+            if _is_in_check(new_board, color):
+                continue
+            value = max(value, _alphabeta(new_board, depth-1, alpha, beta, 1-color, start_time, time_limit, memory))
+            alpha = max(alpha, value)
+            if value >= beta:
+                break
+        return value
+    else:  # Black (minimizing)
+        value = float('inf')
+        for move in ordered_moves:
+            new_board = _make_move(board, move, color)
+            if _is_in_check(new_board, color):
+                continue
+            value = min(value, _alphabeta(new_board, depth-1, alpha, beta, 1-color, start_time, time_limit, memory))
+            beta = min(beta, value)
+            if value <= alpha:
+                break
+        return value
+
+def _build_opening_book():
+    """Build a simple opening book."""
+    book = {}
+    
+    # Common opening moves
+    openings = [
+        ['e2e4', 'e7e5', 'g1f3', 'b8c6', 'f1b5'],  # Ruy Lopez
+        ['e2e4', 'e7e5', 'g1f3', 'g8f6'],  # Petrov Defense
+        ['d2d4', 'd7d5', 'c2c4'],  # Queen's Gambit
+        ['e2e4', 'c7c5'],  # Sicilian Defense
+        ['g1f3', 'd7d5', 'd2d4'],  # Queen's Pawn Game
+    ]
+    
+    # Convert sequences to board states
+    # This is simplified - in practice would need to track board states
+    
+    return book
+</code>

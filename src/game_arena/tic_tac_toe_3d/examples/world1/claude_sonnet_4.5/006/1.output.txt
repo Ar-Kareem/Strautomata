@@ -1,0 +1,134 @@
+<thinking>
+For a 3x3x3 3D Tic Tac Toe game, I need to create a strategy that:
+
+1. Checks if I can win in one move - take it
+2. Checks if opponent can win in one move - block it
+3. Otherwise, make a strategic move
+
+The winning lines in 3D tic-tac-toe include:
+- 9 lines per plane (3 rows, 3 columns, 2 diagonals) × 3 planes = 27 lines
+- 9 lines going through all 3 layers (3×3 vertical lines)
+- 6 diagonal lines through the cube (4 space diagonals + some plane-to-plane diagonals)
+
+Actually, let me enumerate all winning lines more carefully:
+- Lines within each of 3 layers: 3 rows + 3 cols + 2 diagonals = 8 per layer × 3 = 24
+- Lines going vertically through layers: 3×3 = 9 lines
+- Diagonals through the cube: 4 space diagonals
+- Diagonals in vertical planes: 4 planes × 2 diagonals = 8? No wait...
+  - For plane x=0, x=1, x=2: each has 2 diagonals going through z (4 total per plane direction)
+  - Same for y direction
+  - So that's 3×2 + 3×2 = 12 more diagonals through layers
+
+Let me think systematically about all 49 lines:
+1. Horizontal lines in each layer (z fixed): 3 layers × (3 rows + 3 cols) = 18
+2. Diagonals in each horizontal layer: 3 layers × 2 = 6
+3. Vertical lines (through all z): 3×3 = 9
+4. Diagonals in vertical planes parallel to xz: 3 planes × 2 = 6
+5. Diagonals in vertical planes parallel to yz: 3 planes × 2 = 6
+6. Space diagonals (corner to corner): 4
+
+Total: 18 + 6 + 9 + 6 + 6 + 4 = 49 lines
+
+My strategy:
+1. Generate all possible winning lines
+2. Check each line to see if I can win (2 of mine, 1 empty)
+3. Check each line to see if opponent can win (2 of theirs, 1 empty)
+4. Otherwise, prefer center positions, then corners, then edges
+</thinking>
+
+<code>
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    import random
+    
+    # Generate all winning lines in 3D tic-tac-toe
+    def get_all_lines():
+        lines = []
+        
+        # Lines within each horizontal layer (z fixed)
+        for z in range(3):
+            # Rows (y fixed)
+            for y in range(3):
+                lines.append([(x, y, z) for x in range(3)])
+            # Columns (x fixed)
+            for x in range(3):
+                lines.append([(x, y, z) for y in range(3)])
+            # Diagonals in horizontal plane
+            lines.append([(i, i, z) for i in range(3)])
+            lines.append([(i, 2-i, z) for i in range(3)])
+        
+        # Vertical lines (through all z levels)
+        for x in range(3):
+            for y in range(3):
+                lines.append([(x, y, z) for z in range(3)])
+        
+        # Diagonals in vertical planes parallel to xz (y fixed)
+        for y in range(3):
+            lines.append([(i, y, i) for i in range(3)])
+            lines.append([(i, y, 2-i) for i in range(3)])
+        
+        # Diagonals in vertical planes parallel to yz (x fixed)
+        for x in range(3):
+            lines.append([(x, i, i) for i in range(3)])
+            lines.append([(x, i, 2-i) for i in range(3)])
+        
+        # 4 space diagonals (corner to corner)
+        lines.append([(i, i, i) for i in range(3)])
+        lines.append([(i, i, 2-i) for i in range(3)])
+        lines.append([(i, 2-i, i) for i in range(3)])
+        lines.append([(2-i, i, i) for i in range(3)])
+        
+        return lines
+    
+    def check_line(line, board, player):
+        """Check if a line has 2 of player's pieces and 1 empty, return empty position"""
+        values = [board[x][y][z] for x, y, z in line]
+        if values.count(player) == 2 and values.count(0) == 1:
+            empty_idx = values.index(0)
+            return line[empty_idx]
+        return None
+    
+    lines = get_all_lines()
+    
+    # Check for winning move
+    for line in lines:
+        move = check_line(line, board, 1)
+        if move:
+            return move
+    
+    # Check for blocking move
+    for line in lines:
+        move = check_line(line, board, -1)
+        if move:
+            return move
+    
+    # Strategic positions: prefer center, then corners, then edges
+    center = (1, 1, 1)
+    if board[center[0]][center[1]][center[2]] == 0:
+        return center
+    
+    # Corners of the cube
+    corners = [
+        (0, 0, 0), (0, 0, 2), (0, 2, 0), (0, 2, 2),
+        (2, 0, 0), (2, 0, 2), (2, 2, 0), (2, 2, 2)
+    ]
+    empty_corners = [(x, y, z) for x, y, z in corners if board[x][y][z] == 0]
+    if empty_corners:
+        return random.choice(empty_corners)
+    
+    # Face centers
+    face_centers = [
+        (1, 1, 0), (1, 1, 2), (1, 0, 1), (1, 2, 1), (0, 1, 1), (2, 1, 1)
+    ]
+    empty_face_centers = [(x, y, z) for x, y, z in face_centers if board[x][y][z] == 0]
+    if empty_face_centers:
+        return random.choice(empty_face_centers)
+    
+    # Any remaining empty cell
+    for x in range(3):
+        for y in range(3):
+            for z in range(3):
+                if board[x][y][z] == 0:
+                    return (x, y, z)
+    
+    return (0, 0, 0)  # Should never reach here in a valid game
+</code>

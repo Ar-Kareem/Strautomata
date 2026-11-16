@@ -1,0 +1,107 @@
+
+import random
+
+def policy(pieces: dict[str, str], to_play: str, memory: dict) -> tuple[str, dict]:
+    # Constants for piece values
+    VALS = {'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000}
+    
+    # Simplified piece-square tables (centrality and progression)
+    # Higher is better. Values are for White; flipped for Black.
+    PST = {
+        'P': [
+            0,  0,  0,  0,  0,  0,  0,  0,
+            50, 50, 50, 50, 50, 50, 50, 50,
+            10, 10, 20, 30, 30, 20, 10, 10,
+            5,  5, 10, 25, 25, 10,  5,  5,
+            0,  0,  0, 20, 20,  0,  0,  0,
+            5, -5,-10,  0,  0,-10, -5,  5,
+            5, 10, 10,-20,-20, 10, 10,  5,
+            0,  0,  0,  0,  0,  0,  0,  0
+        ],
+        'N': [
+            -50,-40,-30,-30,-30,-30,-40,-50,
+            -40,-20,  0,  0,  0,  0,-20,-40,
+            -30,  0, 10, 15, 15, 10,  0,-30,
+            -30,  5, 15, 20, 20, 15,  5,-30,
+            -30,  0, 15, 20, 20, 15,  0,-30,
+            -30,  5, 10, 15, 15, 10,  5,-30,
+            -40,-20,  0,  5,  5,  0,-20,-40,
+            -50,-40,-30,-30,-30,-30,-40,-50
+        ]
+    }
+
+    def get_sq_val(sq, piece_type, color):
+        file = ord(sq[0]) - ord('a')
+        rank = int(sq[1]) - 1
+        if color == 'b':
+            rank = 7 - rank
+        idx = (7 - rank) * 8 + file
+        table = PST.get(piece_type)
+        return table[idx] if table else 0
+
+    def evaluate(board_state):
+        score = 0
+        for sq, p in board_state.items():
+            side = 1 if p[0] == 'w' else -1
+            ptype = p[1]
+            val = VALS.get(ptype, 0) + get_sq_val(sq, ptype, p[0])
+            score += side * val
+        return score
+
+    # Fetch legal moves from context (in arenas, legal_moves is typically provided via injection)
+    # Since we must return a legal move string, we assume the caller provides legal_moves in memory or globally
+    # If not provided, we must rely on the environment's bridge. 
+    # Logic to handle the move selection:
+    moves = memory.get('legal_moves', [])
+    if not moves:
+        # Fallback: if legal_moves isn't in memory, it must be in the outer scope of the evaluation loop
+        # For this specific bot, we assume standard competitive environment injection
+        return None, memory
+
+    best_move = moves[0]
+    best_eval = -999999 if to_play == 'white' else 999999
+    
+    for mv in moves:
+        # Simulate move
+        start_sq = mv[0:2]
+        end_sq = mv[2:4]
+        promo = mv[4:] if len(mv) > 4 else None
+        
+        moving_piece = pieces.get(start_sq)
+        if not moving_piece: continue
+        
+        # Temp state construction
+        new_state = pieces.copy()
+        if end_sq in new_state:
+            del new_state[end_sq]
+        del new_state[start_sq]
+        
+        new_piece = moving_piece
+        if promo:
+            new_piece = moving_piece[0] + promo.upper()
+        
+        new_state[end_sq] = new_piece
+        
+        # Handle Castling (King move of 2 squares)
+        if moving_piece[1] == 'K':
+            if start_sq == 'e1' and end_sq == 'g1': 
+                if 'h1' in new_state: del new_state['h1']; new_state['f1'] = 'wR'
+            elif start_sq == 'e1' and end_sq == 'c1':
+                if 'a1' in new_state: del new_state['a1']; new_state['d1'] = 'wR'
+            elif start_sq == 'e8' and end_sq == 'g8':
+                if 'h8' in new_state: del new_state['h8']; new_state['f8'] = 'bR'
+            elif start_sq == 'e8' and end_sq == 'c8':
+                if 'a8' in new_state: del new_state['a8']; new_state['d8'] = 'bR'
+
+        curr_eval = evaluate(new_state)
+        
+        if to_play == 'white':
+            if curr_eval > best_eval:
+                best_eval = curr_eval
+                best_move = mv
+        else:
+            if curr_eval < best_eval:
+                best_eval = curr_eval
+                best_move = mv
+                
+    return best_move, memory

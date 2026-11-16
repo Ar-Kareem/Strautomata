@@ -1,0 +1,254 @@
+
+import copy
+
+# Board dimensions
+ROWS = 5
+COLS = 6
+SIZE = ROWS * COLS
+
+# Direction mappings for flat index
+# Directions: Up, Down, Left, Right
+D_DIRS = [
+    (-COLS, 'U'), # Up: subtract 6 (row - 1)
+    (COLS, 'D'),  # Down: add 6 (row + 1)
+    (-1, 'L'),    # Left: subtract 1 (col - 1)
+    (1, 'R')      # Right: add 1 (col + 1)
+]
+
+def get_moves(board_me, board_opp):
+    """Generate all legal moves for the current player."""
+    moves = []
+    for i in range(SIZE):
+        if board_me[i] == 1:
+            # Check orthogonal neighbors
+            r, c = divmod(i, COLS)
+            
+            # Up
+            if r > 0:
+                ni = i - COLS
+                if board_opp[ni] == 1:
+                    moves.append((i, ni, 'U'))
+            # Down
+            if r < ROWS - 1:
+                ni = i + COLS
+                if board_opp[ni] == 1:
+                    moves.append((i, ni, 'D'))
+            # Left
+            if c > 0:
+                ni = i - 1
+                if board_opp[ni] == 1:
+                    moves.append((i, ni, 'L'))
+            # Right
+            if c < COLS - 1:
+                ni = i + 1
+                if board_opp[ni] == 1:
+                    moves.append((i, ni, 'R'))
+    return moves
+
+def apply_move(board_me, board_opp, move):
+    """
+    Apply a move and return new board states.
+    Move tuple: (from_idx, to_idx, dir_char)
+    """
+    f, t, _ = move
+    # Create copies of boards
+    new_me = board_me[:]
+    new_opp = board_opp[:]
+    
+    # Execute move
+    new_me[f] = 0       # Leave start
+    new_opp[t] = 0      # Clobber opponent
+    new_me[t] = 1       # Arrive at destination
+    
+    return new_me, new_opp
+
+def evaluate(board_me, board_opp):
+    """Heuristic evaluation: Mobility difference."""
+    # Count moves for me
+    my_moves = 0
+    for i in range(SIZE):
+        if board_me[i] == 1:
+            r, c = divmod(i, COLS)
+            if r > 0 and board_opp[i - COLS] == 1: my_moves += 1
+            if r < ROWS - 1 and board_opp[i + COLS] == 1: my_moves += 1
+            if c > 0 and board_opp[i - 1] == 1: my_moves += 1
+            if c < COLS - 1 and board_opp[i + 1] == 1: my_moves += 1
+            
+    # Count moves for opponent
+    opp_moves = 0
+    for i in range(SIZE):
+        if board_opp[i] == 1:
+            r, c = divmod(i, COLS)
+            if r > 0 and board_me[i - COLS] == 1: opp_moves += 1
+            if r < ROWS - 1 and board_me[i + COLS] == 1: opp_moves += 1
+            if c > 0 and board_me[i - 1] == 1: opp_moves += 1
+            if c < COLS - 1 and board_me[i + 1] == 1: opp_moves += 1
+            
+    return my_moves - opp_moves
+
+def negamax(board_me, board_opp, depth, alpha, beta, color):
+    """
+    Negamax with Alpha-Beta pruning.
+    color: 1 for maximizing player (me), -1 for minimizing (opponent).
+    Returns score from perspective of current player.
+    """
+    moves = get_moves(board_me, board_opp)
+    
+    # Terminal state: no moves left
+    if not moves:
+        return -100000 # Losing penalty
+    
+    # Depth limit reached
+    if depth == 0:
+        # Evaluate returns (my_mobility - opp_mobility)
+        # If color is 1 (me), score is evaluate().
+        # If color is -1 (opp), 'me' in evaluate is actually opponent.
+        # So evaluate returns (opp_mobility - my_mobility).
+        # We want score relative to current player.
+        # If current is opponent (color -1), evaluate gives their advantage (which is my disadvantage).
+        # But negamax expects score relative to 'board_me'.
+        # Here 'board_me' is ALWAYS the current player to move.
+        return color * evaluate(board_me, board_opp)
+
+    # Move ordering heuristic: sort by a quick estimate of value
+    # We can sort by how much they reduce opponent mobility? 
+    # For now, simple ordering is fine, or we can just process them.
+    # Sorting can add overhead, but improves pruning.
+    # Let's try a simple sort based on resulting mobility diff approx.
+    
+    def move_score_heuristic(m):
+        # Fast approximation of move quality for sorting
+        # Just putting captures in good spots?
+        # For simplicity, we skip complex sorting to save time, 
+        # but standard sort ensures determinism.
+        return m[0] # sort by start index
+
+    # Sorting for deterministic behavior and slight pruning improvement
+    moves.sort(key=move_score_heuristic)
+
+    best_score = -float('inf')
+    
+    for move in moves:
+        new_me, new_opp = apply_move(board_me, board_opp, move)
+        # Swap perspectives: current 'me' becomes 'opp' for the recursive call
+        # color flips
+        score = -negamax(new_opp, new_me, depth - 1, -beta, -alpha, -color)
+        
+        if score > best_score:
+            best_score = score
+        
+        alpha = max(alpha, score)
+        if alpha >= beta:
+            break # Pruning
+            
+    return best_score
+
+def policy(you, opponent):
+    # 1. Preprocess Input
+    # Input might be 2D list or flat list. 
+    # Convert to flat list for performance.
+    
+    flat_you = []
+    flat_opp = []
+    
+    # Check type of first element to determine structure
+    if isinstance(you[0], list):
+        # 2D input
+        for r in range(ROWS):
+            flat_you.extend(you[r])
+            flat_opp.extend(opponent[r])
+    else:
+        # Assuming 1D input or flat list
+        flat_you = list(you)
+        flat_opp = list(opponent)
+
+    # 2. Generate moves for root
+    moves = get_moves(flat_you, flat_opp)
+    
+    if not moves:
+        # Should not happen as per problem statement (we must have a move)
+        return "0,0,R" 
+
+    # If only one move, return it immediately
+    if len(moves) == 1:
+        best_move = moves[0]
+        r, c = divmod(best_move[0], COLS)
+        return f"{r},{c},{best_move[2]}"
+        
+    # 3. Search for best move
+    best_score = -float('inf')
+    best_move = moves[0] # Default
+    
+    # Depth for search. 4 is safe for 1 sec.
+    SEARCH_DEPTH = 4
+    
+    # We are the maximizing player (color = 1)
+    # Note: The root negamax logic is slightly different because we iterate moves here.
+    # Inside the loop, we call negamax for the child state.
+    # The child state is Opponent's turn.
+    # Opponent is 'me' in the child call.
+    # So we pass (new_opp, new_me, ...).
+    # And we want score relative to us (Root).
+    # Negamax returns score relative to 'me' argument.
+    # So for child call: returns score relative to Opponent.
+    # We negate it to get score relative to Us.
+    
+    for move in moves:
+        new_me, new_opp = apply_move(flat_you, flat_opp, move)
+        # Current: Me. Child: Opp.
+        # Pass (Child_Me, Child_Opp, ...)
+        # Child_Me = new_opp (Opponent pieces)
+        # Child_Opp = new_me (My pieces)
+        # color = -1 (for opponent)
+        # We negate the result.
+        # alpha-beta bounds should be standard for root loop.
+        
+        score = -negamax(new_opp, new_me, SEARCH_DEPTH - 1, -float('inf'), -float('inf'), -1)
+        # Wait, alpha beta bounds in loop:
+        # alpha starts at -inf. 
+        # The recursive call handles -alpha, -beta swapping.
+        # We should track alpha in this loop to pass to next iteration?
+        # Yes, that's how we prune siblings? No, alpha beta pruning doesn't prune siblings at root easily without PVS.
+        # But we can tighten the window.
+        
+        # Let's just use standard manual tracking
+        # current_alpha = best_score ? No.
+        # We'll stick to:
+        # score = -negamax(child, depth-1, -beta, -alpha, -1)
+        
+        # Actually, simpler integration:
+        # alpha = -inf
+        # beta = inf
+        # For move in moves:
+        #    val = -negamax(..., -beta, -alpha, ...)
+        #    if val > alpha: alpha = val; best_move = move
+        
+        current_alpha = best_score # Optimization
+        
+        score = -negamax(new_opp, new_me, SEARCH_DEPTH - 1, -float('inf'), -current_alpha, -1)
+        # Bounds check: 
+        # We want to find max(score).
+        # If we pass alpha=best_score, we are saying "we already have a path with score best_score".
+        # If child returns something lower, we ignore it.
+        # Wait, the arguments to negamax are `alpha`, `beta`.
+        # Negamax: `alpha = max(alpha, score)`.
+        # If we pass `current_alpha` as the `alpha` bound, we aren't passing it correctly to the negative bounds.
+        # Negamax bounds: `-beta, -alpha`.
+        # We want to pass `(-inf, -best_score)`?
+        # No.
+        # Standard Root Loop:
+        # alpha = -inf
+        # beta = inf
+        # for move in moves:
+        #    val = -negamax(child, -beta, -alpha)
+        #    if val > alpha:
+        #        alpha = val
+        #        best_move = move
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+            
+    # 4. Format output
+    r, c = divmod(best_move[0], COLS)
+    return f"{r},{c},{best_move[2]}"

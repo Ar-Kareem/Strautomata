@@ -1,0 +1,156 @@
+The strategy for this policy is to implement a hex-playing AI using a combination of:
+
+1. **Virtual Connection Detection** – We evaluate key patterns and paths that help connect our edges.
+2. **Distance-Based Heuristic (Breadth-First Search, BFS)** – We compute the shortest "virtual" distance from our stones to the target opposite side, treating empty cells as potential bridges.
+3. **Territory and Influence Map** – We assign weights to each cell based on how beneficial it is for connecting our sides, considering proximity to our stones and blocking opponent connections.
+4. **Greedy Best-First Move Selection** – We explore a shallow lookahead implicitly through the use of a carefully designed evaluation function and pick the most promising immediate move.
+
+The AI focuses on:
+- For black ('b'): connecting top (row 0) to bottom (row 10).
+- For white ('w'): connecting left (col 0) to right (col 10).
+
+We use BFS to estimate the current shortest unblocked path for us and for the opponent (threat assessment). Then:
+- Prioritize moves that reduce our shortest path.
+- Avoid moves that help the opponent’s shortest path.
+- Favor central and bridge-like positions.
+
+Additionally, if the opponent is about to cut off a critical path, we block aggressively.
+
+The implementation uses `collections.deque` for BFS and avoids external heavy dependencies by relying on pure Python with efficient lists and sets.
+
+<code>
+from collections import deque
+from typing import List, Tuple, Set, Optional
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[int, int]:
+    # Board size
+    N = 11
+    # Convert to sets for fast lookup
+    me_set = set(me)
+    opp_set = set(opp)
+    all_set = me_set | opp desperado
+
+    # Helper: get neighbors in hex grid
+    def get_neighbors(r: int, c: int) -> List[Tuple[int, int]]:
+        # Hexagonal grid: 6 neighbors
+        directions = [
+            (0, -1), (0, 1),           # left, right
+            (-1, 0), (-1, 1),          # up-left, up-right
+            (1, -1), (1, 0)            # down-left, down-right
+        ]
+        neighbors = []
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < N and 0 <= nc < N:
+                neighbors.append((nr, nc))
+        return neighbors
+
+    # BFS shortest path from one side to the other for current player
+    def shortest_path_to_connect(stones: Set[Tuple[int, int]], target: str) -> Optional[int]:
+        visited = set()
+        queue = deque()
+        
+        if target == 'b':
+            # Black: top (row 0) to bottom (row 10)
+            for c in range(N):
+                if (0, c) in stones:
+                    queue.append(((0, c), 0))
+                    visited.add((0, c))
+            target_condition = lambda r, c: r == N - 1
+        else:
+            # White: left (col 0) to right (col 10)
+            for r in range(N):
+                if (r, 0) in stones:
+                    queue.append(((r, 0), 0))
+                    visited.add((r, 0))
+            target_condition = lambda r, c: c == N - 1
+
+        # If we already have stones on both sides, we might already be connected
+        while queue:
+            (r, c), dist = queue.popleft()
+            if target_condition(r, c):
+                return dist
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) in visited or (nr, nc) in opp_set or (nr, nc) in me_set:
+                    continue
+                # Only allow empty cells
+                visited.add((nr, nc))
+                queue.append(((nr, nc), dist + 1))
+                
+        # If no path found, return a large number
+        return float('inf')
+
+    # Evaluate how good a move is
+    def evaluate_move(r: int, c: int) -> float:
+        if (r, c) in me_set or (r, c) in opp_set:
+            return -1  # Invalid move
+
+        score = 0.0
+        
+        # Copy current board state temporarily
+        new_me = me_set | {(r, c)}
+        
+        # Current shortest path
+        current_path_len = shortest_path_to_connect(me_set, color)
+        # After move is placed
+        new_path_len = shortest_path_to_connect(new_me, color)
+        
+        # Reward reducing our own shortest path
+        if new_path_len < current_path_len:
+            score += 100
+        elif new_path_len > current_path_len:
+            score -= 200  # Avoid moves that make us worse
+        
+        # Small bonus for moving toward center
+        center_bias = (N - abs(r - N//2) - abs(c - N//2))
+        score += center_bias * 2
+        
+        # Check neighbors: bonus for connecting to our groups
+        friendly_neighbors = 0
+        for nr, nc in get_neighbors(r, c):
+            if (nr, nc) in me_set:
+                friendly_neighbors += 1
+        score += friendly_neighbors * 20
+        
+        # Penalty: if this move helps opponent (only if they're close)
+        opp_path_before = shortest_path_to_connect(opp_set, 'w' if color == 'b' else 'b')
+        # Simulate: does blocking help? (reverse logic)
+        blocked_opponent = False
+        for nr, nc in get_neighbors(r, c):
+            if (nr, nc) in opp_set and shortest_path_to_connect(opp_set, 'w' if color == 'b' else 'b') < 5:
+                # Nearby opponent under pressure? maybe block
+                # But if we help them by giving bridge? avoid
+                pass
+        # Instead, reward moves that block opponent's potential short path
+        opp_neighbors = 0
+        for nr, nc in get_neighbors(r, c):
+            if (nr, nc) in opp_set:
+                opp_neighbors += 1
+        if opp_path_before < 7 and opp_neighbors > 0:
+            score += 15  # opportunity to block
+
+        return score
+
+    # Find all empty cells
+    empty_cells = []
+    for r in range(N):
+        for c in range(N):
+            if (r, c) not in me_set and (r, c) not in opp_set:
+                empty_cells.append((r, c))
+
+    if not empty_cells:
+        # Should not happen, but fallback
+        return (0, 0)
+
+    # Evaluate all moves and pick the best
+    best_move = empty_cells[0]
+    best_score = -float('inf')
+    
+    for move in empty_cells:
+        score = evaluate_move(move[0], move[1])
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return best_move
+</code>

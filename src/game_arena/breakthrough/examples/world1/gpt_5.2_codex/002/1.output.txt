@@ -1,0 +1,184 @@
+The strategy for this policy is to use a fast alpha–beta minimax search with a tactical evaluation that favors material, advancement toward the goal row, and tactical safety (threats). The search depth adapts to the remaining pieces: deeper searches are used in simpler endgames. The move generator always includes every legal forward and diagonal move, so the policy always returns a legal move.
+
+<code>
+import math
+from typing import List, Tuple
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    # Build full state as (white, black)
+    if color == 'w':
+        white = list(me)
+        black = list(opp)
+    else:
+        black = list(me)
+        white = list(opp)
+
+    root_color = color
+
+    def check_winner(white, black):
+        if not black:
+            return 'w'
+        if not white:
+            return 'b'
+        for r, c in white:
+            if r == 7:
+                return 'w'
+        for r, c in black:
+            if r == 0:
+                return 'b'
+        return None
+
+    def threatened(white, black):
+        # count white pieces capturable by black
+        white_set = set(white)
+        count = 0
+        for r, c in black:
+            tr = r - 1
+            if tr >= 0:
+                for dc in (-1, 1):
+                    tc = c + dc
+                    if 0 <= tc < 8 and (tr, tc) in white_set:
+                        count += 1
+        return count
+
+    def evaluate(white, black, root_color):
+        # Material and advancement
+        adv_white = sum(r for r, c in white)
+        adv_black = sum(7 - r for r, c in black)
+        score = 100 * (len(white) - len(black)) + 3 * (adv_white - adv_black)
+        # Threats
+        th_white = threatened(white, black)
+        th_black = threatened(black, white)
+        score += 5 * (th_black - th_white)
+        if root_color == 'b':
+            score = -score
+        return score
+
+    def generate_moves(color, white, black):
+        moves = []
+        if color == 'w':
+            my = white
+            opp = black
+            dir = 1
+        else:
+            my = black
+            opp = white
+            dir = -1
+
+        my_set = set(my)
+        occ = set(white) | set(black)
+        opp_set = set(opp)
+
+        for r, c in my:
+            nr = r + dir
+            if 0 <= nr < 8:
+                # forward
+                if (nr, c) not in occ:
+                    moves.append(((r, c), (nr, c)))
+                # diag left
+                nc = c - 1
+                if 0 <= nc < 8 and (nr, nc) not in my_set:
+                    moves.append(((r, c), (nr, nc)))
+                # diag right
+                nc = c + 1
+                if 0 <= nc < 8 and (nr, nc) not in my_set:
+                    moves.append(((r, c), (nr, nc)))
+        return moves
+
+    def apply_move(white, black, color, move):
+        (fr, fc), (tr, tc) = move
+        if color == 'w':
+            new_white = [p for p in white if p != (fr, fc)] + [(tr, tc)]
+            new_black = [p for p in black if p != (tr, tc)]
+        else:
+            new_black = [p for p in black if p != (fr, fc)] + [(tr, tc)]
+            new_white = [p for p in white if p != (tr, tc)]
+        return new_white, new_black
+
+    def move_order_key(move, color, opp_set):
+        (_, _), (tr, tc) = move
+        capture = 1 if (tr, tc) in opp_set else 0
+        if color == 'w':
+            prog = tr
+        else:
+            prog = 7 - tr
+        return capture * 10 + prog
+
+    WIN_SCORE = 10000
+
+    def minimax(white, black, turn_color, depth, alpha, beta, root_color):
+        winner = check_winner(white, black)
+        if winner:
+            if winner == root_color:
+                return WIN_SCORE + depth
+            else:
+                return -WIN_SCORE - depth
+        if depth == 0:
+            return evaluate(white, black, root_color)
+
+        moves = generate_moves(turn_color, white, black)
+        if not moves:
+            return evaluate(white, black, root_color)
+
+        # Order moves for better pruning
+        opp_set = set(black) if turn_color == 'w' else set(white)
+        moves.sort(key=lambda m: move_order_key(m, turn_color, opp_set), reverse=(turn_color==root_color))
+
+        if turn_color == root_color:
+            value = -math.inf
+            for mv in moves:
+                nwhite, nblack = apply_move(white, black, turn_color, mv)
+                value = max(value, minimax(nwhite, nblack, 'b' if turn_color=='w' else 'w',
+                                           depth-1, alpha, beta, root_color))
+                alpha = max(alpha, value)
+                if beta <= alpha:
+                    break
+            return value
+        else:
+            value = math.inf
+            for mv in moves:
+                nwhite, nblack = apply_move(white, black, turn_color, mv)
+                value = min(value, minimax(nwhite, nblack, 'b' if turn_color=='w' else 'w',
+                                           depth-1, alpha, beta, root_color))
+                beta = min(beta, value)
+                if beta <= alpha:
+                    break
+            return value
+
+    # Determine depth based on complexity
+    piece_count = len(white) + len(black)
+    if piece_count > 16:
+        depth = 3
+    elif piece_count > 8:
+        depth = 4
+    else:
+        depth = 5
+
+    moves = generate_moves(root_color, white, black)
+    if not moves:
+        # Fallback (should not happen in normal play)
+        return ((0,0),(0,0))
+
+    # Immediate winning move check
+    for mv in moves:
+        nwhite, nblack = apply_move(white, black, root_color, mv)
+        winner = check_winner(nwhite, nblack)
+        if winner == root_color:
+            return mv
+
+    best_move = moves[0]
+    best_score = -math.inf
+
+    opp_set = set(black) if root_color == 'w' else set(white)
+    moves.sort(key=lambda m: move_order_key(m, root_color, opp_set), reverse=True)
+
+    for mv in moves:
+        nwhite, nblack = apply_move(white, black, root_color, mv)
+        score = minimax(nwhite, nblack, 'b' if root_color=='w' else 'w',
+                        depth-1, -math.inf, math.inf, root_color)
+        if score > best_score:
+            best_score = score
+            best_move = mv
+
+    return best_move
+</code>

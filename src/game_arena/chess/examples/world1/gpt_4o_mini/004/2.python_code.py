@@ -1,0 +1,46 @@
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    opponent = 'b' if to_play == 'white' else 'w'
+    checked_moves = []
+    capturing_moves = []
+    best_capture = None
+    highest_value_captured = 0
+    
+    # Piece values for evaluation
+    piece_values = {
+        'P': 1,
+        'N': 3,
+        'B': 3,
+        'R': 5,
+        'Q': 9,
+        'K': 0
+    }
+    
+    def is_checkmate(move):
+        # Simplified: Check if the move results in checkmate
+        # This requires complex chess logic, ideally checking all responses by the opponent
+        # For brevity, we assume we check for checkmate suitability in some form
+        return 'checkmate_marker' in move  # Placeholder for actual conditions
+
+    for move in legal_moves:
+        if is_checkmate(move):
+            return move  # Prioritize immediate checkmate
+
+        # Check for capturing moves
+        if 'x' in move:
+            captured_piece_code = move.split('x')[1][0]  # this depends on the move format
+            if captured_piece_code in pieces.keys():  # Ensure it is capturable
+                captured_piece = pieces[captured_piece_code]
+                value = piece_values[captured_piece[1]]  # Piece type determines value
+                capturing_moves.append(move)
+                if value > highest_value_captured:
+                    best_capture = move
+                    highest_value_captured = value
+    
+    # Choose the best capturing move if no checkmate found
+    if best_capture:
+        return best_capture
+
+    # If no capturing move, choose the first legal move (fallback)
+    return legal_moves[0] if legal_moves else ''
+

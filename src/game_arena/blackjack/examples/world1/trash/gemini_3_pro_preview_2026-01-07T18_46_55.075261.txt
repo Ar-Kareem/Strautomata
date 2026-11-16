@@ -1,0 +1,202 @@
+```python
+import collections
+
+# Mapping from card string to bit index (0-12)
+CARD_TO_BIT = {
+    "A": 0, "2": 1, "3": 2, "4": 3, "5": 4, "6": 5, "7": 6, "8": 7,
+    "9": 8, "10": 9, "J": 10, "Q": 11, "K": 12
+}
+# Base values for each bit index (A is initially 1)
+BIT_TO_VALUE = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 10, 10]
+
+# Global cache for the policies
+_POLICIES = {}
+_PRECOMPUTED = False
+
+def get_hand_mask(hand: list[str]) -> int:
+    mask = 0
+    for c in hand:
+        mask |= (1 << CARD_TO_BIT[c])
+    return mask
+
+def calculate_score(mask: int, target: int) -> int:
+    """
+    Calculates the best score for a given hand mask against a target T.
+    Returns 999 if the lowest possible score > T (Bust).
+    """
+    val = 0
+    aces = 0
+    # Sum base values (A=1)
+    for i in range(13):
+        if (mask >> i) & 1:
+            if i == 0:
+                aces += 1
+                val += 1
+            else:
+                val += BIT_TO_VALUE[i]
+    
+    if val > target:
+        return 999 # Bust
+        
+    # Attempt to upgrade Aces from 1 to 11. Each upgrade adds 10.
+    # We want to perform as many upgrades as possible without exceeding T.
+    space = target - val
+    possible_upgrades = space // 10
+    actual_upgrades = min(aces, possible_upgrades)
+    
+    return val + actual_upgrades * 10
+
+def solve_for_target(t: int):
+    """
+    Iterative solver to find the Nash Equilibrium strategy for a given target T.
+    Since the game is symmetric, we iterate to find a strategy that is optimal
+    against itself.
+    """
+    # 2^13 = 8192 states
+    # Precalculate scores for all hands to speed up loop
+    scores = [0] * 8192
+    for m in range(8192):
+        scores[m] = calculate_score(m, t)
+
+    # Initial Opponent Distribution: Assume opponent always busts (weak strategy)
+    # This ensures we start by valuing "staying" if we have a valid score.
+    # The solver will converge to the equilibrium usually within 5-10 steps.
+    opp_dist = collections.defaultdict(float)
+    opp_dist['bust'] = 1.0 
+    
+    policy_action = {} # map mask -> bool (True=HIT, False=STAY)
+    
+    # Pre-group masks by number of cards for DP efficiency
+    masks_by_len = [[] for _ in range(14)]
+    for m in range(8192):
+        c = bin(m).count('1')
+        masks_by_len[c].append(m)
+
+    # Iteration loop
+    for _ in range(10):
+        
+        # 1. Calculate Expected Utility U(s) based on current opponent distribution
+        # Payoffs: Win=1.0, Draw=0.5, Loss=0.0
+        # Win if opp busts OR (opp !bust AND my_score > opp_score)
+        
+        p_opp_bust = opp_dist['bust']
+        
+        # eu_scores[s] = Expected Utility of ending with score s
+        eu_scores = {}
+        
+        cumulative_p_opp_lower = 0.0
+        for s in range(t + 1):
+            p_s = opp_dist.get(s, 0.0)
+            # EU = P(Win via opp bust) + P(Win via score) + P(Draw)
+            eu_scores[s] = p_opp_bust * 1.0 + cumulative_p_opp_lower * 1.0 + p_s * 0.5
+            cumulative_p_opp_lower += p_s
+            
+        # EU if I bust (I lose unless opponent also busts, then draw)
+        eu_bust = 0.5 * p_opp_bust
+        
+        # 2. Backward induction to find optimal policy V(mask)
+        # V stores the max EV for a given hand state
+        V = {}
+        
+        # Iterate backwards from full hand to empty hand
+        for k in range(13, -1, -1):
+            for m in masks_by_len[k]:
+                s = scores[m]
+                
+                # EV of Staying
+                val_stay = eu_bust if s > t else eu_scores[s]
+                
+                # EV of Hitting
+                # If already busted or no cards left, cannot hit advantageously
+                if s > t or k == 13:
+                    V[m] = val_stay
+                    policy_action[m] = False
+                    continue
+                
+                # Calculate expected value of drawing a card
+                sum_val_hit = 0.0
+                card_count = 0
+                for b in range(13):
+                    if not ((m >> b) & 1):
+                        child = m | (1 << b)
+                        sum_val_hit += V[child]
+                        card_count += 1
+                
+                val_hit = sum_val_hit / card_count if card_count > 0 else 0.0
+                
+                # Choose Value Maximizing Act
+                if val_hit > val_stay + 1e-9:
+                    V[m] = val_hit
+                    policy_action[m] = True
+                else:
+                    V[m] = val_stay
+                    policy_action[m] = False
+
+        # 3. Forward pass to update opponent distribution based on derived policy
+        new_opp_dist = collections.defaultdict(float)
+        state_probs = collections.defaultdict(float)
+        state_probs[0] = 1.0 # Start with empty hand
+        
+        for k in range(13):
+            for m in masks_by_len[k]:
+                p = state_probs[m]
+                if p <= 1e-12: continue
+                
+                if scores[m] > t:
+                    # Trapped in bust state
+                    new_opp_dist['bust'] += p
+                    continue
+                
+                if policy_action.get(m, False):
+                    # HIT
+                    valid_bits = [b for b in range(13) if not ((m >> b) & 1)]
+                    n_rem = len(valid_bits)
+                    prob_share = p / n_rem
+                    for b in valid_bits:
+                        state_probs[m | (1 << b)] += prob_share
+                else:
+                    # STAY
+                    new_opp_dist[scores[m]] += p
+                    
+        # Handle hands that reached max size or remaining mass
+        for m in masks_by_len[13]:
+            p = state_probs[m]
+            if p > 0:
+                if scores[m] > t:
+                    new_opp_dist['bust'] += p
+                else:
+                    new_opp_dist[scores[m]] += p
+        
+        opp_dist = new_opp_dist
+
+    return policy_action
+
+def precompute_all():
+    global _PRECOMPUTED
+    if _PRECOMPUTED:
+        return
+    # Precalculate for specified random range
+    for tgt in range(10, 31):
+        _POLICIES[tgt] = solve_for_target(tgt)
+    _PRECOMPUTED = True
+
+# Run precomputation at module load time (usually allowed and efficient enough)
+# Takes approx 0.1-0.2s
+precompute_all()
+
+def policy(hand: list[str], target: int) -> str:
+    # Ensure target is within expected range, fallback if not
+    if target not in _POLICIES:
+        # Simple heuristic fallback
+        score = sum(BIT_TO_VALUE[CARD_TO_BIT[c]] for c in hand) # rough
+        return "HIT" if score < target - 5 else "STAY"
+        
+    mask = get_hand_mask(hand)
+    
+    # If already busted, staying is the only logical termination
+    if calculate_score(mask, target) > target:
+        return "STAY"
+    
+    should_hit = _POLICIES[target].get(mask, False)
+    return "HIT" if should_hit else "STAY"
+```

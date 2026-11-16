@@ -1,0 +1,379 @@
+<thinking>
+We need to implement a targeting policy for Battleship. The board is 10x10 with known information: 0 = unknown, -1 = miss, 1 = hit.
+
+We need to sink ships of lengths: 5, 4, 3, 3, 2. That's total 17 cells.
+
+Goal: Choose next shot efficiently.
+
+Approach: We can implement a probability-based or rule-based targeting system. Common strategies:
+1. Hunt-target mode: When no hit, use parity or random distribution. When we have a hit, we target adjacent cells to find orientation and sink ship.
+2. Probability density: Calculate for each cell probability that a ship could be placed covering it given the current knowledge.
+
+We'll implement a probability density approach using possibilities of ship placements.
+
+Steps:
+- Generate all possible placements of each ship (horizontal/vertical) that fit within board and don't conflict with known misses (since miss means no ship there) and must include any hits if the ship is not yet sunk? Actually we don't know which hit belongs to which ship. But for probability, we consider that each unknown cell could be part of a ship placement that is consistent with current board.
+
+We can compute for each cell the number of ways a ship of given length can be placed covering that cell given constraints: the ship must not overlap with known misses, and must cover only hits or unknowns (but cannot have a hit in a position that would be impossible? Actually if we have a hit, that cell is definitely ship, so any placement covering that hit must have that cell as part of ship. But we don't require that every placement includes all hits because we don't know which ship. So we can treat hits as "maybe ship" but actually they are ship, so placements that cover a hit are more likely? Actually we want to find cells that are most likely to contain a ship.
+
+Standard approach: For each cell, compute probability as sum over all ships of (number of valid placements of that ship covering this cell) / (total placements of that ship). Then combine.
+
+But we have multiple ships, and they are independent. However, we can't have overlapping ships, but for probability we often approximate by assuming independence.
+
+Alternatively, we can use deterministic targeting: When there is a hit but not sunk, target adjacent cells to determine orientation, then proceed along that line until sunk. This is simpler and likely efficient.
+
+We need to track state between calls: The policy function is called repeatedly with updated board. We cannot rely on global variables? Actually we can define global variables inside the module that persist across calls because the function is defined in a module that stays loaded. However, if the arena resets the environment between games, we might need to detect new game. We can detect new game if board is all zeros? But also could be start of a new game after previous finished. But we don't have to worry about multiple games? The specification says we are competing in a gaming arena, likely each game is a fresh instance of the policy function. However, the function might be called multiple times within a single game. We can use static variables inside the function.
+
+Let's design a stateful policy using a class but define it inside the function? Or use function attributes.
+
+We'll implement:
+- Mode: "HUNT" or "TARGET"
+- In HUNT mode, we shoot at cells with highest probability using parity (to improve coverage) or just probability density.
+- In TARGET mode, when we have a hit that is not yet sunk (i.e., adjacent unknown cells), we target around it.
+
+We need to identify all "unsunk" hits: hits that have at least one adjacent unknown or hit cell (since sunk ships are completely surrounded by misses or board edges? Actually after a ship is sunk, all its cells are still hits, but we might infer sunk when all cells of that ship have been hit and no adjacent hits? We could detect when a hit has no adjacent unknown/hit cells? Not reliable.
+
+Better: We can maintain a set of hit cells that we have not yet "processed" as part of a sunk ship. But we don't know when ship sinks unless we get a signal. In typical Battleship, you get a notification "You sunk my battleship!" but here we only have board state. However, the board doesn't change to indicate sunk. So we must infer: If we have hits that form a line and all ends are surrounded by misses/edges, and the length matches a ship length, we can assume sunk. But tricky.
+
+Alternatively, we can just treat all hits as potential targets: if a hit cell has any adjacent unknown cell, we consider it as part of an unsunk ship. That's simpler.
+
+We'll implement:
+1. Scan board for hits that have at least one adjacent unknown (up/down/left/right). Collect such hits.
+2. If there are such hits, enter TARGET mode. Choose one hit (preferably one with most adjacent unknowns or part of a line). Then try to determine orientation: if there are adjacent hits in line, we shoot along that line. Otherwise, we shoot at adjacent unknown cells in cross pattern.
+3. If no such hits, go to HUNT mode: compute probability density and shoot at cell with highest probability.
+
+Probability density calculation:
+- For each ship length, generate all possible placements (starting positions and orientation) that do not conflict with known misses (cells marked -1). For each placement, mark all cells it covers. Sum over all ships and all placements to get a heatmap. Then choose cell with highest heat.
+
+We also want to avoid shooting cells that are impossible due to isolated single-cell gaps? But heatmap will account for that.
+
+We also want to incorporate parity: ships cannot be placed on a single cell, so we can target a checkerboard pattern to increase odds. But probability density already accounts for ship lengths.
+
+Implementation details:
+- We'll cache the heatmap computation to avoid recalculating every time if board hasn't changed much? But we have to compute each call anyway, within 1 second. Board size 10x10, ships: 5,4,3,3,2. Number of placements per ship: For length L, horizontal placements: 10 * (11-L) = 10*(11-L). Vertical same. So total placements per ship: 2*10*(11-L). For L=5: 2*10*6=120, L=4: 2*10*7=140, L=3: 2*10*8=160 (twice), L=2: 2*10*9=180. Total placements: 120+140+160+160+180 = 760. That's small. For each placement we check L cells for conflict with misses. So overall operations ~ few thousand, trivial.
+
+But we also need to consider that ships cannot overlap. However, for probability, we can treat each ship independently and sum. That's approximate but works.
+
+We'll also weight placements that cover hits more heavily? Actually if a cell is a hit, we know it's ship, so any placement that doesn't include that hit is impossible for that particular ship? Not exactly: the hit belongs to some ship, but we don't know which. However, if a cell is hit, then at least one ship covers it. For probability, we should only consider placements that are consistent with all hits? That is, a placement is valid only if it does not conflict with misses, and for any hit cell it covers, it must be included? Actually we don't know which ship, so a placement of ship A that does not include a hit cell could still be possible if that hit belongs to another ship. However, we must ensure that the set of all ship placements collectively cover all hits exactly? That's complex.
+
+Simpler: For each cell, we want probability that it contains a ship given current board. We can use the naive approach: count all placements that include that cell and do not conflict with misses. That's fine because hits are also unknown in the sense that they are known to be ship, but they are not misses. So we treat hits as "unknown" for the purpose of placement validity? Actually if a cell is hit, we know it's ship, so a placement that covers that cell is allowed. A placement that does not cover that cell is also allowed because that hit could be from another ship. So we don't need special handling for hits except that they are not misses.
+
+Thus we treat board cells: 0 and 1 are "free" (ship could be there), -1 is blocked.
+
+Now, we also want to prioritize cells adjacent to hits because they are more likely to be part of the same ship. So we can add a bonus to heatmap for cells adjacent to hits.
+
+Alternatively, in TARGET mode we handle that separately.
+
+Let's design algorithm:
+
+Function policy(board):
+    # Step 1: Find all unsunk hits: hits with at least one adjacent unknown.
+    unsunk_hits = []
+    for each hit cell (value 1):
+        if any neighbor (up/down/left/right) within board and board[nr][nc] == 0:
+            unsunk_hits.append((r,c))
+
+    if unsunk_hits:
+        # TARGET mode
+        # Group hits into clusters (connected components via adjacency).
+        clusters = []
+        visited = set()
+        for hit in unsunk_hits:
+            if hit not in visited:
+                # BFS to find connected hits (including diagonal? Typically ships are straight, so only orthogonal adjacency indicates same ship.
+                # Actually ships are straight lines, so hits that are adjacent orthogonally are part of same ship. Diagonal hits could be from different ships touching? Not allowed because ships cannot touch? In standard Battleship ships cannot touch, but rules may vary. Here it's not specified. Assume they can't touch? Usually they cannot be adjacent, but we don't know. Safer to assume they can touch? But if they can't touch, then orthogonal adjacency definitely same ship. We'll assume adjacency means same ship.
+                cluster = []
+                queue = [hit]
+                while queue:
+                    r,c = queue.pop()
+                    if (r,c) in visited:
+                        continue
+                    visited.add((r,c))
+                    cluster.append((r,c))
+                    # check orthogonal neighbors that are hits
+                    for dr,dc in [(1,0),(-1,0),(0,1),(0,-1)]:
+                        nr,nc = r+dr, c+dc
+                        if 0<=nr<10 and 0<=nc<10 and board[nr][nc]==1 and (nr,nc) not in visited:
+                            queue.append((nr,nc))
+                clusters.append(cluster)
+
+        # For each cluster, determine if orientation is known (if at least two hits in line).
+        # Choose a cluster to target: prefer larger clusters (more hits) and ones where orientation is not yet determined.
+        # We'll pick the first cluster, but better to pick one with most hits.
+        target_cluster = max(clusters, key=len)
+        # Determine if hits in cluster are in a line horizontally or vertically.
+        rows = [r for r,c in target_cluster]
+        cols = [c for r,c in target_cluster]
+        if len(set(rows)) == 1:
+            # horizontal line
+            orientation = 'H'
+            line_row = rows[0]
+            cols_sorted = sorted(cols)
+            # Find ends: leftmost and rightmost cols
+            left = cols_sorted[0] - 1
+            right = cols_sorted[-1] + 1
+            # Check if we can shoot left or right within bounds and unknown.
+            if left >= 0 and board[line_row][left] == 0:
+                return (line_row, left)
+            if right < 10 and board[line_row][right] == 0:
+                return (line_row, right)
+            # If both ends are miss or out of bounds, maybe ship sunk? But we have unsunk hits, so there must be unknown adjacent. Check other direction? Actually if horizontal line, ends blocked, then ship is sunk? But we have unsunk hits meaning there is adjacent unknown, so at least one end should be unknown. So one of above should return.
+        elif len(set(cols)) == 1:
+            # vertical line
+            orientation = 'V'
+            col = cols[0]
+            rows_sorted = sorted(rows)
+            top = rows_sorted[0] - 1
+            bottom = rows_sorted[-1] + 1
+            if top >= 0 and board[top][col] == 0:
+                return (top, col)
+            if bottom < 10 and board[bottom][col] == 0:
+                return (bottom, col)
+        else:
+            # multiple hits but not in a single line? That's impossible if ships are straight. Could be L-shaped? Not allowed. So maybe two different ships adjacent? Then we should treat each hit separately. Actually our clustering grouped orthogonally adjacent hits, so if two ships are touching orthogonally, they'd be grouped but not in a line. That's a problem. But we can fallback: pick any hit from cluster and shoot around it.
+            # Let's pick the first hit and shoot at adjacent unknown cells.
+            for r,c in target_cluster:
+                # check four directions
+                for dr,dc in [(1,0),(-1,0),(0,1),(0,-1)]:
+                    nr,nc = r+dr, c+dc
+                    if 0<=nr<10 and 0<=nc<10 and board[nr][nc]==0:
+                        return (nr,nc)
+    # HUNT mode: compute probability heatmap
+    heat = [[0]*10 for _ in range(10)]
+    ship_lengths = [5,4,3,3,2]
+    for length in ship_lengths:
+        # horizontal placements
+        for r in range(10):
+            for c in range(10 - length + 1):
+                # check if all cells in this segment are not misses
+                valid = True
+                for k in range(length):
+                    if board[r][c+k] == -1:
+                        valid = False
+                        break
+                if valid:
+                    for k in range(length):
+                        heat[r][c+k] += 1
+        # vertical placements
+        for r in range(10 - length + 1):
+            for c in range(10):
+                valid = True
+                for k in range(length):
+                    if board[r+k][c] == -1:
+                        valid = False
+                        break
+                if valid:
+                    for k in range(length):
+                        heat[r+k][c] += 1
+
+    # Now add bonus for cells adjacent to hits (to prioritize targeting near hits even if not in TARGET mode? Actually we already have TARGET mode for unsunk hits. But if there are hits but all adjacent are known (miss or hit), then those hits are likely sunk. So we might be in HUNT mode but there are hits that are sunk. We don't want to target near them because adjacent cells are likely miss (since ships cannot touch? Not sure). We'll skip bonus for now.
+
+    # Find cell with maximum heat that is unknown (board value 0)
+    max_heat = -1
+    best_cells = []
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0:
+                if heat[r][c] > max_heat:
+                    max_heat = heat[r][c]
+                    best_cells = [(r,c)]
+                elif heat[r][c] == max_heat:
+                    best_cells.append((r,c))
+    # If multiple, we can break ties by preferring cells with parity (e.g., (row+col)%2) to spread shots, or prefer center. Use manhattan distance from center? Let's choose randomly from best cells to avoid deterministic pattern? But we need deterministic function. Use a deterministic tie-breaker: sort by row then col, pick first.
+    best_cells.sort()
+    return best_cells[0]
+
+But we need to consider that in HUNT mode, we might want to shoot in a pattern like checkerboard to maximize coverage. The heatmap already prioritizes cells that are part of many possible ship placements, which tend to be towards the center. That's good.
+
+However, we might want to avoid shooting cells that are isolated due to misses around? The heatmap will have zero for such cells.
+
+We also need to consider that ships cannot overlap, so after we sink a ship, we should remove its placements from future probability. But we don't know when a ship is sunk. We could infer: if a cluster of hits has length matching a ship and both ends are misses or edges, then we can mark that ship as sunk and remove its placements from future calculations. But that's complex.
+
+Alternatively, we can adjust heatmap by subtracting placements that conflict with known sunk ships. But we don't track sunk ships.
+
+Maybe we can keep it simple: the above algorithm is decent.
+
+But we have a bug: In TARGET mode, if we have a cluster of hits that is a line but both ends are unknown, we shoot one end. But if one end is miss, we shoot the other. That's fine.
+
+But what if the cluster has more than one ship? Our clustering might group adjacent ships. To mitigate, we can only cluster hits that are in a straight line (i.e., if two hits are orthogonal but not in same row or col, they could be from different ships touching at a corner? Actually if ships cannot touch, then orthogonal adjacency would not happen. But if they can touch, then two ships could be placed such that one's end touches another's side. That would create an L-shape of hits. In that case, our clustering would group them, and then we might shoot in a direction that is not along either ship. That could waste shots.
+
+We could improve by checking if the cluster is a straight line: if all hits share same row or same col. If not, we need to split into separate lines. How? We can find the longest line within the cluster. Or we can treat each hit as separate target.
+
+Simpler: In TARGET mode, if unsunk_hits list is non-empty, we pick the first unsunk hit (or the one with most adjacent unknowns) and shoot around it without clustering. That might be safer.
+
+Let's change: Instead of clustering, we maintain a queue of target cells from previous shots? Actually we need to remember which ship we are currently pursuing.
+
+We can use a state machine that remembers the last hit and the direction we are exploring. But we need persistence across calls.
+
+We'll use function attributes to store state.
+
+We'll define:
+- policy.mode = "HUNT" or "TARGET"
+- policy.target_stack = []  # list of cells to shoot at around a hit
+- policy.last_hit = None
+- When we get a hit, we add its adjacent cells to stack if not already visited.
+
+But we need to ensure we don't re-shoot same cell.
+
+Alternatively, we can implement a simple algorithm: 
+1. If there is a hit with unknown adjacent, pick that hit and shoot at one of its adjacent unknowns (prioritizing cells that continue a line if there is another hit adjacent). 
+2. If multiple such hits, pick the one that is part of a line (has a hit neighbor in one direction) and shoot in that direction.
+
+We can compute for each hit cell, the number of unknown neighbors. Also check if it has a hit neighbor in some direction.
+
+Let's implement:
+
+- Find all hit cells.
+- For each hit cell, check four directions: up, down, left, right.
+- If there is a hit neighbor in that direction, then we know orientation. Then we can shoot in the opposite direction along that line if unknown.
+- If no hit neighbor, but there are unknown neighbors, we can shoot at any unknown neighbor.
+
+We'll prioritize cells that have a hit neighbor (so we are extending a known line).
+
+Implementation steps:
+
+1. Gather all hit cells.
+2. For each hit cell, for each direction, if neighbor in that direction is hit, then we have a line. Determine the ends: walk in that direction until no more hit or out of bounds, then check the next cell beyond. If that cell is unknown, shoot there.
+   But careful: if there are hits in both directions, then the line is bounded by two ends. We need to pick an end that is unknown.
+3. If no line found, then pick a hit cell that has at least one unknown neighbor (any). Then shoot at one of its unknown neighbors (prefer the one that is not adjacent to other misses?).
+
+4. If no such hit cell (all hits have no unknown neighbors), then go to HUNT mode.
+
+We'll implement this.
+
+But we must also consider that after we sink a ship, the hits remain but have no unknown neighbors. So we correctly switch to HUNT.
+
+Now, for HUNT mode, we can use probability heatmap as described.
+
+We also want to incorporate parity: perhaps we can weight heatmap by a checkerboard pattern to ensure we cover all cells. But heatmap naturally favors center, so initially we might shoot center. That's okay.
+
+We'll implement heatmap with a small twist: we can multiply by a factor that encourages spreading: for example, we can give higher weight to cells that have more unknown neighbors? Not needed.
+
+We'll implement tie-breaking by choosing the cell with highest heat, and if multiple, choose the one with minimum Manhattan distance from center (to favor center), or maximum distance from previous shots? We'll just sort by row then col.
+
+Now, we must ensure we never shoot a cell that is already known (miss or hit). Our selection only considers board[r][c]==0.
+
+Let's write the code.
+
+We'll use function attributes to store previous shots? Not needed because board already tells us.
+
+We'll define helper functions inside policy.
+
+We'll also consider performance: generating placements each call is fine.
+
+Let's code.
+</thinking>
+
+<code>
+import random
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Helper to get adjacent cells (orthogonal)
+    def neighbors(r, c):
+        for dr, dc in [(1,0), (-1,0), (0,1), (0,-1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 10 and 0 <= nc < 10:
+                yield nr, nc
+
+    # 1. Find all hit cells
+    hits = [(r, c) for r in range(10) for c in range(10) if board[r][c] == 1]
+
+    # 2. Try to find a target based on existing hits
+    # We'll examine each hit to see if it's part of an unsunk ship
+    # Prefer hits that are part of a line (have a hit neighbor)
+    target_hits = []
+    for r, c in hits:
+        # Check if any adjacent unknown
+        unknown_adj = any(board[nr][nc] == 0 for nr, nc in neighbors(r, c))
+        if not unknown_adj:
+            continue  # this hit is surrounded by misses/hits, likely sunk
+        # Check for hit neighbors to determine orientation
+        hit_up = r > 0 and board[r-1][c] == 1
+        hit_down = r < 9 and board[r+1][c] == 1
+        hit_left = c > 0 and board[r][c-1] == 1
+        hit_right = c < 9 and board[r][c+1] == 1
+        target_hits.append((r, c, unknown_adj, hit_up, hit_down, hit_left, hit_right))
+
+    if target_hits:
+        # First, try to extend a known line
+        for r, c, _, hu, hd, hl, hr in target_hits:
+            # vertical line?
+            if hu or hd:
+                # find topmost and bottommost hits in this column
+                top = r
+                while top >= 0 and board[top][c] == 1:
+                    top -= 1
+                bottom = r
+                while bottom < 10 and board[bottom][c] == 1:
+                    bottom += 1
+                # Check top-1 and bottom (just outside the line)
+                if top >= 0 and board[top][c] == 0:
+                    return (top, c)
+                if bottom < 10 and board[bottom][c] == 0:
+                    return (bottom, c)
+            # horizontal line?
+            if hl or hr:
+                # find leftmost and rightmost hits in this row
+                left = c
+                while left >= 0 and board[r][left] == 1:
+                    left -= 1
+                right = c
+                while right < 10 and board[r][right] == 1:
+                    right += 1
+                if left >= 0 and board[r][left] == 0:
+                    return (r, left)
+                if right < 10 and board[r][right] == 0:
+                    return (r, right)
+
+        # If no line extension possible, pick a hit with unknown adjacent and shoot at first unknown neighbor
+        for r, c, _, _, _, _, _ in target_hits:
+            for nr, nc in neighbors(r, c):
+                if board[nr][nc] == 0:
+                    return (nr, nc)
+
+    # 3. Hunt mode: probability density
+    heat = [[0] * 10 for _ in range(10)]
+    ship_lengths = [5, 4, 3, 3, 2]
+    for length in ship_lengths:
+        # horizontal placements
+        for r in range(10):
+            for c in range(10 - length + 1):
+                valid = True
+                for k in range(length):
+                    if board[r][c + k] == -1:
+                        valid = False
+                        break
+                if valid:
+                    for k in range(length):
+                        heat[r][c + k] += 1
+        # vertical placements
+        for r in range(10 - length + 1):
+            for c in range(10):
+                valid = True
+                for k in range(length):
+                    if board[r + k][c] == -1:
+                        valid = False
+                        break
+                if valid:
+                    for k in range(length):
+                        heat[r + k][c] += 1
+
+    # Find cell with maximum heat among unknowns
+    max_heat = -1
+    candidates = []
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0:
+                if heat[r][c] > max_heat:
+                    max_heat = heat[r][c]
+                    candidates = [(r, c)]
+                elif heat[r][c] == max_heat:
+                    candidates.append((r, c))
+
+    # Tie-breaking: prefer cells that are more central (min distance from center (4.5,4.5))
+    def dist_from_center(cell):
+        r, c = cell
+        return abs(r - 4.5) + abs(c - 4.5)
+    candidates.sort(key=lambda cell: (dist_from_center(cell), cell[0], cell[1]))
+    return candidates[0]
+</code>

@@ -1,0 +1,164 @@
+
+import random
+from typing import List, Tuple, Set, Optional
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Advanced Battleship targeting policy using hit propagation and probability-based search.
+    
+    Strategy:
+    1. If we have recent hits, try to extend them in the likely direction
+    2. Otherwise, use a probability-based search with parity and patterns
+    """
+    size = 10
+    ships = [5, 4, 3, 3, 2]  # Remaining ship lengths to find
+    
+    # Find all hit cells
+    hits = []
+    for r in range(size):
+        for c in range(size):
+            if board[r][c] == 1:
+                hits.append((r, c))
+    
+    # Find all possible target cells (unknown cells)
+    unknown_cells = []
+    for r in range(size):
+        for c in range(size):
+            if board[r][c] == 0:
+                unknown_cells.append((r, c))
+    
+    # If no hits yet, use probability-based search with parity
+    if not hits:
+        return _parity_search(board, unknown_cells)
+    
+    # Try to extend from existing hits
+    target = _extend_from_hits(board, hits, unknown_cells)
+    if target is not None:
+        return target
+    
+    # If can't extend hits, fall back to probability search
+    return _probability_search(board, unknown_cells, ships)
+
+def _parity_search(board: List[List[int]], unknown_cells: List[Tuple[int, int]]) -> Tuple[int, int]:
+    """
+    Use checkerboard pattern to maximize coverage efficiency.
+    Focus on one color of the checkerboard to minimize shots.
+    """
+    # Use odd-sum cells (r+c is odd) first - this covers all possible ship positions efficiently
+    parity_cells = [(r, c) for r, c in unknown_cells if (r + c) % 2 == 1]
+    if parity_cells:
+        # Sort by proximity to center for better coverage
+        center = (5, 5)
+        parity_cells.sort(key=lambda pos: abs(pos[0] - center[0]) + abs(pos[1] - center[1]))
+        return parity_cells[0]
+    
+    # If no odd-sum cells available, use any unknown cell
+    return unknown_cells[0]
+
+def _extend_from_hits(board: List[List[int]], hits: List[Tuple[int, int]], unknown_cells: List[Tuple[int, int]]) -> Optional[Tuple[int, int]]:
+    """
+    Try to extend from existing hits to find more ship parts.
+    """
+    # Sort hits by recency (try to work on recent hits first)
+    hits.sort(key=lambda x: _hit_score(board, x[0], x[1]), reverse=True)
+    
+    for hit_r, hit_c in hits:
+        # Check all four directions
+        directions = [(0, 1), (1, 0), (0, -1), (-1, 0)]  # right, down, left, up
+        
+        # If there are adjacent hits, we might already know the orientation
+        adjacent_hits = _get_adjacent_hits(board, hit_r, hit_c)
+        if len(adjacent_hits) > 0:
+            # Try to continue in the same line
+            for adj_r, adj_c in adjacent_hits:
+                dr = adj_r - hit_r
+                dc = adj_c - hit_c
+                # Extend in both directions along this line
+                for sign in [1, -1]:
+                    target_r = hit_r + sign * dr
+                    target_c = hit_c + sign * dc
+                    if (0 <= target_r < 10 and 0 <= target_c < 10 and 
+                        board[target_r][target_c] == 0):
+                        return (target_r, target_c)
+        
+        # Otherwise, check all directions for possible extension
+        for dr, dc in directions:
+            target_r = hit_r + dr
+            target_c = hit_c + dc
+            if (0 <= target_r < 10 and 0 <= target_c < 10 and 
+                board[target_r][target_c] == 0):
+                return (target_r, target_c)
+    
+    return None
+
+def _get_adjacent_hits(self, board: List[List[int]], r: int, c: int) -> List[Tuple[int, int]]:
+    """Get all adjacent cells that are hits."""
+    adjacent = []
+    directions = [(0, 1), (1, 0), (0, -1), (-1, 0)]
+    for dr, dc in directions:
+        nr, nc = r + dr, c + dc
+        if (0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 1):
+            adjacent.append((nr, nc))
+    return adjacent
+
+def _hit_score(self, board: List[List[int]], r: int, c: int) -> float:
+    """Calculate score for a hit based on its potential."""
+    # Simple scoring - just count adjacent unknown cells
+    score = 0
+    for dr, dc in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+        nr, nc = r + dr, c + dc
+        if (0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0):
+            score += 1
+    return score
+
+def _probability_search(board: List[List[int]], unknown_cells: List[Tuple[int, int]], ships: List[int]]) -> Tuple[int, int]:
+    """
+    Calculate placement probabilities for remaining ships and target highest probability cell.
+    """
+    size = 10
+    prob = [[0 for _ in range(size)] for _ in range(size)]
+    
+    # For each ship length, calculate how many ways it can be placed over each cell
+    for ship_len in ships:
+        # Horizontal placements
+        for r in range(size):
+            for c in range(size - ship_len + 1):
+                # Check if this horizontal placement is possible
+                valid = True
+                for i in range(ship_len):
+                    if board[r][c+i] == -1:  # Miss
+                        valid = False
+                        break
+                if valid:
+                    for i in range(ship_len):
+                        if board[r][c+i] == 0:  # Unknown
+                            prob[r][c+i] += 1
+        
+        # Vertical placements
+        for r in range(size - ship_len + 1):
+            for c in range(size):
+                # Check if this vertical placement is possible
+                valid = True
+                for i in range(ship_len):
+                    if board[r+i][c] == -1:  # Miss
+                        valid = False
+                        break
+                if valid:
+                    for i in range(ship_len):
+                        if board[r+i][c] == 0:  # Unknown
+                            prob[r+i][c] += 1
+    
+    # Find the unknown cell with highest probability
+    best_cell = None
+    best_prob = -1
+    
+    for r, c in unknown_cells:
+        if prob[r][c] > best_prob:
+            best_prob = prob[r][c]
+            best_cell = (r, c)
+    
+    # If all probabilities are zero, fall back to parity search
+    if best_cell is None or best_prob == 0:
+        return _parity_search(board, unknown_cells)
+    
+    return best_cell

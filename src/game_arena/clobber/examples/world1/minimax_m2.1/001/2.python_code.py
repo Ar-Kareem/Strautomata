@@ -1,0 +1,115 @@
+
+import numpy as np
+
+def policy(you: list[int], opponent: list[int]) -> str:
+    """
+    Clobber game policy for 5x6 grid.
+    Returns the next move as 'row,col,dir'.
+    """
+    you = np.array(you)
+    opponent = np.array(opponent)
+    
+    # Find all legal moves
+    moves = get_legal_moves(you, opponent)
+    
+    if not moves:
+        # No moves available - return placeholder (shouldn't happen if policy is called correctly)
+        return "0,0,U"
+    
+    # Check for winning moves (moves that leave opponent with no moves)
+    for move in moves:
+        new_you, new_opponent = simulate_move(you, opponent, move)
+        opponent_moves = get_legal_moves(new_opponent, new_you)
+        if not opponent_moves:
+            return format_move(move)
+    
+    # Evaluate all moves and select the best one
+    best_move = None
+    best_score = float('-inf')
+    
+    for move in moves:
+        new_you, new_opponent = simulate_move(you, opponent, move)
+        
+        # Calculate scores
+        my_mobility = len(get_legal_moves(new_you, new_opponent))
+        opponent_mobility = len(get_legal_moves(new_opponent, new_you))
+        position_score = evaluate_position(new_you, new_opponent)
+        
+        # Weighted combination of factors
+        # Prioritize reducing opponent mobility, then maintaining our mobility, then position
+        score = (2 * -opponent_mobility) + (1 * my_mobility) + (0.5 * position_score)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return format_move(best_move)
+
+def get_legal_moves(my_pieces: np.ndarray, opponent_pieces: np.ndarray) -> list:
+    """Find all legal moves for the current player."""
+    moves = []
+    rows, cols = my_pieces.shape
+    
+    for row in range(rows):
+        for col in range(cols):
+            if my_pieces[row, col] == 1:
+                # Check all four directions
+                for dr, dc, direction in [(-1, 0, 'U'), (1, 0, 'D'), (0, 1, 'R'), (0, -1, 'L')]:
+                    new_row, new_col = row + dr, col + dc
+                    if 0 <= new_row < rows and 0 <= new_col < cols:
+                        if opponent_pieces[new_row, new_col] == 1:
+                            moves.append((row, col, direction))
+    return moves
+
+def simulate_move(my_pieces: np.ndarray, opponent_pieces: np.ndarray, move: tuple) -> tuple:
+    """Simulate a move and return the new board state."""
+    row, col, direction = move
+    
+    # Calculate destination
+    dr, dc = {'U': (-1, 0), 'D': (1, 0), 'R': (0, 1), 'L': (0, -1)}[direction]
+    new_row, new_col = row + dr, col + dc
+    
+    # Create copies
+    new_my = my_pieces.copy()
+    new_opponent = opponent_pieces.copy()
+    
+    # Move my piece: clear start, set destination
+    new_my[row, col] = 0
+    new_my[new_row, new_col] = 1
+    
+    # Remove opponent piece
+    new_opponent[new_row, new_col] = 0
+    
+    return new_my, new_opponent
+
+def evaluate_position(my_pieces: np.ndarray, opponent_pieces: np.ndarray) -> float:
+    """Evaluate the strategic value of a position."""
+    score = 0
+    rows, cols = my_pieces.shape
+    
+    for row in range(rows):
+        for col in range(cols):
+            if my_pieces[row, col] == 1:
+                # Center control: prefer center positions
+                center_bonus = (2 - abs(row - 2) - abs(col - 2.5)) * 0.3
+                score += center_bonus
+                
+                # Mobility potential: count empty adjacent squares
+                for dr, dc in [(-1, 0), (1, 0), (0, 1), (0, -1)]:
+                    adj_row, adj_col = row + dr, col + dc
+                    if 0 <= adj_row < rows and 0 <= adj_col < cols:
+                        if (my_pieces[adj_row, adj_col] == 0 and 
+                            opponent_pieces[adj_row, adj_col] == 0):
+                            score += 0.1  # Bonus for potential future moves
+                            
+            elif opponent_pieces[row, col] == 1:
+                # Slight penalty for opponent pieces in good positions
+                center_penalty = -(2 - abs(row - 2) - abs(col - 2.5)) * 0.1
+                score += center_penalty
+    
+    return score
+
+def format_move(move: tuple) -> str:
+    """Format move as string."""
+    row, col, direction = move
+    return f"{row},{col},{direction}"

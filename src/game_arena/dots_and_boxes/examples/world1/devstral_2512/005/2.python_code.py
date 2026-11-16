@@ -1,0 +1,110 @@
+
+import numpy as np
+import random
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    # First, check for immediate scoring moves (completing a box)
+    for row in range(5):
+        for col in range(5):
+            # Check horizontal edges
+            if horizontal[row, col] == 0:
+                # Check if this edge would complete any box
+                # For horizontal edge at (row, col), it can complete boxes above and below
+                boxes_completed = 0
+                # Box above (row-1, col)
+                if row > 0 and col < 4:
+                    if (horizontal[row-1, col] != 0 and
+                        vertical[row-1, col] != 0 and
+                        vertical[row-1, col+1] != 0 and
+                        capture[row-1, col] == 0):
+                        boxes_completed += 1
+                # Box below (row, col)
+                if row < 4 and col < 4:
+                    if (horizontal[row+1, col] != 0 and
+                        vertical[row, col] != 0 and
+                        vertical[row, col+1] != 0 and
+                        capture[row, col] == 0):
+                        boxes_completed += 1
+                if boxes_completed > 0:
+                    return f"{row},{col},H"
+
+            # Check vertical edges
+            if vertical[row, col] == 0:
+                # Check if this edge would complete any box
+                # For vertical edge at (row, col), it can complete boxes to the left and right
+                boxes_completed = 0
+                # Box to the left (row, col-1)
+                if col > 0 and row < 4:
+                    if (vertical[row, col-1] != 0 and
+                        horizontal[row, col-1] != 0 and
+                        horizontal[row+1, col-1] != 0 and
+                        capture[row, col-1] == 0):
+                        boxes_completed += 1
+                # Box to the right (row, col)
+                if col < 4 and row < 4:
+                    if (vertical[row, col+1] != 0 and
+                        horizontal[row, col] != 0 and
+                        horizontal[row+1, col] != 0 and
+                        capture[row, col] == 0):
+                        boxes_completed += 1
+                if boxes_completed > 0:
+                    return f"{row},{col},V"
+
+    # If no immediate scoring moves, look for moves that create double cross opportunities
+    # or moves that don't give the opponent easy scoring opportunities
+    best_moves = []
+    for row in range(5):
+        for col in range(5):
+            # Check horizontal edges
+            if horizontal[row, col] == 0:
+                # Calculate how many boxes this edge would help complete (without completing them)
+                potential = 0
+                # Box above
+                if row > 0 and col < 4:
+                    if (horizontal[row-1, col] != 0 and
+                        vertical[row-1, col] != 0 and
+                        vertical[row-1, col+1] != 0):
+                        potential += 1
+                # Box below
+                if row < 4 and col < 4:
+                    if (horizontal[row+1, col] != 0 and
+                        vertical[row, col] != 0 and
+                        vertical[row, col+1] != 0):
+                        potential += 1
+                best_moves.append((potential, f"{row},{col},H"))
+
+            # Check vertical edges
+            if vertical[row, col] == 0:
+                # Calculate how many boxes this edge would help complete (without completing them)
+                potential = 0
+                # Box to the left
+                if col > 0 and row < 4:
+                    if (vertical[row, col-1] != 0 and
+                        horizontal[row, col-1] != 0 and
+                        horizontal[row+1, col-1] != 0):
+                        potential += 1
+                # Box to the right
+                if col < 4 and row < 4:
+                    if (vertical[row, col+1] != 0 and
+                        horizontal[row, col] != 0 and
+                        horizontal[row+1, col] != 0):
+                        potential += 1
+                best_moves.append((potential, f"{row},{col},V"))
+
+    # Sort moves by potential (higher is better) and then by randomness
+    best_moves.sort(key=lambda x: (-x[0], random.random()))
+
+    # If we have any moves, return the best one
+    if best_moves:
+        return best_moves[0][1]
+
+    # If no moves found (shouldn't happen as we check all edges), return a random legal move
+    legal_moves = []
+    for row in range(5):
+        for col in range(5):
+            if horizontal[row, col] == 0:
+                legal_moves.append(f"{row},{col},H")
+            if vertical[row, col] == 0:
+                legal_moves.append(f"{row},{col},V")
+
+    return random.choice(legal_moves)

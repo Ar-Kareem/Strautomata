@@ -1,0 +1,324 @@
+The strategy for this policy is based on comprehensive board analysis and connectivity tracking.
+1.  **Board Geometry Analysis**: On the first move, the policy analyzes the `valid_mask` to deduce the board's topology. By calculating the "valid neighbor degree" of each cell, it identifies **Corners** (degree $\le$ 3), **Edges** (degree 4, grouped by connectivity), and Inner cells. This allows accurate detection of Bridge (2 corners) and Fork (3 edges) winning conditions.
+2.  **Connectivity Tracking**: It uses a Disjoint Set Union (DSU) structure to track connected groups of stones for both the player and the opponent. Each group maintains the set of specific Corners and Edges it touches.
+3.  **Win/Loss Detection**:
+    *   **Winning**: For every legal move, it virtually places a stone and checks if it completes a Bridge, Fork, or Ring. A Ring is detected using a flood-fill algorithm: if a move connects two existing group members, the algorithm checks if the resulting cycle encloses any non-group cells (empty or opponent) by verifying if the enclosed region is cut off from the board boundary.
+    *   **Blocking**: It performs the same check for the opponent. If the opponent has a winning move, the policy marks that spot as a forced block.
+4.  **Heuristic Evaluation**: If no immediate win or forced block exists, moves are scored based on:
+    *   **Connection Potential**: Increasing the count of unique edges/corners connected to a group.
+    *   **Cluster Merging**: preference for uniting disjoint groups.
+    *   **Centrality**: Preference for the center of the board.
+    *   **Local Density**: Preference for moves adjacent to existing friendly stones.
+
+<code>
+import numpy as np
+import collections
+import sys
+
+# Offsets derived from the prompt's neighbor examples
+OFFSETS = [
+    (-1, -1), (-1, 0), (-1, 1),
+    (0, -1),           (0, 1),
+    (1, 0)
+]
+
+# Global cache to store static board geometry (corners, edge groups)
+_BOARD_ANALYSIS = None
+
+class BoardAnalysis:
+    def __init__(self, valid_mask):
+        self.rows, self.cols = valid_mask.shape
+        self.valid_mask = valid_mask
+        self.adj = {}         # (r, c) -> list of valid neighbors
+        self.corners = set()  # set of (r, c)
+        self.edges = {}       # (r, c) -> edge_group_id (int)
+        self.center = (0, 0)
+        
+        self._analyze()
+
+    def _analyze(self):
+        valid_cells = []
+        # Build graph
+        for r in range(self.rows):
+            for c in range(self.cols):
+                if self.valid_mask[r, c]:
+                    valid_cells.append((r, c))
+                    nbrs = []
+                    for dr, dc in OFFSETS:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < self.rows and 0 <= nc < self.cols and self.valid_mask[nr, nc]:
+                            nbrs.append((nr, nc))
+                    self.adj[(r, c)] = nbrs
+
+        # Determine center
+        if valid_cells:
+            rs = [x[0] for x in valid_cells]
+            cs = [x[1] for x in valid_cells]
+            self.center = (sum(rs) / len(valid_cells), sum(cs) / len(valid_cells))
+
+        # Identify boundary cells (degree < 6)
+        boundary = {cell for cell in valid_cells if len(self.adj[cell]) < 6}
+        
+        # Identify Corners: usually degree 2 or 3 on hex board
+        # Edges: degree 4 on hex board (between corners)
+        # We classify based on 'sharpness' of the boundary or simply degree
+        for cell in boundary:
+            if len(self.adj[cell]) <= 3:
+                self.corners.add(cell)
+        
+        # Identify Edge groups (connected boundary components excluding corners)
+        edge_candidates = list(boundary - self.corners)
+        edge_candidates_set = set(edge_candidates)
+        visited = set()
+        edge_id = 0
+        
+        for cell in edge_candidates:
+            if cell not in visited:
+                # BFS/DFS to find connected edge segment
+                stack = [cell]
+                visited.add(cell)
+                while stack:
+                    curr = stack.pop()
+                    self.edges[curr] = edge_id
+                    for nbr in self.adj[curr]:
+                        if nbr in edge_candidates_set and nbr not in visited:
+                            visited.add(nbr)
+                            stack.append(nbr)
+                edge_id += 1
+
+class UnionFind:
+    def __init__(self, analysis):
+        self.parent = {}
+        self.size = {}
+        # Track connected goals for each cluster
+        self.touched_corners = {} # root -> set of corners
+        self.touched_edges = {}   # root -> set of edge_ids
+        self.analysis = analysis
+
+    def make_set(self, cell):
+        self.parent[cell] = cell
+        self.size[cell] = 1
+        
+        cs = set()
+        if cell in self.analysis.corners:
+            cs.add(cell)
+        self.touched_corners[cell] = cs
+        
+        es = set()
+        if cell in self.analysis.edges:
+            es.add(self.analysis.edges[cell])
+        self.touched_edges[cell] = es
+
+    def find(self, cell):
+        path = []
+        while self.parent[cell] != cell:
+            path.append(cell)
+            cell = self.parent[cell]
+        for p in path:
+            self.parent[p] = cell
+        return cell
+
+    def union(self, cell1, cell2):
+        root1 = self.find(cell1)
+        root2 = self.find(cell2)
+        if root1 != root2:
+            if self.size[root1] < self.size[root2]:
+                root1, root2 = root2, root1
+            self.parent[root2] = root1
+            self.size[root1] += self.size[root2]
+            self.touched_corners[root1].update(self.touched_corners[root2])
+            self.touched_edges[root1].update(self.touched_edges[root2])
+            return True
+        return False
+
+def check_ring(move, player_stones, analysis):
+    """
+    Check if placing 'move' forms a ring for 'player_stones'.
+    A ring is formed if 'move' connects two existing stones in the same cluster,
+    and the resulting cycle encloses one or more non-player cells.
+    Algorithm: 
+    1. Assume 'move' is placed (add to blockers).
+    2. Flood fill from all non-player neighbors.
+    3. If any filled region does not reach the board boundary, it is a ring.
+    """
+    blockers = set(player_stones)
+    blockers.add(move)
+    
+    # Identify non-player neighbors to start flood fill
+    starts = []
+    r, c = move
+    for nbr in analysis.adj[(r, c)]:
+        if nbr not in blockers:
+            starts.append(nbr)
+    
+    if not starts:
+        return False
+        
+    visited_global = set()
+    
+    for start in starts:
+        if start in visited_global:
+            continue
+            
+        q = [start]
+        visited_local = {start}
+        reaches_boundary = False
+        
+        idx = 0
+        while idx < len(q):
+            curr = q[idx]
+            idx += 1
+            
+            # Boundary check: if a cell has <6 valid neighbors, it touches the outside void
+            if len(analysis.adj[curr]) < 6:
+                reaches_boundary = True
+            
+            for nbr in analysis.adj[curr]:
+                if nbr not in blockers and nbr not in visited_local:
+                    visited_local.add(nbr)
+                    q.append(nbr)
+                    
+        visited_global.update(visited_local)
+        
+        if not reaches_boundary:
+            # Trapped region found -> Ring
+            return True
+            
+    return False
+
+def evaluate_position(analysis, uf, move, player_stones):
+    """
+    Returns (score, win_type) assuming 'move' is played by 'player_stones'.
+    win_type is None, 'Bridge', 'Fork', or 'Ring'.
+    """
+    # Simulate connection
+    neighbors = [n for n in analysis.adj[move] if n in player_stones]
+    
+    curr_corners = set()
+    curr_edges = set()
+    
+    # 1. Add move's own properties
+    if move in analysis.corners:
+        curr_corners.add(move)
+    if move in analysis.edges:
+        curr_edges.add(analysis.edges[move])
+        
+    # 2. Add properties from neighbor clusters
+    neighbor_roots = set()
+    for n in neighbors:
+        root = uf.find(n)
+        if root not in neighbor_roots:
+            neighbor_roots.add(root)
+            curr_corners.update(uf.touched_corners[root])
+            curr_edges.update(uf.touched_edges[root])
+            
+    # Check Winning Conditions
+    if len(curr_corners) >= 2:
+        return 1e9, "Bridge"
+        
+    if len(curr_edges) >= 3:
+        return 1e9, "Fork"
+        
+    # Check Ring (optimized: only if we connect neighbors, creating potential cycles)
+    # Or if we have enough neighbors to close a loop
+    if len(neighbors) >= 2:
+        if check_ring(move, player_stones, analysis):
+            return 1e9, "Ring"
+            
+    # Heuristic Score
+    score = 0
+    
+    # Progress towards Bridge/Fork
+    score += len(curr_edges) * 200
+    score += len(curr_corners) * 300
+    
+    # Merge bonus (reduce number of groups)
+    score += len(neighbor_roots) * 60
+    
+    # Local adjacency bonus
+    score += len(neighbors) * 10
+    
+    # Centrality
+    cr, cc = analysis.center
+    dist = abs(move[0] - cr) + abs(move[1] - cc)
+    score -= dist * 4
+    
+    return score, None
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    global _BOARD_ANALYSIS
+    if _BOARD_ANALYSIS is None:
+        _BOARD_ANALYSIS = BoardAnalysis(valid_mask)
+    analysis = _BOARD_ANALYSIS
+    
+    # Sets for fast lookup
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    # Identify valid moves
+    valid_moves = []
+    rows, cols = valid_mask.shape
+    for r in range(rows):
+        for c in range(cols):
+            if valid_mask[r, c] and (r, c) not in me_set and (r, c) not in opp_set:
+                valid_moves.append((r, c))
+                
+    if not valid_moves:
+        return (0, 0)
+        
+    # Build Union-Find states for current board
+    uf_me = UnionFind(analysis)
+    uf_opp = UnionFind(analysis)
+    
+    for s in me: uf_me.make_set(s)
+    for s in opp: uf_opp.make_set(s)
+    
+    for s in me:
+        for n in analysis.adj[s]:
+            if n in me_set:
+                uf_me.union(s, n)
+    for s in opp:
+        for n in analysis.adj[s]:
+            if n in opp_set:
+                uf_opp.union(s, n)
+
+    # Search Logic
+    # 1. Check for immediate Win (Me)
+    # 2. Check for immediate Loss (Opp Win) -> Block
+    # 3. Heuristic
+    
+    blocking_moves = []
+    candidates = []
+    
+    # Sort valid moves slightly to randomize or optimize (trivial here)
+    # Just iterate.
+    
+    for mv in valid_moves:
+        # Check My Win
+        my_score, my_win = evaluate_position(analysis, uf_me, mv, me_set)
+        if my_win:
+            return mv
+            
+        # Check Opponent Win (Need to Block)
+        # Note: evaluate_position checks if placing a stone connects existing groups.
+        # Here we simulate Opponent playing at 'mv'.
+        opp_score, opp_win = evaluate_position(analysis, uf_opp, mv, opp_set)
+        if opp_win:
+            blocking_moves.append(mv)
+            
+        # Combined Heuristic: My potential + Factor * Opponent potential (prevention)
+        # We want to play where it helps us AND hurts them.
+        total_score = my_score + (opp_score * 0.8)
+        candidates.append((total_score, mv))
+        
+    # If there are forced blocking moves, pick the one with best heuristic
+    if blocking_moves:
+        block_candidates = [(score, mv) for score, mv in candidates if mv in blocking_moves]
+        # Sort desc
+        block_candidates.sort(key=lambda x: x[0], reverse=True)
+        return block_candidates[0][1]
+        
+    # Otherwise play best heuristic
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    return candidates[0][1]
+</code>

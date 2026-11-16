@@ -1,0 +1,190 @@
+
+import numpy as np
+import time
+
+def policy(board) -> str:
+    """
+    Amazons AI Policy for 6x6 board.
+    
+    Strategy:
+    - Generate all legal moves (Move + Shoot).
+    - Evaluate resulting board using a Territory + Mobility heuristic.
+    - Territory is calculated using a multi-source BFS (King's distance).
+    - Maximize (Territory_Delta * 10 + Mobility_Delta).
+    - Time-constrained to 1 second.
+    """
+    start_time = time.time()
+    
+    # Game Constants
+    ROWS, COLS = board.shape
+    ME = 1
+    OPP = 2
+    EMPTY = 0
+    # Directions: (row_change, col_change) for all 8 neighbors
+    DIRS = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+
+    # Convert board to standard python list of lists for faster iteration
+    grid = board.tolist()
+    
+    # Identify unit positions
+    my_units = []
+    opp_units = []
+    for r in range(ROWS):
+        for c in range(COLS):
+            val = grid[r][c]
+            if val == ME:
+                my_units.append((r, c))
+            elif val == OPP:
+                opp_units.append((r, c))
+
+    # --- Helper Functions ---
+
+    def get_moves(b, r, c):
+        """Generates all legal destination squares from (r,c) sliding like a Queen."""
+        moves = []
+        for dr, dc in DIRS:
+            cr, cc = r + dr, c + dc
+            while 0 <= cr < ROWS and 0 <= cc < COLS and b[cr][cc] == EMPTY:
+                moves.append((cr, cc))
+                cr += dr
+                cc += dc
+        return moves
+
+    def get_mobility_count(b, units):
+        """Calculates total immediate moves available for a list of units."""
+        count = 0
+        for r, c in units:
+            for dr, dc in DIRS:
+                cr, cc = r + dr, c + dc
+                while 0 <= cr < ROWS and 0 <= cc < COLS and b[cr][cc] == EMPTY:
+                    count += 1
+                    cr += dr
+                    cc += dc
+        return count
+
+    def evaluate(b, p1_units, p2_units):
+        """
+        Evaluates the board state.
+        Metrics:
+        1. Territory: Number of empty squares closer to P1 than P2 (BFS distance).
+        2. Mobility: Difference in available immediate moves.
+        """
+        # 1. Mobility
+        m1 = get_mobility_count(b, p1_units)
+        m2 = get_mobility_count(b, p2_units)
+        
+        # 2. Territory BFS
+        inf = 999
+        d1 = [[inf] * COLS for _ in range(ROWS)]
+        d2 = [[inf] * COLS for _ in range(ROWS)]
+        
+        # Initialize BFS queues
+        q1 = []
+        for r, c in p1_units:
+            d1[r][c] = 0
+            q1.append((r, c))
+            
+        q2 = []
+        for r, c in p2_units:
+            d2[r][c] = 0
+            q2.append((r, c))
+            
+        # Run BFS for P1
+        head = 0
+        while head < len(q1):
+            r, c = q1[head]
+            head += 1
+            dist = d1[r][c] + 1
+            for dr, dc in DIRS:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < ROWS and 0 <= nc < COLS:
+                    # Can only step onto empty squares (or target empty squares)
+                    if b[nr][nc] == EMPTY and d1[nr][nc] == inf:
+                        d1[nr][nc] = dist
+                        q1.append((nr, nc))
+                        
+        # Run BFS for P2
+        head = 0
+        while head < len(q2):
+            r, c = q2[head]
+            head += 1
+            dist = d2[r][c] + 1
+            for dr, dc in DIRS:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < ROWS and 0 <= nc < COLS:
+                    if b[nr][nc] == EMPTY and d2[nr][nc] == inf:
+                        d2[nr][nc] = dist
+                        q2.append((nr, nc))
+                        
+        # Calculate Territory ownership
+        t1, t2 = 0, 0
+        for r in range(ROWS):
+            for c in range(COLS):
+                if b[r][c] == EMPTY:
+                    dist1 = d1[r][c]
+                    dist2 = d2[r][c]
+                    if dist1 < dist2:
+                        t1 += 1
+                    elif dist2 < dist1:
+                        t2 += 1
+        
+        # Final Score: Territory is primary, Mobility is secondary
+        return 10 * (t1 - t2) + (m1 - m2)
+
+    # --- Search Logic ---
+
+    best_move_str = ""
+    best_score = -float('inf')
+    found_any = False
+    
+    # Iterate through all my units
+    for i, (r_from, c_from) in enumerate(my_units):
+        # 1. Generate Amazon Moves
+        destinations = get_moves(grid, r_from, c_from)
+        
+        for r_to, c_to in destinations:
+            # Check time limit (leave 0.1s buffer)
+            if time.time() - start_time > 0.9:
+                if found_any:
+                    return best_move_str
+
+            # Apply Amazon Move
+            grid[r_from][c_from] = EMPTY
+            grid[r_to][c_to] = ME
+            
+            # Temporary unit update for eval
+            current_my_units = my_units[:]
+            current_my_units[i] = (r_to, c_to)
+            
+            # 2. Generate Arrow Shots
+            # Note: Can shoot back to 'from' since it is now EMPTY
+            arrows = get_moves(grid, r_to, c_to)
+            
+            for r_arr, c_arr in arrows:
+                # Apply Arrow
+                grid[r_arr][c_arr] = -1 # Blocked
+                
+                # Evaluate State
+                score = evaluate(grid, current_my_units, opp_units)
+                
+                move_str = f"{r_from},{c_from}:{r_to},{c_to}:{r_arr},{c_arr}"
+                
+                # Update Best Move
+                if score > best_score:
+                    best_score = score
+                    best_move_str = move_str
+                    found_any = True
+                elif not found_any:
+                    # Provide at least one legal move even if score is extremely low
+                    best_score = score
+                    best_move_str = move_str
+                    found_any = True
+                
+                # Backtrack Arrow
+                grid[r_arr][c_arr] = EMPTY
+            
+            # Backtrack Amazon Move
+            grid[r_to][c_to] = EMPTY
+            grid[r_from][c_from] = ME
+
+    return best_move_str

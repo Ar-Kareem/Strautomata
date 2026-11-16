@@ -1,0 +1,398 @@
+
+import time
+from typing import List, Tuple, Dict, Any
+
+# Pentago policy: place marble then rotate one quadrant.
+# We represent boards as 36-bit bitboards for speed.
+
+
+# ---------------- Bitboard / geometry precomputation ----------------
+
+N = 6
+INF = 10**12
+
+DIRS = [(1, 0), (0, 1), (1, 1), (1, -1)]  # vertical, horizontal, diag down-right, diag down-left
+
+
+def rc_to_i(r: int, c: int) -> int:
+    return r * 6 + c
+
+
+def i_to_rc(i: int) -> Tuple[int, int]:
+    return divmod(i, 6)
+
+
+def build_segment_masks() -> List[int]:
+    masks = []
+    for dr, dc in DIRS:
+        for r0 in range(N):
+            for c0 in range(N):
+                r_end = r0 + (5 - 1) * dr
+                c_end = c0 + (5 - 1) * dc
+                if 0 <= r_end < N and 0 <= c_end < N:
+                    m = 0
+                    r, c = r0, c0
+                    for _ in range(5):
+                        m |= 1 << rc_to_i(r, c)
+                        r += dr
+                        c += dc
+                    masks.append(m)
+    # Should be 32 for 6x6 with 5-length segments
+    return masks
+
+
+SEG_MASKS = build_segment_masks()
+
+
+def build_pos_weights() -> List[int]:
+    # Small positional bias: prefer central squares.
+    # Symmetric weights based on Manhattan distance to center (2.5,2.5).
+    w = [0] * 36
+    for r in range(6):
+        for c in range(6):
+            # distance to center lines
+            d = abs(r - 2.5) + abs(c - 2.5)
+            # closer => higher
+            val = int(round((5.0 - d) * 2))
+            w[rc_to_i(r, c)] = val
+    return w
+
+
+POS_W = build_pos_weights()
+
+
+def build_quadrant_data():
+    # Quadrants:
+    # 0: rows 0..2 cols 0..2
+    # 1: rows 0..2 cols 3..5
+    # 2: rows 3..5 cols 0..2
+    # 3: rows 3..5 cols 3..5
+    quad_offsets = {
+        0: (0, 0),
+        1: (0, 3),
+        2: (3, 0),
+        3: (3, 3),
+    }
+    quad_cells: Dict[int, List[int]] = {}
+    quad_mask: Dict[int, int] = {}
+    rot_map: Dict[int, Dict[str, Dict[int, int]]] = {}
+
+    for q in range(4):
+        r0, c0 = quad_offsets[q]
+        cells = []
+        mask = 0
+        # local 3x3 indices (lr,lc) in 0..2
+        for lr in range(3):
+            for lc in range(3):
+                gi = rc_to_i(r0 + lr, c0 + lc)
+                cells.append(gi)
+                mask |= 1 << gi
+        quad_cells[q] = cells
+        quad_mask[q] = mask
+
+        # rotation maps: old global index -> new global index
+        # Clockwise: (lr,lc)->(lc,2-lr)
+        # Counterclockwise: (lr,lc)->(2-lc,lr)
+        rmapR: Dict[int, int] = {}
+        rmapL: Dict[int, int] = {}
+        for lr in range(3):
+            for lc in range(3):
+                old = rc_to_i(r0 + lr, c0 + lc)
+                nlrR, nlcR = lc, 2 - lr
+                nlrL, nlcL = 2 - lc, lr
+                newR = rc_to_i(r0 + nlrR, c0 + nlcR)
+                newL = rc_to_i(r0 + nlrL, c0 + nlcL)
+                rmapR[old] = newR
+                rmapL[old] = newL
+
+        rot_map[q] = {"R": rmapR, "L": rmapL}
+
+    return quad_cells, quad_mask, rot_map
+
+
+QUAD_CELLS, QUAD_MASK, ROT_MAP = build_quadrant_data()
+
+
+def rotate_bits(bits: int, quad: int, direc: str) -> int:
+    mask = QUAD_MASK[quad]
+    if bits & mask == 0:
+        # nothing to move
+        return bits
+    cleared = bits & ~mask
+    moved = 0
+    mp = ROT_MAP[quad][direc]
+    # Iterate only 9 cells; cheap.
+    for old in QUAD_CELLS[quad]:
+        if bits & (1 << old):
+            moved |= 1 << mp[old]
+    return cleared | moved
+
+
+# ---------------- Game logic ----------------
+
+def to_bitboard(arr: Any) -> int:
+    b = 0
+    for r in range(6):
+        row = arr[r]
+        for c in range(6):
+            if int(row[c]) == 1:
+                b |= 1 << (r * 6 + c)
+    return b
+
+
+def wins(bits: int) -> bool:
+    # win if any 5-segment is fully occupied
+    for m in SEG_MASKS:
+        if (bits & m) == m:
+            return True
+    return False
+
+
+def terminal_score(cur: int, opp: int, occupied: int) -> None:
+    cw = wins(cur)
+    ow = wins(opp)
+    if cw and ow:
+        return 0
+    if cw:
+        return INF
+    if ow:
+        return -INF
+    if occupied == (1 << 36) - 1:
+        return 0
+    return None
+
+
+# Heuristic: evaluate open 5-segments + small positional weights.
+LINE_SCORES = {
+    0: 0,
+    1: 2,
+    2: 10,
+    3: 60,
+    4: 600,
+    5: 1000000,
+}
+
+
+def heuristic(cur: int, opp: int) -> int:
+    score = 0
+    for m in SEG_MASKS:
+        a = (cur & m).bit_count()
+        b = (opp & m).bit_count()
+        if a and b:
+            continue
+        if a:
+            score += LINE_SCORES[a]
+        elif b:
+            score -= LINE_SCORES[b]
+
+    # positional bias (very small compared to threats)
+    # Add weights of bits by iterating set bits.
+    x = cur
+    while x:
+        lsb = x & -x
+        i = (lsb.bit_length() - 1)
+        score += POS_W[i]
+        x ^= lsb
+    y = opp
+    while y:
+        lsb = y & -y
+        i = (lsb.bit_length() - 1)
+        score -= POS_W[i]
+        y ^= lsb
+
+    return score
+
+
+def apply_move(cur: int, opp: int, idx: int, quad: int, direc: str) -> Tuple[int, int]:
+    # Place on idx (assumed empty), then rotate quadrant affecting both.
+    cur2 = cur | (1 << idx)
+    cur3 = rotate_bits(cur2, quad, direc)
+    opp3 = rotate_bits(opp, quad, direc)
+    return cur3, opp3
+
+
+def gen_moves(cur: int, opp: int) -> List[Tuple[int, int, str]]:
+    occ = cur | opp
+    empties_bits = (~occ) & ((1 << 36) - 1)
+    empties = []
+    x = empties_bits
+    while x:
+        lsb = x & -x
+        empties.append(lsb.bit_length() - 1)
+        x ^= lsb
+
+    moves = []
+    for idx in empties:
+        for q in range(4):
+            moves.append((idx, q, "L"))
+            moves.append((idx, q, "R"))
+    return moves
+
+
+def move_to_str(idx: int, quad: int, direc: str) -> str:
+    r, c = i_to_rc(idx)
+    return f"{r+1},{c+1},{quad},{direc}"
+
+
+# ---------------- Search (negamax alpha-beta with beam + ordering) ----------------
+
+class Searcher:
+    def __init__(self, time_limit_s: float = 0.92):
+        self.t0 = time.perf_counter()
+        self.tlimit = time_limit_s
+        self.nodes = 0
+
+    def time_up(self) -> bool:
+        return (time.perf_counter() - self.t0) >= self.tlimit
+
+    def ordered_moves(
+        self,
+        cur: int,
+        opp: int,
+        moves: List[Tuple[int, int, str]],
+        take: int,
+        ply: int,
+    ) -> List[Tuple[int, int, str, int]]:
+        # Score moves quickly for ordering: prefer immediate wins, avoid immediate losses,
+        # otherwise use static heuristic after move (cheap).
+        scored = []
+        occ = cur | opp
+        for (idx, q, d) in moves:
+            if occ & (1 << idx):
+                continue
+            c2, o2 = apply_move(cur, opp, idx, q, d)
+            term = terminal_score(c2, o2, c2 | o2)
+            if term is not None:
+                # prioritize terminal
+                s = term
+            else:
+                s = heuristic(c2, o2)
+            # Tiny tie-breaker for deterministic selection
+            s2 = s * 1000 - idx * 3 - q * 2 + (0 if d == "L" else 1)
+            scored.append((idx, q, d, s2))
+            if self.time_up() and ply > 0:
+                break
+
+        scored.sort(key=lambda t: t[3], reverse=True)
+        if take is not None and len(scored) > take:
+            scored = scored[:take]
+        return scored
+
+    def negamax(self, cur: int, opp: int, depth: int, alpha: int, beta: int, ply: int) -> int:
+        if self.time_up():
+            return heuristic(cur, opp)
+
+        self.nodes += 1
+        occ = cur | opp
+        term = terminal_score(cur, opp, occ)
+        if term is not None:
+            return term
+        if depth <= 0:
+            return heuristic(cur, opp)
+
+        # Beam sizes by depth: wider near root.
+        if ply == 0:
+            beam = 40
+        elif ply == 1:
+            beam = 18
+        else:
+            beam = 10
+
+        moves = gen_moves(cur, opp)
+        ordered = self.ordered_moves(cur, opp, moves, beam, ply)
+
+        best = -INF
+        for idx, q, d, _s in ordered:
+            c2, o2 = apply_move(cur, opp, idx, q, d)
+            val = -self.negamax(o2, c2, depth - 1, -beta, -alpha, ply + 1)
+            if val > best:
+                best = val
+            if best > alpha:
+                alpha = best
+            if alpha >= beta:
+                break
+            if self.time_up() and ply > 0:
+                break
+        return best
+
+
+def policy(you, opponent) -> str:
+    cur = to_bitboard(you)
+    opp = to_bitboard(opponent)
+    occ = cur | opp
+
+    # Always ensure a legal fallback.
+    def fallback_move() -> str:
+        empties = (~occ) & ((1 << 36) - 1)
+        idx = (empties & -empties).bit_length() - 1
+        return move_to_str(idx, 0, "L")
+
+    # Generate all legal moves once.
+    all_moves = gen_moves(cur, opp)
+    if not all_moves:
+        return fallback_move()
+
+    # 1) Immediate win selection (prefer pure win over draw).
+    best_draw_win = None
+    for idx, q, d in all_moves:
+        if occ & (1 << idx):
+            continue
+        c2, o2 = apply_move(cur, opp, idx, q, d)
+        cw = wins(c2)
+        ow = wins(o2)
+        if cw and not ow:
+            return move_to_str(idx, q, d)
+        if cw and ow and best_draw_win is None:
+            best_draw_win = (idx, q, d)
+
+    if best_draw_win is not None:
+        return move_to_str(*best_draw_win)
+
+    # 2) Search with alpha-beta (beam) at depth 3, fallback to depth 2 if needed.
+    searcher = Searcher(time_limit_s=0.92)
+
+    # Root ordering (consider more moves at root).
+    ordered_root = searcher.ordered_moves(cur, opp, all_moves, take=60, ply=0)
+    if not ordered_root:
+        return fallback_move()
+
+    best_move = (ordered_root[0][0], ordered_root[0][1], ordered_root[0][2])
+    best_val = -INF
+
+    # Try depth 3; if time gets tight, it will naturally fall back via time_up checks.
+    depth = 3
+    alpha, beta = -INF, INF
+    for idx, q, d, _s in ordered_root:
+        if searcher.time_up():
+            break
+        c2, o2 = apply_move(cur, opp, idx, q, d)
+
+        # If this move gives opponent an immediate win on their next move, down-rank it early.
+        # (Still allow if all moves are bad.)
+        # Quick 1-ply opponent check with a small beam.
+        opp_moves = gen_moves(o2, c2)
+        opp_ordered = searcher.ordered_moves(o2, c2, opp_moves, take=12, ply=1)
+        opp_can_win = False
+        for oidx, oq, od, _ in opp_ordered:
+            if (o2 | c2) & (1 << oidx):
+                continue
+            o3, c3 = apply_move(o2, c2, oidx, oq, od)
+            if wins(o3) and not wins(c3):
+                opp_can_win = True
+                break
+
+        val = -searcher.negamax(o2, c2, depth - 1, -beta, -alpha, ply=1)
+        if opp_can_win:
+            val -= 2000  # discourage hanging immediate win
+
+        if val > best_val:
+            best_val = val
+            best_move = (idx, q, d)
+        if val > alpha:
+            alpha = val
+
+    # Final legality check: ensure chosen cell is empty in original position.
+    idx, q, d = best_move
+    if occ & (1 << idx):
+        return fallback_move()
+    return move_to_str(idx, q, d)

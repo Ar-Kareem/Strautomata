@@ -1,0 +1,109 @@
+The strategy is to treat this as a single-move optimization problem. Given the constraints (likely derived from the "Clobber" game in large arenas), the game state is often sparse or close to a terminal state. We will prioritize moves based on a utility function:
+
+1.  **Immediate Win**: If a move leaves the opponent with no legal moves, take it immediately.
+2.  **Tempo (Fork/Trapping)**: We prefer moves where the moving piece ends up adjacent to an opponent piece. This is generally aggressive and sets up future threats.
+3.  **Opponent Mobility**: We calculate the number of legal moves the opponent will have after our move. We prefer moves that minimize the opponent's future options.
+4.  **Backup Heuristic**: If all else is equal, we simply pick the lexicographically first valid move.
+
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    """
+    Selects a move in Clobber (5x6).
+    Prioritizes immediate wins, then maximizing own adjacency (tempo),
+    then minimizing opponent mobility.
+    """
+    rows = 5
+    cols = 6
+    
+    # Helper to get active neighbors (adjacent cells)
+    def get_active_neighbors(r, c, current_you, current_opp):
+        neighbors = []
+        # Directions: Up, Right, Down, Left
+        directions = [(-1, 0), (0, 1), (1, 0), (0, -1)]
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < rows and 0 <= nc < cols:
+                # Check if occupied by opponent (valid capture)
+                if current_opp[nr][nc] == 1:
+                    neighbors.append((nr, nc))
+        return neighbors
+
+    # Helper to calculate number of legal moves for a player
+    def count_moves(y, o):
+        move_count = 0
+        for r in range(rows):
+            for c in range(cols):
+                if y[r][c] == 1:
+                    if (r > 0 and o[r-1][c] == 1) or \
+                       (r < rows-1 and o[r+1][c] == 1) or \
+                       (c > 0 and o[r][c-1] == 1) or \
+                       (c < cols-1 and o[r][c+1] == 1):
+                        move_count += 1
+        return move_count
+
+    # 1. Identify all legal moves
+    legal_moves = []
+    for r in range(rows):
+        for c in range(cols):
+            if you[r][c] == 1:
+                # Check Up
+                if r > 0 and opponent[r-1][c] == 1:
+                    legal_moves.append((r, c, 'U', r-1, c))
+                # Check Down
+                if r < rows-1 and opponent[r+1][c] == 1:
+                    legal_moves.append((r, c, 'D', r+1, c))
+                # Check Left
+                if c > 0 and opponent[r][c-1] == 1:
+                    legal_moves.append((r, c, 'L', r, c-1))
+                # Check Right
+                if c < cols-1 and opponent[r][c+1] == 1:
+                    legal_moves.append((r, c, 'R', r, c+1))
+
+    if not legal_moves:
+        # Should not happen based on problem description, but safe fallback
+        return "0,0,U"
+
+    best_move = None
+    best_score = -float('inf')
+
+    for r, c, d, tr, tc in legal_moves:
+        # Create hypothetical next state
+        you_next = [row[:] for row in you]
+        opp_next = [row[:] for row in opponent]
+        
+        # Apply move: remove capture, move piece
+        you_next[r][c] = 0
+        opp_next[tr][tc] = 0 # Captured
+        you_next[tr][tc] = 1
+
+        # Score 1: Check if this is an immediate win (opponent has no moves)
+        opp_moves_after = count_moves(opp_next, you_next)
+        is_win = (opp_moves_after == 0)
+
+        # Score 2: Tempo (Does my new position attack an opponent?)
+        # We count how many opponent pieces are adjacent to our new position
+        tempo = 0
+        for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+            nr, nc = tr + dr, tc + dc
+            if 0 <= nr < rows and 0 <= nc < cols and opp_next[nr][nc] == 1:
+                tempo += 1
+
+        # Score 3: Minimize opponent mobility (prefer lower opp_moves_after)
+        # We invert it so lower values get higher scores
+        mobility_penalty = opp_moves_after
+
+        # Heuristic: (Immediate Win * 1000) + (Tempo * 10) - (Opponent Moves)
+        # If it's a win, we take it. If not, we maximize tempo, then minimize mobility.
+        score = (1000 if is_win else 0) + (10 * tempo) - mobility_penalty
+
+        # If scores are equal, prefer lexicographically smallest (r, c, d)
+        if score > best_score:
+            best_score = score
+            best_move = (r, c, d)
+        elif score == best_score:
+            # Tie-breaker
+            if best_move is None or (r, c, d) < best_move:
+                best_move = (r, c, d)
+
+    return f"{best_move[0]},{best_move[1]},{best_move[2]}"
+```

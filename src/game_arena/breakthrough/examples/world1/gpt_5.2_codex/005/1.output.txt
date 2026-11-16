@@ -1,0 +1,123 @@
+The strategy for this policy is a depth-limited alpha–beta search (negamax) with a heuristic evaluation emphasizing material advantage, forward progress toward the goal row, mobility, and immediate win detection. It generates all legal moves (including diagonal non-captures), prioritizes winning and capturing moves, and adapts search depth based on remaining pieces to stay within the time limit. The policy always returns a legal move.
+
+<code>
+import random
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    # Convert to sets for fast lookup
+    me_set = set(me)
+    opp_set = set(opp)
+
+    # Direction and goal row
+    dir_step = 1 if color == 'w' else -1
+    goal_row = 7 if color == 'w' else 0
+    opp_goal_row = 0 if color == 'w' else 7
+
+    def in_bounds(r, c):
+        return 0 <= r < 8 and 0 <= c < 8
+
+    def generate_moves(myset, oppset, col):
+        """Generate all legal moves for player col with pieces in myset."""
+        d = 1 if col == 'w' else -1
+        moves = []
+        for (r, c) in myset:
+            nr = r + d
+            # Forward move
+            if in_bounds(nr, c) and (nr, c) not in myset and (nr, c) not in oppset:
+                moves.append(((r, c), (nr, c)))
+            # Diagonal moves (capture or empty)
+            for dc in (-1, 1):
+                nc = c + dc
+                if in_bounds(nr, nc) and (nr, nc) not in myset:
+                    # Can move diagonally if empty or capture
+                    moves.append(((r, c), (nr, nc)))
+        # Move ordering: winning moves, captures, advancement
+        def move_key(m):
+            (_, _), (tr, tc) = m
+            win = 1 if tr == (7 if col == 'w' else 0) else 0
+            capture = 1 if (tr, tc) in oppset else 0
+            advance = tr if col == 'w' else (7 - tr)
+            return (win, capture, advance)
+        moves.sort(key=move_key, reverse=True)
+        return moves
+
+    def evaluate(myset, oppset, col):
+        # Immediate win/loss
+        my_goal = 7 if col == 'w' else 0
+        opp_goal = 0 if col == 'w' else 7
+        if any(r == my_goal for (r, c) in myset):
+            return 10000
+        if any(r == opp_goal for (r, c) in oppset):
+            return -10000
+        if not oppset:
+            return 10000
+        if not myset:
+            return -10000
+
+        # Material and advancement
+        material = (len(myset) - len(oppset)) * 100
+        my_adv = sum(r if col == 'w' else (7 - r) for (r, c) in myset)
+        opp_adv = sum(r if col != 'w' else (7 - r) for (r, c) in oppset)
+        mobility = len(generate_moves(myset, oppset, col)) - len(generate_moves(oppset, myset, 'b' if col == 'w' else 'w'))
+        return material + 10 * (my_adv - opp_adv) + 2 * mobility
+
+    def negamax(myset, oppset, col, depth, alpha, beta):
+        # Terminal or depth
+        my_goal = 7 if col == 'w' else 0
+        opp_goal = 0 if col == 'w' else 7
+        if depth == 0 or not myset or not oppset or any(r == my_goal for (r, c) in myset) or any(r == opp_goal for (r, c) in oppset):
+            return evaluate(myset, oppset, col), None
+
+        moves = generate_moves(myset, oppset, col)
+        if not moves:
+            return -10000, None  # no legal moves -> loss
+
+        best_move = moves[0]
+        best_score = -float('inf')
+        opp_col = 'b' if col == 'w' else 'w'
+
+        for move in moves:
+            (fr, fc), (tr, tc) = move
+            new_my = set(myset)
+            new_opp = set(oppset)
+            new_my.remove((fr, fc))
+            # capture
+            if (tr, tc) in new_opp:
+                new_opp.remove((tr, tc))
+            new_my.add((tr, tc))
+
+            score, _ = negamax(new_opp, new_my, opp_col, depth - 1, -beta, -alpha)
+            score = -score
+            if score > best_score:
+                best_score = score
+                best_move = move
+            alpha = max(alpha, score)
+            if alpha >= beta:
+                break
+
+        return best_score, best_move
+
+    # Depth selection based on remaining pieces
+    total_pieces = len(me) + len(opp)
+    if total_pieces <= 8:
+        depth = 5
+    elif total_pieces <= 16:
+        depth = 4
+    else:
+        depth = 3
+
+    _, move = negamax(me_set, opp_set, color, depth, -float('inf'), float('inf'))
+
+    # Fallback if needed
+    if move is None:
+        legal_moves = generate_moves(me_set, opp_set, color)
+        if legal_moves:
+            move = legal_moves[0]
+        else:
+            # Should not happen, but return a dummy legal-looking move
+            # (game likely over)
+            r, c = next(iter(me_set))
+            move = ((r, c), (r, c))
+
+    return move
+</code>

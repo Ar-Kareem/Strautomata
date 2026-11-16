@@ -1,0 +1,231 @@
+
+import numpy as np
+from collections import deque
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    # Convert to sets for O(1) lookup
+    my_set = set(me)
+    opp_set = set(opp)
+    all_occupied = my_set | opp_set
+    
+    # Define hex neighbor offsets for 11x11 grid
+    # For cell (i, j), neighbors are:
+    # (i-1, j), (i-1, j+1)  -- top row
+    # (i, j-1), (i, j+1)    -- same row
+    # (i+1, j-1), (i+1, j)  -- bottom row
+    # This accounts for the hexagonal grid structure where odd and even rows shift
+    # But for simplicity and uniform indexing, we use the standard hex adjacency:
+    # In our coordinate system, hex neighbors of (r, c) are:
+    neighbors = [
+        (-1, 0), (-1, 1),
+        (0, -1), (0, 1),
+        (1, -1), (1, 0)
+    ]
+    
+    def get_neighbors(r, c):
+        """Return valid neighboring coordinates for (r, c)"""
+        nb = []
+        for dr, dc in neighbors:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr <= 10 and 0 <= nc <= 10:
+                nb.append((nr, nc))
+        return nb
+    
+    def is_winning_move(stone, my_stones, opponent_stones):
+        """Check if placing stone at (r, c) completes a winning path"""
+        r, c = stone
+        if color == 'b':
+            # Black connects top (row 0) to bottom (row 10)
+            if r == 0 or r == 10:
+                # Must be able to connect from top to bottom
+                visited = set(my_stones)
+                visited.add(stone)
+                queue = deque([stone] if r == 0 else [])
+                if r == 0:
+                    queue.append(stone)
+                while queue:
+                    curr = queue.popleft()
+                    cr, cc = curr
+                    if cr == 10:
+                        return True
+                    for nr, nc in get_neighbors(cr, cc):
+                        if (nr, nc) not in visited and (nr, nc) in my_stones:
+                            visited.add((nr, nc))
+                            queue.append((nr, nc))
+                # Check if this stone on top connects to bottom via path
+                if r == 0:
+                    visited_under = set(my_stones)
+                    visited_under.add(stone)
+                    queue = deque([stone])
+                    while queue:
+                        curr = queue.popleft()
+                        cr, cc = curr
+                        if cr == 10:
+                            return True
+                        for nr, nc in get_neighbors(cr, cc):
+                            if (nr, nc) not in visited_under and (nr, nc) in my_stones:
+                                visited_under.add((nr, nc))
+                                queue.append((nr, nc))
+                return False
+            else:
+                # Not on edge, check connectivity to top/bottom
+                visited = set(my_stones)
+                visited.add(stone)
+                queue = deque([stone])
+                reached_top = False
+                reached_bottom = False
+                while queue:
+                    curr = queue.popleft()
+                    cr, cc = curr
+                    if cr == 0:
+                        reached_top = True
+                    if cr == 10:
+                        reached_bottom = True
+                    if reached_top and reached_bottom:
+                        return True
+                    for nr, nc in get_neighbors(cr, cc):
+                        if (nr, nc) not in visited and (nr, nc) in my_stones:
+                            visited.add((nr, nc))
+                            queue.append((nr, nc))
+                return reached_top and reached_bottom
+        else:  # color == 'w'
+            # White connects left (col 0) to right (col 10)
+            if c == 0 or c == 10:
+                visited = set(my_stones)
+                visited.add(stone)
+                queue = deque([stone] if c == 0 else [])
+                if c == 0:
+                    queue.append(stone)
+                reached_left = c == 0
+                reached_right = c == 10
+                while queue:
+                    curr = queue.popleft()
+                    cr, cc = curr
+                    if cc == 0:
+                        reached_left = True
+                    if cc == 10:
+                        reached_right = True
+                    if reached_left and reached_right:
+                        return True
+                    for nr, nc in get_neighbors(cr, cc):
+                        if (nr, nc) not in visited and (nr, nc) in my_stones:
+                            visited.add((nr, nc))
+                            queue.append((nr, nc))
+                return reached_left and reached_right
+            else:
+                visited = set(my_stones)
+                visited.add(stone)
+                queue = deque([stone])
+                reached_left = False
+                reached_right = False
+                while queue:
+                    curr = queue.popleft()
+                    cr, cc = curr
+                    if cc == 0:
+                        reached_left = True
+                    if cc == 10:
+                        reached_right = True
+                    if reached_left and reached_right:
+                        return True
+                    for nr, nc in get_neighbors(cr, cc):
+                        if (nr, nc) not in visited and (nr, nc) in my_stones:
+                            visited.add((nr, nc))
+                            queue.append((nr, nc))
+                return reached_left and reached_right
+    
+    # First: Check if any move wins immediately
+    for r in range(11):
+        for c in range(11):
+            if (r, c) not in all_occupied:
+                if is_winning_move((r, c), my_set, opp_set):
+                    return (r, c)
+    
+    # Second: Check if opponent can win next turn - block it
+    for r in range(11):
+        for c in range(11):
+            if (r, c) not in all_occupied:
+                # Temporarily assume opponent places here
+                if is_winning_move((r, c), opp_set, my_set):
+                    return (r, c)
+    
+    # Third: Evaluate promising moves using weighted heuristic
+    candidates = []
+    for r in range(11):
+        for c in range(11):
+            if (r, c) not in all_occupied:
+                # Heuristic score based on: proximity to own edges, distance to opponent edges, centrality
+                score = 0
+                
+                # Influence on own connecting direction
+                if color == 'b':  # top-bottom
+                    # Closer to top or bottom? Better
+                    if r == 0 or r == 10:
+                        score += 50
+                    elif r < 3:
+                        score += (3 - r) * 10
+                    elif r > 7:
+                        score += (r - 7) * 10
+                    # Center is good for flexibility
+                    score += (5 - abs(r - 5) - abs(c - 5)) * 2
+                    # Count connected neighbors that are mine
+                    connected_my = 0
+                    for nr, nc in get_neighbors(r, c):
+                        if (nr, nc) in my_set:
+                            connected_my += 1
+                    score += connected_my * 8
+                    
+                    # Block opponent's structure
+                    connected_opp = 0
+                    for nr, nc in get_neighbors(r, c):
+                        if (nr, nc) in opp_set:
+                            connected_opp += 1
+                    score -= connected_opp * 3
+                    
+                else:  # color == 'w': left-right
+                    if c == 0 or c == 10:
+                        score += 50
+                    elif c < 3:
+                        score += (3 - c) * 10
+                    elif c > 7:
+                        score += (c - 7) * 10
+                    # Center is good
+                    score += (5 - abs(r - 5) - abs(c - 5)) * 2
+                    # Count connected neighbors that are mine
+                    connected_my = 0
+                    for nr, nc in get_neighbors(r, c):
+                        if (nr, nc) in my_set:
+                            connected_my += 1
+                    score += connected_my * 8
+                    
+                    # Block opponent's structure
+                    connected_opp = 0
+                    for nr, nc in get_neighbors(r, c):
+                        if (nr, nc) in opp_set:
+                            connected_opp += 1
+                    score -= connected_opp * 3
+                
+                # Avoid putting stones too close to opponent's edges when not strategic
+                if color == 'b':
+                    if c < 2 or c > 8:
+                        score -= 2
+                else:
+                    if r < 2 or r > 8:
+                        score -= 2
+                
+                candidates.append((score, (r, c)))
+    
+    # Sort by score, highest first
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    
+    # Return best candidate (at least one guaranteed exists due to game rules)
+    if candidates:
+        return candidates[0][1]
+    
+    # Fallback: return first empty cell (should never reach here in normal play)
+    for r in range(11):
+        for c in range(11):
+            if (r, c) not in all_occupied:
+                return (r, c)
+    
+    # Last resort: this should never happen
+    return (5, 5)

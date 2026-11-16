@@ -1,0 +1,91 @@
+
+import re
+import random
+
+# Piece values for heuristic evaluation
+PIECE_VALUES = {
+    'P': 1,
+    'N': 3,
+    'B': 3,
+    'R': 5,
+    'Q': 9,
+    'K': 0  # King is priceless; we never capture it
+}
+
+def _piece_value(piece_code: str) -> int:
+    """Return the material value of a piece code like 'wQ' or 'bN'."""
+    if not piece_code:
+        return 0
+    return PIECE_VALUES.get(piece_code[1], 0)
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    """
+    Choose a move from ``legal_moves`` using a simple heuristic.
+    ``pieces`` maps squares to piece codes (e.g. {'e4': 'wP'}).
+    ``to_play`` is either 'white' or 'black'.
+    """
+    best_score = -10**9
+    best_moves = []
+
+    for mv in legal_moves:
+        score = 0
+
+        # 1. Checkmate
+        if mv.endswith('#'):
+            score += 10000
+        # 2. Check
+        if mv.endswith('+'):
+            score += 1000
+
+        # 3. Castling
+        if mv.startswith('O-O'):
+            score += 200
+
+        # 4. Promotion
+        if '=' in mv:
+            # queen promotion is usually best
+            promo_piece = mv.split('=')[-1][0]
+            promo_value = PIECE_VALUES.get(promo_piece, 0)
+            score += promo_value * 5  # strong incentive
+
+        # 5. Capture detection
+        if 'x' in mv:
+            # find the destination square after the capture marker
+            cap_match = re.search(r'x([a-h][1-8])', mv)
+            if cap_match:
+                cap_sq = cap_match.group(1)
+                captured = pieces.get(cap_sq)
+                if captured:
+                    captured_val = _piece_value(captured)
+                    # determine moving piece type
+                    first_char = mv[0]
+                    if first_char in 'KQRBN':
+                        mover_type = first_char
+                    else:
+                        # pawn move (e.g. exd5)
+                        mover_type = 'P'
+                    mover_val = PIECE_VALUES.get(mover_type, 0)
+                    # net material gain (scaled)
+                    score += (captured_val - mover_val) * 10
+
+        # 6. Slight preference for central pawn pushes / development
+        # (optional, light weight)
+        if re.fullmatch(r'[a-h][1-8]', mv):  # simple pawn advance
+            dest = mv
+            file, rank = dest[0], int(dest[1])
+            if (file in 'd' or file in 'e') and 3 <= rank <= 6:
+                score += 3
+
+        # Keep track of best moves
+        if score > best_score:
+            best_score = score
+            best_moves = [mv]
+        elif score == best_score:
+            best_moves.append(mv)
+
+    # If for some reason no move was evaluated (should not happen), fallback
+    if not best_moves:
+        return random.choice(legal_moves)
+
+    # Return a random move among the top-scoring ones to add variety
+    return random.choice(best_moves)

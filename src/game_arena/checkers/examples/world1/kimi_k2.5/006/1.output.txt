@@ -1,0 +1,205 @@
+ The strategy for this policy is to use an alpha-beta search with a custom evaluation function. The agent first checks for mandatory captures using a recursive search that handles multi-jump sequences (including promotion during a capture sequence). If captures exist, it selects the one leading to the best-evaluated position. If no captures are available, it performs a depth-4 alpha-beta search to select the optimal regular move. The evaluation function considers material (kings valued higher than men) and positional advancement (rewarding progress toward promotion).
+
+```python
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    # Board representation: dict mapping (r,c) to piece char
+    # 'b'/'w' for men, 'B'/'W' for kings
+    opp_color = 'w' if color == 'b' else 'b'
+    board = {}
+    for sq in my_men:
+        board[sq] = color
+    for sq in my_kings:
+        board[sq] = color.upper()
+    for sq in opp_men:
+        board[sq] = opp_color
+    for sq in opp_kings:
+        board[sq] = opp_color.upper()
+
+    def get_dirs(piece):
+        is_king = piece.isupper()
+        col = piece.lower()
+        if is_king:
+            return [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+        return [(1, -1), (1, 1)] if col == 'w' else [(-1, -1), (-1, 1)]
+
+    def find_captures(board_state, r, c, piece, captured_set):
+        """Find all capture sequences starting from (r,c). Returns list of (end_sq, captured_list)."""
+        is_king = piece.isupper()
+        directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)] if is_king else get_dirs(piece)
+        results = []
+        found_extension = False
+        
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            jr, jc = r + 2*dr, c + 2*dc
+            
+            if 0 <= jr < 8 and 0 <= jc < 8:
+                if (nr, nc) in board_state and board_state[(nr, nc)].lower() != color:
+                    if (jr, jc) not in board_state and (nr, nc) not in captured_set:
+                        # Determine if promotion happens at landing square
+                        new_piece = piece
+                        if not is_king:
+                            if (color == 'w' and jr == 7) or (color == 'b' and jr == 0):
+                                new_piece = piece.upper()
+                        
+                        new_captured = captured_set | {(nr, nc)}
+                        # Create new board state
+                        new_board = board_state.copy()
+                        del new_board[(r, c)]
+                        del new_board[(nr, nc)]
+                        new_board[(jr, jc)] = new_piece
+                        
+                        # Recurse for additional captures
+                        sub_results = find_captures(new_board, jr, jc, new_piece, new_captured)
+                        if sub_results:
+                            results.extend(sub_results)
+                            found_extension = True
+                        else:
+                            results.append(((jr, jc), list(new_captured)))
+                            found_extension = True
+        
+        return results
+
+    def generate_all_moves(board_state, turn_color):
+        """Returns (moves_list, is_capture_flag). moves_item: (from, to, captured_list)"""
+        captures = []
+        regular = []
+        
+        for (r, c), piece in board_state.items():
+            if piece.lower() != turn_color:
+                continue
+            
+            # Look for captures
+            caps = find_captures(board_state, r, c, piece, set())
+            if caps:
+                for end_sq, cap_list in caps:
+                    captures.append(((r, c), end_sq, cap_list))
+            else:
+                # Only add regular moves if we haven't found any captures for this piece
+                # But we only know globally if captures exist after checking all pieces
+                dirs = get_dirs(piece)
+                for dr, dc in dirs:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 8 and 0 <= nc < 8 and (nr, nc) not in board_state:
+                        regular.append(((r, c), (nr, nc), []))
+        
+        if captures:
+            return captures, True
+        return regular, False
+
+    def apply_move(board_state, from_sq, to_sq, captured_list, turn_color):
+        """Apply move and return new board state"""
+        new_board = board_state.copy()
+        piece = new_board[from_sq]
+        del new_board[from_sq]
+        
+        # Remove captured pieces
+        for cap in captured_list:
+            if cap in new_board:
+                del new_board[cap]
+        
+        # Check promotion for final position
+        r, c = to_sq
+        if piece == 'w' and r == 7:
+            piece = 'W'
+        elif piece == 'b' and r == 0:
+            piece = 'B'
+        
+        new_board[to_sq] = piece
+        return new_board
+
+    def evaluate(board_state):
+        """Evaluate from perspective of 'color'"""
+        score = 0
+        for (r, c), piece in board_state.items():
+            is_mine = (piece.lower() == color)
+            is_king = piece.isupper()
+            
+            # Material value
+            val = 3.0 if is_king else 1.0
+            
+            # Positional bonus for advancement
+            if not is_king:
+                if piece.lower() == 'w':
+                    val += r * 0.1
+                else:
+                    val += (7 - r) * 0.1
+            
+            if is_mine:
+                score += val
+            else:
+                score -= val
+        return score
+
+    def alphabeta(board_state, depth, alpha, beta, maximizing, turn_color):
+        """Alpha-beta search. turn_color is whose move it currently is."""
+        moves, _ = generate_all_moves(board_state, turn_color)
+        
+        if not moves:
+            # No moves = loss for current player
+            return -10000 if maximizing else 10000
+        
+        if depth == 0:
+            return evaluate(board_state)
+        
+        if maximizing:
+            value = -float('inf')
+            for from_sq, to_sq, caps in moves:
+                new_board = apply_move(board_state, from_sq, to_sq, caps, turn_color)
+                next_color = opp_color if turn_color == color else color
+                value = max(value, alphabeta(new_board, depth-1, alpha, beta, False, next_color))
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break
+            return value
+        else:
+            value = float('inf')
+            for from_sq, to_sq, caps in moves:
+                new_board = apply_move(board_state, from_sq, to_sq, caps, turn_color)
+                next_color = opp_color if turn_color == color else color
+                value = min(value, alphabeta(new_board, depth-1, alpha, beta, True, next_color))
+                beta = min(beta, value)
+                if alpha >= beta:
+                    break
+            return value
+
+    # Main logic
+    moves, is_capture = generate_all_moves(board, color)
+    
+    if not moves:
+        # Should not happen in valid game, but return something to avoid crash
+        return ((0, 0), (1, 1))
+    
+    best_move = None
+    
+    if is_capture:
+        # Must capture. Choose best by evaluation after move (with shallow lookahead)
+        best_val = -float('inf')
+        for from_sq, to_sq, caps in moves:
+            new_board = apply_move(board, from_sq, to_sq, caps, color)
+            # Short search after capture since board changed significantly
+            val = alphabeta(new_board, 2, -float('inf'), float('inf'), False, opp_color)
+            if val > best_val:
+                best_val = val
+                best_move = (from_sq, to_sq)
+        if best_move is None:
+            best_move = (moves[0][0], moves[0][1])
+    else:
+        # Regular search
+        best_val = -float('inf')
+        alpha = -float('inf')
+        beta = float('inf')
+        
+        for from_sq, to_sq, caps in moves:
+            new_board = apply_move(board, from_sq, to_sq, caps, color)
+            val = alphabeta(new_board, 4, alpha, beta, False, opp_color)
+            if val > best_val:
+                best_val = val
+                best_move = (from_sq, to_sq)
+            alpha = max(alpha, val)
+        
+        if best_move is None:
+            best_move = (moves[0][0], moves[0][1])
+    
+    return best_move
+```

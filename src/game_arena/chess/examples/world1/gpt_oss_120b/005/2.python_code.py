@@ -1,0 +1,83 @@
+
+import re
+from typing import Dict, List
+
+# piece values for material evaluation
+PIECE_VALUE = {
+    'K': 0,   # king is never captured in a legal move list
+    'Q': 9,
+    'R': 5,
+    'B': 3,
+    'N': 3,
+    'P': 1,
+}
+
+def _target_square(move: str) -> str:
+    """
+    Extract the destination square (e.g. 'e4') from a SAN move string.
+    Works for captures, promotions and normal moves.
+    """
+    # strip check / mate suffixes
+    m = move.rstrip('+#')
+    # castling has no target square
+    if m in ('O-O', 'O-O-O'):
+        return ''
+    # capture
+    if 'x' in m:
+        after = m.split('x', 1)[1]
+        # promotion may follow the square, e.g. d8=Q
+        return after[:2]
+    # normal move – the target square is the last two characters before any promotion
+    # e.g. "e4", "Nf3", "Qh8", "a8=Q" (handled above)
+    # Remove possible promotion part
+    if '=' in m:
+        m = m.split('=')[0]
+    return m[-2:]
+
+def policy(pieces: Dict[str, str], to_play: str, legal_moves: List[str]) -> str:
+    """
+    Choose a move from `legal_moves`.
+
+    The move is selected by a lightweight evaluation:
+      * immediate check‑mate (#) → immediate return
+      * material gain (capture value)
+      * promotion value
+      * check (+)
+      * small bonus for castling
+    """
+    best_move = legal_moves[0]
+    best_score = -1e9
+
+    for mv in legal_moves:
+        # immediate mate?
+        if mv.endswith('#'):
+            return mv
+
+        score = 0.0
+
+        # capture value
+        if 'x' in mv:
+            tgt = _target_square(mv)
+            if tgt in pieces:
+                piece = pieces[tgt]          # e.g. 'wQ'
+                score += PIECE_VALUE.get(piece[1], 0)
+
+        # promotion bonus
+        if '=' in mv:
+            promo = mv.split('=')[1][0]   # the promoted piece letter
+            # treat queen promotion as full queen value, others as their piece value
+            score += PIECE_VALUE.get(promo, 0)
+
+        # check bonus
+        if '+' in mv:
+            score += 0.3
+
+        # castling bonus
+        if mv in ('O-O', 'O-O-O'):
+            score += 0.2
+
+        if score > best_score:
+            best_score = score
+            best_move = mv
+
+    return best_move

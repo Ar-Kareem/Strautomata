@@ -1,0 +1,251 @@
+The strategy uses an iterative deepening minimax search with alpha-beta pruning. It evaluates board states based on material (men vs kings), positional advancement (rewarding pieces closer to promotion), and center control. Captures are mandatory and fully explored including multi-jumps. The search prioritizes capture moves to improve pruning efficiency and respects a strict time limit to ensure a legal move is always returned.
+
+<code>
+import time
+from typing import Set, Tuple, List
+
+TIME_LIMIT = 0.9
+start_time = 0.0
+transposition_table = {}
+
+def is_on_board(r: int, c: int) -> bool:
+    return 0 <= r < 8 and 0 <= c < 8
+
+def get_dirs_man(color: str) -> List[Tuple[int, int]]:
+    if color == 'b':
+        return [(-1, -1), (-1, 1)]
+    else:
+        return [(1, -1), (1, 1)]
+
+def get_dirs_king() -> List[Tuple[int, int]]:
+    return [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+def generate_captures(pos: Tuple[int, int], my_men: Set, my_kings: Set, opp_men: Set, opp_kings: Set, 
+                      is_king: bool, color: str, captured: Set, moves: List, orig_pos: Tuple[int, int]):
+    """Recursively find all capture sequences and append (from, to, new_state) to moves."""
+    r, c = pos
+    found_next = False
+    dirs = get_dirs_king() if is_king else get_dirs_man(color)
+    
+    for dr, dc in dirs:
+        mid = (r + dr, c + dc)
+        end = (r + 2*dr, c + 2*dc)
+        
+        if is_on_board(end[0], end[1]):
+            if (mid in opp_men or mid in opp_kings) and end not in my_men and end not in my_kings and end not in opp_men and end not in opp_kings:
+                if mid not in captured:
+                    found_next = True
+                    # Copy sets
+                    n_my_men = set(my_men)
+                    n_my_kings = set(my_kings)
+                    n_opp_men = set(opp_men)
+                    n_opp_kings = set(opp_kings)
+                    
+                    # Remove captured piece
+                    if mid in n_opp_men:
+                        n_opp_men.remove(mid)
+                    else:
+                        n_opp_kings.remove(mid)
+                    
+                    # Move piece
+                    if is_king:
+                        n_my_kings.remove(pos)
+                        n_my_kings.add(end)
+                        new_is_king = True
+                    else:
+                        n_my_men.remove(pos)
+                        # Check promotion
+                        promo_row = 0 if color == 'b' else 7
+                        if end[0] == promo_row:
+                            n_my_kings.add(end)
+                            new_is_king = True
+                        else:
+                            n_my_men.add(end)
+                            new_is_king = False
+                    
+                    generate_captures(end, n_my_men, n_my_kings, n_opp_men, n_opp_kings, 
+                                     new_is_king, color, captured | {mid}, moves, orig_pos)
+    
+    if not found_next and captured:
+        # Swap sides for the next player
+        new_state = (frozenset(opp_men), frozenset(opp_kings), frozenset(my_men), frozenset(my_kings))
+        moves.append((orig_pos, pos, new_state))
+
+def generate_non_captures(state, color: str) -> List:
+    my_men, my_kings, opp_men, opp_kings = state
+    moves = []
+    occupied = my_men | my_kings | opp_men | opp_kings
+    
+    # Men moves
+    for pos in my_men:
+        r, c = pos
+        for dr, dc in get_dirs_man(color):
+            nr, nc = r + dr, c + dc
+            if is_on_board(nr, nc) and (nr, nc) not in occupied:
+                n_my_men = set(my_men)
+                n_my_kings = set(my_kings)
+                n_my_men.remove(pos)
+                promo_row = 0 if color == 'b' else 7
+                if nr == promo_row:
+                    n_my_kings.add((nr, nc))
+                else:
+                    n_my_men.add((nr, nc))
+                new_state = (frozenset(opp_men), frozenset(opp_kings), frozenset(n_my_men), frozenset(n_my_kings))
+                moves.append((pos, (nr, nc), new_state))
+    
+    # Kings moves
+    for pos in my_kings:
+        r, c = pos
+        for dr, dc in get_dirs_king():
+            nr, nc = r + dr, c + dc
+            if is_on_board(nr, nc) and (nr, nc) not in occupied:
+                n_my_men = set(my_men)
+                n_my_kings = set(my_kings)
+                n_my_kings.remove(pos)
+                n_my_kings.add((nr, nc))
+                new_state = (frozenset(opp_men), frozenset(opp_kings), frozenset(n_my_men), frozenset(n_my_kings))
+                moves.append((pos, (nr, nc), new_state))
+    
+    return moves
+
+def generate_moves(state, color: str) -> List:
+    my_men, my_kings, opp_men, opp_kings = state
+    moves = []
+    
+    # Check for captures first
+    for pos in list(my_men):
+        generate_captures(pos, set(my_men), set(my_kings), set(opp_men), set(opp_kings), 
+                         False, color, set(), moves, pos)
+    for pos in list(my_kings):
+        generate_captures(pos, set(my_men), set(my_kings), set(opp_men), set(opp_kings), 
+                         True, color, set(), moves, pos)
+    
+    if moves:
+        return moves
+    else:
+        return generate_non_captures(state, color)
+
+def evaluate(state, color: str) -> int:
+    my_men, my_kings, opp_men, opp_kings = state
+    score = 0
+    
+    # Material
+    score += len(my_men) * 100
+    score += len(my_kings) * 300
+    score -= len(opp_men) * 100
+    score -= len(opp_kings) * 300
+    
+    # Positional bonuses
+    for r, c in my_men:
+        # Advancement
+        if color == 'w':
+            score += r * 5
+        else:
+            score += (7 - r) * 5
+        # Center control
+        if c in [3, 4]:
+            score += 3
+        # Back row safety (for men that haven't moved)
+        if (color == 'w' and r == 0) or (color == 'b' and r == 7):
+            score += 10
+            
+    for r, c in opp_men:
+        if color == 'w':  # opponent is black
+            score -= (7 - r) * 5
+        else:
+            score -= r * 5
+        if c in [3, 4]:
+            score -= 3
+        if (color == 'w' and r == 7) or (color == 'b' and r == 0):
+            score -= 10
+    
+    # King mobility bonus
+    score += len(my_kings) * 2
+    score -= len(opp_kings) * 2
+    
+    return score
+
+def negamax(state, color: str, depth: int, alpha: float, beta: float) -> float:
+    global start_time
+    if time.time() - start_time > TIME_LIMIT:
+        raise TimeoutError()
+    
+    # Transposition table check
+    key = (state[0], state[1], state[2], state[3], color, depth)
+    if key in transposition_table:
+        return transposition_table[key]
+    
+    if depth == 0:
+        val = evaluate(state, color)
+        transposition_table[key] = val
+        return val
+    
+    moves = generate_moves(state, color)
+    
+    if not moves:
+        # No moves = loss
+        return -10000 + (10 - depth)
+    
+    # Sort moves: captures first
+    moves.sort(key=lambda m: 1 if abs(m[1][0] - m[0][0]) > 1 else 0, reverse=True)
+    
+    best = -float('inf')
+    for from_pos, to_pos, new_state in moves:
+        score = -negamax(new_state, 'w' if color == 'b' else 'b', depth - 1, -beta, -alpha)
+        if score > best:
+            best = score
+        if score > alpha:
+            alpha = score
+        if alpha >= beta:
+            break
+    
+    transposition_table[key] = best
+    return best
+
+def policy(my_men, my_kings, opp_men, opp_kings, color) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    global start_time, transposition_table
+    start_time = time.time()
+    transposition_table = {}
+    
+    state = (frozenset(my_men), frozenset(my_kings), frozenset(opp_men), frozenset(opp_kings))
+    
+    moves = generate_moves(state, color)
+    
+    if not moves:
+        return ((0, 0), (0, 0))
+    if len(moves) == 1:
+        return (moves[0][0], moves[0][1])
+    
+    best_move = (moves[0][0], moves[0][1])
+    
+    try:
+        for depth in range(1, 20):
+            if time.time() - start_time > TIME_LIMIT:
+                break
+            
+            current_best = None
+            current_best_score = -float('inf')
+            alpha = -float('inf')
+            beta = float('inf')
+            
+            # Sort by previous iteration's intuition (captures first)
+            ordered = sorted(moves, key=lambda m: 1 if abs(m[1][0] - m[0][0]) > 1 else 0, reverse=True)
+            
+            for from_pos, to_pos, new_state in ordered:
+                if time.time() - start_time > TIME_LIMIT:
+                    break
+                score = -negamax(new_state, 'w' if color == 'b' else 'b', depth - 1, -beta, -alpha)
+                if score > current_best_score:
+                    current_best_score = score
+                    current_best = (from_pos, to_pos)
+                if score > alpha:
+                    alpha = score
+            
+            if current_best:
+                best_move = current_best
+                
+    except TimeoutError:
+        pass
+    
+    return best_move
+</code>

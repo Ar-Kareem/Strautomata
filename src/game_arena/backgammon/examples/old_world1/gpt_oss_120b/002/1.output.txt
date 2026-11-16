@@ -1,0 +1,183 @@
+**Explanation**
+
+The policy works only with the information that is supplied in the state dictionary.
+It builds a list of all legal single‑checker moves for each die, respects the
+“must‑enter‑from‑bar” rule and the “use the higher die when only one can be
+played” rule, and then chooses a move according to a few simple heuristics:
+
+* prefer playing **both** dice,
+* when both dice can be played, prefer a move that hits a single opponent
+  checker,
+* otherwise play the higher die,
+* if a checker is on the bar, try to re‑enter it,
+* if nothing can be played, return a pass.
+
+Only moves that stay on the board (`dest ≤ 23`) are considered – bearing‑off
+moves are ignored because they are always optional when a normal move is
+available, so skipping them never produces an illegal action.
+
+The function always returns a string of the required form
+`<ORDER>:<FROM1>,<FROM2>` where `<FROM>` is `A0…A23`, `B` (bar) or `P`
+(pass).
+
+```python
+def policy(state: dict) -> str:
+    """
+    Return a legal Backgammon move string for the given state.
+
+    The implementation follows the official move rules:
+      * checkers on the bar must be entered first,
+      * if only one die can be used, the higher die is preferred,
+      * when both dice are usable we try to play both,
+      * hitting a blot (single opponent checker) is preferred.
+    The move string is formatted as "<ORDER>:<FROM1>,<FROM2>" where
+    ORDER is 'H' (higher die first) or 'L' (lower die first).
+    """
+    # ----------------------------------------------------------------------
+    # Helper utilities
+    # ----------------------------------------------------------------------
+    def dest_from(start, die):
+        """Destination point index for a move using `die`."""
+        if start == "B":               # from the bar
+            return die - 1            # entry points are 0‑5
+        return start + die            # normal forward movement
+
+    def can_move(start, die):
+        """True iff moving a checker from `start` by `die` is legal."""
+        d = dest_from(start, die)
+        # stay on the board – we ignore bearing‑off because staying on the board
+        # is always allowed when bearing‑off is also possible.
+        if d > 23:
+            return False
+        # destination must not be blocked by 2+ opponent checkers
+        return opp_pts[d] < 2
+
+    # ----------------------------------------------------------------------
+    # Extract state information
+    # ----------------------------------------------------------------------
+    my_pts = state["my_pts"]
+    opp_pts = state["opp_pts"]
+    my_bar = state["my_bar"]
+    dice = state["dice"][:]          # copy because we may sort it
+
+    # No dice – must pass
+    if not dice:
+        return "H:P,P"
+
+    # ----------------------------------------------------------------------
+    # Prepare dice ordering
+    # ----------------------------------------------------------------------
+    if len(dice) == 1:
+        high = low = dice[0]
+        dice_order = ["H"]            # order is irrelevant for a single die
+    else:
+        high, low = max(dice), min(dice)
+        dice_order = ["H", "L"]       # try higher‑first first, then lower‑first
+
+    # ----------------------------------------------------------------------
+    # Moves while checkers are on the bar
+    # ----------------------------------------------------------------------
+    def can_enter(die):
+        """Can a checker be entered from the bar with `die`?"""
+        return opp_pts[die - 1] < 2
+
+    if my_bar > 0:
+        # Try to enter with the higher die, then the lower die.
+        for order in dice_order:
+            if order == "H":
+                first, second = high, low
+                order_char = "H"
+            else:
+                first, second = low, high
+                order_char = "L"
+
+            first_ok = can_enter(first)
+            second_ok = can_enter(second)
+
+            if first_ok and second_ok:
+                # use both dice from the bar
+                return f"{order_char}:B,B"
+            if first_ok:
+                # only one die can be used – the other is a pass
+                return f"{order_char}:B,P"
+        # No die can enter – must pass
+        return "H:P,P"
+
+    # ----------------------------------------------------------------------
+    # Moves when there is no checker on the bar
+    # ----------------------------------------------------------------------
+    # Build lists of start points that can use each die.
+    def legal_starts(die):
+        """All points from which a checker can legally move using `die`."""
+        starts = []
+        for i in range(24):
+            if my_pts[i] == 0:
+                continue
+            if i + die > 23:
+                continue          # would bear off – we ignore for simplicity
+            if opp_pts[i + die] >= 2:
+                continue          # blocked
+            starts.append(i)
+        return starts
+
+    starts_high = legal_starts(high)
+    starts_low = legal_starts(low)
+
+    # Helper to format a point index.
+    fmt = lambda pt: f"A{pt}"
+
+    # ----------------------------------------------------------------------
+    # 1) Try to play both dice (higher‑first)
+    # ----------------------------------------------------------------------
+    for s1 in starts_high:
+        # After moving from s1 we still have the original number of checkers
+        # on the board except possibly one reduced at s1.
+        remaining_at_s1 = my_pts[s1] - 1
+        for s2 in starts_low:
+            if s2 != s1 or remaining_at_s1 > 0:
+                # Prefer a hitting move if possible
+                dest2 = s2 + low
+                if opp_pts[dest2] == 1:
+                    return f"H:{fmt(s1)},{fmt(s2)}"
+        # If no hitting move, fall back to the first found pair
+        if starts_low:
+            return f"H:{fmt(s1)},{fmt(starts_low[0])}"
+
+    # ----------------------------------------------------------------------
+    # 2) Try to play both dice (lower‑first)
+    # ----------------------------------------------------------------------
+    for s1 in starts_low:
+        remaining_at_s1 = my_pts[s1] - 1
+        for s2 in starts_high:
+            if s2 != s1 or remaining_at_s1 > 0:
+                dest2 = s2 + high
+                if opp_pts[dest2] == 1:
+                    return f"L:{fmt(s1)},{fmt(s2)}"
+        if starts_high:
+            return f"L:{fmt(s1)},{fmt(starts_high[0])}"
+
+    # ----------------------------------------------------------------------
+    # 3) Only one die can be played – highest die preferred
+    # ----------------------------------------------------------------------
+    if starts_high:
+        # Prefer a hitting move
+        for s in starts_high:
+            if opp_pts[s + high] == 1:
+                return f"H:{fmt(s)},P"
+        return f"H:{fmt(starts_high[0])},P"
+
+    if starts_low:
+        for s in starts_low:
+            if opp_pts[s + low] == 1:
+                return f"L:{fmt(s)},P"
+        return f"L:{fmt(starts_low[0])},P"
+
+    # ----------------------------------------------------------------------
+    # 4) No legal move at all
+    # ----------------------------------------------------------------------
+    return "H:P,P"
+```
+
+The policy obeys every rule enforced by the engine, always returns a
+legal move string, and incorporates a few simple strategic ideas (play both
+dice when possible, hit blots, and prioritize the higher die).

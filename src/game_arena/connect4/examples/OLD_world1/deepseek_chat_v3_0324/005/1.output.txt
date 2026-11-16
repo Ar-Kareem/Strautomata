@@ -1,0 +1,136 @@
+```python
+import numpy as np
+from typing import List
+
+def policy(board: List[List[int]]) -> int:
+    """
+    Implements a Connect 4 targeting policy using a combination of offensive and defensive strategies.
+    The policy first checks for immediate wins, then blocks opponent wins, uses center control,
+    and falls back to a heuristic based on potential future moves.
+    """
+    def is_valid_move(col: int) -> bool:
+        """Check if the column has at least one empty slot."""
+        return board[0][col] == 0
+    
+    def get_row_for_col(col: int) -> int:
+        """Returns the lowest empty row for the given column."""
+        for row in range(5, -1, -1):
+            if board[row][col] == 0:
+                return row
+        return -1
+    
+    def check_winner(board: List[List[int]], player: int) -> bool:
+        """Check if the specified player has a winning line."""
+        rows, cols = len(board), len(board[0])
+        # Check horizontal
+        for row in range(rows):
+            for col in range(cols - 3):
+                if all(board[row][col + i] == player for i in range(4)):
+                    return True
+        # Check vertical
+        for row in range(rows - 3):
+            for col in range(cols):
+                if all(board[row + i][col] == player for i in range(4)):
+                    return True
+        # Check diagonal (positive slope)
+        for row in range(rows - 3):
+            for col in range(cols - 3):
+                if all(board[row + i][col + i] == player for i in range(4)):
+                    return True
+        # Check diagonal (negative slope)
+        for row in range(3, rows):
+            for col in range(cols - 3):
+                if all(board[row - i][col + i] == player for i in range(4)):
+                    return True
+        return False
+    
+    def evaluate_position(board: List[List[int]], col: int, player: int) -> int:
+        """
+        Evaluates the score of a potential move in the given column for the specified player.
+        Higher scores are better.
+        """
+        temp_board = [row.copy() for row in board]
+        row = get_row_for_col(col)
+        if row == -1:
+            return -1
+        temp_board[row][col] = player
+        score = 0
+        # Immediate win
+        if check_winner(temp_board, player):
+            score += 1000
+        # Center control
+        if col in [3, 2, 4]:
+            score += 2
+        # Horizontal potential
+        for c in range(max(0, col - 3), min(4, col + 1)):
+            window = temp_board[row][c:c+4]
+            if window.count(player) == 3 and window.count(0) == 1:
+                score += 10
+        # Vertical potential
+        if row <= 2:
+            window = [temp_board[row+i][col] for i in range(4)]
+            if window.count(player) == 3 and window.count(0) == 1:
+                score += 10
+        # Diagonal potential (positive slope)
+        start_row, start_col = row, col
+        while start_row > 0 and start_col > 0:
+            start_row -= 1
+            start_col -= 1
+        for i in range(4):
+            r, c = start_row + i, start_col + i
+            if r + 3 < 6 and c + 3 < 7:
+                window = [temp_board[r + j][c + j] for j in range(4)]
+                if window.count(player) == 3 and window.count(0) == 1:
+                    score += 10
+        # Diagonal potential (negative slope)
+        start_row, start_col = row, col
+        while start_row < 5 and start_col > 0:
+            start_row += 1
+            start_col -= 1
+        for i in range(4):
+            r, c = start_row - i, start_col + i
+            if r - 3 >= 0 and c + 3 < 7:
+                window = [temp_board[r - j][c + j] for j in range(4)]
+                if window.count(player) == 3 and window.count(0) == 1:
+                    score += 10
+        return score
+    
+    # First, check for immediate winning move
+    for col in range(7):
+        if is_valid_move(col):
+            temp_board = [row.copy() for row in board]
+            row = get_row_for_col(col)
+            temp_board[row][col] = 1
+            if check_winner(temp_board, 1):
+                return col
+    
+    # Then, block opponent's immediate winning move
+    for col in range(7):
+        if is_valid_move(col):
+            temp_board = [row.copy() for row in board]
+            row = get_row_for_col(col)
+            temp_board[row][col] = -1
+            if check_winner(temp_board, -1):
+                return col
+    
+    # Evaluate remaining columns based on potential
+    scores = []
+    for col in range(7):
+        if is_valid_move(col):
+            score = evaluate_position(board, col, 1)
+            opponent_score = evaluate_position(board, col, -1)
+            # Prioritize blocking opponent's high-score moves
+            combined_score = score + opponent_score * 0.8
+            scores.append((combined_score, col))
+    
+    if scores:
+        scores.sort(reverse=True, key=lambda x: x[0])
+        # Return the column with the highest score
+        return scores[0][1]
+    
+    # Default fallback (shouldn't happen in normal play)
+    for col in range(7):
+        if is_valid_move(col):
+            return col
+    return 0  # Fallback if all columns are full (should not occur)
+```

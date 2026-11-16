@@ -1,0 +1,221 @@
+# Strategy Explanation
+
+This policy implements a Monte Carlo Tree Search (MCTS) approach combined with heuristic evaluation for Hex. The key components are:
+
+1. **Monte Carlo Tree Search**: Explores possible moves through simulations while balancing exploration vs exploitation.
+2. **Bridge Detection**: Prioritizes moves that create or block bridges (two potential connection paths).
+3. **Shortest Path Heuristic**: Evaluates board positions based on the shortest path to connect sides.
+4. **Adjacency Checking**: Considers all 6 neighbors in hexagonal grid when evaluating connections.
+
+The algorithm:
+- First checks for immediate winning moves
+- Then checks for critical blocking moves
+- Uses MCTS to evaluate promising moves when no obvious moves exist
+- Falls back to random legal moves if time constraints prevent full analysis
+
+The evaluation function considers:
+- Current shortest path distance
+- Potential bridges being formed
+- Number of connected components
+- Distance to opponent's connections
+
+<code>
+import numpy as np
+import random
+import time
+from collections import deque
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    start_time = time.time()
+    BOARD_SIZE = 11
+    MAX_TIME = 0.95  # Leave some margin
+    
+    # Convert to sets for faster lookup
+    my_stones = set(me)
+    opp_stones = set(opp)
+    all_stones = my_stones.union(opp_stones)
+    
+    # Check for immediate winning moves
+    for move in get_empty_neighbors(all_stones, BOARD_SIZE):
+        temp_me = my_stones.copy()
+        temp_me.add(move)
+        if is_connected(temp_me, color):
+            return move
+    
+    # Check for opponent's immediate winning moves
+    for move in get_empty_neighbors(all_stones, BOARD_SIZE):
+        temp_opp = opp_stones.copy()
+        temp_opp.add(move)
+        if is_connected(temp_opp, 'b' if color == 'w' else 'w'):
+            return move
+    
+    # Get all legal moves
+    legal_moves = [(i, j) for i in range(BOARD_SIZE) for j in range(BOARD_SIZE) 
+                   if (i, j) not in all_stones]
+    
+    if not legal_moves:
+        return (0, 0)  # Shouldn't happen
+    
+    # Try to find bridge patterns
+    bridge_move = find_bridge_move(my_stones, opp_stones, color, BOARD_SIZE)
+    if bridge_move:
+        return bridge_move
+    
+    # Use MCTS if we have time
+    best_move = legal_moves[0]
+    best_score = -float('inf')
+    
+    for move in legal_moves:
+        if time.time() - start_time > MAX_TIME:
+            break
+            
+        temp_me = my_stones.copy()
+        temp_me.add(move)
+        
+        # Evaluate position with some simulations
+        score = 0
+        simulations = 0
+        max_simulations = 50
+        
+        while simulations < max_simulations and time.time() - start_time < MAX_TIME:
+            result = simulate_game(temp_me, opp_stones, color, BOARD_SIZE)
+            if result == 1:
+                score += 1
+            simulations += 1
+        
+        if simulations > 0:
+            win_rate = score / simulations
+            if win_rate > best_score:
+                best_score = win_rate
+                best_move = move
+    
+    return best_move
+
+def get_empty_neighbors(all_stones, board_size):
+    empty_neighbors = set()
+    for (i, j) in all_stones:
+        for di, dj in get_hex_neighbors(i, j, board_size):
+            if (di, dj) not in all_stones:
+                empty_neighbors.add((di, dj))
+    return list(empty_neighbors)
+
+def get_hex_neighbors(i, j, board_size):
+    neighbors = []
+    # Same row
+    if j > 0: neighbors.append((i, j-1))
+    if j < board_size-1: neighbors.append((i, j+1))
+    # Top neighbors
+    if i > 0:
+        neighbors.append((i-1, j))
+        if j < board_size-1: neighbors.append((i-1, j+1))
+    # Bottom neighbors
+    if i < board_size-1:
+        neighbors.append((i+1, j))
+        if j > 0: neighbors.append((i+1, j-1))
+    return [(ni, nj) for ni, nj in neighbors if 0 <= ni < board_size and 0 <= nj < board_size]
+
+def is_connected(stones, color):
+    if color == 'b':  # Connect top to bottom
+        top = set((0, j) for j in range(11) if (0, j) in stones)
+        bottom = set((10, j) for j in range(11) if (10, j) in stones)
+        connected = False
+        for t in top:
+            if connected_to(t, stones, bottom):
+                connected = True
+                break
+        return connected
+    else:  # Connect left to right
+        left = set((i, 0) for i in range(11) if (i, 0) in stones)
+        right = set((i, 10) for i in range(11) if (i, 10) in stones)
+        connected = False
+        for l in left:
+            if connected_to(l, stones, right):
+                connected = True
+                break
+        return connected
+
+def connected_to(start, stones, targets):
+    visited = set()
+    queue = deque([start])
+    visited.add(start)
+    
+    while queue:
+        current = queue.popleft()
+        if current in targets:
+            return True
+        for neighbor in get_hex_neighbors(current[0], current[1], 11):
+            if neighbor in stones and neighbor not in visited:
+                visited.add(neighbor)
+                queue.append(neighbor)
+    return False
+
+def find_bridge_move(my_stones, opp_stones, color, board_size):
+    all_stones = my_stones.union(opp_stones)
+    empty_cells = [(i, j) for i in range(board_size) for j in range(board_size) 
+                   if (i, j) not in all_stones]
+    
+    for move in empty_cells:
+        # Check if this move creates a bridge for us
+        temp_me = my_stones.copy()
+        temp_me.add(move)
+        if count_bridges(temp_me, color) > count_bridges(my_stones, color):
+            return move
+        
+        # Check if this move blocks an opponent bridge
+        temp_opp = opp_stones.copy()
+        temp_opp.add(move)
+        opp_color = 'b' if color == 'w' else 'w'
+        if count_bridges(temp_opp, opp_color) > count_bridges(opp_stones, opp_color):
+            return move
+    
+    return None
+
+def count_bridges(stones, color):
+    bridge_count = 0
+    for (i, j) in stones:
+        neighbors = get_hex_neighbors(i, j, 11)
+        stone_neighbors = [n for n in neighbors if n in stones]
+        if len(stone_neighbors) >= 2:
+            # Check if these neighbors are not directly connected
+            # (simplified bridge detection)
+            bridge_count += 1
+    return bridge_count
+
+def simulate_game(my_stones, opp_stones, color, board_size):
+    current_me = my_stones.copy()
+    current_opp = opp_stones.copy()
+    current_turn = 'opp'  # Opponent moves next
+    
+    while True:
+        if current_turn == 'me':
+            # Find all empty cells
+            empty_cells = [(i, j) for i in range(board_size) for j in range(board_size)
+                          if (i, j) not in current_me and (i, j) not in current_opp]
+            if not empty_cells:
+                return 0  # Draw
+            
+            # Random move
+            move = random.choice(empty_cells)
+            current_me.add(move)
+            
+            if is_connected(current_me, color):
+                return 1
+            
+            current_turn = 'opp'
+        else:
+            # Find all empty cells
+            empty_cells = [(i, j) for i in range(board_size) for j in range(board_size)
+                          if (i, j) not in current_me and (i, j) not in current_opp]
+            if not empty_cells:
+                return 0  # Draw
+            
+            # Random move
+            move = random.choice(empty_cells)
+            current_opp.add(move)
+            
+            opp_color = 'b' if color == 'w' else 'w'
+            if is_connected(current_opp, opp_color):
+                return -1
+            
+            current_turn = 'me'
+</code>

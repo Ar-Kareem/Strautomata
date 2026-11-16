@@ -1,0 +1,307 @@
+The strategy for this policy is:
+
+- Always return a legal move.
+- First handle tactics:
+  - play an immediate winning move if one exists,
+  - prefer “safe” moves that do not allow the opponent to win immediately next turn.
+- Then use iterative deepening minimax with alpha-beta pruning.
+- Search order prefers the center columns, which are generally strongest in Connect 4.
+- The evaluation function rewards:
+  - central control,
+  - 2-in-a-row and 3-in-a-row patterns,
+  - especially playable threats,
+  - and strongly penalizes opponent threats.
+
+This gives a solid tactical player with reasonable search depth under a 1-second budget.
+
+<code>
+import time
+
+ROWS = 6
+COLS = 7
+MOVE_ORDER = (3, 2, 4, 1, 5, 0, 6)
+DIRECTIONS = ((1, 0), (0, 1), (1, 1), (1, -1))
+WIN_SCORE = 10**9
+INF = 10**18
+TIME_LIMIT = 0.92  # stay a bit under the arena limit
+
+POSITION_WEIGHTS = (
+    (3, 4, 5, 7, 5, 4, 3),
+    (4, 6, 8, 10, 8, 6, 4),
+    (5, 8, 11, 13, 11, 8, 5),
+    (5, 8, 11, 13, 11, 8, 5),
+    (4, 6, 8, 10, 8, 6, 4),
+    (3, 4, 5, 7, 5, 4, 3),
+)
+
+WINDOWS = []
+# Horizontal
+for r in range(ROWS):
+    for c in range(COLS - 3):
+        WINDOWS.append(((r, c), (r, c + 1), (r, c + 2), (r, c + 3)))
+# Vertical
+for r in range(ROWS - 3):
+    for c in range(COLS):
+        WINDOWS.append(((r, c), (r + 1, c), (r + 2, c), (r + 3, c)))
+# Diagonal down-right
+for r in range(ROWS - 3):
+    for c in range(COLS - 3):
+        WINDOWS.append(((r, c), (r + 1, c + 1), (r + 2, c + 2), (r + 3, c + 3)))
+# Diagonal down-left
+for r in range(ROWS - 3):
+    for c in range(3, COLS):
+        WINDOWS.append(((r, c), (r + 1, c - 1), (r + 2, c - 2), (r + 3, c - 3)))
+
+
+class SearchTimeout(Exception):
+    pass
+
+
+def compute_heights(board):
+    heights = [-1] * COLS
+    for c in range(COLS):
+        r = ROWS - 1
+        while r >= 0 and board[r][c] != 0:
+            r -= 1
+        heights[c] = r
+    return heights
+
+
+def is_winning_move(board, row, col, player):
+    for dr, dc in DIRECTIONS:
+        count = 1
+
+        rr, cc = row + dr, col + dc
+        while 0 <= rr < ROWS and 0 <= cc < COLS and board[rr][cc] == player:
+            count += 1
+            rr += dr
+            cc += dc
+
+        rr, cc = row - dr, col - dc
+        while 0 <= rr < ROWS and 0 <= cc < COLS and board[rr][cc] == player:
+            count += 1
+            rr -= dr
+            cc -= dc
+
+        if count >= 4:
+            return True
+    return False
+
+
+def make_move(board, heights, col, player):
+    row = heights[col]
+    board[row][col] = player
+    heights[col] = row - 1
+    return row
+
+
+def undo_move(board, heights, col, row):
+    board[row][col] = 0
+    heights[col] = row
+
+
+def legal_moves(heights):
+    return [c for c in MOVE_ORDER if heights[c] >= 0]
+
+
+def immediate_winning_moves(board, heights, player):
+    wins = []
+    for col in MOVE_ORDER:
+        row = heights[col]
+        if row < 0:
+            continue
+        board[row][col] = player
+        heights[col] = row - 1
+        if is_winning_move(board, row, col, player):
+            wins.append(col)
+        board[row][col] = 0
+        heights[col] = row
+    return wins
+
+
+def evaluate(board, heights):
+    score = 0
+
+    # Positional preference for center control
+    for r in range(ROWS):
+        brow = board[r]
+        wrow = POSITION_WEIGHTS[r]
+        for c in range(COLS):
+            score += brow[c] * wrow[c]
+
+    # Pattern scoring
+    for window in WINDOWS:
+        count_me = 0
+        count_opp = 0
+        count_empty = 0
+        empty_r = -1
+        empty_c = -1
+
+        for r, c in window:
+            v = board[r][c]
+            if v == 1:
+                count_me += 1
+            elif v == -1:
+                count_opp += 1
+            else:
+                count_empty += 1
+                empty_r, empty_c = r, c
+
+        # Mixed windows are much less useful
+        if count_me and count_opp:
+            continue
+
+        if count_me == 4:
+            score += 100000
+        elif count_opp == 4:
+            score -= 100000
+        elif count_me == 3 and count_empty == 1:
+            score += 300 if heights[empty_c] == empty_r else 90
+        elif count_opp == 3 and count_empty == 1:
+            score -= 360 if heights[empty_c] == empty_r else 110
+        elif count_me == 2 and count_empty == 2:
+            score += 14
+        elif count_opp == 2 and count_empty == 2:
+            score -= 16
+        elif count_me == 1 and count_empty == 3:
+            score += 2
+        elif count_opp == 1 and count_empty == 3:
+            score -= 2
+
+    return score
+
+
+def policy(board: list[list[int]]) -> int:
+    grid = [row[:] for row in board]
+    heights = compute_heights(grid)
+    legal = legal_moves(heights)
+
+    # Fallback: always return a legal move if possible.
+    if legal:
+        fallback_move = legal[0]
+    else:
+        # Should not happen in a valid game state, but keep API total.
+        return 0
+
+    # Immediate winning move
+    for col in legal:
+        row = make_move(grid, heights, col, 1)
+        won = is_winning_move(grid, row, col, 1)
+        undo_move(grid, heights, col, row)
+        if won:
+            return col
+
+    # Prefer safe moves that do not allow an immediate opponent win
+    safe_moves = []
+    for col in legal:
+        row = make_move(grid, heights, col, 1)
+        opp_wins = immediate_winning_moves(grid, heights, -1)
+        undo_move(grid, heights, col, row)
+        if not opp_wins:
+            safe_moves.append(col)
+
+    candidate_moves = safe_moves if safe_moves else legal
+    if len(candidate_moves) == 1:
+        return candidate_moves[0]
+
+    deadline = time.perf_counter() + TIME_LIMIT
+    node_counter = [0]
+
+    def check_time():
+        node_counter[0] += 1
+        if (node_counter[0] & 2047) == 0 and time.perf_counter() >= deadline:
+            raise SearchTimeout
+
+    def search(depth, alpha, beta, player):
+        check_time()
+
+        moves = legal_moves(heights)
+        if not moves:
+            return 0  # draw
+
+        if depth == 0:
+            return evaluate(grid, heights)
+
+        if player == 1:
+            best = -INF
+            for col in moves:
+                row = make_move(grid, heights, col, 1)
+                if is_winning_move(grid, row, col, 1):
+                    score = WIN_SCORE + depth
+                else:
+                    score = search(depth - 1, alpha, beta, -1)
+                undo_move(grid, heights, col, row)
+
+                if score > best:
+                    best = score
+                if best > alpha:
+                    alpha = best
+                if alpha >= beta:
+                    break
+            return best
+        else:
+            best = INF
+            for col in moves:
+                row = make_move(grid, heights, col, -1)
+                if is_winning_move(grid, row, col, -1):
+                    score = -WIN_SCORE - depth
+                else:
+                    score = search(depth - 1, alpha, beta, 1)
+                undo_move(grid, heights, col, row)
+
+                if score < best:
+                    best = score
+                if best < beta:
+                    beta = best
+                if alpha >= beta:
+                    break
+            return best
+
+    best_move = candidate_moves[0]
+    best_score = -INF
+
+    # Iterative deepening
+    max_depth = 12
+    try:
+        for depth in range(1, max_depth + 1):
+            current_best_move = best_move
+            current_best_score = -INF
+
+            root_order = [best_move] + [c for c in candidate_moves if c != best_move]
+            alpha = -INF
+            beta = INF
+
+            for col in root_order:
+                if time.perf_counter() >= deadline:
+                    raise SearchTimeout
+
+                row = make_move(grid, heights, col, 1)
+                if is_winning_move(grid, row, col, 1):
+                    score = WIN_SCORE + depth
+                else:
+                    score = search(depth - 1, alpha, beta, -1)
+                undo_move(grid, heights, col, row)
+
+                if score > current_best_score:
+                    current_best_score = score
+                    current_best_move = col
+                if current_best_score > alpha:
+                    alpha = current_best_score
+
+            best_move = current_best_move
+            best_score = current_best_score
+
+            if best_score >= WIN_SCORE:
+                break
+
+    except SearchTimeout:
+        pass
+
+    # Final safety: guarantee legality
+    if heights[best_move] >= 0:
+        return best_move
+    for col in MOVE_ORDER:
+        if heights[col] >= 0:
+            return col
+    return fallback_move
+</code>

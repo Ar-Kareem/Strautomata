@@ -1,0 +1,114 @@
+
+import random
+import math
+import time
+from collections import defaultdict
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    SIZE = 11
+    me_set = set(me)
+    opp_set = set(opp)
+    occupied = me_set | opp_set
+    empty = [(r, c) for r in range(SIZE) for c in range(SIZE) if (r, c) not in occupied]
+    
+    if not empty:
+        return (0, 0)
+    
+    if len(empty) == SIZE * SIZE:
+        return (5, 5)
+    
+    if len(empty) == SIZE * SIZE - 1:
+        if (5, 5) not in occupied:
+            return (5, 5)
+        return (5, 4)
+    
+    def get_neighbors(r, c):
+        candidates = [(r-1, c), (r-1, c+1), (r, c-1), (r, c+1), (r+1, c-1), (r+1, c)]
+        return [(nr, nc) for nr, nc in candidates if 0 <= nr < SIZE and 0 <= nc < SIZE]
+    
+    def check_win(stones, player_color):
+        if len(stones) < SIZE:
+            return False
+        stone_set = set(stones)
+        if player_color == 'b':
+            start = [s for s in stones if s[0] == 0]
+            target_row = SIZE - 1
+        else:
+            start = [s for s in stones if s[1] == 0]
+            target_col = SIZE - 1
+        
+        if not start:
+            return False
+        
+        visited = set()
+        stack = list(start)
+        while stack:
+            r, c = stack.pop()
+            if (r, c) in visited:
+                continue
+            visited.add((r, c))
+            if player_color == 'b' and r == target_row:
+                return True
+            if player_color == 'w' and c == target_col:
+                return True
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) in stone_set and (nr, nc) not in visited:
+                    stack.append((nr, nc))
+        return False
+    
+    def simulate(me_stones, opp_stones, my_turn, my_color):
+        opp_color = 'w' if my_color == 'b' else 'b'
+        me_s = set(me_stones)
+        opp_s = set(opp_stones)
+        avail = [(r, c) for r in range(SIZE) for c in range(SIZE) if (r, c) not in me_s and (r, c) not in opp_s]
+        random.shuffle(avail)
+        
+        turn = my_turn
+        for move in avail:
+            if turn:
+                me_s.add(move)
+                if check_win(me_s, my_color):
+                    return 1
+            else:
+                opp_s.add(move)
+                if check_win(opp_s, opp_color):
+                    return 0
+            turn = not turn
+        return 0.5
+    
+    # MCTS
+    wins = defaultdict(float)
+    visits = defaultdict(int)
+    total_visits = 0
+    
+    # Prioritize moves near existing stones and center
+    def move_priority(m):
+        r, c = m
+        center_dist = abs(r - 5) + abs(c - 5)
+        adj_bonus = sum(1 for n in get_neighbors(r, c) if n in me_set) * 2
+        return center_dist - adj_bonus
+    
+    sorted_empty = sorted(empty, key=move_priority)[:30]
+    if len(sorted_empty) < len(empty):
+        sorted_empty = sorted_empty + random.sample([m for m in empty if m not in sorted_empty], min(10, len(empty) - len(sorted_empty)))
+    
+    start_time = time.time()
+    time_limit = 0.85
+    
+    while time.time() - start_time < time_limit:
+        for move in sorted_empty:
+            new_me = me_set | {move}
+            if check_win(new_me, color):
+                return move
+            result = simulate(new_me, opp_set, False, color)
+            wins[move] += result
+            visits[move] += 1
+            total_visits += 1
+            if time.time() - start_time >= time_limit:
+                break
+    
+    if total_visits == 0:
+        return random.choice(empty)
+    
+    best_move = max(sorted_empty, key=lambda m: wins[m] / max(visits[m], 1) if visits[m] > 0 else 0)
+    return best_move

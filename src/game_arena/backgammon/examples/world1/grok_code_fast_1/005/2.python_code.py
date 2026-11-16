@@ -1,0 +1,121 @@
+
+import sys
+
+def policy(state: dict) -> str:
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    bar = state['my_bar']
+    dice = state['dice']
+    home = list(range(6))  # Points 0-5 are home
+
+    # Check if all checkers are in home for bearing off
+    def can_bear_off():
+        return all(my_pts[i] == 0 for i in range(6, 24)) and bar == 0
+
+    # Get tentative destination point
+    def get_to(from_str, die):
+        if from_str == 'B':
+            return 23 - die  # Enter at 23 - die (assuming bar as position 24)
+        elif from_str.startswith('A'):
+            pt = int(from_str[1:])
+            return pt - die
+        return None
+
+    # Check if a single move (from, die) is legal
+    def is_legal(from_str, die):
+        if from_str == 'P':
+            return True
+        if from_str == 'B':
+            if bar <= 0 or not (1 <= die <= 6):
+                return False
+            to = get_to('B', die)
+            if to < 0 or to > 23 or opp_pts[to] >= 2:
+                return False
+            return True
+        if from_str.startswith('A'): 
+            pt = int(from_str[1:])
+            if my_pts[pt] == 0:
+                return False
+            to = pt - die
+            if to >= 0:
+                if opp_pts[to] >= 2 or to > 23:
+                    return False
+            else:  # Bearing off attempt
+                if not (can_bear_off() and pt in home and pt - die < 0):
+                    return False
+            return True
+        return False
+
+    # Get possible from points for a die, sorted by priority score (higher score = better move)
+    def get_possibles(die):
+        possibles = []
+        # Collect 'B' if possible
+        if bar > 0 and is_legal('B', die):
+            to = get_to('B', die)
+            score = -to if to >= 0 else 1000  # Prefer moves advancing towards home or bearing off
+            possibles.append((score, 'B'))
+        # Collect points, starting from highest
+        for pt in range(23, -1, -1):
+            from_str = 'A' + str(pt)
+            if is_legal(from_str, die):
+                to = get_to(from_str, die)
+                score = -to if to >= 0 else 1000  # Bearing off high priority
+                possibles.append((score, from_str))
+        possibles.sort(reverse=True)  # Highest score first
+        return [f for s, f in possibles]
+    
+    # Check if a pair of moves is legal
+    def is_pair_legal(order, f1, f2, d1, d2):
+        if order == 'H':
+            die1, die2 = d1, d2
+        else:
+            die1, die2 = d2, d1
+        if not (is_legal(f1, die1) and is_legal(f2, die2)):
+            return False
+        # Check if same point moved twice but only one checker there
+        if f1 == f2 and f1.startswith('A'):
+            pt = int(f1[1:])
+            if my_pts[pt] < 2 and (f1 != 'B'):
+                return False
+        if f1 == f2 == 'B':
+            if bar < 2:  # Approximating: can't enter twice if bar has 1
+                return False
+        return True
+
+    # If no dice, pass
+    if not dice:
+        return 'H:P,P'
+    
+    # Handle single die
+    if len(dice) == 1:
+        die = dice[0]
+        possibles = get_possibles(die)
+        if possibles:
+            return 'H:' + possibles[0] + ',P'
+        return 'H:P,P'
+    
+    # Handle two dice
+    d1, d2 = dice
+    h_die, l_die = max(d1, d2), min(d1, d2)
+    h_possibles = get_possibles(h_die)
+    l_possibles = get_possibles(l_die)
+    f1_h = h_possibles[0] if h_possibles else 'P'
+    f2_l = l_possibles[0] if l_possibles else 'P'
+    
+    # Try H order
+    if is_pair_legal('H', f1_h, f2_l, h_die, l_die):
+        return 'H:' + f1_h + ',' + f2_l
+    
+    # Try L order if relevant
+    if h_die != l_die:
+        f1_l = l_possibles[0] if l_possibles else 'P'
+        f2_h = h_possibles[0] if h_possibles else 'P'
+        if is_pair_legal('L', f1_l, f2_h, l_die, h_die):
+            return 'L:' + f1_l + ',' + f2_h
+    
+    # Play partial or single
+    if h_possibles:
+        return 'H:' + h_possibles[0] + ',P'
+    if l_possibles:
+        return 'L:' + l_possibles[0] + ',P'
+    return 'H:P,P'

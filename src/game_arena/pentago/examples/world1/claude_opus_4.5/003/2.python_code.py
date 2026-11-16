@@ -1,0 +1,121 @@
+
+import numpy as np
+
+def policy(you, opponent) -> str:
+    you = np.array(you, dtype=np.int8)
+    opponent = np.array(opponent, dtype=np.int8)
+    
+    def get_empty_cells(y, o):
+        empty = []
+        for r in range(6):
+            for c in range(6):
+                if y[r][c] == 0 and o[r][c] == 0:
+                    empty.append((r, c))
+        return empty
+    
+    def rotate_quad(board, quad, direction):
+        b = board.copy()
+        sr, sc = (0 if quad < 2 else 3), (0 if quad % 2 == 0 else 3)
+        sub = b[sr:sr+3, sc:sc+3].copy()
+        if direction == 'L':
+            sub = np.rot90(sub, 1)
+        else:
+            sub = np.rot90(sub, -1)
+        b[sr:sr+3, sc:sc+3] = sub
+        return b
+    
+    def check_win(board):
+        for r in range(6):
+            for c in range(2):
+                if np.all(board[r, c:c+5] == 1):
+                    return True
+        for c in range(6):
+            for r in range(2):
+                if np.all(board[r:r+5, c] == 1):
+                    return True
+        for r in range(2):
+            for c in range(2):
+                if all(board[r+i, c+i] == 1 for i in range(5)):
+                    return True
+                if all(board[r+i, c+4-i] == 1 for i in range(5)):
+                    return True
+        return False
+    
+    def apply_move(y, o, r, c, quad, d):
+        ny = y.copy()
+        ny[r, c] = 1
+        ny = rotate_quad(ny, quad, d)
+        no = rotate_quad(o, quad, d)
+        return ny, no
+    
+    def evaluate(y, o):
+        if check_win(y):
+            return 10000
+        if check_win(o):
+            return -10000
+        
+        def count_lines(board):
+            score = 0
+            weights = {2: 1, 3: 10, 4: 100}
+            for r in range(6):
+                for c in range(2):
+                    cnt = np.sum(board[r, c:c+5])
+                    if cnt in weights:
+                        score += weights[cnt]
+            for c in range(6):
+                for r in range(2):
+                    cnt = np.sum(board[r:r+5, c])
+                    if cnt in weights:
+                        score += weights[cnt]
+            for r in range(2):
+                for c in range(2):
+                    cnt = sum(board[r+i, c+i] for i in range(5))
+                    if cnt in weights:
+                        score += weights[cnt]
+                    cnt = sum(board[r+i, c+4-i] for i in range(5))
+                    if cnt in weights:
+                        score += weights[cnt]
+            return score
+        
+        return count_lines(y) - count_lines(o) * 1.1
+    
+    def get_moves(y, o):
+        moves = []
+        empty = get_empty_cells(y, o)
+        for r, c in empty:
+            for q in range(4):
+                for d in ['L', 'R']:
+                    moves.append((r, c, q, d))
+        return moves
+    
+    empty = get_empty_cells(you, opponent)
+    best_move = None
+    best_score = -float('inf')
+    
+    # Check for winning moves first
+    for r, c in empty:
+        for q in range(4):
+            for d in ['L', 'R']:
+                ny, no = apply_move(you, opponent, r, c, q, d)
+                if check_win(ny):
+                    return f"{r+1},{c+1},{q},{d}"
+    
+    # Evaluate all moves with simple heuristic
+    for r, c in empty:
+        for q in range(4):
+            for d in ['L', 'R']:
+                ny, no = apply_move(you, opponent, r, c, q, d)
+                if check_win(no) and not check_win(ny):
+                    continue  # Skip moves that let opponent win
+                score = evaluate(ny, no)
+                if score > best_score:
+                    best_score = score
+                    best_move = (r, c, q, d)
+    
+    if best_move is None:
+        # Fallback: any legal move
+        r, c = empty[0]
+        best_move = (r, c, 0, 'L')
+    
+    r, c, q, d = best_move
+    return f"{r+1},{c+1},{q},{d}"

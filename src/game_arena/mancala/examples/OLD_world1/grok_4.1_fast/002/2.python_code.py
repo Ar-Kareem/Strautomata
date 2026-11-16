@@ -1,0 +1,112 @@
+
+import sys
+
+sys.setrecursionlimit(100000)
+
+def apply_move(player_board, opponent_board, move):
+    p = player_board[:]
+    op = opponent_board[:]
+    seeds = p[move]
+    p[move] = 0
+    pos = move + 1
+    last_pos = -1
+    for _ in range(seeds):
+        if 0 <= pos <= 5:
+            p[pos] += 1
+        elif pos == 6:
+            p[6] += 1
+        elif 7 <= pos <= 12:
+            op[pos - 7] += 1
+        last_pos = pos
+        pos += 1
+        if pos == 13:
+            pos = 0
+    # capture
+    if 0 <= last_pos <= 5 and p[last_pos] == 1 and op[5 - last_pos] > 0:
+        p[6] += 1 + op[5 - last_pos]
+        p[last_pos] = 0
+        op[5 - last_pos] = 0
+    landed_in_store = (last_pos == 6)
+    return p, op, landed_in_store
+
+def heuristic(pb, ob):
+    store_diff = pb[6] - ob[6]
+    house_diff = sum(pb[:6]) * 0.5 - sum(ob[:6]) * 0.5
+    my_mob = sum(1 for j in range(6) if pb[j] > 0)
+    opp_mob = sum(1 for j in range(6) if ob[j] > 0)
+    mob_diff = (my_mob - opp_mob) * 4.0
+    hill_my = sum(pb[5 - j] * (j + 1) for j in range(6)) / 21.0
+    hill_opp = sum(ob[5 - j] * (j + 1) for j in range(6)) / 21.0
+    return store_diff + house_diff + mob_diff + (hill_my - hill_opp) * 10
+
+def minimax(player_board, opponent_board, is_my_turn, alpha, beta, depth):
+    if depth == 0:
+        return heuristic(player_board, opponent_board)
+    # terminal test
+    my_has_seeds = any(player_board[j] > 0 for j in range(6))
+    opp_has_seeds = any(opponent_board[j] > 0 for j in range(6))
+    if not my_has_seeds or not opp_has_seeds:
+        my_final = player_board[6] + sum(player_board[j] for j in range(6))
+        opp_final = opponent_board[6] + sum(opponent_board[j] for j in range(6))
+        return my_final - opp_final
+    if is_my_turn:
+        # maximizing
+        legal = [i for i in range(6) if player_board[i] > 0]
+        legal.sort(key=lambda x: -player_board[x] * 10 - x)
+        max_eval = -float('inf')
+        for i in legal:
+            new_p, new_op, landed = apply_move(player_board, opponent_board, i)
+            my_has_seeds = any(new_p[j] > 0 for j in range(6))
+            opp_has_seeds = any(new_op[j] > 0 for j in range(6))
+            if not my_has_seeds or not opp_has_seeds:
+                score = new_p[6] + sum(new_p[j] for j in range(6)) - (new_op[6] + sum(new_op[j] for j in range(6)))
+            elif landed:
+                score = minimax(new_p, new_op, True, alpha, beta, depth - 1)
+            else:
+                score = minimax(new_p, new_op, False, alpha, beta, depth - 1)
+            max_eval = max(max_eval, score)
+            alpha = max(alpha, max_eval)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        # minimizing (opponent's turn)
+        legal = [i for i in range(6) if opponent_board[i] > 0]
+        legal.sort(key=lambda x: opponent_board[x] * 10 - x)
+        min_eval = float('inf')
+        for i in legal:
+            new_op, new_p, landed = apply_move(opponent_board, player_board, i)
+            my_has_seeds = any(new_p[j] > 0 for j in range(6))
+            opp_has_seeds = any(new_op[j] > 0 for j in range(6))
+            if not my_has_seeds or not opp_has_seeds:
+                score = new_p[6] + sum(new_p[j] for j in range(6)) - (new_op[6] + sum(new_op[j] for j in range(6)))
+            elif landed:
+                score = minimax(new_p, new_op, False, alpha, beta, depth - 1)
+            else:
+                score = minimax(new_p, new_op, True, alpha, beta, depth - 1)
+            min_eval = min(min_eval, score)
+            beta = min(beta, min_eval)
+            if alpha >= beta:
+                break
+        return min_eval
+
+def policy(you, opponent):
+    depth = 12
+    best_score = -float('inf')
+    best_move = 0
+    legal = [i for i in range(6) if you[i] > 0]
+    legal.sort(key=lambda x: -you[x] * 10 - x)
+    for i in legal:
+        new_you, new_opp, landed = apply_move(you, opponent, i)
+        my_has_seeds = any(new_you[j] > 0 for j in range(6))
+        opp_has_seeds = any(new_opp[j] > 0 for j in range(6))
+        if not my_has_seeds or not opp_has_seeds:
+            score = new_you[6] + sum(new_you[j] for j in range(6)) - (new_opp[6] + sum(new_opp[j] for j in range(6)))
+        elif landed:
+            score = minimax(new_you, new_opp, True, -float('inf'), float('inf'), depth)
+        else:
+            score = minimax(new_you, new_opp, False, -float('inf'), float('inf'), depth)
+        if score > best_score:
+            best_score = score
+            best_move = i
+    return best_move

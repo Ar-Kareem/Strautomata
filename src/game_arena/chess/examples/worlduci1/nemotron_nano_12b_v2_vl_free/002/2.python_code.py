@@ -1,0 +1,138 @@
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    # Helper function to convert square notation to board coordinates
+    def square_to_coord(s):
+        return ord(s[0]) - ord('a'), int(s[1]) - 1
+
+    # Helper function to convert board coordinates to square notation
+    def coord_to_square(coord):
+        x, y = coord
+        return chr(x + ord('a')) + str(y + 1)
+
+    # Helper function to move a piece from (fx, fy) to (tx, ty)
+    def make_move(board, fx, fy, tx, ty):
+        new_board = [row[:] for row in board]
+        piece = new_board[fy][fx]
+        new_board[fy][fx] = None
+        new_board[ty][tx] = piece
+        return new_board
+
+    # Helper function to check if a square is under attack by any enemy piece
+    def is_attacked(sx, sy, board, player_color):
+        enemy_color = 'w' if player_color == 'b' else 'b'
+        for x in range(8):
+            for y in range(8):
+                piece = board[y][x]
+                if not piece:
+                    continue
+                if piece[0] == enemy_color:
+                    if piece[1] == 'Q':  # Queen: rook + bishop moves
+                        if rook_attacks(x, y, squares) or bishop_attacks(x, y, squares):
+                            return True
+                    elif piece[1] == 'R':  # Rook: rook moves
+                        if rook_attacks(x, y, squares):
+                            return True
+                    elif piece[1] == 'B':  # Bishop: bishop moves
+                        if bishop_attacks(x, y, squares):
+                            return True
+                    elif piece[1] == 'N':  # Knight: knight moves
+                        if abs(x - sx) * abs(y - sy) == 2:
+                            return True
+                    elif piece[1] == 'K':  # King: king moves
+                        if abs(x - sx) <= 1 and abs(y - sy) <= 1:
+                            return True
+                    elif piece[1] == 'P':  # Pawn: normal or capture moves
+                        if piece[0] == 'w' and y == sy + 1 and (x == sx - 1 or x == sx + 1):
+                            return True
+                        elif piece[0] == 'b' and y == sy - 1 and (x == sx - 1 or x == sx + 1):
+                            return True
+                    elif piece[1] == 'K':  # King: king moves
+                        if abs(x - sx) <= 1 and abs(y - sy) <= 1:
+                            return True
+        return False
+
+    # Helper functions for rook and bishop movement
+    def rook_attacks(sx, sy, squares):
+        # Check row (horizontal)
+        for x in range(8):
+            if squares[x][sy] and squares[x][sy][0] == 'w' + 'b'[to_play == 'white']:
+                return False
+        # Check column (vertical)
+        for y in range(8):
+            if squares[sx][y] and squares[sx][y][0] == 'w' + 'b'[to_play == 'white']:
+                return False
+        return True
+
+    def bishop_attacks(sx, sy, squares):
+        # Diagonal movement
+        for dx, dy in [(1, 1), (1, -1), (-1, 1), (-1, -1)]:
+            x, y = sx, sy
+            while 0 <= x < 8 and 0 <= y < 8:
+                if squares[x][y] and squares[x][y][0] == 'w' + 'b'[to_play == 'white']:
+                    return False
+                x += dx
+                y += dy
+        return True
+
+    # Generate all legal moves
+    legal_moves = []
+    for y in range(8):
+        for x in range(8):
+            piece = board[y][x]
+            if not piece or piece[0] != to_play[0]:
+                continue
+            if piece[1] == 'N':
+                for dx, dy in [(2, 1), (2, -1), (-2, 1), (-2, -1),
+                               (1, 2), (1, -2), (-1, 2), (-1, -2)]:
+                    nx, ny = x + dx, y + dy
+                    if 0 <= nx < 8 and 0 <= ny < 8:
+                        if not board[ny][nx] or board[ny][nx][0] != to_play[0]:
+                            legal_moves.append(coord_to_square((x, y)) + coord_to_square((nx, ny)))
+            elif piece[1] == 'P':
+                direction = 1 if to_play == 'white' else -1
+                nx, ny = x, y + direction
+                if 0 <= nx < 8 and 0 <= ny < 8 and not board[ny][nx]:
+                    legal_moves.append(coord_to_square((x, y)) + coord_to_square((nx, ny)))
+                    # Promotion (e.g., 'h7h8Q')
+                    if abs(y + direction) == 7:
+                        legal_moves.extend([f'{coord_to_square((x, y))}{coord_to_square((nx, ny))}Q'],
+                                            [f'{coord_to_square((x, y))}{coord_to_square((nx, ny))}R'],
+                                            [f'{coord_to_square((x, y))}{coord_to_square((nx, ny))}B'],
+                                            [f'{coord_to_square((x, y))}{coord_to_square((nx, ny))}N'])
+                # Capture diagonally
+                for dx in [-1, 1]:
+                    nx, ny = x + dx, y + direction
+                    if 0 <= nx < 8 and 0 <= ny < 8 and board[ny][nx] and board[ny][nx][0] != to_play[0]:
+                        legal_moves.append(coord_to_square((x, y)) + coord_to_square((nx, ny)))
+            elif piece[1] == 'K':
+                for dx, dy in [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]:
+                    nx, ny = x + dx, y + dy
+                    if 0 <= nx < 8 and 0 <= ny < 8 and not board[ny][nx]:
+                        legal_moves.append(coord_to_square((x, y)) + coord_to_square((nx, ny)))
+
+    # Filter legal moves
+    final_moves = []
+    for move in legal_moves:
+        src = move[:2]
+        dst = move[2:]
+        fx, fy = square_to_coord(src)
+        tx, ty = square_to_coord(dst)
+        new_board = make_move(board, fx, fy, tx, ty)
+        king_sq = square_to_coord(king_squares)
+        if not is_attacked(king_sq[0], king_sq[1], new_board, to_play):
+            final_moves.append(move)
+
+    # Prioritize best move: value from capture and central square control
+    def move_value(move):
+        src = move[:2]
+        dst = move[2:]
+        fx, fy = square_to_coord(src)
+        tx, ty = square_to_coord(dst)
+        if board[fy][fx] and board[fy][fx][0] != to_play[0]:
+            val = {'Q': 9, 'R': 5, 'B': 3, 'N': 3, 'P': 1, 'K': 0}[board[fy][fx][1]]
+            return 10 * val * (to_play == 'white') - (8 - ty)
+        return - (8 - ty)
+
+    # Select best move
+    final_moves.sort(key=lambda m: move_value(m), reverse=True)
+    return final_moves[0] if final_moves else ''

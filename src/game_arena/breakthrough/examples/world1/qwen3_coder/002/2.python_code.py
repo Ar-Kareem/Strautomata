@@ -1,0 +1,95 @@
+
+def policy(me, opp, color):
+    # Convert opponent positions to a set for fast lookup
+    opp_set = set(opp)
+    me_set = set(me)
+    
+    # Precompute all possible moves (to avoid recomputing)
+    moves = []
+    capture_moves = []
+    
+    # Directions based on color
+    if color == 'b':
+        forward = -1
+        directions = [(-1, -1), (-1, 0), (-1, 1)]
+    else:
+        forward = 1
+        directions = [(1, -1), (1, 0), (1, 1)]
+    
+    # Generate all possible moves
+    for fr, fc in me:
+        for dr, dc in directions:
+            tr, tc = fr + dr, fc + dc
+            # Check board bounds
+            if 0 <= tr <= 7 and 0 <= tc <= 7:
+                target = (tr, tc)
+                # Check if square is occupied
+                if target not in me_set:
+                    if target in opp_set:
+                        # Capture move
+                        if (dr, dc) in [(-1, -1), (-1, 1)] if color == 'b' else [(1, -1), (1, 1)]:
+                            capture_moves.append(((fr, fc), target))
+                    else:
+                        # Non-capturing move
+                        moves.append(((fr, fc), target))
+    
+    # 1. Check for winning moves
+    for (fr, fc), (tr, tc) in moves + capture_moves:
+        if (color == 'b' and tr == 0) or (color == 'w' and tr == 7):
+            return ((fr, fc), (tr, tc))
+    
+    # 2. Evaluate captures
+    safe_captures = []
+    for move in capture_moves:
+        (fr, fc), (tr, tc) = move
+        # After capture, check if the piece can be recaptured immediately
+        # Opponent's forward directions
+        opp_forward = 1 if color == 'b' else -1
+        opp_dirs = [(opp_forward, -1), (opp_forward, 0), (opp_forward, 1)]
+        recapture_threat = False
+        for dr, dc in opp_dirs:
+            # Check if opponent has a piece at (tr + dr, tc + dc) that can capture our piece at (tr, tc)
+            if (tr + dr, tc + dc) in opp_set:
+                # This opponent piece can move to (tr, tc)
+                # Check the target after its move
+                target_after = (tr + dr + opp_forward, tc + dc)
+                # If target_after == (tr, tc), then it's a recapture
+                # But also we should check if opponent's move is valid
+                # Since we're only interested in immediate recaptures on opponent's next turn
+                # An opponent at (tr+dr,tc+dc) can move to (tr,tc) if it's a diagonal move
+                if dc != 0:  # diagonal move by opponent to capture our piece
+                    recapture_threat = True
+                    break
+        if not recapture_threat:
+            safe_captures.append(move)
+    
+    # If there are safe captures, choose one
+    if safe_captures:
+        # Prefer captures closer to center
+        safe_captures.sort(key=lambda m: abs(m[1][1] - 3.5))
+        return safe_captures[0]
+    
+    # 3. Prefer captures even if not perfectly safe, if no better option
+    if capture_moves:
+        # Rank by distance to center of target
+        capture_moves.sort(key=lambda m: abs(m[1][1] - 3.5))
+        return capture_moves[0]
+    
+    # 4. Otherwise, sort non-capture moves by progress and positional value
+    ranked_moves = []
+    for move in moves:
+        (fr, fc), (tr, tc) = move
+        progress = tr - fr if color == 'w' else fr - tr  # positive for forward moves
+        # Center control: reward moves toward center
+        center_bonus = 4 - abs(tc - 3.5)
+        # Safety from backward captures
+        safety = 2 if progress > 0 else (1 if progress == 0 else 0)
+        score = progress * 10 + center_bonus * 2 + safety
+        ranked_moves.append((score, move))
+    
+    if ranked_moves:
+        ranked_moves.sort(reverse=True, key=lambda x: x[0])
+        return ranked_moves[0][1]
+    
+    # Fallback (should never happen in a legal game state)
+    return moves[0] if moves else capture_moves[0]

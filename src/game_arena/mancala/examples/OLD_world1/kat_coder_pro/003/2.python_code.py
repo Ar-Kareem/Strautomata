@@ -1,0 +1,126 @@
+
+import numpy as np
+from collections import deque
+
+
+def policy(you, opponent):
+    """
+    Selects a move using a greedy heuristic with 1-ply lookahead and tie-breaking.
+    Prioritizes captures, then extra moves, then maximizing score difference.
+    """
+    # Convert to numpy arrays for easier manipulation
+    you = np.array(you, dtype=int)
+    opponent = np.array(opponent, dtype=int)
+    
+    # Get legal moves (non-empty houses)
+    legal_moves = [i for i in range(6) if you[i] > 0]
+    
+    if len(legal_moves) == 1:
+        return legal_moves[0]
+    
+    best_score = -1e9
+    best_move = None
+    
+    for move in legal_moves:
+        # Simulate the move
+        new_you, new_opp, extra_move = simulate_move(you.copy(), opponent.copy(), move)
+        
+        # Calculate score
+        score = evaluate_position(new_you, new_opp, extra_move)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move
+
+
+def simulate_move(you, opponent, move):
+    """
+    Simulates a move and returns the resulting board state.
+    Returns (new_you, new_opponent, extra_move)
+    """
+    seeds = you[move]
+    you[move] = 0
+    
+    # Determine positions to distribute seeds
+    positions = []
+    for i in range(move + 1, 14):  # 0-5: you's houses, 6: you's store, 7-12: opponent's houses
+        if i == 13:  # Skip opponent's store
+            continue
+        positions.append(i)
+    
+    # If we need more positions, wrap around
+    while len(positions) < seeds:
+        for i in range(13):  # 0-5: you's houses, 6: you's store, 7-12: opponent's houses
+            if i == 13:  # Skip opponent's store
+                continue
+            positions.append(i)
+            if len(positions) >= seeds:
+                break
+    
+    # Distribute seeds
+    last_position = None
+    for i in range(seeds):
+        pos = positions[i]
+        if pos < 6:
+            you[pos] += 1
+        elif pos == 6:
+            you[6] += 1  # Your store
+        else:
+            opponent[pos - 7] += 1  # Opponent's houses (7-12 -> 0-5)
+        last_position = pos
+    
+    extra_move = (last_position == 6)
+    
+    # Handle capture
+    if last_position is not None and last_position < 6 and last_position >= 0:
+        if you[last_position] == 1:  # Just placed the last seed, so it should be 1
+            opp_house = 5 - last_position
+            if opponent[opp_house] > 0:
+                # Capture
+                you[6] += you[last_position] + opponent[opp_house]
+                you[last_position] = 0
+                opponent[opp_house] = 0
+    
+    return you, opponent, extra_move
+
+
+def evaluate_position(you, opponent, extra_move):
+    """
+    Evaluates a position and returns a score.
+    Higher scores are better for the player.
+    """
+    score = 0.0
+    
+    # Base score difference
+    score += (you[6] - opponent[6]) * 100
+    
+    # Extra move bonus
+    if extra_move:
+        score += 50
+    
+    # Seed distribution bonus - prefer seeds closer to your store
+    for i in range(6):
+        if you[i] > 0:
+            # Closer houses to store get higher weight
+            distance_to_store = 6 - i
+            score += you[i] * distance_to_store * 0.1
+    
+    # Prevent opponent's extra moves
+    for i in range(6):
+        if opponent[i] > 0:
+            seeds_to_store = opponent[i] - (5 - i)
+            if seeds_to_store > 0 and seeds_to_store % 13 == 0:
+                # This would give opponent an extra move
+                score -= 20
+    
+    # Endgame consideration - if opponent has empty houses, prefer captures
+    empty_opponent_houses = sum(1 for i in range(6) if opponent[i] == 0)
+    if empty_opponent_houses > 0:
+        score += empty_opponent_houses * 5
+    
+    # Small random component for tie-breaking
+    score += np.random.random() * 0.01
+    
+    return score

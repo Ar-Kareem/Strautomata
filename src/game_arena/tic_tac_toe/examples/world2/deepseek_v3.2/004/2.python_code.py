@@ -1,0 +1,189 @@
+
+import time
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    start_time = time.time()
+    time_limit = 0.9  # seconds, leave some margin
+
+    # Convert board to bit masks: 16 bits, row-major order
+    our_mask = 0
+    opp_mask = 0
+    for r in range(4):
+        for c in range(4):
+            bit = 1 << (r * 4 + c)
+            if board[r][c] == 1:
+                our_mask |= bit
+            elif board[r][c] == -1:
+                opp_mask |= bit
+
+    # Winning masks: 4 rows, 4 columns, 2 diagonals
+    winning_masks = []
+    # rows
+    for r in range(4):
+        mask = 0
+        for c in range(4):
+            mask |= 1 << (r * 4 + c)
+        winning_masks.append(mask)
+    # columns
+    for c in range(4):
+        mask = 0
+        for r in range(4):
+            mask |= 1 << (r * 4 + c)
+        winning_masks.append(mask)
+    # main diagonal (top-left to bottom-right)
+    mask = 0
+    for i in range(4):
+        mask |= 1 << (i * 4 + i)
+    winning_masks.append(mask)
+    # anti diagonal (top-right to bottom-left)
+    mask = 0
+    for i in range(4):
+        mask |= 1 << (i * 4 + (3 - i))
+    winning_masks.append(mask)
+
+    # Helper: check if a mask contains a winning line
+    def is_win(mask):
+        for w in winning_masks:
+            if (mask & w) == w:
+                return True
+        return False
+
+    # Helper: evaluate position from our perspective
+    def evaluate(our_mask, opp_mask):
+        score = 0
+        for w in winning_masks:
+            our_cnt = (our_mask & w).bit_count()
+            opp_cnt = (opp_mask & w).bit_count()
+            if our_cnt > 0 and opp_cnt == 0:
+                score += 10 ** our_cnt
+            elif opp_cnt > 0 and our_cnt == 0:
+                score -= 10 ** opp_cnt
+        return score
+
+    # Negamax with alpha-beta pruning
+    def negamax(our_mask, opp_mask, depth, alpha, beta, player):
+        # player: 1 for our turn, -1 for opponent's turn
+        # Check if the player who just moved won (opponent of current player)
+        if player == 1:
+            if is_win(opp_mask):
+                return -100000  # we lost
+        else:
+            if is_win(our_mask):
+                return -100000  # opponent lost (we won)
+
+        empty = ~(our_mask | opp_mask) & 0xFFFF
+        if empty == 0:
+            return 0  # draw
+
+        if depth == 0:
+            # Evaluate from current player's perspective
+            score = evaluate(our_mask, opp_mask)
+            return score if player == 1 else -score
+
+        # Generate moves, ordered by priority (center, corners, others)
+        move_bits = []
+        e = empty
+        while e:
+            lsb = e & -e
+            move_bits.append(lsb)
+            e ^= lsb
+
+        # Priority: center squares (bits 5,6,9,10) > corners (0,3,12,15) > others
+        priority = [2] * 16
+        center_bits = [5, 6, 9, 10]
+        corner_bits = [0, 3, 12, 15]
+        for b in center_bits:
+            priority[b] = 0
+        for b in corner_bits:
+            if priority[b] != 0:
+                priority[b] = 1
+        move_bits.sort(key=lambda m: priority[(m.bit_length() - 1) if m != 0 else 0])
+
+        best = -float('inf')
+        for move in move_bits:
+            if player == 1:
+                new_our = our_mask | move
+                new_opp = opp_mask
+            else:
+                new_our = our_mask
+                new_opp = opp_mask | move
+            val = -negamax(new_our, new_opp, depth - 1, -beta, -alpha, -player)
+            if val > best:
+                best = val
+            if val > alpha:
+                alpha = val
+            if alpha >= beta:
+                break
+        return best
+
+    # Check for immediate win or block
+    empty = ~(our_mask | opp_mask) & 0xFFFF
+    # Winning move for us
+    for bit in [1 << i for i in range(16) if (empty >> i) & 1]:
+        if is_win(our_mask | bit):
+            # Convert bit to (row, col)
+            idx = bit.bit_length() - 1
+            return (idx // 4, idx % 4)
+    # Block opponent's winning move
+    for bit in [1 << i for i in range(16) if (empty >> i) & 1]:
+        if is_win(opp_mask | bit):
+            idx = bit.bit_length() - 1
+            return (idx // 4, idx % 4)
+
+    # If board is empty, choose a center square
+    if empty == 0xFFFF:
+        return (1, 1)
+
+    # Iterative deepening
+    best_move = None
+    best_score = -float('inf')
+    depth = 1
+    move_bits = [1 << i for i in range(16) if (empty >> i) & 1]
+    # Priority ordering for root moves
+    priority = [2] * 16
+    center_bits = [5, 6, 9, 10]
+    corner_bits = [0, 3, 12, 15]
+    for b in center_bits:
+        priority[b] = 0
+    for b in corner_bits:
+        if priority[b] != 0:
+            priority[b] = 1
+    move_bits.sort(key=lambda m: priority[(m.bit_length() - 1) if m != 0 else 0])
+
+    while time.time() - start_time < time_limit and depth <= 16:
+        current_best_move = None
+        current_best_score = -float('inf')
+        alpha = -float('inf')
+        beta = float('inf')
+        for move in move_bits:
+            # Make move for us
+            new_our = our_mask | move
+            new_opp = opp_mask
+            # Opponent's turn
+            score = -negamax(new_our, new_opp, depth - 1, -beta, -alpha, -1)
+            if score > current_best_score:
+                current_best_score = score
+                current_best_move = move
+            if score > alpha:
+                alpha = score
+            # Check time
+            if time.time() - start_time >= time_limit:
+                break
+        if current_best_move is not None:
+            best_move = current_best_move
+            best_score = current_best_score
+        depth += 1
+        if time.time() - start_time >= time_limit:
+            break
+
+    # If we have a move, return it
+    if best_move is not None:
+        idx = best_move.bit_length() - 1
+        return (idx // 4, idx % 4)
+
+    # Fallback: choose first empty cell (should not happen)
+    for r in range(4):
+        for c in range(4):
+            if board[r][c] == 0:
+                return (r, c)
+    return (0, 0)  # shouldn't reach here

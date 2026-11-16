@@ -1,0 +1,904 @@
+<thinking>
+The goal is to implement a policy for Blackjack that maximizes the chance of winning given a target T. The key challenge is deciding when to HIT or STAY.
+
+Observations:
+- We know the target T (10-30).
+- Our hand is a list of cards, and we know the exact composition of our deck (13 unique cards, one of each rank).
+- When we draw a card, we remove it permanently from our deck — so we know exactly which cards are left.
+- Ace is 11 if hand <= T, else 1. This is crucial: we can use this flexibility to avoid busting.
+
+Strategy:
+1. We can compute the current value of our hand using the Ace rule.
+2. We can compute the probability distribution of the next card (since we know exactly which cards remain).
+3. We can simulate the outcome of hitting vs staying:
+   - If we stay: our final score is current_hand_value.
+   - If we hit: we might bust (lose), or we might get a good value and then the opponent might win/lose.
+
+But the opponent’s actions are unknown. However, we know the opponent has their own 13-card deck (same as ours), and they are playing optimally too? But the problem does not specify the opponent's policy.
+
+Important: Since the problem only asks for our policy and the opponent’s behavior is not specified, we must assume we are playing against an opponent who also follows an optimal strategy (or we must make the best decision under worst-case opponent behavior?).
+
+Wait — the problem says: "If the opponent busts and you have not busted, you win." etc. But it does not specify the opponent’s policy.
+
+Given the ambiguity, the typical approach in such problems is to assume we are playing optimally to maximize our own win probability, regardless of the opponent's policy, under the assumption that the opponent is also playing optimally — OR — we treat the opponent as a fixed but unknown player and aim to maximize the chance of winning under the best possible outcome.
+
+But note: we are not given any information about the opponent’s hand. We don’t know what cards they have drawn. So we cannot compute probabilities over their draws. 
+
+Therefore, we must make a decision based solely on our own hand and the target.
+
+Given that, a common and effective approach in Blackjack is to use expected value maximization or to follow a rule based on the risk of busting.
+
+However, since we know the entire deck and which cards are left, we can compute the exact probability of busting if we hit.
+
+But we also care about the opponent. How do we model the opponent?
+
+Re-reading: We don't get any information about the opponent’s hand or draws. So we must assume the opponent is playing optimally as well, but we don't know what they have.
+
+Alternatively, perhaps we can assume the opponent will also play optimally and reach a score as close as possible to T without busting. So we can aim for the same strategy: try to get as close to T as possible without busting.
+
+Given the complexity of modeling the opponent's unknown hand, and the fact that we have no information about it, the most reasonable approach is:
+
+**Strategy: Minimize the probability of busting while maximizing the chance to be close to T.**
+
+We can use a dynamic programming or greedy approach:
+
+- If current hand value > T: impossible (we would have busted already, so we wouldn't be called).
+- If current hand value == T: STAY (can't improve, and hitting risks busting).
+- If current hand value + min_possible_next_card > T: then hitting will certainly bust? Not necessarily, because Aces can be 1. So we need to compute the risk.
+
+Actually, the Ace flexibility means we can avoid busting in many cases.
+
+Let’s define:
+- current_sum: the value of our hand (with Aces counted as 11 when possible, otherwise 1).
+
+But note: the problem says "A" is 11 if the hand value is <= T, else 1. This is per-hand value. So when we add a card, we recalculate the entire hand value.
+
+We need to calculate the current value of the hand:
+
+For a hand, we count all non-Ace cards as their face value (J,Q,K=10), and then for each Ace, we want to count it as 11 if we can without exceeding T, else 1.
+
+But note: if we have multiple Aces, we can use 11 only for one Ace if the rest would push us over T.
+
+Actually, standard Blackjack handling: count as many 11s as possible without exceeding T.
+
+So: let's define a helper to compute hand value:
+
+```python
+def compute_hand_value(hand, T):
+    total = 0
+    aces = 0
+    for card in hand:
+        if card == 'A':
+            aces += 1
+        elif card in ['J','Q','K']:
+            total += 10
+        else:
+            total += int(card)
+    # Now, for aces: we can use 11 for each ace only if total + 11*aces <= T
+    # But we want the maximum value <= T
+    # We can use 11 for up to k aces where k is the maximum integer such that total + 11*k + 1*(aces-k) <= T
+    # => total + 10*k + aces <= T
+    # => 10*k <= T - total - aces
+    # => k <= (T - total - aces) / 10
+    # So k = min(aces, max(0, (T - total - aces) // 10))? Actually, we can use floor division.
+
+    # Alternatively: try using each Ace as 11 first, then reduce 10 per Ace if over.
+    # Instead: total + 11*aces might be too high. We want the maximum value <= T.
+
+    # Start by assuming all aces are 11
+    candidate = total + 11 * aces
+    # If candidate <= T: we can use all 11s.
+    if candidate <= T:
+        return candidate
+    # Otherwise, we need to reduce: each Ace we switch from 11 to 1 reduces total by 10
+    # So we need to reduce by: candidate - T
+    # How many 10 reductions? We need at least ceil((candidate - T)/10) aces to be 1?
+    # Actually: we can reduce by 10 each time we flip one Ace from 11 to 1.
+    # We want the smallest number of flips so that total + 11*(aces - k) + 1*k <= T
+    # => total + 11*aces - 10*k <= T
+    # => 10*k >= total + 11*aces - T
+    # => k >= (candidate - T) / 10
+    # So the minimal k is ceil((candidate - T) / 10) but we cannot flip more than aces.
+
+    k_needed = (candidate - T + 9) // 10  # ceiling of (candidate-T)/10
+    k = min(aces, k_needed)
+    return total + 11*(aces - k) + 1*k
+```
+
+But wait: we don't want the minimal reduction, we want the maximum value <= T. So:
+
+We can use: 
+   value = total + 11 * aces
+   while value > T and aces > 0:
+        value -= 10
+        aces -= 1
+   return value
+
+This is equivalent.
+
+But note: if value <= T, we use all 11s. Otherwise, we subtract 10 for each Ace until we are <= T or until no Aces left.
+
+This is standard.
+
+However, there's a catch: if we have two aces and T=12, total=0: 
+  value = 22 -> too high -> subtract 10 -> 12 -> which is exactly T. So we return 12.
+
+Now, to choose HIT or STAY:
+
+We want to evaluate: 
+  If we STAY: our score is `current_value`.
+  If we HIT: we draw a card from the remaining deck (we know exactly which are left).
+
+But we don't know the opponent's hand! So we cannot compute a win probability.
+
+This is a critical missing piece.
+
+Re-examining the problem: It says "you" and "the opponent" are playing independently. We are given only our hand and the target. The opponent is not under our control. But we are to write a policy that wins as often as possible.
+
+In the absence of opponent information, the only reasonable assumption is:
+
+- The opponent will also play optimally to get as close to T as possible without busting, and we assume they will achieve the same optimal state we might.
+
+But that doesn't help.
+
+Alternative idea: Since the opponent's hand is independent and we have no information, we can assume that the opponent's final score is uniformly distributed over the possible outcomes? But that's not true: they also play optimally.
+
+Actually, the problem is symmetric: we both have the same deck. We both draw from our own deck and we both don't know each other's cards. We both play the same policy? Then we can assume the opponent will follow the same policy.
+
+So let’s assume the opponent follows the same policy we are designing. Then, if our policy is deterministic, the opponent's hand distribution is the same as ours.
+
+But even then, we need to know the distribution over opponent's possible hand values.
+
+However, note: the opponent doesn't know our hand and we don't know theirs. So we must make a decision based only on our own state.
+
+A well-known approach in such games is to use the "hit until you are above a threshold" strategy.
+
+Given the target T, we can compute:
+
+- If we are already at or above T: we should STAY? But we can only be above T if we busted? No: we are only called if we haven't busted. So if we are at T, we STAY.
+
+- What if we are at T-1? We might be tempted to hit to get T, but then we risk busting if we get a card higher than 1.
+
+But we know the exact deck: cards left. So we can compute the probability that we bust if we hit.
+
+Let:
+  current_value = current hand value (computed with Ace flexibility)
+  remaining_cards = all 13 cards minus the ones in our hand.
+
+We can compute:
+  - Probability of busting on next hit: how many of the remaining cards cause the hand to exceed T?
+    But note: after drawing a card, we recalculate the hand value with Ace flexibility.
+
+So we need to compute for each remaining card, what would be the new hand value after adding that card, and then check if that value > T -> bust.
+
+But the problem: when we add a card, the Ace values are recalculated as a whole. So if we have Aces and we add a 10, we might now have to convert one Ace from 11 to 1 to avoid busting. Only then do we bust if even with Aces as 1 we exceed T.
+
+So for each remaining card, we compute the new hand value (with the new card and Ace flexibility). If the new value > T, then we bust.
+
+We can compute the probability of busting as: (# of remaining cards that lead to bust) / (# remaining cards)
+
+Then, if the probability of busting is very high, we STAY.
+
+But what do we compare to? We need to compare the expected utility of hitting vs staying.
+
+What is our utility? We win if:
+- Opponent busts and we do not, OR
+- We do not bust and opponent busts? Actually: 
+  - If we bust: we lose (regardless of opponent)
+  - If opponent busts and we don't: we win
+  - If neither bust: then we win if |current_value - T| < |opponent_value - T|
+  - If both bust: draw
+  - If we don't bust and opponent doesn't bust, then we win if we are closer to T.
+
+Without knowing the opponent's hand distribution, we cannot compute the exact win probability.
+
+But note: the opponent has an identical deck and follows the same policy (we assume). Then, the probability that the opponent's final score is x is the same as the probability we would get x if we had a random hand? Not exactly, because we are both playing optimally.
+
+This is very complex.
+
+Alternatively, we can use a simple heuristic that is known to work in Blackjack: hit until you reach a certain threshold.
+
+Since T is between 10 and 30, and the maximum hand value without busting is T, we can hit as long as our hand value is below a threshold that is a bit below T.
+
+Common thresholds in Blackjack: hit until 17 or 18. But T varies.
+
+A better idea: hit if there is any card that can improve our score without busting.
+
+But we need to be more precise.
+
+Another idea: compute the expected final score if we keep hitting until we can't (i.e., until we are forced to stop) — but we are allowed to stop at any time.
+
+We can use backward induction: the best policy is to stay when the expected value of hitting is less than the value of staying, considering the win probability.
+
+However, without opponent model, a practical approach is to only hit if we are below T-5 or something, but that's arbitrary.
+
+After research in similar problems (like the one in Stanford CS221 or similar), the optimal strategy in such an environment with known deck and no opponent information is to **minimize the risk of busting while maximizing the chance of being close to T**.
+
+But without opponent, we can't know which score is "better".
+
+Wait — we are told the rules: 
+- If both bust: draw.
+- If opponent busts and we don't: we win.
+- If neither bust: closer to T wins.
+
+So we want to maximize the probability of:
+   P( we don't bust and opponent busts ) + P(we don't bust and opponent doesn't bust and we are closer)
+
+But we don't know opponent's status.
+
+The only logical thing: assume the opponent will follow the same policy. Then the opponent's distribution is the same as our own if we were to play optimally.
+
+So then: if we have a hand that is at value V, then we win if:
+   - The opponent busts: but we don't know when they bust.
+   - The opponent doesn't bust and |V - T| < |opponent_final - T|
+
+So the win probability is the sum over all possible opponent scores that are:
+   - Bust: then we win (if we don't bust)
+   - Or not bust and |V - T| < |opponent_score - T|
+
+But we don't know the opponent's hand. But if we assume the opponent is playing the same policy, then we can compute the distribution of opponent's final score as a function of the policy we are going to use.
+
+This becomes a recursive structure. But note: the opponent's initial hand is two cards? The problem doesn't specify! 
+
+Wait — what is the game setup? It says: "On each call to policy you observe hand: the list of strings representing the cards you currently hold."
+
+So we are given our current hand. We don't know how we got there. But we know the initial hand: it's not specified.
+
+Actually, the problem does not specify the initial hand size. So we assume we start with 0 cards? No, that can't be.
+
+Looking again: the game should have started with some cards. But the problem says: "you observe hand: the list of cards you currently hold".
+
+So we are in the middle of a game. We know the cards we have. And we know the cards we have drawn so far (so we know the remaining deck).
+
+But we know: the entire deck is fixed (13 cards). So the number of cards in hand is the number of draws we've made. The initial hand could be 0? or 2? The problem doesn't say.
+
+This is ambiguous.
+
+Let me re-read: "At the start of a game, a target score T is chosen at random and fixed for the entire game."
+
+Then: "On each call to policy you observe: hand: the list of strings representing the cards you currently hold."
+
+So we are called repeatedly until we STAY or bust. So we start with some initial hand? The problem doesn't specify.
+
+But typically, Blackjack gives two cards. However, here the problem does not specify.
+
+We must assume that we start with an empty hand? Or maybe we start with one card?
+
+The problem says: "you draw the next card from your deck". So the hand is the current set of cards.
+
+We have no information on the initial hand.
+
+But then, how do we play? We must design a policy that works for any hand.
+
+We can assume the hand is non-empty? The problem doesn't say.
+
+To be safe, we assume the hand can be of any size from 0 to 12.
+
+Given the complexity, and the fact that we are only given 1 second of time, we must use a simple but effective heuristic.
+
+Common heuristic in Blackjack: hit if your hand is less than 17, stay otherwise. But T varies.
+
+But note: T is between 10 and 30. So 17 might be too high for T=12.
+
+Alternative idea: 
+
+We should HIT if the current hand value is less than T and there exists at least one card in the remaining deck that can be added without busting (even after Ace flexibility). But that is always true? Not necessarily.
+
+But more precisely: we should HIT if the expected improvement in the distance to T is worth the risk.
+
+Without opponent information, a reasonable strategy is to hit until our hand value is as close as possible to T without exceeding it, and if we are already equal to T, we stay.
+
+But what if we are at T-1? We might get an Ace and become 12 if T=12? Then we are equal. Or we might get a 2 and then we are at T+1? But if we get a 2, then we have T-1+2 = T+1, which is bust? Only if T+1 > T? Yes, then bust.
+
+So the risk is that we bust by one.
+
+But because of the Ace, we might be able to avoid busting.
+
+Actually, the Ace flexibility means that even if we draw a high card, we might have Aces we can convert to 1 to avoid busting.
+
+So the only time we bust is when even if we use all Aces as 1, we are still over T.
+
+Therefore, we can compute:
+
+current_value = compute_hand_value(hand, T)
+remaining = set of 13 cards not in hand
+
+If current_value == T: STAY (cannot improve without risking busting)
+
+If current_value > T: this should not happen (so we shouldn't be here)
+
+Otherwise, current_value < T
+
+Now, what if we hit? We will compute the new hand value for each possible card. We bust if the new hand value (after Ace flexibility) > T.
+
+Otherwise, we get a new hand value.
+
+We can compute the expected final value if we were to play optimally from this point? But we don't have a model.
+
+Another idea: since the opponent is symmetric and also using the same optimal policy, then if we are at V and we are at risk of busting, then the opponent is also likely to be around V. So we don't need to worry.
+
+But we can be more aggressive: we want to beat the opponent, so we need to get as close to T as possible. So if we are at V, and there is a card that will get us closer to T without busting, we should hit.
+
+But if the only cards that help are high cards, and we already have a hand that is close, we should stay.
+
+A well-known approach in similar problems (from past competitions) is:
+
+   if current_value >= T - 5:
+        STAY
+   else:
+        HIT
+
+But why 5? Because the average card value is about 7. So if we are within 5 of T, we are likely to be able to get within 2-3.
+
+But this is arbitrary.
+
+Another idea: compute the probability of busting if we hit. If the probability of busting is more than 50%, then STAY. Otherwise, HIT.
+
+But why 50%? Because if we don't bust we might get a good score.
+
+Let's try:
+
+  P_bust = number of remaining cards that cause bust / len(remaining)
+
+  If P_bust > 0.5: STAY
+  else: HIT
+
+But that might not be optimal.
+
+We can also consider the gain: if we don't bust, what is the improvement? We want to get as close to T as possible.
+
+But without knowing the opponent, we can't balance.
+
+However, note that the win condition is: if we are closer than the opponent, we win. So if we are very close to T, we are in a better position than if we are far away.
+
+Therefore, we should hit if we are relatively far from T, and stay if we are close.
+
+So perhaps: STAY if current_value >= T - 4, otherwise HIT.
+
+Why T-4? Because even if we draw a 10, we might get to T+6, which could bust. But if we are at T-5, drawing a 6 gets us to T-5+6 = T+1, which might bust. But with Aces, it might not bust.
+
+The best is to simulate the bust probability and also the potential to improve.
+
+After careful thought, I found a standard solution from similar problems: 
+
+In many simplified Blackjack problems with known deck, the optimal strategy is to stay if the current hand value is greater than or equal to the target minus a safety margin, and hit otherwise.
+
+But what safety margin? Since the minimum card is 1 (Ace if needed) and maximum card is 10, we can hit if we are below T-10? That's too aggressive.
+
+But if we are below T-10, we can draw a 10 and get to T. So we should hit.
+
+If we are between T-9 and T-1, then we might get busted by a 10 (if T-1, then 10 gives T+9) -> bust. So we risk busting for a small gain.
+
+So perhaps: hit if current_value <= T - 11? Because even the smallest card (1) doesn't help? No.
+
+Actually, we can use the following rule:
+
+   if current_value > T - 1:  # meaning, we are at T-1 or T
+        STAY
+   else:
+        HIT
+
+But then if T=10 and we have 8, we hit. We might get a 2 -> 10, which is good, or a 3 -> 11 -> bust? But wait, if we have 8 and we add 3: 11. But if T=10, 11>10 -> bust. But if we have an Ace in hand, we might have converted it to 1 to avoid busting? But we are adding the 3.
+
+Let me compute: hand=[8], T=10 -> value=8. 
+  If we draw '3': new hand=[8,3] -> total=11 -> which is > T. We have no Aces? Then bust.
+
+So 8 + 3 = 11 > 10 -> bust.
+
+But what if we draw a 2: 8+2=10 -> perfect.
+
+So the chance of busting: let's say remaining cards: 13 - 1 = 12 cards left. Which cards will bust us? 
+   3,4,5,6,7,8,9,10,J,Q,K -> 11 cards? Actually:
+      2 -> 10 (good)
+      3 -> 11 -> bust
+      4 -> 12 -> bust
+      ... up to K -> 18 -> bust
+
+So only '2' is safe? So 1/12 chance to win? 11/12 chance to bust.
+
+That's very risky. So we should STAY at 8.
+
+But 8 is less than T-2=8? T-2=8, then T-1=9.
+
+If we use STAY if >= T-2 (i.e., 8 for T=10), then we stay.
+
+But then we get 8, which is 2 away from target. The opponent might also get 8 and we tie? Or opponent might get 9 and win.
+
+But we have no information.
+
+So the rule: STAY if current_value >= T - 4? 
+
+Let me test T=10:
+   current_value=6: HIT
+   current_value=7: HIT
+   current_value=8: STAY? 
+   current_value=9: STAY
+
+But 8: if we draw a 2 we win (10), if we draw a 3 we bust. There are 5 cards that are 2, and 1 card of 2? Actually, each card only appears once.
+
+Cards: A,2,3,4,5,6,7,8,9,10,J,Q,K -> 13 cards.
+
+We have one card: '8'. Remaining: 12 cards.
+
+Which cards are safe? 
+   A: 8+11 = 19 > 10 -> bust? But wait, we now have two cards: 8 and A -> we can count A as 1? 
+   But the rule: A is 11 if the hand value (with all Aces as 11) is <= T, else 1.
+
+   So for hand [8, A]: total without A=8, then add 11 (if we use 11) -> 19 > 10 -> so we must use A as 1 -> total=9.
+   So 9 is not bust.
+
+So drawing an Ace gives 9.
+
+Similarly, draw '2': 8+2=10 -> perfect.
+draw '3': 8+3=11, but we can recalculate with Aces? We have no other Ace, so we have to count 3 as 3 -> 11 -> bust.
+
+So for [8] we add:
+   A -> 8 + 1 = 9 (because 8+11=19>10, so A=1)
+   2 -> 10
+   3 -> 11 -> bust
+   4 -> 12 -> bust
+   5 -> 13 -> bust
+   6 -> 14 -> bust
+   7 -> 15 -> bust
+   8 -> 16 -> bust
+   9 -> 17 -> bust
+   10 -> 18 -> bust
+   J -> 18 -> bust
+   Q -> 18 -> bust
+   K -> 18 -> bust
+
+So only two cards are safe: A and 2.
+  A: gives 9
+  2: gives 10
+
+The others bust.
+
+So safe cards: 2 (value 2) and A (1) -> 2 wins: 10 and 9.
+
+So 2 safe cards out of 12 -> 1/6 chance to improve.
+
+But we go from 8 to 9 or 10. We lose nothing because 8 was already below T.
+
+But we have 10/12 chance to bust.
+
+So we should STAY.
+
+In summary, we should STAY if the probability of busting is high.
+
+Let’s compute for each state:
+
+We'll compute the bust probability when hitting.
+
+But note: the only cards that are safe are those that make the total <= T even after the Ace flexibility.
+
+We have a method to compute new_hand_value(hand+[card], T). It will not bust unless even after using Aces as 1, the total > T.
+
+So we can compute for each remaining card: will it cause bust? 
+
+Then:
+
+   safe_count = 0
+   bust_count = 0
+   for card in remaining_cards:
+        new_hand = hand + [card]
+        new_value = compute_hand_value(new_hand, T)
+        if new_value > T:
+            bust_count += 1
+        else:
+            safe_count += 1
+
+   If safe_count == 0:
+        then hit will definitely bust? Then we must stay? But we are not bust yet! We are allowed to stay.
+
+   So if safe_count == 0, we should STAY (because hitting will bust, so lose, while staying we are safe).
+
+   If safe_count > 0, we have a choice.
+
+But should we hit? We only hit if the benefit of improving is greater than the risk.
+
+But again, without opponent, we can only assume that staying gives us our current value, and hitting might improve it.
+
+But we want to get as close to T as possible.
+
+So we should compare the expected score if we keep hitting versus staying.
+
+We can use a simple rule: hit if we are below T-4, stay if we are above T-4.
+
+But T-4 might be too high for low T.
+
+Another idea: hit if you are not within 2 of T? So if current_value < T-2 -> HIT, else STAY.
+
+Test T=10:
+   current_value=7: < 8 -> HIT
+   current_value=8: >=8 -> STAY
+
+We saw that from 8, hitting risks 10/12 bust. But if we hit and survive, we get 9 or 10, which is better than 8.
+
+But 10 is perfect, 9 is only one away. So if we stay at 8, we are 2 away. If we hit and get 10, we are 0 away -> winning.
+
+But we have 1/6 chance to get 10 or 9.
+
+The expected improvement: 
+   if we stay: distance = 2
+   if we hit: 
+        with 2/12: we get distance 0 (if 10) or 1 (if 9) -> so we have 1/12 chance for 0, 1/12 for 1 -> average distance improvement: (2+1)/12 = 3/12 = 0.25 improvement in distance? Not exactly.
+
+But the win probability: 
+   If we stay: distance=2
+   If we hit: 
+        we bust (10/12) -> lose
+        we get 9 (1/12) -> distance=1 -> better than 2
+        we get 10 (1/12) -> distance=0 -> best
+
+But the opponent will also be trying to get close. We don't know the opponent.
+
+So without knowing the opponent, we cannot compute win probability.
+
+But we know that if we stay, we have a score of V, and if we hit and don't bust, we have a score of V' which is >= V and <= T. And if we bust, we lose.
+
+So we should be risk-averse? 
+
+However, if we are far from T (say T=20 and we have 10), then we should hit because we have a lot to gain.
+
+So we should hit if current_value <= T-5, stay if >= T-4.
+
+Why T-5? Because the minimum card is 1, so if we are at T-5, we can draw a 5 and get to T. 
+        if we are at T-4, we can only draw a 4 or less to get to T, but a 5 would bust. And 5,6,7,8,9,10,J,Q,K are 8 cards that bust, and only 4,3,2,A are safe? But A is 1 -> safe.
+
+So we can draw any card <=4: 2,3,4 and A -> 4 safe cards. The rest (9 cards) bust.
+
+So safe probability = 4/13 of the full deck, but we have some cards already drawn.
+
+But we don't know how many are left.
+
+We can use:
+
+   if current_value > T - 5:
+        STAY
+   else:
+        HIT
+
+This is a simple, known heuristic in some Blackjack variants.
+
+Let me test with T=15, hand has 11:
+   11 < 10? T-5=10, 11>10 -> STAY. But 11 is very close to 15? We are 4 away, so we want to hit? 
+   But wait: 11 + any card: 
+         A: 11+1=12 (because 11+11=22>15, so A=1) -> 12
+         2: 13
+         3: 14
+         4: 15 (perfect)
+         5: 16 -> bust
+         ... up to K: 11+10=21 -> bust
+   So safe cards: A,2,3,4 -> 4 cards.
+   bust cards: 5,6,7,8,9,10,J,Q,K -> 9 cards.
+   So 9/13 chance to bust.
+
+   We are at 11 -> distance 4. If we stay, we are 4 away.
+   If we hit and survive: we get at best 15 (distance 0), worst 12 (distance 3) -> improvement.
+   But we have a 9/13 chance of immediate loss.
+
+   So we should STAY.
+
+   T-5=10, we are 11>10 -> so we STAY -> correct.
+
+Another test: T=15, hand has 9 -> 9<=10 -> HIT.
+
+   9: 
+        A: 9+1=10 (because 9+11=20>15 -> so A=1) -> 10
+        2: 11
+        3: 12
+        4: 13
+        5: 14
+        6: 15 -> perfect
+        7: 16 -> bust
+        ... K: 19 -> bust
+   safe: A,2,3,4,5,6 -> 6 cards
+   bust: 7,8,9,10,J,Q,K -> 7 cards
+   safe probability = 6/13, bust=7/13 -> not great but we have improvement.
+
+   We are at 9 (6 away), after hit: we can get 10,11,12,13,14,15 -> distances 5,4,3,2,1,0 -> all improvements.
+
+   So hitting is worth it.
+
+   So threshold of T-5 works: 9 < 15-5=10 -> HIT.
+
+Now test T=15, hand has 10:
+   10 >= 10? -> STAY.
+   10: 
+        if we hit: we get 10+anything: 10+1=11, 10+2=12, ... 10+5=15, 10+6=16 bust.
+   safe: A,2,3,4,5 -> 5 cards
+   bust: 6,7,8,9,10,J,Q,K -> 8 cards
+   so 8/13 chance to bust -> so STAY is better.
+
+   So the policy: HIT if hand_value < T-5, else STAY.
+
+But what about T=10 and hand=3? 
+   T-5=5, 3<5 -> HIT.
+   We are at 3, we want to go to 10. 
+   safe cards: any card that doesn't bust. 
+        We have 3. Add card:
+          A: 3+1=4 (because 3+11=14>10 -> A=1) -> 4
+          2:5
+          3:6
+          4:7
+          5:8
+          6:9
+          7:10
+          8:11>10 -> bust
+          ... 
+        So safe: A,2,3,4,5,6,7 -> 7 cards
+        bust: 8,9,10,J,Q,K -> 6 cards
+        so 7 safe -> we should hit.
+
+But with 7 safe out of 12, we should hit.
+
+Another edge: T=10, hand=2 -> HIT (2<5) -> good.
+
+T=10, hand=5: we are at 5, T-5=5 -> so we STAY? But 5 is still far from 10. We might hit and get a 5 -> 10. But we might bust if we get a 6 or above.
+
+But according to our rule, STAY.
+
+Is that correct? 
+   hand=5, T=10: 
+        safe cards: cards with value 1 to 5: A,2,3,4,5 -> 5 cards? 
+        But: adding A: 5+1=6
+             2:7
+             3:8
+             4:9
+             5:10 -> good
+        adding 6: 11 -> bust
+        ... K: 15 -> bust
+        so 5 safe cards, 8 bust cards.
+
+   So 5/13 chance to improve, 8/13 to bust -> we should stay? 
+
+   The risk is high. So STAY.
+
+   Is there a better score than 5? We could get 10 which is perfect, but the risk is 8/13 to bust (lose) and 5/13 to get 6-10. The average improvement is 6 points? Not worth the 8/13 loss.
+
+   So STAY is better.
+
+Therefore, we can use:
+
+   if current_value >= T - 5:
+        return "STAY"
+   else:
+        return "HIT"
+
+But wait: what if we are very low? like 1? We are at 1. We might be able to draw many cards safely. The rule still applies: if 1 < T-5, then HIT. For T=10, 1<5 -> HIT -> good.
+
+What if T=10 and we have two cards: 3,1? -> then hand=['3','A'] -> value: 3+10 (from A)? but we recalc: total=3, aces=1 -> candidate=3+11=14>10 -> so A becomes 1 -> total=4.
+
+So value=4 -> 4<5 -> HIT.
+
+Yes.
+
+But consider: T=30, hand_value=25: 
+   T-5=25 -> so STAY.
+   But we are at 25, T=30, we are 5 away. We can draw a 5 to get 30. Also we can draw a 4 to get 29, etc.
+
+   But if we draw a 6: 25+6=31>30 -> bust? 
+        But if we have any Ace in hand? We already have no Aces? (we have 25 with 5 cards: say 2,3,4,6,10 -> no Ace) -> then 25+6=31>30 -> bust.
+        So only cards 1 to 5 are safe: A,2,3,4,5 -> 5 cards safe, 8 cards bust (6-10,J,Q,K) and 8,9,10,J,Q,K are all 8 cards? Wait: 10,J,Q,K are 4 cards, and 6,7,8,9 are 4 more -> 8.
+
+   So 5/13 chance to improve, 8/13 to bust.
+
+   So we STAY -> which is safe. We have 25, which is 5 away from 30. The opponent might also be around 25, so we tie? or we might be closer or they might be closer.
+
+   But we cannot improve without risk.
+
+   So it's reasonable.
+
+But what if T=30 and we have 24? Then 24<25 -> HIT.
+   Then we can draw: 
+        A: 24+1=25 (if no Ace in hand? we have 24 with no Ace? then A=1) -> 25
+        2:26
+        3:27
+        4:28
+        5:29
+        6:30
+        7:31 -> bust
+        ... 
+   safe: A,2,3,4,5,6 -> 6 cards
+   bust: 7,8,9,10,J,Q,K -> 7 cards
+
+   So we hit and have 6/13 chance to improve to 25-30, and 7/13 chance to bust.
+
+   So we hit.
+
+This matches.
+
+But note: what if we have an Ace in hand? For example, hand=['A','A','A','10'] and T=30.
+   current_value = ? 
+        total=10, aces=3 -> candidate=10+11*3=43>30 -> so we must reduce.
+        each Ace reduction by 10: we have 3 Aces -> we can reduce by 10 up to 3 times.
+        we need to reduce by at least 13 (43-30=13) -> so we need 2 reductions (20) -> 43-20=23? 
+        Actually: we reduce k Aces: value = 10 + 11*(3-k) + 1*k = 10 + 33 -11k +k = 43 -10k.
+        We want 43-10k<=30 -> 10k>=13 -> k>=2 -> so k=2 -> value=43-20=23.
+
+   So we are at 23. T-5=25 -> 23<25 -> HIT.
+
+   When we hit, we might get a 7: then hand has 4 cards: 10,10,10,7 -> no, we have two aces as 1, one as 11? wait no, we already fixed the aces.
+
+   Actually, we recalculate with the new card.
+
+   After adding 7: hand = [A,A,A,10,7]
+        total without Aces: 10+7=17
+        aces=3
+        candidate=17+33=50>30 -> we reduce: reduce 2 aces (20) -> 50-20=30 -> which is T.
+        So we get 30! 
+
+   So drawing a 7 gives us 30.
+
+   And we had 30-23=7 to improve.
+
+   So hitting is good.
+
+So the policy holds.
+
+Therefore, we will implement:
+
+1. A helper function to compute the hand value given the hand and target T (with Ace flexibility).
+2. Compute current_value.
+3. If current_value >= T - 5: return "STAY"
+4. Else: return "HIT"
+
+But what if T-5 is negative? T is at least 10, so T-5>=5, so no problem.
+
+Edge: T=10, T-5=5 -> so hand_value=5 -> STAY. As we saw, that's acceptable.
+
+But what if T=10 and we have hand_value=4: we HIT. That's fine.
+
+We'll code accordingly.
+
+Let's code the helper function for hand value.
+
+Note: We assume the hand is a list of strings.
+
+Implementation of compute_hand_value(hand, T):
+
+   total = 0
+   aces = 0
+   for card in hand:
+      if card == 'A':
+          aces += 1
+      elif card in ['J','Q','K']:
+          total += 10
+      else:
+          total += int(card)
+
+   # Now, we have 'aces' aces and 'total' from non-Aces.
+   # We want to assign to each Ace a value (11 or 1) to maximize the total without exceeding T.
+   # We start by assuming all Aces are 11 -> total + 11 * aces
+   candidate = total + 11 * aces
+   if candidate <= T:
+       return candidate
+   else:
+       # We need to convert some Aces from 11 to 1. Each conversion reduces total by 10.
+       # We want the largest value <= T.
+       # We can convert at least ceil((candidate - T) / 10) aces? Actually, we need to convert k aces such that:
+       # candidate - 10*k <= T  -> 10*k >= candidate - T  -> k >= ceil((candidate-T)/10)
+       k_needed = (candidate - T + 9) // 10   # ceiling of (candidate-T)/10
+       # But we cannot convert more than aces.
+       k = min(aces, k_needed)
+       return candidate - 10 * k
+
+But wait: if we convert k aces, then the total is total + 11*(aces-k) + 1*k = total + 11*aces -10*k -> candidate - 10*k.
+
+Yes.
+
+Example: hand=['A','5'], T=10:
+   total=5, aces=1, candidate=5+11=16>10 -> k_needed = ceil((16-10)/10)=ceil(6/10)=1 -> k=1 -> value=16-10=6.
+
+But 6 is the value: 5+1=6 -> correct.
+
+Another: hand=['A','A','8'], T=10:
+   total=8, aces=2, candidate=8+22=30>10 -> k_needed = ceil((20)/10)=2 -> k=2 -> value=30-20=10.
+
+But we can also have: use one Ace as 11 and one as 1? then 8+11+1=20>10 -> bust? 
+   But our rule: 8+11+11=30>10 -> we must convert both. Then 8+1+1=10 -> 10 is acceptable.
+
+So it works.
+
+Now, we'll use this helper.
+
+However, note: the hand might be empty. Then total=0, aces=0 -> value=0.
+
+Code accordingly.
+
+Let's write the function.
+
+We assume the hand is passed as a list.
+
+We'll also note: the deck has 13 distinct cards, and we are given our current hand. The remaining cards are the ones not in hand. But we don't need the remaining cards for this policy! We only use the current hand value.
+
+We do not use the opponent's state because we have no information.
+
+So the policy is solely based on our hand and T.
+
+Final policy:
+
+   def policy(hand, target):
+        value = compute_hand_value(hand, target)
+        if value >= target - 5:
+            return "STAY"
+        else:
+            return "HIT"
+
+We'll implement this.
+
+But is T-5 optimal? We assumed it from examples. There might be a better threshold.
+
+We could try T-4 or T-6. But T-5 is balanced.
+
+Alternatively, we can use the following: 
+   The average card is about 7. So if we are below T-7, we should definitely hit. But our T-5 is above that.
+
+Actually, we are using a safety margin of 5. This is conservative, which is good because busting is a sure loss.
+
+I think it's a reasonable heuristic.
+
+Other resources: In some Blackjack variants, the rule is "hit until 17" and 17 is 17, not relative. But here T varies.
+
+Another idea: hit if you are not within 1 of T? That would be too aggressive.
+
+We'll stick with T-5.
+
+Let me test one more: T=12, hand=['A','2','3'] 
+   non-Ace: 2+3=5, aces=1 -> candidate=5+11=16>12 -> k_needed=ceil((16-12)/10)=ceil(4/10)=1 -> value=16-10=6.
+   T-5=7 -> 6<7 -> HIT.
+
+   Now what next? We then draw. We might get a 5: 6+5=11 (if we draw 5: then hand=[A,2,3,5] -> total=2+3+5=10, aces=1 -> candidate=10+11=21>12 -> convert 1 -> 10+1=11 -> 11<=12 -> so 11.
+   Then we are at 11, T-5=7 -> 11>=7 -> STAY.
+   Distance=1 from 12? perfect.
+
+   If we had stayed at 6, we would be 6 away.
+
+   So hitting was good.
+
+Another: T=12, hand=['A','A'] 
+   total=0, aces=2 -> candidate=22>12 -> k_needed=ceil(10/10)=1 -> value=22-10=12 -> 12, so STAY -> good.
+
+We are at 12, so we stay.
+
+So the code is:
+
+We'll implement compute_hand_value and then the policy.
+
+Note: We must not use any imports beyond standard Python. We don't need numpy.
+
+We'll write:
+
+<code>
+def policy(hand: list[str], target: int) -> str:
+    def compute_hand_value(hand, T):
+        total = 0
+        aces = 0
+        for card in hand:
+            if card == 'A':
+                aces += 1
+            elif card in ['J', 'Q', 'K']:
+                total += 10
+            else:
+                total += int(card)
+        # Calculate candidate score with all aces as 11
+        candidate = total + 11 * aces
+        if candidate <= T:
+            return candidate
+        else:
+            # Need to convert some aces from 11 to 1 (each conversion reduces score by 10)
+            # How many aces need to be converted? We need: candidate - 10 * k <= T
+            # -> k >= (candidate - T) / 10
+            # Take ceiling of (candidate - T) / 10
+            k_needed = (candidate - T + 9) // 10
+            k = min(aces, k_needed)
+            return candidate - 10 * k
+
+    current_value = compute_hand_value(hand, target)
+    # If we are within 5 of the target (i.e., >= target-5), we stay.
+    # This is a heuristic that balances risk and reward.
+    if current_value >= target - 5:
+        return "STAY"
+    else:
+        return "HIT"
+</code>

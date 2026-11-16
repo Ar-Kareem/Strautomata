@@ -1,0 +1,91 @@
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    # Create a copy of the current state to simulate moves
+    def simulate_move(state_you, state_opponent, move):
+        seeds = state_you[move]
+        state_you[move] = 0
+        current_pos = move + 1
+
+        # Distribute seeds
+        while seeds > 0:
+            # Your side (houses and store)
+            if current_pos < 7:
+                if current_pos != 6 or seeds != 1:  # Don't count store as last seed yet
+                    state_you[current_pos] += 1
+                    seeds -= 1
+                if seeds == 0:
+                    # Check for capture
+                    if current_pos < 6 and state_you[current_pos] == 1 and state_opponent[5 - current_pos] > 0:
+                        state_you[6] += state_you[current_pos] + state_opponent[5 - current_pos]
+                        state_you[current_pos] = 0
+                        state_opponent[5 - current_pos] = 0
+                    break
+                current_pos += 1
+
+            # Opponent's side (houses only)
+            if current_pos >= 7 and current_pos < 13:
+                opp_idx = current_pos - 7
+                state_opponent[opp_idx] += 1
+                seeds -= 1
+                if seeds == 0:
+                    break
+                current_pos += 1
+
+            # Wrap around to your side
+            if current_pos >= 13:
+                current_pos = 0
+
+        # Check if last seed was in store (extra move)
+        extra_move = (current_pos == 6 and seeds == 0)
+
+        return state_you, state_opponent, extra_move
+
+    best_move = None
+    best_score = float('-inf')
+    legal_moves = [i for i in range(6) if you[i] > 0]
+
+    for move in legal_moves:
+        # Simulate the move
+        new_you = you.copy()
+        new_opponent = opponent.copy()
+        new_you, new_opponent, extra_move = simulate_move(new_you, new_opponent, move)
+
+        # Calculate score for this move
+        score = 0
+
+        # Immediate win check
+        if sum(new_opponent[:6]) == 0:
+            score += 1000  # Very high priority for winning move
+
+        # Extra move bonus
+        if extra_move:
+            score += 50
+
+        # Capture bonus
+        if new_you[6] > you[6]:
+            score += (new_you[6] - you[6]) * 2
+
+        # Defensive: avoid leaving houses vulnerable
+        vulnerable = 0
+        for i in range(6):
+            if new_you[i] == 0 and new_opponent[5 - i] > 0:
+                vulnerable += 1
+        score -= vulnerable * 10
+
+        # Board control: prefer moves that distribute seeds well
+        # Favor moves that leave seeds in houses closer to store
+        board_control = 0
+        for i in range(6):
+            board_control += new_you[i] * (i + 1)  # Weight houses closer to store higher
+        score += board_control * 0.1
+
+        # Fallback: prefer moves with more seeds
+        score += you[move] * 0.5
+
+        # Update best move
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    # If no move found (shouldn't happen per problem statement), return first legal move
+    return best_move if best_move is not None else legal_moves[0]

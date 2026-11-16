@@ -1,0 +1,57 @@
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    me_set = set(me)
+    opp_set = set(opp)
+    moves = []
+
+    for (r, c) in me:
+        if color == 'w':
+            forward_row = r + 1
+        else:
+            forward_row = r - 1
+
+        # Straight move
+        straight = (forward_row, c)
+        if 0 <= straight[0] < 8 and 0 <= straight[1] < 8:
+            if straight not in me_set and straight not in opp_set:
+                moves.append(((r, c), straight))
+
+        # Diagonal left
+        left_diag = (forward_row, c - 1)
+        if 0 <= left_diag[0] < 8 and 0 <= left_diag[1] < 8:
+            if left_diag in opp_set:
+                moves.append(((r, c), left_diag))
+            elif left_diag not in me_set and left_diag not in opp_set:
+                moves.append(((r, c), left_diag))
+
+        # Diagonal right
+        right_diag = (forward_row, c + 1)
+        if 0 <= right_diag[0] < 8 and 0 <= right_diag[1] < 8:
+            if right_diag in opp_set:
+                moves.append(((r, c), right_diag))
+            elif right_diag not in me_set and right_diag not in opp_set:
+                moves.append(((r, c), right_diag))
+
+    best_score = -float('inf')
+    best_move = None
+
+    for move in moves:
+        from_pos, to_pos = move
+        to_r, to_c = to_pos
+
+        # Promote
+        if (color == 'w' and to_r == 7) or (color == 'b' and to_r == 0):
+            score = 1000
+        else:
+            is_capture = to_pos in opp_set
+            centrality = 4 - abs(to_c - 3.5)
+            if is_capture:
+                score = 10 + centrality
+            else:
+                score = centrality
+
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return best_move

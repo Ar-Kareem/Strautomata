@@ -1,0 +1,154 @@
+
+import numpy as np
+
+def policy(you: list[int], opponent: list[int]) -> str:
+    """
+    Chooses the next move for a Clobber game on a 5x6 grid.
+
+    Args:
+        you: A 5x6 array representing the board state for the player.
+        opponent: A 5x6 array representing the board state for the opponent.
+
+    Returns:
+        A string representing the move in the format 'row,col,dir'.
+    """
+
+    you = np.array(you)
+    opponent = np.array(opponent)
+
+    def get_legal_moves(player: np.ndarray, opponent: np.ndarray) -> list[str]:
+        """
+        Finds all legal moves for a given player.
+
+        Args:
+            player: A 5x6 array representing the player's board state.
+            opponent: A 5x6 array representing the opponent's board state.
+
+        Returns:
+            A list of strings, where each string is a legal move in the format 'row,col,dir'.
+        """
+        moves = []
+        rows, cols = player.shape
+        for r in range(rows):
+            for c in range(cols):
+                if player[r, c] == 1:
+                    # Check for up move
+                    if r > 0 and opponent[r-1, c] == 1:
+                        moves.append(f"{r},{c},U")
+                    # Check for down move
+                    if r < rows - 1 and opponent[r+1, c] == 1:
+                        moves.append(f"{r},{c},D")
+                    # Check for left move
+                    if c > 0 and opponent[r, c-1] == 1:
+                        moves.append(f"{r},{c},L")
+                    # Check for right move
+                    if c < cols - 1 and opponent[r, c+1] == 1:
+                        moves.append(f"{r},{c},R")
+        return moves
+
+    def make_move(board: np.ndarray, move: str) -> np.ndarray:
+        """
+        Applies a move to the given board.
+
+        Args:
+            board: A 5x6 array representing the board state.
+            move: A string representing the move in the format 'row,col,dir'.
+
+        Returns:
+            A new 5x6 array representing the updated board state.
+        """
+        row, col, direction = move.split(',')
+        row = int(row)
+        col = int(col)
+
+        new_board = board.copy()
+        new_board[row, col] = 0
+
+        if direction == 'U':
+            new_board[row - 1, col] = 1
+        elif direction == 'D':
+            new_board[row + 1, col] = 1
+        elif direction == 'L':
+            new_board[row, col - 1] = 1
+        elif direction == 'R':
+            new_board[row, col + 1] = 1
+        return new_board
+        
+    def evaluate_board(you: np.ndarray, opponent: np.ndarray) -> float:
+        """
+        Evaluates the board state for the current player.
+        A positive value indicates a better state for the player,
+        while a negative value indicates a better state for the opponent.
+        """
+        you_pieces = np.sum(you)
+        opponent_pieces = np.sum(opponent)
+        
+        # Simple evaluation function: difference in piece count
+        return you_pieces - opponent_pieces
+    
+    def minimax(you: np.ndarray, opponent: np.ndarray, depth: int, maximizing_player: bool):
+        """
+        Performs minimax search to find the best move.
+        """
+        if depth == 0:
+            return evaluate_board(you, opponent), None
+            
+        legal_moves = get_legal_moves(you if maximizing_player else opponent, 
+                                    opponent if maximizing_player else you)
+        
+        if not legal_moves:
+            return -np.inf if maximizing_player else np.inf, None  # No moves, loss for the player
+            
+        best_move = None
+        if maximizing_player:
+            max_eval = -np.inf
+            for move in legal_moves:
+                new_you = make_move(you, move)
+                new_opponent = opponent.copy()
+                if move[-1] == 'U':
+                    new_opponent[int(move.split(',')[0])-1, int(move.split(',')[1])] = 0
+                elif move[-1] == 'D':
+                    new_opponent[int(move.split(',')[0])+1, int(move.split(',')[1])] = 0
+                elif move[-1] == 'L':
+                    new_opponent[int(move.split(',')[0]), int(move.split(',')[1])-1] = 0
+                elif move[-1] == 'R':
+                    new_opponent[int(move.split(',')[0]), int(move.split(',')[1])+1] = 0
+                eval, _ = minimax(new_you, new_opponent, depth - 1, False)
+                if eval > max_eval:
+                    max_eval = eval
+                    best_move = move
+            return max_eval, best_move
+        else:
+            min_eval = np.inf
+            for move in legal_moves:
+                new_opponent = make_move(opponent, move)
+                new_you = you.copy()
+                if move[-1] == 'U':
+                    new_you[int(move.split(',')[0])-1, int(move.split(',')[1])] = 0
+                elif move[-1] == 'D':
+                    new_you[int(move.split(',')[0])+1, int(move.split(',')[1])] = 0
+                elif move[-1] == 'L':
+                    new_you[int(move.split(',')[0]), int(move.split(',')[1])-1] = 0
+                elif move[-1] == 'R':
+                    new_you[int(move.split(',')[0]), int(move.split(',')[1])+1] = 0
+                eval, _ = minimax(new_you, new_opponent, depth - 1, True)
+                if eval < min_eval:
+                    min_eval = eval
+                    best_move = move
+            return min_eval, best_move
+
+    # Get legal moves
+    legal_moves = get_legal_moves(you, opponent)
+
+    # If no legal moves, return immediately (loss)
+    if not legal_moves:
+        return "0,0,U" # Return a dummy move to avoid disqualification
+
+    # Use minimax to find the best move
+    _, best_move = minimax(you, opponent, depth=3, maximizing_player=True)
+    
+    # If minimax returns None, select a random legal move.
+    if best_move is None:
+      return legal_moves[0]
+
+    return best_move

@@ -1,0 +1,104 @@
+
+def policy(state: list[list[object]], role: str) -> str:
+    # Parse the board state
+    board = [[None for _ in range(3)] for _ in range(3)]
+    for fact in state:
+        if fact[0] == "cell":
+            row = int(fact[1]) - 1
+            col = int(fact[2]) - 1
+            cell_value = fact[3]
+            board[row][col] = cell_value if cell_value != "b" else None
+    
+    # Get legal moves
+    legal_moves = []
+    for i in range(3):
+        for j in range(3):
+            if board[i][j] is None:
+                legal_moves.append((i, j))
+    
+    # If no legal moves, return any valid action (shouldn't happen)
+    if not legal_moves:
+        return "mark(1,1)"
+    
+    def check_winner(b, player):
+        """Check if player has won"""
+        # Check rows
+        for i in range(3):
+            if all(b[i][j] == player for j in range(3)):
+                return True
+        # Check columns
+        for j in range(3):
+            if all(b[i][j] == player for i in range(3)):
+                return True
+        # Check diagonals
+        if all(b[i][i] == player for i in range(3)):
+            return True
+        if all(b[i][2-i] == player for i in range(3)):
+            return True
+        return False
+    
+    def minimax(b, is_maximizing, alpha, beta, depth=0):
+        """Minimax with alpha-beta pruning"""
+        max_player = role
+        min_player = "o" if role == "x" else "x"
+        
+        # Check terminal states
+        if check_winner(b, max_player):
+            return 10 - depth
+        if check_winner(b, min_player):
+            return depth - 10
+        
+        # Check for draw
+        moves_available = any(b[i][j] is None for i in range(3) for j in range(3))
+        if not moves_available:
+            return 0
+        
+        if is_maximizing:
+            max_eval = float('-inf')
+            for i in range(3):
+                for j in range(3):
+                    if b[i][j] is None:
+                        b[i][j] = max_player
+                        eval_score = minimax(b, False, alpha, beta, depth + 1)
+                        b[i][j] = None
+                        max_eval = max(max_eval, eval_score)
+                        alpha = max(alpha, eval_score)
+                        if beta <= alpha:
+                            break
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for i in range(3):
+                for j in range(3):
+                    if b[i][j] is None:
+                        b[i][j] = min_player
+                        eval_score = minimax(b, True, alpha, beta, depth + 1)
+                        b[i][j] = None
+                        min_eval = min(min_eval, eval_score)
+                        beta = min(beta, eval_score)
+                        if beta <= alpha:
+                            break
+                if beta <= alpha:
+                    break
+            return min_eval
+    
+    # Evaluate all legal moves
+    best_move = legal_moves[0]
+    best_score = float('-inf')
+    
+    for move in legal_moves:
+        i, j = move
+        board[i][j] = role
+        score = minimax(board, False, float('-inf'), float('inf'))
+        board[i][j] = None
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    # Convert to action format
+    row = best_move[0] + 1
+    col = best_move[1] + 1
+    return f"mark({row},{col})"

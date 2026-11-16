@@ -1,0 +1,210 @@
+
+import random
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    """
+    A heuristic-based Go policy.
+    Analyzes connected components to find liberties, calculates move values based on
+    captures, saves, and territorial heuristics.
+    """
+    
+    # --- Constants & Setup ---
+    BOARD_SIZE = 19
+    # Board: 0 = Empty, 1 = Me, 2 = Opponent
+    board = [[0] * BOARD_SIZE for _ in range(BOARD_SIZE)]
+    
+    # Convert input (1-based) to internal (0-based) representation
+    my_stones = set()
+    for r, c in me:
+        if 1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE:
+            board[r-1][c-1] = 1
+            my_stones.add((r-1, c-1))
+            
+    opp_stones = set()
+    for r, c in opponent:
+        if 1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE:
+            board[r-1][c-1] = 2
+            opp_stones.add((r-1, c-1))
+            
+    DIRECTIONS = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    
+    def get_neighbors(r, c):
+        for dr, dc in DIRECTIONS:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE:
+                yield nr, nc
+
+    # --- Step 1: Group Analysis (Connected Components) ---
+    # We map every cell to a group_id and store group properties (stones, liberties).
+    
+    group_map = [[-1] * BOARD_SIZE for _ in range(BOARD_SIZE)]
+    groups = {}
+    group_id_counter = 0
+    visited = set()
+    
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if board[r][c] != 0 and (r, c) not in visited:
+                color = board[r][c]
+                gid = group_id_counter
+                group_id_counter += 1
+                
+                # Flood fill to identify group
+                stack = [(r, c)]
+                visited.add((r, c))
+                grp_stones = set()
+                grp_liberties = set()
+                
+                while stack:
+                    curr_r, curr_c = stack.pop()
+                    grp_stones.add((curr_r, curr_c))
+                    group_map[curr_r][curr_c] = gid
+                    
+                    for nr, nc in get_neighbors(curr_r, curr_c):
+                        n_val = board[nr][nc]
+                        if n_val == 0:
+                            grp_liberties.add((nr, nc))
+                        elif n_val == color and (nr, nc) not in visited:
+                            visited.add((nr, nc))
+                            stack.append((nr, nc))
+                
+                groups[gid] = {
+                    'color': color,
+                    'stones': grp_stones,
+                    'liberties': grp_liberties,
+                    'lib_count': len(grp_liberties)
+                }
+
+    # --- Step 2: Evaluation of Candidates ---
+    
+    # Opening: If board is empty or very sparse, prefer 4-4 points
+    if len(my_stones) + len(opp_stones) < 2:
+        return (4, 16) # Classic opening move
+
+    best_score = -float('inf')
+    best_move = (0, 0) # Pass if nothing found
+    
+    # Identification of empty spots
+    empty_spots = []
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if board[r][c] == 0:
+                empty_spots.append((r, c))
+    
+    # Shuffle checks to ensure randomness in ties
+    random.shuffle(empty_spots)
+
+    for r, c in empty_spots:
+        # Base strategic score
+        score = 0.0
+        
+        neighbor_my_groups = set()
+        neighbor_opp_groups = set()
+        empty_neighbors_count = 0
+        
+        # Analyze immediate surroundings
+        for nr, nc in get_neighbors(r, c):
+            val = board[nr][nc]
+            if val == 0:
+                empty_neighbors_count += 1
+            else:
+                gid = group_map[nr][nc]
+                if val == 1: # Me
+                    neighbor_my_groups.add(gid)
+                else: # Opponent
+                    neighbor_opp_groups.add(gid)
+
+        # 1. Check for Capture (High Priority)
+        captures_stones = 0
+        is_capture_move = False
+        
+        for gid in neighbor_opp_groups:
+            if groups[gid]['lib_count'] == 1:
+                # Move fills the last liberty -> Capture
+                is_capture_move = True
+                captures_stones += len(groups[gid]['stones'])
+        
+        if is_capture_move:
+            score += 10000.0 * (1 + captures_stones)
+
+        # 2. Check for Suicide (Mandatory Legality)
+        # A move is suicide if it captures nothing AND results in a group with 0 liberties.
+        
+        # Calculate resulting liberties if we play here
+        if not is_capture_move:
+            # Union of liberties of all connected friendly groups
+            merged_libs = set()
+            for gid in neighbor_my_groups:
+                merged_libs.update(groups[gid]['liberties'])
+            
+            # The current spot (r,c) is a liberty for them; removing it for the new stone
+            if (r, c) in merged_libs:
+                merged_libs.remove((r, c))
+            
+            # Add new liberties provided by empty neighbors
+            # (Note: we already counted empty neighbors, but need accurate set for overlap check if complex)
+            # Simple count is not enough because of shared liberties.
+            for nr, nc in get_neighbors(r, c):
+                if board[nr][nc] == 0:
+                    merged_libs.add((nr, nc))
+            
+            final_lib_count = len(merged_libs)
+            
+            if final_lib_count == 0:
+                # Suicide
+                continue
+            
+            # 3. Check for Self-Atari (Bad Shape)
+            # If valid but results in 1 liberty, significant penalty unless it saves something huge
+            if final_lib_count == 1:
+                score -= 800.0
+        
+        # 4. Rescue Logic (High Priority)
+        # If we connect to a friendly group that has 1 liberty
+        saved_stones = False
+        for gid in neighbor_my_groups:
+            if groups[gid]['lib_count'] == 1:
+                saved_stones = True
+                # If we are not capturing, we checked suicide above.
+                # If we are here, we have >= 1 liberty. If we increased liberties > 1, good.
+                score += 5000.0
+
+        # 5. Positional / Shape Heuristics
+        
+        # Distance from edge (favor 3rd/4th line)
+        dist_edge = min(r, c, BOARD_SIZE - 1 - r, BOARD_SIZE - 1 - c)
+        if dist_edge == 0: score -= 50.0  # 1st line bad
+        elif dist_edge == 1: score -= 10.0 # 2nd line weak
+        elif dist_edge == 2: score += 15.0 # 3rd line territory
+        elif dist_edge == 3: score += 15.0 # 4th line influence
+        
+        # Contact / Influence (be near other stones)
+        if neighbor_my_groups or neighbor_opp_groups:
+            score += 40.0
+        else:
+            # Check diagonals for good shape (Kosumi)
+            diags = [(-1,-1), (-1,1), (1,-1), (1,1)]
+            for dr, dc in diags:
+                nr, nc = r+dr, c+dc
+                if 0<=nr<BOARD_SIZE and 0<=nc<BOARD_SIZE:
+                    if board[nr][nc] != 0:
+                        score += 20.0
+
+        # Penalize filling own eyes
+        # Heuristic: If surrounded by 4 own stones and not capturing, it's likely an eye
+        me_neighbors_count = 0
+        for nr, nc in get_neighbors(r, c):
+            if board[nr][nc] == 1:
+                me_neighbors_count += 1
+        
+        if me_neighbors_count == 4 and not is_capture_move:
+             score -= 500.0
+
+        # Small random noise to prevent deterministic loops
+        score += random.random() * 5.0
+        
+        if score > best_score:
+            best_score = score
+            best_move = (r + 1, c + 1) # Convert to 1-based index
+            
+    return best_move

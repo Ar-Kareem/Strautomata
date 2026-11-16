@@ -1,0 +1,86 @@
+
+import random
+from typing import List, Tuple, Set
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    n = 10
+    # Convert board to a more convenient format for checking
+    # 0 = unknown, -1 = miss, 1 = hit
+    
+    # Step 1: If we have any hits, try to complete the ship
+    hit_cells = []
+    for r in range(n):
+        for c in range(n):
+            if board[r][c] == 1:
+                hit_cells.append((r, c))
+    
+    # If we have hits, look for adjacent hits to determine direction
+    if hit_cells:
+        for r, c in hit_cells:
+            # Check if this hit is part of a known line
+            # Check up
+            if r > 0 and board[r-1][c] == 1:
+                # Continue in this direction
+                if r < n-1 and board[r+1][c] == 0:
+                    return (r+1, c)
+            # Check down
+            if r < n-1 and board[r+1][c] == 1:
+                if r > 0 and board[r-1][c] == 0:
+                    return (r-1, c)
+            # Check left
+            if c > 0 and board[r][c-1] == 1:
+                if c < n-1 and board[r][c+1] == 0:
+                    return (r, c+1)
+            # Check right
+            if c < n-1 and board[r][c+1] == 1:
+                if c > 0 and board[r][c-1] == 0:
+                    return (r, c-1)
+        
+        # If no clear line, try adjacent unknown cells to any hit
+        directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+        candidates = []
+        for r, c in hit_cells:
+            for dr, dc in directions:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < n and 0 <= nc < n and board[nr][nc] == 0:
+                    candidates.append((nr, nc))
+        
+        if candidates:
+            # Prioritize cells that could be part of longer ships
+            # Prefer edges and avoid isolated shots when possible
+            return random.choice(candidates)
+    
+    # Step 2: Parity strategy for search (more efficient than random)
+    # Ships have even and odd lengths, but we can still use a checkerboard pattern
+    # to reduce search space initially
+    unknown_cells = []
+    for r in range(n):
+        for c in range(n):
+            if board[r][c] == 0:
+                unknown_cells.append((r, c))
+    
+    if unknown_cells:
+        # Use a "parity" strategy - only shoot at cells of one color in checkerboard
+        # This is most effective when we don't have any hits yet
+        if not hit_cells:
+            parity_cells = []
+            for r, c in unknown_cells:
+                # Check if position has same parity as (0,0)
+                if (r + c) % 2 == 0:
+                    parity_cells.append((r, c))
+            
+            # If we have more than half the cells available in parity pattern, use it
+            if len(parity_cells) > len(unknown_cells) * 0.4:
+                return random.choice(parity_cells)
+        
+        # Otherwise, just choose randomly from unknown cells
+        return random.choice(unknown_cells)
+    
+    # Fallback (should never happen if board is valid)
+    for r in range(n):
+        for c in range(n):
+            if board[r][c] == 0:
+                return (r, c)
+    
+    # This should never be reached
+    return (0, 0)

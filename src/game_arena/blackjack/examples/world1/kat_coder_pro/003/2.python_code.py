@@ -1,0 +1,59 @@
+
+import numpy as np
+
+def policy(hand: list[str], target: int) -> str:
+    # Card values mapping
+    card_values = {
+        'A': 11, '2': 2, '3': 3, '4': 4, '5': 5, 
+        '6': 6, '7': 7, '8': 8, '9': 9, '10': 10,
+        'J': 10, 'Q': 10, 'K': 10
+    }
+    
+    # Calculate current hand value with Aces as 11 if possible
+    def get_hand_value(hand):
+        value = 0
+        aces = 0
+        
+        for card in hand:
+            if card == 'A':
+                aces += 1
+            else:
+                value += card_values[card]
+        
+        # Add Aces: try 11 first, then 1 if it would bust
+        for _ in range(aces):
+            if value + 11 <= target:
+                value += 11
+            else:
+                value += 1
+        
+        return value
+    
+    current_value = get_hand_value(hand)
+    
+    # If we're already at or very close to target, stay
+    if current_value >= target - 2:
+        return "STAY"
+    
+    # If we're far from target, hit
+    if current_value <= target - 8:
+        return "HIT"
+    
+    # For values in between (target-7 to target-3), be more cautious
+    # Calculate what cards would cause us to bust
+    min_card_needed = target - current_value + 1  # Cards >= this would bust us
+    
+    # Count remaining high cards that could bust us
+    # Since we don't know opponent's cards, assume all cards not in our hand are available
+    all_cards = set(card_values.keys())
+    remaining_cards = all_cards - set(hand)
+    
+    # Count cards that would bust us (>= min_card_needed)
+    bust_cards = sum(1 for card in remaining_cards if card_values[card] >= min_card_needed)
+    total_remaining = len(remaining_cards)
+    
+    # If more than 60% of remaining cards would bust us, stay
+    if total_remaining > 0 and bust_cards / total_remaining > 0.6:
+        return "STAY"
+    else:
+        return "HIT"

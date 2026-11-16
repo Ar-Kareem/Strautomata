@@ -1,0 +1,317 @@
+The strategy for this policy is:
+
+- Always return a legal move, or pass `(0, 0)` if no legal move exists.
+- Reconstruct the board from `me` and `opponent`.
+- Enforce legality including:
+  - empty intersection,
+  - suicide prevention,
+  - capture handling,
+  - simple ko prevention using `memory` to remember the previous observed state.
+- Use a tactical priority system:
+  1. Play moves that capture the most opponent stones.
+  2. Save our own groups that are in atari.
+  3. Prefer moves that put opponent groups into atari.
+  4. Avoid self-atari unless it captures.
+  5. Prefer locally connected, influential moves, especially near the center/opening points.
+- Search candidate moves near existing stones first for speed, but fall back to all legal moves if needed.
+
+<code>
+from typing import List, Tuple, Dict
+
+BOARD_SIZE = 19
+DIRS = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+
+
+def policy(me: List[Tuple[int, int]], opponent: List[Tuple[int, int]], memory: Dict) -> Tuple[Tuple[int, int], Dict]:
+    board = [[0] * BOARD_SIZE for _ in range(BOARD_SIZE)]
+    for r, c in me:
+        if 1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE:
+            board[r - 1][c - 1] = 1
+    for r, c in opponent:
+        if 1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE:
+            board[r - 1][c - 1] = 2
+
+    current_state = canonical_state(me, opponent)
+    prev_state = memory.get("prev_state")
+
+    candidates = generate_candidates(board)
+    best_move = None
+    best_score = -10**18
+
+    legal_found = False
+    for move in candidates:
+        sim = simulate_move(board, move[0], move[1], prev_state)
+        if sim is None:
+            continue
+        legal_found = True
+        score = evaluate_move(board, move[0], move[1], sim)
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    if not legal_found:
+        for r in range(1, BOARD_SIZE + 1):
+            for c in range(1, BOARD_SIZE + 1):
+                sim = simulate_move(board, r, c, prev_state)
+                if sim is None:
+                    continue
+                score = evaluate_move(board, r, c, sim)
+                if score > best_score:
+                    best_score = score
+                    best_move = (r, c)
+
+    memory = dict(memory) if memory is not None else {}
+    memory["prev_state"] = current_state
+
+    if best_move is None:
+        return (0, 0), memory
+    return best_move, memory
+
+
+def canonical_state(me, opponent):
+    return (tuple(sorted(me)), tuple(sorted(opponent)))
+
+
+def in_bounds(r, c):
+    return 0 <= r < BOARD_SIZE and 0 <= c < BOARD_SIZE
+
+
+def neighbors(r, c):
+    for dr, dc in DIRS:
+        nr, nc = r + dr, c + dc
+        if in_bounds(nr, nc):
+            yield nr, nc
+
+
+def get_group_and_liberties(board, r, c):
+    color = board[r][c]
+    stack = [(r, c)]
+    seen = {(r, c)}
+    group = []
+    libs = set()
+
+    while stack:
+        cr, cc = stack.pop()
+        group.append((cr, cc))
+        for nr, nc in neighbors(cr, cc):
+            v = board[nr][nc]
+            if v == 0:
+                libs.add((nr, nc))
+            elif v == color and (nr, nc) not in seen:
+                seen.add((nr, nc))
+                stack.append((nr, nc))
+    return group, libs
+
+
+def board_to_state_after_move(board):
+    me = []
+    opp = []
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if board[r][c] == 1:
+                me.append((r + 1, c + 1))
+            elif board[r][c] == 2:
+                opp.append((r + 1, c + 1))
+    return (tuple(me), tuple(opp))
+
+
+def simulate_move(board, r1, c1, prev_state=None):
+    r = r1 - 1
+    c = c1 - 1
+    if not in_bounds(r, c):
+        return None
+    if board[r][c] != 0:
+        return None
+
+    b = [row[:] for row in board]
+    b[r][c] = 1
+    captured = 0
+    captured_groups = []
+
+    seen_enemy = set()
+    for nr, nc in neighbors(r, c):
+        if b[nr][nc] == 2 and (nr, nc) not in seen_enemy:
+            grp, libs = get_group_and_liberties(b, nr, nc)
+            for p in grp:
+                seen_enemy.add(p)
+            if len(libs) == 0:
+                captured += len(grp)
+                captured_groups.append(grp)
+
+    for grp in captured_groups:
+        for gr, gc in grp:
+            b[gr][gc] = 0
+
+    my_group, my_libs = get_group_and_liberties(b, r, c)
+    if len(my_libs) == 0:
+        return None
+
+    if prev_state is not None:
+        new_state = board_to_state_after_move(b)
+        if new_state == prev_state:
+            return None
+
+    return {
+        "board": b,
+        "captured": captured,
+        "my_group": my_group,
+        "my_liberties": my_libs,
+    }
+
+
+def generate_candidates(board):
+    stones = []
+    empties = 0
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if board[r][c] != 0:
+                stones.append((r, c))
+            else:
+                empties += 1
+
+    if empties == BOARD_SIZE * BOARD_SIZE:
+        opening = [
+            (4, 4), (4, 16), (16, 4), (16, 16),
+            (4, 10), (10, 4), (10, 16), (16, 10),
+            (10, 10), (7, 7), (7, 13), (13, 7), (13, 13),
+        ]
+        return opening
+
+    cand = set()
+
+    for r, c in stones:
+        for dr in range(-2, 3):
+            for dc in range(-2, 3):
+                nr, nc = r + dr, c + dc
+                if in_bounds(nr, nc) and board[nr][nc] == 0:
+                    cand.add((nr + 1, nc + 1))
+
+    strategic = [
+        (4, 4), (4, 16), (16, 4), (16, 16),
+        (4, 10), (10, 4), (10, 16), (16, 10),
+        (10, 10), (7, 7), (7, 13), (13, 7), (13, 13),
+        (10, 9), (10, 11), (9, 10), (11, 10),
+    ]
+    for mv in strategic:
+        r, c = mv
+        if board[r - 1][c - 1] == 0:
+            cand.add(mv)
+
+    return list(cand)
+
+
+def evaluate_move(board, r1, c1, sim):
+    b2 = sim["board"]
+    r = r1 - 1
+    c = c1 - 1
+    captured = sim["captured"]
+    my_libs = len(sim["my_liberties"])
+
+    score = 0.0
+
+    # Strong priority: capture
+    score += captured * 1000.0
+
+    # Save nearby own groups in atari
+    saved = 0
+    seen = set()
+    for nr, nc in neighbors(r, c):
+        if board[nr][nc] == 1 and (nr, nc) not in seen:
+            grp, libs = get_group_and_liberties(board, nr, nc)
+            for p in grp:
+                seen.add(p)
+            if len(libs) == 1 and (r, c) in libs:
+                saved += len(grp)
+    score += saved * 300.0
+
+    # Putting opponent into atari / reducing liberties
+    seen_opp = set()
+    for nr, nc in neighbors(r, c):
+        if b2[nr][nc] == 2 and (nr, nc) not in seen_opp:
+            grp, libs = get_group_and_liberties(b2, nr, nc)
+            for p in grp:
+                seen_opp.add(p)
+            if len(libs) == 1:
+                score += 120.0 + 8.0 * len(grp)
+            elif len(libs) == 2:
+                score += 25.0 + 2.0 * len(grp)
+
+    # Avoid self-atari
+    if captured == 0:
+        if my_libs == 1:
+            score -= 500.0
+        elif my_libs == 2:
+            score -= 40.0
+    else:
+        score += my_libs * 5.0
+
+    # Connection to friendly stones
+    friendly_adj = 0
+    enemy_adj = 0
+    empty_adj = 0
+    for nr, nc in neighbors(r, c):
+        if board[nr][nc] == 1:
+            friendly_adj += 1
+        elif board[nr][nc] == 2:
+            enemy_adj += 1
+        else:
+            empty_adj += 1
+
+    score += friendly_adj * 18.0
+    score += enemy_adj * 10.0
+    score += empty_adj * 1.5
+
+    # Prefer extending weak groups
+    seen = set()
+    for nr, nc in neighbors(r, c):
+        if board[nr][nc] == 1 and (nr, nc) not in seen:
+            grp, libs = get_group_and_liberties(board, nr, nc)
+            for p in grp:
+                seen.add(p)
+            if len(libs) == 2 and (r, c) in libs:
+                score += 40.0 + len(grp)
+
+    # Shape / influence: prefer center-ish, especially early
+    stones_played = sum(board[x][y] != 0 for x in range(BOARD_SIZE) for y in range(BOARD_SIZE))
+    center_dist = abs(r1 - 10) + abs(c1 - 10)
+    if stones_played < 20:
+        score += opening_weight(r1, c1)
+    else:
+        score += max(0.0, 10.0 - 0.6 * center_dist)
+
+    # Mild preference for more liberties after move
+    score += my_libs * 3.0
+
+    # Discourage filling own eyes locally
+    if enemy_adj == 0 and friendly_adj >= 3:
+        score -= 50.0
+
+    return score
+
+
+def opening_weight(r, c):
+    hoshi = {(4, 4), (4, 16), (16, 4), (16, 16),
+             (4, 10), (10, 4), (10, 16), (16, 10)}
+    komoku = {(4, 5), (5, 4), (4, 15), (5, 16), (15, 4), (16, 5), (15, 16), (16, 15),
+              (3, 4), (4, 3), (3, 16), (4, 17), (16, 3), (17, 4), (16, 17), (17, 16)}
+    centerish = {(10, 10), (7, 7), (7, 13), (13, 7), (13, 13)}
+
+    if (r, c) in hoshi:
+        return 35.0
+    if (r, c) in komoku:
+        return 25.0
+    if (r, c) in centerish:
+        return 18.0
+
+    # General corner/side preference early, avoid first-line
+    dist_edge = min(r - 1, c - 1, BOARD_SIZE - r, BOARD_SIZE - c)
+    if dist_edge == 0:
+        return -20.0
+    if dist_edge == 1:
+        return -5.0
+    if dist_edge == 2:
+        return 10.0
+    if dist_edge == 3:
+        return 14.0
+    return 6.0
+</code>

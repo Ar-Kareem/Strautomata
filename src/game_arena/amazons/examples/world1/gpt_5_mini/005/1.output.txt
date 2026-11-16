@@ -1,0 +1,114 @@
+The strategy for this policy is a mobility-maximizing greedy policy. For each legal amazon move and subsequent arrow shot, it simulates the resulting board and scores it by the difference in "mobility" (the total number of empty squares reachable by our amazons minus the same for the opponent). The policy selects the move that maximizes this mobility difference. This simple but effective heuristic prefers moves that increase the player's space while restricting the opponent, which is a strong and fast strategy on a 6x6 board.
+
+<code>
+import numpy as np
+
+# Amazons 6x6 policy: greedy mobility maximizer
+# Returns move string: "fr,fc:tr,tc:ar,ac"
+
+DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1),
+        (-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+def in_bounds(r, c):
+    return 0 <= r < 6 and 0 <= c < 6
+
+def reachable_count(board, player_value):
+    """
+    Compute total number of empty squares reachable by all amazons of player_value.
+    Reachable squares counted per amazon using queen-like rays (each empty square
+    reachable from that amazon counts once per amazon).
+    """
+    total = 0
+    # find player amazon positions
+    positions = np.argwhere(board == player_value)
+    for pr, pc in positions:
+        for dr, dc in DIRS:
+            r, c = pr + dr, pc + dc
+            while in_bounds(r, c) and board[r, c] == 0:
+                total += 1
+                r += dr
+                c += dc
+    return total
+
+def generate_legal_moves(board):
+    """
+    Generate all legal moves as tuples: (fr,fc,tr,tc,ar,ac)
+    """
+    moves = []
+    our_positions = np.argwhere(board == 1)
+    # For each our amazon
+    for (fr, fc) in our_positions:
+        for dr, dc in DIRS:
+            tr, tc = fr + dr, fc + dc
+            # Move along the ray
+            while in_bounds(tr, tc) and board[tr, tc] == 0:
+                # simulate move by copying board and moving the amazon
+                temp = board.copy()
+                temp[fr, fc] = 0
+                temp[tr, tc] = 1
+                # From the landing square, shoot arrow in any direction
+                for adr, adc in DIRS:
+                    ar, ac = tr + adr, tc + adc
+                    while in_bounds(ar, ac) and temp[ar, ac] == 0:
+                        moves.append((int(fr), int(fc), int(tr), int(tc), int(ar), int(ac)))
+                        ar += adr
+                        ac += adc
+                tr += dr
+                tc += dc
+    return moves
+
+def policy(board) -> str:
+    """
+    Select a legal move and return it as "fr,fc:tr,tc:ar,ac".
+    Chooses the move that maximizes (our_mobility - opponent_mobility).
+    """
+    # Ensure board is numpy array
+    board = np.asarray(board)
+    best_move = None
+    best_score = -10**9
+    moves = generate_legal_moves(board)
+
+    # If no legal moves, return something (environment shouldn't call in this case).
+    if not moves:
+        # Attempt a fallback: try to find any single-step move + arrow (robustness)
+        # but if none, return a dummy (should not happen under valid use).
+        for fr, fc in np.argwhere(board == 1):
+            fr, fc = int(fr), int(fc)
+            for dr, dc in DIRS:
+                tr, tc = fr + dr, fc + dc
+                if in_bounds(tr, tc) and board[tr, tc] == 0:
+                    # find any arrow spot
+                    temp = board.copy()
+                    temp[fr, fc] = 0
+                    temp[tr, tc] = 1
+                    for adr, adc in DIRS:
+                        ar, ac = tr + adr, tc + adc
+                        if in_bounds(ar, ac) and temp[ar, ac] == 0:
+                            return f"{fr},{fc}:{tr},{tc}:{ar},{ac}"
+        # As last resort (shouldn't happen), return a fixed string
+        return "0,0:0,0:0,0"
+
+    # Evaluate each move
+    for (fr, fc, tr, tc, ar, ac) in moves:
+        # simulate board after move and arrow
+        temp = board.copy()
+        temp[fr, fc] = 0
+        temp[tr, tc] = 1
+        temp[ar, ac] = -1
+        # mobility counts
+        our_mob = reachable_count(temp, 1)
+        opp_mob = reachable_count(temp, 2)
+        score = our_mob - opp_mob
+        # prefer moves that also increase our mobility more (tie-breaker)
+        if score > best_score:
+            best_score = score
+            best_move = (fr, fc, tr, tc, ar, ac)
+
+    # If somehow not selected, pick first move
+    if best_move is None:
+        fr, fc, tr, tc, ar, ac = moves[0]
+    else:
+        fr, fc, tr, tc, ar, ac = best_move
+
+    return f"{fr},{fc}:{tr},{tc}:{ar},{ac}"
+</code>

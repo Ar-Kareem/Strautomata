@@ -1,0 +1,148 @@
+
+def policy(board: list[list[int]]) -> int:
+    """
+    Implements a Connect 4 targeting policy for a player using a combination of
+    short-term strategy (blocking opponent wins, ensuring own wins), and a heuristic
+    evaluation of board states to make optimal long-term decisions.
+    """
+
+    def is_valid_column(col: int) -> bool:
+        """Check if the specified column has at least one empty cell."""
+        for row in range(6):
+            if board[row][col] == 0:
+                return True
+        return False
+
+    def find_next_open_row(temp_board: list[list[int]], col: int) -> int:
+        """
+        Finds the lowest (bottommost) empty row in a given `col`.
+        Assumes the column is valid and not full.
+        """
+        for row in reversed(range(6)):
+            if temp_board[row][col] == 0:
+                return row
+        return -1  # Should not be reached for valid columns
+
+    def check_win(temp_board: list[list[int]], row: int, col: int, player: int) -> bool:
+        """
+        Checks if the last played move at (row, col) forms
+        a four-in-a-row line in any direction.
+        """
+        directions = ((0, 1), (1, 0), (1, 1), (1, -1))
+        for dr, dc in directions:
+            count = 1
+            # Search in one direction
+            r, c = row + dr, col + dc
+            while 0 <= r < 6 and 0 <= c < 7 and temp_board[r][c] == player:
+                count += 1
+                r += dr
+                c += dc
+            # Search in the opposite direction
+            r, c = row - dr, col - dc
+            while 0 <= r < 6 and 0 <= c < 7 and temp_board[r][c] == player:
+                count += 1
+                r -= dr
+                c -= dc
+            if count >= 4:
+                return True
+        return False
+
+    def evaluate_window(window: list[int]) -> int:
+        """Evaluates a window of 4 consecutive cells based on line strength and player advantage."""
+        score = 0
+        me = 1
+        opponent = -1
+        me_count = window.count(me)
+        opponent_count = window.count(opponent)
+        empty = window.count(0)
+
+        # Prioritize four in a row
+        if me_count == 4:
+            score += 100
+        elif me_count == 3 and empty == 1:
+            score += 50
+        elif me_count == 2 and empty == 2:
+            score += 10
+
+        # Opponent threats are penalized
+        if opponent_count == 4:
+            score -= 100
+        elif opponent_count == 3 and empty == 1:
+            score -= 40
+        elif opponent_count == 2 and empty == 2:
+            score -= 5
+
+        return score
+
+    def evaluate_board(temp_board: list[list[int]]) -> int:
+        """
+        Evaluates the board using a combination of line-based and positional heuristics.
+        Favors potential winning lines and central control.
+        """
+        score = 0
+
+        # Evaluate horizontal lines
+        for row in range(6):
+            for col in range(4):
+                window = [temp_board[row][col + c] for c in range(4)]
+                score += evaluate_window(window)
+
+        # Evaluate vertical lines
+        for row in range(3):
+            for col in range(7):
+                window = [temp_board[row + r][col] for r in range(4)]
+                score += evaluate_window(window)
+
+        # Evaluate positive slope diagonal lines (bottom left to top right)
+        for row in range(3):
+            for col in range(4):
+                window = [temp_board[row + r][col + r] for r in range(4)]
+                score += evaluate_window(window)
+
+        # Evaluate negative slope diagonal lines (top left to bottom right)
+        for row in range(3, 6):
+            for col in range(4):
+                window = [temp_board[row - r][col + r] for r in range(4)]
+                score += evaluate_window(window)
+
+        # Bonus for central column (position 3)
+        center_column = [temp_board[row][3] for row in range(6)]
+        me_count = center_column.count(1)
+        opponent_count = center_column.count(-1)
+        score += me_count * 3
+        score -= opponent_count * 3
+
+        return score
+
+    # Step 1: Find valid columns
+    valid_moves = [col for col in range(7) if is_valid_column(col)]
+
+    # Step 2: Check for immediate winning moves (player = 1)
+    for col in valid_moves:
+        temp_board = [list(row) for row in board]
+        row = find_next_open_row(temp_board, col)
+        temp_board[row][col] = 1
+        if check_win(temp_board, row, col, 1):
+            return col
+
+    # Step 3: Check for opponent's immediate win and block it
+    for col in valid_moves:
+        temp_board = [list(row) for row in board]
+        row = find_next_open_row(temp_board, col)
+        temp_board[row][col] = -1
+        if check_win(temp_board, row, col, -1):
+            return col
+
+    # Step 4: If no immediate threats, choose best move using heuristic
+    best_col = valid_moves[0]
+    best_score = -float('inf')
+    for col in valid_moves:
+        temp_board = [list(row) for row in board]
+        row = find_next_open_row(temp_board, col)
+        temp_board[row][col] = 1
+        current_score = evaluate_board(temp_board)
+        if current_score > best_score or (current_score == best_score and col == 3):
+            best_score = current_score
+            best_col = col
+
+    return best_col

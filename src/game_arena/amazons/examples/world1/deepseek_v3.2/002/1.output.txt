@@ -1,0 +1,300 @@
+I'll implement a policy for Amazons on a 6x6 board using a minimax algorithm with alpha-beta pruning. The strategy focuses on maximizing mobility (available moves) while restricting the opponent's options.
+
+<code>
+import numpy as np
+import copy
+import time
+
+def policy(board) -> str:
+    """
+    Main policy function that selects the best move using minimax with alpha-beta pruning.
+    """
+    # Start timing to respect the 1-second limit
+    start_time = time.time()
+    
+    # Find all legal moves for player 1 (us)
+    legal_moves = get_all_legal_moves(board, player=1)
+    
+    # If no legal moves (shouldn't happen per problem statement), return any string
+    if not legal_moves:
+        return "0,0:0,0:0,0"  # Fallback
+    
+    # Use iterative deepening to search as deep as possible within time limit
+    best_move = None
+    max_depth = 1
+    
+    while time.time() - start_time < 0.95:  # Leave 50ms safety margin
+        try:
+            # Try to search at this depth
+            current_best_move = minimax_search(
+                board, 
+                depth=max_depth, 
+                maximizing_player=True,
+                start_time=start_time,
+                time_limit=0.95
+            )
+            
+            if current_best_move:
+                best_move = current_best_move
+            max_depth += 1
+        except TimeoutError:
+            # Time's up, use the best move found so far
+            break
+    
+    # If we didn't find a move in iterative deepening, use the first legal move
+    if best_move is None:
+        best_move = legal_moves[0]
+    
+    return format_move(best_move)
+
+def get_all_legal_moves(board, player):
+    """
+    Returns all legal moves for the given player.
+    Moves are tuples: (from_row, from_col, to_row, to_col, arrow_row, arrow_col)
+    """
+    moves = []
+    board_size = 6
+    
+    # Directions for queen movement: 8 directions
+    directions = [(-1, -1), (-1, 0), (-1, 1),
+                  (0, -1),           (0, 1),
+                  (1, -1),  (1, 0),  (1, 1)]
+    
+    # Find all our amazons
+    amazon_positions = []
+    for r in range(board_size):
+        for c in range(board_size):
+            if board[r, c] == player:
+                amazon_positions.append((r, c))
+    
+    # For each amazon, generate all possible moves
+    for fr, fc in amazon_positions:
+        # Generate all possible move destinations
+        for dr, dc in directions:
+            nr, nc = fr + dr, fc + dc
+            
+            # Move along this direction until hitting an obstacle or board edge
+            while (0 <= nr < board_size and 0 <= nc < board_size and 
+                   board[nr, nc] == 0):
+                
+                # Now generate all possible arrow shots from this destination
+                for arrow_dr, arrow_dc in directions:
+                    ar, ac = nr + arrow_dr, nc + arrow_dc
+                    
+                    # Shoot arrow along this direction
+                    while (0 <= ar < board_size and 0 <= ac < board_size):
+                        # Arrow cannot land on the amazon's new position
+                        if (ar == nr and ac == nc):
+                            ar += arrow_dr
+                            ac += arrow_dc
+                            continue
+                            
+                        # Check if arrow path is clear
+                        if not is_path_clear(board, nr, nc, ar, ac, exclude_from=(fr, fc)):
+                            break
+                            
+                        # Arrow must land on an empty square
+                        if board[ar, ac] == 0:
+                            moves.append((fr, fc, nr, nc, ar, ac))
+                        
+                        ar += arrow_dr
+                        ac += arrow_dc
+        
+    return moves
+
+def is_path_clear(board, start_r, start_c, end_r, end_c, exclude_from=None):
+    """
+    Check if the queen's path from start to end is clear.
+    exclude_from: optional position to exclude (the vacated from square)
+    """
+    dr = end_r - start_r
+    dc = end_c - start_c
+    
+    # Determine step directions
+    step_r = 0 if dr == 0 else (1 if dr > 0 else -1)
+    step_c = 0 if dc == 0 else (1 if dc > 0 else -1)
+    
+    current_r, current_c = start_r + step_r, start_c + step_c
+    
+    while (current_r != end_r or current_c != end_c):
+        # Check if current position is blocked (excluding the from square if specified)
+        if (board[current_r, current_c] != 0 and 
+            not (exclude_from and current_r == exclude_from[0] and current_c == exclude_from[1])):
+            return False
+        current_r += step_r
+        current_c += step_c
+    
+    # Check the end position
+    if board[end_r, end_c] != 0:
+        return False
+    
+    return True
+
+def make_move(board, move):
+    """
+    Apply a move to the board and return a new board.
+    move: (from_row, from_col, to_row, to_col, arrow_row, arrow_col)
+    """
+    new_board = board.copy()
+    fr, fc, tr, tc, ar, ac = move
+    
+    # Move amazon
+    new_board[tr, tc] = new_board[fr, fc]
+    new_board[fr, fc] = 0
+    
+    # Shoot arrow
+    new_board[ar, ac] = -1
+    
+    return new_board
+
+def evaluate_board(board):
+    """
+    Evaluate the board position for player 1.
+    Higher score is better for player 1.
+    """
+    # Count mobility (number of legal moves) for both players
+    player1_moves = len(get_all_legal_moves(board, player=1))
+    player2_moves = len(get_all_legal_moves(board, player=2))
+    
+    # If no moves for a player, that's terminal
+    if player1_moves == 0:
+        return -1000  # We lose
+    if player2_moves == 0:
+        return 1000   # We win
+    
+    # Mobility difference is the main heuristic
+    mobility_score = player1_moves - player2_moves
+    
+    # Add some positional bonuses
+    positional_score = 0
+    board_size = 6
+    
+    # Center control bonus
+    center_squares = [(2, 2), (2, 3), (3, 2), (3, 3)]
+    for r, c in center_squares:
+        if board[r, c] == 1:
+            positional_score += 1
+        elif board[r, c] == 2:
+            positional_score -= 1
+    
+    # Encourage keeping amazons away from edges early in the game
+    empty_count = np.sum(board == 0)
+    if empty_count > 15:  # Early game
+        for r in range(board_size):
+            for c in range(board_size):
+                if board[r, c] == 1:
+                    # Penalty for being on edge
+                    if r == 0 or r == 5 or c == 0 or c == 5:
+                        positional_score -= 0.5
+    
+    return mobility_score * 3 + positional_score
+
+def minimax_search(board, depth, maximizing_player, alpha, beta, start_time, time_limit):
+    """
+    Minimax search with alpha-beta pruning.
+    Returns the best move for the current player.
+    """
+    # Check time limit
+    if time.time() - start_time > time_limit:
+        raise TimeoutError()
+    
+    # Base case: reached max depth or terminal position
+    if depth == 0:
+        # Evaluate position
+        return None, evaluate_board(board)
+    
+    # Determine current player
+    current_player = 1 if maximizing_player else 2
+    
+    # Get legal moves
+    legal_moves = get_all_legal_moves(board, player=current_player)
+    
+    # Terminal condition: no legal moves
+    if not legal_moves:
+        if maximizing_player:
+            return None, -1000  # Player 1 loses
+        else:
+            return None, 1000   # Player 2 loses (good for player 1)
+    
+    # Sort moves for better alpha-beta pruning (heuristic: moves that seem good)
+    legal_moves.sort(key=lambda move: heuristic_move_order(board, move, maximizing_player), 
+                     reverse=maximizing_player)
+    
+    best_move = legal_moves[0]
+    
+    if maximizing_player:
+        max_eval = float('-inf')
+        for move in legal_moves:
+            # Check time limit
+            if time.time() - start_time > time_limit:
+                raise TimeoutError()
+                
+            new_board = make_move(board, move)
+            _, eval_score = minimax_search(new_board, depth-1, False, alpha, beta, 
+                                          start_time, time_limit)
+            
+            if eval_score > max_eval:
+                max_eval = eval_score
+                best_move = move
+            
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break  # Beta cutoff
+        
+        return best_move, max_eval
+    else:
+        min_eval = float('inf')
+        for move in legal_moves:
+            # Check time limit
+            if time.time() - start_time > time_limit:
+                raise TimeoutError()
+                
+            new_board = make_move(board, move)
+            _, eval_score = minimax_search(new_board, depth-1, True, alpha, beta,
+                                          start_time, time_limit)
+            
+            if eval_score < min_eval:
+                min_eval = eval_score
+                best_move = move
+            
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break  # Alpha cutoff
+        
+        return best_move, min_eval
+
+def heuristic_move_order(board, move, maximizing_player):
+    """
+    Heuristic to order moves for better alpha-beta pruning.
+    Returns a score where higher is better for the current player.
+    """
+    fr, fc, tr, tc, ar, ac = move
+    
+    # Quick evaluation of the move
+    score = 0
+    
+    # Prefer moves that shoot arrows to central squares
+    if (ar, ac) in [(2, 2), (2, 3), (3, 2), (3, 3)]:
+        score += 2
+    
+    # Prefer moves that increase mobility
+    # Make a quick copy and evaluate
+    temp_board = make_move(board, move)
+    mobility = evaluate_board(temp_board)
+    
+    if maximizing_player:
+        score += mobility / 10  # Scale down since mobility is already heavily weighted
+    else:
+        score -= mobility / 10
+    
+    return score
+
+def format_move(move):
+    """
+    Convert move tuple to required string format.
+    """
+    fr, fc, tr, tc, ar, ac = move
+    return f"{fr},{fc}:{tr},{tc}:{ar},{ac}"
+
+# The policy function is defined above
+</code>

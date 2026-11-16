@@ -1,0 +1,333 @@
+The strategy for this policy is based on a highly optimized Alpha-Beta search algorithm using bitboard representations for the board state. Bitboards allow for fast move generation and evaluation using bitwise operations, which is crucial for achieving sufficient search depth within the 1-second time limit in Python.
+
+The core components of the strategy are:
+1.  **Bitboard Representation**: The board is stored as two 64-bit integers (one for the current player, one for the opponent), enabling efficient manipulation and checking of game states.
+2.  **Heuristic Evaluation**: The AI uses a weighted sum of three factors to evaluate leaf nodes:
+    *   **Positional Weights**: A pre-defined 8x8 matrix assigning high values to corners and edges, and negative values to squares adjacent to corners (to avoid giving the opponent corners).
+    *   **Mobility**: The difference between the number of legal moves available to the AI and the opponent. Higher mobility is generally advantageous.
+    *   **Parity**: The difference in disc count, which becomes more significant towards the end of the game.
+3.  **Adaptive Depth**: The search depth adjusts dynamically based on the number of empty squares remaining. It searches deeper (up to 12+ plies) in the endgame to solve perfectly, and shallower (4-5 plies) in the opening/midgame to ensure responsiveness.
+4.  **Move Ordering**: Legal moves are sorted by their static positional weight before searching. This causes Alpha-Beta pruning to cut off large branches of the search tree early, significantly improving efficiency.
+
+<code>
+import numpy as np
+import time
+
+# --- Constants & Heuristics ---
+
+# Positional weight matrix.
+# Corners are valuable (+100), squares adjacent to corners are dangerous (-20 to -50).
+WEIGHTS = np.array([
+    [100, -20, 10,  5,  5, 10, -20, 100],
+    [-20, -50, -2, -2, -2, -2, -50, -20],
+    [ 10,  -2, -1, -1, -1, -1,  -2,  10],
+    [  5,  -2, -1, -1, -1, -1,  -2,   5],
+    [  5,  -2, -1, -1, -1, -1,  -2,   5],
+    [ 10,  -2, -1, -1, -1, -1,  -2,  10],
+    [-20, -50, -2, -2, -2, -2, -50, -20],
+    [100, -20, 10,  5,  5, 10, -20, 100]
+], dtype=np.int32)
+
+# Directions for bitboard shifts: 0=E, 1=SE, 2=S, 3=SW, 4=W, 5=NW, 6=N, 7=NE
+# Shift amounts corresponding to (r, c) -> (r+dr, c+dc)
+# Index mapping: 0 is a8 (row 0), 63 is h1 (row 7). 
+# Wait, standard mapping used here:
+# r * 8 + c. r increases downwards.
+# Left/Right is +/- 1. Up/Down is +/- 8.
+DIRECTIONS = [1, 9, 8, 7, -1, -9, -8, -7]
+
+# Masks to prevent wrapping around the board edges when shifting
+# E (no H col), SE (no H col), S (ok), SW (no A col), W (no A col), NW (no A col), N (ok), NE (no H col)
+MASKS = [
+    0x7E7E7E7E7E7E7E7E, # E
+    0x007E7E7E7E7E7E00, # SE
+    0xFFFFFFFFFFFFFFFF, # S
+    0x007F7F7F7F7F7F00, # SW
+    0x7F7F7F7F7F7F7F7F, # W
+    0x00FEFEFEFEFEFE00, # NW
+    0xFFFFFFFFFFFFFFFF, # N
+    0x00FEFEFEFEFEFE00  # NE
+]
+
+# --- Bitboard Helpers ---
+
+def numpy_to_bitboard(board: np.ndarray) -> int:
+    """Converts 8x8 numpy array to 64-bit integer."""
+    bits = 0
+    # Ensure we treat input as 0/1
+    flat = board.flatten()
+    for i in range(64):
+        if flat[i]:
+            bits |= (1 << i)
+    return bits
+
+def get_legal_moves(my_bits: int, opp_bits: int) -> list:
+    """Returns a list of bit indices representing legal moves."""
+    empty = ~(my_bits | opp_bits) & 0xFFFFFFFFFFFFFFFF
+    moves = 0
+    
+    # Generate potential moves in all 8 directions
+    for i in range(8):
+        # Candidates: opponent pieces that are adjacent in direction i
+        # But for generation, we usually look for 'pattern' like me..opp
+        # Here we iterate directions.
+        
+        # Shifted opponent bits
+        candidates = opp_bits & MASKS[i]
+        shifted = candidates << DIRECTIONS[i] if DIRECTIONS[i] >= 0 else candidates >> (-DIRECTIONS[i])
+        
+        # We need to find lines of opponent pieces bounded by my piece.
+        # Flood fill approach:
+        # Start with empty squares, check if they flip opponent pieces ending in my piece.
+        
+        # Alternative: Iterate all empty squares? 
+        # Better: Iterate all directions and compute bits.
+        
+        direction = DIRECTIONS[i]
+        if direction > 0:
+            # Search 'forward'
+            # mask to ensure we don't cross edge logic for intermediate bits
+            flood = opp_bits & MASKS[i]
+        else:
+            flood = opp_bits & MASKS[i]
+
+        # Actually, let's use the standard logic:
+        # 1. Get opponent pieces adjacent to my pieces in direction i (masked).
+        # 2. Expand away from my pieces.
+        
+        # Step 1: Identify opponent pieces that are adjacent to my pieces in direction i
+        # To do this, we shift my pieces towards the opponent.
+        # If I am at X, I want to check X+dir.
+        # (my_bits shifted dir) intersect opp_bits.
+        
+        potential = 0
+        if direction > 0:
+            # My pieces shifted 'forward' (where I would capture towards)
+            # We look for opponent pieces that are 'downstream' of my pieces
+            capture_candidates = (my_bits << direction) & opp_bits & MASKS[i]
+        else:
+            capture_candidates = (my_bits >> (-direction)) & opp_bits & MASKS[i]
+            
+        # Expand contiguous opponent pieces
+        contiguous = capture_candidates
+        while True:
+            if direction > 0:
+                next_step = (contiguous << direction) & opp_bits & MASKS[i]
+            else:
+                next_step = (contiguous >> (-direction)) & opp_bits & MASKS[i]
+            
+            if next_step == 0:
+                break
+            contiguous |= next_step
+            
+        # Now, 'contiguous' holds all opponent pieces that are in a line connected to my pieces.
+        # The legal move is the empty square immediately after this line.
+        if direction > 0:
+            legal = (contiguous << direction) & empty & MASKS[i]
+        else:
+            legal = (contiguous >> (-direction)) & empty & MASKS[i]
+            
+        moves |= legal
+
+    # Convert bits to list of indices
+    return [i for i in range(64) if (moves >> i) & 1]
+
+def make_move(my_bits: int, opp_bits: int, idx: int) -> tuple:
+    """Applies move at idx. Returns (new_my_bits, new_opp_bits)."""
+    new_my = my_bits | (1 << idx)
+    new_opp = opp_bits
+    flipped = 0
+    
+    r, c = divmod(idx, 8)
+    
+    for i in range(8):
+        direction = DIRECTIONS[i]
+        
+        # Find opponent pieces in this direction
+        current = idx
+        potential_flips = 0
+        valid_line = False
+        
+        while True:
+            if direction > 0:
+                current = current + direction
+                # Check column wrapping
+                if direction in (1, 9, -7): # Moving right
+                    if (current & 0x7) == 0 and direction % 2 != 0: break # wrapped col 0->7? No, idx % 8 logic is better
+                    # Bitboard wrapping check:
+                    # If we move East (1), we cannot go from col 7 to col 0 (next row).
+                    # Since we use arithmetic on index, (idx+1) % 8 != (idx)%8+1 implies wrap?
+                    # Simpler: Use masks.
+            else:
+                current = current + direction # direction is negative
+                
+            # Bounds check (0-63)
+            if current < 0 or current > 63: break
+            
+            # Edge wrapping check (file a/h)
+            if abs(direction) == 1 or abs(direction) == 9 or abs(direction) == 7:
+                cr, cc = divmod(current, 8)
+                pr, pc = divmod(current - direction, 8)
+                if abs(cr - pr) > 1 or abs(cc - pc) > 1: break # Wrapped row/col incorrectly
+            
+            bit = 1 << current
+            if bit & new_opp:
+                potential_flips |= bit
+            elif bit & new_my:
+                valid_line = True
+                break
+            else:
+                # Empty square
+                break
+        
+        if valid_line:
+            flipped |= potential_flips
+            
+    new_opp ^= flipped
+    new_my |= flipped
+    
+    return new_my, new_opp
+
+# --- Evaluation ---
+
+def evaluate(my_bits: int, opp_bits: int) -> int:
+    score = 0
+    
+    # 1. Positional Weights
+    # Extract bits from both boards and score
+    my_board = np.zeros(64, dtype=int)
+    opp_board = np.zeros(64, dtype=int)
+    
+    for i in range(64):
+        mask = 1 << i
+        if my_bits & mask: my_board[i] = 1
+        elif opp_bits & mask: opp_board[i] = 1
+        
+    score += np.sum(my_board.reshape(8,8) * WEIGHTS)
+    score -= np.sum(opp_board.reshape(8,8) * WEIGHTS)
+    
+    # 2. Mobility
+    my_moves = len(get_legal_moves(my_bits, opp_bits))
+    opp_moves = len(get_legal_moves(opp_bits, my_bits))
+    score += (my_moves - opp_moves) * 5
+    
+    # 3. Parity (Coin count) - simple, but helps in endgame
+    my_count = bin(my_bits).count('1')
+    opp_count = bin(opp_bits).count('1')
+    score += (my_count - opp_count) * 1
+    
+    return score
+
+# --- Search ---
+
+# Simple Transposition Table (stores best depth/move)
+# Key: (my_bits, opp_bits), Value: (score, depth, flag)
+# Given the constraints, we might skip a full TT to save memory/speed overhead,
+# relying on move ordering.
+# But a simple cache for leaf evaluation or reuse? Python dict is slow.
+# We will stick to pure Alpha-Beta with Move Ordering.
+
+def minimax(my_bits: int, opp_bits: int, depth: int, alpha: int, beta: int, maximizing: bool) -> int:
+    # If game over (no moves for both)
+    my_moves = get_legal_moves(my_bits, opp_bits)
+    if not my_moves:
+        opp_moves = get_legal_moves(opp_bits, my_bits)
+        if not opp_moves:
+            # Terminal state
+            my_count = bin(my_bits).count('1')
+            opp_count = bin(opp_bits).count('1')
+            if my_count > opp_count: return 100000
+            if my_count < opp_count: return -100000
+            return 0
+        # Pass
+        return minimax(opp_bits, my_bits, depth, alpha, beta, not maximizing)
+        
+    if depth == 0:
+        return evaluate(my_bits, opp_bits)
+        
+    # Move Ordering: Sort moves by heuristic weight
+    # Pre-calculate static weights for moves to sort
+    # We can't easily evaluate all without making moves, but we know square weights.
+    # Indices in my_moves are integers 0-63.
+    # Sort by WEIGHTS[r][c] descending.
+    my_moves.sort(key=lambda idx: WEIGHTS[idx // 8][idx % 7 if idx % 8 < 8 else idx % 8], reverse=True)
+    # Bug in line above: idx % 8 is 0..7.
+    my_moves.sort(key=lambda idx: WEIGHTS[idx // 8][idx % 8], reverse=True)
+
+    if maximizing:
+        max_eval = -float('inf')
+        for idx in my_moves:
+            n_my, n_opp = make_move(my_bits, opp_bits, idx)
+            eval_score = minimax(n_opp, n_my, depth - 1, alpha, beta, False)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for idx in my_moves:
+            n_my, n_opp = make_move(my_bits, opp_bits, idx)
+            eval_score = minimax(n_opp, n_my, depth - 1, alpha, beta, True)
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval
+
+# --- Policy ---
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    my_bits = numpy_to_bitboard(you)
+    opp_bits = numpy_to_bitboard(opponent)
+    
+    legal_moves = get_legal_moves(my_bits, opp_bits)
+    
+    if not legal_moves:
+        return "pass"
+        
+    # Determine depth based on empties
+    total_pieces = bin(my_bits | opp_bits).count('1')
+    empties = 64 - total_pieces
+    
+    if empties < 12:
+        depth = 12 # Endgame, try to solve
+    elif empties < 20:
+        depth = 6 # Late midgame
+    else:
+        depth = 4 # Early/Mid game
+        
+    # Iterative deepening or just fixed depth?
+    # Fixed depth is safer for 1s hard limit.
+    
+    best_move = -1
+    best_val = -float('inf')
+    alpha = -float('inf')
+    beta = float('inf')
+    
+    # Sort root moves for better pruning
+    legal_moves.sort(key=lambda idx: WEIGHTS[idx // 8][idx % 8], reverse=True)
+    
+    for idx in legal_moves:
+        n_my, n_opp = make_move(my_bits, opp_bits, idx)
+        # Note: we call minimax with n_opp as 'current player' bits (because turn passed), 
+        # but the function interprets first arg as 'my_bits' relative to the player to move.
+        # Standard minimax: call(state, depth, alpha, beta, is_maximizing)
+        # We used `minimax(me, opp, ...)` where `me` is the one calculating.
+        # So `minimax(n_opp, n_my, ...)` treats `n_opp` as the player to move.
+        val = minimax(n_opp, n_my, depth - 1, alpha, beta, False)
+        
+        if val > best_val:
+            best_val = val
+            best_move = idx
+            
+        alpha = max(alpha, val)
+        
+    if best_move == -1:
+        # Fallback (shouldn't happen if legal_moves non-empty)
+        r, c = divmod(legal_moves[0], 8)
+        return f"{chr(97+c)}{r+1}"
+        
+    r, c = divmod(best_move, 8)
+    return f"{chr(97+c)}{r+1}"
+</code>

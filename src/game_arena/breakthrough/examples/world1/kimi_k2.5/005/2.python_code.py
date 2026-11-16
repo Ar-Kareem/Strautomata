@@ -1,0 +1,128 @@
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    # Convert to frozensets for efficient hashing and set operations
+    me_set = frozenset(me)
+    opp_set = frozenset(opp)
+    opp_color = 'b' if color == 'w' else 'w'
+    direction = 1 if color == 'w' else -1
+    
+    def generate_moves(pieces: frozenset, enemy: frozenset, dir: int):
+        """Generate all legal moves for pieces moving in direction dir."""
+        moves = []
+        occupied = pieces | enemy
+        for r, c in pieces:
+            # Forward move
+            nr, nc = r + dir, c
+            if 0 <= nr < 8 and (nr, nc) not in occupied:
+                moves.append(((r, c), (nr, nc)))
+            # Diagonal moves (capture or empty)
+            for dc in (-1, 1):
+                nr, nc = r + dir, c + dc
+                if 0 <= nr < 8 and 0 <= nc < 8:
+                    if (nr, nc) in enemy or (nr, nc) not in occupied:
+                        moves.append(((r, c), (nr, nc)))
+        return moves
+    
+    def apply_move(pieces: frozenset, enemy: frozenset, move: tuple):
+        """Apply move and return new piece sets. Handles captures."""
+        fr, to = move
+        new_pieces = set(pieces)
+        new_pieces.remove(fr)
+        new_pieces.add(to)
+        new_enemy = set(enemy)
+        new_enemy.discard(to)  # Remove captured piece if present
+        return frozenset(new_pieces), frozenset(new_enemy)
+    
+    def is_winning_state(pieces: frozenset, col: str):
+        """Check if player has reached the opponent's home row."""
+        if col == 'w':
+            return any(r == 7 for r, c in pieces)
+        else:
+            return any(r == 0 for r, c in pieces)
+    
+    # Negamax with alpha-beta pruning
+    def negamax(cur_p: frozenset, cur_e: frozenset, cur_col: str, depth: int, alpha: float, beta: float):
+        # Terminal states
+        if not cur_e:
+            return 10000 + depth  # Win by capture
+        if is_winning_state(cur_p, cur_col):
+            return 10000 + depth  # Win by breakthrough
+        
+        if depth == 0:
+            # Evaluation from current player's perspective
+            score = 0
+            if cur_col == 'w':
+                # Advancement: higher rows better for white
+                for r, c in cur_p:
+                    score += r * 10
+                for r, c in cur_e:
+                    score -= (7 - r) * 8  # Penalty for opponent's advancement
+            else:
+                # Advancement: lower rows better for black
+                for r, c in cur_p:
+                    score += (7 - r) * 10
+                for r, c in cur_e:
+                    score -= r * 8
+            
+            # Material balance
+            score += len(cur_p) * 50
+            score -= len(cur_e) * 40
+            return score
+        
+        cur_dir = 1 if cur_col == 'w' else -1
+        moves = generate_moves(cur_p, cur_e, cur_dir)
+        
+        if not moves:
+            return -10000 - depth  # Loss (no moves)
+        
+        # Move ordering: captures first for better pruning
+        moves.sort(key=lambda m: m[1] in cur_e, reverse=True)
+        
+        max_eval = -float('inf')
+        for move in moves:
+            new_p, new_e = apply_move(cur_p, cur_e, move)
+            # Swap perspective: opponent becomes current player
+            next_col = opp_color if cur_col == color else color
+            eval_score = -negamax(new_e, new_p, next_col, depth - 1, -beta, -alpha)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if alpha >= beta:
+                break
+        
+        return max_eval
+    
+    # Generate root moves
+    root_moves = generate_moves(me_set, opp_set, direction)
+    
+    # Check for immediate winning moves
+    for move in root_moves:
+        _, (tr, tc) = move
+        if (color == 'w' and tr == 7) or (color == 'b' and tr == 0):
+            return move
+    
+    if not root_moves:
+        # Fallback (should not occur in valid game states)
+        return ((me[0][0], me[0][1]), (me[0][0] + direction, me[0][1]))
+    
+    # Determine search depth based on game phase (fewer pieces = deeper search)
+    total_pieces = len(me_set) + len(opp_set)
+    search_depth = 4 if total_pieces <= 8 else 3
+    
+    # Find best move using negamax
+    best_move = root_moves[0]
+    best_value = -float('inf')
+    alpha = -float('inf')
+    beta = float('inf')
+    
+    # Initial move ordering
+    root_moves.sort(key=lambda m: (m[1] in opp_set, abs(m[1][1] - 3.5) < abs(m[0][1] - 3.5)), reverse=True)
+    
+    for move in root_moves:
+        new_me, new_opp = apply_move(me_set, opp_set, move)
+        value = -negamax(new_opp, new_me, opp_color, search_depth, -beta, -alpha)
+        if value > best_value:
+            best_value = value
+            best_move = move
+        alpha = max(alpha, value)
+    
+    return best_move

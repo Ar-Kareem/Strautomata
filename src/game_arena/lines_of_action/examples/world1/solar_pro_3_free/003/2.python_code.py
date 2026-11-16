@@ -1,0 +1,201 @@
+
+import random
+from collections import deque
+
+def policy(board):
+    """
+    Return a legal move for the current player (marker = 1) as
+    "from_row,from_col:to_row,to_col".
+    """
+    # Ensure we have a mutable list‑of‑lists
+    board = [list(row) for row in board]
+
+    # ------------------------------------------------------------------
+    # Helper functions
+    # ------------------------------------------------------------------
+
+    def count_pieces(sr, sc, tr, tc):
+        """Return the number of non‑zero cells (both players) in the line sr→tr, sc→tc."""
+        dr = tr - sr
+        dc = tc - sc
+        step_len = max(abs(dr), abs(dc))
+        cnt = 0
+        r = sr
+        c = sc
+        while True:
+            if board[r][c] != 0:
+                cnt += 1
+            if r == tr and c == tc:
+                break
+            r += dr // step_len
+            c += dc // step_len
+        return cnt
+
+    def is_legal_move(board, sr, sc, tr, tc, moving_marker):
+        """Return True iff moving_marker can go from (sr,sc) to (tr,tc)."""
+        if tr == sr and tc == sc:                # same cell – illegal
+            return False
+        dr = tr - sr
+        dc = tc - sc
+        step_len = max(abs(dr), abs(dc))
+        # piece count must equal the distance traveled
+        if count_pieces(sr, sc, tr, tc) != step_len:
+            return False
+        # intermediate squares must not contain opponent pieces
+        for s in range(1, step_len):
+            mr = sr + dr * s // step_len
+            mc = sc + dc * s // step_len
+            if board[mr][mc] == -moving_marker:
+                return False
+        return True
+
+    def legal_moves(board, marker):
+        """Generate all legal moves for pieces with value `marker`."""
+        moves = []
+        for sr in range(8):
+            for sc in range(8):
+                if board[sr][sc] != marker:
+                    continue
+                for dr in (-1, 0, 1):
+                    for dc in (-1, 0, 1):
+                        if dr == 0 and dc == 0:
+                            continue
+                        step = 0
+                        while True:
+                            tr = sr + dr * (step + 1)
+                            tc = sc + dc * (step + 1)
+                            if not (0 <= tr < 8 and 0 <= tc < 8):
+                                break
+                            if is_legal_move(board, sr, sc, tr, tc, marker):
+                                moves.append(((sr, sc), (tr, tc)))
+                            step += 1
+        return moves
+
+    def count_edges(b):
+        """Number of adjacency edges between player pieces (8‑dir)."""
+        edges = 0
+        for r in range(8):
+            for c in range(8):
+                if b[r][c] == 1:
+                    for dr in (-1, 0, 1):
+                        for dc in (-1, 0, 1):
+                            if dr == 0 and dc == 0:
+                                continue
+                            nr = r + dr
+                            nc = c + dc
+                            if 0 <= nr < 8 and 0 <= nc < 8 and b[nr][nc] == 1:
+                                edges += 1
+        return edges // 2
+
+    def components(b):
+        """Return the number of connected components of player pieces."""
+        visited = [[False] * 8 for _ in range(8)]
+        comp = 0
+        for r in range(8):
+            for c in range(8):
+                if b[r][c] == 1 and not visited[r][c]:
+                    comp += 1
+                    stack = [(r, c)]
+                    visited[r][c] = True
+                    while stack:
+                        rr, cc = stack.pop()
+                        for dr in (-1, 0, 1):
+                            for dc in (-1, 0, 1):
+                                if dr == 0 and dc == 0:
+                                    continue
+                                nr = rr + dr
+                                nc = cc + dc
+                                if 0 <= nr < 8 and 0 <= nc < 8 and b[nr][nc] == 1 and not visited[nr][nc]:
+                                    visited[nr][nc] = True
+                                    stack.append((nr, nc))
+        return comp
+
+    def opponent_can_capture(b):
+        """True if any opponent piece can capture a player piece on `b`."""
+        opp_moves = legal_moves(b, -1)
+        player_pos = [(r, c) for r in range(8) for c in range(8) if b[r][c] == 1]
+        threat = 0
+        for (sr, sc), (tr, tc) in opp_moves:
+            if (tr, tc) in player_pos:
+                threat += 1
+        return threat
+
+    # ------------------------------------------------------------------
+    # Pre‑evaluate the current situation
+    # ------------------------------------------------------------------
+    player_pos = [(r, c) for r in range(8) for c in range(8) if board[r][c] == 1]
+    opp_pos = [(r, c) for r in range(8) for c in range(8) if board[r][c] == -1]
+
+    pre_edges = count_edges(board)
+    pre_comps = components(board)
+
+    best_move = None
+    best_score = -float('inf')
+
+    # ------------------------------------------------------------------
+    # Search all legal moves for the player
+    # ------------------------------------------------------------------
+    for src, dest in legal_moves(board, 1):
+        # Simulate the move
+        new_board = [row[:] for row in board]
+        new_board[src[0]][src[1]] = 0
+        if board[dest[0]][dest[1]] == -1:
+            # capture
+            new_board[dest[0]][dest[1]] = 1
+        else:
+            new_board[dest[0]][dest[1]] = 1
+
+        # Evaluate the move
+        post_edges = count_edges(new_board)
+        post_comps = components(new_board)
+        # Connectivity improvement (lower components is better)
+        conn_improve = pre_comps - post_comps
+        if conn_improve < 0:
+            conn_improve = 0
+        cap_bonus = 1 if board[dest[0]][dest[1]] == -1 else 0
+        threat = opponent_can_capture(new_board)
+
+        score = conn_improve * 10 + cap_bonus * 10 - threat * 20
+
+        if score > best_score:
+            best_score = score
+            best_move = (src, dest)
+
+    # ------------------------------------------------------------------
+    # Return a move (fallback if nothing was found – should never happen)
+    # ------------------------------------------------------------------
+    if best_move is None:
+        # pick any adjacent empty square that respects the rule (step = 1, no enemy)
+        # (this is a safety net)
+        for sr in range(8):
+            for sc in range(8):
+                if board[sr][sc] != 1:
+                    continue
+                for dr in (-1, 0, 1):
+                    for dc in (-1, 0, 1):
+                        if dr == 0 and dc == 0:
+                            continue
+                        step = 0
+                        while True:
+                            tr = sr + dr * (step + 1)
+                            tc = sc + dc * (step + 1)
+                            if not (0 <= tr < 8 and 0 <= tc < 8):
+                                break
+                            if count_pieces(sr, sc, tr, tc) == step + 1:
+                                # no enemy in intermediate squares (step == 1)
+                                if step == 0 or board[sr + dr][sc + dc] != -1:
+                                    best_move = ((sr, sc), (tr, tc))
+                                    break
+                            step += 1
+                        if best_move:
+                            break
+                    if best_move:
+                        break
+                if best_move:
+                    break
+        # As a final fallback, pick the first legal move we generated earlier
+        if best_move is None:
+            best_move = next(legal_moves(board, 1), ((0, 0), (0, 0)))
+
+    src, dst = best_move
+    return f"{src[0]},{src[1]}:{dst[0]},{dst[1]}"

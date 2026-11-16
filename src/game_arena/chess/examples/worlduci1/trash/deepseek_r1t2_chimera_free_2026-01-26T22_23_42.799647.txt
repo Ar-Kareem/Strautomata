@@ -1,0 +1,105 @@
+
+
+Strategy:
+- **Material Gain**: Prioritize moves that capture higher-value opponent pieces, using piece values (Pawn=1, Knight/Bishop=3, Rook=5, Queen=9).
+- **Promotions**: Heavily favor pawn promotions to queens.
+- **Check Detection**: Reward moves that deliver checks (if detected via simplified checks).
+- **Positional Play**: Tend towards central pawn moves and minor piece development.
+- **Safety**: Penalize moving pieces into squares attacked by low-value opponent pieces (simplified attack detection).
+
+<code>
+import chess
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    board = chess.Board(None)
+    board.clear()
+    board.castling_rights = chess.BB_EMPTY
+    board.ep_square = None
+
+    # Helper to map piece chars to chess.Piece
+    piece_type_map = {'K': chess.KING, 'Q': chess.QUEEN, 'R': chess.ROOK, 
+                      'B': chess.BISHOP, 'N': chess.KNIGHT, 'P': chess.PAWN}
+    
+    # Place pieces on the board
+    w_king, b_king = 0, 0
+    for square_str, code in pieces.items():
+        color_char, pc_char = code[0], code[1]
+        file = ord(square_str[0]) - ord('a')
+        rank = 8 - int(square_str[1])
+        square = chess.square(file, rank)
+        color = chess.WHITE if color_char == 'w' else chess.BLACK
+        piece_type = piece_type_map[pc_char]
+        board.set_piece_at(square, chess.Piece(piece_type, color))
+
+    # Infer castling rights
+    if pieces.get('e1') == 'wK':
+        if pieces.get('a1') == 'wR': board.castling_rights |= chess.BB_A1
+        if pieces.get('h1') == 'wR': board.castling_rights |= chess.BB_H1
+    if pieces.get('e8') == 'bK':
+        if pieces.get('a8') == 'bR': board.castling_rights |= chess.BB_A8
+        if pieces.get('h8') == 'bR': board.castling_rights |= chess.BB_H8
+
+    board.turn = chess.WHITE if to_play == 'white' else chess.BLACK
+
+    if not board.legal_moves:
+        return "0000"  # Fallback if no moves (shouldn't occur)
+
+    piece_vals = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3,
+                  chess.ROOK: 5, chess.QUEEN: 9, chess.KING: 0}
+
+    best_move = None
+    best_score = -99999
+
+    for move in board.legal_moves:
+        score = 0
+        
+        # Apply move on a copy
+        temp = board.copy()
+        temp.push(move)
+        
+        # Material differential
+        score += (material_diff(temp, piece_vals) * (1 if board.turn == chess.WHITE else -1))
+        
+        # Pawn promotion to Queen: high bonus
+        if move.promotion == chess.QUEEN:
+            score += 50
+        
+        # Check bonus
+        if temp.is_check():
+            score += 15
+        
+        # Central pawn advance
+        piece = board.piece_at(move.from_square)
+        if piece and piece.piece_type == chess.PAWN:
+            to_rank = chess.square_rank(move.to_square)
+            if (3 <= to_rank <= 4) or (piece.color == chess.WHITE and to_rank == 5) \
+                or (piece.color == chess.BLACK and to_rank == 2):
+                score += 3
+        
+        # Capture evaluation
+        if board.is_capture(move):
+            capt_val = piece_vals[temp.piece_type_at(move.to_square)]
+            score += capt_val * 10
+        
+        # Update best move
+        if score > best_score:
+            best_score, best_move = score, move
+
+    return best_move.uci()
+
+def material_diff(board: chess.Board, piece_vals: dict) -> int:
+    """Calculate material difference (white - black)."""
+    white = sum(piece_vals[p.piece_type] for p in board.pieces(chess.PAWN, chess.WHITE))
+    white += sum(piece_vals[p.piece_type] for p in board.pieces(chess.KNIGHT, chess.WHITE))
+    white += sum(piece_vals[p.piece_type] for p in board.pieces(chess.BISHOP, chess.WHITE))
+    white += sum(piece_vals[p.piece_type] for p in board.pieces(chess.ROOK, chess.WHITE))
+    white += sum(piece_vals[p.piece_type] for p in board.pieces(chess.QUEEN, chess.WHITE))
+    
+    black = sum(piece_vals[p.piece_type] for p in board.pieces(chess.PAWN, chess.BLACK))
+    black += sum(piece_vals[p.piece_type] for p in board.pieces(chess.KNIGHT, chess.BLACK))
+    black += sum(piece_vals[p.piece_type] for p in board.pieces(chess.BISHOP, chess.BLACK))
+    black += sum(piece_vals[p.piece_type] for p in board.pieces(chess.ROOK, chess.BLACK))
+    black += sum(piece_vals[p.piece_type] for p in board.pieces(chess.QUEEN, chess.BLACK))
+    
+    return white - black
+</code>

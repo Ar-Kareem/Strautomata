@@ -1,0 +1,175 @@
+The strategy for this policy is based on a shortest-path connectivity heuristic (often referred to as a "Two-Distance" or "Centrality" heuristic). The board is modeled as a graph where cells are nodes and adjacent cells share edges. The policy evaluates every empty cell by calculating how critical it is for both the player's own connection (attack) and the opponent's connection (defense).
+
+Technically, the policy performs the following steps:
+1.  **Graph Construction**: The board is treated as a grid where empty cells have a weight of 1, the player's own stones have a weight of 0 (conductors), and the opponent's stones effectively block paths (infinite weight).
+2.  **Dijkstra's Algorithm**: We run Dijkstra's algorithm 4 times to compute the shortest path distances from:
+    *   My starting side to all cells.
+    *   My ending side to all cells.
+    *   Opponent's starting side to all cells.
+    *   Opponent's ending side to all cells.
+3.  **Cell Evaluation**: For each empty cell $(r, c)$, we calculate the length of the shortest path passing through that cell for both 'Me' and 'Opp'.
+    *   $Length(Me) = Dist(Start \to Cell) + Dist(Cell \to End)$
+    *   $Length(Opp) = Dist(Start \to Cell) + Dist(Cell \to End)$
+4.  **Scoring**: The score minimizes the path lengths. We use an inverse square function ($1 / Length^2$) to assign significantly higher value to moves that complete a path or block an immediate threat. If a move completes my path immediately, it is chosen instantly.
+
+This approach is computationally efficient (running well within the 1-second limit on an 11x11 board) while being strategically robust, as it naturally identifies bottlenecks and vital connecting points on the board.
+
+<code>
+import heapq
+import numpy as np
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    """
+    Hex policy based on shortest-path centrality.
+    Analyzes the board to find moves that minimize the player's connection distance
+    while maximizing the opponent's connection distance (blocking).
+    """
+    
+    # Game and Board Constants
+    BOARD_SIZE = 11
+    EMPTY = 0
+    ME = 1
+    OPP = 2
+    INF = 10000.0
+    
+    # Initialize the board grid
+    board = np.full((BOARD_SIZE, BOARD_SIZE), EMPTY, dtype=int)
+    for r, c in me:
+        board[r, c] = ME
+    for r, c in opp:
+        board[r, c] = OPP
+        
+    # Hex neighbor offsets:
+    # (r, c) has neighbors: (r, c-1), (r, c+1), (r-1, c), (r-1, c+1), (r+1, c-1), (r+1, c)
+    directions = [
+        (0, -1), (0, 1),
+        (-1, 0), (-1, 1),
+        (1, -1), (1, 0)
+    ]
+    
+    def get_neighbors(r, c):
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE:
+                yield nr, nc
+                
+    # Dijkstra's algorithm to compute minimum cost from a set of source nodes to all cells
+    def get_min_distances(player_id, start_nodes):
+        # Initialize distances to infinity
+        dists = np.full((BOARD_SIZE, BOARD_SIZE), INF)
+        pq = []
+        
+        # Identify the obstacle id
+        obstacle = OPP if player_id == ME else ME
+        
+        # Initialize priority queue with start nodes (boundaries)
+        for r, c in start_nodes:
+            # If the start node is blocked by an opponent stone, skip it
+            if board[r, c] == obstacle:
+                continue
+            
+            # Cost logic: 
+            # If I already have a stone there, cost is 0. 
+            # If it's empty, cost is 1 (need to place a stone).
+            weight = 0 if board[r, c] == player_id else 1
+            
+            if weight < dists[r, c]:
+                dists[r, c] = weight
+                heapq.heappush(pq, (weight, r, c))
+                
+        while pq:
+            d, r, c = heapq.heappop(pq)
+            
+            if d > dists[r, c]:
+                continue
+            
+            for nr, nc in get_neighbors(r, c):
+                if board[nr, nc] == obstacle:
+                    continue
+                
+                # Edge weight: 0 if travelling into own stone, 1 if travelling into empty
+                move_cost = 0 if board[nr, nc] == player_id else 1
+                new_dist = d + move_cost
+                
+                if new_dist < dists[nr, nc]:
+                    dists[nr, nc] = new_dist
+                    heapq.heappush(pq, (new_dist, nr, nc))
+                    
+        return dists
+
+    # Define boundaries based on color
+    # Black ('b') connects Top (row 0) to Bottom (row 10)
+    # White ('w') connects Left (col 0) to Right (col 10)
+    if color == 'b':
+        my_starts = [(0, c) for c in range(BOARD_SIZE)]
+        my_ends   = [(BOARD_SIZE - 1, c) for c in range(BOARD_SIZE)]
+        opp_starts = [(r, 0) for r in range(BOARD_SIZE)]
+        opp_ends   = [(r, BOARD_SIZE - 1) for r in range(BOARD_SIZE)]
+    else:
+        my_starts = [(r, 0) for r in range(BOARD_SIZE)]
+        my_ends   = [(r, BOARD_SIZE - 1) for r in range(BOARD_SIZE)]
+        opp_starts = [(0, c) for c in range(BOARD_SIZE)]
+        opp_ends   = [(BOARD_SIZE - 1, c) for c in range(BOARD_SIZE)]
+        
+    # Run Dijkstra for both players from both sides
+    # Distances from My Start and My End
+    d_me_s = get_min_distances(ME, my_starts)
+    d_me_e = get_min_distances(ME, my_ends)
+    
+    # Distances from Opponent Start and Opponent End
+    d_opp_s = get_min_distances(OPP, opp_starts)
+    d_opp_e = get_min_distances(OPP, opp_ends)
+    
+    # Identify legal moves
+    candidates = []
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if board[r, c] == EMPTY:
+                candidates.append((r, c))
+                
+    if not candidates:
+        return (0, 0) # Fallback, should not happen
+
+    best_score = -1.0
+    best_move = candidates[0]
+    
+    for r, c in candidates:
+        # Calculate the Shortest Path Length passing through this empty cell.
+        # Path Length = (Dist from Start) + (Dist from End) - (Cost of Cell itself)
+        # Since cell is empty, cost is 1.
+        
+        len_me = d_me_s[r, c] + d_me_e[r, c] - 1.0
+        len_opp = d_opp_s[r, c] + d_opp_e[r, c] - 1.0
+        
+        # Check for immediate win (path length becomes 1, meaning this stone connects the two components)
+        if len_me <= 1.0:
+            return (r, c)
+        
+        # Scoring components
+        # 1. Defense: Block Opponent
+        # If len_opp is small, the opponent is close to winning. We must block.
+        # We use an inverse square to prioritize urgent threats.
+        if len_opp < 1.0: len_opp = 0.5 # Avoid division by zero, though unlikely if incomplete
+        
+        # If opponent can win in 1 move (len_opp <= 1), this is a critical defense block.
+        # We assign a massive score, but slightly less than an immediate win for us.
+        if len_opp <= 1.0:
+            score_opp = 10000.0
+        else:
+            score_opp = 1.0 / (len_opp ** 2)
+            
+        # 2. Attack: Advance our path
+        if len_me < 1.0: len_me = 0.5
+        score_me = 1.0 / (len_me ** 2)
+        
+        # Combined score
+        # We weight blocking slightly higher than building in ambiguous situations,
+        # but the exponential nature of the inverse square handles most urgency.
+        total_score = score_me + 1.1 * score_opp
+        
+        if total_score > best_score:
+            best_score = total_score
+            best_move = (r, c)
+            
+    return best_move
+</code>

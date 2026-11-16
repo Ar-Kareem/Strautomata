@@ -1,0 +1,239 @@
+The strategy for this policy is to select the best move from the legal moves by evaluating material gain and prioritizing checkmate if possible. The policy first checks if any move delivers immediate checkmate and selects it. If no checkmate is available, it selects the move with the highest material gain. For non-capturing moves, it favors moves that place the opponent's king in check. The policy generates pseudo-legal moves using custom logic and filters them for legality by checking if the player's king stays out of check after making a move.
+
+<code>
+```python
+piece_values = {'K': 0, 'Q': 9, 'R': 5, 'B': 3, 'N': 3, 'P': 1}
+
+def policy(pieces, to_play, memory):
+    color = 'w' if to_play == 'white' else 'b'
+    opponent_color = 'b' if to_play == 'white' else 'w'
+
+    # Find the king's position for legality checks and checks
+    king_pos = [pos for pos, pc in pieces.items() if pc[0] == color and pc[1] == 'K']
+    if not king_pos:
+        return ('e2e4', memory)  # dummy move in case of no king
+    king_pos = king_pos[0]
+
+    candidate_moves = []
+
+    for square, piece in pieces.items():
+        piece_color = piece[0]
+        if piece_color != color:
+            continue
+        piece_type = piece[1]
+        start_rank = int(square[1])
+        start_file = square[0]
+        start_col = ord(start_file) - ord('a')
+
+        if piece_type == 'P':
+            direction = -1 if color == 'w' else 1
+            next_row = start_rank + direction
+            if 1 <= next_row <= 8:
+                next_square = start_file + str(next_row)
+                if next_square not in pieces:
+                    # Forward move
+                    if next_row in (1, 8):  # Promotion row
+                        for promo in 'qrbn':
+                            candidate_moves.append(square + next_square + promo)
+                    else:
+                        candidate_moves.append(square + next_square)
+                    # Two-step forward from starting line
+                    if ((color == 'w' and start_rank == 6) or (color == 'b' and start_rank == 1)) and next_row + direction in (1, 8):
+                        two_square = start_file + str(next_row + direction)
+                        if two_square not in pieces:
+                            for promo in 'qrbn':
+                                candidate_moves.append(square + two_square + promo)
+                    if next_row + direction not in (1, 8):
+                        two_square = start_file + str(next_row + direction)
+                        if two_square not in pieces:
+                            candidate_moves.append(square + two_square)
+                # Capture diagonally
+                for delta in (-1, 1):
+                    cap_col = start_col + delta
+                    if 0 <= cap_col < 8:
+                        cap_square = chr(97 + cap_col) + str(next_row)
+                        if cap_square in pieces and pieces[cap_square][0] == opponent_color:
+                            if next_row in (1, 8):  # Promotion from capture
+                                for promo in 'qrbn':
+                                    candidate_moves.append(square + cap_square + promo)
+                            else:
+                                candidate_moves.append(square + cap_square)
+        elif piece_type == 'N':
+            for dr, dc in [(-2, -1), (-2, 1), (-1, -2), (-1, 2), (1, -2), (1, 2), (2, -1), (2, 1)]:
+                new_rank = start_rank + dr
+                new_col = start_col + dc
+                if 1 <= new_rank <= 8 and 0 <= new_col < 8:
+                    dest = chr(new_col + 97) + str(new_rank)
+                    if dest not in pieces or pieces[dest][0] != color:
+                        candidate_moves.append(square + dest)
+        elif piece_type == 'B':
+            for dr, dc in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                r, c = start_rank, start_col
+                while True:
+                    r += dr
+                    c += dc
+                    if r < 1 or r > 8 or c < 0 or c >= 8:
+                        break
+                    dest = chr(97 + c) + str(r)
+                    if dest in pieces:
+                        if pieces[dest][0] == opponent_color:
+                            candidate_moves.append(square + dest)
+                        break
+                    else:
+                        candidate_moves.append(square + dest)
+        elif piece_type == 'R':
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                r, c = start_rank, start_col
+                while True:
+                    r += dr
+                    c += dc
+                    if r < 1 or r > 8 or c < 0 or c >= 8:
+                        break
+                    dest = chr(97 + c) + str(r)
+                    if dest in pieces:
+                        if pieces[dest][0] == opponent_color:
+                            candidate_moves.append(square + dest)
+                        break
+                    else:
+                        candidate_moves.append(square + dest)
+        elif piece_type == 'Q':
+            for dr, dc in [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]:
+                r, c = start_rank, start_col
+                while True:
+                    r += dr
+                    c += dc
+                    if r < 1 or r > 8 or c < 0 or c >= 8:
+                        break
+                    dest = chr(97 + c) + str(r)
+                    if dest in pieces:
+                        if pieces[dest][0] == opponent_color:
+                            candidate_moves.append(square + dest)
+                        break
+                    else:
+                        candidate_moves.append(square + dest)
+        elif piece_type == 'K':
+            for dr, dc in [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]:
+                new_rank = start_rank + dr
+                new_col = start_col + dc
+                if 1 <= new_rank <= 8 and 0 <= new_col < 8:
+                    dest = chr(97 + new_col) + str(new_rank)
+                    if dest not in pieces or pieces[dest][0] != color:
+                        candidate_moves.append(square + dest)
+
+    # Filter candidate moves to only include legal moves
+    legal_moves = []
+    for move in candidate_moves:
+        start_sq = move[:2]
+        end_sq = move[2:4]  # Extract the end square regardless of promotion
+        if end_sq in pieces and pieces[end_sq][0] == color:
+            continue  # Skip moving to own piece
+        new_pieces = pieces.copy()
+        moved_piece = new_pieces[start_sq]
+        new_pieces[end_sq] = moved_piece
+        del new_pieces[start_sq]
+        if not is_king_in_check(new_pieces, color, opponent_color):
+            legal_moves.append(move)
+
+    # Check for immediate checkmate moves first
+    for move in legal_moves:
+        start_sq, end_sq = move[:2], move[2:4]
+        new_pieces = {k: v for k, v in pieces.items() if k != start_sq}
+        new_pieces[end_sq] = new_pieces.get(start_sq, pieces[start_sq])
+        del new_pieces[start_sq]  # Remove the start square if necessary
+        new_pieces[end_sq] = pieces[start_sq]
+        # Check for opponent checkmate
+        opp_king_pos = [sq for sq, pc in new_pieces.items() if pc[0] == opponent_color and pc[1] == 'K']
+        if not opp_king_pos:
+            return (move, memory)  # opponent's king is captured
+        opp_king = opp_king_pos[0]
+        if is_king_in_check(new_pieces, opponent_color, color):
+            # Checkmate if there is no escape
+            escape = False
+            for dr, dc in [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]:
+                kr = int(opp_king[1]) + dr
+                kc = ord(opp_king[0]) - 97 + dc
+                if 1 <= kr <= 8 and 0 <= kc < 8:
+                    new_king_pos = chr(kc + 97) + str(kr)
+                    if new_king_pos in new_pieces and new_pieces[new_king_pos][0] == opponent_color:
+                        continue  # can't move to own piece
+                    # Simulate move
+                    test_pieces = new_pieces.copy()
+                    if opp_king in test_pieces:  # Remove current king if present
+                        del test_pieces[opp_king]
+                    test_pieces[new_king_pos] = new_pieces[end_sq]
+                    if not is_king_in_check(test_pieces, opponent_color, color):
+                        escape = True
+                        break
+            if not escape:
+                return (move, memory)
+
+    # Select the best move based on material gain and checks
+    best_move = None
+    best_value = -float('inf')
+    for move in legal_moves:
+        start_sq = move[:2]
+        end_sq = move[2:4]
+        start_piece = pieces[start_sq]
+        end_piece = pieces.get(end_sq, None)
+        gain = 0
+        if end_piece and end_piece[0] == opponent_color:
+            gain = piece_values[end_piece[1]]  # capture value
+        if is_king_in_check({**pieces, start_sq: None, end_sq: start_piece}, color, opponent_color):
+            gain += 0.5  # bonus for giving check
+        if gain > best_value or (gain == best_value and best_move is None):
+            best_value = gain
+            best_move = move
+    return (best_move if best_move else legal_moves[0], memory)
+
+def is_king_in_check(pieces, color, opponent_color):
+    king_pos = [pos for pos, pc in pieces.items() if pc[0] == color and pc[1] == 'K']
+    if not king_pos:
+        return False
+    kr, kc = int(king_pos[0][1]), ord(king_pos[0][0]) - 97
+
+    # Check for rook/queen straight-line attacks
+    for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+        r, c = kr + dr, kc + dc
+        while 1 <= r <= 8 and 0 <= c < 8:
+            sq = chr(c + 97) + str(r)
+            if sq in pieces:
+                if pieces[sq][0] == opponent_color:
+                    if pieces[sq][1] in ['R', 'Q']:
+                        return True
+                break
+            r += dr
+            c += dc
+
+    # Check for bishop/queen diagonal attacks
+    for dr, dc in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+        r, c = kr + dr, kc + dc
+        while 1 <= r <= 8 and 0 <= c < 8:
+            sq = chr(c + 97) + str(r)
+            if sq in pieces:
+                if pieces[sq][0] == opponent_color:
+                    if pieces[sq][1] in ['B', 'Q']:
+                        return True
+                break
+            r += dr
+            c += dc
+
+    # Check for knight attacks
+    for dr, dc in [(-2, -1), (-2, 1), (-1, -2), (-1, 2), (1, -2), (1, 2), (2, -1), (2, 1)]:
+        r, c = kr + dr, kc + dc
+        if 1 <= r <= 8 and 0 <= c < 8:
+            sq = chr(c + 97) + str(r)
+            if sq in pieces and pieces[sq][0] == opponent_color and pieces[sq][1] == 'N':
+                return True
+
+    # Check for pawn attacks
+    for dc in (-1, 1):
+        r = kr + (-1 if color == 'w' else 1)
+        c = kc + dc
+        if 1 <= r <= 8 and 0 <= c < 8:
+            sq = chr(c + 97) + str(r)
+            if sq in pieces and pieces[sq][0] == opponent_color and pieces[sq][1] == 'P':
+                return True
+
+    return False
+```
+</code>

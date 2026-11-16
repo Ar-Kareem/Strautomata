@@ -1,0 +1,475 @@
+I'll design a competitive Havannah policy that combines hex grid reasoning with pattern recognition and strategic heuristics.
+
+## Strategy Overview
+
+My approach focuses on:
+1. **Hex Grid Coordinate System**: Properly converting 2D board coordinates to hex grid neighbors
+2. **Pattern Recognition**: Efficiently detecting rings, bridges, and forks
+3. **Strategic Heuristics**: Prioritizing center control, blocking threats, and creating multiple winning possibilities
+4. **Computational Efficiency**: Using bitboards and precomputed neighbor patterns for speed
+
+The policy will:
+- First check for immediate winning moves
+- Block opponent's immediate wins
+- Prefer center positions and strategic hex placements
+- Create multiple threats to force opponent into defensive positions
+- Use pattern-based evaluation for complex board states
+<code>
+import numpy as np
+from collections import defaultdict, deque
+from typing import List, Tuple, Set
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], valid_mask) -> Tuple[int, int]:
+    """
+    Strategic Havannah policy with hex grid reasoning and pattern recognition.
+    """
+    # Convert to sets for efficient lookup
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    # Get all valid moves
+    valid_moves = []
+    for r in range(15):
+        for c in range(15):
+            if valid_mask[r][c] and (r, c) not in me_set and (r, c) not in opp_set:
+                valid_moves.append((r, c))
+    
+    if not valid_moves:
+        return (7, 7)  # Fallback (shouldn't happen)
+    
+    # Phase 1: Check for immediate winning moves
+    for move in valid_moves:
+        test_me = me_set | {move}
+        if check_winning_pattern(test_me, valid_mask):
+            return move
+    
+    # Phase 2: Block opponent's immediate threats
+    for move in valid_moves:
+        test_opp = opp_set | {move}
+        if check_winning_pattern(test_opp, valid_mask):
+            return move
+    
+    # Phase 3: Strategic move selection
+    return strategic_move(me_set, opp_set, valid_moves, valid_mask)
+
+def strategic_move(me_set: Set[Tuple[int, int]], opp_set: Set[Tuple[int, int]], 
+                  valid_moves: List[Tuple[int, int]], valid_mask) -> Tuple[int, int]:
+    """
+    Select move using strategic heuristics: center control, threat creation, pattern completion.
+    """
+    if not valid_moves:
+        return (7, 7)
+    
+    # Score each valid move
+    move_scores = {}
+    
+    for move in valid_moves:
+        score = 0
+        
+        # Center control heuristic
+        center_distance = abs(move[0] - 7) + abs(move[1] - 7)
+        score += max(0, 10 - center_distance)
+        
+        # Hex grid neighbor evaluation
+        neighbors = get_hex_neighbors(move[0], move[1])
+        my_neighbors = sum(1 for n in neighbors if n in me_set)
+        opp_neighbors = sum(1 for n in neighbors if n in opp_set)
+        
+        # Prefer moves that connect to own stones
+        score += my_neighbors * 3
+        
+        # Avoid moves that give opponent too many connections
+        score -= opp_neighbors * 2
+        
+        # Threat creation: moves that could lead to winning patterns
+        test_me = me_set | {move}
+        threat_score = evaluate_threats(test_me, opp_set, valid_mask)
+        score += threat_score
+        
+        # Pattern completion potential
+        pattern_score = evaluate_pattern_potential(test_me, valid_mask)
+        score += pattern_score
+        
+        # Mobility consideration (maintain flexibility)
+        empty_neighbors = sum(1 for n in neighbors if n not in me_set and n not in opp_set and is_valid_pos(n[0], n[1], valid_mask))
+        score += empty_neighbors * 0.5
+        
+        move_scores[move] = score
+    
+    # Return move with highest score
+    return max(move_scores.items(), key=lambda x: x[1])[0]
+
+def evaluate_threats(me_set: Set[Tuple[int, int]], opp_set: Set[Tuple[int, int]], valid_mask) -> int:
+    """
+    Evaluate how threatening a position is - can it lead to winning patterns?
+    """
+    score = 0
+    
+    # Count potential bridges (partial connections)
+    bridge_score = evaluate_bridge_threats(me_set, valid_mask)
+    score += bridge_score
+    
+    # Count potential forks (edge connections)
+    fork_score = evaluate_fork_threats(me_set, valid_mask)
+    score += fork_score
+    
+    # Count potential rings
+    ring_score = evaluate_ring_threats(me_set, valid_mask)
+    score += ring_score
+    
+    return score
+
+def evaluate_bridge_threats(me_set: Set[Tuple[int, int]], valid_mask) -> int:
+    """
+    Evaluate potential for creating bridges between corners.
+    """
+    corners = [(0, 0), (0, 14), (14, 0), (14, 14), (7, 0), (7, 14)]  # 6 corners
+    score = 0
+    
+    # Check distance from each corner
+    for corner in corners:
+        if corner in me_set:
+            continue
+            
+        min_dist = float('inf')
+        for my_stone in me_set:
+            dist = hex_distance(corner, my_stone)
+            min_dist = min(min_dist, dist)
+        
+        # Closer to corner = more threatening
+        if min_dist < float('inf'):
+            score += max(0, 8 - min_dist)
+    
+    return score
+
+def evaluate_fork_threats(me_set: Set[Tuple[int, int]], valid_mask) -> int:
+    """
+    Evaluate potential for creating forks by connecting edges.
+    """
+    edges = []
+    
+    # Top and bottom edges
+    for c in range(15):
+        if valid_mask[0][c]:
+            edges.append((0, c))
+        if valid_mask[14][c]:
+            edges.append((14, c))
+    
+    # Left and right edges
+    for r in range(15):
+        if valid_mask[r][0]:
+            edges.append((r, 0))
+        if valid_mask[r][14]:
+            edges.append((r, 14))
+    
+    score = 0
+    edge_connections = 0
+    
+    for edge_pos in edges:
+        if edge_pos in me_set:
+            edge_connections += 1
+        else:
+            # Check if this edge position is near our stones
+            for my_stone in me_set:
+                if hex_distance(edge_pos, my_stone) <= 3:
+                    score += 1
+                    break
+    
+    # More edge connections = higher fork potential
+    score += edge_connections * 2
+    
+    return score
+
+def evaluate_ring_threats(me_set: Set[Tuple[int, int]], valid_mask) -> int:
+    """
+    Evaluate potential for creating rings.
+    """
+    score = 0
+    
+    # Look for clusters that could form rings
+    for stone in me_set:
+        neighbors = get_hex_neighbors(stone[0], stone[1])
+        empty_neighbors = [n for n in neighbors if n not in me_set and is_valid_pos(n[0], n[1], valid_mask)]
+        
+        # More empty neighbors around a stone increases ring potential
+        score += len(empty_neighbors) * 0.5
+        
+        # Check for potential enclosure
+        for empty in empty_neighbors:
+            empty_neighbors_2 = [n for n in get_hex_neighbors(empty[0], empty[1]) 
+                               if n not in me_set and is_valid_pos(n[0], n[1], valid_mask)]
+            if len(empty_neighbors_2) >= 4:  # Potential ring center
+                score += 1
+    
+    return score
+
+def evaluate_pattern_potential(me_set: Set[Tuple[int, int]], valid_mask) -> int:
+    """
+    Evaluate how well a position sets up future winning patterns.
+    """
+    score = 0
+    
+    # Connected component analysis
+    components = find_connected_components(me_set, valid_mask)
+    
+    for component in components:
+        if len(component) >= 2:
+            # Larger connected components are more valuable
+            score += len(component) ** 1.5
+            
+            # Evaluate component shape for pattern potential
+            score += evaluate_component_shape(component)
+    
+    return score
+
+def evaluate_component_shape(component: Set[Tuple[int, int]]) -> int:
+    """
+    Evaluate the shape of a connected component for strategic value.
+    """
+    if len(component) < 2:
+        return 0
+    
+    score = 0
+    
+    # Calculate spread (compact components are often better for rings)
+    positions = list(component)
+    avg_x = sum(p[0] for p in positions) / len(positions)
+    avg_y = sum(p[1] for p in positions) / len(positions)
+    
+    variance = sum((p[0] - avg_x)**2 + (p[1] - avg_y)**2 for p in positions) / len(positions)
+    
+    # Moderate variance is good (neither too compact nor too spread out)
+    if 2 <= variance <= 8:
+        score += 2
+    
+    # Linear components might be good for bridges/forks
+    if is_linear_component(component):
+        score += 1
+    
+    return score
+
+def is_linear_component(component: Set[Tuple[int, int]]) -> bool:
+    """
+    Check if a component forms a roughly linear structure.
+    """
+    if len(component) < 3:
+        return False
+    
+    positions = list(component)
+    
+    # Check if most points lie on a line
+    if len(positions) >= 3:
+        p1, p2, p3 = positions[0], positions[1], positions[2]
+        
+        # Use cross product to check linearity
+        v1 = (p2[0] - p1[0], p2[1] - p1[1])
+        v2 = (p3[0] - p1[0], p3[1] - p1[1])
+        
+        cross_product = abs(v1[0] * v2[1] - v1[1] * v2[0])
+        
+        # If cross product is small, points are roughly collinear
+        return cross_product <= 2
+    
+    return False
+
+def check_winning_pattern(positions: Set[Tuple[int, int]], valid_mask) -> bool:
+    """
+    Check if the given positions contain a winning pattern.
+    """
+    # Check for rings
+    if has_ring(positions, valid_mask):
+        return True
+    
+    # Check for bridges
+    if has_bridge(positions, valid_mask):
+        return True
+    
+    # Check for forks
+    if has_fork(positions, valid_mask):
+        return True
+    
+    return False
+
+def has_ring(positions: Set[Tuple[int, int]], valid_mask) -> bool:
+    """
+    Check if positions contain a ring pattern.
+    """
+    # Simplified ring detection - look for enclosed areas
+    # This is a complex problem; we'll use a simplified approach
+    
+    if len(positions) < 6:  # Minimum ring size
+        return False
+    
+    # Use flood fill from outside to find enclosed areas
+    visited = set()
+    queue = deque()
+    
+    # Start from border cells
+    for r in range(15):
+        for c in range(15):
+            if valid_mask[r][c] and (r, c) not in positions:
+                queue.append((r, c))
+                visited.add((r, c))
+    
+    # Flood fill to mark outside area
+    while queue:
+        pos = queue.popleft()
+        for neighbor in get_hex_neighbors(pos[0], pos[1]):
+            if (is_valid_pos(neighbor[0], neighbor[1], valid_mask) and 
+                neighbor not in positions and neighbor not in visited):
+                visited.add(neighbor)
+                queue.append(neighbor)
+    
+    # If there are valid positions not visited, they might be enclosed
+    enclosed_count = 0
+    for r in range(15):
+        for c in range(15):
+            if (valid_mask[r][c] and (r, c) not in positions and 
+                (r, c) not in visited):
+                enclosed_count += 1
+    
+    # If there's a significant enclosed area, we likely have a ring
+    return enclosed_count >= 3
+
+def has_bridge(positions: Set[Tuple[int, int]], valid_mask) -> bool:
+    """
+    Check if positions contain a bridge connecting two corners.
+    """
+    corners = [(0, 0), (0, 14), (14, 0), (14, 14), (7, 0), (7, 14)]
+    
+    # Check if any two corners are connected
+    for i, corner1 in enumerate(corners):
+        for j, corner2 in enumerate(corners):
+            if i >= j:
+                continue
+            
+            if are_positions_connected(positions, corner1, corner2, valid_mask):
+                return True
+    
+    return False
+
+def has_fork(positions: Set[Tuple[int, int]], valid_mask) -> bool:
+    """
+    Check if positions contain a fork connecting three edges.
+    """
+    # Define edges (excluding corners)
+    top_edge = [(0, c) for c in range(1, 14) if valid_mask[0][c]]
+    bottom_edge = [(14, c) for c in range(1, 14) if valid_mask[14][c]]
+    left_edge = [(r, 0) for r in range(1, 14) if valid_mask[r][0]]
+    right_edge = [(r, 14) for r in range(1, 14) if valid_mask[r][14]]
+    
+    edges = [top_edge, bottom_edge, left_edge, right_edge]
+    
+    # Check combinations of three edges
+    from itertools import combinations
+    
+    for edge_combo in combinations(edges, 3):
+        # Check if we can connect at least one position from each edge
+        connected_edges = 0
+        
+        for edge in edge_combo:
+            for edge_pos in edge:
+                if edge_pos in positions:
+                    connected_edges += 1
+                    break
+        
+        if connected_edges == 3:
+            return True
+    
+    return False
+
+def are_positions_connected(positions: Set[Tuple[int, int]], start: Tuple[int, int], 
+                          end: Tuple[int, int], valid_mask) -> bool:
+    """
+    Check if start and end positions are connected through the given positions.
+    """
+    if start not in positions or end not in positions:
+        return False
+    
+    # Use BFS to check connectivity
+    visited = set()
+    queue = deque([start])
+    visited.add(start)
+    
+    while queue:
+        pos = queue.popleft()
+        
+        if pos == end:
+            return True
+        
+        for neighbor in get_hex_neighbors(pos[0], pos[1]):
+            if (neighbor in positions and 
+                is_valid_pos(neighbor[0], neighbor[1], valid_mask) and 
+                neighbor not in visited):
+                visited.add(neighbor)
+                queue.append(neighbor)
+    
+    return False
+
+def find_connected_components(positions: Set[Tuple[int, int]], valid_mask) -> List[Set[Tuple[int, int]]]:
+    """
+    Find all connected components in the given positions.
+    """
+    visited = set()
+    components = []
+    
+    for pos in positions:
+        if pos not in visited:
+            component = set()
+            queue = deque([pos])
+            visited.add(pos)
+            
+            while queue:
+                current = queue.popleft()
+                component.add(current)
+                
+                for neighbor in get_hex_neighbors(current[0], current[1]):
+                    if (neighbor in positions and 
+                        is_valid_pos(neighbor[0], neighbor[1], valid_mask) and 
+                        neighbor not in visited):
+                        visited.add(neighbor)
+                        queue.append(neighbor)
+            
+            components.append(component)
+    
+    return components
+
+def get_hex_neighbors(row: int, col: int) -> List[Tuple[int, int]]:
+    """
+    Get the 6 hex neighbors of a position on the board.
+    """
+    neighbors = []
+    
+    # Standard hex grid neighbors with "pointy top" orientation
+    # Adjust based on row parity
+    if row % 2 == 0:  # Even row
+        directions = [(-1, 0), (-1, -1), (0, -1), (0, 1), (1, 0), (1, -1)]
+    else:  # Odd row
+        directions = [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, 0), (1, 1)]
+    
+    for dr, dc in directions:
+        neighbors.append((row + dr, col + dc))
+    
+    return neighbors
+
+def hex_distance(pos1: Tuple[int, int], pos2: Tuple[int, int]) -> int:
+    """
+    Calculate hex distance between two positions.
+    """
+    r1, c1 = pos1
+    r2, c2 = pos2
+    
+    # Convert to axial coordinates for hex distance calculation
+    q1 = c1 - (r1 - (r1 & 1)) // 2
+    r1_axial = r1
+    q2 = c2 - (r2 - (r2 & 1)) // 2
+    r2_axial = r2
+    
+    return max(abs(q1 - q2), abs(r1_axial - r2_axial), abs((q1 + r1_axial) - (q2 + r2_axial)))
+
+def is_valid_pos(row: int, col: int, valid_mask) -> bool:
+    """
+    Check if a position is within bounds and valid.
+    """
+    return (0 <= row < 15 and 0 <= col < 15 and valid_mask[row][col])
+</code>

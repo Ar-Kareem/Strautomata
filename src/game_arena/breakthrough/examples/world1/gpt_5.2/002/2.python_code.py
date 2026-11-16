@@ -1,0 +1,337 @@
+
+import time
+from typing import List, Tuple, Optional, Dict
+
+# Breakthrough policy with iterative-deepening alpha-beta negamax on bitboards.
+
+INF = 10**9
+WIN_SCORE = 10**8
+
+# Precompute row masks for fast "has reached goal row" checks.
+ROW_MASK = []
+for r in range(8):
+    m = 0
+    base = r * 8
+    for c in range(8):
+        m |= 1 << (base + c)
+    ROW_MASK.append(m)
+
+
+def _to_bb(pieces: List[Tuple[int, int]]) -> int:
+    bb = 0
+    for r, c in pieces:
+        bb |= 1 << (r * 8 + c)
+    return bb
+
+
+def _bits(bb: int):
+    # iterate indices of set bits
+    while bb:
+        lsb = bb & -bb
+        idx = (lsb.bit_length() - 1)
+        yield idx
+        bb ^= lsb
+
+
+def _idx_to_rc(idx: int) -> Tuple[int, int]:
+    return (idx // 8, idx % 8)
+
+
+def _rc_to_idx(r: int, c: int) -> int:
+    return r * 8 + c
+
+
+def _terminal_score(my_bb: int, opp_bb: int, dr: int, ply: int) -> Optional[int]:
+    """
+    Returns score if terminal, else None.
+    Score is from perspective of side to move represented by (my_bb, dr).
+    """
+    if my_bb == 0:
+        return -WIN_SCORE + ply
+    if opp_bb == 0:
+        return WIN_SCORE - ply
+
+    goal_row = 7 if dr == 1 else 0
+    home_row = 0 if dr == 1 else 7
+
+    # If current player already has a pawn on opponent home row => already won.
+    if my_bb & ROW_MASK[goal_row]:
+        return WIN_SCORE - ply
+
+    # If opponent has a pawn on our home row => we already lost.
+    if opp_bb & ROW_MASK[home_row]:
+        return -WIN_SCORE + ply
+
+    return None
+
+
+def _gen_moves(my_bb: int, opp_bb: int, dr: int):
+    """
+    Generate legal moves for side to move.
+    Returns list of (from_idx, to_idx, is_capture).
+    """
+    occ = my_bb | opp_bb
+    moves = []
+
+    for idx in _bits(my_bb):
+        r, c = divmod(idx, 8)
+        nr = r + dr
+        if not (0 <= nr <= 7):
+            continue
+
+        # Forward
+        fidx = nr * 8 + c
+        if not (occ & (1 << fidx)):
+            moves.append((idx, fidx, False))
+
+        # Diagonals (can be empty move or capture)
+        if c - 1 >= 0:
+            tidx = nr * 8 + (c - 1)
+            bit = 1 << tidx
+            if not (my_bb & bit):  # can't land on own piece
+                if opp_bb & bit:
+                    moves.append((idx, tidx, True))
+                elif not (occ & bit):
+                    moves.append((idx, tidx, False))
+
+        if c + 1 <= 7:
+            tidx = nr * 8 + (c + 1)
+            bit = 1 << tidx
+            if not (my_bb & bit):
+                if opp_bb & bit:
+                    moves.append((idx, tidx, True))
+                elif not (occ & bit):
+                    moves.append((idx, tidx, False))
+
+    return moves
+
+
+def _apply_move(my_bb: int, opp_bb: int, move):
+    """
+    Apply move (from_idx, to_idx, is_capture) for current player.
+    Returns (new_my_bb, new_opp_bb).
+    """
+    fr, to, is_cap = move
+    frb = 1 << fr
+    tob = 1 << to
+    my_bb2 = (my_bb ^ frb) | tob
+    opp_bb2 = opp_bb
+    if is_cap:
+        opp_bb2 = opp_bb & ~tob
+    return my_bb2, opp_bb2
+
+
+def _move_order_key(move, dr: int):
+    fr, to, is_cap = move
+    fr_r, fr_c = divmod(fr, 8)
+    to_r, to_c = divmod(to, 8)
+
+    # Prefer goal-reaching moves highest.
+    goal_row = 7 if dr == 1 else 0
+    reaches_goal = (to_r == goal_row)
+
+    # Advancement amount
+    adv = (to_r - fr_r) * dr  # should be 1 always, but keep general
+
+    # Centralization: prefer columns near center (3.5)
+    cent = -abs(to_c - 3.5)
+
+    # Captures are strong.
+    cap = 1 if is_cap else 0
+
+    # Slightly prefer diagonal moves (create threats / avoid blocks).
+    diag = 1 if (to_c != fr_c) else 0
+
+    # Compose key: larger is better
+    return (
+        1000 if reaches_goal else 0,
+        50 * cap,
+        10 * adv,
+        3 * diag,
+        cent,
+    )
+
+
+def _evaluate(my_bb: int, opp_bb: int, dr: int) -> int:
+    """
+    Heuristic evaluation from perspective of side to move (my_bb, dr).
+    """
+    # Material
+    my_n = my_bb.bit_count()
+    opp_n = opp_bb.bit_count()
+    score = (my_n - opp_n) * 120
+
+    # Advancement + centralization
+    adv_sum = 0
+    cent_sum = 0
+    my_positions = []
+    for idx in _bits(my_bb):
+        r, c = divmod(idx, 8)
+        my_positions.append((r, c))
+        prog = r if dr == 1 else (7 - r)
+        adv_sum += prog
+        cent_sum += -abs(c - 3.5)
+
+    opp_positions = []
+    for idx in _bits(opp_bb):
+        r, c = divmod(idx, 8)
+        opp_positions.append((r, c))
+
+    score += adv_sum * 12
+    score += int(cent_sum * 2)
+
+    # Passed pawn-ish bonus: no opponent piece ahead in same/adjacent file.
+    # Approximate (cheap but effective).
+    passed_bonus = 0
+    for r, c in my_positions:
+        blocked = False
+        for ro, co in opp_positions:
+            if abs(co - c) <= 1:
+                if (dr == 1 and ro > r) or (dr == -1 and ro < r):
+                    blocked = True
+                    break
+        if not blocked:
+            prog = r if dr == 1 else (7 - r)
+            passed_bonus += 30 + 3 * prog
+    score += passed_bonus
+
+    # Threats: available captures next move
+    cap_moves = 0
+    for fr, to, is_cap in _gen_moves(my_bb, opp_bb, dr):
+        if is_cap:
+            cap_moves += 1
+    score += cap_moves * 25
+
+    # Being threatened: opponent captures available (bad)
+    opp_dr = -dr
+    opp_caps = 0
+    for fr, to, is_cap in _gen_moves(opp_bb, my_bb, opp_dr):
+        if is_cap:
+            opp_caps += 1
+    score -= opp_caps * 22
+
+    # Mobility
+    my_mob = len(_gen_moves(my_bb, opp_bb, dr))
+    opp_mob = len(_gen_moves(opp_bb, my_bb, opp_dr))
+    score += (my_mob - opp_mob) * 3
+
+    return score
+
+
+class _Search:
+    def __init__(self, time_limit_s: float):
+        self.t_end = time.perf_counter() + time_limit_s
+        self.tt: Dict[Tuple[int, int, int, int], int] = {}
+        self.nodes = 0
+
+    def time_up(self) -> bool:
+        return time.perf_counter() >= self.t_end
+
+    def negamax(self, my_bb: int, opp_bb: int, dr: int, depth: int, alpha: int, beta: int, ply: int) -> int:
+        if self.time_up():
+            # Return a static eval if out of time
+            return _evaluate(my_bb, opp_bb, dr)
+
+        self.nodes += 1
+
+        term = _terminal_score(my_bb, opp_bb, dr, ply)
+        if term is not None:
+            return term
+        if depth <= 0:
+            return _evaluate(my_bb, opp_bb, dr)
+
+        key = (my_bb, opp_bb, dr, depth)
+        if key in self.tt:
+            return self.tt[key]
+
+        moves = _gen_moves(my_bb, opp_bb, dr)
+        if not moves:
+            # No legal moves: treat as losing (should be rare)
+            return -WIN_SCORE + ply
+
+        # Order moves
+        moves.sort(key=lambda m: _move_order_key(m, dr), reverse=True)
+
+        best = -INF
+        for mv in moves:
+            my2, opp2 = _apply_move(my_bb, opp_bb, mv)
+
+            # Next ply: swap roles (opponent to move)
+            val = -self.negamax(opp2, my2, -dr, depth - 1, -beta, -alpha, ply + 1)
+
+            if val > best:
+                best = val
+            if best > alpha:
+                alpha = best
+            if alpha >= beta:
+                break
+
+        self.tt[key] = best
+        return best
+
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    my_bb = _to_bb(me)
+    opp_bb = _to_bb(opp)
+
+    dr = 1 if color == 'w' else -1
+
+    # Generate moves; must return a legal one.
+    moves = _gen_moves(my_bb, opp_bb, dr)
+    if not moves:
+        # Should not happen in normal gameplay; no legal move exists.
+        # As a last resort, return something (but environment likely won't call here).
+        # We attempt to find any pseudo-move; if impossible, repeat a piece (still illegal).
+        # However, to avoid disqualification in realistic settings, assume non-terminal calls.
+        fr = me[0]
+        return (fr, fr)
+
+    # Immediate winning move (reach goal row)
+    goal_row = 7 if dr == 1 else 0
+    for mv in moves:
+        _, to, _ = mv
+        if (to // 8) == goal_row:
+            fr, to, _ = mv
+            return (_idx_to_rc(fr), _idx_to_rc(to))
+
+    # Iterative deepening alpha-beta
+    # Time budget: keep under 1s; allow some overhead.
+    search = _Search(time_limit_s=0.92)
+
+    # Good default fallback: best by simple ordering
+    moves.sort(key=lambda m: _move_order_key(m, dr), reverse=True)
+    best_move = moves[0]
+    best_val = -INF
+
+    depth = 1
+    # Increase depth while time remains. Depth 5 is often feasible; stop if time.
+    while depth <= 6 and not search.time_up():
+        local_best = None
+        local_best_val = -INF
+        alpha = -INF
+        beta = INF
+
+        # Search moves in current best-first order
+        for mv in moves:
+            if search.time_up():
+                break
+            my2, opp2 = _apply_move(my_bb, opp_bb, mv)
+            val = -search.negamax(opp2, my2, -dr, depth - 1, -beta, -alpha, 1)
+
+            if val > local_best_val:
+                local_best_val = val
+                local_best = mv
+            if val > alpha:
+                alpha = val
+
+        if local_best is not None:
+            best_move = local_best
+            best_val = local_best_val
+            # Reorder moves with PV move first for next iteration
+            moves.remove(best_move)
+            moves.insert(0, best_move)
+
+        depth += 1
+
+    fr, to, _ = best_move
+    return (_idx_to_rc(fr), _idx_to_rc(to))

@@ -1,0 +1,230 @@
+The strategy uses a minimax search with alpha-beta pruning to look ahead several moves. It evaluates board states based on material (men vs kings), advancement toward promotion, control of the center columns, and occupation of the back rank. The search depth adapts to the number of pieces remaining (deeper in endgames) and respects the mandatory capture rule by generating only capture moves when available. Moves are ordered to prioritize captures (especially multi-captures) to improve pruning efficiency.
+
+<code>
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    import time
+    start_time = time.time()
+    
+    # Initialize board: key=(r,c), value='b','bk','w','wk'
+    board = {}
+    opp_color = 'w' if color == 'b' else 'b'
+    for r, c in my_men:
+        board[(r, c)] = color
+    for r, c in my_kings:
+        board[(r, c)] = color + 'k'
+    for r, c in opp_men:
+        board[(r, c)] = opp_color
+    for r, c in opp_kings:
+        board[(r, c)] = opp_color + 'k'
+    
+    # Helpers
+    def is_valid(pos):
+        r, c = pos
+        return 0 <= r < 8 and 0 <= c < 8 and (r + c) % 2 == 1
+    
+    def get_dirs(piece_str):
+        is_king = piece_str.endswith('k')
+        is_black = piece_str.startswith('b')
+        if is_king:
+            return [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+        return [(-1, -1), (-1, 1)] if is_black else [(1, -1), (1, 1)]
+    
+    # Generate all capture sequences for a specific piece
+    def get_captures(pos, piece, bd):
+        who = piece[0]
+        is_king = piece.endswith('k')
+        results = []
+        
+        def dfs(cur_pos, cur_caps, cur_bd, is_k):
+            r, c = cur_pos
+            found_next = False
+            dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)] if is_k else get_dirs(who + ('k' if is_k else ''))
+            
+            for dr, dc in dirs:
+                mid = (r + dr, c + dc)
+                end = (r + 2*dr, c + 2*dc)
+                if not is_valid(end):
+                    continue
+                if mid not in cur_bd or end in cur_bd:
+                    continue
+                mid_piece = cur_bd[mid]
+                if mid_piece.startswith(who):
+                    continue
+                
+                # Execute jump
+                new_caps = cur_caps + [mid]
+                new_bd = cur_bd.copy()
+                del new_bd[mid]
+                del new_bd[cur_pos]
+                
+                # Promotion during capture sequence
+                new_is_k = is_k
+                if not is_k:
+                    if (who == 'b' and end[0] == 0) or (who == 'w' and end[0] == 7):
+                        new_is_k = True
+                
+                new_bd[end] = who + ('k' if new_is_k else '')
+                
+                if dfs(end, new_caps, new_bd, new_is_k):
+                    found_next = True
+                else:
+                    results.append((end, new_caps))
+                    found_next = True
+            return found_next
+        
+        dfs(pos, [], bd, is_king)
+        return results
+    
+    # Generate all legal moves for a player
+    def gen_moves(bd, who):
+        captures = []
+        non_captures = []
+        
+        for pos, piece in bd.items():
+            if not piece.startswith(who):
+                continue
+            
+            # Captures
+            caps = get_captures(pos, piece, bd)
+            for end_pos, cap_list in caps:
+                captures.append((pos, end_pos, cap_list))
+            
+            # Non-captures only if no captures exist for this piece (and globally will be filtered)
+            if not caps:
+                for dr, dc in get_dirs(piece):
+                    nr, nc = pos[0] + dr, pos[1] + dc
+                    np = (nr, nc)
+                    if is_valid(np) and np not in bd:
+                        non_captures.append((pos, np, []))
+        
+        # Mandatory capture rule
+        return captures if captures else non_captures
+    
+    # Apply move to board state
+    def apply_move(bd, move):
+        from_p, to_p, caps = move
+        new_bd = bd.copy()
+        piece = new_bd[from_p]
+        del new_bd[from_p]
+        
+        # Promotion on simple move
+        if not piece.endswith('k'):
+            who = piece[0]
+            if (who == 'b' and to_p[0] == 0) or (who == 'w' and to_p[0] == 7):
+                piece = who + 'k'
+        
+        new_bd[to_p] = piece
+        for cap in caps:
+            if cap in new_bd:
+                del new_bd[cap]
+        return new_bd
+    
+    # Evaluation function
+    def evaluate(bd):
+        score = 0
+        for pos, piece in bd.items():
+            is_mine = piece.startswith(color)
+            is_king = piece.endswith('k')
+            val = 300 if is_king else 100
+            r, c = pos
+            
+            if is_mine:
+                score += val
+                if not is_king:
+                    # Advancement bonus (closer to promotion)
+                    if color == 'w':
+                        score += r * 5
+                        if r == 7:
+                            score += 40
+                    else:
+                        score += (7 - r) * 5
+                        if r == 0:
+                            score += 40
+                # Center control
+                if c in [3, 4]:
+                    score += 10
+            else:
+                score -= val
+                if not is_king:
+                    if opp_color == 'w':
+                        score -= r * 5
+                    else:
+                        score -= (7 - r) * 5
+                if c in [3, 4]:
+                    score -= 10
+        return score
+    
+    # Minimax with alpha-beta
+    def minimax(bd, depth, alpha, beta, is_max, who):
+        if depth == 0:
+            return evaluate(bd)
+        
+        moves = gen_moves(bd, who)
+        if not moves:
+            return -10000 if is_max else 10000
+        
+        # Move ordering: captures first
+        moves.sort(key=lambda m: len(m[2]), reverse=True)
+        
+        next_who = opp_color if who == color else color
+        
+        if is_max:
+            max_eval = -99999
+            for m in moves:
+                new_bd = apply_move(bd, m)
+                eval = minimax(new_bd, depth - 1, alpha, beta, False, next_who)
+                max_eval = max(max_eval, eval)
+                alpha = max(alpha, eval)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = 99999
+            for m in moves:
+                new_bd = apply_move(bd, m)
+                eval = minimax(new_bd, depth - 1, alpha, beta, True, next_who)
+                min_eval = min(min_eval, eval)
+                beta = min(beta, eval)
+                if beta <= alpha:
+                    break
+            return min_eval
+    
+    # Get legal moves
+    moves = gen_moves(board, color)
+    if not moves:
+        return ((0, 0), (0, 0))  # Should not happen in valid game
+    
+    if len(moves) == 1:
+        return (moves[0][0], moves[0][1])
+    
+    # Adaptive depth based on piece count
+    n_pieces = len(board)
+    if n_pieces <= 6:
+        max_depth = 8
+    elif n_pieces <= 10:
+        max_depth = 6
+    else:
+        max_depth = 4
+    
+    # Iterative deepening with time limit
+    TIME_LIMIT = 0.9
+    best_move = moves[0]
+    
+    for depth in range(2, max_depth + 1):
+        if time.time() - start_time > TIME_LIMIT:
+            break
+        current_best = None
+        best_score = -99999
+        for m in moves:
+            new_bd = apply_move(board, m)
+            score = minimax(new_bd, depth - 1, -99999, 99999, False, opp_color)
+            if score > best_score:
+                best_score = score
+                current_best = m
+            if time.time() - start_time > TIME_LIMIT:
+                break
+        if current_best:
+            best_move = current_best
+    
+    return (best_move[0], best_move[1])
+</code>

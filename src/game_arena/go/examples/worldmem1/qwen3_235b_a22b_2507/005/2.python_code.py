@@ -1,0 +1,181 @@
+
+import numpy as np
+from typing import List, Tuple, Dict, Set
+
+# Helper: convert list of stones to a set for fast lookup
+def to_set(stones: List[Tuple[int, int]]) -> Set[Tuple[int, int]]:
+    return set(stones)
+
+# Helper: get all adjacent (orthogonal) points
+def neighbors(row: int, col: int) -> List[Tuple[int, int]]:
+    return [(row + dr, col + dc) for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]
+            if 1 <= row + dr <= 19 and 1 <= col + dc <= 19]
+
+# Count liberties of a group (using flood-fill)
+def count_liberties_and_group(board: Dict[Tuple[int,int], str], start: Tuple[int,int]) -> Tuple[int, Set[Tuple[int,int]]]:
+    color = board[start]
+    stack = [start]
+    group = set()
+    visited = set()
+    liberties = set()
+    
+    while stack:
+        r, c = stack.pop()
+        if (r, c) in visited:
+            continue
+        visited.add((r, c))
+        if board.get((r,c)) == color:
+            group.add((r,c))
+            for nr, nc in neighbors(r, c):
+                if (nr, nc) not in visited:
+                    stack.append((nr, nc))
+        elif board.get((nr, nc), None) is None:
+            liberties.add((r, c))
+    
+    # Actually check liberties from group positions
+    liberties = set()
+    for r, c in group:
+        for nr, nc in neighbors(r, c):
+            if (nr, nc) not in board:
+                liberties.add((nr, nc))
+    
+    return len(liberties), group
+
+# Determine if a move is legal (no suicide or ko), and check captures
+def is_legal_move(board: Dict[Tuple[int,int], str], row: int, col: int, color: str, prev_board: Dict = None) -> Tuple[bool, List[Tuple[int,int]]]:
+    if board.get((row, col)) is not None:
+        return False, []
+    
+    board_copy = board.copy()
+    board_copy[(row, col)] = color
+    opponent_color = 'B' if color == 'W' else 'W'
+    captured_stones = []
+    
+    # Check if any opponent groups are captured
+    for nr, nc in neighbors(row, col):
+        pos = (nr, nc)
+        if board_copy.get(pos) == opponent_color:
+            lib, grp = count_liberties_and_group(board_copy, pos)
+            if lib == 0:
+                captured_stones.extend(list(grp))
+    
+    # Remove captured stones
+    for stone in captured_stones:
+        del board_copy[stone]
+    
+    # Check own group liberty
+    lib, _ = count_liberties_and_group(board_copy, (row, col))
+    if lib == 0:
+        return False, []  # Suicide
+    
+    # Simple ko: if the move would recreate the previous board state (at least prevent immediate 1-stone reversal)
+    if prev_board is not None:
+        if board_copy == prev_board:
+            return False, []
+    
+    return True, captured_stones
+
+def policy(me: List[Tuple[int, int]], opponent: List[Tuple[int, int]], memory: dict) -> Tuple[Tuple[int, int], dict]:
+    # Reconstruct board state
+    board = {}
+    for r, c in me:
+        board[(r, c)] = 'M'  # me
+    for r, c in opponent:
+        board[(r, c)] = 'O'  # opponent
+    
+    my_color = 'M'
+    opponent_color = 'O'
+    
+    # Get previous state if exists
+    prev_board = memory.get('prev_board', {})
+    
+    # List of candidate moves
+    candidates = []
+    
+    # All empty positions
+    all_positions = [(r, c) for r in range(1, 20) for c in range(1, 20)]
+    empty_positions = [pos for pos in all_positions if pos not in board]
+    
+    # 1. Try captures: any move that captures opponent stones
+    for r, c in empty_positions:
+        legal, captured = is_legal_move(board, r, c, my_color, prev_board)
+        if legal and len(captured) > 0:
+            liberty_count_after = 999
+            # Estimate own group liberty after move
+            temp_board = board.copy()
+            temp_board[(r, c)] = my, my_color
+            for nr, nc in neighbors(r, c):
+                pos = (nr, nc)
+                if temp_board.get(pos) == my_color:
+                    lib, _ = count_liberties_and_group(temp_board, pos)
+                    liberty_count_after = min(liberty_count_after, lib)
+            score = len(captured)*10 - (9-liberty_count_after)  # prefer more captures and safety
+            candidates.append(((r, c), score, 'capture'))
+    
+    if candidates:
+        move = max(candidates, key=lambda x: x[1])[0]
+        # Save current board to memory for ko
+        memory['prev_board'] = board
+        return move, memory
+    
+    # 2. Protect own group in atari (1 liberty left)
+    for my_stone in me:
+        lib, group = count_liberties_and_group(board, my_stone)
+        if lib == 1:
+            # Find the single liberty
+            for r, c in group:
+                for nr, nc in neighbors(r, c):
+                    if (nr, nc) not in board:
+                        legal, _ = is_legal_move(board, nr, nc, my_color, prev_board)
+                        if legal:
+                            candidates.append(((nr, nc), 8, 'save'))
+    
+    if candidates:
+        move = max(candidates, key=lambda x: x[1])[0]
+        memory['prev_board'] = board
+        return move, memory
+
+    # 3. Prevent opponent from capturing us by playing in shared liberty (ladders/light defense)
+    # 4. Prefer moves near existing stones (influence)
+    influence_scores = {}
+    for r, c in empty_positions:
+        score = 0
+        near_me = 0
+        near_opponent = 0
+        for nr, nc in neighbors(r, c):
+            if (nr, nc) in me:
+                near_me += 1
+            elif (nr, nc) in opponent:
+                near_opponent += 1
+        # Prefer near own stones, avoid being surrounded by opponent
+        score += near_me * 2
+        score -= near_opponent * 1
+
+        # Positional preference: corners and sides > center
+        if r in [1, 19] or c in [1, 19]:
+            score += 1
+        if r in [1, 4, 16, 19] and c in [1, 4, 16, 19]:
+            score += 1  # corner preference
+        elif r in [1, 19] or c in [1, 19]:
+            score += 0.5
+
+        influence_scores[(r, c)] = score
+
+    # Filter legal moves and collect
+    for r, c in empty_positions:
+        legal, _ = is_legal_move(board, r, c, my_color, prev_board)
+        if legal:
+            candidates.append(((r, c), influence_scores.get((r, c), 0), 'influence'))
+
+    # 5. If still no candidates, pass
+    if not candidates:
+        memory['prev_board'] = board
+        return (0, 0), memory
+
+    # Choose best influence move
+    best_candidate = max(candidates, key=lambda x: x[1])
+    move = best_candidate[0]
+
+    # Update memory
+    memory['prev_board'] = board
+    return move, memory

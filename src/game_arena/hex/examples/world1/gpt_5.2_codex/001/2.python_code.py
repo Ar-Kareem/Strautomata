@@ -1,0 +1,113 @@
+
+import math
+from collections import deque
+from typing import List, Tuple, Set
+
+N = 11
+
+def neighbors(r: int, c: int):
+    # Hex neighbors: all 8 except (r-1,c-1) and (r+1,c+1)
+    dirs = [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, 0), (1, -1)]
+    for dr, dc in dirs:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < N and 0 <= nc < N:
+            yield nr, nc
+
+def shortest_path_cost(color: str, my_set: Set[Tuple[int,int]], opp_set: Set[Tuple[int,int]]) -> int:
+    INF = 10**9
+    dist = [[INF for _ in range(N)] for _ in range(N)]
+    dq = deque()
+
+    def weight(cell):
+        if cell in opp_set:
+            return None
+        if cell in my_set:
+            return 0
+        return 1
+
+    # Initialize from starting edge
+    if color == 'b':  # top to bottom
+        for c in range(N):
+            w = weight((0, c))
+            if w is None: 
+                continue
+            dist[0][c] = w
+            if w == 0:
+                dq.appendleft((0, c))
+            else:
+                dq.append((0, c))
+    else:  # white: left to right
+        for r in range(N):
+            w = weight((r, 0))
+            if w is None:
+                continue
+            dist[r][0] = w
+            if w == 0:
+                dq.appendleft((r, 0))
+            else:
+                dq.append((r, 0))
+
+    target_reached = set()
+    while dq:
+        r, c = dq.popleft()
+        d = dist[r][c]
+
+        if color == 'b' and r == N-1:
+            return d
+        if color == 'w' and c == N-1:
+            return d
+
+        for nr, nc in neighbors(r, c):
+            w = weight((nr, nc))
+            if w is None:
+                continue
+            nd = d + w
+            if nd < dist[nr][nc]:
+                dist[nr][nc] = nd
+                if w == 0:
+                    dq.appendleft((nr, nc))
+                else:
+                    dq.append((nr, nc))
+    return INF
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[int, int]:
+    me_set = set(me)
+    opp_set = set(opp)
+    all_occupied = me_set | opp_set
+
+    empties = [(r, c) for r in range(N) for c in range(N) if (r, c) not in all_occupied]
+    if not empties:
+        return (0, 0)  # fallback (should never happen)
+
+    opp_color = 'w' if color == 'b' else 'b'
+    opp_current_cost = shortest_path_cost(opp_color, opp_set, me_set)
+
+    best_move = None
+    best_score = -1e9
+
+    center = (N - 1) / 2.0
+
+    for cell in empties:
+        r, c = cell
+        me2 = me_set | {cell}
+
+        my_cost = shortest_path_cost(color, me2, opp_set)
+        if my_cost == 0:
+            return cell  # immediate win
+
+        opp_cost = shortest_path_cost(opp_color, opp_set, me2)
+
+        # Heuristic score: block opponent and improve self
+        score = (opp_cost - opp_current_cost) * 2 - my_cost
+
+        # small center bias
+        dist_center = abs(r - center) + abs(c - center)
+        score -= 0.01 * dist_center
+
+        if score > best_score:
+            best_score = score
+            best_move = cell
+
+    if best_move is None:
+        best_move = empties[0]
+    return best_move

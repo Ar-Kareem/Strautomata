@@ -1,0 +1,126 @@
+**Strategy Overview**
+
+The policy searches all legal moves for the current player (value `1`).  
+For each possible move it simulates the resulting board and evaluates it by:
+
+1. **Connected components** – after the move we count how many separate groups of our pieces exist (8‑direction connectivity). Fewer components are always better because the goal of Lines of Action is to connect all pieces.
+2. **Captures** – if two moves lead to the same number of components, we prefer the one that captures an opponent piece.
+3. **Distance to opponent** – as a final tie‑breaker we choose the move that brings the moved piece closest to the opponent’s centre, encouraging aggressive play.
+
+The move with the best (lowest) score is returned as a string `"from_row,from_col:to_row,to_col"`.  
+The implementation is fully self‑contained, runs easily within the 1 s time limit, and always produces a legal move.
+
+```python
+<code>
+import copy
+from collections import deque
+from typing import List, Tuple
+
+DIRS = [(-1, -1), (-1, 0), (-1, 1),
+        (0, -1),          (0, 1),
+        (1, -1),  (1, 0), (1, 1)]
+
+def in_board(r: int, c: int) -> bool:
+    return 0 <= r < 8 and 0 <= c < 8
+
+def count_line_pieces(board: List[List[int]], r: int, c: int, dr: int, dc: int) -> int:
+    """Count all pieces (both colours) on the whole line defined by direction (dr, dc)."""
+    cnt = 0
+    # walk in negative direction
+    rr, cc = r - dr, c - dc
+    while in_board(rr, cc):
+        if board[rr][cc] != 0:
+            cnt += 1
+        rr -= dr
+        cc -= dc
+    # walk in positive direction (including the start square)
+    rr, cc = r, c
+    while in_board(rr, cc):
+        if board[rr][cc] != 0:
+            cnt += 1
+        rr += dr
+        cc += dc
+    return cnt
+
+def generate_moves(board: List[List[int]]) -> List[Tuple[int, int, int, int, bool]]:
+    """Return list of (r0,c0,r1,c1,capture) for all legal moves of player 1."""
+    moves = []
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] != 1:
+                continue
+            for dr, dc in DIRS:
+                line_len = count_line_pieces(board, r, c, dr, dc)
+                if line_len == 0:
+                    continue
+                tr, tc = r + dr * line_len, c + dc * line_len
+                if not in_board(tr, tc):
+                    continue
+                # destination must not contain our own piece
+                if board[tr][tc] == 1:
+                    continue
+                # check path for opponent pieces
+                blocked = False
+                rr, cc = r + dr, c + dc
+                for _ in range(line_len - 1):
+                    if board[rr][cc] == -1:   # cannot jump over opponent
+                        blocked = True
+                        break
+                    rr += dr
+                    cc += dc
+                if blocked:
+                    continue
+                capture = board[tr][tc] == -1
+                moves.append((r, c, tr, tc, capture))
+    return moves
+
+def connected_components(board: List[List[int]]) -> int:
+    """Count 8‑connected components of our pieces (value 1)."""
+    visited = [[False]*8 for _ in range(8)]
+    comps = 0
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == 1 and not visited[r][c]:
+                comps += 1
+                # BFS
+                q = deque([(r, c)])
+                visited[r][c] = True
+                while q:
+                    cr, cc = q.popleft()
+                    for dr, dc in DIRS:
+                        nr, nc = cr + dr, cc + dc
+                        if in_board(nr, nc) and board[nr][nc] == 1 and not visited[nr][nc]:
+                            visited[nr][nc] = True
+                            q.append((nr, nc))
+    return comps
+
+def opponent_center_distance(r: int, c: int) -> int:
+    """Manhattan distance to board centre (3.5,3.5) – used as tie‑breaker."""
+    return abs(r - 3.5) + abs(c - 3.5)
+
+def policy(board: List[List[int]]) -> str:
+    """Select the best legal LoA move for player 1."""
+    moves = generate_moves(board)
+    if not moves:
+        # Should never happen in a legal LoA position, but return a dummy move
+        return "0,0:0,0"
+
+    best_score = (float('inf'), False, float('inf'))  # (components, -capture, distance)
+    best_move = moves[0]
+
+    for r0, c0, r1, c1, capture in moves:
+        # simulate move
+        new_board = copy.deepcopy(board)
+        new_board[r0][c0] = 0
+        new_board[r1][c1] = 1
+        comps = connected_components(new_board)
+        # lower components better, capture preferred, distance to centre smaller better
+        score = (comps, not capture, opponent_center_distance(r1, c1))
+        if score < best_score:
+            best_score = score
+            best_move = (r0, c0, r1, c1)
+
+    r0, c0, r1, c1 = best_move
+    return f"{r0},{c0}:{r1},{c1}"
+</code>
+```

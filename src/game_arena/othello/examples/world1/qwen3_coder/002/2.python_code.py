@@ -1,0 +1,248 @@
+
+import numpy as np
+from typing import Tuple, List
+
+# Board weights for positional evaluation
+BOARD_WEIGHTS = np.array([
+    [ 30, -12,  11,   8,   8,  11, -12,  30],
+    [-12, -15,  -5,  -5,  -5,  -5, -15, -12],
+    [ 11,  -5,   1,   1,   1,   1,  -5,  11],
+    [  8,  -5,   1,   0,   0,   1,  -5,   8],
+    [  8,  -5,   1,   0,   0,   1,  -5,   8],
+    [ 11,  -5,   1,   1,   1,   1,  -5,  11],
+    [-12, -15,  -5,  -5,  -5,  -5, -15, -12],
+    [ 30, -12,  11,   8,   8,  11, -12,  30]
+])
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    """
+    Othello policy that evaluates moves based on position, mobility, and stability.
+    """
+    # Find all legal moves
+    legal_moves = get_legal_moves(you, opponent)
+    
+    # If no legal moves, pass
+    if not legal_moves:
+        return "pass"
+    
+    # If only one move, return it
+    if len(legal_moves) == 1:
+        r, c = legal_moves[0]
+        return coords_to_move(r, c)
+    
+    # Evaluate all legal moves using minimax with limited depth
+    best_move = None
+    best_score = float('-inf')
+    
+    # Order moves for better alpha-beta pruning
+    ordered_moves = order_moves(legal_moves, you, opponent)
+    
+    for r, c in ordered_moves:
+        # Apply move
+        new_you, new_opponent = apply_move(you.copy(), opponent.copy(), r, c)
+        
+        # Evaluate the position
+        score = minimax(new_opponent, new_you, 3, float('-inf'), float('inf'), False)
+        
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+    
+    if best_move is not None:
+        r, c = best_move
+        return coords_to_move(r, c)
+    else:
+        # Fallback to first legal move
+        r, c = legal_moves[0]
+        return coords_to_move(r, c)
+
+def coords_to_move(r: int, c: int) -> str:
+    """Convert coordinates to move string like 'd3'."""
+    return chr(ord('a') + c) + str(r + 1)
+
+def get_legal_moves(you: np.ndarray, opponent: np.ndarray) -> List[Tuple[int, int]]:
+    """Get all legal moves for the current player."""
+    legal_moves = []
+    for r in range(8):
+        for c in range(8):
+            if is_legal_move(you, opponent, r, c):
+                legal_moves.append((r, c))
+    return legal_moves
+
+def is_legal_move(you: np.ndarray, opponent: np.ndarray, r: int, c: int) -> bool:
+    """Check if placing a disc at (r, c) is legal."""
+    # Position must be empty
+    if you[r][c] == 1 or opponent[r][c] == 1:
+        return False
+    
+    # Check all 8 directions
+    directions = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+    for dr, dc in directions:
+        if is_valid_direction(you, opponent, r, c, dr, dc):
+            return True
+    
+    return False
+
+def is_valid_direction(you: np.ndarray, opponent: np.ndarray, r: int, c: int, dr: int, dc: int) -> bool:
+    """Check if there's a valid bracket in direction (dr, dc)."""
+    r, c = r + dr, c + dc
+    found_opponent = False
+    
+    while 0 <= r < 8 and 0 <= c < 8:
+        if opponent[r][c] == 1:
+            found_opponent = True
+            r, c = r + dr, c + dc
+        elif you[r][c] == 1:
+            return found_opponent
+        else:
+            break
+    
+    return False
+
+def apply_move(you: np.ndarray, opponent: np.ndarray, r: int, c: int) -> Tuple[np.ndarray, np.ndarray]:
+    """Apply a move and return the new board state."""
+    you = you.copy()
+    opponent = opponent.copy()
+    
+    # Place the new disc
+    you[r][c] = 1
+    
+    # Flip opponent discs in all valid directions
+    directions = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+    for dr, dc in directions:
+        if is_valid_direction(you, opponent, r, c, dr, dc):
+            flip_discs(you, opponent, r, c, dr, dc)
+    
+    return you, opponent
+
+def flip_discs(you: np.ndarray, opponent: np.ndarray, r: int, c: int, dr: int, dc: int):
+    """Flip opponent discs in a specific direction."""
+    r, c = r + dr, c + dc
+    to_flip = []
+    
+    while 0 <= r < 8 and 0 <= c < 8 and opponent[r][c] == 1:
+        to_flip.append((r, c))
+        r, c = r + dr, c + dc
+    
+    # If we found our disc at the end, flip all in between
+    if 0 <= r < 8 and 0 <= c < 8 and you[r][c] == 1:
+        for fr, fc in to_flip:
+            opponent[fr][fc] = 0
+            you[fr][fc] = 1
+
+def minimax(you: np.ndarray, opponent: np.ndarray, depth: int, alpha: float, beta: float, maximizing: bool) -> float:
+    """Minimax with alpha-beta pruning."""
+    # Terminal condition or depth limit
+    if depth == 0:
+        return evaluate_position(you, opponent)
+    
+    if maximizing:
+        legal_moves = get_legal_moves(you, opponent)
+        if not legal_moves:
+            # Check if game is over
+            opponent_moves = get_legal_moves(opponent, you)
+            if not opponent_moves:
+                # Game over
+                return evaluate_terminal(you, opponent)
+            else:
+                # Pass
+                return -minimax(opponent, you, depth, -beta, -alpha, False)
+        
+        max_eval = float('-inf')
+        ordered_moves = order_moves(legal_moves, you, opponent)
+        
+        for r, c in ordered_moves:
+            new_you, new_opponent = apply_move(you.copy(), opponent.copy(), r, c)
+            eval_score = -minimax(new_opponent, new_you, depth - 1, -beta, -alpha, False)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        
+        return max_eval
+    else:
+        legal_moves = get_legal_moves(you, opponent)
+        if not legal_moves:
+            # Check if game is over
+            opponent_moves = get_legal_moves(opponent, you)
+            if not opponent_moves:
+                # Game over
+                return evaluate_terminal(opponent, you)  # Note: switched parameters for proper evaluation
+            else:
+                # Pass
+                return minimax(opponent, you, depth, alpha, beta, True)
+        
+        min_eval = float('inf')
+        ordered_moves = order_moves(legal_moves, you, opponent)
+        
+        for r, c in ordered_moves:
+            new_you, new_opponent = apply_move(you.copy(), opponent.copy(), r, c)
+            eval_score = -minimax(new_opponent, new_you, depth - 1, -beta, -alpha, True)
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        
+        return min_eval
+
+def order_moves(moves: List[Tuple[int, int]], you: np.ndarray, opponent: np.ndarray) -> List[Tuple[int, int]]:
+    """Order moves to improve alpha-beta pruning efficiency."""
+    scored_moves = []
+    for r, c in moves:
+        # Prioritize corner moves, then evaluate with a simple heuristic
+        if (r, c) in [(0, 0), (0, 7), (7, 0), (7, 7)]:
+            scored_moves.append((float('inf'), r, c))
+        else:
+            # Apply move and evaluate
+            new_you, new_opponent = apply_move(you.copy(), opponent.copy(), r, c)
+            score = evaluate_position(new_you, new_opponent)
+            scored_moves.append((score, r, c))
+    
+    # Sort by score descending
+    scored_moves.sort(reverse=True)
+    return [(r, c) for _, r, c in scored_moves]
+
+def evaluate_position(you: np.ndarray, opponent: np.ndarray) -> float:
+    """Evaluate the board position."""
+    # Weighted position score
+    my_score = np.sum(you * BOARD_WEIGHTS)
+    opp_score = np.sum(opponent * BOARD_WEIGHTS)
+    position_score = my_score - opp_score
+    
+    # Mobility score
+    my_moves = len(get_legal_moves(you, opponent))
+    opp_moves = len(get_legal_moves(opponent, you))
+    mobility_score = my_moves - opp_moves
+    
+    # Disc count difference
+    my_discs = np.sum(you)
+    opp_discs = np.sum(opponent)
+    disc_score = my_discs - opp_discs
+    
+    # Corner occupancy
+    corners = [(0, 0), (0, 7), (7, 0), (7, 7)]
+    my_corners = sum(you[r][c] for r, c in corners)
+    opp_corners = sum(opponent[r][c] for r, c in corners)
+    corner_score = 20 * (my_corners - opp_corners)
+    
+    # Combine scores with weights
+    total_score = (
+        0.4 * position_score +
+        0.1 * mobility_score * 10 +
+        0.3 * disc_score +
+        0.2 * corner_score
+    )
+    
+    return total_score
+
+def evaluate_terminal(you: np.ndarray, opponent: np.ndarray) -> float:
+    """Evaluate terminal position (game over)."""
+    my_discs = np.sum(you)
+    opp_discs = np.sum(opponent)
+    
+    if my_discs > opp_discs:
+        return 10000
+    elif my_discs < opp_discs:
+        return -10000
+    else:
+        return 0

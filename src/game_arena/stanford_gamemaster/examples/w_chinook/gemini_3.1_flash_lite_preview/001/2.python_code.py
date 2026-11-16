@@ -1,0 +1,46 @@
+
+def policy(state: list[list[object]], role: str) -> str:
+    cells = {}
+    for fact in state:
+        if fact[0] == "cell":
+            cells[(fact[1], int(fact[2]))] = fact[3]
+
+    rows = ['a', 'b', 'c', 'd']
+    row_idx = {r: i for i, r in enumerate(rows)}
+    
+    def get_cell(c, r):
+        # Wrap around: columns a-d (4), rows 1-8
+        c_mapped = rows[row_idx[c] % 4]
+        r_mapped = ((r - 1) % 8) + 1
+        return cells.get((c_mapped, r_mapped), 'b')
+
+    legal_moves = []
+    
+    # Directions: Red (up: +1 row index), Blue (down: -1 row index)
+    direction = 1 if role == "red" else -1
+    
+    for (c, r), দখলে in cells.items():
+        if দখলে == role:
+            # Check moves
+            for dc in [-1, 1]:
+                dr = direction
+                nc, nr = rows[(row_idx[c] + dc) % 4], ((r + dr - 1) % 8) + 1
+                if get_cell(nc, nr) == 'b':
+                    legal_moves.append(f"move({c},{r},{nc},{nr})")
+                
+                # Check jumps
+                nnr = ((nr + dr - 1) % 8) + 1
+                nnc = rows[(row_idx[nc] + dc) % 4]
+                if get_cell(nc, nr) == role and get_cell(nnc, nnr) == 'b':
+                    legal_moves.append(f"jump({c},{r},{nc},{nr},{nnc},{nnr})")
+
+    # Heuristic: Prefer jumps over moves, prioritize forward movement
+    if not legal_moves:
+        return "noop"
+        
+    # Simple strategy: prioritize jumps, then moves that advance rows
+    jumps = [m for m in legal_moves if m.startswith('jump')]
+    if jumps:
+        return jumps[0]
+        
+    return legal_moves[0]

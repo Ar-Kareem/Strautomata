@@ -1,0 +1,108 @@
+
+import numpy as np
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    # Convert inputs to sets for O(1) lookup
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    # Board dimensions (assuming 15x15 based on context)
+    N = 15
+    CENTER = (7, 7)  # The ideal center of a 15x15 board
+    
+    # Helper to get valid neighbors on a hex grid
+    def get_neighbors(r, c):
+        # Even rows (0, 2, 4...) have neighbors (r, c-1), (r, c+1), (r-1, c), (r-1, c+1), (r+1, c), (r+1, c+1)
+        # Odd rows (1, 3, 5...) have neighbors (r, c-1), (r, c+1), (r-1, c-1), (r-1, c), (r+1, c-1), (r+1, c)
+        if r % 2 == 0:
+            candidates = [
+                (r, c-1), (r, c+1),
+                (r-1, c), (r-1, c+1),
+                (r+1, c), (r+1, c+1)
+            ]
+        else:
+            candidates = [
+                (r, c-1), (r, c+1),
+                (r-1, c-1), (r-1, c),
+                (r+1, c-1), (r+1, c)
+            ]
+        
+        valid_neighbors = []
+        for nr, nc in candidates:
+            if 0 <= nr < N and 0 <= nc < N and valid_mask[nr][nc]:
+                valid_neighbors.append((nr, nc))
+        return valid_neighbors
+
+    # 1. If board is empty, play center
+    if not me and not opp:
+        return CENTER
+
+    # Heuristic evaluation of a candidate move
+    def evaluate_move(move):
+        r, c = move
+        
+        # Score 1: Distance to center (Manhattan-ish approximation on hex grid)
+        # We want to be central, but if center is taken, expand outwards strategically
+        dist_score = -((r - CENTER[0])**2 + (c - CENTER[1])**2) * 0.1
+        
+        # Score 2: Local Connectivity (how many potential neighbors are friendly/empty)
+        # This encourages forming clusters
+        connectivity_score = 0
+        neighbors = get_neighbors(r, c)
+        for nr, nc in neighbors:
+            if (nr, nc) in me_set:
+                connectivity_score += 5  # Connect to own stone
+            elif (nr, nc) not in opp_set:
+                connectivity_score += 1  # Connect to empty space
+        
+        # Score 3: Blocking (how many neighbors are opponents)
+        # Disourage moves completely surrounded by opponents, but use it to block bridges
+        block_score = 0
+        for nr, nc in neighbors:
+            if (nr, nc) in opp_set:
+                block_score += 2
+        
+        # Score 4: Expansion (distance from existing stones)
+        # Encourage moving away from the dense cluster to build bridges/forks
+        expansion_score = 0
+        if me:
+            min_dist = min((r - mr)**2 + (c - mc)**2 for mr, mc in me_set)
+            expansion_score = min_dist * 0.2
+        
+        return dist_score + connectivity_score + block_score + expansion_score
+
+    # Generate candidate moves
+    candidates = set()
+    
+    # 1. Look at neighbors of existing stones (standard expansion)
+    for r, c in me_set:
+        for neighbor in get_neighbors(r, c):
+            if neighbor not in me_set and neighbor not in opp_set:
+                candidates.add(neighbor)
+    
+    # 2. If no candidates (or just starting), scan valid empty spots
+    # Optimization: If few stones, prioritize center area
+    if len(candidates) < 5:
+        for r in range(N):
+            for c in range(N):
+                if valid_mask[r][c] and (r, c) not in me_set and (r, c) not in opp_set:
+                    candidates.add((r, c))
+
+    # Evaluate all candidates
+    best_move = None
+    best_score = -float('inf')
+    
+    # If we have no moves (shouldn't happen in valid game), return a random valid spot as fallback
+    if not candidates:
+        for r in range(N):
+            for c in range(N):
+                if valid_mask[r][c]:
+                    return (r, c)
+
+    for move in candidates:
+        score = evaluate_move(move)
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return best_move

@@ -1,0 +1,146 @@
+
+import sys
+from typing import List, Tuple, Set
+
+# Directions: (drow, dcol)
+BLACK_FORWARD = [(-1, -1), (-1, 1)]      # black moves to lower rows
+WHITE_FORWARD = [(1, -1), (1, 1)]        # white moves to higher rows
+ALL_DIRECTIONS = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+def is_dark(row: int, col: int) -> bool:
+    return (row + col) % 2 == 1
+
+def opponent_color(color: str) -> str:
+    return 'w' if color == 'b' else 'b'
+
+def promotion_row(color: str) -> int:
+    return 0 if color == 'b' else 7
+
+def forward_dirs(color: str) -> List[Tuple[int, int]]:
+    return BLACK_FORWARD if color == 'b' else WHITE_FORWARD
+
+def legal_simple_moves(pos: Tuple[int, int],
+                       is_king: bool,
+                       my_set: Set[Tuple[int, int]],
+                       occ_set: Set[Tuple[int, int]],
+                       color: str) -> List[Tuple[int, int]]:
+    """Return list of destination squares for a single non‑capture move."""
+    dirs = ALL_DIRECTIONS if is_king else forward_dirs(color)
+    res = []
+    r, c = pos
+    for dr, dc in dirs:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < 8 and 0 <= nc < 8 and is_dark(nr, nc):
+            if (nr, nc) not in occ_set:
+                res.append((nr, nc))
+    return res
+
+def legal_captures(pos: Tuple[int, int],
+                   is_king: bool,
+                   my_set: Set[Tuple[int, int]],
+                   opp_set: Set[Tuple[int, int]],
+                   occ_set: Set[Tuple[int, int]],
+                   color: str) -> List[Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]]:
+    """
+    Return all capture sequences starting from `pos`.
+    Each element is (path, captured_squares) where
+    path[0] == pos and path[-1] is the final landing square.
+    """
+    dirs = ALL_DIRECTIONS if is_king else forward_dirs(color)
+    results = []
+
+    def dfs(cur_pos, cur_is_king, cur_opp, cur_path, cur_capt):
+        moved = False
+        r, c = cur_pos
+        for dr, dc in dirs:
+            mid_r, mid_c = r + dr, c + dc          # square with opponent piece
+            land_r, land_c = r + 2 * dr, c + 2 * dc  # landing square
+            if not (0 <= mid_r < 8 and 0 <= mid_c < 8 and
+                    0 <= land_r < 8 and 0 <= land_c < 8):
+                continue
+            if not is_dark(land_r, land_c):
+                continue
+            if (mid_r, mid_c) not in cur_opp:
+                continue
+            if (land_r, land_c) in occ_set or (land_r, land_c) in cur_path:
+                continue  # cannot land on occupied square or repeat a square
+
+            # Perform the capture
+            new_opp = set(cur_opp)
+            new_opp.remove((mid_r, mid_c))
+            new_path = cur_path + [(land_r, land_c)]
+            new_capt = cur_capt + [(mid_r, mid_c)]
+
+            # Check promotion after landing
+            after_king = cur_is_king or (land_r == promotion_row(color))
+
+            # Re‑compute occupied set for deeper recursion
+            new_occ = occ_set - {pos} | {land_r, land_c}
+            # Continue searching from the new square
+            dfs((land_r, land_c), after_king, new_opp, new_path, new_capt)
+            moved = True
+
+        if not moved and cur_capt:
+            # No further captures – store the completed sequence
+            results.append((cur_path, cur_capt))
+
+    # Initial call
+    dfs(pos, is_king, opp_set, [pos], [])
+    return results
+
+def policy(my_men: List[Tuple[int, int]],
+           my_kings: List[Tuple[int, int]],
+           opp_men: List[Tuple[int, int]],
+           opp_kings: List[Tuple[int, int]],
+           color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    """Select a move according to the strategy described above."""
+
+    # ---- Build sets for fast lookup ----
+    my_set = set(my_men) | set(my_kings)
+    opp_set = set(opp_men) | set(opp_kings)
+    occ_set = my_set | opp_set
+
+    # ---- 1. Search for captures ----
+    all_captures = []   # elements: (start, end, path_len, is_king, promotes)
+    for piece in my_set:
+        is_king = piece in my_kings
+        cap_seqs = legal_captures(piece, is_king, my_set, opp_set, occ_set, color)
+        for path, captured in cap_seqs:
+            start = path[0]
+            end = path[-1]
+            promotes = (not is_king) and (end[0] == promotion_row(color))
+            all_captures.append((start, end, len(captured), is_king, promotes))
+
+    if all_captures:
+        # Find the maximal capture length
+        max_len = max(c[2] for c in all_captures)
+        candidates = [c for c in all_captures if c[2] == max_len]
+
+        # Prefer promotions, then king captures
+        candidates.sort(key=lambda x: (x[4], x[3]), reverse=True)
+        chosen = candidates[0]
+        return (chosen[0], chosen[1])
+
+    # ---- 2. No capture – generate simple moves ----
+    simple_moves = []   # elements: (start, end, score, is_king)
+    for piece in my_set:
+        is_king = piece in my_kings
+        destinations = legal_simple_moves(piece, is_king, my_set, occ_set, color)
+        for dest in destinations:
+            promotes = (not is_king) and (dest[0] == promotion_row(color))
+            # centrality bonus: distance to centre (3.5,3.5)
+            centre_dist = abs(dest[0] - 3.5) + abs(dest[1] - 3.5)
+            centre_bonus = -centre_dist   # smaller distance -> higher bonus
+            score = (10 if promotes else 0) + centre_bonus
+            simple_moves.append((piece, dest, score, is_king))
+
+    if not simple_moves:
+        # No legal move (should not happen in normal play) – return a dummy move
+        return ((0, 0), (0, 0))
+
+    # Choose the best scored move; break ties by preferring king moves
+    best_score = max(m[2] for m in simple_moves)
+    best_moves = [m for m in simple_moves if m[2] == best_score]
+    best_moves.sort(key=lambda x: x[3], reverse=True)  # king first
+    start, end, _, _ = best_moves[0]
+    return (start, end)

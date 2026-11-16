@@ -1,0 +1,95 @@
+Strategy summary:
+- Try to win immediately: if placing in a 0 cell would create three of our confirmed marks in a line, play it.
+- Create forks: prefer moves that create two separate immediate threats (two lines with two of our marks).
+- Otherwise score candidate cells by how much they strengthen our lines (lines with our marks), with bonuses for center and corners.
+- Always avoid (if possible) picking a cell already confirmed as ours (board[r][c] == 1). If no 0-cells remain, pick a valid cell anyway.
+
+This is a greedy, deterministic policy that prioritizes wins and forks and otherwise aims to maximize future threats.
+
+<code>
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Phantom Tic Tac Toe heuristic policy.
+    - board is 3x3 with values: 1 = confirmed our mark, 0 = unknown (may be empty or opponent).
+    - Return a tuple (row, col) with 0<=row,col<=2 indicating where to attempt to play.
+    """
+    # All lines (rows, cols, diagonals) as triples of coordinates
+    lines = [
+        [(0,0),(0,1),(0,2)],
+        [(1,0),(1,1),(1,2)],
+        [(2,0),(2,1),(2,2)],
+        [(0,0),(1,0),(2,0)],
+        [(0,1),(1,1),(2,1)],
+        [(0,2),(1,2),(2,2)],
+        [(0,0),(1,1),(2,2)],
+        [(0,2),(1,1),(2,0)],
+    ]
+
+    # Helper to count ones in a line on a given board
+    def count_ones(bd, line):
+        return sum(1 for (r,c) in line if bd[r][c] == 1)
+
+    # Candidate positions: prefer cells not confirmed ours (board==0)
+    candidates = [(r,c) for r in range(3) for c in range(3) if board[r][c] == 0]
+    # If none available (should be rare), allow choosing any cell (fallback)
+    if not candidates:
+        return (0, 0)
+
+    # Quick immediate win check: if placing at a candidate creates a 3-in-row, do it immediately.
+    for (r,c) in candidates:
+        # simulate placement
+        win = False
+        for line in lines:
+            if (r,c) in line:
+                # Count ones including the simulated placement
+                cnt = sum(1 for (rr,cc) in line if board[rr][cc] == 1 or (rr==r and cc==c))
+                if cnt == 3:
+                    return (r,c)  # immediate win
+
+    # Evaluate candidates for forks / future threats
+    best = None
+    best_score = None
+
+    for (r,c) in candidates:
+        # Simulate board with a placement at (r,c)
+        tb = [[board[i][j] for j in range(3)] for i in range(3)]
+        tb[r][c] = 1
+
+        # Count number of lines that become immediate threats (2 of our marks with the third unknown)
+        threats = 0
+        for line in lines:
+            cnt = count_ones(tb, line)
+            if cnt == 2:
+                # ensure the remaining cell (third cell) is not already our confirmed mark (it must be 0 on original)
+                # find the coords of the third cell
+                third = [pos for pos in line if not (tb[pos[0]][pos[1]] == 1)]
+                if len(third) == 1:
+                    # If that cell was 0 on the original board, it's a potential threat
+                    tr = third[0]
+                    if board[tr[0]][tr[1]] == 0:
+                        threats += 1
+
+        # Count total ones after placement (used for tie-breaking/growth)
+        total_ones = sum(1 for i in range(3) for j in range(3) if tb[i][j] == 1)
+
+        # Geometry bonuses
+        center_bonus = 4 if (r, c) == (1, 1) else 0
+        corner_bonus = 2 if (r, c) in [(0,0),(0,2),(2,0),(2,2)] else 0
+
+        # Fork detection
+        fork = 1 if threats >= 2 else 0
+
+        # Score composition
+        score = fork * 100 + threats * 30 + total_ones * 3 + center_bonus + corner_bonus
+
+        # As deterministic tie-breaker, prefer lower (r,c) when scores equal
+        key = (score, - (0 if fork==0 else 1), -total_ones, -center_bonus, -corner_bonus, -r, -c)
+
+        if best is None or score > best_score or (score == best_score and (r, c) < best):
+            best = (r, c)
+            best_score = score
+
+    return best
+</code>

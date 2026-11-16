@@ -1,0 +1,237 @@
+
+import numpy as np
+from collections import deque
+
+def policy(me, opponent, memory):
+    BOARD_SIZE = 19
+    me_set = set(me)
+    opp_set = set(opponent)
+    all_stones = me_set | opp_set
+
+    def neighbors(r, c):
+        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+            nr, nc = r+dr, c+dc
+            if 1 <= nr <= BOARD_SIZE and 1 <= nc <= BOARD_SIZE:
+                yield nr, nc
+
+    def get_group(r, c, stone_set):
+        group = set()
+        queue = deque([(r, c)])
+        while queue:
+            pos = queue.popleft()
+            if pos in group:
+                continue
+            group.add(pos)
+            for nr, nc in neighbors(*pos):
+                if (nr, nc) in stone_set and (nr, nc) not in group:
+                    queue.append((nr, nc))
+        return group
+
+    def get_liberties(group, me_s, opp_s):
+        libs = set()
+        for r, c in group:
+            for nr, nc in neighbors(r, c):
+                if (nr, nc) not in me_s and (nr, nc) not in opp_s:
+                    libs.add((nr, nc))
+        return libs
+
+    def would_capture(r, c, me_s, opp_s):
+        captured = set()
+        for nr, nc in neighbors(r, c):
+            if (nr, nc) in opp_s:
+                grp = get_group(nr, nc, opp_s)
+                libs = get_liberties(grp, me_s | {(r,c)}, opp_s)
+                if len(libs) == 0:
+                    captured |= grp
+        return captured
+
+    def is_legal(r, c, me_s, opp_s, prev_boards):
+        if (r, c) in me_s or (r, c) in opp_s:
+            return False
+        captured = would_capture(r, c, me_s, opp_s)
+        new_me = me_s | {(r, c)}
+        new_opp = opp_s - captured
+        my_group = get_group(r, c, new_me)
+        my_libs = get_liberties(my_group, new_me, new_opp)
+        if len(my_libs) == 0:
+            return False
+        board_key = make_board_key(new_me, new_opp)
+        if board_key in prev_boards:
+            return False
+        return True
+
+    def make_board_key(me_s, opp_s):
+        return (frozenset(me_s), frozenset(opp_s))
+
+    prev_boards = set(memory.get('prev_boards', []))
+    prev_boards.add(make_board_key(me_set, opp_set))
+
+    # Find all empty points
+    empty = []
+    for r in range(1, BOARD_SIZE+1):
+        for c in range(1, BOARD_SIZE+1):
+            if (r, c) not in all_stones:
+                empty.append((r, c))
+
+    # Precompute opponent groups and their liberties
+    opp_visited = set()
+    opp_groups = []
+    for s in opp_set:
+        if s not in opp_visited:
+            grp = get_group(s[0], s[1], opp_set)
+            opp_visited |= grp
+            libs = get_liberties(grp, me_set, opp_set)
+            opp_groups.append((grp, libs))
+
+    # Precompute my groups and their liberties
+    my_visited = set()
+    my_groups = []
+    for s in me_set:
+        if s not in my_visited:
+            grp = get_group(s[0], s[1], me_set)
+            my_visited |= grp
+            libs = get_liberties(grp, me_set, opp_set)
+            my_groups.append((grp, libs))
+
+    # Build influence map
+    influence = np.zeros((BOARD_SIZE+1, BOARD_SIZE+1), dtype=float)
+    for r, c in me_set:
+        for dr in range(-3, 4):
+            for dc in range(-3, 4):
+                nr, nc = r+dr, c+dc
+                if 1 <= nr <= BOARD_SIZE and 1 <= nc <= BOARD_SIZE:
+                    dist = abs(dr) + abs(dc)
+                    if dist <= 3:
+                        influence[nr][nc] += 1.0 / (1 + dist)
+    for r, c in opp_set:
+        for dr in range(-3, 4):
+            for dc in range(-3, 4):
+                nr, nc = r+dr, c+dc
+                if 1 <= nr <= BOARD_SIZE and 1 <= nc <= BOARD_SIZE:
+                    dist = abs(dr) + abs(dc)
+                    if dist <= 3:
+                        influence[nr][nc] -= 1.0 / (1 + dist)
+
+    def is_eye(r, c, me_s):
+        # All neighbors must be mine
+        for nr, nc in neighbors(r, c):
+            if (nr, nc) not in me_s:
+                return False
+        # At least 3 of 4 diagonals must be mine (or edge)
+        diags = [(r-1,c-1),(r-1,c+1),(r+1,c-1),(r+1,c+1)]
+        my_diag = 0
+        edge_diag = 0
+        for dr, dc in diags:
+            if dr < 1 or dr > BOARD_SIZE or dc < 1 or dc > BOARD_SIZE:
+                edge_diag += 1
+            elif (dr, dc) in me_s:
+                my_diag += 1
+        total = my_diag + edge_diag
+        return total >= 3
+
+    # Score candidate moves
+    best_move = (0, 0)
+    best_score = -1e18
+
+    # Opening: prefer star points if board is mostly empty
+    move_num = len(me) + len(opponent)
+    star_points = [(4,4),(4,10),(4,16),(10,4),(10,10),(10,16),(16,4),(16,10),(16,16)]
+    third_line = [(4,4),(4,10),(4,16),(16,4),(16,10),(16,16),(10,4),(10,16)]
+
+    candidates = empty
+    # Limit candidates if too many
+    if len(candidates) > 200:
+        # Prioritize moves near existing stones
+        scored_candidates = []
+        for r, c in candidates:
+            near_score = 0
+            for dr in range(-3, 4):
+                for dc in range(-3, 4):
+                    if (r+dr, c+dc) in all_stones:
+                        near_score += 1
+            scored_candidates.append((near_score, r, c))
+        scored_candidates.sort(reverse=True)
+        if move_num < 10:
+            candidates = [(r,c) for _,r,c in scored_candidates[:150]] + star_points
+        else:
+            candidates = [(r,c) for _,r,c in scored_candidates[:150]]
+        candidates = list(set(candidates))
+
+    for r, c in candidates:
+        if not is_legal(r, c, me_set, opp_set, prev_boards):
+            continue
+        if is_eye(r, c, me_set):
+            continue
+
+        score = 0.0
+        captured = would_capture(r, c, me_set, opp_set)
+        score += len(captured) * 15.0
+
+        # Atari on opponent groups
+        for nr, nc in neighbors(r, c):
+            if (nr, nc) in opp_set:
+                for grp, libs in opp_groups:
+                    if (nr, nc) in grp and (r, c) in libs and len(libs) == 2:
+                        score += len(grp) * 5.0
+
+        # Save own group in atari
+        for grp, libs in my_groups:
+            if (r, c) in libs and len(libs) == 1:
+                score += len(grp) * 12.0
+
+        # Extend groups with few liberties
+        for grp, libs in my_groups:
+            if (r, c) in libs and len(libs) == 2:
+                score += len(grp) * 3.0
+
+        # Influence
+        score += influence[r][c] * 0.5
+
+        # Territory: prefer moves in contested areas
+        score += abs(influence[r][c]) * (-0.3) if abs(influence[r][c]) > 2 else 0.5
+
+        # Edge distance bonus
+        edge_dist = min(r-1, BOARD_SIZE-r, c-1, BOARD_SIZE-c)
+        if edge_dist < 2:
+            score -= 2.0
+        elif edge_dist < 4:
+            score += 0.5
+
+        # Opening bonus for star points
+        if move_num < 20 and (r, c) in star_points and (r, c) not in all_stones:
+            score += 8.0
+
+        # Connectivity: adjacent to own stones
+        adj_me = sum(1 for nr, nc in neighbors(r, c) if (nr, nc) in me_set)
+        adj_opp = sum(1 for nr, nc in neighbors(r, c) if (nr, nc) in opp_set)
+        score += adj_me * 0.5
+        score += adj_opp * 1.0  # contact fights
+
+        # Self-atari penalty
+        new_me = me_set | {(r, c)}
+        new_opp = opp_set - captured
+        my_new_group = get_group(r, c, new_me)
+        my_new_libs = get_liberties(my_new_group, new_me, new_opp)
+        if len(my_new_libs) == 1 and len(captured) == 0:
+            score -= len(my_new_group) * 10.0
+
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+
+    # Update memory
+    if best_move != (0, 0):
+        new_me = me_set | {best_move}
+        cap = would_capture(best_move[0], best_move[1], me_set, opp_set)
+        new_opp = opp_set - cap
+        new_key = make_board_key(new_me, new_opp)
+        prev_boards.add(new_key)
+
+    # Store as list of tuples for serialization
+    stored = [tuple(k) for k in prev_boards]
+    # Limit memory size
+    if len(stored) > 500:
+        stored = stored[-500:]
+    memory['prev_boards'] = stored
+
+    return best_move, memory

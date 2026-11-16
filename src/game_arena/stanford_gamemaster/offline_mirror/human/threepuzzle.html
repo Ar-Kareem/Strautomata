@@ -1,0 +1,560 @@
+<html>
+
+<!--=======================================================================-->
+
+<head>
+  <title>Human</title>
+  <script type='text/javascript' src='../assets/epilog.js'></script>
+  <script type='text/javascript'>
+//==============================================================================
+// Game parameters
+//==============================================================================
+
+var manager = 'manager';
+var player = 'human';
+
+function doplayer ()
+ {player = read(prompt("What is your player's identifier?"));
+  document.getElementById('player').innerHTML = player;
+  return true}
+
+//==============================================================================
+// human.js
+//==============================================================================
+
+indexing = false;
+dataindexing = false;
+ruleindexing = true;
+
+var game = 'buttonsandlights';
+var role = 'robot';
+var startclock = 10;
+var playclock = 10;
+
+var library = [];
+var roles = [];
+var state = [];
+var statelog = [];
+var movelog = [];
+var messageid = "0";
+
+function initialize ()
+ {//document.addEventListener('keydown',handlekey);
+  window.addEventListener("storage",handlestorage,false); console.log('listening');
+  definerules(library,readdata(document.getElementById('library').textContent));
+  roles = findroles(library);
+  state = findinits(library);
+  statelog = [state];
+  movelog = [];
+  movenum = 0;
+  showstate(state);
+  showactions(state);
+  showhistory(movelog,state);
+  return true}
+
+//==============================================================================
+
+function showstate (state)
+ {var stateholder = document.getElementById('stateholder');
+  var n = stateholder.childNodes.length;
+  for (var i=0; i<n; i++) {stateholder.removeChild(stateholder.childNodes[0])};
+  stateholder.appendChild(rendersituation(state));
+  return true}
+
+function rendersituation (state)
+ {return renderstate(state)}
+
+function renderstate (state)	
+ {var widget = document.createElement('textarea');
+  widget.setAttribute('rows','12');
+  widget.setAttribute('cols','40');
+  widget.setAttribute('style','font-family:courier');
+  widget.setAttribute('disabled',true);
+  widget.value = grindem(state);
+  return widget}
+
+//==============================================================================
+
+function showactions (state)
+ {var actionholder = document.getElementById('actionholder');
+  var n = actionholder.childNodes.length;
+  for (var i=0; i<n; i++) {actionholder.removeChild(actionholder.childNodes[0])};
+  actionholder.appendChild(renderactions(state));
+  return true}
+
+function renderactions (state)
+ {var widget = document.createElement('select');
+  var option = document.createElement('option');
+  option.value = 'error';
+  option.text = '';
+  widget.add(option);
+  var actions = findlegals(state,library).sort();
+  for (var i=0; i<actions.length; i++)
+      {var option = document.createElement('option');
+       var value = grind(actions[i]);
+       option.value = value;
+       option.text = value;
+       widget.add(option)}
+  if (findterminalp(state,library)) {widget.disabled = true}
+     else {widget.disabled = false};
+  widget.setAttribute('onchange','perform(read(this.value))');
+  return widget}
+
+//==============================================================================
+
+function showhistory (moves,state)
+ {var widget = document.getElementById('history');
+  var n = widget.childNodes.length;
+  for (var i=0; i<n; i++) {widget.removeChild(widget.childNodes[0])};
+  widget.appendChild(renderhistory(moves,state));
+  return true}
+
+function renderhistory (moves,state)
+ {var widget = document.createElement('table');
+  widget.setAttribute('cellspacing',0);
+  widget.setAttribute('cellpadding',3);
+  widget.setAttribute('border',1);
+  var row = widget.insertRow(0);
+  var cell = row.insertCell(0);
+  cell.innerHTML = 'Step';
+  cell.setAttribute('width','120');
+  cell.setAttribute('align','center');
+  cell.setAttribute('style','font-weight:bold');
+  cell.setAttribute('bgcolor','#dddddd');
+  for (var j=0; j<roles.length; j++)
+      {cell = row.insertCell(j+1);
+       cell.innerHTML = roles[j];
+       cell.setAttribute('width','120');
+       cell.setAttribute('align','center');
+       cell.setAttribute('style','font-weight:bold');
+       cell.setAttribute('bgcolor','#dddddd')};
+
+  for (var i=0; i<movenum; i++)
+      {row = widget.insertRow(i+1);
+       cell = row.insertCell(0);
+       cell.setAttribute('align','center');
+       cell.setAttribute('bgcolor','#dddddd');
+       cell.innerHTML = i+1;
+       for (var j=0; j<roles.length; j++)
+           {cell = row.insertCell(j+1);
+            cell.setAttribute('width','120');
+            cell.setAttribute('align','center');
+            if (findcontrol(statelog[i],library)===roles[j])
+               {cell.innerHTML = grind(moves[i])}}};
+
+  row = widget.insertRow(widget.rows.length);
+  cell = row.insertCell(0);
+  cell.innerHTML = 'Score';
+  cell.setAttribute('style','font-weight:bold');
+  cell.setAttribute('bgcolor','#dddddd');
+  cell.setAttribute('align','center');
+  for (var i=0; i<roles.length; i++)
+      {cell = row.insertCell(i+1);
+       cell.setAttribute('align','center');
+       cell.setAttribute('bgcolor','#dddddd');
+       cell.innerHTML = findreward(roles[i],state,library)};
+  return widget}
+
+//==============================================================================
+
+function perform (action)
+ {if (action==='error') {return false};
+  //action performed only if in control; could let manager handle for now
+  var response = grind(seq('message',messageid,player,manager,action));
+  console.log(response);
+  send(response);
+  //endclock(timekeeper);
+  return true}
+
+function copy (obj)
+ {return obj.slice(0)}
+
+//==============================================================================
+
+function handlestorage (ev)
+ {//console.log(ev);
+  console.log(ev.newValue);
+  if (ev.key!==player) {return false};
+  //var transcript = document.getElementById('transcript');
+  //transcript.value = transcript.value + ev.newValue + "\n";
+  var envelope = read(ev.newValue);
+  messageid = envelope[1]
+  var sender = envelope[2]
+  var receiver = envelope[3]
+  var message = envelope[4]
+  if (sender!==manager) {return false};
+  if (receiver!==player) {return false};
+  console.log("Manager: " + grind(message));
+  var answer = ggpeval(message);
+  if (!answer) {console.log("Player: no response"); return false};
+  var response = grind(seq('message',messageid,player,manager,answer));
+  send(response);
+  return true}
+
+function send (str)
+ {//var transcript = document.getElementById('transcript');
+  //transcript.value = transcript.value + str + "\n";
+  localStorage.manager = str;
+  return true}
+
+//==============================================================================
+
+function ggpeval (msg)
+ {if (symbolp(msg)) {return false};
+  if (msg[0]==='ping') {return ping()};
+  if (msg[0]==='start') {return start(msg[1],msg[2],msg[3],msg[4])};
+  if (msg[0]==='play') {return play(msg[1])};
+  if (msg[0]==='stop') {return stop(msg[1])};
+  if (msg[0]==='abort') {return abort()};
+  return false}
+
+//==============================================================================
+
+function ping ()
+ {return 'ready'}
+
+function start (r,rs,sc,pc)
+ {role = r;
+  //library = definemorerules([],rs.slice(1));
+  //roles = findroles(library);
+  //state = findinits(library);
+  startclock = numberize(sc);
+  playclock = numberize(pc);
+  //timekeeper = beginclock(startclock);
+  return 'ready'}
+
+function play (move)
+ {if (findcontrol(state,library)!==role) {return false};
+  if (move===nil) {return false};
+  statelog = statelog.slice(0,movenum+1);
+  movelog = movelog.slice(0,movenum);
+  movelog.push(move);
+  state = simulate(move,state,library)
+  statelog.push(state);
+  movenum++;
+  showstate(state);
+  showactions(state);
+  showhistory(movelog,state);
+  //endclock(timekeeper);
+  //timekeeper = beginclock(playclock);  return false}
+
+function stop (move)
+ {if (move!=='nil') {state = simulate(move,state,library)};
+  movelog = movelog.slice(0,movenum);
+  movelog.push(move);
+  movenum++;
+  showstate(state);
+  showactions(state);
+  showhistory(movelog,state);
+  //endclock(timekeeper);
+  return false}
+
+function abort ()
+ {//endclock(timekeeper);
+  return false}
+
+//------------------------------------------------------------------------------
+
+function simulate (move,state,rules)
+ {var deltas = compexpand(move,state,rules);
+  var additions = [];
+  var deletions = [];
+  for (var i=0; i<deltas.length; i++)
+      {if (symbolp(deltas[i])) {additions.push(deltas[i]); continue};
+       if (deltas[i][0]==='not') {deletions.push(deltas[i][1]); continue};
+       additions.push(deltas[i])};
+  var newstate = [];
+  for (i = 0; i<state.length; i++)
+      {if (find(state[i],additions)) {continue};
+       if (find(state[i],deletions)) {continue};
+       newstate.push(state[i])};
+  return newstate.concat(additions)}
+
+//==============================================================================
+// Timer//==============================================================================
+
+function beginclock (n)
+ {if (n===Infinity) {return false};
+  document.getElementById('timer').value = n;
+  return setInterval(updateclock,1000)}
+
+function updateclock ()
+ {var timer = document.getElementById('timer');
+  var time = timer.value - 1;
+  timer.value = time;
+  if (time<=0) {endclock()};
+  return true}
+
+function endclock ()
+ {clearclock();
+  return true}
+
+function clearclock ()
+ {document.getElementById('timer').value = '';
+  //clearInterval(timekeeper);
+  return true}
+
+//==============================================================================
+// Basics
+//==============================================================================
+
+function findroles (rules)
+ {return compfinds('R',seq('role','R'),seq(),rules)}
+
+function findbases (rules)
+ {return compfinds('P',seq('base','P'),seq(),rules)}
+
+function findactions (rules)
+ {return compfinds('A',seq('action','A'),seq(),rules)}
+
+function findinits (rules)
+ {return compfinds('P',seq('init','P'),seq(),rules)}
+
+function findcontrol (facts,rules)
+ {return compfindx('X',seq('control','X'),facts,rules)}
+
+function findlegalp (move,facts,rules)
+ {return compfindp(seq('legal',move),facts,rules)}
+
+function findlegalx (facts,rules)
+ {return compfindx('X',seq('legal','X'),facts,rules)}
+
+function findlegals (facts,rules)
+ {return compfinds('X',seq('legal','X'),facts,rules)}
+
+function findreward (role,facts,rules)
+ {var value = compfindx('R',seq('goal',role,'R'),facts,rules);
+  if (value) {return value};
+  return 0}
+
+function findterminalp (facts,rules)
+ {return compfindp('terminal',facts,rules)}
+
+//==============================================================================
+// End of Script
+//==============================================================================
+  </script>
+  <script type='text/javascript'>
+//==============================================================================
+// threepuzzle
+//==============================================================================
+
+function renderstate (state)
+ {var table = document.createElement('table');
+  table.setAttribute('cellspacing','0');
+  table.setAttribute('bgcolor','white');
+  table.setAttribute('border','10');
+  table.setAttribute('style','font-size:24');
+  makerow(table,0,state);
+  makerow(table,1,state);
+  return table}
+
+function makerow (table,rownum,state)
+ {var row =table.insertRow(rownum);
+  makecell(row,rownum,0,state);
+  makecell(row,rownum,1,state);
+  return row}
+
+function makecell (row,rownum,colnum,state)
+ {var cell = row.insertCell(colnum);
+  cell.setAttribute('width','40');
+  cell.setAttribute('height','40');
+  cell.setAttribute('align','center');
+  cell.setAttribute('valign','center');
+  var mark = findmark(rownum,colnum,state)
+  if (mark && mark != 'b') {cell.innerHTML = mark}
+     else {cell.innerHTML = '&nbsp;'};
+  return cell}
+
+function findmark (rownum,colnum,state)
+ {if (rownum===0 && colnum===0)
+     {return compfindx('M',read('board(M,X,Y,Z)'),state, [])};
+  if (rownum===0 && colnum===1)
+     {return compfindx('M',read('board(X,M,Y,Z)'),state, [])};
+  if (rownum===1 && colnum===0)
+     {return compfindx('M',read('board(X,Y,M,Z)'),state, [])};
+  if (rownum===1 && colnum===1)
+     {return compfindx('M',read('board(X,Y,Z,M)'),state, [])}
+  return false}
+
+//==============================================================================
+//==============================================================================
+//==============================================================================
+  </script>
+  <style>
+  </style>
+</head>
+
+<!--=======================================================================-->
+
+<body bgcolor='#aabbbb' onload='initialize()'>  <center>    <table width='720' cellspacing='0' cellpadding='40' bgcolor='#ffffff'>
+      <tr>
+        <td>
+
+<!--=======================================================================-->
+
+<center>
+  <table width='640' cellpadding='0'>
+    <tr>
+      <td width='180' align='center' valign='center'>
+        <a href='../index.html'><img width='130' src='../assets/ggp.jpg'/></a>
+      </td>
+      <td align='center'>
+        <span style='font-size:18pt'>&nbsp;</span>
+        <span style='font-size:32pt'>Gamemaster</span><br/>
+      </td>
+      <td width='180' align='center' style='color:#000066;font-size:18px'>
+        <i>General<br/>Game<br/>Playing</i>
+      </td>
+    </tr>
+  </table>
+</center>
+<!--=======================================================================-->
+
+<br/>
+<table width='640' cellpadding='8' cellspacing='0' bgcolor='#f4f8f8' border='1'>  <tr height='40'>
+    <td align='center'>
+<table style='color:#000066;font-size:18px'>
+  <tr>
+    <td>
+Protocol: localstorage<br/>
+Strategy: human<br/>
+Identifier: <span id='player'>human</span> <img src="../assets/pencil.gif" height='12' style="cursor:pointer" onclick='doplayer()'/>
+    </td>
+    <td width='20'>&nbsp;</td>
+    <td>
+Game: threepuzzle <img src="../assets/pencil.gif" onclick='dogame()'/><br/>
+Startclock: <br/>
+Playclock:     </td>
+  </tr>
+</table>
+    </td>
+  </tr></table>
+<br/>
+
+<!--=======================================================================-->
+
+<center>
+  <br/>
+  <div id='stateholder'></div>
+  <br/>
+  <br/>
+  <div id='actionholder'></div>
+  <br/>
+  <br/>
+  <div id='history'></div>
+</center>
+
+<!--=======================================================================-->
+
+        </td>
+      </tr>
+    </table>
+  </center>
+</body>
+
+<!--=======================================================================-->
+
+<textarea id='library' type='text/hrf' style='display:none'>
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% threepuzzle
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% metadata
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+role(robot)
+
+base(board(X,Y,Z,b)) :- tile(X) & tile(Y) & tile(Z)
+base(board(X,Y,b,Z)) :- tile(X) & tile(Y) & tile(Z)
+base(board(X,b,Y,Z)) :- tile(X) & tile(Y) & tile(Z)
+base(board(b,X,Y,Z)) :- tile(X) & tile(Y) & tile(Z)
+base(step(1))
+base(step(N)) :- successor(M,N)
+
+action(up)
+action(down)
+action(left)
+action(right)
+
+tile(1)
+tile(2)
+tile(3)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% init
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+init(board(b,3,2,1))
+init(step(1))
+control(robot)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% legal
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+legal(up) :- board(X,Y,b,Z)
+legal(up) :- board(X,Y,Z,b)
+
+legal(down) :- board(b,X,Y,Z)
+legal(down) :- board(X,b,Y,Z)
+
+legal(left) :- board(X,b,Y,Z)
+legal(left) :- board(X,Y,Z,b)
+
+legal(right) :- board(b,X,Y,Z)
+legal(right) :- board(X,Y,b,Z)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% operations
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+up :: board(X,Y,b,Z) ==> ~board(X,Y,b,Z) & board(b,Y,X,Z)
+up :: board(X,Y,Z,b) ==> ~board(X,Y,Z,b) & board(X,b,Z,Y)
+
+down :: board(b,X,Y,Z) ==> ~board(b,X,Y,Z) & board(Y,X,b,Z)
+down :: board(X,b,Y,Z) ==> ~board(X,b,Y,Z) & board(X,Z,Y,b)
+
+left :: board(X,b,Y,Z) ==> ~board(X,b,Y,Z) & board(b,X,Y,Z)
+left :: board(X,Y,Z,b) ==> ~board(X,Y,Z,b) & board(X,Y,b,Z)
+
+right :: board(b,X,Y,Z) ==> ~board(b,X,Y,Z) & board(X,b,Y,Z)
+right :: board(X,Y,b,Z) ==> ~board(X,Y,b,Z) & board(X,Y,Z,b)
+
+up ::    step(M) & successor(M,N) ==> ~step(M) & step(N)
+down ::  step(M) & successor(M,N) ==> ~step(M) & step(N)
+left ::  step(M) & successor(M,N) ==> ~step(M) & step(N)
+right :: step(M) & successor(M,N) ==> ~step(M) & step(N)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% goal
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+goal(robot,100) :- board(1,2,3,b)
+goal(robot,0) :- ~board(1,2,3,b)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% terminal
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+terminal :- step(7)
+
+successor(1,2)
+successor(2,3)
+successor(3,4)
+successor(4,5)
+successor(5,6)
+successor(6,7)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+</textarea>
+
+<!--=======================================================================-->
+
+<textarea id='lambda' type='text/hdf' style='display:none'></textarea>
+
+<!--=======================================================================-->
+
+</html>

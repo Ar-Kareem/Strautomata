@@ -1,0 +1,467 @@
+The strategy for this policy is:
+
+- Always play a legal move.
+- Precompute the hex-board geometry from `valid_mask`: valid cells, hex-neighbors, boundary cells, corners, and edges.
+- Look for immediate wins first:
+  - bridge: one connected group touching 2 corners
+  - fork: one connected group touching 3 edges
+  - ring: detect whether the move creates an enclosed region of non-self cells
+- If the opponent has an immediate winning move, switch to defense and choose a move that minimizes the opponent’s immediate wins next turn.
+- Otherwise use a strong heuristic:
+  - prefer central moves early
+  - prefer moves adjacent to own stones
+  - strongly reward moves that connect multiple own groups
+  - reward moves that increase corner/edge reach for bridge/fork potential
+  - reward blocking large or strategically advanced opponent groups
+  - lightly reward local enclosure/ring potential
+- For top heuristic candidates, avoid moves that allow an immediate opponent win.
+
+<code>
+import numpy as np
+from collections import deque
+
+_BOARD_CACHE = {}
+
+
+def _mask_key(valid_mask):
+    arr = np.asarray(valid_mask, dtype=bool)
+    return (arr.shape, arr.tobytes())
+
+
+def _build_board(valid_mask):
+    key = _mask_key(valid_mask)
+    if key in _BOARD_CACHE:
+        return _BOARD_CACHE[key]
+
+    arr = np.asarray(valid_mask, dtype=bool)
+    n = arr.shape[0]
+
+    valid = [(r, c) for r in range(n) for c in range(n) if arr[r, c]]
+    valid_set = set(valid)
+
+    def inb(r, c):
+        return 0 <= r < n and 0 <= c < n and arr[r, c]
+
+    neighbors = {}
+    for r, c in valid:
+        cand = [
+            (r - 1, c),
+            (r + 1, c),
+            (r - 1, c - 1),
+            (r, c - 1),
+            (r, c + 1),
+            (r - 1, c + 1),
+        ]
+        neighbors[(r, c)] = [(rr, cc) for rr, cc in cand if inb(rr, cc)]
+
+    degree = {p: len(neighbors[p]) for p in valid}
+    boundary = {p for p in valid if degree[p] < 6}
+
+    # Corners are normally the 6 boundary cells of smallest degree (typically 3).
+    if boundary:
+        min_deg = min(degree[p] for p in boundary)
+        corners = [p for p in boundary if degree[p] == min_deg]
+    else:
+        corners = []
+
+    # Robust fallback if needed.
+    if len(corners) != 6:
+        mid = (n - 1) / 2.0
+        scored = sorted(
+            boundary,
+            key=lambda p: (
+                -((p[0] - mid) ** 2 + (p[1] - mid) ** 2),
+                p[0],
+                p[1],
+            ),
+        )
+        corners = scored[:6]
+
+    boundary_neighbors = {
+        p: [q for q in neighbors[p] if q in boundary] for p in boundary
+    }
+
+    # Trace boundary cycle to partition the 6 edges.
+    cycle = []
+    if corners and boundary_neighbors.get(corners[0]):
+        start = min(corners)
+        first = min(boundary_neighbors[start])
+        cycle = [start]
+        prev = start
+        cur = first
+        steps = 0
+        while cur != start and steps <= len(boundary) + 5:
+            cycle.append(cur)
+            bns = boundary_neighbors[cur]
+            if not bns:
+                break
+            if len(bns) == 1:
+                nxt = bns[0]
+            else:
+                nxt = bns[0] if bns[0] != prev else bns[1]
+            prev, cur = cur, nxt
+            steps += 1
+
+    corner_set = set(corners)
+    corners_in_cycle = []
+    seen_corner = set()
+    for p in cycle:
+        if p in corner_set and p not in seen_corner:
+            corners_in_cycle.append(p)
+            seen_corner.add(p)
+
+    if len(corners_in_cycle) != 6:
+        # Fallback ordering by angle around center.
+        mid = (n - 1) / 2.0
+        corners_in_cycle = sorted(
+            corners,
+            key=lambda p: np.arctan2(p[0] - mid, p[1] - mid)
+        )
+
+    corner_id = {p: i for i, p in enumerate(corners_in_cycle)}
+    edge_id = {}
+
+    if cycle and len(corners_in_cycle) == 6:
+        pos = [i for i, p in enumerate(cycle) if p in corner_id]
+        m = len(cycle)
+        for ei, a in enumerate(pos):
+            b = pos[(ei + 1) % len(pos)]
+            j = (a + 1) % m
+            while j != b:
+                edge_id[cycle[j]] = ei
+                j = (j + 1) % m
+
+    # Center cell for centrality heuristic.
+    geom_center = ((n - 1) / 2.0, (n - 1) / 2.0)
+    center = min(
+        valid,
+        key=lambda p: (p[0] - geom_center[0]) ** 2 + (p[1] - geom_center[1]) ** 2
+    )
+
+    center_dist = {center: 0}
+    dq = deque([center])
+    while dq:
+        x = dq.popleft()
+        for y in neighbors[x]:
+            if y not in center_dist:
+                center_dist[y] = center_dist[x] + 1
+                dq.append(y)
+
+    max_center_dist = max(center_dist.values()) if center_dist else 0
+
+    board = {
+        "valid": valid,
+        "valid_set": valid_set,
+        "neighbors": neighbors,
+        "boundary": boundary,
+        "corners": set(corners_in_cycle),
+        "corner_id": corner_id,
+        "edge_id": edge_id,
+        "center_dist": center_dist,
+        "max_center_dist": max_center_dist,
+    }
+    _BOARD_CACHE[key] = board
+    return board
+
+
+def _build_components(stones, board):
+    stones = set(stones)
+    comp_of = {}
+    sizes = []
+    edges = []
+    corners = []
+
+    for s in stones:
+        if s in comp_of:
+            continue
+        cid = len(sizes)
+        q = deque([s])
+        comp_of[s] = cid
+        size = 0
+        e = set()
+        c = set()
+        while q:
+            x = q.popleft()
+            size += 1
+            if x in board["edge_id"]:
+                e.add(board["edge_id"][x])
+            if x in board["corner_id"]:
+                c.add(board["corner_id"][x])
+            for y in board["neighbors"][x]:
+                if y in stones and y not in comp_of:
+                    comp_of[y] = cid
+                    q.append(y)
+        sizes.append(size)
+        edges.append(e)
+        corners.append(c)
+
+    return {
+        "id": comp_of,
+        "sizes": sizes,
+        "edges": edges,
+        "corners": corners,
+    }
+
+
+def _component_bridge_or_fork(stones, move, board):
+    q = deque([move])
+    seen = {move}
+    touched_edges = set()
+    touched_corners = set()
+
+    while q:
+        x = q.popleft()
+        if x in board["edge_id"]:
+            touched_edges.add(board["edge_id"][x])
+        if x in board["corner_id"]:
+            touched_corners.add(board["corner_id"][x])
+
+        if len(touched_corners) >= 2 or len(touched_edges) >= 3:
+            return True
+
+        for y in board["neighbors"][x]:
+            if y in stones and y not in seen:
+                seen.add(y)
+                q.append(y)
+
+    return False
+
+
+def _has_ring(stones, board):
+    # A ring exists iff some non-stone valid cell is disconnected
+    # from the board boundary through non-stone cells.
+    if len(stones) < 6:
+        return False
+
+    visited = set()
+    dq = deque()
+
+    for b in board["boundary"]:
+        if b not in stones:
+            visited.add(b)
+            dq.append(b)
+
+    while dq:
+        x = dq.popleft()
+        for y in board["neighbors"][x]:
+            if y not in stones and y not in visited:
+                visited.add(y)
+                dq.append(y)
+
+    for cell in board["valid"]:
+        if cell not in stones and cell not in visited:
+            return True
+    return False
+
+
+def _is_win_after(stones, move, board):
+    if _component_bridge_or_fork(stones, move, board):
+        return True
+    if _has_ring(stones, board):
+        return True
+    return False
+
+
+def _count_immediate_wins(stones, legal_moves, board, limit=None):
+    count = 0
+    winning_moves = []
+    for mv in legal_moves:
+        new_stones = set(stones)
+        new_stones.add(mv)
+        if _is_win_after(new_stones, mv, board):
+            count += 1
+            winning_moves.append(mv)
+            if limit is not None and count >= limit:
+                break
+    return count, winning_moves
+
+
+def _quick_eval(move, my_set, opp_set, my_comp, opp_comp, board):
+    neigh = board["neighbors"][move]
+    my_adj = 0
+    opp_adj = 0
+    my_adj_ids = set()
+    opp_adj_ids = set()
+
+    for n in neigh:
+        if n in my_set:
+            my_adj += 1
+            my_adj_ids.add(my_comp["id"][n])
+        elif n in opp_set:
+            opp_adj += 1
+            opp_adj_ids.add(opp_comp["id"][n])
+
+    score = 0.0
+
+    # Center preference.
+    score += 3.5 * (board["max_center_dist"] - board["center_dist"].get(move, 0))
+
+    # Early-game avoid isolated moves too much.
+    if len(my_set) < 5 and my_adj == 0:
+        score -= 10.0
+
+    # Basic adjacency.
+    score += 7.0 * my_adj
+    score += 2.2 * opp_adj
+
+    # Connecting own components.
+    if my_adj_ids:
+        score += 16.0 * (len(my_adj_ids) - 1)
+        score += 1.0 * sum(my_comp["sizes"][cid] for cid in my_adj_ids)
+
+        touched_edges = set()
+        touched_corners = set()
+        for cid in my_adj_ids:
+            touched_edges |= my_comp["edges"][cid]
+            touched_corners |= my_comp["corners"][cid]
+        if move in board["edge_id"]:
+            touched_edges.add(board["edge_id"][move])
+        if move in board["corner_id"]:
+            touched_corners.add(board["corner_id"][move])
+
+        score += 10.0 * len(touched_edges)
+        score += 16.0 * len(touched_corners)
+
+        if len(touched_edges) == 2:
+            score += 20.0
+        if len(touched_edges) >= 3:
+            score += 100.0
+        if len(touched_corners) == 1:
+            score += 12.0
+        if len(touched_corners) >= 2:
+            score += 100.0
+    else:
+        if move in board["edge_id"]:
+            score += 2.0
+        if move in board["corner_id"]:
+            score += 2.0
+
+    # Blocking / interfering with opponent components.
+    if opp_adj_ids:
+        score += 8.0 * (len(opp_adj_ids) - 1)
+        score += 0.8 * sum(opp_comp["sizes"][cid] for cid in opp_adj_ids)
+
+        touched_edges = set()
+        touched_corners = set()
+        for cid in opp_adj_ids:
+            touched_edges |= opp_comp["edges"][cid]
+            touched_corners |= opp_comp["corners"][cid]
+        if move in board["edge_id"]:
+            touched_edges.add(board["edge_id"][move])
+        if move in board["corner_id"]:
+            touched_corners.add(board["corner_id"][move])
+
+        score += 6.0 * len(touched_edges)
+        score += 10.0 * len(touched_corners)
+        if len(touched_edges) >= 2:
+            score += 10.0
+        if len(touched_corners) >= 1:
+            score += 10.0
+
+    # Local ring / enclosure potential around neighboring cells.
+    for x in neigh:
+        if x in my_set:
+            continue
+        cnt = 0
+        for y in board["neighbors"][x]:
+            if y == move or y in my_set:
+                cnt += 1
+        if cnt >= 3:
+            score += (cnt - 2) * (1.5 if x in board["boundary"] else 3.0)
+
+    return score
+
+
+def policy(me, opp, valid_mask):
+    board = _build_board(valid_mask)
+
+    my_set = set((int(r), int(c)) for r, c in me)
+    opp_set = set((int(r), int(c)) for r, c in opp)
+    occupied = my_set | opp_set
+
+    legal = [p for p in board["valid"] if p not in occupied]
+    if not legal:
+        # Should not happen in normal play, but remain safe.
+        return tuple(map(int, board["valid"][0]))
+
+    my_comp = _build_components(my_set, board)
+    opp_comp = _build_components(opp_set, board)
+
+    quick_scores = {
+        mv: _quick_eval(mv, my_set, opp_set, my_comp, opp_comp, board) for mv in legal
+    }
+    ordered = sorted(
+        legal,
+        key=lambda mv: (
+            quick_scores[mv],
+            -(board["center_dist"].get(mv, 0)),
+            -mv[0],
+            -mv[1],
+        ),
+        reverse=True,
+    )
+
+    # 1) Immediate winning move.
+    best_win = None
+    best_win_score = None
+    for mv in ordered:
+        new_stones = set(my_set)
+        new_stones.add(mv)
+        if _is_win_after(new_stones, mv, board):
+            sc = quick_scores[mv]
+            if best_win is None or sc > best_win_score:
+                best_win = mv
+                best_win_score = sc
+    if best_win is not None:
+        return (int(best_win[0]), int(best_win[1]))
+
+    # 2) If opponent has any immediate win now, defend by minimizing them.
+    opp_threat_count, _ = _count_immediate_wins(opp_set, legal, board, limit=1)
+    if opp_threat_count > 0:
+        best_move = None
+        best_key = None
+        for mv in ordered:
+            rem = [x for x in legal if x != mv]
+            cnt, _ = _count_immediate_wins(opp_set, rem, board, limit=3)
+            key = (-cnt, quick_scores[mv], -(board["center_dist"].get(mv, 0)))
+            if best_key is None or key > best_key:
+                best_key = key
+                best_move = mv
+                if cnt == 0:
+                    # Still keep searching only if a much better 0-threat move could exist.
+                    pass
+        if best_move is not None:
+            return (int(best_move[0]), int(best_move[1]))
+
+    # 3) Normal play: pick strong heuristic moves, but avoid giving an immediate loss.
+    top_k = min(12, len(ordered))
+    safe_best = None
+    safe_best_score = None
+    for mv in ordered[:top_k]:
+        rem = [x for x in legal if x != mv]
+        cnt, _ = _count_immediate_wins(opp_set, rem, board, limit=1)
+        if cnt == 0:
+            sc = quick_scores[mv]
+            if safe_best is None or sc > safe_best_score:
+                safe_best = mv
+                safe_best_score = sc
+    if safe_best is not None:
+        return (int(safe_best[0]), int(safe_best[1]))
+
+    # 4) If top candidates all allow a threat, do exhaustive safety search.
+    best_move = None
+    best_key = None
+    for mv in ordered:
+        rem = [x for x in legal if x != mv]
+        cnt, _ = _count_immediate_wins(opp_set, rem, board, limit=3)
+        key = (-cnt, quick_scores[mv], -(board["center_dist"].get(mv, 0)))
+        if best_key is None or key > best_key:
+            best_key = key
+            best_move = mv
+    if best_move is not None:
+        return (int(best_move[0]), int(best_move[1]))
+
+    # 5) Final fallback: best heuristic legal move.
+    mv = ordered[0]
+    return (int(mv[0]), int(mv[1]))
+</code>

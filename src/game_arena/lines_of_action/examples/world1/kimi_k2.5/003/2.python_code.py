@@ -1,0 +1,242 @@
+
+import time
+import copy
+
+def policy(board):
+    """
+    Returns the next move as "r1,c1:r2,c2".
+    Implements depth-3 minimax with alpha-beta pruning.
+    """
+    # Immediate win check at root
+    moves = generate_moves(board, 1)
+    for move in moves:
+        new_board = apply_move(board, move, 1)
+        if is_winner(new_board, 1):
+            return f"{move[0]},{move[1]}:{move[2]},{move[3]}"
+    
+    # If no immediate win, run minimax search
+    # Depth 3: My move -> Opponent -> My move
+    score, best_move = minimax(board, 3, -float('inf'), float('inf'), True)
+    
+    if best_move is None:
+        # Fallback: should not happen if legal moves exist
+        best_move = moves[0] if moves else (0, 0, 0, 0)
+    
+    return f"{best_move[0]},{best_move[1]}:{best_move[2]},{best_move[3]}"
+
+def minimax(board, depth, alpha, beta, maximizing):
+    """
+    Minimax with alpha-beta pruning.
+    Returns (score, best_move).
+    """
+    if depth == 0:
+        return evaluate(board), None
+    
+    player = 1 if maximizing else -1
+    moves = generate_moves(board, player)
+    
+    if not moves:
+        # No legal moves, evaluate current position
+        return evaluate(board), None
+    
+    # Sort moves: captures first (improves pruning)
+    moves.sort(key=lambda m: board[m[2]][m[3]] == -player, reverse=True)
+    
+    best_move = None
+    
+    if maximizing:
+        max_eval = -float('inf')
+        for move in moves:
+            new_board = apply_move(board, move, player)
+            
+            # Terminal check: if this move wins
+            if is_winner(new_board, player):
+                return 10000, move
+            
+            eval_score, _ = minimax(new_board, depth - 1, alpha, beta, False)
+            
+            if eval_score > max_eval:
+                max_eval = eval_score
+                best_move = move
+            
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        
+        return max_eval, best_move
+    else:
+        min_eval = float('inf')
+        for move in moves:
+            new_board = apply_move(board, move, player)
+            
+            # Terminal check: opponent wins (bad for us)
+            if is_winner(new_board, player):
+                return -10000, move
+            
+            eval_score, _ = minimax(new_board, depth - 1, alpha, beta, True)
+            
+            if eval_score < min_eval:
+                min_eval = eval_score
+                best_move = move
+            
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        
+        return min_eval, best_move
+
+def generate_moves(board, player):
+    """Generate all legal moves for the given player."""
+    opponent = -player
+    moves = []
+    
+    # Precompute line piece counts
+    row_count = [0] * 8
+    col_count = [0] * 8
+    diag1_count = [0] * 15  # r - c + 7
+    diag2_count = [0] * 15  # r + c
+    
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] != 0:
+                row_count[r] += 1
+                col_count[c] += 1
+                diag1_count[r - c + 7] += 1
+                diag2_count[r + c] += 1
+    
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == player:
+                # Define the 4 lines and their steps
+                lines = [
+                    (0, 1, row_count[r]),   # Horizontal right
+                    (0, -1, row_count[r]),  # Horizontal left
+                    (1, 0, col_count[c]),   # Vertical down
+                    (-1, 0, col_count[c]),  # Vertical up
+                    (1, 1, diag1_count[r - c + 7]),   # Main diagonal down-right
+                    (-1, -1, diag1_count[r - c + 7]), # Main diagonal up-left
+                    (1, -1, diag2_count[r + c]),      # Anti diagonal down-left
+                    (-1, 1, diag2_count[r + c])       # Anti diagonal up-right
+                ]
+                
+                for dr, dc, step in lines:
+                    if step == 0:
+                        continue
+                    
+                    nr, nc = r + dr * step, c + dc * step
+                    
+                    # Check bounds
+                    if not (0 <= nr < 8 and 0 <= nc < 8):
+                        continue
+                    
+                    # Check path: cannot jump over opponent pieces
+                    valid = True
+                    for i in range(1, step):
+                        cr, cc = r + dr * i, c + dc * i
+                        if board[cr][cc] == opponent:
+                            valid = False
+                            break
+                    if not valid:
+                        continue
+                    
+                    # Check destination: cannot land on own piece; can capture opponent or land on empty
+                    if board[nr][nc] == player:
+                        continue
+                    
+                    moves.append((r, c, nr, nc))
+    
+    return moves
+
+def apply_move(board, move, player):
+    """Apply a move and return the new board state."""
+    r1, c1, r2, c2 = move
+    new_board = [row[:] for row in board]  # Deep copy
+    new_board[r1][c1] = 0
+    new_board[r2][c2] = player
+    return new_board
+
+def is_winner(board, player):
+    """Check if all pieces of player are connected (8-connectivity)."""
+    pieces = []
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == player:
+                pieces.append((r, c))
+    
+    if not pieces:
+        return False
+    
+    # BFS/DFS to find connected component from first piece
+    visited = set()
+    stack = [pieces[0]]
+    visited.add(pieces[0])
+    count = 0
+    
+    while stack:
+        r, c = stack.pop()
+        count += 1
+        
+        # Check 8 neighbors
+        for dr in [-1, 0, 1]:
+            for dc in [-1, 0, 1]:
+                if dr == 0 and dc == 0:
+                    continue
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 8 and 0 <= nc < 8:
+                    if board[nr][nc] == player and (nr, nc) not in visited:
+                        visited.add((nr, nc))
+                        stack.append((nr, nc))
+    
+    return count == len(pieces)
+
+def evaluate(board):
+    """
+    Heuristic evaluation function.
+    Positive favoring player 1 (maximizer), negative favoring player -1.
+    """
+    # Terminal states
+    if is_winner(board, 1):
+        return 10000
+    if is_winner(board, -1):
+        return -10000
+    
+    my_groups, my_pieces = count_groups_and_pieces(board, 1)
+    opp_groups, opp_pieces = count_groups_and_pieces(board, -1)
+    
+    # Heuristic components
+    # Fewer groups is better; more opponent groups is better
+    # Material advantage matters
+    score = 0
+    score -= my_groups * 100      # Penalty for each separate group
+    score += opp_groups * 50      # Bonus for opponent fragmentation
+    score += (my_pieces - opp_pieces) * 10  # Material advantage
+    
+    return score
+
+def count_groups_and_pieces(board, player):
+    """Count number of connected groups and total pieces for a player."""
+    visited = set()
+    groups = 0
+    pieces = 0
+    
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == player:
+                pieces += 1
+                if (r, c) not in visited:
+                    # New group found
+                    groups += 1
+                    stack = [(r, c)]
+                    visited.add((r, c))
+                    while stack:
+                        cr, cc = stack.pop()
+                        for dr in [-1, 0, 1]:
+                            for dc in [-1, 0, 1]:
+                                if dr == 0 and dc == 0:
+                                    continue
+                                nr, nc = cr + dr, cc + dc
+                                if (0 <= nr < 8 and 0 <= nc < 8 and 
+                                    board[nr][nc] == player and (nr, nc) not in visited):
+                                    visited.add((nr, nc))
+                                    stack.append((nr, nc))
+    return groups, pieces

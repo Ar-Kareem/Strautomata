@@ -1,0 +1,63 @@
+
+import numpy as np
+
+def is_valid_move(board, from_row, from_col, to_row, to_col):
+    if board[from_row][from_col] != 1 or board[to_row][to_col] != 0:
+        return False
+    
+    direction_row = np.sign(to_row - from_row)
+    direction_col = np.sign(to_col - from_col)
+    
+    # Check path is clear
+    current_row, current_col = from_row, from_col
+    while (current_row != to_row or current_col != to_col):
+        current_row += direction_row
+        current_col += direction_col
+        if (current_row < 0 or current_row > 5 or
+            current_col < 0 or current_col > 5 or
+            board[current_row][current_col] != 0):
+            return False
+            
+    return True
+
+def can_shoot_arrow(board, row, col, arrow_row, arrow_col):
+    if board[arrow_row][arrow_col] != 0:
+        return False
+    
+    direction_row = np.sign(arrow_row - row)
+    direction_col = np.sign(arrow_col - col)
+
+    current_row, current_col = row, col
+    while (current_row != arrow_row or current_col != arrow_col):
+        current_row += direction_row
+        current_col += direction_col
+        if (current_row < 0 or current_row > 5 or
+            current_col < 0 or current_col > 5):
+            return False
+            
+    return True
+
+def policy(board) -> str:
+    possible_moves = []
+    for row in range(6):
+        for col in range(6):
+            if board[row][col] == 1:  # Our amazon
+                # Check all possible moves (in straight lines)
+                for delta_row in range(-5, 6):
+                    for delta_col in range(-5, 6):
+                        if abs(delta_row) == abs(delta_col) or (delta_row == 0) or (delta_col == 0):  # Queen move
+                            to_row = row + delta_row
+                            to_col = col + delta_col
+                            if 0 <= to_row < 6 and 0 <= to_col < 6:
+                                if is_valid_move(board, row, col, to_row, to_col):
+                                    # If move is valid, check possible arrow shots
+                                    for shoot_row in range(6):
+                                        for shoot_col in range(6):
+                                            if can_shoot_arrow(board, to_row, to_col, shoot_row, shoot_col):
+                                                possible_moves.append(f"{row},{col}:{to_row},{to_col}:{shoot_row},{shoot_col}")
+
+    if possible_moves:
+        # Choose a move; for simplicity, let's take the first one
+        return possible_moves[0]
+
+    return "No move available"  # This should theoretically never happen due to constraints from the prompt

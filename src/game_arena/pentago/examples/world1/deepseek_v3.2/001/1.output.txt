@@ -1,0 +1,205 @@
+The strategy is to evaluate potential moves by simulating the placement and rotation, then scoring them based on both immediate win potential and positional advantages. I'll use a minimax with depth 1 (since time is limited) to consider opponent's best response, and focus on creating threats while blocking the opponent's immediate wins. Key considerations:  
+- First, check if I can win in one move.  
+- Then, check if opponent could win on their next turn and block that.  
+- Otherwise, evaluate moves based on:  
+  - Creating open 4-in-a-rows that can be extended.  
+  - Controlling the center of each quadrant for rotation flexibility.  
+  - Avoiding rotations that give opponent a winning alignment.  
+- Use a simple heuristic: count potential lines of length 3 and 4, weighted higher for open-ended ones.  
+- Random choice among equally good moves to avoid being predictable.  
+
+I'll implement helper functions for:  
+1. Rotating a quadrant.  
+2. Checking win condition (5+ in a row).  
+3. Evaluating board state.  
+4. Generating all legal moves.  
+
+<code>
+import random
+import numpy as np
+
+def policy(you, opponent):
+    # Convert to numpy arrays for easier manipulation
+    you_arr = np.array(you, dtype=int)
+    opp_arr = np.array(opponent, dtype=int)
+    
+    # Define quadrant boundaries
+    quad_bounds = {
+        0: ((0, 3), (0, 3)),
+        1: ((0, 3), (3, 6)),
+        2: ((3, 6), (0, 3)),
+        3: ((3, 6), (3, 6))
+    }
+    
+    def rotate_quadrant(board, quad, direction):
+        """Rotate the given quadrant in-place on board (numpy array)."""
+        board = board.copy()
+        (r_start, r_end), (c_start, c_end) = quad_bounds[quad]
+        sub = board[r_start:r_end, c_start:c_end].copy()
+        if direction == 'R':  # clockwise
+            rotated = np.rot90(sub, k=-1)
+        else:  # 'L', counterclockwise
+            rotated = np.rot90(sub, k=1)
+        board[r_start:r_end, c_start:c_end] = rotated
+        return board
+    
+    def check_win(board):
+        """Return True if there is at least one 5-in-a-row on board."""
+        # Horizontal
+        for r in range(6):
+            for c in range(2):
+                if np.sum(board[r, c:c+5]) == 5:
+                    return True
+        # Vertical
+        for r in range(2):
+            for c in range(6):
+                if np.sum(board[r:r+5, c]) == 5:
+                    return True
+        # Diagonal down-right
+        for r in range(2):
+            for c in range(2):
+                if sum(board[r+i, c+i] for i in range(5)) == 5:
+                    return True
+        # Diagonal up-right
+        for r in range(4, 6):
+            for c in range(2):
+                if sum(board[r-i, c+i] for i in range(5)) == 5:
+                    return True
+        return False
+    
+    def evaluate(board_you, board_opp):
+        """Heuristic score: positive is good for you."""
+        score = 0
+        # Prefer center control: weight cells by distance from center
+        center = (2.5, 2.5)
+        for r in range(6):
+            for c in range(6):
+                if board_you[r, c] == 1:
+                    dist = ((r - center[0])**2 + (c - center[1])**2)
+                    score += 1 - dist / 25  # max dist ~ sqrt(12.5) ~ 3.5
+                elif board_opp[r, c] == 1:
+                    dist = ((r - center[0])**2 + (c - center[1])**2)
+                    score -= 1 - dist / 25
+        
+        # Count potential lines of length 4 and 3
+        for length, weight in [(4, 10), (3, 3)]:
+            # Horizontal
+            for r in range(6):
+                for c in range(7 - length):
+                    you_cnt = np.sum(board_you[r, c:c+length])
+                    opp_cnt = np.sum(board_opp[r, c:c+length])
+                    if you_cnt == length and opp_cnt == 0:
+                        score += weight
+                    if opp_cnt == length and you_cnt == 0:
+                        score -= weight
+            # Vertical
+            for r in range(7 - length):
+                for c in range(6):
+                    you_cnt = np.sum(board_you[r:r+length, c])
+                    opp_cnt = np.sum(board_opp[r:r+length, c])
+                    if you_cnt == length and opp_cnt == 0:
+                        score += weight
+                    if opp_cnt == length and you_cnt == 0:
+                        score -= weight
+            # Diagonal down-right
+            for r in range(7 - length):
+                for c in range(7 - length):
+                    you_cnt = sum(board_you[r+i, c+i] for i in range(length))
+                    opp_cnt = sum(board_opp[r+i, c+i] for i in range(length))
+                    if you_cnt == length and opp_cnt == 0:
+                        score += weight
+                    if opp_cnt == length and you_cnt == 0:
+                        score -= weight
+            # Diagonal up-right
+            for r in range(length-1, 6):
+                for c in range(7 - length):
+                    you_cnt = sum(board_you[r-i, c+i] for i in range(length))
+                    opp_cnt = sum(board_opp[r-i, c+i] for i in range(length))
+                    if you_cnt == length and opp_cnt == 0:
+                        score += weight
+                    if opp_cnt == length and you_cnt == 0:
+                        score -= weight
+        return score
+    
+    # Generate all possible moves
+    legal_moves = []
+    empty_cells = np.where((you_arr + opp_arr) == 0)
+    for r_idx, c_idx in zip(empty_cells[0], empty_cells[1]):
+        r, c = r_idx + 1, c_idx + 1  # 1-indexed for output
+        for quad in range(4):
+            for direction in ('L', 'R'):
+                # Simulate the move
+                new_you = you_arr.copy()
+                new_opp = opp_arr.copy()
+                new_you[r_idx, c_idx] = 1
+                new_you = rotate_quadrant(new_you, quad, direction)
+                new_opp = rotate_quadrant(new_opp, quad, direction)
+                legal_moves.append(((r, c, quad, direction), new_you, new_opp))
+    
+    # Check for immediate winning moves
+    winning_moves = []
+    for move, new_you, new_opp in legal_moves:
+        if check_win(new_you):
+            winning_moves.append(move)
+    if winning_moves:
+        chosen = random.choice(winning_moves)
+        return f"{chosen[0]},{chosen[1]},{chosen[2]},{chosen[3]}"
+    
+    # Check for opponent's possible win next turn
+    blocking_moves = []
+    for move, new_you, new_opp in legal_moves:
+        opponent_can_win = False
+        # Generate opponent's responses
+        opp_empty = np.where((new_you + new_opp) == 0)
+        for or_idx, oc_idx in zip(opp_empty[0], opp_empty[1]):
+            for oquad in range(4):
+                for odir in ('L', 'R'):
+                    opp_you = new_you.copy()
+                    opp_opp = new_opp.copy()
+                    opp_opp[or_idx, oc_idx] = 1
+                    opp_you = rotate_quadrant(opp_you, oquad, odir)
+                    opp_opp = rotate_quadrant(opp_opp, oquad, odir)
+                    if check_win(opp_opp):
+                        opponent_can_win = True
+                        break
+            if opponent_can_win:
+                break
+        if not opponent_can_win:
+            blocking_moves.append((move, new_you, new_opp))
+    
+    # If we have moves that block all immediate opponent wins, use those
+    candidates = blocking_moves if blocking_moves else legal_moves
+    
+    # Choose the move with highest heuristic score
+    best_score = -float('inf')
+    best_moves = []
+    for move, new_you, new_opp in candidates:
+        # Evaluate after my move, then consider opponent's best response
+        score = evaluate(new_you, new_opp)
+        # Look one step ahead: opponent's best move (minimizing my evaluation)
+        opp_best = float('inf')
+        opp_empty = np.where((new_you + new_opp) == 0)
+        for or_idx, oc_idx in zip(opp_empty[0], opp_empty[1]):
+            for oquad in range(4):
+                for odir in ('L', 'R'):
+                    opp_you = new_you.copy()
+                    opp_opp = new_opp.copy()
+                    opp_opp[or_idx, oc_idx] = 1
+                    opp_you = rotate_quadrant(opp_you, oquad, odir)
+                    opp_opp = rotate_quadrant(opp_opp, oquad, odir)
+                    opp_val = evaluate(opp_you, opp_opp)
+                    if opp_val < opp_best:
+                        opp_best = opp_val
+        if opp_best == float('inf'):
+            opp_best = 0
+        total_score = score - 0.5 * opp_best  # weight opponent's response
+        if total_score > best_score:
+            best_score = total_score
+            best_moves = [move]
+        elif abs(total_score - best_score) < 1e-6:
+            best_moves.append(move)
+    
+    # Random among equally good moves
+    chosen = random.choice(best_moves)
+    return f"{chosen[0]},{chosen[1]},{chosen[2]},{chosen[3]}"
+</code>

@@ -1,0 +1,122 @@
+
+import copy
+
+# All possible winning lines (indices 0‑8 correspond to cells (1,1) … (3,3))
+WIN_LINES = [
+    (0, 1, 2), (3, 4, 5), (6, 7, 8),          # rows
+    (0, 3, 6), (1, 4, 7), (2, 5, 8),          # columns
+    (0, 4, 8), (2, 4, 6)                      # diagonals
+]
+
+def is_winner(board, player):
+    """Return True if `player` has three marks in a line."""
+    for a, b, c in WIN_LINES:
+        if board[a] == board[b] == board[c] == player:
+            return True
+    return False
+
+def is_full(board):
+    """Return True if the board has no empty cells."""
+    return 'b' not in board
+
+def minimax(board, alpha, beta, is_maximizing, role, opponent):
+    """
+    Minimax with alpha‑beta pruning.
+    `role` is the player we are trying to maximise the score for.
+    `opponent` is the other player.
+    Returns 1 for a win of `role`, -1 for a loss, 0 for a draw/unresolved.
+    """
+    # Terminal checks
+    if is_winner(board, role):
+        return 1
+    if is_winner(board, opponent):
+        return -1
+    if is_full(board):
+        return 0
+
+    if is_maximizing:
+        max_val = -2  # worse than any legal score
+        for i in range(9):
+            if board[i] == 'b':
+                board[i] = role
+                val = minimax(board, alpha, beta, False, role, opponent)
+                board[i] = 'b'
+                if val > max_val:
+                    max_val = val
+                if val > alpha:
+                    alpha = val
+                if beta <= alpha:
+                    break   # beta cut‑off
+        return max_val
+    else:
+        min_val = 2   # worse than any legal score
+        for i in range(9):
+            if board[i] == 'b':
+                board[i] = opponent
+                val = minimax(board, alpha, beta, True, role, opponent)
+                board[i] = 'b'
+                if val < min_val:
+                    min_val = val
+                if val < beta:
+                    beta = val
+                if beta <= alpha:
+                    break   # alpha cut‑off
+        return min_val
+
+def policy(state, role):
+    """
+    Choose a legal move for `role` in the given `state`.
+    The state is a list of propositions; we only care about cell/4 facts.
+    """
+    # Build a flat board (index 0 = (1,1), 1 = (1,2), …, 8 = (3,3))
+    board = ['b'] * 9
+    for prop in state:
+        if prop[0] == 'cell':
+            row = int(prop[1])
+            col = int(prop[2])
+            owner = prop[3]
+            idx = (row - 1) * 3 + (col - 1)
+            board[idx] = owner
+
+    opponent = 'o' if role == 'x' else 'x'
+    legal_moves = [i for i in range(9) if board[i] == 'b']
+
+    # If no moves left (should not happen), return a dummy move
+    if not legal_moves:
+        return "mark(1,1)"
+
+    # 1) Immediate win for us?
+    for i in legal_moves:
+        board[i] = role
+        if is_winner(board, role):
+            board[i] = 'b'
+            row, col = i // 3 + 1, i % 3 + 1
+            return f"mark({row},{col})"
+        board[i] = 'b'
+
+    # 2) Block opponent's immediate win
+    for i in legal_moves:
+        board[i] = opponent
+        if is_winner(board, opponent):
+            board[i] = 'b'
+            row, col = i // 3 + 1, i % 3 + 1
+            return f"mark({row},{col})"
+        board[i] = 'b'
+
+    # 3) Use minimax to find the best move
+    best_move = None
+    best_score = -2
+    for i in legal_moves:
+        board[i] = role
+        score = minimax(board, -1, 1, False, role, opponent)
+        board[i] = 'b'
+        if score > best_score:
+            best_score = score
+            best_move = i
+
+    # Fallback (should never be needed)
+    if best_move is None:
+        best_move = legal_moves[0]
+
+    row, col = best_move // 3 + 1, best_move % 3 + 1
+    return f"mark({row},{col})"

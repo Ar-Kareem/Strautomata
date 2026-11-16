@@ -1,0 +1,184 @@
+The strategy for this policy uses iterative deepening alpha-beta search. The evaluation function combines piece count difference and mobility (number of legal moves). Moves are ordered by a simple heuristic to improve pruning. The search depth increases until the time limit is nearly reached (0.9 seconds), ensuring the best move found so far is returned.
+
+<code>
+import time
+import random
+
+ROWS =5
+COLS =6
+DIIRS = [(-1, 0, 'U'), (1, 0, 'D'), (0, -1, 'L'), (0, 1, 'R')]
+
+# Global start time for time management
+START_TIME =0.0
+
+def popcount(x):
+    """Count set bits, compatible with older Python."""
+    return x.bit_count() if hasattr(x, 'bit_count') else bin(x).count('1')
+
+def gen_moves(our_bb, opp_bb):
+    """Generate all legal moves for the player owning `our_bb`."""
+    moves = []
+    for idx in range(ROWS * COLS):
+        if (our_bb >> idx) & 1:
+            r = idx // COLS
+            c = idx % COLS
+            for dr, dc, dch in DIRS:
+                nr = r + dr
+                nc = c + dc
+                if 0 <= nr < ROWS and0 <= nc < COLS:
+                    nidx = nr * COLS + nc
+                    if (opp_bb >> nidx) & 1:
+                        moves.append((idx, nidx, dch))
+    return moves
+
+def apply_move(our_bb, opp_bb, src, dst):
+    """Apply a move, returning (next_player_bb, next_opponent_bb)."""
+    new_our = (our_bb & ~(1 << src)) | (1 << dst)
+    new_opp = opp_bb & ~(1 << dst)
+    # After our move, it's opponent's turn: their pieces are new_opp, ours are new_our
+    return new_opp, new_our
+
+def evaluate(our_bb, opp_bb):
+    """Heuristic evaluation from perspective of current player."""
+    our_moves = gen_moves(our_bb, opp_bb)
+    if not our_moves:
+        return -100000  # loss
+    opp_moves = gen_moves(opp_bb, our_bb)
+    if not opp_moves:
+        return 100000   # win
+    piece_diff = popcount(our_bb) - popcount(opp_bb)
+    mobility_diff = len(our_moves) - len(opp_moves)
+    return piece_diff * 100 + mobility_diff
+
+def order_moves(moves, our_bb, opp_bb):
+    """Simple move ordering to improve alpha-beta pruning."""
+    # Score each move by the number of legal moves the captured piece had
+    # (capturing a mobile piece is usually good)
+    def move_key(m):
+        src, dst, _ = m
+        # mobility of the opponent piece at dst
+        opp_moves_from_dst = 0
+        r = dst // COLS
+        c = dst % COLS
+        for dr, dc, _ in DIRS:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < ROWS and0 <= nc < COLS:
+                nidx = nr * COLS + nc
+                if (our_bb >> nidx) & 1:  # opponent's opponent is our_bb before move? Wait: from opponent's perspective, our pieces are their opponent. Here we want mobility of the captured piece. Captured piece is at dst, belongs to opp. Its moves are against our pieces.
+                    opp_moves_from_dst +=1
+        return -opp_moves_from_dst  # higher mobility -> lower key (more urgent)
+    return sorted(moves, key=move_key)
+
+def negamax(our_bb, opp_bb, depth, alpha, beta):
+    """Negamax with alpha-beta pruning."""
+    global START_TIME
+    if time.time() - START_TIME >0.95:
+        raise TimeoutError()
+    
+    moves = gen_moves(our_bb, opp_bb)
+    if not moves:
+        return -100000 + depth  # prefer delaying loss slightly
+    if depth ==0:
+        return evaluate(our_bb, opp_bb)
+    
+    # Order moves
+    moves = order_moves(moves, our_bb, opp_bb)
+    
+    best_val = -float('inf')
+    for src, dst, _ in moves:
+        new_our_for_opp, new_opp_for_opp = apply_move(our_bb, opp_bb, src, dst)
+        val = -negamax(new_our_for_opp, new_opp_for_opp, depth - 1, -beta, -alpha)
+        if val > best_val:
+            best_val = val
+        if val > alpha:
+            alpha = val
+        if alpha >= beta:
+            break
+    return best_val
+
+class TimeoutError(Exception):
+    pass
+
+def policy(you, opponent):
+    """Return the best move string for the clobber game."""
+    global START_TIME
+    START_TIME = time.time()
+    
+    try:
+        # Convert board arrays to bitboards
+        our_bb =0
+        opp_bb =0
+        for r in range(ROWS):
+            for c in range(COLS):
+                if you[r][c]:
+                    our_bb |= (1 << (r * COLS + c))
+                if opponent[r][c]:
+                    opp_bb |= (1 << (r * COLS + c))
+        
+        # Check if we have moves (game should not call us otherwise)
+        legal_moves = gen_moves(our_bb, opp_bb)
+        if not legal_moves:
+            # Should not happen, but return a dummy
+            return "0,0,U"
+        
+        best_move = legal_moves[0]
+        previous_time =0.0
+        
+        for depth in range(1, 50):
+            try:
+                alpha = -float('inf')
+                beta = float('inf')
+                current_best_val = -float('inf')
+                current_best_move = best_move
+                
+                # Order root moves
+                root_moves = order_moves(legal_moves, our_bb, opp_bb)
+                for src, dst, dch in root_moves:
+                    new_opp, new_our = apply_move(our_bb, opp_bb, src, dst)
+                    val = -negamax(new_our, new_opp, depth - 1, -beta, -alpha)
+                    if val > current_best_val:
+                        current_best_val = val
+                        current_best_move = (src, dst, dch)
+                        alpha = max(alpha, val)
+                
+                best_move = current_best_move
+                elapsed = time.time() - START_TIME
+                time_this_deepth = elapsed - previous_time
+                previous_time = elapsed
+                
+                # Time management: stop if next depth likely exceeds limit
+                if elapsed >0.9:
+                    break
+                if depth >1 and time_this_depth >0:
+                    # Rough estimate: next depth takes ~4x longer
+                    if time_this_deepth * 4 >0.95 - elapsed:
+                        break
+                        
+            except TimeoutError:
+                break
+        
+        # Format and return best move
+        src, dst, dch = best_move
+        src_r = src // COLS
+        src_c = src % COLS
+        return f"{src_r},{src_c},{dch}"
+    
+    except Exception:
+        # Fallback: return any legal move
+        # Recompute just in case
+        our_bb =0
+        opp_bb =0
+        for r in range(ROWS):
+            for c in range(COLS):
+                if you[r][c]:
+                    our_bb |= (1 << (r * COLS + c))
+                if opponent[r][c]:
+                    opp_bb |= (1 << (r * COLS + c))
+        moves = gen_moves(our_bb, opp_bb)
+        if moves:
+            src, dst, dch = moves[0]
+            src_r = src // COLS
+            src_c = src % COLS
+            return f"{src_r},{src_c},{dch}"
+        return "0,0,U"
+</code>

@@ -1,0 +1,76 @@
+
+import numpy as np
+
+def policy(horizontal, vertical, capture):
+    # Generate all possible moves
+    possible_moves = []
+    # Horizontal edges: 5 rows, 4 columns
+    for r in range(5):
+        for c in range(4):
+            if horizontal[r, c] == 0:
+                possible_moves.append((r, c, 'H'))
+    # Vertical edges: 4 rows, 5 columns
+    for r in range(4):
+        for c in range(5):
+            if vertical[r, c] == 0:
+                possible_moves.append((r, c, 'V'))
+
+    def evaluate_move(move):
+        r, c, d = move
+        capture_cnt = 0
+        affected_boxes = []
+
+        # Determine affected boxes
+        if d == 'H':
+            affected_boxes.append((r, c))
+            if r >= 1:
+                affected_boxes.append((r-1, c))
+        else:
+            affected_boxes.append((r, c))
+            if c >= 1:
+                affected_boxes.append((r, c-1))
+
+        # Calculate captures
+        for (br, bc) in affected_boxes:
+            top = horizontal[br][bc]
+            bottom = horizontal[br+1][bc]
+            left = vertical[br][bc]
+            right = vertical[br][bc+1]
+            if (top != 0) + (bottom != 0) + (left != 0) + (right != 0) == 4:
+                capture_cnt += 1
+
+        # Calculate 3-edge boxes created
+        three_edges = 0
+        for box in affected_boxes:
+            br, bc = box
+            top = horizontal[br][bc]
+            bottom = horizontal[br+1][bc]
+            left = vertical[br][bc]
+            right = vertical[br][bc+1]
+            if (top != 0) + (bottom != 0) + (left != 0) + (right != 0) == 3:
+                three_edges += 1
+
+        return (capture_cnt, three_edges)
+
+    # Evaluate all moves
+    evaluated = []
+    for move in possible_moves:
+        evaluated.append(evaluate_move(move))
+
+    # Split moves into captures and non-captures
+    captures = [m for m in evaluated if m[1] > 0]
+    if captures:
+        max_cap = max(m[1] for m in captures)
+        candidates = [m for m in captures if m[1] == max_cap]
+        # Minimize 3-edge boxes after capture moves
+        min_three = min(m[2] for m in candidates)
+        subgroup = [m for m in candidates if m[2] == min_three]
+    else:
+        # No captures: minimize 3-edge boxes
+        min_three = min(m[1] for m in evaluated)
+        subgroup = [m for m in evaluated if m[1] == min_three]
+
+    # Select lexicographically smallest move
+    candidates = [m for m in subgroup]
+    candidates.sort()
+    return f"{candidates[0][0]},{candidates[0][1]},{candidates[0][2]}"

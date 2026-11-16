@@ -1,0 +1,69 @@
+
+import numpy as np
+
+def get_queen_moves(board, start_pos, ignore_pos=None):
+    """Returns a list of all legal queen-like squares reachable from start_pos."""
+    rows, cols = board.shape
+    moves = []
+    directions = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
+    
+    r_start, c_start = start_pos
+    for dr, dc in directions:
+        for dist in range(1, 6):
+            nr, nc = r_start + dr * dist, c_start + dc * dist
+            if 0 <= nr < rows and 0 <= nc < cols:
+                # If the square is empty, or it is the square the amazon just vacated
+                if board[nr, nc] == 0 or (ignore_pos and (nr, nc) == ignore_pos):
+                    moves.append((nr, nc))
+                else:
+                    break
+            else:
+                break
+    return moves
+
+def policy(board) -> str:
+    my_amazons = np.argwhere(board == 1)
+    best_move = None
+    max_score = -float('inf')
+
+    # Heuristic: maximize mobility of the specific amazon after it moves
+    # and select a central/aggressive arrow shot.
+    
+    for start_r, start_c in my_amazons:
+        possible_tos = get_queen_moves(board, (start_r, start_c))
+        for to_r, to_c in possible_tos:
+            # Temporarily update board to find valid shots
+            # The square (start_r, start_c) is now empty
+            orig_val = board[start_r, start_c]
+            board[start_r, start_c] = 0
+            
+            possible_arrows = get_queen_moves(board, (to_r, to_c))
+            
+            # Simple heuristic: Score based on number of options this move creates
+            # plus a slight preference for moving to 'central' squares.
+            score = len(possible_arrows)
+            
+            if score > max_score:
+                if possible_arrows:
+                    arrow_r, arrow_c = possible_arrows[0] # Pick the first available shot
+                    max_score = score
+                    best_move = f"{start_r},{start_c}:{to_r},{to_c}:{arrow_r},{arrow_c}"
+            
+            # Revert board
+            board[start_r, start_c] = orig_val
+
+    # Fallback to any valid move if heuristic fails
+    if not best_move:
+        for start_r, start_c in my_amazons:
+            tos = get_queen_moves(board, (start_r, start_c))
+            if tos:
+                tr, tc = tos[0]
+                orig_val = board[start_r, start_c]
+                board[start_r, start_c] = 0
+                arrows = get_queen_moves(board, (tr, tc))
+                board[start_r, start_c] = orig_val
+                if arrows:
+                    ar, ac = arrows[0]
+                    return f"{start_r},{start_c}:{tr,tc}:{ar,ac}"
+
+    return best_move

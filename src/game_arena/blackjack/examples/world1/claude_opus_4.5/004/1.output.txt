@@ -1,0 +1,223 @@
+<thinking>
+Let me analyze this Blackjack-like game:
+
+1. There are 13 cards in each player's deck: A, 2, 3, 4, 5, 6, 7, 8, 9, 10, J, Q, K
+2. Card values: 2-10 are face value, J/Q/K = 10, A = 11 if hand <= T, else 1
+3. Target T is between 10 and 30
+4. Goal: Get as close to T as possible without going over (busting)
+
+Key insight: Since each player has their own 13-card deck, I can track which cards have been drawn and calculate probabilities for remaining cards.
+
+Let me think about the strategy:
+
+1. Calculate current hand value
+2. Calculate the remaining cards in my deck
+3. For each possible next card, calculate the probability of busting vs improving
+4. Compare expected value of hitting vs staying
+
+For the Ace handling:
+- If hand value > T, Ace counts as 1
+- If hand value <= T, Ace counts as 11
+
+Wait, I need to re-read the Ace rule. It says:
+- "A" → 11 (when the hand value is <= T) or 1 (when the hand value is > T)
+
+This seems to mean the Ace is valued based on whether including it would make the hand go over T. So if adding 11 would bust, we use 1 instead.
+
+Let me write a function to calculate hand value:
+- Sum up all non-Ace cards
+- For each Ace, add 11 if it keeps us <= T, otherwise add 1
+
+Actually, the standard Blackjack interpretation would be: count Aces as 11 first, then convert to 1 if needed to avoid busting.
+
+Let me implement a strategy:
+
+1. Calculate current hand value
+2. Identify remaining cards in the deck
+3. Calculate probability of busting if we hit
+4. Calculate expected final score if we stay vs hit
+
+For a simplified approach:
+- If current value is very close to T, stay
+- If busting probability is too high, stay
+- Otherwise, hit
+
+Let me think about what the opponent might do. Since we don't know the opponent's cards, we can assume they play optimally too. But for simplicity, let's focus on our own optimal play.
+
+A simple heuristic based on Blackjack strategy:
+- The "bust threshold" depends on T
+- If we're at T or T-1, definitely stay
+- If we're far from T and have low bust probability, hit
+
+Let me compute more carefully:
+
+For each possible hand value, we need to decide hit or stay based on:
+1. Probability of improving (getting closer to T without busting)
+2. Expected opponent score (harder to compute without knowing opponent's strategy)
+
+For a reasonable strategy, let's compute:
+- If I stay at current value V, what's my expected win rate?
+- If I hit, what's my expected win rate?
+
+This requires modeling the opponent, which is complex. Let me use a simpler heuristic:
+
+The average card value is roughly (1+2+3+4+5+6+7+8+9+10+10+10+10)/13 ≈ 6.54 (treating A as ~6 on average)
+
+Actually let's be more precise:
+- Cards 2-10: values 2-10
+- J, Q, K: value 10 each
+- A: value 11 or 1
+
+Sum without A: 2+3+4+5+6+7+8+9+10+10+10+10 = 84
+Average without A = 84/12 = 7
+
+If remaining cards are known, calculate exact probabilities.
+
+Strategy:
+1. Compute current hand value
+2. Compute remaining cards
+3. For each remaining card, compute new hand value
+4. Calculate probability of busting
+5. If probability of staying at current score and winning > hitting, stay
+
+Let me implement a threshold-based strategy:
+- Stay if hand value >= T - 4 (or some threshold based on bust probability)
+
+Actually, let me implement a more sophisticated approach using dynamic programming or expected value calculation.
+
+For the final policy, I'll:
+1. Calculate exact bust probability based on remaining cards
+2. Use a threshold that balances risk of busting vs getting closer to T
+3. Consider that opponent likely aims for similar scores
+
+Here's my approach:
+- Calculate current score
+- Calculate probability of busting if we hit
+- Stay if score is close enough to T or bust probability is too high
+- A reasonable threshold: stay if score >= T - 3 or bust_prob > 0.5
+
+Let me refine this based on the target value and remaining cards.
+</thinking>
+
+<code>
+def policy(hand: list[str], target: int) -> str:
+    # Define card values
+    def card_value(card, current_sum):
+        if card in ['J', 'Q', 'K']:
+            return 10
+        elif card == 'A':
+            # Ace is 11 if it doesn't bust, else 1
+            if current_sum + 11 <= target:
+                return 11
+            else:
+                return 1
+        else:
+            return int(card)
+    
+    def calculate_hand_value(cards):
+        # First sum non-aces
+        total = 0
+        aces = 0
+        for c in cards:
+            if c == 'A':
+                aces += 1
+            elif c in ['J', 'Q', 'K']:
+                total += 10
+            else:
+                total += int(c)
+        
+        # Add aces - use 11 if possible, else 1
+        for _ in range(aces):
+            if total + 11 <= target:
+                total += 11
+            else:
+                total += 1
+        
+        return total
+    
+    current_value = calculate_hand_value(hand)
+    
+    # If already at or above target, must stay
+    if current_value >= target:
+        return "STAY"
+    
+    # Determine remaining cards in deck
+    all_cards = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K']
+    remaining = []
+    hand_copy = list(hand)
+    for c in all_cards:
+        if c in hand_copy:
+            hand_copy.remove(c)
+        else:
+            remaining.append(c)
+    
+    if not remaining:
+        return "STAY"
+    
+    # Calculate probability of busting if we hit
+    bust_count = 0
+    improve_count = 0
+    total_remaining = len(remaining)
+    
+    for card in remaining:
+        new_value = current_value + card_value(card, current_value)
+        if new_value > target:
+            bust_count += 1
+        elif new_value > current_value:
+            improve_count += 1
+    
+    bust_prob = bust_count / total_remaining
+    
+    # Calculate expected value if we hit (simplified)
+    expected_if_hit = 0
+    for card in remaining:
+        new_value = current_value + card_value(card, current_value)
+        if new_value > target:
+            expected_if_hit += 0  # Bust = bad
+        else:
+            expected_if_hit += new_value
+    expected_if_hit /= total_remaining
+    
+    # Strategy based on current position relative to target
+    distance_to_target = target - current_value
+    
+    # More aggressive strategy calibration
+    # If we're far from target, we should hit
+    # If we're close, risk of busting matters more
+    
+    # Threshold based approach with dynamic risk tolerance
+    # Higher targets mean we need to be more aggressive
+    
+    # Calculate a "safe" threshold to stay
+    # This depends on remaining cards and target
+    
+    # Simple heuristic: stay if we're within a reasonable range and bust risk is high
+    
+    # Average remaining card value
+    avg_card = sum(card_value(c, current_value) for c in remaining) / len(remaining)
+    
+    # If current value + average card would overshoot, consider staying
+    if current_value + avg_card > target and current_value >= target - 4:
+        if bust_prob > 0.4:
+            return "STAY"
+    
+    # If very close to target, stay unless bust probability is very low
+    if distance_to_target <= 2:
+        return "STAY"
+    
+    if distance_to_target <= 4:
+        if bust_prob > 0.35:
+            return "STAY"
+        return "HIT"
+    
+    if distance_to_target <= 6:
+        if bust_prob > 0.5:
+            return "STAY"
+        return "HIT"
+    
+    # Far from target - hit unless very high bust probability
+    if bust_prob > 0.65:
+        return "STAY"
+    
+    return "HIT"
+</code>

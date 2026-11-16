@@ -1,0 +1,529 @@
+
+import numpy as np
+import time
+import math
+import random
+
+# ---------------------------------------------------------
+# Configuration & Constants
+# ---------------------------------------------------------
+BOARD_SIZE = 15
+INF = 10**9
+
+# ---------------------------------------------------------
+# Geometry & Board State
+# ---------------------------------------------------------
+
+def get_neighbors(r, c):
+    """
+    Returns a list of valid (r, c) neighbors on the hexagonal grid.
+    Board is offset rows (odd-r).
+    Even rows: (r, c-1), (r, c+1), (r-1, c), (r-1, c-1), (r+1, c), (r+1, c-1)
+    Odd rows:  (r, c-1), (r, c+1), (r-1, c), (r-1, c+1), (r+1, c), (r+1, c+1)
+    """
+    neighbors = []
+    if r % 2 == 0: # Even row
+        diffs = [ (0, -1), (0, 1), (-1, 0), (-1, -1), (1, 0), (1, -1) ]
+    else: # Odd row
+        diffs = [ (0, -1), (0, 1), (-1, 0), (-1, 1), (1, 0), (1, 1) ]
+    
+    for dr, dc in diffs:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE:
+            neighbors.append((nr, nc))
+    return neighbors
+
+def get_all_neighbors():
+    """Precompute neighbors for the entire board."""
+    n = BOARD_SIZE
+    neighbors_map = [[[] for _ in range(n)] for _ in range(n)]
+    for r in range(n):
+        for c in range(n):
+            neighbors_map[r][c] = get_neighbors(r, c)
+    return neighbors_map
+
+NEIGHBORS = get_all_neighbors()
+
+# ---------------------------------------------------------
+# Win Condition Detection
+# ---------------------------------------------------------
+
+def detect_ring(stones, valid_mask):
+    """
+    Detects if 'stones' form a ring.
+    A ring is a cycle of stones encircling at least one cell.
+    We use a flood fill approach: start from an empty cell inside a potential ring
+    and see if it touches the boundary. If the empty region is fully enclosed by stones,
+    it's a ring.
+    
+    Note: This is computationally expensive. We optimize by checking local clusters.
+    """
+    stone_set = set(stones)
+    visited = set()
+    
+    # Only check empty spots that are surrounded by stones
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if (r, c) in stone_set or (r, c) in visited:
+                continue
+            if not valid_mask[r][c]:
+                continue
+                
+            # Flood fill
+            stack = [(r, c)]
+            region = set()
+            is_enclosed = True
+            touched_boundary = False
+            
+            # Limit flood fill size to avoid deep recursion on large empty areas
+            # A ring must be relatively small on a 15x15 board in early/mid game
+            max_flood_size = 20 
+            count = 0
+            
+            while stack and count < max_flood_size:
+                curr = stack.pop()
+                if curr in region:
+                    continue
+                region.add(curr)
+                count += 1
+                
+                for nr, nc in NEIGHBORS[curr[0]][curr[1]]:
+                    if (nr, nc) in stone_set:
+                        continue
+                    # If we hit the edge of the board, it's not enclosed
+                    if nr == 0 or nr == BOARD_SIZE - 1 or nc == 0 or nc == BOARD_SIZE - 1:
+                        touched_boundary = True
+                        is_enclosed = False
+                        break
+                    if (nr, nc) not in region:
+                        stack.append((nr, nc))
+            
+            visited.update(region)
+            
+            if is_enclosed and not touched_boundary and len(region) > 0:
+                # Verify that the region is actually surrounded by 'stones' (connected loop)
+                # A simple check: the boundary of the region must be stones
+                boundary_stones = 0
+                for cell in region:
+                    for neighbor in NEIGHBORS[cell[0]][cell[1]]:
+                        if neighbor in stone_set:
+                            boundary_stones += 1
+                # Heuristic threshold: a valid ring usually has a high density of boundary stones
+                if boundary_stones >= len(region) * 2: 
+                    return True
+    return False
+
+def detect_bridge_fork(stones, is_fork=False):
+    """
+    Detects Bridge (connects 2 corners) or Fork (connects 3 edges).
+    Uses BFS on the stone graph to check reachability to target sets.
+    """
+    stone_set = set(stones)
+    if len(stones) < 2: return False
+    
+    # Define Targets
+    # Corners for Bridge: (0,0), (0,14), (14,0), (14,14), (7,0), (7,14) -> Actually Havannah corners are specific
+    # The board is hex. Corners are single cells.
+    corners = {(0,0), (0,14), (14,0), (14,14), (7,0), (7,14)}
+    
+    # Edges for Fork
+    # Edge 1: Top (row 0), Edge 2: Bottom (row 14), Edge 3: Left (col 0), Edge 4: Right (col 14)
+    # Note: In Hex/Havannah, corners belong to edges but are distinct.
+    # Fork: Connect 3 distinct edges.
+    
+    # BFS to find connected components
+    visited = set()
+    components = []
+    
+    for start in stones:
+        if start in visited:
+            continue
+        
+        comp = set()
+        q = [start]
+        visited.add(start)
+        
+        while q:
+            curr = q.pop(0)
+            comp.add(curr)
+            
+            for neighbor in NEIGHBORS[curr[0]][curr[1]]:
+                if neighbor in stone_set and neighbor not in visited:
+                    visited.add(neighbor)
+                    q.append(neighbor)
+        
+        components.append(comp)
+    
+    # Check conditions on components
+    for comp in components:
+        # Find which targets this component touches
+        touched_corners = sum(1 for c in corners if c in comp)
+        
+        # Check edges (excluding corners for strict fork definition, but usually corners count)
+        # Let's simplify: A component touches an edge if it has a stone on that edge.
+        touched_edges = set()
+        for r, c in comp:
+            if r == 0: touched_edges.add('TOP')
+            if r == BOARD_SIZE - 1: touched_edges.add('BOTTOM')
+            if c == 0: touched_edges.add('LEFT')
+            if c == BOARD_SIZE - 1: touched_edges.add('RIGHT')
+            # Diagonal edges in hex are harder, but Havannah defines them as 6 corners + 4 sides?
+            # Actually, standard Havannah is on a hex board.
+            # Let's stick to the prompt: "6 corners" and "3 edges".
+            # Hex geometry: Left/Right are straight columns. Top/Bottom are zig-zags.
+            # Prompt says: "Corner points are not considered parts of an edge".
+            pass
+            
+        if not is_fork:
+            # Bridge: Connect 2 corners
+            if touched_corners >= 2:
+                return True
+        
+        if is_fork:
+            # Fork: Connect 3 edges (or distinct edges/corners)
+            # If we touch 3 distinct edges, it's a fork.
+            if len(touched_edges) >= 3:
+                return True
+            # Or if we touch corners that span edges. 
+            # Prompt: "connects any three edges". 
+            # Let's assume standard interpretation: reaching 3 sides.
+            # Simple heuristic: if a component touches 3 of 4 board sides.
+            if len(touched_edges) >= 3:
+                return True
+                
+    return False
+
+def check_win(stones, valid_mask):
+    if len(stones) < 4: return False # Minimum for Ring/Bridge/Fork is usually > 2
+    if detect_ring(stones, valid_mask): return True
+    if detect_bridge_fork(stones, is_fork=False): return True
+    if detect_bridge_fork(stones, is_fork=True): return True
+    return False
+
+# ---------------------------------------------------------
+# Heuristics & Evaluation
+# ---------------------------------------------------------
+
+def group_liberties(stones, empty_mask):
+    """Returns a score based on connectivity and liberties."""
+    score = 0
+    stone_set = set(stones)
+    visited = set()
+    
+    for s in stones:
+        if s in visited: continue
+        # BFS for component
+        comp = []
+        q = [s]
+        visited.add(s)
+        while q:
+            curr = q.pop(0)
+            comp.append(curr)
+            for n in NEIGHBORS[curr[0]][curr[1]]:
+                if n in stone_set and n not in visited:
+                    visited.add(n)
+                    q.append(n)
+        
+        # Score based on size and liberties
+        liberties = 0
+        lib_set = set()
+        for cell in comp:
+            for n in NEIGHBORS[cell[0]][cell[1]]:
+                if empty_mask[n[0]][n[1]] and n not in stone_set:
+                    lib_set.add(n)
+        
+        # Score formula: Component Size * 2 + Liberties
+        score += len(comp) * 2 + len(lib_set)
+        
+    return score
+
+def distance_to_edges(r, c):
+    """Heuristic: distance to nearest edge. Closer to edge = better for Forks/Bridges."""
+    return min(r, BOARD_SIZE - 1 - r, c, BOARD_SIZE - 1 - c)
+
+def evaluate_state(my_stones, opp_stones, valid_mask):
+    """
+    Returns a heuristic score for 'my_stones' relative to 'opp_stones'.
+    Higher is better.
+    """
+    # If I win, score is max
+    if check_win(my_stones, valid_mask): return INF
+    # If opponent wins (and I didn't just block), score is min (handled in parent)
+    
+    my_mask = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=bool)
+    for r, c in my_stones: my_mask[r][c] = True
+    
+    opp_mask = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=bool)
+    for r, c in opp_stones: opp_mask[r][c] = True
+    
+    empty_mask = valid_mask & ~my_mask & ~opp_mask
+    
+    # 1. Group Dynamics
+    my_score = group_liberties(my_stones, empty_mask)
+    opp_score = group_liberties(opp_stones, empty_mask)
+    
+    # 2. Positional (Center vs Edges)
+    # Havannah encourages controlling the center to form rings, and edges for bridges.
+    # Balanced approach:
+    center_bonus = 0
+    for r, c in my_stones:
+        dist = distance_to_edges(r, c)
+        # Ring potential: Center is better
+        center_bonus += dist 
+        # Bridge potential: Edges are better
+        # We want a mix.
+        
+    total_score = my_score - opp_score + center_bonus * 0.5
+    
+    return total_score
+
+# ---------------------------------------------------------
+# Search Algorithm (MCTS / Heuristic)
+# ---------------------------------------------------------
+
+def get_best_heuristic_moves(my_stones, opp_stones, valid_mask, n=20):
+    """
+    Returns top N moves based on a heuristic function.
+    """
+    candidates = []
+    my_set = set(my_stones)
+    opp_set = set(opp_stones)
+    
+    # Find valid empty spots
+    empty_spots = []
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if valid_mask[r][c] and (r, c) not in my_set and (r, c) not in opp_set:
+                empty_spots.append((r, c))
+    
+    # Simple evaluation for each spot
+    for r, c in empty_spots:
+        # Quick check: does this move win immediately?
+        test_stones = my_stones + [(r, c)]
+        if check_win(test_stones, valid_mask):
+            return [(r, c)] # Return winning move immediately
+            
+        # Heuristic calculation
+        score = 0
+        
+        # 1. Proximity to own stones (connectivity)
+        dist_sum = 0
+        for oroc, ococ in my_stones:
+            # Hex distance approx
+            d = hex_distance(r, c, oroc, ococ)
+            if d <= 2: score += 5
+            elif d <= 4: score += 2
+        
+        # 2. Proximity to edges (potential bridges/forks)
+        edge_dist = distance_to_edges(r, c)
+        if edge_dist <= 2: score += 3
+        
+        # 3. Center control (potential rings)
+        center_dist = abs(r - 7) + abs(c - 7)
+        if center_dist <= 4: score += 3
+        
+        # 4. Block opponent (neighbor to opponent)
+        for oroc, ococ in opp_stones:
+            if (r, c) in NEIGHBORS[oroc][ococ]:
+                score += 4
+                break
+        
+        candidates.append((score, (r, c)))
+    
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    return [move for score, move in candidates[:n]]
+
+def hex_distance(r1, c1, r2, c2):
+    # Approximate hex distance on odd-r grid
+    # Convert to axial coordinates
+    # odd-r to axial: q = col - (row - (row&1)) / 2, r = row
+    x1 = c1 - (r1 - (r1 & 1)) // 2
+    y1 = r1
+    x2 = c2 - (r2 - (r2 & 1)) // 2
+    y2 = r2
+    return (abs(x1 - x2) + abs(y1 - y2) + abs((x1 + y1) - (x2 + y2))) // 2
+
+def mcts_simulation(root_my_stones, root_opp_stones, valid_mask, time_limit=0.8):
+    """
+    Perform a shallow MCTS search.
+    """
+    start_time = time.time()
+    
+    # 1. Identify Top Candidates (Expansion)
+    candidates = get_best_heuristic_moves(root_my_stones, root_opp_stones, valid_mask, n=15)
+    if not candidates:
+        return None
+        
+    if len(candidates) == 1:
+        return candidates[0]
+        
+    # Root node stats
+    # Map move -> [wins, visits]
+    move_stats = {move: [0.0, 0.0] for move in candidates}
+    
+    iterations = 0
+    while time.time() - start_time < time_limit:
+        iterations += 1
+        
+        # Select a move (UCB1)
+        # If root visits < 5, visit all once first
+        total_visits = sum(s[1] for s in move_stats.values())
+        
+        if total_visits < 5:
+            current_move = candidates[int(total_visits)]
+        else:
+            best_score = -1
+            best_move = None
+            for move, (wins, visits) in move_stats.items():
+                if visits == 0:
+                    ucb = INF
+                else:
+                    exploitation = wins / visits
+                    exploration = 1.4 * math.sqrt(math.log(total_visits) / visits)
+                    ucb = exploitation + exploration
+                if ucb > best_score:
+                    best_score = ucb
+                    best_move = move
+            current_move = best_move
+        
+        # Simulate (Rollout)
+        # Play a few steps for both players using greedy heuristics
+        sim_my_stones = list(root_my_stones)
+        sim_opp_stones = list(root_opp_stones)
+        sim_my_stones.append(current_move)
+        
+        # Simulation depth
+        sim_depth = 4
+        sim_valid = valid_mask.copy()
+        
+        sim_result = 0 # 1 win, 0 draw, -1 loss
+        
+        # Simulate opponent response
+        opp_moves = get_best_heuristic_moves(sim_opp_stones, sim_my_stones, sim_valid, n=5)
+        if opp_moves:
+            sim_opp_stones.append(opp_moves[0])
+            # Check if opponent wins
+            if check_win(sim_opp_stones, sim_valid):
+                sim_result = -1 # Loss
+        
+        if sim_result == 0:
+            # Simulate further for self
+            my_moves = get_best_heuristic_moves(sim_my_stones, sim_opp_stones, sim_valid, n=5)
+            if my_moves:
+                 # Just checking potential
+                 pass
+        
+        # If no immediate win/loss, evaluate state
+        if sim_result == 0:
+            eval_score = evaluate_state(sim_my_stones, sim_opp_stones, sim_valid)
+            if eval_score > 5: sim_result = 1
+            elif eval_score < -5: sim_result = -1
+            else: sim_result = 0
+            
+        # Update Stats
+        # Note: In this simple MCTS, we treat positive score as win, negative as loss for simplicity
+        if sim_result > 0:
+            move_stats[current_move][0] += 1
+            move_stats[current_move][1] += 1
+        else:
+            move_stats[current_move][1] += 1
+            
+    # Select best move based on visit count or win rate
+    best_move = None
+    max_visits = -1
+    max_winrate = -1
+    
+    for move, (wins, visits) in move_stats.items():
+        if visits > max_visits:
+            max_visits = visits
+            best_move = move
+            max_winrate = wins / visits if visits > 0 else 0
+        elif visits == max_visits:
+            if wins/visits > max_winrate:
+                best_move = move
+                max_winrate = wins / visits
+                
+    return best_move
+
+# ---------------------------------------------------------
+# Main Policy
+# ---------------------------------------------------------
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    """
+    Main entry point for the Havannah AI.
+    """
+    # 1. Immediate Win Check
+    # Check if any move creates a win
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if valid_mask[r][c]:
+                # Check if occupied
+                occupied = False
+                for mr, mc in me:
+                    if mr == r and mc == c: occupied = True
+                for orr, oc in opp:
+                    if orr == r and oc == c: occupied = True
+                if occupied: continue
+                
+                # Test move
+                test_me = me + [(r, c)]
+                if check_win(test_me, valid_mask):
+                    return (r, c)
+
+    # 2. Block Immediate Opponent Win
+    # Look for moves that opponent could play to win, and block them
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if valid_mask[r][c]:
+                occupied = False
+                for mr, mc in me:
+                    if mr == r and mc == c: occupied = True
+                for orr, oc in opp:
+                    if orr == r and oc == c: occupied = True
+                if occupied: continue
+                
+                # Test if opponent moves here
+                test_opp = opp + [(r, c)]
+                if check_win(test_opp, valid_mask):
+                    # Block it
+                    return (r, c)
+
+    # 3. MCTS Search
+    # Run MCTS to find best strategic move
+    best_move = mcts_simulation(me, opp, valid_mask)
+    
+    if best_move:
+        return best_move
+    
+    # 4. Fallback (Center or Random)
+    # If MCTS failed (unlikely), go to center
+    center = (BOARD_SIZE // 2, BOARD_SIZE // 2)
+    if valid_mask[center[0]][center[1]]:
+        # Check if occupied
+        occupied = False
+        for mr, mc in me:
+            if mr == center[0] and mc == center[1]: occupied = True
+        for orr, oc in opp:
+            if orr == center[0] and oc == center[1]: occupied = True
+        if not occupied:
+            return center
+            
+    # Last resort: random valid
+    valid_moves = []
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if valid_mask[r][c]:
+                occupied = False
+                for mr, mc in me:
+                    if mr == r and mc == c: occupied = True
+                for orr, oc in opp:
+                    if orr == r and oc == c: occupied = True
+                if not occupied:
+                    valid_moves.append((r, c))
+    if valid_moves:
+        return random.choice(valid_moves)
+    
+    # Should not happen
+    return (0, 0)
+

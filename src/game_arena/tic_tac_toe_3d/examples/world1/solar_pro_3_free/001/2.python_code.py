@@ -1,0 +1,230 @@
+
+from typing import List, Tuple, Optional
+import itertools
+
+# ---------- Global constants ----------
+MAX_DEPTH = 5          # depth limit for alpha‑beta search
+INF = 10**9           # large values for terminal win/loss signals
+
+# ---------- Pre‑computed data ----------
+# All possible 3‑cell lines on a 3×3×3 board (49 total).
+# For each direction vector (dx,dy,dz) ≠ (0,0,0) generate a line from every start cell
+# and deduplicate using a frozenset.
+WINNING_LINES: List[Tuple[Tuple[int, int, int],
+                        Tuple[int, int, int],
+                        Tuple[int, int, int]]] = []
+LINES_SET: set = set()
+DIRS = [(dx, dy, dz) for dx in (-1, 0, 1)
+              for dy in (-1, 0, 1)
+              for dz in (-1, 0, 1) if not (dx == 0 and dy == 0 and dz == 0)]
+
+for start_i, start_j, start_k in itertools.product(range(3), repeat=3):
+    for (dx, dy, dz) in DIRS:
+        cells = [
+            (start_i + dx * step,
+             start_j + dy * step,
+             start_k + dz * step)
+            for step in (0, 1, 2)
+        ]
+        # Keep only lines that stay inside the 0‑2 range.
+        if all(0 <= c[0] <= 2 and 0 <= c[1] <= 2 and 0 <= c[2] <= 2 for c in cells):
+            line = tuple(sorted(cells))           # canonical ordering
+            key = frozenset(line)                  # deduplicate
+            if key not in LINES_SET:
+                WINNING_LINES.append(line)
+                LINES_SET.add(key)
+
+# Cell weight = number of distinct winning lines that contain the cell.
+CELL_WEIGHTS: dict[Tuple[int, int, int], int] = {}
+for line in WINNING_LINES:
+    for coord in line:
+        CELL_WEIGHTS[coord] = CELL_WEIGHTS.get(coord, 0) + 1
+
+
+# ---------- Helper functions ----------
+def copy_board(board: List[List[List[int]]]) -> List[List[List[int]]]:
+    """Deep copy of the 3‑D board."""
+    return [[list(layer) for layer in board],]
+
+
+def empty_cells(board: List[List[List[int]]]) -> List[Tuple[int, int, int]]:
+    """Return all coordinates where value is 0."""
+    empties = []
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board[i][j][k] == 0:
+                    empties.append((i, j, k))
+    return empties
+
+
+def board_full(board: List[List[List[int]]]) -> bool:
+    """True when no empty cells remain."""
+    return not empty_cells(board)
+
+
+def find_win(board: List[List[List[int]]], player: int
+             ) -> Tuple[int, int, int] | None:
+    """Return any empty cell that completes a win for `player`."""
+    for line in WINNING_LINES:
+        vals = tuple(board[x][y][z] for (x, y, z) in line)
+        if vals.count(player) == 2 and vals.count(0) == 1:
+            for (x, y, z) in line:
+                if board[x][y][z] == 0:
+                    return (x, y, z)
+    return None
+
+
+def find_block(board: List[List[List[int]]]) -> Tuple[int, int, int] | None:
+    """Return any empty cell that stops opponent’s immediate win."""
+    opp = -1
+    for line in WINNING_LINES:
+        vals = tuple(board[x][y][z] for (x, y, z) in line)
+        if vals.count(opp) == 2 and vals.count(0) == 1:
+            for (x, y, z) in line:
+                if board[x][y][z] == 0:
+                    return (x, y, z)
+    return None
+
+
+def evaluate(board: List[List[List[int]]]) -> int:
+    """Heuristic: our two‑in‑a‑row chances minus opponent's."""
+    player, opp = 1, -1
+    score = 0
+    for line in WINNING_LINES:
+        vals = tuple(board[x][y][z] for (x, y, z) in line)
+        if vals.count(player) == 2 and vals.count(0) == 1:
+            score += 1                # creates a winning threat
+        if vals.count(opp) == 2 and vals.count(0) == 1:
+            score -= 1                # opponent threatens to win
+    return score
+
+
+def check_winner(board: List[List[List[int]]], player: int
+                 ) -> int | None:
+    """If `player` has three in a line, return that player."""
+    for line in WINNING_LINES:
+        vals = tuple(board[x][y][z] for (x, y, z) in line)
+        if vals == (player, player, player):
+            return player
+    return None
+
+
+def opponent_immediate_win(board: List[List[List[int]]],
+                           cell: Tuple[int, int, int]) -> bool:
+    """True if placing our mark at `cell` would give the opponent a forced win."""
+    temp = copy_board(board)
+    i, j, k = cell
+    temp[i][j][k] = 1
+    return check_winner(temp, -1) is not None
+
+
+# ---------- Minimax (alpha‑beta limited depth) ----------
+def minimax(board: List[List[List[int]]], depth: int,
+            alpha: int, beta: int, maximizing: bool
+            ) -> Tuple[int, Tuple[int, int, int] | None]:
+    """Return (value, best_move). Depth is limited to MAX_DEPTH."""
+    # Terminal states
+    if board_full(board):
+        return evaluate(board), None
+    if depth >= MAX_DEPTH:
+        # Look one step beyond the limit to catch an instant win/loss.
+        turn = 1 if maximizing else -1
+        winner = check_winner(board, turn)
+        if winner == turn:
+            return INF if maximizing else -INF
+        return evaluate(board), None
+
+    # Opponent already has a forced win → prune
+    if check_winner(board, -1):
+        return -INF, None
+
+    player = 1 if maximizing else -1
+    moves = empty_cells(board)
+    if not moves:
+        return evaluate(board), None
+
+    best_val = -INF if maximizing else INF
+    best_move: Optional[Tuple[int, int, int]] = None
+
+    for (i, j, k) in moves:
+        new_board = copy_board(board)
+        new_board[i][j][k] = player
+        val, _ = minimax(new_board, depth + 1, alpha, beta, not maximizing)
+        if maximizing:
+            if val > best_val:
+                best_val = val
+                best_move = (i, j, k)
+                alpha = max(alpha, val)
+        else:
+            if val < best_val:
+                best_val = val
+                best_move = (i, j, k)
+                beta = min(beta, val)
+        if beta <= alpha:            # prune
+            break
+
+    # If no legal move (should not happen) fall back to static weight.
+    if best_move is None:
+        best_move = max(CELL_WEIGHTS.items(),
+                       key=lambda kv: kv[1])[0]   # highest‑weight cell
+    return best_val, best_move
+
+
+# ---------- Policy ----------
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    """
+    Choose the next move for a 3×3×3 Tic‑Tac‑Toe game.
+    The board follows:
+        0  – empty
+        1  – our mark
+       -1 – opponent's mark
+    Returns a legal (i, j, k) tuple.
+    """
+
+    # 1️⃣ Immediate win
+    win_move = find_win(board, player=1)
+    if win_move:
+        return win_move
+
+    # 2️⃣ Immediate block (stop opponent's forced win)
+    block_move = find_block(board)
+    if block_move:
+        return block_move
+
+    # 3️⃣ Heuristic move: safest cells first, then static weight.
+    empties = empty_cells(board)
+    if not empties:
+        # Board is full – this case never occurs in normal play.
+        return (0, 0, 0)
+
+    # Filter out moves that would let the opponent win next turn.
+    safe_cells: List[Tuple[int, int, int]] = []
+    for cell in empties:
+        if opponent_immediate_win(board, cell):
+            continue
+        safe_cells.append(cell)
+
+    # If no safe cells remain, we must still play something (e.g. corner).
+    if not safe_cells:
+        # Return any remaining empty cell – the opponent’s win is forced.
+        return empties[0]
+
+    # Choose the cell with the highest static weight.
+    best_weight = -1
+    best_move: Optional[Tuple[int, int, int]] = None
+    for cell in safe_cells:
+        weight = CELL_WEIGHTS[cell]
+        if weight > best_weight:
+            best_weight = weight
+            best_move = cell
+        elif weight == best_weight:
+            # Tie‑breaker: static ordering (the first cell found) is fine.
+            pass
+
+    if best_move is None:
+        # Tie‑breaker fallback to shallow minimax (≤ MAX_DEPTH) to break symmetry.
+        _, move = minimax(board, depth=0, alpha=-INF, beta=INF, maximizing=True)
+        return move
+
+    return best_move

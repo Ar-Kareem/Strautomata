@@ -1,0 +1,377 @@
+The strategy for this policy is a fast tactical-and-shape heuristic for 19x19 Go:
+
+- Always generate only legal moves, with pass `(0, 0)` as a fallback if no legal move exists.
+- Prioritize urgent tactics first:
+  - capture opponent groups in atari,
+  - save our own groups in atari,
+  - attack weak opponent groups,
+  - connect our own weak groups.
+- Avoid obviously bad moves:
+  - suicide,
+  - self-atari unless it captures,
+  - filling our own true eyes.
+- Use simple opening preferences early in the game:
+  - favor star points, center, and 3rd/4th line development,
+  - avoid first-line plays unless tactical.
+- Score candidate moves with a lightweight simulation:
+  - stones captured,
+  - resulting liberties of the new group,
+  - saved stones,
+  - pressure on neighboring enemy groups,
+  - connections and cuts.
+
+This is not a full search engine, but it is fast, legal, and substantially stronger than random or purely local policies.
+
+<code>
+from typing import List, Tuple
+
+BOARD_SIZE = 19
+DIRS = ((1, 0), (-1, 0), (0, 1), (0, -1))
+
+STAR_POINTS = [
+    (3, 3), (3, 9), (3, 15),
+    (9, 3), (9, 9), (9, 15),
+    (15, 3), (15, 9), (15, 15),
+]
+
+OPENING_POINTS = [
+    (3, 3), (3, 15), (15, 3), (15, 15),
+    (3, 9), (9, 3), (9, 15), (15, 9),
+    (9, 9),
+]
+
+ALL_POINTS_ORDER = sorted(
+    [(r, c) for r in range(BOARD_SIZE) for c in range(BOARD_SIZE)],
+    key=lambda p: (
+        0 if p in OPENING_POINTS else 1,
+        abs(p[0] - 9) + abs(p[1] - 9),
+        abs(p[0] - 9),
+        abs(p[1] - 9),
+    ),
+)
+
+
+def neighbors(r: int, c: int):
+    for dr, dc in DIRS:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE:
+            yield nr, nc
+
+
+def collect_group(board, r: int, c: int):
+    color = board[r][c]
+    stack = [(r, c)]
+    seen = {(r, c)}
+    stones = []
+    liberties = set()
+
+    while stack:
+        x, y = stack.pop()
+        stones.append((x, y))
+        for nx, ny in neighbors(x, y):
+            v = board[nx][ny]
+            if v == 0:
+                liberties.add((nx, ny))
+            elif v == color and (nx, ny) not in seen:
+                seen.add((nx, ny))
+                stack.append((nx, ny))
+    return stones, liberties
+
+
+def analyze_board(board):
+    visited = set()
+    group_at = [[-1] * BOARD_SIZE for _ in range(BOARD_SIZE)]
+    groups = []
+
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if board[r][c] and (r, c) not in visited:
+                stones, liberties = collect_group(board, r, c)
+                gid = len(groups)
+                color = board[r][c]
+                for x, y in stones:
+                    visited.add((x, y))
+                    group_at[x][y] = gid
+                groups.append({
+                    "color": color,
+                    "stones": stones,
+                    "size": len(stones),
+                    "libs": liberties,
+                    "lib_count": len(liberties),
+                })
+    return groups, group_at
+
+
+def is_own_eye(board, r: int, c: int, color: int = 1) -> bool:
+    if board[r][c] != 0:
+        return False
+
+    # All orthogonal neighbors must be ours or off-board.
+    for dr, dc in DIRS:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE:
+            if board[nr][nc] != color:
+                return False
+
+    diag_good = 0
+    diag_total = 0
+    for dr in (-1, 1):
+        for dc in (-1, 1):
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE:
+                diag_total += 1
+                if board[nr][nc] == color:
+                    diag_good += 1
+            else:
+                diag_good += 1
+
+    # Interior: allow at most one bad diagonal. Edge/corner: all visible diagonals should be good.
+    if diag_total == 4:
+        return diag_good >= 3
+    return diag_good >= diag_total
+
+
+def simulate_move(board, r: int, c: int, color: int = 1):
+    if board[r][c] != 0:
+        return None
+
+    opp = 2 if color == 1 else 1
+    temp = [row[:] for row in board]
+    temp[r][c] = color
+
+    captured = 0
+    removed_groups = []
+    seen_enemy = set()
+
+    for nx, ny in neighbors(r, c):
+        if temp[nx][ny] == opp and (nx, ny) not in seen_enemy:
+            stones, libs = collect_group(temp, nx, ny)
+            for s in stones:
+                seen_enemy.add(s)
+            if not libs:
+                captured += len(stones)
+                removed_groups.append(stones)
+
+    for stones in removed_groups:
+        for x, y in stones:
+            temp[x][y] = 0
+
+    own_stones, own_libs = collect_group(temp, r, c)
+    if not own_libs:
+        return None  # suicide
+
+    return temp, captured, len(own_stones), len(own_libs), own_stones, own_libs
+
+
+def opening_bonus(r: int, c: int, total_stones: int) -> int:
+    dist_edge = min(r, c, BOARD_SIZE - 1 - r, BOARD_SIZE - 1 - c)
+    score = 0
+
+    if total_stones < 12:
+        if (r, c) in OPENING_POINTS:
+            score += 180
+        if dist_edge == 3:
+            score += 70
+        elif dist_edge == 2:
+            score += 40
+        elif dist_edge == 1:
+            score -= 20
+        elif dist_edge == 0:
+            score -= 80
+
+    elif total_stones < 40:
+        if (r, c) in STAR_POINTS:
+            score += 25
+        if dist_edge == 0:
+            score -= 40
+        elif dist_edge == 1:
+            score -= 10
+        elif dist_edge in (2, 3):
+            score += 15
+
+    else:
+        if dist_edge == 0:
+            score -= 10
+
+    return score
+
+
+def generate_candidates(board, groups, total_stones: int):
+    if total_stones == 0:
+        return [p for p in OPENING_POINTS if board[p[0]][p[1]] == 0]
+
+    cands = set()
+
+    # Urgent tactical liberties.
+    for g in groups:
+        lc = g["lib_count"]
+        if g["color"] == 1 and lc <= 2:
+            cands.update(g["libs"])
+        elif g["color"] == 2 and lc <= 3:
+            cands.update(g["libs"])
+
+    # Near existing stones: Manhattan distance <= 2.
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if board[r][c] != 0:
+                for dr in (-2, -1, 0, 1, 2):
+                    nr = r + dr
+                    if 0 <= nr < BOARD_SIZE:
+                        rem = 2 - abs(dr)
+                        for dc in range(-rem, rem + 1):
+                            nc = c + dc
+                            if 0 <= nc < BOARD_SIZE and board[nr][nc] == 0:
+                                cands.add((nr, nc))
+
+    # Keep a few strategic points available.
+    for p in OPENING_POINTS:
+        if board[p[0]][p[1]] == 0:
+            cands.add(p)
+
+    return list(cands)
+
+
+def evaluate_move(board, groups, group_at, r: int, c: int, total_stones: int) -> int:
+    if board[r][c] != 0:
+        return -10**18
+
+    adj_my = set()
+    adj_opp = set()
+    adj_my_count = 0
+    adj_opp_count = 0
+
+    for nx, ny in neighbors(r, c):
+        if board[nx][ny] == 1:
+            adj_my_count += 1
+            adj_my.add(group_at[nx][ny])
+        elif board[nx][ny] == 2:
+            adj_opp_count += 1
+            adj_opp.add(group_at[nx][ny])
+
+    score = 0
+
+    # Current-board tactical urgency.
+    threatened = False
+
+    for gid in adj_my:
+        g = groups[gid]
+        if (r, c) in g["libs"]:
+            lc = g["lib_count"]
+            sz = g["size"]
+            if lc == 1:
+                score += 900 + 80 * sz
+                threatened = True
+            elif lc == 2:
+                score += 150 + 12 * sz
+
+    for gid in adj_opp:
+        g = groups[gid]
+        if (r, c) in g["libs"]:
+            lc = g["lib_count"]
+            sz = g["size"]
+            if lc == 1:
+                score += 1000 + 100 * sz
+                threatened = True
+            elif lc == 2:
+                score += 280 + 25 * sz
+                threatened = True
+            elif lc == 3:
+                score += 50 + 5 * sz
+
+    # Connecting and contesting.
+    if len(adj_my) >= 2:
+        score += 180 * len(adj_my)
+    elif len(adj_my) == 1:
+        score += 35
+
+    if len(adj_opp) >= 2:
+        score += 60 * len(adj_opp)
+
+    score += 18 * adj_my_count + 12 * adj_opp_count
+
+    # Opening / line heuristic.
+    score += opening_bonus(r, c, total_stones)
+
+    # Avoid filling our own true eye unless tactically justified.
+    if is_own_eye(board, r, c, 1) and not threatened:
+        score -= 5000
+
+    sim = simulate_move(board, r, c, 1)
+    if sim is None:
+        return -10**18
+
+    temp, captured, own_size, own_lib_count, _, _ = sim
+
+    # Capture value.
+    score += 1500 * captured
+
+    # Resulting group health.
+    score += 35 * min(own_lib_count, 8)
+    score += 4 * own_size
+
+    if captured == 0:
+        if own_lib_count == 1:
+            score -= 2200
+        elif own_lib_count == 2:
+            score -= 180
+    else:
+        # Capturing can justify tighter shape.
+        if own_lib_count == 1:
+            score -= 200
+
+    # Pressure adjacent enemy groups after the move.
+    seen_enemy = set()
+    for nx, ny in neighbors(r, c):
+        if temp[nx][ny] == 2 and (nx, ny) not in seen_enemy:
+            stones, libs = collect_group(temp, nx, ny)
+            for s in stones:
+                seen_enemy.add(s)
+            lc = len(libs)
+            sz = len(stones)
+            if lc == 1:
+                score += 140 + 14 * sz
+            elif lc == 2:
+                score += 20 + 2 * sz
+
+    # Mild central tie-break.
+    score -= abs(r - 9) + abs(c - 9)
+
+    return score
+
+
+def first_legal(board):
+    for r, c in ALL_POINTS_ORDER:
+        if simulate_move(board, r, c, 1) is not None:
+            return r + 1, c + 1
+    return 0, 0
+
+
+def policy(me: List[Tuple[int, int]], opponent: List[Tuple[int, int]]) -> Tuple[int, int]:
+    board = [[0] * BOARD_SIZE for _ in range(BOARD_SIZE)]
+
+    for r, c in me:
+        if 1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE:
+            board[r - 1][c - 1] = 1
+    for r, c in opponent:
+        if 1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE:
+            board[r - 1][c - 1] = 2
+
+    total_stones = len(me) + len(opponent)
+    groups, group_at = analyze_board(board)
+    candidates = generate_candidates(board, groups, total_stones)
+
+    best_move = None
+    best_score = -10**18
+
+    for r, c in candidates:
+        s = evaluate_move(board, groups, group_at, r, c, total_stones)
+        if s > best_score:
+            best_score = s
+            best_move = (r, c)
+
+    if best_move is not None and simulate_move(board, best_move[0], best_move[1], 1) is not None:
+        return best_move[0] + 1, best_move[1] + 1
+
+    # Robust fallback: scan whole board for any legal move.
+    return first_legal(board)
+</code>

@@ -1,0 +1,121 @@
+
+import numpy as np
+import re
+import time
+
+# Piece values for material evaluation
+PIECE_VALUES = {'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000}
+
+# Bonus squares for positional evaluation (center control and development)
+CENTER_SQUARES = {'d4', 'e4', 'd5', 'e5', 'c3', 'c4', 'd3', 'e3', 'f3', 'f4', 'c5', 'f5'}
+EARLY_GAME_THRESHOLD = 28  # Number of pieces threshold for early game detection
+
+def extract_target_square(move, is_white):
+    """
+    Extract the target square from a SAN move string.
+    Handles castling, normal moves, captures, and promotions.
+    """
+    # Castling moves
+    if move.startswith('O-O'):
+        if move.startswith('O-O-O'):  # Queenside
+            return 'c1' if is_white else 'c8'
+        return 'g1' if is_white else 'g8'  # Kingside
+    
+    # Find all squares in the move string
+    squares = re.findall(r'[a-h][1-8]', move)
+    if not squares:
+        return None
+    
+    # Handle promotions: target is the square before '='
+    if '=' in move:
+        parts = move.split('=')
+        return parts[0][-2:]
+    
+    # For all other moves, target is the last square mentioned
+    return squares[-1]
+
+def policy(pieces, to_play, legal_moves, memory):
+    """
+    Select the best chess move using heuristic evaluation.
+    
+    Args:
+        pieces: Dict mapping squares to piece codes (e.g., 'e1': 'wK')
+        to_play: 'white' or 'black'
+        legal_moves: List of legal SAN move strings
+        memory: Persistent memory dictionary (unused but kept for API compliance)
+    
+    Returns:
+        tuple: (selected_move, memory_dict)
+    """
+    is_white = to_play == 'white'
+    
+    # 1. Check for immediate checkmate opportunities
+    for move in legal_moves:
+        if move.endswith('#'):
+            return move, memory
+    
+    # 2. Material gain: prioritize captures using MVV-LVA (Most Valuable Victim - Least Valuable Aggressor)
+    captures = []
+    for move in legal_moves:
+        if 'x' in move:
+            target_sq = extract_target_square(move, is_white)
+            if target_sq:
+                # Determine value of captured piece
+                captured = pieces.get(target_sq)
+                if captured and len(captured) >= 2:
+                    victim_value = PIECE_VALUES.get(captured[1], 0)
+                else:
+                    # En passant or parsing error: assume pawn captured
+                    victim_value = PIECE_VALUES['P']
+                captures.append((move, victim_value))
+    
+    # If captures exist, play the one with highest victim value
+    if captures:
+        captures.sort(key=lambda x: x[1], reverse=True)
+        # Always capture queen or higher if available
+        if captures[0][1] >= PIECE_VALUES['Q']:
+            return captures[0][0], memory
+        return captures[0][0], memory
+    
+    # 3. Checking moves: prioritize giving check when no good captures exist
+    for move in legal_moves:
+        if move.endswith('+'):
+            return move, memory
+    
+    # 4. Positional evaluation: score remaining moves based on heuristics
+    move_scores = []
+    is_early_game = len(pieces) > EARLY_GAME_THRESHOLD
+    
+    for move in legal_moves:
+        score = 0
+        target_sq = extract_target_square(move, is_white)
+        
+        if target_sq:
+            # Center control bonus
+            if target_sq in CENTER_SQUARES:
+                score += 30
+            
+            # Penalty for edge squares in early game
+            if is_early_game:
+                if 'a' in target_sq or 'h' in target_sq:
+                    score -= 5
+                if '1' in target_sq or '8' in target_sq:
+                    score -= 5
+            
+            # Early game development bonuses
+            if is_early_game:
+                # Encourage knight and bishop development
+                if move[0] in 'NB':
+                    score += 10
+                # Discourage early queen/rook activity
+                elif move[0] in 'QR':
+                    score -= 15
+                # Bonus for castling early
+                elif move.startswith('O-O'):
+                    score += 25
+        
+        move_scores.append((move, score))
+    
+    # Sort moves by score and return the best one
+    move_scores.sort(key=lambda x: x[1], reverse=True)
+    return move_scores[0][0], memory

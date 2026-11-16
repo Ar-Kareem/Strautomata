@@ -1,0 +1,270 @@
+The game is Clobber on a 5x6 board.
+I will implement a Minimax algorithm with Alpha-Beta pruning and Quiescence Search to select the best move. I will also use Zobrist hashing for transposition tables to improve efficiency, although the 1-second time limit and single call nature might limit its impact, it's good practice. The evaluation function will be based on piece count and mobility.
+
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    import random
+    import time
+
+    # Constants
+    ROWS = 5
+    COLS = 6
+    MAX_DEPTH = 10
+    TIME_LIMIT = 0.9  # Seconds
+    
+    # Directions
+    DIRS = [(-1, 0, 'U'), (0, 1, 'R'), (1, 0, 'D'), (0, -1, 'L')]
+    
+    start_time = time.time()
+    
+    # Helper to convert lists to bitboards
+    def to_bitboard(board_list):
+        bb = 0
+        for r in range(ROWS):
+            for c in range(COLS):
+                if board_list[r][c] == 1:
+                    bb |= (1 << (r * COLS + c))
+        return bb
+
+    me = to_bitboard(you)
+    opp = to_bitboard(opponent)
+    
+    # Zobrist Hashing Setup
+    # We need random numbers for each piece position (max 30) for each player (2)
+    # And for whose turn it is (1) - though we only search max depth from root, 
+    # so turn is implicit in depth or passed explicitly.
+    # Let's just use a simple random 64-bit int for each cell for me and opp.
+    ZOBRIST = [[random.getrandbits(64) for _ in range(2)] for _ in range(ROWS * COLS)]
+    
+    # Transposition Table
+    tt = {} # key: hash, value: (depth, score, flag, best_move)
+    
+    def get_moves(board, is_me):
+        # Returns list of (from_bit, to_bit, dir_char)
+        moves = []
+        for r in range(ROWS):
+            for c in range(COLS):
+                pos = r * COLS + c
+                bit = 1 << pos
+                if board & bit:
+                    # Check neighbors
+                    for dr, dc, d_char in DIRS:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < ROWS and 0 <= nc < COLS:
+                            n_pos = nr * COLS + nc
+                            n_bit = 1 << n_pos
+                            # If destination has opponent
+                            # We need to know opponent board. 
+                            # In this function we just have the current 'board' (moving player)
+                            # But we also need the opponent's board.
+                            # We will pass 'my_board', 'opp_board'
+                            pass 
+        # Actually, let's rewrite get_moves to take both boards
+        pass
+
+    # Revised Move Generation
+    def generate_moves(my_board, opp_board):
+        moves = []
+        # Iterate over all bits in my_board
+        temp = my_board
+        while temp:
+            lsb = temp & -temp
+            pos = (lsb.bit_length() - 1)
+            r, c = divmod(pos, COLS)
+            temp ^= lsb
+            
+            for dr, dc, d_char in DIRS:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < ROWS and 0 <= nc < COLS:
+                    n_pos = nr * COLS + nc
+                    n_bit = 1 << n_pos
+                    if opp_board & n_bit:
+                        moves.append((lsb, n_bit, d_char))
+        return moves
+
+    # Evaluation Function
+    def evaluate(my_board, opp_board):
+        # Piece count is crucial
+        my_count = bin(my_board).count('1')
+        opp_count = bin(opp_board).count('1')
+        
+        # If opponent has no pieces, it's a win (technically game ends when no moves, 
+        # but capturing last piece leaves 0 moves for opponent).
+        if opp_count == 0:
+            return 1000000 
+        
+        # Mobility
+        my_mob = len(generate_moves(my_board, opp_board))
+        opp_mob = len(generate_moves(opp_board, my_board))
+        
+        # Penalty for having no moves (losing state) should be handled by search
+        # But if we are at depth 0 and have no moves... (handled by caller)
+        
+        # Heuristic: Piece count * 100 + Mobility * 10
+        # We want to maximize my count and mobility, minimize opponent's
+        return (my_count - opp_count) * 100 + (my_mob - opp_mob) * 10
+
+    # Quiescence Search / Static Eval
+    def quiescence(my_board, opp_board, alpha, beta):
+        # Evaluate current position
+        stand_pat = evaluate(my_board, opp_board)
+        if stand_pat >= beta:
+            return beta
+        if alpha < stand_pat:
+            alpha = stand_pat
+            
+        # Only consider captures? In clobber, all moves are captures.
+        # So generate moves
+        moves = generate_moves(my_board, opp_board)
+        # Sort moves? Maybe good captures first? 
+        # All captures are equally good in terms of material (1 piece).
+        # But some might lead to better positions.
+        
+        for m in moves:
+            if time.time() - start_time > TIME_LIMIT:
+                return alpha # Return what we have
+            
+            # Make move
+            new_me = (my_board ^ m[0]) | m[1]
+            new_opp = opp_board ^ m[1]
+            
+            score = -quiescence(new_opp, new_me, -beta, -alpha)
+            
+            if score >= beta:
+                return beta
+            if score > alpha:
+                alpha = score
+        return alpha
+
+    # Minimax with Alpha-Beta
+    def search(my_board, opp_board, depth, alpha, beta, path, root=False):
+        if time.time() - start_time > TIME_LIMIT:
+            return 0, None # Timeout
+
+        # TT Lookup
+        # We use a simple hash combining piece positions
+        # Note: This ignores turn info if we mix up depths, but since we search strictly depth from root,
+        # and depth decreases, we can add depth to key or just be careful. 
+        # Actually, standard TT stores score for a given depth.
+        hash_key = 0 # Simple sum for now to avoid overhead of complex hashing if time is tight
+        # Let's skip TT for simplicity and safety in this constrained environment, 
+        # or use a very simple one.
+        # Let's use the zobrist keys.
+        z_key = 0
+        # Calculate Zobrist key: sum of ZOBRIST[pos][is_me]
+        # Iterating bits is expensive, let's just rely on heuristic if timeout is near.
+        
+        moves = generate_moves(my_board, opp_board)
+        
+        # Terminal conditions
+        if not moves:
+            # No moves -> Loss
+            # But wait, is it my turn? Yes.
+            # If I have no moves, I lose.
+            return -1000000, None # Very bad
+        
+        if depth == 0:
+            # Depth reached, switch to quiescence
+            score = quiescence(my_board, opp_board, alpha, beta)
+            return score, None
+            
+        best_move = moves[0]
+        
+        # Move ordering: prioritize capturing center or something?
+        # Simple: just iterate.
+        
+        for m in moves:
+            if time.time() - start_time > TIME_LIMIT:
+                return alpha, best_move # Return best found so far
+
+            new_me = (my_board ^ m[0]) | m[1]
+            new_opp = opp_board ^ m[1]
+            
+            # Recurse
+            # Pass path for root to record
+            score, _ = search(new_opp, new_me, depth - 1, -beta, -alpha, path, root=False)
+            score = -score
+            
+            if score >= beta:
+                return beta, m # Beta cutoff
+            
+            if score > alpha:
+                alpha = score
+                best_move = m
+                if root:
+                    # Update best move for root
+                    pass
+        
+        return alpha, best_move
+
+    # Main Logic
+    # Root call
+    best_move_str = None
+    
+    # Check immediate legal moves first to ensure we return one
+    moves = generate_moves(me, opp)
+    if not moves:
+        # Should not happen per prompt, but just in case
+        # Return dummy or raise error?
+        # Prompt says "You should assume policy is never called when there is no legal move"
+        # But let's handle it gracefully just in case.
+        # We can't return an empty string.
+        # We'll pick a dummy move that crashes if forced, but better to just pick first available.
+        # Since we can't, we'll just return the first possible index
+        return "0,0,U" # Fallback
+    
+    # If only one move, return it
+    if len(moves) == 1:
+        m = moves[0]
+        r = (m[0].bit_length() - 1) // COLS
+        c = (m[0].bit_length() - 1) % COLS
+        return f"{r},{c},{m[2]}"
+        
+    # Iterative Deepening
+    # We try depths 1 to MAX_DEPTH, but check time
+    best_overall_move = moves[0]
+    
+    for depth in range(1, MAX_DEPTH + 1):
+        if time.time() - start_time > TIME_LIMIT:
+            break
+            
+        alpha = -float('inf')
+        beta = float('inf')
+        
+        # We need to run search for this depth
+        # We need to handle the root level loop manually to update alpha/beta correctly across root moves
+        # The recursive search function returns best score and best move for the subtree.
+        # But at root, we want to explore all moves to depth 'depth'.
+        
+        current_best_move = None
+        current_best_score = -float('inf')
+        
+        # Root Loop
+        for m in moves:
+            if time.time() - start_time > TIME_LIMIT:
+                break
+                
+            new_me = (my_board ^ m[0]) | m[1]
+            new_opp = opp_board ^ m[1]
+            
+            # We search from opponent's perspective
+            score, _ = search(new_opp, new_me, depth - 1, -beta, -alpha, [], root=False)
+            score = -score
+            
+            if score > current_best_score:
+                current_best_score = score
+                current_best_move = m
+            
+            if score > alpha:
+                alpha = score
+                
+        if current_best_move:
+            best_overall_move = current_best_move
+            
+    # Format output
+    r = (best_overall_move[0].bit_length() - 1) // COLS
+    c = (best_overall_move[0].bit_length() - 1) % COLS
+    d = best_overall_move[2]
+    
+    return f"{r},{c},{d}"
+```

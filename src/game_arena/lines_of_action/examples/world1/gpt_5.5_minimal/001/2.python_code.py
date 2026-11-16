@@ -1,0 +1,384 @@
+
+import time
+import math
+
+DIRS = [
+    (-1, -1), (-1, 0), (-1, 1),
+    (0, -1),           (0, 1),
+    (1, -1),  (1, 0),  (1, 1)
+]
+
+INF = 10 ** 9
+
+
+def policy(board) -> str:
+    """
+    Return a legal Lines of Action move for the current player.
+
+    board: 8x8 list-like grid
+      1  = our piece
+     -1  = opponent piece
+      0  = empty
+    """
+    start = time.time()
+    limit = 0.92
+
+    b = tuple(tuple(int(x) for x in row) for row in board)
+    moves = generate_moves(b)
+
+    if not moves:
+        # This should essentially never happen in a valid LOA game state.
+        # Return a syntactically valid fallback.
+        for r in range(8):
+            for c in range(8):
+                if b[r][c] == 1:
+                    return f"{r},{c}:{r},{c}"
+        return "0,0:0,0"
+
+    # Immediate win if available.
+    best_move = moves[0]
+    best_quick = -INF
+    for mv in moves:
+        nb = make_move(b, mv)
+        if connected(nb, 1):
+            return fmt(mv)
+        sc = move_order_score(b, mv)
+        if sc > best_quick:
+            best_quick = sc
+            best_move = mv
+
+    # Iterative deepening. Depth 3 is often affordable; depth 4 in quiet positions.
+    max_depth = 3
+    if len(moves) <= 18:
+        max_depth = 4
+    elif len(moves) >= 45:
+        max_depth = 2
+
+    try:
+        for depth in range(1, max_depth + 1):
+            if time.time() - start > limit:
+                break
+
+            alpha = -INF
+            beta = INF
+            local_best = best_move
+            local_score = -INF
+
+            ordered = sorted(moves, key=lambda m: move_order_score(b, m), reverse=True)
+
+            for mv in ordered:
+                if time.time() - start > limit:
+                    raise TimeoutError
+
+                nb = make_move(b, mv)
+
+                # After our move, if we connected, it is a win.
+                if connected(nb, 1):
+                    score = INF - depth
+                else:
+                    child = switch_perspective(nb)
+                    score = -negamax(child, depth - 1, -beta, -alpha, start, limit)
+
+                if score > local_score:
+                    local_score = score
+                    local_best = mv
+
+                if score > alpha:
+                    alpha = score
+
+            best_move = local_best
+
+    except TimeoutError:
+        pass
+
+    return fmt(best_move)
+
+
+def fmt(mv):
+    r1, c1, r2, c2 = mv
+    return f"{r1},{c1}:{r2},{c2}"
+
+
+def inb(r, c):
+    return 0 <= r < 8 and 0 <= c < 8
+
+
+def line_count(board, r, c, dr, dc):
+    total = 1
+
+    rr, cc = r + dr, c + dc
+    while inb(rr, cc):
+        if board[rr][cc] != 0:
+            total += 1
+        rr += dr
+        cc += dc
+
+    rr, cc = r - dr, c - dc
+    while inb(rr, cc):
+        if board[rr][cc] != 0:
+            total += 1
+        rr -= dr
+        cc -= dc
+
+    return total
+
+
+def legal_move(board, r, c, dr, dc):
+    n = line_count(board, r, c, dr, dc)
+    tr = r + dr * n
+    tc = c + dc * n
+
+    if not inb(tr, tc):
+        return None
+
+    if board[tr][tc] == 1:
+        return None
+
+    # May jump over friendly pieces, but not enemy pieces.
+    rr, cc = r + dr, c + dc
+    while (rr, cc) != (tr, tc):
+        if board[rr][cc] == -1:
+            return None
+        rr += dr
+        cc += dc
+
+    return (r, c, tr, tc)
+
+
+def generate_moves(board):
+    moves = []
+    for r in range(8):
+        row = board[r]
+        for c in range(8):
+            if row[c] == 1:
+                for dr, dc in DIRS:
+                    mv = legal_move(board, r, c, dr, dc)
+                    if mv is not None:
+                        moves.append(mv)
+    return moves
+
+
+def make_move(board, mv):
+    r1, c1, r2, c2 = mv
+    nb = [list(row) for row in board]
+    nb[r1][c1] = 0
+    nb[r2][c2] = 1
+    return tuple(tuple(row) for row in nb)
+
+
+def switch_perspective(board):
+    return tuple(tuple(-x for x in row) for row in board)
+
+
+def positions(board, side):
+    ps = []
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == side:
+                ps.append((r, c))
+    return ps
+
+
+def connected(board, side):
+    ps = positions(board, side)
+    n = len(ps)
+    if n <= 1:
+        return True
+
+    pset = set(ps)
+    stack = [ps[0]]
+    seen = {ps[0]}
+
+    while stack:
+        r, c = stack.pop()
+        for dr, dc in DIRS:
+            q = (r + dr, c + dc)
+            if q in pset and q not in seen:
+                seen.add(q)
+                stack.append(q)
+
+    return len(seen) == n
+
+
+def component_info(board, side):
+    ps = positions(board, side)
+    if not ps:
+        return 0, 0
+
+    pset = set(ps)
+    seen = set()
+    comps = 0
+    largest = 0
+
+    for p in ps:
+        if p in seen:
+            continue
+
+        comps += 1
+        size = 0
+        stack = [p]
+        seen.add(p)
+
+        while stack:
+            r, c = stack.pop()
+            size += 1
+            for dr, dc in DIRS:
+                q = (r + dr, c + dc)
+                if q in pset and q not in seen:
+                    seen.add(q)
+                    stack.append(q)
+
+        if size > largest:
+            largest = size
+
+    return comps, largest
+
+
+def compactness(ps):
+    if len(ps) <= 1:
+        return 0.0
+
+    cr = sum(r for r, _ in ps) / len(ps)
+    cc = sum(c for _, c in ps) / len(ps)
+
+    # Chebyshev distance is natural because LOA connectivity is 8-directional.
+    return sum(max(abs(r - cr), abs(c - cc)) for r, c in ps)
+
+
+def center_score(ps):
+    # Prefer central concentration.
+    s = 0
+    for r, c in ps:
+        s -= abs(r - 3.5) + abs(c - 3.5)
+    return s
+
+
+def mobility(board):
+    return len(generate_moves(board))
+
+
+def evaluate(board):
+    # board is always from the side-to-move's perspective.
+    my_ps = positions(board, 1)
+    op_ps = positions(board, -1)
+
+    if len(my_ps) <= 1 or connected(board, 1):
+        return 1000000
+    if len(op_ps) <= 1 or connected(board, -1):
+        return -1000000
+
+    my_comps, my_largest = component_info(board, 1)
+    op_comps, op_largest = component_info(board, -1)
+
+    my_compact = compactness(my_ps)
+    op_compact = compactness(op_ps)
+
+    my_center = center_score(my_ps)
+    op_center = center_score(op_ps)
+
+    # Material is not always straightforward in LOA, but reducing opponent pieces
+    # often helps, especially when it does not fragment us.
+    material = len(my_ps) - len(op_ps)
+
+    score = 0
+    score += 900 * (op_comps - my_comps)
+    score += 120 * (my_largest - op_largest)
+    score += 35 * (op_compact - my_compact)
+    score += 12 * (my_center - op_center)
+    score += 45 * material
+
+    # Small mobility term.
+    try:
+        my_mob = mobility(board)
+        op_mob = mobility(switch_perspective(board))
+        score += 4 * (my_mob - op_mob)
+    except Exception:
+        pass
+
+    return int(score)
+
+
+def move_order_score(board, mv):
+    r1, c1, r2, c2 = mv
+    score = 0
+
+    # Captures first.
+    if board[r2][c2] == -1:
+        score += 800
+
+    nb = make_move(board, mv)
+
+    if connected(nb, 1):
+        score += 100000
+
+    before_comps, before_largest = component_info(board, 1)
+    after_comps, after_largest = component_info(nb, 1)
+
+    score += 600 * (before_comps - after_comps)
+    score += 80 * (after_largest - before_largest)
+
+    # Prefer moving toward own centroid.
+    ps = positions(board, 1)
+    if ps:
+        cr = sum(r for r, _ in ps) / len(ps)
+        cc = sum(c for _, c in ps) / len(ps)
+        old_d = max(abs(r1 - cr), abs(c1 - cc))
+        new_d = max(abs(r2 - cr), abs(c2 - cc))
+        score += int(25 * (old_d - new_d))
+
+    # Mild central bonus.
+    score -= int(3 * (abs(r2 - 3.5) + abs(c2 - 3.5)))
+
+    return score
+
+
+def negamax(board, depth, alpha, beta, start, limit):
+    if time.time() - start > limit:
+        raise TimeoutError
+
+    # If side to move is connected, good for side to move.
+    # If opponent is connected, bad for side to move.
+    if connected(board, 1):
+        return 1000000 + depth
+    if connected(board, -1):
+        return -1000000 - depth
+
+    if depth <= 0:
+        return evaluate(board)
+
+    moves = generate_moves(board)
+    if not moves:
+        return evaluate(board)
+
+    moves.sort(key=lambda m: move_order_score(board, m), reverse=True)
+
+    best = -INF
+
+    for mv in moves:
+        if time.time() - start > limit:
+            raise TimeoutError
+
+        nb = make_move(board, mv)
+
+        if connected(nb, 1):
+            score = 1000000 + depth
+        else:
+            score = -negamax(
+                switch_perspective(nb),
+                depth - 1,
+                -beta,
+                -alpha,
+                start,
+                limit
+            )
+
+        if score > best:
+            best = score
+
+        if score > alpha:
+            alpha = score
+
+        if alpha >= beta:
+            break
+
+    return best

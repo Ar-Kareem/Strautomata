@@ -1,0 +1,230 @@
+
+import numpy as np
+import time
+
+# Directions for queen-like movement (orthogonal and diagonal)
+DIRECTIONS = [
+    (-1, -1), (-1, 0), (-1, 1),
+    (0, -1),           (0, 1),
+    (1, -1),  (1, 0),  (1, 1)
+]
+
+def get_moves(board, player):
+    """
+    Generates all legal moves for a given player.
+    A move is a tuple: ((from_r, from_c), (to_r, to_c), (arrow_r, arrow_c))
+    """
+    moves = []
+    # Locate all pieces belonging to the player
+    rows, cols = np.where(board == player)
+    
+    for fr, fc in zip(rows, cols):
+        # Explore all 8 directions for the Amazon's move
+        for dr, dc in DIRECTIONS:
+            tr, tc = fr + dr, fc + dc
+            
+            while 0 <= tr < 6 and 0 <= tc < 6:
+                if board[tr, tc] != 0:
+                    break
+                
+                # From the landing spot (tr, tc), explore all 8 directions for the arrow
+                for adr, adc in DIRECTIONS:
+                    ar, ac = tr + adr, tc + adc
+                    
+                    while 0 <= ar < 6 and 0 <= ac < 6:
+                        # Check for obstruction
+                        if board[ar, ac] != 0:
+                            # Special rule: The arrow may pass through the vacated start square (fr, fc)
+                            if ar == fr and ac == fc:
+                                pass # Continue path
+                            else:
+                                break # Path blocked by another piece or arrow
+                        
+                        moves.append(((fr, fc), (tr, tc), (ar, ac)))
+                        ar += adr
+                        ac += adc
+                
+                tr += dr
+                tc += dc
+    return moves
+
+def evaluate(board):
+    """
+    Evaluates the board state from the perspective of Player 1 (AI).
+    Returns a score: Positive is good for AI, Negative is good for Opponent.
+    """
+    # 1. Mobility Heuristic: Difference in legal move counts
+    moves_p1 = get_moves(board, 1)
+    moves_p2 = get_moves(board, 2)
+    
+    # Terminal state checks
+    if not moves_p1 and not moves_p2:
+        return 0
+    if not moves_p1:
+        return -100000 # AI loses
+    if not moves_p2:
+        return 100000  # AI wins
+        
+    score = (len(moves_p1) - len(moves_p2)) * 10
+    
+    # 2. Territory Heuristic: Voronoi-like control based on Chebyshev distance
+    p1_pieces = np.argwhere(board == 1)
+    p2_pieces = np.argwhere(board == 2)
+    
+    # Only calculate if pieces exist (should always be true in valid game)
+    if p1_pieces.size > 0 and p2_pieces.size > 0:
+        for r in range(6):
+            for c in range(6):
+                if board[r, c] != 0:
+                    continue
+                
+                # Calculate minimum Chebyshev distance to any friendly or enemy piece
+                # Chebyshev distance is max(abs(dx), abs(dy)), which is the number of moves a Queen needs
+                d1 = min(max(abs(r - pr), abs(c - pc)) for pr, pc in p1_pieces)
+                d2 = min(max(abs(r - pr), abs(c - pc)) for pr, pc in p2_pieces)
+                
+                if d1 < d2:
+                    score += 1 # Controlled by AI
+                elif d2 < d1:
+                    score -= 1 # Controlled by Opponent
+                    
+    return score
+
+def minimax(board, depth, alpha, beta, maximizing_player, start_time):
+    if depth == 0:
+        return evaluate(board)
+    
+    player = 1 if maximizing_player else 2
+    moves = get_moves(board, player)
+    
+    # If no moves, the current player loses (evaluate reflects this)
+    if not moves:
+        return evaluate(board)
+
+    # Move Ordering: Prioritize moves that land closer to the center (2.5, 2.5)
+    # This improves Alpha-Beta pruning efficiency by finding good moves early
+    center_r, center_c = 2.5, 2.5
+    moves.sort(key=lambda m: (m[1][0]-center_r)**2 + (m[1][1]-center_c)**2)
+
+    if maximizing_player:
+        max_eval = -float('inf')
+        for move in moves:
+            # Time check to ensure we don't exceed limit
+            if time.time() - start_time > 0.95:
+                break
+                
+            (fr, fc), (tr, tc), (ar, ac) = move
+            
+            # Make move (in-place modification)
+            saved_fr, saved_tr, saved_ar = board[fr, fc], board[tr, tc], board[ar, ac]
+            board[fr, fc] = 0
+            board[tr, tc] = 1
+            board[ar, ac] = -1
+            
+            eval_val = minimax(board, depth - 1, alpha, beta, False, start_time)
+            
+            # Undo move
+            board[fr, fc] = saved_fr
+            board[tr, tc] = saved_tr
+            board[ar, ac] = saved_ar
+            
+            max_eval = max(max_eval, eval_val)
+            alpha = max(alpha, eval_val)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for move in moves:
+            if time.time() - start_time > 0.95:
+                break
+            
+            (fr, fc), (tr, tc), (ar, ac) = move
+            saved_fr, saved_tr, saved_ar = board[fr, fc], board[tr, tc], board[ar, ac]
+            
+            board[fr, fc] = 0
+            board[tr, tc] = 2
+            board[ar, ac] = -1
+            
+            eval_val = minimax(board, depth - 1, alpha, beta, True, start_time)
+            
+            board[fr, fc] = saved_fr
+            board[tr, tc] = saved_tr
+            board[ar, ac] = saved_ar
+            
+            min_eval = min(min_eval, eval_val)
+            beta = min(beta, eval_val)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def policy(board):
+    """
+    Main entry point for the AI policy.
+    """
+    start_time = time.time()
+    
+    # Edge case: If I have no pieces (shouldn't happen), return a placeholder
+    if not np.any(board == 1):
+        return "0,0:1,1:0,0"
+
+    # Search Depth: 3 (Ply)
+    # 0 = Current, 1 = Opponent, 2 = AI, 3 = Eval
+    depth = 3
+    
+    best_move = None
+    best_val = -float('inf')
+    alpha = -float('inf')
+    beta = float('inf')
+    
+    # Generate all legal moves for the AI
+    moves = get_moves(board, 1)
+    if not moves:
+        return "" # No legal move
+    
+    # Sort moves at root to try best candidates first
+    center_r, center_c = 2.5, 2.5
+    moves.sort(key=lambda m: (m[1][0]-center_r)**2 + (m[1][1]-center_c)**2)
+    
+    for move in moves:
+        # Time safety check
+        if time.time() - start_time > 0.95:
+            if best_move is None and moves:
+                best_move = moves[0] # Fallback to first available move
+            break
+            
+        (fr, fc), (tr, tc), (ar, ac) = move
+        
+        # Save state
+        saved_fr, saved_tr, saved_ar = board[fr, fc], board[tr, tc], board[ar, ac]
+        
+        # Execute move
+        board[fr, fc] = 0
+        board[tr, tc] = 1
+        board[ar, ac] = -1
+        
+        # Evaluate result
+        val = minimax(board, depth - 1, alpha, beta, False, start_time)
+        
+        # Restore state
+        board[fr, fc] = saved_fr
+        board[tr, tc] = saved_tr
+        board[ar, ac] = saved_ar
+        
+        if val > best_val:
+            best_val = val
+            best_move = move
+            
+        alpha = max(alpha, val)
+        
+        # If we found a winning move, no need to search further
+        if val > 50000:
+            break
+
+    # Fallback if search loop broke without assigning best_move
+    if best_move is None:
+        best_move = moves[0]
+        
+    # Format output string
+    (fr, fc), (tr, tc), (ar, ac) = best_move
+    return f"{fr},{fc}:{tr},{tc}:{ar},{ac}"

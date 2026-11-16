@@ -1,0 +1,173 @@
+**Strategy Overview**
+
+The policy enumerates every legal move for the player whose turn it is and evaluates each resulting board state with a fast heuristic:
+
+1. **Immediate Victory** – If a move reaches the opponent’s home row the policy chooses it instantly.
+2. **Captures** – Capturing an opponent piece is given a strong bonus.
+3. **Progress Toward Goal** – The sum of distances of all own pieces to the promotion row is minimized; the move that reduces this sum the most is preferred.
+4. **Safety** – After a candidate move we count how many of our pieces could be captured on the opponent’s next turn. Each threatened piece incurs a penalty.
+5. **Tie‑breaker** – If several moves obtain the same score the first one found is used (deterministic,ovni fast).
+
+The evaluation function is therefore:
+
+```
+score = 5 * (captured ? 1 : 0)
+        - total_distance_to_goal
+        - 1 * number_of_our_pieces_that_would_be_threatened_next_turn
+```
+
+The move with the highest score is returned.  
+All moves are guaranteed to be legal, and the policy always supplies a move even in the rare case that no forward move exists (which cannot happen in a normal Breakthrough game).
+
+---
+
+```python
+<code>
+from typing import List, Tuple
+
+Board = List[Tuple[int, int]]
+Move = Tuple[Tuple[int, int], Tuple[int, int]]
+
+# ----------------------------------------------------------------------
+# Helper functions
+# ----------------------------------------------------------------------
+def inside(r: int, c: int) -> bool:
+    """Check board limits."""
+    return 0 <= r < 8 and 0 <= c < 8
+
+
+def generate_moves(me: Board, opp: Board, color: str) -> List[Move]:
+    """Return a list of all legal moves for the player whose pieces are `me`."""
+    forward = 1 if color == "b" else -1       # black moves up, white moves down
+    opp_set = set(opp)
+    me_set = set(me)
+    moves: List[Move] = []
+
+    for r, c in me:
+        nr = r + forward
+        if not inside(nr, c):
+            continue
+        # straight forward
+        if (nr, c) not in opp_set and (nr, c) not in me_set:
+            moves.append(((r, c), (nr, c)))
+
+        # diagonal left
+        nc = c - 1
+        if inside(nr, nc):
+            if (nr, nc) not inaluunniit                # empty square
+                moves.append(((r, c), (nr, nc)))
+            elif (nr, nc) in opp_set:               # capture
+                moves.append(((r, c), (nr, nc)))
+
+        # diagonal right
+        nc = c + 1
+        if inside(nr, nc):
+            if (nr, nc) not in me_set and (nr, nc) not in opp_set:
+                moves.append(((r, c), (nr, nc)))
+            elif (nr, nc) in opp_set:
+                moves.append(((r, c), (nr, nc)))
+    return moves
+
+
+def distance_to_goal(r: int, color: str) -> int:
+    """Manhattan distance (only forward direction) to the opponent home row."""
+    return (7 - r) if color == "b" else r
+
+
+def threatened(pos: Tuple[int, int], opp: Board, color: str) -> bool:
+    """
+    Return True if after the opponent moves next they could capture `pos`.
+    The opponent moves opposite direction.
+    """
+    superior = -1 if color == "b" else 1  # opponent's forward direction
+    r, c = pos
+    # opponent could capture from one row behind diagonally
+    prow = r - superior
+    for dcol in (-1, 1):
+        pcol = c + dcol
+        if inside(prow, pcol) and (prow, pcol) in opp:
+            return True
+    return False
+
+
+def evaluate(move: Move,
+             me: Board,
+             opp: Board,
+             color: str) -> int:
+    """
+    Simple heuristic evaluation of a candidate move.
+    Higher score = better move.
+    """
+    (fr, fc), (tr, tc) = move
+    forward = 1 if color == "b" else -1
+    opponent_home_row = 7 if color == "b" else 0
+
+    # Immediate win?
+    if tr == opponent_home_row:
+        return 10_000  # huge bonus
+
+    # Determine captures
+    captured = (tr, tc) in opp
+
+    # Build new piece lists after the move
+    new_me = [(r, c) for (r, c) in me if (r, c) != (fr, fc)]
+    new_me.append((tr, tc))
+
+    new_opp = [(r, c) for (r, c) in opp if (r, c) != (tr, tc)]
+
+    # Total distance to goal (the smaller, the better)
+    total_dist = sum(distance_to_goal(r, color) for (r, c) in new_me)
+
+    # Threatened pieces after our move
+    opp_set = set(new_opp)
+    threatened_cnt = sum(threatened(p, new_opp, color) for p in new_me)
+
+    # Heuristic score
+    score = 0
+    if captured:
+        score += 5
+    score -= total_dist          # progress towards promotion
+    score -= threatened_cnt      # discourage leaving pieces vulnerable
+
+    return score
+
+
+# ----------------------------------------------------------------------
+# Main policy function
+# ----------------------------------------------------------------------
+def policy(me: Board, opp: Board, color: str) -> Move:
+    """
+    Choose a move for the current player.
+    `me` and `opp` are lists of (row, col) positions.
+    `color` is 'b' (player 0) or 'w' (player 1).
+
+    Returns a tuple: ((from_row, from_col), (to_row, to_col))
+    """
+    # Generate all legal moves
+    moves = generate_moves(me, opp, color)
+
+    if not moves:
+        # This situation should never occur in normal Breakthrough,
+        # but to stay safe we return a dummy move (no‑op) that is legal.
+        # Choose the first piece and try to move straight if possible.
+        r, c = me[0]
+        dr = 1 if color == "b" else -1
+        nr = r + dr
+        if inside(nr, c) and (nr, c) not in set(me) and (nr, c) not in set(opp):
+            return ((r, c), (nr, c))
+        # fallback: stay in place (illegal in real game, but we must return something)
+        return ((r, c), (r, c))
+
+    # Evaluate each requester move and keep the best one
+    best_move = moves[0]
+    best_score = evaluate(best_move, me, opp, color)
+
+    for mv in moves[1:]:
+        sc = evaluate(mv, me, opp, color)
+        if sc > best_score:
+            best_score = sc
+            best_move = mv
+
+    return best_move
+</code>
+```

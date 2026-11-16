@@ -1,0 +1,92 @@
+
+def policy(hand: list[str], target: int) -> str:
+    def card_value(card: str, current_sum: int, target: int) -> int:
+        if card in ["J", "Q", "K"]:
+            return 10
+        elif card == "A":
+            return 11 if current_sum + 11 <= target else 1
+        else:
+            return int(card)
+    
+    def calculate_hand_value(hand: list[str], target: int) -> int:
+        total = 0
+        aces = 0
+        
+        # First pass: count non-ace cards and count aces
+        for card in hand:
+            if card == "A":
+                aces += 1
+            elif card in ["J", "Q", "K"]:
+                total += 10
+            else:
+                total += int(card)
+        
+        # Second pass: add aces optimally
+        for _ in range(aces):
+            if total + 11 <= target:
+                total += 11
+            else:
+                total += 1
+                
+        return total
+    
+    current_value = calculate_hand_value(hand, target)
+    
+    # If we're already at or over target, stay
+    if current_value >= target:
+        return "STAY"
+    
+    # Calculate remaining cards in deck
+    all_cards = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    remaining_cards = [card for card in all_cards if card not in hand]
+    
+    if not remaining_cards:
+        return "STAY"
+    
+    # Calculate probability of busting on next hit
+    bust_count = 0
+    safe_count = 0
+    
+    for card in remaining_cards:
+        next_value = current_value + card_value(card, current_value, target)
+        if next_value > target:
+            bust_count += 1
+        else:
+            safe_count += 1
+    
+    total_remaining = len(remaining_cards)
+    bust_probability = bust_count / total_remaining if total_remaining > 0 else 1.0
+    
+    # Conservative strategy: don't hit if bust probability is too high
+    # But be more aggressive when we're far from target
+    distance_from_target = target - current_value
+    
+    # Dynamic threshold based on distance from target and target value
+    if distance_from_target <= 3:
+        # Very close to target, be very conservative
+        threshold = 0.3
+    elif distance_from_target <= 5:
+        # Moderately close, be somewhat conservative
+        threshold = 0.4
+    elif distance_from_target <= 8:
+        # Still have room, be less conservative
+        threshold = 0.5
+    else:
+        # Far from target, take more risks
+        threshold = 0.6
+    
+    # Adjust threshold based on target value
+    # Higher targets allow for more risk-taking
+    if target >= 25:
+        threshold += 0.1
+    elif target <= 15:
+        threshold -= 0.1
+    
+    # Special case: if we have a very low score and many cards left, be aggressive
+    if current_value <= target * 0.5 and len(remaining_cards) >= 8:
+        threshold = 0.7
+    
+    if bust_probability <= threshold:
+        return "HIT"
+    else:
+        return "STAY"

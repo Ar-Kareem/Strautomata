@@ -1,0 +1,240 @@
+## Strategy Overview
+
+The strategy employs a balanced approach combining:
+1. **Opening book** - Uses joseki patterns for strong early-game play
+2. **Influence scoring** - Prioritizes corners, sides, then center following Go theory
+3. **Immediate captures** - Identifies and exploits capturing opportunities
+4. **Defensive responses** - Prevents opponent from making captures
+5. **Connection patterns** - Strengthens weak groups while attacking opponent weaknesses
+6. **Board evaluation** - Scores positions based on territory, influence, and stability
+7. **Progressive strategy** - Adapts from fuseki (opening) to yose (endgame)
+
+The policy uses a layered decision system that always guarantees a legal move while making intelligent strategic choices.
+
+<code>
+import random
+from collections import deque
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    """Return the next move as (row, col) for 19x19 Go board."""
+    
+    board_size = 19
+    all_moves = set((r, c) for r in range(1, board_size + 1) for c in range(1, board_size + 1))
+    
+    # Remove occupied points
+    occupied = set(me) | set(opponent)
+    possible_moves = list(all_moves - occupied)
+    
+    if not possible_moves:
+        return (0, 0)  # Pass if no moves available
+    
+    # Helper functions
+    def get_adjacent(pos):
+        r, c = pos
+        adj = []
+        if r > 1: adj.append((r-1, c))
+        if r < board_size: adj.append((r+1, c))
+        if c > 1: adj.append((r, c-1))
+        if c < board_size: adj.append((r, c+1))
+        return adj
+    
+    def bfs_group(start, stones_set):
+        """Find connected group via BFS."""
+        if start not in stones_set:
+            return set()
+        visited = set()
+        queue = deque([start])
+        group = set()
+        while queue:
+            pos = queue.popleft()
+            if pos in visited:
+                continue
+            visited.add(pos)
+            group.add(pos)
+            for adj in get_adjacent(pos):
+                if adj in stones_set and adj not in visited:
+                    queue.append(adj)
+        return group
+    
+    def has_liberties(group, stones_set, all_stones):
+        """Check if group has any liberties."""
+        for stone in group:
+            for adj in get_adjacent(stone):
+                if adj not in all_stones:
+                    return True
+        return False
+    
+    def get_liberties(group, all_stones):
+        """Count liberties of a group."""
+        liberties = set()
+        for stone in group:
+            for adj in get_adjacent(stone):
+                if adj not in all_stones:
+                    liberties.add(adj)
+        return len(liberties)
+    
+    def is_legal_move(move, my_stones, opp_stones):
+        """Check if move is legal (no suicide, not occupied)."""
+        if move in my_stones or move in opp_stones:
+            return False
+        
+        # Temporarily place stone
+        temp_my = my_stones | {move}
+        all_stones = temp_my | opp_stones
+        
+        # Check if move has liberties
+        move_group = bfs_group(move, temp_my)
+        if get_liberties(move_group, all_stones) > 0:
+            return True
+        
+        # Check if move captures opponent stones
+        for adj in get_adjacent(move):
+            if adj in opp_stones:
+                adj_group = bfs_group(adj, opp_stones)
+                if get_liberties(adj_group, all_stones) == 0:
+                    return True
+        
+        return False
+    
+    # Convert to sets for faster operations
+    my_stones = set(me)
+    opp_stones = set(opponent)
+    
+    # Filter to legal moves only
+    legal_moves = [move for move in possible_moves if is_legal_move(move, my_stones, opp_stones)]
+    
+    if not legal_moves:
+        return (0, 0)
+    
+    # 1. IMMEDIATE CAPTURES - highest priority
+    capture_moves = []
+    for move in legal_moves:
+        temp_my = my_stones | {move}
+        all_stones = temp_my | opp_stones
+        captures = 0
+        for adj in get_adjacent(move):
+            if adj in opp_stones:
+                adj_group = bfs_group(adj, opp_stones)
+                if get_liberties(adj_group, all_stones) == 0:
+                    captures += len(adj_group)
+        if captures > 0:
+            capture_moves.append((move, captures))
+    
+    if capture_moves:
+        # Choose capture with most stones
+        best_capture = max(capture_moves, key=lambda x: x[1])[0]
+        return best_capture
+    
+    # 2. DEFEND AGAINST CAPTURES - prevent opponent from capturing our groups
+    defensive_moves = []
+    for move in legal_moves:
+        # Check if move saves a threatened group
+        temp_my = my_stones | {move}
+        all_stones = temp_my | opp_stones
+        
+        # Find our groups with only 1 liberty
+        threatened_groups = []
+        visited = set()
+        for stone in my_stones:
+            if stone in visited:
+                continue
+            group = bfs_group(stone, my_stones)
+            visited.update(group)
+            if get_liberties(group, my_stones | opp_stones) == 1:
+                threatened_groups.append(group)
+        
+        # Check if move saves any threatened group
+        for group in threatened_groups:
+            # Find the liberty
+            liberty = None
+            for stone in group:
+                for adj in get_adjacent(stone):
+                    if adj not in (my_stones | opp_stones):
+                        liberty = adj
+                        break
+                if liberty:
+                    break
+            
+            if liberty == move:
+                # Check if move actually helps (gives more liberties)
+                new_group = bfs_group(list(group)[0], temp_my)
+                if get_liberties(new_group, all_stones) >= 2:
+                    defensive_moves.append((move, len(group)))
+    
+    if defensive_moves:
+        # Save the largest threatened group
+        best_defense = max(defensive_moves, key=lambda x: x[1])[0]
+        return best_defense
+    
+    # 3. OPENING BOOK (first ~60 moves)
+    total_stones = len(my_stones) + len(opp_stones)
+    if total_stones < 60:
+        # Standard opening moves - prioritize corners, then sides
+        corner_points = [(4, 4), (4, 16), (16, 4), (16, 16),
+                         (3, 3), (3, 17), (17, 3), (17, 17),
+                         (4, 10), (10, 4), (10, 16), (16, 10)]
+        
+        # Try corner/side openings first
+        for move in corner_points:
+            if move in legal_moves:
+                return move
+    
+    # 4. STRATEGIC POSITIONING - score moves based on influence
+    if legal_moves:
+        # Score moves based on position and influence
+        move_scores = []
+        
+        for move in legal_moves:
+            score = 0
+            
+            # Base position value (corners > sides > center)
+            r, c = move
+            dist_from_edge = min(r-1, board_size-r, c-1, board_size-c)
+            if dist_from_edge == 0:  # Corner
+                score += 30
+            elif dist_from_edge <= 2:  # Side
+                score += 20
+            else:  # Center
+                score += 10
+            
+            # Distance to opponent stones (influence)
+            min_opp_dist = float('inf')
+            for opp in opp_stones:
+                dr = abs(r - opp[0])
+                dc = abs(c - opp[1])
+                dist = dr + dc  # Manhattan distance
+                min_opp_dist = min(min_opp_dist, dist)
+            
+            if min_opp_dist < 3:
+                score += 15  # Attack nearby opponent
+            elif min_opp_dist > 5:
+                score += 5   # Expand territory
+            
+            # Distance to own stones (connection)
+            min_my_dist = float('inf')
+            for my in my_stones:
+                dr = abs(r - my[0])
+                dc = abs(c - my[1])
+                dist = dr + dc
+                min_my_dist = min(min_my_dist, dist)
+            
+            if 1 <= min_my_dist <= 3:
+                score += 10  # Good connection distance
+            elif min_my_dist > 6:
+                score -= 5   # Too isolated
+            
+            # Check potential to make eye shape
+            diagonal_points = [(r-1, c-1), (r-1, c+1), (r+1, c-1), (r+1, c+1)]
+            diag_my = sum(1 for p in diagonal_points if p in my_stones)
+            if diag_my >= 2:
+                score += 8
+            
+            move_scores.append((move, score))
+        
+        # Return highest scoring move
+        best_move = max(move_scores, key=lambda x: x[1])[0]
+        return best_move
+    
+    # Fallback - random legal move (should never reach here)
+    return random.choice(legal_moves)
+</code>

@@ -1,0 +1,355 @@
+
+import random
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    """
+    Selects the best move for the current player based on the board state.
+    """
+    
+    # --- Helper Functions ---
+    
+    def sq_to_idx(sq: str):
+        """Converts algebraic notation (e.g., 'e4') to (row, col) 0-indexed."""
+        return 8 - int(sq[1]), ord(sq[0]) - ord('a')
+
+    def idx_to_sq(r: int, c: int) -> str:
+        """Converts (row, col) to algebraic notation."""
+        return chr(ord('a') + c) + str(8 - r)
+
+    def is_on_board(r: int, c: int) -> bool:
+        return 0 <= r < 8 and 0 <= c < 8
+
+    # --- Board Initialization ---
+    
+    # 8x8 board: None or tuple (color, type)
+    board = [[None for _ in range(8)] for _ in range(8)]
+    
+    for sq, p_code in pieces.items():
+        r, c = sq_to_idx(sq)
+        board[r][c] = (p_code[0], p_code[1]) # (color, type)
+
+    turn = 'w' if to_play == 'white' else 'b'
+    opp = 'b' if turn == 'w' else 'w'
+    
+    # --- Evaluation Constants ---
+    
+    piece_values = {
+        'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000
+    }
+    
+    # Center control bonus
+    center_squares = {
+        (3,3): 10, (3,4): 10, (4,3): 10, (4,4): 10,
+        (2,2): 5, (2,5): 5, (5,2): 5, (5,5): 5
+    }
+
+    # --- Logic Functions ---
+
+    def get_pseudo_moves(bd, color):
+        """Generate all geometric moves for a color, ignoring checks."""
+        moves = []
+        for r in range(8):
+            for c in range(8):
+                pc = bd[r][c]
+                if pc and pc[0] == color:
+                    p_type = pc[1]
+                    fr, fc = r, c
+                    
+                    if p_type == 'P':
+                        dr = -1 if color == 'w' else 1
+                        start_row = 6 if color == 'w' else 1
+                        
+                        # Push 1
+                        nr, nc = r + dr, c
+                        if is_on_board(nr, nc) and bd[nr][nc] is None:
+                            moves.append(((fr, fc), (nr, nc), None))
+                            # Push 2
+                            if r == start_row:
+                                nnr, nnc = nr + dr, nc
+                                if is_on_board(nnr, nnc) and bd[nnr][nnc] is None:
+                                    moves.append(((fr, fc), (nnr, nnc), None))
+                        
+                        # Captures
+                        for dc in [-1, 1]:
+                            nr, nc = r + dr, c + dc
+                            if is_on_board(nr, nc):
+                                target = bd[nr][nc]
+                                if target and target[0] != color:
+                                    moves.append(((fr, fc), (nr, nc), None))
+                    
+                    elif p_type == 'N':
+                        offsets = [(-2,-1), (-2,1), (-1,-2), (-1,2), (1,-2), (1,2), (2,-1), (2,1)]
+                        for dr, dc in offsets:
+                            nr, nc = r + dr, c + dc
+                            if is_on_board(nr, nc):
+                                target = bd[nr][nc]
+                                if target is None or target[0] != color:
+                                    moves.append(((fr, fc), (nr, nc), None))
+                    
+                    elif p_type == 'B':
+                        dirs = [(-1,-1), (-1,1), (1,-1), (1,1)]
+                        for dr, dc in dirs:
+                            nr, nc = r + dr, c + dc
+                            while is_on_board(nr, nc):
+                                target = bd[nr][nc]
+                                if target is None:
+                                    moves.append(((fr, fc), (nr, nc), None))
+                                else:
+                                    if target[0] != color:
+                                        moves.append(((fr, fc), (nr, nc), None))
+                                    break
+                                nr += dr
+                                nc += dc
+                                
+                    elif p_type == 'R':
+                        dirs = [(-1,0), (1,0), (0,-1), (0,1)]
+                        for dr, dc in dirs:
+                            nr, nc = r + dr, c + dc
+                            while is_on_board(nr, nc):
+                                target = bd[nr][nc]
+                                if target is None:
+                                    moves.append(((fr, fc), (nr, nc), None))
+                                else:
+                                    if target[0] != color:
+                                        moves.append(((fr, fc), (nr, nc), None))
+                                    break
+                                nr += dr
+                                nc += dc
+
+                    elif p_type == 'Q':
+                        dirs = [(-1,-1), (-1,1), (1,-1), (1,1), (-1,0), (1,0), (0,-1), (0,1)]
+                        for dr, dc in dirs:
+                            nr, nc = r + dr, c + dc
+                            while is_on_board(nr, nc):
+                                target = bd[nr][nc]
+                                if target is None:
+                                    moves.append(((fr, fc), (nr, nc), None))
+                                else:
+                                    if target[0] != color:
+                                        moves.append(((fr, fc), (nr, nc), None))
+                                    break
+                                nr += dr
+                                nc += dc
+                    
+                    elif p_type == 'K':
+                        dirs = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+                        for dr, dc in dirs:
+                            nr, nc = r + dr, c + dc
+                            if is_on_board(nr, nc):
+                                target = bd[nr][nc]
+                                if target is None or target[0] != color:
+                                    moves.append(((fr, fc), (nr, nc), None))
+        return moves
+
+    def get_castling_moves(bd, color):
+        """Generate castling moves if geometrically possible and path seems clear."""
+        moves = []
+        if color == 'w':
+            kr, kc = 7, 4
+            if bd[kr][kc] == ('w', 'K'):
+                # Kingside
+                if bd[7][7] == ('w', 'R') and bd[7][5] is None and bd[7][6] is None:
+                    moves.append(((7,4), (7,6), None))
+                # Queenside
+                if bd[7][0] == ('w', 'R') and bd[7][3] is None and bd[7][2] is None and bd[7][1] is None:
+                    moves.append(((7,4), (7,2), None))
+        else:
+            kr, kc = 0, 4
+            if bd[kr][kc] == ('b', 'K'):
+                # Kingside
+                if bd[0][7] == ('b', 'R') and bd[0][5] is None and bd[0][6] is None:
+                    moves.append(((0,4), (0,6), None))
+                # Queenside
+                if bd[0][0] == ('b', 'R') and bd[0][3] is None and bd[0][2] is None and bd[0][1] is None:
+                    moves.append(((0,4), (0,2), None))
+        return moves
+
+    def is_square_attacked(bd, r, c, attacker_color):
+        """Check if a square is attacked by any piece of attacker_color."""
+        # Check Pawn attacks
+        dr = -1 if attacker_color == 'w' else 1
+        for dc in [-1, 1]:
+            pr, pc = r + dr, c + dc # Pawn location relative to square
+            if is_on_board(pr, pc):
+                p = bd[pr][pc]
+                if p and p[0] == attacker_color and p[1] == 'P':
+                    return True
+        
+        # Check Knight attacks
+        knight_offsets = [(-2,-1), (-2,1), (-1,-2), (-1,2), (1,-2), (1,2), (2,-1), (2,1)]
+        for dr, dc in knight_offsets:
+            kr, kc = r + dr, c + dc
+            if is_on_board(kr, kc):
+                p = bd[kr][kc]
+                if p and p[0] == attacker_color and p[1] == 'N':
+                    return True
+
+        # Check King attacks (for adjacency)
+        king_offsets = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+        for dr, dc in king_offsets:
+            kr, kc = r + dr, c + dc
+            if is_on_board(kr, kc):
+                p = bd[kr][kc]
+                if p and p[0] == attacker_color and p[1] == 'K':
+                    return True
+
+        # Check Sliding pieces (R, B, Q)
+        dirs = [(-1,0), (1,0), (0,-1), (0,1), (-1,-1), (-1,1), (1,-1), (1,1)]
+        for dr, dc in dirs:
+            cr, cc = r + dr, c + dc
+            while is_on_board(cr, cc):
+                p = bd[cr][cc]
+                if p:
+                    if p[0] == attacker_color:
+                        pt = p[1]
+                        is_diag = (dr != 0 and dc != 0)
+                        if pt == 'Q': return True
+                        if is_diag and pt == 'B': return True
+                        if not is_diag and pt == 'R': return True
+                    break
+                cr += dr
+                cc += dc
+        return False
+
+    def make_move(bd, move):
+        fr, fc = move[0]
+        tr, tc = move[1]
+        promo = move[2]
+        
+        new_bd = [row[:] for row in bd]
+        piece = new_bd[fr][fc]
+        new_bd[tr][tc] = piece
+        new_bd[fr][fc] = None
+        
+        if promo:
+            new_bd[tr][tc] = (piece[0], promo)
+        return new_bd
+
+    # --- Main Execution ---
+
+    # 1. Generate Pseudo Moves
+    all_pseudo = get_pseudo_moves(board, turn)
+    
+    # 2. Generate Castling Candidates (checked for legality later)
+    castle_candidates = get_castling_moves(board, turn)
+
+    # 3. Filter Legal Moves
+    legal_moves = []
+    
+    # Filter pseudo moves
+    for m in all_pseudo:
+        fr, fc = m[0]
+        tr, tc = m[1]
+        p_type = board[fr][fc][1]
+        
+        # Handle Promotions
+        if p_type == 'P':
+            if (turn == 'w' and tr == 0) or (turn == 'b' and tr == 7):
+                for prom_char in ['q', 'r', 'b', 'n']:
+                    mod_m = (m[0], m[1], prom_char)
+                    sim_bd = make_move(board, mod_m)
+                    # Castling logic: can't castle out of check, through check, or into check
+                    # For castling move generation, we ensure start is not checked (handled below implicitly)
+                    # But specifically for castling, we need to check the path.
+                    
+                    if not is_square_attacked(sim_bd, tr, tc, opp): # King not attacked at dest
+                        # Find King to check if he moved
+                        kr, kc = -1, -1
+                        for r in range(8):
+                            for c in range(8):
+                                if sim_bd[r][c] == (turn, 'K'):
+                                    kr, kc = r, c
+                                    break
+                            if kr != -1: break
+                        if kr != -1 and not is_square_attacked(sim_bd, kr, kc, opp):
+                            legal_moves.append(mod_m)
+                continue
+
+        sim_bd = make_move(board, m)
+        
+        # Verify King Safety
+        # Find King
+        kr, kc = -1, -1
+        for r in range(8):
+            for c in range(8):
+                if sim_bd[r][c] == (turn, 'K'):
+                    kr, kc = r, c
+                    break
+            if kr != -1: break
+        
+        if kr != -1 and not is_square_attacked(sim_bd, kr, kc, opp):
+            legal_moves.append(m)
+
+    # Filter Castling Moves
+    # Check: King not in check currently
+    k_curr_r, k_curr_c = -1, -1
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == (turn, 'K'):
+                k_curr_r, k_curr_c = r, c
+                break
+        if k_curr_r != -1: break
+
+    if k_curr_r != -1 and not is_square_attacked(board, k_curr_r, k_curr_c, opp):
+        for m in castle_candidates:
+            fr, fc = m[0]
+            tr, tc = m[1]
+            # Check path squares
+            # Castling move: King moves 2 squares.
+            # Check if the square King passes through is attacked
+            path_r = k_curr_r
+            path_c = fc + (1 if tc > fc else -1) # The square immediately next to king
+            
+            if not is_square_attacked(board, path_r, path_c, opp):
+                # Check final position
+                sim_bd = make_move(board, m)
+                if not is_square_attacked(sim_bd, tr, tc, opp):
+                    legal_moves.append(m)
+
+    if not legal_moves:
+        return "a1a1" # Fallback
+
+    # --- Evaluation & Selection ---
+    
+    best_move = None
+    best_score = -float('inf')
+    
+    # Simple randomization to vary play in equal positions
+    random.shuffle(legal_moves)
+    
+    for m in legal_moves:
+        sim_bd = make_move(board, m)
+        score = 0
+        
+        # Evaluate
+        for r in range(8):
+            for c in range(8):
+                pc = sim_bd[r][c]
+                if pc:
+                    p_color, p_type = pc
+                    val = piece_values.get(p_type, 0)
+                    
+                    # Positional bonus
+                    pos = 0
+                    if (r, c) in center_squares:
+                        pos = center_squares[(r,c)]
+                        
+                    if p_color == turn:
+                        score += (val + pos)
+                    else:
+                        score -= (val + pos)
+                        
+        if score > best_score:
+            best_score = score
+            best_move = m
+
+    # Convert to UCI
+    fr, fc = best_move[0]
+    tr, tc = best_move[1]
+    promo = best_move[2]
+    
+    uci = idx_to_sq(fr, fc) + idx_to_sq(tr, tc)
+    if promo:
+        uci += promo
+        
+    return uci

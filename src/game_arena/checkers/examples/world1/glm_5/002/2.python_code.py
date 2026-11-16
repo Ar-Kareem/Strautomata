@@ -1,0 +1,223 @@
+
+import copy
+
+# Constants for board representation
+EMPTY = 0
+WHITE_MAN = 1
+WHITE_KING = 2
+BLACK_MAN = 3
+BLACK_KING = 4
+
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    """
+    Determines the next move for the checkers game using Minimax with Alpha-Beta pruning.
+    """
+    # Initialize board
+    board = [[EMPTY for _ in range(8)] for _ in range(8)]
+    
+    # Populate board based on color perspective
+    # We define WHITE as positive moving up, BLACK as negative moving down
+    # However, 'my_men' implies 'my' pieces.
+    # Let's map 'my' pieces to generic WHITE (1, 2) and 'opp' to BLACK (3, 4) if I am White.
+    # If I am Black, my pieces are BLACK (3, 4) and opp are WHITE (1, 2).
+    
+    if color == 'w':
+        for r, c in my_men: board[r][c] = WHITE_MAN
+        for r, c in my_kings: board[r][c] = WHITE_KING
+        for r, c in opp_men: board[r][c] = BLACK_MAN
+        for r, c in opp_kings: board[r][c] = BLACK_KING
+        is_white = True
+    else:
+        for r, c in my_men: board[r][c] = BLACK_MAN
+        for r, c in my_kings: board[r][c] = BLACK_KING
+        for r, c in opp_men: board[r][c] = WHITE_MAN
+        for r, c in opp_kings: board[r][c] = WHITE_KING
+        is_white = False
+
+    # Get all possible moves
+    moves = get_valid_moves(board, is_white)
+    
+    if not moves:
+        return None # No legal moves available
+
+    # If only one move available, return it immediately
+    if len(moves) == 1:
+        return moves[0]
+
+    # Minimax with Alpha-Beta Pruning
+    best_move = None
+    depth = 4
+    alpha = float('-inf')
+    beta = float('inf')
+    
+    # Maximizing player
+    max_eval = float('-inf')
+    for move in moves:
+        new_board = apply_move(board, move, is_white)
+        eval_score = minimax(new_board, depth - 1, alpha, beta, False, is_white)
+        if eval_score > max_eval:
+            max_eval = eval_score
+            best_move = move
+        alpha = max(alpha, eval_score)
+
+    return best_move
+
+def minimax(board, depth, alpha, beta, is_maximizing, is_player_white):
+    if depth == 0:
+        return evaluate_board(board, is_player_white)
+    
+    current_turn_white = is_player_white if is_maximizing else not is_player_white
+    moves = get_valid_moves(board, current_turn_white)
+    
+    if not moves:
+        return evaluate_board(board, is_player_white) # Game over
+
+    if is_maximizing:
+        max_eval = float('-inf')
+        for move in moves:
+            new_board = apply_move(board, move, current_turn_white)
+            eval_score = minimax(new_board, depth - 1, alpha, beta, False, is_player_white)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for move in moves:
+            new_board = apply_move(board, move, current_turn_white)
+            eval_score = minimax(new_board, depth - 1, alpha, beta, True, is_player_white)
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def evaluate_board(board, is_player_white):
+    score = 0
+    for r in range(8):
+        for c in range(8):
+            piece = board[r][c]
+            if piece == EMPTY:
+                continue
+            
+            # Material Value
+            if piece == WHITE_MAN:
+                val = 100
+                # Advancement bonus
+                val += r * 5 
+                # Back row defense
+                if r == 0: val += 10
+                score += val
+            elif piece == WHITE_KING:
+                val = 175
+                # Kings prefer center
+                dist_center = abs(3.5 - r) + abs(3.5 - c)
+                val += int((8 - dist_center) * 2)
+                score += val
+            elif piece == BLACK_MAN:
+                val = 100
+                # Advancement bonus (black moves down, row index decreases? No, black moves down to lower row values? 
+                # Standard Checkers: Black starts at top (high rows), moves down (low rows). 
+                # Wait, coordinates: row 0-7. Usually 0 is bottom, 7 is top.
+                # Black moves downwards (to lower row values).
+                # Black Men advancement: getting closer to row 0.
+                val += (7 - r) * 5
+                if r == 7: val += 10
+                score -= val
+            elif piece == BLACK_KING:
+                val = 175
+                dist_center = abs(3.5 - r) + abs(3.5 - c)
+                val += int((8 - dist_center) * 2)
+                score -= val
+
+    return score if is_player_white else -score
+
+def get_valid_moves(board, is_white_turn):
+    moves = []
+    captures = []
+    
+    # Directions
+    # White moves up (row + 1), Black moves down (row - 1)
+    # Kings move both
+    forward = 1 if is_white_turn else -1
+    
+    for r in range(8):
+        for c in range(8):
+            piece = board[r][c]
+            if piece == EMPTY:
+                continue
+            
+            my_piece = False
+            is_king = False
+            if is_white_turn:
+                if piece == WHITE_MAN or piece == WHITE_KING:
+                    my_piece = True
+                    is_king = (piece == WHITE_KING)
+            else:
+                if piece == BLACK_MAN or piece == BLACK_KING:
+                    my_piece = True
+                    is_king = (piece == BLACK_KING)
+            
+            if not my_piece:
+                continue
+            
+            # Generate moves
+            # Men move only forward, Kings move both
+            directions = [forward]
+            if is_king:
+                directions = [1, -1]
+                
+            for dr in directions:
+                for dc in [-1, 1]:
+                    # Simple moves
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 8 and 0 <= nc < 8 and board[nr][nc] == EMPTY:
+                        moves.append(((r, c), (nr, nc)))
+                    
+                    # Captures
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 8 and 0 <= nc < 8:
+                        target = board[nr][nc]
+                        is_enemy = False
+                        if is_white_turn:
+                            if target == BLACK_MAN or target == BLACK_KING:
+                                is_enemy = True
+                        else:
+                            if target == WHITE_MAN or target == WHITE_KING:
+                                is_enemy = True
+                        
+                        if is_enemy:
+                            jr, jc = nr + dr, nc + dc
+                            if 0 <= jr < 8 and 0 <= jc < 8 and board[jr][jc] == EMPTY:
+                                captures.append(((r, c), (jr, jc)))
+    
+    # Mandatory capture rule
+    if captures:
+        return captures
+    return moves
+
+def apply_move(board, move, is_white_turn):
+    new_board = copy.deepcopy(board)
+    (fr, fc), (tr, tc) = move
+    
+    piece = new_board[fr][fc]
+    new_board[fr][fc] = EMPTY
+    new_board[tr][tc] = piece
+    
+    # Check for capture
+    if abs(fr - tr) == 2:
+        cap_r = (fr + tr) // 2
+        cap_c = (fc + tc) // 2
+        new_board[cap_r][cap_c] = EMPTY
+    
+    # Promotion
+    # White promotes at row 7, Black promotes at row 0
+    if is_white_turn:
+        if tr == 7 and piece == WHITE_MAN:
+            new_board[tr][tc] = WHITE_KING
+    else:
+        if tr == 0 and piece == BLACK_MAN:
+            new_board[tr][tc] = BLACK_KING
+            
+    return new_board

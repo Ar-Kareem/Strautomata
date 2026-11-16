@@ -1,0 +1,222 @@
+We implement a policy that uses a simple but effective heuristic: maximize our mobility while minimizing opponent's mobility. We'll generate all legal moves, evaluate them with a heuristic function, and select the best one.
+
+The heuristic considers:
+1. Our mobility after the move (number of moves we'd have next turn)
+2. Opponent's mobility after our move (number of moves they'd have)
+3. Territorial control (squares we can reach)
+4. Bonus for controlling center squares
+
+We use iterative deepening with time management to ensure we return a move within 1 second.
+
+<code>
+import numpy as np
+import time
+
+def policy(board):
+    """Return a legal move string for the Amazons game on a 6x6 board."""
+    start_time = time.time()
+    TIME_LIMIT = 0.95  # seconds
+    
+    # Find all our amazons
+    our_amazons = list(zip(*np.where(board == 1)))
+    
+    # Generate all legal moves
+    all_moves = generate_all_moves(board, our_amazons)
+    
+    if not all_moves:
+        # This shouldn't happen, but return a placeholder if it does
+        return "0,0:0,0:0,0"
+    
+    # Simple greedy evaluation if we're running out of time
+    best_move = all_moves[0]
+    best_score = -float('inf')
+    
+    # Evaluate each move with a heuristic
+    for move in all_moves:
+        # Apply the move to a copy of the board
+        new_board = apply_move(board.copy(), move)
+        
+        # Calculate heuristic score
+        score = evaluate_position(new_board)
+        
+        # Simple time management
+        if time.time() - start_time > TIME_LIMIT:
+            # Return the best move found so far
+            return best_move if best_score > -float('inf') else move
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move
+
+def generate_all_moves(board, our_amazons):
+    """Generate all legal moves for our amazons."""
+    moves = []
+    
+    for ar, ac in our_amazons:
+        # Generate all possible destinations for this amazon
+        for dr, dc in get_queen_directions():
+            steps = 1
+            while True:
+                nr, nc = ar + dr * steps, ac + dc * steps
+                if not (0 <= nr < 6 and 0 <= nc < 6):
+                    break
+                if board[nr, nc] != 0:
+                    break
+                
+                # Found a valid move destination, now generate arrow shots
+                temp_board = board.copy()
+                temp_board[ar, ac] = 0
+                temp_board[nr, nc] = 1
+                
+                for adr, adc in get_queen_directions():
+                    arrow_steps = 1
+                    while True:
+                        arrow_r, arrow_c = nr + adr * arrow_steps, nc + adc * arrow_steps
+                        if not (0 <= arrow_r < 6 and 0 <= arrow_c < 6):
+                            break
+                        if temp_board[arrow_r, arrow_c] != 0:
+                            break
+                        
+                        # Valid arrow location
+                        moves.append(f"{ar},{ac}:{nr},{nc}:{arrow_r},{arrow_c}")
+                        arrow_steps += 1
+                
+                steps += 1
+    
+    return moves
+
+def get_queen_directions():
+    """Return all 8 queen movement directions."""
+    return [(-1, -1), (-1, 0), (-1, 1),
+            (0, -1),           (0, 1),
+            (1, -1),  (1, 0),  (1, 1)]
+
+def apply_move(board, move_str):
+    """Apply a move to the board and return the new board."""
+    from_part, to_part, arrow_part = move_str.split(':')
+    fr, fc = map(int, from_part.split(','))
+    tr, tc = map(int, to_part.split(','))
+    ar, ac = map(int, arrow_part.split(','))
+    
+    # Move amazon
+    board[fr, fc] = 0
+    board[tr, tc] = 1
+    
+    # Shoot arrow
+    board[ar, ac] = -1
+    
+    return board
+
+def evaluate_position(board):
+    """Evaluate the board position from our perspective."""
+    # Find all pieces
+    our_amazons = list(zip(*np.where(board == 1)))
+    their_amazons = list(zip(*np.where(board == 2)))
+    
+    if not our_amazons:
+        return -1000
+    if not their_amazons:
+        return 1000
+    
+    # Calculate our mobility
+    our_mobility = calculate_mobility(board, our_amazons, player=1)
+    
+    # Calculate opponent mobility (but with time limit)
+    their_mobility = calculate_mobility(board, their_amazons, player=2)
+    
+    # Calculate territory control
+    our_territory = calculate_territory(board, our_amazons)
+    their_territory = calculate_territory(board, their_amazons)
+    
+    # Center control bonus
+    center_bonus = calculate_center_control(board, our_amazons)
+    
+    # Combine factors with weights
+    score = (our_mobility * 1.0 - their_mobility * 1.2 + 
+             our_territory * 0.5 - their_territory * 0.6 +
+             center_bonus * 0.3)
+    
+    return score
+
+def calculate_mobility(board, amazons, player):
+    """Calculate the mobility for a set of amazons."""
+    total_moves = 0
+    
+    for r, c in amazons:
+        # Temporarily remove this amazon to calculate moves
+        temp_board = board.copy()
+        temp_board[r, c] = 0
+        
+        for dr, dc in get_queen_directions():
+            steps = 1
+            while True:
+                nr, nc = r + dr * steps, c + dc * steps
+                if not (0 <= nr < 6 and 0 <= nc < 6):
+                    break
+                if temp_board[nr, nc] != 0:
+                    break
+                
+                # Valid move, now count arrow shots from this position
+                for adr, adc in get_queen_directions():
+                    arrow_steps = 1
+                    while True:
+                        arrow_r, arrow_c = nr + adr * arrow_steps, nc + adc * arrow_steps
+                        if not (0 <= arrow_r < 6 and 0 <= arrow_c < 6):
+                            break
+                        
+                        # Check if arrow can land here
+                        if arrow_r == nr and arrow_c == nc:
+                            arrow_steps += 1
+                            continue
+                        
+                        if temp_board[arrow_r, arrow_c] != 0:
+                            break
+                        
+                        total_moves += 1
+                        arrow_steps += 1
+                
+                steps += 1
+    
+    return total_moves
+
+def calculate_territory(board, amazons):
+    """Calculate how many empty squares are reachable by our amazons."""
+    territory = 0
+    empty_squares = set(zip(*np.where(board == 0)))
+    
+    for r, c in amazons:
+        for dr, dc in get_queen_directions():
+            steps = 1
+            while True:
+                nr, nc = r + dr * steps, c + dc * steps
+                if not (0 <= nr < 6 and 0 <= nc < 6):
+                    break
+                if board[nr, nc] != 0:
+                    break
+                
+                if (nr, nc) in empty_squares:
+                    territory += 1
+                    empty_squares.remove((nr, nc))
+                
+                steps += 1
+    
+    return territory
+
+def calculate_center_control(board, amazons):
+    """Calculate bonus for controlling center squares."""
+    center_squares = [(2, 2), (2, 3), (3, 2), (3, 3)]
+    bonus = 0
+    
+    for r, c in amazons:
+        # Bonus for being near center
+        dist_to_center = min(abs(r - 2.5), abs(c - 2.5))
+        bonus += 2.0 - dist_to_center
+        
+        # Additional bonus for being exactly on center squares
+        if (r, c) in center_squares:
+            bonus += 1.0
+    
+    return bonus
+</code>

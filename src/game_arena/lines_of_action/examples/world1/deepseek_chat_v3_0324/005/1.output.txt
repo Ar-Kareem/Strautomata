@@ -1,0 +1,267 @@
+# Strategy for Lines of Action AI
+
+This policy implements a minimax algorithm with alpha-beta pruning to evaluate potential moves several steps ahead. The key components are:
+
+1. **Move Generation**: First generates all legal moves for the current player according to Lines of Action rules.
+
+2. **Evaluation Function**: Uses several weighted factors:
+   - Piece connectivity (primary objective)
+   - Mobility (number of legal moves available)
+   - Piece count difference
+   - Central control (pieces near center are more valuable)
+   - Threat detection (identifying potential captures)
+
+3. **Search Depth**: Uses iterative deepening to maximize search depth within the 1-second time constraint.
+
+4. **Move Ordering**: Orders moves by potential value to improve alpha-beta pruning efficiency.
+
+5. **Early Termination**: Checks time remaining after each move evaluation to ensure we don't exceed the time limit.
+
+The algorithm prioritizes moves that improve our piece connectivity while disrupting the opponent's connectivity, with secondary consideration given to capturing opportunities and board control.
+
+<code>
+import numpy as np
+import time
+from collections import deque
+
+def policy(board):
+    start_time = time.time()
+    board = np.array(board)
+    player = 1
+    best_move = None
+    
+    # Iterative deepening with time management
+    depth = 1
+    while time.time() - start_time < 0.95:  # Leave 50ms buffer
+        move, _ = minimax_alpha_beta(board, player, depth, start_time)
+        if move is not None:
+            best_move = move
+        depth += 1
+    
+    # Fallback to first legal move if time runs out
+    if best_move is None:
+        legal_moves = generate_legal_moves(board, player)
+        if legal_moves:
+            best_move = legal_moves[0]
+    
+    return f"{best_move[0][0]},{best_move[0][1]}:{best_move[1][0]},{best_move[1][1]}"
+
+def minimax_alpha_beta(board, player, depth, start_time, alpha=-float('inf'), beta=float('inf'), maximizing=True):
+    if depth == 0 or time.time() - start_time > 0.95:
+        return None, evaluate_position(board, player)
+    
+    legal_moves = generate_legal_moves(board, player if maximizing else -player)
+    if not legal_moves:
+        return None, evaluate_position(board, player)
+    
+    best_move = None
+    if maximizing:
+        max_eval = -float('inf')
+        for move in order_moves(board, legal_moves, player, maximizing):
+            new_board = apply_move(board, move, player)
+            _, eval = minimax_alpha_beta(new_board, player, depth-1, start_time, alpha, beta, False)
+            if eval > max_eval:
+                max_eval = eval
+                best_move = move
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break
+        return best_move, max_eval
+    else:
+        min_eval = float('inf')
+        for move in order_moves(board, legal_moves, -player, maximizing):
+            new_board = apply_move(board, move, -player)
+            _, eval = minimax_alpha_beta(new_board, player, depth-1, start_time, alpha, beta, True)
+            if eval < min_eval:
+                min_eval = eval
+                best_move = move
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break
+        return best_move, min_eval
+
+def evaluate_position(board, player):
+    # Connectivity score (most important)
+    connectivity_score = calculate_connectivity(board, player) * 2
+    
+    # Mobility score
+    mobility = len(generate_legal_moves(board, player)) - len(generate_legal_moves(board, -player))
+    
+    # Piece count difference
+    piece_diff = np.sum(board == player) - np.sum(board == -player)
+    
+    # Central control
+    center_control = calculate_center_control(board, player)
+    
+    # Threat detection
+    threat_score = calculate_threats(board, player)
+    
+    # Weighted sum of factors
+    return (connectivity_score * 5 + mobility * 2 + piece_diff * 3 + 
+            center_control * 1 + threat_score * 2)
+
+def calculate_connectivity(board, player):
+    pieces = np.argwhere(board == player)
+    if len(pieces) == 0:
+        return 0
+    
+    # Use BFS to find connected components
+    visited = set()
+    components = 0
+    total_pieces = len(pieces)
+    
+    for piece in pieces:
+        piece_tuple = tuple(piece)
+        if piece_tuple not in visited:
+            components += 1
+            queue = deque([piece_tuple])
+            visited.add(piece_tuple)
+            
+            while queue:
+                current = queue.popleft()
+                for neighbor in get_adjacent_positions(current):
+                    if (neighbor[0] >= 0 and neighbor[0] < 8 and 
+                        neighbor[1] >= 0 and neighbor[1] < 8 and 
+                        board[neighbor[0], neighbor[1]] == player and 
+                        tuple(neighbor) not in visited):
+                        visited.add(tuple(neighbor))
+                        queue.append(tuple(neighbor))
+    
+    # Fewer components means better connectivity
+    return total_pieces - components
+
+def get_adjacent_positions(pos):
+    directions = [(-1,-1), (-1,0), (-1,1),
+                  (0,-1),          (0,1),
+                  (1,-1),  (1,0), (1,1)]
+    return [(pos[0]+d[0], pos[1]+d[1]) for d in directions]
+
+def calculate_center_control(board, player):
+    center_squares = [(3,3), (3,4), (4,3), (4,4)]
+    score = 0
+    for r, c in center_squares:
+        if board[r,c] == player:
+            score += 1
+        elif board[r,c] == -player:
+            score -= 1
+    return score
+
+def calculate_threats(board, player):
+    threats = 0
+    opponent = -player
+    opponent_pieces = np.argwhere(board == opponent)
+    
+    for piece in opponent_pieces:
+        r, c = piece
+        # Check if this piece can be captured in one move
+        for dr in [-1, 0, 1]:
+            for dc in [-1, 0, 1]:
+                if dr == 0 and dc == 0:
+                    continue
+                distance = count_pieces_in_line(board, (r, c), (dr, dc))
+                new_r = r + dr * distance
+                new_c = c + dc * distance
+                if (0 <= new_r < 8 and 0 <= new_c < 8 and 
+                    board[new_r, new_c] == player):
+                    threats += 1
+    return threats
+
+def generate_legal_moves(board, player):
+    legal_moves = []
+    pieces = np.argwhere(board == player)
+    
+    for piece in pieces:
+        r, c = piece
+        # Check all 8 possible directions
+        for dr in [-1, 0, 1]:
+            for dc in [-1, 0, 1]:
+                if dr == 0 and dc == 0:
+                    continue
+                distance = count_pieces_in_line(board, (r, c), (dr, dc))
+                if distance == 0:
+                    continue
+                
+                new_r = r + dr * distance
+                new_c = c + dc * distance
+                
+                # Check if move is valid
+                if (0 <= new_r < 8 and 0 <= new_c < 8 and 
+                    is_path_clear(board, (r, c), (new_r, new_c), player)):
+                    legal_moves.append(((r, c), (new_r, new_c)))
+    
+    return legal_moves
+
+def count_pieces_in_line(board, pos, direction):
+    r, c = pos
+    dr, dc = direction
+    count = 0
+    
+    # Check in both directions along the line
+    for step in range(1, 8):
+        check_r = r + step * dr
+        check_c = c + step * dc
+        if 0 <= check_r < 8 and 0 <= check_c < 8:
+            if board[check_r, check_c] != 0:
+                count += 1
+        else:
+            break
+    
+    for step in range(1, 8):
+        check_r = r - step * dr
+        check_c = c - step * dc
+        if 0 <= check_r < 8 and 0 <= check_c < 8:
+            if board[check_r, check_c] != 0:
+                count += 1
+        else:
+            break
+    
+    # Count the current position if it has a piece
+    if board[r, c] != 0:
+        count += 1
+    
+    return count
+
+def is_path_clear(board, from_pos, to_pos, player):
+    r1, c1 = from_pos
+    r2, c2 = to_pos
+    dr = 1 if r2 > r1 else (-1 if r2 < r1 else 0)
+    dc = 1 if c2 > c1 else (-1 if c2 < c1 else 0)
+    
+    steps = max(abs(r2 - r1), abs(c2 - c1))
+    
+    for step in range(1, steps):
+        check_r = r1 + step * dr
+        check_c = c1 + step * dc
+        if board[check_r, check_c] == -player:  # Opponent piece blocking
+            return False
+    
+    return True
+
+def apply_move(board, move, player):
+    new_board = board.copy()
+    from_pos, to_pos = move
+    new_board[from_pos[0], from_pos[1]] = 0
+    new_board[to_pos[0], to_pos[1]] = player
+    return new_board
+
+def order_moves(board, moves, player, maximizing):
+    # Simple move ordering based on potential captures and center control
+    scored_moves = []
+    for move in moves:
+        score = 0
+        to_pos = move[1]
+        
+        # Capture moves are good
+        if board[to_pos[0], to_pos[1]] == -player:
+            score += 10 if maximizing else -10
+        
+        # Moving toward center is good
+        center_dist = abs(to_pos[0] - 3.5) + abs(to_pos[1] - 3.5)
+        score += (4 - center_dist) * (1 if maximizing else -1)
+        
+        scored_moves.append((score, move))
+    
+    # Sort by score (descending for maximizing, ascending for minimizing)
+    scored_moves.sort(key=lambda x: x[0], reverse=maximizing)
+    return [move for score, move in scored_moves]
+</code>

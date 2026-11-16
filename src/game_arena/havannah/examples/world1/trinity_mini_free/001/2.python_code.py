@@ -1,0 +1,77 @@
+
+import numpy as np
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    # Define board edges and corners
+    edges = [(0, i) for i in range(15)] + [(14, i) for i in range(15)] + [(i, 0) for i in range(15)] + [(i, 14) for i in range(15)]
+    corners = [(0, 0), (0, 14), (14, 0), (14, 14), (0, 7), (14, 7)]
+    
+    # Helper function to check connectivity (BFS)
+    def is_connected(cell, player_stones):
+        visited = set()
+        queue = [cell]
+        while queue:
+            r, c = queue.pop(0)
+            if (r, c) in visited or (r, c) not in player_stones:
+                continue
+            visited.add((r, c))
+            for dr, dc in [(-1, 0), (1, 0), (-1, -1), (1, 1), (-1, 1), (1, -1)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 15 and 0 <= nc < 15 and valid_mask[nr][nc]:
+                    queue.append((nr, nc))
+        return len(visited) > 1
+    
+    # Check for immediate winning moves
+    for r, c in [(i, j) for i in range(15) for j in range(15) if valid_mask[i][j]]:
+        if (r, c) in me:
+            continue
+        # Check ring formation
+        if is_connected((r, c), me + [(r, c)]):
+            return (r, c)
+        # Check bridge formation
+        for corner in corners:
+            if is_connected((r, c), me + [(r, c)]) and is_connected(corner, me + [(r, c)]):
+                return (r, c)
+    
+    # Check for opponent threats
+    for r, c in [(i, j) for i in range(15) for j in range(15) if valid_mask[i][j]]:
+        if (r, c) in opp:
+            continue
+        # Check if opponent can win next move
+        if is_connected((r, c), opp + [(r, c)]):
+            return (r, c)
+    
+    # Heuristic evaluation of moves
+    def evaluate_move(r, c):
+        score = 0
+        # Edge control bonus
+        if (r, c) in edges:
+            score += 5
+        # Corner proximity bonus
+        if (r, c) in corners:
+            score += 10
+        # Connectivity bonus
+        if is_connected((r, c), me + [(r, c)]):
+            score += 3
+        # Threat potential
+        threats = 0
+        for dr, dc in [(-1, 0), (1, 0), (-1, -1), (1, 1), (-1, 1), (1, -1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 15 and 0 <= nc < 15 and valid_mask[nr][nc]:
+                if (nr, nc) in opp:
+                    threats += 1
+        score -= threats * 2
+        return score
+    
+    # Evaluate all valid moves
+    best_score = -float('inf')
+    best_move = None
+    for r, c in [(i, j) for i in range(15) for j in range(15) if valid_mask[i][j]]:
+        if (r, c) in me or (r, c) in opp:
+            continue
+        score = evaluate_move(r, c)
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+    
+    return best_move if best_move else (7, 7)

@@ -1,0 +1,153 @@
+Looking at this problem, I need to implement a Lines of Action policy using minimax search with alpha-beta pruning.
+
+**Strategy:**
+- **Evaluation function**: Combines connected components count (fewer = better) and piece concentration (closer together = better) using Chebyshev distances between all pairs.
+- **Search**: Alpha-beta with iterative deepening, move ordering at depth ≥ 2 for better pruning.
+- **Terminal detection**: Checks for wins immediately after each move, with the moving player winning on simultaneous connections (per LOA rules).
+- **Time management**: 0.85s hard deadline with early stopping.
+
+<code>
+import time
+
+def policy(board) -> str:
+    start = time.time()
+    g = [[int(board[r][c]) for c in range(8)] for r in range(8)]
+    D8 = [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)]
+    LDIRS = [(0,1),(1,0),(1,1),(1,-1)]
+
+    def pieces(g, p):
+        return [(r,c) for r in range(8) for c in range(8) if g[r][c]==p]
+
+    def line_count(g, r, c, dr, dc):
+        n = 0
+        rr, cc = r, c
+        while 0<=rr<8 and 0<=cc<8:
+            if g[rr][cc]!=0: n+=1
+            rr+=dr; cc+=dc
+        rr, cc = r-dr, c-dc
+        while 0<=rr<8 and 0<=cc<8:
+            if g[rr][cc]!=0: n+=1
+            rr-=dr; cc-=dc
+        return n
+
+    def gen_moves(g, p):
+        ms = []
+        for r,c in pieces(g,p):
+            for dr,dc in LDIRS:
+                d = line_count(g,r,c,dr,dc)
+                for s in (1,-1):
+                    tr,tc = r+s*dr*d, c+s*dc*d
+                    if not(0<=tr<8 and 0<=tc<8): continue
+                    if g[tr][tc]==p: continue
+                    ok=True
+                    for i in range(1,d):
+                        if g[r+s*dr*i][c+s*dc*i]==-p:
+                            ok=False; break
+                    if ok: ms.append((r,c,tr,tc))
+        return ms
+
+    def ncomp(g, p):
+        ps = set(pieces(g,p))
+        if len(ps)<=1: return len(ps)
+        vis=set(); nc=0
+        for s in ps:
+            if s in vis: continue
+            nc+=1; stk=[s]
+            while stk:
+                cr,cc=stk.pop()
+                if (cr,cc) in vis: continue
+                vis.add((cr,cc))
+                for dr,dc in D8:
+                    nb=(cr+dr,cc+dc)
+                    if nb in ps and nb not in vis: stk.append(nb)
+        return nc
+
+    def mk(g, m, p):
+        ng=[row[:] for row in g]
+        ng[m[0]][m[1]]=0; ng[m[2]][m[3]]=p
+        return ng
+
+    def winner(g, mover):
+        mp = pieces(g, mover)
+        if len(mp)>0 and ncomp(g, mover)==1: return mover
+        op = pieces(g, -mover)
+        if len(op)>0 and ncomp(g, -mover)==1: return -mover
+        return 0
+
+    def ev(g):
+        mp=pieces(g,1); op=pieces(g,-1)
+        if not mp: return -9999
+        if not op: return 9999
+        mc=ncomp(g,1); oc=ncomp(g,-1)
+        if mc==1: return 10000
+        if oc==1: return -10000
+        def conc(ps):
+            t=0; n=len(ps)
+            for i in range(n):
+                for j in range(i+1,n):
+                    t+=max(abs(ps[i][0]-ps[j][0]),abs(ps[i][1]-ps[j][1]))
+            return t
+        return (oc-mc)*300 - conc(mp)*5 + conc(op)*5
+
+    def ab(g, d, a, b, mx, dl):
+        if time.time()>dl: return ev(g), None
+        if d==0: return ev(g), None
+        p=1 if mx else -1
+        ms=gen_moves(g,p)
+        if not ms: return ev(g), None
+        if d>=2 and len(ms)>1:
+            sc=[]
+            for m in ms:
+                ng=mk(g,m,p)
+                w=winner(ng,p)
+                if w!=0: sc.append((w*10000*(d+1), m))
+                else: sc.append((ev(ng), m))
+            sc.sort(reverse=mx)
+            ms=[m for _,m in sc]
+        bm=ms[0]
+        if mx:
+            v=-float('inf')
+            for m in ms:
+                ng=mk(g,m,p)
+                w=winner(ng,p)
+                if w!=0: cv=w*(10000+d)
+                else: cv,_=ab(ng,d-1,a,b,False,dl)
+                if cv>v: v=cv; bm=m
+                a=max(a,v)
+                if a>=b: break
+                if time.time()>dl: break
+            return v, bm
+        else:
+            v=float('inf')
+            for m in ms:
+                ng=mk(g,m,p)
+                w=winner(ng,p)
+                if w!=0: cv=w*(10000+d)
+                else: cv,_=ab(ng,d-1,a,b,True,dl)
+                if cv<v: v=cv; bm=m
+                b=min(b,v)
+                if a>=b: break
+                if time.time()>dl: break
+            return v, bm
+
+    dl = start + 0.85
+    ms = gen_moves(g, 1)
+    if not ms:
+        ps = pieces(g, 1)
+        if ps:
+            return f"{ps[0][0]},{ps[0][1]}:{ps[0][0]},{ps[0][1]}"
+        return "0,0:0,0"
+    if len(ms)==1:
+        m=ms[0]; return f"{m[0]},{m[1]}:{m[2]},{m[3]}"
+    for m in ms:
+        ng=mk(g,m,1)
+        if winner(ng,1)==1:
+            return f"{m[0]},{m[1]}:{m[2]},{m[3]}"
+    bm=ms[0]
+    for d in range(1,20):
+        if time.time()>dl-0.1: break
+        v,m=ab(g,d,-float('inf'),float('inf'),True,dl-0.05)
+        if m: bm=m
+        if abs(v)>=9999: break
+    return f"{bm[0]},{bm[1]}:{bm[2]},{bm[3]}"
+</code>

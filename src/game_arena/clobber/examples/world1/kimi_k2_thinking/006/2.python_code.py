@@ -1,0 +1,203 @@
+
+import numpy as np
+import time
+import random
+
+DIRS = [(-1, 0, 'U'), (0, 1, 'R'), (1, 0, 'D'), (0, -1, 'L')]
+
+def policy(you, opponent):
+    """Main policy: returns best move using iterative deepening alpha-beta."""
+    you = np.array(you, dtype=np.int8)
+    opponent = np.array(opponent, dtype=np.int8)
+    
+    board = np.zeros((5, 6), dtype=np.int8)
+    board[you == 1] = 1
+    board[opponent == 1] = -1
+    
+    moves = get_legal_moves(board, 1)
+    
+    if not moves:
+        return find_any_move(board)
+    if len(moves) == 1:
+        return moves[0]
+    
+    center_r, center_c = 2.0, 2.5
+    dist_cache = np.zeros((5, 6), dtype=np.float32)
+    for r in range(5):
+        for c in range(6):
+            dist_cache[r, c] = abs(r - center_r) + abs(c - center_c)
+    
+    best_move = random.choice(moves)
+    start_time = time.time()
+    max_depth = 1
+    
+    while True:
+        if time.time() - start_time > 0.85:
+            break
+        
+        try:
+            move, _ = alpha_beta_root(board, max_depth, start_time, dist_cache)
+            if move is not None:
+                best_move = move
+            max_depth += 1
+        except TimeoutError:
+            break
+    
+    return best_move
+
+def find_any_move(board):
+    """Fallback to find any legal move."""
+    for r in range(5):
+        for c in range(6):
+            if board[r, c] == 1:
+                for dr, dc, dchar in DIRS:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 5 and 0 <= nc < 6 and board[nr, nc] == -1:
+                        return f"{r},{c},{dchar}"
+    return "0,0,U"
+
+def get_legal_moves(board, player):
+    """Generate all legal moves for player."""
+    moves = []
+    rows, cols = board.shape
+    positions = np.where(board == player)
+    
+    for r, c in zip(positions[0], positions[1]):
+        for dr, dc, dir_char in DIRS:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < rows and 0 <= nc < cols and board[nr, nc] == -player:
+                moves.append(f"{r},{c},{dir_char}")
+    
+    return moves
+
+def make_move(board, move_str, player):
+    """Apply move and return new board."""
+    try:
+        r, c, dir_char = move_str.split(',')
+        r, c = int(r), int(c)
+        
+        dr, dc = 0, 0
+        for drr, dcc, dch in DIRS:
+            if dch == dir_char:
+                dr, dc = drr, dcc
+                break
+        
+        nr, nc = r + dr, c + dc
+        
+        if not (0 <= r < 5 and 0 <= c < 6 and 0 <= nr < 5 and 0 <= nc < 6):
+            return None
+        if board[r, c] != player or board[nr, nc] != -player:
+            return None
+        
+        new_board = board.copy()
+        new_board[r, c] = 0
+        new_board[nr, nc] = player
+        
+        return new_board
+    except:
+        return None
+
+def evaluate(board, dist_cache):
+    """Evaluate board from our perspective."""
+    our_moves = get_legal_moves(board, 1)
+    opp_moves = get_legal_moves(board, -1)
+    
+    if not opp_moves and our_moves:
+        return 10000
+    if not our_moves:
+        return -10000
+    
+    our_pieces = np.sum(board == 1)
+    opp_pieces = np.sum(board == -1)
+    
+    our_pos = np.where(board == 1)
+    opp_pos = np.where(board == -1)
+    
+    position_score = 0
+    for r, c in zip(our_pos[0], our_pos[1]):
+        position_score -= dist_cache[r, c]
+    for r, c in zip(opp_pos[0], opp_pos[1]):
+        position_score += dist_cache[r, c]
+    
+    material_weight = 100
+    mobility_weight = 15
+    position_weight = 5
+    
+    score = (our_pieces - opp_pieces) * material_weight
+    score += (len(our_moves) - len(opp_moves)) * mobility_weight
+    score += position_score * position_weight
+    
+    return score
+
+def alpha_beta_root(board, depth, start_time, dist_cache):
+    """Root search with move ordering."""
+    moves = get_legal_moves(board, 1)
+    
+    if not moves:
+        return None, -10000
+    
+    scored_moves = []
+    for move in moves:
+        new_board = make_move(board, move, 1)
+        if new_board is not None:
+            score = evaluate(new_board, dist_cache)
+            scored_moves.append((move, score))
+    
+    scored_moves.sort(key=lambda x: x[1], reverse=True)
+    
+    best_move = None
+    best_score = -np.inf
+    alpha, beta = -np.inf, np.inf
+    
+    for move, _ in scored_moves:
+        if time.time() - start_time > 0.9:
+            raise TimeoutError()
+        
+        new_board = make_move(board, move, 1)
+        score = -alpha_beta(new_board, depth - 1, -beta, -alpha, False, start_time, dist_cache)
+        
+        if score > best_score:
+            best_score, best_move = score, move
+        
+        alpha = max(alpha, score)
+        if alpha >= beta:
+            break
+    
+    return best_move, best_score
+
+def alpha_beta(board, depth, alpha, beta, is_our_turn, start_time, dist_cache):
+    """Alpha-beta recursion."""
+    if time.time() - start_time > 0.95:
+        raise TimeoutError()
+    
+    our_moves = get_legal_moves(board, 1)
+    opp_moves = get_legal_moves(board, -1)
+    
+    if is_our_turn and not our_moves:
+        return -10000
+    if not is_our_turn and not opp_moves:
+        return 10000
+    
+    if depth == 0:
+        return evaluate(board, dist_cache)
+    
+    if is_our_turn:
+        max_eval = -np.inf
+        for move in our_moves:
+            new_board = make_move(board, move, 1)
+            eval = alpha_beta(new_board, depth - 1, alpha, beta, False, start_time, dist_cache)
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = np.inf
+        for move in opp_moves:
+            new_board = make_move(board, move, -1)
+            eval = alpha_beta(new_board, depth - 1, alpha, beta, True, start_time, dist_cache)
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break
+        return min_eval

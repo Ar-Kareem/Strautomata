@@ -1,0 +1,302 @@
+
+import time
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    # Constants for Bitboard Logic
+    FRAME_A = 0xfefefefefefefefe  # Mask to avoid wrap-around on A-file (col 0)
+    FRAME_H = 0x7f7f7f7f7f7f7f7f  # Mask to avoid wrap-around on H-file (col 7)
+    ROW_0 = 0xff                  # First row (White home / Black goal)
+    ROW_7 = 0xff00000000000000    # Last row (Black home / White goal)
+    
+    # Mapping indices 0..63 to (row, col)
+    IDX_TO_COORD = tuple((r, c) for r in range(8) for c in range(8))
+    
+    # --- Helper Functions ---
+    
+    def get_moves(wp, bp, turn):
+        """
+        Generates pseudo-legal moves using bitwise operations.
+        Returns a list of tuples: (from_index, to_index).
+        """
+        moves = []
+        full = wp | bp  # All occupied squares
+        
+        if turn == 'w':
+            # White moves UP (increasing index)
+            
+            # 1. Straight Forward (+8): Target must be empty
+            tgts = (wp << 8) & ~full
+            while tgts:
+                t = tgts & -tgts
+                idx = t.bit_length() - 1
+                moves.append((idx - 8, idx))
+                tgts ^= t
+            
+            # 2. Diagonal Left (+7: Col-1): Target empty or Enemy (Capture)
+            # Must mask out A-file from source to prevent wrapping H->A
+            sources_no_A = wp & FRAME_A
+            
+            # Capture (target is opponent)
+            tgts = (sources_no_A << 7) & bp
+            while tgts:
+                t = tgts & -tgts
+                idx = t.bit_length() - 1
+                moves.append((idx - 7, idx))
+                tgts ^= t
+                
+            # Move (target is empty)
+            tgts = (sources_no_A << 7) & ~full
+            while tgts:
+                t = tgts & -tgts
+                idx = t.bit_length() - 1
+                moves.append((idx - 7, idx))
+                tgts ^= t
+
+            # 3. Diagonal Right (+9: Col+1): Target empty or Enemy
+            sources_no_H = wp & FRAME_H
+            
+            # Capture
+            tgts = (sources_no_H << 9) & bp
+            while tgts:
+                t = tgts & -tgts
+                idx = t.bit_length() - 1
+                moves.append((idx - 9, idx))
+                tgts ^= t
+                
+            # Move
+            tgts = (sources_no_H << 9) & ~full
+            while tgts:
+                t = tgts & -tgts
+                idx = t.bit_length() - 1
+                moves.append((idx - 9, idx))
+                tgts ^= t
+
+        else: 
+            # Black moves DOWN (decreasing index)
+            
+            # 1. Straight Forward (-8): Target must be empty
+            tgts = (bp >> 8) & ~full
+            while tgts:
+                t = tgts & -tgts
+                idx = t.bit_length() - 1
+                moves.append((idx + 8, idx))
+                tgts ^= t
+                
+            # 2. Diagonal Left (relative to board view, index -9: Col-1)
+            # Source must not be A-file (index 0, 8, etc)
+            sources_no_A = bp & FRAME_A
+            
+            # Capture
+            tgts = (sources_no_A >> 9) & wp
+            while tgts:
+                t = tgts & -tgts
+                idx = t.bit_length() - 1
+                moves.append((idx + 9, idx))
+                tgts ^= t
+                
+            # Move
+            tgts = (sources_no_A >> 9) & ~full
+            while tgts:
+                t = tgts & -tgts
+                idx = t.bit_length() - 1
+                moves.append((idx + 9, idx))
+                tgts ^= t
+                
+            # 3. Diagonal Right (relative to board view, index -7: Col+1)
+            # Source must not be H-file
+            sources_no_H = bp & FRAME_H
+            
+            # Capture
+            tgts = (sources_no_H >> 7) & wp
+            while tgts:
+                t = tgts & -tgts
+                idx = t.bit_length() - 1
+                moves.append((idx + 7, idx))
+                tgts ^= t
+                
+            # Move
+            tgts = (sources_no_H >> 7) & ~full
+            while tgts:
+                t = tgts & -tgts
+                idx = t.bit_length() - 1
+                moves.append((idx + 7, idx))
+                tgts ^= t
+                
+        return moves
+
+    def evaluate(wp, bp):
+        """
+        Static evaluation of the board.
+        Positive value favors White, negative favors Black.
+        """
+        score = 0
+        
+        # --- White Evaluation ---
+        temp = wp
+        while temp:
+            t = temp & -temp
+            idx = t.bit_length() - 1
+            row = idx >> 3
+            
+            # Progress heuristic: Reward advancement quadratically
+            # Row 0 -> 10, Row 6 -> 46
+            score += 10 + (row * row)
+            
+            # Connectivity (Phalanx): Reward if supported by piece behind
+            # Behind white is -9 (left-down) or -7 (right-down)
+            if row > 0:
+                 # Check support from left-down (idx-9) if not on A-file
+                 if (idx & 7) > 0 and (wp & (1 << (idx - 9))): score += 2
+                 # Check support from right-down (idx-7) if not on H-file
+                 if (idx & 7) < 7 and (wp & (1 << (idx - 7))): score += 2
+            
+            temp ^= t
+            
+        # --- Black Evaluation ---
+        temp = bp
+        while temp:
+            t = temp & -temp
+            idx = t.bit_length() - 1
+            row = idx >> 3
+            
+            # Progress heuristic: Black moves to row 0
+            dist = 7 - row
+            score -= (10 + (dist * dist))
+            
+            # Connectivity
+            if row < 7:
+                 # Support from left-up (idx+7) relative to board (Black's right)
+                 if (idx & 7) > 0 and (bp & (1 << (idx + 7))): score -= 2
+                 # Support from right-up (idx+9) relative to board
+                 if (idx & 7) < 7 and (bp & (1 << (idx + 9))): score -= 2
+            
+            temp ^= t
+            
+        return score
+
+    # --- Search Engine ---
+    
+    class TimeoutError(Exception): pass
+    
+    start_time = time.time()
+    nodes_visited = 0
+    TIME_LIMIT = 0.90  # 1.0s limit, leave buffer
+
+    def alphabeta(wp, bp, depth, alpha, beta, maximizing):
+        nonlocal nodes_visited
+        nodes_visited += 1
+        
+        # Periodically check time
+        if (nodes_visited & 1023) == 0:
+            if time.time() - start_time > TIME_LIMIT:
+                raise TimeoutError
+        
+        # 1. Check Win Conditions (Reached home row)
+        if wp & ROW_7: return 100000 + depth
+        if bp & ROW_0: return -100000 - depth
+        
+        # 2. Leaf Node
+        if depth == 0:
+            return evaluate(wp, bp)
+        
+        moves = get_moves(wp, bp, 'w' if maximizing else 'b')
+        
+        # 3. Game Over (Captured all or Stalemate)
+        if not moves:
+            return -100000 if maximizing else 100000
+
+        if maximizing: # White
+            value = -1e9
+            for f, t in moves:
+                # Apply move
+                n_wp = (wp & ~(1 << f)) | (1 << t) # Move white
+                n_bp = bp & ~(1 << t)              # Remove captured black
+                
+                v = alphabeta(n_wp, n_bp, depth - 1, alpha, beta, False)
+                value = max(value, v)
+                alpha = max(alpha, value)
+                if alpha >= beta: break # Pruning
+            return value
+        else: # Black
+            value = 1e9
+            for f, t in moves:
+                # Apply move
+                n_bp = (bp & ~(1 << f)) | (1 << t) # Move black
+                n_wp = wp & ~(1 << t)              # Remove captured white
+                
+                v = alphabeta(n_wp, n_bp, depth - 1, alpha, beta, True)
+                value = min(value, v)
+                beta = min(beta, value)
+                if beta <= alpha: break
+            return value
+
+    # --- Main Logic ---
+    
+    # 1. Convert input lists to Bitboards
+    my_bb = sum(1 << (r * 8 + c) for r, c in me)
+    opp_bb = sum(1 << (r * 8 + c) for r, c in opp)
+    
+    wp, bp = (my_bb, opp_bb) if color == 'w' else (opp_bb, my_bb)
+    
+    # 2. Iterative Deepening
+    best_move_idx = None
+    
+    # Generate root moves
+    root_moves = get_moves(wp, bp, color)
+    if not root_moves:
+        # Fallback if no moves (should technically be loss)
+        return ((0,0), (0,0))
+    
+    # Pre-sort moves: Prioritize Captures
+    # Check if target square (t) is in opponent bitboard
+    opp_mask = bp if color == 'w' else wp
+    root_moves.sort(key=lambda m: 1 if (1 << m[1]) & opp_mask else 0, reverse=True)
+    
+    # Initialize best move with first available legal move
+    best_move_idx = root_moves[0]
+    
+    try:
+        # Iterate depths: 1, 2, 3...
+        for depth in range(1, 25):
+            alpha = -1e9
+            beta = 1e9
+            
+            current_best_move = None
+            
+            # Root Search Loop (to handle best_move recording)
+            if color == 'w':
+                best_val = -1e9
+                for f, t in root_moves:
+                    n_wp = (wp & ~(1 << f)) | (1 << t)
+                    n_bp = bp & ~(1 << t)
+                    val = alphabeta(n_wp, n_bp, depth - 1, alpha, beta, False)
+                    
+                    if val > best_val:
+                        best_val = val
+                        current_best_move = (f, t)
+                    alpha = max(alpha, best_val)
+            else:
+                best_val = 1e9
+                for f, t in root_moves:
+                    n_bp = (bp & ~(1 << f)) | (1 << t)
+                    n_wp = wp & ~(1 << t)
+                    val = alphabeta(n_wp, n_bp, depth - 1, alpha, beta, True)
+                    
+                    if val < best_val:
+                        best_val = val
+                        current_best_move = (f, t)
+                    beta = min(beta, best_val)
+            
+            if current_best_move:
+                best_move_idx = current_best_move
+            
+            # Heuristic check: stop if we used > 45% of time, next depth likely times out
+            if time.time() - start_time > 0.45:
+                break
+                
+    except TimeoutError:
+        pass # Return the best move found from the last fully completed depth
+        
+    # 3. Decode result indices back to coordinates
+    f, t = best_move_idx
+    return (IDX_TO_COORD[f], IDX_TO_COORD[t])

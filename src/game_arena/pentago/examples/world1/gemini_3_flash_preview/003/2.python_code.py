@@ -1,0 +1,79 @@
+
+import copy
+
+def policy(you, opponent) -> str:
+    def get_board(p1, p2):
+        # 1 for you, -1 for opponent
+        board = [[0]*6 for _ in range(6)]
+        for r in range(6):
+            for c in range(6):
+                if p1[r][c]: board[r][c] = 1
+                elif p2[r][c]: board[r][c] = -1
+        return board
+
+    def check_win(board, player):
+        # Standard 5-in-a-row check
+        for r in range(6):
+            for c in range(2):
+                if all(board[r][c+i] == player for i in range(5)): return True
+        for c in range(6):
+            for r in range(2):
+                if all(board[r+i][c] == player for i in range(5)): return True
+        for r in range(2):
+            for c in range(2):
+                if all(board[r+i][c+i] == player for i in range(5)): return True
+            for c in range(4, 6):
+                if all(board[r+i][c-i] == player for i in range(5)): return True
+        return False
+
+    def rotate(board, quad, direction):
+        new_board = [row[:] for row in board]
+        qr = (quad // 2) * 3
+        qc = (quad % 2) * 3
+        sub = [row[qc:qc+3] for row in board[qr:qr+3]]
+        if direction == 'R': # Clockwise
+            rotated = [[sub[2-j][i] for j in range(3)] for i in range(3)]
+        else: # Left / Anticlockwise
+            rotated = [[sub[j][2-i] for j in range(3)] for i in range(3)]
+        for r in range(3):
+            for c in range(3):
+                new_board[qr+r][qc+c] = rotated[r][c]
+        return new_board
+
+    board = get_board(you, opponent)
+    empty_cells = [(r, c) for r in range(6) for c in range(6) if board[r][c] == 0]
+
+    # 1. Check for immediate win
+    for r, c in empty_cells:
+        for q in range(4):
+            for d in ['L', 'R']:
+                temp_board = [row[:] for row in board]
+                temp_board[r][c] = 1
+                final_board = rotate(temp_board, q, d)
+                if check_win(final_board, 1):
+                    return f"{r+1},{c+1},{q},{d}"
+
+    # 2. Block opponent immediate win
+    # (Simulate if opponent can win on their next turn)
+    for r, c in empty_cells:
+        for q in range(4):
+            for d in ['L', 'R']:
+                temp_board = [row[:] for row in board]
+                temp_board[r][c] = -1
+                final_board = rotate(temp_board, q, d)
+                if check_win(final_board, -1):
+                    # Blocking move: place where they would have placed
+                    # or at least try to disrupt the win. 
+                    # For simplicity, just return a move placing at the threat cell.
+                    # We pick a generic rotation.
+                    return f"{r+1},{c+1},0,L"
+
+    # 3. Fallback: Center preference
+    center_order = [(2,2), (2,3), (3,2), (3,3), (1,1), (1,4), (4,1), (4,4)]
+    best_move = empty_cells[0]
+    for cp in center_order:
+        if board[cp[0]][cp[1]] == 0:
+            best_move = cp
+            break
+            
+    return f"{best_move[0]+1},{best_move[1]+1},0,R"

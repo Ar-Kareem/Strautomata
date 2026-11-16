@@ -1,0 +1,146 @@
+Here's my strategy followed by the Python implementation:
+
+Strategy:
+1. Prioritize mobility - prefer moves that maximize your future move options while limiting opponent's options.
+2. Look ahead 1 move to avoid immediate traps where opponent can capture multiple pieces.
+3. Prefer captures that create connected clusters of your pieces.
+4. Prioritize center control while maintaining piece connectivity.
+5. When ahead in pieces, trade pieces. When behind, avoid trades and spread out.
+6. Calculate a simple material difference metric to decide when to be aggressive vs defensive.
+
+The implementation uses numpy for efficient board operations, evaluates possible moves based on multiple factors (mobility, material, board control), and selects the optimal legal move.
+
+<code>
+import numpy as np
+from collections import deque
+
+def policy(you, opponent):
+    you_board = np.array(you)
+    opp_board = np.array(opponent)
+    rows, cols = 5, 6
+    
+    # Find all legal moves
+    legal_moves = []
+    for row in range(rows):
+        for col in range(cols):
+            if you_board[row, col] == 0:
+                continue
+                
+            # Check up
+            if row > 0 and opp_board[row-1, col] == 1:
+                legal_moves.append(f"{row},{col},U")
+            # Check right
+            if col < cols - 1 and opp_board[row, col+1] == 1:
+                legal_moves.append(f"{row},{col},R")
+            # Check down
+            if row < rows - 1 and opp_board[row+1, col] == 1:
+                legal_moves.append(f"{row},{col},D")
+            # Check left
+            if col > 0 and opp_board[row, col-1] == 1:
+                legal_moves.append(f"{row},{col},L")
+    
+    if not legal_moves:
+        return "0,0,U"  # Shouldn't happen since game continues until one player cannot move
+    
+    # Evaluate moves based on multiple factors
+    best_score = -float('inf')
+    best_move = legal_moves[0]
+    
+    for move in legal_moves:
+        row, col, dir = move.split(',')
+        row, col = int(row), int(col)
+        
+        # Simulate the move
+        new_you = you_board.copy()
+        new_opp = opp_board.copy()
+        new_you[row, col] = 0
+        
+        if dir == 'U':
+            new_you[row-1, col] = 1
+            new_opp[row-1, col] = 0
+        elif dir == 'R':
+            new_you[row, col+1] = 1
+            new_opp[row, col+1] = 0
+        elif dir == 'D':
+            new_you[row+1, col] = 1
+            new_opp[row+1, col] = 0
+        elif dir == 'L':
+            new_you[row, col-1] = 1
+            new_opp[row, col-1] = 0
+        
+        # Calculate score for this move
+        score = 0
+        
+        # Material difference
+        material_diff = np.sum(new_you) - np.sum(new_opp)
+        score += material_diff * 2
+        
+        # Mobility score
+        your_moves = count_moves(new_you, new_opp)
+        opp_moves = count_moves(new_opp, new_you)
+        mobility_diff = your_moves - opp_moves
+        score += mobility_diff
+        
+        # Center control
+        center_rows = [1, 2, 3]
+        center_cols = [2, 3, 4]
+        for r in center_rows:
+            for c in center_cols:
+                if new_you[r, c] == 1:
+                    score += 0.5
+        
+        # Connectivity bonus
+        if count_connected_components(new_you) <= 2:
+            score += 1
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move
+
+def count_moves(board, opp_board):
+    rows, cols = 5, 6
+    count = 0
+    for row in range(rows):
+        for col in range(cols):
+            if board[row, col] == 0:
+                continue
+            # Check up
+            if row > 0 and opp_board[row-1, col] == 1:
+                count += 1
+            # Check right
+            if col < cols - 1 and opp_board[row, col+1] == 1:
+                count += 1
+            # Check down
+            if row < rows - 1 and opp_board[row+1, col] == 1:
+                count += 1
+            # Check left
+            if col > 0 and opp_board[row, col-1] == 1:
+                count += 1
+    return count
+
+def count_connected_components(board):
+    rows, cols = 5, 6
+    visited = np.zeros_like(board)
+    components = 0
+    
+    for row in range(rows):
+        for col in range(cols):
+            if board[row, col] == 1 and not visited[row, col]:
+                components += 1
+                # BFS
+                queue = deque()
+                queue.append((row, col))
+                visited[row, col] = 1
+                
+                while queue:
+                    r, c = queue.popleft()
+                    for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < rows and 0 <= nc < cols:
+                            if board[nr, nc] == 1 and not visited[nr, nc]:
+                                visited[nr, nc] = 1
+                                queue.append((nr, nc))
+    return components
+</code>

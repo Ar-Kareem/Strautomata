@@ -1,0 +1,338 @@
+
+import random
+from collections import deque, defaultdict
+
+# Hex neighbor directions for this 2D representation
+NEI_DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, 1), (1, -1)]
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    """
+    Heuristic Havannah policy:
+      - If any immediate winning move exists, play it.
+      - If opponent has immediate winning moves, block (if possible).
+      - Otherwise pick among candidate moves (neighbors of stones + center) using connectivity heuristics.
+    """
+    N = len(valid_mask)
+    # Build set and list of valid cells
+    valid = set()
+    for r in range(N):
+        for c in range(N):
+            if valid_mask[r][c]:
+                valid.add((r, c))
+
+    me_set = set(me)
+    opp_set = set(opp)
+    occupied = me_set | opp_set
+    empties = sorted(list(valid - occupied))
+
+    # Precompute neighbor map for valid cells and degrees
+    neighbors = {}
+    degree = {}
+    for (r, c) in valid:
+        nbrs = []
+        for dr, dc in NEI_DIRS:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < N and 0 <= nc < N and (nr, nc) in valid:
+                nbrs.append((nr, nc))
+        neighbors[(r, c)] = nbrs
+        degree[(r, c)] = len(nbrs)
+
+    # Identify boundary cells and corners (degree==2 -> corner)
+    boundary = {p for p in valid if degree[p] < 6}
+    corners = {p for p in valid if degree[p] == 2}
+
+    # Build boundary adjacency
+    boundary_neighbors = {}
+    for p in boundary:
+        boundary_neighbors[p] = [q for q in neighbors[p] if q in boundary]
+
+    # Traverse boundary cycle to assign edge ids to non-corner boundary cells.
+    # Edges are the segments between consecutive corners; assign an index 0..5 to each segment's non-corner cells.
+    edge_id_of = {}  # maps boundary non-corner cell -> edge index
+    corner_list = []
+    if corners and boundary:
+        # pick a starting corner
+        start_corner = next(iter(corners))
+        # pick a neighbor on boundary to go forward
+        # if a corner has only two boundary neighbors, pick one arbitrarily
+        nbrs = boundary_neighbors.get(start_corner, [])
+        if nbrs:
+            prev = start_corner
+            curr = nbrs[0]
+            idx = 0
+            visited = set()
+            # We will loop until we return to start_corner and have done at least one full loop
+            loop_guard = 0
+            while True:
+                loop_guard += 1
+                if loop_guard > len(boundary) * 4:
+                    break
+                # If current is a corner, record it and move on: increment edge index
+                if curr in corners:
+                    corner_list.append(curr)
+                    # find next boundary neighbor of curr that's not prev
+                    nxt = None
+                    for q in boundary_neighbors.get(curr, []):
+                        if q != prev:
+                            nxt = q
+                            break
+                    if nxt is None:
+                        break
+                    prev, curr = curr, nxt
+                    idx = (idx + 1) % 6
+                    # if we've wrapped to start corner and we have recorded >0 corners, break
+                    if curr == start_corner:
+                        # finish: append start_corner to corner list and break
+                        corner_list.append(start_corner)
+                        break
+                    continue
+                else:
+                    # curr is non-corner boundary cell: assign edge id
+                    edge_id_of[curr] = idx
+                    # step forward
+                    nxt = None
+                    for q in boundary_neighbors.get(curr, []):
+                        if q != prev:
+                            nxt = q
+                            break
+                    if nxt is None:
+                        break
+                    prev, curr = curr, nxt
+
+    # Helper: BFS-based connected components for a player's stones
+    def components_of(stones_set):
+        comps = {}
+        comp_sizes = {}
+        visited = set()
+        comp_id = 0
+        for s in stones_set:
+            if s in visited:
+                continue
+            # BFS
+            q = deque([s])
+            visited.add(s)
+            comps[comp_id] = {s}
+            while q:
+                u = q.popleft()
+                for v in neighbors[u]:
+                    if v in stones_set and v not in visited:
+                        visited.add(v)
+                        comps[comp_id].add(v)
+                        q.append(v)
+            comp_sizes[comp_id] = len(comps[comp_id])
+            comp_id += 1
+        # map node->comp id
+        node_to_comp = {}
+        for cid, nodes in comps.items():
+            for n in nodes:
+                node_to_comp[n] = cid
+        return node_to_comp, comps
+
+    # Win detection functions
+    def has_bridge(stones_set):
+        # If any two corners lie in same connected component of stones_set -> bridge
+        if not corners:
+            return False
+        node_to_comp, comps = components_of(stones_set)
+        corner_comps = set()
+        for c in corners:
+            if c in node_to_comp:
+                corner_comps.add(node_to_comp[c])
+        # if any component has two or more corners
+        if not corner_comps:
+            return False
+        # count corners per comp
+        comp_corner_count = defaultdict(int)
+        for c in corners:
+            if c in node_to_comp:
+                comp_corner_count[node_to_comp[c]] += 1
+                if comp_corner_count[node_to_comp[c]] >= 2:
+                    return True
+        return False
+
+    def has_fork(stones_set):
+        # If some connected component touches >=3 distinct edges (edge segments, corner nodes not counted)
+        if not edge_id_of:
+            return False
+        node_to_comp, comps = components_of(stones_set)
+        comp_edges = defaultdict(set)
+        for node, cid in node_to_comp.items():
+            # if this node touches any non-corner boundary nodes -> add their edge ids
+            for nb in neighbors[node]:
+                if nb in edge_id_of:
+                    comp_edges[cid].add(edge_id_of[nb])
+        for cid, edges in comp_edges.items():
+            if len(edges) >= 3:
+                return True
+        return False
+
+    def has_ring(stones_set):
+        # If there exists at least one valid cell (occupied or empty by any player) that is NOT reachable from boundary
+        # when treating stones_set cells as blocked, then stones_set encloses region => ring.
+        # Build BFS from boundary cells that are not in stones_set.
+        # All valid cells not in stones_set that are not reached are enclosed.
+        blocked = stones_set
+        # start BFS from all boundary cells that are not blocked
+        start_nodes = [p for p in boundary if p not in blocked]
+        if not start_nodes:
+            # If boundary completely blocked by stones_set, then definitely ring
+            # But ensure at least one interior cell exists
+            # If there exists any valid cell not in stones_set, then it's enclosed.
+            for p in valid:
+                if p not in blocked:
+                    return True
+            return False
+        visited = set(start_nodes)
+        q = deque(start_nodes)
+        while q:
+            u = q.popleft()
+            for v in neighbors[u]:
+                if v in blocked or v in visited:
+                    continue
+                visited.add(v)
+                q.append(v)
+        # Any valid cell not in stones_set and not visited -> enclosed -> ring
+        for p in valid:
+            if p not in blocked and p not in visited:
+                return True
+        return False
+
+    def is_winner(stones_set):
+        # Check ring, bridge, fork
+        if has_ring(stones_set):
+            return True
+        if has_bridge(stones_set):
+            return True
+        if has_fork(stones_set):
+            return True
+        return False
+
+    # Helper to find a legal center-ish cell if actual center is invalid
+    def pick_center():
+        # ideal center
+        mid = N // 2
+        order = sorted(list(valid), key=lambda x: (abs(x[0]-mid)+abs(x[1]-mid), abs(x[0]-mid), abs(x[1]-mid)))
+        for p in order:
+            if p not in occupied:
+                return p
+        # fallback
+        return next(iter(valid - occupied))
+
+    # If first move overall (no stones on board), play center
+    if not me_set and not opp_set:
+        return pick_center()
+
+    # Immediate winning move for me?
+    for p in empties:
+        new_me = me_set | {p}
+        if is_winner(new_me):
+            return p
+
+    # Immediate opponent threats (moves that would let opponent win)
+    opp_threats = []
+    for p in empties:
+        new_opp = opp_set | {p}
+        if is_winner(new_opp):
+            opp_threats.append(p)
+    if opp_threats:
+        # If we have a move that both wins for us and blocks multiple threats, we already checked winning moves.
+        # If only one threat, block it.
+        if len(opp_threats) == 1:
+            return opp_threats[0]
+        # If many threats, try to block one that also helps our connectivity (heuristic)
+        # Score threats by adjacency to our stones
+        best = None
+        best_score = -10**9
+        for p in opp_threats:
+            score = sum(1 for q in neighbors[p] if q in me_set)
+            # prefer moves nearer center
+            mid = N // 2
+            score -= (abs(p[0]-mid)+abs(p[1]-mid))*0.1
+            if score > best_score:
+                best_score = score
+                best = p
+        if best is not None:
+            return best
+        # fallback
+        return opp_threats[0]
+
+    # Build my components map
+    my_node_to_comp, my_comps = components_of(me_set)
+
+    # Candidate generation: empties adjacent (distance 1) to existing stones or near them
+    candidates = set()
+    for s in me_set | opp_set:
+        for nb in neighbors[s]:
+            if nb not in occupied:
+                candidates.add(nb)
+        # also include second ring neighbors
+        for nb in neighbors[s]:
+            for nb2 in neighbors[nb]:
+                if nb2 not in occupied:
+                    candidates.add(nb2)
+    # ensure center present
+    center = (N // 2, N // 2)
+    if center in valid and center not in occupied:
+        candidates.add(center)
+    # if too few candidates, include all empties
+    if not candidates:
+        if empties:
+            return empties[0]
+        else:
+            # no legal move (shouldn't happen)
+            return pick_center()
+
+    # cap candidate list size: pick top candidates by proximity to center and randomness
+    cand_list = list(candidates)
+    # compute score baseline for initial sorting: proximity to center
+    mid = N // 2
+    cand_list.sort(key=lambda p: (abs(p[0]-mid)+abs(p[1]-mid)))
+    if len(cand_list) > 60:
+        cand_list = cand_list[:60]
+
+    # Evaluate heuristic score for each candidate
+    best_move = None
+    best_score = -1e9
+    for p in cand_list:
+        # quick legality
+        if p in occupied:
+            continue
+        adj_my = sum(1 for q in neighbors[p] if q in me_set)
+        adj_opp = sum(1 for q in neighbors[p] if q in opp_set)
+        # how many distinct my components would be merged by placing here?
+        neighbor_my_comps = {my_node_to_comp[q] for q in neighbors[p] if q in my_node_to_comp}
+        merges = max(0, len(neighbor_my_comps) - 1)  # merging occurs if >1 distinct comps adjacent
+        # touching edges (non-corner boundary)
+        touch_edge = 1 if p in edge_id_of else 0
+        # corner connectivity potential (if placing connects to corners)
+        corner_connects = 0
+        for q in neighbors[p]:
+            if q in my_node_to_comp:
+                # count corners within that component
+                cid = my_node_to_comp[q]
+                # if that component contains any corner stones, add
+                if any(node in corners for node in my_comps.get(cid, [])):
+                    corner_connects += 1
+        # distance to center penalty
+        dist_center = abs(p[0]-mid)+abs(p[1]-mid)
+        # base score weights tuned heuristically
+        score = 0
+        score += 200 * merges
+        score += 25 * adj_my
+        score += 12 * adj_opp  # blocking/interaction
+        score += 45 * touch_edge
+        score += 30 * corner_connects
+        score -= 2 * dist_center
+        # slight randomness to break ties and diversify
+        score += random.random() * 1e-3
+        if score > best_score:
+            best_score = score
+            best_move = p
+
+    if best_move is not None:
+        return best_move
+
+    # fallback: pick first empty or center
+    if empties:
+        return empties[0]
+    return pick_center()

@@ -1,0 +1,206 @@
+<thinking>
+Let me think about a good strategy for Kalah:
+
+1. **Extra moves are valuable**: Landing in your store gives you another turn, which is a significant advantage.
+2. **Captures are valuable**: Capturing opponent's seeds can swing the game.
+3. **Endgame matters**: When the game ends, remaining seeds go to their owner's store.
+4. **Lookahead helps**: A minimax or alpha-beta search would be ideal, but needs to be fast enough.
+
+Given the 1-second time constraint, I'll implement a strategy that combines:
+- Minimax search with alpha-beta pruning
+- Reasonable depth limit
+- Good move ordering (try extra-move generating moves first)
+- Evaluation function that considers:
+  - Store difference (main goal)
+  - Potential captures
+  - Seeds on our side vs opponent's side
+
+Let me code this step by step:
+
+1. Implement game simulation logic
+2. Implement evaluation function
+3. Implement minimax with alpha-beta pruning
+4. Return the best move
+
+Key implementation details:
+- Need to simulate moves accurately including extra turns and captures
+- Need to detect game-over conditions
+- Need efficient state representation
+- Should try moves that land in store first (move ordering for alpha-beta)
+
+Let me write the complete solution:
+</thinking>
+
+<code>
+def policy(you: list[int], opponent: list[int]) -> int:
+    import copy
+    
+    def simulate_move(you_state, opp_state, house_idx, is_you):
+        """
+        Simulate a move and return (new_you, new_opp, extra_turn)
+        is_you=True means we're moving for 'you', False means for opponent
+        """
+        you_state = you_state[:]
+        opp_state = opp_state[:]
+        
+        if is_you:
+            seeds = you_state[house_idx]
+            you_state[house_idx] = 0
+            pos = house_idx
+            side = 'you'
+        else:
+            seeds = opp_state[house_idx]
+            opp_state[house_idx] = 0
+            pos = house_idx
+            side = 'opp'
+        
+        # Distribute seeds
+        while seeds > 0:
+            pos += 1
+            
+            if side == 'you':
+                if pos <= 5:
+                    you_state[pos] += 1
+                    seeds -= 1
+                    last_side = 'you'
+                    last_pos = pos
+                elif pos == 6:
+                    you_state[6] += 1
+                    seeds -= 1
+                    last_side = 'you'
+                    last_pos = 6
+                else:
+                    # Switch to opponent side
+                    side = 'opp'
+                    pos = -1
+            else:  # side == 'opp'
+                if pos <= 5:
+                    opp_state[pos] += 1
+                    seeds -= 1
+                    last_side = 'opp'
+                    last_pos = pos
+                elif pos == 6:
+                    # Skip opponent's store if we're playing as 'you'
+                    if is_you:
+                        side = 'you'
+                        pos = -1
+                    else:
+                        opp_state[6] += 1
+                        seeds -= 1
+                        last_side = 'opp'
+                        last_pos = 6
+                else:
+                    side = 'you'
+                    pos = -1
+        
+        # Check for extra turn
+        extra_turn = False
+        if is_you and last_side == 'you' and last_pos == 6:
+            extra_turn = True
+        elif not is_you and last_side == 'opp' and last_pos == 6:
+            extra_turn = True
+        
+        # Check for capture
+        if is_you and last_side == 'you' and 0 <= last_pos <= 5:
+            if you_state[last_pos] == 1:  # Was empty before drop
+                opp_idx = 5 - last_pos
+                if opp_state[opp_idx] > 0:
+                    you_state[6] += you_state[last_pos] + opp_state[opp_idx]
+                    you_state[last_pos] = 0
+                    opp_state[opp_idx] = 0
+        elif not is_you and last_side == 'opp' and 0 <= last_pos <= 5:
+            if opp_state[last_pos] == 1:  # Was empty before drop
+                you_idx = 5 - last_pos
+                if you_state[you_idx] > 0:
+                    opp_state[6] += opp_state[last_pos] + you_state[you_idx]
+                    opp_state[last_pos] = 0
+                    you_state[you_idx] = 0
+        
+        return you_state, opp_state, extra_turn
+    
+    def is_game_over(you_state, opp_state):
+        you_empty = all(you_state[i] == 0 for i in range(6))
+        opp_empty = all(opp_state[i] == 0 for i in range(6))
+        return you_empty or opp_empty
+    
+    def get_final_score(you_state, opp_state):
+        you_state = you_state[:]
+        opp_state = opp_state[:]
+        
+        # Collect remaining seeds
+        you_state[6] += sum(you_state[0:6])
+        opp_state[6] += sum(opp_state[0:6])
+        
+        return you_state[6] - opp_state[6]
+    
+    def evaluate(you_state, opp_state):
+        if is_game_over(you_state, opp_state):
+            return get_final_score(you_state, opp_state)
+        
+        return you_state[6] - opp_state[6]
+    
+    def minimax(you_state, opp_state, depth, alpha, beta, is_maximizing):
+        if depth == 0 or is_game_over(you_state, opp_state):
+            return evaluate(you_state, opp_state), None
+        
+        if is_maximizing:
+            max_eval = float('-inf')
+            best_move = None
+            moves = [i for i in range(6) if you_state[i] > 0]
+            
+            # Move ordering: try moves that land in store first
+            def move_priority(m):
+                return -1 if you_state[m] == (6 - m) else 0
+            moves.sort(key=move_priority)
+            
+            for move in moves:
+                new_you, new_opp, extra = simulate_move(you_state, opp_state, move, True)
+                
+                if extra:
+                    eval_score, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, True)
+                else:
+                    eval_score, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, False)
+                
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_move = move
+                
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            best_move = None
+            moves = [i for i in range(6) if opp_state[i] > 0]
+            
+            if not moves:
+                return evaluate(you_state, opp_state), None
+            
+            for move in moves:
+                new_you, new_opp, extra = simulate_move(you_state, opp_state, move, False)
+                
+                if extra:
+                    eval_score, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, False)
+                else:
+                    eval_score, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, True)
+                
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            
+            return min_eval, best_move
+    
+    # Search with reasonable depth
+    _, best_move = minimax(you, opponent, depth=8, alpha=float('-inf'), beta=float('inf'), is_maximizing=True)
+    
+    # Fallback to first legal move if something goes wrong
+    if best_move is None:
+        for i in range(6):
+            if you[i] > 0:
+                return i
+    
+    return best_move
+</code>

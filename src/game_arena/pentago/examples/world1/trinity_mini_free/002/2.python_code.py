@@ -1,0 +1,88 @@
+
+def policy(you, opponent) -> str:
+    # Check for immediate winning moves
+    for r in range(6):
+        for c in range(6):
+            if you[r][c] == 0 and opponent[r][c] == 0:
+                you_copy = [row[:] for row in you]
+                opponent_copy = [row[:] for row in opponent]
+                you_copy[r][c] = 1
+                for quad in range(4):
+                    for direction in ['L', 'R']:
+                        rotate_quadrant(you_copy, opponent_copy, quad, direction)
+                        if has_five(you_copy):
+                            return f"{r+1},{c+1},{quad},{direction}"
+    
+    # Block opponent's winning moves
+    for r in range(6):
+        for c in range(6):
+            if you[r][c] == 0 and opponent[r][c] == 0:
+                you_copy = [row[:] for row in you]
+                opponent_copy = [row[:] for row in opponent]
+                you_copy[r][c] = 1
+                opponent_can_win = False
+                for opp_r in range(6):
+                    for opp_c in range(6):
+                        if you_copy[opp_r][opp_c] == 0 and opponent_copy[opp_r][opp_c] == 0:
+                            opp_you_copy = [row[:] for row in you_copy]
+                            opp_you_copy[opp_r][opp_c] = 1
+                            for quad in range(4):
+                                for direction in ['L', 'R']:
+                                    rotate_quadrant(opp_you_copy, opponent_copy, quad, direction)
+                                    if has_five(opp_you_copy):
+                                        opponent_can_win = True
+                                        break
+                                if opponent_can_win:
+                                    break
+                            if opponent_can_win:
+                                break
+                    if opponent_can_win:
+                        break
+                if not opponent_can_win:
+                    return f"{r+1},{c+1},0,L"
+    
+    # Default move: center placement
+    for r in range(6):
+        for c in range(6):
+            if you[r][c] == 0 and opponent[r][c] == 0:
+                return f"{r+1},{c+1},0,L"
+    return "1,1,0,L"
+
+def rotate_quadrant(you, opponent, quad, direction):
+    r0 = quad // 2 * 3
+    c0 = quad % 2 * 3
+    quad_you = [you[r0 + i][c0:c0+3] for i in range(3)]
+    quad_opp = [opponent[r0 + i][c0:c0+3] for i in range(3)]
+    if direction == 'L':
+        rotated_you = [[quad_you[2-j][i] for j in range(3)] for i in range(3)]
+        rotated_opp = [[quad_opp[2-j][i] for j in range(3)] for i in range(3)]
+    else:
+        rotated_you = [[quad_you[j][2-i] for j in range(3)] for i in range(3)]
+        rotated_opp = [[quad_opp[j][2-i] for j in range(3)] for i in range(3)]
+    for i in range(3):
+        for j in range(3):
+            you[r0 + i][c0 + j] = rotated_you[i][j]
+            opponent[r0 + i][c0 + j] = rotated_opp[i][j]
+
+def has_five(board):
+    # Check rows
+    for r in range(6):
+        for c in range(4):
+            if board[r][c] == 1 and board[r][c+1] == 1 and board[r][c+2] == 1 and board[r][c+3] == 1 and board[r][c+4] == 1:
+                return True
+    # Check columns
+    for c in range(6):
+        for r in range(4):
+            if board[r][c] == 1 and board[r+1][c] == 1 and board[r+2][c] == 1 and board[r+3][c] == 1 and board[r+4][c] == 1:
+                return True
+    # Check main diagonal
+    for r in range(4):
+        for c in range(4):
+            if board[r][c] == 1 and board[r+1][c+1] == 1 and board[r+2][c+2] == 1 and board[r+3][c+3] == 1 and board[r+4][c+4] == 1:
+                return True
+    # Check anti-diagonal
+    for r in range(4):
+        for c in range(4, 6):
+            if board[r][c] == 1 and board[r+1][c-1] == 1 and board[r+2][c-2] == 1 and board[r+3][c-3] == 1 and board[r+4][c-4] == 1:
+                return True
+    return False

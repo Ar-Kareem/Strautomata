@@ -1,0 +1,158 @@
+<thinking>
+To create a competitive Kalah AI, I will implement a Minimax algorithm with Alpha-Beta pruning. 
+
+1.  **Game Simulation**: I need a robust simulator that handles the specific rules of Kalah:
+    *   Sowing seeds counter-clockwise.
+    *   Skipping the opponent's store.
+    *   Extra turns if the last seed lands in the player's store.
+    *   Captures if the last seed lands in an empty house on the player's side.
+    *   End-game conditions where remaining seeds are swept to stores.
+
+2.  **Strategy**: 
+    *   **Heuristics**: The primary goal is the score difference (`you[store] - opponent[store]`). I will also weight "extra moves" and seeding near the store higher.
+    *   **Depth**: Given a 1-second limit, a depth-limited search (around 8-10) should be safe, or iterative deepening. For this implementation, I'll aim for a depth of 6-8 to ensure stability within the time limit.
+    *   **Move Ordering**: To optimize Alpha-Beta, I'll prioritize moves that result in extra turns.
+
+3.  **Refinements**:
+    *   Handle recursive extra turns within the `simulate` function.
+    *   Ensure the `policy` function returns a valid index `0..5`.
+</thinking>
+
+<code>
+import copy
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    """
+    Implements a move-selection policy for Kalah using Minimax with Alpha-Beta pruning.
+    """
+
+    def get_moves(state_you):
+        return [i for i in range(6) if state_you[i] > 0]
+
+    def simulate(state_you, state_opp, move_idx):
+        """Returns (new_you, new_opp, extra_turn)"""
+        y = list(state_you)
+        o = list(state_opp)
+        
+        seeds = y[move_idx]
+        y[move_idx] = 0
+        curr_pos = move_idx + 1
+        side = 0 # 0 for you, 1 for opponent
+        
+        last_pos = -1
+        last_side = -1
+
+        while seeds > 0:
+            if side == 0:
+                if curr_pos < 7:
+                    y[curr_pos] += 1
+                    seeds -= 1
+                    last_pos = curr_pos
+                    last_side = 0
+                    curr_pos += 1
+                else:
+                    side = 1
+                    curr_pos = 0
+            else:
+                if curr_pos < 6:
+                    o[curr_pos] += 1
+                    seeds -= 1
+                    last_pos = curr_pos
+                    last_side = 1
+                    curr_pos += 1
+                else:
+                    side = 0
+                    curr_pos = 0
+        
+        extra_turn = False
+        # Rules Check
+        if last_side == 0:
+            if last_pos == 6:
+                extra_turn = True
+            elif y[last_pos] == 1 and o[5 - last_pos] > 0:
+                # Capture
+                y[6] += y[last_pos] + o[5 - last_pos]
+                y[last_pos] = 0
+                o[5 - last_pos] = 0
+        
+        # Check for game end
+        if sum(y[:6]) == 0 or sum(o[:6]) == 0:
+            y[6] += sum(y[:6])
+            o[6] += sum(o[:6])
+            for i in range(6):
+                y[i] = 0
+                o[i] = 0
+            extra_turn = False
+            
+        return y, o, extra_turn
+
+    def evaluate(y, o):
+        # Basic heuristic: store difference
+        # Factor in seeds remaining on board as potential points
+        return (y[6] - o[6]) * 10 + (sum(y[:6]) - sum(o[:6]))
+
+    def minimax(y, o, depth, alpha, beta, maximizing):
+        if depth == 0 or sum(y[:6]) == 0 or sum(o[:6]) == 0:
+            return evaluate(y, o)
+
+        legal_moves = get_moves(y)
+        if not legal_moves:
+            return evaluate(y, o)
+
+        if maximizing:
+            max_eval = float('-inf')
+            # Sort moves: prioritize moves likely to give extra turns
+            legal_moves.sort(key=lambda m: (y[m] % 13 == 6 - m), reverse=True)
+            for move in legal_moves:
+                new_y, new_o, extra = simulate(y, o, move)
+                if extra:
+                    eval = minimax(new_y, new_o, depth - 1, alpha, beta, True)
+                else:
+                    # Switch perspective: swap sides for the opponent's turn
+                    eval = -minimax(new_o, new_y, depth - 1, -beta, -alpha, True)
+                max_eval = max(max_eval, eval)
+                alpha = max(alpha, eval)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            # This branch logic is technically handled by negation in the recursion
+            min_eval = float('inf')
+            for move in legal_moves:
+                new_y, new_o, extra = simulate(y, o, move)
+                if extra:
+                    eval = minimax(new_y, new_o, depth - 1, alpha, beta, False)
+                else:
+                    eval = -minimax(new_o, new_y, depth - 1, -beta, -alpha, False)
+                min_eval = min(min_eval, eval)
+                beta = min(beta, eval)
+                if beta <= alpha:
+                    break
+            return min_eval
+
+    best_move = -1
+    best_val = float('-inf')
+    alpha = float('-inf')
+    beta = float('inf')
+    
+    # Depth 6 is safe for 1 second in Python
+    depth = 6
+    
+    moves = get_moves(you)
+    # Simple move ordering for the root
+    moves.sort(key=lambda m: (you[m] % 13 == 6 - m), reverse=True)
+    
+    for move in moves:
+        new_y, new_o, extra = simulate(you, opponent, move)
+        if extra:
+            val = minimax(new_y, new_o, depth - 1, alpha, beta, True)
+        else:
+            val = -minimax(new_o, new_y, depth - 1, -beta, -alpha, True)
+            
+        if val > best_val:
+            best_val = val
+            best_move = move
+        alpha = max(alpha, val)
+
+    return best_move if best_move != -1 else moves[0]
+</code>

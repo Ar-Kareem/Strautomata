@@ -1,0 +1,104 @@
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    """
+    Select the best move from legal_moves based on a heuristic evaluation.
+    
+    Args:
+        pieces: Dictionary mapping squares to piece codes (e.g., 'e1': 'bK', 'f3': 'wR')
+        to_play: Player to move ('white' or 'black')
+        legal_moves: List of legal move strings for the current player
+        
+    Returns:
+        The best move string from legal_moves
+    """
+    if not legal_moves:
+        return ""
+    
+    # Piece values for evaluation
+    piece_values = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}
+    
+    # Central squares for control evaluation
+    center_squares = {'d4', 'e4', 'd5', 'e5'}
+    
+    def get_move_score(move: str) -> float:
+        """Evaluate the score of a single move."""
+        score = 0.0
+        
+        # Check for checkmate first (highest priority)
+        if move.endswith('#'):
+            return 100.0
+        
+        # Handle castling
+        if move.startswith('O-O') or move.startswith('O-O-O'):
+            return 5.0  # Castling is valuable for king safety
+        
+        # Handle captures
+        if 'x' in move:
+            # Parse destination square (after last 'x')
+            dest_part = move.split('x')[-1]
+            square = dest_part[:2]  # First two characters are the square
+            
+            # Get captured piece value
+            if square in pieces:
+                captured_piece = pieces[square][1]  # Second character is piece type
+                score += piece_values.get(captured_piece, 0)
+            else:
+                # En passant capture - pawn value
+                score += 1.0
+            
+            # Check for promotion in capture
+            if '=' in move:
+                promo_piece = move.split('=')[-1][0]
+                score += piece_values.get(promo_piece, 0)
+            
+            # Check for check
+            if '+' in move:
+                score += 2.0
+                
+        else:
+            # Non-capture moves
+            # Check for promotion
+            if '=' in move:
+                promo_piece = move.split('=')[-1][0]
+                score = piece_values.get(promo_piece, 0)
+                
+                if '+' in move:
+                    score += 2.0
+            else:
+                # Regular move
+                score = 0.5  # Base value for any move
+                
+                # Check for check
+                if move.endswith('+'):
+                    score += 2.0
+                
+                # Identify moving piece
+                if move[0] in 'KQRBN':
+                    moving_piece = move[0]
+                elif move[0] in 'abcdefgh':
+                    moving_piece = 'P'
+                else:
+                    moving_piece = None
+                
+                # Penalize king moves (non-castling)
+                if moving_piece == 'K':
+                    score -= 1.0
+                
+                # Center control bonus
+                dest_square = move[-2:]
+                if dest_square in center_squares:
+                    score += 1.0
+        
+        return score
+    
+    # Find the best move
+    best_move = legal_moves[0]
+    best_score = get_move_score(best_move)
+    
+    for move in legal_moves[1:]:
+        current_score = get_move_score(move)
+        if current_score > best_score:
+            best_score = current_score
+            best_move = move
+    
+    return best_move

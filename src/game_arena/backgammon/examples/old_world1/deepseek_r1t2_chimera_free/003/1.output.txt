@@ -1,0 +1,235 @@
+
+
+The strategy for this policy focuses on safety, efficient bearing off, and strategic blocking. It prioritizes moves that avoid leaving blots, create anchors in the opponent's home board, and maximize progress towards bearing off. When checkers are on the bar, it uses the highest possible die for re-entry. During regular play, it evaluates all legal moves by simulating the resulting board state and scoring it based on blots, blockades, hits, and progress. The highest-scoring move is selected.
+
+<code>
+import copy
+
+def policy(state):
+    dice = state['dice']
+    if not dice:
+        return 'H:P,P'
+    
+    # Generate all possible legal moves
+    legal_moves = generate_legal_moves(state)
+    
+    # If no legal moves, return pass
+    if not legal_moves:
+        return 'H:P,P'
+    
+    # Evaluate each legal move and select the best scoring
+    best_move = None
+    best_score = -float('inf')
+    for move in legal_moves:
+        score = evaluate_move(state, move)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    # Format the move
+    order, moves = best_move
+    from1, from2 = moves
+    die_order = 'H' if order == 'high' else 'L'
+    if from1 == 'B':
+        from_str1 = 'B'
+    elif from1 == 'P':
+        from_str1 = 'P'
+    else:
+        from_str1 = f'A{from1}'
+    
+    if from2 == 'B':
+        from_str2 = 'B'
+    elif from2 == 'P':
+        from_str2 = 'P'
+    else:
+        from_str2 = f'A{from2}'
+    
+    return f"{die_order}:{from_str1},{from_str2}"
+
+def generate_legal_moves(state):
+    dice = state['dice']
+    moves = []
+    
+    # If there are checkers on the bar, we must re-enter
+    if state['my_bar'] > 0:
+        if len(dice) == 1:
+            die = dice[0]
+            target = 23 - die
+            if state['opp_pts'][target] <= 1:
+                moves.append(('high', ['B', 'P']))
+        else:
+            die1, die2 = max(dice), min(dice)
+            # Check high die first order
+            moves_high = []
+            target1 = 23 - die1
+            if state['opp_pts'][target1] <= 1:
+                if state['my_bar'] >= 2:
+                    target2 = 23 - die2
+                    if state['opp_pts'][target2] <= 1:
+                        moves_high.append(('high', ['B', 'B']))
+                else:
+                    moves_high.append(('high', ['B', 'P']))
+            # Check low die first order
+            moves_low = []
+            target1 = 23 - die2
+            if state['opp_pts'][target1] <= 1:
+                if state['my_bar'] >= 2:
+                    target2 = 23 - die1
+                    if state['opp_pts'][target2] <= 1:
+                        moves_low.append(('low', ['B', 'B']))
+                else:
+                    moves_low.append(('low', ['B', 'P']))
+            moves.extend(moves_high)
+            moves.extend(moves_low)
+        return moves if moves else [('high', ['P', 'P'])]
+    
+    # No bar checkers, regular moves
+    if len(dice) == 1:
+        die = dice[0]
+        for from_point in range(24):
+            if state['my_pts'][from_point] > 0 and is_legal_move(state, from_point, die):
+                moves.append(('high', [from_point, 'P']))
+        if not moves:
+            moves.append(('high', ['P', 'P']))
+    else:
+        # Generate all possible moves for both dice
+        die1, die2 = dice
+        moves_high = generate_move_sequence(state, die1, die2)
+        moves_low = generate_move_sequence(state, die2, die1)
+        moves = moves_high + moves_low
+        if not moves:
+            moves.append(('high', ['P', 'P']))
+    
+    return moves
+
+def generate_move_sequence(state, first_die, second_die):
+    sequence = []
+    # Check first move
+    for from1 in range(24):
+        if state['my_pts'][from1] > 0 and is_legal_move(state, from1, first_die):
+            new_state = apply_move(copy.deepcopy(state), from1, first_die)
+            if new_state is None:
+                continue
+            # Check second move
+            moved = False
+            for from2 in range(24):
+                if new_state['my_pts'][from2] > 0 and is_legal_move(new_state, from2, second_die):
+                    # Valid two moves
+                    sequence.append(('high' if first_die >= second_die else 'low', [from1, from2]))
+                    moved = True
+            if not moved:
+                # Only first move valid
+                sequence.append(('high' if first_die >= second_die else 'low', [from1, 'P']))
+    return sequence
+
+def is_legal_move(state, from_point, die):
+    if state['my_pts'][from_point] <= 0:
+        return False
+    # Check bearing off
+    if all_checkers_in_home(state):
+        if from_point + die > 23:
+            return True  # Can bear off
+        else:
+            dest = from_point + die
+            return dest < 24 and state['opp_pts'][dest] <= 1
+    else:
+        dest = from_point + die
+        return dest < 24 and state['opp_pts'][dest] <= 1
+
+def apply_move(state, from_point, die):
+    # Create a new state by applying the move
+    if from_point == 'B':
+        return None  # Handled separately in bar moves
+    new_state = copy.deepcopy(state)
+    if new_state['my_pts'][from_point] <= 0:
+        return None
+    dest = from_point + die
+    # Bearing off
+    if all_checkers_in_home(new_state):
+        if from_point + die > 23:
+            new_state['my_pts'][from_point] -= 1
+            new_state['my_off'] += 1
+            return new_state
+    # Normal move
+    if dest >= 24 or new_state['opp_pts'][dest] > 1:
+        return None
+    new_state['my_pts'][from_point] -= 1
+    if dest < 24:
+        new_state['my_pts'][dest] += 1
+    if new_state['opp_pts'][dest] == 1:
+        new_state['opp_pts'][dest] = 0
+        new_state['opp_bar'] += 1
+    return new_state
+
+def all_checkers_in_home(state):
+    return sum(state['my_pts'][:18]) == 0 and state['my_bar'] == 0
+
+def evaluate_move(state, move):
+    order, moves = move
+    die_order = {'high': sorted(state['dice'], reverse=True), 'low': sorted(state['dice'])}
+    dice = die_order[order]
+    
+    # Simulate the move
+    temp_state = copy.deepcopy(state)
+    score = 0
+    first_move = moves[0]
+    second_move = moves[1]
+    
+    # Apply first move
+    if first_move != 'P':
+        if first_move == 'B':
+            die = dice[0]
+            temp_state = apply_bar_move(temp_state, die)
+        else:
+            die = dice[0] if (order == 'high' or len(dice) == 1) else dice[1]
+            temp_state = apply_move(temp_state, first_move, die)
+        if temp_state is None:
+            return -float('inf')
+    
+    # Apply second move if applicable
+    if len(dice) > 1 and second_move != 'P':
+        die = dice[1] if order == 'high' else dice[0]
+        if second_move == 'B':
+            temp_state = apply_bar_move(temp_state, die)
+        else:
+            temp_state = apply_move(temp_state, second_move, die)
+        if temp_state is None:
+            return -float('inf')
+    
+    # Score the resulting state
+    # Score based on blots, blocks, hits, progress, and bearing off
+    score = 0
+    # Blots penalty
+    for i in range(24):
+        if temp_state['my_pts'][i] == 1:
+            # Check if exposed (opponent can attack)
+            score -= 10
+    # Blocks bonus
+    for i in range(24):
+        if temp_state['my_pts'][i] >= 2:
+            score += 5
+    # Hits bonus
+    for i in range(24):
+        if temp_state['opp_pts'][i] == 0 and state['opp_pts'][i] == 1:
+            score += 20  # Opponent checker was hit
+    # # Progress: average point
+    # total = sum(temp_state['my_pts']) + temp_state['my_off']
+    # if total > 0:
+    #     avg_pos = sum(i * temp_state['my_pts'][i] for i in range(24)) / total
+    #     score += avg_pos * 0.5
+    # Bearing off bonus
+    score += temp_state['my_off'] * 30
+    return score
+
+def apply_bar_move(state, die):
+    new_state = copy.deepcopy(state)
+    target = 23 - die
+    if new_state['my_bar'] == 0 or new_state['opp_pts'][target] > 1:
+        return None
+    new_state['my_bar'] -= 1
+    new_state['my_pts'][target] += 1
+    if new_state['opp_pts'][target] == 1:
+        new_state['opp_pts'][target] = 0
+        new_state['opp_bar'] += 1
+    return new_state
+</code>

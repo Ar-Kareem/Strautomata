@@ -1,0 +1,87 @@
+**Strategy**  
+The game is a misère Nim variant: the player who takes the last object loses.  
+The optimal strategy for misère Nim is almost identical to normal Nim, except when all non‑empty piles contain a single object. In that special “all‑ones” situation the game reduces to a simple parity game – the player who faces an even number of heaps can force a win by turning the count odd, while an odd count is a losing position.  
+
+For all other positions (i.e., there is at least one pile with ≥ 2 objects) we can use the classic Nim‑sum (XOR) argument:
+
+* **If the Nim‑sum ≠ 0** – we can make it 0 by selecting a pile whose size is larger than the current XOR and removing the excess (`take = pile – xor`).  
+* **If the Nim‑sum = 0** – the position is losing; any legal move is acceptable. We simply remove the whole largest pile (a safe fallback).
+
+When there is **exactly one pile larger than 1** we must respect the parity rule:
+
+* If the number of “1‑only” piles is even we turn that pile into size 1 (`take = H‑1`).  
+* If that number is odd and there is at least one other “1‑only” pile we can safely remove the entire large pile (`take = H`).  
+* If there are no “1‑only” piles at all we again turn the large pile into size 1 (`take = H‑1`) because removing it would end the game immediately.
+
+The code below implements this logic and always returns a legal move in the required `"pile,take"` format. It runs in well under the 1 second limit.  
+
+```python
+<code>
+def policy(piles: list[int]) -> str:
+    """
+    Return a legal optimal move for misère Nim with 4 piles.
+    Format: 'pile_index,take' where pile_index is 0‑based and take ≥ 1.
+    """
+    if not (0 <= len(piles) <= 4):
+        raise ValueError("Exactly four piles are expected")
+
+    # Find any non‑zero pile for fallback – the game will always have at least one.
+    non_zero_idx = next(i for i, v in enumerate(piles) if v > 0)
+
+    xor = 0
+    for v in piles:
+        xor ^= v
+
+    # Count piles that contain at least two objects
+    piles_ge2 = sum(1 for v in piles if v >= 2)
+
+    # -----------------------------------------------------------------
+    # 1) All non‑empty piles are size‑1 only (misère Nim parity case)
+    # -----------------------------------------------------------------
+    if piles_ge2 == 0:
+        # Find the first heap that holds a single object.
+        for i, v in enumerate(piles):
+            if v == 1:
+                return f"{i},1"
+        # As a last resort (should never happen) remove an entire heap.
+        return f"{non_zero_idx},1"
+
+    # -----------------------------------------------------------------
+    # 2) At least two piles have size ≥ 2  → normal Nim behaviour
+    # -----------------------------------------------------------------
+    if piles_ge2 >= 2:
+        if xor != 0:
+            # Locate a heap that can be reduced so the new Nim‑sum becomes 0.
+            # new_size = xor ^ original_size
+            for i, size in enumerate(piles):
+                new_size = xor ^ size
+                if new_size < size:                # a positive removal is possible
+                    take = size - new_size
+                    return f"{i},{take}"
+            # Fallback: remove the whole largest pile (xor == 0 case handled below).
+            largest_idx = max(range(4), key=lambda idx: piles[idx])
+            return f"{largest_idx},{piles[largest_idx]}"
+        else:  # xor == 0 → losing position for the player to move
+            # Any legal move is acceptable; remove the whole largest pile.
+            largest_idx = max(range(4), key=lambda idx: piles[idx])
+            return f"{largest_idx},{piles[largest_idx]}"
+
+    # -----------------------------------------------------------------
+    # 3) Exactly one pile larger than 1 (size‑≥2 pile mixed with 0/1 piles)
+    # -----------------------------------------------------------------
+    large_idx = next(i for i, v in enumerate(piles) if v >= 2)
+    H = piles[large_idx]            # size of the large pile
+    ones = sum(1 for v in piles if v == 1)  # count of pure‑1 piles
+
+    if ones % 2 == 0:               # even number of 1‑only piles → make it odd
+        take = H - 1                  # turn the large pile into a single object
+        return f"{large_idx},{take}"
+    else:                            # odd number of 1‑only piles
+        if ones == 0:                # no 1‑only piles → must leave exactly one object
+            take = H - 1
+            return f"{large_idx},{take}"
+        else:                       # at least one 1‑only pile remains; remove whole large pile
+            take = H
+            return f"{large_idx},{take}"
+</code>
+```

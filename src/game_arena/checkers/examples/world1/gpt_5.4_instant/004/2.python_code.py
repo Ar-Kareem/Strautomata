@@ -1,0 +1,433 @@
+
+from __future__ import annotations
+
+from typing import List, Tuple, Dict, Set, Optional
+
+Square = Tuple[int, int]
+Move = Tuple[Square, Square]
+
+
+BOARD_MIN = 0
+BOARD_MAX = 7
+
+
+def in_bounds(r: int, c: int) -> bool:
+    return 0 <= r <= 7 and 0 <= c <= 7
+
+
+def is_dark(r: int, c: int) -> bool:
+    return (r + c) % 2 == 1
+
+
+def forward_dirs(color: str):
+    # Problem statement:
+    # black moves downwards to lower row values
+    # white moves upwards to higher row values
+    return [(-1, -1), (-1, 1)] if color == 'b' else [(1, -1), (1, 1)]
+
+
+def all_dirs():
+    return [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+
+class State:
+    __slots__ = ("my_men", "my_kings", "opp_men", "opp_kings", "color")
+
+    def __init__(
+        self,
+        my_men: Set[Square],
+        my_kings: Set[Square],
+        opp_men: Set[Square],
+        opp_kings: Set[Square],
+        color: str,
+    ):
+        self.my_men = my_men
+        self.my_kings = my_kings
+        self.opp_men = opp_men
+        self.opp_kings = opp_kings
+        self.color = color  # side to move
+
+    def clone(self) -> "State":
+        return State(
+            set(self.my_men),
+            set(self.my_kings),
+            set(self.opp_men),
+            set(self.opp_kings),
+            self.color,
+        )
+
+    def occupied(self) -> Set[Square]:
+        return self.my_men | self.my_kings | self.opp_men | self.opp_kings
+
+    def switch_turn(self) -> "State":
+        # swap perspective so side to move is always "my"
+        return State(
+            set(self.opp_men),
+            set(self.opp_kings),
+            set(self.my_men),
+            set(self.my_kings),
+            'w' if self.color == 'b' else 'b',
+        )
+
+
+def promotion_row(color: str) -> int:
+    return 0 if color == 'b' else 7
+
+
+def man_move_dirs(color: str):
+    return forward_dirs(color)
+
+
+def piece_dirs(is_king: bool, color: str):
+    return all_dirs() if is_king else man_move_dirs(color)
+
+
+def gen_simple_moves_for_piece(state: State, sq: Square, is_king: bool) -> List[List[Square]]:
+    r, c = sq
+    occ = state.occupied()
+    out = []
+    for dr, dc in piece_dirs(is_king, state.color):
+        nr, nc = r + dr, c + dc
+        if in_bounds(nr, nc) and is_dark(nr, nc) and (nr, nc) not in occ:
+            out.append([sq, (nr, nc)])
+    return out
+
+
+def gen_captures_from(
+    my_men: Set[Square],
+    my_kings: Set[Square],
+    opp_men: Set[Square],
+    opp_kings: Set[Square],
+    color: str,
+    sq: Square,
+    is_king: bool,
+) -> List[List[Square]]:
+    """
+    Generate all capture sequences for one piece as paths [start, ..., end].
+    Standard men capture in all diagonal directions here, which matches common 8x8 checkers arenas.
+    """
+    results: List[List[Square]] = []
+    found = False
+    r, c = sq
+    occ = my_men | my_kings | opp_men | opp_kings
+
+    dirs = all_dirs() if is_king else all_dirs()
+
+    for dr, dc in dirs:
+        mr, mc = r + dr, c + dc
+        tr, tc = r + 2 * dr, c + 2 * dc
+        if not (in_bounds(mr, mc) and in_bounds(tr, tc)):
+            continue
+        if not is_dark(tr, tc):
+            continue
+        if (tr, tc) in occ:
+            continue
+        if (mr, mc) not in opp_men and (mr, mc) not in opp_kings:
+            continue
+
+        found = True
+
+        n_my_men = set(my_men)
+        n_my_kings = set(my_kings)
+        n_opp_men = set(opp_men)
+        n_opp_kings = set(opp_kings)
+
+        if is_king:
+            n_my_kings.remove(sq)
+        else:
+            n_my_men.remove(sq)
+
+        if (mr, mc) in n_opp_men:
+            n_opp_men.remove((mr, mc))
+        else:
+            n_opp_kings.remove((mr, mc))
+
+        landing = (tr, tc)
+
+        became_king = is_king or (tr == promotion_row(color))
+        if became_king:
+            n_my_kings.add(landing)
+        else:
+            n_my_men.add(landing)
+
+        tails = gen_captures_from(
+            n_my_men, n_my_kings, n_opp_men, n_opp_kings, color, landing, became_king
+        )
+        if tails:
+            for t in tails:
+                results.append([sq] + t[1:])
+        else:
+            results.append([sq, landing])
+
+    return results
+
+
+def gen_all_moves(state: State) -> List[List[Square]]:
+    captures: List[List[Square]] = []
+
+    for sq in state.my_men:
+        captures.extend(
+            gen_captures_from(
+                state.my_men, state.my_kings, state.opp_men, state.opp_kings, state.color, sq, False
+            )
+        )
+    for sq in state.my_kings:
+        captures.extend(
+            gen_captures_from(
+                state.my_men, state.my_kings, state.opp_men, state.opp_kings, state.color, sq, True
+            )
+        )
+
+    if captures:
+        # Prefer longer capture sequences for move ordering
+        captures.sort(key=lambda p: (len(p), p[-1][0]), reverse=True)
+        return captures
+
+    moves: List[List[Square]] = []
+    for sq in state.my_men:
+        moves.extend(gen_simple_moves_for_piece(state, sq, False))
+    for sq in state.my_kings:
+        moves.extend(gen_simple_moves_for_piece(state, sq, True))
+
+    # Mild ordering: promotions and centrality
+    def move_key(path):
+        a, b = path[0], path[-1]
+        promo = 1 if (a in state.my_men and b[0] == promotion_row(state.color)) else 0
+        center = -abs(b[0] - 3.5) - abs(b[1] - 3.5)
+        return (promo, center)
+
+    moves.sort(key=move_key, reverse=True)
+    return moves
+
+
+def apply_path(state: State, path: List[Square]) -> State:
+    new_state = state.clone()
+    start = path[0]
+    end = path[-1]
+
+    moving_is_king = start in new_state.my_kings
+    if moving_is_king:
+        new_state.my_kings.remove(start)
+    else:
+        new_state.my_men.remove(start)
+
+    cur = start
+    captured_any = False
+    for nxt in path[1:]:
+        if abs(nxt[0] - cur[0]) == 2 and abs(nxt[1] - cur[1]) == 2:
+            mr = (cur[0] + nxt[0]) // 2
+            mc = (cur[1] + nxt[1]) // 2
+            mid = (mr, mc)
+            if mid in new_state.opp_men:
+                new_state.opp_men.remove(mid)
+            elif mid in new_state.opp_kings:
+                new_state.opp_kings.remove(mid)
+            captured_any = True
+        cur = nxt
+
+    became_king = moving_is_king or (not moving_is_king and end[0] == promotion_row(state.color))
+    if became_king:
+        new_state.my_kings.add(end)
+    else:
+        new_state.my_men.add(end)
+
+    return new_state.switch_turn()
+
+
+def threatened_count(state: State) -> int:
+    """
+    Number of current player's pieces that opponent could capture immediately next turn.
+    Estimate by switching turn and checking capture starts/endpoints.
+    """
+    opp_turn = state.switch_turn()
+    caps = gen_all_moves(opp_turn)
+    if not caps:
+        return 0
+    if len(caps[0]) < 2 or abs(caps[0][1][0] - caps[0][0][0]) != 2:
+        return 0
+
+    threatened: Set[Square] = set()
+    for path in caps:
+        cur = path[0]
+        for nxt in path[1:]:
+            if abs(nxt[0] - cur[0]) == 2 and abs(nxt[1] - cur[1]) == 2:
+                mid = ((cur[0] + nxt[0]) // 2, (cur[1] + nxt[1]) // 2)
+                threatened.add(mid)
+            cur = nxt
+    return len(threatened)
+
+
+def evaluate(state: State) -> float:
+    my_men = len(state.my_men)
+    my_kings = len(state.my_kings)
+    opp_men = len(state.opp_men)
+    opp_kings = len(state.opp_kings)
+
+    if my_men + my_kings == 0:
+        return -10000.0
+    if opp_men + opp_kings == 0:
+        return 10000.0
+
+    score = 0.0
+
+    # Material
+    score += 100 * (my_men - opp_men)
+    score += 175 * (my_kings - opp_kings)
+
+    # Advancement
+    if state.color == 'w':
+        score += sum(r for r, c in state.my_men) * 4.0
+        score -= sum(7 - r for r, c in state.opp_men) * 4.0
+    else:
+        score += sum(7 - r for r, c in state.my_men) * 4.0
+        score -= sum(r for r, c in state.opp_men) * 4.0
+
+    # Center control
+    for r, c in state.my_men | state.my_kings:
+        score += 3.0 - (abs(r - 3.5) + abs(c - 3.5)) * 0.6
+    for r, c in state.opp_men | state.opp_kings:
+        score -= 3.0 - (abs(r - 3.5) + abs(c - 3.5)) * 0.6
+
+    # Back-rank guard for men
+    back = 0 if state.color == 'b' else 7
+    opp_back = 7 if state.color == 'b' else 0
+    score += 8 * sum(1 for r, c in state.my_men if r == back)
+    score -= 8 * sum(1 for r, c in state.opp_men if r == opp_back)
+
+    # Mobility
+    my_moves = gen_all_moves(state)
+    score += 2.0 * len(my_moves)
+    opp_moves = gen_all_moves(state.switch_turn())
+    score -= 2.0 * len(opp_moves)
+
+    # Tactical danger
+    score -= 18.0 * threatened_count(state)
+    score += 18.0 * threatened_count(state.switch_turn())
+
+    # Promotion potential
+    promo_row = promotion_row(state.color)
+    opp_promo_row = promotion_row('w' if state.color == 'b' else 'b')
+    for r, c in state.my_men:
+        dist = abs(promo_row - r)
+        score += (7 - dist) * 2.0
+    for r, c in state.opp_men:
+        dist = abs(opp_promo_row - r)
+        score -= (7 - dist) * 2.0
+
+    return score
+
+
+def is_capture_path(path: List[Square]) -> bool:
+    return len(path) >= 2 and abs(path[1][0] - path[0][0]) == 2
+
+
+def move_order_key(state: State, path: List[Square]):
+    start, end = path[0], path[-1]
+    cap = 1 if is_capture_path(path) else 0
+    cap_len = len(path)
+    promo = 1 if (start in state.my_men and end[0] == promotion_row(state.color)) else 0
+    king_move = 1 if start in state.my_kings else 0
+    center = -abs(end[0] - 3.5) - abs(end[1] - 3.5)
+    return (cap, cap_len, promo, king_move, center)
+
+
+def alphabeta(state: State, depth: int, alpha: float, beta: float) -> float:
+    moves = gen_all_moves(state)
+
+    if depth == 0 or not moves:
+        if not moves:
+            return -9999.0
+        return evaluate(state)
+
+    moves.sort(key=lambda p: move_order_key(state, p), reverse=True)
+
+    best = -10**18
+    for path in moves:
+        child = apply_path(state, path)
+        val = -alphabeta(child, depth - 1, -beta, -alpha)
+        if val > best:
+            best = val
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+    return best
+
+
+def choose_search_depth(state: State, num_moves: int) -> int:
+    pieces = len(state.my_men) + len(state.my_kings) + len(state.opp_men) + len(state.opp_kings)
+    if num_moves <= 2:
+        return 8
+    if pieces <= 6:
+        return 8
+    if pieces <= 10:
+        return 7
+    if pieces <= 16:
+        return 6
+    if num_moves <= 8:
+        return 6
+    return 5
+
+
+def legal_fallback(state: State) -> Move:
+    moves = gen_all_moves(state)
+    if not moves:
+        # Should not happen in valid arena positions, but ensure return shape.
+        if state.my_men:
+            sq = next(iter(state.my_men))
+            return (sq, sq)
+        if state.my_kings:
+            sq = next(iter(state.my_kings))
+            return (sq, sq)
+        return ((0, 1), (0, 1))
+    p = moves[0]
+    return (p[0], p[1] if len(p) > 1 else p[0])
+
+
+def policy(my_men, my_kings, opp_men, opp_kings, color) -> tuple[tuple[int, int], tuple[int, int]]:
+    state = State(set(my_men), set(my_kings), set(opp_men), set(opp_kings), color)
+
+    moves = gen_all_moves(state)
+    if not moves:
+        return legal_fallback(state)
+
+    # If capture exists, mandatory captures already enforced by generator.
+    # If the environment expects only one action from->to, return the first step
+    # of the chosen sequence, which is always legal.
+    if len(moves) == 1:
+        best_path = moves[0]
+        return (best_path[0], best_path[1])
+
+    depth = choose_search_depth(state, len(moves))
+
+    moves.sort(key=lambda p: move_order_key(state, p), reverse=True)
+
+    best_score = -10**18
+    best_path = moves[0]
+    alpha = -10**18
+    beta = 10**18
+
+    # Search top moves
+    for path in moves:
+        child = apply_path(state, path)
+        val = -alphabeta(child, depth - 1, -beta, -alpha)
+
+        # Small tiebreakers
+        if val > best_score:
+            best_score = val
+            best_path = path
+        elif val == best_score:
+            # prefer longer captures, then promotions
+            cur_key = move_order_key(state, path)
+            best_key = move_order_key(state, best_path)
+            if cur_key > best_key:
+                best_path = path
+
+        if val > alpha:
+            alpha = val
+
+    # Return first leg to guarantee compatibility with requested API
+    if len(best_path) >= 2:
+        return (best_path[0], best_path[1])
+
+    return legal_fallback(state)

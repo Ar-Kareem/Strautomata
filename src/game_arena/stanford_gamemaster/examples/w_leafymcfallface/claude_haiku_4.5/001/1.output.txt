@@ -1,0 +1,85 @@
+# Strategy
+
+This is a game where two caterpillars move on a grid of leaves, eating the leaf behind them as they move. The objective is to trap your opponent (surround them with no available moves) while still having moves available yourself. The winner gets 100 points.
+
+**Key observations:**
+1. Players must move to adjacent cells (up/down/left/right) that contain leaves
+2. A player wins if they have moves but their opponent doesn't
+3. Each move consumes the leaf at the current position
+4. The game is about controlling space and positioning to eventually trap the opponent
+
+**Winning strategy:**
+1. **Early game**: Move towards the center of the board to maximize control of space and prevent opponent from splitting the map
+2. **Mid game**: Try to create barriers or control key choke points that limit opponent movement
+3. **Late game**: Force opponent into a dead end while maintaining your own escape routes
+4. **General principle**: Maximize the number of remaining leaves accessible to you while minimizing those accessible to your opponent
+
+**Move selection priority:**
+1. If opponent has no legal moves and we have moves → we win (but this is end state)
+2. Prefer moves that maximize future options (moves to cells with many adjacent leaves)
+3. Prefer moves towards center/contested areas early
+4. Avoid getting trapped in corners
+5. Try to control positions that limit opponent's future movement
+
+<code>
+def policy(state: list[list[object]], role: str) -> str:
+    # Parse the state to find leaves and player positions
+    leaves = set()
+    players = {}
+    
+    for fact in state:
+        if fact[0] == "leaf":
+            leaves.add((int(fact[1]), int(fact[2])))
+        elif fact[0] == "isplayer":
+            pos = (int(fact[1]), int(fact[2]))
+            player_role = fact[3]
+            players[player_role] = pos
+    
+    # Get current player position
+    if role not in players:
+        # Fallback - shouldn't happen in valid states
+        return "move(0,0)"
+    
+    current_pos = players[role]
+    current_x, current_y = current_pos
+    
+    # Find all adjacent cells with leaves
+    adjacent_moves = []
+    directions = [(0, 1), (0, -1), (1, 0), (-1, 0)]
+    
+    for dx, dy in directions:
+        new_x, new_y = current_x + dx, current_y + dy
+        if (new_x, new_y) in leaves:
+            adjacent_moves.append((new_x, new_y))
+    
+    # If no moves available, this shouldn't happen in valid game state
+    if not adjacent_moves:
+        return "move(0,0)"
+    
+    # Scoring function: prefer moves that keep us mobile and limit opponent
+    def score_move(pos):
+        x, y = pos
+        # Count how many leaves would be adjacent after this move
+        future_leaves = leaves - {current_pos}  # After eating current leaf
+        future_adjacent = 0
+        
+        for dx, dy in directions:
+            nx, ny = x + dx, y + dy
+            if (nx, ny) in future_leaves and (nx, ny) != current_pos:
+                future_adjacent += 1
+        
+        # Prefer positions with more adjacent leaves (stay mobile)
+        score = future_adjacent
+        
+        # Secondary: prefer moving towards center (x=4, y=4 on a 7x7 board)
+        center_x, center_y = 4, 4
+        dist_to_center = abs(x - center_x) + abs(y - center_y)
+        score += 10 - dist_to_center  # Normalize for typical board sizes
+        
+        return score
+    
+    # Choose the best move
+    best_move = max(adjacent_moves, key=score_move)
+    
+    return f"move({best_move[0]},{best_move[1]})"
+</code>

@@ -1,0 +1,245 @@
+The strategy for this policy is to implement a lightweight but effective Go AI using a prioritized decision-making hierarchy that balances territorial expansion, immediate survival, threat detection, and tactical responses—all while ensuring legality of moves. The policy uses heatmapping based on proximity to existing stones, liberty counting, simple pattern recognition, and ko-rule avoidance via memory. It emphasizes board edges and corners early, responds to immediate capture threats, prioritizes eyespace, and avoids suicidal moves. The implementation uses only standard libraries and NumPy for efficient board manipulation, staying well within the 1-second time limit.
+
+Key features:
+1. Convert stone lists into a 19x19 board representation for fast manipulation.
+2. Prioritize moves that:
+   - Prevent own groups from being captured (low liberties).
+   - Capture opponent groups (reducing their liberties to 0).
+   - Expand influence in open areas.
+3. Avoid illegal moves (suicide, ko) using game logic and memory.
+4. Use a heat map to score empty positions based on proximity to own/opponent stones.
+5. Play corner/edge moves early if the board is sparse.
+
+This heuristic-based policy avoids expensive tree searches but remains competitive through smart prioritization and fast evaluation.
+
+<code>
+import numpy as np
+from typing import List, Tuple, Dict, Set
+
+def policy(me: List[Tuple[int, int]], opponent: List[Tuple[int, int]], memory: Dict) -> Tuple[Tuple[int, int], Dict]:
+    # Constants
+    BOARD_SIZE = 19
+    PASS_MOVE = (0, 0)
+    
+    # Initialize board: 0=empty, 1=own, 2=opponent
+    board = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=np.int8)
+    for r, c in me:
+        board[r-1, c-1] = 1
+    for r, c in opponent:
+        board[r-1, c-1] = 2
+
+    def is_on_board(r: int, c: int) -> bool:
+        return 0 <= r < BOARD_SIZE and 0 <= c < BOARD_SIZE
+
+    def get_neighbors(r: int, c: int) -> List[Tuple[int, int]]:
+        deltas = [(-1,0), (1,0), (0,-1), (0,1)]
+        neighbors = []
+        for dr, dc in deltas:
+            nr, nc = r + dr, c + dc
+            if is_on_board(nr, nc):
+                neighbors.append((nr, nc))
+        return neighbors
+
+    def get_group(start_r: int, start_c: int) -> Set[Tuple[int, int]]:
+        color = board[start_r, start_c]
+        if color == 0:
+            return set()
+        group = set()
+        stack = [(start_r, start_c)]
+        visited = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=bool)
+        visited[start_r, start_c] = True
+        
+        while stack:
+            r, c = stack.pop()
+            group.add((r, c))
+            for nr, nc in get_neighbors(r, c):
+                if not visited[nr, nc] and board[nr, nc] == color:
+                    visited[nr, nc] = True
+                    stack.append((nr, nc))
+        return group
+
+    def count_liberties(group: Set[Tuple[int, int]]) -> int:
+        libs = set()
+        for r, c in group:
+            for nr, nc in get_neighbors(r, c):
+                if board[nr, nc] == 0:
+                    libs.add((nr, nc))
+        return len(libs)
+
+    def would_have_liberties(play_r: int, play_c: int, color: int) -> bool:
+        board[play_r, play_c] = color
+        group = get_group(play_r, play_c)
+        libs = count_liberties(group)
+        board[play_r, play_c] = 0
+        return libs > 0
+
+    def is_legal_move(r: int, c: int) -> bool:
+        if board[r, c] != 0:
+            return False
+        # Check suicide rule
+        board[r, c] = 1
+        my_group = get_group(r, c)
+        my_libs = count_liberties(my_group)
+        board[r, c] = 0
+        if my_libs > 0:
+            return True
+        # Suicide only allowed if it captures
+        for nr, nc in get_neighbors(r, c):
+            if board[nr, nc] == 2:
+                opp_group = get_group(nr, nc)
+                opp_libs = count_liberties(opp_group)
+                if opp_libs == 1:  # This move would capture
+                    return True
+        return False
+
+    # Avoid ko: don't repeat last move position if it's likely ko
+    last_bad_move = memory.get('last_ko_like', None)
+    if last_bad_move and len(me) + len(opponent) > 30:
+        # Avoid repeating same move if it caused ko
+        lb_r, lb_c = last_bad_move
+        if not is_on_board(lb_r, lb_c):
+            memory['last_ko_like'] = None
+        else:
+            # Mark it as risky
+            pass
+
+    # Immediate tactical priorities
+    candidates = []
+    my_moves = set((r-1, c-1) for r, c in me)
+    opp_moves = set((r-1, c-1) for r, c in opponent)
+    empty_positions = [(r, c) for r in range(BOARD_SIZE) for c in range(BOARD_SIZE) if board[r, c] == 0]
+
+    # 1. Check for any immediate capture (reducing opponent group to 0 liberty)
+    for r, c in empty_positions:
+        board[r, c] = 1
+        captures = []
+        for nr, nc in get_neighbors(r, c):
+            if board[nr, nc] == 2:
+                opp_group = get_group(nr, nc)
+                libs = count_liberties(opp_group)
+                if libs == 0:
+                    captures.extend(opp_group)
+        board[r, c] = 0
+        if captures:
+            if is_legal_move(r, c) and (r, c) != last_bad_move:
+                candidates.append(('capture', r, c, 100))
+
+    # 2. Check for self-preservation (prevent own group from being captured)
+    for r, c in my_moves:
+        my_group = get_group(r, c)
+        libs = count_liberties(my_group)
+        if libs == 1:  # Group in atari
+            for nr, nc in get_neighbors(r, c):
+                if board[nr, nc] == 0 and is_legal_move(nr, nc):
+                    # Playing there may save the group
+                    temp_board = board.copy()
+                    temp_board[nr, nc] = 1
+                    saved_group = get_group(nr, nc)
+                    saved_libs = count_liberties(saved_group)
+                    temp_board[nr, nc] = 0
+                    if saved_libs > 1:
+                        score = 90 if libs == 1 else 85
+                        if (nr, nc) != last_bad_move:
+                            candidates.append(('save', nr, nc, score))
+
+    # 3. Avoid self in atari — don't play where you'd be captured next
+    for r, c in empty_positions:
+        if not is_legal_move(r, c):
+            continue
+        # Simulate opponent capturing after our move?
+        board[r, c] = 1
+        endangered = False
+        for nr, nc in get_neighbors(r, c):
+            if board[nr, nc] == 2:
+                opp_group = get_group(nr, nc)
+                libs = count_liberties(opp_group)
+                if libs == 1:  # Our move puts opponent in atari -> good!
+                    board[r, c] = 0
+                    continue
+        # Now check if our own move creates a weak group
+        my_group = get_group(r, c)
+        my_libs = count_liberties(my_group)
+        board[r, c] = 0
+        if my_libs == 1:
+            # We'd be in atari — dangerous unless it captures
+            captures = False
+            for nr, nc in get_neighbors(r, c):
+                if board[nr, nc] == 2:
+                    opp_group = get_group(nr, nc)
+                    opp_libs = count_liberties(opp_group)
+                    if opp_libs == 1:
+                        captures = True
+            if not captures:
+                continue  # Avoid this dangerous move unless necessary
+
+    # 4. Influence-based heatmap
+    heat = np.zeros((BOARD_SIZE, BOARD_SIZE))
+    for r, c in my_moves:
+        for dr in range(-3, 4):
+            for dc in range(-3, 4):
+                nr, nc = r + dr, c + dc
+                if is_on_board(nr, nc):
+                    dist = abs(dr) + abs(dc)
+                    if dist == 0:
+                        continue
+                    heat[nr, nc] += max(0, (4 - dist)) * 1.0  # Own influence
+    for r, c in opp_moves:
+        for dr in range(-3, 4):
+            for dc in range(-3, 4):
+                nr, nc = r + dr, c + dc)
+                if is_on_board(nr, nc):
+                    dist = abs(dr) + abs(dc)
+                    if dist == 0:
+                        continue
+                    heat[nr, nc] -= max(0, (4 - dist)) * 0.9  # Opponent pressure
+
+    # 5. Add heat-based candidates
+    for r, c in empty_positions:
+        if (r, c) == last_bad_move:
+            continue
+        if not is_legal_move(r, c):
+            continue
+        score = heat[r, c]
+        # Bonus for corner and edge in early game
+        if len(me) + len(opponent) < 30:
+            if (r in [0,1,17,18] and c in [0,1,17,18]) or (r in [0,18] or c in [0,18]):
+                score += 5
+        # Demote center in very early game
+        center_dist = abs(r - 9.5) + abs(c - 9.5)
+        if len(me) + len(opponent) < 10:
+            if center_dist < 4:
+                score -= 3
+        candidates.append(('influence', r, c, score))
+
+    # 6. Sort candidates by score
+    if not candidates:
+        return PASS_MOVE, memory
+
+    # Filter only legal moves
+    valid_candidates = []
+    for priority, r, c, score in candidates:
+        if is_legal_move(r, c):
+            valid_candidates.append((score, r, c))
+
+    if not valid_candidates:
+        return PASS_MOVE, memory
+
+    # Choose highest score
+    best_score, best_r, best_c = max(valid_candidates, key=lambda x: x[0])
+
+    # Record potential ko situation (if single stone captured and we just played next to it)
+    # Simplified: if we played and there's only one opponent liberty that's same as previous "bad" move
+    # We avoid repeating that exact move
+    if len(opponent) > 0:
+        opp_liberties = []
+        for r, c in opp_moves:
+            for nr, nc in get_neighbors(r, c):
+                if board[nr, nc] == 0:
+                    opp_liberties.append((nr, nc))
+        singleton_liberties = [pos for pos in set(opp_liberties) if opp_liberties.count(pos) == 1]
+        if (best_r, best_c) in singleton_liberties and len(singleton_liberties) == 1:
+            # Might be ko — remember not to repeat
+            memory['last_ko_like'] = (best_r, best_c)
+
+    return (best_r + 1, best_c + 1), memory
+</code>

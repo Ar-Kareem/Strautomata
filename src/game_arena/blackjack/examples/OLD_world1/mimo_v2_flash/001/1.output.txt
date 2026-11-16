@@ -1,0 +1,725 @@
+```python
+import itertools
+
+def policy(hand: list[str], target: int) -> str:
+    """
+    Implements an optimal policy for a simplified Blackjack game using an
+    Expectimax-like approach (Max Expected Value vs. Opponent).
+    
+    Logic:
+    1. Determine current hand value and the set of valid remaining cards in our deck.
+    2. Determine the opponent's remaining deck (we cannot see their hand, so we assume 
+       the worst/best case? No, for expectation, we simulate all possibilities).
+       However, to be precise: the opponent plays a fixed policy (unknown to us) 
+       or plays optimally. Since we are playing against the game mechanism 
+       (and our own deck), and the prompt implies a competitive arena, 
+       we assume the opponent plays optimally against the same target.
+       Since we don't know the opponent's hand, we calculate the probability 
+       of the opponent busting or achieving a specific score based on their 
+       remaining deck (which is symmetric to ours, excluding our drawn cards).
+    3. Compare the Expected Win Probability (EWP) of STAY vs. HIT.
+       - STAY: We lock in our score. We win if Opponent Busts OR (Opponent <= T AND Opponent < Us).
+       - HIT: We draw a card. If we bust, we lose (unless opponent busts, which is factored in).
+    4. Recursion/DP is used to handle the "A" card value fluctuation (1 or 11).
+    """
+
+    # --- 1. HELPER FUNCTIONS ---
+
+    def get_card_value(card: str) -> int:
+        if card == "A": return 11 # Treated as 11 by default, logic handles downgrades
+        if card in ["J", "Q", "K", "10"]: return 10
+        return int(card)
+
+    def calculate_hand_details(cards: list[str]):
+        """
+        Returns (min_value, is_soft, valid_ace_count)
+        """
+        total = 0
+        aces = 0
+        for c in cards:
+            if c == "A":
+                aces += 1
+                total += 11
+            elif c in ["J", "Q", "K", "10"]:
+                total += 10
+            else:
+                total += int(c)
+        
+        # Adjust for aces to keep value <= target (or just soft check)
+        # We actually need to know if it's "soft" (can we drop 10?)
+        # And what is the valid value for a specific target.
+        # The rules say: "A is 11 when sum <= T, 1 when sum > T".
+        # This implies that for a fixed set of cards, the value might depend on T.
+        # Actually, the rule is dynamic: "A -> 11 (when the hand value is <= T) or 1 (when the hand value is > T)".
+        # This is usually interpreted as: Calculate sum. If > T and there's an Ace counted as 11, subtract 10.
+        # If that makes it <= T, we stay? Or do we want the highest value <= T?
+        # Typically in Blackjack: we want the highest score <= 21.
+        # Here: we want the highest score <= T (to win), but if we exceed T, we bust.
+        # So if we have a sum S > T, and we have an Ace counted as 11, we can count it as 1 (S-10).
+        # If S-10 <= T, we are valid. If S-10 > T, we are still bust.
+        
+        # We return a list of possible valid scores for this hand.
+        # Since 'T' is fixed for the game, we calculate the best possible score for this hand.
+        possible_scores = []
+        temp_total = total
+        for _ in range(aces + 1):
+            if temp_total <= target:
+                possible_scores.append(temp_total)
+            temp_total -= 10
+            if temp_total < 0: break
+        
+        if not possible_scores:
+            return 0, False, 0 # Bust (score 0 implies bust)
+            
+        best_score = max(possible_scores)
+        is_soft = (aces > 0 and total != best_score and total - (aces * 10) != best_score)
+        # Actually, "soft" means we have an Ace counted as 11 that we could count as 1.
+        # This happens if total > target but total-10 <= target? 
+        # Or more simply: if we have an Ace and we haven't been forced to count it as 1 yet.
+        # Let's stick to: best_score is what we currently hold. is_soft means we have flex.
+        
+        # Correction: 'is_soft' logic for this specific game:
+        # If we have a score S <= T, but we have an Ace counted as 11, then if S-10 <= T, we are soft.
+        # But usually, "soft" means we can't bust by hitting (because we can downgrade the Ace).
+        # In this game, we bust if Score > T. 
+        # If we have a soft hand, we can take a hit, go over T, then downgrade Ace to stay <= T.
+        # So, effectively, a soft hand is safer.
+        
+        has_ace = any(c == "A" for c in cards)
+        current_val = best_score
+        # Can we downgrade an ace?
+        # If current_val <= T and current_val + 10 <= T? No.
+        # If we have an Ace counted as 11, total was X+11, we dropped to X+1.
+        # If current_val + 10 <= T, we could have not dropped? No, we always want highest <= T.
+        # Soft means: current_val + 10 <= T is FALSE (we dropped it), BUT if we hit, we might go over T, 
+        # then we might be able to drop the Ace again.
+        # Wait, if current_val <= T and we have an Ace counted as 11 (implied by 'is_soft'):
+        # Then current_val is actually X + 11, but we displayed X + 1? No, we displayed the max valid.
+        # Let's simplify: 
+        # Calculate raw total with A=11.
+        # If raw total <= T: Score = raw total. Soft = (aces > 0).
+        # If raw total > T: Try raw total - 10. If <= T: Score = raw total - 10. Soft = False (forced downgrade).
+        # If raw total - 10 > T: Bust.
+        
+        raw_total = sum(get_card_value(c) if c != "A" else 11 for c in cards)
+        aces_count = sum(1 for c in cards if c == "A")
+        
+        if raw_total <= target:
+            score = raw_total
+            is_soft = (aces_count > 0)
+        else:
+            # Try to downgrade aces
+            # We can downgrade one ace: raw_total - 10
+            # We can downgrade two aces: raw_total - 20
+            temp = raw_total
+            soft_flag = False
+            found = False
+            for i in range(aces_count + 1):
+                if temp <= target:
+                    score = temp
+                    # If we haven't used all aces to downgrade (i.e. we still have an ace counting as 11)
+                    # or if we have multiple aces and only dropped some?
+                    # Actually, 'soft' in this context usually means we have an Ace counting as 11.
+                    # If we have 2 aces: 11+11=22. Target 20. We downgrade one: 12. (Soft? No, we have no 11).
+                    # If Target is 25: 22 <= 25. We keep 11s. Soft=True.
+                    # So, Soft = True if (raw_total <= target).
+                    # Wait, if raw_total > target, we MUST downgrade. We downgrade until <= target.
+                    # Once downgraded, no Aces are 11. So Soft=False.
+                    soft_flag = (i == 0) # If we didn't downgrade any (raw_total <= target)
+                    found = True
+                    break
+                temp -= 10
+            
+            if not found:
+                return 0, False, 0 # Bust
+            score = temp
+            is_soft = soft_flag
+            
+        return score, is_soft, aces_count
+
+    def get_remaining_deck(current_hand: list[str]) -> list[str]:
+        full_deck = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+        deck_counts = {card: full_deck.count(card) for card in full_deck}
+        for card in current_hand:
+            deck_counts[card] -= 1
+        remaining = []
+        for card, count in deck_counts.items():
+            remaining.extend([card] * count)
+        return remaining
+
+    # --- 2. PROBABILITY ESTIMATOR (OPPONENT) ---
+    # Memoization for Opponent State -> (Bust Prob, Score Dist)
+    opp_cache = {}
+
+    def get_opponent_stats(opp_hand: tuple, opp_deck: tuple, t: int):
+        # Returns: (Prob_Bust, Prob_Win_If_We_Stay, Prob_Draw_If_We_Stay)
+        # Actually, we need: Distribution of Opponent Scores.
+        # If we stay at our_score, we win if opp_score > T (Bust) OR (opp_score <= T AND opp_score < our_score).
+        # We draw if opp_score == our_score.
+        # We lose if opp_score <= T AND opp_score > our_score.
+        
+        state = (opp_hand, opp_deck, t)
+        if state in opp_cache:
+            return opp_cache[state]
+        
+        # Calculate current opp score
+        opp_score, opp_is_soft, _ = calculate_hand_details(list(opp_hand))
+        
+        if opp_score > t: # Busted
+            return 1.0, 0.0, 0.0 # Prob Bust=1
+        if not opp_deck: # Deck empty, game ends
+            # If not busted, score is fixed.
+            # We handle Win/Loss in the main logic against our score.
+            # But here we return the distribution.
+            # Return as: Bust=0. Scores are deterministic.
+            # Let's return a dict? No, this function is for Expectation.
+            # Let's refactor: We need to know P(Opponent_Score <= s) for any s.
+            # That's hard to return in one value.
+            # Let's return specific stats for our_score.
+            # Wait, our_score is fixed in the outer loop.
+            # Let's pass our_score here.
+            # Actually, let's keep it generic: return Bust_Prob and a list of (Score, Prob).
+            # But recursion makes that heavy.
+            # Let's return: (Bust_Prob, Win_Prob_If_We_Stay_At_X, Draw_Prob, Lose_Prob).
+            # We need 'our_score' for that.
+            pass # We will handle empty deck in recursion base case properly.
+
+        # Recursion
+        if not opp_deck:
+            # Base case: Opponent stops.
+            # We return a structure that the parent understands.
+            # Parent needs to compare to 'our_score'.
+            # This implies we need 'our_score' in the recursion.
+            # Let's put 'our_score' in the arguments.
+            pass 
+
+    # Revised Opponent Logic with Our Score passed in:
+    # Returns (Prob_Bust, Prob_We_Win, Prob_Draw, Prob_We_Lose)
+    # But 'Prob_We_Win' depends on 'our_score'. So 'our_score' is needed.
+    # Since 'our_score' might change (if we hit), we can't memoize 'our_score'.
+    # However, we can memoize Opponent's Score Distribution relative to T.
+    
+    # Let's try: Returns (Prob_Bust, List of (Score, Prob)).
+    # List size is small (<= T).
+    def get_opp_dist(opp_hand_tuple, opp_deck_tuple, t):
+        # Check cache (without our_score)
+        state = (opp_hand_tuple, opp_deck_tuple, t)
+        if state in opp_cache:
+            return opp_cache[state]
+
+        opp_score, _, _ = calculate_hand_details(list(opp_hand_tuple))
+        
+        if opp_score > t:
+            return 1.0, [] # Bust
+        if not opp_deck_tuple:
+            return 0.0, [(opp_score, 1.0)] # Terminal non-bust
+
+        # Opponent draws?
+        # Assume Opponent plays optimally (Maximizing their win prob).
+        # We don't know their win prob without knowing our score.
+        # This is circular.
+        # BUT, we know the opponent's optimal policy depends on their hand vs Target.
+        # It does NOT depend on our hand (in standard Blackjack strategy).
+        # So, we can assume the opponent follows a standard "Optimal vs Target" policy.
+        # What is that policy?
+        # It's the same logic as us! Maximize win probability.
+        # So we can simulate them using the SAME function (recursive).
+        
+        # Wait, if we both use the same logic, and we don't know their hand...
+        # We must assume they play "Smart". 
+        # Smart means: Hit if Expected_Value(Hit) > Expected_Value(Stay).
+        # Let's implement a mini-simulation of the opponent's turn.
+        # But the opponent plays to THEIR win, not to minimize OUR win.
+        # So we simulate their turn:
+        # Opponent actions:
+        # 1. STAY: They lock in opp_score.
+        # 2. HIT: They draw a card.
+        
+        # Since we don't know if they will hit or stay, we calculate their Expected Win Value (EWV).
+        # EWV(Stay) = P(We Bust or We < Opp_Score)
+        # EWV(Hit) = Average EWV(new_hand).
+        # This is computationally expensive (nested recursion).
+        
+        # Heuristic: Opponent plays to get as close to T as possible without going over (Dealer style).
+        # Or Opponent plays "Blackjack Base Strategy" adapted for T.
+        # Since T varies, "Base Strategy" is hard.
+        # Let's assume Opponent follows a greedy heuristic: 
+        # If opp_score < T - 10, Hit.
+        # If opp_score >= T - 5, Stay (assuming risk of busting).
+        # This is a simplification.
+        
+        # Better approach:
+        # Let's assume the Opponent is also using the Max Expected Value logic.
+        # Then, to calculate our Win Prob, we need to know the probability distribution of the Opponent's FINAL score.
+        # We can calculate this by simulating all possible opponent sequences, assuming they play optimally against the target.
+        # This is feasible because T is small (<=30) and deck is small (13).
+        
+        # Let's compute Opponent Final Score Distribution (FSD).
+        # We need to know "Does Opponent Hit or Stay?" at each state.
+        # We can determine this by calculating "Expected Win Probability" for Opponent from their state.
+        # But "Win Probability" for Opponent depends on our final score.
+        # Since our score is currently variable, we can assume the Opponent plays to Maximize their Expected Score (or minimize distance to T), 
+        # assuming we might get close to T.
+        # A safe assumption: Opponent plays to maximize P(Score <= T AND Score is high).
+        # This is equivalent to: Maximize Expected Score (bounded by T).
+        
+        # Let's implement "Opponent plays to maximize Expected Value of their score (capped at T)".
+        # This avoids the circular dependency.
+        
+        # Helper: Expected Score of Opponent from state
+        def get_opp_expected_score(hand, deck, t):
+            score, _, _ = calculate_hand_details(list(hand))
+            if score > t: return 0 # Bust
+            if not deck: return score
+            
+            # Should we Hit or Stay?
+            # Expected Score if Stay = score.
+            # Expected Score if Hit = Average( get_opp_expected_score(new_hand, new_deck) )
+            
+            # Let's be more precise: Opponent wants to WIN. 
+            # But since we don't know our final score, we can assume a distribution for US.
+            # Maybe we assume we will end up with a score close to T? 
+            # Or maybe we assume we follow the same logic.
+            
+            # Let's make a critical assumption for the Opponent's behavior:
+            # The Opponent plays the "Dealer" role (or a simple bot).
+            # Rule: If score < (T - 5), Hit. If score >= (T - 5), Stay.
+            # Why T-5? It's a safety margin. If T=20, dealer hits until 15.
+            # This is a standard heuristic. Let's use this for the opponent to keep calculations fast.
+            # It's robust enough for an unknown opponent policy.
+            
+            if score < t - 6: # Heuristic: Hit if far below target
+                # Expected value of hitting
+                if not deck: return score
+                total_val = 0
+                for c in set(deck):
+                    prob = deck.count(c) / len(deck)
+                    new_hand = tuple(sorted(list(hand) + [c]))
+                    new_deck_list = list(deck)
+                    new_deck_list.remove(c)
+                    new_deck = tuple(new_deck_list)
+                    val = get_opp_expected_score(new_hand, new_deck, t)
+                    total_val += val * prob
+                return total_val
+            else:
+                return score
+
+        # But we need a distribution, not just expected value.
+        # Let's just do a full Monte Carlo simulation of the opponent?
+        # No, we need exact values.
+        
+        # Let's go with: 
+        # 1. Calculate probability of Opponent Busting.
+        # 2. Calculate probability of Opponent getting specific scores.
+        # We will assume Opponent plays to maximize Score (i.e., hits if < T and safe).
+        # Safe means: P(Bust | Hit) is low enough.
+        # Heuristic: If Current_Score <= T - 10, Hit. If Current_Score > T - 10, Stay.
+        
+        def get_opp_dist_recursive(hand, deck, t):
+            # Returns {score: prob} (including Bust as score > T)
+            # But Bust is an event.
+            score, _, _ = calculate_hand_details(list(hand))
+            if score > t:
+                return {'bust': 1.0}
+            if not deck:
+                return {score: 1.0}
+            
+            # Decision
+            if score < t - 7: # Threshold for hitting (aggressive to get close to T)
+                should_hit = True
+            else:
+                should_hit = False
+            
+            if not should_hit:
+                return {score: 1.0}
+            
+            # If Hit
+            dist = {}
+            for c in set(deck):
+                prob = deck.count(c) / len(deck)
+                new_hand = tuple(sorted(list(hand) + [c]))
+                new_deck_list = list(deck)
+                new_deck_list.remove(c)
+                new_deck = tuple(new_deck_list)
+                sub_dist = get_opp_dist_recursive(new_hand, new_deck, t)
+                for k, v in sub_dist.items():
+                    dist[k] = dist.get(k, 0) + v * prob
+            return dist
+
+        # Memoize this
+        # We need a global cache for this specific logic
+        if not hasattr(get_opponent_stats, 'dist_cache'):
+            get_opponent_stats.dist_cache = {}
+        
+        cache_key = (opp_hand_tuple, opp_deck_tuple, t)
+        if cache_key in get_opponent_stats.dist_cache:
+            return get_opponent_stats.dist_cache[cache_key]
+            
+        dist = get_opp_dist_recursive(opp_hand_tuple, opp_deck_tuple, t)
+        get_opponent_stats.dist_cache[cache_key] = dist
+        return dist
+
+    # --- 3. MAIN POLICY LOGIC ---
+
+    # 1. Determine My Current State
+    my_score, my_is_soft, my_aces = calculate_hand_details(hand)
+    
+    if my_score > target:
+        # Should not happen if logic is correct, but handled just in case
+        return "STAY" # We busted, game over (though this function shouldn't be called if we busted)
+    
+    # 2. Identify Available Cards (My Deck)
+    # The prompt says "You have your own 13-card deck". 
+    # We draw from our deck. We don't know what's in our deck, but we know the set.
+    # Wait, do we track our deck state? No, the function is stateless (it only gets hand).
+    # So we must assume a full deck minus current hand? 
+    # Yes, standard assumption in such problems: `hand` is what we hold, the rest is available.
+    my_deck = get_remaining_deck(hand)
+    
+    # 3. Opponent State
+    # We don't see opponent hand. 
+    # To calculate win probability, we must simulate opponent possibilities.
+    # Opponent has a full deck (separate from ours).
+    # We assume opponent starts with empty hand (or we average over all possibilities?).
+    # Usually, in this setup, we assume opponent is at the START of their game too?
+    # Or does opponent have a partial hand? 
+    # The prompt says: "On each call to policy you observe: hand: ...". It doesn't say opponent's hand.
+    # Usually, this implies we play against the "House" or a generic dealer who plays by fixed rules.
+    # Given "Opponent has their own separate 13-card deck", it implies they draw from their own full deck.
+    # We don't know their current hand. 
+    # Strategy: We assume the Opponent is at the START of their turn (empty hand) OR we assume they play optimally from scratch.
+    # If the opponent has been playing, they have drawn cards. We don't know them.
+    # SAFEST ASSUMPTION: Opponent is also just starting (or has a symmetric distribution of hands).
+    # But usually, "Policy" games involve playing until the end. 
+    # If we assume Opponent is at the start:
+    # Opponent Hand = [], Opponent Deck = Full Deck (13 cards).
+    
+    opp_hand = tuple()
+    opp_deck = tuple(sorted([c for c in "A2345678910JQK"])) # Full deck
+    
+    # Let's refine: We want to decide HIT or STAY.
+    # We calculate Expected Value (EV) of STAY and EV of HIT.
+    # EV is defined as (P(Win) * 1 + P(Draw) * 0 + P(Lose) * -1) ? Or just P(Win).
+    # Let's maximize P(Win).
+    
+    # Function to calculate P(Win) given (My_Score, Opponent_Dist)
+    def calc_win_prob(my_score, opp_dist):
+        p_win = 0
+        p_draw = 0
+        p_lose = 0
+        
+        for score_val, prob in opp_dist.items():
+            if score_val == 'bust':
+                p_win += prob
+            else:
+                if my_score > score_val:
+                    p_win += prob
+                elif my_score == score_val:
+                    p_draw += prob
+                else:
+                    p_lose += prob
+        return p_win # We don't care about draw/lose weights separately for Max
+
+    # Calculate Opponent Distribution
+    # Note: Since we don't know opponent's hand, we assume they start fresh.
+    # This is a bit of a guess, but it's the only info we have.
+    # Actually, if the opponent has played, they have fewer cards. 
+    # If we assume they start fresh, we might overestimate their chances (more cards).
+    # But it's symmetric. 
+    
+    # Wait, if we want to be robust, we should assume the opponent has NO cards initially.
+    # And they play by some policy.
+    # Let's define the opponent policy here to be: 
+    # "If score < T-5, Hit. Else Stay."
+    # This is a fixed heuristic. 
+    opp_dist = get_opp_dist(opp_hand, opp_deck, target)
+    
+    # --- DECISION ---
+    
+    # 1. EV of STAY
+    # We are done. Opponent plays out their hand.
+    # We already computed opp_dist.
+    win_prob_stay = calc_win_prob(my_score, opp_dist)
+    
+    # 2. EV of HIT
+    # We draw a card. We might bust. We might improve.
+    # If we bust, we lose (unless opponent busts? No, we bust -> we lose immediately or draw if opponent also busts).
+    # Actually: "If at any point sum > target, you bust and immediately lose." 
+    # Wait, "If opponent busts and you have not busted, you win."
+    # If we bust, do we wait to see if opponent busts? 
+    # "If at any point sum > target, you bust and immediately lose."
+    # This usually implies game over for us immediately. 
+    # But "If both you and the opponent bust, the game is a draw."
+    # This implies we might not know if we lost immediately if we bust first.
+    # However, in the context of a policy function called "on each turn", 
+    # if we HIT and bust, we return "HIT" and presumably the game engine checks us.
+    # If we bust, we lose UNLESS opponent busts later.
+    # But we bust FIRST (usually). So we are at risk.
+    # If we bust, we lose. Even if opponent busts later? 
+    # "If at any point... you bust and immediately lose."
+    # "If both... bust, draw."
+    # This suggests: We bust -> we are "Busted". Opponent continues. 
+    # If Opponent BUSTs -> Draw. If Opponent < Target -> We Lose.
+    
+    # So, if we bust:
+    # Win = P(Opponent BUST)
+    # Lose = P(Opponent < Target)
+    # Draw = 0 (Wait, if we busted, and they bust, it's a draw).
+    
+    # If we do NOT bust (and stay or hit and continue):
+    # We play normally.
+    
+    # Let's calculate EV(HIT).
+    if not my_deck:
+        return "STAY" # Can't hit
+    
+    total_win_prob_hit = 0
+    
+    for card in set(my_deck):
+        prob_card = my_deck.count(card) / len(my_deck)
+        
+        # New Hand
+        new_hand = hand + [card]
+        new_score, new_is_soft, _ = calculate_hand_details(new_hand)
+        
+        if new_score > target:
+            # We BUSTED
+            # We win if Opponent Busts. Lose if Opponent stays <= T.
+            # From our opp_dist: P(Opponent Bust)
+            p_opp_bust = opp_dist.get('bust', 0)
+            # We lose if Opponent <= T.
+            # We draw if Opponent Busts? "Both bust -> draw".
+            # So if we bust and opp busts -> Draw.
+            # If we bust and opp <= T -> Lose.
+            # If we bust and opp > T (impossible) -> Win?
+            # Win prob is 0 (Draw is not Win).
+            # Actually, usually Win=1, Lose=-1, Draw=0.
+            # Or we want to maximize Win probability.
+            # Let's stick to Win = 1. Draw = 0. Lose = -1 (or 0 for win prob).
+            # If we bust:
+            # Win = 0.
+            # The prompt: "If both bust, draw". "If opp busts and you haven't, you win".
+            # So if we bust:
+            #   If opp busts -> Draw (0).
+            #   If opp <= T -> Lose (-1).
+            # This is a bad outcome.
+            
+            # So the "Value" of Busting is negative (or at best 0).
+            # Let's calculate Win Probability.
+            # P(Win | Bust) = 0.
+            # P(Draw | Bust) = P(Opp Bust).
+            # P(Lose | Bust) = 1 - P(Opp Bust).
+            
+            # If we are maximizing Win Probability, value is 0.
+            # If we are maximizing Expected Outcome (Win=1, Lose=-1, Draw=0), value is - (1 - P(Opp Bust)).
+            
+            # Let's use Win Probability as the metric.
+            # If we bust, we can't win. So P(Win) = 0.
+            # This discourages hitting if bust probability is high, unless we are already losing badly.
+            # But if we are losing (e.g. score 5), we must hit.
+            
+            # Let's calculate: Value = P(Win) - P(Lose).
+            # If Bust: Value = 0 - P(Opp <= T) = -(1 - P(Opp Bust)).
+            
+            # Or simply: Expected Win Probability.
+            # If Bust: Win Prob = 0.
+            
+            # Let's stick to: Expected Win Probability.
+            # If Bust: 0.
+            p_win_bust = 0.0 # We can't win if we bust.
+            # Wait, if opp busts, we draw. So we don't win.
+            
+            total_win_prob_hit += prob_card * p_win_bust
+            
+        else:
+            # We survived. 
+            # We need to decide if we should continue or stop?
+            # Wait, the policy is a single decision: HIT or STAY.
+            # If we choose HIT, we draw one card, then the game continues?
+            # Or do we keep drawing until we STAY?
+            # Usually, policy is called repeatedly. 
+            # So if we choose HIT, we draw one card. Then policy is called again.
+            # So here, we evaluate "Is it better to draw one card, then re-evaluate?"
+            # Or "Is it better to draw until we Bust or Stay?"
+            # The prompt says: "HIT — you draw the next card". "STAY — you stop drawing".
+            # So it's a step-by-step decision.
+            # So EV(HIT) should consider the state "New Hand", and the *future* decisions.
+            # But we are the policy. If we Hit, next time we are called, we might Hit again or Stay.
+            # So we need to know: What is the value of the state "New Hand"?
+            # This requires solving the MDP.
+            
+            # MDP Approach:
+            # V(Hand) = max( V_Stay(Hand), E[V(Hand + Card)] )
+            # But V(Hand + Card) depends on future decisions.
+            # This is a dynamic programming problem over subsets of the deck.
+            # Since T <= 30 and Deck size is small, we can compute V for all reachable states.
+            
+            # However, we are writing a `policy` function.
+            # We can implement a recursive solver with memoization.
+            # Key: Hand (as sorted tuple) and Opponent Distribution (which is constant if Opponent is a fixed heuristic).
+            # Opponent Distribution is constant for the game (since T is constant and Opponent deck is full).
+            # Wait, Opponent Distribution changes as Opponent draws.
+            # But we don't see Opponent draws.
+            # So we must stick to the assumption: Opponent plays optimally from start.
+            # This means Opponent Distribution is fixed for the game? No, Opponent draws.
+            # If we don't see Opponent cards, we can't know their current state.
+            # We can only know the *expected* state.
+            # But since the game is simultaneous-ish, we assume Opponent plays by a fixed rule 
+            # (e.g. Hits if < T-5) starting from scratch.
+            # And we assume we play against that fixed rule.
+            # So we can calculate the probability of Opponent achieving any score.
+            # But wait, if Opponent hits, their state changes.
+            # But we don't know when they hit.
+            # This is getting complicated.
+            
+            # Simplification: 
+            # Assume Opponent plays exactly like us (Max Expected Value).
+            # But since we don't know their hand, we assume they are in the "Expected" state?
+            # No.
+            
+            # Let's go with a simpler, robust policy often used in these contests:
+            # Calculate the Expected Value of the next step only, assuming we stop after that step?
+            # No, that's greedy and suboptimal.
+            
+            # Let's implement a look-ahead.
+            # What is the value of hitting?
+            # Value(Hit) = Sum P(card) * Value(New_State)
+            # Value(Stay) = WinProb(Stay)
+            # We need Value(New_State).
+            # Since we don't know opponent's future moves, we assume Opponent plays a fixed "Conservative" strategy:
+            # Stops at T-5.
+            # We can simulate our OWN future moves recursively!
+            # This is a self-play recursion.
+            # V(hand) = max( WinProb_Stay(hand), Sum P(card) * V(hand+card) )
+            # We assume Opponent's win distribution is fixed (based on their fixed strategy).
+            
+            # Let's implement V(hand) with memoization.
+            # We need to compute WinProb_Stay(hand) against the fixed Opponent Strategy.
+            # We already have a function to compute Opponent Score Distribution.
+            
+            # Optimization:
+            # Opponent strategy is "Hits if < T-6, Stays if >= T-6".
+            # Let's implement this.
+            
+            def get_opp_dist_fixed(t):
+                # Returns distribution of Opponent's final score given they play by heuristic
+                # We can precompute this or compute on fly.
+                # Since T is constant, we can cache this per T.
+                if not hasattr(policy, 'opp_fixed_dist'):
+                    policy.opp_fixed_dist = {}
+                if t in policy.opp_fixed_dist:
+                    return policy.opp_fixed_dist[t]
+                
+                # Recursive calculator for Opponent
+                def calc_opp_dist(oh, od, target_t):
+                    score, _, _ = calculate_hand_details(list(oh))
+                    if score > target_t: return {'bust': 1.0}
+                    if not od: return {score: 1.0}
+                    
+                    # Heuristic decision
+                    if score < target_t - 6: # Hit
+                        dist = {}
+                        for c in set(od):
+                            prob = od.count(c) / len(od)
+                            new_oh = tuple(sorted(list(oh) + [c]))
+                            new_od_list = list(od)
+                            new_od_list.remove(c)
+                            new_od = tuple(new_od_list)
+                            sub = calc_opp_dist(new_oh, new_od, target_t)
+                            for k, v in sub.items():
+                                dist[k] = dist.get(k, 0) + v * prob
+                        return dist
+                    else: # Stay
+                        return {score: 1.0}
+
+                full_deck = tuple(sorted(list("A2345678910JQK")))
+                dist = calc_opp_dist(tuple(), full_deck, t)
+                policy.opp_fixed_dist[t] = dist
+                return dist
+
+            def get_my_win_prob_stay(current_hand, t):
+                # Calculates P(Win) if I stay now
+                my_score, _, _ = calculate_hand_details(current_hand)
+                if my_score > t: return 0.0 # Should not be called if bust
+                
+                opp_dist = get_opp_dist_fixed(t)
+                p_win = 0
+                for score_val, prob in opp_dist.items():
+                    if score_val == 'bust':
+                        p_win += prob
+                    elif my_score > score_val:
+                        p_win += prob
+                return p_win
+
+            # Now we need Value(Hand) for future decisions.
+            # Value(Hand) = max( WinProb(Stay), Avg(Value(Hand+Card)) )
+            # We need to memoize Value(Hand).
+            
+            memo_v = {}
+            
+            def get_v(current_hand, t):
+                # Convert to tuple for memo
+                h_tup = tuple(sorted(current_hand))
+                if h_tup in memo_v:
+                    return memo_v[h_tup]
+                
+                # 1. Value of Staying
+                v_stay = get_my_win_prob_stay(current_hand, t)
+                
+                # 2. Value of Hitting
+                deck = get_remaining_deck(current_hand)
+                if not deck:
+                    memo_v[h_tup] = v_stay
+                    return v_stay
+                
+                v_hit = 0
+                for c in set(deck):
+                    prob = deck.count(c) / len(deck)
+                    new_hand = current_hand + [c]
+                    new_score, _, _ = calculate_hand_details(new_hand)
+                    
+                    if new_score > t:
+                        # We bust. Win Prob is 0 (or P(Opp Bust)? No, we lose immediately).
+                        # "If both bust, draw" -> 0 win.
+                        # But if we bust and opp doesn't, we lose (-1).
+                        # Let's assume we want to maximize Win Prob.
+                        # If we bust, we can't win.
+                        val_next = 0.0
+                    else:
+                        val_next = get_v(new_hand, t)
+                
+                    v_hit += prob * val_next
+                
+                res = max(v_stay, v_hit)
+                memo_v[h_tup] = res
+                return res
+
+            # Now, for the current state, what do we do?
+            v_stay = get_my_win_prob_stay(hand, target)
+            v_hit = 0
+            deck = get_remaining_deck(hand)
+            if not deck:
+                return "STAY"
+            
+            for c in set(deck):
+                prob = deck.count(c) / len(deck)
+                new_hand = hand + [c]
+                new_score, _, _ = calculate_hand_details(new_hand)
+                if new_score > target:
+                    val_next = 0.0
+                else:
+                    val_next = get_v(new_hand, target)
+                v_hit += prob * val_next
+            
+            if v_hit > v_stay:
+                return "HIT"
+            else:
+                return "STAY"
+
+    # If we didn't enter the loop (should not happen), default to STAY
+    return "STAY"
+
+# Note: The logic above relies on the opponent playing a fixed heuristic ("Hits if < T-6, Stays if >= T-6").
+# This is a reasonable assumption for a competitive environment where opponent strategy is unknown but likely conservative.
+# The recursion `get_v` calculates the optimal strategy for ourselves against that opponent.
+```

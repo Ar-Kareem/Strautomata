@@ -1,0 +1,120 @@
+
+import numpy as np
+from collections import defaultdict
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    # Initialize memory if empty
+    if not memory:
+        memory = {
+            'move_count': 0,
+            'opening_moves': [
+                (3, 3), (3, 17), (17, 3), (17, 17),  # Standard 3-4 point opening
+                (6, 6), (6, 14), (14, 6), (14, 14),  # Expand influence
+                (9, 9), (9, 11), (11, 9), (11, 11),  # Center control
+                (1, 1), (1, 19), (19, 1), (19, 19),  # Corners if opponent plays there
+            ],
+            'territory_grid': np.zeros((19, 19), dtype=int),
+            'opponent_liberties': defaultdict(int),
+            'my_liberties': defaultdict(int),
+            'last_move': None,
+        }
+
+    # Update move count
+    memory['move_count'] += 1
+
+    # --- Opening Phase (First 30 moves) ---
+    if memory['move_count'] <= 30:
+        if memory['last_move'] in [(3, 3), (3, 17), (17, 3), (17, 17)]:
+            # Expand influence after initial 3-4 point
+            if memory['move_count'] <= 8:
+                return (memory['opening_moves'][memory['move_count'] - 1], memory)
+            else:
+                # After 8 moves, play near opponent's stones
+                for (r, c) in opponent:
+                    if (r-1, c) not in me and (r-1, c) not in opponent:
+                        return ((r-1, c), memory)
+                    if (r+1, c) not in me and (r+1, c) not in opponent:
+                        return ((r+1, c), memory)
+                    if (r, c-1) not in me and (r, c-1) not in opponent:
+                        return ((r, c-1), memory)
+                    if (r, c+1) not in me and (r, c+1) not in opponent:
+                        return ((r, c+1), memory)
+                # Fallback: play in center
+                return ((9, 9), memory)
+        else:
+            # Play standard opening moves
+            if memory['move_count'] <= 4:
+                return (memory['opening_moves'][memory['move_count'] - 1], memory)
+            else:
+                # After 4 moves, expand influence
+                if memory['move_count'] <= 8:
+                    return (memory['opening_moves'][memory['move_count'] - 1], memory)
+                else:
+                    # Play near opponent's stones
+                    for (r, c) in opponent:
+                        if (r-1, c) not in me and (r-1, c) not in opponent:
+                            return ((r-1, c), memory)
+                        if (r+1, c) not in me and (r+1, c) not in opponent:
+                            return ((r+1, c), memory)
+                        if (r, c-1) not in me and (r, c-1) not in opponent:
+                            return ((r, c-1), memory)
+                        if (r, c+1) not in me and (r, c+1) not in opponent:
+                            return ((r, c+1), memory)
+                    # Fallback: play in center
+                    return ((9, 9), memory)
+
+    # --- Middle Game (After 30 moves) ---
+    else:
+        # Update liberties for opponent groups
+        memory['opponent_liberties'] = defaultdict(int)
+        for (r, c) in opponent:
+            neighbors = [(r-1, c), (r+1, c), (r, c-1), (r, c+1)]
+            for nr, nc in neighbors:
+                if 1 <= nr <= 19 and 1 <= nc <= 19:
+                    if (nr, nc) not in me and (nr, nc) not in opponent:
+                        memory['opponent_liberties'][(r, c)] += 1
+
+        # Update liberties for my groups
+        memory['my_liberties'] = defaultdict(int)
+        for (r, c) in me:
+            neighbors = [(r-1, c), (r+1, c), (r, c-1), (r, c+1)]
+            for nr, nc in neighbors:
+                if 1 <= nr <= 19 and 1 <= nc <= 19:
+                    if (nr, nc) not in me and (nr, nc) not in opponent:
+                        memory['my_liberties'][(r, c)] += 1
+
+        # --- Strategy 1: Play near opponent groups with 1 liberty (ko threat) ---
+        for (r, c) in opponent:
+            if memory['opponent_liberties'][(r, c)] == 1:
+                neighbors = [(r-1, c), (r+1, c), (r, c-1), (r, c+1)]
+                for nr, nc in neighbors:
+                    if 1 <= nr <= 19 and 1 <= nc <= 19:
+                        if (nr, nc) not in me and (nr, nc) not in opponent:
+                            return ((nr, nc), memory)
+
+        # --- Strategy 2: Play in empty territory (maximize influence) ---
+        # Find the largest empty rectangle (simplified)
+        empty_cells = [(r, c) for r in range(1, 20) for c in range(1, 20) if (r, c) not in me and (r, c) not in opponent]
+        if empty_cells:
+            # Prefer center and edges
+            center_priority = [
+                (9, 9), (9, 10), (10, 9), (10, 10),
+                (3, 3), (3, 17), (17, 3), (17, 17),
+                (6, 6), (6, 14), (14, 6), (14, 14),
+            ]
+            for move in center_priority:
+                if move in empty_cells:
+                    return (move, memory)
+
+            # Fallback: play near opponent's stones
+            for (r, c) in opponent:
+                for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                    nr, nc = r + dr, c + dc
+                    if 1 <= nr <= 19 and 1 <= nc <= 19 and (nr, nc) not in me and (nr, nc) not in opponent:
+                        return ((nr, nc), memory)
+
+            # Fallback: play randomly in empty cells
+            return (empty_cells[0], memory)
+
+        # --- Endgame: Pass if no moves left ---
+        return ((0, 0), memory)

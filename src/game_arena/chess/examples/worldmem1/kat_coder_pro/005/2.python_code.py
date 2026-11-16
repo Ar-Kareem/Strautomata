@@ -1,0 +1,232 @@
+
+import numpy as np
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str], memory: dict) -> tuple[str, dict]:
+    # Material values
+    piece_values = {
+        'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000
+    }
+    
+    # Piece-square tables (positive values are good for white, negative for black)
+    # Center control bonus for pawns, knights, bishops
+    pawn_table = np.array([
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [50, 50, 50, 50, 50, 50, 50, 50],
+        [10, 10, 20, 30, 30, 20, 10, 10],
+        [5, 5, 10, 25, 25, 10, 5, 5],
+        [0, 0, 0, 20, 20, 0, 0, 0],
+        [5, -5, -10, 0, 0, -10, -5, 5],
+        [5, 10, 10, -20, -20, 10, 10, 5],
+        [0, 0, 0, 0, 0, 0, 0, 0]
+    ])
+    
+    knight_table = np.array([
+        [-50, -40, -30, -30, -30, -30, -40, -50],
+        [-40, -20, 0, 0, 0, 0, -20, -40],
+        [-30, 0, 10, 15, 15, 10, 0, -30],
+        [-30, 5, 15, 20, 20, 15, 5, -30],
+        [-30, 0, 15, 20, 20, 15, 0, -30],
+        [-30, 5, 10, 15, 15, 10, 5, -30],
+        [-40, -20, 0, 5, 5, 0, -20, -40],
+        [-50, -40, -30, -30, -30, -30, -40, -50]
+    ])
+    
+    bishop_table = np.array([
+        [-20, -10, -10, -10, -10, -10, -10, -20],
+        [-10, 0, 0, 0, 0, 0, 0, -10],
+        [-10, 0, 5, 10, 10, 5, 0, -10],
+        [-10, 5, 5, 10, 10, 5, 5, -10],
+        [-10, 0, 10, 10, 10, 10, 0, -10],
+        [-10, 10, 10, 10, 10, 10, 10, -10],
+        [-10, 5, 0, 0, 0, 0, 5, -10],
+        [-20, -10, -10, -10, -10, -10, -10, -20]
+    ])
+    
+    rook_table = np.array([
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [5, 10, 10, 10, 10, 10, 10, 5],
+        [-5, 0, 0, 0, 0, 0, 0, -5],
+        [-5, 0, 0, 0, 0, 0, 0, -5],
+        [-5, 0, 0, 0, 0, 0, 0, -5],
+        [-5, 0, 0, 0, 0, 0, 0, -5],
+        [-5, 0, 0, 0, 0, 0, 0, -5],
+        [0, 0, 0, 5, 5, 0, 0, 0]
+    ])
+    
+    queen_table = np.array([
+        [-20, -10, -10, -5, -5, -10, -10, -20],
+        [-10, 0, 0, 0, 0, 0, 0, -10],
+        [-10, 0, 5, 5, 5, 5, 0, -10],
+        [-5, 0, 5, 5, 5, 5, 0, -5],
+        [0, 0, 5, 5, 5, 5, 0, -5],
+        [-10, 5, 5, 5, 5, 5, 0, -10],
+        [-10, 0, 5, 0, 0, 0, 0, -10],
+        [-20, -10, -10, -5, -5, -10, -10, -20]
+    ])
+    
+    king_table = np.array([
+        [-30, -40, -40, -50, -50, -40, -40, -30],
+        [-30, -40, -40, -50, -50, -40, -40, -30],
+        [-30, -40, -40, -50, -50, -40, -40, -30],
+        [-30, -40, -40, -50, -50, -40, -40, -30],
+        [-20, -30, -30, -40, -40, -30, -30, -20],
+        [-10, -20, -20, -20, -20, -20, -20, -10],
+        [20, 20, 0, 0, 0, 0, 20, 20],
+        [20, 30, 10, 0, 0, 10, 30, 20]
+    ])
+    
+    def evaluate(pieces_dict, to_play):
+        score = 0
+        for square, piece in pieces_dict.items():
+            color = piece[0]
+            piece_type = piece[1]
+            
+            # Get file and rank
+            file = ord(square[0]) - ord('a')
+            rank = int(square[1]) - 1
+            
+            # Material value
+            if color == 'w':
+                score += piece_values[piece_type]
+            else:
+                score -= piece_values[piece_type]
+            
+            # Positional value
+            if piece_type == 'P':
+                if color == 'w':
+                    score += pawn_table[rank][file]
+                else:
+                    score -= pawn_table[7-rank][file]
+            elif piece_type == 'N':
+                if color == 'w':
+                    score += knight_table[rank][file]
+                else:
+                    score -= knight_table[7-rank][file]
+            elif piece_type == 'B':
+                if color == 'w':
+                    score += bishop_table[rank][file]
+                else:
+                    score -= bishop_table[7-rank][file]
+            elif piece_type == 'R':
+                if color == 'w':
+                    score += rook_table[rank][file]
+                else:
+                    score -= rook_table[7-rank][file]
+            elif piece_type == 'Q':
+                if color == 'w':
+                    score += queen_table[rank][file]
+                else:
+                    score -= queen_table[7-rank][file]
+            elif piece_type == 'K':
+                if color == 'w':
+                    score += king_table[rank][file]
+                else:
+                    score -= king_table[7-rank][file]
+        
+        return score
+    
+    def simulate_move(pieces_dict, move):
+        # Create a copy of the board
+        new_pieces = pieces_dict.copy()
+        
+        # Parse the move
+        if 'x' in move:
+            move = move.replace('x', '')
+        
+        if move == 'O-O':
+            # Kingside castling
+            if to_play == 'white':
+                new_pieces['e1'] = None
+                new_pieces['h1'] = None
+                new_pieces['g1'] = 'wK'
+                new_pieces['f1'] = 'wR'
+            else:
+                new_pieces['e8'] = None
+                new_pieces['h8'] = None
+                new_pieces['g8'] = 'bK'
+                new_pieces['f8'] = 'bR'
+        elif move == 'O-O-O':
+            # Queenside castling
+            if to_play == 'white':
+                new_pieces['e1'] = None
+                new_pieces['a1'] = None
+                new_pieces['c1'] = 'wK'
+                new_pieces['d1'] = 'wR'
+            else:
+                new_pieces['e8'] = None
+                new_pieces['a8'] = None
+                new_pieces['c8'] = 'bK'
+                new_pieces['d8'] = 'bR'
+        elif '=' in move:
+            # Promotion
+            # Assuming pawn promotion to queen for simplicity
+            file = move[0]
+            rank = move[1]
+            new_pieces[file + rank] = None
+            new_pieces[move[-1]] = None
+            new_pieces[move[-2]] = ('w' if to_play == 'white' else 'b') + 'Q'
+        else:
+            # Regular move
+            # This is a simplified version, assuming the move is in the format 'e4'
+            # or 'Nf3' (disambiguation not handled)
+            if len(move) == 2:
+                # Pawn move
+                file = move[0]
+                rank = move[1]
+                if to_play == 'white':
+                    # Find the pawn
+                    for square, piece in pieces_dict.items():
+                        if piece == 'wP' and square[0] == file:
+                            new_pieces[square] = None
+                            new_pieces[move] = 'wP'
+                            break
+                else:
+                    # Find the pawn
+                    for square, piece in pieces_dict.items():
+                        if piece == 'bP' and square[0] == file:
+                            new_pieces[square] = None
+                            new_pieces[move] = 'bP'
+                            break
+            else:
+                # Piece move
+                piece_type = move[0]
+                target = move[-2:]
+                if to_play == 'white':
+                    for square, piece in pieces_dict.items():
+                        if piece[1] == piece_type and piece[0] == 'w':
+                            new_pieces[square] = None
+                            new_pieces[target] = piece
+                            break
+                else:
+                    for square, piece in pieces_dict.items():
+                        if piece[1] == piece_type and piece[0] == 'b':
+                            new_pieces[square] = None
+                            new_pieces[target] = piece
+                            break
+        
+        # Remove None values
+        new_pieces = {k: v for k, v in new_pieces.items() if v is not None}
+        
+        return new_pieces
+    
+    # Evaluate each move
+    best_move = None
+    best_score = float('-inf')
+    
+    for move in legal_moves:
+        # Simulate the move
+        new_pieces = simulate_move(pieces, move)
+        
+        # Evaluate the resulting position
+        score = evaluate(new_pieces, to_play)
+        
+        # Prefer captures and check moves
+        if 'x' in move or '+' in move or move == 'O-O' or move == 'O-O-O':
+            score += 10
+        
+        # Update best move
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move, memory

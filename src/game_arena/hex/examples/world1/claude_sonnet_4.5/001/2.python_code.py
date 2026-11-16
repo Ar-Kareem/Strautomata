@@ -1,0 +1,154 @@
+
+import numpy as np
+from collections import deque
+import heapq
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    BOARD_SIZE = 11
+    
+    # Convert to sets for O(1) lookup
+    my_stones = set(me)
+    opp_stones = set(opp)
+    occupied = my_stones | opp_stones
+    
+    # Get neighbors for hex grid (exclude diagonal: top-left and bottom-right)
+    def get_neighbors(r, c):
+        neighbors = []
+        deltas = [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0)]
+        for dr, dc in deltas:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE:
+                neighbors.append((nr, nc))
+        return neighbors
+    
+    # Check if position connects the goal sides using BFS
+    def is_winning(stones, player_color):
+        if player_color == 'b':
+            # Black connects top to bottom
+            start_cells = [(0, c) for c in range(BOARD_SIZE) if (0, c) in stones]
+            goal_row = BOARD_SIZE - 1
+            
+            visited = set(start_cells)
+            queue = deque(start_cells)
+            
+            while queue:
+                r, c = queue.popleft()
+                if r == goal_row:
+                    return True
+                for nr, nc in get_neighbors(r, c):
+                    if (nr, nc) in stones and (nr, nc) not in visited:
+                        visited.add((nr, nc))
+                        queue.append((nr, nc))
+        else:
+            # White connects left to right
+            start_cells = [(r, 0) for r in range(BOARD_SIZE) if (r, 0) in stones]
+            goal_col = BOARD_SIZE - 1
+            
+            visited = set(start_cells)
+            queue = deque(start_cells)
+            
+            while queue:
+                r, c = queue.popleft()
+                if c == goal_col:
+                    return True
+                for nr, nc in get_neighbors(r, c):
+                    if (nr, nc) in stones and (nr, nc) not in visited:
+                        visited.add((nr, nc))
+                        queue.append((nr, nc))
+        
+        return False
+    
+    # Calculate minimum resistance path using Dijkstra
+    def min_resistance(stones, player_color, forbidden):
+        if player_color == 'b':
+            # Connect top to bottom
+            start_cells = [(0, c) for c in range(BOARD_SIZE)]
+            goal_cells = set((BOARD_SIZE - 1, c) for c in range(BOARD_SIZE))
+        else:
+            # Connect left to right
+            start_cells = [(r, 0) for r in range(BOARD_SIZE)]
+            goal_cells = set((r, BOARD_SIZE - 1) for r in range(BOARD_SIZE))
+        
+        dist = {}
+        pq = []
+        
+        for cell in start_cells:
+            dist[cell] = 0 if cell in stones else 1
+            heapq.heappush(pq, (dist[cell], cell))
+        
+        while pq:
+            d, (r, c) = heapq.heappop(pq)
+            
+            if d > dist.get((r, c), float('inf')):
+                continue
+            
+            if (r, c) in goal_cells:
+                return d
+            
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) in forbidden:
+                    continue
+                
+                cost = 0 if (nr, nc) in stones else 1
+                new_dist = d + cost
+                
+                if new_dist < dist.get((nr, nc), float('inf')):
+                    dist[(nr, nc)] = new_dist
+                    heapq.heappush(pq, (new_dist, (nr, nc)))
+        
+        return float('inf')
+    
+    # Get all empty cells
+    empty_cells = [(r, c) for r in range(BOARD_SIZE) for c in range(BOARD_SIZE) 
+                   if (r, c) not in occupied]
+    
+    if not empty_cells:
+        return (0, 0)  # Shouldn't happen
+    
+    # Check for immediate winning move
+    for move in empty_cells:
+        if is_winning(my_stones | {move}, color):
+            return move
+    
+    # Check for blocking opponent's winning move
+    for move in empty_cells:
+        if is_winning(opp_stones | {move}, 'w' if color == 'b' else 'b'):
+            return move
+    
+    # Evaluate moves based on resistance metric
+    best_score = -float('inf')
+    best_moves = []
+    
+    opp_color = 'w' if color == 'b' else 'b'
+    
+    for move in empty_cells:
+        # My resistance after placing stone
+        my_resist = min_resistance(my_stones | {move}, color, opp_stones)
+        
+        # Opponent's resistance after I place stone (they can't use this cell)
+        opp_resist = min_resistance(opp_stones, opp_color, my_stones | {move})
+        
+        # Score: prefer low resistance for me, high resistance for opponent
+        score = opp_resist - my_resist * 2
+        
+        # Bonus for moves that connect to edges
+        if color == 'b':
+            edge_bonus = 1.5 if move[0] in [0, BOARD_SIZE - 1] else 0
+        else:
+            edge_bonus = 1.5 if move[1] in [0, BOARD_SIZE - 1] else 0
+        
+        score += edge_bonus
+        
+        # Bonus for center control early game
+        if len(occupied) < 20:
+            center_dist = abs(move[0] - 5) + abs(move[1] - 5)
+            score += (10 - center_dist) * 0.3
+        
+        if score > best_score:
+            best_score = score
+            best_moves = [move]
+        elif score == best_score:
+            best_moves.append(move)
+    
+    # Return best move (with tie-breaking)
+    return best_moves[0] if best_moves else empty_cells[0]

@@ -1,0 +1,141 @@
+<think>
+Okay, let's tackle this problem. I need to create a move-selection policy for the game Kalah. The function policy(you, opponent) should return an integer i (0-5) indicating the house from which to take seeds. The move has to be legal, so the chosen house must have at least one seed.
+
+First, I need to understand how the seeds are distributed when a move is made. The rules state that when a house is chosen, you take all the seeds from it and distribute them one by one to subsequent positions, following a specific order. The order is: player's next houses, then their store, then opponent's houses, then player's houses again, but skipping the opponent's store.
+
+The key points here are the distribution order and the potential for capturing seeds. The capture happens if the last seed lands in the player's house (0-5) and that house was empty before, and the opposite house has seeds. Also, if the last seed lands in the player's store, they get another move.
+
+So, the strategy should prioritize moves that lead to captures or extra moves. Let me think about possible heuristics.
+
+First, check all valid moves (houses with seeds) and compute their scores. The best move is the one with the highest score. The score can be based on whether the move results in a capture, an extra move, or the difference in seeds.
+
+Possible steps:
+
+1. For each valid move i (you[i] > 0):
+   a. Simulate distributing the seeds from you[i].
+   b. Check if the last seed lands in a house that triggers a capture.
+   c. Check if the last seed lands in the player's store, giving another move.
+   d. Calculate a heuristic score for the move.
+
+2. Select the move with the highest score.
+
+Now, how to simulate the move efficiently. Since the code needs to run within 1 second, generating all possible seeds distribution sequences for each move might be computationally expensive if done naively. But since the maximum seeds per house are up to, say, hundreds (maybe in later game states), but for each move, the number of steps would be O(n), which could be manageable if optimized.
+
+But perhaps a smarter way. For each seed distribution, find out where each seed lands without iterating each step. For example, by calculating how many full cycles there are and the remainder. But maybe for small n, iteration is manageable.
+
+Let me outline the simulation function:
+
+def simulate_move(you, opponent, i):
+    n = you[i]
+    seeds = n
+    new_you = you.copy()
+    new_opponent = opponent.copy()
+    # Remove all seeds from the chosen house
+    a = 0
+    new_you[i] = 0
+    current = (i + 1) % 12  # Wait, no. Wait, the houses are arranged in a circle. Each player has 6 houses, and the stores. The distribution order after the starting house is i+1, i+2, etc., but wraps around.
+
+    Actually, the distribution starts at i+1 (player's houses), then continues to the end of the player's houses (5), then store (6), then opponent's 0-5, then player's 0-5, etc.
+
+    So the positions can be represented as a list where the indexes after the starting point are first the player's houses, then the store, then the opponent's houses, then the player's houses again, and so on.
+
+    So the order for distribution is: [i+1, i+2, ...,5, 6, 0,1,2,3,4,5, 0,... up to (n-1) steps].
+
+    Wait, no. Because after the initial i+1 to 5, the next is you[6] (store), then opponent's 0-5, then you[0-5], then opponent's 0-5<thinking>
+I need to implement a move-selection policy for Kalah that prioritizes moves leading to captures and extra turns. The strategy involves simulating each possible move, evaluating its outcome based on immediate gains and positional advantages.
+
+Key steps:
+1. **Simulate Moves**: For each valid move (non-empty house), distribute seeds in order and track distribution steps.
+2. **Capture Check**: After distribution, check if the last seed in a player's house triggers a capture of the opponent's corresponding opposite house.
+3. **Extra Move Check**: If the last seed lands in the player's store, grant another move.
+4. **Scoring**: Moves are scored based on captures (highest priority), extra moves (next priority), and store difference. The best move is selected using these criteria with negative scoring to utilize Python's default tuple comparison and min function efficiently.
+
+<code>
+from copy import deepcopy
+
+def policy(you, opponent):
+    moves = []
+    for i in range(6):
+        if you[i] <= 0:
+            continue
+        
+        # Simulate the move
+        new_you = deepcopy(you)
+        new_opponent = deepcopy(opponent)
+        n = new_you[i]
+        new_you[i] = 0
+        current_step = 0
+        last_pos = -1
+        
+        # Distribute seeds
+        while n > 0:
+            pos = ((i + 1 + current_step) % 13)  # 0To solve this problem, we need to create a move-selection policy for the game Kalah that prioritizes moves leading to captures and extra turns. The goal is to maximize the player's score while minimizing the opponent's score through strategic moves.
+
+### Approach
+The approach involves simulating each possible move and evaluating its outcome based on three key factors:
+1. **Captures**: Moves that result in capturing the opponent's seeds are prioritized the highest.
+2. **Extra Move**: Moves that allow the player to take another turn by placing the last seed in their store.
+3. **Store Difference**: The difference between the player's store and the opponent's store after the move, which helps in long-term strategy.
+
+The solution involves iterating over each possible move, simulating the seed distribution, checking for captures and extra moves, and then scoring each move based on these factors. The move with the highest priority (least negative score) is selected using Python's tuple comparison, which efficiently handles multiple criteria.
+
+### Solution Code
+```python
+from copy import deepcopy
+
+def policy(you, opponent):
+    moves = []
+    for i in range(6):
+        if you[i] <= 0:
+            continue
+        
+        # Simulate the move
+        new_you = deepcopy(you)
+        new_opponent = deepcopy(opponent)
+        n = new_you[i]
+        new_you[i] = 0
+        current_step = 0
+        last_pos = -1
+        
+        # Distribute seeds
+        while n > 0:
+            pos = ((i + 1 + current_step) % 13)  # Positions 0-5 (your houses), 6 (your store), 7-11 (opponent's houses)
+            if pos < 6:
+                new_you[pos] += 1
+            elif pos == 6:
+                new_you[6] += 1
+            else:
+                opp_idx = pos - 7
+                new_opponent[opp_idx] += 1
+            last_pos = pos
+            n -= 1
+            current_step += 1
+        
+        # Check for capture
+        if last_pos < 6:
+            was_empty = (you[last_pos] == 0)
+            opp_idx = 5 - last_pos
+            if was_empty and new_opponent[opp_idx] > 0:
+                captured = new_opponent[opp_idx]
+                new_opponent[opp_idx] = 0
+                new_you[6] += captured
+        
+        # Determine if the move gives an extra turn
+        in_store = (last_pos == 6)
+        
+        # Calculate the score based on capture, extra move, and store difference
+        score = (-captured, -in_store, (new_you[6] - new_opponent[6]))
+        moves.append((score, i))
+    
+    # Select the best move using lexicographical order of scores (minimize negative values)
+    best_move = min(moves, key=lambda x: x[0])[1]
+    return best_move
+```
+
+### Explanation
+1. **Simulating Moves**: For each valid house (non-empty), the code simulates the distribution of seeds starting from the next house in the distribution order. This includes handling edge cases like reaching the end of the player's houses and wrapping around to the opponent's houses.
+2. **Capture Check**: After distributing all seeds, the code checks if the last seed landed in a player's house that was empty before the move, and if the corresponding opponent's house has seeds. If both conditions are met, the opponent's seeds are captured.
+3. **Extra Move Check**: If the last seed lands in the player's store, the move grants an extra turn.
+4. **Scoring**: Each move is scored based on the number of captured seeds (prioritized highest), whether it results in an extra move, and the difference in store sizes. The score is a tuple that Python's `min` function uses to find the best move efficiently by leveraging lexicographical order.
+
+This approach ensures that the policy selects the optimal move by considering immediate gains and future opportunities, adhering to the game's rules and constraints.

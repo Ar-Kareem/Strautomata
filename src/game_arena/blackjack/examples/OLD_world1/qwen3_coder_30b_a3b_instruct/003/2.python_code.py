@@ -1,0 +1,51 @@
+
+def policy(hand: list[str], target: int) -> str:
+    # Calculate the current hand value
+    def get_hand_value(hand):
+        value = 0
+        aces = 0
+        for card in hand:
+            if card == "A":
+                aces += 1
+                value += 11
+            elif card in ["J", "Q", "K"]:
+                value += 10
+            else:
+                value += int(card)
+        
+        # Adjust aces from 11 to 1 if needed
+        while value > target and aces > 0:
+            value -= 10
+            aces -= 1
+        
+        return value
+    
+    current_value = get_hand_value(hand)
+    
+    # If we've already busted, we can't make a meaningful decision
+    if current_value > target:
+        return "STAY"  # We're already busted
+    
+    # Strategy:
+    # If we're close to target, consider staying
+    # If we're far from target, consider hitting
+    # Specifically, if we're at or above target-3, we're reasonably close
+    
+    if current_value >= target - 3:
+        # If we're reasonably close to target, we might consider staying
+        # But let's be more conservative: if we're at or above target,
+        # it's usually better to stay unless we're very close to busting
+        if current_value >= target:
+            # At or over target, stay
+            return "STAY"
+        elif current_value >= target - 2:
+            # Within 2 of target - 50/50 chance, but let's err on the side of caution
+            # We'll consider staying with 50% probability, but default to hit
+            import random
+            return "STAY" if random.random() < 0.3 else "HIT"
+        else:
+            # Well below target - hit to get closer
+            return "HIT"
+    else:
+        # Far from target - hit
+        return "HIT"

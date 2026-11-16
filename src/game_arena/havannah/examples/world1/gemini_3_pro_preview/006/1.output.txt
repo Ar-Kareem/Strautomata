@@ -1,0 +1,325 @@
+The strategy for this policy uses **Monte Carlo Tree Search (MCTS)** to evaluate moves on the Havannah board. Since Havannah has complex winning conditions (Ring, Bridge, Fork) and the board connectivity depends on the specific hexagonal grid mapping, the policy first constructs a graph of the board based on the provided `valid_mask` and the neighbor rules derived from the prompt (vertical "even-q" style offset).
+
+Key components of the strategy:
+1.  **Board Analysis**: At the start of every move, we identify **Corners** (cells with $\le$ 3 neighbors) and **Edges** (cells with 4 neighbors on the boundary). We group connected edge cells into distinct "Edge Segments" and assign unique bitmasks to each corner and edge segment.
+2.  **Union-Find Data Structure**: To efficiently check for "Bridge" (connecting 2 corners) and "Fork" (connecting 3 edges) during simulations, we use a Union-Find structure that propagates these bitmasks. Checking a win condition becomes a fast bitwise operation (`popcount >= 2` for corners, `popcount >= 3` for edges).
+3.  **Lightweight Rollouts**: The MCTS simulations play random moves until a Bridge or Fork is detected or the board fills. Explicit Ring detection is omitted in the rollouts to maximize the number of simulations within the 1-second limit, as Bridge and Fork are the most common winning conditions.
+4.  **UCT Selection**: The search uses standard UCB1 to balance exploring new moves and exploiting promising lines.
+
+<code>
+import math
+import time
+import random
+import numpy as np
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    """
+    Havannah policy using MCTS with efficient handling of Bridge and Fork winning conditions.
+    """
+    rows, cols = valid_mask.shape
+    
+    # 1. Map board coordinates to linear indices for speed
+    cells = []
+    coord_to_idx = {}
+    idx = 0
+    for r in range(rows):
+        for c in range(cols):
+            if valid_mask[r][c]:
+                cells.append((r, c))
+                coord_to_idx[(r, c)] = idx
+                idx += 1
+    n_cells = len(cells)
+    
+    # 2. Build Adjacency Graph based on odd/even column offset
+    # Neighbor rules derived from prompt:
+    # Vertical: (r-1, c), (r+1, c)
+    # Same row index: (r, c-1), (r, c+1)
+    # Diagonal: 
+    #   If col is Odd: (r-1, c-1), (r-1, c+1)
+    #   If col is Even: (r+1, c-1), (r+1, c+1)
+    
+    adj = [[] for _ in range(n_cells)]
+    
+    for i, (r, c) in enumerate(cells):
+        candidates = [
+            (r - 1, c), (r + 1, c),       # Vertical
+            (r, c - 1), (r, c + 1)        # Horizontal (grid-wise)
+        ]
+        
+        if c % 2 != 0: # Odd column
+            candidates.append((r - 1, c - 1))
+            candidates.append((r - 1, c + 1))
+        else:          # Even column
+            candidates.append((r + 1, c - 1))
+            candidates.append((r + 1, c + 1))
+            
+        for nr, nc in candidates:
+            if 0 <= nr < rows and 0 <= nc < cols and valid_mask[nr][nc]:
+                if (nr, nc) in coord_to_idx:
+                    adj[i].append(coord_to_idx[(nr, nc)])
+
+    # 3. Identify Corners and Edges for Win Detection
+    # Corner: Degree <= 3. Edge: Degree == 4. Inner: Degree >= 5.
+    
+    corner_indices = []
+    edge_indices = []
+    
+    # deg_map to store cell types for BFS
+    TYPE_NONE = 0
+    TYPE_CORNER = 1
+    TYPE_EDGE = 2
+    cell_types = [TYPE_NONE] * n_cells
+    
+    for i in range(n_cells):
+        deg = len(adj[i])
+        if deg <= 3:
+            cell_types[i] = TYPE_CORNER
+            corner_indices.append(i)
+        elif deg == 4:
+            cell_types[i] = TYPE_EDGE
+            edge_indices.append(i)
+            
+    # Assign unique bitmasks to corners
+    corner_masks = {}
+    for i, c_idx in enumerate(corner_indices):
+        corner_masks[c_idx] = (1 << i)
+        
+    # Group edges into continuous segments
+    edge_masks = {}
+    visited_edges = set()
+    current_edge_bit = 0
+    
+    for i in edge_indices:
+        if i not in visited_edges:
+            # BFS to find connected edge cells
+            stack = [i]
+            visited_edges.add(i)
+            group_mask = (1 << current_edge_bit)
+            edge_masks[i] = group_mask
+            
+            while stack:
+                curr = stack.pop()
+                for nbr in adj[curr]:
+                    if cell_types[nbr] == TYPE_EDGE and nbr not in visited_edges:
+                        visited_edges.add(nbr)
+                        edge_masks[nbr] = group_mask
+                        stack.append(nbr)
+            current_edge_bit += 1
+            
+    # Create fast lookup arrays for initial masks
+    init_edge_mask = np.zeros(n_cells, dtype=np.int32)
+    init_corner_mask = np.zeros(n_cells, dtype=np.int32)
+    
+    for i in range(n_cells):
+        if i in edge_masks:
+            init_edge_mask[i] = edge_masks[i]
+        if i in corner_masks:
+            init_corner_mask[i] = corner_masks[i]
+
+    # 4. MCTS Setup
+    
+    # Fill current board
+    # 0: Empty, 1: Me, 2: Opp
+    current_board = np.zeros(n_cells, dtype=np.int8)
+    for pos in me:
+        current_board[coord_to_idx[pos]] = 1
+    for pos in opp:
+        current_board[coord_to_idx[pos]] = 2
+        
+    empties = [i for i in range(n_cells) if current_board[i] == 0]
+    
+    # Initialize Union-Find state for root (Me and Opp separate)
+    # We maintain parent pointers and the accumulated edge/corner masks for each set.
+    
+    def build_root_uf(board_state, pl_id):
+        parent = np.arange(n_cells, dtype=np.int16)
+        e_mask = init_edge_mask.copy()
+        c_mask = init_corner_mask.copy()
+        
+        # Simple find
+        def find_root(p, x):
+            while p[x] != x:
+                p[x] = p[p[x]]
+                x = p[x]
+            return x
+
+        # Process existing stones
+        for i in range(n_cells):
+            if board_state[i] == pl_id:
+                root_i = find_root(parent, i)
+                for nbr in adj[i]:
+                    if board_state[nbr] == pl_id:
+                        root_n = find_root(parent, nbr)
+                        if root_i != root_n:
+                            parent[root_n] = root_i
+                            e_mask[root_i] |= e_mask[root_n]
+                            c_mask[root_i] |= c_mask[root_n]
+        return parent, e_mask, c_mask
+
+    # Precompute UF for root to copy in rollouts
+    p1_par, p1_e, p1_c = build_root_uf(current_board, 1) # Me
+    p2_par, p2_e, p2_c = build_root_uf(current_board, 2) # Opp
+    
+    class Node:
+        __slots__ = ['parent', 'move', 'player_just_moved', 'wins', 'visits', 'untried_moves', 'children']
+        def __init__(self, parent, move, player):
+            self.parent = parent
+            self.move = move
+            self.player_just_moved = player # 1 or 2
+            self.wins = 0.0
+            self.visits = 0
+            self.untried_moves = [] # set later
+            self.children = []
+
+    root = Node(None, None, 2) # Assume Opp moved last
+    root.untried_moves = list(empties)
+    
+    start_time = time.time()
+    idx_map_range = range(n_cells)
+    
+    # 5. MCTS Loop
+    while time.time() - start_time < 0.95:
+        node = root
+        
+        # Select
+        while not node.untried_moves and node.children:
+            # UCT
+            node = max(node.children, key=lambda c: c.wins / c.visits + 1.41 * math.sqrt(math.log(node.visits) / c.visits))
+            
+        # Expand
+        if node.untried_moves:
+            m = random.choice(node.untried_moves)
+            node.untried_moves.remove(m)
+            player = 1 if node.player_just_moved == 2 else 2
+            child = Node(node, m, player)
+            node.children.append(child)
+            node = child
+            
+        # Rollout
+        # Copy UF state
+        # We need mutable copies.
+        cur_p1_par = p1_par.copy()
+        cur_p1_e   = p1_e.copy()
+        cur_p1_c   = p1_c.copy()
+        
+        cur_p2_par = p2_par.copy()
+        cur_p2_e   = p2_e.copy()
+        cur_p2_c   = p2_c.copy()
+        
+        # Track board locally for rollout
+        # We start from root state and apply path
+        path = []
+        temp = node
+        while temp.parent is not None:
+            path.append((temp.move, temp.player_just_moved))
+            temp = temp.parent
+        path.reverse()
+        
+        # Helper for inline Union-Find with path compression
+        def union_and_check(par, em, cm, idx, neighbors):
+            # Find
+            root = idx
+            while par[root] != root:
+                par[root] = par[par[root]]
+                root = par[root]
+            
+            curr_e = em[root]
+            curr_c = cm[root]
+            
+            for nbr in neighbors:
+                nr = nbr
+                while par[nr] != nr:
+                    par[nr] = par[par[nr]]
+                    nr = par[nr]
+                
+                if nr != root:
+                    par[nr] = root
+                    curr_e |= em[nr]
+                    curr_c |= cm[nr]
+            
+            # Write back
+            em[root] = curr_e
+            cm[root] = curr_c
+            
+            # Check Win (Fork: 3 edges, Bridge: 2 corners)
+            # bin().count('1') is standard python
+            return (bin(curr_e).count('1') >= 3) or (bin(curr_c).count('1') >= 2)
+
+        # Build rollout board logic
+        # Instead of full array copy, we track occupied set to know neighbor colors
+        # But we need colors. Array copy is fast for 225 ints.
+        sim_board = current_board.copy()
+        
+        winner = 0 # 0 none, 1 me, 2 opp
+        is_terminal = False
+        
+        # Apply path moves
+        for mv, ply in path:
+            sim_board[mv] = ply
+            # Identify neighbors of same color
+            # We can optimise by pre-calculating neighbors? adj is already fast.
+            nbs = [nb for nb in adj[mv] if sim_board[nb] == ply]
+            
+            if ply == 1:
+                if union_and_check(cur_p1_par, cur_p1_e, cur_p1_c, mv, nbs):
+                    winner = 1
+                    is_terminal = True
+            else:
+                if union_and_check(cur_p2_par, cur_p2_e, cur_p2_c, mv, nbs):
+                    winner = 2
+                    is_terminal = True
+            
+            if is_terminal: break
+            
+        # Random Simulation
+        if not is_terminal:
+            # Determine available moves
+            # Only empty cells
+            possible = [i for i in idx_map_range if sim_board[i] == 0]
+            random.shuffle(possible)
+            
+            turn = 1 if node.player_just_moved == 2 else 2
+            
+            for mv in possible:
+                sim_board[mv] = turn
+                nbs = [nb for nb in adj[mv] if sim_board[nb] == turn]
+                
+                if turn == 1:
+                    if union_and_check(cur_p1_par, cur_p1_e, cur_p1_c, mv, nbs):
+                        winner = 1
+                        break
+                else:
+                    if union_and_check(cur_p2_par, cur_p2_e, cur_p2_c, mv, nbs):
+                        winner = 2
+                        break
+                
+                turn = 3 - turn
+        
+        # Backpropagate
+        res = 0.5
+        if winner == 1: res = 1.0
+        elif winner == 2: res = 0.0
+        
+        back_node = node
+        while back_node is not None:
+            back_node.visits += 1
+            # If node represents a move by P1 (player_just_moved=1),
+            # and we are P1, then Win (1.0) is good?
+            # Standard: Node stores wins for the player who made the move to get there.
+            if back_node.player_just_moved == 1:
+                back_node.wins += res
+            else:
+                back_node.wins += (1.0 - res)
+            back_node = back_node.parent
+            
+    # Return best move
+    if root.children:
+        best = max(root.children, key=lambda c: c.visits)
+        return cells[best.move]
+    
+    # Fallback
+    if empties:
+        return cells[random.choice(empties)]
+        
+    return cells[0]
+</code>

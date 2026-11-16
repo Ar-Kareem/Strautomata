@@ -1,0 +1,213 @@
+### Strategy for This Othello (Reversi) Policy
+
+This policy combines **pattern-based heuristics**, **disc control**, and **endgame optimization** to make strong moves. The strategy is as follows:
+
+1. **Early Game (Fewer than 20 discs on the board)**:
+   - Prioritize **corner control** (corners are the most valuable positions in Othello).
+   - Avoid placing discs in the center unless it leads to a strong corner response.
+   - Use **pattern recognition** to identify forced moves (e.g., opening moves like `d4` or `e4` followed by corner responses).
+
+2. **Mid Game (20-40 discs on the board)**:
+   - Balance **disc count** and **mobility** (number of legal moves).
+   - Prefer moves that **maximize flips** (especially opponent discs).
+   - Avoid **weak moves** (e.g., moves that don’t flip any discs or leave the opponent with a strong response).
+   - Use **disc parity** (odd/even count) to force the opponent into a disadvantageous position.
+
+3. **Late Game (More than 40 discs on the board)**:
+   - Focus on **disc count** and **stability** (avoid creating weak groups).
+   - Prioritize **flipping opponent discs** to reduce their count.
+   - Use **endgame patterns** (e.g., forcing the opponent into a position where they must pass).
+
+4. **General Heuristics**:
+   - **Corner stability**: Corners are safe and hard to flip.
+   - **Edge control**: Edges are next most valuable after corners.
+   - **Center control**: The center is important for mobility but less so for disc count.
+   - **Disc parity**: If the total disc count is odd, you want to make the last move.
+
+5. **Move Evaluation**:
+   - Assign **weights** to positions (e.g., corners = 1000, edges = 100, center = 50).
+   - Evaluate moves based on:
+     - **Flipped discs** (opponent discs flipped).
+     - **Potential future flips** (how many discs could be flipped in future moves).
+     - **Disc parity** (whether the move helps maintain or gain parity).
+     - **Stability** (whether the move creates weak groups).
+
+6. **Fallback**:
+   - If no strong move is found, default to **maximizing flips** or **disc count**.
+
+---
+
+### Python Implementation
+Here’s the policy code that implements the above strategy:
+
+```python
+import numpy as np
+from typing import List, Tuple
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    # Precompute board state
+    board = you + opponent
+    empty = (board == 0)
+    your_discs = np.sum(you)
+    opponent_discs = np.sum(opponent)
+    total_discs = your_discs + opponent_discs
+
+    # Get all legal moves
+    legal_moves = get_legal_moves(you, opponent)
+
+    if not legal_moves:
+        return "pass"
+
+    # Early game: prioritize corners
+    if total_discs < 20:
+        # Corners in order of preference (a1, a8, h1, h8, b1, etc.)
+        corners = [
+            (0, 0), (0, 7), (7, 0), (7, 7),
+            (0, 1), (0, 6), (1, 0), (6, 0), (7, 1), (7, 6),
+            (1, 7), (6, 7), (1, 1), (6, 6), (2, 0), (5, 0),
+            (0, 2), (0, 5), (2, 7), (5, 7), (7, 2), (7, 5)
+        ]
+        # Filter corners that are legal
+        corner_moves = [(r, c) for (r, c) in corners if empty[r, c] and (r, c) in legal_moves]
+        if corner_moves:
+            # Choose the corner with the highest stability (no opponent adjacent)
+            def corner_score(r, c):
+                score = 0
+                for dr, dc in [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 8 and 0 <= nc < 8 and opponent[nr, nc]:
+                        score -= 1
+                return score
+            best_corner = max(corner_moves, key=lambda pos: corner_score(*pos))
+            return f"{chr(ord('a') + best_corner[1])}{best_corner[0] + 1}"
+
+    # Mid/late game: evaluate moves based on flips, stability, and disc parity
+    best_move = None
+    best_score = -float('inf')
+
+    for (r, c) in legal_moves:
+        # Simulate the move
+        new_you = you.copy()
+        new_opponent = opponent.copy()
+        new_you[r, c] = 1
+        flipped = get_flipped_discs(new_you, new_opponent, r, c)
+        new_opponent[r, c] = 1
+        for (fr, fc) in flipped:
+            new_opponent[fr, fc] = 0
+            new_you[fr, fc] = 1
+
+        # Evaluate the move
+        score = evaluate_move(new_you, new_opponent, r, c, total_discs + 1)
+
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+
+    if best_move:
+        return f"{chr(ord('a') + best_move[1])}{best_move[0] + 1}"
+    else:
+        # Fallback: choose any legal move (shouldn't happen if legal_moves is correct)
+        return f"{chr(ord('a') + legal_moves[0][1])}{legal_moves[0][0] + 1}"
+
+def get_legal_moves(you: np.ndarray, opponent: np.ndarray) -> List[Tuple[int, int]]:
+    legal_moves = []
+    empty = (you + opponent == 0)
+    for r in range(8):
+        for c in range(8):
+            if empty[r, c]:
+                if has_legal_flips(you, opponent, r, c):
+                    legal_moves.append((r, c))
+    return legal_moves
+
+def has_legal_flips(you: np.ndarray, opponent: np.ndarray, r: int, c: int) -> bool:
+    directions = [(-1, -1), (-1, 0), (-1, 1),
+                  (0, -1),          (0, 1),
+                  (1, -1),  (1, 0), (1, 1)]
+    for dr, dc in directions:
+        flipped = []
+        nr, nc = r + dr, c + dc
+        while 0 <= nr < 8 and 0 <= nc < 8 and opponent[nr, nc]:
+            flipped.append((nr, nc))
+            nr += dr
+            nc += dc
+        if flipped and (0 <= nr < 8 and 0 <= nc < 8 and you[nr, nc]):
+            return True
+    return False
+
+def get_flipped_discs(you: np.ndarray, opponent: np.ndarray, r: int, c: int) -> List[Tuple[int, int]]:
+    flipped = []
+    directions = [(-1, -1), (-1, 0), (-1, 1),
+                  (0, -1),          (0, 1),
+                  (1, -1),  (1, 0), (1, 1)]
+    for dr, dc in directions:
+        nr, nc = r + dr, c + dc
+        while 0 <= nr < 8 and 0 <= nc < 8 and opponent[nr, nc]:
+            flipped.append((nr, nc))
+            nr += dr
+            nc += dc
+        if flipped and (0 <= nr < 8 and 0 <= nc < 8 and you[nr, nc]):
+            pass  # Valid flip direction
+        else:
+            flipped = []  # Reset for this direction
+    return flipped
+
+def evaluate_move(you: np.ndarray, opponent: np.ndarray, r: int, c: int, total_discs: int) -> float:
+    # Positional weights (corners > edges > center)
+    position_weights = np.array([
+        [1000, -100,  100,  50,  50,  100, -100, 1000],
+        [-100,  -50,  -50,   0,   0,  -50,  -50, -100],
+        [ 100,  -50,   0,   0,   0,   0,  -50,  100],
+        [  50,    0,   0,   0,   0,   0,    0,   50],
+        [  50,    0,   0,   0,   0,   0,    0,   50],
+        [ 100,  -50,   0,   0,   0,   0,  -50,  100],
+        [-100,  -50,  -50,   0,   0,  -50,  -50, -100],
+        [1000, -100,  100,  50,  50,  100, -100, 1000]
+    ])
+
+    # Flips (opponent discs flipped)
+    flipped = get_flipped_discs(you, opponent, r, c)
+    flips = len(flipped)
+
+    # Stability (no opponent adjacent)
+    stability = 0
+    for dr, dc in [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < 8 and 0 <= nc < 8 and opponent[nr, nc]:
+            stability -= 1
+
+    # Disc parity (odd/even)
+    parity = 1 if (total_discs + 1) % 2 == 1 else -1
+
+    # Future mobility (number of legal moves after this move)
+    new_you = you.copy()
+    new_opponent = opponent.copy()
+    new_you[r, c] = 1
+    for (fr, fc) in flipped:
+        new_opponent[fr, fc] = 0
+        new_you[fr, fc] = 1
+    future_moves = len(get_legal_moves(new_you, new_opponent))
+
+    # Score components
+    positional = position_weights[r, c]
+    flip_bonus = flips * 10
+    stability_bonus = stability * 5
+    mobility_bonus = future_moves * 2
+    parity_bonus = parity * 100
+
+    # Combine scores
+    score = positional + flip_bonus + stability_bonus + mobility_bonus + parity_bonus
+    return score
+```
+
+### Explanation of Key Functions:
+1. **`get_legal_moves`**: Returns all valid moves where placing a disc flips at least one opponent disc.
+2. **`has_legal_flips`**: Checks if placing a disc at `(r, c)` would flip any opponent discs.
+3. **`get_flipped_discs`**: Simulates the move and returns the list of opponent discs that would be flipped.
+4. **`evaluate_move`**: Scores a move based on:
+   - **Positional weight** (corners are best).
+   - **Flips** (more flips = better).
+   - **Stability** (avoid placing next to opponent discs).
+   - **Mobility** (future legal moves).
+   - **Parity** (odd/even disc count advantage).
+
+This policy balances **positional play**, **disc control**, and **mobility** to compete effectively in the arena.

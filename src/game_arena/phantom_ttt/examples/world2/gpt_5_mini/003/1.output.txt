@@ -1,0 +1,98 @@
+The strategy for this policy:
+
+- Try to win immediately: if there is any cell that would complete a line where you already have two confirmed marks, play it.
+- Otherwise choose the move that best improves your chances by maximizing line potentials: for each candidate cell (cells not confirmed yours), simulate placing your mark there and score all lines (rows, cols, diags) by how many of your marks they would contain. Lines with 2 of your marks are heavily favored (forks / imminent wins), then lines with 1, etc.
+- Tie-break deterministically by positional preference: center, then corners, then edges. This avoids choosing cells already confirmed as yours.
+
+This heuristic is lightweight, runs in constant time, and aims to create forks and complete wins while respecting the imperfect information nature of Phantom Tic Tac Toe.
+
+<code>
+#!/usr/bin/env python3
+from typing import List, Tuple
+
+# Phantom Tic Tac Toe policy
+# Returns a tuple (row, col) with 0-based indices.
+
+# Precompute the 8 winning lines (each as list of (r,c) pairs)
+_LINES = [
+    [(0, 0), (0, 1), (0, 2)],
+    [(1, 0), (1, 1), (1, 2)],
+    [(2, 0), (2, 1), (2, 2)],
+    [(0, 0), (1, 0), (2, 0)],
+    [(0, 1), (1, 1), (2, 1)],
+    [(0, 2), (1, 2), (2, 2)],
+    [(0, 0), (1, 1), (2, 2)],
+    [(0, 2), (1, 1), (2, 0)],
+]
+
+# Positional tie-breaker preference: center, then corners, then edges
+_PREFERRED_ORDER = [
+    (1, 1),
+    (0, 0), (0, 2), (2, 0), (2, 2),
+    (0, 1), (1, 0), (1, 2), (2, 1),
+]
+
+def _score_for_board(sim_board: List[List[int]]) -> int:
+    """
+    Compute an aggregated score for the board based on how strong our lines are.
+    Higher if there are more lines with multiple of our marks.
+    """
+    # Weights favor lines with 2 of our marks (imminent wins), then 1, then 0.
+    weights = {0: 1, 1: 10, 2: 100, 3: 1000}
+    s = 0
+    for line in _LINES:
+        count = 0
+        for (r, c) in line:
+            if sim_board[r][c] == 1:
+                count += 1
+        s += weights[count]
+    return s
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    # Collect candidate cells (avoid cells confirmed ours == 1)
+    candidates = [(r, c) for r in range(3) for c in range(3) if board[r][c] != 1]
+
+    # If no candidates (very unlikely), return a valid coordinate (0,0)
+    if not candidates:
+        return (0, 0)
+
+    best_score = None
+    best_moves = []
+
+    # First check immediate winning moves: any candidate that completes a line with two existing 1s
+    for (r, c) in candidates:
+        # Check if placing here would create a line with 3 of our marks
+        would_win = False
+        for line in _LINES:
+            if (r, c) in line:
+                count = 0
+                for (rr, cc) in line:
+                    if (rr, cc) == (r, c):
+                        count += 1  # simulated placement
+                    elif board[rr][cc] == 1:
+                        count += 1
+                if count >= 3:
+                    would_win = True
+                    break
+        if would_win:
+            return (r, c)
+
+    # Otherwise evaluate each candidate by simulating placing our mark and scoring board
+    for (r, c) in candidates:
+        sim = [row[:] for row in board]
+        sim[r][c] = 1
+        sc = _score_for_board(sim)
+        if (best_score is None) or (sc > best_score):
+            best_score = sc
+            best_moves = [(r, c)]
+        elif sc == best_score:
+            best_moves.append((r, c))
+
+    # Tie-break among best_moves using positional preference order
+    for pref in _PREFERRED_ORDER:
+        if pref in best_moves:
+            return pref
+
+    # If none of the preferred order hit (unlikely), return first best
+    return best_moves[0]
+</code>

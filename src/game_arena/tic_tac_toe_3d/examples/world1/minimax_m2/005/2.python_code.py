@@ -1,0 +1,104 @@
+
+# Precomputation of winning lines and priority constants
+
+LINES = []   # will hold 49 lines, each line is a list of 3 (x,y,z) tuples
+
+# Generate axis-aligned lines
+for y in range(3):
+    for z in range(3):
+        LINES.append([(x, y, z) for x in range(3)])
+for x in range(3):
+    for z in range(3):
+        LINES.append([(x, y, z) for y in range(3)])
+for x in range(3):
+    for y in range(3):
+        LINES.append([(x, y, z) for z in range(3)])
+
+# Generate face diagonals
+for z in range(3):
+    LINES.append([(0,0,z), (1,1,z), (2,2,z)])
+    LINES.append([(0,2,z), (1,1,z), (2,0,z)])
+for y in range(3):
+    LINES.append([(0,y,0), (1,y,1), (2,y,2)])
+    LINES.append([(0,y,2), (1,y,1), (2,y,0)])
+for x in range(3):
+    LINES.append([(x,0,0), (x,1,1), (x,2,2)])
+    LINES.append([(x,0,2), (x,1,1), (x,2,0)])
+
+# Generate space diagonals
+LINES.append([(0,0,0), (1,1,1), (2,2,2)])
+LINES.append([(0,0,2), (1,1,1), (2,2,0)])
+LINES.append([(0,2,0), (1,1,1), (2,0,2)])
+LINES.append([(0,2,2), (1,1,1), (2,0,0)])
+
+# Predefine corners and face centers for priority
+CORNERS = ((0,0,0), (0,0,2), (0,2,0), (0,2,2), (2,0,0), (2,0,2), (2,2,0), (2,2,2))
+FACE_CENTERS = ((0,1,1), (1,0,1), (1,1,0), (1,1,2), (1,2,1), (2,1,1))
+
+def priority(cell):
+    """Return the priority for a cell: 0 (center), 1 (corner), 2 (face center), 3 (edge)."""
+    if cell == (1,1,1):
+        return 0
+    if cell in CORNERS:
+        return 1
+    if cell in FACE_CENTERS:
+        return 2
+    return 3
+
+def policy(board):
+    """Given a 3x3x3 board (list of lists of lists), return the next move (x,y,z)."""
+    # Step 1: Check for a winning move for us
+    for line in LINES:
+        count_our = 0
+        count_empty = 0
+        empty_pos = None
+        for (x, y, z) in line:
+            if board[x][y][z] == 1:
+                count_our += 1
+            elif board[x][y][z] == 0:
+                count_empty += 1
+                empty_pos = (x, y, z)
+        if count_our == 2 and count_empty == 1:
+            return empty_pos
+
+    # Step 2: Check for opponent's winning move to block
+    for line in LINES:
+        count_opp = 0
+        count_empty = 0
+        empty_pos = None
+        for (x, y, z) in line:
+            if board[x][y][z] == -1:
+                count_opp += 1
+            elif board[x][y][z] == 0:
+                count_empty += 1
+                empty_pos = (x, y, z)
+        if count_opp == 2 and count_empty == 1:
+            return empty_pos
+
+    # Step 3: Choose the best move by potential and priority
+    best_move = None
+    max_count = -1
+    for x in range(3):
+        for y in range(3):
+            for z in range(3):
+                if board[x][y][z] == 0:
+                    count = 0
+                    for line in LINES:
+                        if (x, y, z) in line:
+                            # Check if the line has any opponent piece
+                            has_opp = False
+                            for (i, j, k) in line:
+                                if board[i][j][k] == -1:
+                                    has_opp = True
+                                    break
+                            if not has_opp:
+                                count += 1
+                    if count > max_count:
+                        max_count = count
+                        best_move = (x, y, z)
+                    elif count == max_count and best_move is not None:
+                        # Break tie by priority: lower priority value is better
+                        if priority((x, y, z)) < priority(best_move):
+                            best_move = (x, y, z)
+
+    return best_move

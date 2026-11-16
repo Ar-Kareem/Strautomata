@@ -1,0 +1,150 @@
+
+import numpy as np
+
+def policy(board: list[list[int]]) -> int:
+    """
+    Connect 4 policy that looks for winning moves, blocks opponent wins,
+    and uses heuristics for strategic play.
+    """
+    rows = 6
+    cols = 7
+    
+    # Convert to numpy array for easier manipulation
+    board_array = np.array(board)
+    
+    def get_valid_moves():
+        """Return list of columns that aren't full."""
+        return [col for col in range(cols) if board_array[0][col] == 0]
+    
+    def get_next_open_row(col):
+        """Get the lowest empty row in a column."""
+        for row in range(rows - 1, -1, -1):
+            if board_array[row][col] == 0:
+                return row
+        return None
+    
+    def check_window(window, player):
+        """Count potential in a 4-cell window."""
+        player_count = np.sum(window == player)
+        empty_count = np.sum(window == 0)
+        opponent_count = np.sum(window == -player)
+        
+        if player_count == 4:
+            return 1000000  # Win
+        elif player_count == 3 and empty_count == 1:
+            return 100
+        elif player_count == 2 and empty_count == 2:
+            return 10
+        elif opponent_count == 3 and empty_count == 1:
+            return -10000  # Block opponent win
+        return 0
+    
+    def evaluate_position(test_board, player):
+        """Evaluate board position for given player."""
+        score = 0
+        
+        # Center column preference
+        center_array = [int(i) for i in list(test_board[:, cols//2])]
+        center_count = center_array.count(player)
+        score += center_count * 6
+        
+        # Horizontal
+        for row in range(rows):
+            for col in range(cols - 3):
+                window = test_board[row, col:col+4]
+                score += check_window(window, player)
+        
+        # Vertical
+        for col in range(cols):
+            for row in range(rows - 3):
+                window = test_board[row:row+4, col]
+                score += check_window(window, player)
+        
+        # Positive diagonal
+        for row in range(rows - 3):
+            for col in range(cols - 3):
+                window = [test_board[row+i][col+i] for i in range(4)]
+                score += check_window(np.array(window), player)
+        
+        # Negative diagonal
+        for row in range(3, rows):
+            for col in range(cols - 3):
+                window = [test_board[row-i][col+i] for i in range(4)]
+                score += check_window(np.array(window), player)
+        
+        return score
+    
+    def simulate_move(col, player):
+        """Simulate dropping a piece and return new board."""
+        test_board = board_array.copy()
+        row = get_next_open_row(col)
+        if row is not None:
+            test_board[row][col] = player
+        return test_board
+    
+    def is_winning_move(col, player):
+        """Check if a move wins the game."""
+        test_board = simulate_move(col, player)
+        row = get_next_open_row(col)
+        if row is None:
+            return False
+        
+        # Check horizontal
+        for c in range(max(0, col-3), min(cols-3, col+1)):
+            if np.all(test_board[row, c:c+4] == player):
+                return True
+        
+        # Check vertical
+        if row <= rows - 4:
+            if np.all(test_board[row:row+4, col] == player):
+                return True
+        
+        # Check diagonals
+        for dr, dc in [(1, 1), (1, -1)]:
+            count = 1
+            for direction in [1, -1]:
+                r, c = row + direction * dr, col + direction * dc
+                while 0 <= r < rows and 0 <= c < cols and test_board[r][c] == player:
+                    count += 1
+                    r += direction * dr
+                    c += direction * dc
+            if count >= 4:
+                return True
+        
+        return False
+    
+    valid_moves = get_valid_moves()
+    
+    if not valid_moves:
+        return 0
+    
+    # Check for immediate win
+    for col in valid_moves:
+        if is_winning_move(col, 1):
+            return col
+    
+    # Block opponent's winning move
+    for col in valid_moves:
+        if is_winning_move(col, -1):
+            return col
+    
+    # Evaluate all moves
+    best_score = float('-inf')
+    best_cols = []
+    
+    for col in valid_moves:
+        test_board = simulate_move(col, 1)
+        score = evaluate_position(test_board, 1)
+        
+        if score > best_score:
+            best_score = score
+            best_cols = [col]
+        elif score == best_score:
+            best_cols.append(col)
+    
+    # Prefer center among equally good moves
+    if len(best_cols) > 1:
+        center = cols // 2
+        best_cols.sort(key=lambda x: abs(x - center))
+    
+    return best_cols[0]

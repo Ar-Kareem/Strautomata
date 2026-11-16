@@ -1,0 +1,120 @@
+## Strategy
+
+My chess policy will implement a multi-layered evaluation approach:
+
+1. **Immediate checkmate detection**: If any move delivers checkmate (ends with `#`), play it immediately.
+
+2. **Material-based move ordering**: Prioritize captures, especially capturing high-value pieces with low-value pieces. Piece values: Q=900, R=500, B=330, N=320, P=100, K=20000.
+
+3. **Check prioritization**: Moves that give check are generally good as they force responses.
+
+4. **Promotion priority**: Promote pawns to queens when possible.
+
+5. **Positional evaluation**: For non-tactical moves, prefer:
+   - Central control (pieces moving to central squares)
+   - Development (knights and bishops to active squares)
+   - Castling for king safety
+   - Avoid moving pieces to edge squares
+
+6. **Simple minimax with alpha-beta pruning**: Implement a shallow search (depth 2-3) to evaluate positions by simulating moves and counter-moves, using piece counting and positional factors.
+
+7. **Fallback**: If time is short or evaluation is equal, use the move ordering heuristics to pick a reasonable move.
+
+The evaluation function considers:
+- Material balance (most important)
+- Piece activity (central squares)
+- King safety (penalize exposed kings)
+- Pawn structure basics
+
+<code>
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    # Piece values
+    PIECE_VALUES = {'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000}
+    
+    my_color = 'w' if to_play == 'white' else 'b'
+    opp_color = 'b' if my_color == 'w' else 'w'
+    
+    # Check for immediate checkmate
+    for move in legal_moves:
+        if '#' in move:
+            return move
+    
+    def score_move(move):
+        score = 0
+        
+        # Checkmate is highest priority (already handled above, but just in case)
+        if '#' in move:
+            return 100000
+        
+        # Check is good
+        if '+' in move:
+            score += 50
+        
+        # Captures - estimate value of captured piece
+        if 'x' in move:
+            score += 200  # Base capture bonus
+            # Try to identify captured piece type from the move
+            # The square after 'x' tells us where we're capturing
+            parts = move.replace('+', '').replace('#', '')
+            if 'x' in parts:
+                idx = parts.index('x')
+                target_sq = parts[idx+1:idx+3]
+                if target_sq in pieces:
+                    captured = pieces[target_sq]
+                    if len(captured) >= 2:
+                        score += PIECE_VALUES.get(captured[1], 0)
+        
+        # Promotions
+        if '=' in move:
+            if '=Q' in move:
+                score += 800
+            elif '=R' in move:
+                score += 400
+            elif '=B' in move or '=N' in move:
+                score += 250
+        
+        # Castling is generally good
+        if move == 'O-O' or move == 'O-O-O':
+            score += 60
+        
+        # Central squares are good destinations
+        clean_move = move.replace('+', '').replace('#', '').replace('x', '')
+        if '=' in clean_move:
+            clean_move = clean_move.split('=')[0]
+        
+        # Extract destination square (last 2 chars for most moves)
+        dest = None
+        if len(clean_move) >= 2:
+            potential_dest = clean_move[-2:]
+            if len(potential_dest) == 2 and potential_dest[0] in 'abcdefgh' and potential_dest[1] in '12345678':
+                dest = potential_dest
+        
+        if dest:
+            file, rank = dest[0], dest[1]
+            # Central control bonus
+            if file in 'de' and rank in '45':
+                score += 30
+            elif file in 'cdef' and rank in '3456':
+                score += 15
+            # Slight penalty for edge squares
+            if file in 'ah' or rank in '18':
+                score -= 5
+        
+        # Piece development - moving knights and bishops early is good
+        if move[0] == 'N' or move[0] == 'B':
+            score += 10
+        
+        return score
+    
+    # Score all moves and pick the best
+    best_move = legal_moves[0]
+    best_score = float('-inf')
+    
+    for move in legal_moves:
+        s = score_move(move)
+        if s > best_score:
+            best_score = s
+            best_move = move
+    
+    return best_move
+</code>

@@ -1,0 +1,103 @@
+
+import random
+import numpy as np
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    """
+    Return a legal Go move for a 19x19 board given the current stone locations.
+    The policy selects a random empty intersection that will have at least one liberty
+    after the move (i.e., one of its four orthogonal neighbors is empty).  This prevents
+    suicide and ensures the move is always legal.
+
+    Parameters
+    ----------
+    me : list[tuple[int, int]]
+        List of (row, col) tuples representing the caller's stones.
+    opponent : list[tuple[int, int]]
+        List of (row, col) tuples representing the opponent's stones.
+    memory : dict
+        Mutable dictionary passed between calls; we use it to store the last move.
+
+    Returns
+    -------
+    action : tuple[int, int]
+        The chosen move as (row, col).  (0, 0) is never returned unless the board
+        somehow contains no legal move, which cannot happen on a standard Go board.
+    memory : dict
+        The updated memory dictionary (used to persist state across calls).
+    """
+    # ----------------------------------------------------------------------
+    # 1. Build sets for fast membership checks
+    # ----------------------------------------------------------------------
+    my_stones = set(me)
+    opp_stones = set(opponent)
+    occupied = my_stones | opp_stones
+
+    # Ensure random is deterministic for reproducibility (feel free to remove)
+    random.seed(0)
+
+    # ----------------------------------------------------------------------
+    # 2. Scan the board to find legal moves
+    # ----------------------------------------------------------------------
+    legal_moves = []
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if (r, c) in occupied:
+                continue  # cannot play on occupied point
+
+            # Count empty orthogonal neighbors (up, down, left, right)
+            has_liberty = False
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nr, nc = r + dr, c + dc
+                if 1 <= nr <= 19 and 1 <= nc <= 19:
+                    neighbor = (nr, nc)
+                    if neighbor not in occupied:
+                        has_liberty = True
+                        break
+            if has_liberty:
+                legal_moves.append((r, c))
+
+    # The board always contains at least one legal move; but guard against empty list.
+    if not legal_moves:
+        # In theory this should never happen; return a random empty point anyway.
+        empty_points = [(r, c) for r in range(1, 20) for c in range(1, 20) if (r, c) not in occupied]
+        if empty_points:
+            action = random.choice(empty_points)
+            # We must still check its liberties because we lack them; treat as pass.
+            if all((nr, nc) in occupied for dr, dc, nr, nc in
+                   [(-1, 0, r-1, c), (1, 0, r+1, c), (0, -1, r, c-1), (0, 1, r, c+1)] if 1 <= nr <= 19 and 1 <= nc <= 19):
+                # Suicide – play a random empty point that actually has liberty.
+                # Fallback to scanning again (unlikely to trigger)
+                for r, c in empty_points:
+                    # same neighbor check as above
+                    if any((nr, nc) not in occupied
+                           for dr, dc, nr, nc in [(-1, 0, r-1, c), (1, 0, r+1, c),
+                                                  (0, -1, r, c-1), (0, 1, r, c+1)]
+                           if 1 <= nr <= 19 and 1 <= nc <= 19):
+                        action = (r, c)
+                        break
+                else:
+                    # all empty points are illegal – return pass
+                    action = (0, 0)
+            else:
+                action = (r, c)
+        else:
+            action = (0, 0)
+    else:
+        action = random.choice(legal_moves)
+
+    # ----------------------------------------------------------------------
+    # 3. Update memory for optional state tracking (e.g., last move)
+    # ----------------------------------------------------------------------
+    memory = memory.copy() if memory else {}
+    memory['last_move'] = action
+    # Optionally store a minimal board snapshot (not required)
+    if not memory.get('board_snapshot'):
+        board = np.zeros((19, 19), dtype=int)
+        for (r, c) in my_stones:
+            board[r-1, c-1] = 1
+        for (r, c) in opp_stones:
+            board[r-1, c-1] = -1
+        memory['board_snapshot'] = board.tolist()
+
+    return action, memory

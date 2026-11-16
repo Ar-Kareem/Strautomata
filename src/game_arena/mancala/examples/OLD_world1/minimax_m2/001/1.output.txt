@@ -1,0 +1,115 @@
+To solve this problem, we need to implement a move-selection policy for the game Kalah (Mancala). The policy should always select a legal move that maximizes the player's advantage based on a heuristic evaluation of the game state after the move. The evaluation considers the seeds in the stores, the distribution of seeds in the houses, and any potential extra moves or captures resulting from the chosen move.
+
+### Approach
+1. **Problem Analysis**: The game state is represented by two lists, `you` and `opponent`, each containing 7 elements (6 houses and 1 store). The player to move must choose a non-empty house (indices 0 to 5) to distribute its seeds according to Kalah rules. The move may result in an extra move (if the last seed lands in the player's store) or a capture (if the last seed lands in an empty house with seeds in the opposite house).
+
+2. **Heuristic Evaluation**: For each legal move, we simulate the move to determine the new game state. The evaluation function calculates a score based on:
+   - **Store Seeds Difference**: The difference in seeds between the player's store and the opponent's store.
+   - **House Seeds Difference**: The difference in seeds between the player's houses and the opponent's houses, weighted by 0.1.
+   - **Extra Move Bonus**: A bonus of 0.2 if the last seed lands in the player's store, indicating an extra move.
+
+3. **End Game Handling**: After simulating the move, if the opponent has no seeds in their houses, all remaining seeds in the player's houses are moved to their store. Similarly, if the player has no seeds in their houses, the opponent's remaining seeds are moved to their store.
+
+4. **Move Selection**: Among all legal moves, the move with the highest evaluation score is selected. This ensures the policy is competitive and follows optimal strategies based on the heuristic.
+
+### Solution Code
+```python
+def policy(you, opponent):
+    def simulate_move(you_state, opponent_state, move_idx):
+        new_you = you_state[:]
+        new_opponent = opponent_state[:]
+        seeds = new_you[move_idx]
+        new_you[move_idx] = 0
+        current = 'you'
+        pos = move_idx + 1
+        extra_move = 0
+        last_drop = None
+        
+        while seeds > 0:
+            if seeds == 1:
+                last_drop = (current, pos)
+                
+            if current == 'you':
+                if pos < 6:
+                    if seeds == 1:
+                        if new_you[pos] == 0 and new_opponent[5 - pos] > 0:
+                            new_you[pos] = 1
+                            captured = 1 + new_opponent[5 - pos]
+                            new_you[6] += captured
+                            new_you[pos] = 0
+                            new_opponent[5 - pos] = 0
+                        else:
+                            new_you[pos] += 1
+                    else:
+                        new_you[pos] += 1
+                    if pos < 5:
+                        pos += 1
+                    else:
+                        pos = 6
+                else:
+                    new_you[6] += 1
+                    current = 'opponent'
+                    pos = 0
+            else:
+                new_opponent[pos] += 1
+                if pos < 5:
+                    pos += 1
+                else:
+                    current = 'you'
+                    pos = 0
+            seeds -= 1
+                    
+        if last_drop is not None and last_drop[0] == 'you' and last_drop[1] == 6:
+            extra_move = 1
+            
+        if all(new_opponent[i] == 0 for i in range(6)):
+            total = sum(new_you[0:6])
+            new_you[6] += total
+            new_you[0:6] = [0] * 6
+            
+        if all(new_you[i] == 0 for i in range(6)):
+            total = sum(new_opponent[0:6])
+            new_opponent[6] += total
+            new_opponent[0:6] = [0] * 6
+            
+        return new_you, new_opponent, extra_move
+    
+    def evaluate(new_you, new_opponent, extra_move_bonus):
+        store_score = new_you[6] - new_opponent[6]
+        house_score = 0.1 * (sum(new_you[0:6]) - sum(new_opponent[0:6]))
+        extra_move_score = 0.2 * extra_move_bonus
+        return store_score + house_score + extra_move_score
+        
+    legal_moves = [i for i in range(6) if you[i] > 0]
+    best_move = None
+    best_score = -float('inf')
+    
+    for move_idx in legal_moves:
+        new_you, new_opponent, extra_move = simulate_move(you, opponent, move_idx)
+        score = evaluate(new_you, new_opponent, extra_move)
+        if score > best_score:
+            best_score = score
+            best_move = move_idx
+            
+    return best_move
+```
+
+### Explanation
+1. **Simulation Function (`simulate_move`)**:
+   - **State Copy**: The current state is copied to avoid modifying the original state.
+   - **Seed Distribution**: Seeds from the chosen house are distributed one by one according to Kalah rules, skipping the opponent's store.
+   - **Capture Handling**: If the last seed lands in an empty house with seeds in the opposite house, seeds are captured and moved to the player's store.
+   - **End Game Check**: If the opponent has no seeds in their houses, the player's remaining seeds are moved to their store. Similarly, if the player has no seeds, the opponent's seeds are moved to their store.
+   - **Extra Move Detection**: If the last seed lands in the player's store, an extra move bonus is set.
+
+2. **Evaluation Function (`evaluate`)**:
+   - **Store Seeds Difference**: Calculates the difference in seeds between the player's and opponent's stores.
+   - **House Seeds Difference**: Calculates the difference in seeds between the player's and opponent's houses, weighted by 0.1.
+   - **Extra Move Bonus**: Adds 0.2 to the score if an extra move is detected.
+
+3. **Policy Function (`policy`)**:
+   - **Legal Moves**: Identifies all non-empty houses as legal moves.
+   - **Move Evaluation**: For each legal move, simulates the move, evaluates the resulting state, and selects the move with the highest score.
+   - **Result**: Returns the best move index (0 to 5).
+
+This approach ensures that the policy selects a move that maximizes the player's advantage based on the heuristic evaluation, considering immediate benefits like captures and extra moves while also preparing for end-game scenarios.

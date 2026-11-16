@@ -1,0 +1,295 @@
+The strategy for this policy is a fast tactical minimax with strong move ordering and a safety-aware evaluation.
+
+Key ideas:
+- Always generate only legal moves, so it never risks disqualification.
+- Immediately play a winning move if one exists.
+- Prefer moves that:
+  - reach the goal row,
+  - capture,
+  - create advanced passed pawns,
+  - keep pieces protected,
+  - avoid hanging pieces,
+  - increase promotion threats,
+  - reduce the opponent’s immediate winning chances.
+- Use alpha-beta search with iterative deepening under a small time budget.
+- Use a compact board representation and a transposition table for speed.
+- Fall back safely to the first legal move if time is extremely tight.
+
+<code>
+from __future__ import annotations
+
+import time
+from typing import List, Tuple, Dict, Optional
+
+Move = Tuple[Tuple[int, int], Tuple[int, int]]
+
+INF = 10**9
+
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Move:
+    start = time.time()
+    time_limit = 0.92  # stay safely under 1 second
+
+    my_set = frozenset(me)
+    opp_set = frozenset(opp)
+    my_color = color
+
+    trans: Dict[Tuple[frozenset, frozenset, str, int], Tuple[int, Optional[Move]]] = {}
+
+    def in_bounds(r: int, c: int) -> bool:
+        return 0 <= r < 8 and 0 <= c < 8
+
+    def forward_dir(col: str) -> int:
+        return 1 if col == 'w' else -1
+
+    def goal_row(col: str) -> int:
+        return 7 if col == 'w' else 0
+
+    def opponent(col: str) -> str:
+        return 'b' if col == 'w' else 'w'
+
+    def legal_moves(my: frozenset, op: frozenset, col: str) -> List[Move]:
+        d = forward_dir(col)
+        occ = my | op
+        moves = []
+        # Ordering by advancement first helps pruning
+        pieces = sorted(my, key=lambda p: (p[0] * d), reverse=True)
+        for r, c in pieces:
+            nr = r + d
+            if not (0 <= nr < 8):
+                continue
+            # forward
+            if (nr, c) not in occ:
+                moves.append(((r, c), (nr, c)))
+            # diagonals
+            if c - 1 >= 0:
+                to = (nr, c - 1)
+                if to not in my:  # empty or capture opponent
+                    moves.append(((r, c), to))
+            if c + 1 < 8:
+                to = (nr, c + 1)
+                if to not in my:
+                    moves.append(((r, c), to))
+        return moves
+
+    def apply_move(my: frozenset, op: frozenset, mv: Move) -> Tuple[frozenset, frozenset]:
+        (r1, c1), (r2, c2) = mv
+        new_my = set(my)
+        new_op = set(op)
+        new_my.remove((r1, c1))
+        new_my.add((r2, c2))
+        if (r2, c2) in new_op:
+            new_op.remove((r2, c2))
+        return frozenset(new_my), frozenset(new_op)
+
+    def is_terminal(my: frozenset, op: frozenset, col: str) -> Optional[int]:
+        if not op:
+            return INF
+        g = goal_row(col)
+        if any(r == g for r, _ in my):
+            return INF
+        opp_col = opponent(col)
+        opp_g = goal_row(opp_col)
+        if any(r == opp_g for r, _ in op):
+            return -INF
+        if not legal_moves(my, op, col):
+            return -INF
+        return None
+
+    def immediate_win_exists(my: frozenset, op: frozenset, col: str) -> Optional[Move]:
+        g = goal_row(col)
+        for mv in legal_moves(my, op, col):
+            _, (r2, _) = mv
+            if r2 == g:
+                return mv
+        return None
+
+    def count_immediate_wins(my: frozenset, op: frozenset, col: str) -> int:
+        g = goal_row(col)
+        cnt = 0
+        for mv in legal_moves(my, op, col):
+            _, (r2, _) = mv
+            if r2 == g:
+                cnt += 1
+        return cnt
+
+    def is_protected(square: Tuple[int, int], pieces: frozenset, col: str) -> bool:
+        r, c = square
+        d = forward_dir(col)
+        back_r = r - d
+        return ((back_r, c - 1) in pieces) or ((back_r, c + 1) in pieces)
+
+    def is_attacked(square: Tuple[int, int], pieces: frozenset, attacker_col: str) -> bool:
+        r, c = square
+        d = forward_dir(attacker_col)
+        from_r = r - d
+        return ((from_r, c - 1) in pieces) or ((from_r, c + 1) in pieces)
+
+    def passed_pawn_score(square: Tuple[int, int], op: frozenset, col: str) -> int:
+        r, c = square
+        if col == 'w':
+            relevant = [(ro, co) for ro, co in op if ro > r and abs(co - c) <= 1]
+            dist = 7 - r
+        else:
+            relevant = [(ro, co) for ro, co in op if ro < r and abs(co - c) <= 1]
+            dist = r
+        if not relevant:
+            return 18 - 2 * dist
+        return 0
+
+    def evaluate(my: frozenset, op: frozenset, col: str) -> int:
+        term = is_terminal(my, op, col)
+        if term is not None:
+            return term
+
+        opp_col = opponent(col)
+
+        score = 0
+
+        # Material
+        score += 120 * (len(my) - len(op))
+
+        # Advancement and promotion pressure
+        for r, c in my:
+            adv = r if col == 'w' else (7 - r)
+            score += 14 * adv
+            score += passed_pawn_score((r, c), op, col)
+            if is_protected((r, c), my, col):
+                score += 8
+            if is_attacked((r, c), op, opp_col):
+                score -= 10
+            # central files
+            score += 3 * (3 - abs(c - 3.5))
+
+        for r, c in op:
+            adv = r if opp_col == 'w' else (7 - r)
+            score -= 14 * adv
+            score -= passed_pawn_score((r, c), my, opp_col)
+            if is_protected((r, c), op, opp_col):
+                score -= 8
+            if is_attacked((r, c), my, col):
+                score += 10
+            score -= 3 * (3 - abs(c - 3.5))
+
+        # Immediate tactical threats
+        my_wins = count_immediate_wins(my, op, col)
+        op_wins = count_immediate_wins(op, my, opp_col)
+        score += 500 * my_wins
+        score -= 700 * op_wins
+
+        # Lane openness near promotion
+        g = goal_row(col)
+        for r, c in my:
+            dist = abs(g - r)
+            if dist <= 2:
+                score += 25 * (2 - dist + 1)
+        og = goal_row(opp_col)
+        for r, c in op:
+            dist = abs(og - r)
+            if dist <= 2:
+                score -= 25 * (2 - dist + 1)
+
+        return int(score)
+
+    def move_key(my: frozenset, op: frozenset, col: str, mv: Move):
+        (r1, c1), (r2, c2) = mv
+        capture = (r2, c2) in op
+        promote = (r2 == goal_row(col))
+        protected = is_protected((r2, c2), my, col)
+        attacked = is_attacked((r2, c2), op, opponent(col))
+        advance = (r2 if col == 'w' else (7 - r2))
+        center = -abs(c2 - 3.5)
+        return (
+            1 if promote else 0,
+            1 if capture else 0,
+            1 if protected else 0,
+            0 if attacked else 1,
+            advance,
+            center,
+        )
+
+    def ordered_moves(my: frozenset, op: frozenset, col: str, tt_move: Optional[Move] = None) -> List[Move]:
+        moves = legal_moves(my, op, col)
+        if not moves:
+            return moves
+        moves.sort(key=lambda mv: move_key(my, op, col, mv), reverse=True)
+        if tt_move is not None and tt_move in moves:
+            moves.remove(tt_move)
+            moves.insert(0, tt_move)
+        return moves
+
+    def negamax(my: frozenset, op: frozenset, col: str, depth: int, alpha: int, beta: int) -> Tuple[int, Optional[Move]]:
+        if time.time() - start > time_limit:
+            raise TimeoutError
+
+        key = (my, op, col, depth)
+        if key in trans:
+            return trans[key]
+
+        term = is_terminal(my, op, col)
+        if term is not None:
+            trans[key] = (term, None)
+            return term, None
+
+        if depth == 0:
+            val = evaluate(my, op, col)
+            trans[key] = (val, None)
+            return val, None
+
+        win_mv = immediate_win_exists(my, op, col)
+        if win_mv is not None:
+            trans[key] = (INF - 1, win_mv)
+            return INF - 1, win_mv
+
+        best_val = -INF
+        best_move = None
+        opp_col = opponent(col)
+        tt_move = trans.get((my, op, col, depth - 1), (None, None))[1]
+
+        for mv in ordered_moves(my, op, col, tt_move):
+            new_my, new_op = apply_move(my, op, mv)
+            val, _ = negamax(new_op, new_my, opp_col, depth - 1, -beta, -alpha)
+            val = -val
+            if val > best_val:
+                best_val = val
+                best_move = mv
+            if best_val > alpha:
+                alpha = best_val
+            if alpha >= beta:
+                break
+
+        trans[key] = (best_val, best_move)
+        return best_val, best_move
+
+    # Safe fallback
+    fallback_moves = legal_moves(my_set, opp_set, my_color)
+    if not fallback_moves:
+        # Should not happen in normal play, but return something legal-looking if arena gives terminal state.
+        return ((0, 0), (0, 0))
+    fallback_moves.sort(key=lambda mv: move_key(my_set, opp_set, my_color, mv), reverse=True)
+    best_move = fallback_moves[0]
+
+    # Instant winning move if present
+    instant = immediate_win_exists(my_set, opp_set, my_color)
+    if instant is not None:
+        return instant
+
+    # Iterative deepening
+    try:
+        depth = 1
+        while depth <= 6:
+            val, mv = negamax(my_set, opp_set, my_color, depth, -INF, INF)
+            if mv is not None:
+                best_move = mv
+            # if clearly winning, no need to search deeper
+            if val >= INF - 5:
+                break
+            depth += 1
+    except TimeoutError:
+        pass
+
+    # Final legality guard
+    if best_move not in legal_moves(my_set, opp_set, my_color):
+        return fallback_moves[0]
+    return best_move
+</code>

@@ -1,0 +1,196 @@
+
+import random
+from typing import List, Tuple
+
+# ---------- Union Find ----------
+class UF:
+    def __init__(self):
+        self.parent = {}
+        self.rank = {}
+
+    def add(self, x):
+        if x not in self.parent:
+            self.parent[x] = x
+            self.rank[x] = 0
+
+    def find(self, x):
+        # path compression
+        while self.parent[x] != x:
+            self.parent[x] = self.parent[self.parent[x]]
+            x = self.parent[x]
+        return x
+
+    def union(self, x, y):
+        xr, yr = self.find(x), self.find(y)
+        if xr == yr:
+            return
+        if self.rank[xr] < self.rank[yr]:
+            self.parent[xr] = yr
+        elif self.rank[xr] > self.rank[yr]:
+            self.parent[yr] = xr
+        else:
+            self.parent[yr] = xr
+            self.rank[xr] += 1
+
+# ---------- Geometry helpers ----------
+_NEIGHBORS = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, 1)]
+
+def neighbours(r: int, c: int, valid_mask) -> List[Tuple[int, int]]:
+    N = len(valid_mask)
+    out = []
+    for dr, dc in _NEIGHBORS:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < N and 0 <= nc < N and valid_mask[nr][nc]:
+            out.append((nr, nc))
+    return out
+
+def compute_corners_and_edges(valid_mask):
+    """Return (set_of_corners, set_of_edges).  Cached after first call."""
+    N = len(valid_mask)
+    corners = set()
+    edges = set()
+    for r in range(N):
+        for c in range(N):
+            if not valid_mask[r][c]:
+                continue
+            neigh = neighbours(r, c, valid_mask)
+            if len(neigh) == 2:               # only two valid neighbours → corner
+                corners.add((r, c))
+            # an edge cell touches at least one invalid neighbour
+            for dr, dc in _NEIGHBORS:
+                nr, nc = r + dr, c + dc
+                if not (0 <= nr < N and 0 <= nc < N) or not valid_mask[nr][nc]:
+                    edges.add((r, c))
+                    break
+    return corners, edges
+
+# Cache for repeated calls (the board never changes)
+_corners_cache = None
+_edges_cache = None
+
+def _ensure_geometry(valid_mask):
+    global _corners_cache, _edges_cache
+    if _corners_cache is None or _edges_cache is None:
+        _corners_cache, _edges_cache = compute_corners_and_edges(valid_mask)
+
+# ---------- Winning tests ----------
+def _build_uf(stones, valid_mask):
+    """Create a union‑find structure for the given stones."""
+    uf = UF()
+    for s in stones:
+        uf.add(s)
+    for s in stones:
+        for nb in neighbours(*s, valid_mask):
+            if nb in stones:
+                uf.union(s, nb)
+    return uf
+
+def _components_by_corner(uf, corners):
+    """Map component root -> how many corners it contains."""
+    comp = {}
+    for cor in corners:
+        comp_root = uf.find(cor) if cor in uf.parent else None
+        if comp_root is not None:
+            comp.setdefault(comp_root, 0)
+            comp[comp_root] += 1
+    return comp
+
+def _edges_reached(uf, edges):
+    """Return the set of distinct edge‑identifiers reachable by the player's stones."""
+    reached = set()
+    for e in edges:
+        if e in uf.parent:
+            reached.add(uf.find(e))
+    return reached
+
+def _immediate_win(move, me, opp, valid_mask, corners, edges):
+    """Check if placing at *move* immediately creates a bridge, fork or ring."""
+    new_me = me + [move]
+    uf = _build_uf(new_me, valid_mask)
+
+    # Bridge: any component that contains at least two corners
+    corner_comps = _components_by_corner(uf, corners)
+    if any(cnt >= 2 for cnt in corner_comps.values()):
+        return True
+
+    # Fork: component that touches three different edges
+    edge_comps = _edges_reached(uf, edges)
+    # count how many distinct edges are represented in each component
+    edge_cnt = {}
+    for e in edges:
+        if e in uf.parent:
+            root = uf.find(e)
+            edge_cnt.setdefault(root, set()).add(e)
+    if any(len(s) >= 3 for s in edge_cnt.values()):
+        return True
+
+    # Ring (approximation): does the new stone connect two neighbours already in the same component?
+    nb_self = [nb for nb in neighbours(*move, valid_mask) if nb in me]
+    roots = [uf.find(nb) for nb in nb_self]
+    if len(set(roots)) < len(roots):   # duplicate root → cycle formed
+        return True
+
+    return False
+
+# ---------- Main policy ----------
+def policy(me: List[Tuple[int, int]],
+           opp: List[Tuple[int, int]],
+           valid_mask) -> Tuple[int, int]:
+    """
+    Choose a move for the current player.
+    """
+    N = len(valid_mask)
+    occupied = set(me) | set(opp)
+
+    _ensure_geometry(valid_mask)
+    corners = _corners_cache
+    edges = _edges_cache
+
+    # 1) Try to win immediately
+    for r in range(N):
+        for c in range(N):
+            if not valid_mask[r][c] or (r, c) in occupied:
+                continue
+            if _immediate_win((r, c), me, opp, valid_mask, corners, edges):
+                return (r, c)
+
+    # 2) Build current connectivity components
+    uf_me = _build_uf(me, valid_mask)
+
+    best_score = -1
+    best_moves = []
+
+    for r in range(N):
+        for c in range(N):
+            if not valid_mask[r][c] or (r, c) in occupied:
+                continue
+            move = (r, c)
+            # neighbour analysis
+            nb_self = [nb for nb in neighbours(r, c, valid_mask) if nb in me]
+            n_self = len(nb_self)
+
+            # which distinct components would be merged?
+            comp_ids = set()
+            for nb in nb_self:
+                comp_ids.add(uf_me.find(nb))
+            score = n_self + 2 * len(comp_ids)
+
+            if move in corners:
+                score += 5
+            elif move in edges:
+                score += 2
+
+            if score > best_score:
+                best_score = score
+                best_moves = [move]
+            elif score == best_score:
+                best_moves.append(move)
+
+    # fallback (should never happen)
+    if not best_moves:
+        for r in range(N):
+            for c in range(N):
+                if valid_mask[r][c] and (r, c) not in occupied:
+                    return (r, c)
+
+    return random.choice(best_moves)

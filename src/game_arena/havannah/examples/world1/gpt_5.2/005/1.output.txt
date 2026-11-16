@@ -1,0 +1,463 @@
+The strategy for this policy is:
+
+1. **Always play legally**: enumerate all playable, unoccupied cells and never return an invalid coordinate.
+2. **Tactics first (win / don’t lose):**
+   - If any move **wins immediately** (by **bridge**, **fork**, or **ring**), play it.
+   - Otherwise, if the opponent has any **immediate winning move** next turn, **block** it (choose the blocking move that also scores best heuristically if there are multiple).
+3. **Positioning / growth heuristic (when no immediate tactics):**
+   - Prefer moves that **connect** existing groups, increasing component size.
+   - Prefer moves that increase the number of **distinct edges** (fork potential) and **corners** (bridge potential) touched by the resulting merged component.
+   - Prefer moves with good **local adjacency** (next to our stones, and not overly helping the opponent).
+   - Prefer moves more **central** (using true graph distance on the hex-adjacency induced by `valid_mask`), with a slight preference for interior stability.
+
+Ring detection is done robustly by treating our stones as “walls” and flood-filling all non-our cells from the boundary; any unreachable non-our cell implies a surrounded region → **ring**.
+
+<code>
+#!/usr/bin/env python3
+"""
+Havannah 15x15 policy bot.
+
+Implements:
+def policy(me: list[tuple[int,int]], opp: list[tuple[int,int]], valid_mask) -> tuple[int,int]
+
+Notes:
+- Board is provided as a 2D mask of playable cells (hex shape embedded in 2D).
+- Adjacency follows the problem statement example:
+  (r,c) neighbors: (r-1,c), (r+1,c), (r,c-1), (r,c+1), (r-1,c-1), (r-1,c+1)
+"""
+
+from __future__ import annotations
+
+from collections import deque
+import random
+from typing import Dict, List, Tuple, Set, Iterable, Optional
+
+try:
+    import numpy as np
+except Exception:  # pragma: no cover
+    np = None
+
+
+# Hex-neighborhood deltas per statement/example.
+_DELTAS = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1)]
+
+
+# Small global cache keyed by mask bytes (board geometry is constant in arena).
+_GEOM_CACHE: dict = {}
+
+
+def _as_bool_mask(valid_mask):
+    """Return mask as a Python-accessible boolean 2D structure and a cache key."""
+    if np is not None and hasattr(valid_mask, "shape"):
+        m = np.asarray(valid_mask, dtype=bool)
+        key = ("np", m.shape, m.tobytes())
+        return m, key
+    # Fallback: assume list-of-lists of bools
+    m = [[bool(x) for x in row] for row in valid_mask]
+    # Key as tuple of rows (small: 15x15)
+    key = ("py", len(m), tuple(tuple(row) for row in m))
+    return m, key
+
+
+def _popcount(x: int) -> int:
+    return x.bit_count()
+
+
+class _Geom:
+    __slots__ = (
+        "N",
+        "mask",
+        "valid_cells",
+        "neighbors",
+        "boundary_cells",
+        "corners",            # list of 6 corner cells
+        "corner_id",          # dict cell->corner index 0..5
+        "edge_id",            # dict cell->edge index 0..5 (excluding corners)
+        "dist_to_center",     # dict cell->graph distance
+        "dist_to_boundary",   # dict cell->graph distance
+        "center_cell",
+    )
+
+    def __init__(self, mask):
+        self.mask = mask
+        self.N = len(mask)
+        self.valid_cells: List[Tuple[int, int]] = []
+        for r in range(self.N):
+            for c in range(self.N):
+                if bool(mask[r][c]):
+                    self.valid_cells.append((r, c))
+
+        valid_set = set(self.valid_cells)
+
+        # Precompute neighbors for each valid cell.
+        self.neighbors: Dict[Tuple[int, int], List[Tuple[int, int]]] = {}
+        for (r, c) in self.valid_cells:
+            nb = []
+            for dr, dc in _DELTAS:
+                rr, cc = r + dr, c + dc
+                if 0 <= rr < self.N and 0 <= cc < self.N and (rr, cc) in valid_set:
+                    nb.append((rr, cc))
+            self.neighbors[(r, c)] = nb
+
+        # Boundary cells: valid cells with < 6 valid neighbors.
+        self.boundary_cells = [cell for cell in self.valid_cells if len(self.neighbors[cell]) < 6]
+
+        # Determine geometric extremes (in embedded integer lattice).
+        # Use x=c, y=r, s=r+c. These define 6 "sides" in this coordinate embedding.
+        min_x = min(c for _, c in self.valid_cells)
+        max_x = max(c for _, c in self.valid_cells)
+        min_y = min(r for r, _ in self.valid_cells)
+        max_y = max(r for r, _ in self.valid_cells)
+        min_s = min(r + c for r, c in self.valid_cells)
+        max_s = max(r + c for r, c in self.valid_cells)
+
+        # Corners are intersections of adjacent side constraints.
+        # If an intersection isn't a valid cell due to representation quirks, we pick the closest valid cell.
+        def closest_cell(target_constraints):
+            # target_constraints: list of callables (r,c)->nonnegative cost; we minimize total.
+            best = None
+            best_cost = 10**18
+            for (r, c) in self.valid_cells:
+                cost = 0
+                for f in target_constraints:
+                    cost += f(r, c)
+                if cost < best_cost:
+                    best_cost = cost
+                    best = (r, c)
+            return best
+
+        # Define constraints as absolute distance to required extreme.
+        cA = closest_cell([lambda r, c: abs(c - min_x), lambda r, c: abs((r + c) - min_s)])
+        cB = closest_cell([lambda r, c: abs((r + c) - min_s), lambda r, c: abs(r - min_y)])
+        cC = closest_cell([lambda r, c: abs(r - min_y), lambda r, c: abs(c - max_x)])
+        cD = closest_cell([lambda r, c: abs(c - max_x), lambda r, c: abs((r + c) - max_s)])
+        cE = closest_cell([lambda r, c: abs((r + c) - max_s), lambda r, c: abs(r - max_y)])
+        cF = closest_cell([lambda r, c: abs(r - max_y), lambda r, c: abs(c - min_x)])
+
+        # Ensure uniqueness: if duplicates happen, still keep 6 entries but corner_id will map accordingly.
+        self.corners = [cA, cB, cC, cD, cE, cF]
+        self.corner_id = {}
+        for i, cell in enumerate(self.corners):
+            # If duplicates, keep the first mapping; later duplicates won't overwrite.
+            if cell not in self.corner_id:
+                self.corner_id[cell] = i
+
+        corners_set = set(self.corner_id.keys())
+
+        # Edge classification: 6 sides by extreme equalities, excluding corners.
+        # Edge indices correspond to:
+        # 0: x=min_x, 1: s=min_s, 2: y=min_y, 3: x=max_x, 4: s=max_s, 5: y=max_y
+        self.edge_id = {}
+        for (r, c) in self.boundary_cells:
+            if (r, c) in corners_set:
+                continue
+            s = r + c
+            eid = None
+            if c == min_x:
+                eid = 0
+            elif s == min_s:
+                eid = 1
+            elif r == min_y:
+                eid = 2
+            elif c == max_x:
+                eid = 3
+            elif s == max_s:
+                eid = 4
+            elif r == max_y:
+                eid = 5
+            else:
+                # If boundary cell doesn't match any extreme exactly (rare due to mask quirks),
+                # assign to the closest extreme side.
+                options = [
+                    (abs(c - min_x), 0),
+                    (abs(s - min_s), 1),
+                    (abs(r - min_y), 2),
+                    (abs(c - max_x), 3),
+                    (abs(s - max_s), 4),
+                    (abs(r - max_y), 5),
+                ]
+                eid = min(options)[1]
+            self.edge_id[(r, c)] = eid
+
+        # Pick a center cell: prefer (7,7) if valid, else closest valid by Manhattan.
+        target = (self.N // 2, self.N // 2)
+        if target in valid_set:
+            self.center_cell = target
+        else:
+            tr, tc = target
+            self.center_cell = min(self.valid_cells, key=lambda rc: abs(rc[0] - tr) + abs(rc[1] - tc))
+
+        # Distances for heuristics.
+        self.dist_to_center = self._bfs_distance([self.center_cell])
+        self.dist_to_boundary = self._bfs_distance(self.boundary_cells)
+
+    def _bfs_distance(self, sources: List[Tuple[int, int]]) -> Dict[Tuple[int, int], int]:
+        dist = {cell: 10**9 for cell in self.valid_cells}
+        dq = deque()
+        for s in sources:
+            dist[s] = 0
+            dq.append(s)
+        while dq:
+            u = dq.popleft()
+            du = dist[u]
+            for v in self.neighbors[u]:
+                if dist[v] > du + 1:
+                    dist[v] = du + 1
+                    dq.append(v)
+        return dist
+
+
+def _get_geom(valid_mask) -> _Geom:
+    mask, key = _as_bool_mask(valid_mask)
+    g = _GEOM_CACHE.get(key)
+    if g is None:
+        g = _Geom(mask)
+        _GEOM_CACHE[key] = g
+    return g
+
+
+def _check_bridge_fork(stones: Set[Tuple[int, int]], geom: _Geom) -> bool:
+    """Return True if stones contain a bridge or fork."""
+    if len(stones) < 2:
+        return False
+
+    visited = set()
+    for start in stones:
+        if start in visited:
+            continue
+        dq = deque([start])
+        visited.add(start)
+
+        corners_mask = 0
+        edges_mask = 0
+
+        while dq:
+            u = dq.popleft()
+            if u in geom.corner_id:
+                corners_mask |= (1 << geom.corner_id[u])
+            eid = geom.edge_id.get(u)
+            if eid is not None:
+                edges_mask |= (1 << eid)
+
+            for v in geom.neighbors[u]:
+                if v in stones and v not in visited:
+                    visited.add(v)
+                    dq.append(v)
+
+        if _popcount(corners_mask) >= 2:
+            return True
+        if _popcount(edges_mask) >= 3:
+            return True
+
+    return False
+
+
+def _check_ring(stones: Set[Tuple[int, int]], geom: _Geom) -> bool:
+    """
+    Ring detection via complement flood fill:
+    - Treat player's stones as blocked.
+    - Flood fill all non-player cells from the boundary.
+    - If any non-player cell is unreachable => enclosed region => ring.
+    """
+    # Minimum cycle length in hex grid is 6; if fewer stones, can't form a ring.
+    if len(stones) < 6:
+        return False
+
+    blocked = stones
+    visited = set()
+    dq = deque()
+
+    # Start from all boundary cells that are NOT blocked.
+    for b in geom.boundary_cells:
+        if b not in blocked and b not in visited:
+            visited.add(b)
+            dq.append(b)
+
+    while dq:
+        u = dq.popleft()
+        for v in geom.neighbors[u]:
+            if v in blocked or v in visited:
+                continue
+            visited.add(v)
+            dq.append(v)
+
+    # If there exists any valid cell not blocked and not visited => enclosed => ring.
+    for cell in geom.valid_cells:
+        if cell not in blocked and cell not in visited:
+            return True
+    return False
+
+
+def _check_win(stones: Set[Tuple[int, int]], geom: _Geom) -> bool:
+    """Havannah win: bridge OR fork OR ring."""
+    if _check_bridge_fork(stones, geom):
+        return True
+    if _check_ring(stones, geom):
+        return True
+    return False
+
+
+def _build_components(stones: Set[Tuple[int, int]], geom: _Geom):
+    """
+    Build connected components for 'stones'.
+    Returns:
+      comp_id: dict cell->component index
+      comps: list of dicts {size:int, edges_mask:int, corners_mask:int}
+    """
+    comp_id: Dict[Tuple[int, int], int] = {}
+    comps = []
+    idx = 0
+
+    for s in stones:
+        if s in comp_id:
+            continue
+        dq = deque([s])
+        comp_id[s] = idx
+        size = 0
+        edges_mask = 0
+        corners_mask = 0
+
+        while dq:
+            u = dq.popleft()
+            size += 1
+            if u in geom.corner_id:
+                corners_mask |= (1 << geom.corner_id[u])
+            eid = geom.edge_id.get(u)
+            if eid is not None:
+                edges_mask |= (1 << eid)
+
+            for v in geom.neighbors[u]:
+                if v in stones and v not in comp_id:
+                    comp_id[v] = idx
+                    dq.append(v)
+
+        comps.append({"size": size, "edges_mask": edges_mask, "corners_mask": corners_mask})
+        idx += 1
+
+    return comp_id, comps
+
+
+def _heuristic_score(
+    move: Tuple[int, int],
+    my_set: Set[Tuple[int, int]],
+    opp_set: Set[Tuple[int, int]],
+    geom: _Geom,
+    my_comp_id,
+    my_comps,
+) -> float:
+    r, c = move
+    nbs = geom.neighbors[move]
+
+    adj_my = 0
+    adj_opp = 0
+    neighbor_comp_ids = set()
+
+    for nb in nbs:
+        if nb in my_set:
+            adj_my += 1
+            neighbor_comp_ids.add(my_comp_id[nb])
+        elif nb in opp_set:
+            adj_opp += 1
+
+    merged_size = 1
+    edges_mask = 0
+    corners_mask = 0
+    for cid in neighbor_comp_ids:
+        comp = my_comps[cid]
+        merged_size += comp["size"]
+        edges_mask |= comp["edges_mask"]
+        corners_mask |= comp["corners_mask"]
+
+    # Add edge/corner contribution of the move itself.
+    if move in geom.corner_id:
+        corners_mask |= (1 << geom.corner_id[move])
+    eid = geom.edge_id.get(move)
+    if eid is not None:
+        edges_mask |= (1 << eid)
+
+    edges_cnt = _popcount(edges_mask)
+    corners_cnt = _popcount(corners_mask)
+
+    # Distances (smaller is better for center; larger is better for boundary distance).
+    dc = geom.dist_to_center.get(move, 0)
+    db = geom.dist_to_boundary.get(move, 0)
+
+    # Phase weighting based on total stones placed so far.
+    ply = len(my_set) + len(opp_set)
+    early = 1.0 if ply < 20 else 0.0
+
+    score = 0.0
+    score += 2.6 * adj_my
+    score -= 1.4 * adj_opp
+
+    # Grow and connect components.
+    score += 0.35 * merged_size
+    score += 5.0 * edges_cnt
+    score += 7.5 * corners_cnt
+
+    # Central preference early; also prefer being not too close to boundary overall.
+    score += early * (-0.55 * dc)
+    score += 0.18 * db
+
+    # Small deterministic tie-breaker to avoid pathological symmetry.
+    score += (hash((r, c)) & 0xFFFF) * 1e-9
+
+    return score
+
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], valid_mask) -> Tuple[int, int]:
+    geom = _get_geom(valid_mask)
+
+    my_set = set(me)
+    opp_set = set(opp)
+    occ = my_set | opp_set
+
+    legal = [cell for cell in geom.valid_cells if cell not in occ]
+    if not legal:
+        # Should never happen, but must return something legal-ish: pick any valid.
+        return geom.valid_cells[0]
+
+    # Opening: take center if available.
+    if not me and not opp and geom.center_cell in legal:
+        return geom.center_cell
+
+    # 1) Immediate win
+    # Check all legal moves; board is small enough.
+    for mv in legal:
+        if _check_win(my_set | {mv}, geom):
+            return mv
+
+    # 2) Immediate block
+    threats = []
+    for mv in legal:
+        if _check_win(opp_set | {mv}, geom):
+            threats.append(mv)
+    if threats:
+        # Block with best heuristic among threat-blocking moves.
+        my_comp_id, my_comps = _build_components(my_set, geom)
+        best_mv = threats[0]
+        best_sc = -1e100
+        for mv in threats:
+            sc = _heuristic_score(mv, my_set, opp_set, geom, my_comp_id, my_comps)
+            if sc > best_sc:
+                best_sc = sc
+                best_mv = mv
+        return best_mv
+
+    # 3) Heuristic choice
+    my_comp_id, my_comps = _build_components(my_set, geom)
+    best_move = None
+    best_score = -1e100
+
+    # Evaluate all legal moves.
+    for mv in legal:
+        sc = _heuristic_score(mv, my_set, opp_set, geom, my_comp_id, my_comps)
+        if sc > best_score:
+            best_score = sc
+            best_move = mv
+
+    if best_move is None:
+        # Fallback (should not happen): choose a deterministic legal move.
+        return legal[0]
+    return best_move
+</code>

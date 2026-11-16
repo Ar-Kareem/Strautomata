@@ -1,0 +1,131 @@
+```python
+from typing import List, Tuple
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    """
+    Choose a move for 3x3x3 Tic Tac Toe.
+
+    Board is expected as board[z][y][x] with values:
+      0 = empty, 1 = our mark, -1 = opponent.
+
+    Returns a triple (z, y, x) with indices 0..n-1.
+    Strategy:
+      1. Win if possible (complete a line of two of ours + empty).
+      2. Block opponent immediate win.
+      3. Take center if free.
+      4. Heuristic: choose empty cell that participates in the most promising lines
+         (favors lines with more of our marks; also gives some weight to blocking
+         lines that have many opponent marks).
+      5. Fallback: first empty cell.
+    """
+    n = len(board)
+    # Helper to get cell value
+    def val(coord):
+        z, y, x = coord
+        return board[z][y][x]
+
+    # Generate all winning lines (unique)
+    lines = []
+
+    # Straight lines along x (vary x)
+    for z in range(n):
+        for y in range(n):
+            lines.append([(z, y, x) for x in range(n)])
+    # Straight lines along y (vary y)
+    for z in range(n):
+        for x in range(n):
+            lines.append([(z, y, x) for y in range(n)])
+    # Straight lines along z (vary z)
+    for y in range(n):
+        for x in range(n):
+            lines.append([(z, y, x) for z in range(n)])
+
+    # Face diagonals: XY planes (for each z)
+    for z in range(n):
+        lines.append([(z, i, i) for i in range(n)])
+        lines.append([(z, i, n - 1 - i) for i in range(n)])
+    # Face diagonals: XZ planes (for each y) -> vary z and x
+    for y in range(n):
+        lines.append([(i, y, i) for i in range(n)])
+        lines.append([(i, y, n - 1 - i) for i in range(n)])
+    # Face diagonals: YZ planes (for each x) -> vary z and y
+    for x in range(n):
+        lines.append([(i, i, x) for i in range(n)])
+        lines.append([(i, n - 1 - i, x) for i in range(n)])
+
+    # Space diagonals
+    lines.append([(i, i, i) for i in range(n)])
+    lines.append([(i, i, n - 1 - i) for i in range(n)])
+    lines.append([(i, n - 1 - i, i) for i in range(n)])
+    lines.append([(i, n - 1 - i, n - 1 - i) for i in range(n)])
+
+    # Ensure uniqueness
+    uniq = []
+    seen = set()
+    for ln in lines:
+        t = tuple(ln)
+        if t not in seen:
+            seen.add(t)
+            uniq.append(ln)
+    lines = uniq
+
+    # 1) Win immediately if possible
+    for ln in lines:
+        vals = [val(c) for c in ln]
+        if vals.count(1) == n - 1 and vals.count(0) == 1:
+            empty_idx = vals.index(0)
+            return ln[empty_idx]
+
+    # 2) Block opponent immediate win
+    for ln in lines:
+        vals = [val(c) for c in ln]
+        if vals.count(-1) == n - 1 and vals.count(0) == 1:
+            empty_idx = vals.index(0)
+            return ln[empty_idx]
+
+    # 3) Center
+    center = (n // 2, n // 2, n // 2)
+    if board[center[0]][center[1]][center[2]] == 0:
+        return center
+
+    # 4) Heuristic scoring for remaining empties
+    scores = {}
+    for z in range(n):
+        for y in range(n):
+            for x in range(n):
+                if board[z][y][x] != 0:
+                    continue
+                s = 0
+                coord = (z, y, x)
+                for ln in lines:
+                    if coord not in ln:
+                        continue
+                    vals = [val(c) for c in ln]
+                    # If both players present, it's a contested line; skip (no pure potential)
+                    if 1 in vals and -1 in vals:
+                        continue
+                    # If opponent has marks in the line, this cell helps block future threats
+                    if -1 in vals:
+                        # weight blocking more strongly when opponent already has many in the line
+                        s += 4 * vals.count(-1)
+                    else:
+                        # line is free of opponent. Prefer lines with more of our marks (build toward win)
+                        s += 1 + 3 * vals.count(1)
+                scores[coord] = s
+
+    if scores:
+        max_score = max(scores.values())
+        candidates = [pos for pos, sc in scores.items() if sc == max_score]
+        # deterministically pick smallest lexicographic coordinate
+        return min(candidates)
+
+    # 5) Fallback: pick first empty found (lexicographic)
+    for z in range(n):
+        for y in range(n):
+            for x in range(n):
+                if board[z][y][x] == 0:
+                    return (z, y, x)
+
+    # No moves (shouldn't happen) - return a default
+    return (0, 0, 0)
+```

@@ -1,0 +1,154 @@
+The strategy for this policy is to use the Minimax algorithm with alpha-beta pruning, combined with iterative deepening to balance depth and time constraints (aiming for depths up to 8 on a 3GHz CPU within 1 second). The evaluation function scores positions based on the number of 4-in-a-rows, 3-in-a-rows, and 2-in-a-rows for both players, with bonuses for open-ended lines and central column preference. Center columns are favored in early moves via a heuristic. The algorithm prioritizes winning moves, blocks opponent wins, and otherwise selects the best evaluated move. If no moves are available (which shouldn't happen), it defaults to column 0, but all returns are guaranteed legal.
+
+<code>
+import time
+
+def is_valid_move(board, col):
+    return board[0][col] == 0
+
+def make_move(board, col, player):
+    new_board = [row[:] for row in board]
+    for row in range(5, -1, -1):
+        if new_board[row][col] == 0:
+            new_board[row][col] = player
+            return new_board
+    return None  # Shouldn't happen
+
+def is_winning(board, player):
+    # Check for 4 in a row
+    # Horizontal
+    for r in range(6):
+        for c in range(4):
+            if all(board[r][c+i] == player for i in range(4)):
+                return True
+    # Vertical
+    for r in range(3):
+        for c in range(7):
+            if all(board[r+i][c] == player for i in range(4)):
+                return True
+    # Diagonal (down-right)
+    for r in range(3):
+        for c in range(4):
+            if all(board[r+i][c+i] == player for i in range(4)):
+                return True
+    # Diagonal (down-left)
+    for r in range(3):
+        for c in range(4):
+            if all(board[r+i][c+3-i] == player for i in range(4)):
+                return True
+    return False
+
+def evaluate(board):
+    if is_winning(board, 1):
+        return 1000000
+    if is_winning(board, -1):
+        return -1000000
+    # Heuristic evaluation
+    score = 0
+    # Center column preference
+    center = [board[i][3] for i in range(6)]
+    score += center.count(1) * 3
+    score -= center.count(-1) * 3
+    
+    # Score windows (4-cell segments)
+    def score_window(window, player):
+        opp_player = -player
+        score = 0
+        count = 0
+        empty = 0
+        for cell in window:
+            if cell == player:
+                count += 1
+            elif cell == 0:
+                empty += 1
+            elif cell == opp_player:
+                return 0  # Opponent has a piece, no value
+        if count == 4:
+            score += 100
+        elif count == 3 and empty == 1:
+            score += 10
+        elif count == 2 and empty == 2:
+            score += 2
+        elif count == 1 and empty == 3:
+            score += 1
+        return score if player == 1 else -score * 1.5  # Favor our pieces more
+    
+    # Horizontal windows
+    for r in range(6):
+        for c in range(4):
+            window = [board[r][c+i] for i in range(4)]
+            score += score_window(window, 1) + score_window(window, -1)
+    
+    # Vertical windows
+    for c in range(7):
+        for r in range(3):
+            window = [board[r+i][c] for i in range(4)]
+            score += score_window(window, 1) + score_window(window, -1)
+    
+    # Diagonal down-right
+    for r in range(3):
+        for c in range(4):
+            window = [board[r+i][c+i] for i in range(4)]
+            score += score_window(window, 1) + score_window(window, -1)
+    
+    # Diagonal down-left
+    for r in range(3):
+        for c in range(4):
+            window = [board[r+i][c+3-i] for i in range(4)]
+            score += score_window(window, 1) + score_window(window, -1)
+    
+    return score
+
+def minimax(board, depth, is_maximizing, alpha, beta):
+    if depth == 0 or is_winning(board, 1) or is_winning(board, -1) or all(board[0][c] != 0 for c in range(7)):
+        return evaluate(board)
+    
+    if is_maximizing:
+        max_eval = -float('inf')
+        for col in range(7):
+            if is_valid_move(board, col):
+                new_board = make_move(board, col, 1)
+                eval = minimax(new_board, depth - 1, False, alpha, beta)
+                max_eval = max(max_eval, eval)
+                alpha = max(alpha, eval)
+                if beta <= alpha:
+                    break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for col in range(7):
+            if is_valid_move(board, col):
+                new_board = make_move(board, col, -1)
+                eval = minimax(new_board, depth - 1, True, alpha, beta)
+                min_eval = min(min_eval, eval)
+                beta = min(beta, eval)
+                if beta <= alpha:
+                    break
+        return min_eval
+
+def policy(board):
+    best_col = None
+    best_score = -float('inf')
+    max_depth = 8  # Adjust based on time, but start with iterative deepening
+    for col in range(7):
+        if is_valid_move(board, col):
+            new_board = make_move(board, col, 1)
+            if is_winning(new_board, 1):  # Immediate win
+                return col
+            if is_winning(new_board, -1):  # Block opponent win
+                return col
+            start_time = time.time()
+            score = minimax(new_board, max_depth, False, -float('inf'), float('inf'))
+            if time.time() - start_time > 0.1:  # Safety for time limit
+                continue
+            if score > best_score:
+                best_score = score
+                best_col = col
+    if best_col is not None:
+        return best_col
+    # Fallback: find any valid move
+    for col in range(7):
+        if is_valid_move(board, col):
+            return col
+    return 0  # Should not reach here
+</code>

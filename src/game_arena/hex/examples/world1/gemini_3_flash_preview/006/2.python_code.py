@@ -1,0 +1,105 @@
+
+import collections
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    board_size = 11
+    occupied = set(me) | set(opp)
+    
+    # Opening move
+    if not occupied:
+        return (5, 5)
+    if len(occupied) == 1 and (5, 5) not in occupied:
+        return (5, 5)
+    elif len(occupied) == 1:
+        return (4, 6)
+
+    def get_neighbors(r, c):
+        for dr, dc in [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < board_size and 0 <= nc < board_size:
+                yield nr, nc
+
+    def shortest_path(stones, other_stones, is_black):
+        # Dijkstra to find distance to goal
+        # is_black: True (top-bottom 0 to N-1), False (left-right 0 to N-1)
+        dist = {}
+        queue = collections.deque()
+        
+        target_indices = set(range(board_size))
+        other_set = set(other_stones)
+        my_set = set(stones)
+        
+        # Start nodes
+        for i in range(board_size):
+            r, c = (0, i) if is_black else (i, 0)
+            if (r, c) not in other_set:
+                cost = 0 if (r, c) in my_set else 1
+                dist[(r, c)] = cost
+                queue.append((r, c))
+
+        # Standard BFS for constant weights 0/1 (Dijkstra simplified)
+        # Using a deque for 0-1 BFS
+        v_dist = {}
+        for k, v in dist.items():
+            v_dist[k] = v
+            
+        dq = collections.deque(sorted(dist.keys(), key=lambda x: dist[x]))
+        
+        best_path_len = float('inf')
+        
+        while dq:
+            curr = dq.popleft()
+            d = v_dist[curr]
+            
+            r, c = curr
+            if (is_black and r == board_size - 1) or (not is_black and c == board_size - 1):
+                best_path_len = min(best_path_len, d)
+
+            for nb in get_neighbors(r, c):
+                if nb in other_set:
+                    continue
+                cost = 0 if nb in my_set else 1
+                if nb not in v_dist or v_dist[nb] > d + cost:
+                    v_dist[nb] = d + cost
+                    if cost == 0:
+                        dq.appendleft(nb)
+                    else:
+                        dq.append(nb)
+        return v_dist, best_path_len
+
+    # Evaluate importance of empty cells
+    my_dist, my_len = shortest_path(me, opp, color == 'b')
+    opp_dist, opp_len = shortest_path(opp, me, color == 'w')
+    
+    best_move = None
+    max_score = -1
+    
+    # Candidates: Empty cells
+    candidates = []
+    for r in range(board_size):
+        for c in range(board_size):
+            if (r, c) not in occupied:
+                candidates.append((r, c))
+
+    # Basic Scoring: move is good if it is on my shortest path AND opponent's shortest path
+    # We use a heuristic: closeness to edges and centralizing
+    for r, c in candidates:
+        # A simple but effective hex heuristic:
+        # How much does this move shorten my path vs how much it blocks the opponent?
+        
+        # We estimate "betweenness" by re-calculating path length if we took the spot
+        # or simply use the distance maps
+        
+        my_inf = my_dist.get((r, c), 20)
+        opp_inf = opp_dist.get((r, c), 20)
+        
+        # Priority 1: Move is on a shortest path
+        # Priority 2: Move is central
+        center_dist = abs(r - 5) + abs(c - 5)
+        score = (20 - my_inf) + (20 - opp_inf) * 1.5 - center_dist * 0.1
+        
+        if score > max_score:
+            max_score = score
+            best_move = (r, c)
+
+    return best_move if best_move else candidates[0]

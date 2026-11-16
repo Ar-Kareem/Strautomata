@@ -1,0 +1,60 @@
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    """Generates the best move for the current player using the current game state."""
+    import sys
+    sys.setrecursionlimit(1000000)
+
+    possible_moves = []
+    for (row, col) in me:
+        forward_dir = 1 if color == 'w' else -1
+        # Forward move
+        next_r = row + forward_dir
+        if 0 <= next_r < 8:
+            new_pos = (next_r, col)
+            if new_pos not in me and new_pos not in opp:
+                possible_moves.append( ((row, col), new_pos) )
+        # Diagonal captures
+        for dc in (-1, 1):
+            new_c = c + dc
+            new_r = row + forward_dir
+            if 0 <= new_r < 8 and 0 <= new_c < 8:
+                if (new_r, new_c) in opp:
+                    possible_moves.append( ((row, col), (new_r, new_c)) )
+
+    # Split moves into captures and non-captures
+    captures = [move for move in possible_moves if move[1] in opp]
+    non_captures = [move for move in possible_moves if move[1] not in opp]
+
+    best_move = None
+    if captures:
+        # Find the capture move that captures the piece closest to their home row
+        best_captured_distance = None
+        best_capture = None
+        for move in captures:
+            target_row, target_col = move[1]
+            if color == 'w':
+                # Captured piece is black, target row 0. Distance = target_row
+                captured_distance = target_row
+            else:
+                # Captured piece is white, target row 7. Distance = 7 - target_row
+                captured_distance = 7 - target_row
+            if best_captured_distance is None or captured_distance < best_captured_distance:
+                best_captured_distance = captured_distance
+                best_capture = move
+        return best_capture
+
+    # No captures available, choose best non-capture move
+    if non_captures:
+        best_distance = -1
+        for move in non_captures:
+            to_r, _ = move[1]
+            if color == 'w':
+                current_distance = 7 - to_r
+            else:
+                current_distance = to_r
+            if current_distance > best_distance:
+                best_distance = current_distance
+                best_move = move
+        return best_move
+    # Fallback if no moves found (should not happen according to problem constraints)
+    return possible_moves[0] if possible_moves else ((0, 0), (0, 0))

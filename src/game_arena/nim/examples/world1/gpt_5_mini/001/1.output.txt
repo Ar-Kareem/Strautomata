@@ -1,0 +1,68 @@
+I will use the standard optimal strategy for misère Nim (the variant where the player who takes the last object loses). For 4 piles this reduces to:
+
+- If every non-empty pile has size 1 (i.e., max(piles) <= 1):
+  - If the number of 1-heaps is even, this position is winning: remove one object from any heap of size 1 (take 1).
+  - If the number of 1-heaps is odd, this position is losing under perfect play; return a legal move anyway (take 1 from any heap of size 1).
+- Otherwise (there exists at least one heap of size >= 2): play like normal Nim — compute the XOR (nim-sum). If nim-sum == 0, there's no winning move: return a simple legal move (remove 1 from the first non-empty heap). If nim-sum != 0, remove from a heap the amount that makes the overall XOR zero (find heap i with (pile_i ^ xor) < pile_i and take pile_i - (pile_i ^ xor)).
+
+This is the standard optimal misère-Nim policy. The code below implements this and always returns a legal 'pile,take' string. (If all piles are zero the function returns a best-effort legal-looking move; in practice the game should never call policy on a finished position.)
+
+<code>
+from typing import List
+import operator
+from functools import reduce
+
+def policy(piles: List[int]) -> str:
+    """
+    Misère Nim policy for 4 piles (player who takes the last object loses).
+    Returns a move string "pile,take" (pile is 0-based index).
+    """
+    # Ensure we have a list of ints
+    piles = list(map(int, piles))
+    n = len(piles)
+    # If all piles are zero (game finished) — no legal move exists in reality.
+    # Return a safe fallback move (should not be called in proper play).
+    if sum(piles) == 0:
+        return "0,1"
+    # Count heaps of size 1 and check max
+    ones = sum(1 for p in piles if p == 1)
+    maxp = max(piles)
+    # Case: every non-empty pile has size 1 (i.e., max <= 1)
+    if maxp <= 1:
+        # If even number of ones, current player has a winning move: take one from any 1-heap.
+        # If odd, position is losing with best play, but we must still return a legal move.
+        for i, p in enumerate(piles):
+            if p == 1:
+                return f"{i},1"
+        # If we reach here, there were no ones (shouldn't happen because sum(piles)>0),
+        # fall back to first non-zero (defensive).
+        for i, p in enumerate(piles):
+            if p > 0:
+                return f"{i},1"
+    # General case: there exists a heap >= 2. Play like normal Nim.
+    xor = reduce(operator.xor, piles, 0)
+    if xor == 0:
+        # No winning move under perfect play; return a simple legal move:
+        # remove 1 from first non-empty heap.
+        for i, p in enumerate(piles):
+            if p > 0:
+                return f"{i},1"
+    else:
+        # Find a heap where reducing it to (pile ^ xor) decreases its size.
+        for i, p in enumerate(piles):
+            target = p ^ xor
+            if target < p:
+                take = p - target
+                # Ensure take is at least 1 and at most p
+                if take < 1:
+                    take = 1
+                if take > p:
+                    take = p
+                return f"{i},{take}"
+    # Defensive fallback (should not be reached): remove 1 from first non-empty heap.
+    for i, p in enumerate(piles):
+        if p > 0:
+            return f"{i},1"
+    # Final fallback (should never happen)
+    return "0,1"
+</code>

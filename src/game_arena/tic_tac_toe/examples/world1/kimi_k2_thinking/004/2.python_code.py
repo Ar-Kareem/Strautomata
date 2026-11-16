@@ -1,0 +1,94 @@
+
+import numpy as np
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Optimal Tic Tac Toe policy implementing perfect play strategy.
+    Returns (row, col) for next move.
+    """
+    board = np.array(board)
+    empty_cells = [(i, j) for i in range(3) for j in range(3) if board[i, j] == 0]
+    
+    def gives_win(row: int, col: int, player: int) -> bool:
+        """Check if move at (row, col) gives immediate win for player."""
+        temp = board.copy()
+        temp[row, col] = player
+        
+        # Check row
+        if np.all(temp[row, :] == player):
+            return True
+        # Check column
+        if np.all(temp[:, col] == player):
+            return True
+        # Check diagonal (if cell is on diagonal)
+        if row == col and np.all(np.diag(temp) == player):
+            return True
+        # Check anti-diagonal (if cell is on anti-diagonal)
+        if row + col == 2 and np.all(np.diag(np.fliplr(temp)) == player):
+            return True
+        return False
+    
+    def creates_fork(row: int, col: int, player: int) -> bool:
+        """Check if move creates a fork (two winning threats)."""
+        temp = board.copy()
+        temp[row, col] = player
+        
+        # Count how many empty cells would give win next turn
+        winning_moves = 0
+        for r in range(3):
+            for c in range(3):
+                if temp[r, c] == 0 and gives_win(r, c, player):
+                    winning_moves += 1
+        
+        return winning_moves >= 2
+    
+    # 1. Win immediately if possible
+    for row, col in empty_cells:
+        if gives_win(row, col, 1):
+            return (row, col)
+    
+    # 2. Block opponent's immediate win
+    for row, col in empty_cells:
+        if gives_win(row, col, -1):
+            return (row, col)
+    
+    # 3. Create a fork
+    for row, col in empty_cells:
+        if creates_fork(row, col, 1):
+            return (row, col)
+    
+    # 4. Block opponent's fork
+    opponent_forks = []
+    for row, col in empty_cells:
+        if creates_fork(row, col, -1):
+            opponent_forks.append((row, col))
+    
+    if opponent_forks:
+        # Block the first fork found (optimal in all cases)
+        return opponent_forks[0]
+    
+    # 5. Take center
+    if board[1, 1] == 0:
+        return (1, 1)
+    
+    # 6. Take opposite corner from opponent
+    opposite_corner = {(0, 0): (2, 2), (0, 2): (2, 0), (2, 0): (0, 2), (2, 2): (0, 0)}
+    for corner in [(0, 0), (0, 2), (2, 0), (2, 2)]:
+        if board[corner] == -1:
+            opp = opposite_corner[corner]
+            if board[opp] == 0:
+                return opp
+    
+    # 7. Take any available corner
+    for corner in [(0, 0), (0, 2), (2, 0), (2, 2)]:
+        if board[corner] == 0:
+            return corner
+    
+    # 8. Take any available side
+    sides = [(0, 1), (1, 0), (1, 2), (2, 1)]
+    for side in sides:
+        if board[side] == 0:
+            return side
+    
+    # Fallback (should never reach for valid board)
+    return empty_cells[0]

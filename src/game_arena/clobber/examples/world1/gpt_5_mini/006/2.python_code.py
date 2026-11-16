@@ -1,0 +1,149 @@
+
+from typing import List, Tuple
+
+# Board dimensions
+ROWS = 5
+COLS = 6
+
+DIRS = {
+    'U': (-1, 0),
+    'R': (0, 1),
+    'D': (1, 0),
+    'L': (0, -1)
+}
+
+def to_grid(arr: List[int]) -> List[List[int]]:
+    """
+    Convert input to a 5x6 2D list. Accepts either a list of 5 rows (each len 6),
+    or a flat list of length 30.
+    """
+    if arr is None:
+        return [[0]*COLS for _ in range(ROWS)]
+    # If already nested list of shape (5,6)
+    if isinstance(arr, list) and len(arr) == ROWS and all(isinstance(r, list) and len(r) == COLS for r in arr):
+        return [row[:] for row in arr]
+    # If flat list of length 30
+    if isinstance(arr, list) and len(arr) == ROWS * COLS:
+        grid = []
+        for r in range(ROWS):
+            start = r * COLS
+            grid.append(arr[start:start+COLS])
+        return [row[:] for row in grid]
+    # Otherwise try to coerce: if it's tuple-of-tuples etc.
+    try:
+        grid = [[int(arr[r][c]) for c in range(COLS)] for r in range(ROWS)]
+        return grid
+    except Exception:
+        # Fallback to empty board
+        return [[0]*COLS for _ in range(ROWS)]
+
+def in_bounds(r: int, c: int) -> bool:
+    return 0 <= r < ROWS and 0 <= c < COLS
+
+def legal_moves(you: List[List[int]], opp: List[List[int]]) -> List[Tuple[int,int,str]]:
+    """
+    Return list of legal moves for 'you' capturing 'opp'.
+    Each move is (r, c, dir) meaning piece at (r,c) moves in dir capturing opponent at adjacent cell.
+    """
+    moves = []
+    for r in range(ROWS):
+        for c in range(COLS):
+            if you[r][c]:
+                for d, (dr, dc) in DIRS.items():
+                    nr, nc = r + dr, c + dc
+                    if in_bounds(nr, nc) and opp[nr][nc]:
+                        moves.append((r, c, d))
+    return moves
+
+def simulate_move(you: List[List[int]], opp: List[List[int]], move: Tuple[int,int,str]) -> Tuple[List[List[int]], List[List[int]]]:
+    """
+    Return new (you2, opp2) after applying move (r,c,dir).
+    This function assumes the move is legal: you[r][c]==1 and opp[nr][nc]==1.
+    """
+    r, c, d = move
+    dr, dc = DIRS[d]
+    nr, nc = r + dr, c + dc
+    # Copy boards
+    you2 = [row[:] for row in you]
+    opp2 = [row[:] for row in opp]
+    # Move your piece
+    you2[r][c] = 0
+    you2[nr][nc] = 1
+    # Remove captured opponent piece
+    opp2[nr][nc] = 0
+    return you2, opp2
+
+def format_move(move: Tuple[int,int,str]) -> str:
+    r, c, d = move
+    return f"{r},{c},{d}"
+
+def evaluate_mobility(you: List[List[int]], opp: List[List[int]]) -> int:
+    """
+    Simple evaluation: difference in number of legal moves (your - opponent).
+    """
+    my_moves = len(legal_moves(you, opp))
+    opp_moves = len(legal_moves(opp, you))
+    return my_moves - opp_moves
+
+def policy(you: List[int], opponent: List[int]) -> str:
+    """
+    Choose a legal move string 'row,col,dir' for Clobber on 5x6.
+    Strategy: for each legal move, simulate it and consider all opponent replies.
+    Score each of our moves by the minimum (worst-case) evaluation after opponent replies,
+    where evaluation = our_moves - opp_moves. Choose the move with maximum worst-case score.
+    Prefer immediate wins (opponent has no replies).
+    """
+    you_grid = to_grid(you)
+    opp_grid = to_grid(opponent)
+
+    my_moves = legal_moves(you_grid, opp_grid)
+    # If no legal moves (shouldn't normally happen when called), return a dummy legal move if possible.
+    if not my_moves:
+        # Try to find any legal move by scanning (defensive fallback)
+        for r in range(ROWS):
+            for c in range(COLS):
+                if you_grid[r][c]:
+                    for d, (dr, dc) in DIRS.items():
+                        nr, nc = r + dr, c + dc
+                        if in_bounds(nr, nc) and opp_grid[nr][nc]:
+                            return format_move((r, c, d))
+        # If still none, return a fixed string (game over case)
+        return "0,0,U"
+
+    best_move = None
+    best_score = None
+    best_immediate_my_moves = -10**9
+
+    # Deterministic ordering of moves for tie-breaking
+    my_moves_sorted = sorted(my_moves)
+
+    for move in my_moves_sorted:
+        # simulate our move
+        you_after, opp_after = simulate_move(you_grid, opp_grid, move)
+        # Check immediate win: opponent has no replies
+        opp_replies = legal_moves(opp_after, you_after)
+        if not opp_replies:
+            return format_move(move)  # immediate win, take it
+
+        # For each opponent reply, simulate and evaluate (we assume opponent tries to minimize our evaluation)
+        worst_eval = None
+        for opp_move in opp_replies:
+            # When simulating opponent's move, treat opp_after as "you" in simulate_move
+            opp_after2, you_after2 = simulate_move(opp_after, you_after, opp_move)
+            # Now it's our turn again with boards you_after2, opp_after2
+            eval_val = evaluate_mobility(you_after2, opp_after2)
+            if worst_eval is None or eval_val < worst_eval:
+                worst_eval = eval_val
+
+        # Immediate values for tie-breakers
+        immediate_my_moves = len(legal_moves(you_after, opp_after))
+
+        if best_score is None or worst_eval > best_score or (worst_eval == best_score and immediate_my_moves > best_immediate_my_moves):
+            best_score = worst_eval
+            best_move = move
+            best_immediate_my_moves = immediate_my_moves
+
+    # As a final fallback if none selected (shouldn't happen), pick first legal move
+    if best_move is None:
+        best_move = my_moves_sorted[0]
+    return format_move(best_move)

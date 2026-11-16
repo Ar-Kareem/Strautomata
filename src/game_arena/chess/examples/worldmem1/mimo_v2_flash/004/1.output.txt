@@ -1,0 +1,541 @@
+# Strategy for Chess Arena
+
+The objective is to create a policy that selects strong chess moves from legal moves. Since this is an AI competition, I need a policy that can outperform others by making smart decisions. Given the 1-second time limit and the need to run in an arena against other AI, I cannot rely on complex engines like Stockfish, but I can implement a heuristic-based approach that evaluates moves based on fundamental chess principles.
+
+## Key Principles for Decision-Making
+
+1. **Checkmate in 1**: Prioritize moves that deliver immediate checkmate. This is the highest priority.
+2. **Checks that force immediate winning responses**: If a check can lead to winning material or a forced sequence, prioritize it.
+3. **Material advantage**: Capture high-value pieces (Queen > Rook > Bishop/Knight > Pawn). Consider pawn promotions to promote to a Queen.
+4. **Piece activity**: Develop pieces (Knights to f3/c3, Bishops to active squares). Control the center.
+5. **King safety**: Castle early, avoid exposing the king. In the endgame, centralize the king.
+6. **Threats**: Make moves that threaten enemy pieces or defend own pieces.
+7. **Avoid blunders**: Avoid moves that lose material immediately (though this requires evaluation; we can approximate by not moving to squares under attack unless capturing or defending).
+
+## Implementation Plan
+
+We need a function `policy` that takes `pieces`, `to_play`, `legal_moves`, and `memory`. It returns a move string and a memory dictionary.
+
+Since we don't have an evaluation function for the entire board state, we will rely on simple heuristics based on the move string and the current board configuration.
+
+### Steps:
+
+1. **Parse the board**: Build a representation of the board from `pieces`. We'll create a 2D array or dictionary to map squares to piece values.
+
+2. **Categorize moves**:
+   - Check moves (end with '+')
+   - Checkmate moves (end with '#')
+   - Captures (contain 'x')
+   - Promotions (contain '=')
+   - Castling (contain 'O-O')
+   - Others (quiet moves)
+
+3. **Evaluation**:
+   - Assign scores to moves based on:
+     - Checkmate: highest score (e.g., 1000)
+     - Check: high score (e.g., 100) because it forces a response
+     - Captures: value of captured piece minus value of moving piece (material gain)
+       - Queen = 9, Rook = 5, Bishop/Knight = 3, Pawn = 1
+     - Promotions: promotion to Queen (9), Rook (5), Bishop/Knight (3)
+     - Developing moves: move knights to f3/c3 for white, f6/c6 for black; bishops to active diagonals; castling
+     - King safety: avoid moving king into danger (hard to assess without full lookahead)
+     - Control center: moves to central squares (d4,d5,e4,e5) get a small bonus
+
+4. **Memory usage**: We can store the move history or state evaluation in memory to avoid repeating moves or to implement iterative deepening, but given the 1-second limit and simplicity, we might not need it. However, we can store the best move from the previous turn to avoid repetition or to track progress.
+
+5. **Simplify**: Since we only have one second, we need a fast heuristic. We'll implement a scoring system that evaluates each legal move based on the above criteria and picks the highest.
+
+6. **Implementation details**:
+   - Convert square strings to coordinates for evaluation.
+   - For captures, we need to know the captured piece. Since the move string might be 'Bxf5', we can look at the board: f5 has an enemy piece? But we have the current board state. We can parse the move string to see if it's a capture and what piece is on the destination square.
+
+### Caveats:
+- The move string may have disambiguation (e.g., 'Nec3' means Knight from e-file to c3). We don't necessarily know which knight moved? But we can infer from the board state.
+- For captures, we can check the destination square in the current `pieces` dictionary to see if there's an enemy piece.
+- For promotions, the move string includes the promotion piece (e.g., 'b8=Q'), so we can assign a value.
+
+### Algorithm:
+
+1. Precompute piece values: {'K': 200, 'Q': 9, 'R': 5, 'B': 3, 'N': 3, 'P': 1} (King is high to avoid losing, but we won't capture king in legal moves).
+
+2. For each move in legal_moves:
+   - Initialize score = 0.
+   - Check if move ends with '#' (checkmate): score += 1000
+   - Else if ends with '+' (check): score += 100
+   - If move contains 'x' (capture):
+        - Parse the destination square (e.g., 'Bxf5' -> 'f5')
+        - Look at the piece on that square in `pieces` (if it exists and is enemy). But note: the move string doesn't specify which piece is captured? Actually, the destination square has an enemy piece if it's a capture.
+        - However, in `pieces`, we have the current board. So we can get the piece at the destination square. But wait: the board state is before the move. So for a capture, the destination square has an enemy piece (unless it's an en passant, but we don't have en passant in the move string? Actually, en passant might be represented as 'exd5' and we need to know it's en passant. But for simplicity, we can assume that if the move has 'x', then the destination square has an enemy piece. However, en passant is an exception: the destination square might be empty? But the move string for en passant is typically 'exd6' or similar, and the captured pawn is on a different file. We might not have en passant in the legal moves list? We'll assume that for simplicity, we treat captures as capturing the piece on the destination square. If the destination square is empty (en passant), we might not have it in `pieces`. So we need to handle en passant separately? But since we don't know the move type, we can assign a capture value of 1 (pawn) if the destination square is empty? That might be inaccurate.
+
+Given the complexity and time, we'll make a simplification: for captures, we look at the destination square in `pieces`. If there's an enemy piece, we take its value. Otherwise, we assume it's a pawn (1) if it's a capture move (since en passant captures a pawn). This is a reasonable approximation.
+
+   - If move contains '=' (promotion):
+        - The promotion piece is after '='. So 'b8=Q' promotes to Queen. Add the value of the promotion piece (9 for Queen, etc.)
+   - If move is castling ('O-O' or 'O-O-O'): add a bonus for king safety (e.g., 20) because castling is generally good.
+   - For development moves: 
+        - For white: if move is Nf3, Nc3, Bc4, Be3, etc., add a bonus (e.g., 10).
+        - For black: similarly, Nf6, Nc6, Bc5, Be6, etc.
+   - Control center: if the destination square is in the center (d4,d5,e4,e5 for white; d5,d4,e5,e4 for black? Actually, center is relative), add a small bonus (5).
+   - King safety: avoid moving king to squares that are under attack? We don't have attack maps, so we skip for now.
+
+3. After scoring all moves, select the move with the highest score. If multiple, pick the first one (or random? but we want deterministic). We'll pick the first one with the highest score.
+
+4. Memory: We can store the current board state or the last move to avoid repetition? But since it's a single call, we might not need it. However, we can store the best move from the previous turn to avoid playing the same move? Not necessary. We'll just return an empty memory or keep the previous memory.
+
+5. Edge cases: 
+   - If no moves are legal (shouldn't happen because the game would be over), but we'll handle by returning the first move.
+   - If multiple moves have the same score, we can break ties by preferring captures, then checks, etc. But our scoring already orders them.
+
+### Implementation:
+
+We'll write helper functions to parse the move string and evaluate the board.
+
+Note: The board state `pieces` is a dict from square to piece code. We'll create a helper to get the piece value.
+
+Let's define piece values: {'K': 0 (we don't capture king), 'Q': 9, 'R': 5, 'B': 3, 'N': 3, 'P': 1}.
+
+But note: King cannot be captured in legal moves, so we can set it to 0.
+
+We'll create a function to get the value of a piece from its code: e.g., 'wQ' -> 9, 'bQ' -> 9, etc. But for capture, we care about the enemy piece value.
+
+### Code Structure:
+
+```python
+def policy(pieces, to_play, legal_moves, memory):
+    # Piece values
+    piece_values = {'K': 0, 'Q': 9, 'R': 5, 'B': 3, 'N': 3, 'P': 1}
+    
+    # Helper to get piece value from code
+    def get_piece_value(code):
+        if code is None:
+            return 0
+        # code is like 'wQ', 'bN', etc.
+        return piece_values[code[1]]
+    
+    # Helper to get enemy color
+    enemy = 'b' if to_play == 'white' else 'w'
+    
+    # Center squares for bonus (for the side to play)
+    center_squares = ['d4', 'd5', 'e4', 'e5']  # for white; for black, we might adjust? Actually, center is symmetric
+    # But for simplicity, we use the same center squares. A move to d4 by white is good, by black is also good? We can consider the board center.
+    # We'll just check if the destination square is in the center set.
+    
+    best_move = None
+    best_score = -float('inf')
+    
+    for move in legal_moves:
+        score = 0
+        
+        # Check for checkmate and check
+        if move.endswith('#'):
+            score += 1000
+        elif move.endswith('+'):
+            score += 100
+        
+        # Check for capture
+        if 'x' in move:
+            # Extract destination square. The move string may have disambiguation, but the last two characters are the square (if no promotion). 
+            # For captures, it's usually like "Bxf5" or "dxe6". But with disambiguation: "Nfxg5". 
+            # We can find the last two characters that are a square.
+            # We'll assume the move string is valid and the last two characters are the destination square (except for promotions and castling).
+            # For captures with promotion: "e8=Q" doesn't have 'x', so no. But "exd8=Q" has 'x' and promotion. So we need to handle.
+            # We'll use a simple method: split by 'x' and take the second part, then remove any promotion.
+            dest = move.split('x')[-1]
+            if '=' in dest:
+                dest = dest.split('=')[0]
+            # Now dest is the destination square (e.g., 'f5', 'd8')
+            if dest in pieces:
+                enemy_piece = pieces[dest]
+                if enemy_piece[0] == enemy:
+                    score += get_piece_value(enemy_piece)
+            else:
+                # En passant or other? Assume it's a pawn capture (1)
+                score += 1  # pawn value
+        
+        # Check for promotion
+        if '=' in move:
+            promo = move.split('=')[1]
+            # promo might be 'Q', 'R', 'B', 'N', but it could be followed by '+' or '#', so remove those
+            promo = promo.rstrip('+#')
+            promo_val = piece_values.get(promo, 0)
+            score += promo_val
+        
+        # Check for castling
+        if move in ['O-O', 'O-O-O']:
+            score += 20  # king safety bonus
+        
+        # Development and center control
+        # Extract destination square without capture or promotion
+        # We'll parse the move string to get the destination square.
+        # This is tricky because of disambiguation. We can use the last two characters if they are a square.
+        # But sometimes it's like "Nec3" -> destination is "c3". We can check if the last two characters are a valid square.
+        dest_square = None
+        # Remove any annotation at the end: '+', '#', or promotion
+        temp = move
+        temp = temp.rstrip('+#')
+        if '=' in temp:
+            # Remove promotion part
+            temp = temp.split('=')[0]
+        # Now temp is the move without annotations and promotion. The last two characters should be the square.
+        if len(temp) >= 2 and temp[-2] in 'abcdefgh' and temp[-1] in '12345678':
+            dest_square = temp[-2:]
+        
+        if dest_square:
+            # Check if it's a center square
+            if dest_square in center_squares:
+                score += 5
+            
+            # Check for development: for white, moving knight to f3 or c3, bishop to active squares
+            # We can check if the move is a knight move to f3/c3, or bishop to c4/f4, etc.
+            # But note: the move string might be 'Nf3' or 'Nec3'. We can check the piece type and destination.
+            # We don't know the piece type from the move string? Actually, the move string starts with the piece (except pawn moves).
+            # For pawn moves, there's no prefix. So we need to infer.
+            # We'll assume that if the move string has a capital letter, it's a piece move. Otherwise, it's a pawn move.
+            piece_type = None
+            if temp[0] in 'KQRBN':
+                piece_type = temp[0]
+            # For pawn moves, we don't have a prefix, so piece_type remains None.
+            
+            # For white: if piece_type is 'N' and dest_square in ['f3','c3'] -> bonus
+            if to_play == 'white':
+                if piece_type == 'N' and dest_square in ['f3', 'c3']:
+                    score += 10
+                elif piece_type == 'B' and dest_square in ['c4', 'f4', 'b5', 'g5']:
+                    score += 8
+                elif piece_type == 'Q' and dest_square in ['d2', 'e2']:  # developing queen is not always good, but early
+                    score += 2
+                elif piece_type == 'R' and dest_square in ['d1', 'e1']:  # rook to center files
+                    score += 3
+                # King moves are bad in opening, but we already have check bonus
+            else:  # black
+                if piece_type == 'N' and dest_square in ['f6', 'c6']:
+                    score += 10
+                elif piece_type == 'B' and dest_square in ['c5', 'f5', 'b4', 'g4']:
+                    score += 8
+                elif piece_type == 'Q' and dest_square in ['d7', 'e7']:
+                    score += 2
+                elif piece_type == 'R' and dest_square in ['d8', 'e8']:
+                    score += 3
+        
+        # Update best move
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    # If no moves scored (unlikely), pick the first move
+    if best_move is None and legal_moves:
+        best_move = legal_moves[0]
+    
+    # Update memory: we can store the best move for the next turn, but not necessary. Return empty or keep memory.
+    # We'll return the same memory (or we can update it with the current state). For simplicity, return memory as is.
+    new_memory = memory.copy()  # or we can modify in place? The problem says we receive the same memory dict next call.
+    # We'll just return the memory we received, but we can add something if needed.
+    # For now, return empty or the same.
+    return best_move, new_memory
+```
+
+### Improvements:
+
+1. **En passant**: We don't handle en passant captures specially. We assumed a value of 1 for captures without a piece. That's okay because it's a pawn.
+
+2. **Disambiguation**: Our parsing of the destination square might fail for moves like "O-O" or "Nbd2". But for "Nbd2", the last two characters are "d2", which is correct. For castling, we already handled separately.
+
+3. **Piece type for pawn moves**: We didn't handle pawn moves for development. For example, e4 or d4 for white are good center moves. We can add a bonus for pawn moves to center squares.
+
+   - If there's no piece type (i.e., the move doesn't start with a capital letter), it's a pawn move. Then:
+        - If to_play is white and dest_square in ['e4','d4','c4','f4'] (center and flank), add bonus.
+        - Similarly for black: e5, d5, etc.
+
+   But note: pawn moves can be like "e4" or "exd5" (capture). Our dest_square extraction should work for "e4" (dest_square='e4') and "exd5" (dest_square='d5').
+
+   So we can add:
+
+   ```python
+   if piece_type is None:  # pawn move
+       if to_play == 'white':
+           if dest_square in ['e4', 'd4', 'c4', 'f4']:
+               score += 6  # good pawn center moves
+       else:
+           if dest_square in ['e5', 'd5', 'c5', 'f5']:
+               score += 6
+   ```
+
+4. **Avoid moving piece to a square where it can be captured without compensation**: We don't evaluate that because it requires looking at enemy attacks, which is complex. We'll skip for now.
+
+5. **Memory usage**: We can store the board state to avoid repetition? But since we are called once per move, we don't have continuity. The memory is passed to the next call, so we can store the last move or a history. However, without a board update, we don't know the new board. The problem does not provide the board after the move, only before. So we cannot update the board ourselves. Therefore, we cannot store a full game state. We can only store the moves we have made. But we don't know which move the opponent played. So memory might not be very useful here. We'll just return the same memory.
+
+### Final Code:
+
+We'll implement the above with the pawn move bonus.
+
+Let's write the code accordingly.
+
+Note: We must be cautious with the move string parsing. We assume the move string is in standard algebraic notation (SAN). The last two characters being a square is generally true for non-castling moves.
+
+We'll also add a bonus for moving the king in the endgame? But we don't know if it's endgame. We can skip.
+
+### Code:
+
+```python
+def policy(pieces, to_play, legal_moves, memory):
+    # Piece values
+    piece_values = {'K': 0, 'Q': 9, 'R': 5, 'B': 3, 'N': 3, 'P': 1}
+    
+    # Helper to get piece value from code
+    def get_piece_value(code):
+        if code is None:
+            return 0
+        return piece_values.get(code[1], 0)
+    
+    # Enemy color
+    enemy = 'b' if to_play == 'white' else 'w'
+    
+    # Center squares (same for both sides)
+    center_squares = ['d4', 'd5', 'e4', 'e5']
+    
+    best_move = None
+    best_score = -10000  # very low
+    
+    for move in legal_moves:
+        score = 0
+        
+        # Check for checkmate and check
+        if move.endswith('#'):
+            score += 1000
+        elif move.endswith('+'):
+            score += 100
+        
+        # Check for capture
+        if 'x' in move:
+            # Extract destination square: split by 'x', take last part, remove promotion
+            parts = move.split('x')
+            dest_part = parts[-1]
+            if '=' in dest_part:
+                dest_part = dest_part.split('=')[0]
+            # dest_part should be the destination square (e.g., 'f5')
+            if len(dest_part) >= 2 and dest_part[-2] in 'abcdefgh' and dest_part[-1] in '12345678':
+                dest_square = dest_part[-2:]
+                if dest_square in pieces:
+                    enemy_piece = pieces[dest_square]
+                    if enemy_piece[0] == enemy:
+                        score += get_piece_value(enemy_piece)
+                else:
+                    # En passant or other: assume pawn capture
+                    score += 1
+        
+        # Check for promotion
+        if '=' in move:
+            # The promotion piece is after '=' and before any check/mate
+            promo_str = move.split('=')[1]
+            # Remove any trailing '+#'
+            promo_piece = promo_str.rstrip('+#')
+            if promo_piece in piece_values:
+                score += piece_values[promo_piece]
+        
+        # Check for castling
+        if move in ['O-O', 'O-O-O']:
+            score += 20  # king safety bonus
+        
+        # Parse destination square for non-castling moves
+        dest_square = None
+        # Remove annotations
+        temp_move = move.rstrip('+#')
+        if '=' in temp_move:
+            temp_move = temp_move.split('=')[0]
+        # Now the last two characters should be the destination square
+        if len(temp_move) >= 2 and temp_move[-2] in 'abcdefgh' and temp_move[-1] in '12345678':
+            dest_square = temp_move[-2:]
+        
+        # Center control bonus
+        if dest_square and dest_square in center_squares:
+            score += 5
+        
+        # Development and pawn moves
+        if dest_square:
+            # Determine piece type if any
+            piece_type = None
+            # If the move starts with a capital letter (and not 'O' for castling, but castling already handled)
+            if temp_move[0] in 'KQRBN':
+                piece_type = temp_move[0]
+            
+            # Development for pieces
+            if to_play == 'white':
+                if piece_type == 'N' and dest_square in ['f3', 'c3']:
+                    score += 10
+                elif piece_type == 'B' and dest_square in ['c4', 'f4', 'b5', 'g5']:
+                    score += 8
+                elif piece_type == 'Q' and dest_square in ['d2', 'e2']:
+                    score += 2
+                elif piece_type == 'R' and dest_square in ['d1', 'e1']:
+                    score += 3
+            else:  # black
+                if piece_type == 'N' and dest_square in ['f6', 'c6']:
+                    score += 10
+                elif piece_type == 'B' and dest_square in ['c5', 'f5', 'b4', 'g4']:
+                    score += 8
+                elif piece_type == 'Q' and dest_square in ['d7', 'e7']:
+                    score += 2
+                elif piece_type == 'R' and dest_square in ['d8', 'e8']:
+                    score += 3
+            
+            # Pawn moves to center
+            if piece_type is None:  # pawn move
+                if to_play == 'white':
+                    if dest_square in ['e4', 'd4', 'c4', 'f4']:
+                        score += 6
+                else:
+                    if dest_square in ['e5', 'd5', 'c5', 'f5']:
+                        score += 6
+        
+        # Update best move
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    # Fallback: if no best move found (shouldn't happen), pick first legal move
+    if best_move is None and legal_moves:
+        best_move = legal_moves[0]
+    
+    # Return the move and memory (we don't modify memory, but we could store something)
+    # We'll return the same memory dictionary (or a copy) to avoid accidental modification
+    return best_move, memory.copy()
+```
+
+### Note on Efficiency:
+
+The above code runs in O(n) where n is the number of legal moves (typically < 50). It does simple string operations and dictionary lookups, which should be well under 1 second on a 3GHz CPU.
+
+### Testing:
+
+We should test with a few examples, but since we are in an arena, we trust the logic.
+
+### Final Output:
+
+We output the strategy first, then the code in `<code>` tags.
+
+Strategy:
+I have designed a heuristic-based policy that evaluates each legal move based on chess principles. The policy prioritizes checkmate and checks, then material gains (captures and promotions), followed by positional improvements like king safety (castling), piece development (knights and bishops to active squares), and center control. The evaluation is fast and deterministic, suitable for a 1-second time limit.
+
+Now, the Python```python
+def policy(pieces, to_play, legal_moves, memory):
+    # Piece values
+    piece_values = {'K': 0, 'Q': 9, 'R': 5, 'B': 3, 'N': 3, 'P': 1}
+    
+    # Helper to get piece value from code
+    def get_piece_value(code):
+        if code is None:
+            return 0
+        return piece_values.get(code[1], 0)
+    
+    # Enemy color
+    enemy = 'b' if to_play == 'white' else 'w'
+    
+    # Center squares (same for both sides)
+    center_squares = ['d4', 'd5', 'e4', 'e5']
+    
+    best_move = None
+    best_score = -10000  # very low
+    
+    for move in legal_moves:
+        score = 0
+        
+        # Check for checkmate and check
+        if move.endswith('#'):
+            score += 1000
+        elif move.endswith('+'):
+            score += 100
+        
+        # Check for capture
+        if 'x' in move:
+            # Extract destination square: split by 'x', take last part, remove promotion
+            parts = move.split('x')
+            dest_part = parts[-1]
+            if '=' in dest_part:
+                dest_part = dest_part.split('=')[0]
+            # dest_part should be the destination square (e.g., 'f5')
+            if len(dest_part) >= 2 and dest_part[-2] in 'abcdefgh' and dest_part[-1] in '12345678':
+                dest_square = dest_part[-2:]
+                if dest_square in pieces:
+                    enemy_piece = pieces[dest_square]
+                    if enemy_piece[0] == enemy:
+                        score += get_piece_value(enemy_piece)
+                else:
+                    # En passant or other: assume pawn capture
+                    score += 1
+        
+        # Check for promotion
+        if '=' in move:
+            # The promotion piece is after '=' and before any check/mate
+            promo_str = move.split('=')[1]
+            # Remove any trailing '+#'
+            promo_piece = promo_str.rstrip('+#')
+            if promo_piece in piece_values:
+                score += piece_values[promo_piece]
+        
+        # Check for castling
+        if move in ['O-O', 'O-O-O']:
+            score += 20  # king safety bonus
+        
+        # Parse destination square for non-castling moves
+        dest_square = None
+        # Remove annotations
+        temp_move = move.rstrip('+#')
+        if '=' in temp_move:
+            temp_move = temp_move.split('=')[0]
+        # Now the last two characters should be the destination square
+        if len(temp_move) >= 2 and temp_move[-2] in 'abcdefgh' and temp_move[-1] in '12345678':
+            dest_square = temp_move[-2:]
+        
+        # Center control bonus
+        if dest_square and dest_square in center_squares:
+            score += 5
+        
+        # Development and pawn moves
+        if dest_square:
+            # Determine piece type if any
+            piece_type = None
+            # If the move starts with a capital letter (and not 'O' for castling, but castling already handled)
+            if temp_move[0] in 'KQRBN':
+                piece_type = temp_move[0]
+            
+            # Development for pieces
+            if to_play == 'white':
+                if piece_type == 'N' and dest_square in ['f3', 'c3']:
+                    score += 10
+                elif piece_type == 'B' and dest_square in ['c4', 'f4', 'b5', 'g5']:
+                    score += 8
+                elif piece_type == 'Q' and dest_square in ['d2', 'e2']:
+                    score += 2
+                elif piece_type == 'R' and dest_square in ['d1', 'e1']:
+                    score += 3
+            else:  # black
+                if piece_type == 'N' and dest_square in ['f6', 'c6']:
+                    score += 10
+                elif piece_type == 'B' and dest_square in ['c5', 'f5', 'b4', 'g4']:
+                    score += 8
+                elif piece_type == 'Q' and dest_square in ['d7', 'e7']:
+                    score += 2
+                elif piece_type == 'R' and dest_square in ['d8', 'e8']:
+                    score += 3
+            
+            # Pawn moves to center
+            if piece_type is None:  # pawn move
+                if to_play == 'white':
+                    if dest_square in ['e4', 'd4', 'c4', 'f4']:
+                        score += 6
+                else:
+                    if dest_square in ['e5', 'd5', 'c5', 'f5']:
+                        score += 6
+        
+        # Update best move
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    # Fallback: if no best move found (shouldn't happen), pick first legal move
+    if best_move is None and legal_moves:
+        best_move = legal_moves[0]
+    
+    # Return the move and memory (we don't modify memory, but we could store something)
+    return best_move, memory.copy()
+```

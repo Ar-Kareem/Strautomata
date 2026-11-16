@@ -1,0 +1,252 @@
+The strategy for this policy is a fast, legal-move-safe Clobber agent using alpha-beta minimax with strong move ordering and a lightweight evaluation.
+
+Key ideas:
+- Always generate only legal captures, so it never returns an illegal move.
+- If there is only one legal move, return it immediately.
+- Search game states with alpha-beta pruning.
+- Use a negamax formulation for compactness and speed.
+- Order moves to improve pruning:
+  - prefer moves that reduce the opponent’s immediate replies,
+  - prefer moves that move into squares with fewer adjacent enemy threats,
+  - prefer central squares slightly.
+- Use iterative deepening within a small time budget.
+- If the full search cannot finish, still return the best move found so far.
+- Evaluation emphasizes:
+  - number of legal moves for side to move,
+  - limiting opponent mobility,
+  - piece count,
+  - local vulnerability / pressure.
+
+This is robust, reasonably strong on a 5x6 board, and guaranteed to return a legal move whenever one exists.
+
+<code>
+from typing import List, Tuple
+import time
+
+ROWS = 5
+COLS = 6
+DIRS = [(-1, 0, 'U'), (0, 1, 'R'), (1, 0, 'D'), (0, -1, 'L')]
+CENTER_R = 2.0
+CENTER_C = 2.5
+
+# Global timing state
+_DEADLINE = 0.0
+
+def _idx(r: int, c: int) -> int:
+    return r * COLS + c
+
+def _bit(r: int, c: int) -> int:
+    return 1 << _idx(r, c)
+
+def _parse_board(arr) -> int:
+    bits = 0
+    # Accept list-of-lists or numpy arrays
+    for r in range(ROWS):
+        row = arr[r]
+        for c in range(COLS):
+            if int(row[c]) == 1:
+                bits |= _bit(r, c)
+    return bits
+
+def _popcount(x: int) -> int:
+    return x.bit_count()
+
+def _adjacent_indices(i: int):
+    r, c = divmod(i, COLS)
+    if r > 0:
+        yield i - COLS, 'U'
+    if c + 1 < COLS:
+        yield i + 1, 'R'
+    if r + 1 < ROWS:
+        yield i + COLS, 'D'
+    if c > 0:
+        yield i - 1, 'L'
+
+def _legal_moves(my_bits: int, opp_bits: int) -> List[Tuple[int, int, str]]:
+    moves = []
+    pieces = my_bits
+    while pieces:
+        lsb = pieces & -pieces
+        i = lsb.bit_length() - 1
+        for j, d in _adjacent_indices(i):
+            if (opp_bits >> j) & 1:
+                moves.append((i, j, d))
+        pieces ^= lsb
+    return moves
+
+def _apply_move(my_bits: int, opp_bits: int, move: Tuple[int, int, str]) -> Tuple[int, int]:
+    i, j, _ = move
+    my_bits ^= (1 << i)      # remove from start
+    my_bits |= (1 << j)      # place on captured square
+    opp_bits ^= (1 << j)     # remove opponent piece
+    return opp_bits, my_bits  # swap side to move
+
+def _local_pressure(my_bits: int, opp_bits: int) -> int:
+    # Positive if my pieces pressure opp more than vice versa
+    score = 0
+    pieces = my_bits
+    while pieces:
+        lsb = pieces & -pieces
+        i = lsb.bit_length() - 1
+        for j, _ in _adjacent_indices(i):
+            if (opp_bits >> j) & 1:
+                score += 1
+        pieces ^= lsb
+    pieces = opp_bits
+    while pieces:
+        lsb = pieces & -pieces
+        i = lsb.bit_length() - 1
+        for j, _ in _adjacent_indices(i):
+            if (my_bits >> j) & 1:
+                score -= 1
+        pieces ^= lsb
+    return score
+
+def _centrality_after_dest(j: int) -> float:
+    r, c = divmod(j, COLS)
+    return -abs(r - CENTER_R) - 0.7 * abs(c - CENTER_C)
+
+def _danger_at_square(j: int, opp_bits: int) -> int:
+    # Count opponent pieces adjacent to destination square
+    cnt = 0
+    for k, _ in _adjacent_indices(j):
+        if (opp_bits >> k) & 1:
+            cnt += 1
+    return cnt
+
+def _evaluate(my_bits: int, opp_bits: int) -> float:
+    my_moves = _legal_moves(my_bits, opp_bits)
+    if not my_moves:
+        return -100000.0
+    opp_moves = _legal_moves(opp_bits, my_bits)
+    if not opp_moves:
+        return 100000.0
+
+    my_count = _popcount(my_bits)
+    opp_count = _popcount(opp_bits)
+
+    score = 0.0
+    score += 20.0 * len(my_moves)
+    score -= 24.0 * len(opp_moves)
+    score += 3.0 * (my_count - opp_count)
+    score += 2.0 * _local_pressure(my_bits, opp_bits)
+
+    # Mild positional preference
+    pieces = my_bits
+    while pieces:
+        lsb = pieces & -pieces
+        i = lsb.bit_length() - 1
+        r, c = divmod(i, COLS)
+        score += 0.2 * (-abs(r - CENTER_R) - 0.7 * abs(c - CENTER_C))
+        pieces ^= lsb
+
+    pieces = opp_bits
+    while pieces:
+        lsb = pieces & -pieces
+        i = lsb.bit_length() - 1
+        r, c = divmod(i, COLS)
+        score -= 0.2 * (-abs(r - CENTER_R) - 0.7 * abs(c - CENTER_C))
+        pieces ^= lsb
+
+    return score
+
+def _ordered_moves(my_bits: int, opp_bits: int) -> List[Tuple[int, int, str]]:
+    moves = _legal_moves(my_bits, opp_bits)
+    scored = []
+    for mv in moves:
+        i, j, d = mv
+        new_opp, new_my = _apply_move(my_bits, opp_bits, mv)  # swapped
+        opp_reply_count = len(_legal_moves(new_my, new_opp))  # from original perspective: opponent replies
+        danger = _danger_at_square(j, opp_bits)
+        cent = _centrality_after_dest(j)
+        # Lower opponent replies is best. Lower danger is best.
+        score = -30.0 * opp_reply_count - 4.0 * danger + cent
+        # Small preference for captures from vulnerable squares
+        start_danger = _danger_at_square(i, opp_bits)
+        score += 0.5 * start_danger
+        scored.append((score, mv))
+    scored.sort(reverse=True, key=lambda x: x[0])
+    return [mv for _, mv in scored]
+
+def _negamax(my_bits: int, opp_bits: int, depth: int, alpha: float, beta: float) -> float:
+    if time.perf_counter() >= _DEADLINE:
+        raise TimeoutError
+
+    moves = _ordered_moves(my_bits, opp_bits)
+    if not moves:
+        return -100000.0 + (6 - depth)
+
+    if depth == 0:
+        return _evaluate(my_bits, opp_bits)
+
+    best = -1e18
+    for mv in moves:
+        next_my, next_opp = _apply_move(my_bits, opp_bits, mv)
+        val = -_negamax(next_my, next_opp, depth - 1, -beta, -alpha)
+        if val > best:
+            best = val
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+    return best
+
+def _move_to_str(move: Tuple[int, int, str]) -> str:
+    i, _, d = move
+    r, c = divmod(i, COLS)
+    return f"{r},{c},{d}"
+
+def policy(you: List[List[int]], opponent: List[List[int]]) -> str:
+    global _DEADLINE
+
+    my_bits = _parse_board(you)
+    opp_bits = _parse_board(opponent)
+
+    legal = _ordered_moves(my_bits, opp_bits)
+    if legal:
+        fallback = legal[0]
+    else:
+        # No legal move should be a losing state; still return a syntactically valid string.
+        # Arena specification says must always return a legal move string, implying valid states should have one.
+        # This branch is only a last resort.
+        return "0,0,U"
+
+    if len(legal) == 1:
+        return _move_to_str(legal[0])
+
+    start = time.perf_counter()
+    _DEADLINE = start + 0.94
+
+    best_move = fallback
+    best_val = -1e18
+
+    # Iterative deepening
+    for depth in range(1, 11):
+        if time.perf_counter() >= _DEADLINE:
+            break
+        current_best_move = best_move
+        current_best_val = -1e18
+        alpha = -1e18
+        beta = 1e18
+        try:
+            ordered = _ordered_moves(my_bits, opp_bits)
+            for mv in ordered:
+                next_my, next_opp = _apply_move(my_bits, opp_bits, mv)
+                val = -_negamax(next_my, next_opp, depth - 1, -beta, -alpha)
+                if val > current_best_val:
+                    current_best_val = val
+                    current_best_move = mv
+                if val > alpha:
+                    alpha = val
+        except TimeoutError:
+            break
+
+        best_move = current_best_move
+        best_val = current_best_val
+
+        # Immediate forced win found
+        if best_val > 90000:
+            break
+
+    return _move_to_str(best_move)
+</code>

@@ -1,0 +1,220 @@
+
+import numpy as np
+import time
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    """
+    Othello AI policy using Iterative Deepening Minimax with Alpha-Beta pruning.
+    """
+    
+    # -------------------------------------------------------------------------
+    # Constants & Configuration
+    # -------------------------------------------------------------------------
+    # Static weights for board positions.
+    # Scores: High for corners, Low for 'X-squares' (diagonally adjacent to corners),
+    # Moderate for edges.
+    WEIGHTS = np.array([
+        [120, -20, 20,  5,  5, 20, -20, 120],
+        [-20, -40, -5, -5, -5, -5, -40, -20],
+        [ 20,  -5, 15,  3,  3, 15,  -5,  20],
+        [  5,  -5,  3,  3,  3,  3,  -5,   5],
+        [  5,  -5,  3,  3,  3,  3,  -5,   5],
+        [ 20,  -5, 15,  3,  3, 15,  -5,  20],
+        [-20, -40, -5, -5, -5, -5, -40, -20],
+        [120, -20, 20,  5,  5, 20, -20, 120]
+    ])
+    
+    # 8 standard directions (dr, dc)
+    DIRS = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+    
+    # Algebraic notation helpers
+    FILES = "abcdefgh"
+    RANKS = "12345678"
+    
+    # Time management (seconds)
+    TIME_LIMIT = 0.90
+    start_time = time.time()
+
+    # -------------------------------------------------------------------------
+    # Helper Functions
+    # -------------------------------------------------------------------------
+    def get_legal_moves(p_board, o_board):
+        """
+        Generates list of (r, c) tuples representing legal moves for p_board 
+        against o_board.
+        """
+        moves = []
+        # Optimization: indices of empty squares
+        # np.argwhere returns array of [row, col]
+        empties = np.argwhere((p_board == 0) & (o_board == 0))
+        
+        for r, c in empties:
+            is_valid_move = False
+            for dr, dc in DIRS:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 8 and 0 <= nc < 8 and o_board[nr, nc] == 1:
+                    # Found an opponent neighbor; check for bracket
+                    nr += dr
+                    nc += dc
+                    while 0 <= nr < 8 and 0 <= nc < 8 and o_board[nr, nc] == 1:
+                        nr += dr
+                        nc += dc
+                    # Check if the line ends with our piece
+                    if 0 <= nr < 8 and 0 <= nc < 8 and p_board[nr, nc] == 1:
+                        is_valid_move = True
+                        break
+            if is_valid_move:
+                moves.append((r, c))
+        return moves
+
+    def make_move(p_board, o_board, r, c):
+        """
+        Executes a move at (r, c) for p_board.
+        Returns tuple (new_p_board, new_o_board) with pieces flipped.
+        """
+        new_p = p_board.copy()
+        new_o = o_board.copy()
+        new_p[r, c] = 1
+        
+        for dr, dc in DIRS:
+            nr, nc = r + dr, c + dc
+            potential_flips = []
+            
+            # Trace opponent pieces
+            while 0 <= nr < 8 and 0 <= nc < 8 and new_o[nr, nc] == 1:
+                potential_flips.append((nr, nc))
+                nr += dr
+                nc += dc
+                
+            # If we cap with our piece, flip them
+            if 0 <= nr < 8 and 0 <= nc < 8 and new_p[nr, nc] == 1 and potential_flips:
+                for fr, fc in potential_flips:
+                    new_p[fr, fc] = 1
+                    new_o[fr, fc] = 0
+                    
+        return new_p, new_o
+
+    # -------------------------------------------------------------------------
+    # Evaluation
+    # -------------------------------------------------------------------------
+    def evaluate(p_board, o_board):
+        """
+        Heuristic evaluation from p_board's perspective.
+        """
+        return np.sum((p_board - o_board) * WEIGHTS)
+
+    # -------------------------------------------------------------------------
+    # Search Algorithm (Minimax + AlphaBeta)
+    # -------------------------------------------------------------------------
+    def minimax(my_bd, opp_bd, depth, alpha, beta, is_my_turn):
+        
+        # Check strict time limit
+        if (time.time() - start_time) > TIME_LIMIT:
+            raise TimeoutError()
+        
+        # Leaf Node
+        if depth == 0:
+            return evaluate(my_bd, opp_bd)
+
+        # Generate moves
+        if is_my_turn:
+            curr_legal = get_legal_moves(my_bd, opp_bd)
+        else:
+            curr_legal = get_legal_moves(opp_bd, my_bd)
+            
+        # Handle 'No Moves' case
+        if not curr_legal:
+            # Check if opponent has moves (pass vs game over)
+            if is_my_turn:
+                opp_moves_exist = len(get_legal_moves(opp_bd, my_bd)) > 0
+            else:
+                opp_moves_exist = len(get_legal_moves(my_bd, opp_bd)) > 0
+                
+            if not opp_moves_exist:
+                # Game Over: return exact disc differential magnified
+                # (Win > Max Heuristic, Loss < Min Heuristic)
+                diff = np.sum(my_bd) - np.sum(opp_bd)
+                return diff * 10000
+            else:
+                # Pass turn: recurse without changing board, switch turn, reduce depth
+                return minimax(my_bd, opp_bd, depth - 1, alpha, beta, not is_my_turn)
+
+        if is_my_turn:
+            value = -float('inf')
+            # Iterate my moves
+            for r, c in curr_legal:
+                n_my, n_opp = make_move(my_bd, opp_bd, r, c)
+                score = minimax(n_my, n_opp, depth - 1, alpha, beta, False)
+                value = max(value, score)
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break # Prune
+            return value
+        else:
+            value = float('inf')
+            # Iterate opponent moves
+            for r, c in curr_legal:
+                n_opp, n_my = make_move(opp_bd, my_bd, r, c)
+                score = minimax(n_my, n_opp, depth - 1, alpha, beta, True)
+                value = min(value, score)
+                beta = min(beta, value)
+                if beta <= alpha:
+                    break # Prune
+            return value
+
+    # -------------------------------------------------------------------------
+    # Main Logic
+    # -------------------------------------------------------------------------
+    
+    # 1. Identify legal moves restricted to empty squares
+    legal_moves = get_legal_moves(you, opponent)
+    
+    if not legal_moves:
+        return "pass"
+    
+    # 2. Sort moves by static weight map (heuristic efficiency for Alpha-Beta)
+    #    Moves on corners/stable squares are checked first.
+    legal_moves.sort(key=lambda m: WEIGHTS[m[0], m[1]], reverse=True)
+    
+    best_move = legal_moves[0]
+    
+    # 3. Iterative Deepening
+    #    We try to go as deep as possible within 1 second.
+    #    Standard 8x8 usually allows depth 3-5 in Python.
+    try:
+        # Depth 1 to 9 (will timeout before 9)
+        for d in range(1, 10):
+            current_iter_best = None
+            max_eval = -float('inf')
+            alpha = -float('inf')
+            beta = float('inf')
+            
+            for r, c in legal_moves:
+                n_you, n_opp = make_move(you, opponent, r, c)
+                # Next level is opponent's turn (False)
+                val = minimax(n_you, n_opp, d - 1, alpha, beta, False)
+                
+                if val > max_eval:
+                    max_eval = val
+                    current_iter_best = (r, c)
+                
+                alpha = max(alpha, val)
+                
+            # If we completed this depth entirely, update our best move
+            if current_iter_best is not None:
+                best_move = current_iter_best
+                
+            # Soft timeout check between depths to avoid starting a doomed deep search
+            if (time.time() - start_time) > 0.8:
+                break
+                
+    except TimeoutError:
+        # Time limit exceeded inside minimax recursion
+        # Fall back to best_move found in the last successfully completed depth
+        pass
+
+    # 4. Format Output (algebraic)
+    # r (row) -> Rank 1..8
+    # c (col) -> File a..h
+    r, c = best_move
+    return f"{FILES[c]}{RANKS[r]}"

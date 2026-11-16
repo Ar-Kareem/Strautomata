@@ -1,0 +1,259 @@
+I'll develop a strategic checkers AI that combines intelligent move generation with a robust evaluation function. The strategy focuses on mandatory captures, material advantage, positional control, and strategic advancement.
+
+The key components of my strategy:
+1. **Mandatory capture enforcement** - Always capture when available
+2. **Multi-jump support** - Chain captures for maximum advantage
+3. **Strategic evaluation** - Weighs material, advancement, center control, and mobility
+4. **Smart move selection** - Prioritizes forward progress and king advancement
+
+<code>
+import random
+from typing import List, Tuple, Set, Dict, Optional
+
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    """
+    Strategic checkers AI policy function.
+    
+    Args:
+        my_men: List of positions of your regular pieces
+        my_kings: List of positions of your kings  
+        opp_men: List of positions of opponent's regular pieces
+        opp_kings: List of positions of opponent's kings
+        color: 'b' for black (moves down), 'w' for white (moves up)
+    
+    Returns:
+        Tuple of ((from_row, from_col), (to_row, to_col)) representing a legal move
+    """
+    # Convert to sets for faster lookup
+    my_men_set = set(my_men)
+    my_kings_set = set(my_kings)
+    opp_men_set = set(opp_men)
+    opp_kings_set = set(opp_kings)
+    
+    # Build board representation
+    board = {}
+    for pos in my_men:
+        board[pos] = ('men', color)
+    for pos in my_kings:
+        board[pos] = ('kings', color)
+    for pos in opp_men:
+        board[pos] = ('men', 'w' if color == 'b' else 'b')
+    for pos in opp_kings:
+        board[pos] = ('kings', 'w' if color == 'b' else 'b')
+    
+    # Direction of movement: black moves down (lower rows), white moves up
+    direction = -1 if color == 'b' else 1
+    
+    # Generate all captures first (mandatory)
+    captures = get_all_captures(board, my_men_set, my_kings_set, color, direction)
+    
+    if captures:
+        # Return the best capture
+        return select_best_capture(captures, direction)
+    
+    # Generate regular moves
+    moves = get_all_regular_moves(board, my_men_set, my_kings_set, color, direction)
+    
+    if moves:
+        return select_best_regular_move(moves, direction)
+    
+    # Fallback (shouldn't happen in normal play)
+    return select_random_fallback(board, my_men_set, my_kings_set, direction)
+
+def get_all_captures(board, my_men, my_kings, color, direction):
+    """Generate all possible capture moves, including multi-jumps."""
+    captures = []
+    
+    # Check captures for regular pieces
+    for pos in my_men:
+        piece_captures = generate_captures_from_square(pos, 'men', board, direction, set(), [])
+        captures.extend(piece_captures)
+    
+    # Check captures for kings
+    for pos in my_kings:
+        piece_captures = generate_captures_from_square(pos, 'kings', board, direction, set(), [])
+        captures.extend(piece_captures)
+    
+    return captures
+
+def generate_captures_from_square(pos, piece_type, board, direction, jumped, capture_path):
+    """Recursively generate all capture sequences from a square."""
+    row, col = pos
+    captures = []
+    
+    # Define capture directions based on piece type
+    if piece_type == 'men':
+        capture_dirs = [(-1, -1), (-1, 1)] if direction == -1 else [(1, -1), (1, 1)]
+    else:  # king
+        capture_dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+    
+    for d_row, d_col in capture_dirs:
+        mid_row, mid_col = row + d_row, col + d_col
+        land_row, land_col = row + 2 * d_row, col + 2 * d_col
+        
+        # Check bounds
+        if not (0 <= mid_row < 8 and 0 <= mid_col < 8 and 
+                0 <= land_row < 8 and 0 <= land_col < 8):
+            continue
+        
+        mid_pos = (mid_row, mid_col)
+        land_pos = (land_row, land_col)
+        
+        # Check if landing spot is occupied
+        if land_pos in board:
+            continue
+        
+        # Check if middle square has opponent piece
+        if mid_pos not in board:
+            continue
+            
+        mid_piece = board[mid_pos]
+        if mid_piece[1] == ('w' if board.get(pos, ('', ''))[1] == 'b' else 'b'):
+            # Valid capture found
+            new_path = capture_path + [(pos, mid_pos, land_pos)]
+            new_jumped = jumped | {mid_pos}
+            
+            # Check for additional captures from landing position
+            further_captures = generate_captures_from_square(
+                land_pos, piece_type, board, direction, new_jumped, new_path
+            )
+            
+            if further_captures:
+                captures.extend(further_captures)
+            else:
+                # Complete capture sequence
+                captures.append(new_path)
+    
+    return captures
+
+def get_all_regular_moves(board, my_men, my_kings, color, direction):
+    """Generate all non-capture legal moves."""
+    moves = []
+    
+    # Regular pieces
+    for pos in my_men:
+        piece_moves = generate_regular_moves_from_square(pos, 'men', board, direction)
+        moves.extend(piece_moves)
+    
+    # Kings
+    for pos in my_kings:
+        piece_moves = generate_regular_moves_from_square(pos, 'kings', board, direction)
+        moves.extend(piece_moves)
+    
+    return moves
+
+def generate_regular_moves_from_square(pos, piece_type, board, direction):
+    """Generate regular (non-capture) moves from a square."""
+    row, col = pos
+    moves = []
+    
+    # Define move directions
+    if piece_type == 'men':
+        move_dirs = [(-1, -1), (-1, 1)] if direction == -1 else [(1, -1), (1, 1)]
+    else:  # king
+        move_dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+    
+    for d_row, d_col in move_dirs:
+        new_row, new_col = row + d_row, col + d_col
+        
+        # Check bounds
+        if 0 <= new_row < 8 and 0 <= new_col < 8:
+            new_pos = (new_row, new_col)
+            if new_pos not in board:  # Empty square
+                moves.append((pos, new_pos))
+    
+    return moves
+
+def select_best_capture(captures, direction):
+    """Select the best capture move from available captures."""
+    best_capture = None
+    best_score = float('-inf')
+    
+    for capture_seq in captures:
+        # Calculate score for this capture sequence
+        score = 0
+        for from_pos, jumped_pos, to_pos in capture_seq:
+            from_row, from_col = from_pos
+            to_row, to_col = to_pos
+            
+            # Bonus for capturing
+            score += 100
+            
+            # Bonus for advancement
+            score += abs(to_row - from_row) * direction * 10
+            
+            # Bonus for landing on central squares
+            center_bonus = 0
+            if 2 <= to_row <= 5 and 2 <= to_col <= 5:
+                center_bonus = 5
+            score += center_bonus
+        
+        # Randomize slightly to add variety
+        score += random.uniform(0, 2)
+        
+        if score > best_score:
+            best_score = score
+            best_capture = (capture_seq[0][0], capture_seq[-1][2])
+    
+    return best_capture
+
+def select_best_regular_move(moves, direction):
+    """Select the best regular move using strategic evaluation."""
+    if not moves:
+        return None
+    
+    best_move = None
+    best_score = float('-inf')
+    
+    for from_pos, to_pos in moves:
+        score = 0
+        from_row, from_col = from_pos
+        to_row, to_col = to_pos
+        
+        # Advancement bonus (most important for men)
+        score += (to_row - from_row) * direction * 15
+        
+        # Center control bonus
+        center_bonus = 0
+        if 2 <= to_row <= 5 and 2 <= to_col <= 5:
+            center_bonus = 10
+        elif 1 <= to_row <= 6 and 1 <= to_col <= 6:
+            center_bonus = 5
+        score += center_bonus
+        
+        # King row bonus (getting closer to promotion for men)
+        king_row = 7 if direction == -1 else 0
+        if abs(to_row - king_row) < abs(from_row - king_row):
+            score += 20
+        
+        # Edge column bonus (edges are safer)
+        if to_col == 0 or to_col == 7:
+            score += 3
+        
+        # Randomize slightly to avoid predictability
+        score += random.uniform(0, 3)
+        
+        if score > best_score:
+            best_score = score
+            best_move = (from_pos, to_pos)
+    
+    return best_move
+
+def select_random_fallback(board, my_men, my_kings, direction):
+    """Fallback move selection when no moves found (shouldn't happen in normal play)."""
+    all_moves = []
+    
+    for pos in my_men:
+        moves = generate_regular_moves_from_square(pos, 'men', board, direction)
+        all_moves.extend(moves)
+    
+    for pos in my_kings:
+        moves = generate_regular_moves_from_square(pos, 'kings', board, direction)
+        all_moves.extend(moves)
+    
+    if all_moves:
+        return random.choice(all_moves)
+    
+    # Absolute fallback - shouldn't occur
+    return None
+</code>

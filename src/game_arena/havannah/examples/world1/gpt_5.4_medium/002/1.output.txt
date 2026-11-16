@@ -1,0 +1,556 @@
+The strategy for this policy is:
+
+1. Model the 15x15 Havannah board as a hex graph.
+2. Always play a legal move.
+3. First look for an immediate winning move.
+4. If the opponent has an immediate winning move, block it.
+5. Otherwise use a strong positional heuristic that prefers:
+   - connecting friendly groups,
+   - growing components that touch multiple edges/corners,
+   - blocking large enemy groups,
+   - central, well-connected moves,
+   - moves that avoid giving the opponent an immediate win next turn.
+6. Detect all three Havannah win types:
+   - bridge,
+   - fork,
+   - ring.
+
+This is a tactical 1-ply policy with real Havannah win detection plus a connectivity-based heuristic, which makes it much stronger than a purely greedy or random bot while remaining safely within time limits.
+
+<code>
+from collections import deque
+import math
+
+# Hex-neighbor deltas for the 15x15 Havannah embedding.
+# This orientation matches the standard "abs(r-c) < 8" style mask.
+DELTAS = [(-1, -1), (-1, 0), (0, -1), (0, 1), (1, 0), (1, 1)]
+
+_BOARD = None
+
+
+class BoardData:
+    __slots__ = (
+        "n",
+        "cells",
+        "id_of",
+        "neighbors",
+        "degree",
+        "boundary",
+        "boundary_set",
+        "corners",
+        "corner_id",
+        "edge_id",
+        "cell_corner_mask",
+        "cell_edge_mask",
+        "center_r",
+        "center_c",
+        "center_id",
+        "valid_positions",
+    )
+
+    def __init__(self, valid_mask):
+        n = len(valid_mask)
+        self.n = n
+        cells = []
+        id_of = {}
+
+        for r in range(n):
+            row = valid_mask[r]
+            for c in range(n):
+                if bool(row[c]):
+                    idx = len(cells)
+                    cells.append((r, c))
+                    id_of[(r, c)] = idx
+
+        self.cells = cells
+        self.id_of = id_of
+        self.valid_positions = tuple(cells)
+
+        neighbors = [[] for _ in range(len(cells))]
+        for i, (r, c) in enumerate(cells):
+            for dr, dc in DELTAS:
+                j = id_of.get((r + dr, c + dc))
+                if j is not None:
+                    neighbors[i].append(j)
+        self.neighbors = neighbors
+
+        degree = [len(nb) for nb in neighbors]
+        self.degree = degree
+        boundary = [i for i, d in enumerate(degree) if d < 6]
+        self.boundary = boundary
+        self.boundary_set = set(boundary)
+
+        self.center_r = sum(r for r, _ in cells) / max(1, len(cells))
+        self.center_c = sum(c for _, c in cells) / max(1, len(cells))
+        self.center_id = min(
+            range(len(cells)),
+            key=lambda i: (cells[i][0] - self.center_r) ** 2 + (cells[i][1] - self.center_c) ** 2,
+        ) if cells else None
+
+        self._build_edges_and_corners()
+
+    def _build_edges_and_corners(self):
+        V = len(self.cells)
+        boundary_nb = [[] for _ in range(V)]
+        for i in self.boundary:
+            boundary_nb[i] = [j for j in self.neighbors[i] if j in self.boundary_set]
+
+        # Preferred corner detection: board corners have degree 3 on this embedding.
+        corners = [i for i in self.boundary if self.degree[i] == 3]
+
+        # Fallback if needed: pick 6 farthest boundary cells in angular sectors.
+        if len(corners) != 6:
+            corners = self._fallback_corners()
+
+        corner_set = set(corners)
+
+        # Trace the boundary cycle.
+        path = self._trace_boundary(boundary_nb)
+
+        # If something odd happened, fall back to angle order.
+        path_set = set(path)
+        missing = [i for i in corners if i not in path_set]
+        if missing:
+            # Extremely defensive fallback.
+            ordered_corners = sorted(
+                corners,
+                key=lambda i: math.atan2(
+                    self.cells[i][0] - self.center_r,
+                    self.cells[i][1] - self.center_c,
+                ),
+            )
+            corner_id = [-1] * V
+            for cid, i in enumerate(ordered_corners[:6]):
+                corner_id[i] = cid
+            edge_id = [-1] * V
+            self.corners = ordered_corners[:6]
+            self.corner_id = corner_id
+            self.edge_id = edge_id
+            self.cell_corner_mask = [0] * V
+            self.cell_edge_mask = [0] * V
+            for i in range(V):
+                if corner_id[i] != -1:
+                    self.cell_corner_mask[i] = 1 << corner_id[i]
+            return
+
+        # Order corners by appearance on boundary cycle.
+        corner_positions = [k for k, i in enumerate(path) if i in corner_set]
+        ordered_corners = [path[k] for k in corner_positions]
+
+        # Build corner ids.
+        corner_id = [-1] * V
+        for cid, i in enumerate(ordered_corners):
+            corner_id[i] = cid
+
+        # Assign each non-corner boundary cell to one of the 6 edge segments.
+        edge_id = [-1] * V
+        if len(path) > 0 and len(corner_positions) == 6:
+            L = len(path)
+            for eid, p1 in enumerate(corner_positions):
+                p2 = corner_positions[(eid + 1) % 6]
+                j = (p1 + 1) % L
+                while j != p2:
+                    cell = path[j]
+                    if cell not in corner_set:
+                        edge_id[cell] = eid
+                    j = (j + 1) % L
+
+        self.corners = ordered_corners
+        self.corner_id = corner_id
+        self.edge_id = edge_id
+        self.cell_corner_mask = [0] * V
+        self.cell_edge_mask = [0] * V
+        for i in range(V):
+            if corner_id[i] != -1:
+                self.cell_corner_mask[i] = 1 << corner_id[i]
+            if edge_id[i] != -1:
+                self.cell_edge_mask[i] = 1 << edge_id[i]
+
+    def _fallback_corners(self):
+        # Pick one farthest boundary cell in each of 6 angular sectors.
+        buckets = [None] * 6
+        for i in self.boundary:
+            r, c = self.cells[i]
+            ang = math.atan2(r - self.center_r, c - self.center_c)
+            sector = int(((ang + math.pi) / (2 * math.pi)) * 6) % 6
+            d2 = (r - self.center_r) ** 2 + (c - self.center_c) ** 2
+            cur = buckets[sector]
+            if cur is None or d2 > cur[0]:
+                buckets[sector] = (d2, i)
+
+        corners = []
+        used = set()
+        for item in buckets:
+            if item is not None and item[1] not in used:
+                corners.append(item[1])
+                used.add(item[1])
+
+        if len(corners) < 6:
+            rem = []
+            for i in self.boundary:
+                if i not in used:
+                    r, c = self.cells[i]
+                    d2 = (r - self.center_r) ** 2 + (c - self.center_c) ** 2
+                    rem.append((d2, i))
+            rem.sort(reverse=True)
+            for _, i in rem:
+                if i not in used:
+                    corners.append(i)
+                    used.add(i)
+                    if len(corners) == 6:
+                        break
+
+        return corners[:6]
+
+    def _trace_boundary(self, boundary_nb):
+        if not self.boundary:
+            return []
+
+        start = min(self.boundary, key=lambda i: self.cells[i])
+        nbs = boundary_nb[start]
+        if not nbs:
+            return [start]
+
+        cur = min(nbs, key=lambda i: self.cells[i])
+        prev = start
+        path = [start]
+        limit = len(self.boundary) + 5
+
+        steps = 0
+        while cur != start and steps < limit:
+            path.append(cur)
+            nbs2 = boundary_nb[cur]
+            if len(nbs2) < 2:
+                break
+            nxt = nbs2[0] if nbs2[1] == prev else nbs2[1]
+            prev, cur = cur, nxt
+            steps += 1
+
+        return path
+
+
+def _ensure_board(valid_mask):
+    global _BOARD
+    if _BOARD is None:
+        _BOARD = BoardData(valid_mask)
+    return _BOARD
+
+
+def _component_info(stones, board):
+    V = len(board.cells)
+    comp_of = [-1] * V
+    sizes = []
+    corner_masks = []
+    edge_masks = []
+
+    cid = 0
+    for s in stones:
+        if comp_of[s] != -1:
+            continue
+        stack = [s]
+        comp_of[s] = cid
+        size = 0
+        cm = 0
+        em = 0
+        while stack:
+            x = stack.pop()
+            size += 1
+            cm |= board.cell_corner_mask[x]
+            em |= board.cell_edge_mask[x]
+            for y in board.neighbors[x]:
+                if y in stones and comp_of[y] == -1:
+                    comp_of[y] = cid
+                    stack.append(y)
+        sizes.append(size)
+        corner_masks.append(cm)
+        edge_masks.append(em)
+        cid += 1
+
+    return comp_of, sizes, corner_masks, edge_masks
+
+
+def _ring_exists(stones, board):
+    V = len(board.cells)
+    visited = [False] * V
+    dq = deque()
+
+    # Any non-stone boundary cell is connected to the outside.
+    for i in board.boundary:
+        if i not in stones and not visited[i]:
+            visited[i] = True
+            dq.append(i)
+
+    while dq:
+        x = dq.popleft()
+        for y in board.neighbors[x]:
+            if y not in stones and not visited[y]:
+                visited[y] = True
+                dq.append(y)
+
+    # Any remaining non-stone cell is enclosed: a ring exists.
+    for i in range(V):
+        if i not in stones and not visited[i]:
+            return True
+    return False
+
+
+def _is_win_with_move(stones, move, board):
+    # Check the connected component containing move for bridge/fork.
+    seen = {move}
+    stack = [move]
+    corner_mask = 0
+    edge_mask = 0
+
+    while stack:
+        x = stack.pop()
+        corner_mask |= board.cell_corner_mask[x]
+        edge_mask |= board.cell_edge_mask[x]
+        for y in board.neighbors[x]:
+            if y in stones and y not in seen:
+                seen.add(y)
+                stack.append(y)
+
+    if corner_mask.bit_count() >= 2:
+        return True  # bridge
+    if edge_mask.bit_count() >= 3:
+        return True  # fork
+
+    # Ring: only plausible if the new stone touches at least 2 friendly stones.
+    friendly_neighbors = 0
+    for y in board.neighbors[move]:
+        if y in stones and y != move:
+            friendly_neighbors += 1
+            if friendly_neighbors >= 2:
+                break
+
+    if friendly_neighbors >= 2 and _ring_exists(stones, board):
+        return True
+
+    return False
+
+
+def _raw_score(
+    m,
+    board,
+    me_set,
+    opp_set,
+    me_comp_of,
+    me_sizes,
+    me_corner_masks,
+    me_edge_masks,
+    opp_comp_of,
+    opp_sizes,
+    opp_threats_set,
+):
+    r, c = board.cells[m]
+
+    adj_me_comps = set()
+    adj_opp_comps = set()
+    adj_me_n = 0
+    adj_opp_n = 0
+    empty_n = 0
+
+    for y in board.neighbors[m]:
+        if y in me_set:
+            adj_me_n += 1
+            cid = me_comp_of[y]
+            if cid != -1:
+                adj_me_comps.add(cid)
+        elif y in opp_set:
+            adj_opp_n += 1
+            cid = opp_comp_of[y]
+            if cid != -1:
+                adj_opp_comps.add(cid)
+        else:
+            empty_n += 1
+
+    merged_size = 1
+    cm = board.cell_corner_mask[m]
+    em = board.cell_edge_mask[m]
+    for cid in adj_me_comps:
+        merged_size += me_sizes[cid]
+        cm |= me_corner_masks[cid]
+        em |= me_edge_masks[cid]
+
+    opp_touch_size = sum(opp_sizes[cid] for cid in adj_opp_comps)
+
+    score = 0.0
+
+    # Connectivity and merging.
+    score += 30.0 * merged_size
+    score += 22.0 * len(adj_me_comps)
+    score += 10.0 * adj_me_n
+
+    # Blocking / contesting.
+    score += 12.0 * opp_touch_size
+    score += 8.0 * adj_opp_n
+    score += 10.0 * len(adj_opp_comps)
+
+    # Structural progress.
+    score += 18.0 * cm.bit_count()
+    score += 14.0 * em.bit_count()
+    if len(adj_me_comps) >= 2:
+        score += 22.0 * len(adj_me_comps)
+    if em.bit_count() == 2:
+        score += 28.0
+    if cm.bit_count() == 1:
+        score += 12.0
+
+    # Slight local ring preference.
+    if adj_me_n >= 2:
+        score += 6.0 * adj_me_n
+
+    # Centrality.
+    dr = r - board.center_r
+    dc = c - board.center_c
+    score -= 2.0 * (dr * dr + dc * dc)
+
+    # Prefer having some local support / tension.
+    if adj_me_n + adj_opp_n == 0:
+        score -= 20.0
+    score += 2.0 * empty_n
+
+    # Urgent blocks.
+    if m in opp_threats_set:
+        score += 200000.0
+
+    # Mild bonus for corners / edges, but not enough to override center early.
+    if board.corner_id[m] != -1:
+        score += 10.0
+    elif board.edge_id[m] != -1:
+        score += 4.0
+
+    return score
+
+
+def _opponent_has_immediate_win_after_my_move(my_move, opp_set, legal_ids, board):
+    temp_opp = set(opp_set)
+    for r in legal_ids:
+        if r == my_move:
+            continue
+        temp_opp.add(r)
+        if _is_win_with_move(temp_opp, r, board):
+            temp_opp.remove(r)
+            return True
+        temp_opp.remove(r)
+    return False
+
+
+def policy(me, opp, valid_mask):
+    board = _ensure_board(valid_mask)
+
+    # Convert to indexed sets.
+    me_set = set()
+    opp_set = set()
+
+    for rc in me:
+        i = board.id_of.get(tuple(rc))
+        if i is not None:
+            me_set.add(i)
+    for rc in opp:
+        i = board.id_of.get(tuple(rc))
+        if i is not None:
+            opp_set.add(i)
+
+    occupied = me_set | opp_set
+    legal_ids = [i for i in range(len(board.cells)) if i not in occupied]
+
+    # Absolute fallback: always return a legal move.
+    if not legal_ids:
+        # Should not happen in normal play, but stay safe.
+        return board.cells[0] if board.cells else (0, 0)
+
+    # Opening: center is usually strong in Havannah.
+    if len(occupied) == 0 and board.center_id in legal_ids:
+        return board.cells[board.center_id]
+
+    # 1) Immediate winning move?
+    temp_me = set(me_set)
+    for m in legal_ids:
+        temp_me.add(m)
+        if _is_win_with_move(temp_me, m, board):
+            return board.cells[m]
+        temp_me.remove(m)
+
+    # 2) Immediate opponent winning moves?
+    opp_threats = []
+    temp_opp = set(opp_set)
+    for m in legal_ids:
+        temp_opp.add(m)
+        if _is_win_with_move(temp_opp, m, board):
+            opp_threats.append(m)
+        temp_opp.remove(m)
+
+    opp_threats_set = set(opp_threats)
+
+    # Component info for heuristics.
+    me_comp_of, me_sizes, me_corner_masks, me_edge_masks = _component_info(me_set, board)
+    opp_comp_of, opp_sizes, _, _ = _component_info(opp_set, board)
+
+    raw_scores = {}
+    for m in legal_ids:
+        raw_scores[m] = _raw_score(
+            m,
+            board,
+            me_set,
+            opp_set,
+            me_comp_of,
+            me_sizes,
+            me_corner_masks,
+            me_edge_masks,
+            opp_comp_of,
+            opp_sizes,
+            opp_threats_set,
+        )
+
+    # If the opponent has an immediate win, the only reliable block is to occupy a threat cell.
+    if opp_threats:
+        best_block = max(opp_threats, key=lambda x: raw_scores.get(x, -1e18))
+        return board.cells[best_block]
+
+    # 3) Heuristic selection, filtered by "don't allow immediate loss if avoidable".
+    ordered = sorted(legal_ids, key=lambda x: raw_scores[x], reverse=True)
+
+    # Check safety on the best candidates.
+    top_k = min(20, len(ordered))
+    candidates = ordered[:top_k]
+
+    best_move = None
+    best_score = -1e18
+    found_safe = False
+
+    for m in candidates:
+        unsafe = _opponent_has_immediate_win_after_my_move(m, opp_set, legal_ids, board)
+        final_score = raw_scores[m] - (500000.0 if unsafe else 0.0)
+        if not unsafe:
+            found_safe = True
+        if final_score > best_score:
+            best_score = final_score
+            best_move = m
+
+    # If none of the top candidates are safe, look a bit deeper for any safe move.
+    if not found_safe and len(ordered) > top_k:
+        extra_limit = min(50, len(ordered))
+        for m in ordered[top_k:extra_limit]:
+            unsafe = _opponent_has_immediate_win_after_my_move(m, opp_set, legal_ids, board)
+            if not unsafe:
+                final_score = raw_scores[m]
+                if final_score > best_score:
+                    best_score = final_score
+                    best_move = m
+                    found_safe = True
+
+    if best_move is None:
+        best_move = ordered[0]
+
+    # Final safety net.
+    move = board.cells[best_move]
+    if move in me or move in opp or not bool(valid_mask[move[0]][move[1]]):
+        # Return first legal valid move.
+        for i in legal_ids:
+            r, c = board.cells[i]
+            if bool(valid_mask[r][c]) and (r, c) not in me and (r, c) not in opp:
+                return (r, c)
+
+    return move
+</code>

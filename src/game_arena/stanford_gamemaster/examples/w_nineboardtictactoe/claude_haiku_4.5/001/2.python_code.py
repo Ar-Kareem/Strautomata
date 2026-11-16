@@ -1,0 +1,139 @@
+
+def policy(state: list[list[object]], role: str) -> str:
+    # Parse state
+    cells = {}
+    current_board = None
+    
+    for fact in state:
+        if fact[0] == "cell":
+            board_row, board_col, cell_row, cell_col, value = int(fact[1]), int(fact[2]), int(fact[3]), int(fact[4]), fact[5]
+            cells[(board_row, board_col, cell_row, cell_col)] = value
+        elif fact[0] == "current":
+            current_board = (int(fact[1]), int(fact[2]))
+    
+    # Determine opponent role
+    opponent = "o" if role == "x" else "x"
+    
+    # Get available moves in current board
+    def get_legal_moves(board_pos):
+        moves = []
+        br, bc = board_pos
+        for row in range(1, 4):
+            for col in range(1, 4):
+                if cells.get((br, bc, row, col), "b") == "b":
+                    moves.append((row, col))
+        return moves
+    
+    # Check for winning move or line completion
+    def check_line(board_pos, player):
+        br, bc = board_pos
+        # Check rows
+        for row in range(1, 4):
+            for col_start in range(1, 2):
+                if all(cells.get((br, bc, row, col_start + i), "b") == player for i in range(3)):
+                    return True
+        # Check columns
+        for col in range(1, 4):
+            for row_start in range(1, 2):
+                if all(cells.get((br, bc, row_start + i, col), "b") == player for i in range(3)):
+                    return True
+        # Check diagonals
+        if all(cells.get((br, bc, i, i), "b") == player for i in range(1, 4)):
+            return True
+        if all(cells.get((br, bc, i, 4-i), "b") == player for i in range(1, 4)):
+            return True
+        return False
+    
+    # Count threats/opportunities (2 in a row)
+    def count_threats(board_pos, player):
+        br, bc = board_pos
+        threats = 0
+        # Check rows
+        for row in range(1, 4):
+            for col_start in range(1, 2):
+                cells_in_line = [cells.get((br, bc, row, col_start + i), "b") for i in range(3)]
+                if cells_in_line.count(player) == 2 and cells_in_line.count("b") == 1:
+                    threats += 1
+        # Check columns
+        for col in range(1, 4):
+            for row_start in range(1, 2):
+                cells_in_line = [cells.get((br, bc, row_start + i, col), "b") for i in range(3)]
+                if cells_in_line.count(player) == 2 and cells_in_line.count("b") == 1:
+                    threats += 1
+        # Check diagonals
+        cells_in_line = [cells.get((br, bc, i, i), "b") for i in range(1, 4)]
+        if cells_in_line.count(player) == 2 and cells_in_line.count("b") == 1:
+            threats += 1
+        cells_in_line = [cells.get((br, bc, i, 4-i), "b") for i in range(1, 4)]
+        if cells_in_line.count(player) == 2 and cells_in_line.count("b") == 1:
+            threats += 1
+        return threats
+    
+    legal_moves = get_legal_moves(current_board)
+    
+    if not legal_moves:
+        return "noop"
+    
+    # Score moves
+    best_score = -float('inf')
+    best_move = legal_moves[0]
+    
+    for row, col in legal_moves:
+        score = 0
+        next_board = (row, col)
+        
+        # Check if this move wins immediately
+        test_cells = cells.copy()
+        test_cells[(current_board[0], current_board[1], row, col)] = role
+        
+        # Simulate the move and check for win
+        temp_cells = cells.copy()
+        temp_cells[(current_board[0], current_board[1], row, col)] = role
+        
+        br, bc = current_board
+        # Check rows
+        for check_row in range(1, 4):
+            if all(temp_cells.get((br, bc, check_row, c), "b") == role for c in range(1, 4)):
+                return f"mark({current_board[0]},{current_board[1]},{row},{col})"
+        # Check columns
+        for check_col in range(1, 4):
+            if all(temp_cells.get((br, bc, r, check_col), "b") == role for r in range(1, 4)):
+                return f"mark({current_board[0]},{current_board[1]},{row},{col})"
+        # Check diagonals
+        if all(temp_cells.get((br, bc, i, i), "b") == role for i in range(1, 4)):
+            return f"mark({current_board[0]},{current_board[1]},{row},{col})"
+        if all(temp_cells.get((br, bc, i, 4-i), "b") == role for i in range(1, 4)):
+            return f"mark({current_board[0]},{current_board[1]},{row},{col})"
+        
+        # Check if this blocks opponent win
+        test_cells[(current_board[0], current_board[1], row, col)] = opponent
+        br, bc = current_board
+        opponent_wins = False
+        for check_row in range(1, 4):
+            if all(test_cells.get((br, bc, check_row, c), "b") == opponent for c in range(1, 4)):
+                opponent_wins = True
+        for check_col in range(1, 4):
+            if all(test_cells.get((br, bc, r, check_col), "b") == opponent for r in range(1, 4)):
+                opponent_wins = True
+        if all(test_cells.get((br, bc, i, i), "b") == opponent for i in range(1, 4)):
+            opponent_wins = True
+        if all(test_cells.get((br, bc, i, 4-i), "b") == opponent for i in range(1, 4)):
+            opponent_wins = True
+        
+        if opponent_wins:
+            score += 100
+        
+        # Prefer center board
+        if next_board == (2, 2):
+            score += 50
+        
+        # Count our threats after move
+        test_cells = cells.copy()
+        test_cells[(current_board[0], current_board[1], row, col)] = role
+        score += count_threats(current_board, role) * 10
+        
+        if score > best_score:
+            best_score = score
+            best_move = (row, col)
+    
+    return f"mark({current_board[0]},{current_board[1]},{best_move[0]},{best_move[1]})"

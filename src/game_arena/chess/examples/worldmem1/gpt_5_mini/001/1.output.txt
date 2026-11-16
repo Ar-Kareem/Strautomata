@@ -1,0 +1,143 @@
+Strategy:
+- Prioritize instantaneous mate moves (#).
+- Then prioritize promotions, with queen promotions highest.
+- Prefer captures, scoring by the captured piece's value (Q=9,R=5,B/N=3,P=1). Assume en-passant captures capture a pawn.
+- Prefer checks (+).
+- Prefer castling (king safety).
+- Slightly prefer moving to central squares.
+- Break ties randomly for variety.
+This heuristic is fast, deterministic-ish, and focuses on material gains, immediate tactical wins, and king safety.
+
+<code>
+import re
+import random
+from typing import Dict, Tuple, List
+
+# Piece values for simple material heuristic
+PIECE_VALUES = {
+    'P': 1,
+    'N': 3,
+    'B': 3,
+    'R': 5,
+    'Q': 9,
+    'K': 1000
+}
+
+CENTER_SQUARES = {'d4', 'd5', 'e4', 'e5', 'c4', 'c5', 'f4', 'f5'}
+
+_dest_sq_re = re.compile(r'([a-h][1-8])')
+
+def _extract_dest(move: str) -> str:
+    """
+    Extract the destination square from an algebraic move string.
+    Returns None for pure castling strings like 'O-O' (no explicit square).
+    """
+    m = list(_dest_sq_re.finditer(move))
+    if not m:
+        return None
+    return m[-1].group(1)
+
+def _infer_moving_piece_type(move: str) -> str:
+    """
+    Infer the moving piece type from SAN-like move string.
+    Returns one of 'P','N','B','R','Q','K'.
+    Pawn moves typically start with a file letter (lowercase), so default to 'P'.
+    """
+    if not move:
+        return 'P'
+    ch = move[0]
+    if ch in 'NBRQK':
+        return ch
+    # Could be like 'axb5' or 'exd6' -> pawn
+    return 'P'
+
+def policy(pieces: Dict[str, str], to_play: str, legal_moves: List[str], memory: Dict) -> Tuple[str, Dict]:
+    """
+    Select a move from legal_moves using heuristics:
+    - Immediate mate (#) highest priority
+    - Promotions (prefer to queen)
+    - Captures by captured piece value
+    - Checks
+    - Castling bonus
+    - Center squares bonus
+    - Small randomness tie-break
+    """
+    if not legal_moves:
+        # Should not happen in normal usage; return empty string to avoid exceptions
+        return ("", memory)
+
+    scores = []
+    for mv in legal_moves:
+        score = 0.0
+        # Strongest: immediate mate
+        if '#' in mv:
+            score += 1e6
+
+        # Promotion
+        if '=' in mv:
+            # e.g., b8=Q
+            # prefer queen promotions strongest
+            # find promoted piece letter after '='
+            idx = mv.find('=')
+            if idx != -1 and idx + 1 < len(mv):
+                promo = mv[idx+1]
+                promo_val = PIECE_VALUES.get(promo, 9)
+                # big bonus for promotion (net value), add extra to prefer queen
+                score += promo_val * 200 + 500
+            else:
+                score += 200  # generic promotion bonus
+
+        # Checks
+        if '+' in mv:
+            score += 80
+
+        # Castling as king safety
+        if mv.startswith('O-O'):
+            score += 60  # both O-O and O-O-O
+
+        # Destination square
+        dest = _extract_dest(mv)
+
+        # Capture detection: SAN includes 'x' when capturing; also check if dest square had opponent piece
+        is_capture = 'x' in mv
+        captured_value = 0
+        if is_capture:
+            if dest and dest in pieces:
+                cap = pieces[dest]
+                # cap is like 'wQ' or 'bP' - second char is piece type
+                cap_piece_type = cap[1]
+                captured_value = PIECE_VALUES.get(cap_piece_type, 1)
+            else:
+                # en-passant or destination square might not contain piece in mapping
+                captured_value = PIECE_VALUES['P']  # assume pawn
+            # reward captures proportional to captured piece value, prefer captures
+            score += captured_value * 150
+
+        # If move lands on center squares, small bonus
+        if dest in CENTER_SQUARES:
+            score += 20
+
+        # Discourage moving high-value pieces without reason: small penalty proportional to moving piece value
+        moving_type = _infer_moving_piece_type(mv)
+        moving_value = PIECE_VALUES.get(moving_type, 1)
+        # Give a small penalty for moving high-value pieces unless it's a capture/promotion/check/mate
+        if not (is_capture or '=' in mv or '+' in mv or '#' in mv):
+            score -= moving_value * 2.0
+
+        # Prefer developing or active piece moves as tiny bonus: if moving piece is not pawn and goes to center
+        if moving_type != 'P' and dest in CENTER_SQUARES:
+            score += 8
+
+        # Slight random tie-break to diversify play
+        score += random.random() * 1e-6
+
+        scores.append((score, mv))
+
+    # Choose the move with maximum score. If multiple, pick one randomly among bests.
+    scores.sort(key=lambda x: x[0], reverse=True)
+    best_score = scores[0][0]
+    best_moves = [mv for sc, mv in scores if abs(sc - best_score) < 1e-9 or sc == best_score]
+
+    chosen = random.choice(best_moves)
+    return (chosen, memory)
+</code>

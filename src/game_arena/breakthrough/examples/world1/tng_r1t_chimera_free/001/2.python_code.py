@@ -1,0 +1,78 @@
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    me_set = set(me)
+    opp_set = set(opp)
+    best_move = None
+    best_score = -float('inf')
+    
+    for (r, c) in me:
+        # Determine possible directions based on color
+        if color == 'w':
+            directions = [(1, 0), (1, -1), (1, 1)]  # forward, left diagonal, right diagonal
+        else:
+            directions = [(-1, 0), (-1, -1), (-1, 1)]
+        
+        for dr, dc in directions:
+            new_r = r + dr
+            new_c = c + dc
+            if not (0 <= new_r < 8 and 0 <= new_c < 8):
+                continue  # out of bounds
+            if (new_r, new_c) in me_set:
+                continue  # can't move to own piece
+            
+            is_forward = (dc == 0)
+            is_capture = (new_r, new_c) in opp_set and not is_forward
+            
+            # Check if move is legal
+            if is_forward and (new_r, new_c) in opp_set:
+                continue  # can't move straight forward into opponent's piece
+            if not is_forward and (new_r, new_c) in opp_set:
+                is_capture = True  # diagonal capture
+            
+            # Calculate progress score
+            if color == 'w':
+                progress = (new_r - r) * 10
+            else:
+                progress = (r - new_r) * 10
+            
+            # Calculate capture score
+            capture_score = 0
+            if is_capture:
+                if color == 'w':
+                    # Captured black piece at new_r; value depends on how close it is to row 0
+                    capture_value = (8 - new_r) * 20
+                else:
+                    # Captured white piece at new_r; value depends on how close it is to row 7
+                    capture_value = (new_r + 1) * 20
+                capture_score = capture_value
+            
+            # Calculate positional score
+            if new_c in (3, 4):
+                positional = 2
+            elif new_c in (2, 5):
+                positional = 1
+            else:
+                positional = 0
+            
+            # Calculate safety penalty
+            safety = 0
+            if color == 'w':
+                threats = [(new_r + 1, new_c - 1), (new_r + 1, new_c + 1)]
+            else:
+                threats = [(new_r - 1, new_c - 1), (new_r - 1, new_c + 1)]
+            for tr, tc in threats:
+                if 0 <= tr < 8 and 0 <= tc < 8 and (tr, tc) in opp_set:
+                    safety -= 5
+                    break  # only need one threat
+            
+            # Total score
+            total = progress + capture_score + positional + safety
+            
+            # Update best move
+            if total > best_score or (total == best_score and best_move is None):
+                best_score = total
+                best_move = ((r, c), (new_r, new_c))
+    
+    # Ensure the move is legal (if somehow no move was found, but the game state should always have a move)
+    assert best_move is not None, "No legal moves found"
+    return best_move

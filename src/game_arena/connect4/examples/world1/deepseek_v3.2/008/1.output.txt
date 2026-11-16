@@ -1,0 +1,272 @@
+<thinking>
+We need to implement a Connect 4 policy that can make good moves. Let's think about what we need:
+
+1. The board is 6 rows × 7 columns.
+2. We need to return a column index (0-6) that isn't full.
+3. We want to win if possible, block opponent if they're about to win, and otherwise make a good strategic move.
+
+First, let's outline a simple approach:
+- Check if we can win in the next move by placing a disc in any column.
+- Check if opponent can win in their next move (if we don't block), and block that.
+- Otherwise, use a heuristic to choose the best column.
+
+We need to consider:
+1. Vertical wins: 4 in a column
+2. Horizontal wins: 4 in a row
+3. Diagonal wins: both directions
+
+We can implement functions to:
+1. Check if a player would win if they placed a disc in column c.
+2. Evaluate the board position with a heuristic.
+
+A simple heuristic could be:
+- Prefer center columns (column 3 is best, then 2 and 4, etc.)
+- Try to create our own threats while blocking opponent's.
+
+We might want to implement a minimax with alpha-beta pruning for better play, but we have only 1 second. Since Connect 4 has a branching factor of up to 7, we could search maybe 6-7 plies deep in 1 second with alpha-beta.
+
+Let's plan:
+1. First, check for immediate win for us.
+2. Check for immediate win for opponent (block).
+3. Otherwise, use a minimax search with a depth limit.
+
+We need a good evaluation function. Simple one: count potential 4-in-a-rows that are still possible for us, minus those for opponent.
+
+Actually, for simplicity and speed, we could use a heuristic that:
+- Gives high value to center columns
+- Gives value to creating threats
+- Avoids giving opponent opportunities
+
+But let's implement a minimax with alpha-beta, depth-limited to maybe 6 moves ahead.
+
+First, implement helper functions:
+- make_move(board, col, player): returns new board after player drops in col
+- check_win(board, player): checks if player has won
+- get_valid_moves(board): list of columns not full
+- evaluate(board): heuristic evaluation from our perspective (player 1)
+
+Evaluation heuristic ideas:
+1. For each possible 4-in-a-row segment (horizontal, vertical, diagonal):
+   - Count our discs in that segment
+   - Count opponent's discs in that segment
+   - If both have discs, it's dead (value 0)
+   - Otherwise, value = (our_count)^3 or something
+
+But we need to be efficient. Maybe use a precomputed list of all winning lines.
+
+There are:
+- Horizontal: 6 rows × 4 per row = 6 × 4 = 24
+- Vertical: 7 columns × 3 per column = 21
+- Diagonal (down-right): (rows-3)*(cols-3) * 2 directions = 3×4×2 = 24
+Actually, let's compute: For a 6x7 board:
+  - Horizontal: 6 rows × (7-3) = 6×4 = 24
+  - Vertical: 7 columns × (6-3) = 7×3 = 21
+  - Diagonal (down-right): (6-3)×(7-3) = 3×4 = 12
+  - Diagonal (down-left): same 12
+Total: 24+21+12+12 = 69 winning lines.
+
+We can precompute these lines once.
+
+Let's design the algorithm:
+1. Precompute all winning lines (list of 4 positions each).
+2. In evaluation, for each line:
+   - Count our discs, opponent discs
+   - If our=3 and opp=0: very high score (almost win)
+   - If opp=3 and our=0: very low score (almost loss)
+   - Otherwise, score = (our^2 - opp^2) or similar
+
+3. Use minimax with alpha-beta:
+   - Depth limit based on time or fixed (say 6)
+   - At leaf nodes, return evaluation
+   - If win/loss, return +/-infinity
+
+But we need to be careful about time. Maybe depth 6-7 is OK.
+
+Alternative: Use iterative deepening with time limit.
+
+Let's implement simpler first: check immediate win/block, then use heuristic for center preference.
+
+Actually, for a decent bot, we should implement minimax. Let's do depth 6.
+
+We'll write:
+- class Connect4 with methods to make moves, check win, evaluate
+- Precompute winning lines once
+
+Wait, we're writing a single function `policy`. We can compute winning lines inside as a global constant.
+
+Let's outline code:
+1. Define winning lines as a constant.
+2. Helper functions: check_win, get_valid_moves, make_move, evaluate.
+3. Minimax with alpha-beta.
+4. In policy: check immediate win, immediate block, then call minimax.
+
+We'll use negamax for simplicity (since game is symmetric).
+
+Let's code.
+</thinking>
+
+<code>
+import numpy as np
+from copy import deepcopy
+
+# Precompute all winning lines (4 positions) for a 6x7 board
+WINNING_LINES = []
+
+# Horizontal lines
+for r in range(6):
+    for c in range(4):
+        WINNING_LINES.append([(r, c + i) for i in range(4)])
+
+# Vertical lines
+for c in range(7):
+    for r in range(3):
+        WINNING_LINES.append([(r + i, c) for i in range(4)])
+
+# Diagonal down-right
+for r in range(3):
+    for c in range(4):
+        WINNING_LINES.append([(r + i, c + i) for i in range(4)])
+
+# Diagonal down-left
+for r in range(3):
+    for c in range(3, 7):
+        WINNING_LINES.append([(r + i, c - i) for i in range(4)])
+
+def check_win(board, player):
+    """Check if player has won."""
+    for line in WINNING_LINES:
+        if all(board[r][c] == player for r, c in line):
+            return True
+    return False
+
+def get_valid_moves(board):
+    """Return list of columns that are not full."""
+    return [c for c in range(7) if board[0][c] == 0]
+
+def make_move(board, col, player):
+    """Return a new board after player drops a disc in column col."""
+    new_board = deepcopy(board)
+    for row in range(5, -1, -1):
+        if new_board[row][col] == 0:
+            new_board[row][col] = player
+            break
+    return new_board
+
+def evaluate_board(board):
+    """
+    Evaluate the board from the perspective of player 1 (us).
+    Higher score is better for us.
+    """
+    score = 0
+    # Prefer center column
+    center_col = 3
+    for r in range(6):
+        if board[r][center_col] == 1:
+            score += 3
+        elif board[r][center_col] == -1:
+            score -= 3
+    
+    # Evaluate winning lines
+    for line in WINNING_LINES:
+        ours = 0
+        opps = 0
+        for r, c in line:
+            if board[r][c] == 1:
+                ours += 1
+            elif board[r][c] == -1:
+                opps += 1
+        
+        if ours > 0 and opps > 0:
+            # Line is blocked for both, no threat
+            continue
+        elif ours > 0:
+            # Only our discs
+            if ours == 3:
+                score += 100  # Very close to win
+            elif ours == 2:
+                score += 10
+            elif ours == 1:
+                score += 1
+        elif opps > 0:
+            # Only opponent discs
+            if opps == 3:
+                score -= 1000  # Immediate threat, but should be blocked before evaluation
+            elif opps == 2:
+                score -= 10
+            elif opps == 1:
+                score -= 1
+    
+    return score
+
+def negamax(board, depth, alpha, beta, player):
+    """
+    Negamax implementation with alpha-beta pruning.
+    Player: 1 for us, -1 for opponent.
+    Returns (score, best_move_column).
+    """
+    valid_moves = get_valid_moves(board)
+    
+    # Check for terminal states
+    if check_win(board, 1):
+        return (1000000, None)
+    if check_win(board, -1):
+        return (-1000000, None)
+    if depth == 0 or not valid_moves:
+        # Evaluate from perspective of player 1 (us)
+        eval_score = evaluate_board(board)
+        return (eval_score * player, None)  # negamax: score from current player's view
+    
+    best_score = -float('inf')
+    best_col = valid_moves[0]
+    
+    for col in valid_moves:
+        new_board = make_move(board, col, player)
+        score, _ = negamax(new_board, depth - 1, -beta, -alpha, -player)
+        score = -score  # negamax: flip sign
+        
+        if score > best_score:
+            best_score = score
+            best_col = col
+        
+        alpha = max(alpha, best_score)
+        if alpha >= beta:
+            break
+    
+    return (best_score, best_col)
+
+def policy(board):
+    """
+    Main policy function.
+    Returns the column index (0-6) to play.
+    """
+    # First, check if we can win immediately
+    valid_moves = get_valid_moves(board)
+    for col in valid_moves:
+        new_board = make_move(board, col, 1)
+        if check_win(new_board, 1):
+            return col
+    
+    # Check if opponent can win next move (block)
+    for col in valid_moves:
+        new_board = make_move(board, col, -1)
+        if check_win(new_board, -1):
+            return col
+    
+    # Otherwise, use negamax search with depth 6
+    # Adjust depth based on number of moves left for speed
+    moves_left = sum(1 for r in range(6) for c in range(7) if board[r][c] == 0)
+    if moves_left > 30:
+        depth = 5
+    elif moves_left > 20:
+        depth = 6
+    elif moves_left > 10:
+        depth = 7
+    else:
+        depth = 8  # endgame, can search deeper
+    
+    # Ensure depth is not too high for time constraint
+    depth = min(depth, 8)
+    
+    _, best_col = negamax(board, depth, -float('inf'), float('inf'), 1)
+    return best_col
+</code>

@@ -1,0 +1,177 @@
+
+import heapq
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    BOARD_SIZE = 11
+
+    # Convert lists to sets for fast O(1) lookups
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    # -------------------------------------------------------------------------
+    # Helper Functions
+    # -------------------------------------------------------------------------
+    
+    def get_neighbors(r, c):
+        # In this Hex grid representation:
+        # A cell (r, c) touches:
+        # (r, c-1), (r, c+1) -> neighbors in the same row
+        # (r-1, c), (r-1, c+1) -> neighbors in the row above
+        # (r+1, c-1), (r+1, c) -> neighbors in the row below
+        candidates = [
+            (r, c-1), (r, c+1),
+            (r-1, c), (r-1, c+1),
+            (r+1, c-1), (r+1, c)
+        ]
+        return [(nr, nc) for nr, nc in candidates 
+                if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE]
+
+    def get_shortest_path(p_stones, p_obstacles, direction):
+        """
+        Runs Dijkstra's algorithm to find the minimum weighted distance 
+        (number of empty cells to occupy) to connect the two sides.
+        
+        Args:
+            p_stones: Set of coordinates occupied by the player.
+            p_obstacles: Set of coordinates occupied by the opponent.
+            direction: 'TB' (Top-Bottom) or 'LR' (Left-Right).
+            
+        Returns:
+            int: Minimum stones needed (0 means connected). 
+                 Returns float('inf') if blocked.
+        """
+        pq = []
+        visited = set()
+        
+        # Initialize priority queue with source nodes
+        # Cost is 0 if stone already exists (my stone), 1 if empty.
+        if direction == 'TB':
+            # Sources: Top row (0, c)
+            for c in range(BOARD_SIZE):
+                node = (0, c)
+                if node in p_obstacles: continue
+                cost = 0 if node in p_stones else 1
+                heapq.heappush(pq, (cost, node))
+        else: # LR
+            # Sources: Left col (r, 0)
+            for r in range(BOARD_SIZE):
+                node = (r, 0)
+                if node in p_obstacles: continue
+                cost = 0 if node in p_stones else 1
+                heapq.heappush(pq, (cost, node))
+        
+        while pq:
+            d, (r, c) = heapq.heappop(pq)
+            
+            if (r, c) in visited:
+                continue
+            visited.add((r, c))
+            
+            # Check target condition
+            if direction == 'TB':
+                if r == BOARD_SIZE - 1:
+                    return d
+            else: # LR
+                if c == BOARD_SIZE - 1:
+                    return d
+            
+            # Expand neighbors
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) in p_obstacles:
+                    continue
+                if (nr, nc) in visited:
+                    continue
+                
+                weight = 0 if (nr, nc) in p_stones else 1
+                heapq.heappush(pq, (d + weight, (nr, nc)))
+        
+        return float('inf')
+
+    # -------------------------------------------------------------------------
+    # Strategy Logic
+    # -------------------------------------------------------------------------
+    
+    # 1. Opening Strategy: Claim center if available and board is distinctively empty
+    # The center (5, 5) is the strongest opening move in Hex.
+    if len(me) == 0 and len(opp) <= 1:
+        center = (5, 5)
+        if center not in opp_set:
+            return center
+    
+    # 2. Setup Direction and Sets
+    if color == 'b':
+        my_dir = 'TB'  # Black connects Top-Bottom
+        opp_dir = 'LR' # White connects Left-Right
+    else:
+        my_dir = 'LR'  # White connects Left-Right
+        opp_dir = 'TB' # Black connects Top-Bottom
+
+    best_move = None
+    best_score = -float('inf')
+    
+    # Identify all legal moves (empty cells)
+    empty_cells = []
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if (r, c) not in me_set and (r, c) not in opp_set:
+                empty_cells.append((r, c))
+    
+    # Fallback to avoid crash if board is full (unlikely without game end)
+    if not empty_cells:
+        return (0, 0)
+
+    # 3. Evaluate Every Legal Move
+    for (r, c) in empty_cells:
+        # --- Evaluation 1: My potential connectivity ---
+        # Temporarily place my stone
+        me_set.add((r, c))
+        
+        # Check if playing here causes an immediate win
+        my_dist_after_move = get_shortest_path(me_set, opp_set, my_dir)
+        
+        # Check how much this move hinders the opponent (Defensive value)
+        # Note: (r, c) is now in 'me_set', so get_shortest_path treats it as an obstacle for opp
+        opp_dist_blocked = get_shortest_path(opp_set, me_set, opp_dir)
+        
+        me_set.remove((r, c)) # Backtrack
+        
+        # Priority 1: Immediate Win
+        if my_dist_after_move == 0:
+            return (r, c)
+            
+        # --- Evaluation 2: Opponent's threat ---
+        # Check if opponent playing here would give them a win
+        opp_set.add((r, c))
+        opp_dist_if_they_move = get_shortest_path(opp_set, me_set, opp_dir)
+        opp_set.remove((r, c)) # Backtrack
+        
+        is_threat = (opp_dist_if_they_move == 0)
+        
+        # --- Evaluation 3: Heuristic Scoring ---
+        score = 0
+        
+        # Heavy weight: Block an immediate defeat
+        if is_threat:
+            score += 100000
+            
+        # Medium weight: Maximize obstacle for opponent
+        # If opponent is cut off (inf), treat as very high finite value
+        if opp_dist_blocked == float('inf'):
+            score += 5000 # Very good to cut them off entirely
+        else:
+            score += 50 * opp_dist_blocked
+            
+        # Medium weight: Minimize my path length
+        score -= 50 * my_dist_after_move
+        
+        # Light weight: Centrality (Control middle of board)
+        # Manhattan distance from center (5, 5)
+        dist_from_center = abs(r - 5) + abs(c - 5)
+        score -= dist_from_center
+        
+        # Track Max
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+            
+    return best_move

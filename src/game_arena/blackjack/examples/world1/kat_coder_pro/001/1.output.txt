@@ -1,0 +1,111 @@
+<thinking>
+I need to implement a policy for a simplified Blackjack-like game. Let me think through the key aspects:
+
+1. The game has a target score T (10-30) that's given as input
+2. I have a 13-card deck with one copy each of A, 2-10, J, Q, K
+3. Card values: 2-10 = face value, J/Q/K = 10, A = 11 (if hand <= T) or 1 (if hand > T)
+4. I need to decide between "HIT" or "STAY" on each turn
+5. Goal: get as close to target as possible without busting
+
+Since I don't know the opponent's strategy or cards, I should focus on maximizing my expected value. Key considerations:
+
+- I need to track which cards I've already used (since I have only one copy of each)
+- The Ace value depends on whether my current hand would bust
+- I need to balance the risk of busting against the potential reward of getting closer to target
+
+My strategy should be:
+1. Calculate current hand value (with Ace logic)
+2. If I'm already at or very close to target, stay
+3. If I'm far from target, consider hitting
+4. Calculate the risk of busting based on remaining cards
+5. Use expected value calculations to make the decision
+
+Let me implement a policy that:
+- Always stays if current value >= target
+- Uses a threshold-based approach for hitting/staying
+- Considers the distribution of remaining cards
+- Takes into account how close I am to the target
+</thinking>
+
+<code>
+import numpy as np
+
+def policy(hand: list[str], target: int) -> str:
+    # Card values mapping
+    card_values = {
+        '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9, '10': 10,
+        'J': 10, 'Q': 10, 'K': 10, 'A': 11
+    }
+    
+    # Calculate current hand value with Ace logic
+    def get_hand_value(hand):
+        # Count Aces separately
+        aces = hand.count('A')
+        non_ace_value = sum(card_values[card] for card in hand if card != 'A')
+        
+        # Try to use Aces as 11 first, then as 1 if needed
+        current_value = non_ace_value
+        for _ in range(aces):
+            if current_value + 11 <= target:
+                current_value += 11
+            else:
+                current_value += 1
+        return current_value
+    
+    current_value = get_hand_value(hand)
+    
+    # If already at or over target, must stay
+    if current_value >= target:
+        return "STAY"
+    
+    # Calculate remaining cards
+    all_cards = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K']
+    remaining_cards = [card for card in all_cards if card not in hand]
+    
+    # If no cards left, must stay
+    if not remaining_cards:
+        return "STAY"
+    
+    # Calculate distance to target
+    distance = target - current_value
+    
+    # If very close to target, be conservative
+    if distance <= 2:
+        return "STAY"
+    
+    # Calculate risk of busting
+    bust_threshold = target - current_value
+    bust_cards = [card for card in remaining_cards if card_values[card] > bust_threshold]
+    
+    # Special handling for Ace - it can be 1 or 11
+    # If Ace would cause bust as 11, it becomes 1, so it never causes bust
+    bust_probability = len(bust_cards) / len(remaining_cards)
+    
+    # If high risk of busting, be conservative
+    if bust_probability > 0.5:
+        return "STAY"
+    
+    # Calculate expected value if we hit
+    # For Ace, we need special handling since it can be 1 or 11
+    expected_gain = 0
+    for card in remaining_cards:
+        if card == 'A':
+            # Ace can be 11 if it doesn't bust, otherwise 1
+            if current_value + 11 <= target:
+                expected_gain += 11
+            else:
+                expected_gain += 1
+        else:
+            expected_gain += card_values[card]
+    
+    expected_gain /= len(remaining_cards)
+    
+    # If expected gain is high relative to risk, hit
+    # Use a threshold that gets more conservative as we get closer to target
+    conservative_factor = 1.0 - (current_value / target) * 0.5
+    
+    if expected_gain > (distance * conservative_factor):
+        return "HIT"
+    else:
+        return "STAY"
+</code>

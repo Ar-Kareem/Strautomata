@@ -1,0 +1,166 @@
+<thinking>
+I need to create a Python function that plays 3D Tic Tac Toe on a 3x3x3 board. The function should analyze the current board state and return the best move for the AI player (marked as 1).
+
+First, I should understand the game rules. In 3D Tic Tac Toe, players take turns marking cells in a 3x3x3 grid. The goal is to get three of your marks in a row along any straight line (row, column, or diagonal) in any of the 3 dimensions.
+
+The board is represented as a 3x3x3 list where:
+- 0 means empty
+- 1 means AI's move (me)
+- -1 means opponent's move
+
+I should implement a basic strategy that:
+1. First checks if there's an immediate winning move
+2. Then checks if there's an immediate blocking move (to prevent opponent from winning)
+3. Then looks for strategic positions (like center, corners)
+4. Finally picks any available move
+
+For the winning/blocking logic, I need to check all possible lines in 3D space. In a 3x3x3 cube, there are:
+- 9 rows (3 in each layer)
+- 9 columns (3 in each layer)
+- 9 pillars (vertical lines through layers)
+- 4 space diagonals (the main diagonals through the cube)
+
+Actually, let me count properly:
+- Rows: 3 layers × 3 rows per layer = 9
+- Columns: 3 layers × 3 columns per layer = 9
+- Depth lines (pillars): 3 × 3 positions × 1 line through layers = 9
+- Face diagonals: 6 faces × 2 diagonals per face = 12
+- Space diagonals: 4 (from corner to opposite corner through center)
+
+Total lines to check: 9 + 9 + 9 + 12 + 4 = 43 lines
+
+I should create a function to check all these lines for winning opportunities.
+
+For the policy function:
+1. First check if I can win immediately by placing in any empty cell that completes a line
+2. If not, check if opponent can win and block them
+3. If neither, use a priority system: center first, then corners, then edges
+4. If all else fails, pick the first available move
+
+The center of a 3x3x3 cube is at (1,1,1). Corners are positions where all coordinates are either 0 or 2. Edges are positions with two coordinates at 0/2 and one at 1.
+
+Let me implement this step by step.
+</thinking>
+<code>
+import numpy as np
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    # Convert to numpy array for easier manipulation
+    board_array = np.array(board)
+
+    # Get all empty positions
+    empty_positions = []
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board_array[i, j, k] == 0:
+                    empty_positions.append((i, j, k))
+
+    # If no empty positions, return None (though game should be over)
+    if not empty_positions:
+        return None
+
+    # Check for immediate winning move
+    for pos in empty_positions:
+        i, j, k = pos
+        # Temporarily place our mark
+        board_array[i, j, k] = 1
+        if check_win(board_array, 1):
+            return pos
+        # Undo the temporary placement
+        board_array[i, j, k] = 0
+
+    # Check for immediate blocking move
+    for pos in empty_positions:
+        i, j, k = pos
+        # Temporarily place opponent's mark
+        board_array[i, j, k] = -1
+        if check_win(board_array, -1):
+            return pos
+        # Undo the temporary placement
+        board_array[i, j, k] = 0
+
+    # If no immediate win/block, use strategic positioning
+    # Priority: center, then corners, then edges
+
+    # Check if center is available
+    center = (1, 1, 1)
+    if center in empty_positions:
+        return center
+
+    # Check corners (all coordinates are 0 or 2)
+    corners = [(0,0,0), (0,0,2), (0,2,0), (0,2,2),
+               (2,0,0), (2,0,2), (2,2,0), (2,2,2)]
+    for corner in corners:
+        if corner in empty_positions:
+            return corner
+
+    # Check edges (two coordinates are 0/2, one is 1)
+    edges = []
+    for i in [0, 2]:
+        for j in [0, 2]:
+            edges.append((i, j, 1))  # z-edge
+            edges.append((i, 1, j))  # y-edge
+            edges.append((1, i, j))  # x-edge
+
+    for edge in edges:
+        if edge in empty_positions:
+            return edge
+
+    # If all else fails, return the first available position
+    return empty_positions[0]
+
+def check_win(board: np.ndarray, player: int) -> bool:
+    """Check if the given player has won on the board."""
+    # Check all rows in each layer
+    for i in range(3):
+        for j in range(3):
+            if all(board[i, j, :] == player):
+                return True
+
+    # Check all columns in each layer
+    for i in range(3):
+        for k in range(3):
+            if all(board[i, :, k] == player):
+                return True
+
+    # Check all depth lines (pillars)
+    for j in range(3):
+        for k in range(3):
+            if all(board[:, j, k] == player):
+                return True
+
+    # Check face diagonals
+    # Front and back faces (z=0 and z=2)
+    for i in [0, 2]:
+        if board[i, 0, 0] == player and board[i, 1, 1] == player and board[i, 2, 2] == player:
+            return True
+        if board[i, 0, 2] == player and board[i, 1, 1] == player and board[i, 2, 0] == player:
+            return True
+
+    # Left and right faces (x=0 and x=2)
+    for k in [0, 2]:
+        if board[0, 0, k] == player and board[1, 1, k] == player and board[2, 2, k] == player:
+            return True
+        if board[0, 2, k] == player and board[1, 1, k] == player and board[2, 0, k] == player:
+            return True
+
+    # Top and bottom faces (y=0 and y=2)
+    for j in [0, 2]:
+        if board[0, j, 0] == player and board[1, j, 1] == player and board[2, j, 2] == player:
+            return True
+        if board[0, j, 2] == player and board[1, j, 1] == player and board[2, j, 0] == player:
+            return True
+
+    # Check space diagonals
+    if board[0, 0, 0] == player and board[1, 1, 1] == player and board[2, 2, 2] == player:
+        return True
+    if board[0, 0, 2] == player and board[1, 1, 1] == player and board[2, 2, 0] == player:
+        return True
+    if board[0, 2, 0] == player and board[1, 1, 1] == player and board[2, 0, 2] == player:
+        return True
+    if board[0, 2, 2] == player and board[1, 1, 1] == player and board[2, 0, 0] == player:
+        return True
+
+    return False
+</code>

@@ -1,0 +1,142 @@
+
+import time
+from typing import List, Tuple, Set
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    start_time = time.time()
+    
+    me_set: Set[Tuple[int, int]] = set(me)
+    opp_set: Set[Tuple[int, int]] = set(opp)
+    
+    direction = 1 if color == 'w' else -1
+    my_goal = 7 if color == 'w' else 0
+    opp_goal = 0 if color == 'w' else 7
+    
+    def generate_moves(pieces: Set[Tuple[int, int]], enemy: Set[Tuple[int, int]], dir: int, goal_row: int):
+        """Generate all legal moves. Returns (moves, has_win)."""
+        moves = []
+        captures = []
+        advances = []
+        
+        for r, c in pieces:
+            nr = r + dir
+            if 0 <= nr <= 7:
+                # Straight forward - must be empty
+                if (nr, c) not in pieces and (nr, c) not in enemy:
+                    move = ((r, c), (nr, c))
+                    if nr == goal_row:
+                        return [move], True  # Winning move found
+                    advances.append(move)
+                
+                # Diagonals - capture or move to empty
+                for nc in (c - 1, c + 1):
+                    if 0 <= nc <= 7:
+                        if (nr, nc) in enemy:
+                            captures.append(((r, c), (nr, nc)))
+                        elif (nr, nc) not in pieces:
+                            moves.append(((r, c), (nr, nc)))
+        
+        # Order: captures first, then advances, then diagonal moves
+        return captures + advances + moves, False
+    
+    def evaluate(my_pieces: Set[Tuple[int, int]], enemy_pieces: Set[Tuple[int, int]]) -> int:
+        """Static evaluation from current player's perspective."""
+        # Material is crucial in Breakthrough
+        material = (len(my_pieces) - len(enemy_pieces)) * 1000
+        
+        # Advancement bonus
+        if color == 'w':
+            my_adv = sum(r for r, c in my_pieces) * 10
+            opp_adv = sum(7 - r for r, c in enemy_pieces) * 10
+        else:
+            my_adv = sum(7 - r for r, c in my_pieces) * 10
+            opp_adv = sum(r for r, c in enemy_pieces) * 10
+        
+        return material + my_adv - opp_adv
+    
+    # Get all legal moves for current player
+    my_moves, immediate_win = generate_moves(me_set, opp_set, direction, my_goal)
+    
+    if immediate_win:
+        return my_moves[0]
+    
+    if not my_moves:
+        # Should not happen in a valid game, but return something to avoid crash
+        return (me[0], me[0])
+    
+    best_move = my_moves[0]
+    best_score = -float('inf')
+    
+    # 2-ply minimax search
+    for move in my_moves:
+        r1, c1 = move[0]
+        r2, c2 = move[1]
+        
+        # Execute my move
+        new_me = set(me_set)
+        new_me.remove((r1, c1))
+        new_me.add((r2, c2))
+        new_opp = set(opp_set)
+        
+        is_capture = (r2, c2) in new_opp
+        if is_capture:
+            new_opp.remove((r2, c2))
+        
+        # Check if I just won
+        if r2 == my_goal:
+            return move
+        
+        # Get opponent's responses
+        opp_dir = -direction
+        opp_moves, opp_can_win = generate_moves(new_opp, new_me, opp_dir, opp_goal)
+        
+        if opp_can_win:
+            # Opponent has immediate winning move, avoid this line if possible
+            score = -5000
+        elif not opp_moves:
+            # Opponent has no legal moves (stalemate/losing position for them)
+            score = 4000
+        else:
+            # Find opponent's best move (minimizes my advantage)
+            worst_score = float('inf')
+            
+            for opp_move in opp_moves:
+                or1, oc1 = opp_move[0]
+                or2, oc2 = opp_move[1]
+                
+                # Execute opponent move
+                final_opp = set(new_opp)
+                final_opp.remove((or1, oc1))
+                final_opp.add((or2, oc2))
+                final_me = set(new_me)
+                
+                if (or2, oc2) in final_me:
+                    final_me.remove((or2, oc2))
+                
+                # Check if opponent wins
+                if or2 == opp_goal:
+                    score = -4000
+                else:
+                    score = evaluate(final_me, final_opp)
+                
+                if score < worst_score:
+                    worst_score = score
+                    # Early pruning if we found a very bad line
+                    if worst_score < -3000:
+                        break
+            
+            score = worst_score
+        
+        # Slight preference for captures (material gain)
+        if is_capture:
+            score += 100
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+        
+        # Time management
+        if time.time() - start_time > 0.9:
+            break
+    
+    return best_move

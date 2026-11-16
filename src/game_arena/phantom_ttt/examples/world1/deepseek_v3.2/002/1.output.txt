@@ -1,0 +1,127 @@
+# Strategy for Phantom Tic Tac Toe
+
+Since Phantom Tic Tac Toe involves imperfect information (we can't see opponent's successful placements), we need a strategy that balances:
+1. **Aggressive play**: Try to complete lines where we already have confirmed marks (1s)
+2. **Information gathering**: Probe cells to discover which ones are occupied vs empty
+3. **Adaptive behavior**: Adjust strategy based on game phase
+
+**Key insights:**
+- When we have 2 confirmed marks in a line, the third cell is likely valuable
+- The center (1,1) is statistically the most valuable position
+- Corners provide more winning opportunities than edges
+- We should avoid trying cells we already know are ours (marked 1)
+
+**Algorithm:**
+1. **Immediate win**: If we have 2 confirmed marks in any line, try the third cell
+2. **Block opponent**: Since we can't see opponent marks, we use probability - if we have 1 confirmed mark in a line, try the other cells to potentially complete or block
+3. **Strategic placement**: Prefer center, then corners, then edges
+4. **Exploration**: When no clear move, try to expand our knowledge by probing cells that could create future opportunities
+
+**Implementation details:**
+- Use a move priority system with weights
+- Track potential winning lines
+- Random tie-breaking to avoid predictable patterns
+
+<code>
+import random
+from collections import defaultdict
+
+def policy(board: list[list[int]], legal_moves: list[int]) -> tuple[int, int]:
+    """
+    Strategy for Phantom Tic Tac Toe:
+    1. First, check for immediate winning moves (2 in a row with 3rd cell legal)
+    2. Then try to create/block potential lines
+    3. Use strategic position priorities (center > corners > edges)
+    4. Add randomness to avoid being predictable
+    """
+    
+    # Convert legal moves to (row, col) format
+    legal_cells = [(move // 3, move % 3) for move in legal_moves]
+    
+    # Strategy 1: Immediate winning moves
+    # Check all rows, columns, and diagonals for 2 confirmed marks (1s)
+    # And see if the third cell is legal
+    lines = [
+        # Rows
+        [(0,0), (0,1), (0,2)],
+        [(1,0), (1,1), (1,2)],
+        [(2,0), (2,1), (2,2)],
+        # Columns
+        [(0,0), (1,0), (2,0)],
+        [(0,1), (1,1), (2,1)],
+        [(0,2), (1,2), (2,2)],
+        # Diagonals
+        [(0,0), (1,1), (2,2)],
+        [(0,2), (1,1), (2,0)]
+    ]
+    
+    for line in lines:
+        # Count our confirmed marks in this line
+        our_marks = sum(board[r][c] for r, c in line)
+        if our_marks == 2:
+            # Find the empty cell in this line
+            for r, c in line:
+                if board[r][c] == 0 and (r, c) in legal_cells:
+                    return (r, c)
+    
+    # Strategy 2: Create opportunities - look for lines with 1 confirmed mark
+    for line in lines:
+        our_marks = sum(board[r][c] for r, c in line)
+        if our_marks == 1:
+            # Try cells in this line that could lead to a win
+            for r, c in line:
+                if board[r][c] == 0 and (r, c) in legal_cells:
+                    # Check if this cell is part of multiple potential winning lines
+                    return (r, c)
+    
+    # Strategy 3: Position-based strategy with weights
+    # Center is most valuable
+    position_weights = {
+        (1, 1): 10,  # Center
+        
+        # Corners
+        (0, 0): 5, (0, 2): 5, 
+        (2, 0): 5, (2, 2): 5,
+        
+        # Edges
+        (0, 1): 3, (1, 0): 3,
+        (1, 2): 3, (2, 1): 3
+    }
+    
+    # Calculate scores for all legal moves
+    move_scores = []
+    for r, c in legal_cells:
+        score = position_weights.get((r, c), 0)
+        
+        # Bonus: if this move creates multiple potential lines
+        line_potential = 0
+        for line in lines:
+            if (r, c) in line:
+                # Check if this line has at least one of our marks
+                line_marks = sum(board[r2][c2] for r2, c2 in line if (r2, c2) != (r, c))
+                if line_marks > 0:
+                    line_potential += 1
+        score += line_potential * 2
+        
+        move_scores.append(((r, c), score))
+    
+    # Sort by score (highest first)
+    move_scores.sort(key=lambda x: x[1], reverse=True)
+    
+    # Return the highest scoring move
+    # Add some randomness among top moves to avoid predictability
+    if len(move_scores) > 1:
+        # Consider top 3 moves
+        top_score = move_scores[0][1]
+        top_moves = [move for move, score in move_scores if score >= top_score - 1]
+        return random.choice(top_moves)
+    else:
+        return move_scores[0][0]
+
+# For testing locally (not used in arena)
+if __name__ == "__main__":
+    # Example board (all unknown)
+    test_board = [[0, 0, 0], [0, 0, 0], [0, 0, 0]]
+    test_moves = list(range(9))
+    print(policy(test_board, test_moves))
+</code>

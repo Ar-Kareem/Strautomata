@@ -1,0 +1,114 @@
+The strategy for this policy is to implement a multi-layered approach:
+
+1. **Winning Move Priority**: Always check for an immediate win by moving a piece to the opponent's home row.
+2. **Threat Prevention**: If the opponent has a piece on our home row, prioritize capturing it.
+3. **Progress Advancement**: Advance pieces that are closest to the opponent's home row.
+4. **Safe Captures**: Perform captures when they don't expose our pieces unnecessarily.
+5. **Favor Forward Movement**: Prefer forward moves over diagonal moves when no immediate tactical advantage exists.
+6. **Fallback Strategy**: If no other moves are available, make the first legal move found.
+
+This approach balances between aggressive tactics (capturing, advancing) and defensive play (preventing opponent wins). It prioritizes positional advantage while maintaining board control.
+
+<code>
+def policy(me, opp, color):
+    # Determine direction based on color
+    if color == 'b':
+        direction = -1  # Black moves down (decreasing row)
+        home_row = 7
+        opp_home_row = 0
+    else:
+        direction = 1   # White moves up (increasing row)
+        home_row = 0
+        opp_home_row = 7
+
+    # Convert positions to sets for faster lookup
+    my_positions = set(me)
+    opp_positions = set(opp)
+
+    # 1. Check for winning move
+    for r, c in me:
+        # Try straight forward move to opponent's home row
+        if r + direction == opp_home_row:
+            if (r + direction, c) not in my_positions and (r + direction, c) not in opp_positions:
+                return ((r, c), (r + direction, c))
+
+    # 2. Check for opponent pieces on our home row that need to be captured
+    for r, c in opp:
+        if r == home_row:
+            # Check if we can capture this piece
+            # For black, this would be a forward-diagonal move from row 7 to row 6
+            # For white, this would be a forward-diagonal move from row 0 to row 1
+            if color == 'b':
+                # Check if we have a piece at (6, c-1) or (6, c+1) that can capture
+                for my_r, my_c in [(home_row - 1, c - 1), (home_row - 1, c + 1)]:
+                    if (my_r, my_c) in my_positions:
+                        if abs(my_c - c) == 1:  # Valid diagonal
+                            return ((my_r, my_c), (home_row, c))
+            else:
+                # Check if we have a piece at (1, c-1) or (1, c+1) that can capture
+                for my_r, my_c in [(home_row + 1, c - 1), (home_row + 1, c + 1)]:
+                    if (my_r, my_c) in my_positions:
+                        if abs(my_c - c) == 1:  # Valid diagonal
+                            return ((my_r, my_c), (home_row, c))
+
+    # 3. Try to advance the most advanced pieces (closest to opponent home row)
+    # Sort pieces by distance to opponent home row (ascending)
+    sorted_pieces = sorted(me, key=lambda pos: abs(pos[0] - opp_home_row))
+    
+    for r, c in sorted_pieces:
+        # Try straight forward move first (preferred)
+        r_new = r + direction
+        if 0 <= r_new <= 7:
+            # Straight move
+            if (r_new, c) not in my_positions and (r_new, c) not in opp_positions:
+                return ((r, c), (r_new, c))
+            
+            # Diagonal moves (capture or empty)
+            for dc in [-1, 1]:
+                c_new = c + dc
+                if 0 <= c_new <= 7:
+                    # Capture move
+                    if (r_new, c_new) in opp_positions:
+                        return ((r, c), (r_new, c_new))
+                    # Empty diagonal (less preferred than straight)
+                    elif (r_new, c_new) not in my_positions:
+                        # We'll consider this later if no captures are available
+        
+    # 4. Make any legal move (capture or forward/diagonal)
+    for r, c in me:
+        r_new = r + direction
+        if 0 <= r_new <= 7:
+            # Straight move
+            if (r_new, c) not in my_positions and (r_new, c) not in opp_positions:
+                return ((r, c), (r_new, c))
+            
+            # Diagonal moves
+            for dc in [-1, 1]:
+                c_new = c + dc
+                if 0 <= c_new <= 7:
+                    # Capture
+                    if (r_new, c_new) in opp_positions:
+                        return ((r, c), (r_new, c_new))
+                    # Diagonal forward (empty)
+                    elif (r_new, c_new) not in my_positions:
+                        return ((r, c), (r_new, c_new))
+    
+    # Fallback (should never happen in a legal position where we have moves)
+    # But required to satisfy the API constraint of always returning a move
+    for r, c in me:
+        r_new = r + direction
+        if 0 <= r_new <= 7:
+            # Try straight
+            if (r_new, c) not in my_positions and (r_new, c) not in opp_positions:
+                return ((r, c), (r_new, c))
+            # Try diagonals
+            for dc in [-1, 1]:
+                c_new = c + dc
+                if 0 <= c_new <= 7:
+                    if (r_new, c_new) not in my_positions:
+                        return ((r, c), (r_new, c_new))
+
+    # This should never be reached in a valid game state
+    # but included for robustness
+    return (me[0], (me[0][0] + direction, me[0][1]))
+</code>

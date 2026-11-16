@@ -1,0 +1,212 @@
+
+import random
+from typing import List, Tuple, Set
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Advanced Battleship targeting policy that combines:
+    1. Hunt mode: Probability-based targeting using ship placement constraints
+    2. Target mode: Systematic destruction of discovered ships
+    3. Parity optimization for efficient hunting
+    """
+    
+    # Ship lengths in the game
+    SHIP_LENGTHS = [5, 4, 3, 3, 2]
+    BOARD_SIZE = 10
+    
+    def get_unfired_cells() -> Set[Tuple[int, int]]:
+        """Get all cells that haven't been fired at yet."""
+        unfired = set()
+        for r in range(BOARD_SIZE):
+            for c in range(BOARD_SIZE):
+                if board[r][c] == 0:
+                    unfired.add((r, c))
+        return unfired
+    
+    def get_hits() -> Set[Tuple[int, int]]:
+        """Get all cells that are hits."""
+        hits = set()
+        for r in range(BOARD_SIZE):
+            for c in range(BOARD_SIZE):
+                if board[r][c] == 1:
+                    hits.add((r, c))
+        return hits
+    
+    def get_adjacent_cells(r: int, c: int) -> List[Tuple[int, int]]:
+        """Get valid adjacent cells (up, down, left, right)."""
+        adjacent = []
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE:
+                adjacent.append((nr, nc))
+        return adjacent
+    
+    def find_ship_targets() -> List[Tuple[int, int]]:
+        """Find unfired cells adjacent to hits that could be part of ships."""
+        targets = []
+        hits = get_hits()
+        unfired = get_unfired_cells()
+        
+        for hit_r, hit_c in hits:
+            # Check if this hit is part of an incomplete ship
+            adjacent_unfired = []
+            for adj_r, adj_c in get_adjacent_cells(hit_r, hit_c):
+                if (adj_r, adj_c) in unfired:
+                    adjacent_unfired.append((adj_r, adj_c))
+            
+            # If there are adjacent unfired cells, this might be an incomplete ship
+            if adjacent_unfired:
+                # Check if we can determine direction
+                hit_neighbors = []
+                for adj_r, adj_c in get_adjacent_cells(hit_r, hit_c):
+                    if (adj_r, adj_c) in hits:
+                        hit_neighbors.append((adj_r, adj_c))
+                
+                if hit_neighbors:
+                    # We have a direction, prioritize cells in that direction
+                    for neighbor_r, neighbor_c in hit_neighbors:
+                        dr = neighbor_r - hit_r
+                        dc = neighbor_c - hit_c
+                        
+                        # Extend in both directions along the line
+                        for direction in [1, -1]:
+                            test_r = hit_r + direction * dr
+                            test_c = hit_c + direction * dc
+                            while (0 <= test_r < BOARD_SIZE and 0 <= test_c < BOARD_SIZE and 
+                                   (test_r, test_c) in unfired):
+                                targets.append((test_r, test_c))
+                                test_r += direction * dr
+                                test_c += direction * dc
+                                break  # Only add the first unfired cell in each direction
+                else:
+                    # No direction determined yet, add all adjacent unfired cells
+                    targets.extend(adjacent_unfired)
+        
+        return list(set(targets))  # Remove duplicates
+    
+    def calculate_ship_probabilities() -> List[List[float]]:
+        """Calculate probability that each cell contains a ship based on possible placements."""
+        prob_grid = [[0.0 for _ in range(BOARD_SIZE)] for _ in range(BOARD_SIZE)]
+        unfired = get_unfired_cells()
+        
+        # Estimate remaining ships based on hits
+        hits = get_hits()
+        total_hit_cells = len(hits)
+        remaining_ship_cells = sum(SHIP_LENGTHS) - total_hit_cells
+        
+        if remaining_ship_cells <= 0:
+            return prob_grid
+        
+        # For each ship length, calculate placement probabilities
+        for ship_len in SHIP_LENGTHS:
+            # Try all possible placements
+            for r in range(BOARD_SIZE):
+                for c in range(BOARD_SIZE):
+                    # Try horizontal placement
+                    if c + ship_len <= BOARD_SIZE:
+                        valid = True
+                        placement_cells = []
+                        for i in range(ship_len):
+                            cell = (r, c + i)
+                            placement_cells.append(cell)
+                            if board[r][c + i] == -1:  # Hit water
+                                valid = False
+                                break
+                        
+                        if valid:
+                            # Check if placement is consistent with known hits
+                            has_required_hit = any(board[r][c + i] == 1 for i in range(ship_len))
+                            weight = 1.0
+                            if has_required_hit:
+                                weight *= 2.0  # Prefer placements that explain existing hits
+                            
+                            for cell_r, cell_c in placement_cells:
+                                if (cell_r, cell_c) in unfired:
+                                    prob_grid[cell_r][cell_c] += weight
+                    
+                    # Try vertical placement
+                    if r + ship_len <= BOARD_SIZE:
+                        valid = True
+                        placement_cells = []
+                        for i in range(ship_len):
+                            cell = (r + i, c)
+                            placement_cells.append(cell)
+                            if board[r + i][c] == -1:  # Hit water
+                                valid = False
+                                break
+                        
+                        if valid:
+                            # Check if placement is consistent with known hits
+                            has_required_hit = any(board[r + i][c] == 1 for i in range(ship_len))
+                            weight = 1.0
+                            if has_required_hit:
+                                weight *= 2.0  # Prefer placements that explain existing hits
+                            
+                            for cell_r, cell_c in placement_cells:
+                                if (cell_r, cell_c) in unfired:
+                                    prob_grid[cell_r][cell_c] += weight
+        
+        return prob_grid
+    
+    def get_parity_cells(unfired: Set[Tuple[int, int]], parity: int) -> List[Tuple[int, int]]:
+        """Get unfired cells matching the specified parity (0 or 1)."""
+        parity_cells = []
+        for r, c in unfired:
+            if (r + c) % 2 == parity:
+                parity_cells.append((r, c))
+        return parity_cells
+    
+    # Main targeting logic
+    unfired = get_unfired_cells()
+    
+    if not unfired:
+        # Should not happen, but fallback
+        return (0, 0)
+    
+    # Priority 1: Target cells adjacent to known hits (Target Mode)
+    ship_targets = find_ship_targets()
+    if ship_targets:
+        # Choose the target with highest probability among ship targets
+        prob_grid = calculate_ship_probabilities()
+        best_target = max(ship_targets, 
+                         key=lambda pos: prob_grid[pos[0]][pos[1]])
+        return best_target
+    
+    # Priority 2: Hunt Mode - Use probability grid with parity optimization
+    prob_grid = calculate_ship_probabilities()
+    
+    # Apply parity optimization for efficient hunting
+    # Start with checkerboard pattern (parity 0), then fill in
+    total_cells = len(unfired)
+    parity_0_cells = get_parity_cells(unfired, 0)
+    parity_1_cells = get_parity_cells(unfired, 1)
+    
+    # Use parity 0 (checkerboard) if we have many cells left
+    # Switch to parity 1 when we have fewer cells or need to fill gaps
+    use_parity_0 = len(parity_0_cells) > len(parity_1_cells) * 0.5 and total_cells > 20
+    
+    candidate_cells = parity_0_cells if use_parity_0 else list(unfired)
+    
+    if not candidate_cells:
+        candidate_cells = list(unfired)
+    
+    # Find the cell with highest probability
+    if candidate_cells:
+        best_cell = max(candidate_cells, 
+                       key=lambda pos: prob_grid[pos[0]][pos[1]])
+        
+        # If all probabilities are similar, add some randomness
+        max_prob = prob_grid[best_cell[0]][best_cell[1]]
+        if max_prob == 0:
+            # No probability guidance, choose randomly
+            return random.choice(candidate_cells)
+        
+        # Find all cells with similar high probability
+        threshold = max_prob * 0.9
+        high_prob_cells = [pos for pos in candidate_cells 
+                          if prob_grid[pos[0]][pos[1]] >= threshold]
+        
+        return random.choice(high_prob_cells) if high_prob_cells else best_cell
+    
+    # Fallback: random choice
+    return random.choice(list(unfired))

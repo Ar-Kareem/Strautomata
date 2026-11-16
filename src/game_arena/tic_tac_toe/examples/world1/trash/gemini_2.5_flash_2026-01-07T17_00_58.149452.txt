@@ -1,0 +1,722 @@
+<thinking>
+The user wants a Python function `policy(board)` that returns the best move for a Tic Tac Toe game.
+The board is a 3x3 list of lists, where 0 is empty, 1 is 'me', and -1 is 'opponent'.
+I need to implement a strategy to choose the next move.
+
+A good strategy for Tic Tac Toe involves:
+1.  **Winning move**: If I can win in the next move, take it.
+2.  **Blocking move**: If the opponent can win in the next move, block them.
+3.  **Forking opportunity**: Create a situation where I have two winning threats.
+4.  **Block opponent's fork**: If the opponent can create a fork, block it.
+5.  **Center preference**: Take the center if available.
+6.  **Corner preference**: Take a corner if available.
+7.  **Side preference**: Take a side if available.
+
+Let's break this down into functions.
+
+First, I need a way to find all empty cells.
+Then, for each empty cell, I can simulate placing my move there and check the board state.
+
+Helper functions:
+*   `get_empty_cells(board)`: Returns a list of (row, col) tuples for empty cells.
+*   `check_win(board, player)`: Checks if a given player has won on the board.
+
+Main `policy` function logic:
+
+1.  **Check for winning moves**: Iterate through all empty cells. For each empty cell, place my marker (`1`), check if I win. If yes, return that cell.
+2.  **Check for blocking moves**: Iterate through all empty cells. For each empty cell, place opponent's marker (`-1`), check if opponent wins. If yes, return that cell (to block).
+3.  **Check for center**: If (1, 1) is empty, return (1, 1).
+4.  **Check for potential forks (offensive)**: This is a bit more complex. A fork means placing a mark creates two separate lines where I could win on the *next* turn.
+    *   Iterate through empty cells.
+    *   For each empty cell `(r, c)`, place my mark (`1`).
+    *   Count how many ways I can win in the *next* move from this state (i.e., how many empty cells, if filled by me, would lead to a win).
+    *   If this count is 2 or more, then `(r, c)` is a fork. Take it.
+5.  **Block opponent's forks (defensive)**: This is also complex.
+    *   Iterate through empty cells.
+    *   For each empty empty cell `(r, c)`, place opponent's mark (`-1`).
+    *   Count how many ways the opponent can win in the *next* move from this state.
+    *   If this count is 2 or more, then `(r, c)` is an opponent's fork. I should block this.
+        *   However, if there's only one blocking move that prevents a fork, I take that.
+        *   If there are multiple forks, prioritize the one that blocks a win immediately.
+        *   A simpler approach might be: if the opponent can create a fork, I need to make a move that prevents them from winning on the *next* turn, even if it's not a fork for me.
+        *   Let's refine: If placing an opponent's mark at `(r, c)` creates a fork *for the opponent*, I need to block it. What's the best way to block it?
+            *   One strategy: find all moves that would lead to an opponent's fork. If there's more than one, simply taking one of *their* potential winning spots is a good defense.
+            *   A more robust way: If the opponent can create a fork, I should prevent it. If there's only one such cell, I take it. If there are multiple, I might combine this with my own fork creation.
+            *   Simpler approach for now: if I find a cell that creates a fork for the opponent, I should take it.
+
+    Let's reconsider fork strategy.
+    *   **My fork**: Try moves that create 2 or more possible winning lines.
+    *   **Block opponent fork**: Try moves that prevent the opponent from creating 2 or more possible winning lines.
+
+    The "two winning lines" check is the core for forks.
+
+    `count_winning_lines(board, player)`: Counts how many lines (rows, columns, diagonals) the `player` only needs one more cell to win.
+
+    Revised strategy:
+
+    1.  **Iterate through empty cells `(r, c)`:**
+        a.  **My winning move**: Simulate `board[r][c] = 1`. If `check_win(board, 1)` is true, return `(r, c)`.
+        b.  **Opponent's winning move**: Simulate `board[r][c] = -1`. If `check_win(board, -1)` is true, return `(r, c)` (to block).
+        c.  Reset `board[r][c] = 0` after each simulation.
+
+    2.  If no immediate win or block:
+        a.  **Center**: If `board[1][1] == 0`, return `(1, 1)`.
+
+    3.  **Forking moves**:
+        *   Create lists for `my_fork_moves` and `opponent_fork_moves`.
+        *   For each empty cell `(r, c)`:
+            *   Simulate `board[r][c] = 1`.
+            *   Count how many ways I can win from this board state on the *next* turn. (i.e., how many empty spots, if filled by me, would make me win). Let's call this `my_winning_opportunities`.
+            *   If `my_winning_opportunities >= 2`, add `(r, c)` to `my_fork_moves`.
+            *   Reset `board[r][c] = 0`.
+            *   Simulate `board[r][c] = -1`.
+            *   Count how many ways the opponent can win from this board state on the *next* turn. Let's call this `opp_winning_opportunities`.
+            *   If `opp_winning_opportunities >= 2`, add `(r, c)` to `opponent_fork_moves`.
+            *   Reset `board[r][c] = 0`.
+
+        *   If `my_fork_moves`: return _any_ move from `my_fork_moves` (preferably the first one found). This prioritizes creating my own fork.
+        *   If `opponent_fork_moves`: return _any_ move from `opponent_fork_moves`. This blocks the opponent's fork.
+
+    4.  **Corners**:
+        *   List corners: `[(0,0), (0,2), (2,0), (2,2)]`.
+        *   If any corner is empty, return it.
+
+    5.  **Sides**:
+        *   List sides: `[(0,1), (1,0), (1,2), (2,1)]`.
+        *   If any side is empty, return it.
+
+    This covers the standard Tic Tac Toe strategy.
+
+Let's implement `check_win` and a `count_potential_wins` carefully.
+
+```python
+def check_win(board, player):
+    # Check rows
+    for row in board:
+        if all(cell == player for cell in row):
+            return True
+    # Check columns
+    for col_idx in range(3):
+        if all(board[row_idx][col_idx] == player for row_idx in range(3)):
+            return True
+    # Check diagonals
+    if all(board[i][i] == player for i in range(3)):
+        return True
+    if all(board[i][2 - i] == player for i in range(3)):
+        return True
+    return False
+
+def count_potential_wins(board, player):
+    # Counts how many ways 'player' could win in the *next* move
+    empty_cells = []
+    for r in range(3):
+        for c in range(3):
+            if board[r][c] == 0:
+                empty_cells.append((r, c))
+
+    potential_wins = 0
+    for r_e, c_e in empty_cells:
+        # Simulate placing player's mark
+        board[r_e][c_e] = player
+        if check_win(board, player):
+            potential_wins += 1
+        # Revert the move
+        board[r_e][c_e] = 0
+    return potential_wins
+
+```
+
+Now integrate this into the `policy` function.
+
+```python
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Helper to find empty cells
+    empty_cells = []
+    for r in range(3):
+        for c in range(3):
+            if board[r][c] == 0:
+                empty_cells.append((r, c))
+
+    # 1. Check for win opportunities (me)
+    for r, c in empty_cells:
+        board[r][c] = 1  # Simulate my move
+        if check_win(board, 1):
+            return (r, c)
+        board[r][c] = 0  # Revert
+
+    # 2. Check for opponent's win opportunities (block)
+    for r, c in empty_cells:
+        board[r][c] = -1  # Simulate opponent's move
+        if check_win(board, -1):
+            return (r, c)
+        board[r][c] = 0  # Revert
+
+    # 3. Take center if available
+    if board[1][1] == 0:
+        return (1, 1)
+
+    # 4. Check for creating forks (me)
+    my_fork_moves = []
+    for r, c in empty_cells:
+        board[r][c] = 1
+        if count_potential_wins(board, 1) >= 2:
+            my_fork_moves.append((r, c))
+        board[r][c] = 0
+
+    if my_fork_moves:
+        return my_fork_moves[0] # Take the first fork found
+
+    # 5. Check for blocking opponent's forks
+    # This needs careful consideration. If there are multiple moves that block an opponent's fork,
+    # which one do we pick? Or should I try to create my own threat while blocking?
+    # A simpler approach: if the opponent has a fork, block it at one of the "forking" squares.
+    opponent_fork_moves = []
+    for r, c in empty_cells:
+        board[r][c] = -1
+        if count_potential_wins(board, -1) >= 2:
+            opponent_fork_moves.append((r, c))
+        board[r][c] = 0
+    
+    if opponent_fork_moves:
+        # If opponent can create a fork, block one of their potential winning lines.
+        # The best way to block an opponent's fork is to take one of the cells
+        # that *would* be part of their fork.
+        # However, a simpler strategy: if they have a fork, just block one of the cells that *creates* the fork.
+        # This implementation just takes one of the cells that result in an opponent's fork.
+        # This is not totally robust. For example, if opponent makes (0,0) and (2,2),
+        # center is taken. Then opponent places at (0,2). Now they could fork if I don't block.
+        # The true "block fork" logic involves identifying the actual two lines and taking one of the squares that forms it.
+        # For a standard Tic-Tac-Toe, blocking one of the squares that *creates* the fork is usually sufficient.
+        # E.g., You are O, board: X _ O / _ _ _ / X _ O. If I play center for O, I fork.
+        # Opponent made one move already (X).
+        # My move will be (1,1).
+        # Scenario:
+        # X 0 X
+        # 0 1 0
+        # X 0 X
+        # Board looks like:
+        # 0  0 -1
+        # 0  0  0
+        # 1  0  0
+        # Let's say it's my turn (1).
+        # Opponent is -1.
+        # Opponent's moves so far: (0,2) and (2,0)
+        # Board:
+        # 0  0 -1
+        # 0  0  0
+        # 1  0  0
+        # If I take (1,1), then after I place my 1:
+        # 0  0 -1
+        # 0  1  0
+        # 1  0  0
+        # Now it's opponent's turn. Opponent can place at (0,0) or (2,2) to win. This is a fork for opponent.
+        # My previous fork finding strategy should have found if (1,1) for -1 would lead to 2 potential wins.
+        # My current `opponent_fork_moves` will find moves that, if I make them, will result in the opponent having a fork.
+        # This isn't quite right. It should be: "find moves that, if *they* make them, would result in a fork for them".
+        # Let's re-think `opponent_fork_moves`.
+        # `opponent_fork_moves` now means "if I place my piece at (r,c), does it block an opponent fork?"
+        # The correct check is: what moves *would* the opponent make to create a fork?
+        # Iterate through empty_cells.
+        #   Temporarily place -1 at (r,c).
+        #   If `count_potential_wins(board, -1) >= 2`, then (r,c) is a fork for the opponent.
+        #   Add (r,c) to a `critical_opponent_moves`.
+        # If `critical_opponent_moves` has items, block one.
+        # My code for `opponent_fork_moves` currently does this correctly.
+        # So I choose one of these moves to block the fork.
+        return opponent_fork_moves[0]
+        
+
+    # 6. Take an empty corner
+    corners = [(0, 0), (0, 2), (2, 0), (2, 2)]
+    for r, c in corners:
+        if board[r][c] == 0:
+            return (r, c)
+
+    # 7. Take an empty side
+    sides = [(0, 1), (1, 0), (1, 2), (2, 1)]
+    for r, c in sides:
+        if board[r][c] == 0:
+            return (r, c)
+            
+    # Should not reach here in a valid Tic Tac Toe game as there's always an empty cell.
+    # But as a fallback, return the first empty cell.
+    if empty_cells:
+        return empty_cells[0]
+    return (-1, -1) # Indicate error, should not happen
+
+```
+
+Let's test the fork logic.
+Consider board:
+X . .
+. O .
+. . .
+(1 is me, -1 is opponent)
+Current:
+-1 0 0
+0 1 0
+0 0 0
+
+My turn (1).
+Empty cells: (0,1), (0,2), (1,0), (1,2), (2,0), (2,1), (2,2)
+
+1. Win for me? No.
+2. Block opponent win? No. (opponent -1 doesn't have 2 in a row/col/diag)
+3. Center? No, I (1) already have it. (Let's assume the example is for the next turn, with opponent having the center, or it's just my turn and I'm player '1')
+   Let's assume the state is:
+   -1 0 0
+   0 0 0
+   0 0 0
+   My turn (1).
+   1. Win: No
+   2. Block: No
+   3. Center (1,1): Yes. Return (1,1).
+   Board after (1,1):
+   -1 0 0
+   0 1 0
+   0 0 0
+
+Now my current code for `policy` should work.
+The `check_win` and `count_potential_wins` functions are critical.
+`count_potential_wins` is correct: it counts how many *single* moves by `player` would lead to *immediate* win on the next turn.
+So if `count_potential_wins(board, 1) >= 2` it means by making move `(r,c)`, I create >= 2 immediate winning threats for _my next turn_. This is a fork.
+And if `count_potential_wins(board, -1) >= 2` for a move `(r,c)` if _opponent_ made it, it means that `(r,c)` is a fork point for the opponent.
+
+Consider some tricky Tic Tac Toe scenarios:
+Scenario 1: Opponent creates a diagonal X block X.
+Board:
+X 0 X
+0 O 0
+0 0 0
+
+Let's represent: X=-1, O=1.
+Board:
+-1 0 -1
+0  1  0
+0  0  0
+
+My turn (1).
+1. Check for win (me=1): No (1 at (1,1) is not enough for any 3 in a row).
+2. Check for block (opponent=-1):
+   If I play at (0,1) for -1:
+   -1 -1 -1 (opponent wins). So (0,1) is a blocking move. My code should return (0,1).
+   If I play at (1,0) for -1:
+   -1 0 -1
+   -1 1 0
+   0 0 0 -> no win.
+
+   Wait, my `check_win` is for `board` itself.
+   If `board[r][c] = -1` makes `check_win(board, -1)` true.
+   Currently, my board does not have an immediate win for -1.
+   A win for -1 would be (0,0), (0,1), (0,2). Here, 0,1 is empty.
+   So if I check (0,1) for blocking:
+   `board[0][1] = -1`
+   Board:
+   -1 -1 -1
+   0   1  0
+   0   0  0
+   `check_win(board, -1)` is True. So my code should return (0,1). This is correct.
+
+Scenario 2: Opponent creates a fork.
+Board:
+X . .
+. O .
+. . X
+(-1=X, 1=O)
+Board:
+-1 0 0
+0  1 0
+0  0 -1
+
+My turn (1).
+1. Win (me)? No
+2. Block (opponent)?
+   Empty: (0,1), (0,2), (1,0), (1,2), (2,0), (2,1)
+   Let's check `(0,0)` to (2,2) for `check_win(board, -1)` when I put -1 there for simulation.
+   None of these leads to immediate win for -1. For example, if `(0,1)` = -1, board line is -1 -1 0, not immediate win.
+   So no direct block.
+
+3. Take center? No, I already have it (1,1).
+
+4. My fork opportunities:
+   Iterate `empty_cells`:
+   e.g., cell (0,1). Simulate `board[0][1]=1`:
+   -1 1 0
+   0  1 0
+   0  0 -1
+   `count_potential_wins(board, 1)`:
+     If I place 1 at (0,2): Win (0,1), (0,2), (0,0) (No, need -1 in (0,0)).
+     This logic is tricky. Let's trace `count_potential_wins` for the `board` after `board[0][1]=1`.
+     Board state for counting potential wins for my 1 (me):
+     -1 1 0
+     0  1 0
+     0  0 -1
+     Empty for *this* sub-check: (0,2), (1,0), (1,2), (2,0), (2,1)
+     - Simulate (0,2)=1:
+       -1 1 1 (win for 1? No, need -1 for row 0).
+       Wait, `check_win` checks for specific player.
+       If `board` is:
+       -1 1 0
+       0  1 0
+       0  0 -1
+       And I want to check for player 1.
+       The current row 0: -1 1 0 (no win)
+       The current col 1: 1 1 0 (no win)
+       diag 1: -1 1 -1 (no win)
+       diag 2: 0 1 0 (no win)
+       So for `(0,2)=1` simulation:
+       -1 1 1  <- This is a win for 1 (row 0), `check_win({-1,1,1},{0,1,0},{0,0,-1}, 1)` should be true. (It is not, because it still contains -1).
+       Ah, `check_win` must be called on the *current* state of the board.
+       `check_win(board, player)` checks if *player* HAS won on that board state.
+       `count_potential_wins` counts how many *empty cells* (r_e, c_e) when filled with `player` would make `check_win(...)` true.
+       
+       Let's re-evaluate `check_win`.
+       A potential winning line needs to be either:
+       [player, player, 0]
+       [player, 0, player]
+       [0, player, player]
+       
+       My `check_win` actually check if there is a *completed line*.
+       `if all(cell == player for cell in row): return True`
+       This is correct for an immediate win.
+
+       So, `count_potential_wins(board, player)` is counting how many empty squares, if filled by `player`, would immediately complete a line for `player`. This is exactly what is needed for fork detection.
+
+       Back to Scenario 2 with board:
+       -1 0 0
+       0  1 0
+       0  0 -1
+       Simulate my move for `my_fork_moves` at `(0,1)`:
+       Board becomes:
+       -1 1 0
+       0  1 0
+       0  0 -1
+       Now call `count_potential_wins(temp_board, 1)`:
+         Empty cells for `count_potential_wins` are: (0,2), (1,0), (1,2), (2,0), (2,1)
+         - For (0,2): temp board = `-1 1 1`. Check `check_win(temp_board, 1)`: No. (row 0 is -1,1,1; col 1 is 1,1,0; diag is -1,1,-1). No win.
+         - For (1,0): temp board = `-1 1 0 / 1 1 0 / 0 0 -1`. Check `check_win`: No.
+         ... and so on.
+       In this specific board, placing 1 at (0,1) doesn't create any two-in-a-row for player 1, so `count_potential_wins(board_after_0_1, 1)` would be 0.
+       So (0,1) is not a fork for me. Same for other `empty_cells`.
+       `my_fork_moves` will be empty.
+
+5. Opponent fork opportunities:
+   Iterate `empty_cells`.
+   e.g., cell (0,0). What happens if opponent (`-1`) placed at `(0,0)`?
+   Board becomes:
+   -1 0 0
+   0  1 0
+   0  0 -1
+   Wait, this is the current board! What if opponent placed at `(0,0)`? It's already `-1`. (This implies the description from a game perspective. My code shouldn't simulate on already occupied cells).
+   The `empty_cells` list already correctly takes care of this. Let's use `(0,1)` for opponent simulation.
+   Simulate `board[0][1] = -1`:
+   -1 -1 0
+   0   1 0
+   0   0 -1
+   Now call `count_potential_wins(temp_board, -1)`:
+     Empty cells for this sub-check: (0,2), (1,0), (1,2), (2,0), (2,1)
+     - Simulate (0,2)=-1:
+       Temp board: `-1 -1 -1`. `check_win(-1, -1, -1, ..., -1)` returns True. Potential win count = 1.
+     - Simulate (1,0)=-1:
+       Temp board: `-1 -1 0 / -1 1 0 / 0 0 -1`. Check `check_win(..., -1)`:
+         Col 0 is `-1 -1 0`. Not a win.
+         Row 0 is `-1 -1 0`. Not a win.
+         ... No win.
+     - Simulate (2,1)=-1:
+       Temp board: `-1 -1 0 / 0 1 0 / 0 -1 -1`. Check `check_win(..., -1)`:
+         Row 2 is `0 -1 -1`. Not a win.
+         Col 1 is `-1 1 -1`. Not a win.
+         ... No win.
+
+       What about the diagonal `(0,0), (1,1), (2,2)`? This is already `-1, 1, -1`. If I place at (1,1) *already full*, it cannot be included.
+       `count_potential_wins` iterates only over `board[r][c] == 0`.
+
+     Let's manually identify forks for the board:
+     -1 0 0
+     0  1 0
+     0  0 -1
+     My turn. Opponent is -1.
+     If opponent places at (0,2):
+     -1 0 -1
+     0  1 0
+     0  0 -1
+     Now opponent threatens (1,2) or (2,1) to win.
+     No, opponent threatens `(1,0)` for Column 0, `(0,1)` for Row 0. But my cell (1,1) disrupts both.
+     The "fork" implies two distinct lines that can be completed.
+     Lines are:
+     R0: [-1,0,0]
+     R1: [0,1,0]
+     R2: [0,0,-1]
+     C0: [-1,0,0]
+     C1: [0,1,0]
+     C2: [0,0,-1]
+     D1: [-1,1,-1] (already taken care of by occupied (1,1))
+     D2: [0,1,0] (already taken care of by occupied (1,1))
+
+     Let's re-think `count_potential_wins`. Is it too simple?
+     It counts how many empty cells can complete a 3-in-a-row. This is a very standard way to detect 2-in-a-row (needs 1 more to win). Which is what forks are built upon.
+
+     Scenario:
+     -1 0 0
+     0  1 0
+     0  0 -1
+     If I am player 1, my turn. (-1 is X, 1 is O).
+     My move (1,1) is taken.
+     I want to identify opponent forks.
+     What if opponent takes (0,1)?
+     Board is `-1 -1 0 / 0 1 0 / 0 0 -1`.
+     Let's evaluate `count_potential_wins` FOR OPPONENT (`-1`) on this board.
+     Empty cells: (0,2), (1,0), (1,2), (2,0), (2,1)
+     - `board[0][2]=-1`: gives `(-1,-1,-1)` for row 0. Win for -1 count = 1.
+     - `board[1][0]=-1`: gives `(-1,-1,0)` for col 0. No win.
+     - `board[1][2]=-1`: gives `(0,1,-1)` for col 2. No win.
+     - `board[2][0]=-1`: gives `(-1,-1,-1)` for col 0, row 2. No win.
+     - `board[2][1]=-1`: gives `(0,-1,-1)` for row 2, col 1. No win.
+     So count = 1. This means placing at (0,1) for opponent would not create a fork.
+
+     What if opponent places at (0,2)?
+     Board:
+     -1 0 -1
+     0  1 0
+     0  0 -1
+     Now `count_potential_wins` for -1:
+     - empty(0,1): Simulate `board[0][1]=-1` -> R0 `(-1,-1,-1)`. Win. Count = 1.
+     - empty(1,0): Simulate `board[1][0]=-1` -> C0 `(-1,-1,0)`. No win.
+     - empty(1,2): Simulate `board[1][2]=-1` -> C2 `(-1,0,-1)`. No win? No. C2 is `0,0,-1`. So with the temp -1 at (1,2), C2 is `0,-1,-1`. No win.
+     - `board[2][0]` and `board[2][1]` are similar.
+     Still no fork for opponent.
+
+     This suggests that the "fork" is probably not detected with player 1 having center (O at 1,1).
+     A common fork scenario:
+     X . .
+     . O .
+     . . .
+     Opponent (X=-1) plays first, takes (0,0). I (O=1) take (1,1).
+     Then opponent takes (0,2).
+     Board:
+     -1 0 -1
+     0  1 0
+     0  0 0
+     My turn (1).
+     1. Win for me? No (1 at (1,1)).
+     2. Block for opponent? No (Opponent does not have 2 in a row that needs 1 space).
+     3. Center: Taken by me.
+
+     4. My fork opportunities:
+       Iterate empty cells. Example: (0,1) for me (1).
+       Board:
+       -1 1 -1
+       0  1 0
+       0  0 0
+       `count_potential_wins(board, 1)`:
+         - Temp 1 at (1,0): C0 `(-1,1,0)`. No win.
+         - Temp 1 at (1,2): C2 `(-1,1,0)`. No win.
+         - Temp 1 at (2,0): D1 `(-1,1,1)`. No win.
+         - Temp 1 at (2,1): R2 `(0,0,0)`. No win. R2 will be (0,1,0). C1 already (1,1,0). No win for (2,1)
+         - Temp 1 at (2,2): D2 `(0,1,1)`. No win.
+       So (0,1) is not a fork. No `my_fork_moves`.
+
+     5. Opponent fork opportunities (`opponent_fork_moves` list):
+       Need to find `(r,c)` from empty_cells such that if `-1` is placed there, `count_potential_wins(temp_board, -1)` is >= 2.
+       Empty cells are: (0,1), (1,0), (1,2), (2,0), (2,1), (2,2).
+       Consider (1,0). Put `-1` there temporarily:
+       -1 0 -1
+       -1 1  0
+       0  0  0
+       Now, `count_potential_wins(temp_board, -1)` for player -1.
+       Empty for *this* sub-check: (0,1), (1,2), (2,0), (2,1), (2,2)
+       - Simulate `board[0][1]=-1`: R0 `(-1,-1,-1)`. Win. Potential count = 1.
+       - Simulate `board[1][2]=-1`: No win (C2 is `-1,0,0` not full)
+       - Simulate `board[2][0]=-1`: C0 `(-1,-1,-1)`. Win. Potential count = 2.
+       So placing at (1,0) makes _opponent_ have 2 winning lines immediately (Row 0 if (0,1) is taken by -1 AND Col 0 if (2,0) taken by -1).
+       Actually, Row 0 is `(-1,0,-1)`. If (0,1) is `L`, then `(-1,L,-1)` is NOT a win.
+       Col 0 is `(-1,-1,0)`. If (2,0) is `L`, then `(-1,-1,L)` IS a win.
+       This is precisely what `check_win` does.
+
+       Let's re-examine `count_potential_wins` with the actual win condition logic:
+       `check_win(board, player)` scans rows/cols/diagonals.
+       Example:
+       -1  0 -1
+       -1  1  0
+       0   0  0
+       `count_potential_wins(board, -1)`:
+       Empty cells: (0,1), (1,2), (2,0), (2,1), (2,2)
+       - Try (0,1) for -1:
+         Board state:
+         -1 -1 -1  <- WIN FOR -1 (row 0)
+         -1  1  0
+         0   0  0
+         Count = 1
+       - Try (1,2) for -1:
+         Board state:
+         -1 0 -1
+         -1 1 -1  <- WIN FOR -1 (col 2 is (-1,0,-1)) No, C2 is currently (0,0,0). So if (1,2) is -1, C2 is (0,-1,0). No win.
+         0  0 -1
+         Count = 1 (remains 1)
+       - Try (2,0) for -1:
+         Board state:
+         -1 0 -1
+         -1 1  0
+         -1 0  0  <- WIN FOR -1 (col 0)
+         Count = 2!
+       Thus, placing `-1` at `(1,0)` creates `2` winning lines for the opponent. So, my `policy` should return `(1,0)` to block this opponent's fork.
+       This confirms my `count_potential_wins` and fork detection is probably correct.
+
+6. Corners
+7. Sides.
+
+The order of checks is crucial for Tic Tac Toe strategy.
+1. Win
+2. Block
+3. Center
+4. My fork
+5. Block opponent's fork
+6. Empty Corner
+7. Empty Side
+
+This order seems standard and robust for a perfect Tic Tac Toe player.
+
+A small point on `get_empty_cells` and passing `board`.
+`board` is a list of lists. When I pass it to `check_win` or `count_potential_wins`, and modify it temporarily, I must be careful.
+In my code:
+`board[r][c] = 1`
+`if check_win(board, 1): return (r, c)`
+`board[r][c] = 0` (revert)
+
+This modification/revert pattern is good. It ensures the original `board` state is restored for the next check.
+The `empty_cells` list is calculated once at the beginning, which is fine.
+
+Final check on edge cases:
+- Empty board: `policy([[0]*3 for _ in range(3)])`
+  1. Win: No.
+  2. Block: No.
+  3. Center: `board[1][1] == 0`. Returns (1,1). Correct, for first move, center is best.
+
+- Board almost full: If only one empty cell left.
+  It would find that cell and return it. Eventually it hits "take any empty cell" rule.
+
+The solution looks complete and robust for Tic Tac Toe.
+I don't need numpy for a simple 3x3 array. Plain Python lists are fine.
+Execution time: The board is tiny (3x3). Max 9 calls to `policy`. Each call runs through a fixed number of rows/cols/diagonals. Loops are max 9 iterations for moves, and within `check_win` it's max 8 distinct lines. This is extremely fast, well within 1 second.
+</thinking>
+```python
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Determines the best next move for a Tic Tac Toe game.
+
+    Args:
+        board: A 3x3 list of lists representing the Tic Tac Toe board.
+               0: empty, 1: your piece, -1: opponent's piece.
+
+    Returns:
+        A tuple (row, col) indicating the chosen move.
+    """
+
+    # Helper function to check if a player has won on the current board.
+    def check_win(current_board: list[list[int]], player: int) -> bool:
+        # Check rows
+        for row in current_board:
+            if all(cell == player for cell in row):
+                return True
+        # Check columns
+        for col_idx in range(3):
+            if all(current_board[row_idx][col_idx] == player for row_idx in range(3)):
+                return True
+        # Check diagonals
+        if all(current_board[i][i] == player for i in range(3)):
+            return True
+        if all(current_board[i][2 - i] == player for i in range(3)):
+            return True
+        return False
+
+    # Helper function to count how many single moves would lead to a win for a player.
+    # This is used for fork detection.
+    def count_potential_wins(current_board: list[list[int]], player: int) -> int:
+        potential_wins = 0
+        temp_empty_cells = []
+        for r in range(3):
+            for c in range(3):
+                if current_board[r][c] == 0:
+                    temp_empty_cells.append((r, c))
+
+        for r_e, c_e in temp_empty_cells:
+            current_board[r_e][c_e] = player  # Temporarily place player's mark
+            if check_win(current_board, player):
+                potential_wins += 1
+            current_board[r_e][c_e] = 0  # Revert the move
+        return potential_wins
+
+    empty_cells = []
+    for r in range(3):
+        for c in range(3):
+            if board[r][c] == 0:
+                empty_cells.append((r, c))
+
+    # --- Strategy Steps ---
+
+    # 1. Check for immediate winning move (for me)
+    for r, c in empty_cells:
+        board[r][c] = 1  # Simulate my move
+        if check_win(board, 1):
+            board[r][c] = 0  # Revert
+            return (r, c)
+        board[r][c] = 0  # Revert
+
+    # 2. Check for immediate blocking move (opponent's winning move)
+    for r, c in empty_cells:
+        board[r][c] = -1  # Simulate opponent's move
+        if check_win(board, -1):
+            board[r][c] = 0  # Revert
+            return (r, c)
+        board[r][c] = 0  # Revert
+
+    # 3. Take the center if available
+    if board[1][1] == 0:
+        return (1, 1)
+
+    # 4. Check for creating a fork (two winning lines for me)
+    my_fork_moves = []
+    for r, c in empty_cells:
+        board[r][c] = 1  # Simulate my move
+        if count_potential_wins(board, 1) >= 2:
+            my_fork_moves.append((r, c))
+        board[r][c] = 0  # Revert
+
+    if my_fork_moves:
+        # If I can create a fork, take the first one found
+        return my_fork_moves[0]
+
+    # 5. Block an opponent's fork (prevent them from creating two winning lines)
+    opponent_fork_moves = []
+    for r, c in empty_cells:
+        board[r][c] = -1  # Simulate opponent's move
+        if count_potential_wins(board, -1) >= 2:
+            opponent_fork_moves.append((r, c))
+        board[r][c] = 0  # Revert
+
+    if opponent_fork_moves:
+        # If opponent can create a fork, block one of the cells that forms it.
+        # Taking the first move that leads to an opponent's fork is sufficient.
+        return opponent_fork_moves[0]
+
+    # 6. Take an empty corner
+    corners = [(0, 0), (0, 2), (2, 0), (2, 2)]
+    for r, c in corners:
+        if board[r][c] == 0:
+            return (r, c)
+
+    # 7. Take an empty side (edge)
+    sides = [(0, 1), (1, 0), (1, 2), (2, 1)]
+    for r, c in sides:
+        if board[r][c] == 0:
+            return (r, c)
+
+    # This case should theoretically not be reached in a valid Tic Tac Toe game
+    # as there should always be an empty cell until the game is over.
+    # As a fallback, return the first available empty cell.
+    if empty_cells:
+        return empty_cells[0]
+    
+    # If no empty cells and no other condition met (game is likely over or draw)
+    return (-1, -1) # Should not happen based on game rules
+```

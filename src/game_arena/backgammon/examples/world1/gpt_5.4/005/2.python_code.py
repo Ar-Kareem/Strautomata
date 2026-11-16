@@ -1,0 +1,418 @@
+
+from typing import List, Tuple, Dict
+
+# Backgammon policy with full legal move generation for normal 2-dice turns.
+# Returns action string format: "<ORDER>:<FROM1>,<FROM2>"
+
+
+def policy(state: dict) -> str:
+    try:
+        return _policy(state)
+    except Exception:
+        # Absolute safety fallback: try to find any legal move conservatively.
+        return _safe_fallback(state)
+
+
+def _policy(state: dict) -> str:
+    dice = list(state.get("dice", []))
+    if len(dice) == 0:
+        return "H:P,P"
+    if len(dice) == 1:
+        # Not expected by spec usually, but handle safely.
+        d = dice[0]
+        moves_h = _generate_sequences(state, [d])
+        if not moves_h:
+            return "H:P,P"
+        best = max(moves_h, key=lambda x: _score_position(x[0]))
+        frm = best[1][0] if best[1] else "P"
+        return f"H:{frm},P"
+
+    d1, d2 = dice[0], dice[1]
+    hi = max(d1, d2)
+    lo = min(d1, d2)
+
+    # Enumerate both possible die orders.
+    seq_H = _generate_sequences(state, [hi, lo])  # first move uses higher die
+    seq_L = _generate_sequences(state, [lo, hi])  # first move uses lower die
+
+    all_actions = []
+
+    for st2, froms in seq_H:
+        from1 = froms[0] if len(froms) >= 1 else "P"
+        from2 = froms[1] if len(froms) >= 2 else "P"
+        all_actions.append((st2, f"H:{from1},{from2}"))
+
+    for st2, froms in seq_L:
+        from1 = froms[0] if len(froms) >= 1 else "P"
+        from2 = froms[1] if len(froms) >= 2 else "P"
+        all_actions.append((st2, f"L:{from1},{from2}"))
+
+    if not all_actions:
+        return "H:P,P"
+
+    best_state, best_action = max(all_actions, key=lambda x: _score_position(x[0]))
+    return best_action
+
+
+def _generate_sequences(state: dict, dice_order: List[int]):
+    """
+    Generate all legal sequences for the given die order.
+    Enforces:
+      - must enter from bar first
+      - if both dice playable, must use both
+      - if only one die playable overall, for 2-dice turn the higher die must be used if possible
+    Returns list of (result_state, [from_tokens used])
+    """
+    assert len(dice_order) in (1, 2)
+
+    if len(dice_order) == 1:
+        d = dice_order[0]
+        first_moves = _legal_single_die_moves(state, d)
+        if not first_moves:
+            return []
+        return [(st, [frm]) for st, frm in first_moves]
+
+    d_first, d_second = dice_order
+
+    # Try all first moves, then second.
+    first_moves = _legal_single_die_moves(state, d_first)
+    results_two = []
+    results_one = []
+
+    for st1, frm1 in first_moves:
+        second_moves = _legal_single_die_moves(st1, d_second)
+        if second_moves:
+            for st2, frm2 in second_moves:
+                results_two.append((st2, [frm1, frm2]))
+        else:
+            results_one.append((st1, [frm1]))
+
+    if results_two:
+        return _dedup_sequences(results_two)
+
+    # If first die order yields only one move, that is legal only if no 2-move sequence exists in this order.
+    # Higher-die-only enforcement across orders is handled by caller by comparing H/L action sets,
+    # but we also need global rule: if only one die can be played, must play higher die when possible.
+    # Since caller combines both orders, we need to filter there. Easier approach:
+    # build all actions in caller and legal generation here should be order-legal.
+    # However for an order beginning with lower die when only higher is playable, _legal_single_die_moves
+    # could be nonempty and produce an illegal global action if higher alone was also possible.
+    # So we must enforce higher-die-only at generation time for 2-dice turns.
+
+    # To handle this robustly, compute global max usable dice and singleton-die preference.
+    # This function needs access to initial state and both dice. Do it here.
+    global_legal = _global_legality_info(state, d_first, d_second)
+    max_used = global_legal["max_used"]
+    allowed_single_first_die_values = global_legal["allowed_single_die_values"]
+
+    if max_used == 2:
+        return []
+    # max_used == 1
+    if d_first in allowed_single_first_die_values:
+        return _dedup_sequences(results_one)
+    return []
+
+
+def _global_legality_info(state: dict, d_a: int, d_b: int):
+    """
+    For exactly two dice values (not doubles handling; arena spec says 0,1,2 dice only),
+    determine whether any 2-move sequence exists and, if only one die can be played,
+    which die value(s) are legal to use (higher die if possible).
+    """
+    # Any 2-move sequence?
+    any_two = False
+    for order in ((d_a, d_b), (d_b, d_a)):
+        firsts = _legal_single_die_moves(state, order[0])
+        for st1, _ in firsts:
+            seconds = _legal_single_die_moves(st1, order[1])
+            if seconds:
+                any_two = True
+                break
+        if any_two:
+            break
+
+    if any_two:
+        return {"max_used": 2, "allowed_single_die_values": set()}
+
+    playable_a = bool(_legal_single_die_moves(state, d_a))
+    playable_b = bool(_legal_single_die_moves(state, d_b))
+    hi = max(d_a, d_b)
+    lo = min(d_a, d_b)
+
+    allowed = set()
+    if playable_a or playable_b:
+        if hi == lo:
+            allowed.add(hi)
+        else:
+            hi_playable = bool(_legal_single_die_moves(state, hi))
+            lo_playable = bool(_legal_single_die_moves(state, lo))
+            if hi_playable:
+                allowed.add(hi)
+            elif lo_playable:
+                allowed.add(lo)
+
+    return {"max_used": 1 if allowed else 0, "allowed_single_die_values": allowed}
+
+
+def _legal_single_die_moves(state: dict, die: int):
+    """
+    Return list of (new_state, from_token) for all legal single-checker moves using one die.
+    """
+    my_pts = state["my_pts"]
+    opp_pts = state["opp_pts"]
+    my_bar = state["my_bar"]
+
+    moves = []
+
+    if my_bar > 0:
+        dest = 24 - die
+        if 0 <= dest <= 23 and opp_pts[dest] < 2:
+            new_state = _copy_state(state)
+            new_state["my_bar"] -= 1
+            _land_my_checker(new_state, dest)
+            moves.append((new_state, "B"))
+        return moves
+
+    all_in_home = _all_in_home(state)
+
+    for src in range(24):
+        if my_pts[src] <= 0:
+            continue
+        dest = src - die
+
+        if dest >= 0:
+            if opp_pts[dest] >= 2:
+                continue
+            new_state = _copy_state(state)
+            new_state["my_pts"][src] -= 1
+            _land_my_checker(new_state, dest)
+            moves.append((new_state, f"A{src}"))
+        else:
+            # Bearing off
+            if not all_in_home:
+                continue
+            # Exact bear off always legal.
+            if dest == -1 or src == die - 1:
+                new_state = _copy_state(state)
+                new_state["my_pts"][src] -= 1
+                new_state["my_off"] += 1
+                moves.append((new_state, f"A{src}"))
+            else:
+                # Oversized die can bear off highest occupied point below die.
+                # Legal iff there are no checkers on higher points than src.
+                if src < die - 1 and _no_checker_on_higher_points(my_pts, src):
+                    new_state = _copy_state(state)
+                    new_state["my_pts"][src] -= 1
+                    new_state["my_off"] += 1
+                    moves.append((new_state, f"A{src}"))
+
+    return moves
+
+
+def _land_my_checker(state: dict, dest: int):
+    """
+    Apply landing of one of my checkers on dest, handling hit.
+    """
+    if state["opp_pts"][dest] == 1:
+        state["opp_pts"][dest] = 0
+        state["opp_bar"] += 1
+    state["my_pts"][dest] += 1
+
+
+def _all_in_home(state: dict) -> bool:
+    if state["my_bar"] > 0:
+        return False
+    # Home board is A0..A5
+    for i in range(6, 24):
+        if state["my_pts"][i] > 0:
+            return False
+    return True
+
+
+def _no_checker_on_higher_points(my_pts: List[int], src: int) -> bool:
+    for i in range(src + 1, 24):
+        if my_pts[i] > 0:
+            return False
+    return True
+
+
+def _copy_state(state: dict) -> dict:
+    return {
+        "my_pts": state["my_pts"][:],
+        "opp_pts": state["opp_pts"][:],
+        "my_bar": state["my_bar"],
+        "opp_bar": state["opp_bar"],
+        "my_off": state["my_off"],
+        "opp_off": state["opp_off"],
+        "dice": state.get("dice", [])[:],
+    }
+
+
+def _dedup_sequences(seq_list):
+    seen = set()
+    out = []
+    for st, frms in seq_list:
+        key = (
+            tuple(st["my_pts"]),
+            tuple(st["opp_pts"]),
+            st["my_bar"],
+            st["opp_bar"],
+            st["my_off"],
+            st["opp_off"],
+            tuple(frms),
+        )
+        if key not in seen:
+            seen.add(key)
+            out.append((st, frms))
+    return out
+
+
+def _pip_count(pts: List[int], bar: int) -> int:
+    # My orientation: point i is distance i+1 from bear-off.
+    pip = bar * 25
+    for i, n in enumerate(pts):
+        pip += n * (i + 1)
+    return pip
+
+
+def _score_position(state: dict) -> float:
+    my_pts = state["my_pts"]
+    opp_pts = state["opp_pts"]
+    my_bar = state["my_bar"]
+    opp_bar = state["opp_bar"]
+    my_off = state["my_off"]
+    opp_off = state["opp_off"]
+
+    score = 0.0
+
+    # Strong race terms
+    my_pip = _pip_count(my_pts, my_bar)
+    opp_pip = _pip_count_opp(opp_pts, opp_bar)
+    score += 13.0 * (my_off - opp_off)
+    score += 0.22 * (opp_pip - my_pip)
+
+    # Bar is urgent
+    score += -18.0 * my_bar
+    score += 16.0 * opp_bar
+
+    # Home-board strength and anchors/primes
+    made_points = 0
+    home_made = 0
+    entry_block = 0
+    blots = 0
+    stacks_penalty = 0
+    advanced_anchors = 0
+
+    for i in range(24):
+        n = my_pts[i]
+        if n >= 2:
+            made_points += 1
+            score += 1.6
+            if i <= 5:
+                home_made += 1
+                score += 2.3
+            if i >= 18:
+                entry_block += 1
+                score += 1.7
+            if n > 4:
+                stacks_penalty += (n - 4)
+        elif n == 1:
+            blots += 1
+            # Penalize blots more if exposed outside home
+            score -= 2.0 if i > 5 else 0.9
+
+        # Encourage progress toward bear off
+        score += (23 - i) * 0.03 * n
+
+        # Anchors in opponent home / outer board
+        if n >= 2 and i >= 18:
+            advanced_anchors += 1
+
+    # Opponent made points hurt, especially in our home-entry zone (0..5 from opp perspective = 18..23 absolute for us)
+    opp_made = 0
+    opp_homeprime_against_us = 0
+    opp_blots = 0
+    for i in range(24):
+        n = opp_pts[i]
+        if n >= 2:
+            opp_made += 1
+            score -= 1.4
+            if i <= 5:
+                # Opponent home board from our absolute indexing is still their points 0..5,
+                # less immediately relevant than blockade near our bar entry.
+                score -= 0.8
+            if i >= 18:
+                opp_homeprime_against_us += 1
+                score -= 2.5
+        elif n == 1:
+            opp_blots += 1
+            score += 0.6
+
+    score += 1.1 * made_points + 0.9 * home_made + 0.8 * entry_block
+    score -= 0.7 * blots
+    score -= 0.8 * stacks_penalty
+    score += 0.5 * advanced_anchors
+    score -= 0.7 * opp_made
+    score -= 0.8 * opp_homeprime_against_us
+
+    # Prime / consecutive made points bonus
+    score += 1.4 * _max_consecutive_blocks(my_pts)
+    score -= 1.0 * _max_consecutive_blocks(opp_pts)
+
+    # Contact tactics: if opp on bar, close board matters much more
+    if opp_bar > 0:
+        closed = sum(1 for i in range(18, 24) if my_pts[i] >= 2)
+        score += 2.2 * closed
+    if my_bar > 0:
+        opp_closed = sum(1 for i in range(0, 6) if opp_pts[i] >= 2)
+        score -= 2.0 * opp_closed
+
+    return score
+
+
+def _pip_count_opp(opp_pts: List[int], opp_bar: int) -> int:
+    # Opponent moves 0 -> 23, so distance to bear-off is 24-i
+    pip = opp_bar * 25
+    for i, n in enumerate(opp_pts):
+        pip += n * (24 - i)
+    return pip
+
+
+def _max_consecutive_blocks(pts: List[int]) -> int:
+    best = 0
+    cur = 0
+    for i in range(24):
+        if pts[i] >= 2:
+            cur += 1
+            if cur > best:
+                best = cur
+        else:
+            cur = 0
+    return best
+
+
+def _safe_fallback(state: dict) -> str:
+    dice = list(state.get("dice", []))
+    if len(dice) == 0:
+        return "H:P,P"
+    if len(dice) == 1:
+        d = dice[0]
+        ms = _legal_single_die_moves(state, d)
+        if ms:
+            return f"H:{ms[0][1]},P"
+        return "H:P,P"
+
+    d1, d2 = dice
+    hi = max(d1, d2)
+    lo = min(d1, d2)
+
+    # Try proper legal generation.
+    for order_char, order in (("H", [hi, lo]), ("L", [lo, hi])):
+        seqs = _generate_sequences(state, order)
+        if seqs:
+            frms = seqs[0][1]
+            if len(frms) == 1:
+                return f"{order_char}:{frms[0]},P"
+            return f"{order_char}:{frms[0]},{frms[1]}"
+
+    return "H:P,P"

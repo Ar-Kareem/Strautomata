@@ -1,0 +1,359 @@
+
+import sys
+import time
+import random
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    # --- Configuration ---
+    TIME_LIMIT = 0.9  # Seconds buffer
+    start_time = time.time()
+    
+    # Constants
+    FILES = 'abcdefgh'
+    RANKS = '12345678'
+    
+    # Piece Values
+    VALS = {'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000}
+    
+    # Position Tables (Simplified) - bonuses for center/advancement
+    # 0-63, from a1 to h8
+    PST = [
+        0,  0,  0,  0,  0,  0,  0,  0,
+        5, 10, 10, 10, 10, 10, 10,  5,
+        5, 10, 20, 20, 20, 20, 10,  5,
+        5, 15, 25, 25, 25, 25, 15,  5,
+        5, 15, 25, 25, 25, 25, 15,  5,
+        5, 10, 20, 20, 20, 20, 10,  5,
+        5, 10, 10, 10, 10, 10, 10,  5,
+        0,  0,  0,  0,  0,  0,  0,  0
+    ]
+    
+    # Directions
+    DIRS_N = [-10, -6, -17, -15, 10, 6, 17, 15] # Knight
+    DIRS_K = [1, -1, 8, -8, 9, 7, -9, -7] # King/Queen/etc
+    
+    # --- Helpers ---
+    def to_idx(sq):
+        return (int(sq[1]) - 1) * 8 + (ord(sq[0]) - ord('a'))
+
+    def to_sq(idx):
+        return FILES[idx % 8] + RANKS[idx // 8]
+
+    def get_rank_file(idx):
+        return idx // 8, idx % 8
+
+    # --- Board Parsing ---
+    board = [None] * 64
+    my_color = 'w' if to_play == 'white' else 'b'
+    op_color = 'b' if to_play == 'white' else 'w'
+    
+    my_king_start = -1
+    
+    for sq, p in pieces.items():
+        idx = to_idx(sq)
+        board[idx] = p
+        if p == my_color + 'K':
+            my_king_start = idx
+
+    # --- Move Generation ---
+    def is_attacked(b, sq, by_color):
+        r, f = get_rank_file(sq)
+        
+        # 1. Pawn attacks
+        # If attacker is White, they are "below" coming up. Attacks come from (r-1, f+/-1) logic relative to them.
+        # Relative to ME at sq: If attacker is W, I am attacked by pawns at r-1.
+        p_dir = -1 if by_color == 'w' else 1
+        for df in [-1, 1]:
+            tr, tf = r + p_dir, f + df
+            if 0 <= tr <= 7 and 0 <= tf <= 7:
+                idx = tr * 8 + tf
+                p = b[idx]
+                if p and p == by_color + 'P':
+                    return True
+
+        # 2. Knight attacks
+        for off in DIRS_N:
+            tgt = sq + off
+            if 0 <= tgt < 64:
+                tr, tf = get_rank_file(tgt)
+                if abs(tr - r) <= 2 and abs(tf - f) <= 2:
+                    p = b[tgt]
+                    if p and p == by_color + 'N':
+                        return True
+        
+        # 3. Sliding (B, R, Q) & King
+        # Ortho (R, Q, K)
+        for d in [1, -1, 8, -8]:
+            curr = sq
+            dist = 0
+            while True:
+                curr += d
+                dist += 1
+                if not (0 <= curr < 64): break
+                cr, cf = get_rank_file(curr)
+                pr, pf = get_rank_file(curr - d)
+                if abs(cr - pr) > 1 or abs(cf - pf) > 1: break # Wrap check
+                
+                p = b[curr]
+                if p:
+                    if p[0] == by_color:
+                        t = p[1]
+                        if t == 'K' and dist == 1: return True
+                        if t == 'Q' or t == 'R': return True
+                    break
+
+        # Diag (B, Q, K)
+        for d in [9, 7, -9, -7]:
+            curr = sq
+            dist = 0
+            while True:
+                curr += d
+                dist += 1
+                if not (0 <= curr < 64): break
+                cr, cf = get_rank_file(curr)
+                pr, pf = get_rank_file(curr - d)
+                if abs(cr - pr) > 1 or abs(cf - pf) > 1: break
+                
+                p = b[curr]
+                if p:
+                    if p[0] == by_color:
+                        t = p[1]
+                        if t == 'K' and dist == 1: return True
+                        if t == 'Q' or t == 'B': return True
+                    break
+        return False
+
+    def generate_moves(b, color):
+        # Returns list of (start, end, promo_char_or_None)
+        moves = []
+        is_white = (color == 'w')
+        op = 'b' if is_white else 'w'
+        
+        # Determine check status to filter legality later?
+        # Standard approach: Generate pseudo -> filter if king attacked
+        
+        for idx in range(64):
+            p = b[idx]
+            if not p or p[0] != color: continue
+            
+            t = p[1]
+            r, f = get_rank_file(idx)
+            
+            if t == 'P':
+                direction = 1 if is_white else -1
+                start_r = 1 if is_white else 6
+                prom_r = 7 if is_white else 0
+                
+                # Push 1
+                tgt = idx + direction * 8
+                if 0 <= tgt < 64 and not b[tgt]:
+                    # Promo?
+                    if (r + direction) == prom_r:
+                        # For simplicity in brief code, only Queen promo, or loop
+                        for pc in ['q', 'r', 'b', 'n']:
+                            moves.append((idx, tgt, pc))
+                    else:
+                        moves.append((idx, tgt, None))
+                        # Push 2
+                        if r == start_r:
+                            tgt2 = idx + direction * 16
+                            if not b[tgt2]:
+                                moves.append((idx, tgt2, None))
+                
+                # Capture
+                for df in [-1, 1]:
+                    if 0 <= f + df <= 7:
+                        tgt = idx + direction * 8 + df
+                        if 0 <= tgt < 64:
+                            tp = b[tgt]
+                            if tp and tp[0] == op:
+                                if (r + direction) == prom_r:
+                                    for pc in ['q', 'r', 'b', 'n']:
+                                        moves.append((idx, tgt, pc))
+                                else:
+                                    moves.append((idx, tgt, None))
+            
+            elif t == 'N':
+                for off in DIRS_N:
+                    tgt = idx + off
+                    if 0 <= tgt < 64:
+                        tr, tf = get_rank_file(tgt)
+                        if abs(tr - r) <= 2 and abs(tf - f) <= 2:
+                            if not b[tgt] or b[tgt][0] == op:
+                                moves.append((idx, tgt, None))
+
+            elif t == 'K':
+                for d in DIRS_K:
+                    tgt = idx + d
+                    if 0 <= tgt < 64:
+                        tr, tf = get_rank_file(tgt)
+                        if abs(tr - r) <= 1 and abs(tf - f) <= 1:
+                            if not b[tgt] or b[tgt][0] == op:
+                                moves.append((idx, tgt, None))
+            
+            else: # B, R, Q
+                dirs = []
+                if t in 'BQ': dirs += [9, 7, -9, -7]
+                if t in 'RQ': dirs += [1, -1, 8, -8]
+                
+                for d in dirs:
+                    curr = idx
+                    while True:
+                        curr += d
+                        if not (0 <= curr < 64): break
+                        cr, cf = get_rank_file(curr)
+                        pr, pf = get_rank_file(curr - d)
+                        if abs(cr - pr) > 1 or abs(cf - pf) > 1: break
+                        
+                        tp = b[curr]
+                        if not tp:
+                            moves.append((idx, curr, None))
+                        else:
+                            if tp[0] == op:
+                                moves.append((idx, curr, None))
+                            break
+        return moves
+
+    def filter_legal(b, moves, color):
+        legal_strs = []
+        op = 'b' if color == 'w' else 'w'
+        
+        # Find king
+        k_idx = -1
+        for i in range(64):
+            if b[i] == color + 'K':
+                k_idx = i
+                break
+        
+        for (s, e, p) in moves:
+            # Make move
+            captured = b[e]
+            moved = b[s]
+            b[s] = None
+            if p:
+                b[e] = color + p.upper()
+            else:
+                b[e] = moved
+            
+            # Check king safety
+            this_k = e if (moved[1] == 'K') else k_idx
+            if not is_attacked(b, this_k, op):
+                # Format
+                m_str = to_sq(s) + to_sq(e)
+                if p: m_str += p
+                legal_strs.append(m_str)
+            
+            # Unmake
+            b[e] = captured
+            b[s] = moved
+            
+        return legal_strs
+
+    def evaluate(b):
+        score = 0
+        for i in range(64):
+            item = b[i]
+            if not item: continue
+            
+            val = VALS.get(item[1], 0)
+            bonus = 0
+            
+            r, f = get_rank_file(i)
+            # PST
+            if item[1] in 'NP':
+                # Center good
+                idx_pst = (7-r)*8 + f if item[0] == 'b' else i
+                bonus += PST[idx_pst]
+            
+            if item[0] == my_color:
+                score += (val + bonus)
+            else:
+                score -= (val + bonus)
+        return score
+
+    # --- Strategy Execution ---
+    
+    # 1. Get my legal moves
+    pseudo = generate_moves(board, my_color)
+    legal_moves_str = filter_legal(board, pseudo, my_color)
+    
+    if not legal_moves_str:
+        return '0000' # No moves
+        
+    random.shuffle(legal_moves_str) # Tie-breaker
+    
+    best_move = legal_moves_str[0]
+    best_score = -float('inf')
+    
+    # Depth 2 Loop (Minimax)
+    # Maximize (Minimize Opponent's Best)
+    
+    for m in legal_moves_str:
+        # Check time
+        if time.time() - start_time > TIME_LIMIT:
+            break
+            
+        s = to_idx(m[:2])
+        e = to_idx(m[2:4])
+        promo = m[4].upper() if len(m) > 4 else None
+        
+        # Make Move
+        moved = board[s]
+        captured = board[e]
+        board[s] = None
+        if promo: board[e] = my_color + promo
+        else: board[e] = moved
+        
+        # Current naive eval (to fallback if mate search takes long?)
+        # score = evaluate(board)
+        
+        # Opponent Response
+        op_pseudo = generate_moves(board, op_color)
+        op_legal = filter_legal(board, op_pseudo, op_color)
+        
+        if not op_legal:
+            # Checkmate or Stalemate
+            # If op King attacked?
+            op_k = -1
+            for i in range(64): 
+                if board[i] == op_color + 'K': 
+                    op_k = i; break
+            
+            if is_attacked(board, op_k, my_color):
+                count_score = 100000 # Mate
+            else:
+                count_score = 0 # Stalemate
+        else:
+            # Opponent minimizes my score (Greedy)
+            min_score = float('inf')
+            for op_m in op_legal:
+                os = to_idx(op_m[:2])
+                oe = to_idx(op_m[2:4])
+                opromo = op_m[4].upper() if len(op_m) > 4 else None
+                
+                omoved = board[os]
+                ocaptured = board[oe]
+                board[os] = None
+                if opromo: board[oe] = op_color + opromo
+                else: board[oe] = omoved
+                
+                # Eval from MY perspective
+                val = evaluate(board)
+                if val < min_score:
+                    min_score = val
+                
+                # Unmake op
+                board[oe] = ocaptured
+                board[os] = omoved
+            
+            count_score = min_score
+            
+        # Unmake My Move
+        board[e] = captured
+        board[s] = moved
+        
+        if count_score > best_score:
+            best_score = count_score
+            best_move = m
+            
+    return best_move

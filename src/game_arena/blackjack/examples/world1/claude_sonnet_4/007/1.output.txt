@@ -1,0 +1,245 @@
+<thinking>
+Let me break down this problem:
+
+1. I need to implement a policy for a Blackjack-like game where the target is variable (10-30).
+2. I have a single deck of 13 cards, one of each rank.
+3. Aces are flexible: 11 if it keeps me <= target, 1 if it would otherwise bust me.
+4. I need to decide whether to HIT or STAY based on my current hand and the target.
+
+Key considerations:
+- I want to get as close to the target as possible without going over
+- I don't know what my opponent will do, but I can assume they're playing optimally too
+- Since each player has their own deck, I don't need to worry about card counting between decks
+
+Strategy considerations:
+1. Basic approach: Calculate current hand value, see what cards could help vs hurt
+2. Since I know exactly which cards are left in my deck (I can track what I've drawn), I can calculate probabilities
+3. I should HIT if the expected value of hitting is better than staying
+
+Let me think about the algorithm:
+1. Calculate current hand value (handling Aces properly)
+2. Determine which cards are still available in my deck
+3. For each available card, calculate what my new total would be
+4. Calculate the probability of busting vs getting closer to target
+5. Make decision based on expected value
+
+For the Ace handling, I need to be careful:
+- Aces should be 11 if possible, but 1 if 11 would cause a bust
+- When calculating hand value, I should count as many Aces as 11 as possible without busting
+
+Let me implement this step by step:
+
+```python
+def policy(hand: list[str], target: int) -> str:
+    # Calculate current hand value
+    def calculate_hand_value(cards):
+        total = 0
+        aces = 0
+        
+        for card in cards:
+            if card == "A":
+                aces += 1
+            elif card in ["J", "Q", "K"]:
+                total += 10
+            else:
+                total += int(card)
+        
+        # Add aces - as many 11s as possible, rest as 1s
+        for _ in range(aces):
+            if total + 11 <= target:
+                total += 11
+            else:
+                total += 1
+                
+        return total
+    
+    # Get available cards (what's left in deck)
+    all_cards = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    available_cards = []
+    hand_copy = hand.copy()
+    
+    for card in all_cards:
+        if card in hand_copy:
+            hand_copy.remove(card)
+        else:
+            available_cards.append(card)
+    
+    current_value = calculate_hand_value(hand)
+    
+    # If we're already at target, stay
+    if current_value == target:
+        return "STAY"
+    
+    # Calculate expected outcomes of hitting
+    bust_count = 0
+    better_count = 0
+    same_count = 0
+    worse_count = 0
+    
+    for card in available_cards:
+        new_hand = hand + [card]
+        new_value = calculate_hand_value(new_hand)
+        
+        if new_value > target:
+            bust_count += 1
+        elif abs(new_value - target) < abs(current_value - target):
+            better_count += 1
+        elif abs(new_value - target) == abs(current_value - target):
+            same_count += 1
+        else:
+            worse_count += 1
+    
+    total_cards = len(available_cards)
+    if total_cards == 0:
+        return "STAY"
+    
+    # Simple heuristic: hit if more cards help than hurt
+    # But be more conservative as we get closer to target
+    improvement_prob = better_count / total_cards
+    bust_prob = bust_count / total_cards
+    
+    # Conservative approach: only hit if improvement probability > bust probability
+    # and we're not already very close to target
+    distance_from_target = abs(current_value - target)
+    
+    if distance_from_target <= 2:
+        return "STAY"  # Very close, don't risk it
+    
+    if improvement_prob > bust_prob and improvement_prob > 0.3:
+        return "HIT"
+    else:
+        return "STAY"
+```
+
+Wait, I think there's an issue with my Ace handling. Let me reconsider:
+
+The rule states: "A" → 11 (when the hand value is <= T) or 1 (when the hand value is > T)
+
+This seems to mean that if using 11 would make the total > T, then use 1 instead. But I need to optimize across all Aces.
+
+Actually, let me re-read: "A" → 11 (when the hand value is <= T) or 1 (when the hand value is > T)
+
+I think this means for each Ace individually, but the optimal strategy would be to use as many 11s as possible without busting. Let me code this more carefully:
+
+```python
+def calculate_hand_value(cards, target):
+    total = 0
+    aces = 0
+    
+    # First pass: count non-aces
+    for card in cards:
+        if card == "A":
+            aces += 1
+        elif card in ["J", "Q", "K"]:
+            total += 10
+        else:
+            total += int(card)
+    
+    # Add aces optimally
+    # Try to use as many 11s as possible without going over target
+    aces_as_eleven = 0
+    for i in range(aces):
+        if total + (aces_as_eleven + 1) * 11 + (aces - aces_as_eleven - 1) * 1 <= target:
+            aces_as_eleven += 1
+        else:
+            break
+    
+    total += aces_as_eleven * 11 + (aces - aces_as_eleven) * 1
+    return total
+```
+
+Actually, let me think about this more systematically. The goal is to maximize the hand value without exceeding the target. So for Aces, I want as many to be 11 as possible.
+
+Let me rewrite this more clearly:
+</thinking>
+
+<code>
+def policy(hand: list[str], target: int) -> str:
+    def calculate_hand_value(cards, target):
+        """Calculate the optimal value of a hand given the target."""
+        total = 0
+        aces = 0
+        
+        # Count non-ace cards
+        for card in cards:
+            if card == "A":
+                aces += 1
+            elif card in ["J", "Q", "K"]:
+                total += 10
+            else:
+                total += int(card)
+        
+        # Handle aces optimally - use as many 11s as possible without busting
+        aces_as_eleven = 0
+        for i in range(aces):
+            if total + (aces_as_eleven + 1) * 11 + (aces - aces_as_eleven - 1) * 1 <= target:
+                aces_as_eleven += 1
+        
+        total += aces_as_eleven * 11 + (aces - aces_as_eleven) * 1
+        return total
+    
+    def get_available_cards(hand):
+        """Get cards still available in the deck."""
+        all_cards = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+        hand_cards = hand.copy()
+        available = []
+        
+        for card in all_cards:
+            if card in hand_cards:
+                hand_cards.remove(card)
+            else:
+                available.append(card)
+        
+        return available
+    
+    # Calculate current hand value
+    current_value = calculate_hand_value(hand, target)
+    
+    # If we've reached the target exactly, stay
+    if current_value == target:
+        return "STAY"
+    
+    # Get available cards
+    available_cards = get_available_cards(hand)
+    
+    # If no cards left, must stay
+    if not available_cards:
+        return "STAY"
+    
+    # Analyze outcomes of hitting
+    total_cards = len(available_cards)
+    bust_cards = 0
+    improve_cards = 0
+    
+    current_distance = abs(current_value - target)
+    
+    for card in available_cards:
+        new_hand = hand + [card]
+        new_value = calculate_hand_value(new_hand, target)
+        
+        if new_value > target:
+            bust_cards += 1
+        else:
+            new_distance = abs(new_value - target)
+            if new_distance < current_distance:
+                improve_cards += 1
+    
+    # Calculate probabilities
+    bust_prob = bust_cards / total_cards
+    improve_prob = improve_cards / total_cards
+    
+    # Decision logic
+    # Stay if we're very close to target or bust probability is too high
+    if current_distance <= 2:
+        return "STAY"
+    
+    # Hit if improvement probability is significantly better than bust probability
+    if improve_prob > bust_prob and improve_prob >= 0.25:
+        return "HIT"
+    
+    # Conservative approach for edge cases
+    if current_distance >= 6 and bust_prob < 0.3:
+        return "HIT"
+    
+    return "STAY"
+</code>

@@ -1,0 +1,390 @@
+<thinking>
+The user wants a Python function `policy(board)` that returns the best move for a 4x4 Tic-Tac-Toe game.
+The board represents the current state: `0` for empty, `1` for my pieces, `-1` for opponent's pieces.
+I need to return a `(row, col)` tuple.
+The time limit is 1 second.
+
+I should implement a minimax algorithm with alpha-beta pruning for this.
+Since it's a 4x4 board, the state space can be large, but the game typically ends relatively quickly.
+A simple minimax should be sufficient given the time limit.
+
+Let's define the core components:
+1.  **`policy(board)`**: The main entry point. It will iterate through possible moves, call minimax for each, and choose the move that leads to the best outcome.
+2.  **`minimax(board, depth, is_maximizing_player, alpha, beta)`**:
+    *   `board`: Current game state.
+    *   `depth`: Current depth in the search tree (can be used for heuristic evaluation or limiting search depth if needed, but for TT, full search is usually possible).
+    *   `is_maximizing_player`: True if it's my turn (player `1`), False if it's the opponent's turn (player `-1`).
+    *   `alpha`: Best score found for the maximizing player so far.
+    *   `beta`: Best score found for the minimizing player so far.
+3.  **`evaluate(board)`**:
+    *   Checks for wins/losses on the board.
+    *   Returns `1000` (large positive) for a win for player `1`.
+    *   Returns `-1000` (large negative) for a win for player `-1`.
+    *   Returns `0` for a draw or ongoing game (or a heuristic score for ongoing). For Tic-Tac-Toe, winning/losing is absolute.
+    *   If no win/loss, it could return 0, or a heuristic based on potential lines. Given 4x4, winning requires 4-in-a-row.
+
+**Board Evaluation (`check_win`)**:
+Need to check rows, columns, and diagonals for 4 consecutive pieces.
+
+*   Rows: Iterate through each row, check for 4 consecutive `1`s or `-1`s.
+*   Columns: Iterate through each column, check for 4 consecutive `1`s or `-1`s.
+*   Main Diagonal: Check `(0,0), (1,1), (2,2), (3,3)`.
+*   Anti-Diagonal: Check `(0,3), (1,2), (2,1), (3,0)`.
+*   Also, need to consider "shifted" diagonals for 4x4. For example, `(0,1),(1,2),(2,3)` or `(1,0),(2,1),(3,2)`. This makes it a bit more complex than standard 3x3.
+    *   There are 6 winning diagonals in total beyond the main two for a 4x4.
+        *   `diag_1`: `(0,0), (1,1), (2,2), (3,3)`
+        *   `diag_2`: `(0,3), (1,2), (2,1), (3,0)`
+        *   `diag_row0_col1_to_row2_col3`: `(0,1), (1,2), (2,3)` (3-in-a-row)
+        *   `diag_row1_col0_to_row3_col2`: `(1,0), (2,1), (3,2)` (3-in-a-row)
+        *   And similarly for anti-diagonals.
+    *   Ah, the problem states "4x4 Tic Tac Toe", which usually implies 4-in-a-row.
+    *   Let's enumerate all 4-in-a-row possibilities:
+        *   **Rows**: 4 rows, each has 1 way (e.g., `board[r][0:4]`)
+        *   **Cols**: 4 columns, each has 1 way (e.g., `board[0:4][c]`)
+        *   **Main Diagonals**:
+            *   `[(0,0), (1,1), (2,2), (3,3)]`
+            *   `[(0,3), (1,2), (2,1), (3,0)]`
+        *   **Secondary Diagonals** (these are tricky, need to be careful of indexing)
+            *   `[(0,1), (1,2), (2,3), (3,0)]` (no, this would wrap around)
+            *   This is not like connect four. It's strictly straight lines.
+            *   The only strictly straight 4-in-a-row diagonals are the main two.
+            *   To verify this, "4x4 Tic Tac Toe" implies winning with **any** straight line of 4.
+            *   Rows: Indeed 4 lines.
+            *   Cols: Indeed 4 lines.
+            *   Diagonals: `(0,0)-(3,3)` and `(0,3)-(3,0)` are the only full 4-cell diagonals.
+            *   If it meant *any* 4 in a row, even if only part of a diagonal, it would be explicitly stated (e.g. "Connect 4"). Standard Tic-Tac-Toe rules apply, just on 4x4. So only the two main diagonals.
+
+    *   Okay, so 4 rows, 4 columns, 2 diagonals = 10 winning lines.
+
+`check_win` function will iterate over these 10 lines.
+A score of `100` for my win, `-100` for opponent win.
+What if no one wins but the board is full? It's a draw, score `0`.
+
+**Minimax parameters:**
+`depth` could be useful for an iterative deepening approach or when the game has many empty cells left. But for 4x4, it's small enough that a full-depth search should be feasible. The maximum depth would be 16 moves.
+
+**Improved `evaluate(board)` for minimax:**
+*   Return `1` if I win, `-1` if opponent wins, `0` for draw/ongoing.
+*   The minimax will propagate these scores. A higher score is better for me, lower for the opponent.
+
+Let's carefully define the return values for `minimax`:
+*   If `is_maximizing_player` is true, maximize the score.
+*   If `is_maximizing_player` is false, minimize the score.
+
+Winning score: `1`
+Losing score: `-1`
+Draw score: `0`
+
+**Game State Check:**
+`is_game_over(board)`: Returns `True` if there's a win or the board is full.
+`get_empty_cells(board)`: Returns a list of `(row, col)` tuples for empty cells.
+
+```python
+import math
+
+# Constants for player representation
+ME = 1
+OPPONENT = -1
+EMPTY = 0
+BOARD_SIZE = 4
+
+def check_win(board, player):
+    # Check rows
+    for r in range(BOARD_SIZE):
+        if all(board[r][c] == player for c in range(BOARD_SIZE)):
+            return True
+    # Check columns
+    for c in range(BOARD_SIZE):
+        if all(board[r][c] == player for r in range(BOARD_SIZE)):
+            return True
+    # Check main diagonal
+    if all(board[i][i] == player for i in range(BOARD_SIZE)):
+        return True
+    # Check anti-diagonal
+    if all(board[i][BOARD_SIZE - 1 - i] == player for i in range(BOARD_SIZE)):
+        return True
+    return False
+
+def is_board_full(board):
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if board[r][c] == EMPTY:
+                return False
+    return True
+
+def get_empty_cells(board):
+    empty_cells = []
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if board[r][c] == EMPTY:
+                empty_cells.append((r, c))
+    return empty_cells
+
+def evaluate(board):
+    if check_win(board, ME):
+        return 1
+    if check_win(board, OPPONENT):
+        return -1
+    return 0 # Draw or game ongoing
+
+def minimax(board, depth, is_maximizing_player, alpha, beta):
+    score = evaluate(board)
+
+    # Base cases for recursion
+    if score == 1:  # ME wins
+        return 1
+    if score == -1: # OPPONENT wins
+        return -1
+    if is_board_full(board): # Draw
+        return 0
+
+    # If we reached here, game is not over and board is not full.
+    # Minimax search continues.
+
+    if is_maximizing_player:
+        max_eval = -math.inf
+        for r, c in get_empty_cells(board):
+            board[r][c] = ME
+            eval = minimax(board, depth + 1, False, alpha, beta)
+            board[r][c] = EMPTY # Undo move
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break # Beta cutoff
+        return max_eval
+    else: # Minimizing player
+        min_eval = math.inf
+        for r, c in get_empty_cells(board):
+            board[r][c] = OPPONENT
+            eval = minimax(board, depth + 1, True, alpha, beta)
+            board[r][c] = EMPTY # Undo move
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break # Alpha cutoff
+        return min_eval
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    best_move = (-1, -1)
+    max_eval = -math.inf
+
+    # Get available moves
+    empty_cells = get_empty_cells(board)
+
+    # If the board is empty, place in the center for a good start.
+    # This is a heuristic that might cut down search in some early cases
+    # but the minimax itself will find this anyway since center is generally a good spot.
+    # For a 4x4, (1,1), (1,2), (2,1), (2,2) are central.
+    # Let's just pick one fixed center if the board is completely empty.
+    if len(empty_cells) == BOARD_SIZE * BOARD_SIZE:
+        return (1, 1) # Or (2,2) or any central point. (1,1) is fine.
+
+    # Iterate through all possible moves
+    for r, c in empty_cells:
+        board[r][c] = ME # Make the move
+        # Call minimax for the opponent (minimizing player)
+        eval = minimax(board, 0, False, -math.inf, math.inf)
+        board[r][c] = EMPTY # Undo the move
+
+        if eval > max_eval:
+            max_eval = eval
+            best_move = (r, c)
+
+    return best_move
+
+```
+
+**Testing the evaluation and logic:**
+
+Consider a simple 4x4 board:
+`[[0,0,0,0], [0,0,0,0], [0,0,0,0], [0,0,0,0]]` -> My first move will return `(1,1)` by shortcut.
+Then opponent makes a move.
+My code for `(1,1)` should be fine. It is a good starting position.
+
+Consider a winning scenario for me:
+`[[1,1,1,0], [0,0,0,0], [0,0,0,0], [0,0,0,0]]`
+If I play `(0,3)`, I win.
+The `policy` function should iterate `(0,3)`, call `minimax`.
+`minimax` with `board[0][3]=ME`: `check_win(board, ME)` becomes True. `evaluate` returns `1`. This path yields `1`.
+Other paths for empty cells for me:
+e.g., `(0,0)` if available, `(0,1)` etc.
+My `max_eval` initialised to `-math.inf`, so naturally `1` is better than anything.
+
+The depth parameter in `minimax` is currently not used for anything other than being incremented. For pure win/loss/draw, it doesn't strictly need to be there for pruning, unless we had heuristic values. But the alpha-beta pruning depends on it.
+
+What if there are multiple winning moves?
+`best_move` will just pick the first one encountered that results in `max_eval`. This is fine.
+
+What if there are no winning moves, but also no losing moves for me, just all lead to a draw?
+`max_eval` will be `0` (draw). `best_move` will be any move that leads to a draw. This is also fine.
+
+What if all moves lead to a loss for me?
+`max_eval` will be `-1` (loss). `best_move` will be any move that leads to a loss. This is also fine, as it's the best I can do.
+
+**Refinement of `policy`**:
+The `if len(empty_cells) == BOARD_SIZE * BOARD_SIZE:` for `(1,1)` is a minor optimization, but not strictly necessary for correctness. `minimax` would find it. It might speed up the very first move.
+The `depth` parameter in `minimax` starts at 0.
+The `is_maximizing_player` in the first call of `minimax` from `policy` is `False` because after I make my move, it becomes the opponent's turn.
+
+Let's double-check the constant names for clarity.
+`ME = 1` - Yes, `policy`'s player is `1`.
+`OPPONENT = -1` - Yes.
+
+The logic seems sound for a standard minimax with alpha-beta pruning.
+The board size (4x4) is small enough for this to probably complete within 1 second.
+The number of possible moves decreases quickly.
+
+Worst case scenario: first move, 16 empty cells.
+`policy` iterates 16 times. Each time calls `minimax`.
+`minimax` for a virtually empty board will recurse deeply.
+Alpha-beta pruning is crucial.
+
+Consider data types and potential issues:
+*   `board` is `list[list[int]]`, mutable. Pass by reference, so need to `undo` moves. My code does this.
+*   `math.inf` is used correctly for alpha-beta.
+
+Looks good.
+
+One final check: the question asks for a tuple `(row, col)`. My return `best_move` is a tuple.
+The policy function assumes it is *my* turn. My player ID is `1`. The opponent's is `-1`. This is correctly mapped in `minimax`.
+</thinking>
+<code>
+import math
+
+# Constants for player representation
+ME = 1
+OPPONENT = -1
+EMPTY = 0
+BOARD_SIZE = 4
+
+def check_win(board, player):
+    """
+    Checks if a given player has won the game.
+    A win is defined as 4 pieces in a row, column, or main diagonal.
+    """
+    # Check rows
+    for r in range(BOARD_SIZE):
+        if all(board[r][c] == player for c in range(BOARD_SIZE)):
+            return True
+    # Check columns
+    for c in range(BOARD_SIZE):
+        if all(board[r][c] == player for r in range(BOARD_SIZE)):
+            return True
+    # Check main diagonal
+    if all(board[i][i] == player for i in range(BOARD_SIZE)):
+        return True
+    # Check anti-diagonal
+    if all(board[i][BOARD_SIZE - 1 - i] == player for i in range(BOARD_SIZE)):
+        return True
+    return False
+
+def is_board_full(board):
+    """
+    Checks if the board is completely full (no more empty cells).
+    """
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if board[r][c] == EMPTY:
+                return False
+    return True
+
+def get_empty_cells(board):
+    """
+    Returns a list of (row, col) tuples for all empty cells on the board.
+    """
+    empty_cells = []
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if board[r][c] == EMPTY:
+                empty_cells.append((r, c))
+    return empty_cells
+
+def evaluate(board):
+    """
+    Evaluates the current state of the board.
+    Returns 1 if ME wins, -1 if OPPONENT wins, and 0 for a draw or ongoing game.
+    """
+    if check_win(board, ME):
+        return 1
+    if check_win(board, OPPONENT):
+        return -1
+    return 0 # Draw or game ongoing
+
+def minimax(board, depth, is_maximizing_player, alpha, beta):
+    """
+    Implements the Minimax algorithm with Alpha-Beta Pruning.
+    depth: Current depth in the search tree (not strictly used for pruning limit, but incremented).
+    is_maximizing_player: True if it's the AI's (ME) turn, False if it's the OPPONENT's turn.
+    alpha: The best score that the maximizing player can guarantee so far.
+    beta: The best score that the minimizing player can guarantee so far.
+    """
+    score = evaluate(board)
+
+    # Base cases for recursion: game over conditions
+    if score == 1:  # ME wins
+        return 1
+    if score == -1: # OPPONENT wins
+        return -1
+    if is_board_full(board): # Draw
+        return 0
+
+    # If the game is not over and the board is not full, continue searching.
+    if is_maximizing_player:
+        max_eval = -math.inf
+        for r, c in get_empty_cells(board):
+            board[r][c] = ME  # Make the move
+            eval = minimax(board, depth + 1, False, alpha, beta)
+            board[r][c] = EMPTY # Undo the move (backtrack)
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break # Beta cutoff
+        return max_eval
+    else: # Minimizing player (OPPONENT)
+        min_eval = math.inf
+        for r, c in get_empty_cells(board):
+            board[r][c] = OPPONENT # Make the move
+            eval = minimax(board, depth + 1, True, alpha, beta)
+            board[r][c] = EMPTY # Undo the move (backtrack)
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break # Alpha cutoff
+        return min_eval
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Determines the best next move for the AI player (ME).
+    Searches all possible moves using minimax with alpha-beta pruning.
+    """
+    best_move = (-1, -1)
+    max_eval = -math.inf
+
+    empty_cells = get_empty_cells(board)
+
+    # Special case for the very first move to potentially speed up slightly,
+    # though minimax would find a good central move anyway.
+    if len(empty_cells) == BOARD_SIZE * BOARD_SIZE:
+        return (1, 1) # A good central position for a 4x4 board.
+
+    # Iterate through all available empty cells to find the best move
+    for r, c in empty_cells:
+        board[r][c] = ME  # Try making the move
+        # Call minimax for the opponent (minimizing player)
+        # after our move, assuming it's depth 0 from our perspective for this move series
+        # and the opponent will play next.
+        eval = minimax(board, 0, False, -math.inf, math.inf)
+        board[r][c] = EMPTY # Undo the move
+
+        if eval > max_eval:
+            max_eval = eval
+            best_move = (r, c)
+        
+        # If we found a winning move, no need to search further.
+        # This is an optimization for early wins.
+        if max_eval == 1:
+            break
+
+    return best_move
+
+</code>

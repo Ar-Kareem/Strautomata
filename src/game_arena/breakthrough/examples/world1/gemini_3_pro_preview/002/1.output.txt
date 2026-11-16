@@ -1,0 +1,230 @@
+The strategy for this policy is an **Iterative Deepening Minimax with Alpha-Beta Pruning**. The bot represents the board state as an 8x8 integer grid to efficiently generate moves and evaluate positions. The evaluation function uses **exponential weights** based on row advancement to aggressively prioritize pushing pieces toward the opponent's home row, which is the primary winning condition of Breakthrough. Specifically, closer rows to the goal are weighted significantly higher ($2^n$). It also considers material balance and "kill conditions" where the opponent is wiped out. 
+
+The search algorithm iterates through depths 1 to 4, managing execution time to strictly adhere to the 1-second limit. Move ordering is applied to consider winning moves and captures first, maximizing the pruning efficiency of the alpha-beta algorithm. If a winning sequence is detected or time runs low, the best move found so far is returned immediately.
+
+<code>
+import time
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    # Constants
+    START_TIME = time.time()
+    TIME_LIMIT = 0.95  # Seconds
+    
+    # 1. Initialize Board
+    # 0 = Empty, 1 = Me, -1 = Opp
+    board = [[0] * 8 for _ in range(8)]
+    for r, c in me:
+        board[r][c] = 1
+    for r, c in opp:
+        board[r][c] = -1
+        
+    # 2. Determine Orientation and Goals
+    # White ('w'): Moves row index 0 -> 7
+    # Black ('b'): Moves row index 7 -> 0
+    if color == 'w':
+        MY_DIR = 1
+        MY_GOAL = 7
+        OPP_GOAL = 0
+        # Exponential weights favoring higher rows for White
+        W_ME = [1, 2, 4, 8, 16, 30, 60, 10000]
+        # Opponent (Black) favors lower rows
+        W_OPP = [10000, 60, 30, 16, 8, 4, 2, 1]
+    else:
+        MY_DIR = -1
+        MY_GOAL = 0
+        OPP_GOAL = 7
+        # Exponential weights favoring lower rows for Black
+        W_ME = [10000, 60, 30, 16, 8, 4, 2, 1]
+        # Opponent (White) favors higher rows
+        W_OPP = [1, 2, 4, 8, 16, 30, 60, 10000]
+
+    # --- Helper Functions ---
+
+    def evaluate(bd):
+        """
+        Evaluates the board from the perspective of 'Me' (Player 1).
+        Positive score = Good for Me.
+        """
+        score = 0
+        p_count = 0
+        o_count = 0
+        
+        for r in range(8):
+            for c in range(8):
+                p = bd[r][c]
+                if p == 1:
+                    score += W_ME[r]
+                    p_count += 1
+                elif p == -1:
+                    score -= W_OPP[r]
+                    o_count += 1
+        
+        # Check elimination win condition
+        if o_count == 0: return 20000
+        if p_count == 0: return -20000
+        
+        # Small material/mobility bonus
+        score += (p_count - o_count) * 20
+        return score
+
+    def get_moves(bd, player):
+        """
+        Generates all legal moves for 'player' (1 or -1).
+        Returns a list of tuples: ((r1, c1), (r2, c2))
+        Sorted by heuristic strength for Alpha-Beta optimization.
+        """
+        moves = []
+        mdir = MY_DIR if player == 1 else -MY_DIR
+        goal = MY_GOAL if player == 1 else OPP_GOAL
+        
+        # Locate pieces
+        pieces = []
+        for r in range(8):
+            for c in range(8):
+                if bd[r][c] == player:
+                    pieces.append((r,c))
+                    
+        for r, c in pieces:
+            nr = r + mdir
+            if 0 <= nr <= 7:
+                # 1. Straight Move (Must be empty)
+                if bd[nr][c] == 0:
+                    moves.append(((r,c), (nr,c)))
+                
+                # 2. Diagonal Move (Empty or Capture)
+                for dc in (-1, 1):
+                    nc = c + dc
+                    if 0 <= nc <= 7:
+                        target = bd[nr][nc]
+                        # Valid if target is not friendly
+                        if target != player:
+                            moves.append(((r,c), (nr,nc)))
+        
+        # Move Ordering: Win > Capture > Advance
+        def sort_key(m):
+            (fr, fc), (tr, tc) = m
+            # Immediate Win
+            if tr == goal: return 100000
+            # Capture
+            if bd[tr][tc] != 0: return 10000
+            # Advance (Weighted by position strength)
+            w = W_ME[fr] if player == 1 else W_OPP[fr]
+            return w
+
+        moves.sort(key=sort_key, reverse=True)
+        return moves
+
+    def alphabeta(bd, depth, alpha, beta, player):
+        """
+        Minimax with Alpha-Beta Pruning.
+        """
+        # Time Check
+        if (time.time() - START_TIME) > TIME_LIMIT:
+            return 0, None
+        
+        # Check score for terminal states (Win/Loss reached)
+        score = evaluate(bd)
+        if abs(score) > 5000:
+            return player * score, None
+            
+        if depth == 0:
+            return player * score, None
+            
+        moves = get_moves(bd, player)
+        if not moves:
+            # No moves available is a loss
+            return -20000, None
+            
+        best_val = -float('inf')
+        best_move = moves[0]
+        
+        for m in moves:
+            (fr, fc), (tr, tc) = m
+            captured = bd[tr][tc]
+            
+            # Make Move
+            bd[tr][tc] = bd[fr][fc]
+            bd[fr][fc] = 0
+            
+            # Recurse
+            val, _ = alphabeta(bd, depth - 1, -beta, -alpha, -player)
+            
+            # Undo Move
+            bd[fr][fc] = bd[tr][tc]
+            bd[tr][tc] = captured
+            
+            if val is None: # Timeout propagation
+                return 0, None
+            
+            val = -val
+            if val > best_val:
+                best_val = val
+                best_move = m
+            
+            alpha = max(alpha, best_val)
+            if alpha >= beta:
+                break
+                
+        return best_val, best_move
+
+    # --- Main Search Loop ---
+    
+    # Generate root moves
+    legal_moves = get_moves(board, 1)
+    if not legal_moves:
+        return ((0,0), (0,0)) # Should not happen unless game over
+        
+    best_move = legal_moves[0]
+    
+    # Check immediate win (1-ply)
+    if legal_moves[0][1][0] == MY_GOAL:
+        return legal_moves[0]
+        
+    # Iterative Deepening
+    for depth in range(1, 5): # Depths 1, 2, 3, 4
+        alpha = -float('inf')
+        beta = float('inf')
+        d_best_val = -float('inf')
+        d_best_move = None
+        aborted = False
+        
+        for m in legal_moves:
+            if time.time() - START_TIME > TIME_LIMIT:
+                aborted = True
+                break
+                
+            (fr, fc), (tr, tc) = m
+            captured = board[tr][tc]
+            
+            # Make Move
+            board[tr][tc] = board[fr][fc]
+            board[fr][fc] = 0
+            
+            # Search
+            val, _ = alphabeta(board, depth - 1, -beta, -alpha, -1)
+            
+            # Undo Move
+            board[fr][fc] = board[tr][tc]
+            board[tr][tc] = captured
+            
+            if val is None:
+                aborted = True
+                break
+            
+            val = -val
+            if val > d_best_val:
+                d_best_val = val
+                d_best_move = m
+            
+            alpha = max(alpha, d_best_val)
+        
+        if not aborted:
+            best_move = d_best_move
+            # If we find a winning score, we can stop early
+            if d_best_val > 5000:
+                break
+        else:
+            break
+            
+    return best_move
+</code>

@@ -1,0 +1,138 @@
+
+from typing import List
+
+# Mapping from card symbol to its numeric value (face value)
+CARD_VALUE = {
+    "A": 11,
+    "2": 2, "3": 3, "4": 4, "5": 5, "6": 6,
+    "7": 7, "8": 8, "9": 9,
+    "10": 10,
+    "J": 10, "Q": 10, "K": 10,
+}
+
+def card_value(card: str) -> int:
+    """Return the numeric value of a card."""
+    return CARD_VALUE[card]
+
+def hand_value(hand: List[str], target: int) -> int:
+    """
+    Compute the current hand total using the flexible Ace rule:
+    – Ace counts as 11 as long as the total stays ≤ target.
+    – If the total would exceed target and an Ace is present, treat the Ace as 1 (subtract 10).
+    – This function assumes the hand is legal (total ≤ target). Returns None otherwise.
+    """
+    total = 0
+    ace_present = False
+    for c in hand:
+        if c == "A":
+            total += 11
+            ace_present = True
+        else:
+            total += card_value(c)
+    if total <= target:
+        return total
+    if ace_present:
+        return total - 10   # treat Ace as 1
+    # Bust or illegal hand – should not happen on legal calls
+    return None
+
+def remaining_cards(hand: List[str]) -> List[str]:
+    """
+    Return a list of the cards still in the player's deck.
+    The deck contains exactly one copy of each rank from the suit.
+    """
+    all_ranks = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    hand_set = set(hand)
+    return [r for r in all_ranks if r not in hand_set]
+
+def exact_match_possible(remaining: List[str], hand_total: int, target: int) -> tuple[bool, float]:
+    """
+    Determine whether a single card can bring the hand exactly to the target.
+    Returns (possible, probability) where probability is the fraction of remaining cards
+    that satisfy the condition (if possible).
+    """
+    diff = target - hand_total
+    if diff <= 0:
+        return False, 0.0
+
+    # diff == 1 cannot be reached because there is no card worth 1 (except Ace after bust)
+    if diff == 1:
+        return False, 0.0
+
+    # diff in 2‑9
+    if 2 <= diff <= 9:
+        candidate = str(diff)
+        if candidate in remaining:
+            prob = remaining.count(candidate) / len(remaining)
+            return True, prob
+        else:
+            return False, 0.0
+
+    # diff == 10 (can be hit by 10, J, Q, K)
+    if diff == 10:
+        candidates = ["10", "J", "Q", "K"]
+        cnt = sum(1 for c in remaining if c in candidates)
+        prob = cnt / len(remaining)
+        return True, prob
+
+    # diff == 11 (can be hit by an Ace counted as 11)
+    if diff == 11:
+        if "A" in remaining:
+            prob = 1.0 / len(remaining)
+            return True, prob
+        else:
+            return False, 0.0
+
+    # diff > 11 cannot be completed in one draw
+    return False, 0.0
+
+def policy(hand: List[str], target: int) -> str:
+    """
+    Decision rule for the next move in the simplified Blackjack‑like arena.
+    Returns either "HIT" or "STAY" as a legal move string.
+    """
+    s = hand_value(hand, target)
+    # If we are bust or already at the target, stay
+    if s is None or s > target:
+        return "STAY"
+    if s == target:
+        return "STAY"
+
+    remaining = remaining_cards(hand)
+    if not remaining:
+        return "STAY"
+
+    # Count how many draws would bust the hand
+    bust = 0
+    safe = 0
+    for c in remaining:
+        v = card_value(c)
+        if s + v > target:
+            bust += 1
+        else:
+            safe += 1
+    total_rem = len(remaining)
+
+    if safe == 0:
+        return "STAY"
+
+    safe_prob = safe / total_rem
+    # Close to the goal – stay unless we can finish exactly
+    if s >= target - 5:
+        possible, prob_exact = exact_match_possible(remaining, s, target)
+        if possible and prob_exact >= 0.10:
+            return "HIT"
+        else:
+            return "STAY"
+    else:
+        # Far enough – hit when safe draw is likely
+        if safe_prob >= 0.5:
+            # high chance to improve without busting
+            possible, prob_exact = exact_match_possible(remaining, s, target)
+            if possible and prob_exact >= 0.10:
+                return "HIT"
+            return "HIT"
+        # Check if an exact‑target draw is unusually likely
+        if possible and prob_exact >= 0.10:
+            return "HIT"
+        return "STAY"

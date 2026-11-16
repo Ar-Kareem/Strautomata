@@ -1,0 +1,146 @@
+
+import numpy as np
+import math
+
+# Direction vectors for 8 neighboring directions
+DIRS = [(-1, -1), (-1, 0), (-1, 1),
+        (0, -1),          (0, 1),
+        (1, -1),  (1, 0), (1, 1)]
+
+# Positional weights (corners highly valued, adjacent to corners penalized)
+WEIGHTS = np.array([
+    [100, -20, 10,  5,  5, 10, -20, 100],
+    [-20, -50, -2, -2, -2, -2, -50, -20],
+    [10,  -2, -1, -1, -1, -1,  -2,  10],
+    [5,   -2, -1, -1, -1, -1,  -2,   5],
+    [5,   -2, -1, -1, -1, -1,  -2,   5],
+    [10,  -2, -1, -1, -1, -1,  -2,  10],
+    [-20, -50, -2, -2, -2, -2, -50, -20],
+    [100, -20, 10,  5,  5, 10, -20, 100]
+], dtype=np.int32)
+
+CORNERS = [(0,0),(0,7),(7,0),(7,7)]
+
+def in_bounds(r, c):
+    return 0 <= r < 8 and 0 <= c < 8
+
+def get_flips(you, opp, r, c):
+    if you[r, c] or opp[r, c]:
+        return []
+    flips = []
+    for dr, dc in DIRS:
+        rr, cc = r + dr, c + dc
+        temp = []
+        while in_bounds(rr, cc) and opp[rr, cc]:
+            temp.append((rr, cc))
+            rr += dr
+            cc += dc
+        if temp and in_bounds(rr, cc) and you[rr, cc]:
+            flips.extend(temp)
+    return flips
+
+def legal_moves(you, opp):
+    moves = {}
+    for r in range(8):
+        for c in range(8):
+            if you[r, c] == 0 and opp[r, c] == 0:
+                flips = get_flips(you, opp, r, c)
+                if flips:
+                    moves[(r, c)] = flips
+    return moves
+
+def apply_move(you, opp, r, c, flips):
+    new_you = you.copy()
+    new_opp = opp.copy()
+    new_you[r, c] = 1
+    for fr, fc in flips:
+        new_you[fr, fc] = 1
+        new_opp[fr, fc] = 0
+    return new_you, new_opp
+
+def evaluate(you, opp):
+    # Positional score
+    pos_score = int(np.sum(WEIGHTS * you) - np.sum(WEIGHTS * opp))
+    # Mobility
+    my_moves = len(legal_moves(you, opp))
+    opp_moves = len(legal_moves(opp, you))
+    mobility_score = 5 * (my_moves - opp_moves)
+    # Corner occupancy
+    my_corners = sum(you[r, c] for r, c in CORNERS)
+    opp_corners = sum(opp[r, c] for r, c in CORNERS)
+    corner_score = 25 * (my_corners - opp_corners)
+    # Disc count (more important late)
+    disc_score = int(np.sum(you) - np.sum(opp))
+
+    empties = 64 - int(np.sum(you) + np.sum(opp))
+    if empties < 12:
+        return pos_score + mobility_score + corner_score + 2 * disc_score
+    elif empties < 24:
+        return pos_score + mobility_score + corner_score + disc_score
+    else:
+        return pos_score + mobility_score + corner_score
+
+def negamax(you, opp, depth, alpha, beta):
+    if depth == 0:
+        return evaluate(you, opp)
+    moves = legal_moves(you, opp)
+    if not moves:
+        opp_moves = legal_moves(opp, you)
+        if not opp_moves:
+            return evaluate(you, opp)
+        # Pass turn
+        return -negamax(opp, you, depth - 1, -beta, -alpha)
+
+    value = -math.inf
+    for (r, c), flips in moves.items():
+        ny, no = apply_move(you, opp, r, c, flips)
+        score = -negamax(no, ny, depth - 1, -beta, -alpha)
+        if score > value:
+            value = score
+        if value > alpha:
+            alpha = value
+        if alpha >= beta:
+            break
+    return value
+
+def choose_depth(you, opp):
+    empties = 64 - int(np.sum(you) + np.sum(opp))
+    if empties > 44:
+        return 3
+    elif empties > 20:
+        return 4
+    elif empties > 10:
+        return 5
+    else:
+        return 5  # keep safe for time
+
+def to_notation(move):
+    r, c = move
+    return chr(ord('a') + c) + str(r + 1)
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    you = you.astype(np.int8)
+    opponent = opponent.astype(np.int8)
+    moves = legal_moves(you, opponent)
+    if not moves:
+        return "pass"
+
+    depth = choose_depth(you, opponent)
+    best_score = -math.inf
+    best_move = None
+    alpha = -math.inf
+    beta = math.inf
+
+    for (r, c), flips in moves.items():
+        ny, no = apply_move(you, opponent, r, c, flips)
+        score = -negamax(no, ny, depth - 1, -beta, -alpha)
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+        if score > alpha:
+            alpha = score
+
+    if best_move is None:
+        # Fallback: return any legal move
+        best_move = next(iter(moves.keys()))
+    return to_notation(best_move)

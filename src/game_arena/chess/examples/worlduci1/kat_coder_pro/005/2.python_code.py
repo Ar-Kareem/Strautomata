@@ -1,0 +1,193 @@
+
+import numpy as np
+import random
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    # Piece values for material evaluation
+    piece_values = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}
+    
+    # Color mapping
+    color_map = {'white': 'w', 'black': 'b'}
+    player_color = color_map[to_play]
+    opponent_color = 'b' if player_color == 'w' else 'w'
+    
+    # Get all legal moves
+    legal_moves = get_legal_moves(pieces, to_play)
+    
+    if not legal_moves:
+        return random.choice(legal_moves)  # This shouldn't happen, but just in case
+    
+    # Check for immediate checkmate
+    for move in legal_moves:
+        if is_checkmate_after_move(pieces, to_play, move):
+            return move
+    
+    # Evaluate all moves and select the best
+    best_moves = []
+    best_score = float('-inf')
+    
+    for move in legal_moves:
+        score = evaluate_move(pieces, to_play, move, piece_values)
+        
+        if score > best_score:
+            best_score = score
+            best_moves = [move]
+        elif score == best_score:
+            best_moves.append(move)
+    
+    # Randomly select from best moves to add some unpredictability
+    if best_moves:
+        return random.choice(best_moves)
+    
+    # Fallback - should not reach here
+    return random.choice(legal_moves)
+
+def get_legal_moves(pieces: dict[str, str], to_play: str) -> list[str]:
+    """Generate all legal moves for the current position"""
+    # This is a simplified version - a real implementation would need full chess rules
+    # For this competition, we assume the legal moves are provided by the environment
+    # This function is a placeholder to show the expected interface
+    
+    # In the real implementation, this would be provided by the competition framework
+    # Here we're simulating the generation of legal moves
+    return simulate_legal_moves(pieces, to_play)
+
+def simulate_legal_moves(pieces: dict[str, str], to_play: str) -> list[str]:
+    """Simulate generating legal moves (simplified for demonstration)"""
+    # This is a placeholder implementation
+    # In reality, this would require full chess move generation logic
+    
+    legal_moves = []
+    player_color = 'w' if to_play == 'white' else 'b'
+    
+    # Find all pieces of the current player
+    player_pieces = [square for square, piece in pieces.items() if piece[0] == player_color]
+    
+    # For each piece, generate possible moves (simplified)
+    for square in player_pieces:
+        piece = pieces[square]
+        row, col = square_to_coords(square)
+        
+        # Generate moves based on piece type (very simplified)
+        if piece[1] == 'P':  # Pawn
+            # Forward moves
+            forward_row = row + (1 if player_color == 'w' else -1)
+            if 0 <= forward_row <= 7:
+                forward_square = coords_to_square(forward_row, col)
+                if forward_square not in pieces:  # Square is empty
+                    legal_moves.append(square + forward_square)
+                    
+                # Diagonal captures
+                for d_col in [-1, 1]:
+                    capture_col = col + d_col
+                    if 0 <= capture_col <= 7:
+                        capture_square = coords_to_square(forward_row, capture_col)
+                        if capture_square in pieces and pieces[capture_square][0] != player_color:
+                            legal_moves.append(square + capture_square)
+        
+        elif piece[1] == 'N':  # Knight
+            knight_moves = [
+                (2, 1), (2, -1), (-2, 1), (-2, -1),
+                (1, 2), (1, -2), (-1, 2), (-1, -2)
+            ]
+            for d_row, d_col in knight_moves:
+                new_row, new_col = row + d_row, col + d_col
+                if 0 <= new_row <= 7 and 0 <= new_col <= 7:
+                    target_square = coords_to_square(new_row, new_col)
+                    if target_square not in pieces or pieces[target_square][0] != player_color:
+                        legal_moves.append(square + target_square)
+        
+        # Add more piece types as needed (R, B, Q, K)
+        # This is a simplified example
+    
+    return legal_moves
+
+def is_checkmate_after_move(pieces: dict[str, str], to_play: str, move: str) -> bool:
+    """Check if making this move results in checkmate"""
+    # Simplified checkmate detection
+    # In a real implementation, this would require checking if the opponent's king is in check
+    # and has no legal moves to escape
+    
+    # For this example, we'll just check if the move captures the opponent's king
+    # (which would be checkmate, though this is not how chess actually works)
+    
+    target_square = move[2:4]
+    if target_square in pieces and pieces[target_square][1] == 'K':
+        return True
+    
+    return False
+
+def evaluate_move(pieces: dict[str, str], to_play: str, move: str, piece_values: dict) -> float:
+    """Evaluate a move based on various heuristics"""
+    score = 0.0
+    
+    # Parse the move
+    from_square = move[:2]
+    to_square = move[2:4]
+    
+    # Current player's color
+    player_color = 'w' if to_play == 'white' else 'b'
+    opponent_color = 'b' if player_color == 'w' else 'w'
+    
+    # 1. Material gain from capture
+    if to_square in pieces:
+        captured_piece = pieces[to_square]
+        if captured_piece[0] == opponent_color:
+            score += piece_values[captured_piece[1]]
+    
+    # 2. Piece development (encourage moving pieces from back rank)
+    from_row = square_to_coords(from_square)[0]
+    if player_color == 'w':
+        if from_row == 0 or from_row == 1:  # Back rank for white
+            score += 0.1
+    else:
+        if from_row == 7 or from_row == 6:  # Back rank for black
+            score += 0.1
+    
+    # 3. Central control bonus
+    central_squares = ['d4', 'd5', 'e4', 'e5']
+    if to_square in central_squares:
+        score += 0.2
+    
+    # 4. King safety (encourage castling)
+    if len(move) == 4 and move[0] == 'e' and move[2] == 'g':  # King-side castling
+        score += 0.5
+    elif len(move) == 4 and move[0] == 'e' and move[2] == 'c':  # Queen-side castling
+        score += 0.4
+    
+    # 5. Penalize moving the same piece multiple times early
+    # (This would require tracking move history, which we don't have)
+    
+    # 6. Encourage pawn advancement
+    if len(move) == 4 and move[0] in 'abcdefgh' and move[1] in '234567' and move[2] in 'abcdefgh':
+        from_row = square_to_coords(from_square)[0]
+        to_row = square_to_coords(to_square)[0]
+        if player_color == 'w':
+            if to_row > from_row:  # Moving forward
+                score += 0.1
+        else:
+            if to_row < from_row:  # Moving forward
+                score += 0.1
+    
+    # 7. Promotion bonus
+    if len(move) > 4 and move[-1] in 'rnbq':  # Pawn promotion
+        score += 8.0  # High value for promotion
+    
+    # 8. Avoid moving into check (simplified)
+    # This would require full chess rules to implement properly
+    
+    return score
+
+def square_to_coords(square: str) -> tuple[int, int]:
+    """Convert algebraic notation to coordinates (0-7, 0-7)"""
+    file = square[0]
+    rank = int(square[1])
+    col = ord(file) - ord('a')
+    row = rank - 1
+    return row, col
+
+def coords_to_square(row: int, col: int) -> str:
+    """Convert coordinates to algebraic notation"""
+    file = chr(ord('a') + col)
+    rank = str(row + 1)
+    return file + rank

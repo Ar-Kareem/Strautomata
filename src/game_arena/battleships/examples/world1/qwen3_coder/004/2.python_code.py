@@ -1,0 +1,173 @@
+
+import numpy as np
+from collections import defaultdict
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Convert to numpy array for easier manipulation
+    board_array = np.array(board)
+    
+    # Find all hit cells (value = 1)
+    hit_positions = np.where(board_array == 1)
+    hit_cells = list(zip(hit_positions[0], hit_positions[1]))
+    
+    # If we have hits, look for adjacent cells to target
+    if hit_cells:
+        # Try to find the best adjacent cell to continue sinking ships
+        target = find_best_adjacent_target(board_array, hit_cells)
+        if target:
+            return target
+    
+    # If no targets from hits, use probabilistic hunting
+    return find_best_hunt_target(board_array)
+
+def find_best_adjacent_target(board, hit_cells):
+    """Find the best adjacent cell to target based on current hits"""
+    # For each hit, check adjacent cells
+    adjacent_candidates = []
+    
+    # Group hits to identify potential ship orientations
+    # First, look for hits that form lines
+    for hit_r, hit_c in hit_cells:
+        # Check horizontal and vertical lines
+        # Horizontal line check (same row)
+        line_horizontal = []
+        c = hit_c
+        # Go left
+        while c >= 0 and board[hit_r, c] == 1:
+            line_horizontal.append((hit_r, c))
+            c -= 1
+        # Go right  
+        c = hit_c + 1
+        while c < 10 and board[hit_r, c] == 1:
+            line_horizontal.append((hit_r, c))
+            c += 1
+            
+        # If we have a horizontal line, check its ends
+        if len(line_horizontal) > 1:
+            # Check left end
+            left_r, left_c = line_horizontal[0]
+            if left_c > 0 and board[left_r, left_c - 1] == 0:
+                return (left_r, left_c - 1)
+            # Check right end
+            right_r, right_c = line_horizontal[-1]
+            if right_c < 9 and board[right_r, right_c + 1] == 0:
+                return (right_r, right_c + 1)
+        
+        # Vertical line check (same column)
+        line_vertical = []
+        r = hit_r
+        # Go up
+        while r >= 0 and board[r, hit_c] == 1:
+            line_vertical.append((r, hit_c))
+            r -= 1
+        # Go down
+        r = hit_r + 1
+        while r < 10 and board[r, hit_c] == 1:
+            line_vertical.append((r, hit_c))
+            r += 1
+            
+        # If we have a vertical line, check its ends
+        if len(line_vertical) > 1:
+            # Check top end
+            top_r, top_c = line_vertical[0]
+            if top_r > 0 and board[top_r - 1, top_c] == 0:
+                return (top_r - 1, top_c)
+            # Check bottom end  
+            bottom_r, bottom_c = line_vertical[-1]
+            if bottom_r < 9 and board[bottom_r + 1, bottom_c] == 0:
+                return (bottom_r + 1, bottom_c)
+    
+    # If no line found, just check adjacent cells to any hit
+    for hit_r, hit_c in hit_cells:
+        # Check 4 adjacent cells (up, right, down, left)
+        for dr, dc in [(-1, 0), (0, 1), (1, 0), (0, -1)]:
+            nr, nc = hit_r + dr, hit_c + dc
+            if 0 <= nr < 10 and 0 <= nc < 10 and board[nr, nc] == 0:
+                return (nr, nc)
+    
+    return None
+
+def find_best_hunt_target(board):
+    """Find the best cell to target when hunting for ships"""
+    # Use a probabilistic approach
+    
+    # Simple approach: start with checkerboard pattern for maximum efficiency 
+    # and target the cell with the most possible ship placements
+    
+    # Weights for each ship length (5, 4, 3, 3, 2)
+    ship_lengths = [5, 4, 3, 3, 2]
+    
+    # Create a probability map
+    prob_map = np.zeros((10, 10))
+    
+    # For each cell, count how many possible ship placements include it
+    for r in range(10):
+        for c in range(10):
+            if board[r, c] != 0:  # Already fired at this cell
+                continue
+                
+            # For each ship length, count valid placements through this cell
+            for length in ship_lengths:
+                # Horizontal placements
+                for offset in range(length):
+                    # Check if ship fits horizontally with (r,c) at position 'offset'
+                    start_c = c - offset
+                    end_c = start_c + length - 1
+                    
+                    if 0 <= start_c and end_c < 10:
+                        # Check if all cells in this placement are unknown (0)
+                        valid = True
+                        for check_c in range(start_c, end_c + 1):
+                            if board[r, check_c] == -1:  # Miss
+                                valid = False
+                                break
+                        if valid:
+                            for check_c in range(start_c, end_c + 1):
+                                if board[r, check_c] == 0:  # Unknown
+                                    prob_map[r, check_c] += 1
+                
+                # Vertical placements        
+                for offset in range(length):
+                    # Check if ship fits vertically with (r,c) at position 'offset'  
+                    start_r = r - offset
+                    end_r = start_r + length - 1
+                    
+                    if 0 <= start_r and end_r < 10:
+                        # Check if all cells in this placement are unknown (0)
+                        valid = True
+                        for check_r in range(start_r, end_r + 1):
+                            if board[check_r, c] == -1:  # Miss
+                                valid = False
+                                break
+                        if valid:
+                            for check_r in range(start_r, end_r + 1):
+                                if board[check_r, c] == 0:  # Unknown
+                                    prob_map[check_r, c] += 1
+    
+    # Find the cell with maximum probability
+    max_prob = -1
+    best_pos = None
+    
+    for r in range(10):
+        for c in range(10):
+            if board[r, c] == 0 and prob_map[r, c] > max_prob:
+                max_prob = prob_map[r, c]
+                best_pos = (r, c)
+    
+    # If all probabilities are 0, pick any unknown cell
+    if best_pos is None:
+        unknown_positions = np.where(board == 0)
+        if len(unknown_positions[0]) > 0:
+            best_pos = (unknown_positions[0][0], unknown_positions[1][0])
+    
+    # Fallback to first unknown cell if we still haven't found anything
+    if best_pos is None:
+        for r in range(10):
+            for c in range(10):
+                if board[r, c] == 0:
+                    best_pos = (r, c)
+                    break
+            if best_pos:
+                break
+    
+    return best_pos

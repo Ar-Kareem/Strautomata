@@ -1,0 +1,281 @@
+
+import numpy as np
+import random
+from collections import defaultdict
+import time
+
+class HexGame:
+    def __init__(self, size=11):
+        self.size = size
+        self.board = np.zeros((size, size), dtype=int)  # 0: empty, 1: black, 2: white
+        self.black_stones = []
+        self.white_stones = []
+        
+    def clone(self):
+        new_game = HexGame(self.size)
+        new_game.board = self.board.copy()
+        new_game.black_stones = self.black_stones.copy()
+        new_game.white_stones = self.white_stones.copy()
+        return new_game
+        
+    def place_stone(self, row, col, color):
+        if self.board[row, col] != 0:
+            return False
+        self.board[row, col] = 1 if color == 'b' else 2
+        if color == 'b':
+            self.black_stones.append((row, col))
+        else:
+            self.white_stones.append((row, col))
+        return True
+        
+    def get_neighbors(self, row, col):
+        neighbors = []
+        for dr, dc in [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0)]:
+            nr, nc = row + dr, col + dc
+            if 0 <= nr < self.size and 0 <= nc < self.size:
+                neighbors.append((nr, nc))
+        return neighbors
+        
+    def is_connected(self, color):
+        if color == 'b':
+            # Check if black connects top to bottom
+            visited = set()
+            stack = [(0, c) for c in range(self.size) if self.board[0, c] == 1]
+            
+            while stack:
+                r, c = stack.pop()
+                if r == self.size - 1:
+                    return True
+                if (r, c) in visited:
+                    continue
+                visited.add((r, c))
+                for nr, nc in self.get_neighbors(r, c):
+                    if self.board[nr, nc] == 1 and (nr, nc) not in visited:
+                        stack.append((nr, nc))
+            return False
+        else:
+            # Check if white connects left to right
+            visited = set()
+            stack = [(r, 0) for r in range(self.size) if self.board[r, 0] == 2]
+            
+            while stack:
+                r, c = stack.pop()
+                if c == self.size - 1:
+                    return True
+                if (r, c) in visited:
+                    continue
+                visited.add((r, c))
+                for nr, nc in self.get_neighbors(r, c):
+                    if self.board[nr, nc] == 2 and (nr, nc) not in visited:
+                        stack.append((nr, nc))
+            return False
+            
+    def get_legal_moves(self):
+        moves = []
+        for r in range(self.size):
+            for c in range(self.size):
+                if self.board[r, c] == 0:
+                    moves.append((r, c))
+        return moves
+        
+    def evaluate(self, color):
+        # Simple heuristic evaluation
+        if self.is_connected(color):
+            return 1000 if color == 'b' else -1000
+        if self.is_connected('w' if color == 'b' else 'b'):
+            return -1000 if color == 'b' else 1000
+            
+        # Heuristic based on distance to connection
+        score = 0
+        
+        if color == 'b':
+            # Black wants to connect top to bottom
+            # Check distance from top to bottom
+            min_dist_bottom = self.size
+            for c in range(self.size):
+                if self.board[0, c] == 1:
+                    # BFS to find shortest path to bottom
+                    visited = set()
+                    queue = [(0, c, 0)]
+                    found = False
+                    while queue and not found:
+                        r, c2, dist = queue.pop(0)
+                        if r == self.size - 1:
+                            min_dist_bottom = min(min_dist_bottom, dist)
+                            found = True
+                            break
+                        if (r, c2) in visited:
+                            continue
+                        visited.add((r, c2))
+                        for nr, nc in self.get_neighbors(r, c2):
+                            if self.board[nr, nc] == 1 and (nr, nc) not in visited:
+                                queue.append((nr, nc, dist + 1))
+            score -= min_dist_bottom
+        else:
+            # White wants to connect left to right
+            min_dist_right = self.size
+            for r in range(self.size):
+                if self.board[r, 0] == 2:
+                    # BFS to find shortest path to right
+                    visited = set()
+                    queue = [(r, 0, 0)]
+                    found = False
+                    while queue and not found:
+                        r2, c, dist = queue.pop(0)
+                        if c == self.size - 1:
+                            min_dist_right = min(min_dist_right, dist)
+                            found = True
+                            break
+                        if (r2, c) in visited:
+                            continue
+                        visited.add((r2, c))
+                        for nr, nc in self.get_neighbors(r2, c):
+                            if self.board[nr, nc] == 2 and (nr, nc) not in visited:
+                                queue.append((nr, nc, dist + 1))
+            score -= min_dist_right
+            
+        return score
+
+class MCTSNode:
+    def __init__(self, game, move=None, parent=None):
+        self.game = game
+        self.move = move
+        self.parent = parent
+        self.children = []
+        self.wins = 0
+        self.visits = 0
+        self.untried_moves = game.get_legal_moves()
+        
+    def uct_value(self, exploration_constant=1.4):
+        if self.visits == 0:
+            return float('inf')
+        return self.wins / self.visits + exploration_constant * np.sqrt(np.log(self.parent.visits) / self.visits)
+        
+    def select(self):
+        node = self
+        while node.children:
+            node = max(node.children, key=lambda c: c.uct_value())
+        return node
+        
+    def expand(self):
+        if not self.untried_moves:
+            return None
+        move = self.untried_moves.pop()
+        child_game = self.game.clone()
+        color = 'b' if len(self.game.black_stones) == len(self.game.white_stones) else 'w'
+        child_game.place_stone(move[0], move[1], color)
+        child = MCTSNode(child_game, move, self)
+        self.children.append(child)
+        return child
+        
+    def simulate(self):
+        current_game = self.game.clone()
+        color = 'b' if len(current_game.black_stones) == len(current_game.white_stones) else 'w'
+        
+        while True:
+            legal_moves = current_game.get_legal_moves()
+            if not legal_moves:
+                break
+                
+            # Simple heuristic for simulation: prefer moves that block opponent or advance connection
+            move_scores = []
+            for move in legal_moves:
+                score = 0
+                # Check if this move blocks opponent
+                temp_game = current_game.clone()
+                temp_game.place_stone(move[0], move[1], color)
+                if temp_game.is_connected(color):
+                    score += 100
+                if temp_game.is_connected('w' if color == 'b' else 'b'):
+                    score += 50
+                move_scores.append((score, move))
+            
+            move = max(move_scores, key=lambda x: x[0])[1]
+            current_game.place_stone(move[0], move[1], color)
+            color = 'w' if color == 'b' else 'b'
+            
+            if current_game.is_connected('b') or current_game.is_connected('w'):
+                break
+                
+        # Evaluate final position
+        if current_game.is_connected('b'):
+            return 1 if self.game.black_stones else -1
+        elif current_game.is_connected('w'):
+            return 1 if not self.game.black_stones else -1
+        return 0
+        
+    def backpropagate(self, result):
+        self.visits += 1
+        self.wins += result
+        if self.parent:
+            self.parent.backpropagate(-result)
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    # Initialize game state
+    game = HexGame()
+    
+    # Place existing stones
+    for r, c in me:
+        game.place_stone(r, c, color)
+    for r, c in opp:
+        game.place_stone(r, c, 'w' if color == 'b' else 'b')
+    
+    # Check for immediate winning move
+    for move in game.get_legal_moves():
+        temp_game = game.clone()
+        temp_game.place_stone(move[0], move[1], color)
+        if temp_game.is_connected(color):
+            return move
+            
+    # Check for immediate blocking move
+    for move in game.get_legal_moves():
+        temp_game = game.clone()
+        temp_game.place_stone(move[0], move[1], 'w' if color == 'b' else 'b')
+        if temp_game.is_connected('w' if color == 'b' else 'b'):
+            return move
+    
+    # Use MCTS for more complex positions
+    root = MCTSNode(game)
+    
+    # Run MCTS for a limited time
+    start_time = time.time()
+    simulations = 0
+    
+    while time.time() - start_time < 0.8:  # Use 0.8 seconds for search
+        # Selection
+        node = root.select()
+        
+        # Expansion
+        if node.untried_moves:
+            node = node.expand()
+            
+        # Simulation
+        if node:
+            result = node.simulate()
+            # Backpropagation
+            node.backpropagate(result)
+            
+        simulations += 1
+    
+    # Choose best move
+    if root.children:
+        best_child = max(root.children, key=lambda c: c.visits)
+        return best_child.move
+    
+    # Fallback to heuristic if MCTS didn't find good moves
+    best_move = None
+    best_score = -float('inf')
+    
+    for move in game.get_legal_moves():
+        temp_game = game.clone()
+        temp_game.place_stone(move[0], move[1], color)
+        score = temp_game.evaluate(color)
+        
+        # Add some randomness to avoid predictable play
+        score += random.uniform(-1, 1)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+            
+    return best_move if best_move else random.choice(game.get_legal_moves())

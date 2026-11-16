@@ -1,0 +1,398 @@
+
+import math
+
+def policy(you, opponent) -> str:
+    # Convert to plain lists of ints
+    Y = [[int(you[r][c]) for c in range(6)] for r in range(6)]
+    O = [[int(opponent[r][c]) for c in range(6)] for r in range(6)]
+
+    LINES = _ALL_LINES
+
+    def empty_cells(y, o):
+        out = []
+        for r in range(6):
+            for c in range(6):
+                if y[r][c] == 0 and o[r][c] == 0:
+                    out.append((r, c))
+        return out
+
+    def rotate_inplace(y, o, quad, dirc):
+        rs = 0 if quad < 2 else 3
+        cs = 0 if quad % 2 == 0 else 3
+
+        by = [[y[rs+i][cs+j] for j in range(3)] for i in range(3)]
+        bo = [[o[rs+i][cs+j] for j in range(3)] for i in range(3)]
+
+        if dirc == 'R':
+            ry = [[by[2-j][i] for j in range(3)] for i in range(3)]
+            ro = [[bo[2-j][i] for j in range(3)] for i in range(3)]
+        else:
+            ry = [[by[j][2-i] for j in range(3)] for i in range(3)]
+            ro = [[bo[j][2-i] for j in range(3)] for i in range(3)]
+
+        for i in range(3):
+            for j in range(3):
+                y[rs+i][cs+j] = ry[i][j]
+                o[rs+i][cs+j] = ro[i][j]
+
+    def apply_move(y, o, move, me=True):
+        r, c, q, d = move
+        ny = [row[:] for row in y]
+        no = [row[:] for row in o]
+        if me:
+            ny[r][c] = 1
+        else:
+            no[r][c] = 1
+        rotate_inplace(ny, no, q, d)
+        return ny, no
+
+    def has_five(board):
+        for line in LINES:
+            cnt = 0
+            for r, c in line:
+                if board[r][c]:
+                    cnt += 1
+                    if cnt >= 5:
+                        return True
+                else:
+                    cnt = 0
+        return False
+
+    def result_after_my_move(y, o, move):
+        ny, no = apply_move(y, o, move, me=True)
+        my_win = has_five(ny)
+        op_win = has_five(no)
+        if my_win and op_win:
+            return 0
+        if my_win:
+            return 1
+        if op_win:
+            return 0
+        return None
+
+    def result_after_opp_move(y, o, move):
+        ny, no = apply_move(y, o, move, me=False)
+        my_win = has_five(ny)
+        op_win = has_five(no)
+        if my_win and op_win:
+            return 0
+        if op_win:
+            return -1
+        if my_win:
+            return 0
+        return None
+
+    def all_moves_for_current(y, o):
+        cells = ordered_empty_cells(y, o)
+        moves = []
+        for r, c in cells:
+            for q in range(4):
+                moves.append((r, c, q, 'L'))
+                moves.append((r, c, q, 'R'))
+        return moves
+
+    def immediate_winning_moves(y, o, me=True):
+        wins = []
+        cells = ordered_empty_cells(y, o)
+        for r, c in cells:
+            for q in range(4):
+                for d in ('L', 'R'):
+                    mv = (r, c, q, d)
+                    if me:
+                        ny, no = apply_move(y, o, mv, me=True)
+                        my_win = has_five(ny)
+                        op_win = has_five(no)
+                        if my_win and not op_win:
+                            wins.append(mv)
+                    else:
+                        ny, no = apply_move(y, o, mv, me=False)
+                        my_win = has_five(ny)
+                        op_win = has_five(no)
+                        if op_win and not my_win:
+                            wins.append(mv)
+        return wins
+
+    def ordered_empty_cells(y, o):
+        cells = []
+        for r in range(6):
+            for c in range(6):
+                if y[r][c] == 0 and o[r][c] == 0:
+                    center_dist = abs(r - 2.5) + abs(c - 2.5)
+                    score = -center_dist
+                    if (r, c) in _KEY_CELLS:
+                        score += 1.5
+                    cells.append((score, r, c))
+        cells.sort(reverse=True)
+        return [(r, c) for _, r, c in cells]
+
+    def line_value(myc, opc, empties, length):
+        if myc > 0 and opc > 0:
+            return 0
+        if myc == 0 and opc == 0:
+            return 0
+
+        # windows closer to 5 matter more
+        base = {5: 1.0, 6: 1.15}[length]
+
+        if opc == 0:
+            if myc >= 5:
+                return 100000
+            if myc == 4 and empties >= 1:
+                return int(4000 * base)
+            if myc == 3 and empties >= 2:
+                return int(500 * base)
+            if myc == 2 and empties >= 3:
+                return int(60 * base)
+            if myc == 1:
+                return int(8 * base)
+        else:
+            if opc >= 5:
+                return -100000
+            if opc == 4 and empties >= 1:
+                return -int(4500 * base)
+            if opc == 3 and empties >= 2:
+                return -int(650 * base)
+            if opc == 2 and empties >= 3:
+                return -int(70 * base)
+            if opc == 1:
+                return -int(8 * base)
+        return 0
+
+    def evaluate(y, o):
+        my_win = has_five(y)
+        op_win = has_five(o)
+        if my_win and op_win:
+            return 0
+        if my_win:
+            return 10**7
+        if op_win:
+            return -10**7
+
+        score = 0
+
+        # Positional weights
+        for r in range(6):
+            for c in range(6):
+                if y[r][c]:
+                    score += _POS_W[r][c]
+                elif o[r][c]:
+                    score -= _POS_W[r][c]
+
+        # Window-based line evaluation over all rows/cols/diags
+        for line in LINES:
+            n = len(line)
+            for w in (5, 6):
+                if n < w:
+                    continue
+                for i in range(n - w + 1):
+                    myc = opc = 0
+                    for j in range(i, i + w):
+                        rr, cc = line[j]
+                        myc += y[rr][cc]
+                        opc += o[rr][cc]
+                    empties = w - myc - opc
+                    score += line_value(myc, opc, empties, w)
+
+        # Count immediate opponent wins next move: heavy penalty
+        opp_wins = count_immediate_wins(y, o, me=False, cap=8)
+        my_wins = count_immediate_wins(y, o, me=True, cap=8)
+        score += 2500 * my_wins
+        score -= 3200 * opp_wins
+
+        return score
+
+    def count_immediate_wins(y, o, me=True, cap=8):
+        cnt = 0
+        cells = ordered_empty_cells(y, o)
+        for r, c in cells:
+            for q in range(4):
+                for d in ('L', 'R'):
+                    mv = (r, c, q, d)
+                    if me:
+                        ny, no = apply_move(y, o, mv, me=True)
+                        my_win = has_five(ny)
+                        op_win = has_five(no)
+                        if my_win and not op_win:
+                            cnt += 1
+                    else:
+                        ny, no = apply_move(y, o, mv, me=False)
+                        my_win = has_five(ny)
+                        op_win = has_five(no)
+                        if op_win and not my_win:
+                            cnt += 1
+                    if cnt >= cap:
+                        return cnt
+        return cnt
+
+    # Generate moves ordered by placement quality first
+    legal_moves = all_moves_for_current(Y, O)
+    if not legal_moves:
+        return "1,1,0,L"
+
+    # 1) Immediate win
+    best_immediate = None
+    for mv in legal_moves:
+        res = result_after_my_move(Y, O, mv)
+        if res == 1:
+            best_immediate = mv
+            break
+    if best_immediate is not None:
+        return move_to_str(best_immediate)
+
+    # 2) Mandatory block against opponent immediate wins if possible
+    opp_now_wins = immediate_winning_moves(Y, O, me=False)
+    if opp_now_wins:
+        best_block = None
+        best_block_score = -10**18
+        for mv in legal_moves:
+            ny, no = apply_move(Y, O, mv, me=True)
+            # If opponent still has immediate win, bad
+            remaining = count_immediate_wins(ny, no, me=False, cap=2)
+            val = evaluate(ny, no) - 200000 * remaining
+            if remaining == 0:
+                val += 50000
+            if val > best_block_score:
+                best_block_score = val
+                best_block = mv
+        if best_block is not None:
+            return move_to_str(best_block)
+
+    # 3) One-ply search with opponent best response on promising moves
+    # Limit candidates for speed
+    candidate_moves = []
+    for mv in legal_moves:
+        ny, no = apply_move(Y, O, mv, me=True)
+        # reject self-losing positions somewhat
+        val = evaluate(ny, no)
+        candidate_moves.append((val, mv, ny, no))
+    candidate_moves.sort(key=lambda x: x[0], reverse=True)
+    candidate_moves = candidate_moves[:18]
+
+    best_mv = None
+    best_val = -10**18
+
+    for _, mv, ny, no in candidate_moves:
+        # terminal check
+        my_win = has_five(ny)
+        op_win = has_five(no)
+        if my_win and not op_win:
+            return move_to_str(mv)
+        if op_win and not my_win:
+            v = -10**7
+        else:
+            # opponent response: only inspect a limited promising set
+            opp_moves = []
+            cells = ordered_empty_cells(ny, no)
+            for r, c in cells[:10]:
+                for q in range(4):
+                    opp_moves.append((r, c, q, 'L'))
+                    opp_moves.append((r, c, q, 'R'))
+
+            worst = 10**18
+            # If no limited moves somehow, static eval
+            if not opp_moves:
+                worst = evaluate(ny, no)
+            else:
+                # prioritize opponent tactical wins
+                found_forced_loss = False
+                for omv in opp_moves:
+                    nny, nno = apply_move(ny, no, omv, me=False)
+                    my2 = has_five(nny)
+                    op2 = has_five(nno)
+                    if op2 and not my2:
+                        worst = -10**7
+                        found_forced_loss = True
+                        break
+                if not found_forced_loss:
+                    for omv in opp_moves:
+                        nny, nno = apply_move(ny, no, omv, me=False)
+                        sc = evaluate(nny, nno)
+                        if sc < worst:
+                            worst = sc
+            v = worst
+
+        if v > best_val:
+            best_val = v
+            best_mv = mv
+
+    if best_mv is not None:
+        return move_to_str(best_mv)
+
+    # 4) Fallback: first legal move
+    return move_to_str(legal_moves[0])
+
+
+def move_to_str(mv):
+    r, c, q, d = mv
+    return f"{r+1},{c+1},{q},{d}"
+
+
+def _generate_lines():
+    lines = []
+
+    # Rows
+    for r in range(6):
+        lines.append([(r, c) for c in range(6)])
+    # Cols
+    for c in range(6):
+        lines.append([(r, c) for r in range(6)])
+    # Main diagonals with len >= 5
+    for start_c in range(2):
+        line = []
+        r, c = 0, start_c
+        while r < 6 and c < 6:
+            line.append((r, c))
+            r += 1
+            c += 1
+        if len(line) >= 5:
+            lines.append(line)
+    for start_r in range(1, 2):
+        line = []
+        r, c = start_r, 0
+        while r < 6 and c < 6:
+            line.append((r, c))
+            r += 1
+            c += 1
+        if len(line) >= 5:
+            lines.append(line)
+
+    # Anti-diagonals with len >= 5
+    for start_c in range(4, 6):
+        line = []
+        r, c = 0, start_c
+        while r < 6 and c >= 0:
+            line.append((r, c))
+            r += 1
+            c -= 1
+        if len(line) >= 5:
+            lines.append(line)
+    for start_r in range(1, 2):
+        line = []
+        r, c = start_r, 5
+        while r < 6 and c >= 0:
+            line.append((r, c))
+            r += 1
+            c -= 1
+        if len(line) >= 5:
+            lines.append(line)
+
+    return lines
+
+
+_ALL_LINES = _generate_lines()
+
+_POS_W = [
+    [3, 4, 5, 5, 4, 3],
+    [4, 6, 7, 7, 6, 4],
+    [5, 7, 8, 8, 7, 5],
+    [5, 7, 8, 8, 7, 5],
+    [4, 6, 7, 7, 6, 4],
+    [3, 4, 5, 5, 4, 3],
+]
+
+_KEY_CELLS = {
+    (1, 1), (1, 4), (4, 1), (4, 4),
+    (1, 2), (1, 3), (4, 2), (4, 3),
+    (2, 1), (3, 1), (2, 4), (3, 4),
+    (2, 2), (2, 3), (3, 2), (3, 3),
+}

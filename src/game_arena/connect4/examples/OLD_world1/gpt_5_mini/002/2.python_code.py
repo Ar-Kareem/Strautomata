@@ -1,0 +1,153 @@
+
+from typing import List, Optional
+
+ROWS = 6
+COLS = 7
+
+def drop_row(board: List[List[int]], col: int) -> Optional[int]:
+    """Return the row index where a disc would land if dropped in col, or None if column full."""
+    for r in range(ROWS - 1, -1, -1):
+        if board[r][col] == 0:
+            return r
+    return None
+
+def check_win_at(board: List[List[int]], row: int, col: int, player: int) -> bool:
+    """Check whether placing player at (row, col) creates 4 in a row."""
+    # directions: horizontal, vertical, diag down-right, diag up-right
+    directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
+    for dr, dc in directions:
+        count = 1
+        # positive direction
+        r, c = row + dr, col + dc
+        while 0 <= r < ROWS and 0 <= c < COLS and board[r][c] == player:
+            count += 1
+            r += dr; c += dc
+        # negative direction
+        r, c = row - dr, col - dc
+        while 0 <= r < ROWS and 0 <= c < COLS and board[r][c] == player:
+            count += 1
+            r -= dr; c -= dc
+        if count >= 4:
+            return True
+    return False
+
+def score_move(board: List[List[int]], col: int, player: int) -> float:
+    """Heuristic score for dropping player's disc in column col."""
+    row = drop_row(board, col)
+    if row is None:
+        return -1e6
+    # center preference
+    center_pref = 3 - abs(col - (COLS // 2))
+    score = center_pref * 2.0
+
+    # simulate placement
+    board[row][col] = player
+
+    # compute max contiguous length created
+    max_len = 0
+    directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
+    for dr, dc in directions:
+        count = 1
+        r, c = row + dr, col + dc
+        while 0 <= r < ROWS and 0 <= c < COLS and board[r][c] == player:
+            count += 1
+            r += dr; c += dc
+        r, c = row - dr, col - dc
+        while 0 <= r < ROWS and 0 <= c < COLS and board[r][c] == player:
+            count += 1
+            r -= dr; c -= dc
+        if count > max_len:
+            max_len = count
+
+    # reward creating longer sequences
+    if max_len >= 4:
+        score += 10000
+    elif max_len == 3:
+        score += 200.0
+    elif max_len == 2:
+        score += 20.0
+    else:
+        score += 1.0
+
+    # Penalize if after this move opponent has an immediate winning response
+    opp = -player
+    opponent_can_win = False
+    for c2 in range(COLS):
+        r2 = drop_row(board, c2)
+        if r2 is None:
+            continue
+        board[r2][c2] = opp
+        if check_win_at(board, r2, c2, opp):
+            opponent_can_win = True
+        board[r2][c2] = 0
+        if opponent_can_win:
+            break
+    if opponent_can_win:
+        score -= 500.0
+
+    # undo
+    board[row][col] = 0
+    return score
+
+def policy(board: List[List[int]]) -> int:
+    """
+    Choose a column (0-6) to drop a disc for the current player (1).
+    Strategy:
+      1. If we can win immediately, play that move.
+      2. If opponent has an immediate win, block it (choose among blocking columns by heuristic).
+      3. Otherwise choose the column with highest heuristic score (center-pref, create sequences,
+         avoid moves that allow immediate opponent win).
+    """
+    player = 1
+    opp = -1
+
+    # list of legal columns
+    valid_cols = [c for c in range(COLS) if drop_row(board, c) is not None]
+    if not valid_cols:
+        # no moves (shouldn't happen), but return 0
+        return 0
+
+    # 1) Immediate winning move
+    for c in valid_cols:
+        r = drop_row(board, c)
+        board[r][c] = player
+        if check_win_at(board, r, c, player):
+            board[r][c] = 0
+            return c
+        board[r][c] = 0
+
+    # 2) Block opponent immediate wins
+    opp_threats = []
+    for c in valid_cols:
+        r = drop_row(board, c)
+        board[r][c] = opp
+        if check_win_at(board, r, c, opp):
+            opp_threats.append(c)
+        board[r][c] = 0
+
+    if opp_threats:
+        # If there are blocking moves, choose best among them by heuristic
+        best_col = None
+        best_score = -1e9
+        for c in opp_threats:
+            if c not in valid_cols:
+                continue
+            sc = score_move(board, c, player)
+            if sc > best_score:
+                best_score = sc
+                best_col = c
+        if best_col is not None:
+            return best_col
+        # fallback: pick first threat column
+        return opp_threats[0]
+
+    # 3) Choose best heuristic move among all legal moves
+    best_col = valid_cols[0]
+    best_score = -1e9
+    for c in valid_cols:
+        sc = score_move(board, c, player)
+        if sc > best_score:
+            best_score = sc
+            best_col = c
+
+    return best_col

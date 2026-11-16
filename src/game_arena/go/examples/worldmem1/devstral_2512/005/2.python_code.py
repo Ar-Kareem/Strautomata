@@ -1,0 +1,407 @@
+
+import random
+import math
+from collections import defaultdict, deque
+import numpy as np
+
+class GoBoard:
+    def __init__(self, size=19):
+        self.size = size
+        self.board = np.zeros((size+2, size+2), dtype=int)  # 1-based with padding
+        self.ko_point = None
+        self.last_move = None
+        self.move_history = []
+
+    def reset(self):
+        self.board = np.zeros((self.size+2, self.size+2), dtype=int)
+        self.ko_point = None
+        self.last_move = None
+        self.move_history = []
+
+    def place_stone(self, row, col, color):
+        if self.board[row, col] != 0:
+            return False  # Illegal move
+
+        # Check for ko violation
+        if (row, col) == self.ko_point:
+            return False
+
+        # Play the move
+        self.board[row, col] = color
+        self.last_move = (row, col)
+        self.move_history.append((row, col, color))
+
+        # Check for captures
+        captured = self.check_captures(row, col, color)
+
+        # Check if this move is a suicide
+        group, liberties = self.get_group_liberties(row, col)
+        if liberties == 0 and not captured:
+            self.board[row, col] = 0  # Undo the move
+            return False
+
+        # Set ko point if exactly one stone was captured
+        if len(captured) == 1:
+            self.ko_point = captured[0]
+        else:
+            self.ko_point = None
+
+        return True
+
+    def check_captures(self, row, col, color):
+        captured = []
+        opponent = 3 - color  # 1 becomes 2, 2 becomes 1
+
+        for dr, dc in [(1,0), (-1,0), (0,1), (0,-1)]:
+            r, c = row + dr, col + dc
+            if self.board[r, c] == opponent:
+                group, liberties = self.get_group_liberties(r, c)
+                if liberties == 0:
+                    captured.extend(group)
+
+        # Remove captured stones
+        for r, c in captured:
+            self.board[r, c] = 0
+
+        return captured
+
+    def get_group_liberties(self, row, col):
+        if self.board[row, col] == 0:
+            return [], 0
+
+        color = self.board[row, col]
+        visited = set()
+        stack = [(row, col)]
+        liberties = set()
+        group = []
+
+        while stack:
+            r, c = stack.pop()
+            if (r, c) in visited:
+                continue
+            visited.add((r, c))
+            group.append((r, c))
+
+            for dr, dc in [(1,0), (-1,0), (0,1), (0,-1)]:
+                nr, nc = r + dr, c + dc
+                if self.board[nr, nc] == 0:
+                    liberties.add((nr, nc))
+                elif self.board[nr, nc] == color and (nr, nc) not in visited:
+                    stack.append((nr, nc))
+
+        return group, len(liberties)
+
+    def is_eye(self, row, col, color):
+        if self.board[row, col] != 0:
+            return False
+
+        # Check all adjacent points
+        for dr, dc in [(1,0), (-1,0), (0,1), (0,-1), (1,1), (1,-1), (-1,1), (-1,-1)]:
+            r, c = row + dr, col + dc
+            if self.board[r, c] != color:
+                return False
+
+        # Check diagonals for false eyes
+        false_eye = False
+        for dr, dc in [(1,1), (1,-1), (-1,1), (-1,-1)]:
+            r, c = row + dr, col + dc
+            if self.board[r, c] == 0:
+                false_eye = True
+                break
+
+        return not false_eye
+
+    def get_liberties(self, row, col):
+        if self.board[row, col] == 0:
+            return 0
+        _, liberties = self.get_group_liberties(row, col)
+        return liberties
+
+    def is_legal(self, row, col, color):
+        if row < 1 or row > self.size or col < 1 or col > self.size:
+            return False
+        if self.board[row, col] != 0:
+            return False
+        if (row, col) == self.ko_point:
+            return False
+
+        # Check if it's a suicide move
+        temp_board = self.board.copy()
+        temp_board[row, col] = color
+        group, liberties = self.get_group_liberties(row, col)
+        if liberties == 0:
+            # Check if it captures anything
+            captured = False
+            for dr, dc in [(1,0), (-1,0), (0,1), (0,-1)]:
+                r, c = row + dr, col + dc
+                if temp_board[r, c] == 3 - color:
+                    opp_group, opp_liberties = self.get_group_liberties(r, c)
+                    if opp_liberties == 1:
+                        captured = True
+                        break
+            if not captured:
+                return False
+
+        return True
+
+def policy(me, opponent, memory):
+    # Initialize board if not in memory
+    if 'board' not in memory:
+        board = GoBoard()
+        # Place existing stones
+        for r, c in me:
+            board.place_stone(r, c, 1)
+        for r, c in opponent:
+            board.place_stone(r, c, 2)
+        memory['board'] = board
+        memory['move_count'] = len(me) + len(opponent)
+    else:
+        board = memory['board']
+
+    # Update board with any new moves since last call
+    current_me = set((r, c) for r, c in me)
+    current_opponent = set((r, c) for r, c in opponent)
+
+    if 'last_me' in memory:
+        new_me = current_me - set(memory['last_me'])
+        new_opponent = current_opponent - set(memory['last_opponent'])
+
+        for r, c in new_me:
+            board.place_stone(r, c, 1)
+        for r, c in new_opponent:
+            board.place_stone(r, c, 2)
+
+    memory['last_me'] = list(current_me)
+    memory['last_opponent'] = list(current_opponent)
+
+    # If this is the first move, play in a corner
+    if memory['move_count'] == 0:
+        corners = [(4,4), (4,16), (16,4), (16,16)]
+        return random.choice(corners), memory
+
+    # If second move, play in opposite corner
+    if memory['move_count'] == 1:
+        if (4,4) in current_opponent:
+            return (16,16), memory
+        elif (4,16) in current_opponent:
+            return (16,4), memory
+        elif (16,4) in current_opponent:
+            return (4,16), memory
+        else:
+            return (4,4), memory
+
+    # Generate candidate moves
+    candidates = generate_candidates(board, me, opponent)
+
+    # If we have urgent moves (saving groups, capturing), prioritize them
+    urgent_moves = []
+    for move in candidates:
+        if is_urgent_move(board, move, 1):
+            urgent_moves.append(move)
+
+    if urgent_moves:
+        # Use MCTS to select the best urgent move
+        best_move = mcts(board, urgent_moves, 1, iterations=50)
+        return best_move, memory
+
+    # Otherwise, use MCTS on all candidates
+    best_move = mcts(board, candidates, 1, iterations=100)
+
+    return best_move, memory
+
+def generate_candidates(board, me, opponent, num_candidates=20):
+    candidates = set()
+
+    # Add all empty points adjacent to stones
+    for r, c in me + opponent:
+        for dr, dc in [(1,0), (-1,0), (0,1), (0,-1)]:
+            nr, nc = r + dr, c + dc
+            if board.board[nr, nc] == 0:
+                candidates.add((nr, nc))
+
+    # Add points near groups with few liberties
+    for r, c in me:
+        group, liberties = board.get_group_liberties(r, c)
+        if liberties <= 3:
+            for stone in group:
+                for dr, dc in [(1,0), (-1,0), (0,1), (0,-1)]:
+                    nr, nc = stone[0] + dr, stone[1] + dc
+                    if board.board[nr, nc] == 0:
+                        candidates.add((nr, nc))
+
+    # Add potential eye points
+    for r, c in me:
+        for dr, dc in [(1,0), (-1,0), (0,1), (0,-1), (1,1), (1,-1), (-1,1), (-1,-1)]:
+            nr, nc = r + dr, c + dc
+            if board.is_eye(nr, nc, 1):
+                candidates.add((nr, nc))
+
+    # Add some random points for exploration
+    while len(candidates) < num_candidates:
+        r = random.randint(1, 19)
+        c = random.randint(1, 19)
+        if board.board[r, c] == 0:
+            candidates.add((r, c))
+
+    return list(candidates)
+
+def is_urgent_move(board, move, color):
+    r, c = move
+
+    # Check if this move saves one of our groups
+    for dr, dc in [(1,0), (-1,0), (0,1), (0,-1)]:
+        nr, nc = r + dr, c + dc
+        if board.board[nr, nc] == color:
+            group, liberties = board.get_group_liberties(nr, nc)
+            if liberties == 1:
+                return True
+
+    # Check if this move captures opponent stones
+    temp_board = board.board.copy()
+    temp_board[r, c] = color
+    for dr, dc in [(1,0), (-1,0), (0,1), (0,-1)]:
+        nr, nc = r + dr, c + dc
+        if temp_board[nr, nc] == 3 - color:
+            group, liberties = board.get_group_liberties(nr, nc)
+            if liberties == 1:
+                return True
+
+    # Check if this move prevents opponent from making an eye
+    if board.is_eye(r, c, 3 - color):
+        return True
+
+    return False
+
+class MCTSNode:
+    def __init__(self, board, parent=None, move=None):
+        self.board = board
+        self.parent = parent
+        self.move = move
+        self.children = []
+        self.wins = 0
+        self.visits = 0
+        self.untried_moves = self.get_legal_moves()
+
+    def get_legal_moves(self):
+        moves = []
+        for r in range(1, 20):
+            for c in range(1, 20):
+                if self.board.is_legal(r, c, 1):
+                    moves.append((r, c))
+        return moves
+
+    def uct_select_child(self):
+        log_parent_visits = math.log(self.visits)
+
+        def uct_score(child):
+            exploit = child.wins / child.visits
+            explore = math.sqrt(2 * log_parent_visits / child.visits)
+            return exploit + explore
+
+        return max(self.children, key=uct_score)
+
+    def add_child(self, move):
+        new_board = GoBoard()
+        new_board.board = self.board.board.copy()
+        new_board.ko_point = self.board.ko_point
+        new_board.last_move = self.board.last_move
+        new_board.move_history = self.board.move_history.copy()
+
+        new_board.place_stone(move[0], move[1], 1)
+        child_node = MCTSNode(new_board, parent=self, move=move)
+        self.untried_moves.remove(move)
+        self.children.append(child_node)
+        return child_node
+
+    def update(self, result):
+        self.visits += 1
+        self.wins += result
+
+def mcts(board, candidate_moves, color, iterations=100):
+    root = MCTSNode(board)
+
+    for _ in range(iterations):
+        node = root
+        temp_board = GoBoard()
+        temp_board.board = board.board.copy()
+        temp_board.ko_point = board.ko_point
+        temp_board.last_move = board.last_move
+        temp_board.move_history = board.move_history.copy()
+
+        # Selection
+        while node.untried_moves == [] and node.children != []:
+            node = node.uct_select_child()
+            temp_board.place_stone(node.move[0], node.move[1], color)
+
+        # Expansion
+        if node.untried_moves != []:
+            move = random.choice(node.untried_moves)
+            temp_board.place_stone(move[0], move[1], color)
+            node = node.add_child(move)
+
+        # Simulation
+        while True:
+            legal_moves = []
+            for r in range(1, 20):
+                for c in range(1, 20):
+                    if temp_board.is_legal(r, c, 3 - color):
+                        legal_moves.append((r, c))
+
+            if not legal_moves:
+                break
+
+            move = random.choice(legal_moves)
+            temp_board.place_stone(move[0], move[1], 3 - color)
+
+            legal_moves = []
+            for r in range(1, 20):
+                for c in range(1, 20):
+                    if temp_board.is_legal(r, c, color):
+                        legal_moves.append((r, c))
+
+            if not legal_moves:
+                break
+
+            move = random.choice(legal_moves)
+            temp_board.place_stone(move[0], move[1], color)
+
+        # Backpropagation
+        while node is not None:
+            # Simple evaluation: count territory
+            score = evaluate_position(temp_board)
+            node.update(score)
+            node = node.parent
+
+    # Return the move with the highest visit count
+    if not root.children:
+        return random.choice(candidate_moves)
+
+    best_child = max(root.children, key=lambda c: c.visits)
+    return best_child.move
+
+def evaluate_position(board):
+    # Simple territory evaluation
+    score = 0
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if board.board[r, c] == 1:
+                score += 1
+            elif board.board[r, c] == 2:
+                score -= 1
+            else:
+                # Check if empty point is surrounded by one color
+                black_neighbors = 0
+                white_neighbors = 0
+                for dr, dc in [(1,0), (-1,0), (0,1), (0,-1)]:
+                    nr, nc = r + dr, c + dc
+                    if board.board[nr, nc] == 1:
+                        black_neighbors += 1
+                    elif board.board[nr, nc] == 2:
+                        white_neighbors += 1
+
+                if black_neighbors > 0 and white_neighbors == 0:
+                    score += 0.5
+                elif white_neighbors > 0 and black_neighbors == 0:
+                    score -= 0.5
+
+    return score

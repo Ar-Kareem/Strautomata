@@ -1,0 +1,648 @@
+<html>
+
+<!--=======================================================================-->
+
+<head>
+  <title>Human</title>
+  <script type='text/javascript' src='../assets/epilog.js'></script>
+  <script type='text/javascript'>
+//==============================================================================
+// Game parameters
+//==============================================================================
+
+var manager = 'manager';
+var player = 'human';
+
+function doplayer ()
+ {player = read(prompt("What is your player's identifier?"));
+  document.getElementById('player').innerHTML = player;
+  return true}
+
+//==============================================================================
+// human.js
+//==============================================================================
+
+indexing = false;
+dataindexing = false;
+ruleindexing = true;
+
+var game = 'buttonsandlights';
+var role = 'robot';
+var startclock = 10;
+var playclock = 10;
+
+var library = [];
+var roles = [];
+var state = [];
+var statelog = [];
+var movelog = [];
+var messageid = "0";
+
+function initialize ()
+ {//document.addEventListener('keydown',handlekey);
+  window.addEventListener("storage",handlestorage,false); console.log('listening');
+  definerules(library,readdata(document.getElementById('library').textContent));
+  roles = findroles(library);
+  state = findinits(library);
+  statelog = [state];
+  movelog = [];
+  movenum = 0;
+  showstate(state);
+  showactions(state);
+  showhistory(movelog,state);
+  return true}
+
+//==============================================================================
+
+function showstate (state)
+ {var stateholder = document.getElementById('stateholder');
+  var n = stateholder.childNodes.length;
+  for (var i=0; i<n; i++) {stateholder.removeChild(stateholder.childNodes[0])};
+  stateholder.appendChild(rendersituation(state));
+  return true}
+
+function rendersituation (state)
+ {return renderstate(state)}
+
+function renderstate (state)	
+ {var widget = document.createElement('textarea');
+  widget.setAttribute('rows','12');
+  widget.setAttribute('cols','40');
+  widget.setAttribute('style','font-family:courier');
+  widget.setAttribute('disabled',true);
+  widget.value = grindem(state);
+  return widget}
+
+//==============================================================================
+
+function showactions (state)
+ {var actionholder = document.getElementById('actionholder');
+  var n = actionholder.childNodes.length;
+  for (var i=0; i<n; i++) {actionholder.removeChild(actionholder.childNodes[0])};
+  actionholder.appendChild(renderactions(state));
+  return true}
+
+function renderactions (state)
+ {var widget = document.createElement('select');
+  var option = document.createElement('option');
+  option.value = 'error';
+  option.text = '';
+  widget.add(option);
+  var actions = findlegals(state,library).sort();
+  for (var i=0; i<actions.length; i++)
+      {var option = document.createElement('option');
+       var value = grind(actions[i]);
+       option.value = value;
+       option.text = value;
+       widget.add(option)}
+  if (findterminalp(state,library)) {widget.disabled = true}
+     else {widget.disabled = false};
+  widget.setAttribute('onchange','perform(read(this.value))');
+  return widget}
+
+//==============================================================================
+
+function showhistory (moves,state)
+ {var widget = document.getElementById('history');
+  var n = widget.childNodes.length;
+  for (var i=0; i<n; i++) {widget.removeChild(widget.childNodes[0])};
+  widget.appendChild(renderhistory(moves,state));
+  return true}
+
+function renderhistory (moves,state)
+ {var widget = document.createElement('table');
+  widget.setAttribute('cellspacing',0);
+  widget.setAttribute('cellpadding',3);
+  widget.setAttribute('border',1);
+  var row = widget.insertRow(0);
+  var cell = row.insertCell(0);
+  cell.innerHTML = 'Step';
+  cell.setAttribute('width','120');
+  cell.setAttribute('align','center');
+  cell.setAttribute('style','font-weight:bold');
+  cell.setAttribute('bgcolor','#dddddd');
+  for (var j=0; j<roles.length; j++)
+      {cell = row.insertCell(j+1);
+       cell.innerHTML = roles[j];
+       cell.setAttribute('width','120');
+       cell.setAttribute('align','center');
+       cell.setAttribute('style','font-weight:bold');
+       cell.setAttribute('bgcolor','#dddddd')};
+
+  for (var i=0; i<movenum; i++)
+      {row = widget.insertRow(i+1);
+       cell = row.insertCell(0);
+       cell.setAttribute('align','center');
+       cell.setAttribute('bgcolor','#dddddd');
+       cell.innerHTML = i+1;
+       for (var j=0; j<roles.length; j++)
+           {cell = row.insertCell(j+1);
+            cell.setAttribute('width','120');
+            cell.setAttribute('align','center');
+            if (findcontrol(statelog[i],library)===roles[j])
+               {cell.innerHTML = grind(moves[i])}}};
+
+  row = widget.insertRow(widget.rows.length);
+  cell = row.insertCell(0);
+  cell.innerHTML = 'Score';
+  cell.setAttribute('style','font-weight:bold');
+  cell.setAttribute('bgcolor','#dddddd');
+  cell.setAttribute('align','center');
+  for (var i=0; i<roles.length; i++)
+      {cell = row.insertCell(i+1);
+       cell.setAttribute('align','center');
+       cell.setAttribute('bgcolor','#dddddd');
+       cell.innerHTML = findreward(roles[i],state,library)};
+  return widget}
+
+//==============================================================================
+
+function perform (action)
+ {if (action==='error') {return false};
+  //action performed only if in control; could let manager handle for now
+  var response = grind(seq('message',messageid,player,manager,action));
+  console.log(response);
+  send(response);
+  //endclock(timekeeper);
+  return true}
+
+function copy (obj)
+ {return obj.slice(0)}
+
+//==============================================================================
+
+function handlestorage (ev)
+ {//console.log(ev);
+  console.log(ev.newValue);
+  if (ev.key!==player) {return false};
+  //var transcript = document.getElementById('transcript');
+  //transcript.value = transcript.value + ev.newValue + "\n";
+  var envelope = read(ev.newValue);
+  messageid = envelope[1]
+  var sender = envelope[2]
+  var receiver = envelope[3]
+  var message = envelope[4]
+  if (sender!==manager) {return false};
+  if (receiver!==player) {return false};
+  console.log("Manager: " + grind(message));
+  var answer = ggpeval(message);
+  if (!answer) {console.log("Player: no response"); return false};
+  var response = grind(seq('message',messageid,player,manager,answer));
+  send(response);
+  return true}
+
+function send (str)
+ {//var transcript = document.getElementById('transcript');
+  //transcript.value = transcript.value + str + "\n";
+  localStorage.manager = str;
+  return true}
+
+//==============================================================================
+
+function ggpeval (msg)
+ {if (symbolp(msg)) {return false};
+  if (msg[0]==='ping') {return ping()};
+  if (msg[0]==='start') {return start(msg[1],msg[2],msg[3],msg[4])};
+  if (msg[0]==='play') {return play(msg[1])};
+  if (msg[0]==='stop') {return stop(msg[1])};
+  if (msg[0]==='abort') {return abort()};
+  return false}
+
+//==============================================================================
+
+function ping ()
+ {return 'ready'}
+
+function start (r,rs,sc,pc)
+ {role = r;
+  //library = definemorerules([],rs.slice(1));
+  //roles = findroles(library);
+  //state = findinits(library);
+  startclock = numberize(sc);
+  playclock = numberize(pc);
+  //timekeeper = beginclock(startclock);
+  return 'ready'}
+
+function play (move)
+ {if (findcontrol(state,library)!==role) {return false};
+  if (move===nil) {return false};
+  statelog = statelog.slice(0,movenum+1);
+  movelog = movelog.slice(0,movenum);
+  movelog.push(move);
+  state = simulate(move,state,library)
+  statelog.push(state);
+  movenum++;
+  showstate(state);
+  showactions(state);
+  showhistory(movelog,state);
+  //endclock(timekeeper);
+  //timekeeper = beginclock(playclock);  return false}
+
+function stop (move)
+ {if (move!=='nil') {state = simulate(move,state,library)};
+  movelog = movelog.slice(0,movenum);
+  movelog.push(move);
+  movenum++;
+  showstate(state);
+  showactions(state);
+  showhistory(movelog,state);
+  //endclock(timekeeper);
+  return false}
+
+function abort ()
+ {//endclock(timekeeper);
+  return false}
+
+//------------------------------------------------------------------------------
+
+function simulate (move,state,rules)
+ {var deltas = compexpand(move,state,rules);
+  var additions = [];
+  var deletions = [];
+  for (var i=0; i<deltas.length; i++)
+      {if (symbolp(deltas[i])) {additions.push(deltas[i]); continue};
+       if (deltas[i][0]==='not') {deletions.push(deltas[i][1]); continue};
+       additions.push(deltas[i])};
+  var newstate = [];
+  for (i = 0; i<state.length; i++)
+      {if (find(state[i],additions)) {continue};
+       if (find(state[i],deletions)) {continue};
+       newstate.push(state[i])};
+  return newstate.concat(additions)}
+
+//==============================================================================
+// Timer//==============================================================================
+
+function beginclock (n)
+ {if (n===Infinity) {return false};
+  document.getElementById('timer').value = n;
+  return setInterval(updateclock,1000)}
+
+function updateclock ()
+ {var timer = document.getElementById('timer');
+  var time = timer.value - 1;
+  timer.value = time;
+  if (time<=0) {endclock()};
+  return true}
+
+function endclock ()
+ {clearclock();
+  return true}
+
+function clearclock ()
+ {document.getElementById('timer').value = '';
+  //clearInterval(timekeeper);
+  return true}
+
+//==============================================================================
+// Basics
+//==============================================================================
+
+function findroles (rules)
+ {return compfinds('R',seq('role','R'),seq(),rules)}
+
+function findbases (rules)
+ {return compfinds('P',seq('base','P'),seq(),rules)}
+
+function findactions (rules)
+ {return compfinds('A',seq('action','A'),seq(),rules)}
+
+function findinits (rules)
+ {return compfinds('P',seq('init','P'),seq(),rules)}
+
+function findcontrol (facts,rules)
+ {return compfindx('X',seq('control','X'),facts,rules)}
+
+function findlegalp (move,facts,rules)
+ {return compfindp(seq('legal',move),facts,rules)}
+
+function findlegalx (facts,rules)
+ {return compfindx('X',seq('legal','X'),facts,rules)}
+
+function findlegals (facts,rules)
+ {return compfinds('X',seq('legal','X'),facts,rules)}
+
+function findreward (role,facts,rules)
+ {var value = compfindx('R',seq('goal',role,'R'),facts,rules);
+  if (value) {return value};
+  return 0}
+
+function findterminalp (facts,rules)
+ {return compfindp('terminal',facts,rules)}
+
+//==============================================================================
+// End of Script
+//==============================================================================
+  </script>
+  <script type='text/javascript'>
+//------------------------------------------------------------------------------
+// Knightthroughsmall
+//------------------------------------------------------------------------------
+
+function renderstate (state)
+ {var role = compfindx('R',seq('control','R'),state,library);
+  var table = document.createElement('table');
+  table.setAttribute('border','0');
+  var row = table.insertRow(0);
+  var cell = row.insertCell(0);
+  var board = renderboard(state);
+  cell.appendChild(board);
+  row = table.insertRow(1);
+  var cell = row.insertCell(0);
+  cell.setAttribute('align','center');
+  cell.setAttribute('style','font-size:20px');
+  if (compfindp('terminal',state,library))
+     {cell.innerHTML = 'Game over'}
+     else {cell.innerHTML = 'Control:  ' + role};
+  return table}
+
+function renderboard (state)
+ {var table = document.createElement('table');
+  table.setAttribute('cellspacing','2');
+  table.setAttribute('bgcolor','#cccccc');
+  table.setAttribute('border','4');
+  for (var i=6; i>0; i--)
+      {var row = table.insertRow(6-i);
+       var rank = stringize(i);
+       makecell(row,'a',rank,state);
+       makecell(row,'b',rank,state);
+       makecell(row,'c',rank,state);
+       makecell(row,'d',rank,state);
+       makecell(row,'e',rank,state);
+       makecell(row,'f',rank,state)};
+  return table}
+
+function makecell (row,file,rank,state)
+ {var cell = row.insertCell(row.cells.length);
+  cell.setAttribute('width','50');
+  cell.setAttribute('height','50');
+  cell.setAttribute('align','center');
+  cell.setAttribute('valign','center');
+  var image = getimage(file,rank,state);
+  if (image)
+     {var widget = document.createElement('img');
+      widget.setAttribute('width','40');
+      widget.setAttribute('height','40');
+      widget.setAttribute('src',image);
+      cell.appendChild(widget)}
+     else {cell.innerHTML = '&nbsp;'};
+  return cell}
+
+function getimage (file,rank,state)
+ {var image = compfindx('Piece',seq('cell',file,rank,'Piece'),state,library);
+  if (image=='white') {return '../library/knightthrough/white.png'};
+  if (image=='black') {return '../library/knightthrough/black.png'};
+  return ''}
+
+//------------------------------------------------------------------------------
+//------------------------------------------------------------------------------
+//------------------------------------------------------------------------------
+  </script>
+  <style>
+  </style>
+</head>
+
+<!--=======================================================================-->
+
+<body bgcolor='#aabbbb' onload='initialize()'>  <center>    <table width='720' cellspacing='0' cellpadding='40' bgcolor='#ffffff'>
+      <tr>
+        <td>
+
+<!--=======================================================================-->
+
+<center>
+  <table width='640' cellpadding='0'>
+    <tr>
+      <td width='180' align='center' valign='center'>
+        <a href='../index.html'><img width='130' src='../assets/ggp.jpg'/></a>
+      </td>
+      <td align='center'>
+        <span style='font-size:18pt'>&nbsp;</span>
+        <span style='font-size:32pt'>Gamemaster</span><br/>
+      </td>
+      <td width='180' align='center' style='color:#000066;font-size:18px'>
+        <i>General<br/>Game<br/>Playing</i>
+      </td>
+    </tr>
+  </table>
+</center>
+<!--=======================================================================-->
+
+<br/>
+<table width='640' cellpadding='8' cellspacing='0' bgcolor='#f4f8f8' border='1'>  <tr height='40'>
+    <td align='center'>
+<table style='color:#000066;font-size:18px'>
+  <tr>
+    <td>
+Protocol: localstorage<br/>
+Strategy: human<br/>
+Identifier: <span id='player'>human</span> <img src="../assets/pencil.gif" height='12' style="cursor:pointer" onclick='doplayer()'/>
+    </td>
+    <td width='20'>&nbsp;</td>
+    <td>
+Game: knights <img src="../assets/pencil.gif" onclick='dogame()'/><br/>
+Startclock: <br/>
+Playclock:     </td>
+  </tr>
+</table>
+    </td>
+  </tr></table>
+<br/>
+
+<!--=======================================================================-->
+
+<center>
+  <br/>
+  <div id='stateholder'></div>
+  <br/>
+  <br/>
+  <div id='actionholder'></div>
+  <br/>
+  <br/>
+  <div id='history'></div>
+</center>
+
+<!--=======================================================================-->
+
+        </td>
+      </tr>
+    </table>
+  </center>
+</body>
+
+<!--=======================================================================-->
+
+<textarea id='library' type='text/hrf' style='display:none'>
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% knights
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% metadata
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+role(white)
+role(black)
+
+base(cell(X,Y,R)) :- file(X) & rank(Y) & role(R)
+base(score(Role,0)) :- role(Role)
+base(score(Role,N)) :- role(Role) & incr(M,N)
+base(control(R)) :- role(R)
+
+action(move(X1,Y1,X2,Y2)) :- file(X1) & rank(Y1) & whitemove(X1,Y1,X2,Y2)
+action(move(X1,Y1,X2,Y2)) :- file(X1) & rank(Y1) & blackmove(X1,Y1,X2,Y2)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% init
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+init(cell(b,1,white))
+init(cell(c,1,white))
+init(cell(d,1,white))
+init(cell(e,1,white))
+init(cell(a,2,white))
+init(cell(b,2,white))
+init(cell(c,2,white))
+init(cell(d,2,white))
+init(cell(e,2,white))
+init(cell(f,2,white))
+init(cell(a,5,black))
+init(cell(b,5,black))
+init(cell(c,5,black))
+init(cell(d,5,black))
+init(cell(e,5,black))
+init(cell(f,5,black))
+init(cell(b,6,black))
+init(cell(c,6,black))
+init(cell(d,6,black))
+init(cell(e,6,black))
+init(score(white,0))
+init(score(black,0))
+init(control(white))
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% legal
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+legal(move(X1,Y1,X2,Y2)) :-
+  control(white) &
+  cell(X1,Y1,white) &
+  whitemove(X1,Y1,X2,Y2) &
+  ~cell(X2,Y2,white)
+
+legal(move(X1,Y1,X2,Y2)) :-
+  control(black) &
+  cell(X1,Y1,black) &
+  blackmove(X1,Y1,X2,Y2) &
+  ~cell(X2,Y2,black)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% operations
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+move(X1,Y1,X2,Y2) :: control(R) ==> ~cell(X1,Y1,R) & cell(X2,Y2,R)
+move(X1,Y1,X2,Y2) :: cell(X2,Y2,R) ==> ~cell(X2,Y2,R)
+
+move(X1,Y1,X2,Y2) :: cell(X2,Y2,R) & control(Role) & score(Role,M) & incr(M,N)
+  ==> ~score(Role,M) & score(Role,N)
+
+move(X1,Y1,X2,Y2) :: control(white) ==> ~control(white) & control(black)
+move(X1,Y1,X2,Y2) :: control(black) ==> ~control(black) & control(white)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% terminal
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+goal(R,N) :- score(R,N)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% terminal
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+terminal :- whitewin
+terminal :- blackwin
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% Views
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+whitemove(X1,Y1,X2,Y2) :- skipfile(X1,X2) & nextrank(Y1,Y2)
+whitemove(X1,Y1,X2,Y2) :- skipfile(X2,X1) & nextrank(Y1,Y2)
+whitemove(X1,Y1,X2,Y2) :- skiprank(Y1,Y2) & nextfile(X1,X2)
+whitemove(X1,Y1,X2,Y2) :- skiprank(Y1,Y2) & nextfile(X2,X1)
+
+blackmove(X1,Y1,X2,Y2) :- skipfile(X1,X2) & nextrank(Y2,Y1)
+blackmove(X1,Y1,X2,Y2) :- skipfile(X2,X1) & nextrank(Y2,Y1)
+blackmove(X1,Y1,X2,Y2) :- skiprank(Y2,Y1) & nextfile(X1,X2)
+blackmove(X1,Y1,X2,Y2) :- skiprank(Y2,Y1) & nextfile(X2,X1)
+
+whitewin :- cell(X,6,white)
+whitewin :- ~hasanypiece(black)
+
+blackwin :- cell(X,1,black)
+blackwin :- ~hasanypiece(white)
+
+hasanypiece(Role) :- cell(X,Y,Role)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% Facts
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+file(a)
+file(b)
+file(c)
+file(d)
+file(e)
+file(f)
+
+rank(1)
+rank(2)
+rank(3)
+rank(4)
+rank(5)
+rank(6)
+
+nextrank(1,2)
+nextrank(2,3)
+nextrank(3,4)
+nextrank(4,5)
+nextrank(5,6)
+
+nextfile(a,b)
+nextfile(b,c)
+nextfile(c,d)
+nextfile(d,e)
+nextfile(e,f)
+
+skiprank(1,3)
+skiprank(2,4)
+skiprank(3,5)
+skiprank(4,6)
+
+skipfile(a,c)
+skipfile(b,d)
+skipfile(c,e)
+skipfile(d,f)
+
+incr(0,10)
+incr(10,20)
+incr(20,30)
+incr(30,40)
+incr(40,50)
+incr(50,60)
+incr(60,70)
+incr(70,80)
+incr(80,90)
+incr(90,100)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+</textarea>
+
+<!--=======================================================================-->
+
+<textarea id='lambda' type='text/hdf' style='display:none'></textarea>
+
+<!--=======================================================================-->
+
+</html>

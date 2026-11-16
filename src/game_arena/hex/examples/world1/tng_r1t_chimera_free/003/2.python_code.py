@@ -1,0 +1,79 @@
+
+from collections import deque
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    def is_connected(stones, stone_color):
+        stone_set = set(stones)
+        if stone_color == 'b':
+            top = [(r, c) for (r, c) in stone_set if r == 0]
+            if not top:
+                return False
+            visited = set(top)
+            queue = deque(top)
+            while queue:
+                r, c = queue.popleft()
+                if r == 10:
+                    return True
+                for dr, dc in [(-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0)]:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 11 and 0 <= nc < 11 and (nr, nc) in stone_set and (nr, nc) not in visited:
+                        visited.add((nr, nc))
+                        queue.append((nr, nc))
+            return False
+        else:
+            left = [(r, c) for (r, c) in stone_set if c == 0]
+            if not left:
+                return False
+            visited = set(left)
+            queue = deque(left)
+            while queue:
+                r, c = queue.popleft()
+                if c == 10:
+                    return True
+                for dr, dc in [(-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0)]:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 11 and 0 <= nc < 11 and (nr, nc) in stone_set and (nr, nc) not in visited:
+                        visited.add((nr, nc))
+                        queue.append((nr, nc))
+            return False
+
+    all_stones = set(me) | set(opp)
+    empty = [ (i, j) for i in range(11) for j in range(11) if (i, j) not in all_stones ]
+
+    # Check for immediate win
+    for cell in empty:
+        new_me = me + [cell]
+        if is_connected(new_me, color):
+            return cell
+
+    # Check if opponent can win next turn
+    opp_color = 'w' if color == 'b' else 'b'
+    for cell in empty:
+        new_opp = opp + [cell]
+        if is_connected(new_opp, opp_color):
+            return cell
+
+    # Otherwise, choose best cell based on heuristic
+    best_score = -float('inf')
+    best_cell = empty[0]
+    for cell in empty:
+        i, j = cell
+        if color == 'b':
+            my_product = i * (10 - i)
+            opp_product = j * (10 - j)
+        else:
+            my_product = j * (10 - j)
+            opp_product = i * (10 - i)
+        
+        my_score = 10.0 / (1 + my_product)
+        opp_score = opp_product
+        adj_count = 0
+        for di, dj in [(-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0)]:
+            ni, nj = i + di, j + dj
+            if (ni, nj) in me:
+                adj_count += 1
+        total_score = my_score + 5 * opp_score + 2 * adj_count
+        if total_score > best_score:
+            best_score = total_score
+            best_cell = cell
+    return best_cell

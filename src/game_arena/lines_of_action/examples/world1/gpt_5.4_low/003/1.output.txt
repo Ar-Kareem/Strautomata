@@ -1,0 +1,394 @@
+The strategy for this policy is:
+- Generate all legal Lines of Action moves exactly.
+- Use iterative-deepening negamax with alpha-beta pruning under a short time limit.
+- Detect immediate wins and immediate losses after each candidate move.
+- Evaluate positions by LOA-specific features: number of connected components, size of the largest group, compactness, centralization, and mobility.
+- Order moves to search promising tactical and connecting moves first.
+- Always keep a fallback legal move so the policy always returns a valid move string.
+
+<code>
+import time
+import math
+
+WIN_SCORE = 10**7
+TIME_LIMIT = 0.92
+
+DIRS = [
+    (-1, 0), (1, 0), (0, -1), (0, 1),
+    (-1, -1), (-1, 1), (1, -1), (1, 1)
+]
+
+def policy(board) -> str:
+    board = [[int(board[r][c]) for c in range(8)] for r in range(8)]
+    state = SearchState(time.time() + TIME_LIMIT)
+
+    moves = generate_moves(board)
+    if not moves:
+        # Extremely unlikely in valid LOA positions; return a syntactically valid string.
+        # Arena expects legal move, but if no legal moves exist this is the best fallback.
+        return "0,0:0,0"
+
+    best_move = moves[0]
+
+    # Fast tactical pre-check: immediate winning move.
+    for mv in moves:
+        b2 = apply_move(board, mv)
+        if is_connected(b2, 1):
+            return move_to_str(mv)
+
+    # Iterative deepening
+    try:
+        depth = 1
+        while depth <= 4:
+            val, mv = negamax_root(board, depth, state)
+            if mv is not None:
+                best_move = mv
+            depth += 1
+    except TimeoutError:
+        pass
+
+    return move_to_str(best_move)
+
+
+class SearchState:
+    def __init__(self, deadline):
+        self.deadline = deadline
+        self.tt = {}
+
+    def check_time(self):
+        if time.time() >= self.deadline:
+            raise TimeoutError
+
+
+def move_to_str(mv):
+    fr, fc, tr, tc = mv
+    return f"{fr},{fc}:{tr},{tc}"
+
+
+def inside(r, c):
+    return 0 <= r < 8 and 0 <= c < 8
+
+
+def board_key(board):
+    return tuple(tuple(row) for row in board)
+
+
+def negate_board(board):
+    return [[-board[r][c] for c in range(8)] for r in range(8)]
+
+
+def apply_move(board, mv):
+    fr, fc, tr, tc = mv
+    piece = board[fr][fc]
+    b2 = [row[:] for row in board]
+    b2[fr][fc] = 0
+    b2[tr][tc] = piece
+    return b2
+
+
+def precompute_counts(board):
+    rowc = [0] * 8
+    colc = [0] * 8
+    diag1 = [0] * 15          # index by r-c+7
+    diag2 = [0] * 15          # index by r+c
+    for r in range(8):
+        rr = board[r]
+        cnt = 0
+        for c in range(8):
+            if rr[c] != 0:
+                cnt += 1
+                colc[c] += 1
+                diag1[r - c + 7] += 1
+                diag2[r + c] += 1
+        rowc[r] = cnt
+    return rowc, colc, diag1, diag2
+
+
+def line_count(rowc, colc, diag1, diag2, r, c, dr, dc):
+    if dr == 0:
+        return rowc[r]
+    if dc == 0:
+        return colc[c]
+    if dr == dc:
+        return diag1[r - c + 7]
+    return diag2[r + c]
+
+
+def generate_moves(board):
+    rowc, colc, diag1, diag2 = precompute_counts(board)
+    moves = []
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] != 1:
+                continue
+            for dr, dc in DIRS:
+                dist = line_count(rowc, colc, diag1, diag2, r, c, dr, dc)
+                tr = r + dr * dist
+                tc = c + dc * dist
+                if not inside(tr, tc):
+                    continue
+                if board[tr][tc] == 1:
+                    continue
+
+                # Path may jump friendly pieces, but not enemy pieces.
+                blocked = False
+                cr, cc = r, c
+                for _ in range(dist - 1):
+                    cr += dr
+                    cc += dc
+                    if board[cr][cc] == -1:
+                        blocked = True
+                        break
+                if blocked:
+                    continue
+                moves.append((r, c, tr, tc))
+    return moves
+
+
+def get_piece_positions(board, player):
+    out = []
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == player:
+                out.append((r, c))
+    return out
+
+
+def component_info(board, player):
+    pieces = get_piece_positions(board, player)
+    n = len(pieces)
+    if n <= 1:
+        return 1 if n == 1 else 0, n
+
+    vis = [[False] * 8 for _ in range(8)]
+    comps = 0
+    largest = 0
+
+    for sr, sc in pieces:
+        if vis[sr][sc]:
+            continue
+        comps += 1
+        stack = [(sr, sc)]
+        vis[sr][sc] = True
+        sz = 0
+        while stack:
+            r, c = stack.pop()
+            sz += 1
+            for dr in (-1, 0, 1):
+                nr = r + dr
+                if nr < 0 or nr >= 8:
+                    continue
+                for dc in (-1, 0, 1):
+                    if dr == 0 and dc == 0:
+                        continue
+                    nc = c + dc
+                    if 0 <= nc < 8 and not vis[nr][nc] and board[nr][nc] == player:
+                        vis[nr][nc] = True
+                        stack.append((nr, nc))
+        if sz > largest:
+            largest = sz
+
+    return comps, largest
+
+
+def is_connected(board, player):
+    pieces = get_piece_positions(board, player)
+    n = len(pieces)
+    if n <= 1:
+        return True
+    vis = set()
+    stack = [pieces[0]]
+    vis.add(pieces[0])
+    while stack:
+        r, c = stack.pop()
+        for dr in (-1, 0, 1):
+            nr = r + dr
+            if nr < 0 or nr >= 8:
+                continue
+            for dc in (-1, 0, 1):
+                if dr == 0 and dc == 0:
+                    continue
+                nc = c + dc
+                if 0 <= nc < 8 and board[nr][nc] == player and (nr, nc) not in vis:
+                    vis.add((nr, nc))
+                    stack.append((nr, nc))
+    return len(vis) == n
+
+
+def compactness_features(board, player):
+    pieces = get_piece_positions(board, player)
+    n = len(pieces)
+    if n == 0:
+        return 0, 0, 0, 0
+
+    rs = [p[0] for p in pieces]
+    cs = [p[1] for p in pieces]
+    minr, maxr = min(rs), max(rs)
+    minc, maxc = min(cs), max(cs)
+    bbox_area = (maxr - minr + 1) * (maxc - minc + 1)
+
+    cr = sum(rs) / n
+    cc = sum(cs) / n
+    spread = 0.0
+    center_bias = 0.0
+    for r, c in pieces:
+        dr = r - cr
+        dc = c - cc
+        spread += dr * dr + dc * dc
+        center_bias += abs(r - 3.5) + abs(c - 3.5)
+
+    adjacency = 0
+    for r, c in pieces:
+        local = 0
+        for dr in (-1, 0, 1):
+            nr = r + dr
+            if nr < 0 or nr >= 8:
+                continue
+            for dc in (-1, 0, 1):
+                if dr == 0 and dc == 0:
+                    continue
+                nc = c + dc
+                if 0 <= nc < 8 and board[nr][nc] == player:
+                    local += 1
+        adjacency += local
+    adjacency //= 2
+
+    return bbox_area, spread, center_bias, adjacency
+
+
+def evaluate(board):
+    my_conn = is_connected(board, 1)
+    opp_conn = is_connected(board, -1)
+    if my_conn and opp_conn:
+        return WIN_SCORE
+    if my_conn:
+        return WIN_SCORE
+    if opp_conn:
+        return -WIN_SCORE
+
+    my_comp, my_largest = component_info(board, 1)
+    op_comp, op_largest = component_info(board, -1)
+
+    my_bbox, my_spread, my_center, my_adj = compactness_features(board, 1)
+    op_bbox, op_spread, op_center, op_adj = compactness_features(board, -1)
+
+    my_mob = len(generate_moves(board))
+    op_mob = len(generate_moves(negate_board(board)))
+
+    score = 0
+    score += 700 * (op_comp - my_comp)
+    score += 45 * (my_largest - op_largest)
+    score += 6 * (op_adj - my_adj) * -1  # equivalent to +6*(my_adj-op_adj)
+    score += 3 * (op_bbox - my_bbox)
+    score += 2 * (op_spread - my_spread)
+    score += 2 * (op_center - my_center)
+    score += 2 * (my_mob - op_mob)
+
+    # Mild piece count incentive through captures
+    my_n = len(get_piece_positions(board, 1))
+    op_n = len(get_piece_positions(board, -1))
+    score += 8 * (my_n - op_n)
+
+    return int(score)
+
+
+def quick_move_score(board, mv):
+    fr, fc, tr, tc = mv
+    score = 0
+    if board[tr][tc] == -1:
+        score += 50
+
+    # Prefer centralization and adjacency creation
+    score -= int(abs(tr - 3.5) + abs(tc - 3.5))
+    for dr in (-1, 0, 1):
+        nr = tr + dr
+        if nr < 0 or nr >= 8:
+            continue
+        for dc in (-1, 0, 1):
+            if dr == 0 and dc == 0:
+                continue
+            nc = tc + dc
+            if 0 <= nc < 8 and board[nr][nc] == 1:
+                score += 6
+    return score
+
+
+def ordered_moves(board):
+    moves = generate_moves(board)
+    moves.sort(key=lambda mv: quick_move_score(board, mv), reverse=True)
+    return moves
+
+
+def negamax_root(board, depth, state):
+    state.check_time()
+    moves = ordered_moves(board)
+    if not moves:
+        return -WIN_SCORE + 1, None
+
+    alpha = -WIN_SCORE
+    beta = WIN_SCORE
+    best_val = -WIN_SCORE
+    best_move = moves[0]
+
+    for mv in moves:
+        state.check_time()
+        b2 = apply_move(board, mv)
+
+        if is_connected(b2, 1):
+            return WIN_SCORE - 1, mv
+        if is_connected(b2, -1):
+            val = -WIN_SCORE + 1
+        else:
+            nb = negate_board(b2)
+            val = -negamax(nb, depth - 1, -beta, -alpha, state)
+
+        if val > best_val:
+            best_val = val
+            best_move = mv
+        if val > alpha:
+            alpha = val
+
+    return best_val, best_move
+
+
+def negamax(board, depth, alpha, beta, state):
+    state.check_time()
+
+    key = (board_key(board), depth, alpha, beta)
+    if key in state.tt:
+        return state.tt[key]
+
+    if depth <= 0:
+        val = evaluate(board)
+        state.tt[key] = val
+        return val
+
+    moves = ordered_moves(board)
+    if not moves:
+        val = -WIN_SCORE + 1
+        state.tt[key] = val
+        return val
+
+    best = -WIN_SCORE
+
+    for mv in moves:
+        b2 = apply_move(board, mv)
+
+        if is_connected(b2, 1):
+            val = WIN_SCORE - (4 - depth)
+        elif is_connected(b2, -1):
+            val = -WIN_SCORE + (4 - depth)
+        else:
+            nb = negate_board(b2)
+            val = -negamax(nb, depth - 1, -beta, -alpha, state)
+
+        if val > best:
+            best = val
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+
+    state.tt[key] = best
+    return best
+</code>

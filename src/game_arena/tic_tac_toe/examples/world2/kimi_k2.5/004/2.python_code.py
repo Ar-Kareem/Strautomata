@@ -1,0 +1,158 @@
+
+import numpy as np
+from typing import List, Tuple, Optional
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """Return the best move (row, col) for the current board state."""
+    b = np.array(board, dtype=int)
+    
+    # 1. Take immediate win if available
+    move = find_immediate_win(b, 1)
+    if move:
+        return move
+    
+    # 2. Block opponent's immediate win
+    move = find_immediate_win(b, -1)
+    if move:
+        return move
+    
+    # 3. Use minimax with alpha-beta pruning
+    empty_cells = list(zip(*np.where(b == 0)))
+    if not empty_cells:
+        return (0, 0)  # Should not happen in valid game
+    
+    # Adaptive depth: deeper search as game progresses
+    n_empty = len(empty_cells)
+    if n_empty > 12:
+        max_depth = 4
+    elif n_empty > 8:
+        max_depth = 5
+    else:
+        max_depth = 6
+    
+    # Sort by centrality to improve alpha-beta pruning
+    empty_cells.sort(key=lambda pos: abs(pos[0] - 1.5) + abs(pos[1] - 1.5))
+    
+    best_score = -float('inf')
+    best_move = empty_cells[0]
+    
+    for r, c in empty_cells:
+        b[r, c] = 1
+        score = minimax(b, max_depth - 1, -float('inf'), float('inf'), False)
+        b[r, c] = 0
+        if score > best_score:
+            best_score = score
+            best_move = (int(r), int(c))
+    
+    return best_move
+
+def find_immediate_win(b: np.ndarray, player: int) -> Optional[Tuple[int, int]]:
+    """Find a move that gives player an immediate 4-in-a-row."""
+    empty_r, empty_c = np.where(b == 0)
+    for r, c in zip(empty_r, empty_c):
+        b[r, c] = player
+        win = check_win(b, player)
+        b[r, c] = 0
+        if win:
+            return (int(r), int(c))
+    return None
+
+def check_win(b: np.ndarray, player: int) -> bool:
+    """Check if player has 4 consecutive marks."""
+    # Rows
+    for i in range(4):
+        if np.all(b[i, :] == player):
+            return True
+    # Columns
+    for j in range(4):
+        if np.all(b[:, j] == player):
+            return True
+    # Diagonal
+    if np.all(np.diag(b) == player):
+        return True
+    # Anti-diagonal
+    if np.all(np.diag(np.fliplr(b)) == player):
+        return True
+    return False
+
+def evaluate(b: np.ndarray) -> float:
+    """Heuristic evaluation of board state."""
+    # Terminal states
+    if check_win(b, 1):
+        return 1000
+    if check_win(b, -1):
+        return -1000
+    
+    score = 0.0
+    
+    # Collect all lines (rows, cols, diagonals)
+    lines = []
+    # Rows and columns
+    for i in range(4):
+        lines.append(b[i, :])
+        lines.append(b[:, i])
+    # Diagonals
+    lines.append(np.diag(b))
+    lines.append(np.diag(np.fliplr(b)))
+    
+    for line in lines:
+        my_count = np.sum(line == 1)
+        opp_count = np.sum(line == -1)
+        empty_count = np.sum(line == 0)
+        
+        if opp_count == 0 and my_count > 0:
+            # Our potential line
+            if my_count == 3:
+                score += 10  # One move away from winning
+            elif my_count == 2:
+                score += 2
+        elif my_count == 0 and opp_count > 0:
+            # Opponent's potential line
+            if opp_count == 3:
+                score -= 10  # Must block
+            elif opp_count == 2:
+                score -= 2
+    
+    # Positional preference for center
+    center_value = b[1:3, 1:3]
+    score += np.sum(center_value == 1) * 0.5
+    score -= np.sum(center_value == -1) * 0.5
+    
+    return score
+
+def minimax(b: np.ndarray, depth: int, alpha: float, beta: float, is_maximizing: bool) -> float:
+    """Minimax algorithm with alpha-beta pruning."""
+    # Terminal checks
+    if check_win(b, 1):
+        return 100 + depth  # Prefer faster wins
+    if check_win(b, -1):
+        return -100 - depth  # Prefer slower losses
+    if depth == 0:
+        return evaluate(b)
+    
+    empty_r, empty_c = np.where(b == 0)
+    if len(empty_r) == 0:
+        return evaluate(b)
+    
+    if is_maximizing:
+        max_eval = -float('inf')
+        for r, c in zip(empty_r, empty_c):
+            b[r, c] = 1
+            eval = minimax(b, depth - 1, alpha, beta, False)
+            b[r, c] = 0
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for r, c in zip(empty_r, empty_c):
+            b[r, c] = -1
+            eval = minimax(b, depth - 1, alpha, beta, True)
+            b[r, c] = 0
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break
+        return min_eval

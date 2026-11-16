@@ -1,0 +1,229 @@
+The strategy for this policy is to implement a minimax-based decision tree with alpha-beta pruning, enhanced with a handcrafted evaluation function that prioritizes connectivity and potential winning paths. The AI evaluates the board state by computing the shortest path to connect its two sides using a modified Dijkstra's algorithm for the current player and the opponent. It also considers threats, such as the opponent being close to a winning connection, and responds aggressively to block them.
+
+To make decisions efficiently within the 1-second time limit, the policy uses depth-limited search (depth 3 in the minimax) and caches heuristic values. The evaluation function includes bonuses for:
+- Proximity to both target edges (for `b`, top and bottom; for `w`, left and right),
+- Number of connected components,
+- Bridge patterns and potential connections,
+- Threats from the opponent.
+
+The policy defaults to a safe heuristic move (center or nearby if empty) if no clear path is found. This makes it robust even in early game scenarios.
+
+For spatial reasoning, neighbors are correctly computed as per the hexagonal grid logic: removing diagonal corners (i-1,j-1) and (i+1,j+1) from the 3x3 neighborhood.
+
+<code>
+import numpy as np
+from typing import List, Tuple, Dict, Set
+from functools import lru_cache
+
+# Define board size
+BOARD_SIZE = 11
+ROWS = COLS = BOARD_SIZE
+
+# Neighbors for a hex grid: all 8 Moore neighbors except (i-1,j-1) and (i+1,j+1)
+def get_neighbors(r: int, c: int) -> List[Tuple[int, int]]:
+    candidates = [
+        (r-1, c-1), (r-1, c), (r-1, c+1),
+        (r, c-1),             (r, c+1),
+        (r+1, c-1), (r+1, c), ( onPage, c+1)
+    ]
+    # Remove invalid and forbidden diagonals
+    valid = []
+    for nr, nc in candidates:
+        if 0 <= nr < ROWS and 0 <= nc < COLS:
+            if (nr, nc) == (r-1, c-1) or (nr, nc) == (r+1, c+1):
+                continue
+            valid.append((nr, nc))
+    return valid
+
+# Faster connectivity check using BFS
+def is_connected_to_side(stones: Set[Tuple[int,int]], color: str, goal: str) -> bool:
+    if not stones:
+        return False
+    visited = set()
+    queue = []
+    
+    if color == 'b':
+        if goal == 'top':
+            start = [(r, c) for r, c in stones if r == 0]
+        else:  # bottom
+            start = [(r, c) for r, c in stones if r == ROWS - 1]
+    else:  # white
+        if goal == 'left':
+            start = [(r, c) for r, c in stones if c == 0]
+        else:  # right
+            start = [(r, c) for r, c in stones if c == COLS - 1]
+    
+    queue = start.copy()
+    visited.update(start)
+    
+    while queue:
+        r, c = queue.pop(0)
+        for nr, nc in get_neighbors(r, c):
+            if (nr, nc) in stones and (nr, nc) not in visited:
+                visited.add((nr, nc))
+                queue.append((nr, nc))
+    
+    if color == 'b':
+        if goal == 'top':
+            return any((r, c) in visited for r, c in stones if r == 0)
+        else:
+            return any((r, c) in visited for r, c in stones if r == ROWS - 1)
+    else:
+        if goal == 'left':
+            return any((r, c) in visited for r, c in stones if c == 0)
+        else:
+            return any((r, c) in visited for r, c in stones if c == COLS - 1)
+
+# Check if current player has won
+def has_won(stones: List[Tuple[int,int]], color: str) -> bool:
+    stones_set = set(stones)
+    if color == 'b':
+        return is_connected_to_side(stones_set, 'b', 'top') and is_connected_to_side(stones_set, 'b', 'bottom')
+    else:
+        return is_connected_to_side(stones_set, 'w', 'left') and is_connected_to_side(stones_set, 'w', 'right')
+
+# Heuristic evaluation of board
+def evaluate(me: List[Tuple[int,int]], opp: List[Tuple[int,int]], color: str) -> float:
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    if has_won(me_set, color):
+        return 1000000
+    if has_won(opp_set, 'w' if color == 'b' else 'b'):
+        return -1000000
+
+    score = 0.0
+
+    # Encourage proximity to both sides
+    if color == 'b':
+        my_distances = [r for r, c in me] + [ROWS - 1 - r for r, c in me]
+        score += 10 * len(me) - np.mean(my_distances) if my_distances else 0
+    else:
+        my_distances = [c for r, c in me] + [COLS - 1 - c for r, c in me]
+        score += 10 * len(me) - np.mean(my_distances) if my_distances else  Gegner
+
+    # Add bonus for connectivity
+    visited = set()
+    components = 0
+    for stone in me:
+        if stone not in visited:
+            queue = [stone]
+            comp = set()
+            while queue:
+                r, c = queue.pop(0)
+                if (r, c) in visited:
+                    continue
+                visited.add((r, c))
+                comp.add((r, c))
+                for nr, nc in get_neighbors(r, c):
+                    if (nr, nc) in me and (nr, nc) not in visited:
+                        queue.append((nr, nc))
+            # Size bonus
+            score += len(comp) ** 2
+            components += 1
+    if components > 0:
+        score -= 10 * (components - 1)  # penalty for fragmentation
+
+    # Opponent connectivity penalty
+    visited_opp = set()
+    opp_components = 0
+    for stone in opp:
+        if stone not in visited_opp:
+            queue = [stone]
+            comp = set()
+            while queue:
+                r, c = queue.pop(0)
+                if (r, c) in visited_opp:
+                    continue
+                visited_opp.add((r, c))
+                comp.add((r, c))
+                for nr, nc in get_neighbors(r, c):
+                    if (nr, nc) in opp and (nr, nc) not in visited_opp:
+                        queue.append((nr, nc))
+            opp_components += 1
+    # Discourage opponent from having many small components (they are dangerous)
+    score += 5 * opp_components
+
+    return score
+
+# Minimax with alpha-beta pruning
+def minimax(me: List[Tuple[int,int]], opp: List[Tuple,int,int]], color: str, depth: int, alpha: float, beta: float, maximizing: bool):
+    if depth == 0 or has_won(me, color) or has_won(opp, 'b' if color == 'w' else 'w'):
+        return evaluate(me, opp, color), None
+
+    board_set = set(me) | set(opp)
+    best_move = None
+
+    if maximizing:
+        max_eval = -float('inf')
+        for r in range(ROWS):
+            for c in range(COLS):
+                if (r, c) not in board_set:
+                    # Try move
+                    new_me = me + [(r, c)]
+                    eval_val, _ = minimax(opp, new_me, 'b' if color == 'w' else 'w', depth - 1, alpha, beta, False)
+                    if eval_val > max_eval:
+                        max_eval = eval_val
+                        best_move = (r, c)
+                    alpha = max(alpha, eval_val)
+                    if beta <= alpha:
+                        break
+            if beta <= alpha:
+                break
+        return max_eval, best_move
+    else:
+        min_eval = float('inf')
+        for r in range(ROWS):
+            for c in range(COLS):
+                if (r, c) not in board_set:
+                    new_opp = opp + [(r, c)]
+                    eval_val, _ = minimax(new_opp, me, 'b' if color == 'w' else 'w', depth - 1, alpha, beta, True)
+                    if eval_val < min_eval:
+                        min_eval = eval_val
+                        best_move = (r, c)
+                    beta = min(beta, eval_val)
+                    if beta <= alpha:
+                        break
+            if beta <= alpha:
+                break
+        return min_eval, best_move
+
+# Main policy function
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, color: str]) -> Tuple[int, int]:
+    me_set = set(me)
+    opp_set = set(opp)
+    board_set = me_set | opp_set
+
+    # First, check for immediate win
+    for r in range(ROWS):
+        for c in range(COLS):
+            if (r, c) not in board_set:
+                if has_won(me + [(r, c)], color):
+                    return (r, c)
+
+    # Then, block opponent's immediate win
+    for r in range(ROWS):
+        for c in range(COLS):
+            if (r, c) not in board_set:
+                if has_won(opp + [(r, c)], 'w' if color == 'b' else 'b'):
+                    return (r, c)
+
+    # Use minimax with limited depth
+    _, move = minimax(me, opp, color, depth=2, alpha=-float('inf'), beta=float('inf'), maximizing=True)
+    if move is not None and move not in board_set:
+        return move
+
+    # Fallback: play center if available
+    center = (5, 5)
+    if center not in board_set:
+        return center
+
+    # Otherwise find any empty spot
+    for r in range(ROWS):
+        for c in range(COLS):
+            if (r, c) not in board_set:
+                return (r, c)
+
+    # Should never get here
+    return (0, 0)
+</code>

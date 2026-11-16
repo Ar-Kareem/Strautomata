@@ -1,0 +1,273 @@
+**Strategy Overview**
+
+The policy uses a depth‑limited minimax search with alpha‑beta pruning.
+* The game state is represented as `(my_side, opponent_side)` where each side is a 7‑tuple
+  `(h0,…,h5, store)`. The player to move is always side 0.
+* Moves are simulated exactly: sowing skips the opponent’s store, extra moves are granted when the
+  last seed lands in the player’s store, and captures are performed when a seed lands in an empty
+  house with seeds on the opposite side.
+* Terminal positions (one side has no seeds in its houses) are evaluated by the final score
+  (remaining seeds are moved to the owner’s store). The value is the difference
+  `my_store – opp_store` from the perspective of the root player.
+* The heuristic for non‑terminal nodes combines:
+  * store difference,
+  * a small weight on the total seeds still in houses,
+  * a bonus for “free moves’’ (a house whose seed count equals the distance to the store).
+* Iterative deepening is used: the search tries depths 1, 2, 3,… until about 0.9 seconds have
+  elapsed, returning the best move found at the deepest completed depth.
+* Move ordering (extra moves first, then captures, then by static evaluation) improves alpha‑beta
+  pruning dramatically.
+
+```python
+import sys
+import time
+from typing import Tuple, List
+
+# ----------------------------------------------------------------------
+# Game logic
+# ----------------------------------------------------------------------
+def _apply_move(state: Tuple[Tuple[int, ...], Tuple[int, ...]], move: int):
+    """
+    Apply a legal move from the player whose side is state[0].
+    Returns (new_state, extra_turn) where new_state is oriented so that
+    side0 is the player to move next (i.e. swapped if turn passes).
+    """
+    board0, board1 = state
+    # work with mutable copies
+    b0 = list(board0)
+    b1 = list(board1)
+
+    seeds = b0[move]
+    b0[move] = 0
+    idx = move + 1          # first pit after the chosen house
+    last_idx = None         # where the last seed lands (0‑5 for my houses, 6 for store)
+
+    while seeds:
+        m = idx % 13        # 0‑5 my houses, 6 my store, 7‑12 opponent houses
+        if m == 6:
+            b0[6] += 1
+            seeds -= 1
+            last_idx = 6
+        elif m < 6:
+            b0[m] += 1
+            seeds -= 1
+            last_idx = m
+        else:               # opponent house
+            opp = m - 7
+            b1[opp] += 1
+            seeds -= 1
+            last_idx = None
+        idx += 1
+
+    extra = (last_idx == 6)
+
+    # capture rule
+    if not extra and last_idx is not None and 0 <= last_idx <= 5:
+        if b0[last_idx] == 1:               # landed in an empty house
+            opp_idx = 5 - last_idx
+            captured = b1[opp_idx]
+            if captured:
+                b0[6] += 1 + captured
+                b0[last_idx] = 0
+                b1[opp_idx] = 0
+
+    new0 = tuple(b0)
+    new1 = tuple(b1)
+
+    if extra:
+        return (new0, new1), True
+    else:
+        # turn passes → opponent becomes side0
+        return (new1, new0), False
+
+
+def _is_terminal(state: Tuple[Tuple[int, ...], Tuple[int, ...]]) -> bool:
+    """True if either player has no seeds in their houses."""
+    b0, b1 = state
+    return all(x == 0 for x in b0[:6]) or all(x == 0 for x in b1[:6])
+
+
+def _evaluate_terminal(state: Tuple[Tuple[int, ...], Tuple[int, ...]],
+                       original_is_0: bool) -> float:
+    """
+    Terminal evaluation from the perspective of the root player.
+    original_is_0 tells whether side0 of *state* belongs to the root player.
+    """
+    b0, b1 = state
+    if original_is_0:
+        my, opp = b0, b1
+    else:
+        my, opp = b1, b0
+
+    if all(x == 0 for x in my[:6]):          # my houses are empty
+        my_score = my[6]
+        opp_score = opp[6] + sum(opp[:6])
+    else:                                     # opponent houses empty (or both)
+        my_score = my[6] + sum(my[:6])
+        opp_score = opp[6]
+    return float(my_score - opp_score)
+
+
+def _evaluate(state: Tuple[Tuple[int, ...], Tuple[int, ...]],
+              original_is_0: bool) -> float:
+    """
+    Heuristic evaluation for non‑terminal states.
+    """
+    b0, b1 = state
+    if original_is_0:
+        my, opp = b0, b1
+    else:
+        my, opp = b1, b0
+
+    # store difference + weighted seed count difference
+    val = (my[6] - opp[6]) + 0.2 * (sum(my[:6]) - sum(opp[:6]))
+
+    # potential free moves (distance to store == seeds in house)
+    free = 0.0
+    for i in range(6):
+        if my[i] == 6 - i:
+            free += 0.3
+    val += free
+    return val
+
+
+def _ordered_moves(state: Tuple[Tuple[int, ...], Tuple[int, ...]],
+                   original_is_0: bool):
+    """
+    Generate legal moves for side0 together with their resulting child state,
+    sorted by a quick static evaluation (descending for maximizing,
+    ascending for minimizing).
+    """
+    b0 = state[0]
+    moves = []
+    for i in range(6):
+        if b0[i]:
+            child, extra = _apply_move(state, i)
+            child_is_0 = original_is_0 if extra else (not original_is_0)
+            approx = _evaluate(child, child_is_0)
+            moves.append((approx, i, child, extra))
+    # maximizing (original_is_0==True) → high values first
+    moves.sort(key=lambda x: x[0], reverse=original_is_0)
+    return moves
+
+
+# ----------------------------------------------------------------------
+# Minimax with alpha‑beta
+# ----------------------------------------------------------------------
+def _minimax(state: Tuple[Tuple[int, ...], Tuple[int, ...]],
+             depth: int,
+             original_is_0: bool,
+             alpha: float,
+             beta: float) -> float:
+    """Return the minimax value for the root player."""
+    if _is_terminal(state):
+        return _evaluate_terminal(state, original_is_0)
+    if depth == 0:
+        return _evaluate(state, original_is_0)
+
+    moves = _ordered_moves(state, original_is_0)
+    if not moves:                     # should not happen because terminal is caught
+        return _evaluate_terminal(state, original_is_0)
+
+    if original_is_0:                 # maximizing node (root player to move)
+        value = -float('inf')
+        for _, _, child, extra in moves:
+            child_is_0 = original_is_0 if extra else (not original_is_0)
+            if _is_terminal(child):
+                val = _evaluate_terminal(child, child_is_0)
+            else:
+                val = _minimax(child, depth - 1, child_is_0, alpha, beta)
+            if val > value:
+                value = val
+            alpha = max(alpha, val)
+            if alpha >= beta:
+                break
+        return value
+    else:                             # minimizing node (opponent to move)
+        value = float('inf')
+        for _, _, child, extra in moves:
+            child_is_0 = original_is_0 if extra else (not original_is_0)
+            if _is_terminal(child):
+                val = _evaluate_terminal(child, child_is_0)
+            else:
+                val = _minimax(child, depth - 1, child_is_0, alpha, beta)
+            if val < value:
+                value = val
+            beta = min(beta, val)
+            if beta <= alpha:
+                break
+        return value
+
+
+def _search_root(state: Tuple[Tuple[int, ...], Tuple[int, ...]],
+                 depth: int) -> Tuple[float, int]:
+    """Search from the root (original player is side0). Returns (value, best_move)."""
+    legal = [i for i in range(6) if state[0][i] > 0]
+    if not legal:
+        return 0.0, 0
+
+    # order root moves by static evaluation
+    scored = []
+    for i in legal:
+        child, extra = _apply_move(state, i)
+        child_is_0 = True if extra else False
+        approx = _evaluate(child, child_is_0)
+        scored.append((approx, i, child, extra))
+    scored.sort(key=lambda x: x[0], reverse=True)   # root is maximizing
+
+    best_val = -float('inf')
+    best_move = scored[0][1]
+    alpha = -float('inf')
+    beta = float('inf')
+
+    for _, move, child, extra in scored:
+        child_is_0 = True if extra else False
+        if _is_terminal(child):
+            val = _evaluate_terminal(child, child_is_0)
+        else:
+            val = _minimax(child, depth - 1, child_is_0, alpha, beta)
+        if val > best_val:
+            best_val = val
+            best_move = move
+        alpha = max(alpha, val)
+        if alpha >= beta:
+            break
+    return best_val, best_move
+
+
+# ----------------------------------------------------------------------
+# Public API
+# ----------------------------------------------------------------------
+def policy(you: List[int], opponent: List[int]) -> int:
+    """
+    Choose the next move for the player ``you``.
+    you[0..5] are houses, you[6] is the store.
+    """
+    sys.setrecursionlimit(10000)
+    state = (tuple(you), tuple(opponent))
+
+    legal = [i for i in range(6) if you[i] > 0]
+    if not legal:
+        return 0                     # should never happen per problem statement
+    if len(legal) == 1:
+        return legal[0]
+
+    start = time.time()
+    best_move = legal[0]
+
+    # Iterative deepening until time runs out
+    for depth in range(1, 20):       # depth limited by time, not by the loop bound
+        if time.time() - start > 0.9:
+            break
+        try:
+            val, move = _search_root(state, depth)
+            if move is not None:
+                best_move = move
+            # If we have a guaranteed win (large margin) we can stop early
+            if val > 40:
+                break
+        except RecursionError:
+            break
+
+    return best_move
+```

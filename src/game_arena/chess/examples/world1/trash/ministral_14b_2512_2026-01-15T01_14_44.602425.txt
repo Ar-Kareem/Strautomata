@@ -1,0 +1,182 @@
+### **Strategy for this Policy**
+My chess AI policy will follow a **multi-layered evaluation approach** to select the strongest move from the given legal moves. The strategy prioritizes the following objectives in order:
+
+1. **Checkmate**: If any legal move results in a checkmate, choose it immediately.
+2. **Material Advantage**: Prefer moves that capture the opponent’s pieces (especially high-value ones like queens, rooks, and bishops).
+3. **King Safety**: Avoid moves that expose the king to threats (e.g., castling if it improves safety).
+4. **Development & Activity**: Prioritize moves that improve piece mobility (e.g., pawn pushes, knight/bishop moves).
+5. **Tactical Opportunities**: Look for moves that create threats (e.g., double attacks, pins, or forks).
+6. **Pawn Structure**: Prefer moves that support pawn chains or prevent weaknesses.
+7. **Center Control**: If no immediate threats exist, push pawns or move pieces toward the center.
+8. **Default to Simple Moves**: If no strong tactical/strategic move stands out, choose a move that improves piece position (e.g., rook to open file, knight to active square).
+
+The policy will use a **weighted evaluation system** to score each legal move based on:
+- **Piece values** (Pawn=1, Knight/Bishop=3, Rook=5, Queen=9, King=∞).
+- **King safety** (avoiding moves that leave the king in danger).
+- **Piece mobility** (preferring moves that increase options for pieces).
+- **Tactical threats** (e.g., capturing opponent’s pieces or improving attack/defense).
+
+If a move is ambiguous (e.g., `Nc3` could mean `Nbc3` or `Nec3`), the policy will disambiguate by preferring moves that **avoid leaving valuable pieces en prise** or **improve control over key squares**.
+
+---
+
+### **Python Implementation**
+```python
+import chess
+import chess.engine
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    # Convert the input state to a chess.Board object
+    board = chess.Board()
+    for square, piece_code in pieces.items():
+        color = piece_code[0]
+        piece_type = piece_code[1]
+        if piece_type == 'K':
+            board.set_piece_at(square, chess.Piece(chess.KING, color == 'w'))
+        elif piece_type == 'Q':
+            board.set_piece_at(square, chess.Piece(chess.QUEEN, color == 'w'))
+        elif piece_type == 'R':
+            board.set_piece_at(square, chess.Piece(chess.ROOK, color == 'w'))
+        elif piece_type == 'B':
+            board.set_piece_at(square, chess.Piece(chess.BISHOP, color == 'w'))
+        elif piece_type == 'N':
+            board.set_piece_at(square, chess.Piece(chess.KNIGHT, color == 'w'))
+        elif piece_type == 'P':
+            board.set_piece_at(square, chess.Piece(chess.PAWN, color == 'w'))
+
+    # Set the turn (since we're given to_play, we can ignore board.turn)
+    board.turn = chess.WHITE if to_play == 'white' else chess.BLACK
+
+    # If no legal moves, return any (shouldn't happen per problem statement)
+    if not legal_moves:
+        return ""
+
+    # Evaluate each legal move using a weighted heuristic
+    best_move = None
+    best_score = -float('inf')
+
+    for move in legal_moves:
+        try:
+            # Parse the move string into a chess.Move object
+            parsed_move = chess.Move.from_uci(move.replace('x', '').replace('+', '').replace('-', ''))
+            if parsed_move.promotion != chess.Piece.NONE:
+                # Handle promotions by trying all possible promotions
+                for promotion in chess.Piece.promotion_symbols:
+                    if move.endswith('=' + promotion):
+                        board.push_uci(move.replace('=' + promotion, promotion))
+                        break
+            else:
+                board.push_uci(move)
+        except ValueError:
+            # Handle castling (O-O and O-O-O)
+            if move == "O-O":
+                board.push(chess.Move(e1, g1, chess.MoveFlag.CASTLE_KINGSIDE))
+            elif move == "O-O-O":
+                board.push(chess.Move(e1, c1, chess.MoveFlag.CASTLE_QUEENSIDE))
+            else:
+                # Fallback: try parsing as UCI (shouldn't happen if legal_moves is correct)
+                board.push_uci(move)
+        except Exception:
+            # If parsing fails, skip (shouldn't happen per problem statement)
+            continue
+
+        # Check if the move is a checkmate
+        if board.is_checkmate():
+            board.pop()
+            return move
+
+        # Evaluate the move using a heuristic
+        score = evaluate_move(board, move)
+
+        # Undo the move and keep track of the best one
+        board.pop()
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return best_move
+
+def evaluate_move(board: chess.Board, move: str) -> float:
+    # Get the current board state
+    current_state = board.copy()
+
+    # Apply the move (handling promotions separately)
+    try:
+        parsed_move = chess.Move.from_uci(move.replace('x', '').replace('+', '').replace('-', ''))
+        if parsed_move.promotion != chess.Piece.NONE:
+            # Handle promotions (e.g., b8=Q)
+            promotion_piece = chess.Piece.promotion_symbols[move[-1]]
+            board.push_uci(move.replace('=' + promotion_piece, promotion_piece))
+        else:
+            board.push_uci(move)
+    except ValueError:
+        # Handle castling (O-O and O-O-O)
+        if move == "O-O":
+            board.push(chess.Move(current_state.king(current_state.turn), current_state.king(current_state.turn) + chess.Pawn(2), chess.MoveFlag.CASTLE_KINGSIDE))
+        elif move == "O-O-O":
+            board.push(chess.Move(current_state.king(current_state.turn), current_state.king(current_state.turn) - chess.Pawn(2), chess.MoveFlag.CASTLE_QUEENSIDE))
+        else:
+            # Fallback: try parsing as UCI (shouldn't happen if legal_moves is correct)
+            board.push_uci(move)
+
+    # Evaluate the resulting board
+    evaluation = evaluate_board(board)
+
+    # Undo the move
+    board.pop()
+
+    return evaluation
+
+def evaluate_board(board: chess.Board) -> float:
+    # Piece values (material)
+    piece_values = {
+        chess.Piece(chess.PAWN, chess.WHITE): 1.0,
+        chess.Piece(chess.KNIGHT, chess.WHITE): 3.0,
+        chess.Piece(chess.BISHOP, chess.WHITE): 3.0,
+        chess.Piece(chess.ROOK, chess.WHITE): 5.0,
+        chess.Piece(chess.QUEEN, chess.WHITE): 9.0,
+        chess.Piece(chess.PAWN, chess.BLACK): -1.0,
+        chess.Piece(chess.KNIGHT, chess.BLACK): -3.0,
+        chess.Piece(chess.BISHOP, chess.BLACK): -3.0,
+        chess.Piece(chess.ROOK, chess.BLACK): -5.0,
+        chess.Piece(chess.QUEEN, chess.BLACK): -9.0,
+    }
+
+    # King safety (simplified: avoid moves that leave king in check)
+    king_safety = 0.0
+    if board.is_check():
+        # Check if the king is in danger after the move
+        king_square = board.king(board.turn)
+        if board.is_square_attacked_by(king_square, not board.turn):
+            king_safety -= 100.0  # Penalize heavily if king is in check
+
+    # Piece mobility (simplified: count legal moves for each piece)
+    mobility = 0.0
+    for piece_type in [chess.PAWN, chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN]:
+        for square in chess.SQUARES:
+            piece = board.piece_at(square)
+            if piece and piece.piece_type == piece_type:
+                legal_moves = len(board.legal_moves) if piece.piece_type == chess.KING else len(board.attackers(not board.turn, square))
+                mobility += legal_moves * (0.1 if piece.piece_type == chess.PAWN else 0.5)
+
+    # Center control (simplified: count pawns/bishops in center)
+    center_squares = [chess.E4, chess.D4, chess.E5, chess.D5]
+    center_control = 0.0
+    for square in center_squares:
+        if board.is_square_attacked_by(square, board.turn):
+            center_control += 1.0
+
+    # Total evaluation (weighted sum)
+    total = board.material() / 100.0  # Material in pawn units
+    total += king_safety * 0.01
+    total += mobility * 0.1
+    total += center_control * 0.5
+
+    # Bonus for check or capture
+    if board.is_check():
+        total += 1.0
+    if board.is_capture(move):
+        total += 0.5
+
+    return total
+```

@@ -1,0 +1,423 @@
+The strategy for this policy is:
+
+1. Play tactically first:
+   - If there is an immediate winning move, play it.
+   - Otherwise, if the opponent has an immediate winning move, block it.
+
+2. Use exact structure detection for Havannah wins:
+   - bridge: one connected group touches 2 corners
+   - fork: one connected group touches 3 edges
+   - ring: the opponent/empty region contains a hole not connected to the boundary
+
+3. If no forced tactic exists, score all legal moves with a heuristic that prefers:
+   - connecting/merging our groups
+   - growing groups that touch edges/corners
+   - central control early
+   - blocking strong opponent groups
+   - avoiding moves that allow an immediate opponent win next turn
+
+4. The code always falls back to a legal move.
+
+<code>
+from collections import deque
+import numpy as np
+
+# Chosen hex-neighbor embedding on the 2D mask.
+# This is the standard skew-grid adjacency compatible with a hex-shaped valid mask.
+_DIRS = [(-1, -1), (-1, 0), (0, -1), (0, 1), (1, 0), (1, 1)]
+
+_GEOM_CACHE = {}
+
+
+def _bitcount(x: int) -> int:
+    return x.bit_count()
+
+
+def _fallback_labels(arr, valid_cells, valid_set):
+    """Formula fallback for the standard diameter-(2s-1) hex board."""
+    n = arr.shape[0]
+    s = (n + 1) // 2
+
+    corner_positions = [
+        (0, 0),
+        (0, s - 1),
+        (s - 1, n - 1),
+        (n - 1, n - 1),
+        (n - 1, s - 1),
+        (s - 1, 0),
+    ]
+
+    corner_bits = {}
+    edge_bits = {}
+
+    for i, cell in enumerate(corner_positions):
+        if cell in valid_set and arr[cell]:
+            corner_bits[cell] = 1 << i
+
+    for cell in valid_cells:
+        if cell in corner_bits:
+            edge_bits[cell] = 0
+            continue
+
+        r, c = cell
+        eb = 0
+        if r == 0 and 0 < c < s - 1:
+            eb |= 1 << 0
+        if c - r == s - 1 and 0 < r < s - 1:
+            eb |= 1 << 1
+        if c == n - 1 and s - 1 < r < n - 1:
+            eb |= 1 << 2
+        if r == n - 1 and s - 1 < c < n - 1:
+            eb |= 1 << 3
+        if r - c == s - 1 and s - 1 < r < n - 1:
+            eb |= 1 << 4
+        if c == 0 and 0 < r < s - 1:
+            eb |= 1 << 5
+        edge_bits[cell] = eb
+
+    return corner_bits, edge_bits
+
+
+def _get_geom(valid_mask):
+    arr = np.asarray(valid_mask, dtype=bool)
+    key = (arr.shape, arr.tobytes())
+    if key in _GEOM_CACHE:
+        return _GEOM_CACHE[key]
+
+    n = arr.shape[0]
+    valid_cells = [(r, c) for r in range(n) for c in range(n) if arr[r, c]]
+    valid_set = set(valid_cells)
+
+    neighbors = {}
+    for r, c in valid_cells:
+        lst = []
+        for dr, dc in _DIRS:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < n and 0 <= nc < n and arr[nr, nc]:
+                lst.append((nr, nc))
+        neighbors[(r, c)] = tuple(lst)
+
+    # Boundary for ring detection: all valid cells with < 6 neighbors.
+    boundary_cells = {cell for cell in valid_cells if len(neighbors[cell]) < 6}
+
+    # Try to derive corners/edges geometrically from the boundary cycle.
+    corner_bits = {}
+    edge_bits = {cell: 0 for cell in valid_cells}
+
+    boundary_neighbors = {
+        cell: [nb for nb in neighbors[cell] if nb in boundary_cells]
+        for cell in boundary_cells
+    }
+    corners = [cell for cell in boundary_cells if len(neighbors[cell]) == 3]
+
+    success = False
+    if len(corners) == 6 and boundary_cells:
+        start = min(corners)
+        order = [start]
+        prev = None
+        cur = start
+
+        # Traverse the boundary cycle.
+        for _ in range(len(boundary_cells) + 5):
+            opts = [x for x in boundary_neighbors[cur] if x != prev]
+            if not opts:
+                break
+            nxt = min(opts) if prev is None else opts[0]
+            if nxt == start:
+                break
+            order.append(nxt)
+            prev, cur = cur, nxt
+
+        if len(order) == len(boundary_cells):
+            corner_seq = [cell for cell in order if cell in set(corners)]
+            if len(corner_seq) == 6:
+                cidx = {cell: i for i, cell in enumerate(corner_seq)}
+                for cell, i in cidx.items():
+                    corner_bits[cell] = 1 << i
+
+                edge_id = 0
+                for cell in order[1:]:
+                    if cell in cidx:
+                        edge_id = cidx[cell]
+                    else:
+                        edge_bits[cell] = 1 << edge_id
+                success = True
+
+    if not success:
+        corner_bits, edge_bits = _fallback_labels(arr, valid_cells, valid_set)
+
+    # Centrality: nearest valid point to array center, then graph distances.
+    mid = (n // 2, n // 2)
+    if arr[mid]:
+        center = mid
+    else:
+        center = min(valid_cells, key=lambda x: abs(x[0] - mid[0]) + abs(x[1] - mid[1]))
+
+    dist_to_center = {center: 0}
+    dq = deque([center])
+    while dq:
+        v = dq.popleft()
+        for nb in neighbors[v]:
+            if nb not in dist_to_center:
+                dist_to_center[nb] = dist_to_center[v] + 1
+                dq.append(nb)
+
+    geom = {
+        "arr": arr,
+        "valid_cells": valid_cells,
+        "valid_set": valid_set,
+        "neighbors": neighbors,
+        "boundary_cells": boundary_cells,
+        "corner_bits": corner_bits,
+        "edge_bits": edge_bits,
+        "center": center,
+        "dist_to_center": dist_to_center,
+    }
+    _GEOM_CACHE[key] = geom
+    return geom
+
+
+def _build_components(stones_set, geom):
+    neighbors = geom["neighbors"]
+    corner_bits = geom["corner_bits"]
+    edge_bits = geom["edge_bits"]
+
+    comp_of = {}
+    sizes = []
+    corners = []
+    edges = []
+
+    for cell in stones_set:
+        if cell in comp_of:
+            continue
+        idx = len(sizes)
+        stack = [cell]
+        comp_of[cell] = idx
+        size = 0
+        cb = 0
+        eb = 0
+
+        while stack:
+            v = stack.pop()
+            size += 1
+            cb |= corner_bits.get(v, 0)
+            eb |= edge_bits.get(v, 0)
+            for nb in neighbors[v]:
+                if nb in stones_set and nb not in comp_of:
+                    comp_of[nb] = idx
+                    stack.append(nb)
+
+        sizes.append(size)
+        corners.append(cb)
+        edges.append(eb)
+
+    return {
+        "of": comp_of,
+        "sizes": sizes,
+        "corners": corners,
+        "edges": edges,
+    }
+
+
+def _wins(stones_set, geom):
+    # Bridge / fork via connected components.
+    comp = _build_components(stones_set, geom)
+    for cb, eb in zip(comp["corners"], comp["edges"]):
+        if _bitcount(cb) >= 2:
+            return True
+        if _bitcount(eb) >= 3:
+            return True
+
+    # Ring via holes in the complement: if any non-stone valid cell is not connected
+    # to the board boundary through non-stone cells, then there is a ring.
+    boundary_cells = geom["boundary_cells"]
+    neighbors = geom["neighbors"]
+    valid_cells = geom["valid_cells"]
+
+    seen = set()
+    dq = deque()
+
+    for cell in boundary_cells:
+        if cell not in stones_set:
+            seen.add(cell)
+            dq.append(cell)
+
+    while dq:
+        v = dq.popleft()
+        for nb in neighbors[v]:
+            if nb not in stones_set and nb not in seen:
+                seen.add(nb)
+                dq.append(nb)
+
+    for cell in valid_cells:
+        if cell not in stones_set and cell not in seen:
+            return True
+
+    return False
+
+
+def _score_move(move, me_set, opp_set, me_comp, opp_comp, geom, turn):
+    neighbors = geom["neighbors"][move]
+    corner_bits = geom["corner_bits"]
+    edge_bits = geom["edge_bits"]
+
+    own_adj = 0
+    opp_adj = 0
+    own_adj_comps = set()
+    opp_adj_comps = set()
+    empty_adj = 0
+
+    for nb in neighbors:
+        if nb in me_set:
+            own_adj += 1
+            own_adj_comps.add(me_comp["of"][nb])
+        elif nb in opp_set:
+            opp_adj += 1
+            opp_adj_comps.add(opp_comp["of"][nb])
+        else:
+            empty_adj += 1
+
+    merged_size = 1
+    merged_corners = corner_bits.get(move, 0)
+    merged_edges = edge_bits.get(move, 0)
+
+    for cid in own_adj_comps:
+        merged_size += me_comp["sizes"][cid]
+        merged_corners |= me_comp["corners"][cid]
+        merged_edges |= me_comp["edges"][cid]
+
+    cc = _bitcount(merged_corners)
+    ec = _bitcount(merged_edges)
+
+    # Phase weighting.
+    if turn < 6:
+        center_w = 6.0
+    elif turn < 20:
+        center_w = 3.0
+    else:
+        center_w = 1.0
+
+    score = 0.0
+
+    # Connectivity / growth.
+    score += 18.0 * len(own_adj_comps)
+    score += 8.0 * max(0, len(own_adj_comps) - 1)
+    score += 4.0 * own_adj
+    score += 0.7 * merged_size
+
+    # Progress toward bridge/fork.
+    score += 16.0 * cc
+    score += 10.0 * ec
+    if cc >= 1 and ec >= 1:
+        score += 8.0
+    if ec >= 2:
+        score += 8.0
+
+    # Blocking / interference.
+    opp_block = 0.0
+    for cid in opp_adj_comps:
+        oc = _bitcount(opp_comp["corners"][cid])
+        oe = _bitcount(opp_comp["edges"][cid])
+        opp_block += (
+            1.0 * opp_comp["sizes"][cid]
+            + 12.0 * oc
+            + 9.0 * oe
+            + (8.0 if (oc >= 1 and oe >= 1) else 0.0)
+        )
+    score += 4.0 * opp_adj
+    score += 7.0 * len(opp_adj_comps)
+    score += 0.9 * opp_block
+
+    # Centrality and flexibility.
+    score += center_w * (12 - geom["dist_to_center"].get(move, 12))
+    score += 0.8 * empty_adj
+
+    # Avoid drifting too far from the fight later.
+    if own_adj == 0 and turn > 4:
+        score -= 6.0
+
+    # Mild preference for boundary play later, not too early.
+    if turn > 10:
+        score += 2.0 * _bitcount(corner_bits.get(move, 0))
+        score += 1.0 * _bitcount(edge_bits.get(move, 0))
+
+    return score
+
+
+def _opponent_has_immediate_win_after(my_move, me_set, opp_set, empties, geom):
+    # After we play my_move, does opponent have a winning reply?
+    for mv in empties:
+        if mv == my_move:
+            continue
+        if _wins(opp_set | {mv}, geom):
+            return True
+    return False
+
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    geom = _get_geom(valid_mask)
+    valid_cells = geom["valid_cells"]
+
+    me_set = set(map(tuple, me))
+    opp_set = set(map(tuple, opp))
+    occupied = me_set | opp_set
+
+    empties = [cell for cell in valid_cells if cell not in occupied]
+
+    # Absolute safety fallback.
+    if not empties:
+        # Should not happen in a normal game, but return something legal-looking.
+        return valid_cells[0]
+
+    # Opening: grab center if possible.
+    if not me_set and not opp_set and geom["center"] in empties:
+        return geom["center"]
+
+    turn = len(me_set) + len(opp_set)
+
+    # 1) Immediate winning move.
+    winning_moves = []
+    for mv in empties:
+        if _wins(me_set | {mv}, geom):
+            winning_moves.append(mv)
+    if winning_moves:
+        me_comp = _build_components(me_set, geom)
+        opp_comp = _build_components(opp_set, geom)
+        return max(
+            winning_moves,
+            key=lambda mv: _score_move(mv, me_set, opp_set, me_comp, opp_comp, geom, turn),
+        )
+
+    # 2) Immediate block if opponent has a winning move.
+    opp_winning_moves = []
+    for mv in empties:
+        if _wins(opp_set | {mv}, geom):
+            opp_winning_moves.append(mv)
+    if opp_winning_moves:
+        me_comp = _build_components(me_set, geom)
+        opp_comp = _build_components(opp_set, geom)
+        # If multiple threats exist, choose the blocker with best strategic value.
+        return max(
+            opp_winning_moves,
+            key=lambda mv: _score_move(mv, me_set, opp_set, me_comp, opp_comp, geom, turn),
+        )
+
+    # 3) Heuristic search.
+    me_comp = _build_components(me_set, geom)
+    opp_comp = _build_components(opp_set, geom)
+
+    scored = []
+    for mv in empties:
+        s = _score_move(mv, me_set, opp_set, me_comp, opp_comp, geom, turn)
+        scored.append((s, mv))
+    scored.sort(reverse=True)
+
+    # 4) Tactical safety filter on top candidates.
+    top_k = min(10, len(scored))
+    for _, mv in scored[:top_k]:
+        if not _opponent_has_immediate_win_after(mv, me_set, opp_set, empties, geom):
+            return mv
+
+    # 5) Best heuristic move.
+    return scored[0][1]
+</code>

@@ -1,0 +1,125 @@
+
+import numpy as np
+from typing import List, Tuple
+
+# Static weight matrix for board evaluation
+WEIGHTS = np.array([
+    [120, -20, 20, 5, 5, 20, -20, 120],
+    [-20, -40, -5, -5, -5, -5, -40, -20],
+    [20, -5, 15, 3, 3, 15, -5, 20],
+    [5, -5, 3, 3, 3, 3, -5, 5],
+    [5, -5, 3, 3, 3, 3, -5, 5],
+    [20, -5, 15, 3, 3, 15, -5, 20],
+    [-20, -40, -5, -5, -5, -5, -40, -20],
+    [120, -20, 20, 5, 5, 20, -20, 120]
+])
+
+CORNER_POSITIONS = [(0,0), (0,7), (7,0), (7,7)]
+
+def get_legal_moves(board: np.ndarray, opponent: np.ndarray) -> List[Tuple[int, int]]:
+    legal_moves = []
+    directions = [(-1,-1), (-1,0), (-1,1),
+                  (0,-1),          (0,1),
+                  (1,-1),  (1,0), (1,1)]
+    
+    for r in range(8):
+        for c in range(8):
+            if board[r,c] == 0 and opponent[r,c] == 0:
+                for dr, dc in directions:
+                    flip_count = 0
+                    nr, nc = r + dr, c + dc
+                    while 0 <= nr < 8 and 0 <= nc < 8:
+                        if opponent[nr,nc] == 1:
+                            flip_count += 1
+                            nr += dr
+                            nc += dc
+                        else:
+                            break
+                    if flip_count > 0 and 0 <= nr < 8 and 0 <= nc < 8 and board[nr,nc] == 1:
+                        legal_moves.append((r, c))
+                        break
+    return legal_moves
+
+def evaluate_move(board: np.ndarray, opponent: np.ndarray, move: Tuple[int, int], game_phase: float) -> float:
+    r, c = move
+    score = 0
+    
+    # Corner capture is always best
+    if (r,c) in CORNER_POSITIONS:
+        return float('inf')
+    
+    # Avoid moves adjacent to opponent's corners (X-squares and C-squares)
+    for cr, cc in CORNER_POSITIONS:
+        if opponent[cr,cc] == 1:
+            if abs(r - cr) <= 1 and abs(c - cc) <= 1:
+                return -float('inf')
+    
+    # Weighted position score
+    score += WEIGHTS[r,c] * (1.0 - 0.5 * game_phase)
+    
+    # Mobility score - prefer moves that give opponent fewer options
+    temp_board = board.copy()
+    temp_opponent = opponent.copy()
+    flip_discs(temp_board, temp_opponent, r, c)
+    opponent_moves = len(get_legal_moves(temp_opponent, temp_board))
+    mobility_score = -opponent_moves * 5
+    score += mobility_score * (1.0 - game_phase)
+    
+    # Stability score - prefer edge positions
+    if r == 0 or r == 7 or c == 0 or c == 7:
+        score += 30
+    
+    return score
+
+def flip_discs(board: np.ndarray, opponent: np.ndarray, r: int, c: int):
+    directions = [(-1,-1), (-1,0), (-1,1),
+                  (0,-1),          (0,1),
+                  (1,-1),  (1,0), (1,1)]
+    
+    for dr, dc in directions:
+        flip_list = []
+        nr, nc = r + dr, c + dc
+        while 0 <= nr < 8 and 0 <= nc < 8:
+            if opponent[nr,nc] == 1:
+                flip_list.append((nr, nc))
+                nr += dr
+                nc += dc
+            else:
+                break
+        if flip_list and 0 <= nr < 8 and 0 <= nc < 8 and board[nr,nc] == 1:
+            for fr, fc in flip_list:
+                board[fr,fc] = 1
+                opponent[fr,fc] = 0
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    legal_moves = get_legal_moves(you, opponent)
+    if not legal_moves:
+        return "pass"
+    
+    # Calculate game phase (0 = early, 1 = late)
+    total_discs = np.sum(you) + np.sum(opponent)
+    game_phase = min(1.0, total_discs / 40.0)  # Normalize to 0-1
+    
+    best_move = None
+    best_score = -float('inf')
+    
+    for move in legal_moves:
+        r, c = move
+        move_score = evaluate_move(you, opponent, move, game_phase)
+        
+        # In endgame, prioritize pure disc count
+        if game_phase > 0.75:
+            temp_you = you.copy()
+            temp_opponent = opponent.copy()
+            flip_discs(temp_you, temp_opponent, r, c)
+            move_score += np.sum(temp_you) * 2
+        
+        if move_score > best_score:
+            best_score = move_score
+            best_move = move
+    
+    if best_move:
+        col = chr(best_move[1] + ord('a'))
+        row = str(best_move[0] + 1)
+        return f"{col}{row}"
+    return "pass"

@@ -1,0 +1,390 @@
+<thinking>
+We need to design a policy for a simplified Blackjack-like game where:
+- Target T is random between 10 and 30, given as input.
+- We have a full deck of 13 cards (one of each rank).
+- Opponent has their own separate 13-card deck.
+- Card values: 2-10 = face value, J/Q/K = 10, A = 11 if hand value <= T else 1.
+- We must return "HIT" or "STAY" based on current hand and target.
+
+Goal: Maximize probability of winning given opponent's unknown actions.
+
+Since both players have the same deck composition and independent draws, we need to consider:
+1. Probability of busting if we hit.
+2. Expected value of hitting vs staying.
+3. Opponent's optimal strategy? But we don't know opponent's policy.
+
+We could model this as a decision problem: given current hand sum and cards already drawn, what's the probability that drawing another card leads to a better outcome than stopping?
+
+We need to compute:
+- Current hand value.
+- Available cards in our deck (since we draw without replacement from our own deck).
+- For each possible next card, compute new hand value and whether we bust.
+
+But we also need to consider opponent's unknown state. Since opponent has separate deck, we cannot know what cards they have drawn. However, we can assume opponent follows some reasonable strategy (maybe similar to ours).
+
+We could implement a basic strategy:
+- If current hand value < target, consider hitting.
+- If current hand value >= target, definitely stay (since hitting would bust or worsen).
+
+But need to account for Aces flexibility: Ace counts as 11 if hand value <= T else 1.
+
+We need to compute hand value properly:
+1. Sum all non-Ace cards (JQK=10).
+2. Add Aces: for each Ace, count as 11 if total <= T else 1.
+
+But careful: if we have multiple Aces, we might want to count one as 11 and others as 1 depending on total.
+
+Simpler: compute hand value function:
+- Start with sum of non-Ace cards.
+- For each Ace, if adding 11 keeps total <= T, add 11; else add 1.
+
+But order matters? Actually we can always maximize value without busting: count Aces as 11 as long as total <= T.
+
+Implementation:
+```python
+def hand_value(hand, target):
+    total = 0
+    aces = hand.count('A')
+    for card in hand:
+        if card == 'A':
+            continue
+        elif card in ['J','Q','K']:
+            total += 10
+        else:
+            total += int(card)
+    # Add aces optimally
+    for _ in range(aces):
+        if total + 11 <= target:
+            total += 11
+        else:
+            total += 1
+    return total
+```
+
+Now decision: hit or stay?
+We can compute:
+- Current hand value = hv.
+- If hv >= target: stay (since hitting likely to bust).
+- Else: consider probability that hitting improves outcome.
+
+We could compute expected value of hitting: mean of possible new hand values weighted by probability of drawing each remaining card.
+But we need to consider bust probability.
+
+Better: simulate possible outcomes given remaining cards.
+
+We could implement a dynamic approach: compute probability distribution of final scores if we continue drawing optimally.
+
+But since we have only 13 cards total, we can brute force all possible sequences? Not feasible in 1 second maybe.
+
+Given constraints (max 13 cards), we could compute optimal decision via recursion with memoization.
+
+Define state: (tuple of remaining cards in deck, current hand sum without Aces flexibility, number of Aces in hand).
+But also need to know which cards are left.
+
+Simpler: we can compute expected win probability if we hit vs stay, assuming opponent follows same policy? But opponent may not.
+
+We could assume opponent plays optimally (from game theory perspective). This is like a single-player decision problem since opponent's deck is independent.
+
+Actually, we can think: we want to maximize probability that our final score is better than opponent's, given opponent's unknown strategy.
+
+If we assume opponent's strategy is similar to ours (or optimal), we could model opponent's score distribution.
+
+But maybe simpler: implement a threshold strategy:
+- If current hand value < target - X, hit.
+- Else stay.
+
+X could be dynamic based on target and remaining cards.
+
+We could compute risk: probability that next card causes bust.
+
+Let's compute:
+- Remaining cards = all cards not in hand.
+- For each remaining card, compute new hand value.
+- Count how many cause bust (new value > target).
+- If bust probability > threshold, stay.
+
+We also need to consider that even if we don't bust, we might get worse (farther from target).
+
+We could compute expected squared distance from target.
+
+Alternative: compute expected utility: probability of winning if we stop now vs if we draw one more card and then play optimally thereafter.
+
+We could implement recursion with memoization on (hand_value, tuple(sorted(remaining_cards))).
+
+But note: hand value depends on Aces which can be counted differently.
+
+Simplify: treat Ace as 1 for decision? No, because Ace can be 11.
+
+Actually, we can treat Ace as either 1 or 11 in computation.
+
+We'll implement a function that given current hand (list of cards) and target, returns the best action by evaluating:
+- If we stay, compute probability of winning against a random opponent who plays same strategy? That's circular.
+
+Better: we can compute the probability that our final score (if we stop now) beats opponent's final score if opponent plays to maximize their own win probability.
+
+We need to model opponent's decision process. Since we don't know opponent's hand, we can assume opponent's state is random given they haven't busted.
+
+This is getting complex.
+
+Given time constraints, maybe implement a simple but reasonable strategy:
+- Always hit if hand value <= target-10.
+- If hand value > target-10, compute probability of busting on next card.
+- If probability of busting > 0.5, stay.
+- Else hit.
+
+But need to adjust thresholds.
+
+Let's analyze typical targets: 10 to 30.
+If target is low (e.g., 10), we should stop quickly.
+If target is high (e.g., 30), we can hit more.
+
+We could precompute optimal strategy for each target using dynamic programming, assuming opponent plays optimally.
+
+We can write a function to compute the optimal action for any state (current hand value, remaining cards). Since deck size is only 13, state space is manageable.
+
+State: current hand value (integer), set of remaining cards (tuple sorted).
+We'll assume optimal play: maximize probability of winning against an opponent who starts from empty hand and same deck composition.
+
+We can compute via recursion with memoization:
+Given state (hv, remaining_cards), we consider:
+1. Stay: probability of winning = probability that opponent's final score (when they stop optimally) is worse than hv (or busts).
+2. Hit: for each card in remaining_cards, compute new hv' (considering Ace adjustment), if hv' > target -> bust (immediate loss). Else recurse with new state.
+Take weighted average of results.
+
+We need opponent's optimal strategy too. This is a two-player game but since decks are independent and simultaneous, we can treat it as each player trying to maximize probability that their score beats opponent's.
+
+Actually, it's a simultaneous move game where each player chooses when to stop. The equilibrium strategy is to stop when the expected gain from hitting is negative.
+
+We can compute the value of being at a certain hand value with certain remaining cards, assuming opponent is at some unknown state.
+
+Simplify: Assume opponent's hand value distribution is uniform over possible final scores given optimal play? We can precompute opponent's distribution for each target.
+
+We can compute for each target T:
+- Probability distribution of final scores if playing optimally.
+Then, given our current hand value hv, probability of winning if we stop now = P(opponent score < hv) + 0.5 * P(opponent score == hv) (assuming draw counts as 0.5? Actually draw is draw, but we can treat as 0.5 for utility).
+
+If we hit, we get new hv' and then we can decide again.
+
+We can implement dynamic programming to compute optimal action.
+
+Steps:
+1. Precompute for each target T (10 to 30) the optimal policy via DP.
+2. In policy function, compute current hand value hv.
+3. Determine available cards (all cards not in hand).
+4. Use precomputed DP table to decide hit or stay.
+
+But DP state depends on remaining cards, which is large (13 choose k). However total states per target: sum_{k=0 to 13} C(13,k) = 2^13 = 8192, manageable.
+
+We can compute for each target T a dictionary mapping (tuple of remaining cards sorted, current hand value) to optimal action.
+
+But current hand value depends on Aces. We need to incorporate Aces count.
+
+Simplify state: (tuple of remaining cards sorted, current sum without Aces, current Aces count). But Aces can be counted as 1 or 11.
+
+We can compute hand value on the fly.
+
+Alternatively, we can define state as (tuple of remaining cards sorted, current hand list). But that's larger.
+
+Given small deck size, we can brute force with memoization.
+
+Implementation plan:
+- Write helper function hand_value(hand, target).
+- In policy, compute current hv.
+- If hv > target: we've already busted? Actually if hv > target, we would have busted earlier. But the game calls policy only if we haven't busted? Actually if we bust, game ends immediately and we lose. So policy is called only when hand value <= target.
+- So hv <= target always.
+
+We can compute expected value of hitting: 
+For each card in remaining_deck:
+   new_hand = hand + [card]
+   new_hv = hand_value(new_hand, target)
+   if new_hv > target: bust -> lose.
+   else: we have new state.
+
+We need to compare staying vs hitting.
+
+We can implement recursion with memoization on (tuple(sorted(hand)), target). But hand order doesn't matter.
+
+However recursion depth <= 13.
+
+We also need opponent model. Since opponent has same deck and independent draws, their optimal strategy is same as ours. So we can assume opponent follows same policy.
+
+Then we can compute probability of winning given we stop now:
+Let P_win_stay = probability that opponent's final score (when they play optimally) is less than hv, plus half probability equal.
+
+We need to compute distribution of opponent's final score under optimal play.
+
+We can compute recursively: function final_score_distribution(remaining_cards, current_hand, target) returns distribution of final scores (or bust).
+
+But we also need to consider that opponent might bust.
+
+Simplify: compute value of state as probability of winning from that state.
+
+Define V(hand, target) = max over actions of expected probability of winning.
+
+If stay: opponent gets to play from empty hand with full deck. Compute probability that opponent's final score < hv(hand) or opponent busts while we don't.
+
+If hit: for each card c in remaining_deck:
+   new_hand = hand + [c]
+   if bust -> 0
+   else V(new_hand, target)
+Average over remaining cards.
+
+We need base case: if no cards left, must stay.
+
+We can compute V via recursion with memoization.
+
+But computing opponent's distribution from scratch each time is heavy.
+
+We can precompute for each target T the value of empty hand for opponent? Actually opponent starts empty.
+
+We can compute probability distribution of opponent's final score under optimal play: we can compute optimal policy for opponent (same as ours) and then simulate.
+
+Alternatively, we can approximate: assume opponent stops at some threshold.
+
+Given time, maybe implement a simpler heuristic.
+
+Let's try to implement DP approach.
+
+Steps:
+1. Define function hand_value(hand, target).
+2. Define function possible_cards(hand) returns list of cards not in hand.
+3. Define recursive function win_prob(hand, target, memo):
+   - hv = hand_value(hand, target)
+   - if hv > target: return 0.0 (bust)
+   - remaining = possible_cards(hand)
+   - if not remaining: return 0.5? Actually if no cards left, must stay. Opponent also may have cards. We need to consider opponent's remaining cards too. This is symmetric, so probability of winning if both have no cards left and we stop: compare hv vs opponent's hv? But opponent hasn't drawn yet? Actually opponent draws from their own deck independently. So we cannot know opponent's hand.
+
+Thus our state must include opponent's remaining cards? That makes state huge.
+
+We need a different approach.
+
+Given the complexity, maybe implement a simple threshold policy based on target and current hand value.
+
+Idea: 
+- Compute hand value hv.
+- Compute expected value of next card: mean value of remaining cards (Ace = 1? but can be 11). We'll assume Ace = 1 for safety.
+- If hv + avg_next_card_value <= target, hit.
+- Else stay.
+
+But we need to consider bust risk.
+
+Better: compute probability that next card causes bust.
+Let bust_count = number of cards in remaining that when added cause hv' > target.
+If bust_count / len(remaining) > 0.5, stay.
+
+We also need to consider that even if we don't bust, we might overshoot.
+
+Maybe use basic blackjack strategy adjusted for target:
+- If hv <= target-10: hit.
+- If hv > target-10: stay.
+
+But for low targets like 10, target-10=0, so always hit? Not good.
+
+We can adjust threshold based on target.
+
+Let's design:
+If target <= 15: stop if hv >= target-3.
+If target > 15: stop if hv >= target-5.
+
+But need to test.
+
+Given time, I'll implement a DP solution that assumes opponent plays same strategy and decks are independent.
+
+We can compute optimal action for our state ignoring opponent's specific cards but assuming opponent's deck is full except for cards we've drawn? Actually opponent has separate deck, so our draws don't affect opponent's deck.
+
+Thus opponent's deck is always full 13 cards at start? No, opponent draws from their own deck without replacement, but we don't know which cards they've drawn.
+
+We have to assume opponent's deck is random subset.
+
+This is getting too complex for time.
+
+I'll implement a heuristic that works reasonably well:
+- Compute hv.
+- Compute remaining cards.
+- Compute bust probability.
+- If bust probability > 0.3, stay.
+- Else if hv < target - 5, hit.
+- Else stay.
+
+We'll also adjust for Aces: if we have Ace that can be counted as 11, we have more flexibility.
+
+Let's code.
+</thinking>
+
+<code>
+import random
+from typing import List
+
+def card_value(card: str, current_total: int, target: int) -> int:
+    """Return the value of a single card given current total and target."""
+    if card == "A":
+        return 11 if current_total + 11 <= target else 1
+    elif card in ("J", "Q", "K"):
+        return 10
+    else:
+        return int(card)
+
+def hand_value(hand: List[str], target: int) -> int:
+    """Calculate total value of hand, optimizing Aces."""
+    total = 0
+    aces = 0
+    for card in hand:
+        if card == "A":
+            aces += 1
+        elif card in ("J", "Q", "K"):
+            total += 10
+        else:
+            total += int(card)
+    # Add aces optimally
+    for _ in range(aces):
+        if total + 11 <= target:
+            total += 11
+        else:
+            total += 1
+    return total
+
+def policy(hand: List[str], target: int) -> str:
+    """
+    Policy for the simplified Blackjack game.
+    Returns "HIT" or "STAY".
+    """
+    # All possible cards in a deck
+    full_deck = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    
+    # Cards remaining in our deck (cards not yet drawn)
+    remaining = [c for c in full_deck if c not in hand]
+    
+    # Current hand value
+    current = hand_value(hand, target)
+    
+    # If we are already at or above target, staying is safe
+    if current >= target:
+        return "STAY"
+    
+    # Calculate bust probability if we draw one more card
+    bust_count = 0
+    for card in remaining:
+        # Value of this card given our current total
+        card_val = card_value(card, current, target)
+        new_total = current + card_val
+        if new_total > target:
+            bust_count += 1
+    
+    bust_prob = bust_count / len(remaining) if remaining else 0
+    
+    # Heuristic decision
+    if bust_prob > 0.3:
+        return "STAY"
+    
+    # If we are far below target, hit
+    if current < target - 7:
+        return "HIT"
+    
+    # If we are moderately below target, consider expected improvement
+    # Compute average value of remaining cards (conservative: treat Ace as 1)
+    avg_value = sum(card_value(c, 0, target) if c != "A" else 1 for c in remaining) / len(remaining) if remaining else 0
+    if current + avg_value <= target:
+        return "HIT"
+    else:
+        return "STAY"
+</code>

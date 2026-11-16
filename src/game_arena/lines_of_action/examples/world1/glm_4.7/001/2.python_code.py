@@ -1,0 +1,216 @@
+
+import copy
+import random
+
+# Depth for Minimax search. Depth 3 is chosen to fit within ~1 second on Python.
+SEARCH_DEPTH = 3
+
+# Directions for lines of movement: (dr, dc)
+# Horizontal, Vertical, Diagonal Down-Right, Diagonal Down-Left
+LINE_DIRECTIONS = [(0, 1), (1, 0), (1, 1), (1, -1)]
+
+def policy(board):
+    """
+    Returns the best move for the current board state.
+    """
+    # 1. Generate all legal moves for the current player (1)
+    moves = get_all_moves(board, 1)
+    
+    if not moves:
+        # No legal moves found (should not happen in a valid game state, 
+        # but prevents crashing).
+        return "0,0:0,0"
+
+    best_score = -float('inf')
+    best_move = None
+    
+    # 2. Move Ordering: Prioritize captures to improve Alpha-Beta pruning
+    # Capture moves land on an opponent piece (-1)
+    def is_capture(move_str):
+        parts = move_str.split(':')
+        r, c = map(int, parts[1].split(','))
+        return board[r][c] == -1
+
+    captures = [m for m in moves if is_capture(m)]
+    non_captures = [m for m in moves if not is_capture(m)]
+    
+    # Shuffle to add variety if multiple moves have same score
+    random.shuffle(captures)
+    random.shuffle(non_captures)
+    
+    ordered_moves = captures + non_captures
+        
+    for move in ordered_moves:
+        # Execute move on a copy of the board
+        new_board = apply_move(board, move, 1)
+        
+        # Recursively evaluate using Minimax
+        score = minimax(new_board, SEARCH_DEPTH - 1, -float('inf'), float('inf'), False)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+            
+    return best_move
+
+def get_all_moves(board, player):
+    """
+    Generates all legal moves for the given player (1 or -1).
+    Returns a list of strings "r1,c1:r2,c2".
+    """
+    moves = []
+    rows = 8
+    cols = 8
+    opponent = -player
+    
+    for r in range(rows):
+        for c in range(cols):
+            if board[r][c] != player:
+                continue
+            
+            # Check all 4 line directions
+            for dr, dc in LINE_DIRECTIONS:
+                # 1. Count pieces in this line (including self)
+                count = 1 
+                
+                # Count forward
+                cr, cc = r + dr, c + dc
+                while 0 <= cr < rows and 0 <= cc < cols:
+                    if board[cr][cc] != 0:
+                        count += 1
+                    cr += dr
+                    cc += dc
+                
+                # Count backward
+                cr, cc = r - dr, c - dc
+                while 0 <= cr < rows and 0 <= cc < cols:
+                    if board[cr][cc] != 0:
+                        count += 1
+                    cr -= dr
+                    cc -= dc
+                
+                # 2. Try moving 'count' steps in both directions along the line
+                for sign in [1, -1]:
+                    tr, tc = r + sign * dr * count, c + sign * dc * count
+                    
+                    if 0 <= tr < rows and 0 <= tc < cols:
+                        # Rule: Cannot land on own piece
+                        if board[tr][tc] == player:
+                            continue
+                            
+                        # Rule: Cannot jump over opponent pieces
+                        # Check intermediate squares
+                        path_blocked = False
+                        curr_r, curr_c = r + sign * dr, c + sign * dc
+                        
+                        while (curr_r != tr) or (curr_c != tc):
+                            if board[curr_r][curr_c] == opponent:
+                                path_blocked = True
+                                break
+                            curr_r += sign * dr
+                            curr_c += sign * dc
+                        
+                        if not path_blocked:
+                            moves.append(f"{r},{c}:{tr},{tc}")
+                            
+    return moves
+
+def apply_move(board, move, player):
+    """
+    Applies a move string to a copy of the board and returns it.
+    """
+    # Manual copy is faster than deepcopy for small 2D lists
+    new_board = [row[:] for row in board]
+    
+    parts = move.split(':')
+    r1, c1 = map(int, parts[0].split(','))
+    r2, c2 = map(int, parts[1].split(','))
+    
+    new_board[r1][c1] = 0
+    new_board[r2][c2] = player
+    return new_board
+
+def evaluate(board):
+    """
+    Evaluates the board state from the perspective of player 1.
+    Returns a heuristic score.
+    """
+    # 1. Check for immediate win/loss based on connectivity
+    comp_1 = count_components(board, 1)
+    comp_neg1 = count_components(board, -1)
+    
+    if comp_1 == 1:
+        return 1000000 # Player 1 wins
+    if comp_neg1 == 1:
+        return -1000000 # Player -1 wins
+        
+    # 2. Primary Heuristic: Difference in components
+    # We want fewer components, opponent wants more.
+    # Weighted heavily as this is the win condition.
+    score = (comp_neg1 - comp_1) * 100
+    
+    # 3. Add slight randomness to avoid repetitive cycles in equal positions
+    score += random.uniform(-1, 1)
+    
+    return score
+
+def count_components(board, player):
+    """
+    Counts the number of connected components for 'player' using DFS.
+    """
+    rows = 8
+    cols = 8
+    visited = [[False for _ in range(cols)] for _ in range(rows)]
+    components = 0
+    
+    for r in range(rows):
+        for c in range(cols):
+            if board[r][c] == player and not visited[r][c]:
+                components += 1
+                stack = [(r, c)]
+                visited[r][c] = True
+                
+                while stack:
+                    curr_r, curr_c = stack.pop()
+                    # Check 8 neighbors
+                    for dr in [-1, 0, 1]:
+                        for dc in [-1, 0, 1]:
+                            if dr == 0 and dc == 0:
+                                continue
+                            nr, nc = curr_r + dr, curr_c + dc
+                            if 0 <= nr < rows and 0 <= nc < cols:
+                                if board[nr][nc] == player and not visited[nr][nc]:
+                                    visited[nr][nc] = True
+                                    stack.append((nr, nc))
+    return components
+
+def minimax(board, depth, alpha, beta, maximizing):
+    if depth == 0:
+        return evaluate(board)
+        
+    if maximizing:
+        max_eval = -float('inf')
+        moves = get_all_moves(board, 1)
+        if not moves: return -float('inf') # No moves = loss
+        
+        for move in moves:
+            new_board = apply_move(board, move, 1)
+            eval_score = minimax(new_board, depth - 1, alpha, beta, False)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        moves = get_all_moves(board, -1)
+        if not moves: return float('inf') # Opponent has no moves = I win
+        
+        for move in moves:
+            new_board = apply_move(board, move, -1)
+            eval_score = minimax(new_board, depth - 1, alpha, beta, True)
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval

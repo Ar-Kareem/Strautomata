@@ -1,0 +1,290 @@
+The strategy for this policy is a fast tactical-first 4x4 Tic Tac Toe player with minimax search and strong move ordering.
+
+Core ideas:
+1. Always return a legal move, even on malformed or full boards.
+2. Immediately play a winning move if one exists.
+3. Immediately block an opponent winning move if necessary.
+4. Prefer strong positions: center 2x2 cells, then corners, while also valuing lines with many of our marks and no opponent marks.
+5. Use alpha-beta minimax to search the game tree deeply enough to be strong, while keeping within time limits.
+6. Use a heuristic evaluation for non-terminal positions based on all rows, columns, and diagonals.
+
+This makes the policy robust, tactically sharp, and generally hard to beat.
+
+<code>
+from typing import List, Tuple
+import math
+import time
+
+N = 4
+WIN_SCORE = 10**9
+
+def _lines():
+    lines = []
+    # Rows
+    for r in range(N):
+        lines.append([(r, c) for c in range(N)])
+    # Cols
+    for c in range(N):
+        lines.append([(r, c) for r in range(N)])
+    # Diagonals
+    lines.append([(i, i) for i in range(N)])
+    lines.append([(i, N - 1 - i) for i in range(N)])
+    return lines
+
+LINES = _lines()
+CENTER_CELLS = {(1, 1), (1, 2), (2, 1), (2, 2)}
+CORNERS = {(0, 0), (0, 3), (3, 0), (3, 3)}
+
+def _empty_cells(board: List[List[int]]) -> List[Tuple[int, int]]:
+    res = []
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 0:
+                res.append((r, c))
+    return res
+
+def _check_winner(board: List[List[int]]) -> int:
+    for line in LINES:
+        s = sum(board[r][c] for r, c in line)
+        if s == N:
+            return 1
+        if s == -N:
+            return -1
+    return 0
+
+def _is_full(board: List[List[int]]) -> bool:
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 0:
+                return False
+    return True
+
+def _terminal_value(board: List[List[int]], depth: int) -> int:
+    w = _check_winner(board)
+    if w == 1:
+        return WIN_SCORE - depth
+    if w == -1:
+        return -WIN_SCORE + depth
+    if _is_full(board):
+        return 0
+    return None
+
+def _line_score(line_vals: List[int]) -> int:
+    my_count = line_vals.count(1)
+    opp_count = line_vals.count(-1)
+    empty_count = line_vals.count(0)
+
+    if my_count > 0 and opp_count > 0:
+        return 0
+    if my_count == 4:
+        return WIN_SCORE // 2
+    if opp_count == 4:
+        return -WIN_SCORE // 2
+
+    weights = {
+        0: 0,
+        1: 2,
+        2: 12,
+        3: 120,
+        4: 100000,
+    }
+
+    if opp_count == 0:
+        return weights[my_count] + (1 if empty_count > 0 else 0)
+    if my_count == 0:
+        return -(weights[opp_count] + (1 if empty_count > 0 else 0))
+    return 0
+
+def _evaluate(board: List[List[int]]) -> int:
+    term = _terminal_value(board, 0)
+    if term is not None:
+        return term
+
+    score = 0
+
+    for line in LINES:
+        vals = [board[r][c] for r, c in line]
+        score += _line_score(vals)
+
+    # Mild positional bonuses
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 1:
+                if (r, c) in CENTER_CELLS:
+                    score += 6
+                elif (r, c) in CORNERS:
+                    score += 3
+                else:
+                    score += 1
+            elif board[r][c] == -1:
+                if (r, c) in CENTER_CELLS:
+                    score -= 6
+                elif (r, c) in CORNERS:
+                    score -= 3
+                else:
+                    score -= 1
+
+    return score
+
+def _winning_moves(board: List[List[int]], player: int) -> List[Tuple[int, int]]:
+    wins = []
+    for r, c in _empty_cells(board):
+        board[r][c] = player
+        if _check_winner(board) == player:
+            wins.append((r, c))
+        board[r][c] = 0
+    return wins
+
+def _move_order(board: List[List[int]], moves: List[Tuple[int, int]], player: int) -> List[Tuple[int, int]]:
+    scored = []
+    for r, c in moves:
+        s = 0
+
+        if (r, c) in CENTER_CELLS:
+            s += 30
+        elif (r, c) in CORNERS:
+            s += 15
+        else:
+            s += 5
+
+        # Prefer moves that contribute to open lines
+        for line in LINES:
+            if (r, c) in line:
+                vals = [board[rr][cc] for rr, cc in line]
+                my_count = vals.count(player)
+                opp_count = vals.count(-player)
+                if opp_count == 0:
+                    s += 8 * my_count + 2
+                if my_count == 0:
+                    s += 3  # blocks an open opponent line by occupying it
+
+        # Tactical bonus: immediate win / block
+        board[r][c] = player
+        if _check_winner(board) == player:
+            s += 1000000
+        board[r][c] = 0
+
+        board[r][c] = -player
+        if _check_winner(board) == -player:
+            s += 500000
+        board[r][c] = 0
+
+        scored.append((s, (r, c)))
+
+    scored.sort(reverse=True)
+    return [m for _, m in scored]
+
+def _alphabeta(board: List[List[int]], depth: int, alpha: int, beta: int, maximizing: bool,
+               start_time: float, time_limit: float) -> int:
+    if time.time() - start_time > time_limit:
+        return _evaluate(board)
+
+    term = _terminal_value(board, depth)
+    if term is not None:
+        return term
+    if depth == 0:
+        return _evaluate(board)
+
+    moves = _empty_cells(board)
+    if not moves:
+        return 0
+
+    player = 1 if maximizing else -1
+    moves = _move_order(board, moves, player)
+
+    if maximizing:
+        value = -math.inf
+        for r, c in moves:
+            board[r][c] = 1
+            value = max(value, _alphabeta(board, depth - 1, alpha, beta, False, start_time, time_limit))
+            board[r][c] = 0
+            alpha = max(alpha, value)
+            if beta <= alpha:
+                break
+        return int(value)
+    else:
+        value = math.inf
+        for r, c in moves:
+            board[r][c] = -1
+            value = min(value, _alphabeta(board, depth - 1, alpha, beta, True, start_time, time_limit))
+            board[r][c] = 0
+            beta = min(beta, value)
+            if beta <= alpha:
+                break
+        return int(value)
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    # Fallback legal move helper
+    empties = _empty_cells(board)
+    if not empties:
+        return (0, 0)
+
+    # 1. Immediate win
+    my_wins = _winning_moves(board, 1)
+    if my_wins:
+        return my_wins[0]
+
+    # 2. Immediate block
+    opp_wins = _winning_moves(board, -1)
+    if opp_wins:
+        return opp_wins[0]
+
+    # 3. Opening preference
+    if len(empties) == N * N:
+        for move in [(1, 1), (1, 2), (2, 1), (2, 2), (0, 0), (0, 3), (3, 0), (3, 3)]:
+            if board[move[0]][move[1]] == 0:
+                return move
+
+    # 4. Iterative deepening alpha-beta
+    start_time = time.time()
+    time_limit = 0.92
+
+    best_move = _move_order(board, empties, 1)[0]
+
+    # Search depth based on remaining moves
+    remain = len(empties)
+    if remain >= 12:
+        max_depth = 5
+    elif remain >= 9:
+        max_depth = 7
+    elif remain >= 6:
+        max_depth = 9
+    else:
+        max_depth = remain  # near-endgame, solve exactly if possible
+
+    ordered_moves = _move_order(board, empties, 1)
+
+    for depth in range(1, max_depth + 1):
+        if time.time() - start_time > time_limit:
+            break
+
+        current_best = None
+        current_best_val = -math.inf
+
+        for r, c in ordered_moves:
+            if time.time() - start_time > time_limit:
+                break
+
+            board[r][c] = 1
+            val = _alphabeta(board, depth - 1, -math.inf, math.inf, False, start_time, time_limit)
+            board[r][c] = 0
+
+            if val > current_best_val:
+                current_best_val = val
+                current_best = (r, c)
+
+        if current_best is not None:
+            best_move = current_best
+            # Reorder around principal variation
+            ordered_moves = [best_move] + [m for m in ordered_moves if m != best_move]
+
+    # Final legality guarantee
+    r, c = best_move
+    if 0 <= r < N and 0 <= c < N and board[r][c] == 0:
+        return (r, c)
+
+    for move in empties:
+        return move
+
+    return (0, 0)
+</code>

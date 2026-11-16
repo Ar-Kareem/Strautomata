@@ -1,0 +1,134 @@
+The strategy for this policy is to use a minimax algorithm with alpha-beta pruning to a depth of 3 plies. The evaluation function combines positional weights with disc count difference to assess board positions. The positional weights are based on standard Othello heuristics, giving high values to corners and edges while penalizing squares adjacent to corners. The disc count difference (our discs minus opponent discs) is weighted by 10 to balance with positional scores. The algorithm generates all legal moves for the current player, evaluates each move by simulating it and using minimax to assess the resulting position, then selects the move with the highest evaluation score. If no legal moves are available, it returns "pass".
+
+```python
+import numpy as np
+
+DIRECTIONS = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+
+WEIGHTS = np.array([
+    [120, -20,  20,   5,   5,  20, -20, 120],
+    [-20, -40,  -5,  -5,  -5,  -5, -40, -20],
+    [ 20,  -5,  15,   3,   3,  15,  -5,  20],
+    [  5,  -5,   3,   3,   3,   3,  -5,   5],
+    [  5,  -5,   3,   3,   3,   3,  -5,   5],
+    [ 20,  -5,  15,   3,   3,  15,  -5,  20],
+    [-20, -40,  -5,  -5,  -5,  -5, -40, -20],
+    [120, -20,  20,   5,   5,  20, -20, 120]
+], dtype=np.int8)
+
+def legal_moves(board, player):
+    moves = []
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == 0:
+                for dr, dc in DIRECTIONS:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 8 and 0 <= nc < 8 and board[nr][nc] == -player:
+                        while True:
+                            nr += dr
+                            nc += dc
+                            if not (0 <= nr < 8 and 0 <= nc < 8):
+                                break
+                            if board[nr][nc] == 0:
+                                break
+                            if board[nr][nc] == player:
+                                moves.append((r, c))
+                                break
+    return moves
+
+def apply_move(board, player, r, c):
+    new_board = board.copy()
+    new_board[r][c] = player
+    for dr, dc in DIRECTIONS:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < 8 and 0 <= nc < 8 and board[nr][nc] == -player:
+            to_flip = []
+            while True:
+                nr += dr
+                nc += dc
+                if not (0 <= nr < 8 and 0 <= nc < 8):
+                    break
+                if board[nr][nc] == 0:
+                    break
+                if board[nr][nc] == player:
+                    for fr, fc in to_flip:
+                        new_board[fr][fc] = player
+                    break
+                else:
+                    to_flip.append((nr, nc))
+    return new_board
+
+def evaluate(board):
+    positional_score = np.sum(WEIGHTS * board)
+    disc_diff = np.sum(board)
+    return positional_score + 10 * disc_diff
+
+def minimax(board, depth, alpha, beta, maximizing):
+    if depth == 0:
+        return evaluate(board)
+    
+    if maximizing:
+        player = 1
+    else:
+        player = -1
+    
+    moves = legal_moves(board, player)
+    
+    if len(moves) == 0:
+        opponent_moves = legal_moves(board, -player)
+        if len(opponent_moves) == 0:
+            return evaluate(board)
+        else:
+            return minimax(board, depth, alpha, beta, not maximizing)
+    
+    if maximizing:
+        max_eval = -float('inf')
+        for r, c in moves:
+            new_board = apply_move(board, player, r, c)
+            eval_score = minimax(new_board, depth-1, alpha, beta, False)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for r, c in moves:
+            new_board = apply_move(board, player, r, c)
+            eval_score = minimax(new_board, depth-1, alpha, beta, True)
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def policy(you, opponent):
+    board = you - opponent
+    moves = legal_moves(board, 1)
+    
+    if len(moves) == 0:
+        opponent_moves = legal_moves(board, -1)
+        if len(opponent_moves) == 0:
+            return "pass"
+        else:
+            return "pass"
+    
+    if len(moves) == 1:
+        r, c = moves[0]
+        columns = 'abcdefgh'
+        return columns[c] + str(r+1)
+    
+    best_move = None
+    best_score = -float('inf')
+    
+    for r, c in moves:
+        new_board = apply_move(board, 1, r, c)
+        score = minimax(new_board, depth=3, alpha=-float('inf'), beta=float('inf'), maximizing=False)
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+    
+    r, c = best_move
+    columns = 'abcdefgh'
+    return columns[c] + str(r+1)
+```

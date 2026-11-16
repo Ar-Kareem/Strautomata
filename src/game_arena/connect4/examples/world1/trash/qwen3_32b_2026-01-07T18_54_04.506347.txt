@@ -1,0 +1,200 @@
+<thinking>
+To solve the problem of determining the optimal column to play in a game of Connect 4, I developed a Python implementation that combines immediate win detection, opponent win blocking, and a minimax algorithm with alpha-beta pruning for long-term strategic planning.
+
+---
+
+### 🎮 Game Logic Overview
+
+- The board is a 6x7 grid where:
+  - `0` is an empty cell.
+  - `1` is the current player's disc (assumed to be the one calling the `policy` function).
+  - `-1` is the opponent's disc.
+- A valid move is one where the column is not full (i.e., the topmost cell is `0`).
+- A player wins by placing four of their discs in a row (horizontal, vertical, or diagonal).
+
+---
+
+### ⚙️ Strategy
+
+1. **Immediate Win Detection**: For each valid move, simulate dropping a disc and check if it results in a win.
+2. **Opponent Win Block**: If the opponent can win in their next move, block them by playing in the same column.
+3. **Minimax with Alpha-Beta Pruning**: If no immediate wins or threats are found, the AI uses a minimax algorithm up to depth 4 to evaluate the best move, assuming optimal play from both players.
+
+---
+
+### 📊 Evaluation Function
+
+The minimax relies on a scoring heuristic that:
+- Favors control of the center column.
+- Assigns bonuses for lines of 2 or 3 of our discs and penalties for lines of 2 or 3 of the opponent's discs.
+- Rewards potential four-disc lines more heavily.
+
+---
+
+### 🌀 Alpha-Beta Pruning
+
+The algorithm reduces search space by:
+- Pruning branches that are already known to be worse than others.
+- Maintaining alpha (best for maximizing player) and beta (best for minimizing player) bounds.
+
+---
+
+### 🕒 Time Constraints
+
+Given the CPU constraint (1 second), the minimax depth is set to 4, which is deep enough to produce strong play and deterministic responses without excessive computation.
+
+---
+
+### ✅ Final Output
+
+The implementation is a complete `policy(board)` function defining the AI’s move selection code.
+</thinking>
+
+<code>
+```python
+def policy(board: list[list[int]]) -> int:
+    def is_valid_location(board, col):
+        return board[0][col] == 0
+
+    def get_valid_moves(board):
+        return [col for col in range(7) if is_valid_location(board, col)]
+
+    def get_next_open_row(board, col):
+        for r in reversed(range(6)):
+            if board[r][col] == 0:
+                return r
+        return None
+
+    def drop_piece(temp_board, col, piece):
+        row = get_next_open_row(temp_board, col)
+        if row is not None:
+            temp_board[row][col] = piece
+
+    def winning_move(board, piece):
+        # Horizontal
+        for r in range(6):
+            for c in range(4):
+                if all(board[r][c + i] == piece for i in range(4)):
+                    return True
+        # Vertical
+        for c in range(7):
+            for r in range(3):
+                if all(board[r + i][c] == piece for i in range(4)):
+                    return True
+        # Positive Diagonal
+        for r in range(3):
+            for c in range(4):
+                if all(board[r + i][c + i] == piece for i in range(4)):
+                    return True
+        # Negative Diagonal
+        for r in range(3, 6):
+            for c in range(4):
+                if all(board[r - i][c + i] == piece for i in range(4)):
+                    return True
+        return False
+
+    def score_position(board, piece):
+        score = 0
+        # Center column advantage
+        center_array = [board[r][3] for r in range(6)]
+        center_count = center_array.count(piece)
+        score += center_count * 3
+
+        # Horizontal
+        for r in range(6):
+            for c in range(4):
+                window = [board[r][c], board[r][c+1], board[r][c+2], board[r][c+3]]
+                score += evaluate_window(window, piece)
+        # Vertical
+        for c in range(7):
+            for r in range(3):
+                window = [board[r][c], board[r+1][c], board[r+2][c], board[r+3][c]]
+                score += evaluate_window(window, piece)
+        # Positive Diagonal
+        for r in range(3):
+            for c in range(4):
+                window = [board[r][c], board[r+1][c+1], board[r+2][c+2], board[r+3][c+3]]
+                score += evaluate_window(window, piece)
+        # Negative Diagonal
+        for r in range(3, 6):
+            for c in range(4):
+                window = [board[r][c], board[r-1][c+1], board[r-2][c+2], board[r-3][c+3]]
+                score += evaluate_window(window, piece)
+        return score
+
+    def evaluate_window(window, piece):
+        opp_piece = -1 * piece
+        if window.count(piece) == 4:
+            return 100
+        elif window.count(piece) == 3 and window.count(0) == 1:
+            return 5
+        elif window.count(piece) == 2 and window.count(0) == 2:
+            return 2
+        elif window.count(opp_piece) == 3 and window.count(0) == 1:
+            return -4
+        elif window.count(opp_piece) == 4:
+            return -100
+        return 0
+
+    def minimax(board, depth, alpha, beta, maximizing_player):
+        valid_moves = get_valid_moves(board)
+        is_terminal = winning_move(board, 1) or winning_move(board, -1) or not valid_moves
+        if depth == 0 or is_terminal:
+            if is_terminal:
+                if winning_move(board, 1):
+                    return (10**9, None)
+                elif winning_move(board, -1):
+                    return (-10**9, None)
+                else:
+                    return (0, None)
+            else:
+                return (score_position(board, 1), None)
+        if maximizing_player:
+            max_eval = -float('inf')
+            best_col = valid_moves[0]
+            for col in valid_moves:
+                temp_board = [row[:] for row in board]
+                drop_piece(temp_board, col, 1)
+                new_score = minimax(temp_board, depth - 1, alpha, beta, False)[0]
+                if new_score > max_eval:
+                    max_eval = new_score
+                    best_col = col
+                alpha = max(alpha, new_score)
+                if alpha >= beta:
+                    break
+            return (max_eval, best_col)
+        else:
+            min_eval = float('inf')
+            best_col = valid_moves[0]
+            for col in valid_moves:
+                temp_board = [row[:] for row in board]
+                drop_piece(temp_board, col, -1)
+                new_score = minimax(temp_board, depth - 1, alpha, beta, True)[0]
+                if new_score < min_eval:
+                    min_eval = new_score
+                    best_col = col
+                beta = min(beta, new_score)
+                if beta <= alpha:
+                    break
+            return (min_eval, best_col)
+
+    # Step 1: Immediate win check
+    valid_moves = get_valid_moves(board)
+    for col in valid_moves:
+        temp_board = [row[:] for row in board]
+        drop_piece(temp_board, col, 1)
+        if winning_move(temp_board, 1):
+            return col
+
+    # Step 2: Opponent win block
+    for col in valid_moves:
+        temp_board = [row[:] for row in board]
+        drop_piece(temp_board, col, -1)
+        if winning_move(temp_board, -1):
+            return col
+
+    # Step 3: Minimax
+    _, best_col = minimax(board, depth=4, alpha=-float('inf'), beta=float('inf'), maximizing_player=True)
+    return best_col
+```
+</code>

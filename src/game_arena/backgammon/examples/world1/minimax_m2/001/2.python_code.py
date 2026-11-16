@@ -1,0 +1,158 @@
+
+def generate_moves_for_die(state, die):
+    moves = []
+    if state['my_bar'] > 0:
+        # Must move from bar
+        dest = 24 - die
+        if 0 <= dest < 24 and state['opp_pts'][dest] < 2:
+            moves.append('B')
+        return moves
+    else:
+        # Check if all checkers are in home board
+        if state['my_bar'] == 0 and sum(state['my_pts'][j] for j in range(6, 24)) == 0:
+            # In home board: can bear off
+            for i in range(0, 6):
+                if state['my_pts'][i] > 0:
+                    if i - die < 0:
+                        moves.append(str(i))  # Bearing off from i
+                    else:
+                        dest = i - die
+                        if 0 <= dest < 24 and state['opp_pts'][dest] < 2:
+                            moves.append(str(i))
+            return moves
+        else:
+            # Not in home board
+            for i in range(0, 24):
+                if state['my_pts'][i] > 0:
+                    dest = i - die
+                    if dest < 0:
+                        continue  # Cannot bear off outside home board
+                    if 0 <= dest < 24 and state['opp_pts'][dest] < 2:
+                        moves.append(str(i))
+            return moves
+
+def apply_move(state, move_start, die):
+    new_state = {
+        'my_pts': state['my_pts'][:],
+        'opp_pts': state['opp_pts'][:],
+        'my_bar': state['my_bar'],
+        'opp_bar': state['opp_bar'],
+        'my_off': state['my_off'],
+        'opp_off': state['opp_off'],
+    }
+    
+    if move_start == 'B':
+        new_state['my_bar'] -= 1
+        dest = 24 - die
+    else:
+        i = int(move_start)
+        new_state['my_pts'][i] -= 1
+        dest = i - die
+    
+    if dest < 0:
+        new_state['my_off'] += 1
+    else:
+        new_state['my_pts'][dest] += 1
+        if new_state['opp_pts'][dest] == 1:
+            new_state['opp_pts'][dest] -= 1
+            new_state['opp_bar'] += 1
+    
+    return new_state
+
+def evaluate(state):
+    score = (state['my_off'] - state['opp_off']) * 10000
+    
+    # Pip count for us (moving from 23 to 0)
+    my_pips = 0
+    for i in range(24):
+        my_pips += state['my_pts'][i] * (i + 1)
+    my_pips += state['my_bar'] * 25
+    
+    # Pip count for opponent (moving from 0 to 23)
+    opp_pips = 0
+    for i in range(24):
+        opp_pips += state['opp_pts'][i] * (24 - i)
+    opp_pips += state['opp_bar'] * 25
+    
+    score += (opp_pips - my_pips)
+    
+    # Blocking in opponent's home board (points 18-23)
+    for i in range(18, 24):
+        if state['my_pts'][i] >= 2:
+            score += 100
+    
+    # Small bonus for two or more in our home board (points 0-5)
+    for i in range(0, 6):
+        if state['my_pts'][i] >= 2:
+            score += 10
+    
+    return score
+
+def policy(state):
+    dice = state['dice']
+    if len(dice) == 2:
+        two_move_actions = []
+        higher = max(dice)
+        lower = min(dice)
+        
+        # Higher first
+        for move1 in generate_moves_for_die(state, higher):
+            state1 = apply_move(state, move1, higher)
+            for move2 in generate_moves_for_die(state1, lower):
+                state2 = apply_move(state1, move2, lower)
+                action_str = f"H:{move1},{move2}"
+                two_move_actions.append((action_str, state2))
+        
+        # Lower first
+        for move1 in generate_moves_for_die(state, lower):
+            state1 = apply_move(state, move1, lower)
+            for move2 in generate_moves_for_die(state1, higher):
+                state2 = apply_move(state1, move2, higher)
+                action_str = f"L:{move1},{move2}"
+                two_move_actions.append((action_str, state2))
+        
+        if two_move_actions:
+            best_action = None
+            best_score = -1e18
+            for action, next_state in two_move_actions:
+                score = evaluate(next_state)
+                if score > best_score:
+                    best_score = score
+                    best_action = action
+            return best_action
+        else:
+            one_move_actions = []
+            for move1 in generate_moves_for_die(state, higher):
+                state1 = apply_move(state, move1, higher)
+                action_str = f"H:{move1},P"
+                one_move_actions.append((action_str, state1))
+            if one_move_actions:
+                best_action = None
+                best_score = -1e18
+                for action, next_state in one_move_actions:
+                    score = evaluate(next_state)
+                    if score > best_score:
+                        best_score = score
+                        best_action = action
+                return best_action
+            else:
+                return "H:P,P"
+    elif len(dice) == 1:
+        die = dice[0]
+        moves = []
+        for move_start in generate_moves_for_die(state, die):
+            state1 = apply_move(state, move_start, die)
+            moves.append((f"H:{move_start},P", state1))
+        if moves:
+            best_action = None
+            best_score = -1e18
+            for action, next_state in moves:
+                score = evaluate(next_state)
+                if score > best_score:
+                    best_score = score
+                    best_action = action
+            return best_action
+        else:
+            return "H:P,P"
+    else:
+        return "H:P,P"

@@ -1,0 +1,159 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    def check_winner(board):
+        # Check rows
+        for row in board:
+            if abs(sum(row)) == 4:
+                return 1 if sum(row) > 0 else -1
+        
+        # Check columns
+        for col in range(4):
+            col_sum = sum(board[row][col] for row in range(4))
+            if abs(col_sum) == 4:
+                return 1 if col_sum > 0 else -1
+        
+        # Check diagonals
+        main_diag = sum(board[i][i] for i in range(4))
+        if abs(main_diag) == 4:
+            return 1 if main_diag > 0 else -1
+        
+        anti_diag = sum(board[i][3-i] for i in range(4))
+        if abs(anti_diag) == 4:
+            return 1 if anti_diag > 0 else -1
+        
+        return 0
+    
+    def count_threats(board, player):
+        threats = 0
+        
+        # Check rows
+        for row in board:
+            row_sum = sum(row)
+            if row.count(0) == 1 and abs(row_sum) == 3 and (row_sum > 0) == (player > 0):
+                threats += 1
+        
+        # Check columns
+        for col in range(4):
+            column = [board[row][col] for row in range(4)]
+            col_sum = sum(column)
+            if column.count(0) == 1 and abs(col_sum) == 3 and (col_sum > 0) == (player > 0):
+                threats += 1
+        
+        # Check diagonals
+        main_diag = [board[i][i] for i in range(4)]
+        main_sum = sum(main_diag)
+        if main_diag.count(0) == 1 and abs(main_sum) == 3 and (main_sum > 0) == (player > 0):
+            threats += 1
+        
+        anti_diag = [board[i][3-i] for i in range(4)]
+        anti_sum = sum(anti_diag)
+        if anti_diag.count(0) == 1 and abs(anti_sum) == 3 and (anti_sum > 0) == (player > 0):
+            threats += 1
+        
+        return threats
+    
+    def evaluate_board(board):
+        winner = check_winner(board)
+        if winner == 1:
+            return 1000
+        elif winner == -1:
+            return -1000
+        
+        # Count threats for both players
+        my_threats = count_threats(board, 1)
+        opp_threats = count_threats(board, -1)
+        
+        # Strategic position values (center is more valuable)
+        position_value = 0
+        center_positions = [(1, 1), (1, 2), (2, 1), (2, 2)]
+        
+        for r in range(4):
+            for c in range(4):
+                if board[r][c] == 1:
+                    if (r, c) in center_positions:
+                        position_value += 3
+                    else:
+                        position_value += 1
+                elif board[r][c] == -1:
+                    if (r, c) in center_positions:
+                        position_value -= 3
+                    else:
+                        position_value -= 1
+        
+        return my_threats * 50 - opp_threats * 60 + position_value
+    
+    def get_empty_cells(board):
+        return [(r, c) for r in range(4) for c in range(4) if board[r][c] == 0]
+    
+    def minimax(board, depth, alpha, beta, maximizing_player):
+        winner = check_winner(board)
+        if winner != 0 or depth == 0:
+            return evaluate_board(board)
+        
+        empty_cells = get_empty_cells(board)
+        if not empty_cells:
+            return 0
+        
+        if maximizing_player:
+            max_eval = float('-inf')
+            for r, c in empty_cells:
+                board[r][c] = 1
+                eval_score = minimax(board, depth - 1, alpha, beta, False)
+                board[r][c] = 0
+                max_eval = max(max_eval, eval_score)
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for r, c in empty_cells:
+                board[r][c] = -1
+                eval_score = minimax(board, depth - 1, alpha, beta, True)
+                board[r][c] = 0
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval
+    
+    # Check for immediate win
+    empty_cells = get_empty_cells(board)
+    for r, c in empty_cells:
+        board[r][c] = 1
+        if check_winner(board) == 1:
+            board[r][c] = 0
+            return (r, c)
+        board[r][c] = 0
+    
+    # Check for blocking opponent win
+    for r, c in empty_cells:
+        board[r][c] = -1
+        if check_winner(board) == -1:
+            board[r][c] = 0
+            return (r, c)
+        board[r][c] = 0
+    
+    # Use minimax for strategic play
+    best_move = None
+    best_score = float('-inf')
+    
+    # Adjust depth based on game state
+    empty_count = len(empty_cells)
+    if empty_count > 12:
+        depth = 4
+    elif empty_count > 8:
+        depth = 5
+    else:
+        depth = 6
+    
+    for r, c in empty_cells:
+        board[r][c] = 1
+        score = minimax(board, depth, float('-inf'), float('inf'), False)
+        board[r][c] = 0
+        
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+    
+    return best_move if best_move else empty_cells[0]

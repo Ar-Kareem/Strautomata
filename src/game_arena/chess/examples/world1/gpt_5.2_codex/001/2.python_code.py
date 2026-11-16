@@ -1,0 +1,114 @@
+
+import math
+
+PIECE_VALUES = {
+    'K': 1000,
+    'Q': 9,
+    'R': 5,
+    'B': 3,
+    'N': 3,
+    'P': 1,
+}
+
+CENTRAL_SQUARES = {'d4', 'e4', 'd5', 'e5'}
+
+def _strip_suffix(move: str) -> str:
+    # remove check/mate indicators
+    while move and move[-1] in ['+', '#']:
+        move = move[:-1]
+    return move
+
+def _dest_square(move: str) -> None:
+    if move in ("O-O", "O-O-O"):
+        return None
+    m = _strip_suffix(move)
+    if '=' in m:
+        m = m.split('=')[0]
+    # destination square is last two chars
+    if len(m) >= 2 and m[-2].isalpha() and m[-1].isdigit():
+        return m[-2:]
+    return None
+
+def _moving_piece(move: str) -> str:
+    if move in ("O-O", "O-O-O"):
+        return 'K'
+    c = move[0]
+    if c in "KQRBN":
+        return c
+    return 'P'
+
+def _promotion_piece(move: str) -> None:
+    if '=' in move:
+        return move.split('=')[1][0]
+    return None
+
+def _en_passant_capture_square(dest: str, to_play: str) -> str:
+    # If en passant, captured pawn is behind dest square
+    file = dest[0]
+    rank = int(dest[1])
+    if to_play == 'white':
+        cap_rank = rank - 1
+    else:
+        cap_rank = rank + 1
+    return f"{file}{cap_rank}"
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    color = 'w' if to_play == 'white' else 'b'
+    opp = 'b' if color == 'w' else 'w'
+    best_move = legal_moves[0]
+    best_score = -math.inf
+
+    for mv in legal_moves:
+        # Checkmate has absolute priority
+        if '#' in mv:
+            return mv
+
+        score = 0
+
+        if '+' in mv:
+            score += 50
+
+        if mv in ("O-O", "O-O-O"):
+            score += 10
+
+        dest = _dest_square(mv)
+
+        # Promotion bonus
+        promo = _promotion_piece(mv)
+        if promo:
+            score += PIECE_VALUES.get(promo, 0) * 20
+
+        # Capture bonus
+        if 'x' in mv and dest:
+            cap_val = 0
+            if dest in pieces and pieces[dest][0] == opp:
+                cap_val = PIECE_VALUES.get(pieces[dest][1], 0)
+            else:
+                # possible en passant
+                if _moving_piece(mv) == 'P':
+                    ep_square = _en_passant_capture_square(dest, to_play)
+                    if ep_square in pieces and pieces[ep_square][0] == opp and pieces[ep_square][1] == 'P':
+                        cap_val = 1
+            score += 100 * cap_val + 5
+
+        # Central control
+        if dest in CENTRAL_SQUARES:
+            score += 2
+
+        # Pawn advancement (encourage)
+        if _moving_piece(mv) == 'P' and dest:
+            rank = int(dest[1])
+            if to_play == 'white':
+                score += (rank - 1) * 0.2
+            else:
+                score += (8 - rank) * 0.2
+
+        # Small bonus for developing minor pieces
+        if _moving_piece(mv) in ('N', 'B'):
+            score += 1
+
+        if score > best_score:
+            best_score = score
+            best_move = mv
+
+    return best_move

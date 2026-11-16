@@ -1,0 +1,184 @@
+The strategy for this policy is to implement a balanced approach combining pattern recognition, influence evaluation, and basic life-and-death reasoning. The policy prioritizes:
+
+1. Capturing opponent groups with only one liberty left (immediate threat)
+2. Completing my own groups to ensure life (two eyes or potential for two eyes)
+3. Playing at vital points to prevent opponent from forming eyes
+4. Taking center and corner influence points when no immediate tactical moves exist
+5. Passing only when the board is completely filled or no beneficial moves remain
+
+The algorithm uses a layered approach:
+- First, check for immediate captures (opponent groups with 1 liberty)
+- Then, check for my own groups that can be completed to secure life
+- Then, evaluate opponent's potential eye spaces and play at vital points
+- Finally, use a weighted influence map favoring center and symmetry to choose moves
+
+We implement this with efficient neighbor checking and liberty counting, avoiding heavy computations to stay under 1s limit.
+
+<code>
+import numpy as np
+from typing import List, Tuple
+
+def policy(me: List[Tuple[int, int]], opponent: List[Tuple[int, int]]) -> Tuple[int, int]:
+    # Convert to sets for faster lookup
+    my_stones = set(me)
+    opp_stones = set(opponent)
+    all_stones = my_stones | opp_stones
+    
+    # If board is empty, play center (10,10) - standard opening
+    if len(all_stones) == 0:
+        return (10, 10)
+    
+    # Create board representation for easier computation
+    # We'll use 1-indexed coordinates as specified
+    board = np.zeros((20, 20), dtype=int)  # 0-indexed array, but we use 1-19
+    for r, c in my_stones:
+        board[r][c] = 1
+    for r, c in opp_stones:
+        board[r][c] = 2
+    
+    # Directions: up, right, down, left
+    directions = [(-1, 0), (0, 1), (1, 0), (0, -1)]
+    
+    def get_liberties(stone_group):
+        """Get all liberties of a group of stones"""
+        liberties = set()
+        visited = set()
+        stack = list(stone_group)
+        visited.update(stone_group)
+        
+        while stack:
+            r, c = stack.pop()
+            for dr, dc in directions:
+                nr, nc = r + dr, c + dc
+                if 1 <= nr <= 19 and 1 <= nc <= 19:
+                    if board[nr][nc] == 0:  # empty point
+                        liberties.add((nr, nc))
+                    elif board[nr][nc] == 1 if stone_group == my_stones else 2:  # same color
+                        if (nr, nc) not in visited:
+                            visited.add((nr, nc))
+                            stack.append((nr, nc))
+        return liberties
+    
+    def get_group_stones(start_r, start_c, color):
+        """Get all stones in the group containing (start_r, start_c)"""
+        group = set()
+        visited = set()
+        stack = [(start_r, start_c)]
+        visited.add((start_r, start_c))
+        
+        while stack:
+            r, c = stack.pop()
+            group.add((r, c))
+            for dr, dc in directions:
+                nr, nc = r + dr, c + dc
+                if 1 <= nr <= 19 and 1 <= nc <= 19 and board[nr][nc] == color:
+                    if (nr, nc) not in visited:
+                        visited.add((nr, nc))
+                        stack.append((nr, nc))
+        return group
+    
+    # 1. Check for immediate opponent captures (winning moves)
+    for r, c in opp_stones:
+        group = get_group_stones(r, c, 2)
+        liberties = get_liberties(group)
+        if len(liberties) == 1:
+            capture_point = list(liberties)[0]
+            return capture_point
+    
+    # 2. Check for my own groups that need to be completed to live
+    # Look for my groups with only 2 liberties and play at vital points
+    for r, c in my_stones:
+        group = get_group_stones(r, c, 1)
+        liberties = get_liberties(group)
+        if len(liberties) == 2:
+            # Try to fill one liberty to prevent cutting
+            for liberty in liberties:
+                # Simulate playing here and check if group becomes safe
+                # We don't actually play, just check if it reduces opponent's potential
+                # This is a simplified version - we prioritize these points
+                return liberty
+    
+    # 3. Look for opponent groups with 2 liberties - try to reduce them
+    for r, c in opp_stones:
+        group = get_group_stones(r, c, 2)
+        liberties = get_liberties(group)
+        if len(liberties) == 2:
+            # Play at one of the liberties to threaten the group
+            for liberty in liberties:
+                # Check if this move would also improve my position
+                # Check neighboring positions to see if this is a good general move
+                return liberty
+    
+    # 4. Check for empty points that create two eyes for me or prevent opponent from making eyes
+    # Look for potential eye spaces in opponent groups
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if (r, c) in all_stones:
+                continue
+            
+            # Check if playing here would make an eye for opponent
+            # We want to prevent this
+            is_eye_candidate = True
+            adj_empty = 0
+            adj_my = 0
+            adj_opp = 0
+            neighbor_count = 0
+            
+            for dr, dc in directions:
+                nr, nc = r + dr, c + dc
+                if 1 <= nr <= 19 and 1 <= nc <= 19:
+                    neighbor_count += 1
+                    if board[nr][nc] == 0:
+                        adj_empty += 1
+                    elif board[nr][nc] == 1:
+                        adj_my += 1
+                    elif board[nr][nc] == 2:
+                        adj_opp += 1
+            
+            # If this point is surrounded mostly by opponent stones, 
+            # playing here might prevent an eye
+            if adj_opp >= 3 and adj_empty == 0:
+                # Critical point for opponent's eye space
+                # But we need to check if it's actually a potential eye
+                # Simple rule: if surrounded by 3+ opponent stones, and 1+ empty, consider
+                if adj_opp >= 3 and adj_empty + adj_my <= 1:
+                    return (r, c)
+            
+            # Also check if this point helps create a potential eye for us
+            if adj_my >= 3 and adj_opp == 0:
+                # Good center point for eye
+                return (r, c)
+    
+    # 5. Center and influence prioritization - use a weighted scoring
+    # Center of the board is most valuable
+    # Corners next, then edges, then rest
+    best_score = -1
+    best_move = (0, 0)  # Pass by default
+    
+    # Define influence weights for each position (prioritize center)
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if (r, c) in all_stones:
+                continue
+            
+            # Weighting based on distance from center
+            # Center (10,10) has weight 10, corners (1,1) has weight 2
+            base_weight = 10 - max(abs(r - 10), abs(c - 10))
+            # Add bonus for proximity to other stones (influence)
+            influence = 0
+            for dr, dc in directions:
+                nr, nc = r + dr, c + dc
+                if 1 <= nr <= 19 and 1 <= nc <= 19:
+                    if board[nr][nc] == 1:  # my stone
+                        influence += 1.5
+                    elif board[nr][nc] == 2:  # opponent stone
+                        influence += 0.5
+            
+            score = base_weight + influence
+            if score > best_score:
+                best_score = score
+                best_move = (r, c)
+    
+    # If we didn't find a good move, pass
+    return best_move
+</code>

@@ -1,0 +1,29 @@
+
+def policy(hand: list[str], target: int) -> str:
+    base_sum = 0
+    has_ace = False
+    for card in hand:
+        if card == 'A':
+            has_ace = True
+        elif card in ['J','Q','K']:
+            base_sum += 10
+        else:
+            base_sum += int(card)
+    
+    if has_ace:
+        if base_sum + 11 <= target:
+            current_value = base_sum + 11
+        elif base_sum + 1 <= target:
+            current_value = base_sum + 1
+        else:
+            current_value = None  # Bust, but shouldn't occur in valid calls
+    else:
+        current_value = base_sum
+    
+    if has_ace:
+        return "HIT"
+    else:
+        if current_value < target and (target - current_value) > 10:
+            return "HIT"
+        else:
+            return "STAY"

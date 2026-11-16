@@ -1,0 +1,215 @@
+The strategy for this policy is to implement a combination of immediate threat detection, connection building, and opponent blocking. The key components are:
+
+1. **Immediate Threat Detection**: Check if the opponent is one move away from winning and block that move.
+2. **Connection Building**: Prioritize moves that extend existing connections toward the target sides.
+3. **Opponent Blocking**: Block opponent's potential connections that could lead to their victory.
+4. **Center Control**: Prefer central positions early in the game for better connectivity options.
+5. **Edge Expansion**: Expand toward the target sides while maintaining connectivity.
+
+The policy uses a scoring system to evaluate potential moves based on these criteria and selects the highest-scoring legal move.
+
+<code>
+import numpy as np
+from collections import deque
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    board_size = 11
+    me_set = set(me)
+    opp_set = set(opp)
+    all_moves = set((i, j) for i in range(board_size) for j in range(board_size))
+    empty_cells = all_moves - me_set - opp_set
+
+    # Directions for hexagonal neighbors (excluding the two diagonal directions)
+    directions = [(-1, 0), (-1, 1), (0, 1), (1, 0), (1, -1), (0, -1)]
+
+    def get_neighbors(cell):
+        i, j = cell
+        neighbors = []
+        for di, dj in directions:
+            ni, nj = i + di, j + dj
+            if 0 <= ni < board_size and 0 <= nj < board_size:
+                neighbors.append((ni, nj))
+        return neighbors
+
+    def is_connected_to_side(cell, side):
+        if side == 'top' and cell[0] == 0:
+            return True
+        if side == 'bottom' and cell[0] == board_size - 1:
+            return True
+        if side == 'left' and cell[1] == 0:
+            return True
+        if side == 'right' and cell[1] == board_size - 1:
+            return True
+        return False
+
+    def bfs_connected_component(start, visited):
+        queue = deque([start])
+        visited.add(start)
+        component = set()
+        while queue:
+            cell = queue.popleft()
+            component.add(cell)
+            for neighbor in get_neighbors(cell):
+                if neighbor not in visited and neighbor in me_set:
+                    visited.add(neighbor)
+                    queue.append(neighbor)
+        return component
+
+    def find_shortest_path_to_side(start, target_side):
+        visited = set()
+        queue = deque([(start, 0)])
+        visited.add(start)
+        while queue:
+            cell, dist = queue.popleft()
+            if is_connected_to_side(cell, target_side):
+                return dist
+            for neighbor in get_neighbors(cell):
+                if neighbor not in visited and neighbor in me_set:
+                    visited.add(neighbor)
+                    queue.append((neighbor, dist + 1))
+        return float('inf')
+
+    def evaluate_move(move):
+        score = 0
+        i, j = move
+
+        # Check if this move connects to existing stones
+        connected_to_me = False
+        for neighbor in get_neighbors(move):
+            if neighbor in me_set:
+                connected_to_me = True
+                break
+
+        # Check if this move blocks opponent's potential connections
+        blocks_opponent = False
+        for neighbor in get_neighbors(move):
+            if neighbor in opp_set:
+                blocks_opponent = True
+                break
+
+        # Check if this move is near the target sides
+        if color == 'b':  # Connect top and bottom
+            if i == 0 or i == board_size - 1:
+                score += 10
+            elif i == 1 or i == board_size - 2:
+                score += 5
+        else:  # Connect left and right
+            if j == 0 or j == board_size - 1:
+                score += 10
+            elif j == 1 or j == board_size - 2:
+                score += 5
+
+        # Check if this move is in the center (early game)
+        if len(me) + len(opp) < 20:
+            center_dist = abs(i - board_size // 2) + abs(j - board_size // 2)
+            score += max(0, 5 - center_dist)
+
+        # Check if this move creates a bridge between two separate components
+        if connected_to_me:
+            # Find all connected components
+            visited = set()
+            components = []
+            for cell in me_set:
+                if cell not in visited:
+                    component = bfs_connected_component(cell, visited)
+                    components.append(component)
+
+            # Check if this move connects two separate components
+            connected_components = set()
+            for neighbor in get_neighbors(move):
+                if neighbor in me_set:
+                    for idx, component in enumerate(components):
+                        if neighbor in component:
+                            connected_components.add(idx)
+
+            if len(connected_components) >= 2:
+                score += 20
+
+        # Check if this move blocks opponent's potential winning path
+        if blocks_opponent:
+            # Find opponent's connected components
+            opp_visited = set()
+            opp_components = []
+            for cell in opp_set:
+                if cell not in opp_visited:
+                    component = bfs_connected_component(cell, opp_visited)
+                    opp_components.append(component)
+
+            # Check if this move blocks a critical opponent connection
+            for neighbor in get_neighbors(move):
+                if neighbor in opp_set:
+                    for component in opp_components:
+                        if neighbor in component:
+                            # Check if this component is close to connecting sides
+                            if color == 'b':  # Opponent is white, trying to connect left and right
+                                left_dist = float('inf')
+                                right_dist = float('inf')
+                                for cell in component:
+                                    if cell[1] == 0:
+                                        left_dist = 0
+                                    if cell[1] == board_size - 1:
+                                        right_dist = 0
+                                    if left_dist == 0 and right_dist == 0:
+                                        break
+                                    if left_dist > 0:
+                                        left_dist = min(left_dist, find_shortest_path_to_side(cell, 'left'))
+                                    if right_dist > 0:
+                                        right_dist = min(right_dist, find_shortest_path_to_side(cell, 'right'))
+                                if left_dist + right_dist <= 2:
+                                    score += 30
+                            else:  # Opponent is black, trying to connect top and bottom
+                                top_dist = float('inf')
+                                bottom_dist = float('inf')
+                                for cell in component:
+                                    if cell[0] == 0:
+                                        top_dist = 0
+                                    if cell[0] == board_size - 1:
+                                        bottom_dist = 0
+                                    if top_dist == 0 and bottom_dist == 0:
+                                        break
+                                    if top_dist > 0:
+                                        top_dist = min(top_dist, find_shortest_path_to_side(cell, 'top'))
+                                    if bottom_dist > 0:
+                                        bottom_dist = min(bottom_dist, find_shortest_path_to_side(cell, 'bottom'))
+                                if top_dist + bottom_dist <= 2:
+                                    score += 30
+
+        return score
+
+    # Check for immediate threats (opponent can win next move)
+    if color == 'b':  # Opponent is white, trying to connect left and right
+        for cell in empty_cells:
+            # Check if placing here would let opponent win
+            temp_opp = opp_set | {cell}
+            # Check if opponent can connect left and right
+            visited = set()
+            for start in temp_opp:
+                if start[1] == 0:  # Left side
+                    component = bfs_connected_component(start, visited)
+                    for c in component:
+                        if c[1] == board_size - 1:  # Right side
+                            return cell
+    else:  # Opponent is black, trying to connect top and bottom
+        for cell in empty_cells:
+            # Check if placing here would let opponent win
+            temp_opp = opp_set | {cell}
+            # Check if opponent can connect top and bottom
+            visited = set()
+            for start in temp_opp:
+                if start[0] == 0:  # Top side
+                    component = bfs_connected_component(start, visited)
+                    for c in component:
+                        if c[0] == board_size - 1:  # Bottom side
+                            return cell
+
+    # Evaluate all possible moves
+    best_move = None
+    best_score = -float('inf')
+    for move in empty_cells:
+        score = evaluate_move(move)
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return best_move
+</code>

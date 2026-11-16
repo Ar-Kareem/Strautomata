@@ -1,0 +1,430 @@
+
+import numpy as np
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    # Define piece values for material evaluation
+    piece_values = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}
+    
+    # Get all legal moves
+    legal_moves = get_all_legal_moves(pieces, to_play)
+    
+    if not legal_moves:
+        return ""  # Should not happen in valid state, but safety
+    
+    # Check for checkmate immediately
+    for move in legal_moves:
+        if is_checkmate(pieces, move, to_play):
+            return move
+    
+    # Evaluate each move with a simple 1-ply lookahead
+    best_move = legal_moves[0]
+    best_score = float('-inf')
+    
+    # Precompute opponent color
+    opp_color = 'black' if to_play == 'white' else 'white'
+    
+    for move in legal_moves:
+        # Simulate our move
+        new_pieces = simulate_move(pieces, move)
+        if new_pieces is None:  # Invalid simulation
+            continue
+            
+        # Check if opponent has any legal moves after our move
+        opp_legal_moves = get_all_legal_moves(new_pieces, opp_color)
+        if not opp_legal_moves:
+            # Opponent has no moves -> checkmate or stalemate
+            # We want checkmate (we delivered it). But we need to know if king is threatened
+            # Since we already checked checkmate above, we can assume this is stalemate unless we know otherwise
+            # We'll treat it as a draw, which is not ideal, but we prioritize winning moves above
+            score = 0
+        else:
+            # Evaluate the position after our move
+            score = evaluate_position(new_pieces, to_play)
+            
+            # Now simulate opponent's best response
+            # We do a shallow 1-ply lookahead: opponent picks best move for them
+            opp_best_score = float('inf')
+            for opp_move in opp_legal_moves:
+                # Simulate opponent's move
+                after_opp = simulate_move(new_pieces, opp_move)
+                if after_opp is None:
+                    continue
+                # Evaluate the resulting position from our perspective
+                opp_eval = evaluate_position(after_opp, to_play)
+                opp_best_score = min(opp_best_score, opp_eval)
+            
+            score = opp_best_score  # We assume opponent plays optimally
+        
+        # Prefer moves that capture material
+        captured_piece = get_captured_piece(pieces, move)
+        if captured_piece:
+            score += 10 * piece_values.get(captured_piece[1], 0)  # Bonus for capturing
+        
+        # Prefer moves that put opponent in check
+        if gives_check(new_pieces, opp_color):
+            score += 5
+            
+        # Prefer moves that improve king safety
+        if is_king_safety_improved(pieces, move, to_play):
+            score += 2
+            
+        # Prefer center control (especially for pawns and knights)
+        if is_center_control(move):
+            score += 1
+            
+        if score > best_score:
+            best_score = score
+            best_move = move
+            
+    return best_move
+
+def get_all_legal_moves(pieces: dict[str, str], to_play: str) -> list[str]:
+    """Generate all legal moves for the player to_play."""
+    color = 'w' if to_play == 'white' else 'b'
+    moves = []
+    
+    # For each piece, generate possible moves
+    for square, piece in pieces.items():
+        if piece[0] != color:
+            continue
+            
+        piece_type = piece[1]
+        file, rank = square[0], square[1]
+        file_idx = ord(file) - ord('a')
+        rank_idx = int(rank) - 1
+        
+        # Generate moves based on piece type
+        if piece_type == 'P':  # Pawn
+            moves.extend(generate_pawn_moves(file_idx, rank_idx, color, pieces))
+        elif piece_type == 'N':  # Knight
+            moves.extend(generate_knight_moves(file_idx, rank_idx, color, pieces))
+        elif piece_type == 'B':  # Bishop
+            moves.extend(generate_bishop_moves(file_idx, rank_idx, color, pieces))
+        elif piece_type == 'R':  # Rook
+            moves.extend(generate_rook_moves(file_idx, rank_idx, color, pieces))
+        elif piece_type == 'Q':  # Queen
+            moves.extend(generate_bishop_moves(file_idx, rank_idx, color, pieces))
+            moves.extend(generate_rook_moves(file_idx, rank_idx, color, pieces))
+        elif piece_type == 'K':  # King
+            moves.extend(generate_king_moves(file_idx, rank_idx, color, pieces))
+    
+    return moves
+
+def generate_pawn_moves(file_idx, rank_idx, color, pieces):
+    moves = []
+    direction = 1 if color == 'w' else -1
+    start_rank = 1 if color == 'w' else 6
+    
+    # Move one square forward
+    new_rank = rank_idx + direction
+    if 0 <= new_rank <= 7:
+        new_square = chr(ord('a') + file_idx) + str(new_rank + 1)
+        if new_square not in pieces:
+            # Check for promotion
+            if new_rank == 7 if color == 'w' else new_rank == 0:
+                # Promotion
+                for promo in ['q', 'r', 'n', 'b']:
+                    moves.append(chr(ord('a') + file_idx) + str(rank_idx + 1) + new_square + promo)
+            else:
+                moves.append(chr(ord('a') + file_idx) + str(rank_idx + 1) + new_square)
+                
+            # Move two squares forward from starting rank
+            if rank_idx == start_rank:
+                two_rank = rank_idx + 2 * direction
+                two_square = chr(ord('a') + file_idx) + str(two_rank + 1)
+                if two_square not in pieces:
+                    moves.append(chr(ord('a') + file_idx) + str(rank_idx + 1) + two_square)
+    
+    # Captures
+    for capture_file in [file_idx - 1, file_idx + 1]:
+        if 0 <= capture_file <= 7:
+            new_rank = rank_idx + direction
+            if 0 <= new_rank <= 7:
+                capture_square = chr(ord('a') + capture_file) + str(new_rank + 1)
+                if capture_square in pieces:
+                    captured_piece = pieces[capture_square]
+                    if captured_piece[0] != color:
+                        if new_rank == 7 if color == 'w' else new_rank == 0:
+                            for promo in ['q', 'r', 'n', 'b']:
+                                moves.append(chr(ord('a') + file_idx) + str(rank_idx + 1) + capture_square + promo)
+                        else:
+                            moves.append(chr(ord('a') + file_idx) + str(rank_idx + 1) + capture_square)
+    
+    return moves
+
+def generate_knight_moves(file_idx, rank_idx, color, pieces):
+    moves = []
+    knight_moves = [(-2,-1), (-2,1), (-1,-2), (-1,2), (1,-2), (1,2), (2,-1), (2,1)]
+    
+    for df, dr in knight_moves:
+        new_file = file_idx + df
+        new_rank = rank_idx + dr
+        if 0 <= new_file <= 7 and 0 <= new_rank <= 7:
+            square = chr(ord('a') + new_file) + str(new_rank + 1)
+            if square not in pieces or pieces[square][0] != color:
+                moves.append(chr(ord('a') + file_idx) + str(rank_idx + 1) + square)
+    
+    return moves
+
+def generate_bishop_moves(file_idx, rank_idx, color, pieces):
+    moves = []
+    directions = [(-1,-1), (-1,1), (1,-1), (1,1)]
+    
+    for df, dr in directions:
+        for step in range(1, 8):
+            new_file = file_idx + df * step
+            new_rank = rank_idx + dr * step
+            if not (0 <= new_file <= 7 and 0 <= new_rank <= 7):
+                break
+            square = chr(ord('a') + new_file) + str(new_rank + 1)
+            if square in pieces:
+                if pieces[square][0] != color:
+                    moves.append(chr(ord('a') + file_idx) + str(rank_idx + 1) + square)
+                break
+            moves.append(chr(ord('a') + file_idx) + str(rank_idx + 1) + square)
+    
+    return moves
+
+def generate_rook_moves(file_idx, rank_idx, color, pieces):
+    moves = []
+    directions = [(-1,0), (1,0), (0,-1), (0,1)]
+    
+    for df, dr in directions:
+        for step in range(1, 8):
+            new_file = file_idx + df * step
+            new_rank = rank_idx + dr * step
+            if not (0 <= new_file <= 7 and 0 <= new_rank <= 7):
+                break
+            square = chr(ord('a') + new_file) + str(new_rank + 1)
+            if square in pieces:
+                if pieces[square][0] != color:
+                    moves.append(chr(ord('a') + file_idx) + str(rank_idx + 1) + square)
+                break
+            moves.append(chr(ord('a') + file_idx) + str(rank_idx + 1) + square)
+    
+    return moves
+
+def generate_king_moves(file_idx, rank_idx, color, pieces):
+    moves = []
+    king_moves = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+    
+    for df, dr in king_moves:
+        new_file = file_idx + df
+        new_rank = rank_idx + dr
+        if 0 <= new_file <= 7 and 0 <= new_rank <= 7:
+            square = chr(ord('a') + new_file) + str(new_rank + 1)
+            if square not in pieces or pieces[square][0] != color:
+                moves.append(chr(ord('a') + file_idx) + str(rank_idx + 1) + square)
+    
+    return moves
+
+def simulate_move(pieces: dict[str, str], move: str) -> dict[str, str]:
+    """Return a new pieces dictionary after applying the move, or None if invalid."""
+    new_pieces = pieces.copy()
+    
+    if len(move) == 4:
+        from_sq, to_sq = move[:2], move[2:]
+        piece = new_pieces.get(from_sq)
+        if not piece:
+            return None
+        del new_pieces[from_sq]
+        # Capture
+        if to_sq in new_pieces:
+            del new_pieces[to_sq]
+        new_pieces[to_sq] = piece
+    elif len(move) == 5:
+        # Promotion
+        from_sq, to_sq, promo = move[:2], move[2:4], move[4]
+        piece = new_pieces.get(from_sq)
+        if not piece:
+            return None
+        del new_pieces[from_sq]
+        # Capture
+        if to_sq in new_pieces:
+            del new_pieces[to_sq]
+        # Promote
+        new_pieces[to_sq] = piece[0] + promo.upper()
+    else:
+        return None  # Invalid format
+    
+    return new_pieces
+
+def evaluate_position(pieces: dict[str, str], to_play: str) -> float:
+    """Simple evaluation: material difference + minor positional bonuses."""
+    piece_values = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}
+    white_material = 0
+    black_material = 0
+    
+    for piece in pieces.values():
+        if piece[0] == 'w':
+            white_material += piece_values.get(piece[1], 0)
+        elif piece[0] == 'b':
+            black_material += piece_values.get(piece[1], 0)
+    
+    # Evaluate from the perspective of the player to_play
+    if to_play == 'white':
+        return white_material - black_material
+    else:
+        return black_material - white_material
+
+def is_checkmate(pieces: dict[str, str], move: str, to_play: str) -> bool:
+    """Check if this move results in checkmate for the opponent."""
+    after_move = simulate_move(pieces, move)
+    if after_move is None:
+        return False
+    
+    opp_color = 'black' if to_play == 'white' else 'white'
+    opp_king_sq = None
+    
+    # Find opponent's king
+    for square, piece in after_move.items():
+        if piece == opp_color + 'K':
+            opp_king_sq = square
+            break
+    
+    if not opp_king_sq:
+        return False  # No king found (shouldn't happen)
+    
+    # Check if king is in check
+    if is_in_check(after_move, opp_color, opp_king_sq):
+        # Check if any opponent move can get out of check
+        opp_legal_moves = get_all_legal_moves(after_move, opp_color)
+        for opp_move in opp_legal_moves:
+            after_opp = simulate_move(after_move, opp_move)
+            if after_opp is None:
+                continue
+            # Check if king is still in check after opponent's move
+            opp_king_sq_after = None
+            for sq, pc in after_opp.items():
+                if pc == opp_color + 'K':
+                    opp_king_sq_after = sq
+                    break
+            if opp_king_sq_after and not is_in_check(after_opp, opp_color, opp_king_sq_after):
+                return False  # Opponent has a legal escape
+    
+        # If we get here, no escape found -> checkmate
+        return True
+    else:
+        return False
+
+def is_in_check(pieces: dict[str, str], color: str, king_sq: str) -> bool:
+    """Check if the king of the given color at king_sq is in check."""
+    opp_color = 'b' if color == 'w' else 'w'
+    
+    # Check for pawn attacks
+    file_idx = ord(king_sq[0]) - ord('a')
+    rank_idx = int(king_sq[1]) - 1
+    direction = -1 if color == 'w' else 1  # Opposing pawns attack forward
+
+    for df in [-1, 1]:
+        attack_file = file_idx + df
+        attack_rank = rank_idx + direction
+        if 0 <= attack_file <= 7 and 0 <= attack_rank <= 7:
+            attack_sq = chr(ord('a') + attack_file) + str(attack_rank + 1)
+            if attack_sq in pieces and pieces[attack_sq] == opp_color + 'P':
+                return True
+
+    # Check for knight attacks
+    knight_moves = [(-2,-1), (-2,1), (-1,-2), (-1,2), (1,-2), (1,2), (2,-1), (2,1)]
+    for df, dr in knight_moves:
+        new_file = file_idx + df
+        new_rank = rank_idx + dr
+        if 0 <= new_file <= 7 and 0 <= new_rank <= 7:
+            square = chr(ord('a') + new_file) + str(new_rank + 1)
+            if square in pieces and pieces[square] == opp_color + 'N':
+                return True
+
+    # Check for king attacks (one square away)
+    king_moves = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+    for df, dr in king_moves:
+        new_file = file_idx + df
+        new_rank = rank_idx + dr
+        if 0 <= new_file <= 7 and 0 <= new_rank <= 7:
+            square = chr(ord('a') + new_file) + str(new_rank + 1)
+            if square in pieces and pieces[square] == opp_color + 'K':
+                return True
+
+    # Check for bishop/queen attacks (diagonals)
+    directions = [(-1,-1), (-1,1), (1,-1), (1,1)]
+    for df, dr in directions:
+        for step in range(1, 8):
+            new_file = file_idx + df * step
+            new_rank = rank_idx + dr * step
+            if not (0 <= new_file <= 7 and 0 <= new_rank <= 7):
+                break
+            square = chr(ord('a') + new_file) + str(new_rank + 1)
+            if square in pieces:
+                if pieces[square] == opp_color + 'B' or pieces[square] == opp_color + 'Q':
+                    return True
+                break  # Blocked
+
+    # Check for rook/queen attacks (straight)
+    directions = [(-1,0), (1,0), (0,-1), (0,1)]
+    for df, dr in directions:
+        for step in range(1, 8):
+            new_file = file_idx + df * step
+            new_rank = rank_idx + dr * step
+            if not (0 <= new_file <= 7 and 0 <= new_rank <= 7):
+                break
+            square = chr(ord('a') + new_file) + str(new_rank + 1)
+            if square in pieces:
+                if pieces[square] == opp_color + 'R' or pieces[square] == opp_color + 'Q':
+                    return True
+                break  # Blocked
+
+    return False
+
+def gives_check(pieces: dict[str, str], color: str) -> bool:
+    """Check if any piece puts the opponent's king in check (after a move)."""
+    opp_color = 'b' if color == 'w' else 'w'
+    opp_king_sq = None
+    
+    for square, piece in pieces.items():
+        if piece == opp_color + 'K':
+            opp_king_sq = square
+            break
+    
+    if not opp_king_sq:
+        return False
+    
+    return is_in_check(pieces, opp_color, opp_king_sq)
+
+def get_captured_piece(pieces: dict[str, str], move: str) -> str:
+    """Return the captured piece code (if any), else None."""
+    if len(move) == 4:
+        to_sq = move[2:4]
+        if to_sq in pieces:
+            return pieces[to_sq]
+    elif len(move) == 5:
+        to_sq = move[2:4]
+        if to_sq in pieces:
+            return pieces[to_sq]
+    return None
+
+def is_king_safety_improved(pieces: dict[str, str], move: str, to_play: str) -> bool:
+    """Simple heuristic: if king was on the back rank and is moving away, consider safety improved."""
+    # This is a very simple version: if a king is moving from the back rank (1 or 8) to a safer file
+    color = 'w' if to_play == 'white' else 'b'
+    king_sq = None
+    for sq, piece in pieces.items():
+        if piece == color + 'K':
+            king_sq = sq
+            break
+    if not king_sq:
+        return False
+        
+    if move[:2] != king_sq:
+        return False  # Not a king move
+    
+    # If king was on back rank and now moves away
+    if king_sq[1] == '1' or king_sq[1] == '8':
+        new_rank = move[3]
+        if new_rank not in ['1', '8']:
+            return True
+    return False
+
+def is_center_control(move: str) -> bool:
+    """Check if the move controls the center squares (e4, d4, e5, d5)"""
+    center_squares = {'d4', 'e4', 'd5', 'e5'}
+    to_sq = move[2:4]
+    return to_sq in center_squares

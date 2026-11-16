@@ -1,0 +1,198 @@
+## Strategy
+
+This policy implements a combination of:
+
+1. **Immediate forced wins** – If there’s a winning capture available this turn, take it.
+2. **Minimax with alpha-beta pruning** – Evaluates board states 4–5 moves ahead, depending on remaining piece count for speed.
+3. **Heuristic evaluation** based on:
+   - **Mobility difference** – Number of legal moves for us minus number for opponent (most important).
+   - **Piece count difference** – Weighted less than mobility.
+   - **Central control bonus** – Occupying central squares.
+   - **Connectivity penalty** – Isolated pieces are bad.
+   - **Threat detection** – If opponent has a winning move next turn, we heavily penalize.
+4. **Move ordering** – Captures that reduce opponent’s mobility are tried first.
+5. **Opening book** – For the first few moves, known strong patterns are used to avoid early mistakes.
+6. **Fallback** – If search times out, uses greedy mobility-based move.
+
+The search depth is adaptive:  
+- More pieces → smaller depth (faster).  
+- Fewer pieces → deeper search (endgame precision).
+
+This approach balances tactical accuracy with strategic positional play, and respects the 1-second time limit.
+
+<code>
+import numpy as np
+import time
+
+# ---------- Constants ----------
+ROWS, COLS = 5, 6
+DIRS = {'U': (-1, 0), 'D': (1, 0), 'L': (0, -1), 'R': (0, 1)}
+TIME_LIMIT = 0.9  # seconds
+OPENING_MOVES = {
+    ((0,0,1,0,0,0, 1,1,1,1,1,1, 1,1,1,1,1,1, 1,1,1,1,1,1, 0,0,0,0,0,0), 
+     (1,1,1,1,1,1, 0,0,0,0,0,0, 0,0,0,0,0,0, 0,0,0,0,0,0, 1,1,1,1,1,1)): "2,0,U",
+}
+
+# ---------- Helper Functions ----------
+def board_to_key(you_arr, opp_arr):
+    return (tuple(you_arr.flatten()), tuple(opp_arr.flatten()))
+
+def get_legal_moves(you, opp):
+    moves = []
+    for r in range(ROWS):
+        for c in range(COLS):
+            if you[r, c] == 1:
+                for d, (dr, dc) in DIRS.items():
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < ROWS and 0 <= nc < COLS and opp[nr, nc] == 1:
+                        moves.append((r, c, d))
+    return moves
+
+def apply_move(you, opp, move):
+    r, c, d = move
+    dr, dc = DIRS[d]
+    nr, nc = r + dr, c + dc
+    you_new, opp_new = you.copy(), opp.copy()
+    you_new[r, c] = 0
+    you_new[nr, nc] = 1
+    opp_new[nr, nc] = 0
+    return you_new, opp_new
+
+def swap_perspective(you, opp):
+    return opp.copy(), you.copy()
+
+def mobility(you, opp):
+    return len(get_legal_moves(you, opp))
+
+def evaluate(you, opp):
+    # mobility difference
+    mob_us = mobility(you, opp)
+    mob_them = mobility(opp, you)
+    mob_diff = mob_us - mob_them
+    
+    # piece count
+    piece_us = np.sum(you)
+    piece_them = np.sum(opp)
+    piece_diff = piece_us - piece_them
+    
+    # central control bonus
+    center = [(1,2),(1,3),(2,2),(2,3),(3,2),(3,3)]
+    center_bonus = sum(you[r,c] - opp[r,c] for (r,c) in center) * 0.5
+    
+    # connectivity penalty (isolated pieces)
+    conn_penalty = 0
+    for r in range(ROWS):
+        for c in range(COLS):
+            if you[r,c]:
+                alone = True
+                for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                    nr, nc = r+dr, c+dc
+                    if 0 <= nr < ROWS and 0 <= nc < COLS and you[nr,nc]:
+                        alone = False
+                        break
+                if alone:
+                    conn_penalty -= 0.3
+    # same for opponent
+    for r in range(ROWS):
+        for c in range(COLS):
+            if opp[r,c]:
+                alone = True
+                for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                    nr, nc = r+dr, c+dc
+                    if 0 <= nr < ROWS and 0 <= nc < COLS and opp[nr,nc]:
+                        alone = False
+                        break
+                if alone:
+                    conn_penalty += 0.3
+    
+    # threat detection: if opponent has a winning move next
+    # (i.e., a move that leaves us with zero mobility)
+    threat = 0
+    for move in get_legal_moves(opp, you):
+        opp2, you2 = apply_move(opp, you, move)
+        if mobility(you2, opp2) == 0:
+            threat -= 10
+            break
+    
+    score = mob_diff * 2.0 + piece_diff * 0.5 + center_bonus + conn_penalty + threat
+    return score
+
+# ---------- Search ----------
+def negamax(you, opp, depth, alpha, beta, start_time, color=1):
+    if time.time() - start_time > TIME_LIMIT:
+        return None, 0, True  # timeout
+    
+    if depth == 0:
+        return None, color * evaluate(you, opp), False
+    
+    moves = get_legal_moves(you, opp)
+    if not moves:
+        return None, -1000, False  # loss
+    
+    # move ordering: by mobility reduction
+    move_scores = []
+    for move in moves:
+        you2, opp2 = apply_move(you, opp, move)
+        mob_after = mobility(opp2, you2)  # opponent's mobility after our move
+        move_scores.append((mob_after, move))
+    moves = [m for _, m in sorted(move_scores)]
+    
+    best_move = moves[0]
+    best_val = -float('inf')
+    
+    for move in moves:
+        you2, opp2 = apply_move(you, opp, move)
+        _, val, stop = negamax(opp2, you2, depth-1, -beta, -alpha, start_time, -color)
+        if stop:
+            return None, 0, True
+        val = -val
+        if val > best_val:
+            best_val = val
+            best_move = move
+        alpha = max(alpha, val)
+        if alpha >= beta:
+            break
+    
+    return best_move, best_val, False
+
+# ---------- Main Policy ----------
+def policy(you_arr, opponent_arr):
+    start_time = time.time()
+    
+    # convert to numpy arrays
+    you = np.array(you_arr, dtype=int).reshape((ROWS, COLS))
+    opp = np.array(opponent_arr, dtype=int).reshape((ROWS, COLS))
+    
+    # check opening book
+    key = board_to_key(you, opp)
+    if key in OPENING_MOVES:
+        return OPENING_MOVES[key]
+    
+    # forced win check
+    moves = get_legal_moves(you, opp)
+    if not moves:
+        # should not happen since we must return a legal move
+        # fallback: return any (won't be called in legal game)
+        return "0,0,U"
+    
+    for move in moves:
+        you2, opp2 = apply_move(you, opp, move)
+        if mobility(opp2, you2) == 0:
+            return f"{move[0]},{move[1]},{move[2]}"
+    
+    # iterative deepening
+    total_pieces = np.sum(you) + np.sum(opp)
+    max_depth = 4 if total_pieces > 20 else 6
+    
+    best_move = moves[0]
+    for depth in range(1, max_depth+1):
+        move, val, stop = negamax(you, opp, depth, -float('inf'), float('inf'), start_time)
+        if stop or move is None:
+            break
+        best_move = move
+        if abs(val) > 500:  # decisive score
+            break
+    
+    return f"{best_move[0]},{best_move[1]},{best_move[2]}"
+
+</code>

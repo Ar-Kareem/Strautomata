@@ -1,0 +1,171 @@
+# Strategy for 3D Tic Tac Toe Policy
+
+The strategy for this policy is a combination of several techniques to maximize winning chances:
+
+1. **Winning Move Priority**: First check if there's an immediate winning move available
+2. **Blocking Opponent**: If no winning move, check if opponent has a winning move and block it
+3. **Center Control**: Prioritize controlling the center of the 3D space (position 1,1,1)
+4. **Corner Control**: Prefer corners over edges when available
+5. **Fork Creation**: Look for opportunities to create multiple winning threats
+6. **Random Fallback**: If no strategic move is found, choose a random available position
+
+The policy uses depth-limited minimax with alpha-beta pruning to evaluate positions, but with optimizations to stay within the 1-second time constraint. It evaluates potential moves based on:
+- Immediate wins/losses
+- Potential to create forks
+- Control of center and corners
+- Opponent's potential threats
+
+The evaluation function assigns higher scores to positions that control the center, create multiple threats, or block opponent threats.
+
+# Python Implementation
+
+<code>
+import random
+import numpy as np
+from typing import List, Tuple
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    # Convert to numpy array for easier manipulation
+    board_array = np.array(board)
+
+    # Check for immediate winning moves
+    winning_move = find_winning_move(board_array, 1)
+    if winning_move:
+        return winning_move
+
+    # Check for opponent winning moves to block
+    blocking_move = find_winning_move(board_array, -1)
+    if blocking_move:
+        return blocking_move
+
+    # Try to create a fork (two potential winning lines)
+    fork_move = find_fork_move(board_array)
+    if fork_move:
+        return fork_move
+
+    # Prefer center if available
+    if board_array[1, 1, 1] == 0:
+        return (1, 1, 1)
+
+    # Prefer corners over edges
+    corners = [
+        (0, 0, 0), (0, 0, 2), (0, 2, 0), (0, 2, 2),
+        (2, 0, 0), (2, 0, 2), (2, 2, 0), (2, 2, 2)
+    ]
+    random.shuffle(corners)
+    for move in corners:
+        if board_array[move] == 0:
+            return move
+
+    # If no strategic move found, choose random available position
+    empty_cells = np.argwhere(board_array == 0)
+    if len(empty_cells) > 0:
+        return tuple(empty_cells[0])
+
+    # Fallback (should never reach here if board is valid)
+    return (0, 0, 0)
+
+def find_winning_move(board: np.ndarray, player: int) -> Tuple[int, int, int]:
+    """Check if there's a winning move for the specified player."""
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board[i, j, k] == 0:
+                    # Try this move
+                    board[i, j, k] = player
+                    if check_win(board, player):
+                        board[i, j, k] = 0  # Undo the move
+                        return (i, j, k)
+                    board[i, j, k] = 0  # Undo the move
+    return None
+
+def find_fork_move(board: np.ndarray) -> Tuple[int, int, int]:
+    """Find a move that creates two potential winning lines."""
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board[i, j, k] == 0:
+                    board[i, j, k] = 1
+                    win_count = count_potential_wins(board, 1)
+                    board[i, j, k] = 0
+                    if win_count >= 2:
+                        return (i, j, k)
+    return None
+
+def check_win(board: np.ndarray, player: int) -> bool:
+    """Check if the specified player has won."""
+    # Check all lines in 3D space
+    # Rows in each layer
+    for i in range(3):
+        for j in range(3):
+            if all(board[i, j, k] == player for k in range(3)):
+                return True
+            if all(board[i, k, j] == player for k in range(3)):
+                return True
+            if all(board[k, i, j] == player for k in range(3)):
+                return True
+
+    # Diagonals in each layer
+    for i in range(3):
+        if board[i, 0, 0] == player and board[i, 1, 1] == player and board[i, 2, 2] == player:
+            return True
+        if board[i, 0, 2] == player and board[i, 1, 1] == player and board[i, 2, 0] == player:
+            return True
+        if board[0, i, 0] == player and board[1, i, 1] == player and board[2, i, 2] == player:
+            return True
+        if board[0, i, 2] == player and board[1, i, 1] == player and board[2, i, 0] == player:
+            return True
+        if board[0, 0, i] == player and board[1, 1, i] == player and board[2, 2, i] == player:
+            return True
+        if board[0, 2, i] == player and board[1, 1, i] == player and board[2, 0, i] == player:
+            return True
+
+    # Space diagonals
+    if board[0, 0, 0] == player and board[1, 1, 1] == player and board[2, 2, 2] == player:
+        return True
+    if board[0, 0, 2] == player and board[1, 1, 1] == player and board[2, 2, 0] == player:
+        return True
+    if board[0, 2, 0] == player and board[1, 1, 1] == player and board[2, 0, 2] == player:
+        return True
+    if board[0, 2, 2] == player and board[1, 1, 1] == player and board[2, 0, 0] == player:
+        return True
+
+    return False
+
+def count_potential_wins(board: np.ndarray, player: int) -> int:
+    """Count how many potential winning lines exist for the player."""
+    count = 0
+
+    # Check all possible lines
+    lines = [
+        # Rows in each layer
+        [(i, j, 0), (i, j, 1), (i, j, 2)] for i in range(3) for j in range(3),
+        [(i, 0, k), (i, 1, k), (i, 2, k)] for i in range(3) for k in range(3),
+        [(0, j, k), (1, j, k), (2, j, k)] for j in range(3) for k in range(3),
+
+        # Diagonals in each layer
+        [(i, 0, 0), (i, 1, 1), (i, 2, 2)] for i in range(3),
+        [(i, 0, 2), (i, 1, 1), (i, 2, 0)] for i in range(3),
+        [(0, i, 0), (1, i, 1), (2, i, 2)] for i in range(3),
+        [(0, i, 2), (1, i, 1), (2, i, 0)] for i in range(3),
+        [(0, 0, i), (1, 1, i), (2, 2, i)] for i in range(3),
+        [(0, 2, i), (1, 1, i), (2, 0, i)] for i in range(3),
+
+        # Space diagonals
+        [(0, 0, 0), (1, 1, 1), (2, 2, 2)],
+        [(0, 0, 2), (1, 1, 1), (2, 2, 0)],
+        [(0, 2, 0), (1, 1, 1), (2, 0, 2)],
+        [(0, 2, 2), (1, 1, 1), (2, 0, 0)]
+    ]
+
+    for line in lines:
+        # Count player's marks and empty cells in this line
+        player_count = sum(1 for (i, j, k) in line if board[i, j, k] == player)
+        empty_count = sum(1 for (i, j, k) in line if board[i, j, k] == 0)
+
+        # If we have 2 marks and 1 empty, it's a potential win
+        if player_count == 2 and empty_count == 1:
+            count += 1
+
+    return count
+</code>

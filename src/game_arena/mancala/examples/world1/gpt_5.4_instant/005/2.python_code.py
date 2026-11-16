@@ -1,0 +1,283 @@
+
+import time
+from typing import List, Tuple
+
+INF = 10**18
+
+# Tuned positional preference: moves from rightmost pits often create store landings/captures.
+PIT_WEIGHTS = [2, 4, 6, 6, 8, 10]
+
+
+def _legal_moves(you: List[int]) -> List[int]:
+    return [i for i in range(6) if you[i] > 0]
+
+
+def _sow(you: List[int], opp: List[int], move: int) -> Tuple[List[int], List[int], bool]:
+    """
+    Apply move for side 'you' against 'opp'.
+    Returns (new_you, new_opp, extra_turn).
+    Endgame sweeping is applied if a side's houses become empty.
+    """
+    y = you[:]
+    o = opp[:]
+    seeds = y[move]
+    y[move] = 0
+
+    side = 0  # 0 = you, 1 = opp
+    idx = move + 1
+    last_side = None
+    last_idx = None
+
+    while seeds > 0:
+        if side == 0:
+            while idx <= 6 and seeds > 0:
+                y[idx] += 1
+                seeds -= 1
+                last_side, last_idx = 0, idx
+                idx += 1
+            side = 1
+            idx = 0
+        else:
+            while idx <= 5 and seeds > 0:  # skip opponent store
+                o[idx] += 1
+                seeds -= 1
+                last_side, last_idx = 1, idx
+                idx += 1
+            side = 0
+            idx = 0
+
+    extra = (last_side == 0 and last_idx == 6)
+
+    # Capture
+    if last_side == 0 and 0 <= last_idx <= 5 and y[last_idx] == 1 and o[5 - last_idx] > 0:
+        y[6] += 1 + o[5 - last_idx]
+        y[last_idx] = 0
+        o[5 - last_idx] = 0
+
+    # Endgame sweep
+    y_empty = True
+    for i in range(6):
+        if y[i] != 0:
+            y_empty = False
+            break
+    o_empty = True
+    for i in range(6):
+        if o[i] != 0:
+            o_empty = False
+            break
+
+    if y_empty or o_empty:
+        if not y_empty:
+            rem = 0
+            for i in range(6):
+                rem += y[i]
+                y[i] = 0
+            y[6] += rem
+        if not o_empty:
+            rem = 0
+            for i in range(6):
+                rem += o[i]
+                o[i] = 0
+            o[6] += rem
+        extra = False  # game is over
+
+    return y, o, extra
+
+
+def _is_terminal(you: List[int], opp: List[int]) -> bool:
+    return all(v == 0 for v in you[:6]) or all(v == 0 for v in opp[:6])
+
+
+def _bonus_features(you: List[int], opp: List[int]) -> Tuple[int, int, int]:
+    """
+    Returns:
+      extra_turn_moves, immediate_capture_potential, vulnerable_seeds
+    """
+    extra_turn_moves = 0
+    capture_potential = 0
+    vulnerable = 0
+
+    # Extra turns and captures available now
+    for i in range(6):
+        s = you[i]
+        if s <= 0:
+            continue
+
+        # Extra turn check by modular landing
+        dist_to_store = 6 - i
+        if s % 13 == dist_to_store:
+            extra_turn_moves += 1
+
+        # Immediate capture check via exact simulation-lite
+        y = you[:]
+        o = opp[:]
+        yy, oo, _ = _sow(y, o, i)
+        gained = yy[6] - you[6]
+        # If store gain exceeds just normal store passes/end sweep modestly, likely capture or strong move.
+        # But we want a direct immediate tactical signal:
+        if gained >= 2 and not _is_terminal(yy, oo):
+            # detect if own moved pit ended as capture by looking for one-step tactical gain
+            capture_potential += gained
+
+    # Vulnerable singletons: your singleton opposite non-empty can be captured by opponent.
+    for i in range(6):
+        if you[i] == 1 and opp[5 - i] > 0:
+            vulnerable += 1 + opp[5 - i]
+
+    return extra_turn_moves, capture_potential, vulnerable
+
+
+def _evaluate(you: List[int], opp: List[int]) -> int:
+    # Terminal exact value
+    if _is_terminal(you, opp):
+        return (you[6] - opp[6]) * 100000
+
+    you_h = sum(you[:6])
+    opp_h = sum(opp[:6])
+
+    extra_moves, capture_pot, vulnerable = _bonus_features(you, opp)
+    opp_extra, opp_capture_pot, opp_vulnerable = _bonus_features(opp, you)
+
+    # Positional distribution
+    pos_you = sum(you[i] * PIT_WEIGHTS[i] for i in range(6))
+    pos_opp = sum(opp[i] * PIT_WEIGHTS[i] for i in range(6))
+
+    # Mobility
+    my_moves = sum(1 for i in range(6) if you[i] > 0)
+    op_moves = sum(1 for i in range(6) if opp[i] > 0)
+
+    # Heuristic composition
+    score = 0
+    score += 1200 * (you[6] - opp[6])          # store lead dominates
+    score += 80 * (you_h - opp_h)              # side control
+    score += 25 * (pos_you - pos_opp)          # shape
+    score += 180 * (extra_moves - opp_extra)   # free-turn opportunities
+    score += 18 * (capture_pot - opp_capture_pot)
+    score += 12 * (opp_vulnerable - vulnerable)
+    score += 20 * (my_moves - op_moves)
+
+    # Endgame emphasis
+    total_side = you_h + opp_h
+    if total_side <= 18:
+        score += 160 * (you[6] - opp[6])
+        score += 35 * (you_h - opp_h)
+
+    return score
+
+
+def _ordered_moves(you: List[int], opp: List[int]) -> List[int]:
+    moves = _legal_moves(you)
+    scored = []
+    for m in moves:
+        ny, no, extra = _sow(you, opp, m)
+        # Fast move ordering favoring extra turns, captures, store gains, good shape.
+        gain = ny[6] - you[6]
+        score = gain * 500
+        if extra:
+            score += 2000
+        # Encourage creating terminal wins and suppress obvious blunders
+        if _is_terminal(ny, no):
+            score += (ny[6] - no[6]) * 1000
+        score += PIT_WEIGHTS[m] * 5
+        score += _evaluate(ny, no) // 20
+        scored.append((score, m))
+    scored.sort(reverse=True)
+    return [m for _, m in scored]
+
+
+def _negamax(you: List[int], opp: List[int], depth: int, alpha: int, beta: int,
+             end_time: float) -> int:
+    if time.perf_counter() >= end_time:
+        raise TimeoutError
+
+    if depth <= 0 or _is_terminal(you, opp):
+        return _evaluate(you, opp)
+
+    moves = _ordered_moves(you, opp)
+    if not moves:
+        return _evaluate(you, opp)
+
+    best = -INF
+    for m in moves:
+        ny, no, extra = _sow(you, opp, m)
+        if extra:
+            val = _negamax(ny, no, depth - 1, alpha, beta, end_time)
+        else:
+            val = -_negamax(no, ny, depth - 1, -beta, -alpha, end_time)
+
+        if val > best:
+            best = val
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+    return best
+
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    moves = [i for i in range(6) if you[i] > 0]
+    if not moves:
+        return 0  # Should not happen per prompt, but remains a valid int fallback.
+
+    # Immediate tactical check: winning terminal move
+    best_legal = moves[0]
+    best_quick = -INF
+    for m in _ordered_moves(you, opponent):
+        ny, no, extra = _sow(you, opponent, m)
+        if _is_terminal(ny, no):
+            # exact game-over result
+            val = (ny[6] - no[6]) * 100000 + (1 if extra else 0)
+            if val > best_quick:
+                best_quick = val
+                best_legal = m
+
+    # Iterative deepening search
+    start = time.perf_counter()
+    time_budget = 0.92
+    end_time = start + time_budget
+
+    best_move = best_legal
+    ordered_root = _ordered_moves(you, opponent)
+    if ordered_root:
+        best_move = ordered_root[0]
+
+    depth = 1
+    try:
+        while depth <= 12:
+            current_best = None
+            current_best_val = -INF
+            alpha = -INF
+            beta = INF
+
+            root_moves = _ordered_moves(you, opponent)
+            for m in root_moves:
+                if time.perf_counter() >= end_time:
+                    raise TimeoutError
+                ny, no, extra = _sow(you, opponent, m)
+                if extra:
+                    val = _negamax(ny, no, depth - 1, alpha, beta, end_time)
+                else:
+                    val = -_negamax(no, ny, depth - 1, -beta, -alpha, end_time)
+
+                # Small tie-break toward higher pit index / immediate store gain already in ordering
+                if val > current_best_val:
+                    current_best_val = val
+                    current_best = m
+                if val > alpha:
+                    alpha = val
+
+            if current_best is not None:
+                best_move = current_best
+            depth += 1
+    except TimeoutError:
+        pass
+    except Exception:
+        # Safety: always return legal move
+        pass
+
+    if 0 <= best_move <= 5 and you[best_move] > 0:
+        return best_move
+    for i in range(6):
+        if you[i] > 0:
+            return i
+    return 0

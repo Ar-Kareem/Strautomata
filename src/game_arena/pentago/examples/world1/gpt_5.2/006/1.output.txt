@@ -1,0 +1,449 @@
+The strategy for this policy is a time-bounded, alpha-beta **negamax** search on a fast **bitboard** representation. It (1) always checks for immediate wins/draw-wins, (2) searches deeper with iterative deepening (typically 2–3 plies within 1s), (3) uses strong move ordering via threat-based candidate selection (complete/stop 4-in-a-row segments) plus local adjacency/centrality heuristics, and (4) evaluates positions by counting unblocked 5-cell segments (with large weights for 4-in-a-row threats) while also penalizing opponent threats. A hard fallback guarantees a legal move in all cases.
+
+<code>
+import time
+from typing import Iterable, List, Tuple, Dict, Optional
+
+# -----------------------------
+# Bitboard utilities / constants
+# -----------------------------
+
+BOARD_N = 6
+CELLS = 36
+
+def rc_to_pos(r: int, c: int) -> int:
+    return r * BOARD_N + c
+
+def pos_to_rc(pos: int) -> Tuple[int, int]:
+    return divmod(pos, BOARD_N)
+
+def bit(pos: int) -> int:
+    return 1 << pos
+
+def iter_bits(x: int):
+    while x:
+        lsb = x & -x
+        yield lsb
+        x ^= lsb
+
+def bit_index(lsb: int) -> int:
+    return lsb.bit_length() - 1
+
+# Quadrant definitions (top-left coords)
+QUAD_ORIGIN = {
+    0: (0, 0),
+    1: (0, 3),
+    2: (3, 0),
+    3: (3, 3),
+}
+
+# Precompute rotation maps for each quadrant and direction
+ROT_MAP: Dict[Tuple[int, str], List[Tuple[int, int]]] = {}
+QUAD_MASK: Dict[int, int] = {}
+
+def _precompute_rotation():
+    for q, (r0, c0) in QUAD_ORIGIN.items():
+        src_positions = []
+        mask = 0
+        for lr in range(3):
+            for lc in range(3):
+                gp = rc_to_pos(r0 + lr, c0 + lc)
+                src_positions.append((lr, lc, gp))
+                mask |= bit(gp)
+        QUAD_MASK[q] = mask
+
+        for d in ("L", "R"):
+            pairs = []
+            for lr, lc, gp_src in src_positions:
+                if d == "R":
+                    nr, nc = lc, 2 - lr
+                else:  # "L"
+                    nr, nc = 2 - lc, lr
+                gp_dst = rc_to_pos(r0 + nr, c0 + nc)
+                pairs.append((gp_src, gp_dst))
+            ROT_MAP[(q, d)] = pairs
+
+_precompute_rotation()
+
+def rotate_bits(bits_in: int, quad: int, d: str) -> int:
+    """Rotate only the bits of a single player within the given quadrant."""
+    pairs = ROT_MAP[(quad, d)]
+    qm = QUAD_MASK[quad]
+    bits_out = bits_in & ~qm
+    # Move bits according to mapping
+    for src, dst in pairs:
+        if bits_in & (1 << src):
+            bits_out |= (1 << dst)
+    return bits_out
+
+def apply_move(curr: int, opp: int, pos: int, quad: int, d: str) -> Tuple[int, int]:
+    """Place at pos (assumed empty), then rotate quadrant (affecting both)."""
+    curr2 = curr | (1 << pos)
+    opp2 = opp
+    curr3 = rotate_bits(curr2, quad, d)
+    opp3 = rotate_bits(opp2, quad, d)
+    return curr3, opp3
+
+# -----------------------------
+# Win detection: all 5-length segments
+# -----------------------------
+WIN_MASKS: List[int] = []
+
+def _precompute_win_masks():
+    masks = []
+    # Horizontal length-5 segments
+    for r in range(6):
+        for c0 in range(2):
+            m = 0
+            for k in range(5):
+                m |= bit(rc_to_pos(r, c0 + k))
+            masks.append(m)
+    # Vertical
+    for c in range(6):
+        for r0 in range(2):
+            m = 0
+            for k in range(5):
+                m |= bit(rc_to_pos(r0 + k, c))
+            masks.append(m)
+    # Diagonal down-right
+    for r0 in range(2):
+        for c0 in range(2):
+            m = 0
+            for k in range(5):
+                m |= bit(rc_to_pos(r0 + k, c0 + k))
+            masks.append(m)
+    # Diagonal down-left
+    for r0 in range(2):
+        for c0 in range(4, 6):
+            m = 0
+            for k in range(5):
+                m |= bit(rc_to_pos(r0 + k, c0 - k))
+            masks.append(m)
+    return masks
+
+WIN_MASKS = _precompute_win_masks()
+
+def has_five(bits_in: int) -> bool:
+    for m in WIN_MASKS:
+        if (bits_in & m) == m:
+            return True
+    return False
+
+# -----------------------------
+# Heuristics / evaluation
+# -----------------------------
+
+# Positional weights (center is best)
+POS_W = [
+    1, 2, 2, 2, 2, 1,
+    2, 3, 4, 4, 3, 2,
+    2, 4, 6, 6, 4, 2,
+    2, 4, 6, 6, 4, 2,
+    2, 3, 4, 4, 3, 2,
+    1, 2, 2, 2, 2, 1,
+]
+
+# Neighbor masks for adjacency heuristic
+NEI_MASK = [0] * CELLS
+
+def _precompute_neighbors():
+    for r in range(6):
+        for c in range(6):
+            p = rc_to_pos(r, c)
+            m = 0
+            for dr in (-1, 0, 1):
+                for dc in (-1, 0, 1):
+                    if dr == 0 and dc == 0:
+                        continue
+                    rr, cc = r + dr, c + dc
+                    if 0 <= rr < 6 and 0 <= cc < 6:
+                        m |= bit(rc_to_pos(rr, cc))
+            NEI_MASK[p] = m
+
+_precompute_neighbors()
+
+LINE_W = {
+    0: 0,
+    1: 2,
+    2: 15,
+    3: 140,
+    4: 4000,
+    5: 200000,  # shouldn't appear in nonterminal eval often; terminal handled separately
+}
+
+WIN_SCORE = 10**9
+
+def piece_square_sum(bits_in: int) -> int:
+    s = 0
+    x = bits_in
+    while x:
+        lsb = x & -x
+        idx = lsb.bit_length() - 1
+        s += POS_W[idx]
+        x ^= lsb
+    return s
+
+def eval_static(curr: int, opp: int, ply: int = 0) -> int:
+    """Evaluation from perspective of curr-to-move player (higher is better)."""
+    cw = has_five(curr)
+    ow = has_five(opp)
+    if cw and ow:
+        return 0
+    if cw:
+        return WIN_SCORE - ply
+    if ow:
+        return -WIN_SCORE + ply
+
+    score = 0
+
+    # Segment-based scoring (unblocked 5-length windows)
+    for m in WIN_MASKS:
+        a = (curr & m).bit_count()
+        b = (opp & m).bit_count()
+        if a and b:
+            continue
+        if a:
+            score += LINE_W[a]
+        elif b:
+            score -= LINE_W[b]
+
+    # Positional preference
+    score += 3 * (piece_square_sum(curr) - piece_square_sum(opp))
+
+    return score
+
+def critical_positions(curr: int, opp: int) -> Tuple[set, set]:
+    """Return (winning_now_positions_for_curr, blocking_positions_vs_opp) ignoring rotation."""
+    occ = curr | opp
+    win_set = set()
+    block_set = set()
+    for m in WIN_MASKS:
+        a = (curr & m).bit_count()
+        b = (opp & m).bit_count()
+        if b == 0 and a == 4:
+            missing = m & ~occ
+            if missing and (missing & (missing - 1)) == 0:
+                win_set.add(bit_index(missing))
+        if a == 0 and b == 4:
+            missing = m & ~occ
+            if missing and (missing & (missing - 1)) == 0:
+                block_set.add(bit_index(missing))
+    return win_set, block_set
+
+def pos_priority(pos: int, curr: int, opp: int, win_set: set, block_set: set) -> int:
+    """Cheap placement-only ordering for candidate selection."""
+    s = 0
+    if pos in win_set:
+        s += 20000
+    if pos in block_set:
+        s += 12000
+    s += 40 * POS_W[pos]
+    s += 25 * (NEI_MASK[pos] & curr).bit_count()
+    s -= 18 * (NEI_MASK[pos] & opp).bit_count()
+    return s
+
+# -----------------------------
+# Search (iterative deepening negamax with alpha-beta)
+# -----------------------------
+
+class _Timeout(Exception):
+    pass
+
+END_TIME = 0.0
+TT: Dict[Tuple[int, int, int], int] = {}
+
+def gen_candidate_positions(curr: int, opp: int, depth_left: int) -> List[int]:
+    occ = curr | opp
+    empties_bits = ((1 << CELLS) - 1) & ~occ
+    empties = [bit_index(b) for b in iter_bits(empties_bits)]
+
+    win_set, block_set = critical_positions(curr, opp)
+
+    # Choose a cap based on depth remaining / game phase
+    empty_n = len(empties)
+    if depth_left >= 2:
+        cap = 10 if empty_n > 18 else 14
+    else:
+        cap = 18 if empty_n > 18 else 24
+
+    # Rank empties and take top cap, but always include critical positions.
+    scored = sorted(((pos_priority(p, curr, opp, win_set, block_set), p) for p in empties), reverse=True)
+    top = [p for _, p in scored[:cap]]
+
+    # Always add critical squares (threat completion / block), even if not in top
+    crit = list(win_set | block_set)
+
+    # In very early game, ensure we don't get too myopic: include some center-biased extras
+    if empty_n >= 30:
+        centers = [rc_to_pos(r, c) for r in (2, 3) for c in (2, 3)]
+        crit.extend(centers)
+
+    # Merge without duplicates, preserving priority order
+    seen = set()
+    out = []
+    for p in top + crit:
+        if p not in seen and ((occ >> p) & 1) == 0:
+            seen.add(p)
+            out.append(p)
+
+    # Safety: if somehow empty, return all empties
+    if not out:
+        return empties
+    return out
+
+def gen_moves(curr: int, opp: int, depth_left: int, for_ordering: bool = True):
+    """Generate (curr2, opp2, move_str, heuristic) after making a move for 'curr'."""
+    if time.perf_counter() > END_TIME:
+        raise _Timeout
+
+    occ = curr | opp
+    cand_positions = gen_candidate_positions(curr, opp, depth_left)
+
+    moves = []
+    for pos in cand_positions:
+        if (occ >> pos) & 1:
+            continue
+        r, c = pos_to_rc(pos)
+        for quad in range(4):
+            for d in ("L", "R"):
+                curr2, opp2 = apply_move(curr, opp, pos, quad, d)
+                # Quick heuristic for ordering: static eval of resulting state
+                h = eval_static(curr2, opp2, ply=0) if for_ordering else 0
+                move_str = f"{r+1},{c+1},{quad},{d}"
+                moves.append((curr2, opp2, move_str, h))
+
+    # Order high-to-low for better alpha-beta pruning
+    moves.sort(key=lambda x: x[3], reverse=True)
+    return moves
+
+def negamax(curr: int, opp: int, depth: int, alpha: int, beta: int, ply: int) -> int:
+    if time.perf_counter() > END_TIME:
+        raise _Timeout
+
+    key = (curr, opp, depth)
+    if key in TT:
+        return TT[key]
+
+    # Terminal / horizon
+    val_terminal = eval_static(curr, opp, ply=ply)
+    if depth == 0 or abs(val_terminal) >= WIN_SCORE - 1000:
+        TT[key] = val_terminal
+        return val_terminal
+
+    best = -10**18
+
+    moves = gen_moves(curr, opp, depth_left=depth, for_ordering=True)
+    if not moves:
+        # No legal moves shouldn't happen (problem statement says at least one empty),
+        # but keep a reasonable fallback.
+        TT[key] = val_terminal
+        return val_terminal
+
+    for curr2, opp2, _ms, _h in moves:
+        # Switch perspective for opponent
+        v = -negamax(opp2, curr2, depth - 1, -beta, -alpha, ply + 1)
+        if v > best:
+            best = v
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+
+    TT[key] = best
+    return best
+
+def bits_from_array(a) -> int:
+    """Convert 6x6 array-like with 0/1 into a 36-bit int."""
+    b = 0
+    for r in range(6):
+        row = a[r]
+        for c in range(6):
+            if int(row[c]) == 1:
+                b |= bit(rc_to_pos(r, c))
+    return b
+
+def first_legal_move(you_bits: int, opp_bits: int) -> str:
+    occ = you_bits | opp_bits
+    for pos in range(CELLS):
+        if ((occ >> pos) & 1) == 0:
+            r, c = pos_to_rc(pos)
+            return f"{r+1},{c+1},0,L"
+    # Should be unreachable per constraints; still return syntactically valid.
+    return "1,1,0,L"
+
+# -----------------------------
+# Required API
+# -----------------------------
+
+def policy(you, opponent) -> str:
+    """
+    Return a legal Pentago move string: "row,col,quad,dir"
+    """
+    global END_TIME, TT
+    start = time.perf_counter()
+    END_TIME = start + 0.95  # keep margin for overhead
+    TT = {}
+
+    try:
+        you_bits = bits_from_array(you)
+        opp_bits = bits_from_array(opponent)
+    except Exception:
+        # Extremely defensive fallback
+        return "1,1,0,L"
+
+    # Always ensure we can return a legal move
+    fallback = first_legal_move(you_bits, opp_bits)
+
+    # Root: iterative deepening (1..3), keep best from last completed depth
+    best_move = fallback
+    best_val = -10**18
+
+    # If any immediate winning/draw-winning move exists, depth-1 will catch quickly.
+    for depth in (1, 2, 3):
+        if time.perf_counter() > END_TIME:
+            break
+        try:
+            alpha, beta = -10**18, 10**18
+            local_best_move = best_move
+            local_best_val = -10**18
+
+            moves = gen_moves(you_bits, opp_bits, depth_left=depth, for_ordering=True)
+            if not moves:
+                return fallback
+
+            for y2, o2, ms, _h in moves:
+                v = -negamax(o2, y2, depth - 1, -beta, -alpha, ply=1)
+                if v > local_best_val:
+                    local_best_val = v
+                    local_best_move = ms
+                if v > alpha:
+                    alpha = v
+                if time.perf_counter() > END_TIME:
+                    raise _Timeout
+
+            # Depth completed
+            best_move = local_best_move
+            best_val = local_best_val
+        except _Timeout:
+            break
+        except Exception:
+            # If anything goes wrong, keep last known good move
+            break
+
+    # Final sanity check: ensure returned move places on empty in the original position.
+    # (Rotations do not affect legality of the placement square being empty pre-move.)
+    try:
+        parts = best_move.split(",")
+        r = int(parts[0]) - 1
+        c = int(parts[1]) - 1
+        pos = rc_to_pos(r, c)
+        occ = you_bits | opp_bits
+        if not (0 <= r < 6 and 0 <= c < 6) or ((occ >> pos) & 1):
+            return fallback
+        if int(parts[2]) not in (0, 1, 2, 3) or parts[3] not in ("L", "R"):
+            return fallback
+    except Exception:
+        return fallback
+
+    return best_move
+</code>

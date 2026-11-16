@@ -1,0 +1,102 @@
+
+import numpy as np
+
+def generate_moves(board, opponent_board):
+    rows, cols = board.shape
+    moves = []
+    for r in range(rows):
+        for c in range(cols):
+            if board[r, c]:
+                # Up
+                if r-1 >= 0 and opponent_board[r-1, c]:
+                    moves.append((r, c, 'U'))
+                # Right
+                if c+1 < cols and opponent_board[r, c+1]:
+                    moves.append((r, c, 'R'))
+                # Down
+                if r+1 < rows and opponent_board[r+1, c]:
+                    moves.append((r, c, 'D'))
+                # Left
+                if c-1 >= 0 and opponent_board[r, c-1]:
+                    moves.append((r, c, 'L'))
+    return moves
+
+def apply_move(board, opponent_board, move):
+    r, c, dir = move
+    if dir == 'U':
+        dr, dc = -1, 0
+    elif dir == 'R':
+        dr, dc = 0, 1
+    elif dir == 'D':
+        dr, dc = 1, 0
+    elif dir == 'L':
+        dr, dc = 0, -1
+    nr, nc = r+dr, c+dc
+    new_board = board.copy()
+    new_opponent_board = opponent_board.copy()
+    new_board[r, c] = 0
+    new_board[nr, nc] = 1
+    new_opponent_board[nr, nc] = 0
+    return new_board, new_opponent_board
+
+def evaluate(you, opponent, is_maximizing):
+    # Check if the current player has no moves
+    if len(generate_moves(you, opponent)) == 0:
+        if is_maximizing:
+            return -100  # Current player loses
+        else:
+            return 100   # Opponent loses
+    else:
+        moves_current = len(generate_moves(you, opponent))
+        moves_opponent = len(generate_moves(opponent, you))
+        score = moves_current - moves_opponent
+        if is_maximizing:
+            return score
+        else:
+            return -score
+
+def minimax(you, opponent, depth, is_maximizing):
+    # Check terminal state or depth limit
+    if depth == 0 or len(generate_moves(you, opponent)) == 0:
+        return evaluate(you, opponent, is_maximizing)
+    
+    if is_maximizing:
+        best_value = -10**9
+        for move in generate_moves(you, opponent):
+            new_you, new_opponent = apply_move(you, opponent, move)
+            value = minimax(new_opponent, new_you, depth-1, False)
+            if value > best_value:
+                best_value = value
+        return best_value
+    else:
+        best_value = 10**9
+        for move in generate_moves(you, opponent):
+            new_you, new_opponent = apply_move(you, opponent, move)
+            value = minimax(new_opponent, new_you, depth-1, True)
+            if value < best_value:
+                best_value = value
+        return best_value
+
+def policy(you, opponent):
+    you = np.array(you)
+    opponent = np.array(opponent)
+    
+    # Generate possible moves
+    moves = generate_moves(you, opponent)
+    if not moves:
+        # Return a default move if no moves available
+        return "0,0,U"
+    
+    # Use minimax to find the best move
+    best_value = -10**9
+    best_move = None
+    for move in moves:
+        new_you, new_opponent = apply_move(you, opponent, move)
+        value = minimax(new_opponent, new_you, 1, False)
+        if value > best_value:
+            best_value = value
+            best_move = move
+    
+    # Convert the best move to string format
+    r, c, dir = best_move
+    return f"{r},{c},{dir}"

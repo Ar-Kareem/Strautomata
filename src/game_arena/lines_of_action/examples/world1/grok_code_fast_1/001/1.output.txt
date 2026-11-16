@@ -1,0 +1,167 @@
+The strategy for this policy is to implement a minimax search with alpha-beta pruning to evaluate board positions, aiming to a depth of 3 moves while accounting for the time constraint. The evaluation heuristic focuses on the connectivity of the player's pieces: it penalizes the number of disconnected groups (using 8-directional adjacency) and rewards the concentration of pieces, as the win condition is to connect all pieces into one group. The search prioritizes moves that directly improve connectivity, with a fallback to breadth-first-like ordering of moves (radial from center) to explore promising actions first. This approach beats simpler greedy policies by looking ahead and considering opponent responses.
+
+<code>
+import numpy as np
+from collections import deque
+import time
+
+def get_moves(board, player):
+    """Generate all legal moves for the current player."""
+    moves = []
+    board_shape = board.shape
+    for i in range(board_shape[0]):
+        for j in range(board_shape[1]):
+            if board[i, j] == player:
+                # Check all 8 directions
+                directions = [
+                    (-1, -1), (-1, 0), (-1, 1),
+                    (0, -1),           (0, 1),
+                    (1, -1),  (1, 0),  (1, 1)
+                ]
+                for di, dj in directions:
+                    # Count pieces in this line
+                    count = 0
+                    pos = i, j
+                    while 0 <= pos[0] < 8 and 0 <= pos[1] < 8:
+                        if board[pos[0], pos[1]] != 0:
+                            count += 1
+                        pos = (pos[0] + di, pos[1] + dj)
+                    # Number of steps k = count - 1 (since moving counts the starting piece)
+                    k = count - 1
+                    if k == 0:
+                        continue
+                    # Get k steps in direction
+                    ni, nj = i + di * k, j + dj * k
+                    if 0 <= ni < 8 and 0 <= nj < 8:
+                        # Check the path: can't jump over opponent pieces
+                        valid = True
+                        for step in range(1, k):
+                            mi, mj = i + di * step, j + dj * step
+                            if board[mi, mj] == -player:
+                                valid = False
+                                break
+                        if valid:
+                            # Can land on enemy or empty; if enemy, capture
+                            moves.append((i, j, ni, nj))
+    return moves
+
+def apply_move(board, move, player):
+    """Apply move and return new board."""
+    i, j, ni, nj = move
+    new_board = board.copy()
+    new_board[i, j] = 0
+    if new_board[ni, nj] == -player:
+        # Capture
+        new_board[ni, nj] = player
+    else:
+        new_board[ni, nj] = player
+    return new_board
+
+def is_connected(board, player):
+    """Check number of connected components for player (8-dir)."""
+    visited = set()
+    components = 0
+    for i in range(8):
+        for j in range(8):
+            if board[i, j] == player and (i, j) not in visited:
+                components += 1
+                # BFS
+                queue = deque([(i, j)])
+                visited.add((i, j))
+                while queue:
+                    x, y = queue.popleft()
+                    for dx in [-1, 0, 1]:
+                        for dy in [-1, 0, 1]:
+                            if dx == 0 and dy == 0:
+                                continue
+                            nx, ny = x + dx, y + dy
+                            if 0 <= nx < 8 and 0 <= ny < 8 and board[nx, ny] == player and (nx, ny) not in visited:
+                                visited.add((nx, ny))
+                                queue.append((nx, ny))
+    return components == 1
+
+def evaluate(board, player):
+    """Heuristic: negative for more components (bad), positive for concentration."""
+    if is_connected(board, player):
+        return 1000  # Win
+    if is_connected(board, -player):
+        return -1000  # Loss
+    my_pieces = np.sum(board == player)
+    opp_pieces = np.sum(board == -player)
+    components = 0
+    visited = set()
+    for i in range(8):
+        for j in range(8):
+            if board[i, j] == player and (i, j) not in visited:
+                components += 1
+                # BFS for component size?
+                component_size = 0
+                queue = deque([(i, j)])
+                visited.add((i, j))
+                component_size += 1
+                while queue:
+                    x, y = queue.popleft()
+                    for dx in [-1, 0, 1]:
+                        for dy in [-1, 0, 1]:
+                            if dx == 0 and dy == 0:
+                                continue
+                            nx, ny = x + dx, y + dy
+                            if 0 <= nx < 8 and 0 <= ny < 8 and board[nx, ny] == player and (nx, ny) not in visited:
+                                visited.add((nx, ny))
+                                component_size += 1
+                                queue.append((nx, ny))
+                # Penalty: components - 1 + (100 * (1/avg_size)) but simplify
+    # Simple: fewer components is better
+    return -components + (opp_pieces - my_pieces)  # Prefer attack
+
+def minimax(board, depth, maximizing, player, alpha, beta, start_time):
+    """Alpha-beta search."""
+    if depth == 0 or is_connected(board, 1) or is_connected(board, -1) or time.time() - start_time > 0.9:
+        return evaluate(board, player) if maximizing else -evaluate(board, -player)
+    
+    moves = get_moves(board, player if maximizing else -player)
+    # Sort moves: prioritize center-staying or connectivity-improving, approx by distance from center
+    def move_score(m):
+        ni, nj = m[2], m[3]
+        return abs(ni - 3.5) + abs(nj - 3.5)  # Closer to center first
+    moves.sort(key=move_score)
+    
+    if maximizing:
+        max_eval = -np.inf
+        for move in moves:
+            new_board = apply_move(board, move, player)
+            eval = minimax(new_board, depth - 1, False, player, alpha, beta, start_time)
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = np.inf
+        for move in moves:
+            new_board = apply_move(board, move, -player)
+            eval = minimax(new_board, depth - 1, True, player, alpha, beta, start_time)
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def policy(board):
+    """Main policy: return best move."""
+    player = 1  # Always 1
+    moves = get_moves(board, player)
+    if not moves:
+        # Shouldn't happen, but in case
+        return "0,0:0,1"  # Dummy, but assume legal
+    best_move = None
+    best_score = -np.inf
+    start_time = time.time()
+    for move in moves:
+        new_board = apply_move(board, move, player)
+        score = minimax(new_board, 3, False, player, -np.inf, np.inf, start_time)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    return f"{best_move[0]},{best_move[1]}:{best_move[2]},{best_move[3]}"
+</code>

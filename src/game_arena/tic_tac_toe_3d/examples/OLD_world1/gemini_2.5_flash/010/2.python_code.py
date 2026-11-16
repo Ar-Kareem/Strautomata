@@ -1,0 +1,89 @@
+
+import random
+import numpy as np
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    n = len(board)
+    current_board = np.array(board)
+
+    # Helper function to check a winner given a player
+    def check_win(b_arr, player):
+        # Check all possible winning lines: rows, columns, depths, and diagonals
+
+        # Define all winning directions (delta_z, delta_y, delta_x)
+        directions = []
+        for dz in [-1, 0, 1]:
+            for dy in [-1, 0, 1]:
+                for dx in [-1, 0, 1]:
+                    if dz == 0 and dy == 0 and dx == 0:
+                        continue
+                    directions.append((dz, dy, dx))
+
+        for z in range(n):
+            for y in range(n):
+                for x in range(n):
+                    if b_arr[z, y, x] == player:
+                        for dz, dy, dx in directions:
+                            line_count = 1
+                            for i in range(1, n):
+                                nz, ny, nx = z + i * dz, y + i * dy, x + i * dx
+                                if 0 <= nz < n and 0 <= ny < n and 0 <= nx < n and b_arr[nz, ny, nx] == player:
+                                    line_count += 1
+                                else:
+                                    break
+                            if line_count == n:
+                                return True
+        return False
+
+    # 1. Check for an immediate win
+    for z in range(n):
+        for y in range(n):
+            for x in range(n):
+                if current_board[z, y, x] == 0:
+                    current_board[z, y, x] = 1
+                    if check_win(current_board, 1):
+                        return z, y, x
+                    current_board[z, y, x] = 0  # Undo move
+
+    # 2. Block the opponent's immediate win
+    for z in range(n):
+        for y in range(n):
+            for x in range(n):
+                if current_board[z, y, x] == 0:
+                    current_board[z, y, x] = -1
+                    if check_win(current_board, -1):
+                        return z, y, x
+                    current_board[z, y, x] = 0  # Undo move
+
+    # 3. Prefer center cells
+    center_coords = []
+    if n % 2 == 1:
+        center = n // 2
+        center_coords.append((center, center, center))
+    # For even N, consider the middle 2x2x2 cube as central area
+    elif n % 2 == 0:
+        c1 = n // 2 - 1
+        c2 = n // 2
+        for z in [c1, c2]:
+            for y in [c1, c2]:
+                for x in [c1, c2]:
+                    center_coords.append((z, y, x))
+
+    for z, y, x in center_coords:
+        if current_board[z, y, x] == 0:
+            return z, y, x
+
+    # 4. If nothing else, pick a random available cell
+    empty_cells = []
+    for z in range(n):
+        for y in range(n):
+            for x in range(n):
+                if current_board[z, y, x] == 0:
+                    empty_cells.append((z, y, x))
+
+    if empty_cells:
+        return random.choice(empty_cells)
+    
+    # Should not happen in a valid game state
+    raise Exception("No empty cells available, but game not ended?")
+

@@ -1,0 +1,141 @@
+## Strategy
+
+This Clobber bot uses a **one-ply search with sophisticated move evaluation** optimized for the 5x6 grid. The core strategy prioritizes:
+
+1. **Immediate Wins**: First checks if a move leaves the opponent with zero legal moves
+2. **Loss Prevention**: Avoids moves that allow opponent to force an immediate win on their next turn
+3. **Material Advantage**: Maximizes the difference in piece count (each piece = +500 points)
+4. **Mobility Control**: Maximizes the difference in available moves between players (each move = +200 points)
+5. **Center Positioning**: Rewards moving pieces toward the center for better future mobility (Manhattan distance improvement)
+6. **Capture Quality**: Values capturing opponent pieces that threaten multiple of our pieces
+
+The bot evaluates all legal moves in ~O(n·m) time where n is piece count and m is average moves per piece, easily fitting within the 1-second constraint for a 5x6 board.
+
+<code>
+import numpy as np
+
+def policy(you, opponent):
+    """
+    Clobber policy for 5x6 grid.
+    Evaluates all legal moves and selects the highest-scoring move based on:
+    1. Immediate win detection
+    2. Immediate loss avoidance
+    3. Material advantage
+    4. Mobility differential
+    5. Center positioning
+    6. Captured piece value
+    """
+    # Convert to numpy arrays for efficient operations
+    you = np.array(you, dtype=np.int8)
+    opponent = np.array(opponent, dtype=np.int8)
+    
+    # Get all legal moves
+    moves = _get_legal_moves(you, opponent)
+    
+    # Safety check - return a dummy if somehow no moves exist
+    if not moves:
+        return "0,0,R"
+    
+    # Single move case
+    if len(moves) == 1:
+        return _format_move(moves[0])
+    
+    # Evaluate each move and track the best
+    best_move = moves[0]
+    best_score = float('-inf')
+    
+    for move in moves:
+        score = _evaluate_move(move, you, opponent)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return _format_move(best_move)
+
+def _get_legal_moves(you, opponent):
+    """Find all legal moves for current player with bounds checking"""
+    moves = []
+    rows, cols = you.shape
+    
+    for r in range(rows):
+        for c in range(cols):
+            if you[r, c]:
+                # Check each direction with explicit bounds
+                if r > 0 and opponent[r-1, c]:
+                    moves.append((r, c, 'U', r-1, c))
+                if c < cols-1 and opponent[r, c+1]:
+                    moves.append((r, c, 'R', r, c+1))
+                if r < rows-1 and opponent[r+1, c]:
+                    moves.append((r, c, 'D', r+1, c))
+                if c > 0 and opponent[r, c-1]:
+                    moves.append((r, c, 'L', r, c-1))
+    
+    return moves
+
+def _evaluate_move(move, you, opponent):
+    """Score a move from our perspective - higher is better"""
+    r, c, dir_name, nr, nc = move
+    
+    # Simulate the move
+    new_you = you.copy()
+    new_opp = opponent.copy()
+    new_you[r, c] = 0
+    new_you[nr, nc] = 1
+    new_opp[nr, nc] = 0
+    
+    # 1. Immediate win: opponent has no moves after our move
+    opp_moves = _get_legal_moves(new_opp, new_you)
+    if not opp_moves:
+        return 1_000_000
+    
+    # 2. Immediate loss check: avoid moves letting opponent win next turn
+    for orow, ocol, _, onr, onc in opp_moves:
+        # Simulate opponent's response
+        test_you = new_you.copy()
+        test_opp = new_opp.copy()
+        test_opp[orow, ocol] = 0
+        test_opp[onr, onc] = 1
+        test_you[onr, onc] = 0
+        
+        # If we would have no reply, this move is terrible
+        if not _get_legal_moves(test_you, test_opp):
+            return -500_000
+    
+    # 3. Material advantage
+    material = new_you.sum() - new_opp.sum()
+    
+    # 4. Mobility differential
+    our_mobility = len(_get_legal_moves(new_you, new_opp))
+    opp_mobility = len(opp_moves)
+    mobility = our_mobility - opp_mobility
+    
+    # 5. Center position improvement (Manhattan distance)
+    center_r, center_c = 2, 2.5
+    old_dist = abs(r - center_r) + abs(c - center_c)
+    new_dist = abs(nr - center_r) + abs(nc - center_c)
+    center_score = (old_dist - new_dist) * 10
+    
+    # 6. Value of captured piece (how many of our pieces it threatened)
+    captured_value = 0
+    if nr > 0 and you[nr-1, nc]:
+        captured_value += 1
+    if nr < 4 and you[nr+1, nc]:
+        captured_value += 1
+    if nc > 0 and you[nr, nc-1]:
+        captured_value += 1
+    if nc < 5 and you[nr, nc+1]:
+        captured_value += 1
+    
+    # Weighted combination
+    return (
+        material * 500 +
+        mobility * 200 +
+        center_score * 50 +
+        captured_value * 150
+    )
+
+def _format_move(move):
+    """Convert move tuple to required string format"""
+    r, c, dir_name, _, _ = move
+    return f"{r},{c},{dir_name}"
+</code>

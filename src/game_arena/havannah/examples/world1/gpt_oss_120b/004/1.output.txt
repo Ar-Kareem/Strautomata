@@ -1,0 +1,179 @@
+**Strategy Overview**
+
+The policy follows a simple yet effective connectivity‑driven heuristic:
+
+1. **Board representation** – All moves are taken from cells where `valid_mask` is `True` and the cell is not already occupied by either player.
+
+2. **Hex adjacency** – For a cell `(r,c)` the six neighbours on a hex grid are  
+   ```
+   (r‑1,c) , (r+1,c) , (r,c‑1) , (r,c+1) , (r‑1,c+1) , (r+1,c‑1)
+   ```
+   (the last two are the “upper‑right” and “lower‑left” neighbours).
+
+3. **Union‑Find for connectivity** – The player’s stones are grouped into components using a disjoint‑set data structure.  
+   For each component we store the set of board edges it already touches:
+   - top    : `row == 0`
+   - bottom : `row == 14`
+   - left   : `col == 0`
+   - right  : `col == 14`
+   (These four are sufficient to recognise progress toward bridges and forks.)
+
+4. **Scoring a candidate move**  
+   For every legal empty cell we:
+   * count how many of the player’s neighbours it would connect to,
+   * simulate the union of the neighbour components,
+   * compute the number of distinct edges that the resulting component would touch,
+   * penalise a move that would give the opponent many new neighbours (to avoid handing them a quick win).
+
+   The final score is  
+   ```
+   score = 10 * edge_count + 2 * own_adjacent – opponent_adjacent
+   ```
+   The move with the highest score is selected (random tie‑break).
+
+5. **Legal move guarantee** – If, for any reason, the heuristic fails to find a move (e.g., an empty board with a corrupted mask), the policy falls back to the first still‑available cell.
+
+This heuristic favours moves that grow a component toward multiple board edges, which is exactly what is needed to build bridges and forks, while still keeping the stone well‑connected to existing groups. It is lightweight, runs far below the 1 second limit, and always returns a legal move.
+
+---
+
+```python
+<code>
+import random
+from typing import List, Tuple
+import numpy as np
+
+# ---------- Union‑Find implementation ----------
+class UnionFind:
+    def __init__(self):
+        self.parent = {}          # maps node -> parent
+        self.rank = {}            # for union by rank
+        self.edge_sets = {}       # maps root -> set of edges touched
+
+    def make_set(self, node, edges):
+        self.parent[node] = node
+        self.rank[node] = 0
+        self.edge_sets[node] = set(edges)
+
+    def find(self, node):
+        # Path compression
+        if self.parent[node] != node:
+            self.parent[node] = self.find(self.parent[node])
+        return self.parent[node]
+
+    def union(self, a, b):
+        ra, rb = self.find(a), self.find(b)
+        if ra == rb:
+            return ra
+        # Union by rank
+        if self.rank[ra] < self.rank[rb]:
+            ra, rb = rb, ra
+        self.parent[rb] = ra
+        self.edge_sets[ra].update(self.edge_sets[rb])
+        if self.rank[ra] == self.rank[rb]:
+            self.rank[ra] += 1
+        return ra
+
+    def component_edges(self, node):
+        return self.edge_sets[self.find(node)]
+
+# ---------- Helper functions ----------
+def hex_neighbours(r: int, c: int, N: int = 15) -> List[Tuple[int, int]]:
+    """Return the six hex neighbours of (r,c) that are inside the board."""
+    dirs = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, 1), (1, -1)]
+    neigh = []
+    for dr, dc in dirs:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < N and 0 <= nc < N:
+            neigh.append((nr, nc))
+    return neigh
+
+def edges_touched(cell: Tuple[int, int]) -> List[str]:
+    """Return a list of edge identifiers the cell touches."""
+    r, c = cell
+    edges = []
+    if r == 0:
+        edges.append('top')
+    if r == 14:
+        edges.append('bottom')
+    if c == 0:
+        edges.append('left')
+    if c == 14:
+        edges.append('right')
+    return edges
+
+# ---------- Main policy ----------
+def policy(me: List[Tuple[int, int]],
+           opp: List[Tuple[int, int]],
+           valid_mask) -> Tuple[int, int]:
+    """
+    Returns a legal move for the current player on a 15x15 Havannah board.
+    """
+    N = 15  # board size
+    occupied = set(me) | set(opp)
+
+    # Pre‑compute UnionFind for our stones
+    uf = UnionFind()
+    for stone in me:
+        uf.make_set(stone, edges_touched(stone))
+
+    # Merge existing neighbour components
+    for stone in me:
+        for nb in hex_neighbours(*stone, N):
+            if nb in me:
+                uf.union(stone, nb)
+
+    # Gather all candidate cells
+    candidates = []
+    valid_np = np.array(valid_mask, dtype=bool)
+    for r in range(N):
+        for c in range(N):
+            if not valid_np[r, c]:
+                continue
+            if (r, c) in occupied:
+                continue
+            candidates.append((r, c))
+
+    # Fallback: if no candidates (should not happen) choose first empty
+    if not candidates:
+        for r in range(N):
+            for c in range(N):
+                if valid_np[r, c] and (r, c) not in occupied:
+                    return (r, c)
+
+    best_score = -10**9
+    best_moves = []
+
+    for cand in candidates:
+        r, c = cand
+        own_adj = 0
+        opp_adj = 0
+        neighbour_comps = set()
+
+        for nb in hex_neighbours(r, c, N):
+            if nb in me:
+                own_adj += 1
+                neighbour_comps.add(uf.find(nb))
+            elif nb in opp:
+                opp_adj += 1
+
+        # Simulate merging neighbour components with the new stone
+        simulated_edges = set(edges_touched(cand))
+        for comp_root in neighbour_comps:
+            simulated_edges.update(uf.component_edges(comp_root))
+
+        edge_count = len(simulated_edges)
+
+        # Simple linear scoring function
+        score = 10 * edge_count + 2 * own_adj - opp_adj
+
+        if score > best_score:
+            best_score = score
+            best_moves = [cand]
+        elif score == best_score:
+            best_moves.append(cand)
+
+    # Random tie‑break among equally good moves
+    return random.choice(best_moves)
+</code>
+```

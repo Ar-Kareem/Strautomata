@@ -1,0 +1,97 @@
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    def evaluate_move(move):
+        from_pos, to_pos = move
+        old_row, old_col = from_pos
+        new_row, new_col = to_pos
+        score = 0
+        
+        # Advancement and goal proximity
+        if color == 'w':
+            advancement = new_row - old_row
+            goal_dist = 7 - new_row
+            score += advancement * 5
+            score += goal_dist * 2
+        else:
+            advancement = old_row - new_row
+            goal_dist = new_row
+            score += advancement * 5
+            score += goal_dist * 2
+            
+        # Instant win condition
+        if (color == 'w' and new_row == 7) or (color == 'b' and new_row == 0):
+            score += 1000
+        
+        # Capture bonus
+        if to_pos in opp:
+            score += 15
+        
+        # Threat detection
+        threatened = False
+        if color == 'w':
+            if new_row + 1 <= 7:
+                can_be_captured = (new_row + 1, new_col - 1) in opp or (new_row + 1, new_col + 1) in opp
+                if can_be_captured and new_row < 7:
+                    threatened = True
+        else:
+            if new_row - 1 >= 0:
+                can_be_captured = (new_row - 1, new_col - 1) in opp or (new_row - 1, new_col + 1) in opp
+                if can_be_captured and new_row > 0:
+                    threatened = True
+        if threatened:
+            score -= 10
+        
+        # Central positioning bonus
+        center_bonus = 3.5 - abs(new_col - 3.5)
+        score += center_bonus * 0.5
+        
+        return score
+    
+    # Generate all legal moves
+    legal_moves = []
+    for (r, c) in me:
+        if color == 'w':
+            fr = r + 1
+            directions = [(fr, c)]
+            if c > 0:
+                directions.append((fr, c-1))
+            if c < 7:
+                directions.append((fr, c+1))
+        else:
+            fr = r - 1
+            directions = [(fr, c)]
+            if c > 0:
+                directions.append((fr, c-1))
+            if c < 7:
+                directions.append((fr, c+1))
+                
+        for (tr, tc) in directions:
+            # Bounds check
+            if not (0 <= tr <= 7 and 0 <= tc <= 7):
+                continue
+            
+            # Collision check (straight move)
+            if (tr, tc) == (fr, c):
+                if (tr, tc) not in me and (tr, tc) not in opp:
+                    legal_moves.append(((r, c), (tr, tc)))
+            else:  # Diagonal move
+                if (tr, tc) not in me:
+                    legal_moves.append(((r, c), (tr, tc)))
+    
+    # Select best move using deterministic tie-breaking
+    if not legal_moves:
+        return (me[0], me[0])  # Fallback (should never occur)
+    
+    best_score = -float('inf')
+    best_moves = []
+    for move in legal_moves:
+        score = evaluate_move(move)
+        if score > best_score:
+            best_score = score
+            best_moves = [move]
+        elif score == best_score:
+            best_moves.append(move)
+    
+    # Tie-breaker: lexicographical order on (from_row, from_col, to_row, to_col)
+    best_moves.sort(key=lambda m: (m[0][0], m[0][1], m[1][0], m[1][1]))
+    return best_moves[0]

@@ -1,0 +1,61 @@
+
+def evaluate_move(pieces, move, to_play):
+    # Move pieces in a temporary state for evaluation
+    from_square, to_square = move[:2], move[2:4]
+    piece_moving = pieces[from_square]
+    new_pieces = pieces.copy()
+    new_pieces[to_square] = piece_moving
+    del new_pieces[from_square]
+    
+    # Evaluate the new position
+    if to_play == 'white':
+        opponent_color = 'b'
+    else:
+        opponent_color = 'w'
+    
+    # Check for potential gains
+    move_gain = 0
+    if to_square in new_pieces:
+        opponent_piece = new_pieces[to_square]
+        if opponent_piece[0] == opponent_color:  # It's an opponent piece
+            move_gain += piece_value(opponent_piece[1])  # Capture gain
+            
+    # Check for checkmate or threats
+    if is_checkmate(new_pieces, to_play):
+        return float('inf')  # Checkmate is the highest value
+    elif is_threatened(new_pieces, to_play):
+        return -float('inf')  # If we are threatened
+    
+    return move_gain
+
+def piece_value(piece_type):
+    values = {
+        'K': 0,
+        'Q': 9,
+        'R': 5,
+        'B': 3,
+        'N': 3,
+        'P': 1
+    }
+    return values.get(piece_type, 0)
+
+def is_checkmate(pieces, color):
+    # Simplified checkmate evaluation (this function needs to be logically defined)
+    return False  # Placeholder
+
+def is_threatened(pieces, color):
+    # Check if the player's king is under threat (this function needs to be logically defined)
+    return False  # Placeholder
+
+def policy(pieces: dict[str, str], to_play: str, memory: dict) -> tuple[str, dict]:
+    legal_moves = [move for move in pieces if move]  # Change this with actual legal moves provided in the call
+    best_move = None
+    best_value = -float('inf')
+    
+    for move in legal_moves:
+        move_value = evaluate_move(pieces, move, to_play)
+        if move_value > best_value:
+            best_value = move_value
+            best_move = move
+            
+    return best_move, memory

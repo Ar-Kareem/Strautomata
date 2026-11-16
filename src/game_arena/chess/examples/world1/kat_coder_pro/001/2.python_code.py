@@ -1,0 +1,77 @@
+
+import numpy as np
+from typing import Dict, List
+
+def policy(pieces: Dict[str, str], to_play: str, legal_moves: List[str]) -> str:
+    # Piece values
+    piece_values = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}
+    
+    # Central squares for piece development
+    central_squares = ['d4', 'd5', 'e4', 'e5', 'c4', 'c5', 'f4', 'f5']
+    
+    # Get current player's color
+    player_color = 'w' if to_play == 'white' else 'b'
+    opponent_color = 'b' if to_play == 'white' else 'w'
+    
+    # Count pieces for each player
+    player_pieces = sum(1 for piece in pieces.values() if piece[0] == player_color)
+    opponent_pieces = sum(1 for piece in pieces.values() if piece[0] == opponent_color)
+    
+    # Check if any of our pieces are under attack
+    our_attacked_squares = []
+    for move in legal_moves:
+        if 'x' in move and move[move.index('x')-1] in central_squares:
+            our_attacked_squares.append(move[move.index('x')-1])
+    
+    best_move = legal_moves[0]
+    best_score = -999999
+    
+    for move in legal_moves:
+        score = 0
+        
+        # Check if move is a capture
+        if 'x' in move:
+            target_square = move[move.index('x')+1:move.index('x')+3]
+            if target_square in pieces:
+                captured_piece = pieces[target_square]
+                if captured_piece[0] == opponent_color:
+                    score += piece_values[captured_piece[1]]
+                    # Check if we can recapture
+                    recapture_moves = [m for m in legal_moves if m != move and 'x' in m and m[m.index('x')+1:m.index('x')+3] == target_square]
+                    if not recapture_moves:
+                        score += 10  # Safe capture
+        
+        # Prefer moves to central squares
+        if move[-2:] in central_squares:
+            score += 1
+        
+        # Prefer defending attacked pieces
+        if move[-2:] in our_attacked_squares:
+            score += 5
+        
+        # Prefer developing minor pieces early
+        if len(move) >= 2 and move[0] in ['N', 'B'] and move[-2:] in central_squares:
+            score += 2
+        
+        # Prefer castling
+        if move in ['O-O', 'O-O-O']:
+            score += 10
+        
+        # Prefer pawn advances in center
+        if len(move) == 2 and move in central_squares:
+            score += 2
+        
+        # Avoid checks unless they lead to material gain
+        if '+' in move and 'x' not in move:
+            score -= 1
+        
+        # Prefer maintaining piece count advantage
+        if player_pieces > opponent_pieces:
+            score += 1
+        
+        # Update best move if current score is higher
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move

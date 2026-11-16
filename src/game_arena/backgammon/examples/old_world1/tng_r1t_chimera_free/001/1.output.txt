@@ -1,0 +1,99 @@
+
+
+The logic for this policy prioritizes safety by re-entering checkers from the bar efficiently, bearing off when possible, and moving the farthest checkers first to bring them home quicker. It avoids leaving blots and prefers higher dice for maximum movement.
+
+<code>
+def policy(state: dict) -> str:
+    dice = sorted(state['dice'], reverse=True)
+    if not dice:
+        return 'H:P,P'
+
+    # Helper to check if bearing off is allowed
+    def can_bear_off():
+        if state['my_bar'] > 0:
+            return False
+        for i in range(18):
+            if state['my_pts'][i] > 0:
+                return False
+        return True
+
+    # Re-enter from bar if necessary
+    if state['my_bar'] > 0:
+        valid_dice = []
+        for die in dice:
+            target = 24 - die
+            if 0 <= target < 24 and state['opp_pts'][target] < 2:
+                valid_dice.append(die)
+        if not valid_dice:
+            return 'H:P,P'
+        # Use highest possible dice first
+        if len(valid_dice) >= 2:
+            return 'H:B,B' if valid_dice[0] >= valid_dice[1] else 'L:B,B'
+        else:
+            return 'H:B,P' if valid_dice[0] == dice[0] else 'L:B,P'
+
+    # Bearing off
+    if can_bear_off():
+        for die in dice:
+            for p in range(23, 17, -1):
+                if state['my_pts'][p] > 0:
+                    if p >= 24 - die - 1:
+                        if len(dice) == 1:
+                            return f'H:A{p},P'
+                        else:
+                            # Try to bear off second die
+                            remaining_die = dice[1] if die == dice[0] else dice[0]
+                            for p2 in range(23, 17, -1):
+                                if p2 == p and state['my_pts'][p] < 2:
+                                    continue
+                                if state['my_pts'][p2] > 0 and p2 >= 24 - remaining_die - 1:
+                                    order = 'H' if die >= remaining_die else 'L'
+                                    return f'{order}:A{p},A{p2}'
+                            return f'H:A{p},P' if die >= remaining_die else f'L:A{p},P'
+        # If only one die can be used
+        for p in range(23, 17, -1):
+            if state['my_pts'][p] > 0:
+                return f'H:A{p},P'
+
+    # Normal moves: prioritize furthest checkers, avoid leaving blots
+    def find_move(die, current_pts):
+        for p in range(23, -1, -1):
+            if current_pts[p] == 0:
+                continue
+            dest = p - die
+            if dest >= 0:
+                if state['opp_pts'][dest] < 2:
+                    return p
+            else:
+                if can_bear_off():
+                    return p
+        return None
+
+    my_pts = state['my_pts'].copy()
+    if len(dice) == 1:
+        p = find_move(dice[0], my_pts)
+        return f'H:A{p},P' if p is not None else 'H:P,P'
+    else:
+        # Try H order
+        p1 = find_move(dice[0], my_pts)
+        if p1 is not None:
+            temp_pts = my_pts.copy()
+            temp_pts[p1] -= 1
+            p2 = find_move(dice[1], temp_pts)
+            if p2 is not None:
+                return f'H:A{p1},A{p2}'
+        # Try L order
+        p1 = find_move(dice[1], my_pts)
+        if p1 is not None:
+            temp_pts = my_pts.copy()
+            temp_pts[p1] -= 1
+            p2 = find_move(dice[0], temp_pts)
+            if p2 is not None:
+                return f'L:A{p1},A{p2}'
+        # Use only one die if possible
+        for die in dice:
+            p = find_move(die, my_pts)
+            if p is not None:
+                return f'H:A{p},P' if die == dice[0] else f'L:A{p},P'
+        return 'H:P,P'
+</code>

@@ -1,0 +1,282 @@
+ The strategy for this policy is a **Flat Monte Carlo** approach combined with heuristic candidate selection. 
+
+1.  **Board Representation**: The game state is converted into a 2D list for fast mutation and copying during simulations.
+2.  **Candidate Generation**: Instead of evaluating all 361 intersections, we focus on *local* moves—empty points adjacent to existing stones. This drastically reduces the search space while maintaining high-quality options (captures, extensions, cuts).
+3.  **Heuristic Pre-sorting**: Candidates are sorted by a simple tactical heuristic (e.g., immediate capture value) to prioritize promising moves for simulation.
+4.  **Random Playouts**: For each top candidate, we simulate short random games (40 moves). During these playouts, we use optimized legality checks (fast suicide detection) and efficient board updates using frontier sets to avoid scanning the whole board.
+5.  **Evaluation**: The final board state is scored using Area Scoring (stones + surrounded territory). The move with the highest average score across its simulations is selected.
+6.  **Safety**: If no candidates are found or time is short, the policy falls back to any legal move or a pass.
+
+This method balances tactical awareness (via pre-sorting) with strategic foresight (via Monte Carlo evaluation), making it robust against both greedy and random opponents within the 1-second time limit.
+
+<code>
+import random
+from collections import deque
+
+SIZE = 19
+EMPTY = 0
+ME = 1
+OPP = 2
+
+# Precompute neighbor coordinates for all positions for speed
+NEIGHBORS = []
+for r in range(SIZE):
+    for c in range(SIZE):
+        n = []
+        if r > 0: n.append((r-1, c))
+        if r < SIZE-1: n.append((r+1, c))
+        if c > 0: n.append((r, c-1))
+        if c < SIZE-1: n.append((r, c+1))
+        NEIGHBORS.append(n)
+
+def _idx(r, c):
+    return r * SIZE + c
+
+def _get_neighbors(r, c):
+    return NEIGHBORS[_idx(r, c)]
+
+def _get_group_and_liberties(board, r, c):
+    """Returns (group_set, liberty_set) for the stone at (r,c)."""
+    color = board[r][c]
+    if color == EMPTY:
+        return set(), set()
+    group = set()
+    liberties = set()
+    queue = deque([(r, c)])
+    group.add((r, c))
+    while queue:
+        cr, cc = queue.popleft()
+        for nr, nc in _get_neighbors(cr, cc):
+            if board[nr][nc] == EMPTY:
+                liberties.add((nr, nc))
+            elif board[nr][nc] == color and (nr, nc) not in group:
+                group.add((nr, nc))
+                queue.append((nr, nc))
+    return group, liberties
+
+def _has_liberty_other_than(board, r, c, exclude_r, exclude_c):
+    """Check if the group at (r,c) has any liberty other than (exclude_r, exclude_c)."""
+    color = board[r][c]
+    # Quick check on immediate neighbors
+    for nr, nc in _get_neighbors(r, c):
+        if board[nr][nc] == EMPTY and (nr != exclude_r or nc != exclude_c):
+            return True
+    # Full BFS if necessary (rare)
+    visited = set([(r, c)])
+    queue = deque([(r, c)])
+    while queue:
+        cr, cc = queue.popleft()
+        for nr, nc in _get_neighbors(cr, cc):
+            if board[nr][nc] == EMPTY and (nr != exclude_r or nc != exclude_c):
+                return True
+            if board[nr][nc] == color and (nr, nc) not in visited:
+                visited.add((nr, nc))
+                queue.append((nr, nc))
+    return False
+
+def _is_legal(board, r, c, color):
+    """Fast legality check (no Ko check due to lack of history)."""
+    if board[r][c] != EMPTY:
+        return False
+    # Optimization: if any neighbor is empty, move is legal (not suicide)
+    for nr, nc in _get_neighbors(r, c):
+        if board[nr][nc] == EMPTY:
+            return True
+    # Check if it captures any opponent group (giving it liberties)
+    opp = OPP if color == ME else ME
+    for nr, nc in _get_neighbors(r, c):
+        if board[nr][nc] == opp:
+            if not _has_liberty_other_than(board, nr, nc, r, c):
+                return True
+    return False
+
+def _play_move(board, r, c, color):
+    """Place stone, remove captured opponent stones. Returns list of captured positions."""
+    board[r][c] = color
+    opp = OPP if color == ME else ME
+    captured = []
+    for nr, nc in _get_neighbors(r, c):
+        if board[nr][nc] == opp:
+            if not _has_liberty_other_than(board, nr, nc, r, c):
+                # This group is captured
+                group, _ = _get_group_and_liberties(board, nr, nc)
+                for gr, gc in group:
+                    board[gr][gc] = EMPTY
+                    captured.append((gr, gc))
+    return captured
+
+def _evaluate(board):
+    """Area scoring: returns score from ME's perspective."""
+    score = 0
+    # Count stones
+    for r in range(SIZE):
+        for c in range(SIZE):
+            if board[r][c] == ME:
+                score += 1
+            elif board[r][c] == OPP:
+                score -= 1
+    
+    # Count territory via flood fill on empty regions
+    visited = [[False]*SIZE for _ in range(SIZE)]
+    for r in range(SIZE):
+        for c in range(SIZE):
+            if board[r][c] == EMPTY and not visited[r][c]:
+                region = []
+                queue = deque([(r, c)])
+                visited[r][c] = True
+                owners = set()
+                region.append((r, c))
+                idx = 0
+                while idx < len(region):
+                    cr, cc = region[idx]
+                    idx += 1
+                    for nr, nc in _get_neighbors(cr, cc):
+                        if board[nr][nc] == EMPTY:
+                            if not visited[nr][nc]:
+                                visited[nr][nc] = True
+                                region.append((nr, nc))
+                        else:
+                            owners.add(board[nr][nc])
+                
+                if len(owners) == 1:
+                    if ME in owners:
+                        score += len(region)
+                    else:
+                        score -= len(region)
+    return score
+
+def _simulate(board, move_r, move_c, num_simulations):
+    """Run random playouts from the given move and return average score."""
+    total_score = 0
+    for _ in range(num_simulations):
+        # Deep copy board (list of lists)
+        b = [row[:] for row in board]
+        _play_move(b, move_r, move_c, ME)
+        
+        cur = OPP
+        empty_set = set((r, c) for r in range(SIZE) for c in range(SIZE) if b[r][c] == EMPTY)
+        # Frontier: empty cells adjacent to stones (candidates for moves)
+        frontier = set()
+        for r, c in [(move_r, move_c)]:
+            for nr, nc in _get_neighbors(r, c):
+                if b[nr][nc] == EMPTY:
+                    frontier.add((nr, nc))
+        
+        passes = 0
+        moves = 0
+        max_moves = 40  # Short playouts for speed
+        
+        while moves < max_moves and passes < 2:
+            move_to_play = None
+            # Try frontier first (likely legal moves)
+            f_list = list(frontier)
+            random.shuffle(f_list)
+            for r, c in f_list:
+                if b[r][c] == EMPTY and _is_legal(b, r, c, cur):
+                    move_to_play = (r, c)
+                    break
+            
+            if move_to_play is None:
+                # Fallback to random empty spot check
+                candidates = list(empty_set)
+                random.shuffle(candidates)
+                for r, c in candidates[:30]:
+                    if _is_legal(b, r, c, cur):
+                        move_to_play = (r, c)
+                        break
+            
+            if move_to_play:
+                r, c = move_to_play
+                caps = _play_move(b, r, c, cur)
+                empty_set.discard((r, c))
+                frontier.discard((r, c))
+                # Update frontier and empty set based on changes
+                for nr, nc in _get_neighbors(r, c):
+                    if b[nr][nc] == EMPTY:
+                        frontier.add((nr, nc))
+                for cr, cc in caps:
+                    empty_set.add((cr, cc))
+                    for nr, nc in _get_neighbors(cr, cc):
+                        if b[nr][nc] == EMPTY:
+                            frontier.add((nr, nc))
+                passes = 0
+            else:
+                passes += 1
+            
+            cur = OPP if cur == ME else ME
+            moves += 1
+        
+        total_score += _evaluate(b)
+    
+    return total_score / num_simulations
+
+def policy(me, opponent):
+    # Initialize board (0-indexed internally)
+    board = [[EMPTY]*SIZE for _ in range(SIZE)]
+    for r, c in me:
+        board[r-1][c-1] = ME
+    for r, c in opponent:
+        board[r-1][c-1] = OPP
+    
+    # Opening book
+    if not me and not opponent:
+        return (4, 4)  # 3-3 point (conventional opening)
+    
+    # Generate local candidates: empty points adjacent to any stone
+    candidates = set()
+    for r in range(SIZE):
+        for c in range(SIZE):
+            if board[r][c] != EMPTY:
+                for nr, nc in _get_neighbors(r, c):
+                    if board[nr][nc] == EMPTY:
+                        candidates.add((nr, nc))
+    
+    if not candidates:  # Should not happen except on empty board
+        for r in range(SIZE):
+            for c in range(SIZE):
+                if board[r][c] == EMPTY:
+                    candidates.add((r, c))
+    
+    # Filter legal moves and score by immediate tactical value
+    legal_moves = []
+    for r, c in candidates:
+        if _is_legal(board, r, c, ME):
+            # Heuristic: prioritize captures
+            heuristic = 0
+            for nr, nc in _get_neighbors(r, c):
+                if board[nr][nc] == OPP:
+                    if not _has_liberty_other_than(board, nr, nc, r, c):
+                        heuristic += 100  # Capture bonus
+            legal_moves.append((heuristic, r, c))
+    
+    if not legal_moves:
+        # Exhaustive search for any legal move (rare)
+        for r in range(SIZE):
+            for c in range(SIZE):
+                if _is_legal(board, r, c, ME):
+                    legal_moves.append((0, r, c))
+        if not legal_moves:
+            return (0, 0)  # Pass
+    
+    # Sort by heuristic and take top 20 for simulation (time management)
+    legal_moves.sort(reverse=True)
+    top_moves = legal_moves[:20]
+    
+    # Flat Monte Carlo: evaluate top moves via simulation
+    best_score = -float('inf')
+    best_move = None
+    # Adjust simulations based on candidate count for speed
+    sims = 5 if len(top_moves) > 10 else 10
+    
+    for h, r, c in top_moves:
+        avg_score = _simulate(board, r, c, num_simulations=sims)
+        if avg_score > best_score:
+            best_score = avg_score
+            best_move = (r, c)
+    
+    if best_move is None:
+        return (0, 0)
+    
+    # Convert back to 1-indexed
+    return (best_move[0] + 1, best_move[1] + 1)
+</code>

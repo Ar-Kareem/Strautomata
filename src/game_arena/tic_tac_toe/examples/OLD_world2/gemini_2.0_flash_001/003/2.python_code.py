@@ -1,0 +1,73 @@
+
+import random
+import numpy as np
+
+def is_winner(board: list[list[int]], player: int) -> bool:
+    """Checks if the given player has won the Tic Tac Toe game."""
+
+    # Check rows
+    for row in board:
+        if all(cell == player for cell in row):
+            return True
+
+    # Check columns
+    for col in range(4):
+        if all(board[row][col] == player for row in range(4)):
+            return True
+
+    # Check diagonals
+    if all(board[i][i] == player for i in range(4)):
+        return True
+    if all(board[i][3 - i] == player for i in range(4)):
+        return True
+
+    return False
+
+def get_valid_moves(board: list[list[int]]) -> list[tuple[int, int]]:
+    """Returns a list of valid (row, col) moves on the board."""
+    moves = []
+    for row in range(4):
+        for col in range(4):
+            if board[row][col] == 0:
+                moves.append((row, col))
+    return moves
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Selects the next move for a 4x4 Tic Tac Toe game.
+    Chooses a winning move if available, otherwise blocks the opponent from winning.
+    If no winning or blocking move is available, chooses a random available move.
+    """
+
+    # Check for winning moves
+    valid_moves = get_valid_moves(board)
+    for row, col in valid_moves:
+        temp_board = [row[:] for row in board] # Create a copy
+        temp_board[row][col] = 1  # Try making the move for the AI 
+        if is_winner(temp_board, 1):
+            return (row, col)
+
+    # Check for blocking moves
+    for row, col in valid_moves:
+        temp_board = [row[:] for row in board]  # Create a copy
+        temp_board[row][col] = -1 # Try making the move for the opponent.
+        if is_winner(temp_board, -1):
+            return (row, col)
+
+    # Choose a random available move if no winning or blocking moves are available
+    if valid_moves:
+        return random.choice(valid_moves)
+    else:
+        return (0, 0)  # Should never happen in a valid game state.
+
+if __name__ == '__main__':
+    # Example usage:
+    board = [
+        [1, 0, -1, 0],
+        [0, 1, 0, -1],
+        [0, -1, 1, 0],
+        [-1, 0, 0, 1]
+    ]
+
+    move = policy(board)
+    print(f"Recommended move: {move}") # Example of a move

@@ -1,0 +1,245 @@
+<thinking>
+I need to implement a Connect 4 AI policy. Let me think about the key components:
+
+1. **Win Detection**: I need to check if a move results in an immediate win
+2. **Block Opponent**: I need to check if the opponent can win on their next turn and block them
+3. **Strategic Play**: For non-critical moves, I should prefer moves that create opportunities or control the center
+
+Let me break this down:
+
+1. **Valid Moves**: First, I need to identify which columns are available (not full)
+2. **Win Check**: For each valid move, simulate placing my disc and check if it creates 4 in a row
+3. **Block Check**: For each valid move, simulate placing opponent's disc and see if they would win
+4. **Heuristic**: If no immediate wins/blocks, use a heuristic like preferring center columns
+
+For the win/block detection, I need to:
+- Simulate dropping a disc in a column (find the lowest empty row)
+- Check all 4 directions from that position: horizontal, vertical, and both diagonals
+- Count consecutive pieces in both directions from the placed disc
+
+Let me implement this step by step:
+
+```python
+def policy(board: list[list[int]]) -> int:
+    def is_valid_move(col):
+        return board[0][col] == 0
+    
+    def simulate_drop(board, col, player):
+        # Find the lowest empty row in the column
+        for row in range(5, -1, -1):
+            if board[row][col] == 0:
+                return row
+        return -1  # Column is full
+    
+    def check_win(board, row, col, player):
+        # Check all 4 directions: horizontal, vertical, diagonal1, diagonal2
+        directions = [
+            (0, 1),   # horizontal
+            (1, 0),   # vertical
+            (1, 1),   # diagonal \
+            (1, -1)   # diagonal /
+        ]
+        
+        for dr, dc in directions:
+            count = 1  # Count the piece we just placed
+            
+            # Check in positive direction
+            r, c = row + dr, col + dc
+            while 0 <= r < 6 and 0 <= c < 7 and board[r][c] == player:
+                count += 1
+                r, c = r + dr, c + dc
+            
+            # Check in negative direction
+            r, c = row - dr, col - dc
+            while 0 <= r < 6 and 0 <= c < 7 and board[r][c] == player:
+                count += 1
+                r, c = r - dr, c - dc
+            
+            if count >= 4:
+                return True
+        
+        return False
+    
+    # Get all valid moves
+    valid_moves = [col for col in range(7) if is_valid_move(col)]
+    
+    if not valid_moves:
+        return 0  # Shouldn't happen in a proper game
+    
+    # Check for winning moves
+    for col in valid_moves:
+        row = simulate_drop(board, col, 1)
+        if row != -1:
+            # Temporarily place the disc
+            board[row][col] = 1
+            if check_win(board, row, col, 1):
+                board[row][col] = 0  # Undo
+                return col
+            board[row][col] = 0  # Undo
+    
+    # Check for blocking moves
+    for col in valid_moves:
+        row = simulate_drop(board, col, -1)
+        if row != -1:
+            # Temporarily place opponent's disc
+            board[row][col] = -1
+            if check_win(board, row, col, -1):
+                board[row][col] = 0  # Undo
+                return col
+            board[row][col] = 0  # Undo
+    
+    # If no immediate win/block, prefer center columns
+    center_preference = [3, 2, 4, 1, 5, 0, 6]
+    for col in center_preference:
+        if col in valid_moves:
+            return col
+    
+    return valid_moves[0]  # Fallback
+```
+
+Wait, I think there's an issue with my simulate_drop function - I'm modifying the board but I should be more careful about that. Also, let me double-check my win detection logic.
+
+Actually, let me rewrite this more carefully:
+
+```python
+def policy(board: list[list[int]]) -> int:
+    def get_valid_moves():
+        return [col for col in range(7) if board[0][col] == 0]
+    
+    def get_drop_row(col):
+        for row in range(5, -1, -1):
+            if board[row][col] == 0:
+                return row
+        return -1
+    
+    def check_win_at_position(board, row, col, player):
+        directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
+        
+        for dr, dc in directions:
+            count = 1
+            
+            # Check positive direction
+            r, c = row + dr, col + dc
+            while 0 <= r < 6 and 0 <= c < 7 and board[r][c] == player:
+                count += 1
+                r += dr
+                c += dc
+            
+            # Check negative direction
+            r, c = row - dr, col - dc
+            while 0 <= r < 6 and 0 <= c < 7 and board[r][c] == player:
+                count += 1
+                r -= dr
+                c -= dc
+            
+            if count >= 4:
+                return True
+        return False
+    
+    def is_winning_move(col, player):
+        row = get_drop_row(col)
+        if row == -1:
+            return False
+        
+        # Simulate the move
+        board[row][col] = player
+        is_win = check_win_at_position(board, row, col, player)
+        board[row][col] = 0  # Undo
+        return is_win
+    
+    valid_moves = get_valid_moves()
+    
+    # Priority 1: Win if possible
+    for col in valid_moves:
+        if is_winning_move(col, 1):
+            return col
+    
+    # Priority 2: Block opponent's winning move
+    for col in valid_moves:
+        if is_winning_move(col, -1):
+            return col
+    
+    # Priority 3: Choose center columns
+    center_order = [3, 2, 4, 1, 5, 0, 6]
+    for col in center_order:
+        if col in valid_moves:
+            return col
+    
+    return valid_moves[0]
+```
+
+This looks better. Let me trace through the logic:
+1. First, I find all valid moves (columns that aren't full)
+2. Then I check if any move results in an immediate win for me
+3. Then I check if any move blocks the opponent from winning
+4. Finally, I prefer center columns as they generally provide better strategic positioning
+
+The win detection checks all four directions (horizontal, vertical, and both diagonals) and counts consecutive pieces in both directions from the placed disc.
+</thinking>
+
+<code>
+def policy(board: list[list[int]]) -> int:
+    def get_valid_moves():
+        return [col for col in range(7) if board[0][col] == 0]
+    
+    def get_drop_row(col):
+        for row in range(5, -1, -1):
+            if board[row][col] == 0:
+                return row
+        return -1
+    
+    def check_win_at_position(board, row, col, player):
+        directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
+        
+        for dr, dc in directions:
+            count = 1
+            
+            # Check positive direction
+            r, c = row + dr, col + dc
+            while 0 <= r < 6 and 0 <= c < 7 and board[r][c] == player:
+                count += 1
+                r += dr
+                c += dc
+            
+            # Check negative direction
+            r, c = row - dr, col - dc
+            while 0 <= r < 6 and 0 <= c < 7 and board[r][c] == player:
+                count += 1
+                r -= dr
+                c -= dc
+            
+            if count >= 4:
+                return True
+        return False
+    
+    def is_winning_move(col, player):
+        row = get_drop_row(col)
+        if row == -1:
+            return False
+        
+        # Simulate the move
+        board[row][col] = player
+        is_win = check_win_at_position(board, row, col, player)
+        board[row][col] = 0  # Undo
+        return is_win
+    
+    valid_moves = get_valid_moves()
+    
+    # Priority 1: Win if possible
+    for col in valid_moves:
+        if is_winning_move(col, 1):
+            return col
+    
+    # Priority 2: Block opponent's winning move
+    for col in valid_moves:
+        if is_winning_move(col, -1):
+            return col
+    
+    # Priority 3: Choose center columns (better strategic positioning)
+    center_order = [3, 2, 4, 1, 5, 0, 6]
+    for col in center_order:
+        if col in valid_moves:
+            return col
+    
+    return valid_moves[0]
+</code>

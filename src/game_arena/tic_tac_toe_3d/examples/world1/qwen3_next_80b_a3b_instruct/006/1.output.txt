@@ -1,0 +1,267 @@
+The strategy for this policy is to implement a minimax algorithm with alpha-beta pruning to find the optimal move in the 3D Tic Tac Toe game. Since the game tree is manageable in a 3x3x3 board (only 27 cells), we can search deeply enough to find winning or blocking moves. The evaluation function prioritizes:
+
+1. Immediate wins (if any move completes a line of 3 for us)
+2. Blocking opponent's immediate wins
+3. Controlling the center (1,1,1) as it's part of the most potential lines (13 lines total)
+4. Maximizing potential lines we can complete while minimizing opponent's potential lines
+5. Favoring edge and corner moves that connect to multiple lines
+
+We use alpha-beta pruning to efficiently search possible future states up to a depth of 6-8 moves, which is sufficient given the game's small state space. The evaluation function assigns positive scores for our potential lines and negative scores for opponent's potential lines, with higher weights for lines with more pieces already in place.
+
+As a fallback, if no good move is found (e.g., in early game), we prioritize the center, then corners, then edges in a heuristic pattern.
+
+<code>
+import numpy as np
+from itertools import product
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    # Convert to numpy array for easier indexing
+    board_np = np.array(board)
+    
+    # Get empty positions
+    empty_positions = [(i, j, k) for i, j, k in product(range(3), repeat=3) if board_np[i, j, k] == 0]
+    
+    # If no empty positions, return any (shouldn't happen in proper game)
+    if not empty_positions:
+        return (0, 0, 0)
+    
+    # Check for immediate win
+    for pos in empty_positions:
+        if check_win_move(board_np, pos, 1):
+            return pos
+    
+    # Check for opponent immediate win and block it
+    for pos in empty_positions:
+        if check_win_move(board_np, pos, -1):
+            return pos
+    
+    # If center is available, take it (most strategic position)
+    if board_np[1, 1, 1] == 0:
+        return (1, 1, 1)
+    
+    # Use minimax with alpha-beta pruning for deeper search
+    best_move = None
+    best_score = float('-inf')
+    
+    # Try all possible moves
+    for move in empty_positions:
+        # Make the move
+        board_np[move[0], move[1], move[2]] = 1
+        
+        # Evaluate the board state using minimax
+        score = minimax(board_np, depth=4, alpha=float('-inf'), beta=float('inf'), maximizing_player=False)
+        
+        # Undo the move
+        board_np[move[0], move[1], move[2]] = 0
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    # Fallback: if no good move found, choose first available
+    if best_move is None:
+        return empty_positions[0]
+    
+    return best_move
+
+
+def check_win_move(board, pos, player):
+    """Check if placing player at pos creates a win"""
+    i, j, k = pos
+    board[i, j, k] = player
+    
+    # Check all possible lines (rows, columns, diagonals in 3D)
+    # 1. Rows (fixed j,k)
+    if all(board[i, j, c] == player for c in range(3)):
+        board[i, j, k] = 0
+        return True
+    
+    # 2. Columns (fixed i,k)
+    if all(board[i, c, k] == player for c in range(3)):
+        board[i, j, k] = 0
+        return True
+    
+    # 3. Depth (fixed i,j)
+    if all(board[c, j, k] == player for c in range(3)):
+        board[i, j, k] = 0
+        return True
+    
+    # 4. Face diagonals (on each of the 6 faces)
+    
+    # Front face (k=0)
+    if k == 0:
+        if all(board[c, c, 0] == player for c in range(3)) or all(board[c, 2-c, 0] == player for c in range(3)):
+            board[i, j, k] = 0
+            return True
+    
+    # Middle face (k=1)
+    if k == 1:
+        if all(board[c, c, 1] == player for c in range(3)) or all(board[c, 2-c, 1] == player for c in range(3)):
+            board[i, j, k] = 0
+            return True
+    
+    # Back face (k=2)
+    if k == 2:
+        if all(board[c, c, 2] == player for c in range(3)) or all(board[c, 2-c, 2] == player for c in range(3)):
+            board[i, j, k] = 0
+            return True
+    
+    # 5. Vertical diagonals (on each of the 4 vertical planes)
+    
+    # Left face (j=0)
+    if j == 0:
+        if all(board[c, 0, c] == player for c in range(3)) or all(board[c, 0, 2-c] == player for c in range(3)):
+            board[i, j, k] = 0
+            return True
+    
+    # Middle (j=1)
+    if j == 1:
+        if all(board[c, 1, c] == player for c in range(3)) or all(board[c, 1, 2-c] == player for c in range(3)):
+            board[i, j, k] = 0
+            return True
+    
+    # Right face (j=2)
+    if j == 2:
+        if all(board[c, 2, c] == player for c in range(3)) or all(board[c, 2, 2-c] == player for c in range(3)):
+            board[i, j, k] = 0
+            return True
+    
+    # 6. Space diagonals (through the cube)
+    
+    # Main space diagonal (0,0,0) to (2,2,2)
+    if (i,j,k) in [(0,0,0), (1,1,1), (2,2,2)]:
+        if all(board[c, c, c] == player for c in range(3)):
+            board[i, j, k] = 0
+            return True
+    
+    # Opposite space diagonal (0,2,0) to (2,0,2)
+    if (i,j,k) in [(0,2,0), (1,1,1), (2,0,2)]:
+        if all(board[c, 2-c, c] == player for c in range(3)):
+            board[i, j, k] = 0
+            return True
+    
+    # Other two space diagonals (0,0,2) to (2,2,0) and (0,2,2) to (2,0,0)
+    if (i,j,k) in [(0,0,2), (1,1,1), (2,2,0)]:
+        if all(board[c, c, 2-c] == player for c in range(3)):
+            board[i, j, k] = 0
+            return True
+    
+    if (i,j,k) in [(0,2,2), (1,1,1), (2,0,0)]:
+        if all(board[c, 2-c, 2-c] == player for c in range(3)):
+            board[i, j, k] = 0
+            return True
+    
+    board[i, j, k] = 0
+    return False
+
+
+def minimax(board, depth, alpha, beta, maximizing_player):
+    # Base case: depth limit reached or board full
+    if depth == 0:
+        return evaluate_board(board)
+    
+    empty_positions = [(i, j, k) for i, j, k in product(range(3), repeat=3) if board[i, j, k] == 0]
+    
+    # Check if game over
+    if len(empty_positions) == 0:
+        return evaluate_board(board)
+    
+    if maximizing_player:
+        max_eval = float('-inf')
+        for pos in empty_positions:
+            board[pos[0], pos[1], pos[2]] = 1
+            eval_score = minimax(board, depth - 1, alpha, beta, False)
+            board[pos[0], pos[1], pos[2]] = 0
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break  # Beta cutoff
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for pos in empty_positions:
+            board[pos[0], pos[1], pos[2]] = -1
+            eval_score = minimax(board, depth - 1, alpha, beta, True)
+            board[pos[0], pos[1], pos[2]] = 0
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break  # Alpha cutoff
+        return min_eval
+
+
+def evaluate_board(board):
+    """Simple heuristic evaluation: count potential lines and assign scores"""
+    player_score = 0
+    opponent_score = 0
+    
+    # Evaluate all possible lines (each line is a potential winning condition)
+    lines = get_all_lines()
+    
+    for line in lines:
+        player_count = 0
+        opponent_count = 0
+        empty_count = 0
+        
+        for (i, j, k) in line:
+            if board[i, j, k] == 1:
+                player_count += 1
+            elif board[i, j, k] == -1:
+                opponent_count += 1
+            else:
+                empty_count += 1
+        
+        # If line is complete by opponent, give large penalty
+        if opponent_count == 3:
+            return -1000
+        if player_count == 3:
+            return 1000
+        
+        # Heuristic: prioritize lines with more pieces
+        if player_count > 0 and opponent_count == 0:
+            if player_count == 2:
+                player_score += 50
+            elif player_count == 1:
+                player_score += 10
+        elif opponent_count > 0 and player_count == 0:
+            if opponent_count == 2:
+                opponent_score += 50
+            elif opponent_count == 1:
+                opponent_score += 10
+        # If mixed, line is blocked and has no value
+    
+    return player_score - opponent_score
+
+
+def get_all_lines():
+    """Return all 49 possible winning lines in 3D tic-tac-toe"""
+    lines = []
+    
+    # Rows, columns, depth lines (27 lines)
+    for i in range(3):
+        for j in range(3):
+            lines.append([(i, j, k) for k in range(3)])  # depth lines
+            lines.append([(i, k, j) for k in range(3)])  # columns
+            lines.append([(k, i, j) for k in range(3)])  # rows
+    
+    # Face diagonals (18 lines)
+    for j in range(3):
+        lines.append([(i, j, i) for i in range(3)])  # front-back diag
+        lines.append([(i, j, 2-i) for i in range(3)])  # front-back diag other
+    
+    for i in range(3):
+        lines.append([(i, i, k) for k in range(3)])  # left-right diag
+        lines.append([(i, 2-i, k) for k in range(3)])  # left-right diag other
+    
+    for k in range(3):
+        lines.append([(i, i, k) for i in range(3)])  # top-bottom diag
+        lines.append([(i, 2-i, k) for i in range(3)])  # top-bottom diag other
+    
+    # Space diagonals (4 lines)
+    lines.append([(i, i, i) for i in range(3)])
+    lines.append([(i, i, 2-i) for i in range(3)])
+    lines.append([(i, 2-i, i) for i in range(3)])
+    lines.append([(i, 2-i, 2-i) for i in range(3)])
+    
+    return lines
+</code>

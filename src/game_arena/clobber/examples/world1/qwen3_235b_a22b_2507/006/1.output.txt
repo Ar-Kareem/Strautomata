@@ -1,0 +1,120 @@
+The strategy for this policy is to implement a greedy heuristic that prioritizes moves based on immediate board control and mobility. The policy evaluates all legal moves and selects the one that maximizes a score combining several factors:
+
+1. **Mobility**: Prefer moves that result in higher future mobility (i.e., more potential moves after the current one).
+2. **Corner and Edge Awareness**: Avoid leaving pieces stranded on corners or edges unless capturing.
+3. **Central Control**: Prefer capturing pieces nearer the center of the board, as central positions offer greater connectivity.
+4. **Promote Connectivity**: Try to keep your pieces connected to allow for future moves.
+5. **Last Resort**: If no strategic advantage is clear, pick the first legal move.
+
+To remain within time limits, the policy uses NumPy for fast array operations and only looks one move ahead (myopic but fast). This reactive but informed approach balances speed and strength, making it robust against random and moderately intelligent opponents.
+
+<code>
+import numpy as np
+
+def policy(you: list[int], opponent: list[int]) -> str:
+    # Convert inputs to numpy arrays and reshape to 5x6
+    you_board = np.array(you).reshape(5, 6)
+    opp_board = np.array(opponent).reshape(5, 6)
+    
+    # Direction vectors
+    directions = {
+        'U': (-1, 0),
+        'R': (0, 1),
+        'D': (1, 0),
+        'L': (0, -1)
+    }
+    
+    moves = []
+    
+    # Generate all legal moves
+    for r in range(5):
+        for c in range(6):
+            if you_board[r, c] == 1:
+                for dir_name, (dr, dc) in directions.items():
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 5 and 0 <= nc < 6:
+                        if opp_board[nr, nc] == 1:
+                            moves.append((r, c, dir_name))
+    
+    # If no legal moves, return any (should not happen when called correctly)
+    if not moves:
+        # But per rules, we must return a move; fallback to first available piece and direction if possible
+        for r in range(5):
+            for c in range(6):
+                if you_board[r, c] == 1:
+                    for dir_name in directions:
+                        dr, dc = directions[dir_name]
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < 5 and 0 <= nc < 6:
+                            if opp_board[nr, nc] == 1:
+                                return f"{r},{c},{dir_name}"
+        # Last fallback
+        return "0,0,R"
+    
+    # Score each move
+    best_score = -np.inf
+    best_move = moves[0]
+    
+    for r, c, d in moves:
+        score = 0
+        
+        # Apply move temporarily
+        nr = r + directions[d][0]
+        nc = c + directions[d][1]
+        
+        # Project new you and opponent boards after capture
+        new_you = you_board.copy()
+        new_opp = opp_board.copy()
+        new_you[r, c] = 0
+        new_you[nr, nc] = 1
+        new_opp[nr, nc] = 0
+        
+        # 1. Future mobility: count how many moves we have after this
+        future_moves = 0
+        for i in range(5):
+            for j in range(6):
+                if new_you[i, j] == 1:
+                    for dr, dc in directions.values():
+                        ni, nj = i + dr, j + dc
+                        if 0 <= ni < 5 and 0 <= nj < 6 and new_opp[ni, nj] == 1:
+                            future_moves += 1
+        score += future_moves * 10
+        
+        # 2. Central control bonus: center is (2,2.5); reward moving closer to center
+        center_row, center_col = 2, 2.5
+        start_dist = -(abs(r - center_row) + abs(c - center_col))  # negative: closer is better
+        end_dist = -(abs(nr - center_row) + abs(nc - center_col))
+        if end_dist > start_dist:  # moved closer to center
+            score += 5
+        
+        # 3. Avoid moving into corner unless necessary
+        corner_positions = [(0,0), (0,5), (4,0), (4,5)]
+        edge_positions = [(i,j) for i in [0,4] for j in range(6)] + [(i,j) for i in range(5) for j in [0,5]]
+        edge_positions = set(edge_positions)
+        corner_positions = set(corner_positions)
+        
+        if (nr, nc) in corner_positions:
+            score -= 5
+        elif (nr, nc) in edge_positions:
+            score -= 2
+        
+        # 4. Do not disconnect: count connected components heuristically
+        # Simple: prefer moves that keep more neighbors (more adjacent own pieces means more connected)
+        connectivity_before = 0
+        connectivity_after = 0
+        for dr, dc in directions.values():
+            br, bc = r + dr, c + dc
+            if 0 <= br < 5 and 0 <= bc < 6 and you_board[br, bc] == 1:
+                connectivity_before += 1
+            ar, ac = nr + dr, nc + dc
+            if 0 <= ar < 5 and 0 <= ac < 6 and new_you[ar, ac] == 1:
+                connectivity_after += 1
+        score += (connectivity_after - connectivity_before) * 2
+        
+        if score > best_score:
+            best_score = score
+            best_move = (r, c, d)
+    
+    r, c, d = best_move
+    return f"{r},{c},{d}"
+</code>

@@ -1,0 +1,180 @@
+
+import sys
+
+# Constants
+ROWS = 5
+COLS = 6
+SIZE = ROWS * COLS
+INF = 100000
+
+# Precompute neighbor indices for each cell to speed up move generation
+# NEIGHBORS[idx] contains a list of valid neighbor indices
+NEIGHBORS = []
+for i in range(SIZE):
+    r, c = divmod(i, COLS)
+    neighbors = []
+    if r > 0: neighbors.append(i - COLS) # Up
+    if r < ROWS - 1: neighbors.append(i + COLS) # Down
+    if c > 0: neighbors.append(i - 1) # Left
+    if c < COLS - 1: neighbors.append(i + 1) # Right
+    NEIGHBORS.append(neighbors)
+
+def count_moves(me, opp):
+    """Counts the number of legal moves for the 'me' player."""
+    count = 0
+    m = me
+    while m:
+        lsb = m & -m
+        idx = (lsb.bit_length() - 1)
+        for target in NEIGHBORS[idx]:
+            if (opp >> target) & 1:
+                count += 1
+        m -= lsb
+    return count
+
+def negamax(me, opp, depth, alpha, beta):
+    """
+    Negamax search with Alpha-Beta pruning.
+    Returns a score relative to the current player.
+    """
+    # Evaluate at depth 0
+    if depth == 0:
+        my_mobility = count_moves(me, opp)
+        opp_mobility = count_moves(opp, me)
+        return my_mobility - opp_mobility
+
+    best_val = -INF - 10
+    found_move = False
+    
+    # Iterate through pieces (bits) of the current player
+    m = me
+    while m:
+        lsb = m & -m
+        idx = (lsb.bit_length() - 1)
+        
+        # Check all neighbors for opponent pieces
+        for target in NEIGHBORS[idx]:
+            if (opp >> target) & 1:
+                found_move = True
+                
+                # Apply move
+                s_bit = 1 << idx
+                t_bit = 1 << target
+                
+                # State transition:
+                # Player piece moves from idx to target.
+                # Opponent piece at target is removed.
+                new_me = (me | t_bit) & ~s_bit
+                new_opp = opp & ~t_bit
+                
+                # Recurse
+                val = -negamax(new_opp, new_me, depth - 1, -beta, -alpha)
+                
+                if val > best_val:
+                    best_val = val
+                
+                alpha = max(alpha, val)
+                if alpha >= beta:
+                    return best_val # Pruning
+        
+        m -= lsb
+
+    if not found_move:
+        # No moves available = Loss
+        return -INF - depth
+
+    return best_val
+
+def policy(you, opponent):
+    # Convert input to bitboards
+    me_bb = 0
+    opp_bb = 0
+    
+    # Detect input format (flat list vs nested list/numpy array)
+    # Type hint says list[int], but description says 5x6 array.
+    # We handle both safely.
+    flat_input = (len(you) == SIZE) if you else False
+    
+    for r in range(ROWS):
+        for c in range(COLS):
+            idx = r * COLS + c
+            if flat_input:
+                v_me = you[idx]
+                v_opp = opponent[idx]
+            else:
+                # Accessing [r][c] works for both numpy arrays and list-of-lists
+                v_me = you[r][c]
+                v_opp = opponent[r][c]
+            
+            if v_me == 1:
+                me_bb |= (1 << idx)
+            elif v_opp == 1:
+                opp_bb |= (1 << idx)
+
+    # Generate root moves
+    root_moves = []
+    m = me_bb
+    while m:
+        lsb = m & -m
+        idx = (lsb.bit_length() - 1)
+        for target in NEIGHBORS[idx]:
+            if (opp_bb >> target) & 1:
+                root_moves.append((idx, target))
+        m -= lsb
+
+    if not root_moves:
+        return "0,0,U" # Should not happen in a valid game state
+
+    # Determine search depth based on game complexity
+    total_pieces = me_bb.bit_count() + opp_bb.bit_count()
+    depth = 5
+    if total_pieces <= 20: depth = 6
+    if total_pieces <= 12: depth = 8
+    if total_pieces <= 6: depth = 10
+
+    # Sort root moves by a simple heuristic (mobility gain) to improve pruning
+    def move_heuristic(move):
+        start, target = move
+        s_bit = 1 << start
+        t_bit = 1 << target
+        new_me = (me_bb | t_bit) & ~s_bit
+        new_opp = opp_bb & ~t_bit
+        return count_moves(new_me, new_opp) - count_moves(new_opp, new_me)
+
+    root_moves.sort(key=move_heuristic, reverse=True)
+
+    # Iterative search or direct depth search
+    best_score = -INF - 100
+    best_move = root_moves[0]
+    
+    alpha = -INF
+    beta = INF
+    
+    for move in root_moves:
+        start, target = move
+        s_bit = 1 << start
+        t_bit = 1 << target
+        new_me = (me_bb | t_bit) & ~s_bit
+        new_opp = opp_bb & ~t_bit
+        
+        score = -negamax(new_opp, new_me, depth - 1, -beta, -alpha)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+        
+        alpha = max(alpha, score)
+
+    # Format output string
+    start_idx, target_idx = best_move
+    row = start_idx // COLS
+    col = start_idx % COLS
+    
+    diff = target_idx - start_idx
+    if diff == -COLS: d = 'U'
+    elif diff == COLS: d = 'D'
+    elif diff == -1: d = 'L'
+    elif diff == 1: d = 'R'
+    else: d = 'U' # Fallback
+
+    return f"{row},{col},{d}"

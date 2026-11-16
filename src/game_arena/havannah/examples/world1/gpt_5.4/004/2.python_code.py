@@ -1,0 +1,444 @@
+
+from typing import List, Tuple
+import numpy as np
+
+N = 15
+
+# Neighbor convention from prompt:
+# (r,c) touches:
+# (r-1,c), (r+1,c), (r-1,c-1), (r,c-1), (r,c+1), (r-1,c+1)
+DIRS = [(-1, 0), (1, 0), (-1, -1), (0, -1), (0, 1), (-1, 1)]
+
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], valid_mask) -> Tuple[int, int]:
+    try:
+        valid = np.asarray(valid_mask, dtype=bool)
+        n = valid.shape[0]
+
+        me_set = set((int(r), int(c)) for r, c in me)
+        opp_set = set((int(r), int(c)) for r, c in opp)
+        occupied = me_set | opp_set
+
+        legal = [(r, c) for r in range(n) for c in range(n) if valid[r, c] and (r, c) not in occupied]
+        if not legal:
+            return (0, 0)  # should never happen
+
+        # Opening: center-ish if available
+        if not me_set and not opp_set:
+            center_candidates = sorted(
+                legal,
+                key=lambda x: abs(x[0] - n // 2) + abs(x[1] - n // 2)
+            )
+            return center_candidates[0]
+
+        # Precompute board features
+        corners, edge_ids = compute_edges_and_corners(valid)
+
+        # 1) Immediate win
+        for mv in candidate_moves(legal, me_set, opp_set, valid):
+            if is_immediate_win(me_set, opp_set, mv, valid, corners, edge_ids):
+                return mv
+
+        # 2) Immediate block
+        for mv in candidate_moves(legal, opp_set, me_set, valid):
+            if is_immediate_win(opp_set, me_set, mv, valid, corners, edge_ids):
+                return mv
+
+        # 3) Heuristic search
+        my_uf = build_uf(me_set, valid, corners, edge_ids)
+        opp_uf = build_uf(opp_set, valid, corners, edge_ids)
+
+        best_mv = legal[0]
+        best_score = -10**18
+
+        for mv in candidate_moves(legal, me_set, opp_set, valid, limit=80):
+            s = score_move(mv, me_set, opp_set, valid, corners, edge_ids, my_uf, opp_uf)
+            if s > best_score:
+                best_score = s
+                best_mv = mv
+
+        return best_mv
+
+    except Exception:
+        # Absolute safety fallback: first legal move
+        valid = np.asarray(valid_mask, dtype=bool)
+        me_set = set((int(r), int(c)) for r, c in me)
+        opp_set = set((int(r), int(c)) for r, c in opp)
+        occupied = me_set | opp_set
+        for r in range(valid.shape[0]):
+            for c in range(valid.shape[1]):
+                if valid[r, c] and (r, c) not in occupied:
+                    return (r, c)
+        return (0, 0)
+
+
+def inb(r, c, valid):
+    return 0 <= r < valid.shape[0] and 0 <= c < valid.shape[1] and valid[r, c]
+
+
+def neighbors(cell, valid):
+    r, c = cell
+    out = []
+    for dr, dc in DIRS:
+        nr, nc = r + dr, c + dc
+        if inb(nr, nc, valid):
+            out.append((nr, nc))
+    return out
+
+
+def candidate_moves(legal, my_set, opp_set, valid, limit=60):
+    # Prioritize moves near existing stones for speed and strength
+    frontier = set()
+    seeds = my_set | opp_set
+    for s in seeds:
+        frontier.add(s)
+        for nb in neighbors(s, valid):
+            frontier.add(nb)
+            for nb2 in neighbors(nb, valid):
+                frontier.add(nb2)
+
+    cand = [mv for mv in legal if mv in frontier]
+    if not cand:
+        cand = legal[:]
+
+    center = valid.shape[0] // 2
+    cand.sort(key=lambda x: (
+        -locality_score(x, my_set, opp_set, valid),
+        abs(x[0] - center) + abs(x[1] - center)
+    ))
+    if len(cand) > limit:
+        cand = cand[:limit]
+    return cand
+
+
+def locality_score(mv, my_set, opp_set, valid):
+    score = 0
+    for nb in neighbors(mv, valid):
+        if nb in my_set:
+            score += 3
+        elif nb in opp_set:
+            score += 1
+        for nb2 in neighbors(nb, valid):
+            if nb2 in my_set:
+                score += 1
+    return score
+
+
+class UF:
+    def __init__(self):
+        self.parent = {}
+        self.rank = {}
+        self.corner_mask = {}
+        self.edge_mask = {}
+
+    def add(self, x, c_mask=0, e_mask=0):
+        if x not in self.parent:
+            self.parent[x] = x
+            self.rank[x] = 0
+            self.corner_mask[x] = c_mask
+            self.edge_mask[x] = e_mask
+
+    def find(self, x):
+        p = self.parent[x]
+        if p != x:
+            self.parent[x] = self.find(p)
+        return self.parent[x]
+
+    def union(self, a, b):
+        ra, rb = self.find(a), self.find(b)
+        if ra == rb:
+            return ra
+        if self.rank[ra] < self.rank[rb]:
+            ra, rb = rb, ra
+        self.parent[rb] = ra
+        self.corner_mask[ra] |= self.corner_mask[rb]
+        self.edge_mask[ra] |= self.edge_mask[rb]
+        if self.rank[ra] == self.rank[rb]:
+            self.rank[ra] += 1
+        return ra
+
+
+def compute_edges_and_corners(valid):
+    # Degree on valid board graph distinguishes corners (=3 neighbors)
+    n = valid.shape[0]
+    deg3 = []
+    edge_ids = {}
+
+    for r in range(n):
+        for c in range(n):
+            if not valid[r, c]:
+                continue
+            d = len(neighbors((r, c), valid))
+            if d == 3:
+                deg3.append((r, c))
+
+    # Six corners in cyclic order around center
+    center = np.array([n / 2.0, n / 2.0])
+    def ang(p):
+        v = np.array([p[1], p[0]]) - center
+        return np.arctan2(v[1], v[0])
+
+    deg3 = sorted(deg3, key=ang)
+    corners = deg3[:6]
+
+    # Build boundary cycle from all cells with degree < 6
+    boundary = [(r, c) for r in range(n) for c in range(n) if valid[r, c] and len(neighbors((r, c), valid)) < 6]
+    bset = set(boundary)
+
+    # Boundary adjacency restricted to boundary cells
+    badj = {b: [x for x in neighbors(b, valid) if x in bset] for b in boundary}
+
+    # Walk cycle
+    if len(corners) != 6:
+        # fallback: no reliable corner detection, leave edge ids empty
+        return corners, edge_ids
+
+    start = corners[0]
+    cycle = [start]
+    prev = None
+    cur = start
+    while True:
+        nxts = badj[cur]
+        nxt = None
+        for x in nxts:
+            if x != prev:
+                nxt = x
+                break
+        if nxt is None:
+            break
+        if nxt == start:
+            break
+        cycle.append(nxt)
+        prev, cur = cur, nxt
+        if len(cycle) > len(boundary) + 5:
+            break
+
+    pos = {cell: i for i, cell in enumerate(cycle)}
+    cidx = [pos[c] for c in corners if c in pos]
+    if len(cidx) != 6:
+        return corners, edge_ids
+
+    # Assign edge segments between consecutive corners on cycle, excluding corners
+    cidx_sorted = sorted(cidx)
+    cyc_len = len(cycle)
+    ordered_corners = []
+    for idx in cidx_sorted:
+        ordered_corners.append(cycle[idx])
+
+    for i in range(6):
+        a = cidx_sorted[i]
+        b = cidx_sorted[(i + 1) % 6]
+        j = (a + 1) % cyc_len
+        while j != b:
+            edge_ids[cycle[j]] = i
+            j = (j + 1) % cyc_len
+
+    return ordered_corners, edge_ids
+
+
+def build_uf(stones, valid, corners, edge_ids):
+    uf = UF()
+    corner_map = {c: i for i, c in enumerate(corners)}
+    for s in stones:
+        c_mask = 0
+        e_mask = 0
+        if s in corner_map:
+            c_mask |= 1 << corner_map[s]
+        if s in edge_ids:
+            e_mask |= 1 << edge_ids[s]
+        uf.add(s, c_mask, e_mask)
+
+    for s in stones:
+        for nb in neighbors(s, valid):
+            if nb in stones:
+                uf.union(s, nb)
+    return uf
+
+
+def popcount(x):
+    return int(x.bit_count()) if hasattr(int, "bit_count") else bin(x).count("1")
+
+
+def is_immediate_win(my_set, opp_set, mv, valid, corners, edge_ids):
+    tmp = set(my_set)
+    tmp.add(mv)
+
+    # Bridge / fork via UF
+    uf = build_uf(tmp, valid, corners, edge_ids)
+    root = uf.find(mv)
+    if popcount(uf.corner_mask[root]) >= 2:
+        return True
+    if popcount(uf.edge_mask[root]) >= 3:
+        return True
+
+    # Ring via localized detection around new stone
+    if creates_ring(tmp, opp_set, mv, valid):
+        return True
+    return False
+
+
+def creates_ring(my_set, opp_set, mv, valid):
+    # Detect whether placing mv creates a cycle in the player's graph
+    # that encloses at least one neighboring non-player cell.
+    my_neighbors = [nb for nb in neighbors(mv, valid) if nb in my_set and nb != mv]
+    if len(my_neighbors) < 2:
+        return False
+
+    # Build adjacency among player's stones in a local region
+    region = set([mv])
+    frontier = [mv]
+    for _ in range(3):
+        newf = []
+        for x in frontier:
+            for nb in neighbors(x, valid):
+                if nb in my_set and nb not in region:
+                    region.add(nb)
+                    newf.append(nb)
+        frontier = newf
+
+    # Remove mv, check if two neighbors of mv are connected -> cycle with mv
+    region_wo = set(region)
+    region_wo.discard(mv)
+
+    adj = {x: [] for x in region_wo}
+    for x in region_wo:
+        for nb in neighbors(x, valid):
+            if nb in region_wo:
+                adj[x].append(nb)
+
+    # For each pair of distinct neighboring stones, if connected without mv,
+    # then mv closes a cycle. Then test if some adjacent non-player cell is enclosed.
+    comps = {}
+    comp_id = 0
+    for x in region_wo:
+        if x in comps:
+            continue
+        stack = [x]
+        comps[x] = comp_id
+        while stack:
+            y = stack.pop()
+            for z in adj[y]:
+                if z not in comps:
+                    comps[z] = comp_id
+                    stack.append(z)
+        comp_id += 1
+
+    neigh = my_neighbors
+    cyc = False
+    for i in range(len(neigh)):
+        for j in range(i + 1, len(neigh)):
+            a, b = neigh[i], neigh[j]
+            if a in comps and b in comps and comps[a] == comps[b]:
+                cyc = True
+                break
+        if cyc:
+            break
+    if not cyc:
+        return False
+
+    # Enclosure test: for any non-player cell adjacent to mv, can it escape far away
+    # without crossing player stones, inside a local window? If not, count as ring.
+    candidates = []
+    for nb in neighbors(mv, valid):
+        if nb not in my_set:
+            candidates.append(nb)
+    if not candidates:
+        # A cycle around occupied/nonempty interior may still be a ring; accept.
+        return True
+
+    for target in candidates:
+        if is_enclosed_local(target, my_set, valid, center=mv, radius=4):
+            return True
+    return False
+
+
+def is_enclosed_local(start, my_set, valid, center, radius=4):
+    # BFS on non-player cells within a local box. If reaches box boundary, assume escape.
+    sr, sc = start
+    cr, cc = center
+    q = [start]
+    seen = {start}
+    while q:
+        r, c = q.pop()
+        if max(abs(r - cr), abs(c - cc)) >= radius:
+            return False
+        for nb in neighbors((r, c), valid):
+            if nb in my_set or nb in seen:
+                continue
+            seen.add(nb)
+            q.append(nb)
+    return True
+
+
+def score_move(mv, my_set, opp_set, valid, corners, edge_ids, my_uf, opp_uf):
+    r, c = mv
+    n = valid.shape[0]
+    score = 0.0
+
+    # Tactical adjacency
+    my_adj = 0
+    opp_adj = 0
+    my_roots = set()
+    opp_roots = set()
+
+    for nb in neighbors(mv, valid):
+        if nb in my_set:
+            my_adj += 1
+            if nb in my_uf.parent:
+                my_roots.add(my_uf.find(nb))
+        elif nb in opp_set:
+            opp_adj += 1
+            if nb in opp_uf.parent:
+                opp_roots.add(opp_uf.find(nb))
+
+    score += 18 * my_adj + 8 * opp_adj
+    score += 22 * max(0, len(my_roots) - 1)   # connect own groups
+    score += 8 * max(0, len(opp_roots) - 1)   # contest opponent shape
+
+    # Centrality early / flexibility later
+    center = n // 2
+    dist = abs(r - center) + abs(c - center)
+    score += max(0, 10 - dist)
+
+    # Boundary objective potential
+    corner_map = {c0: i for i, c0 in enumerate(corners)}
+    c_mask = 0
+    e_mask = 0
+    if mv in corner_map:
+        c_mask |= 1 << corner_map[mv]
+    if mv in edge_ids:
+        e_mask |= 1 << edge_ids[mv]
+
+    agg_corner = c_mask
+    agg_edge = e_mask
+    for root in my_roots:
+        agg_corner |= my_uf.corner_mask[root]
+        agg_edge |= my_uf.edge_mask[root]
+
+    score += 30 * popcount(agg_corner)
+    score += 16 * popcount(agg_edge)
+
+    # Bonus for stepping toward a bridge/fork completion
+    if popcount(agg_corner) >= 2:
+        score += 200
+    if popcount(agg_edge) >= 2:
+        score += 60
+    if popcount(agg_edge) >= 3:
+        score += 200
+
+    # Ring-ish local motif
+    my_tmp = set(my_set)
+    my_tmp.add(mv)
+    if creates_ring(my_tmp, opp_set, mv, valid):
+        score += 180
+
+    # Avoid isolated edge clutter in opening
+    if my_adj == 0 and opp_adj == 0:
+        score -= 20
+        if len(my_set) + len(opp_set) < 8:
+            score -= dist
+
+    # Slight preference for legal cells with many valid neighbors
+    score += 2 * len(neighbors(mv, valid))
+
+    return score

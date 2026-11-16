@@ -1,0 +1,411 @@
+**Strategy**  
+The policy uses a depth‑limited minimax search (alpha‑beta pruning) with a simple material evaluation.  
+* All legal moves are generated for the side to move, including captures, promotions and castling.  
+* Moves that put the king in check are filtered out.  
+* Moves are ordered by strength: checks first, captures second, promotions third.  
+* The search recurses for a few plies (5 half‑moves), flipping the perspective each turn.  
+* At depth 0 the evaluation score is the sum of piece values (with white + and black –).  
+* If a side has no legal moves and is in check we treat it as a mate (+10⁶ for a win).  
+* The best move according to the search is converted to UCI notation (e.g. `e2e4`, `e7e8q`).  
+
+The engine is fast enough for the given time limit and selects a legal move at every call.
+
+```python
+import copy
+import itertools
+import random
+
+# ------------------------------------------------------------
+# Simple material values
+PIECE_SCORE = {
+    'K': 20000,
+    'Q': 900,
+    'R': 500,
+    'B': 330,
+    'N': 320,
+    'P': 100,
+}
+MATE_SCORE = 10 ** 6
+MAX_DEPTH = 5  # ply limit
+
+# ------------------------------------------------------------
+def square_to_idx(sq: str) -> int:
+    """Algebraic square → linear index (0‑63)."""
+    f = ord(sq[0]) - ord('a')
+    r = 8 - int(sq[1])               # rank 1 → index 7, rank 8 → index 0
+    return r * 8 + f
+
+def idx_to_square(idx: int) -> str:
+    """Linear index → algebraic square."""
+    r = idx // 8
+    f = idx % 8
+    return chr(r + 1) + chr(f + ord('a'))
+
+# ------------------------------------------------------------
+def opposite(col: str) -> str:
+    return 'black' if col == 'white' else 'white'
+
+# ------------------------------------------------------------
+def compute_ep_target(board, color):
+    """
+    Return the en‑passant target square (file, rank_index) for the side `color`
+    if it can capture en passant, otherwise None.
+    """
+    opp = opposite(color)
+    if color == 'white':  # white could capture after black double‑pushed
+        for f in range(8):
+            if board[3][f] == 'bP' and board[2][f] == ' ':
+                if board[6][f-1] == 'wP' or board[6][f+1] == 'wP':
+                    return (f, 2)          # rank index 2 = rank6
+    else:                 # black could capture after white double‑pushed
+        for f in range(8):
+            if board[4][f] == 'wP' and board[5][f] == ' ':
+                if board[5][f-1] == 'bP' or board[5][f+1] == 'bP':
+                    return (f, 5)          # rank index 5 = rank3
+    return None
+
+# ------------------------------------------------------------
+class Move:
+    """A single move – stored in linear index form."""
+    __slots__ = ('src_idx', 'dst_idx', 'promotion', 'ep_target', 'castling',
+                 'capture', 'color')
+    def __init__(self, src_idx, dst_idx, promotion=None, ep_target=None,
+                 castling=None):
+        self.src_idx = src_idx
+        self.dst_idx = dst_idx
+        self.promotion = promotion           # None or 'Q','R','B','N'
+        self.ep_target = ep_target           # (file, rank_index) or None
+        self.castling = castling              # 'k' or 'q' or None
+        self.color = opposite_color          # set later
+        self.capture = False                 # set later
+
+    @property
+    def uci(self) -> str:
+        s = idx_to_square(self.src_idx) + idx_to_square(self.dst_idx)
+        if self.promotion:
+            s += self.promotion.lower()
+        return s
+
+def opposite_color(col: str) -> str:
+    return opposite(col)
+
+# ------------------------------------------------------------
+def is_square_under_attack(board, color, target_idx):
+    """True if any pseudo‑legal move of `color` attacks `target_idx`."""
+    if not generate_pseudo_legal_moves(board, color):
+        return False
+    for m in generate_pseudo_legal_moves(board, color):
+        if m.dst_idx == target_idx:
+            return True
+    return False
+
+# ------------------------------------------------------------
+def generate_pseudo_legal_moves(board, color, ep_target=None):
+    """
+    Generate all pseudo‑legal moves for `color`.  Does NOT filter illegal king moves.
+    Returns a list of Move objects; capture flag will be set later.
+    """
+    moves = []
+    for r in range(8):
+        for f in range(8):
+            piece = board[r][f]
+            if not piece:
+                continue
+            if piece[0] != color:
+                continue
+            src = r * 8 + f
+            pt = piece[1]
+
+            # --- King ---
+            if pt == 'K':
+                for dr, df in ((1,0),(1,1),(0,1),(-1,1),(-1,0),(-1,-1),(0,-1),(1,-1)):
+                    nr, nf = r + dr, f + df
+                    if 0 <= nr < 8 and 0 <= nf < 8:
+                        moves.append(Move(src, nr*8+nf, promotion=None))
+                # Castling (if possible)
+                if color == 'white':
+                    king_start = (7,4)
+                    rook_srcs = {('k', (7,0)), ('q', (7,7))}
+                else:
+                    king_start = (0,4)
+                    rook_srcs = {('k', (0,0)), ('q', (0,7))}
+                if board[king_start[0]][king_start[1]] == f'{color}K':
+                    for side, (rk_file, rk_rank) in rook_srcs:
+                        king_dst = (king_start[0], king_start[1] + (2 if side == 'k' else -2))
+                        king_dst_file, king_dst_rank = king_dst[1], king_dst[0]
+                        if not (0 <= king_dst_file < 8):
+                            continue
+                        # intermediate squares
+                        intermediates = [(king_start[1] + (1 if side == 'k' else -1), king_start[0])]
+                        if side == 'q':
+                            intermediates.append((king_start[1] - 1, king_start[0]))
+                        # must be empty and not under attack
+                        empty = True
+                        safe = True
+                        for ifi, rfi in intermediates:
+                            if board[ifi][rfi] != ' ':
+                                empty = False
+                                break
+                            if is_square_under_attack(board, opposite(color), rfi*8+ifi):
+                                safe = False
+                                break
+                        if empty and safe and board[rk_rank][rk_file] == f'{color}R':
+                            moves.append(Move(src, king_dst[0]*8+king_dst[1], castling=side))
+                continue
+
+            # --- Pawn ---
+            forward = 1 if color == 'white' else -1
+            start_rank = 7 if color == 'white' else 1   # white pawn on rank1 (index7)
+            # one‑step
+            nr = r + forward
+            if 0 <= nr < 8:
+                # en‑passant
+                if ep_target and (nr, f) == ep_target:
+                    moves.append(Move(src, nr*8+f, promotion=None, ep_target=ep_target))
+                else:
+                    dest = board[nr][f]
+                    if dest == ' ':
+                        moves.append(Move(src, nr*8+f, promotion=None))
+                    elif dest[0] != color:
+                        moves.append(Move(src, nr*8+f, promotion=None))
+            # double‑step (if on start rank)
+            if r == start_rank:
+                nr2 = r + 2*forward
+                if 0 <= nr2 < 8:
+                    if board[r+forward][f] == ' ' and board[nr2][f] == ' ':
+                        moves.append(Move(src, nr2*8+f, promotion=None))
+                # captures (diagonal)
+                for df in (-1, 1):
+                    nf_c = f + df
+                    if 0 <= nf_c < 8:
+                        nr_c = r + forward
+                        dest = board[nr_c][nf_c]
+                        if dest and dest[0] != color:
+                            moves.append(Move(src, nr_c*8+nf_c, promotion=None))
+
+            # --- Knight ---
+            if pt == 'N':
+                for dr, df in ((2,1),(2,-1),(-2,1),(-2,-1),
+                               (1,2),(-1,2),(1,-2),(-1,-2)):
+                    nr, nf = r + dr, f + df
+                    if 0 <= nr < 8 and 0 <= nf < 8:
+                        moves.append(Move(src, nr*8+nf, promotion=None))
+
+            # --- Bishop ---
+            if pt == 'B':
+                dirs = [(1,1),(1,-1),(-1,1),(-1,-1)]
+                for dr, df in dirs:
+                    nr, nf = r + dr, f + df
+                    while 0 <= nr < 8 and 0 <= nf < 8:
+                        moves.append(Move(src, nr*8+nf, promotion=None))
+                        if board[nr][nf] and board[nr][nf][0] != color:
+                            break
+                        nr += dr
+                        nf += df
+
+            # --- Rook ---
+            if pt == 'R':
+                dirs = [(1,0),(-1,0),(0,1),(0,-1)]
+                for dr, df in dirs:
+                    nr, nf = r + dr, f + df
+                    while 0 <= nr < 8 and 0 <= nf < 8:
+                        moves.append(Move(src, nr*8+nf, promotion=None))
+                        if board[nr][nf] and board[nr][nf][0] != color:
+                            break
+                        nr += dr
+                        nf += df
+
+            # --- Queen ---
+            if pt == 'Q':
+                # bishops
+                for dr, df in [(1,1),(1,-1),(-1,1),(-1,-1)]:
+                    nr, nf = r + dr, f + df
+                    while 0 <= nr < 8 and 0 <= nf < 8:
+                        moves.append(Move(src, nr*8+nf, promotion=None))
+                        if board[nr][nf] and board[nr][nf][0] != color:
+                            break
+                        nr += dr
+                        nf += df
+                # rooks
+                for dr, df in [(1,0),(-1,0),(0,1),(0,-1)]:
+                    nr, nf = r + dr, f + df
+                    while 0 <= nr < 8 and 0 <= nf < 8:
+                        moves.append(Move(src, nr*8+nf, promotion=None))
+                        if board[nr][nf] and board[nr][nf][0] != color:
+                            break
+                        nr += dr
+                        nf += df
+
+            # --- King (already handled) ---
+    return moves
+
+# ------------------------------------------------------------
+def apply_move(board, move):
+    """Return a deep copy of `board` after executing `move`."""
+    new = copy.deepcopy(board)
+    sr, sf = move.src_idx // 8, move.src_idx % 8
+    dr, df = move.dst_idx // 8, move.dst_idx % 8
+
+    # Castling: both king and rook move in one step
+    if move.castling:
+        if move.color == 'white':
+            rook_src = (7, 0) if move.castling == 'k' else (7, 7)
+            king_dst = (7, 6) if move.castling == 'k' else (7, 2)
+        else:  # black
+            rook_src = (0, 0) if move.castling == 'k' else (0, 7)
+            king_dst = (0, 6) if move.castling == 'k' else (0, 2)
+
+        # remove old pieces
+        new[rooksrc[0]][rooksrc[1]] = ' '
+        new[sr][sf] = ' '
+        # place pieces
+        new[king_dst[0]][king_dst[1]] = board[sr][sf]
+        new[king_dst[0]][rooksrc[1]] = move.color + 'R'
+        # clear empty squares in between (already handled when castling was generated)
+        return new
+
+    # Normal move
+    piece = board[sr][sf]
+    if move.ep_target:
+        # remove captured pawn
+        ep_file, ep_rank = move.ep_target
+        new[ep_rank][ep_file] = ' '
+    if move.promotion:
+        new_piece = move.color + move.promotion.upper()
+    else:
+        new_piece = piece
+    new[dr][df] = new_piece
+    new[sr][sf] = ' '
+    return new
+
+# ------------------------------------------------------------
+def get_king_pos(board, color):
+    for r in range(8):
+        for f in range(8):
+            if board[r][f] and board[r][f][1] == 'K':
+                return (r, f)
+    return None
+
+def is_game_over(board, color):
+    opp = opposite(color)
+    opp_moves = generate_legal_moves(board, opp)
+    if opp_moves:
+        return False
+    opp_king = get_king_pos(board, opp)
+    if not opp_king:
+        return False      # missing king – treat as loss for us
+    opp_idx = opp_king[0] * 8 + opp_king[1]
+    return not is_square_under_attack(board, opp, opp_idx)   # no moves + in check = checkmate
+
+# ------------------------------------------------------------
+def generate_legal_moves(board, color):
+    """All pseudo‑legal moves filtered to be legal (king never stays in check)."""
+    ep = compute_ep_target(board, color)
+    pseudo = generate_pseudo_legal_moves(board, color, ep)
+
+    legal = []
+    for m in pseudo:
+        m.capture = m.ep_target is not None
+        new = apply_move(board, m)
+        opp_king = get_king_pos(new, opposite(color))
+        if not opp_king:
+            continue
+        opp_idx = opp_king[0] * 8 + opp_king[1]
+        if not is_square_under_attack(new, opposite(color), opp_idx):
+            # set attributes that we need later
+            m.capture = (m.ep_target is not None) or \
+                        (new[opp_king[0]][opp_king[1] % 8] != ' ')
+            m.color = opposite_color(color)  # actually should be `color` (side that moves)
+            # determine actual capture by looking at board before move
+            r_d, f_d = m.dst_idx // 8, m.dst_idx % 8
+            dest_piece = board[r_d][f_d]
+            if dest_piece:
+                m.capture = dest_piece[0] != color
+            m.color = color
+            legal.append(m)
+    return legal
+
+# ------------------------------------------------------------
+def evaluate(board, color):
+    """Simple material evaluation; white positive, black negative."""
+    val = 0
+    for r in range(8):
+        for f in range(8):
+            pc = board[r][f]
+            if pc:
+                pt = pc[1]
+                val += PIECE_SCORE[pt] * (1 if pc[0] == 'w' else -1)
+    return val
+
+def search(board, depth, color, alpha, beta):
+    """Negamax search with alpha‑beta pruning."""
+    if depth == 0:
+        # terminal evaluation
+        if is_game_over(board, opposite(color)):
+            # opponent check‑mate => good for us
+            return MATE_SCORE if color == 'white' else -MATE_SCORE
+        return evaluate(board, color)
+
+    legal_moves = generate_legal_moves(board, color)
+    if not legal_moves:
+        return 0, None
+
+    # sort moves: checks, captures, promotions, castling
+    opp = opposite(color)
+    for m in legal_moves:
+        m.check = False
+        # a move gives a check if the opponent is under attack after it
+        new = apply_move(board, m)
+        king_pos = get_king_pos(new, opp)
+        if king_pos:
+            k_idx = king_pos[0] * 8 + king_pos[1]
+            m.check = is_square_under_attack(new, opp, k_idx)
+
+    # sort by priority
+    legal_moves.sort(key=lambda m: (
+        -int(m.check),                     # checks first (True highest)
+        -int(m.capture),                  # captures next
+        -int(bool(m.promotion)),          # promotions last
+        # tie‑break: promotion to queen first
+        m.promotion is None,
+    ), reverse=True)
+
+    best_score = -float('inf')
+    best_move = None
+    for move in legal_moves:
+        new_board = apply_move(board, move)
+        score, _ = -search(new_board, depth - 1, opp, -beta, -alpha)
+        if score > best_score:
+            best_score = score
+            best_move = move
+        if best_score >= beta:
+            return best_score, best_move
+        alpha = max(alpha, best_score)
+    return best_score, best_move
+
+# ------------------------------------------------------------
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    """
+    Returns a UCI move string for the given position.  The move is always
+    legal and is the strongest move found within the limited depth search.
+    """
+    # build board
+    board = [['' for _ in range(8)] for _ in range(8)]
+    for sq, pc in pieces.items():
+        f = ord(sq[0]) - ord('a')
+        r = 8 - int(sq[1])
+        board[r][f] = pc
+
+    # root search
+    best_score, best_move = search(board, MAX_DEPTH, to_play, -MATE_SCORE, MATE_SCORE)
+
+    if best_move is None:
+        # fallback – pick any legal move
+        legal = generate_legal_moves(board, to_play)
+        if legal:
+            best_move = legal[0]
+
+    return best_move.uci
+
+# ------------------------------------------------------------
+```

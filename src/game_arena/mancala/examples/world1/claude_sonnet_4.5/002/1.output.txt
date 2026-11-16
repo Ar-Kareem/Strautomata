@@ -1,0 +1,328 @@
+<thinking>
+Let me think about a good strategy for Kalah:
+
+1. **Extra moves are valuable** - Landing in your store gives you another turn, which is powerful
+2. **Captures are valuable** - Capturing opponent's seeds can swing the game
+3. **Endgame matters** - Positioning to empty your houses when ahead, or prevent opponent from doing so
+4. **Look ahead** - A minimax or alpha-beta search would be ideal
+
+Given the time constraint (1 second), I should implement:
+- A simulation function to execute moves
+- An evaluation function to score board states
+- A minimax search with alpha-beta pruning and depth limit
+
+Key heuristics for evaluation:
+- Store difference (main goal)
+- Number of seeds on our side vs opponent's side
+- Potential for extra moves
+- Potential for captures
+
+Let me implement a reasonably strong policy with minimax search:
+
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    # Implement minimax with alpha-beta pruning
+    
+    def simulate_move(you, opp, house):
+        """Simulate a move and return (new_you, new_opp, extra_turn)"""
+        you = you[:]
+        opp = opp[:]
+        
+        if you[house] == 0:
+            return None  # Invalid move
+        
+        seeds = you[house]
+        you[house] = 0
+        
+        # Distribute seeds
+        pos = house + 1
+        player_side = True  # True = you, False = opponent
+        
+        while seeds > 0:
+            if player_side:
+                if pos <= 6:
+                    you[pos] += 1
+                    last_pos = ('you', pos)
+                    pos += 1
+                    seeds -= 1
+                    if pos == 7:
+                        player_side = False
+                        pos = 0
+                else:
+                    player_side = False
+                    pos = 0
+            else:
+                if pos <= 5:
+                    opp[pos] += 1
+                    last_pos = ('opp', pos)
+                    pos += 1
+                    seeds -= 1
+                    if pos == 6:
+                        player_side = True
+                        pos = 0
+                else:
+                    player_side = True
+                    pos = 0
+        
+        # Check for extra turn
+        extra_turn = (last_pos == ('you', 6))
+        
+        # Check for capture
+        if last_pos[0] == 'you' and 0 <= last_pos[1] <= 5:
+            landing_house = last_pos[1]
+            if you[landing_house] == 1:  # Was empty before
+                opposite = 5 - landing_house
+                if opp[opposite] > 0:
+                    you[6] += you[landing_house] + opp[opposite]
+                    you[landing_house] = 0
+                    opp[opposite] = 0
+        
+        return you, opp, extra_turn
+    
+    def is_terminal(you, opp):
+        """Check if game is over"""
+        return sum(you[:6]) == 0 or sum(opp[:6]) == 0
+    
+    def evaluate(you, opp):
+        """Evaluate board state from 'you' perspective"""
+        # If game is over, finalize stores
+        if sum(you[:6]) == 0:
+            opp_final = opp[6] + sum(opp[:6])
+            you_final = you[6]
+        elif sum(opp[:6]) == 0:
+            you_final = you[6] + sum(you[:6])
+            opp_final = opp[6]
+        else:
+            you_final = you[6]
+            opp_final = opp[6]
+        
+        # Main score is store difference
+        score = you_final - opp_final
+        
+        # Add small bonuses for seeds on our side
+        score += sum(you[:6]) * 0.1
+        
+        return score
+    
+    def minimax(you, opp, depth, alpha, beta, maximizing):
+        """Minimax with alpha-beta pruning"""
+        if depth == 0 or is_terminal(you, opp):
+            return evaluate(you, opp), None
+        
+        legal_moves = [i for i in range(6) if you[i] > 0]
+        if not legal_moves:
+            return evaluate(you, opp), None
+        
+        if maximizing:
+            max_eval = float('-inf')
+            best_move = legal_moves[0]
+            
+            for move in legal_moves:
+                result = simulate_move(you, opp, move)
+                if result is None:
+                    continue
+                new_you, new_opp, extra_turn = result
+                
+                if extra_turn:
+                    # We move again
+                    eval_score, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, True)
+                else:
+                    # Opponent's turn
+                    eval_score, _ = minimax(new_opp, new_you, depth - 1, alpha, beta, False)
+                    eval_score = -eval_score  # Flip perspective
+                
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_move = move
+                
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            best_move = legal_moves[0]
+            
+            for move in legal_moves:
+                result = simulate_move(you, opp, move)
+                if result is None:
+                    continue
+                new_you, new_opp, extra_turn = result
+                
+                if extra_turn:
+                    # Opponent moves again
+                    eval_score, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, False)
+                else:
+                    # Our turn
+                    eval_score, _ = minimax(new_opp, new_you, depth - 1, alpha, beta, True)
+                    eval_score = -eval_score  # Flip perspective
+                
+                if eval_score < min_eval:
+                    min_eval = eval_score
+                    best_move = move
+                
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            
+            return min_eval, best_move
+    
+    # Search with reasonable depth
+    _, best_move = minimax(you, opponent, depth=8, alpha=float('-inf'), beta=float('inf'), maximizing=True)
+    
+    # Fallback to first legal move if something goes wrong
+    if best_move is None:
+        legal_moves = [i for i in range(6) if you[i] > 0]
+        best_move = legal_moves[0] if legal_moves else 0
+    
+    return best_move
+```
+
+Wait, I think there's an issue with my simulation. Let me reconsider the distribution logic more carefully.
+
+Actually, looking at it again, I need to be more careful about the circular distribution. Let me rewrite it more clearly.
+</thinking>
+
+<code>
+def policy(you: list[int], opponent: list[int]) -> int:
+    def simulate_move(you, opp, house):
+        """Simulate a move and return (new_you, new_opp, extra_turn)"""
+        you = you[:]
+        opp = opp[:]
+        
+        if you[house] == 0:
+            return None
+        
+        seeds = you[house]
+        you[house] = 0
+        
+        # Create circular path: you[house+1..5], you[6], opp[0..5], you[0..5], ...
+        # Skip opponent[6]
+        positions = []
+        pos_idx = house + 1
+        
+        while len(positions) < seeds:
+            # Your houses and store
+            for i in range(pos_idx, 7):
+                positions.append(('you', i))
+                if len(positions) == seeds:
+                    break
+            if len(positions) == seeds:
+                break
+            
+            # Opponent houses (not store)
+            for i in range(6):
+                positions.append(('opp', i))
+                if len(positions) == seeds:
+                    break
+            if len(positions) == seeds:
+                break
+            
+            pos_idx = 0  # Start from beginning of your side
+        
+        # Distribute seeds
+        for side, idx in positions:
+            if side == 'you':
+                you[idx] += 1
+            else:
+                opp[idx] += 1
+        
+        last_side, last_idx = positions[-1]
+        
+        # Check for extra turn
+        extra_turn = (last_side == 'you' and last_idx == 6)
+        
+        # Check for capture
+        if last_side == 'you' and 0 <= last_idx <= 5:
+            if you[last_idx] == 1:  # Was empty before drop
+                opposite = 5 - last_idx
+                if opp[opposite] > 0:
+                    you[6] += you[last_idx] + opp[opposite]
+                    you[last_idx] = 0
+                    opp[opposite] = 0
+        
+        return you, opp, extra_turn
+    
+    def is_terminal(you, opp):
+        return sum(you[:6]) == 0 or sum(opp[:6]) == 0
+    
+    def evaluate(you, opp):
+        """Evaluate board from 'you' perspective"""
+        you_store = you[6]
+        opp_store = opp[6]
+        
+        if sum(you[:6]) == 0:
+            opp_store += sum(opp[:6])
+        elif sum(opp[:6]) == 0:
+            you_store += sum(you[:6])
+        
+        return you_store - opp_store + sum(you[:6]) * 0.05
+    
+    def minimax(you, opp, depth, alpha, beta, maximizing):
+        if depth == 0 or is_terminal(you, opp):
+            return evaluate(you, opp), None
+        
+        legal_moves = [i for i in range(6) if you[i] > 0]
+        if not legal_moves:
+            return evaluate(you, opp), None
+        
+        if maximizing:
+            max_eval = float('-inf')
+            best_move = legal_moves[0]
+            
+            for move in legal_moves:
+                result = simulate_move(you, opp, move)
+                if result is None:
+                    continue
+                new_you, new_opp, extra_turn = result
+                
+                if extra_turn:
+                    eval_score, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, True)
+                else:
+                    eval_score, _ = minimax(new_opp, new_you, depth - 1, alpha, beta, False)
+                    eval_score = -eval_score
+                
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_move = move
+                
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            best_move = legal_moves[0]
+            
+            for move in legal_moves:
+                result = simulate_move(you, opp, move)
+                if result is None:
+                    continue
+                new_you, new_opp, extra_turn = result
+                
+                if extra_turn:
+                    eval_score, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, False)
+                else:
+                    eval_score, _ = minimax(new_opp, new_you, depth - 1, alpha, beta, True)
+                    eval_score = -eval_score
+                
+                if eval_score < min_eval:
+                    min_eval = eval_score
+                    best_move = move
+                
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            
+            return min_eval, best_move
+    
+    _, best_move = minimax(you, opponent, depth=10, alpha=float('-inf'), beta=float('inf'), maximizing=True)
+    
+    if best_move is None:
+        legal_moves = [i for i in range(6) if you[i] > 0]
+        best_move = legal_moves[0]
+    
+    return best_move
+</code>

@@ -1,0 +1,93 @@
+
+import numpy as np
+
+def policy(state: dict) -> str:
+    private_card = state['private_cards'][0]
+    public_cards = state['public_cards']
+    allowed = state['allowed_actions']
+    to_call = state['to_call']
+    pot = state['pot']
+    
+    def evaluate_hand(private, public):
+        if not public:
+            return private['rank'] / 14.0
+        
+        ranks = [c['rank'] for c in [private] + public]
+        suits = [c['suit'] for c in [private] + public]
+        
+        rank_counts = {}
+        for r in ranks:
+            rank_counts[r] = rank_counts.get(r, 0) + 1
+        max_rank_count = max(rank_counts.values()) if rank_counts else 1
+        pairs = sum(1 for v in rank_counts.values() if v >= 2)
+        
+        suit_counts = {}
+        for s in suits:
+            suit_counts[s] = suit_counts.get(s, 0) + 1
+        flush = max(suit_counts.values()) >= 3 if len(public) >=2 else False
+        
+        sorted_ranks = sorted(ranks)
+        straight = False
+        for i in range(len(sorted_ranks)-2):
+            if sorted_ranks[i+2] - sorted_ranks[i] == 2 and len(public) >=2:
+                straight = True
+                break
+        
+        score = 0
+        if flush and straight:
+            score = 8
+        elif max_rank_count >=4:
+            score = 7
+        elif max_rank_count ==3 and pairs >=1:
+            score = 6
+        elif flush:
+            score = 5
+        elif straight:
+            score = 4
+        elif max_rank_count ==3:
+            score = 3
+        elif pairs >=2:
+            score = 2
+        elif pairs ==1:
+            score = 1
+        else:
+            score = 0
+        
+        max_rank = max(ranks)
+        return score + max_rank / 14.0
+    
+    hand_value = evaluate_hand(private_card, public_cards)
+    num_public = len(public_cards)
+    
+    if num_public == 0:
+        if private_card['rank'] >= 10:
+            if 'raise' in allowed:
+                return 'raise'
+            elif 'all-in' in allowed:
+                return 'all-in'
+        elif private_card['rank'] >= 7:
+            return 'call' if 'call' in allowed else 'fold'
+        else:
+            return 'fold' if 'fold' in allowed else 'call'
+    else:
+        if hand_value >= 4.0:
+            if 'raise' in allowed:
+                return 'raise'
+            elif 'all-in' in allowed:
+                return 'all-in'
+            else:
+                return 'call'
+        elif hand_value >= 2.0:
+            if 'raise' in allowed and (pot / (to_call + 1e-6)) > 1.5:
+                return 'raise'
+            else:
+                return 'call' if 'call' in allowed else 'fold'
+        elif hand_value >= 1.0:
+            if to_call == 0:
+                return 'call'
+            elif (pot / (to_call + 1e-6)) >= 2.0:
+                return 'call'
+            else:
+                return 'fold' if 'fold' in allowed else 'call'
+        else:
+            return 'fold' if 'fold' in allowed else 'call'

@@ -1,0 +1,201 @@
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    import random
+    
+    # Piece values
+    PIECE_VALUES = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}
+    
+    # Helper functions
+    def get_color(piece_code):
+        return 'white' if piece_code[0] == 'w' else 'black'
+    
+    def get_piece_type(piece_code):
+        return piece_code[1]
+    
+    def sq_to_coords(sq):
+        return (ord(sq[0]) - ord('a'), int(sq[1]) - 1)
+    
+    def coords_to_sq(col, row):
+        if 0 <= col <= 7 and 0 <= row <= 7:
+            return chr(col + ord('a')) + str(row + 1)
+        return None
+    
+    def generate_legal_moves(pieces, to_play):
+        moves = []
+        color_prefix = 'w' if to_play == 'white' else 'b'
+        
+        for sq, piece in pieces.items():
+            if piece[0] != color_prefix[0]:
+                continue
+            
+            piece_type = piece[1]
+            col, row = sq_to_coords(sq)
+            
+            if piece_type == 'P':
+                direction = 1 if to_play == 'white' else -1
+                start_row = 1 if to_play == 'white' else 6
+                promo_row = 7 if to_play == 'white' else 0
+                
+                # Forward move
+                next_sq = coords_to_sq(col, row + direction)
+                if next_sq and next_sq not in pieces:
+                    if row + direction == promo_row:
+                        for promo in ['q', 'r', 'b', 'n']:
+                            moves.append(sq + next_sq + promo)
+                    else:
+                        moves.append(sq + next_sq)
+                    
+                    # Double move from start
+                    if row == start_row:
+                        next_sq2 = coords_to_sq(col, row + 2 * direction)
+                        if next_sq2 and next_sq2 not in pieces:
+                            moves.append(sq + next_sq2)
+                
+                # Captures
+                for dc in [-1, 1]:
+                    cap_sq = coords_to_sq(col + dc, row + direction)
+                    if cap_sq and cap_sq in pieces and pieces[cap_sq][0] != color_prefix[0]:
+                        if row + direction == promo_row:
+                            for promo in ['q', 'r', 'b', 'n']:
+                                moves.append(sq + cap_sq + promo)
+                        else:
+                            moves.append(sq + cap_sq)
+            
+            elif piece_type == 'N':
+                for dc, dr in [(2,1), (2,-1), (-2,1), (-2,-1), (1,2), (1,-2), (-1,2), (-1,-2)]:
+                    new_sq = coords_to_sq(col + dc, row + dr)
+                    if new_sq and (new_sq not in pieces or pieces[new_sq][0] != color_prefix[0]):
+                        moves.append(sq + new_sq)
+            
+            elif piece_type == 'K':
+                for dc in [-1, 0, 1]:
+                    for dr in [-1, 0, 1]:
+                        if dc == 0 and dr == 0:
+                            continue
+                        new_sq = coords_to_sq(col + dc, row + dr)
+                        if new_sq and (new_sq not in pieces or pieces[new_sq][0] != color_prefix[0]):
+                            moves.append(sq + new_sq)
+            
+            elif piece_type in ['B', 'R', 'Q']:
+                directions = []
+                if piece_type in ['B', 'Q']:
+                    directions.extend([(1,1), (1,-1), (-1,1), (-1,-1)])
+                if piece_type in ['R', 'Q']:
+                    directions.extend([(1,0), (-1,0), (0,1), (0,-1)])
+                
+                for dc, dr in directions:
+                    for dist in range(1, 8):
+                        new_sq = coords_to_sq(col + dc * dist, row + dr * dist)
+                        if not new_sq:
+                            break
+                        if new_sq in pieces:
+                            if pieces[new_sq][0] != color_prefix[0]:
+                                moves.append(sq + new_sq)
+                            break
+                        moves.append(sq + new_sq)
+        
+        return moves
+    
+    def make_move(pieces, move):
+        new_pieces = pieces.copy()
+        from_sq = move[:2]
+        to_sq = move[2:4]
+        
+        piece = new_pieces[from_sq]
+        del new_pieces[from_sq]
+        
+        if len(move) > 4:  # Promotion
+            promo_piece = move[4].upper()
+            new_pieces[to_sq] = piece[0] + promo_piece
+        else:
+            new_pieces[to_sq] = piece
+        
+        return new_pieces
+    
+    def evaluate_position(pieces, to_play):
+        color_prefix = 'w' if to_play == 'white' else 'b'
+        opp_prefix = 'b' if to_play == 'white' else 'w'
+        
+        score = 0
+        my_king_sq = None
+        opp_king_sq = None
+        
+        for sq, piece in pieces.items():
+            value = PIECE_VALUES[piece[1]]
+            col, row = sq_to_coords(sq)
+            
+            if piece[0] == color_prefix[0]:
+                score += value
+                if piece[1] == 'K':
+                    my_king_sq = sq
+                # Center control bonus
+                center_bonus = (3 - abs(col - 3.5)) * (3 - abs(row - 3.5)) * 0.05
+                score += center_bonus
+            else:
+                score -= value
+                if piece[1] == 'K':
+                    opp_king_sq = sq
+                center_bonus = (3 - abs(col - 3.5)) * (3 - abs(row - 3.5)) * 0.05
+                score -= center_bonus
+        
+        # Check if opponent has no king (checkmate)
+        if opp_king_sq is None:
+            return 1000
+        if my_king_sq is None:
+            return -1000
+        
+        return score
+    
+    def minimax(pieces, to_play, depth, alpha, beta, maximizing):
+        if depth == 0:
+            return evaluate_position(pieces, to_play if maximizing else ('white' if to_play == 'black' else 'black'))
+        
+        moves = generate_legal_moves(pieces, to_play)
+        if not moves:
+            return evaluate_position(pieces, to_play)
+        
+        if maximizing:
+            max_eval = -10000
+            for move in moves:
+                new_pieces = make_move(pieces, move)
+                eval_score = minimax(new_pieces, 'white' if to_play == 'black' else 'black', 
+                                   depth - 1, alpha, beta, False)
+                max_eval = max(max_eval, eval_score)
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = 10000
+            for move in moves:
+                new_pieces = make_move(pieces, move)
+                eval_score = minimax(new_pieces, 'white' if to_play == 'black' else 'black',
+                                   depth - 1, alpha, beta, True)
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval
+    
+    # Main logic
+    legal_moves = generate_legal_moves(pieces, to_play)
+    
+    if not legal_moves:
+        return ""
+    
+    if len(legal_moves) == 1:
+        return legal_moves[0]
+    
+    best_move = legal_moves[0]
+    best_score = -10000
+    
+    for move in legal_moves:
+        new_pieces = make_move(pieces, move)
+        score = minimax(new_pieces, 'white' if to_play == 'black' else 'black', 
+                       1, -10000, 10000, False)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move

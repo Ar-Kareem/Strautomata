@@ -1,0 +1,108 @@
+The strategy is to implement a simple but robust policy for the game of Amazons. The policy will prioritize moves that:
+1. Move an amazon a reasonable distance (not too short)
+2. Shoot the arrow to block opponent mobility or corner them
+3. Avoid shooting arrows too close to own amazons
+
+We'll generate all legal moves and then apply a basic heuristic to select a good one.
+
+<code>
+import numpy as np
+
+def policy(board) -> str:
+    def is_valid_pos(r, c):
+        return 0 <= r < 6 and 0 <= c < 6
+
+    def get_directions():
+        return [(dr, dc) for dr in (-1,0,1) for dc in (-1,0,1) if dr != 0 or dc != 0]
+
+    def find_legal_moves(board):
+        moves = []
+        directions = get_directions()
+        
+        # Find all our amazons
+        positions = np.argwhere(board == 1)
+        
+        for from_r, from_c in positions:
+            # Try all directions for movement
+            for dr, dc in directions:
+                # Try all distances for movement
+                for dist in range(1, 6):
+                    to_r = from_r + dr * dist
+                    to_c = from_c + dc * dist
+                    
+                    if not is_valid_pos(to_r, to_c):
+                        break
+                        
+                    if board[to_r, to_c] != 0:
+                        break
+                        
+                    # Now try all directions for arrow shot
+                    for adr, adc in directions:
+                        # Try all distances for arrow
+                        for adist in range(1, 6):
+                            arrow_r = to_r + adr * adist
+                            arrow_c = to_c + adc * adist
+                            
+                            if not is_valid_pos(arrow_r, arrow_c):
+                                break
+                                
+                            # Check if path is blocked (excluding from position which is now empty)
+                            # We need to check the path from to_r,to_c to arrow_r,arrow_c
+                            blocked = False
+                            for step in range(1, adist + 1):
+                                path_r = to_r + adr * step
+                                path_c = to_c + adc * step
+                                if not is_valid_pos(path_r, path_c):
+                                    blocked = True
+                                    break
+                                if board[path_r, path_c] != 0 and not (path_r == from_r and path_c == from_c):
+                                    blocked = True
+                                    break
+                                    
+                            if not blocked:
+                                moves.append((from_r, from_c, to_r, to_c, arrow_r, arrow_c))
+                                
+        return moves
+
+    # Find all legal moves
+    legal_moves = find_legal_moves(board)
+    
+    if not legal_moves:
+        # Should not happen according to problem statement, but just in case
+        # Make any legal move
+        for r in range(6):
+            for c in range(6):
+                if board[r, c] == 1:
+                    # Try moving right
+                    for nc in range(c+1, 6):
+                        if board[r, nc] == 0:
+                            # Move here, shoot back
+                            return f"{r},{c}:{r},{nc}:{r},{c}"
+    
+    # Apply a simple heuristic: prefer moves that shoot arrows farther away
+    best_move = None
+    best_score = -1
+    
+    for move in legal_moves:
+        from_r, from_c, to_r, to_c, arrow_r, arrow_c = move
+        # Distance from moved amazon to arrow
+        dist = max(abs(to_r - arrow_r), abs(to_c - arrow_c))
+        score = dist
+        
+        # Bonus for shooting near opponent
+        opponent_positions = np.argwhere(board == 2)
+        min_opp_dist = 6
+        for opp_r, opp_c in opponent_positions:
+            d = max(abs(arrow_r - opp_r), abs(arrow_c - opp_c))
+            min_opp_dist = min(min_opp_dist, d)
+            
+        # Prefer shooting closer to opponents
+        score += (6 - min_opp_dist)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+            
+    from_r, from_c, to_r, to_c, arrow_r, arrow_c = best_move
+    return f"{from_r},{from_c}:{to_r},{to_c}:{arrow_r},{arrow_c}"
+</code>

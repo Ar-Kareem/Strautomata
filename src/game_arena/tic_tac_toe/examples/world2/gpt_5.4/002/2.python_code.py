@@ -1,0 +1,262 @@
+
+from typing import List, Tuple
+import math
+import time
+
+N = 4
+TIME_LIMIT = 0.92
+
+# Positional preference: center-ish squares are better on 4x4
+POSITION_WEIGHTS = [
+    [3, 4, 4, 3],
+    [4, 5, 5, 4],
+    [4, 5, 5, 4],
+    [3, 4, 4, 3],
+]
+
+LINES = []
+
+# Rows
+for r in range(N):
+    LINES.append([(r, c) for c in range(N)])
+# Cols
+for c in range(N):
+    LINES.append([(r, c) for r in range(N)])
+# Diagonals
+LINES.append([(i, i) for i in range(N)])
+LINES.append([(i, N - 1 - i) for i in range(N)])
+
+
+def legal_moves(board: List[List[int]]) -> List[Tuple[int, int]]:
+    return [(r, c) for r in range(N) for c in range(N) if board[r][c] == 0]
+
+
+def check_winner(board: List[List[int]]) -> int:
+    for line in LINES:
+        s = sum(board[r][c] for r, c in line)
+        if s == N:
+            return 1
+        if s == -N:
+            return -1
+    return 0
+
+
+def board_full(board: List[List[int]]) -> bool:
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 0:
+                return False
+    return True
+
+
+def count_immediate_wins(board: List[List[int]], player: int) -> int:
+    count = 0
+    for r, c in legal_moves(board):
+        board[r][c] = player
+        if check_winner(board) == player:
+            count += 1
+        board[r][c] = 0
+    return count
+
+
+def line_score(vals: List[int]) -> int:
+    my_count = vals.count(1)
+    opp_count = vals.count(-1)
+    empty = vals.count(0)
+
+    if my_count > 0 and opp_count > 0:
+        return 0
+
+    if my_count == 4:
+        return 100000
+    if opp_count == 4:
+        return -100000
+
+    if opp_count == 0:
+        if my_count == 3 and empty == 1:
+            return 1200
+        if my_count == 2 and empty == 2:
+            return 120
+        if my_count == 1 and empty == 3:
+            return 12
+        if my_count == 0:
+            return 2
+
+    if my_count == 0:
+        if opp_count == 3 and empty == 1:
+            return -1400
+        if opp_count == 2 and empty == 2:
+            return -140
+        if opp_count == 1 and empty == 3:
+            return -12
+        if opp_count == 0:
+            return -2
+
+    return 0
+
+
+def evaluate(board: List[List[int]]) -> int:
+    winner = check_winner(board)
+    if winner == 1:
+        return 1000000
+    if winner == -1:
+        return -1000000
+
+    score = 0
+
+    # Line-based evaluation
+    for line in LINES:
+        vals = [board[r][c] for r, c in line]
+        score += line_score(vals)
+
+    # Positional control
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 1:
+                score += POSITION_WEIGHTS[r][c]
+            elif board[r][c] == -1:
+                score -= POSITION_WEIGHTS[r][c]
+
+    # Fork / tactical pressure
+    my_wins = count_immediate_wins(board, 1)
+    opp_wins = count_immediate_wins(board, -1)
+    score += 500 * my_wins
+    score -= 650 * opp_wins
+
+    return score
+
+
+def ordered_moves(board: List[List[int]], player: int) -> List[Tuple[int, int]]:
+    moves = legal_moves(board)
+
+    def move_key(move: Tuple[int, int]):
+        r, c = move
+        board[r][c] = player
+        win_now = 1 if check_winner(board) == player else 0
+        board[r][c] = 0
+
+        center_bias = POSITION_WEIGHTS[r][c]
+        tactical = 0
+
+        board[r][c] = player
+        tactical += count_immediate_wins(board, player)
+        board[r][c] = 0
+
+        return (win_now, tactical, center_bias)
+
+    moves.sort(key=move_key, reverse=True)
+    return moves
+
+
+def alphabeta(board: List[List[int]], depth: int, alpha: int, beta: int, maximizing: bool, start_time: float) -> int:
+    if time.time() - start_time > TIME_LIMIT:
+        return evaluate(board)
+
+    winner = check_winner(board)
+    if winner != 0:
+        return evaluate(board)
+    if board_full(board):
+        return 0
+    if depth == 0:
+        return evaluate(board)
+
+    if maximizing:
+        value = -math.inf
+        for r, c in ordered_moves(board, 1):
+            board[r][c] = 1
+            value = max(value, alphabeta(board, depth - 1, alpha, beta, False, start_time))
+            board[r][c] = 0
+            alpha = max(alpha, value)
+            if beta <= alpha:
+                break
+        return value
+    else:
+        value = math.inf
+        for r, c in ordered_moves(board, -1):
+            board[r][c] = -1
+            value = min(value, alphabeta(board, depth - 1, alpha, beta, True, start_time))
+            board[r][c] = 0
+            beta = min(beta, value)
+            if beta <= alpha:
+                break
+        return value
+
+
+def choose_depth(empty_count: int) -> int:
+    if empty_count >= 13:
+        return 4
+    if empty_count >= 10:
+        return 5
+    if empty_count >= 7:
+        return 6
+    if empty_count >= 5:
+        return 7
+    return 10
+
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    try:
+        moves = legal_moves(board)
+        if not moves:
+            return (0, 0)
+
+        # Opening preference on empty board
+        if len(moves) == 16:
+            for move in [(1, 1), (1, 2), (2, 1), (2, 2)]:
+                if board[move[0]][move[1]] == 0:
+                    return move
+
+        # Immediate win
+        for r, c in moves:
+            board[r][c] = 1
+            if check_winner(board) == 1:
+                board[r][c] = 0
+                return (r, c)
+            board[r][c] = 0
+
+        # Immediate block
+        opp_winning_moves = []
+        for r, c in moves:
+            board[r][c] = -1
+            if check_winner(board) == -1:
+                opp_winning_moves.append((r, c))
+            board[r][c] = 0
+        if opp_winning_moves:
+            # If multiple blocks are possible, pick best-positioned one
+            opp_winning_moves.sort(key=lambda mv: POSITION_WEIGHTS[mv[0]][mv[1]], reverse=True)
+            return opp_winning_moves[0]
+
+        # Search
+        start_time = time.time()
+        depth = choose_depth(len(moves))
+        best_score = -math.inf
+        best_move = None
+
+        for r, c in ordered_moves(board, 1):
+            if time.time() - start_time > TIME_LIMIT:
+                break
+            board[r][c] = 1
+            score = alphabeta(board, depth - 1, -math.inf, math.inf, False, start_time)
+            board[r][c] = 0
+
+            # Mild tie-break by position
+            score += POSITION_WEIGHTS[r][c] * 0.01
+
+            if score > best_score or best_move is None:
+                best_score = score
+                best_move = (r, c)
+
+        if best_move is not None and board[best_move[0]][best_move[1]] == 0:
+            return best_move
+
+        # Heuristic fallback
+        moves.sort(key=lambda mv: POSITION_WEIGHTS[mv[0]][mv[1]], reverse=True)
+        return moves[0]
+
+    except Exception:
+        # Absolute safety fallback: first legal move
+        for r in range(N):
+            for c in range(N):
+                if board[r][c] == 0:
+                    return (r, c)
+        return (0, 0)

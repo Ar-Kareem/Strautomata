@@ -1,0 +1,132 @@
+<code>
+import random
+import numpy as np
+from typing import List, Tuple
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], valid_mask) -> Tuple[int, int]:
+    """
+    A simple heuristic-based policy for Havannah.
+    
+    Strategy:
+    - Prioritize moves that complete winning structures (ring, bridge, fork)
+    - Prioritize defensive moves to block opponent's winning structures
+    - Use mobility heuristic to choose among other moves
+    """
+    N = len(valid_mask)
+    
+    # Convert to sets for faster lookups
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    # Get all valid moves
+    valid_moves = []
+    for r in range(N):
+        for c in range(N):
+            if valid_mask[r][c] and (r, c) not in me_set and (r, c) not in opp_set:
+                valid_moves.append((r, c))
+    
+    if not valid_moves:
+        # Fallback - shouldn't happen in normal play
+        return (0, 0)
+    
+    # Helper to get neighbors
+    def get_neighbors(r, c):
+        neighbors = []
+        # Same column
+        if r + 1 < N: neighbors.append((r + 1, c))
+        if r - 1 >= 0: neighbors.append((r - 1, c))
+        
+        # Left column
+        if c - 1 >= 0:
+            if r + 1 < N: neighbors.append((r + 1, c - 1))
+            if r - 1 >= 0: neighbors.append((r - 1, c - 1))
+        
+        # Right column
+        if c + 1 < N:
+            if r + 1 < N: neighbors.append((r + 1, c + 1))
+            if r - 1 >= 0: neighbors.append((r - 1, c + 1))
+        
+        return neighbors
+    
+    # Check if a move completes a winning structure
+    def is_winning_move(r, c, player_stones):
+        test_set = player_stones | {(r, c)}
+        
+        # Check for ring (simplified heuristic)
+        # A ring requires at least 6 stones forming a loop
+        if len(player_stones) >= 5:
+            # Check if adding this stone creates a connected component
+            # that surrounds at least one empty cell
+            pass  # Complex to implement fully
+        
+        # Check for bridge (connects two corners)
+        corners = [(0, 0), (0, N-1), (N//2, 0), (N//2, N-1), (N-1, 0), (N-1, N-1)]
+        corner_components = {}
+        
+        # Find connected components for corners
+        visited = set()
+        for corner in corners:
+            if corner in test_set and corner not in visited:
+                # BFS to find connected component
+                component = set()
+                queue = [corner]
+                visited.add(corner)
+                while queue:
+                    curr = queue.pop(0)
+                    component.add(curr)
+                    for nr, nc in get_neighbors(curr[0], curr[1]):
+                        if (nr, nc) in test_set and (nr, nc) not in visited:
+                            visited.add((nr, nc))
+                            queue.append((nr, nc))
+                
+                # Check if any other corner is in this component
+                for other_corner in corners:
+                    if other_corner != corner and other_corner in component:
+                        return True
+        
+        # Check for fork (connects three edges)
+        # This is complex to implement fully in this time constraint
+        
+        return False
+    
+    # Check winning moves for me
+    for move in valid_moves:
+        if is_winning_move(move[0], move[1], me_set):
+            return move
+    
+    # Check winning moves for opponent (block them)
+    for move in valid_moves:
+        if is_winning_move(move[0], move[1], opp_set):
+            return move
+    
+    # Mobility heuristic - prefer moves with more empty neighbors
+    # (gives more options for future connections)
+    best_move = valid_moves[0]
+    best_score = -1
+    
+    for move in valid_moves:
+        score = 0
+        for nr, nc in get_neighbors(move[0], move[1]):
+            if valid_mask[nr][nc] and (nr, nc) not in me_set and (nr, nc) not in opp_set:
+                score += 1
+        
+        # Bonus for being near existing stones
+        for nr, nc in get_neighbors(move[0], move[1]):
+            if (nr, nc) in me_set:
+                score += 2
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    # Add some randomness to avoid predictable play
+    if best_score > 0:
+        candidates = [m for m in valid_moves if m == best_move or 
+                     all(n in me_set or not valid_mask[n[0]][n[1]] 
+                         for n in get_neighbors(m[0], m[1]) 
+                         if (n[0], n[1]) in [best_move])]
+        if candidates:
+            return random.choice(candidates)
+    
+    return best_move
+</code>

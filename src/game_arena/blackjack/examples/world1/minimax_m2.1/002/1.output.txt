@@ -1,0 +1,151 @@
+# Smart Blackjack-like Game Policy Strategy
+
+The strategy for this policy involves several key components:
+
+1. **Optimal Ace Handling**: Calculate hand value by treating Aces as 11 first, then converting to 1 if needed to avoid busting
+2. **Risk Assessment**: Calculate the probability of busting based on remaining cards in the deck
+3. **Expected Value Calculation**: Estimate the expected improvement from hitting
+4. **Dynamic Thresholds**: Adjust hitting threshold based on how close we are to the target
+5. **Deck Awareness**: Track which cards have been drawn to make better probabilistic decisions
+
+The policy uses a threshold-based approach where it will HIT if the probability of improving the hand without busting is sufficiently high, and STAY otherwise.
+<code>
+def policy(hand: list[str], target: int) -> str:
+    """
+    Smart policy for simplified Blackjack-like game.
+    
+    Args:
+        hand: List of card strings currently held
+        target: Target score T to approach
+    
+    Returns:
+        "HIT" or "STAY" based on optimal strategy
+    """
+    
+    # Define card values
+    card_values = {
+        "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10": 10,
+        "J": 10, "Q": 10, "K": 10
+    }
+    
+    def calculate_hand_value(cards):
+        """Calculate hand value with optimal Ace handling."""
+        if not cards:
+            return 0
+        
+        # Calculate base value (treating Aces as 11)
+        value = 0
+        ace_count = 0
+        
+        for card in cards:
+            if card == "A":
+                ace_count += 1
+                value += 11
+            else:
+                value += card_values[card]
+        
+        # Convert Aces from 11 to 1 if needed to avoid busting
+        while value > target and ace_count > 0:
+            value -= 10  # Convert one Ace from 11 to 1
+            ace_count -= 1
+        
+        return value
+    
+    def get_card_value(card):
+        """Get the face value of a card (treating Ace as 11 for deck analysis)."""
+        if card == "A":
+            return 11
+        return card_values[card]
+    
+    def get_safe_cards_remaining(current_value):
+        """Count how many remaining cards won't cause a bust."""
+        safe_count = 0
+        
+        # Check each card type that might still be in deck
+        for card in ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]:
+            if card in hand:
+                continue  # This card has been drawn
+                
+            card_val = get_card_value(card)
+            if current_value + card_val <= target:
+                safe_count += 1
+        
+        return safe_count
+    
+    def get_expected_improvement(current_value):
+        """Calculate expected value of hitting."""
+        total_value = 0
+        card_count = 0
+        
+        for card in ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]:
+            if card in hand:
+                continue  # This card has been drawn
+                
+            card_val = get_card_value(card)
+            total_value += card_val
+            card_count += 1
+        
+        if card_count == 0:
+            return 0
+        
+        return total_value / card_count
+    
+    # Calculate current hand value
+    current_value = calculate_hand_value(hand)
+    
+    # If we're already at or past target, STAY
+    if current_value > target:
+        return "STAY"  # Should have busted already
+    if current_value == target:
+        return "STAY"  # Perfect score
+    
+    # Calculate risk metrics
+    safe_cards = get_safe_cards_remaining(current_value)
+    expected_improvement = get_expected_improvement(current_value)
+    
+    # Total remaining cards in deck
+    remaining_cards = 13 - len(hand)
+    
+    if remaining_cards == 0:
+        return "STAY"  # No cards left
+    
+    # Calculate probability of safe hit
+    safe_probability = safe_cards / remaining_cards if remaining_cards > 0 else 0
+    
+    # Calculate how far we are from target
+    distance_to_target = target - current_value
+    
+    # Dynamic threshold based on distance to target
+    # Closer to target = more conservative (higher threshold to hit)
+    # Further from target = more aggressive (lower threshold to hit)
+    
+    if distance_to_target <= 3:
+        # Very close to target - be very conservative
+        # Only hit if high probability of improvement and low bust risk
+        if safe_probability >= 0.6 and expected_improvement >= 3:
+            return "HIT"
+        else:
+            return "STAY"
+    
+    elif distance_to_target <= 6:
+        # Moderately close - moderate risk taking
+        if safe_probability >= 0.4 and expected_improvement >= 2:
+            return "HIT"
+        else:
+            return "STAY"
+    
+    elif distance_to_target <= 10:
+        # Further away - willing to take more risks
+        if safe_probability >= 0.25 and expected_improvement >= 1.5:
+            return "HIT"
+        else:
+            return "STAY"
+    
+    else:
+        # Far from target - very aggressive
+        # Even with low probability, we need to improve
+        if expected_improvement >= 1:
+            return "HIT"
+        else:
+            return "STAY"
+</code>

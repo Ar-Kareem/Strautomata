@@ -1,0 +1,422 @@
+The strategy for this policy is:
+
+- Represent the board as two 36-bit bitboards for speed.
+- Precompute all winning 5-cell segments and all quadrant rotation maps.
+- Generate legal moves as placement + rotation.
+- First, look for an immediate winning move.
+- Otherwise, use a shallow negamax search with alpha-beta pruning and strong move ordering.
+- Limit search to promising placements when the board is still wide open, so it fits comfortably in the time limit.
+- Use a heuristic evaluation that rewards uncontested 2/3/4-in-a-row patterns, center control, and tactical urgency.
+- Always keep a legal fallback move, so the policy never fails to return a valid action.
+
+<code>
+from typing import List, Tuple
+import math
+
+# =========================
+# Pentago policy
+# =========================
+
+N = 6
+WIN_SCORE = 10**9
+
+# Cell index: r*6 + c
+def idx(r, c):
+    return r * 6 + c
+
+# Precompute all 5-cell winning masks on the 6x6 board
+WIN_MASKS = []
+CELL_TO_MASKS = [[] for _ in range(36)]
+
+def _build_win_masks():
+    masks = []
+
+    # Horizontal
+    for r in range(6):
+        for c0 in range(2):
+            cells = [idx(r, c0 + k) for k in range(5)]
+            m = 0
+            for p in cells:
+                m |= 1 << p
+            masks.append(m)
+
+    # Vertical
+    for c in range(6):
+        for r0 in range(2):
+            cells = [idx(r0 + k, c) for k in range(5)]
+            m = 0
+            for p in cells:
+                m |= 1 << p
+            masks.append(m)
+
+    # Diagonal down-right
+    for r0 in range(2):
+        for c0 in range(2):
+            cells = [idx(r0 + k, c0 + k) for k in range(5)]
+            m = 0
+            for p in cells:
+                m |= 1 << p
+            masks.append(m)
+
+    # Diagonal down-left
+    for r0 in range(2):
+        for c0 in range(4, 6):
+            cells = [idx(r0 + k, c0 - k) for k in range(5)]
+            m = 0
+            for p in cells:
+                m |= 1 << p
+            masks.append(m)
+
+    return masks
+
+WIN_MASKS = _build_win_masks()
+for mi, m in enumerate(WIN_MASKS):
+    x = m
+    while x:
+        b = x & -x
+        p = b.bit_length() - 1
+        CELL_TO_MASKS[p].append(mi)
+        x -= b
+
+# Precompute quadrant cells and rotation mappings
+QUAD_CELLS = {
+    0: [idx(r, c) for r in range(0, 3) for c in range(0, 3)],
+    1: [idx(r, c) for r in range(0, 3) for c in range(3, 6)],
+    2: [idx(r, c) for r in range(3, 6) for c in range(0, 3)],
+    3: [idx(r, c) for r in range(3, 6) for c in range(3, 6)],
+}
+
+ROT_MAP = {}  # (quad, dir) -> dict old_index -> new_index
+
+def _build_rot_maps():
+    for q in range(4):
+        r0 = 0 if q < 2 else 3
+        c0 = 0 if q % 2 == 0 else 3
+
+        mp_r = {}
+        mp_l = {}
+        for dr in range(3):
+            for dc in range(3):
+                old = idx(r0 + dr, c0 + dc)
+
+                # Clockwise: (dr, dc) -> (dc, 2-dr)
+                nr, nc = dc, 2 - dr
+                new_r = idx(r0 + nr, c0 + nc)
+                mp_r[old] = new_r
+
+                # Counterclockwise: (dr, dc) -> (2-dc, dr)
+                nr, nc = 2 - dc, dr
+                new_l = idx(r0 + nr, c0 + nc)
+                mp_l[old] = new_l
+
+        ROT_MAP[(q, 'R')] = mp_r
+        ROT_MAP[(q, 'L')] = mp_l
+
+_build_rot_maps()
+
+NEIGHBORS = [[] for _ in range(36)]
+for r in range(6):
+    for c in range(6):
+        p = idx(r, c)
+        arr = []
+        for dr in (-1, 0, 1):
+            for dc in (-1, 0, 1):
+                if dr == 0 and dc == 0:
+                    continue
+                rr, cc = r + dr, c + dc
+                if 0 <= rr < 6 and 0 <= cc < 6:
+                    arr.append(idx(rr, cc))
+        NEIGHBORS[p] = arr
+
+CENTER_WEIGHT = [0] * 36
+for r in range(6):
+    for c in range(6):
+        # Mild preference for central cells
+        CENTER_WEIGHT[idx(r, c)] = 6 - abs(2.5 - r) - abs(2.5 - c)
+
+POPCOUNT = int.bit_count
+
+def has_five(bits: int) -> bool:
+    for m in WIN_MASKS:
+        if (bits & m) == m:
+            return True
+    return False
+
+def rotate_bits(bits: int, quad: int, d: str) -> int:
+    mp = ROT_MAP[(quad, d)]
+    out = bits
+    # Clear quadrant
+    for p in QUAD_CELLS[quad]:
+        out &= ~(1 << p)
+    # Put rotated bits back
+    for old, new in mp.items():
+        if (bits >> old) & 1:
+            out |= 1 << new
+    return out
+
+def apply_move(me: int, opp: int, p: int, quad: int, d: str) -> Tuple[int, int]:
+    me2 = me | (1 << p)
+    me3 = rotate_bits(me2, quad, d)
+    opp3 = rotate_bits(opp, quad, d)
+    return me3, opp3
+
+def terminal_after_move(me_after: int, opp_after: int, occupied_after: int) -> int:
+    myw = has_five(me_after)
+    opw = has_five(opp_after)
+    if myw and opw:
+        return 0
+    if myw:
+        return WIN_SCORE
+    if opw:
+        return -WIN_SCORE
+    if POPCOUNT(occupied_after) == 36:
+        return 0
+    return None
+
+def eval_position(me: int, opp: int) -> int:
+    # Immediate tactical values
+    myw = has_five(me)
+    opw = has_five(opp)
+    if myw and opw:
+        return 0
+    if myw:
+        return WIN_SCORE
+    if opw:
+        return -WIN_SCORE
+
+    score = 0
+
+    # Segment-based evaluation
+    # Reward uncontested patterns, heavily emphasize 4-in-5
+    for m in WIN_MASKS:
+        a = POPCOUNT(me & m)
+        b = POPCOUNT(opp & m)
+        if a and b:
+            continue
+        if a:
+            if a == 1:
+                score += 2
+            elif a == 2:
+                score += 12
+            elif a == 3:
+                score += 80
+            elif a == 4:
+                score += 5000
+            elif a == 5:
+                score += 200000
+        elif b:
+            if b == 1:
+                score -= 2
+            elif b == 2:
+                score -= 12
+            elif b == 3:
+                score -= 90
+            elif b == 4:
+                score -= 6000
+            elif b == 5:
+                score -= 200000
+
+    # Mild center / connectivity bias
+    x = me
+    while x:
+        b = x & -x
+        p = b.bit_length() - 1
+        score += int(CENTER_WEIGHT[p] * 2)
+        score += sum(1 for n in NEIGHBORS[p] if ((me >> n) & 1))
+        x -= b
+
+    x = opp
+    while x:
+        b = x & -x
+        p = b.bit_length() - 1
+        score -= int(CENTER_WEIGHT[p] * 2)
+        score -= sum(1 for n in NEIGHBORS[p] if ((opp >> n) & 1))
+        x -= b
+
+    return score
+
+def placement_priority(me: int, opp: int, p: int) -> int:
+    s = int(CENTER_WEIGHT[p] * 10)
+
+    # Neighbor pressure
+    for n in NEIGHBORS[p]:
+        if (me >> n) & 1:
+            s += 8
+        elif (opp >> n) & 1:
+            s += 6
+
+    # Boost cells that participate in strong line segments
+    for mi in CELL_TO_MASKS[p]:
+        m = WIN_MASKS[mi]
+        a = POPCOUNT(me & m)
+        b = POPCOUNT(opp & m)
+        if a and b:
+            continue
+        if a >= 2:
+            s += 20 * a
+        if b >= 2:
+            s += 18 * b
+
+    return s
+
+def generate_moves(me: int, opp: int, root: bool = False):
+    occupied = me | opp
+    empties = [p for p in range(36) if ((occupied >> p) & 1) == 0]
+
+    if not empties:
+        return []
+
+    # Candidate placement pruning on wide boards
+    stones = POPCOUNT(occupied)
+    scored = [(placement_priority(me, opp, p), p) for p in empties]
+    scored.sort(reverse=True)
+
+    if stones < 4:
+        keep = min(len(scored), 8)
+    elif stones < 10:
+        keep = min(len(scored), 12)
+    elif stones < 18:
+        keep = min(len(scored), 16)
+    else:
+        keep = len(scored)
+
+    candidates = [p for _, p in scored[:keep]]
+
+    moves = []
+    for p in candidates:
+        for q in range(4):
+            for d in ('L', 'R'):
+                me2, opp2 = apply_move(me, opp, p, q, d)
+                term = terminal_after_move(me2, opp2, occupied | (1 << p))
+                if term == WIN_SCORE:
+                    pr = WIN_SCORE
+                elif term == 0:
+                    pr = 0
+                elif term == -WIN_SCORE:
+                    pr = -WIN_SCORE
+                else:
+                    pr = eval_position(me2, opp2)
+                moves.append((pr, p, q, d, me2, opp2))
+
+    # Strong ordering
+    moves.sort(key=lambda t: t[0], reverse=True)
+    return moves
+
+def negamax(me: int, opp: int, depth: int, alpha: int, beta: int) -> int:
+    occupied = me | opp
+
+    # Board full draw
+    if POPCOUNT(occupied) == 36:
+        return 0
+
+    # Static if depth exhausted
+    if depth == 0:
+        return eval_position(me, opp)
+
+    moves = generate_moves(me, opp, root=False)
+    if not moves:
+        return 0
+
+    # Deeper pruning: only consider best slice on large branching nodes
+    if depth >= 2 and len(moves) > 24:
+        moves = moves[:24]
+    elif depth == 1 and len(moves) > 32:
+        moves = moves[:32]
+
+    best = -10**18
+    for _, p, q, d, me2, opp2 in moves:
+        term = terminal_after_move(me2, opp2, occupied | (1 << p))
+        if term is not None:
+            val = term
+        else:
+            val = -negamax(opp2, me2, depth - 1, -beta, -alpha)
+
+        if val > best:
+            best = val
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+
+    return best
+
+def first_legal_move(you, opponent) -> str:
+    for r in range(6):
+        for c in range(6):
+            if int(you[r][c]) == 0 and int(opponent[r][c]) == 0:
+                return f"{r+1},{c+1},0,L"
+    return "1,1,0,L"  # should never happen per problem statement
+
+def policy(you, opponent) -> str:
+    try:
+        me = 0
+        opp = 0
+        for r in range(6):
+            for c in range(6):
+                if int(you[r][c]) == 1:
+                    me |= 1 << idx(r, c)
+                elif int(opponent[r][c]) == 1:
+                    opp |= 1 << idx(r, c)
+
+        occupied = me | opp
+
+        # Safe fallback
+        fallback = first_legal_move(you, opponent)
+
+        # Generate root moves
+        moves = generate_moves(me, opp, root=True)
+        if not moves:
+            return fallback
+
+        # 1) Immediate win if available
+        for _, p, q, d, me2, opp2 in moves:
+            term = terminal_after_move(me2, opp2, occupied | (1 << p))
+            if term == WIN_SCORE:
+                r, c = divmod(p, 6)
+                return f"{r+1},{c+1},{q},{d}"
+
+        stones = POPCOUNT(occupied)
+
+        # Search depth tuning
+        if stones < 8:
+            depth = 1
+            root_limit = min(len(moves), 20)
+        elif stones < 18:
+            depth = 2
+            root_limit = min(len(moves), 24)
+        else:
+            depth = 2
+            root_limit = min(len(moves), 40)
+
+        best_val = -10**18
+        best_move = None
+
+        for _, p, q, d, me2, opp2 in moves[:root_limit]:
+            term = terminal_after_move(me2, opp2, occupied | (1 << p))
+            if term is not None:
+                val = term
+            else:
+                val = -negamax(opp2, me2, depth - 1, -10**18, 10**18)
+
+            if val > best_val:
+                best_val = val
+                best_move = (p, q, d)
+
+        if best_move is None:
+            # Fallback to best heuristic move
+            _, p, q, d, _, _ = moves[0]
+            best_move = (p, q, d)
+
+        p, q, d = best_move
+        r, c = divmod(p, 6)
+        move = f"{r+1},{c+1},{q},{d}"
+
+        # Final legality sanity check
+        rr, cc = r, c
+        if 0 <= rr < 6 and 0 <= cc < 6 and ((occupied >> p) & 1) == 0 and q in (0, 1, 2, 3) and d in ('L', 'R'):
+            return move
+        return fallback
+
+    except Exception:
+        return first_legal_move(you, opponent)
+</code>

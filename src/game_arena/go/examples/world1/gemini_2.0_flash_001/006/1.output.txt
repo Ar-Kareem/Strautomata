@@ -1,0 +1,301 @@
+The strategy for this policy is heavily based on Monte Carlo Tree Search (MCTS) with enhancements for Go, including:
+
+1.  **Monte Carlo Tree Search (MCTS):** The core of the policy. The algorithm simulates many games from the current state to evaluate potential moves.
+
+2.  **UCT (Upper Confidence Bound 1 for Trees):**  Used to balance exploration and exploitation during tree traversal. This ensures the algorithm explores promising moves while also refining its estimates for known good moves.
+
+3.  **Move Filtering (Legality):** Ensures only valid moves are considered during simulations.  Crucially important to guarantee a legal move is always returned.  This includes checking for suicide moves.
+
+4.  **Simple Heuristics:** A set of simple heuristics is incorporated to prioritize certain move types (e.g., capture moves, connection moves, territory consolidation) to guide simulations and improve move selection.
+
+5.  **Time Management:** A hard time limit is set for the MCTS search. The policy returns the best move found so far when the time limit is reached. This handles the 1-second constraint.
+
+6.  **Board Representation:**  A 19x19 board is represented using a numpy array for efficient state manipulation.
+
+7.  **Capturing Logic:** Correctly and efficiently implements the rules of capturing stones.
+
+8.  **Pass Move:** Includes the option to pass, returning (0, 0), when no better move is found.
+
+This strategy aims to strike a balance between a reasonably deep search and the ability to produce a move under the strict time constraint.  The heuristics provide a way to guide the search toward strategically sound moves without requiring an exhaustive search.
+
+```python
+import numpy as np
+import time
+import math
+
+class GoBoard:
+    def __init__(self, size=19):
+        self.size = size
+        self.board = np.zeros((size, size), dtype=int)
+
+    def place_stone(self, row, col, player):
+        self.board[row, col] = player
+
+    def get_board(self):
+        return self.board
+
+    def is_valid_move(self, row, col, player):
+        if not (0 <= row < self.size and 0 <= col < self.size):
+            return False
+        if self.board[row, col] != 0:
+            return False
+
+        # Check for suicide
+        temp_board = np.copy(self.board)
+        temp_board[row, col] = player
+        if self.is_suicide(temp_board, row, col, player):
+            return False
+
+        return True
+
+    def is_suicide(self, board, row, col, player):
+        opponent = 3 - player
+        
+        # Check if the move immediately captures opponent groups
+        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nr, nc = row + dr, col + dc
+            if 0 <= nr < self.size and 0 <= nc < self.size and board[nr, nc] == opponent:
+                group = self.get_group(board, nr, nc)
+                if len(group) > 0 and not self.has_liberties(board, group):
+                    return False # Capturing move, not suicide
+
+        # Temporarily place the stone
+        # If no liberties AND not connected to friendly group with liberties, then suicide.
+        
+        group = self.get_group(board, row, col)
+        if len(group) > 0 and not self.has_liberties(board, group):
+            is_connected_to_friendly_group_with_liberties = False
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = row + dr, col + dc
+                if 0 <= nr < self.size and 0 <= nc < self.size and board[nr, nc] == player:
+                    friendly_group = self.get_group(board, nr, nc)
+                    if self.has_liberties(board, friendly_group):
+                        is_connected_to_friendly_group_with_liberties = True
+                        break # Connected to friendly group with liberties
+
+            if not is_connected_to_friendly_group_with_liberties:
+                return True # Suicide move
+
+        return False
+
+    def get_group(self, board, row, col):
+        player = board[row, col]
+        if player == 0:
+            return []
+
+        group = []
+        visited = set()
+        stack = [(row, col)]
+
+        while stack:
+            r, c = stack.pop()
+            if (r, c) in visited:
+                continue
+            visited.add((r, c))
+            if board[r, c] == player:
+                group.append((r, c))
+                for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < self.size and 0 <= nc < self.size:
+                        stack.append((nr, nc))
+        return group
+
+    def has_liberties(self, board, group):
+        for row, col in group:
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = row + dr, col + dc
+                if 0 <= nr < self.size and 0 <= nc < self.size and board[nr, nc] == 0:
+                    return True
+        return False
+
+    def remove_captured_stones(self, player):
+        opponent = 3 - player
+        captured_stones = []
+        for row in range(self.size):
+            for col in range(self.size):
+                if self.board[row, col] == opponent:
+                    group = self.get_group(self.board, row, col)
+                    if not self.has_liberties(self.board, group):
+                        captured_stones.extend(group)
+        for row, col in captured_stones:
+            self.board[row, col] = 0
+        return captured_stones
+
+class MCTSNode:
+    def __init__(self, board, player, parent=None, move=None):
+        self.board = board
+        self.player = player
+        self.parent = parent
+        self.move = move
+        self.children = {}
+        self.visits = 0
+        self.wins = 0
+        self.legal_moves = self.get_legal_moves()
+
+    def get_legal_moves(self):
+        legal_moves = []
+        board = self.board.get_board()
+        for row in range(self.board.size):
+            for col in range(self.board.size):
+                if self.board.is_valid_move(row, col, self.player):
+                    legal_moves.append((row, col))
+        legal_moves.append((0, 0)) # Pass move
+        return legal_moves
+
+    def expand(self):
+        if not self.legal_moves:
+            return None  # No more legal moves
+
+        move = self.legal_moves.pop(0)
+        new_board = GoBoard(self.board.size)
+        new_board.board = np.copy(self.board.get_board())
+        if move != (0, 0):
+            new_board.place_stone(move[0], move[1], self.player)
+            new_board.remove_captured_stones(self.player)
+
+
+        next_player = 3 - self.player
+        child = MCTSNode(new_board, next_player, parent=self, move=move)
+        self.children[move] = child
+        return child
+
+    def simulate(self):
+        board = GoBoard(self.board.size)
+        board.board = np.copy(self.board.get_board())
+        player = self.player
+        
+        while True:
+            legal_moves = []
+            temp_board = board.get_board()
+
+            for row in range(board.size):
+                for col in range(board.size):
+                    if board.is_valid_move(row, col, player):
+                        legal_moves.append((row, col))
+            legal_moves.append((0, 0))   # always allow pass
+
+            if not legal_moves:
+                break
+
+            move = self.select_move_for_simulation(board, legal_moves, player)
+
+            if move == (0, 0):
+              break  # Pass move in simulation
+
+            board.place_stone(move[0], move[1], player)
+            board.remove_captured_stones(player)
+            player = 3 - player
+        
+        # Simple win evaluation: count territory
+        my_territory = np.sum(board.get_board() == self.player)
+        opponent_territory = np.sum(board.get_board() == (3 - self.player))
+        return 1 if my_territory > opponent_territory else 0
+
+    def select_move_for_simulation(self, board, legal_moves, player):
+        # Heuristic: prioritize capturing moves
+        for move in legal_moves:
+            if move == (0, 0):
+                continue
+            temp_board = np.copy(board.get_board())
+            temp_board[move[0], move[1]] = player
+            
+            # Check if placing a stone at move leads to capturing
+            opponent = 3 - player
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = move[0] + dr, move[1] + dc
+                if 0 <= nr < board.size and 0 <= nc < board.size and temp_board[nr, nc] == opponent:
+                    group = board.get_group(temp_board, nr, nc)
+                    temp_board[move[0], move[1]] = player  #Place stone manually to check capture after placement
+                    if len(group) > 0:
+                       temp_board[move[0], move[1]] = player #Place stone manually to check capture after placement
+                       if not board.has_liberties(temp_board, group):
+                            return move
+
+        # Heuristic: Prioritize filling in own territory (safer moves)
+        for move in legal_moves:
+            if move == (0, 0):
+                continue
+            row, col = move
+            neighbors = []
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = row + dr, col + dc
+                if 0 <= nr < board.size and 0 <= nc < board.size:
+                    neighbors.append(board.get_board()[nr, nc])
+            if all(neighbor == player for neighbor in neighbors if neighbor != 0):
+              return move
+        
+        # Otherwise, choose a random move
+        return legal_moves[np.random.choice(len(legal_moves))]
+
+
+    def backpropagate(self, result):
+        self.visits += 1
+        self.wins += result
+        if self.parent:
+            self.parent.backpropagate(1 - result)
+
+    def uct_value(self, exploration_constant=1.41):
+        if self.visits == 0:
+            return float('inf')
+        return (self.wins / self.visits) + exploration_constant * math.sqrt(math.log(self.parent.visits) / self.visits)
+
+    def select_best_child(self):
+        best_child = None
+        best_uct = -float('inf')
+        for child in self.children.values():
+            uct = child.uct_value()
+            if uct > best_uct:
+                best_uct = uct
+                best_child = child
+        return best_child
+
+def get_move(board: GoBoard, player: int, time_limit: float = 0.9):
+    root = MCTSNode(board, player)
+    start_time = time.time()
+
+    while time.time() - start_time < time_limit:
+        node = root
+        # Selection
+        while node.children and node.legal_moves==[]:
+            node = node.select_best_child()
+
+        # Expansion
+        if node.legal_moves:
+          child = node.expand()
+        else:
+          child = None
+
+        # Simulation
+        if child:
+            result = child.simulate()
+        else: #If there are no legal moves do a self evaluation and break so MCTS can continue on other branches
+          result = root.simulate()
+
+        # Backpropagation
+        if child:
+            child.backpropagate(result)
+
+    # Choose the best move from the root node
+    best_move = None
+    best_win_rate = -1
+    for move, child in root.children.items():
+        if child.visits > 0:
+            win_rate = child.wins / child.visits
+            if win_rate > best_win_rate:
+                best_win_rate = win_rate
+                best_move = move
+
+    if best_move is None:
+        return (0, 0)  # Pass if no good move found
+    return best_move
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    board = GoBoard()
+    for row, col in me:
+        board.place_stone(row - 1, col - 1, 1)  # Player 1
+    for row, col in opponent:
+        board.place_stone(row - 1, col - 1, 2)  # Player 2
+    
+    move = get_move(board, 1)
+    return (move[0] + 1, move[1] + 1)
+```

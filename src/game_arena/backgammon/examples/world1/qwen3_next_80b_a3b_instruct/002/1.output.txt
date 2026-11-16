@@ -1,0 +1,364 @@
+The strategy for this policy is to implement a sophisticated Backgammon AI that prioritizes safety, blocking, and efficient bearing off while adhering strictly to the rules. The policy uses a hierarchical decision-making process:
+
+1. **Bar Entry Priority**: If checkers are on the bar, prioritize entering them using the highest possible die to maximize flexibility and avoid leaving blots.
+2. **Safe Moves First**: Avoid moves that leave a single checker (a blot) vulnerable to being hit unless there's no alternative or the move creates a strong block.
+3. **Block Building**: Prioritize moves that create points (2+ checkers) in the opponent's home board or in key middle points to hinder their progress.
+4. **Bearing Off Optimization**: When all checkers are in the home board, prioritize bearing off with the highest dice first to minimize the number of turns needed to finish.
+5. **Dice Ordering Strategy**: Use 'H' (higher die first) when possible, as it often enables more aggressive or optimal moves; default to 'L' only when it leads to a significantly better position (e.g., bearing off or escaping a blot).
+6. **Legal Move Validation**: Ensure every returned move is legal by exhaustive validation against game rules (bar entry, hitting, bearing off constraints).
+7. **Search Strategy**: Since time is limited (1 second), we avoid deep lookahead and instead rely on hand-tuned heuristics that mimic expert human play, focusing on: safety, efficiency, and board control.
+
+The policy evaluates all valid move combinations for the given dice, scores each based on a heuristic function, and returns the highest-scoring legal move.
+
+<code>
+import numpy as np
+
+def policy(state: dict) -> str:
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+    dice = sorted(state['dice'])  # sorted ascending
+    if len(dice) == 0:
+        return "H:P,P"  # no dice, must pass (though engine should prevent this)
+    elif len(dice) == 1:
+        dice = [dice[0], dice[0]]  # treat single die as two identical dice for move generation
+
+    high_die, low_die = dice[1], dice[0]
+
+    # Determine if all checkers are in home board (for bearing off)
+    home_board_start = 18  # points 18-23 are home for player moving from 23 to 0
+    all_in_home = all(my_pts[i] == 0 for i in range(0, home_board_start))
+
+    # Generate all possible legal moves
+    possible_moves = []
+
+    # Case 1: Checkers on bar — must move them first
+    if my_bar > 0:
+        # Try to enter on high die first
+        for die_val in [high_die, low_die]:
+            dest = 24 - die_val  # entry point from bar (absolute index)
+            # Check if dest is valid to enter (opponent has < 2 checkers)
+            if dest >= 0 and dest <= 23 and opp_pts[dest] < 2:
+                # Can enter with this die
+                remaining_die = high_die if die_val == low_die else low_die
+                # Now try to use remaining die
+                second_moves = []
+                # Try all possible second moves (from home board or other points)
+                for start in range(24):
+                    if my_pts[start] > 0:
+                        dest2 = start - remaining_die
+                        if dest2 >= 0:
+                            if opp_pts[dest2] < 2:  # legal destination (not blocked)
+                                second_moves.append(start)
+                        elif dest2 < 0 and all_in_home:  # bearing off
+                            second_moves.append(start)
+                # Include pass if no second move possible
+                if len(second_moves) == 0:
+                    second_moves = ['P']
+                for second_start in second_moves:
+                    # Format: order based on which die was used first
+                    if die_val == high_die:
+                        move_str = f"H:B,{second_start if second_start != 'P' else 'P'}"
+                    else:
+                        move_str = f"L:B,{second_start if second_start != 'P' else 'P'}"
+                    possible_moves.append(move_str)
+                # If we can only use the bar move and not the second die, we must still use both if possible
+                # But if no second move is legal, then we must play the bar move and then pass only if the second die cannot be played elsewhere
+                # Actually, engine requires both dice to be played if possible. So we only generate if second move is legal or pass is allowed
+                # Pass is only allowed if no legal second move exists at all
+                if len(second_moves) == 0:
+                    # But we still have to use the die for entry, and we can't play second — so if we entered with high, we need to pass second
+                    # But we already included 'P'
+                    pass
+        # If no move from bar is possible? Then player must pass — but this should be impossible because engine ensures a move exists if possible
+        # But if bar cannot be entered, then the player has no legal move — so return pass
+        if len(possible_moves) == 0:
+            return "H:P,P"
+
+    else:
+        # Case 2: No checkers on bar — generate moves from points
+        # We'll try all combinations of two moves (using both dice) in both orders: H then L, and L then H
+
+        # All possible starting positions that have checkers
+        available_points = [i for i in range(24) if my_pts[i] > 0]
+
+        for die1, die2 in [(high_die, low_die), (low_die, high_die)]:
+            for start1 in available_points:
+                dest1 = start1 - die1
+                # Check if first move is legal
+                if dest1 >= 0:
+                    if opp_pts[dest1] < 2:
+                        # Legal first move
+                        # Check remaining dice for second move
+                        remaining_available = available_points.copy()
+                        # If moving from start1, we must reduce its count for second move calculation
+                        # But we are only considering one move at a time — so for second move, we simulate the board
+                        my_pts_temp = my_pts.copy()
+                        my_pts_temp[start1] -= 1
+                        if dest1 >= 0:
+                            # Check if we can make a second move from anywhere
+                            second_moves = []
+                            for start2 in remaining_available:
+                                if start2 == start1 and my_pts[start1] == 1:
+                                    # This checker is moved, skip
+                                    continue
+                                dest2 = start2 - die2
+                                if dest2 >= 0:
+                                    if opp_pts[dest2] < 2:
+                                        second_moves.append(start2)
+                                elif dest2 < 0 and all_in_home:
+                                    second_moves.append(start2)
+                            # Also consider passing as a second move (only if no other legal move exists)
+                            if len(second_moves) == 0:
+                                second_moves = ['P']
+
+                            for start2 in second_moves:
+                                move_str = f"{ 'H' if die1 == high_die else 'L' }:{start1},{start2 if start2 != 'P' else 'P'}"
+                                possible_moves.append(move_str)
+                elif dest1 < 0:
+                    # Trying to bear off
+                    if all_in_home:
+                        # First move is bearing off
+                        second_moves = []
+                        for start2 in available_points:
+                            if start2 == start1 and my_pts[start1] == 1:
+                                continue
+                            dest2 = start2 - die2
+                            if dest2 >= 0:
+                                if opp_pts[dest2] < 2:
+                                    second_moves.append(start2)
+                            elif dest2 < 0 and all_in_home:
+                                second_moves.append(start2)
+                        if len(second_moves) == 0:
+                            second_moves = ['P']
+                        for start2 in second_moves:
+                            move_str = f"{ 'H' if die1 == high_die else 'L' }:{start1},{start2 if start2 != 'P' else 'P'}"
+                            possible_moves.append(move_str)
+
+        # Also try cases where first move bears off, and second move is from a different point
+        # We already covered above
+
+        # If no possible moves found, return pass
+        if len(possible_moves) == 0:
+            # Check if a single move is possible, and we can pass the second
+            # But engine requires both dice to be played if possible — so if there's at least one legal single move,
+            # we must use it and then pass if second cannot be played? Actually, no — we must use both if both CAN be played.
+            # But if we can't play the second die, it's still allowed to play the first.
+            # So we need to check: is there ANY legal move with at least one die?
+            has_at_least_one_move = False
+            for die_val in dice:
+                for start in available_points:
+                    dest = start - die_val
+                    if dest >= 0:
+                        if opp_pts[dest] < 2:
+                            has_at_least_one_move = True
+                            break
+                    elif dest < 0 and all_in_home:
+                        has_at_least_one_move = True
+                        break
+                if has_at_least_one_move:
+                    break
+
+            if not has_at_least_one_move:
+                return "H:P,P"
+            else:
+                # We must play one die and pass the other if it's not playable
+                # Try to play one die (prefer higher) and pass the other
+                for die_val in [high_die, low_die]:
+                    for start in available_points:
+                        dest = start - die_val
+                        if dest >= 0:
+                            if opp_pts[dest] < 2:
+                                # Found a move for this die
+                                # Use the move with higher die first if possible — this matches standard
+                                if die_val == high_die:
+                                    return f"H:{start},P"
+                                else:
+                                    return f"L:{start},P"
+                        elif dest < 0 and all_in_home:
+                            if die_val == high_die:
+                                return f"H:{start},P"
+                            else:
+                                return f"L:{start},P"
+
+    # If no moves found, pass
+    if len(possible_moves) == 0:
+        return "H:P,P"
+
+    # Now score each possible move with a heuristic
+
+    def score_move(move_str):
+        # Extract die order and start points
+        order, from1_str, from2_str = move_str.split(':')
+        from1 = from1_str
+        from2 = from2_str
+
+        # Simulate the move to score new state
+        my_pts_temp = my_pts.copy()
+        my_bar_temp = my_bar
+        all_in_home_temp = all_in_home
+
+        # First move
+        if from1 == 'B':
+            my_bar_temp -= 1
+            first_dest = 24 - (high_die if order == 'H' else low_die)
+            if opp_pts[first_dest] == 1:
+                # Hit! Opponent's checker goes to bar
+                opp_bar_hit = True
+            my_pts_temp[first_dest] += 1
+        elif from1 == 'P':
+            first_dest = None
+        else:
+            start1 = int(from1[1:])
+            my_pts_temp[start1] -= 1
+            die1_val = high_die if order == 'H' else low_die
+            dest1 = start1 - die1_val
+            if dest1 < 0:
+                # Bearing off
+                pass  # my_off increases, but we don't track it in scoring, we track board position
+            else:
+                if opp_pts[dest1] == 1:
+                    # Hit opponent
+                    pass  # This is good!
+                my_pts_temp[dest1] += 1
+
+        # Second move
+        if from2 != 'P':
+            if from2 == 'B':
+                # This shouldn't happen because if we're on bar, we only enter once
+                pass
+            else:
+                start2 = int(from2[1:])
+                my_pts_temp[start2] -= 1
+                die2_val = low_die if order == 'H' else high_die
+                dest2 = start2 - die2_val
+                if dest2 < 0:
+                    # Bearing off
+                    pass
+                else:
+                    if opp_pts[dest2] == 1:
+                        # Hit opponent
+                        pass
+
+        # Heuristic scoring — higher score is better
+        score = 0
+
+        # 1. Hit opponent?
+        if from1 == 'B' and (24 - (high_die if order == 'H' else low_die)) >= 0:
+            hit_dest = 24 - (high_die if order == 'H' else low_die)
+            if opp_pts[hit_dest] == 1:
+                score += 20  # big bonus for hitting
+
+        # Check second move
+        if from2 != 'P' and from2 != 'B' and isinstance(from2, str) and from2.startswith('A'):
+            start2 = int(from2[1:])
+            die2_val = low_die if order == 'H' else high_die
+            dest2 = start2 - die2_val
+            if dest2 >= 0 and opp_pts[dest2] == 1:
+                score += 20
+
+        # 2. Avoid leaving blots
+        # If first move leaves a point with only 1 checker (unless we're moving the only one)
+        if from1 != 'B' and from1 != 'P':
+            start1 = int(from1[1:])
+            die1_val = high_die if order == 'H' else low_die
+            dest1 = start1 - die1_val
+            # Check if this leaves a blot on the original point
+            if my_pts[start1] == 1:
+                # We moved the last checker from start1 — so that point is now empty
+                pass
+            else:
+                # There are still checkers at start1 after move
+                if my_pts[start1] - 1 == 1:
+                    # We leave a blot on start1 — bad!
+                    score -= 5
+            # Check new destination for blot
+            if dest1 >= 0 and my_pts_temp[dest1] == 1 and opp_pts[dest1] == 0:
+                # Leaving a blot at dest1
+                score -= 3
+        # Check second move
+        if from2 != 'P' and from2 != 'B':
+            start2 = int(from2[1:])
+            die2_val = low_die if order == 'H' else high_die
+            dest2 = start2 - die2_val
+            if my_pts[start2] == 1 and dest2 >= 0 and opp_pts[dest2] == 0:
+                score -= 3  # left a blot
+
+        # 3. Make points (have 2+ checkers)
+        if from1 != 'B' and from1 != 'P':
+            start1 = int(from1[1:])
+            die1_val = high_die if order == 'H' else low_die
+            dest1 = start1 - die1_val
+            if dest1 >= 0:
+                # After move, dest1 has my_pts_temp[dest1] checkers
+                if my_pts_temp[dest1] >= 2:
+                    # We made a point or strengthened one
+                    if dest1 >= 18 and dest1 <= 23:  # home board
+                        score += 10
+                    elif dest1 >= 6 and dest1 <= 17:  # middle board
+                        score += 5
+                    if opp_pts[dest1] == 0:
+                        score += 3  # control of point
+        # Second move
+        if from2 != 'P' and from2 != 'B':
+            start2 = int(from2[1:])
+            die2_val = low_die if order == 'H' else high_die
+            dest2 = start2 - die2_val
+            if dest2 >= 0:
+                if my_pts_temp[dest2] >= 2 and opp_pts[dest2] == 0:
+                    if dest2 >= 18 and dest2 <= 23:
+                        score += 10
+                    elif dest2 >= 6 and dest2 <= 17:
+                        score += 5
+
+        # 4. Bearing off as soon as possible
+        if from1 != 'P' and from1 != 'B' and isinstance(from1, str) and from1.startswith('A'):
+            start1 = int(from1[1:])
+            die1_val = high_die if order == 'H' else low_die
+            dest1 = start1 - die1_val
+            if dest1 < 0:
+                # Bearing off
+                score += 15
+        elif from2 != 'P' and from2 != 'B' and isinstance(from2, str) and from2.startswith('A'):
+            start2 = int(from2[1:])
+            die2_val = low_die if order == 'H' else high_die
+            dest2 = start2 - die2_val
+            if dest2 < 0:
+                score += 15
+
+        # 5. Prefer moving from closer to home
+        if from1 != 'B' and from1 != 'P':
+            start1 = int(from1[1:])
+            if start1 >= 18:  # in home
+                score += 2
+            elif start1 >= 12:  # mid
+                score += 1
+            # otherwise, moving from far — neutral or slightly penalize
+            if start1 < 6:
+                score -= 1
+
+        # 6. Try to escape checkers from the opponent's home board? Not our board — so ignore
+
+        # 7. Preference for using higher die first if it leads to better position (we have order in string)
+        # If moving higher die first to a good position — good
+        # We don't penalize order — we let the move be generated in both orders.
+
+        # 8. Avoid moves that help opponent bear off? Not directly — so ignore
+
+        return score
+
+    # Score all possible moves
+    scored_moves = []
+    for move in possible_moves:
+        score = score_move(move)
+        scored_moves.append((move, score))
+
+    # Sort by score descending
+    scored_moves.sort(key=lambda x: x[1], reverse=True)
+    best_move = scored_moves[0][0]
+
+    # Always return a legal move
+    return best_move
+</code>

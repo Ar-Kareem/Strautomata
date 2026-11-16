@@ -1,0 +1,518 @@
+<thinking>
+Alright, I need to design a targeting policy for a Battleship-like game where I can only see the results of my own shots. The goal is to efficiently sink the opponent's ships before they sink mine.
+
+### Understanding the Problem:
+1. **Board Representation**: The `board` is a 10x10 grid where:
+   - `0` means the cell hasn't been fired at yet.
+   - `-1` means a miss (water).
+   - `1` means a hit (part of a ship).
+2. **Ships**: The opponent has ships of lengths 5, 4, 3, 3, and 2. These are placed secretly and can be either horizontal or vertical.
+3. **Objective**: Sink all opponent ships as quickly as possible. The policy must return a `(row, col)` tuple representing the next cell to fire at, ensuring it hasn't been fired at before.
+
+### Strategy:
+The key here is to use a heuristic that prioritizes cells likely to be part of a ship, especially around hits. Here's how I can approach this:
+
+1. **Initial Phase**: If no hits have been made yet, we can use a random or pattern-based approach (e.g., spiral or diagonal) to cover the board systematically.
+2. **After Hits**: Once hits are detected, we need to focus on the surrounding areas to find the rest of the ship. This involves:
+   - **Ship Length Tracking**: For each hit, we need to infer the possible ship lengths and directions (horizontal or vertical).
+   - **Prioritization**: Cells adjacent to hits are more likely to be part of the same ship. We can prioritize these cells.
+   - **Avoiding Redundancy**: Ensure we don't fire at the same cell twice.
+
+### Implementation Details:
+1. **Data Structures**:
+   - Track all hits (`1`s) and misses (`-1`s).
+   - For each hit, explore possible ship directions (horizontal and vertical) and lengths.
+   - Maintain a priority queue or a scoring system to decide the next best cell to fire at.
+
+2. **Scoring System**:
+   - Assign higher scores to cells adjacent to hits (especially in lines that could form a ship).
+   - For example, if a hit is at `(r, c)`, then `(r±1, c)` and `(r, c±1)` are candidates, but we need to consider the ship's possible length and direction.
+
+3. **Edge Cases**:
+   - Handle cases where ships are at the edge of the board.
+   - Ensure we don't fire at cells we've already targeted.
+
+### Algorithm Outline:
+1. **Collect Hits and Misses**: Iterate through the board to collect all hits and misses.
+2. **Generate Candidates**: For each hit, generate potential ship extensions (horizontal and vertical) and mark adjacent cells as high-priority candidates.
+3. **Score Candidates**: Assign scores to candidate cells based on their likelihood of being part of a ship. For example:
+   - Cells adjacent to hits get higher scores.
+   - Cells that are part of a potential ship line (e.g., 3 in a row) get even higher scores.
+4. **Select Next Target**: Choose the cell with the highest score that hasn't been fired at yet.
+5. **Fallback**: If no high-priority candidates are available, fall back to a systematic search (e.g., spiral or diagonal).
+
+### Optimizations:
+- Use a priority queue to efficiently manage and select the next best cell.
+- Precompute possible ship configurations to quickly evaluate candidate cells.
+- Avoid recalculating scores for cells that haven't changed (e.g., cells that are still `0`).
+
+### Example:
+Suppose we have hits at `(2, 3)` and `(2, 4)`. The next best candidates would be `(2, 2)` and `(2, 5)` (horizontal ship) or `(1, 3)` and `(3, 3)` (vertical ship). We'd prioritize these over other cells.
+
+### Code Structure:
+- Use a list to keep track of all hits and misses.
+- For each hit, explore possible ship directions and mark adjacent cells as candidates.
+- Use a scoring function to rank candidates.
+- Select the highest-scoring candidate that hasn't been fired at yet.
+
+### Potential Libraries:
+- `numpy` can be useful for board operations, but since the board is small (10x10), a list of lists should suffice.
+- `heapq` for priority queue operations.
+
+### Edge Cases to Handle:
+- No hits yet: return a cell in a systematic pattern (e.g., spiral).
+- All adjacent cells to hits are already fired at: continue searching for other potential ship parts.
+- Multiple ships: prioritize longer ships first (since they have fewer possible configurations).
+
+### Final Approach:
+1. **Initialization**: If no hits, use a spiral pattern to cover the board.
+2. **After Hits**: For each hit, consider all possible ship directions and lengths. Score adjacent cells based on how likely they are to be part of a ship.
+3. **Scoring**:
+   - For a hit at `(r, c)`, score `(r±1, c)` and `(r, c±1)` higher if they are part of a potential ship line.
+   - For example, if `(r, c-1)` and `(r, c+1)` are hits, then `(r, c-2)` and `(r, c+2)` are high-priority candidates for a horizontal ship of length 3.
+4. **Selection**: Pick the highest-scoring candidate that hasn't been fired at yet.
+
+### Implementation:
+Here's how I can implement this in Python:
+
+```python
+import heapq
+from collections import defaultdict
+
+def policy(board):
+    # Flatten the board to find all hits and misses
+    hits = []
+    misses = []
+    for i in range(10):
+        for j in range(10):
+            if board[i][j] == 1:
+                hits.append((i, j))
+            elif board[i][j] == -1:
+                misses.append((i, j))
+
+    # If no hits, use a spiral pattern to cover the board
+    if not hits:
+        # Simple spiral pattern to cover the board
+        # This is a placeholder; a better approach would be to use a more systematic pattern
+        # For now, just return (0, 0) and let the caller handle the rest
+        # In practice, you'd want to implement a proper spiral or diagonal search
+        # Here's a simple diagonal search for now
+        for i in range(10):
+            for j in range(10):
+                if board[i][j] == 0:
+                    return (i, j)
+        return (0, 0)  # fallback
+
+    # For each hit, explore possible ship directions and lengths
+    # We'll use a priority queue to keep track of the best candidates
+    candidates = []
+
+    # Directions: horizontal and vertical
+    directions = [(0, 1), (1, 0)]  # right and down
+
+    # For each hit, explore possible ship extensions
+    for (r, c) in hits:
+        # Check horizontal and vertical lines around the hit
+        for dr, dc in directions:
+            # Check left and right (for horizontal)
+            if dr == 0:  # horizontal
+                # Check left
+                for k in range(1, 6):  # max ship length is 5
+                    nr, nc = r, c - k
+                    if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                        # Score based on how many hits are in the line
+                        # For simplicity, just add to candidates with a score
+                        score = 0
+                        # Count consecutive hits in the line
+                        consecutive = 0
+                        for l in range(-k, 0):
+                            nr2, nc2 = r, c + l
+                            if 0 <= nr2 < 10 and 0 <= nc2 < 10 and board[nr2][nc2] == 1:
+                                consecutive += 1
+                            else:
+                                break
+                        for l in range(1, k + 1):
+                            nr2, nc2 = r, c - l
+                            if 0 <= nr2 < 10 and 0 <= nc2 < 10 and board[nr2][nc2] == 1:
+                                consecutive += 1
+                            else:
+                                break
+                        score = consecutive * 10  # higher score for longer consecutive hits
+                        heapq.heappush(candidates, (-score, nr, nc))  # using negative for max heap
+
+                # Check right
+                for k in range(1, 6):
+                    nr, nc = r, c + k
+                    if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                        score = 0
+                        consecutive = 0
+                        for l in range(1, k + 1):
+                            nr2, nc2 = r, c + l
+                            if 0 <= nr2 < 10 and 0 <= nc2 < 10 and board[nr2][nc2] == 1:
+                                consecutive += 1
+                            else:
+                                break
+                        for l in range(-1, -k - 1, -1):
+                            nr2, nc2 = r, c + l
+                            if 0 <= nr2 < 10 and 0 <= nc2 < 10 and board[nr2][nc2] == 1:
+                                consecutive += 1
+                            else:
+                                break
+                        score = consecutive * 10
+                        heapq.heappush(candidates, (-score, nr, nc))
+
+            elif dc == 0:  # vertical
+                # Check up
+                for k in range(1, 6):
+                    nr, nc = r - k, c
+                    if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                        score = 0
+                        consecutive = 0
+                        for l in range(1, k + 1):
+                            nr2, nc2 = r - l, c
+                            if 0 <= nr2 < 10 and 0 <= nc2 < 10 and board[nr2][nc2] == 1:
+                                consecutive += 1
+                            else:
+                                break
+                        for l in range(-1, -k - 1, -1):
+                            nr2, nc2 = r + l, c
+                            if 0 <= nr2 < 10 and 0 <= nc2 < 10 and board[nr2][nc2] == 1:
+                                consecutive += 1
+                            else:
+                                break
+                        score = consecutive * 10
+                        heapq.heappush(candidates, (-score, nr, nc))
+
+                # Check down
+                for k in range(1, 6):
+                    nr, nc = r + k, c
+                    if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                        score = 0
+                        consecutive = 0
+                        for l in range(1, k + 1):
+                            nr2, nc2 = r + l, c
+                            if 0 <= nr2 < 10 and 0 <= nc2 < 10 and board[nr2][nc2] == 1:
+                                consecutive += 1
+                            else:
+                                break
+                        for l in range(-1, -k - 1, -1):
+                            nr2, nc2 = r + l, c
+                            if 0 <= nr2 < 10 and 0 <= nc2 < 10 and board[nr2][nc2] == 1:
+                                consecutive += 1
+                            else:
+                                break
+                        score = consecutive * 10
+                        heapq.heappush(candidates, (-score, nr, nc))
+
+    # Also consider cells adjacent to hits (not just in lines)
+    for (r, c) in hits:
+        for dr in [-1, 0, 1]:
+            for dc in [-1, 0, 1]:
+                if dr == 0 and dc == 0:
+                    continue  # skip the hit itself
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                    # Score based on proximity to hits
+                    score = 0
+                    # Count nearby hits (within 1 cell)
+                    for dr2 in [-1, 0, 1]:
+                        for dc2 in [-1, 0, 1]:
+                            if dr2 == 0 and dc2 == 0:
+                                continue
+                            nr2, nc2 = nr + dr2, nc + dc2
+                            if 0 <= nr2 < 10 and 0 <= nc2 < 10 and board[nr2][nc2] == 1:
+                                score += 1
+                    heapq.heappush(candidates, (-score, nr, nc))
+
+    # If no candidates (shouldn't happen if there are hits), fall back to spiral
+    if not candidates:
+        for i in range(10):
+            for j in range(10):
+                if board[i][j] == 0:
+                    return (i, j)
+        return (0, 0)
+
+    # Get the highest scoring candidate
+    while candidates:
+        neg_score, r, c = heapq.heappop(candidates)
+        if board[r][c] == 0:  # ensure it hasn't been fired at yet
+            return (r, c)
+
+    # Fallback: return any unfired cell
+    for i in range(10):
+        for j in range(10):
+            if board[i][j] == 0:
+                return (i, j)
+    return (0, 0)
+```
+
+### Improvements:
+1. **Better Initial Search**: Instead of a simple spiral, implement a more efficient initial search pattern (e.g., diagonal or checkerboard).
+2. **Ship Length Tracking**: Keep track of possible ship lengths and directions to better prioritize candidates.
+3. **Avoiding Redundancy**: Ensure that once a ship is sunk, we don't keep targeting its cells.
+4. **Dynamic Scoring**: Adjust scores based on the remaining possible ship lengths and configurations.
+
+### Final Code:
+Here's the refined version of the policy function:
+
+```python
+import heapq
+
+def policy(board):
+    # Collect all hits and misses
+    hits = []
+    for i in range(10):
+        for j in range(10):
+            if board[i][j] == 1:
+                hits.append((i, j))
+
+    # If no hits, use a systematic search (e.g., diagonal)
+    if not hits:
+        for i in range(10):
+            for j in range(10):
+                if board[i][j] == 0:
+                    return (i, j)
+        return (0, 0)
+
+    # Priority queue for candidates: (-score, row, col)
+    candidates = []
+
+    # Directions: horizontal and vertical
+    directions = [(0, 1), (1, 0)]  # right and down
+
+    # For each hit, explore possible ship extensions
+    for (r, c) in hits:
+        # Check horizontal line
+        # Left
+        for k in range(1, 6):
+            nr, nc = r, c - k
+            if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                # Score based on consecutive hits to the right
+                consecutive = 0
+                for l in range(1, k + 1):
+                    nr2, nc2 = r, c + l
+                    if 0 <= nr2 < 10 and 0 <= nc2 < 10 and board[nr2][nc2] == 1:
+                        consecutive += 1
+                    else:
+                        break
+                score = consecutive * 10
+                heapq.heappush(candidates, (-score, nr, nc))
+
+        # Right
+        for k in range(1, 6):
+            nr, nc = r, c + k
+            if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                consecutive = 0
+                for l in range(1, k + 1):
+                    nr2, nc2 = r, c - l
+                    if 0 <= nr2 < 10 and 0 <= nc2 < 10 and board[nr2][nc2] == 1:
+                        consecutive += 1
+                    else:
+                        break
+                score = consecutive * 10
+                heapq.heappush(candidates, (-score, nr, nc))
+
+        # Check vertical line
+        # Up
+        for k in range(1, 6):
+            nr, nc = r - k, c
+            if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                consecutive = 0
+                for l in range(1, k + 1):
+                    nr2, nc2 = r + l, c
+                    if 0 <= nr2 < 10 and 0 <= nc2 < 10 and board[nr2][nc2] == 1:
+                        consecutive += 1
+                    else:
+                        break
+                score = consecutive * 10
+                heapq.heappush(candidates, (-score, nr, nc))
+
+        # Down
+        for k in range(1, 6):
+            nr, nc = r + k, c
+            if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                consecutive = 0
+                for l in range(1, k + 1):
+                    nr2, nc2 = r - l, c
+                    if 0 <= nr2 < 10 and 0 <= nc2 < 10 and board[nr2][nc2] == 1:
+                        consecutive += 1
+                    else:
+                        break
+                score = consecutive * 10
+                heapq.heappush(candidates, (-score, nr, nc))
+
+    # Also consider cells adjacent to hits (not just in lines)
+    for (r, c) in hits:
+        for dr in [-1, 0, 1]:
+            for dc in [-1, 0, 1]:
+                if dr == 0 and dc == 0:
+                    continue
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                    # Score based on proximity to hits
+                    score = 0
+                    for dr2 in [-1, 0, 1]:
+                        for dc2 in [-1, 0, 1]:
+                            if dr2 == 0 and dc2 == 0:
+                                continue
+                            nr2, nc2 = nr + dr2, nc + dc2
+                            if 0 <= nr2 < 10 and 0 <= nc2 < 10 and board[nr2][nc2] == 1:
+                                score += 1
+                    heapq.heappush(candidates, (-score, nr, nc))
+
+    # If no candidates (shouldn't happen if there are hits), fall back to spiral
+    if not candidates:
+        for i in range(10):
+            for j in range(10):
+                if board[i][j] == 0:
+                    return (i, j)
+        return (0, 0)
+
+    # Get the highest scoring candidate
+    while candidates:
+        neg_score, r, c = heapq.heappop(candidates)
+        if board[r][c] == 0:
+            return (r, c)
+
+    # Fallback: return any unfired cell
+    for i in range(10):
+        for j in range(10):
+            if board[i][j] == 0:
+                return (i, j)
+    return (0, 0)
+```
+
+### Further Optimizations:
+- **Ship Length Tracking**: Keep track of possible ship lengths and directions to avoid redundant checks.
+- **Avoiding Redundancy**: Once a ship is sunk, mark its cells as "sunk" and avoid targeting them again.
+- **Dynamic Scoring**: Adjust scores based on the remaining possible ship lengths and configurations to prioritize longer ships.
+
+This policy should efficiently target the opponent's ships by focusing on high-probability cells around hits and systematically covering the board when no hits are present.
+</thinking>
+
+<code>
+import heapq
+
+def policy(board):
+    # Collect all hits
+    hits = []
+    for i in range(10):
+        for j in range(10):
+            if board[i][j] == 1:
+                hits.append((i, j))
+
+    # If no hits, use a systematic search (e.g., diagonal)
+    if not hits:
+        for i in range(10):
+            for j in range(10):
+                if board[i][j] == 0:
+                    return (i, j)
+        return (0, 0)
+
+    # Priority queue for candidates: (-score, row, col)
+    candidates = []
+
+    # Directions: horizontal and vertical
+    directions = [(0, 1), (1, 0)]  # right and down
+
+    # For each hit, explore possible ship extensions
+    for (r, c) in hits:
+        # Check horizontal line
+        # Left
+        for k in range(1, 6):
+            nr, nc = r, c - k
+            if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                # Score based on consecutive hits to the right
+                consecutive = 0
+                for l in range(1, k + 1):
+                    nr2, nc2 = r, c + l
+                    if 0 <= nr2 < 10 and 0 <= nc2 < 10 and board[nr2][nc2] == 1:
+                        consecutive += 1
+                    else:
+                        break
+                score = consecutive * 10
+                heapq.heappush(candidates, (-score, nr, nc))
+
+        # Right
+        for k in range(1, 6):
+            nr, nc = r, c + k
+            if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                consecutive = 0
+                for l in range(1, k + 1):
+                    nr2, nc2 = r, c - l
+                    if 0 <= nr2 < 10 and 0 <= nc2 < 10 and board[nr2][nc2] == 1:
+                        consecutive += 1
+                    else:
+                        break
+                score = consecutive * 10
+                heapq.heappush(candidates, (-score, nr, nc))
+
+        # Check vertical line
+        # Up
+        for k in range(1, 6):
+            nr, nc = r - k, c
+            if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                consecutive = 0
+                for l in range(1, k + 1):
+                    nr2, nc2 = r + l, c
+                    if 0 <= nr2 < 10 and 0 <= nc2 < 10 and board[nr2][nc2] == 1:
+                        consecutive += 1
+                    else:
+                        break
+                score = consecutive * 10
+                heapq.heappush(candidates, (-score, nr, nc))
+
+        # Down
+        for k in range(1, 6):
+            nr, nc = r + k, c
+            if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                consecutive = 0
+                for l in range(1, k + 1):
+                    nr2, nc2 = r - l, c
+                    if 0 <= nr2 < 10 and 0 <= nc2 < 10 and board[nr2][nc2] == 1:
+                        consecutive += 1
+                    else:
+                        break
+                score = consecutive * 10
+                heapq.heappush(candidates, (-score, nr, nc))
+
+    # Also consider cells adjacent to hits (not just in lines)
+    for (r, c) in hits:
+        for dr in [-1, 0, 1]:
+            for dc in [-1, 0, 1]:
+                if dr == 0 and dc == 0:
+                    continue
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                    # Score based on proximity to hits
+                    score = 0
+                    for dr2 in [-1, 0, 1]:
+                        for dc2 in [-1, 0, 1]:
+                            if dr2 == 0 and dc2 == 0:
+                                continue
+                            nr2, nc2 = nr + dr2, nc + dc2
+                            if 0 <= nr2 < 10 and 0 <= nc2 < 10 and board[nr2][nc2] == 1:
+                                score += 1
+                    heapq.heappush(candidates, (-score, nr, nc))
+
+    # If no candidates (shouldn't happen if there are hits), fall back to spiral
+    if not candidates:
+        for i in range(10):
+            for j in range(10):
+                if board[i][j] == 0:
+                    return (i, j)
+        return (0, 0)
+
+    # Get the highest scoring candidate
+    while candidates:
+        neg_score, r, c = heapq.heappop(candidates)
+        if board[r][c] == 0:
+            return (r, c)
+
+    # Fallback: return any unfired cell
+    for i in range(10):
+        for j in range(10):
+            if board[i][j] == 0:
+                return (i, j)
+    return (0, 0)
+</code>

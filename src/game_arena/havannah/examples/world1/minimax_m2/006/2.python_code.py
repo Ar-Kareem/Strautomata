@@ -1,0 +1,125 @@
+
+def get_neighbors(cell, valid_mask):
+    r, c = cell
+    neighbors = []
+    offsets = [(-1, 0), (-1, 1), (0, 1), (1, 0), (1, -1), (0, -1)]
+    for dr, dc in offsets:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < len(valid_mask) and 0 <= nc < len(valid_mask[0]):
+            if valid_mask[nr][nc]:
+                neighbors.append((nr, nc))
+    return neighbors
+
+def score_board(me, opp, valid_mask, corner_cells, edge_cells):
+    my_stones_set = set(me)
+    opp_stones_set = set(opp)
+    
+    my_stones_count = len(me)
+    opp_stones_count = len(opp)
+    
+    my_edge_count = sum(1 for cell in me if cell in edge_cells)
+    opp_edge_count = sum(1 for cell in opp if cell in edge_cells)
+    
+    my_corner_count = sum(1 for cell in me if cell in corner_cells)
+    opp_corner_count = sum(1 for cell in opp if cell in corner_cells)
+    
+    def find_components(stones_set):
+        visited = set()
+        components = []
+        for stone in stones_set:
+            if stone not in visited:
+                queue = [stone]
+                component = []
+                while queue:
+                    current = queue.pop(0)
+                    if current not in visited:
+                        visited.add(current)
+                        component.append(current)
+                        for neighbor in get_neighbors(current, valid_mask):
+                            if neighbor in stones_set and neighbor not in visited:
+                                queue.append(neighbor)
+                components.append(component)
+        return components
+    
+    my_components = find_components(my_stones_set)
+    my_components_count = len(my_components)
+    
+    opp_components = find_components(opp_stones_set)
+    opp_components_count = len(opp_components)
+    
+    score = (my_stones_count - opp_stones_count) \
+            + (my_edge_count - opp_edge_count) \
+            + 2 * (my_corner_count - opp_corner_count) \
+            - my_components_count \
+            + opp_components_count
+    return score
+
+def minimax(me, opp, valid_mask, corner_cells, edge_cells, depth, maximizing_player):
+    if depth == 0:
+        return score_board(me, opp, valid_mask, corner_cells, edge_cells)
+    
+    # Generate possible moves for the current player
+    moves = []
+    for r in range(len(valid_mask)):
+        for c in range(len(valid_mask[0])):
+            if valid_mask[r][c] and (r, c) not in me and (r, c) not in opp:
+                moves.append((r, c))
+    
+    if not moves:
+        return score_board(me, opp, valid_mask, corner_cells, edge_cells)
+    
+    if maximizing_player:
+        best_score = -float('inf')
+        for move in moves:
+            new_me = me + [move]
+            score = minimax(new_me, opp, valid_mask, corner_cells, edge_cells, depth-1, False)
+            best_score = max(best_score, score)
+        return best_score
+    else:
+        best_score = float('inf')
+        for move in moves:
+            new_opp = opp + [move]
+            score = minimax(me, new_opp, valid_mask, corner_cells, edge_cells, depth-1, True)
+            best_score = min(best_score, score)
+        return best_score
+
+def policy(me, opp, valid_mask):
+    # Precompute corner and edge cells if not cached for this valid_mask
+    if not hasattr(policy, 'corner_cells_cache') or policy.corner_cells_cache is not valid_mask:
+        corner_cells = []
+        edge_cells = []
+        for r in range(len(valid_mask)):
+            for c in range(len(valid_mask[0])):
+                if valid_mask[r][c]:
+                    neighbors = get_neighbors((r, c), valid_mask)
+                    degree = len(neighbors)
+                    if degree == 2:
+                        corner_cells.append((r, c))
+                    elif degree < 6 and degree > 2:
+                        edge_cells.append((r, c))
+        policy.corner_cells_cache = valid_mask
+        policy.corner_cells_set = set(corner_cells)
+        policy.edge_cells_set = set(edge_cells)
+    
+    corner_cells = policy.corner_cells_set
+    edge_cells = policy.edge_cells_set
+    
+    # Generate all possible moves
+    moves = []
+    for r in range(len(valid_mask)):
+        for c in range(len(valid_mask[0])):
+            if valid_mask[r][c] and (r, c) not in me and (r, c) not in opp:
+                moves.append((r, c))
+    
+    best_move = None
+    best_score = -float('inf')
+    
+    for move in moves:
+        new_me = me + [move]
+        # Evaluate opponent's best response
+        score = minimax(new_me, opp, valid_mask, corner_cells, edge_cells, 1, False)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move

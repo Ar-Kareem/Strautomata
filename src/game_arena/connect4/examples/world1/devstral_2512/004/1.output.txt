@@ -1,0 +1,266 @@
+# Strategy
+
+The strategy for this Connect 4 policy is a combination of several techniques:
+
+1. **Immediate Win Check**: First, the AI checks if it can win immediately by placing a disc in any column. If such a move exists, it takes it.
+
+2. **Block Opponent's Win**: If the opponent has a winning move available in the next turn, the AI blocks it by placing its disc in that column.
+
+3. **Center Control**: The AI prioritizes columns in the center (columns 3 and 4) as they provide more opportunities for creating multiple threats.
+
+4. **Threat Creation**: The AI evaluates potential moves that create multiple threats (potential winning lines) to force the opponent into defensive play.
+
+5. **Minimax with Alpha-Beta Pruning**: For deeper evaluation, the AI uses a minimax algorithm with alpha-beta pruning to look ahead several moves (depth-limited to ensure performance within 1 second). The evaluation function considers:
+   - Number of potential winning lines (threats)
+   - Center control
+   - Mobility (number of available moves)
+   - Piece count advantage
+
+6. **Fallback to Heuristics**: If the minimax search doesn't complete within time constraints, the AI falls back to heuristic-based moves focusing on center control and threat creation.
+
+This combination ensures the AI plays aggressively when it can win, defensively when needed, and strategically to build advantageous positions.
+
+<code>
+import numpy as np
+import time
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> int:
+    # Convert board to numpy array for easier manipulation
+    board_array = np.array(board, dtype=int)
+    player = 1  # Current player is always 1
+
+    # Check for immediate win
+    for col in range(7):
+        if is_valid_move(board_array, col):
+            temp_board = make_move(board_array.copy(), col, player)
+            if check_win(temp_board, player):
+                return col
+
+    # Check for opponent's immediate win and block it
+    opponent = -1
+    for col in range(7):
+        if is_valid_move(board_array, col):
+            temp_board = make_move(board_array.copy(), col, opponent)
+            if check_win(temp_board, opponent):
+                return col
+
+    # Get all valid moves
+    valid_moves = [col for col in range(7) if is_valid_move(board_array, col)]
+
+    # If only one move available, take it
+    if len(valid_moves) == 1:
+        return valid_moves[0]
+
+    # Try to find the best move using minimax with alpha-beta pruning
+    try:
+        start_time = time.time()
+        best_move = None
+        best_score = -float('inf')
+        alpha = -float('inf')
+        beta = float('inf')
+
+        # Sort valid moves to try center columns first (better for pruning)
+        valid_moves_sorted = sorted(valid_moves, key=lambda x: abs(x - 3))
+
+        for col in valid_moves_sorted:
+            # Time check to ensure we don't exceed 1 second
+            if time.time() - start_time > 0.9:
+                break
+
+            new_board = make_move(board_array.copy(), col, player)
+            score = minimax(new_board, 4, alpha, beta, False, start_time)
+
+            if score > best_score:
+                best_score = score
+                best_move = col
+
+            alpha = max(alpha, best_score)
+
+        if best_move is not None:
+            return best_move
+
+    except:
+        pass  # Fall back to heuristic if minimax fails or times out
+
+    # Fallback heuristic: prioritize center columns and columns that create threats
+    best_heuristic_score = -float('inf')
+    best_heuristic_move = valid_moves[0]
+
+    for col in valid_moves:
+        # Create a temporary board with the move
+        temp_board = make_move(board_array.copy(), col, player)
+
+        # Calculate heuristic score
+        score = evaluate_board(temp_board, player)
+
+        # Bonus for center columns
+        if col in [2, 3, 4]:
+            score += 0.5
+
+        if score > best_heuristic_score:
+            best_heuristic_score = score
+            best_heuristic_move = col
+
+    return best_heuristic_move
+
+def is_valid_move(board: np.ndarray, col: int) -> bool:
+    return board[0][col] == 0
+
+def make_move(board: np.ndarray, col: int, player: int) -> np.ndarray:
+    for row in range(5, -1, -1):
+        if board[row][col] == 0:
+            board[row][col] = player
+            break
+    return board
+
+def check_win(board: np.ndarray, player: int) -> bool:
+    # Check horizontal
+    for row in range(6):
+        for col in range(4):
+            if (board[row][col] == player and
+                board[row][col+1] == player and
+                board[row][col+2] == player and
+                board[row][col+3] == player):
+                return True
+
+    # Check vertical
+    for row in range(3):
+        for col in range(7):
+            if (board[row][col] == player and
+                board[row+1][col] == player and
+                board[row+2][col] == player and
+                board[row+3][col] == player):
+                return True
+
+    # Check diagonal (top-left to bottom-right)
+    for row in range(3):
+        for col in range(4):
+            if (board[row][col] == player and
+                board[row+1][col+1] == player and
+                board[row+2][col+2] == player and
+                board[row+3][col+3] == player):
+                return True
+
+    # Check diagonal (bottom-left to top-right)
+    for row in range(3, 6):
+        for col in range(4):
+            if (board[row][col] == player and
+                board[row-1][col+1] == player and
+                board[row-2][col+2] == player and
+                board[row-3][col+3] == player):
+                return True
+
+    return False
+
+def evaluate_board(board: np.ndarray, player: int) -> float:
+    opponent = -player
+    score = 0.0
+
+    # Evaluate based on potential threats
+    score += evaluate_threats(board, player) * 10
+    score -= evaluate_threats(board, opponent) * 8
+
+    # Evaluate center control
+    center_count = 0
+    for row in range(6):
+        for col in [2, 3, 4]:
+            if board[row][col] == player:
+                center_count += 1
+            elif board[row][col] == opponent:
+                center_count -= 1
+    score += center_count * 0.3
+
+    # Evaluate mobility (number of available moves)
+    player_moves = sum(1 for col in range(7) if is_valid_move(board, col))
+    score += player_moves * 0.1
+
+    return score
+
+def evaluate_threats(board: np.ndarray, player: int) -> float:
+    threat_score = 0.0
+
+    # Check horizontal threats
+    for row in range(6):
+        for col in range(4):
+            window = board[row][col:col+4]
+            threat_score += evaluate_window(window, player)
+
+    # Check vertical threats
+    for row in range(3):
+        for col in range(7):
+            window = [board[row+i][col] for i in range(4)]
+            threat_score += evaluate_window(window, player)
+
+    # Check diagonal (top-left to bottom-right) threats
+    for row in range(3):
+        for col in range(4):
+            window = [board[row+i][col+i] for i in range(4)]
+            threat_score += evaluate_window(window, player)
+
+    # Check diagonal (bottom-left to top-right) threats
+    for row in range(3, 6):
+        for col in range(4):
+            window = [board[row-i][col+i] for i in range(4)]
+            threat_score += evaluate_window(window, player)
+
+    return threat_score
+
+def evaluate_window(window: List[int], player: int) -> float:
+    opponent = -player
+    score = 0.0
+
+    # Count player and opponent pieces in the window
+    player_count = sum(1 for x in window if x == player)
+    opponent_count = sum(1 for x in window if x == opponent)
+    empty_count = sum(1 for x in window if x == 0)
+
+    # Score based on potential threats
+    if player_count == 4:
+        score += 100
+    elif player_count == 3 and empty_count == 1:
+        score += 5
+    elif player_count == 2 and empty_count == 2:
+        score += 2
+    elif opponent_count == 3 and empty_count == 1:
+        score -= 4
+    elif opponent_count == 2 and empty_count == 2:
+        score -= 1
+
+    return score
+
+def minimax(board: np.ndarray, depth: int, alpha: float, beta: float, maximizing_player: bool, start_time: float) -> float:
+    # Time check
+    if time.time() - start_time > 0.95:
+        return evaluate_board(board, 1)
+
+    # Base case: depth 0 or game over
+    if depth == 0 or check_win(board, 1) or check_win(board, -1) or len(get_valid_moves(board)) == 0:
+        return evaluate_board(board, 1)
+
+    valid_moves = get_valid_moves(board)
+
+    if maximizing_player:
+        max_eval = -float('inf')
+        for col in valid_moves:
+            new_board = make_move(board.copy(), col, 1)
+            eval = minimax(new_board, depth-1, alpha, beta, False, start_time)
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for col in valid_moves:
+            new_board = make_move(board.copy(), col, -1)
+            eval = minimax(new_board, depth-1, alpha, beta, True, start_time)
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def get_valid_moves(board: np.ndarray) -> List[int]:
+    return [col for col in range(7) if is_valid_move(board, col)]
+</code>

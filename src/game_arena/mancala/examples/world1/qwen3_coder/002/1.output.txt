@@ -1,0 +1,160 @@
+<thinking>
+I need to implement a policy function for Kalah that chooses a legal move. Let me think through the strategy:
+
+1. **Immediate capture opportunities**: If I can make a move that ends in an empty house and captures seeds from the opponent, that's generally good.
+
+2. **Extra turn opportunities**: If I can make a move that ends in my store, I get another turn - this is very valuable.
+
+3. **Avoid giving opponent captures**: Try not to leave my houses with just 1 seed that could be captured.
+
+4. **General strategy**: Try to maximize seeds in my store while minimizing opponent's opportunities.
+
+Let me think about implementation:
+- First, check for moves that give extra turns (end in store)
+- Then check for captures
+- Then fall back to a reasonable heuristic (like maximizing seeds moved)
+
+For extra turn: if I choose house i with you[i] seeds, I need (5-i)+1+(you[i]-1) % (6+6) == 6 (to land in store)
+Wait, let me be more careful:
+- I distribute you[i] seeds
+- Starting from house i+1 (or wrapping)
+- The positions are: you[i+1], ..., you[5], you[6](store), opponent[0], ..., opponent[5], you[0], you[1], ...
+- So position 0 is you[i+1], 5-i positions later is you[6] (store)
+- After that we continue with opponent's houses and then back to my houses
+
+So if I start at house i with n seeds:
+- First (5-i) positions are my houses [i+1, ..., 5]  
+- Next 1 position is my store
+- Then opponent houses [0..5]  
+- Then my houses [0..5] again, and so on
+
+So the final position = (n - 1) % (13) - (5-i)
+Wait, that's confusing.
+
+Actually, let's think step by step:
+Position numbering:
+- You[0] ... You[5] You[6] Opponent[0] ... Opponent[5] You[0] ...
+-   0   ...   5     6       7      ...    12      13   ...
+
+If I start at house i and have you[i] seeds to distribute, starting position for the last seed is (i+1).
+The last seed lands at position: (i+1) + (you[i]-1) = i + you[i]
+
+Positions 0-5 are your houses
+Position 6 is your store
+Positions 7-12 are opponent houses
+Positions 13-18 are your houses again (13=you[0], etc.)
+
+So final landing position is (i + you[i]) % 13 (since 13 positions repeat)
+
+Now check:
+- If final position == 6: extra turn
+- If final position in [0,5] (your house after move):
+  - Need it to be empty before (but you moved seeds from i, so it was empty only if you[i] = ?)
+  - Actually, it was empty before the sowing, not before the whole turn.
+  - So you need to check if you originally had 0 seeds there.
+  - But you removed seeds from position i, so you need the count after placing seeds but before the last one to be 0.
+  - Actually it's simpler: it was 0 before the move, and you're putting the last seed there.
+
+So for capture:
+- Final position p is in [0,5] (your house)
+- Before move, you[p] was 0
+- Opponent[5-p] > 0
+
+This is getting complex. Let me prioritize simpler but effective strategies:
+1. Extra turn moves
+2. Capture moves
+3. Otherwise, make a move that doesn't leave easily capturable seeds
+
+Let me code a simple but smart heuristic:
+- Prioritize extra turns
+- Then captures  
+- Avoid leaving single seeds easily captured
+- Otherwise, just pick an available move
+</thinking>
+
+<code>
+def policy(you: list[int], opponent: list[int]) -> int:
+    """
+    Choose a move for Kalah game.
+    
+    Args:
+        you: [h0,h1,h2,h3,h4,h5,store] - your houses and store
+        opponent: [h0,h1,h2,h3,h4,h5,store] - opponent's houses and store
+        
+    Returns:
+        int: index (0-5) of the house to play
+    """
+    
+    # Try to find moves that give extra turn (land in your store)
+    extra_turn_moves = []
+    capture_moves = []
+    
+    for i in range(6):
+        if you[i] == 0:
+            continue
+            
+        # Calculate where the last seed would land
+        # Total positions = 13 (your 6 houses + your store + opponent 6 houses)
+        # Position 6 is your store
+        # Starting position for first seed is (i+1), so last seed lands at (i + you[i]) % 13
+        final_pos = (i + you[i]) % 13
+        
+        if final_pos == 6:
+            # Extra turn!
+            extra_turn_moves.append(i)
+        elif 0 <= final_pos <= 5:
+            # Final position is in your house
+            # Check if it was empty before the move and opponent has seeds opposite
+            if you[final_pos] == 0 and opponent[5 - final_pos] > 0:
+                # We can capture
+                capture_moves.append((i, opponent[5 - final_pos]))  # prefer captures with more seeds
+    
+    # If we have extra turn moves, pick the best one
+    if extra_turn_moves:
+        # You might prefer the one that moves more seeds or creates better future positions
+        return extra_turn_moves[0]
+    
+    # If we have capture moves, pick the one with most captured seeds
+    if capture_moves:
+        capture_moves.sort(key=lambda x: x[1], reverse=True)
+        return capture_moves[0][0]
+    
+    # Heuristic: avoid moves that leave single seeds capturable
+    safe_moves = []
+    for i in range(6):
+        if you[i] > 0:
+            safe_moves.append(i)
+            
+    # Find moves that don't put seeds in vulnerable positions
+    good_moves = []
+    for i in safe_moves:
+        seeds = you[i]
+        # See where this move puts seeds
+        positions_affected = []
+        for seed in range(seeds):
+            pos = (i + 1 + seed) % 13
+            if pos < 6:  # Your house
+                positions_affected.append(pos)
+        
+        # Avoid moves that leave opponent with easy captures
+        seems_safe = True
+        if positions_affected and positions_affected[-1] <= 5:
+            final_house = positions_affected[-1]
+            if you[final_house] == 0 and opponent[5 - final_house] > 0:
+                # Could allow capture next turn
+                seems_safe = False
+                
+        if seems_safe:
+            good_moves.append(i)
+    
+    if good_moves:
+        return good_moves[0]
+    
+    # Otherwise, just return first valid move
+    for i in range(6):
+        if you[i] > 0:
+            return i
+            
+    # Shouldn't happen due to problem constraints
+    return 0
+</code>

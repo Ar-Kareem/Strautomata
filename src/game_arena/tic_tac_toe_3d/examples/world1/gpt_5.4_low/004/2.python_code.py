@@ -1,0 +1,288 @@
+
+from __future__ import annotations
+
+from typing import List, Tuple
+
+Move = Tuple[int, int, int]
+
+N = 3
+INF = 10**15
+WIN_SCORE = 10**9
+
+# ----------------------------------------------------------------------
+# Precompute all winning lines in 3x3x3 Tic Tac Toe
+# ----------------------------------------------------------------------
+
+def _generate_lines() -> List[List[Move]]:
+    lines = []
+
+    # Axis-aligned lines
+    for j in range(N):
+        for k in range(N):
+            lines.append([(i, j, k) for i in range(N)])  # vary i
+    for i in range(N):
+        for k in range(N):
+            lines.append([(i, j, k) for j in range(N)])  # vary j
+    for i in range(N):
+        for j in range(N):
+            lines.append([(i, j, k) for k in range(N)])  # vary k
+
+    # Plane diagonals
+    # i-j planes, fixed k
+    for k in range(N):
+        lines.append([(d, d, k) for d in range(N)])
+        lines.append([(d, N - 1 - d, k) for d in range(N)])
+
+    # i-k planes, fixed j
+    for j in range(N):
+        lines.append([(d, j, d) for d in range(N)])
+        lines.append([(d, j, N - 1 - d) for d in range(N)])
+
+    # j-k planes, fixed i
+    for i in range(N):
+        lines.append([(i, d, d) for d in range(N)])
+        lines.append([(i, d, N - 1 - d) for d in range(N)])
+
+    # Space diagonals
+    lines.append([(d, d, d) for d in range(N)])
+    lines.append([(d, d, N - 1 - d) for d in range(N)])
+    lines.append([(d, N - 1 - d, d) for d in range(N)])
+    lines.append([(d, N - 1 - d, N - 1 - d) for d in range(N)])
+
+    return lines
+
+
+LINES = _generate_lines()
+
+# For each cell, which lines contain it?
+CELL_TO_LINES = {(i, j, k): [] for i in range(N) for j in range(N) for k in range(N)}
+for idx, line in enumerate(LINES):
+    for cell in line:
+        CELL_TO_LINES[cell].append(idx)
+
+# Positional value: number of winning lines through the cell
+CELL_WEIGHT = {cell: len(CELL_TO_LINES[cell]) for cell in CELL_TO_LINES}
+
+# Heuristic line weights
+LINE_VALUE = [0, 2, 18, 5000]
+
+
+# ----------------------------------------------------------------------
+# Utilities
+# ----------------------------------------------------------------------
+
+def _flatten(board: List[List[List[int]]]) -> Tuple[int, ...]:
+    return tuple(board[i][j][k] for i in range(N) for j in range(N) for k in range(N))
+
+
+def _legal_moves(board: List[List[List[int]]]) -> List[Move]:
+    return [(i, j, k) for i in range(N) for j in range(N) for k in range(N) if board[i][j][k] == 0]
+
+
+def _winner(board: List[List[List[int]]]) -> int:
+    for line in LINES:
+        s = sum(board[i][j][k] for (i, j, k) in line)
+        if s == 3:
+            return 1
+        if s == -3:
+            return -1
+    return 0
+
+
+def _immediate_winning_moves(board: List[List[List[int]]], player: int) -> List[Move]:
+    wins = []
+    for move in _legal_moves(board):
+        i, j, k = move
+        board[i][j][k] = player
+        if _winner(board) == player:
+            wins.append(move)
+        board[i][j][k] = 0
+    return wins
+
+
+def _fork_moves(board: List[List[List[int]]], player: int) -> List[Move]:
+    forks = []
+    for move in _legal_moves(board):
+        i, j, k = move
+        board[i][j][k] = player
+        wins = _immediate_winning_moves(board, player)
+        board[i][j][k] = 0
+        if len(wins) >= 2:
+            forks.append(move)
+    return forks
+
+
+def _evaluate(board: List[List[List[int]]]) -> int:
+    w = _winner(board)
+    if w == 1:
+        return WIN_SCORE
+    if w == -1:
+        return -WIN_SCORE
+
+    score = 0
+
+    # Positional weighting
+    for i in range(N):
+        for j in range(N):
+            for k in range(N):
+                v = board[i][j][k]
+                if v != 0:
+                    score += v * CELL_WEIGHT[(i, j, k)] * 3
+
+    # Line-based heuristic
+    for line in LINES:
+        vals = [board[i][j][k] for (i, j, k) in line]
+        c1 = vals.count(1)
+        c2 = vals.count(-1)
+        if c1 and c2:
+            continue
+        if c1:
+            score += LINE_VALUE[c1]
+        elif c2:
+            score -= LINE_VALUE[c2]
+
+    return score
+
+
+def _move_order_score(board: List[List[List[int]]], move: Move, player: int) -> int:
+    i, j, k = move
+    score = CELL_WEIGHT[move] * 10
+
+    # Prefer immediate tactical effects
+    board[i][j][k] = player
+    if _winner(board) == player:
+        score += 10**8
+    else:
+        my_wins = len(_immediate_winning_moves(board, player))
+        opp_wins = len(_immediate_winning_moves(board, -player))
+        score += my_wins * 20000
+        score -= opp_wins * 15000
+    board[i][j][k] = 0
+
+    # Prefer blocks of opponent immediate win
+    board[i][j][k] = -player
+    if _winner(board) == -player:
+        score += 5 * 10**7
+    board[i][j][k] = 0
+
+    return score
+
+
+TT = {}
+
+
+def _negamax(
+    board: List[List[List[int]]],
+    depth: int,
+    alpha: int,
+    beta: int,
+    player: int,
+) -> int:
+    w = _winner(board)
+    if w != 0:
+        return w * WIN_SCORE * player
+
+    legal = _legal_moves(board)
+    if not legal:
+        return 0
+
+    if depth == 0:
+        return _evaluate(board) * player
+
+    key = (_flatten(board), depth, player)
+    if key in TT:
+        return TT[key]
+
+    legal.sort(key=lambda m: _move_order_score(board, m, player), reverse=True)
+
+    best = -INF
+    for move in legal:
+        i, j, k = move
+        board[i][j][k] = player
+        val = -_negamax(board, depth - 1, -beta, -alpha, -player)
+        board[i][j][k] = 0
+
+        if val > best:
+            best = val
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+
+    TT[key] = best
+    return best
+
+
+# ----------------------------------------------------------------------
+# Main policy
+# ----------------------------------------------------------------------
+
+def policy(board: List[List[List[int]]]) -> Move:
+    legal = _legal_moves(board)
+    if not legal:
+        return (0, 0, 0)  # Should not happen in a valid arena call
+
+    if len(legal) == 1:
+        return legal[0]
+
+    # 1. Immediate win
+    my_wins = _immediate_winning_moves(board, 1)
+    if my_wins:
+        my_wins.sort(key=lambda m: CELL_WEIGHT[m], reverse=True)
+        return my_wins[0]
+
+    # 2. Immediate block
+    opp_wins = _immediate_winning_moves(board, -1)
+    if opp_wins:
+        opp_wins.sort(key=lambda m: CELL_WEIGHT[m], reverse=True)
+        return opp_wins[0]
+
+    # 3. Create fork
+    my_forks = _fork_moves(board, 1)
+    if my_forks:
+        my_forks.sort(key=lambda m: CELL_WEIGHT[m], reverse=True)
+        return my_forks[0]
+
+    # 4. Block opponent fork
+    opp_forks = _fork_moves(board, -1)
+    if opp_forks:
+        # If a direct occupation of the fork square is possible, prefer strongest one.
+        candidates = [m for m in opp_forks if board[m[0]][m[1]][m[2]] == 0]
+        if candidates:
+            candidates.sort(key=lambda m: CELL_WEIGHT[m], reverse=True)
+            return candidates[0]
+
+    # 5. Strong opening preference: center
+    if board[1][1][1] == 0:
+        return (1, 1, 1)
+
+    # 6. Search
+    empties = len(legal)
+    if empties <= 8:
+        depth = empties
+    elif empties <= 12:
+        depth = 6
+    elif empties <= 18:
+        depth = 4
+    else:
+        depth = 3
+
+    ordered = sorted(legal, key=lambda m: _move_order_score(board, m, 1), reverse=True)
+
+    best_move = ordered[0]
+    best_val = -INF
+
+    for move in ordered:
+        i, j, k = move
+        board[i][j][k] = 1
+        val = -_negamax(board, depth - 1, -INF, INF, -1)
+        board[i][j][k] = 0
+
+        if val > best_val:
+            best_val = val
+            best_move = move
+
+    # 7. Guaranteed legal fallback
+    if board[best_move[0]][best_move[1]][best_move[2]] == 0:
+        return best_move
+    return legal[0]

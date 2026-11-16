@@ -1,0 +1,103 @@
+The strategy employs a two-phase approach: **Target Mode** and **Hunt Mode**.
+
+**Target Mode** activates when there are existing hits (`1`s) on the board. The algorithm prioritizes shots that continue a line of consecutive hits (horizontal or vertical), as these are the most likely positions to complete a ship. If no line can be extended (e.g., an isolated hit), it targets orthogonally adjacent unknown cells. This ensures that once a ship is found, it is sunk as quickly as possible.
+
+**Hunt Mode** is used when no hits are present. It uses a **probability density calculation** combined with **parity (checkerboard) optimization**. For each unknown cell of a fixed parity (e.g., `(row+col) % 2 == 0`), the algorithm counts how many valid placements of the remaining ships (lengths 5, 4, 3, 3, 2) could pass through that cell without overlapping misses. The cell with the highest count is selected, with ties broken toward the center. The parity check reduces the search space by half while guaranteeing that any ship of length ≥2 will be hit, significantly improving search efficiency.
+
+<code>
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Battleship policy using target priority and probability density hunting.
+    """
+    # --- Target Mode: Sink existing hits ---
+    # Priority 1: Continue a line of hits
+    # Priority 2: Adjacent to isolated hits
+    priority_targets = []
+    normal_targets = []
+    
+    hit_positions = [(r, c) for r in range(10) for c in range(10) if board[r][c] == 1]
+    hit_set = set(hit_positions)
+    
+    for r, c in hit_positions:
+        # Check all 4 directions for potential shots
+        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                # Check if this direction continues a line of hits
+                # by looking at the cell behind (opposite direction)
+                pr, pc = r - dr, c - dc
+                if 0 <= pr < 10 and 0 <= pc < 10 and board[pr][pc] == 1:
+                    priority_targets.append((nr, nc))
+                else:
+                    normal_targets.append((nr, nc))
+    
+    if priority_targets:
+        return priority_targets[0]
+    if normal_targets:
+        return normal_targets[0]
+    
+    # --- Hunt Mode: Probability Density with Parity ---
+    # We only check cells where (r+c)%2 == 0 (checkerboard pattern)
+    # This is optimal because the smallest ship has length 2
+    
+    ship_lengths = [5, 4, 3, 3, 2]
+    best_score = -1
+    best_moves = []
+    
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] != 0:
+                continue
+            # Parity optimization: skip odd parity cells
+            if (r + c) % 2 != 0:
+                continue
+            
+            # Count valid ship placements through (r, c)
+            count = 0
+            for length in ship_lengths:
+                # Horizontal placements
+                # start_c can range such that start_c <= c <= start_c + length - 1
+                min_start_c = max(0, c - length + 1)
+                max_start_c = min(c, 10 - length)
+                for start_c in range(min_start_c, max_start_c + 1):
+                    valid = True
+                    for dc in range(length):
+                        if board[r][start_c + dc] != 0:
+                            valid = False
+                            break
+                    if valid:
+                        count += 1
+                
+                # Vertical placements
+                min_start_r = max(0, r - length + 1)
+                max_start_r = min(r, 10 - length)
+                for start_r in range(min_start_r, max_start_r + 1):
+                    valid = True
+                    for dr in range(length):
+                        if board[start_r + dr][c] != 0:
+                            valid = False
+                            break
+                    if valid:
+                        count += 1
+            
+            if count > best_score:
+                best_score = count
+                best_moves = [(r, c)]
+            elif count == best_score:
+                best_moves.append((r, c))
+    
+    if best_moves:
+        # Tie-breaker: prefer cells closer to center (4.5, 4.5)
+        def center_distance(pos):
+            return abs(pos[0] - 4.5) + abs(pos[1] - 4.5)
+        
+        best_moves.sort(key=center_distance)
+        return best_moves[0]
+    
+    # --- Fallback: Should not reach here if board has empty cells ---
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0:
+                return (r, c)
+    return (0, 0)
+</code>

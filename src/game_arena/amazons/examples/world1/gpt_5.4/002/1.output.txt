@@ -1,0 +1,281 @@
+The strategy for this policy is a fast one-ply tactical search with strong mobility and territory heuristics, plus a guaranteed legal fallback.
+
+Core ideas:
+- Generate all legal moves.
+- Score each move by applying it and evaluating:
+  - our total mobility minus opponent mobility,
+  - local territory/reachability advantage via multi-source distance maps,
+  - immediate traps, especially reducing the opponent’s movable amazons,
+  - centrality / flexibility of our amazons.
+- Use lightweight candidate pruning when there are many moves:
+  - first rank moves by a cheap heuristic,
+  - then fully evaluate only the best candidates.
+- Always keep a legal fallback move in case of any unexpected issue.
+
+This is strong for 6x6 Amazons because mobility and space control matter a lot, and the small board allows evaluating many positions quickly.
+
+<code>
+import numpy as np
+
+# 8 queen directions
+_DIRS = [(-1, -1), (-1, 0), (-1, 1),
+         (0, -1),           (0, 1),
+         (1, -1),  (1, 0),  (1, 1)]
+
+def _in_bounds(r, c, n=6):
+    return 0 <= r < n and 0 <= c < n
+
+def _ray_moves(board, r, c):
+    n = board.shape[0]
+    out = []
+    for dr, dc in _DIRS:
+        rr, cc = r + dr, c + dc
+        while 0 <= rr < n and 0 <= cc < n and board[rr, cc] == 0:
+            out.append((rr, cc))
+            rr += dr
+            cc += dc
+    return out
+
+def _count_ray_moves(board, r, c):
+    n = board.shape[0]
+    total = 0
+    for dr, dc in _DIRS:
+        rr, cc = r + dr, c + dc
+        while 0 <= rr < n and 0 <= cc < n and board[rr, cc] == 0:
+            total += 1
+            rr += dr
+            cc += dc
+    return total
+
+def _all_legal_moves(board, player=1):
+    # Returns list of moves as tuples: (fr, fc, tr, tc, ar, ac)
+    pieces = np.argwhere(board == player)
+    moves = []
+    for fr, fc in pieces:
+        tos = _ray_moves(board, fr, fc)
+        if not tos:
+            continue
+        for tr, tc in tos:
+            b2 = board.copy()
+            b2[fr, fc] = 0
+            b2[tr, tc] = player
+            arrows = _ray_moves(b2, tr, tc)
+            for ar, ac in arrows:
+                moves.append((int(fr), int(fc), int(tr), int(tc), int(ar), int(ac)))
+    return moves
+
+def _apply_move(board, move, player=1):
+    fr, fc, tr, tc, ar, ac = move
+    b = board.copy()
+    b[fr, fc] = 0
+    b[tr, tc] = player
+    b[ar, ac] = -1
+    return b
+
+def _mobility(board, player):
+    pieces = np.argwhere(board == player)
+    total = 0
+    movable = 0
+    for r, c in pieces:
+        cnt = _count_ray_moves(board, int(r), int(c))
+        total += cnt
+        if cnt > 0:
+            movable += 1
+    return total, movable
+
+def _queen_distance_map(board, starts):
+    # Multi-source shortest path where one queen move = cost 1.
+    # Distances on empty cells only.
+    n = board.shape[0]
+    INF = 10**9
+    dist = np.full((n, n), INF, dtype=np.int16)
+
+    frontier = []
+    for r, c in starts:
+        r = int(r); c = int(c)
+        # Expand from each amazon to all visible empty cells in 1 move
+        for dr, dc in _DIRS:
+            rr, cc = r + dr, c + dc
+            while 0 <= rr < n and 0 <= cc < n and board[rr, cc] == 0:
+                if dist[rr, cc] > 1:
+                    dist[rr, cc] = 1
+                    frontier.append((rr, cc))
+                rr += dr
+                cc += dc
+
+    idx = 0
+    while idx < len(frontier):
+        r, c = frontier[idx]
+        idx += 1
+        d = int(dist[r, c]) + 1
+        for dr, dc in _DIRS:
+            rr, cc = r + dr, c + dc
+            while 0 <= rr < n and 0 <= cc < n and board[rr, cc] == 0:
+                if dist[rr, cc] > d:
+                    dist[rr, cc] = d
+                    frontier.append((rr, cc))
+                rr += dr
+                cc += dc
+    return dist
+
+def _territory_score(board):
+    my_pos = np.argwhere(board == 1)
+    op_pos = np.argwhere(board == 2)
+    myd = _queen_distance_map(board, my_pos)
+    opd = _queen_distance_map(board, op_pos)
+
+    score = 0.0
+    n = board.shape[0]
+    for r in range(n):
+        for c in range(n):
+            if board[r, c] != 0:
+                continue
+            a = int(myd[r, c])
+            b = int(opd[r, c])
+            if a < b:
+                score += 1.0
+                score += 0.15 / max(a, 1)
+            elif b < a:
+                score -= 1.0
+                score -= 0.15 / max(b, 1)
+            elif a < 10**8:
+                # tied reachable
+                pass
+    return score
+
+def _centrality_score(board):
+    # Favor flexible placement away from edges/corners.
+    # On 6x6, center around 2.5,2.5
+    my_pos = np.argwhere(board == 1)
+    op_pos = np.argwhere(board == 2)
+    score = 0.0
+    for r, c in my_pos:
+        score -= 0.12 * (abs(float(r) - 2.5) + abs(float(c) - 2.5))
+    for r, c in op_pos:
+        score += 0.12 * (abs(float(r) - 2.5) + abs(float(c) - 2.5))
+    return score
+
+def _evaluate(board):
+    my_mob, my_movable = _mobility(board, 1)
+    op_mob, op_movable = _mobility(board, 2)
+
+    # Strong terminal-ish signals
+    if op_mob == 0:
+        return 1e9
+    if my_mob == 0:
+        return -1e9
+
+    score = 0.0
+    score += 2.8 * (my_mob - op_mob)
+    score += 18.0 * (my_movable - op_movable)
+    score += 1.6 * _territory_score(board)
+    score += _centrality_score(board)
+    return score
+
+def _cheap_move_score(board, move):
+    # Fast approximation to prune candidates before full evaluation.
+    fr, fc, tr, tc, ar, ac = move
+
+    # Simulate only enough for local mobility estimates
+    b = board.copy()
+    b[fr, fc] = 0
+    b[tr, tc] = 1
+    b[ar, ac] = -1
+
+    # Our moved piece mobility
+    my_local = _count_ray_moves(b, tr, tc)
+
+    # Opponent mobility local approximation near all pieces
+    op_positions = np.argwhere(b == 2)
+    op_total = 0
+    op_stuck = 0
+    for r, c in op_positions:
+        cnt = _count_ray_moves(b, int(r), int(c))
+        op_total += cnt
+        if cnt == 0:
+            op_stuck += 1
+
+    # Arrow aggressiveness: reward if arrow is near opponent pieces
+    pressure = 0.0
+    for r, c in op_positions:
+        d = max(abs(int(r) - ar), abs(int(c) - ac))
+        if d == 0:
+            pressure += 0.0
+        elif d == 1:
+            pressure += 2.0
+        elif d == 2:
+            pressure += 0.7
+
+    # Prefer keeping moved amazon not too edge-bound
+    center = - (abs(tr - 2.5) + abs(tc - 2.5))
+
+    return 3.0 * my_local - 1.3 * op_total + 8.0 * op_stuck + pressure + 0.3 * center
+
+def _move_to_str(move):
+    fr, fc, tr, tc, ar, ac = move
+    return f"{fr},{fc}:{tr},{tc}:{ar},{ac}"
+
+def policy(board) -> str:
+    try:
+        board = np.asarray(board)
+        legal = _all_legal_moves(board, 1)
+        if not legal:
+            # Robust fallback; environment should not call this in no-move states.
+            return "0,0:0,0:0,0"
+
+        # Guaranteed legal fallback
+        fallback = legal[0]
+
+        # If move count is manageable, evaluate all. Otherwise prune.
+        m = len(legal)
+        if m <= 90:
+            candidates = legal
+        else:
+            cheap_scored = [(_cheap_move_score(board, mv), mv) for mv in legal]
+            cheap_scored.sort(key=lambda x: x[0], reverse=True)
+            # Adaptive top-k
+            k = 40 if m <= 200 else 28
+            candidates = [mv for _, mv in cheap_scored[:k]]
+
+        best_move = fallback
+        best_score = -1e18
+
+        for mv in candidates:
+            b2 = _apply_move(board, mv, 1)
+            sc = _evaluate(b2)
+
+            # Small tie-breaker from cheap score to stabilize
+            sc += 0.01 * _cheap_move_score(board, mv)
+
+            if sc > best_score:
+                best_score = sc
+                best_move = mv
+
+        return _move_to_str(best_move)
+
+    except Exception:
+        # Last-resort robust legal move generation
+        try:
+            board = np.asarray(board)
+            pieces = np.argwhere(board == 1)
+            n = board.shape[0]
+            for fr, fc in pieces:
+                fr = int(fr); fc = int(fc)
+                for dr, dc in _DIRS:
+                    tr, tc = fr + dr, fc + dc
+                    while 0 <= tr < n and 0 <= tc < n and board[tr, tc] == 0:
+                        b2 = board.copy()
+                        b2[fr, fc] = 0
+                        b2[tr, tc] = 1
+                        for adr, adc in _DIRS:
+                            ar, ac = tr + adr, tc + adc
+                            while 0 <= ar < n and 0 <= ac < n and b2[ar, ac] == 0:
+                                return f"{fr},{fc}:{tr},{tc}:{ar},{ac}"
+                                ar += adr
+                                ac += adc
+                        tr += dr
+                        tc += dc
+            return "0,0:0,0:0,0"
+        except Exception:
+            return "0,0:0,0:0,0"
+</code>

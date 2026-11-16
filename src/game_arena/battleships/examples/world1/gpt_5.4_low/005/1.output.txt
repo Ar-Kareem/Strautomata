@@ -1,0 +1,227 @@
+The strategy for this policy is:
+
+- Use **target mode** whenever there is a connected group of hit cells.
+  - For each hit group, enumerate all ship placements of lengths `5, 4, 3, 3, 2` that could contain that group.
+  - Placements must be straight, must avoid known misses, and cannot pass through hit cells from other groups.
+  - Score unknown cells that appear in those valid placements.
+  - This aggressively finishes damaged ships instead of wasting shots elsewhere.
+
+- Use **hunt mode** when there is no active target.
+  - Enumerate all valid placements of the remaining ship lengths over currently unknown cells.
+  - Score each unknown cell by how many ship placements could include it.
+  - Prefer a **checkerboard parity** pattern when possible, which is strong for finding ships efficiently.
+  - Add a small center bias as a tiebreaker.
+
+- Always include a **legal fallback**:
+  - If anything unusual happens, return the first unknown cell so the move is always valid.
+
+<code>
+from typing import List, Tuple
+
+SHIPS = [5, 4, 3, 3, 2]
+
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    n = 10
+
+    def in_bounds(r: int, c: int) -> bool:
+        return 0 <= r < n and 0 <= c < n
+
+    def first_unknown() -> Tuple[int, int]:
+        for r in range(n):
+            for c in range(n):
+                if board[r][c] == 0:
+                    return (r, c)
+        return (0, 0)  # should never happen in a valid game state
+
+    # Collect connected components of hits (4-neighbor connectivity)
+    def hit_components():
+        seen = [[False] * n for _ in range(n)]
+        comps = []
+        for r in range(n):
+            for c in range(n):
+                if board[r][c] == 1 and not seen[r][c]:
+                    stack = [(r, c)]
+                    seen[r][c] = True
+                    comp = []
+                    while stack:
+                        x, y = stack.pop()
+                        comp.append((x, y))
+                        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                            nx, ny = x + dx, y + dy
+                            if in_bounds(nx, ny) and board[nx][ny] == 1 and not seen[nx][ny]:
+                                seen[nx][ny] = True
+                                stack.append((nx, ny))
+                    comps.append(comp)
+        return comps
+
+    comps = hit_components()
+
+    # Map each hit cell to its component id
+    hit_to_comp = {}
+    for i, comp in enumerate(comps):
+        for cell in comp:
+            hit_to_comp[cell] = i
+
+    # Build target-mode heat by enumerating placements consistent with each hit component
+    target_heat = [[0.0] * n for _ in range(n)]
+
+    for comp_id, comp in enumerate(comps):
+        comp_set = set(comp)
+        rows = {r for r, _ in comp}
+        cols = {c for _, c in comp}
+
+        # Determine allowed orientations
+        if len(comp) == 1:
+            orientations = ["H", "V"]
+        elif len(rows) == 1:
+            orientations = ["H"]
+        elif len(cols) == 1:
+            orientations = ["V"]
+        else:
+            # Malformed/unexpected shape; skip special targeting for this component
+            orientations = []
+
+        comp_heat_added = 0.0
+
+        for L in SHIPS:
+            if L < len(comp):
+                continue
+
+            for orient in orientations:
+                if orient == "H":
+                    r = next(iter(rows)) if rows else comp[0][0]
+                    min_c = min(c for _, c in comp)
+                    max_c = max(c for _, c in comp)
+                    start_min = max(0, max_c - L + 1)
+                    start_max = min(min_c, n - L)
+                    for start_c in range(start_min, start_max + 1):
+                        cells = [(r, start_c + k) for k in range(L)]
+
+                        valid = True
+                        # Must avoid misses and cannot include hits from other components
+                        for x, y in cells:
+                            v = board[x][y]
+                            if v == -1:
+                                valid = False
+                                break
+                            if v == 1 and (x, y) not in comp_set:
+                                valid = False
+                                break
+                        if not valid:
+                            continue
+
+                        # Must include all cells of this component
+                        if not comp_set.issubset(set(cells)):
+                            continue
+
+                        weight = L * L + 8 * len(comp)
+                        for x, y in cells:
+                            if board[x][y] == 0:
+                                target_heat[x][y] += weight
+                                comp_heat_added += weight
+
+                else:  # orient == "V"
+                    c = next(iter(cols)) if cols else comp[0][1]
+                    min_r = min(r for r, _ in comp)
+                    max_r = max(r for r, _ in comp)
+                    start_min = max(0, max_r - L + 1)
+                    start_max = min(min_r, n - L)
+                    for start_r in range(start_min, start_max + 1):
+                        cells = [(start_r + k, c) for k in range(L)]
+
+                        valid = True
+                        for x, y in cells:
+                            v = board[x][y]
+                            if v == -1:
+                                valid = False
+                                break
+                            if v == 1 and (x, y) not in comp_set:
+                                valid = False
+                                break
+                        if not valid:
+                            continue
+
+                        if not comp_set.issubset(set(cells)):
+                            continue
+
+                        weight = L * L + 8 * len(comp)
+                        for x, y in cells:
+                            if board[x][y] == 0:
+                                target_heat[x][y] += weight
+                                comp_heat_added += weight
+
+        # Small local fallback around lone hits if enumeration found nothing
+        if comp_heat_added == 0 and len(comp) == 1:
+            r, c = comp[0]
+            for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nr, nc = r + dr, c + dc
+                if in_bounds(nr, nc) and board[nr][nc] == 0:
+                    target_heat[nr][nc] += 1.0
+
+    # If there is any target heat, play the best target cell
+    best_target = None
+    best_target_score = -1.0
+    for r in range(n):
+        for c in range(n):
+            if board[r][c] == 0:
+                score = target_heat[r][c]
+                if score > 0:
+                    # slight center bias as tie-break
+                    score += 0.01 * (9 - abs(r - 4.5) - abs(c - 4.5))
+                    if score > best_target_score:
+                        best_target_score = score
+                        best_target = (r, c)
+
+    if best_target is not None:
+        return best_target
+
+    # Hunt mode: enumerate placements on unknown cells only
+    hunt_heat = [[0.0] * n for _ in range(n)]
+
+    for L in SHIPS:
+        # Horizontal placements
+        for r in range(n):
+            for c in range(n - L + 1):
+                cells = [(r, c + k) for k in range(L)]
+                if all(board[x][y] == 0 for x, y in cells):
+                    weight = float(L * L)
+                    for x, y in cells:
+                        hunt_heat[x][y] += weight
+
+        # Vertical placements
+        for r in range(n - L + 1):
+            for c in range(n):
+                cells = [(r + k, c) for k in range(L)]
+                if all(board[x][y] == 0 for x, y in cells):
+                    weight = float(L * L)
+                    for x, y in cells:
+                        hunt_heat[x][y] += weight
+
+    # Prefer checkerboard parity when possible
+    parity_candidates = []
+    all_candidates = []
+
+    for r in range(n):
+        for c in range(n):
+            if board[r][c] != 0:
+                continue
+            score = hunt_heat[r][c]
+            score += 0.01 * (9 - abs(r - 4.5) - abs(c - 4.5))  # center bias
+            all_candidates.append((score, r, c))
+            if (r + c) % 2 == 0:
+                parity_candidates.append((score, r, c))
+
+    if parity_candidates:
+        best_parity_score = max(x[0] for x in parity_candidates)
+        if best_parity_score > 0:
+            parity_candidates.sort(key=lambda t: (-t[0], t[1], t[2]))
+            return (parity_candidates[0][1], parity_candidates[0][2])
+
+    if all_candidates:
+        all_candidates.sort(key=lambda t: (-t[0], t[1], t[2]))
+        return (all_candidates[0][1], all_candidates[0][2])
+
+    # Guaranteed legal fallback
+    return first_unknown()
+</code>

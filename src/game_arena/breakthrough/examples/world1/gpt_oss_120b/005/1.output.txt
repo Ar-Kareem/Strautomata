@@ -1,0 +1,122 @@
+**Strategy Overview**
+
+The policy follows a simple but effective heuristic search:
+
+1. **Generate all legal moves** – forward moves, diagonal moves to empty squares, and diagonal captures.
+2. **Score each move**  
+   * **Goal advancement** – moving one step closer to the opponent’s home row is rewarded.  
+   * **Capture** – captures receive an extra bonus.  
+   * **Immediate win** – any move that reaches the opponent’s home row receives a huge score.  
+   * **Safety** – if the landing square can be captured by the opponent on their next turn, a penalty is applied.  
+3. **Select the move with the highest score** (break ties randomly).  
+4. The algorithm is fast (O(#pieces)) and always returns a legal move, guaranteeing compliance with the arena rules.
+
+```python
+import random
+from typing import List, Tuple, Set
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    """
+    Return the selected move for Breakthrough.
+
+    Parameters
+    ----------
+    me : list of (row, col)
+        Coordinates of our pieces.
+    opp : list of (row, col)
+        Coordinates of opponent pieces.
+    color : str
+        'b' for black (moves downwards), 'w' for white (moves upwards).
+
+    Returns
+    -------
+    ((from_row, from_col), (to_row, to_col))
+        The chosen legal move.
+    """
+    # ----- helpers -------------------------------------------------
+    BOARD_SIZE = 8
+    me_set: Set[Tuple[int, int]] = set(me)
+    opp_set: Set[Tuple[int, int]] = set(opp)
+
+    # direction: +1 for white (upwards), -1 for black (downwards)
+    dr = 1 if color == 'w' else -1
+    opponent_dr = -dr  # direction opponent moves
+
+    # opponent home row (the row we want to reach)
+    goal_row = 7 if color == 'w' else 0
+
+    # squares that the opponent could capture on its next turn
+    opponent_capture_squares: Set[Tuple[int, int]] = set()
+    for (r, c) in opp:
+        for dc in (-1, 1):
+            nr, nc = r + opponent_dr, c + dc
+            if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE:
+                opponent_capture_squares.add((nr, nc))
+
+    # generate all legal moves for us
+    moves = []  # each element: ((r,c), (nr,nc), is_capture)
+    for (r, c) in me:
+        nr = r + dr
+        if 0 <= nr < BOARD_SIZE:
+            # straight forward (must be empty)
+            if (nr, c) not in me_set and (nr, c) not in opp_set:
+                moves.append(((r, c), (nr, c), False))
+            # diagonal left
+            nc = c - 1
+            if 0 <= nc < BOARD_SIZE:
+                target = (nr, nc)
+                if target not in me_set:
+                    if target in opp_set:
+                        moves.append(((r, c), target, True))
+                    elif target not in opp_set:
+                        moves.append(((r, c), target, False))
+            # diagonal right
+            nc = c + 1
+            if 0 <= nc < BOARD_SIZE:
+                target = (nr, nc)
+                if target not in me_set:
+                    if target in opp_set:
+                        moves.append(((r, c), target, True))
+                    elif target not in opp_set:
+                        moves.append(((r, c), target, False))
+
+    # safety check – there must be at least one move
+    if not moves:
+        raise RuntimeError("No legal moves found – should never happen in Breakthrough.")
+
+    # ----- scoring function -----------------------------------------
+    def score_move(move):
+        (fr, fc), (tr, tc), is_capture = move
+        # 1. Immediate victory
+        if tr == goal_row:
+            return 10_000  # huge reward
+
+        # 2. Advancement towards goal (+1 per forward step)
+        # All moves advance exactly one row, but diagonal moves also move forward.
+        advancement = 1  # constant for every legal move
+
+        # 3. Capture bonus
+        capture_bonus = 5 if is_capture else 0
+
+        # 4. Safety penalty – avoid squares opponent can capture next turn
+        safety_penalty = -8 if (tr, tc) in opponent_capture_squares else 0
+
+        # 5. Centrality (optional): prefer central columns to keep future options
+        central_bonus = -abs(tc - 3.5) * 0.2  # small negative for edge columns
+
+        return advancement + capture_bonus + safety_penalty + central_bonus
+
+    # ----- choose best move -----------------------------------------
+    best_score = -float('inf')
+    best_moves = []
+    for mv in moves:
+        sc = score_move(mv)
+        if sc > best_score:
+            best_score = sc
+            best_moves = [mv]
+        elif sc == best_score:
+            best_moves.append(mv)
+
+    chosen_move = random.choice(best_moves)
+    return chosen_move
+```

@@ -1,0 +1,115 @@
+
+import sys
+
+N = 11
+INF = float('inf')
+
+def neighbors(r, c):
+    for dr, dc in ((-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0)):
+        rr, cc = r+dr, c+dc
+        if 0 <= rr < N and 0 <= cc < N:
+            yield rr, cc
+
+def dijkstra(me_set, opp_set, color):
+    # returns shortest connection cost (own stones=0, empty=1, opp=INF)
+    import heapq
+    dist = [[INF]*N for _ in range(N)]
+    pq = []
+    if color == 'b':  # top(r=0) to bottom(r=10)
+        for c in range(N):
+            if (0, c) in opp_set:
+                continue
+            d = 0 if (0, c) in me_set else 1
+            dist[0][c] = d
+            heapq.heappush(pq, (d, 0, c))
+    else:  # left(c=0) to right(c=10)
+        for r in range(N):
+            if (r, 0) in opp_set:
+                continue
+            d = 0 if (r, 0) in me_set else 1
+            dist[r][0] = d
+            heapq.heappush(pq, (d, r, 0))
+    best = INF
+    while pq:
+        d, r, c = heapq.heappop(pq)
+        if d > dist[r][c]:
+            continue
+        if (color == 'b' and r == N-1) or (color == 'w' and c == N-1):
+            if d < best:
+                best = d
+            continue
+        for rr, cc in neighbors(r, c):
+            if (rr, cc) in opp_set:
+                continue
+            nd = d + (0 if (rr, cc) in me_set else 1)
+            if nd < dist[rr][cc]:
+                dist[rr][cc] = nd
+                heapq.heappush(pq, (nd, rr, cc))
+    return best
+
+def policy(me, opp, color):
+    me_set = set(me)
+    opp_set = set(opp)
+    empty = [(r, c) for r in range(N) for c in range(N)
+             if (r, c) not in me_set and (r, c) not in opp_set]
+    if not empty:
+        return (5, 5)
+
+    # Opening: center
+    if not me and not opp:
+        return (5, 5)
+
+    # --- Bridge protection ---
+    # If I have stones u,v forming a bridge with carriers a,b,
+    # and opp just took one carrier, play the other.
+    for u in me_set:
+        ur, uc = u
+        # candidate carriers: empty neighbors of u
+        nbrs_u = set(neighbors(ur, uc))
+        for a in list(nbrs_u):
+            if a in me_set or a in opp_set:
+                continue
+            for b in neighbors(a[0], a[1]):
+                if b == u or b not in me_set:
+                    continue
+                # b must not be adjacent to u (else it's not a bridge)
+                if b in nbrs_u:
+                    continue
+                # a and b are the two carriers; the other carrier of pair (u,b)
+                # find common empty neighbors of u and b
+                common = [x for x in neighbors(ur, uc)
+                          if x in set(neighbors(b[0], b[1]))
+                          and x not in me_set and x not in opp_set]
+                if len(common) == 1:
+                    # one carrier occupied by opp -> save bridge
+                    occ = [x for x in neighbors(ur, uc)
+                           if x in set(neighbors(b[0], b[1])) and x in opp_set]
+                    if len(occ) == 1:
+                        return common[0]
+
+    # --- Path-based move evaluation ---
+    my_base = dijkstra(me_set, opp_set, color)
+    if color == 'b':
+        opp_color = 'w'
+    else:
+        opp_color = 'b'
+    opp_base = dijkstra(opp_set, me_set, opp_color)
+
+    best_move = None
+    best_score = -INF
+    center_pref = lambda r, c: -abs(r-5)-abs(c-5)*0.01
+    for m in empty:
+        mr, mc = m
+        new_me = me_set | {m}
+        # my distance after move (approx: only compute if near my base path region or cheap)
+        my_new = dijkstra(new_me, opp_set, color)
+        # opponent distance after my move (blocking effect)
+        opp_new = dijkstra(opp_set, new_me, opp_color)
+        score = (my_base - my_new) + (opp_new - opp_base) + center_pref(mr, mc)
+        # prefer winning move
+        if my_new == 0:
+            return m
+        if score > best_score:
+            best_score = score
+            best_move = m
+    return best_move

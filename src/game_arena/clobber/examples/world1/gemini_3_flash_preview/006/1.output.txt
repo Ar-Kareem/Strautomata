@@ -1,0 +1,94 @@
+The strategy for this policy uses a Minimax search with Alpha-Beta pruning. Since Clobber is an impartial-like game played on a grid, the evaluation function focuses on maximizing the number of legal moves available to our player while minimizing those available to the opponent.
+
+To optimize performance within the 1-second time limit:
+1.  **Move Ordering**: It prioritizes moves that reduce the opponent's move count (heavy interference).
+2.  **Iterative Deepening**: It attempts to reach a depth of 3 to 4, which is generally feasible on a 5x6 grid within the time constraint.
+3.  **Heuristic Evaluation**: The score is calculated as `(MyMoves * 1.5) - (OpponentMoves)`. This weight encourages preserving our own "components" while aggressively taking away the opponent's options.
+
+<code>
+import time
+
+def policy(you, opponent):
+    start_time = time.time()
+    rows, cols = 5, 6
+
+    def get_legal_moves(p1, p2):
+        moves = []
+        for r in range(rows):
+            for c in range(cols):
+                if p1[r][c] == 1:
+                    for dr, dc, dstr in [(-1, 0, 'U'), (1, 0, 'D'), (0, -1, 'L'), (0, 1, 'R')]:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < rows and 0 <= nc < cols and p2[nr][nc] == 1:
+                            moves.append((r, c, nr, nc, dstr))
+        return moves
+
+    def apply_move(p1, p2, move):
+        r, c, nr, nc, _ = move
+        new_p1 = [row[:] for row in p1]
+        new_p2 = [row[:] for row in p2]
+        new_p1[r][c] = 0
+        new_p1[nr][nc] = 1
+        new_p2[nr][nc] = 0
+        return new_p1, new_p2
+
+    def evaluate(p1, p2):
+        m1 = len(get_legal_moves(p1, p2))
+        m2 = len(get_legal_moves(p2, p1))
+        return m1 * 1.5 - m2
+
+    def minimax(p1, p2, depth, alpha, beta, is_max):
+        moves = get_legal_moves(p1 if is_max else p2, p2 if is_max else p1)
+        
+        if not moves:
+            return -10000 if is_max else 10000
+        if depth == 0 or (time.time() - start_time > 0.8):
+            return evaluate(p1, p2) if is_max else -evaluate(p2, p1)
+
+        if is_max:
+            max_eval = -float('inf')
+            for m in moves:
+                np1, np2 = apply_move(p1, p2, m)
+                ev = minimax(np1, np2, depth - 1, alpha, beta, False)
+                max_eval = max(max_eval, ev)
+                alpha = max(alpha, ev)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for m in moves:
+                np2, np1 = apply_move(p2, p1, m)
+                ev = minimax(np1, np2, depth - 1, alpha, beta, True)
+                min_eval = min(min_eval, ev)
+                beta = min(beta, ev)
+                if beta <= alpha:
+                    break
+            return min_eval
+
+    best_move = None
+    legal_moves = get_legal_moves(you, opponent)
+    
+    if not legal_moves:
+        return "0,0,U" # Should not happen if game is active
+
+    # Sort moves to improve pruning (prioritize moves that reduce opponent's mobility)
+    scored_moves = []
+    for m in legal_moves:
+        np1, np2 = apply_move(you, opponent, m)
+        opp_moves = len(get_legal_moves(np2, np1))
+        scored_moves.append((opp_moves, m))
+    scored_moves.sort() # Lower opponent moves first
+
+    best_val = -float('inf')
+    depth = 3
+    for _, m in scored_moves:
+        np1, np2 = apply_move(you, opponent, m)
+        val = minimax(np1, np2, depth - 1, -float('inf'), float('inf'), False)
+        if val > best_val:
+            best_val = val
+            best_move = m
+            
+    r, c, nr, nc, d = best_move if best_move else legal_moves[0]
+    return f"{r},{c},{d}"
+</code>

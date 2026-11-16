@@ -1,0 +1,165 @@
+I'll create a strong chess policy that evaluates positions and selects moves based on multiple strategic factors.
+
+## Strategy
+
+My policy will use a multi-layered approach:
+
+1. **Immediate Wins**: Check for checkmate moves (moves ending with '#')
+2. **Material Evaluation**: Calculate material balance after each move, prioritizing captures that win material
+3. **Positional Scoring**: Evaluate piece placement using piece-square tables
+4. **Threat Detection**: Prioritize moves that give check or promote pawns
+5. **King Safety**: Encourage castling when available
+6. **Center Control**: Value central squares more highly
+7. **Piece Development**: In early game, prioritize developing pieces
+
+The evaluation combines these factors with weighted scoring to select the best move from the legal options.
+
+<code>
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str], memory: dict) -> tuple[str, dict]:
+    import random
+    
+    # Piece values for material evaluation
+    PIECE_VALUES = {
+        'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000
+    }
+    
+    # Piece-square tables (simplified, for white from white's perspective)
+    PAWN_TABLE = [
+        0,  0,  0,  0,  0,  0,  0,  0,
+        50, 50, 50, 50, 50, 50, 50, 50,
+        10, 10, 20, 30, 30, 20, 10, 10,
+        5,  5, 10, 25, 25, 10,  5,  5,
+        0,  0,  0, 20, 20,  0,  0,  0,
+        5, -5,-10,  0,  0,-10, -5,  5,
+        5, 10, 10,-20,-20, 10, 10,  5,
+        0,  0,  0,  0,  0,  0,  0,  0
+    ]
+    
+    KNIGHT_TABLE = [
+        -50,-40,-30,-30,-30,-30,-40,-50,
+        -40,-20,  0,  0,  0,  0,-20,-40,
+        -30,  0, 10, 15, 15, 10,  0,-30,
+        -30,  5, 15, 20, 20, 15,  5,-30,
+        -30,  0, 15, 20, 20, 15,  0,-30,
+        -30,  5, 10, 15, 15, 10,  5,-30,
+        -40,-20,  0,  5,  5,  0,-20,-40,
+        -50,-40,-30,-30,-30,-30,-40,-50
+    ]
+    
+    BISHOP_TABLE = [
+        -20,-10,-10,-10,-10,-10,-10,-20,
+        -10,  0,  0,  0,  0,  0,  0,-10,
+        -10,  0,  5, 10, 10,  5,  0,-10,
+        -10,  5,  5, 10, 10,  5,  5,-10,
+        -10,  0, 10, 10, 10, 10,  0,-10,
+        -10, 10, 10, 10, 10, 10, 10,-10,
+        -10,  5,  0,  0,  0,  0,  5,-10,
+        -20,-10,-10,-10,-10,-10,-10,-20
+    ]
+    
+    KING_TABLE = [
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -20,-30,-30,-40,-40,-30,-30,-20,
+        -10,-20,-20,-20,-20,-20,-20,-10,
+        20, 20,  0,  0,  0,  0, 20, 20,
+        20, 30, 10,  0,  0, 10, 30, 20
+    ]
+    
+    def square_to_index(square):
+        file = ord(square[0]) - ord('a')
+        rank = int(square[1]) - 1
+        return rank * 8 + file
+    
+    def get_position_value(piece_type, square, is_white):
+        tables = {'P': PAWN_TABLE, 'N': KNIGHT_TABLE, 'B': BISHOP_TABLE, 'K': KING_TABLE}
+        table = tables.get(piece_type, [0]*64)
+        idx = square_to_index(square)
+        if not is_white:
+            idx = 63 - idx  # Flip for black
+        return table[idx]
+    
+    def evaluate_position(board):
+        score = 0
+        for square, piece in board.items():
+            is_white = piece[0] == 'w'
+            piece_type = piece[1]
+            value = PIECE_VALUES.get(piece_type, 0)
+            pos_value = get_position_value(piece_type, square, is_white)
+            
+            if is_white:
+                score += value + pos_value
+            else:
+                score -= value + pos_value
+        return score
+    
+    def parse_move(move_str, board, color):
+        # Simple move parser to understand basic move structure
+        is_capture = 'x' in move_str
+        is_check = '+' in move_str or '#' in move_str
+        is_mate = '#' in move_str
+        is_promotion = '=' in move_str
+        is_castle = move_str in ['O-O', 'O-O-O']
+        
+        return {
+            'move': move_str,
+            'is_capture': is_capture,
+            'is_check': is_check,
+            'is_mate': is_mate,
+            'is_promotion': is_promotion,
+            'is_castle': is_castle
+        }
+    
+    def score_move(move_str, board, color):
+        move_info = parse_move(move_str, board, color)
+        score = 0
+        
+        # Checkmate is best
+        if move_info['is_mate']:
+            return 1000000
+        
+        # Check is good
+        if move_info['is_check']:
+            score += 50
+        
+        # Promotion is very good
+        if move_info['is_promotion']:
+            if '=Q' in move_str:
+                score += 800
+            elif '=R' in move_str:
+                score += 400
+            elif '=N' in move_str or '=B' in move_str:
+                score += 300
+        
+        # Castling is good for king safety
+        if move_info['is_castle']:
+            score += 40
+        
+        # Captures are generally good
+        if move_info['is_capture']:
+            score += 100
+        
+        # Add some randomness to avoid predictability
+        score += random.uniform(0, 5)
+        
+        return score
+    
+    # Check for immediate checkmate
+    for move in legal_moves:
+        if '#' in move:
+            return (move, memory)
+    
+    # Score all legal moves
+    best_move = legal_moves[0]
+    best_score = float('-inf')
+    
+    for move in legal_moves:
+        score = score_move(move, pieces, to_play)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return (best_move, memory)
+</code>

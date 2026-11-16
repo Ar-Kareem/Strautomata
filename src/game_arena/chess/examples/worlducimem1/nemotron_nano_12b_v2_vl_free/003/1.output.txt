@@ -1,0 +1,275 @@
+<code>
+import math
+
+def policy(pieces: dict[str, str], to_play: str, memory: dict) -> tuple[str, dict]:
+    # Generate all possible moves for the current player
+    # and evaluate them with a simple evaluation function.
+
+    # Helper function to convert square names to coordinates
+    def square_to_pos(square: str) -> tuple[int, int]:
+        return (ord(square[0]) - ord('a'), int(square[1]) - 1)
+
+    # Define piece values for evaluation
+    piece_values = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0, 'w': 1000, 'b': -1000}
+
+    # Function to check if a square is a threat to the king
+    def is_square_threatened(square: str, board: dict[str, str], color: str) -> bool:
+        x, y = square_to_pos(square)
+        enemy_color = 'b' if color == 'w' else 'w'
+
+        # Check all enemy pieces to see if they can attack the square
+        for sq in board:
+            if board[sq][0] == enemy_color:
+                color_p, piece = board[sq]
+                px, py = square_to_pos(sq)
+                dx, dy = x - px, y - py
+
+                if piece == 'K':
+                    if abs(dx) <= 1 and abs(dy) <= 1:
+                        return True
+
+                elif piece == 'N':
+                    if (dx*dx + dy*dy) == 5:
+                        return True
+
+                elif piece == 'R':
+                    if dx == 0 or dy == 0:
+                        # Check for blocking pieces
+                        dir_x = 0 if dx == 0 else 1 if dx > 0 else -1
+                        dir_y = 0 if dy == 0 else 1 if dy > 0 else -1
+                        cx, cy = px + dir_x, py + dir_y
+                        while 0 <= cx < 8 and 0 <= cy < 8:
+                            current_sq = chr(cx + ord('a')) + str(cy + 1)
+                            if current_sq == sq:
+                                break
+                            if current_sq in board:
+                                break
+                            cx += dir_x
+                            cy += dir_y
+                        else:
+                            return True
+
+                elif piece == 'B':
+                    if abs(dx) == abs(dy):
+                        dir_x = 1 if dx > 0 else -1 if dx < 0 else 0
+                        dir_y = 1 if dy > 0 else -1 if dy < 0 else 0
+                        cx, cy = px + dir_x, py + dir_y
+                        while cx != x and cx != -1:
+                            current_sq = chr(cx + ord('a')) + str(cy + 1)
+                            if current_sq in board:
+                                break
+                            cx += dir_x
+                            cy += dir_y
+                        else:
+                            return True
+
+                elif piece == 'Q':
+                    if (dx == 0 or dy == 0) or (abs(dx) == abs(dy)):
+                        dir_x = 1 if dx > 0 else -1 if dx < 0 else 0
+                        dir_y = 1 if dy > 0 else -1 if dy < 0 else 0
+                        cx, cy = px, py
+                        blocking = False
+                        while 0 <= cx < 8 and 0 <= cy < 8:
+                            if cx != px or cy != py:
+                                current_sq = chr(cx + ord('a')) + str(cy + 1)
+                                if current_sq == sq:
+                                    break
+                                if current_sq in board:
+                                    blocking = True
+                                    break
+                            cx += dir_x
+                            cy += dir_y
+                        if not blocking:
+                            return True
+
+                elif piece == 'P':
+                    # Pawn capture checks
+                    if color == 'w' and py + 1 == y and (dx == 1 and dx * dir_x == 1):
+                        return True
+                    elif color == 'b' and py - 1 == y and (dx == 1 and dx * dir_x == 1):
+                        return True
+
+        return False
+
+    # Evaluate the current king's safety
+    def evaluate_king_safety(color: str) -> int:
+        king_sq = next(sq for sq in pieces if pieces[sq].startswith(color) and pieces[sq][1] == 'K')
+        x, y = square_to_pos(king_sq)
+        danger_score = 0
+        # Check how many pieces threaten the king
+        for sq in pieces:
+            color_p, piece = pieces[sq]
+            if color_p != color:
+                if is_square_threatened(king_sq, pieces, color_p):
+                    danger_score += 5
+                    if piece == 'Q':
+                        danger_score += 3
+                    elif piece == 'R' or piece == 'B':
+                        danger_score += 2
+        return danger_score
+
+    # Generate all possible moves
+    legal_moves = []
+    king_pos = None
+    for square in pieces:
+        piece = pieces[square]
+        if piece[0] != to_play:
+            continue
+
+        color, piece_type = piece[0], piece[1]
+        from_x, from_y = square_to_pos(square)
+        moves = []
+
+        if piece_type == 'K':
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    if dx == 0 and dy == 0:
+                        continue
+                    to_x = from_x + dx
+                    to_y = from_y + dy
+                    if 0 <= to_x <= 7 and 0 <= to_y <= 7:
+                        to_sq = f"{chr(to_x + ord('a'))}{to_y + 1}"
+                        if to_sq not in pieces or pieces[to_sq][0] != color:
+                            moves.append(to_sq)
+
+        elif piece_type == 'Q':
+            directions = [(1,0), (1,1), (0,1), (-1,1), (-1,0), (-1,-1), (0,-1), (1,-1)]
+            for dx, dy in directions:
+                current_x, current_y = from_x, from_y
+                while True:
+                    current_x += dx
+                    current_y += dy
+                    if not 0 <= current_x <= 7 or not 0 <= current_y <= 7:
+                        break
+                    to_sq = f"{chr(current_x + ord('a'))}{current_y + 1}"
+                    if to_sq in pieces and pieces[to_sq][0] == color:
+                        break
+                    moves.append(to_sq)
+                    if to_sq in pieces and pieces[to_sq][0] != color:
+                        break  # Capture block further moves
+
+        elif piece_type == 'R':
+            directions = [(1,0), (0,1), (-1,0), (0,-1)]
+            for dx, dy in directions:
+                current_x, current_y = from_x, from_y
+                while True:
+                    current_x += dx
+                    current_y += dy
+                    if not 0 <= current_x <= 7 or not 0 <= current_y <= 7:
+                        break
+                    to_sq = f"{chr(current_x + ord('a'))}{current_y + 1}"
+                    if to_sq in pieces and pieces[to_sq][0] == color:
+                        break
+                    moves.append(to_sq)
+                    if to_sq in pieces and pieces[to_sq][0] != color:
+                        break  # Capture block further moves
+
+        elif piece_type == 'B':
+            directions = [(1,1), (1,-1), (-1,1), (-1,-1)]
+            for dx, dy in directions:
+                current_x, current_y = from_x, from_y
+                while True:
+                    current_x += dx
+                    current_y += dy
+                    if not 0 <= current_x <= 7 or not 0 <= current_y <= 7:
+                        break
+                    to_sq = f"{chr(current_x + ord('a'))}{current_y + 1}"
+                    if to_sq in pieces and pieces[to_sq][0] == color:
+                        break
+                    moves.append(to_sq)
+                    if to_sq in pieces and pieces[to_sq][0] != color:
+                        break  # Capture block further moves
+
+        elif piece_type == 'N':
+            knight_moves = [(2,1), (2,-1), (-2,1), (-2,-1),
+                            (1,2), (1,-2), (-1,2), (-1,-2)]
+            for dx, dy in knight_moves:
+                to_x = from_x + dx
+                to_y = from_y + dy
+                if 0 <= to_x <= 7 and 0 <= to_y <= 7:
+                    to_sq = f"{chr(to_x + ord('a'))}{to_y + 1}"
+                    if to_sq not in pieces or pieces[to_sq][0] != color:
+                        moves.append(to_sq)
+
+        elif piece_type == 'P':
+            if color == 'w':
+                # White pawn
+                forward = (from_x, from_y + 1)
+                if forward[1] < 8:
+                    to_sq = f"{chr(forward[0] + ord('a'))}{forward[1] + 1}"
+                    if to_sq not in pieces:
+                        moves.append(to_sq)
+                    if from_y == 1:
+                        forward2 = (from_x, from_y + 2)
+                        if forward2[1] < 8 and to_sq not in pieces and pieces.get(f"{from_x}{from_y + 1 + 1}", '') not in pieces:
+                            moves.append(f"{chr(from_x + ord('a'))}{from_y + 3}")
+                # Captures
+                for dx in (-1, 1):
+                    to_x = from_x + dx
+                    to_sq = f"{chr(to_x + ord('a'))}{from_y + 2}"
+                    if 0 <= to_x <=7 and to_sq in pieces and pieces[to_sq][0] != color:
+                        moves.append(to_sq)
+            else:
+                # Black pawn
+                forward = (from_x, from_y - 1)
+                if forward[1] >= 0:
+                    to_sq = f"{chr(forward[0] + ord('a'))}{forward[1] + 1}"
+                    if to_sq not in pieces:
+                        moves.append(to_sq)
+                    if from_y == 6:
+                        forward2 = (from_x, from_y - 2)
+                        if forward2[1] >= 0 and to_sq not in pieces and pieces.get(f"{from_x}{from_y - 1 + 1}", '') not in pieces:
+                            moves.append(f"{chr(from_x + ord('a'))}{from_y + 1}")
+                # Captures
+                for dx in (-1, 1):
+                    to_x = from_x + dx
+                    to_sq = f"{chr(to_x + ord('a'))}{from_y}"
+                    if 0 <= to_x <=7 and to_sq in pieces and pieces[to_sq][0] != color:
+                        moves.append(to_sq)
+
+        # Filter legal moves (not in check after move)
+        for to_sq in moves:
+            new_pieces = dict(pieces)
+            # Move the piece
+            _, captured = new_pieces.pop(square, (None, None))
+            new_pieces[to_sq] = piece
+
+            # Check if king is in check
+            king_sq = next((sq for sq in new_pieces if new_pieces[sq] == color + 'K'), None)
+            if is_square_threatened(king_sq, new_pieces, color):
+                continue
+            legal_moves.append(to_sq)
+
+    # If no legal moves, return (exists in real chess, but assume no stalemate for now)
+    if not legal_moves:
+        return ('', dict())
+
+    best_move = min(legal_moves, key=lambda move: -len(move))  # Default to lex order
+
+    # Prioritize captures
+    capture_moves = []
+    for move in legal_moves:
+        captured = pieces.get(move[0:2], None)
+        if captured and captured[0] != to_play:
+            capture_moves.append(move)
+
+    if capture_moves:
+        # Prefer moves that capture higher-value pieces
+        best_capture = max(capture_moves, key=lambda move: piece_values.get(pieces.get(move[0:2], '')[1], 0), default='')
+        best_move = best_capture
+
+    # The code below is a placeholder for further evaluation
+    # Red in chess: minimize king danger
+    king_danger = evaluate_king_safety(to_play)
+    if king_danger > 10:
+        # Move to safer position (heuristic)
+        # For simplicity, select a random move
+        best_move = min(legal_moves, key=lambda move: (len(move[-1], move)))
+
+    return (best_move, dict())
+
+</code>
+
+The code provided attempts to generate all possible moves for each piece and check for legality by verifying that the king is not in check after the move. It prioritizes moves that capture opponent pieces, especially higher-value ones. It also includes a basic evaluation of king safety. However, due to the complexity of accurately generating and evaluating all legal moves in real-time without a chess library, the code may have limitations and is designed to work with simple cases.
+
+This implementation includes functions to check if a square is threatened by an enemy piece and evaluates king safety. It selects moves that capture opponent pieces, especially high-value ones, and prioritizes king safety if the king is in immediate danger. However, generating all legal moves and evaluating checkmate situations requires a more robust implementation than what is shown here, which highlights the challenges of writing a chess engine from scratch.

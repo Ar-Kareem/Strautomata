@@ -1,0 +1,258 @@
+
+import numpy as np
+import random
+from collections import defaultdict
+from typing import List, Tuple, Set, Dict, Optional
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[int, int]:
+    board_size = 11
+    EMPTY = 0
+    ME = 1
+    OPP = 2
+
+    # Initialize board
+    board = np.zeros((board_size, board_size), dtype=np.uint8)
+    for r, c in me:
+        board[r, c] = ME
+    for r, c in opp:
+        board[r, c] = OPP
+
+    # Hex neighbors: for a cell (r, c), the six adjacent hexes
+    def get_neighbors(r: int, c: int) -> List[Tuple[int, int]]:
+        # In a hex grid using axial or offset coordinates (here, we use "odd-r" offset)
+        # The six neighbors depend on row parity (odd/even row)
+        # For "odd-r" horizontal layout:
+        if r % 2 == 1:
+            # Odd row: offsets are (0,-1), (0,+1), (-1,-1), (-1,0), (+1,-1), (+1,0)
+            deltas = [(-1, -1), (-1, 0), (0, -1), (0, 1), (1, -1), (1, 0)]
+        else:
+            # Even row: offsets are (0,-1), (0,+1), (-1,0), (-1,+1), (+1,0), (+1,+1)
+            deltas = [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, 0), (1, 1)]
+        neighbors = []
+        for dr, dc in deltas:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < board_size and 0 <= nc < board_size:
+                neighbors.append((nr, nc))
+        return neighbors
+
+    # Check if a player has won by connecting their edges
+    def is_connected(groups: List[Set[Tuple[int, int]]], player_color: str) -> bool:
+        if player_color == 'b':  # Black: connect top (row 0) to bottom (row 10)
+            top = set((0, c) for c in range(board_size))
+            bottom = set((10, c) for c in range(board_size))
+            for group in groups:
+                if group & top and group & bottom:
+                    return True
+        else:  # White: connect left (col 0) to right (col 10)
+            left = set((r, 0) for r in range(board_size))
+            right = set((r, 10) for r in range(board_size))
+            for group in groups:
+                if group & left and group & right:
+                    return True
+        return False
+
+    # Get all connected groups (using BFS) for a given player
+    def get_groups(player_id: int) -> List[Set[Tuple[int, int]]]:
+        visited = set()
+        groups = []
+        positions = [(r, c) for r in range(board_size) for c in range(board_size) if board[r, c] == player_id]
+        pos_set = set(positions)
+
+        while pos_set:
+            start = pos_set.pop()
+            queue = [start]
+            group = {start}
+            visited.add(start)
+
+            while queue:
+                r, c = queue.pop(0)
+                for nb in get_neighbors(r, c):
+                    if nb in pos_set and nb not in visited:
+                        visited.add(nb)
+                        pos_set.discard(nb)
+                        queue.append(nb)
+                        group.add(nb)
+            groups.append(group)
+        return groups
+
+    # Check if current board has a winner
+    def check_winner() -> Optional[str]:
+        me_groups = get_groups(ME)
+        opp_groups = get_groups(OPP)
+        if is_connected(me_groups, color):
+            return 'me'
+        opp_color = 'w' if color == 'b' else 'b'
+        if is_connected(opp_groups, opp_color):
+            return 'opp'
+        return None
+
+    # Heuristic evaluation: reward central control and proximity to both sides
+    def heuristic_score(r: int, c: int, player_color: str) -> float:
+        score = 0.0
+        if player_color == 'b':
+            # Distance to top and bottom
+            d_top = r
+            d_bottom = 10 - r
+            score -= (d_top + d_bottom)  # prefer middle row
+            score -= abs(c - 5) * 0.1  # slight preference for center column
+        else:
+            d_left = c
+            d_right = 10 - c
+            score -= (d_left + d_right)
+            score -= abs(r - 5) * 0.1
+        return score
+
+    # Fast rollout policy: guide random moves with light heuristics
+    def rollout_policy(empty_cells: List[Tuple[int, int]], player_color: str) -> Tuple[int, int]:
+        if not empty_cells:
+            return (-1, -1)
+        # Prefer moves near existing stones and center
+        scores = []
+        for r, c in empty_cells:
+            h_score = heuristic_score(r, c, player_color)
+            # Bonus for adjacency to own or opponent stones (increases relevance)
+            neighbors = get_neighbors(r, c)
+            adj_me = sum(1 for nr, nc in neighbors if board[nr, nc] == ME)
+            adj_opp = sum(1 for nr, nc in neighbors if board[nr, nc] == OPP)
+            total_adj = adj_me + adj_opp
+            score = h_score + total_adj * 2.0 + random.random()  # random tiebreak
+            scores.append((score, (r, c)))
+        return max(scores, key=lambda x: x[0])[1]
+
+    # Perform a full random rollout with heuristic guidance
+    def simulate(board: np.ndarray) -> str:
+        # We'll simulate on a copy using lists for me/opp
+        sim_me = me[:]
+        sim_opp = opp[:]
+        sim_board = board.copy()
+        player_turn = 'me'  # we start from current player
+        empty_cells = [(r, c) for r in range(board_size) for c in range(board_size) if sim_board[r, c] == EMPTY]
+        random.shuffle(empty_cells)
+
+        while empty_cells:
+            if player_turn == 'me':
+                move = rollout_policy(empty_cells, color)
+            else:
+                opp_color = 'w' if color == 'b' else 'b'
+                move = rollout_policy(empty_cells, opp_color)
+
+            if move == (-1, -1) or move not in empty_cells:
+                # No valid move
+                break
+
+            r, c = move
+            if player_turn == 'me':
+                sim_board[r, c] = ME
+                sim_me.append((r, c))
+            else:
+                sim_board[r, c] = OPP
+                sim_opp.append((r, c))
+            empty_cells.remove(move)
+
+            # Check win
+            me_groups = get_groups(ME)
+            opp_groups = get_groups(OPP)
+            if is_connected(me_groups, color):
+                return 'win'
+            opp_color = 'w' if color == 'b' else 'b'
+            if is_connected(opp_groups, opp_color):
+                return 'loss'
+
+            player_turn = 'opp' if player_turn == 'me' else 'me'
+
+        # If no winner, assume we lose (conservative)
+        return 'loss'
+
+    # MCTS Node
+    class Node:
+        def __init__(self, move: Optional[Tuple[int, int]] = None, parent=None):
+            self.move = move
+            self.parent = parent
+            self.children = []
+            self.wins = 0
+            self.visits = 0
+            self.untried_moves = []
+
+        def select(self):
+            # UCB1: 4 * log(parent visits) / visits
+            log_parent = np.log(self.visits) if self.visits > 0 else 1e-5
+            best_score = -float('inf')
+            best_child = None
+            for child in self.children:
+                if child.visits == 0:
+                    return child
+                ucb = child.wins / child.visits + 2.0 * np.sqrt(log_parent / child.visits)
+                if ucb > best_score:
+                    best_score = ucb
+                    best_child = child
+            return best_child
+
+        def expand(self):
+            if not self.untried_moves:
+                return None
+            move = self.untried_moves.pop()
+            child = Node(move=move, parent=self)
+            self.children.append(child)
+            return child
+
+        def update(self, result):
+            self.visits += 1
+            if result == 'win':
+                self.wins += 1
+
+    # Root node
+    root = Node()
+    empty_cells = [(r, c) for r in range(board_size) for c in range(board_size) if board[r, c] == EMPTY]
+    root.untried_moves = empty_cells.copy()
+
+    # If only one move left, take it
+    if len(empty_cells) == 1:
+        return empty_cells[0]
+
+    # MCTS main loop
+    simulation_count = 0
+    start_time = __import__('time').time()
+
+    while __import__('time').time() - start_time < 0.95:
+        node = root
+        temp_board = board.copy()
+        temp_me = me[:]
+        temp_opp = opp[:]
+
+        # Selection
+        while node.untried_moves == [] and node.children != []:
+            node = node.select()
+            r, c = node.move
+            if temp_board[r, c] == EMPTY:
+                if (len(temp_me) + len(temp_opp)) % 2 == len(me) % 2:  # it's me
+                    temp_board[r, c] = ME
+                    temp_me.append((r, c))
+                else:
+                    temp_board[r, c] = OPP
+                    temp_opp.append((r, c))
+
+        # Expansion
+        if node.untried_moves:
+            move = random.choice(node.untried_moves)
+            r, c = move
+            if (len(temp_me) + len(temp_opp)) % 2 == len(me) % 2:
+                temp_board[r, c] = ME
+                temp_me.append((r, c))
+            else:
+                temp_board[r, c] = OPP
+                temp_opp.append((r, c))
+            node = node.expand()
+
+        # Simulation
+        result = simulate(temp_board)
+
+        # Backpropagation
+        while node is not None:
+            node.update(result)
+            node = node.parent
+
+        simulation_count += 1
+
+    # Choose the move with the highest visit count
+    best_child = max(root.children, key=lambda c: c.visits)
+    return best_child.move

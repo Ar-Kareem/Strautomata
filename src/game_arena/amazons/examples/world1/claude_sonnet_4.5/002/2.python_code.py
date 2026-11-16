@@ -1,0 +1,191 @@
+
+import numpy as np
+from typing import Tuple, List, Optional
+
+def policy(board: np.ndarray) -> str:
+    """
+    Returns the best move for the current player (1) on the board.
+    """
+    moves = get_legal_moves(board, 1)
+    
+    if not moves:
+        # Fallback - should not happen in valid game state
+        return "0,0:0,0:0,0"
+    
+    # Adaptive search depth based on game phase
+    empty_count = np.sum(board == 0)
+    if empty_count < 12:
+        depth = 3  # Endgame: deeper search
+    elif empty_count < 20:
+        depth = 2  # Midgame
+    else:
+        depth = 2  # Opening
+    
+    best_move = None
+    best_value = float('-inf')
+    alpha = float('-inf')
+    beta = float('inf')
+    
+    # Order moves by a quick heuristic
+    scored_moves = []
+    for move in moves:
+        quick_score = quick_move_eval(board, move)
+        scored_moves.append((quick_score, move))
+    scored_moves.sort(reverse=True)
+    
+    for _, move in scored_moves:
+        new_board = apply_move(board, move, 1)
+        value = minimax(new_board, depth - 1, alpha, beta, False)
+        
+        if value > best_value:
+            best_value = value
+            best_move = move
+        
+        alpha = max(alpha, value)
+        if beta <= alpha:
+            break
+    
+    if best_move is None:
+        best_move = moves[0]
+    
+    return format_move(best_move)
+
+def minimax(board: np.ndarray, depth: int, alpha: float, beta: float, maximizing: bool) -> float:
+    """Minimax with alpha-beta pruning."""
+    player = 1 if maximizing else 2
+    moves = get_legal_moves(board, player)
+    
+    if depth == 0 or not moves:
+        return evaluate_board(board)
+    
+    if maximizing:
+        max_eval = float('-inf')
+        for move in moves[:15]:  # Limit branching factor
+            new_board = apply_move(board, move, player)
+            eval_score = minimax(new_board, depth - 1, alpha, beta, False)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for move in moves[:15]:  # Limit branching factor
+            new_board = apply_move(board, move, player)
+            eval_score = minimax(new_board, depth - 1, alpha, beta, True)
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def evaluate_board(board: np.ndarray) -> float:
+    """Evaluate board position from player 1's perspective."""
+    my_mobility = len(get_legal_moves(board, 1))
+    opp_mobility = len(get_legal_moves(board, 2))
+    
+    # Terminal states
+    if my_mobility == 0:
+        return -10000
+    if opp_mobility == 0:
+        return 10000
+    
+    # Territory control using flood fill
+    my_territory = sum(flood_fill_territory(board, pos) for pos in zip(*np.where(board == 1)))
+    opp_territory = sum(flood_fill_territory(board, pos) for pos in zip(*np.where(board == 2)))
+    
+    score = 0
+    score += 50 * (my_mobility - opp_mobility)
+    score += 10 * (my_territory - opp_territory)
+    
+    return score
+
+def flood_fill_territory(board: np.ndarray, start: Tuple[int, int]) -> int:
+    """Count squares reachable from a position."""
+    visited = set()
+    stack = [start]
+    count = 0
+    
+    while stack and count < 100:  # Limit for performance
+        pos = stack.pop()
+        if pos in visited:
+            continue
+        
+        r, c = pos
+        if not (0 <= r < 6 and 0 <= c < 6):
+            continue
+        if board[r, c] not in [0, board[start]]:
+            continue
+        
+        visited.add(pos)
+        count += 1
+        
+        for dr, dc in [(0,1), (1,0), (0,-1), (-1,0), (1,1), (1,-1), (-1,1), (-1,-1)]:
+            stack.append((r + dr, c + dc))
+    
+    return count
+
+def quick_move_eval(board: np.ndarray, move: Tuple) -> float:
+    """Quick heuristic for move ordering."""
+    from_pos, to_pos, arrow_pos = move
+    score = 0
+    
+    # Prefer central positions
+    center = 2.5
+    to_r, to_c = to_pos
+    centrality = -(abs(to_r - center) + abs(to_c - center))
+    score += centrality
+    
+    return score
+
+def get_legal_moves(board: np.ndarray, player: int) -> List[Tuple]:
+    """Generate all legal moves for a player."""
+    amazons = list(zip(*np.where(board == player)))
+    moves = []
+    
+    for amazon in amazons:
+        reachable = get_reachable_squares(board, amazon)
+        for to_pos in reachable:
+            temp_board = board.copy()
+            temp_board[amazon] = 0
+            temp_board[to_pos] = player
+            
+            arrow_targets = get_reachable_squares(temp_board, to_pos)
+            for arrow_pos in arrow_targets:
+                moves.append((amazon, to_pos, arrow_pos))
+    
+    return moves
+
+def get_reachable_squares(board: np.ndarray, pos: Tuple[int, int]) -> List[Tuple[int, int]]:
+    """Get all squares reachable from a position (queen-like movement)."""
+    reachable = []
+    r, c = pos
+    
+    directions = [(0, 1), (1, 0), (0, -1), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1)]
+    
+    for dr, dc in directions:
+        for dist in range(1, 6):
+            nr, nc = r + dr * dist, c + dc * dist
+            if not (0 <= nr < 6 and 0 <= nc < 6):
+                break
+            if board[nr, nc] != 0:
+                break
+            reachable.append((nr, nc))
+    
+    return reachable
+
+def apply_move(board: np.ndarray, move: Tuple, player: int) -> np.ndarray:
+    """Apply a move and return new board."""
+    new_board = board.copy()
+    from_pos, to_pos, arrow_pos = move
+    
+    new_board[from_pos] = 0
+    new_board[to_pos] = player
+    new_board[arrow_pos] = -1
+    
+    return new_board
+
+def format_move(move: Tuple) -> str:
+    """Format move as required string."""
+    from_pos, to_pos, arrow_pos = move
+    return f"{from_pos[0]},{from_pos[1]}:{to_pos[0]},{to_pos[1]}:{arrow_pos[0]},{arrow_pos[1]}"

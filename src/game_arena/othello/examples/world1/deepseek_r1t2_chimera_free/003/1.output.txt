@@ -1,0 +1,82 @@
+
+
+The strategy for this policy combines positional evaluation and game phase awareness:
+1. **Positional Weights**: Prefer corners and edges, avoiding dangerous squares adjacent to corners using a weighted matrix.
+2. **Flip Count Adjustment**: In early game, limit flips to avoid exposing moves; in mid/late game, maximize flips.
+3. **Game Phases**: Adjust strategy based on disc count (early <20, mid 20-50, late >50).
+
+<code>
+import numpy as np
+
+# Direction vectors for 8 possible move directions
+DIRS = [(-1, -1), (-1, 0), (-1, 1),
+         (0, -1),          (0, 1),
+         (1, -1),  (1, 0),  (1, 1)]
+
+# Positional weight matrix
+WEIGHTS = [
+    [120, -20, 20,  5,  5, 20, -20, 120],
+    [-20, -40, -5, -5, -5, -5, -40, -20],
+    [ 20,  -5, 15,  3,  3, 15,  -5,  20],
+    [  5,  -5,  3,  3,  3,  3,  -5,   5],
+    [  5,  -5,  3,  3,  3,  3,  -5,   5],
+    [ 20,  -5, 15,  3,  3, 15,  -5,  20],
+    [-20, -40, -5, -5, -5, -5, -40, -20],
+    [120, -20, 20,  5,  5, 20, -20, 120]
+]
+
+def get_legal_moves(you, opponent):
+    """Returns list of (row, col, total_flips) for valid moves"""
+    moves = []
+    for r in range(8):
+        for c in range(8):
+            if you[r][c] == 0 and opponent[r][c] == 0:
+                total_flips = 0
+                legal = False
+                for dr, dc in DIRS:
+                    nr, nc = r + dr, c + dc
+                    flips = 0
+                    # Traverse opponent discs
+                    while 0 <= nr < 8 and 0 <= nc < 8 and opponent[nr][nc]:
+                        flips += 1
+                        nr += dr
+                        nc += dc
+                    # Validate bracketed by player disc
+                    if 0 <= nr < 8 and 0 <= nc < 8 and you[nr][nc] and flips > 0:
+                        total_flips += flips
+                        legal = True
+                if legal:
+                    moves.append((r, c, total_flips))
+    return moves
+
+def policy(you, opponent):
+    # Generate legal moves
+    moves = get_legal_moves(you, opponent)
+    if not moves:
+        return "pass"
+    
+    # Determine game phase
+    total_discs = np.sum(you) + np.sum(opponent)
+    if total_discs < 20:     # Early game
+        flip_weight = 0.5
+    elif total_discs < 50:   # Mid game
+        flip_weight = 1.0
+    else:                    # Late game
+        flip_weight = 2.0
+    
+    # Evaluate moves
+    best_score = -float('inf')
+    best_move = moves[0][:2]  # Default to first move
+    
+    for r, c, flips in moves:
+        score = WEIGHTS[r][c] + flips * flip_weight
+        # Prefer same score moves closer to top-left (faster than random choice)
+        if score > best_score or (score == best_score and (r, c) < best_move):
+            best_score = score
+            best_move = (r, c)
+    
+    # Convert to algebraic notation
+    col_char = chr(ord('a') + best_move[1])
+    row_num = best_move[0] + 1
+    return f"{col_char}{row_num}"
+</code>

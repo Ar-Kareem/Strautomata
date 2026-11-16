@@ -1,0 +1,237 @@
+Strategy:
+- First check for immediate winning moves and play one if available.
+- Then block any immediate opponent wins.
+- Use a depth-limited minimax with alpha-beta pruning to search for best moves (default depth 5, adaptive if few moves).
+- Heuristic evaluation scores 4-cell windows across the board, giving strong weight to immediate threats (3-in-a-row with an open cell) and preference to center columns.
+- Moves are ordered by heuristic to improve pruning speed.
+- Always returns a legal non-full column.
+
+<code>
+import math
+import time
+from copy import deepcopy
+
+ROWS = 6
+COLUMNS = 7
+PLAYER = 1      # current player id in the given board
+OPPONENT = -1
+INF = 10**9
+
+def policy(board: list[list[int]]) -> int:
+    """
+    Choose a column (0-6) to drop a disc for the current player (1).
+    """
+    start_time = time.time()
+    # Quick helpers
+    def valid_moves(bd):
+        return [c for c in range(COLUMNS) if bd[0][c] == 0]
+
+    def get_next_row(bd, col):
+        for r in range(ROWS-1, -1, -1):
+            if bd[r][col] == 0:
+                return r
+        return None
+
+    def make_move(bd, col, piece):
+        r = get_next_row(bd, col)
+        if r is None:
+            return None
+        new_bd = [row[:] for row in bd]
+        new_bd[r][col] = piece
+        return new_bd
+
+    def winning_move(bd, piece):
+        # Horizontal
+        for r in range(ROWS):
+            for c in range(COLUMNS-3):
+                if all(bd[r][c+i] == piece for i in range(4)):
+                    return True
+        # Vertical
+        for c in range(COLUMNS):
+            for r in range(ROWS-3):
+                if all(bd[r+i][c] == piece for i in range(4)):
+                    return True
+        # Positive diagonal
+        for r in range(ROWS-3):
+            for c in range(COLUMNS-3):
+                if all(bd[r+i][c+i] == piece for i in range(4)):
+                    return True
+        # Negative diagonal
+        for r in range(3, ROWS):
+            for c in range(COLUMNS-3):
+                if all(bd[r-i][c+i] == piece for i in range(4)):
+                    return True
+        return False
+
+    def is_terminal(bd):
+        return winning_move(bd, PLAYER) or winning_move(bd, OPPONENT) or len(valid_moves(bd)) == 0
+
+    def score_window(window, piece):
+        score = 0
+        opp_piece = OPPONENT if piece == PLAYER else PLAYER
+        cnt_piece = window.count(piece)
+        cnt_opp = window.count(opp_piece)
+        cnt_empty = window.count(0)
+        # Prioritize winning / blocking
+        if cnt_piece == 4:
+            score += 100000
+        elif cnt_piece == 3 and cnt_empty == 1:
+            score += 100
+        elif cnt_piece == 2 and cnt_empty == 2:
+            score += 10
+
+        if cnt_opp == 3 and cnt_empty == 1:
+            score -= 900  # urgent to block
+        elif cnt_opp == 2 and cnt_empty == 2:
+            score -= 20
+        return score
+
+    def evaluate_board(bd):
+        score = 0
+        # Center column preference
+        center_col = [bd[r][COLUMNS//2] for r in range(ROWS)]
+        score += center_col.count(PLAYER) * 6
+        score -= center_col.count(OPPONENT) * 6
+
+        # Horizontal windows
+        for r in range(ROWS):
+            for c in range(COLUMNS-3):
+                window = [bd[r][c+i] for i in range(4)]
+                score += score_window(window, PLAYER)
+        # Vertical
+        for c in range(COLUMNS):
+            for r in range(ROWS-3):
+                window = [bd[r+i][c] for i in range(4)]
+                score += score_window(window, PLAYER)
+        # Positive diagonal
+        for r in range(ROWS-3):
+            for c in range(COLUMNS-3):
+                window = [bd[r+i][c+i] for i in range(4)]
+                score += score_window(window, PLAYER)
+        # Negative diagonal
+        for r in range(3, ROWS):
+            for c in range(COLUMNS-3):
+                window = [bd[r-i][c+i] for i in range(4)]
+                score += score_window(window, PLAYER)
+        return score
+
+    # Immediate win
+    moves = valid_moves(board)
+    if not moves:
+        return 0  # all full, fallback
+
+    for col in moves:
+        nb = make_move(board, col, PLAYER)
+        if nb is not None and winning_move(nb, PLAYER):
+            return col
+
+    # Immediate block
+    for col in moves:
+        nb = make_move(board, col, OPPONENT)
+        if nb is not None and winning_move(nb, OPPONENT):
+            return col
+
+    # Minimax with alpha-beta pruning
+    # Adaptive depth: if many moves, keep depth smaller to be safe within time
+    max_moves = len(moves)
+    if max_moves >= 6:
+        MAX_DEPTH = 5
+    elif max_moves >= 4:
+        MAX_DEPTH = 6
+    else:
+        MAX_DEPTH = 7
+
+    # Bound the depth further to keep it fast
+    MAX_DEPTH = min(MAX_DEPTH, 7)
+
+    TIME_LIMIT = 0.95  # seconds
+
+    def order_moves(bd, possible_moves, piece):
+        scored = []
+        for col in possible_moves:
+            nb = make_move(bd, col, piece)
+            sc = evaluate_board(nb) if nb is not None else -INF
+            # prefer center
+            sc += -abs(col - COLUMNS//2)
+            scored.append((sc, col))
+        scored.sort(reverse=True)
+        return [c for _, c in scored]
+
+    def alphabeta(bd, depth, alpha, beta, maximizing_player):
+        # time check
+        if time.time() - start_time > TIME_LIMIT:
+            # return heuristic quickly
+            return evaluate_board(bd), None
+
+        valid_cols = valid_moves(bd)
+        terminal = is_terminal(bd)
+        if depth == 0 or terminal:
+            if terminal:
+                if winning_move(bd, PLAYER):
+                    return INF, None
+                elif winning_move(bd, OPPONENT):
+                    return -INF, None
+                else:
+                    return 0, None
+            else:
+                return evaluate_board(bd), None
+
+        if maximizing_player:
+            value = -INF
+            best_col = valid_cols[0]
+            ordered = order_moves(bd, valid_cols, PLAYER)
+            for col in ordered:
+                nb = make_move(bd, col, PLAYER)
+                if nb is None:
+                    continue
+                new_score, _ = alphabeta(nb, depth-1, alpha, beta, False)
+                if new_score > value:
+                    value = new_score
+                    best_col = col
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break
+            return value, best_col
+        else:
+            value = INF
+            best_col = valid_cols[0]
+            ordered = order_moves(bd, valid_cols, OPPONENT)
+            for col in ordered:
+                nb = make_move(bd, col, OPPONENT)
+                if nb is None:
+                    continue
+                new_score, _ = alphabeta(nb, depth-1, alpha, beta, True)
+                if new_score < value:
+                    value = new_score
+                    best_col = col
+                beta = min(beta, value)
+                if alpha >= beta:
+                    break
+            return value, best_col
+
+    # If near end or not much time, reduce depth
+    try_depth = MAX_DEPTH
+    best_move = moves[0]
+    best_score = -INF
+
+    # Iterative deepening within time limit
+    for depth in range(1, try_depth+1):
+        if time.time() - start_time > TIME_LIMIT:
+            break
+        score, col = alphabeta(board, depth, -INF, INF, True)
+        if col is not None:
+            best_move = col
+            best_score = score
+        # If found a forced win, stop
+        if abs(score) >= INF:
+            break
+
+    # final safety: if chosen column is full (shouldn't happen), pick first valid
+    if board[0][best_move] != 0:
+        valid = valid_moves(board)
+        if valid:
+            return valid[0]
+        else:
+            return 0
+    return best_move
+</code>

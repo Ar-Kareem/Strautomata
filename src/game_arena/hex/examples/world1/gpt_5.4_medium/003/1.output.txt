@@ -1,0 +1,356 @@
+The strategy for this policy is:
+
+1. Represent Hex as a connection race.
+   - For either player, compute the minimum number of empty cells still needed to complete a connection between that player’s two sides.
+   - This is done with a fast 0-1 BFS:
+     - own stones cost 0
+     - empty cells cost 1
+     - opponent stones are blocked
+
+2. Tactics first.
+   - If there is a move that wins immediately, play it.
+   - Otherwise, if the opponent has any immediate winning move next turn, restrict to blocking those moves.
+
+3. Evaluate candidate moves by simulation.
+   - For each candidate move, simulate placing it and score:
+     - how much it improves my connection cost
+     - how much it worsens the opponent’s connection cost
+
+4. Add Hex-specific positional heuristics.
+   - Prefer cells that lie on strong current connection routes.
+   - Prefer moves that join multiple friendly components.
+   - Reward bridge-like structures and connector cells.
+   - Prefer central, axis-relevant moves as a mild tie-breaker.
+
+5. Always return a legal move.
+   - If anything unexpected happens, fall back to the first empty cell.
+
+<code>
+from collections import deque
+from typing import List, Tuple, Dict
+
+N = 11
+INF = 10**9
+ALL_CELLS = [(r, c) for r in range(N) for c in range(N)]
+
+# Hex neighbors in the coordinate system described by the prompt.
+NEIGHBORS: Dict[Tuple[int, int], List[Tuple[int, int]]] = {}
+for r in range(N):
+    for c in range(N):
+        nbrs = []
+        for nr, nc in (
+            (r, c - 1),
+            (r, c + 1),
+            (r - 1, c),
+            (r - 1, c + 1),
+            (r + 1, c),
+            (r + 1, c - 1),
+        ):
+            if 0 <= nr < N and 0 <= nc < N:
+                nbrs.append((nr, nc))
+        NEIGHBORS[(r, c)] = nbrs
+
+# Side cells
+BLACK_START = [(0, c) for c in range(N)]      # top
+BLACK_GOAL = [(N - 1, c) for c in range(N)]   # bottom
+WHITE_START = [(r, 0) for r in range(N)]      # left
+WHITE_GOAL = [(r, N - 1) for r in range(N)]   # right
+
+# Bridge / connector patterns precomputed from common neighbors.
+BRIDGES: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], Tuple[Tuple[int, int], Tuple[int, int]]]]] = {
+    cell: [] for cell in ALL_CELLS
+}
+CONNECTOR_PATTERNS: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]]]] = {
+    cell: [] for cell in ALL_CELLS
+}
+
+_neighbor_sets = {cell: set(NEIGHBORS[cell]) for cell in ALL_CELLS}
+for i in range(len(ALL_CELLS)):
+    a = ALL_CELLS[i]
+    na = _neighbor_sets[a]
+    for j in range(i + 1, len(ALL_CELLS)):
+        b = ALL_CELLS[j]
+        if b in na:
+            continue
+        common = tuple(sorted(na.intersection(_neighbor_sets[b])))
+        if len(common) == 2:
+            BRIDGES[a].append((b, common))
+            BRIDGES[b].append((a, common))
+            x, y = common
+            CONNECTOR_PATTERNS[x].append((a, b, y))
+            CONNECTOR_PATTERNS[y].append((a, b, x))
+
+
+def _side_cells(color: str, start: bool) -> List[Tuple[int, int]]:
+    if color == 'b':
+        return BLACK_START if start else BLACK_GOAL
+    return WHITE_START if start else WHITE_GOAL
+
+
+def _hex_dist(a: Tuple[int, int], b: Tuple[int, int]) -> int:
+    dr = a[0] - b[0]
+    dc = a[1] - b[1]
+    return (abs(dr) + abs(dc) + abs(dr + dc)) // 2
+
+
+def _state(
+    pos: Tuple[int, int],
+    player: set,
+    opponent: set,
+    extra_player: Tuple[int, int] | None,
+    extra_block: Tuple[int, int] | None,
+) -> int:
+    # 1 = player stone, 2 = opponent stone/block, 0 = empty
+    if extra_player is not None and pos == extra_player:
+        return 1
+    if extra_block is not None and pos == extra_block:
+        return 2
+    if pos in player:
+        return 1
+    if pos in opponent:
+        return 2
+    return 0
+
+
+def _side_distance(
+    player: set,
+    opponent: set,
+    color: str,
+    start: bool,
+    extra_player: Tuple[int, int] | None = None,
+    extra_block: Tuple[int, int] | None = None,
+) -> List[List[int]]:
+    dist = [[INF] * N for _ in range(N)]
+    dq = deque()
+
+    for cell in _side_cells(color, start):
+        r, c = cell
+        st = _state(cell, player, opponent, extra_player, extra_block)
+        if st == 2:
+            continue
+        w = 0 if st == 1 else 1
+        if w < dist[r][c]:
+            dist[r][c] = w
+            if w == 0:
+                dq.appendleft(cell)
+            else:
+                dq.append(cell)
+
+    while dq:
+        u = dq.popleft()
+        ur, uc = u
+        du = dist[ur][uc]
+        for v in NEIGHBORS[u]:
+            vr, vc = v
+            st = _state(v, player, opponent, extra_player, extra_block)
+            if st == 2:
+                continue
+            w = 0 if st == 1 else 1
+            nd = du + w
+            if nd < dist[vr][vc]:
+                dist[vr][vc] = nd
+                if w == 0:
+                    dq.appendleft(v)
+                else:
+                    dq.append(v)
+    return dist
+
+
+def _shortest_cost(
+    player: set,
+    opponent: set,
+    color: str,
+    extra_player: Tuple[int, int] | None = None,
+    extra_block: Tuple[int, int] | None = None,
+) -> int:
+    dist = _side_distance(player, opponent, color, True, extra_player, extra_block)
+    best = INF
+    for r, c in _side_cells(color, False):
+        if dist[r][c] < best:
+            best = dist[r][c]
+    return best
+
+
+def _through_value(ds: List[List[int]], dg: List[List[int]], pos: Tuple[int, int]) -> int:
+    r, c = pos
+    a = ds[r][c]
+    b = dg[r][c]
+    if a >= INF or b >= INF:
+        return INF
+    # Empty cell is counted in both distances, subtract once.
+    return a + b - 1
+
+
+def _component_ids(stones: set) -> Dict[Tuple[int, int], int]:
+    comp: Dict[Tuple[int, int], int] = {}
+    cid = 0
+    for s in stones:
+        if s in comp:
+            continue
+        cid += 1
+        stack = [s]
+        comp[s] = cid
+        while stack:
+            u = stack.pop()
+            for v in NEIGHBORS[u]:
+                if v in stones and v not in comp:
+                    comp[v] = cid
+                    stack.append(v)
+    return comp
+
+
+def _rough_sort_key(
+    move: Tuple[int, int],
+    color: str,
+    own_ds: List[List[int]],
+    own_dg: List[List[int]],
+    opp_ds: List[List[int]],
+    opp_dg: List[List[int]],
+):
+    own_through = _through_value(own_ds, own_dg, move)
+    opp_through = _through_value(opp_ds, opp_dg, move)
+    center_d = _hex_dist(move, (5, 5))
+    axis = abs(move[1] - 5) if color == 'b' else abs(move[0] - 5)
+    return (own_through, opp_through, center_d, axis, move[0], move[1])
+
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[int, int]:
+    me_set = set(map(tuple, me))
+    opp_set = set(map(tuple, opp))
+    occupied = me_set | opp_set
+    empties = [cell for cell in ALL_CELLS if cell not in occupied]
+
+    if not empties:
+        return (0, 0)
+
+    # Strong opening default.
+    if len(occupied) == 0 and (5, 5) in empties:
+        return (5, 5)
+
+    opp_color = 'w' if color == 'b' else 'b'
+
+    # Current path maps for ordering/evaluation.
+    own_ds = _side_distance(me_set, opp_set, color, True)
+    own_dg = _side_distance(me_set, opp_set, color, False)
+    opp_ds = _side_distance(opp_set, me_set, opp_color, True)
+    opp_dg = _side_distance(opp_set, me_set, opp_color, False)
+
+    empties.sort(key=lambda mv: _rough_sort_key(mv, color, own_ds, own_dg, opp_ds, opp_dg))
+
+    # 1) Immediate win
+    for mv in empties:
+        if _shortest_cost(me_set, opp_set, color, extra_player=mv) == 0:
+            return mv
+
+    # 2) Immediate block
+    threats = []
+    for mv in empties:
+        if _shortest_cost(opp_set, me_set, opp_color, extra_player=mv) == 0:
+            threats.append(mv)
+
+    candidates = threats if threats else empties
+
+    me_comp = _component_ids(me_set)
+    opp_comp = _component_ids(opp_set)
+
+    best_move = candidates[0]
+    best_score = -10**18
+
+    for mv in candidates:
+        r, c = mv
+
+        my_cost = _shortest_cost(me_set, opp_set, color, extra_player=mv)
+        their_cost = _shortest_cost(opp_set, me_set, opp_color, extra_block=mv)
+
+        # Main race evaluation: lower my cost, higher their cost.
+        score = 8.0 * min(their_cost, 50) - 9.0 * min(my_cost, 50)
+
+        # Criticality on current best routes.
+        own_through = _through_value(own_ds, own_dg, mv)
+        if own_through < INF:
+            score += 0.25 * (22 - own_through)
+
+        opp_through = _through_value(opp_ds, opp_dg, mv)
+        if opp_through < INF:
+            score += 0.22 * (22 - opp_through)
+
+        # Local adjacency / component joining.
+        friendly_adj = 0
+        enemy_adj = 0
+        my_touch = set()
+        opp_touch = set()
+
+        for nb in NEIGHBORS[mv]:
+            if nb in me_set:
+                friendly_adj += 1
+                my_touch.add(me_comp[nb])
+            elif nb in opp_set:
+                enemy_adj += 1
+                opp_touch.add(opp_comp[nb])
+
+        if my_touch:
+            score += 0.35 * len(my_touch)
+            if len(my_touch) > 1:
+                score += 0.85 * (len(my_touch) - 1)
+
+        if opp_touch:
+            score += 0.10 * len(opp_touch)
+            if len(opp_touch) > 1:
+                score += 0.30 * (len(opp_touch) - 1)
+
+        score += 0.12 * friendly_adj
+        score += 0.04 * enemy_adj
+
+        # Bridge endpoint patterns.
+        bridge_bonus = 0.0
+        for partner, conns in BRIDGES[mv]:
+            if partner in me_set:
+                blocked = sum(1 for x in conns if x in opp_set)
+                mine = sum(1 for x in conns if x in me_set)
+                empt = 2 - blocked - mine
+                if blocked < 2:
+                    bridge_bonus += 0.55
+                    bridge_bonus += 0.12 * mine + 0.08 * empt
+
+        # Bridge connector patterns.
+        for a, b, other in CONNECTOR_PATTERNS[mv]:
+            if a in me_set and b in me_set:
+                bridge_bonus += 0.75
+                if other in opp_set:
+                    bridge_bonus += 0.25
+            if a in opp_set and b in opp_set:
+                bridge_bonus += 0.65
+                if other in me_set:
+                    bridge_bonus += 0.20
+
+        score += bridge_bonus
+
+        # Mild positional bias: center and axis relevance.
+        center_norm = (10 - _hex_dist(mv, (5, 5))) / 10.0
+        score += 0.60 * center_norm
+
+        if color == 'b':
+            axis_norm = max(0.0, 1.0 - abs(c - 5) / 5.0)
+            edge_norm = 1.0 if r in (0, 10) else 0.0
+        else:
+            axis_norm = max(0.0, 1.0 - abs(r - 5) / 5.0)
+            edge_norm = 1.0 if c in (0, 10) else 0.0
+
+        score += 0.25 * axis_norm
+        score += 0.05 * edge_norm
+
+        # If we are in forced defense, prefer blocks that also help us.
+        if threats:
+            score += 0.50 * (22 - own_through) if own_through < INF else 0.0
+
+        # Deterministic tie-break.
+        if score > best_score or (score == best_score and mv < best_move):
+            best_score = score
+            best_move = mv
+
+    if best_move in occupied:
+        for mv in empties:
+            if mv not in occupied:
+                return mv
+    return best_move
+</code>

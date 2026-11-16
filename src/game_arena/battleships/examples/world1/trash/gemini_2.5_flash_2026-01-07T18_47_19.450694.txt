@@ -1,0 +1,493 @@
+<thinking>
+The user wants a Python function `policy(board)` that, given a 10x10 Battleship board representing my knowledge of the opponent's grid, returns the coordinates `(row, col)` of the next shot.
+
+The board states are:
+- `0`: Unknown
+- `-1`: Miss
+- `1`: Hit
+
+The goal is to sink all ships efficiently.
+
+Here's a breakdown of a strategy:
+
+1.  **Initial Strategy (Hunting Phase):**
+    *   When no ships are hit, or no active ship to pursue, we are in a "hunting" phase.
+    *   A common strategy for hunting is "checkerboard" or "stride" pattern. This ensures we don't shoot adjacent to a missed spot unnecessarily. For a 10x10 board and knowing ships are at least 2 cells long, a stride of 2 (shooting every other cell) is efficient. This ensures we'll hit any ship eventually. A slight improvement could be a stride of 3 or 4, as ships are 2, 3, 3, 4, 5. A stride of 4 guarantees hitting a ship of length 4 or 5. A stride of 3 guarantees hitting a ship of length 3, 4, or 5. Let's start with a stride of 2, as it's simple and effective.
+    *   To be more precise, let's shoot at (row, col) where `(row + col) % 2 == 0`. This is a classic checkerboard pattern.
+
+2.  **Sinking Strategy (Targeting Phase):**
+    *   If we hit a ship (`board[r][c] == 1`), we enter a "sinking" phase.
+    *   The goal now is to determine the ship's orientation (horizontal or vertical) and sink it completely.
+    *   **Finding adjacent hits:** Look for other hits adjacent to the current hit.
+        *   If we find two hits in a row (e.g., `(r, c)` and `(r, c+1) == 1`), we know the ship is horizontal. Our next shots should be at `(r, c-1)` (if valid and unknown) and `(r, c+2)` (if valid and unknown).
+        *   If we find two hits in a column (e.g., `(r, c)` and `(r+1, c) == 1`), we know the ship is vertical. Our next shots should be at `(r-1, c)` (if valid and unknown) and `(r+2, c)` (if valid and unknown).
+    *   **If only one hit:** If we have only one hit, we need to check all four adjacent directions (`(r-1, c)`, `(r+1, c)`, `(r, c-1)`, `(r, c+1)`) in some order.
+        *   Prioritize unknown cells (`0`).
+        *   Once we hit an adjacent cell, we can transition to the "two hits in a row/column" logic above.
+
+3.  **Prioritization and State Management:**
+    *   The `policy` function is called repeatedly. It needs to "remember" its state. Since the `board` itself contains all the state we need (hits, misses, unknowns), we just need to infer the current phase from the board.
+    *   A list of "active hits" or "potential ship segments" could be useful.
+
+Let's refine the "Sinking Strategy":
+
+*   **Step 1: Identify all current hits.** Iterate through the board and collect all `(r, c)` where `board[r][c] == 1`.
+*   **Step 2: Prioritize hits that are part of an un-sunk ship.**
+    *   A "sunk" ship would mean a contiguous segment of `1`s, completely surrounded by `-1`s or board boundaries, and its length matches one of the ship lengths. This is complicated to detect reliably without knowing original ship positions. A simpler approach is to focus on *any* `1` that has an adjacent `0`.
+*   **Step 3: Target based on hits:**
+    *   Iterate through each hit `(r, c)`.
+    *   Check its neighbors: `(r-1, c)`, `(r+1, c)`, `(r, c-1)`, `(r, c+1)`.
+    *   If any neighbor `(nr, nc)` is `1` (another hit), this indicates a potential ship segment.
+        *   Derive the probable orientation.
+        *   Try to extend along that orientation. For example, if `(r,c)` and `(r, c+1)` are `1`, try `(r, c-1)` then `(r, c+2)`.
+    *   If no neighbors are `1` (isolated hit), try each adjacent `0` cell in order (e.g., up, down, left, right).
+
+**Data Structures for Sinking:**
+
+We can use a queue or stack of "targets" (coordinates to shoot at next for sinking a ship).
+
+Let's simplify.
+The `policy` function only returns *one* shot.
+1.  **Search for an active ship:**
+    *   Iterate through the board to find any `1` (hit).
+    *   If a `1` is found, check its unknown neighbors `0`. If there are any, pick one of them. This is the simplest "sink" logic.
+    *   If a `1` has no unknown neighbors, it means all its neighbors are either `-1` (miss) or `1` (part of the ship already). If it's part of a fully hit ship, all its neighbors in the ship's direction should be `1`s, and perpendicular neighbors should be `-1`s.
+    *   To be smart about orientation:
+        *   If `(r, c)` is a hit:
+        *   Check `(r, c+1)`. If it's `1`, the ship is horizontal. Then try `(r, c-1)` (if `0`) then `(r, c+2)` (if `0`).
+        *   Check `(r, c-1)`. If it's `1`, the ship is horizontal. Then try `(r, c+1)` (if `0`) then `(r, c-2)` (if `0`).
+        *   Same for vertical.
+        *   If no, then just try any `0` adjacent.
+
+Let's refine the "Active Ship Hunting":
+
+To avoid redundant checks or re-hitting sunk ships:
+We need to know what constitutes a "sunk" ship. Without knowing the actual ship configuration and which `1`s belong to which ship, it's hard to definitively say a ship is sunk.
+However, we can infer. If we have a contiguous hit segment of a certain length (2, 3, 4, or 5) and all cells around it (including its ends) are either `-1` or boundaries, we can assume it's sunk. This is too complex for a single function call without persistent state.
+
+A simpler approach for "sinking":
+1.  **Scan for existing hits (`1`):**
+    *   Find the first `1` on the board. Let's call it `(r_hit, c_hit)`.
+    *   **Check for orientation:**
+        *   If `(r_hit, c_hit + 1)` is `1`: It's horizontal.
+            *   Expand right: Find the rightmost `1` in this segment. Try `(r_hit, c_right + 1)`.
+            *   Expand left: Find the leftmost `1`. Try `(r_hit, c_left - 1)`.
+            *   Pick the first valid `0` from these two.
+        *   If `(r_hit + 1, c_hit)` is `1`: It's vertical.
+            *   Expand down: Find the bottommost `1`. Try `(r_bottom + 1, c_hit)`.
+            *   Expand up: Find the topmost `1`. Try `(r_top - 1, c_hit)`.
+            *   Pick the first valid `0` from these two.
+        *   **If an isolated hit (no adjacent `1`s immediately found):** Try adjacent `0`s (up, down, left, right in that order).
+
+2.  **Hunting (if no active hits are being pursued):**
+    *   Use a checkerboard pattern. Iterate through `(r, c)` where `(r + c) % 2 == 0`.
+    *   Pick the first `0` encountered.
+
+**Edge Cases & Constraints:**
+*   Coordinates must be `0-9`.
+*   Can't shoot where we've already shot (`-1` or `1`).
+
+Let's formalize the logic:
+
+```python
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    rows, cols = 10, 10
+
+    # Phase 1: Sinking an existing ship
+    # Look for any hit (1) that hasn't been fully explored.
+    # A simple indicator is a '1' adjacent to a '0'.
+    
+    # Store potential next shots based on hits
+    potential_shots = []
+
+    for r in range(rows):
+        for c in range(cols):
+            if board[r][c] == 1:
+                # Check for horizontal segments
+                if c + 1 < cols and board[r][c+1] == 1: # Found a horizontal segment
+                    # Expand right
+                    curr_c = c + 1
+                    while curr_c < cols and board[r][curr_c] == 1:
+                        curr_c += 1
+                    if curr_c < cols and board[r][curr_c] == 0:
+                        potential_shots.append((r, curr_c))
+                    # Expand left
+                    curr_c = c - 1
+                    while curr_c >= 0 and board[r][curr_c] == 1: # This loop condition is wrong, it should be part of the segment definition
+                        curr_c -= 1
+                    if curr_c >= 0 and board[r][curr_c] == 0:
+                        potential_shots.append((r, curr_c))
+                
+                # Check for vertical segments
+                if r + 1 < rows and board[r+1][c] == 1: # Found a vertical segment
+                    # Expand down
+                    curr_r = r + 1
+                    while curr_r < rows and board[curr_r][c] == 1:
+                        curr_r += 1
+                    if curr_r < rows and board[curr_r][c] == 0:
+                        potential_shots.append((curr_r, c))
+                    # Expand up
+                    curr_r = r - 1
+                    while curr_r >= 0 and board[curr_r][c] == 1:
+                        curr_r -= 1
+                    if curr_r >= 0 and board[curr_r][c] == 0:
+                        potential_shots.append((curr_r, c))
+
+    # Remove duplicates and prioritize unique valid shots
+    potential_shots = list(set(potential_shots))
+    
+    # If we have oriented shots, pick one
+    if potential_shots:
+        # A simple strategy is to take the first valid one
+        # Or, we could prioritize based on proximity to other hits, etc.
+        # For now, just take the first one encountered:
+        for r, c in potential_shots:
+            if board[r][c] == 0:
+                return r, c
+            
+    # Handle isolated hits (no adjacent 1s yet, or all oriented shots taken/missed)
+    # This logic was slightly flawed above. Let's refine for *any* hit.
+    for r in range(rows):
+        for c in range(cols):
+            if board[r][c] == 1:
+                # Check adjacent cells
+                for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < rows and 0 <= nc < cols and board[nr][nc] == 0:
+                        return nr, nc
+
+    # Phase 2: Hunting (no active hits found or pursued)
+    # Use a checkerboard pattern.
+    # Prioritize cells based on a pattern for efficient searching.
+    # (r + c) % 2 == 0 is one such pattern.
+    for r in range(rows):
+        for c in range(cols):
+            if board[r][c] == 0 and (r + c) % 2 == 0:
+                return r, c
+
+    # Fallback: Should not happen if there are still unknown cells.
+    # If checkerboard is exhausted (all have been hit or missed),
+    # shoot at any remaining unknown cell. This covers ships missed by
+    # checkerboard (if they start on an odd (r+c)%2 cell).
+    for r in range(rows):
+        for c in range(cols):
+            if board[r][c] == 0:
+                return r, c
+
+    # If all cells are hit or missed, something is wrong or game over.
+    return 0, 0 # Should not be reached in a normal game before outcome.
+```
+
+Let's refine the "sinking" logic. The primary issue with the above is that it tries to infer orientation based on a *single* `(r,c)` pair, making it somewhat redundant or inefficient.
+
+A better way to handle sinking:
+When a `1` is hit initially:
+1.  Try to shoot directly up, down, left, right from that `1`.
+2.  If any of those becomes a `1`, then we know the orientation.
+3.  Once orientation is known, *then* we extend along that axis until we hit water or a ship's end.
+
+We need a way to keep track of "active" ship segments. This suggests maintaining some state. Since the `policy` function itself cannot maintain state between calls without a global variable (which is generally discouraged and might not be allowed in the arena setup) or a class, the `board` itself must be the state.
+
+Let's try a different approach based purely on the board state at the current call:
+
+1.  **Scan for "active" hit cells:** A cell `(r, c)` is "active" if it's `1` and has at least one adjacent `0`.
+2.  **Prioritize firing at oriented segments:**
+    *   Iterate through all `(r, c)` that are `1`.
+    *   If `(r, c)` and `(r, c + 1)` are both `1` (horizontal segment):
+        *   Try to shoot at `(r, c - 1)` (left end) if `0`.
+        *   Try to shoot at `(r, c + 2)` (right end) if `0`.
+    *   If `(r, c)` and `(r + 1, c)` are both `1` (vertical segment):
+        *   Try to shoot at `(r - 1, c)` (top end) if `0`.
+        *   Try to shoot at `(r + 2, c)` (bottom end) if `0`.
+    *   Collect all such valid `0` targets.
+    *   If multiple potential shots, pick one (e.g., the first one found). This is our *sinking* shot.
+
+3.  **If no oriented segments are found (or all their ends are already hit/missed):**
+    *   Look for any *isolated* `1` (a hit with no adjacent `1`s). For these, shoot at any adjacent `0`. Iterate in a preferred order (e.g., up, down, left, right).
+
+4.  **If no active hits at all:**
+    *   Proceed to hunting phase: checkerboard pattern `(r + c) % 2 == 0`.
+    *   If that's exhausted, shoot at any remaining `0`.
+
+This approach ensures that we try to sink ships efficiently first.
+
+Let's implement this refined logic.
+
+```python
+import random
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    rows, cols = 10, 10
+    
+    # Priority 1: Continue sinking an identified ship (oriented segment)
+    # Search for two consecutive hits to infer orientation
+    
+    # Store candidate shots from identified segments
+    segment_targets = []
+
+    for r in range(rows):
+        for c in range(cols):
+            if board[r][c] == 1:
+                # Check for horizontal segment
+                if c + 1 < cols and board[r][c+1] == 1:
+                    # Found '11'. Try extending left and right.
+                    
+                    # Try left end
+                    curr_c = c
+                    while curr_c >= 0 and board[r][curr_c] == 1:
+                        curr_c -= 1
+                    if curr_c >= 0 and board[r][curr_c] == 0:
+                        segment_targets.append((r, curr_c))
+                        
+                    # Try right end
+                    curr_c = c + 1
+                    while curr_c < cols and board[r][curr_c] == 1:
+                        curr_c += 1
+                    if curr_c < cols and board[r][curr_c] == 0:
+                        segment_targets.append((r, curr_c))
+
+                # Check for vertical segment
+                if r + 1 < rows and board[r+1][c] == 1:
+                    # Found '1' stacked. Try extending up and down.
+                    
+                    # Try top end
+                    curr_r = r
+                    while curr_r >= 0 and board[curr_r][c] == 1:
+                        curr_r -= 1
+                    if curr_r >= 0 and board[curr_r][c] == 0:
+                        segment_targets.append((curr_r, c))
+                        
+                    # Try bottom end
+                    curr_r = r + 1
+                    while curr_r < rows and board[curr_r][c] == 1:
+                        curr_r += 1
+                    if curr_r < rows and board[curr_r][c] == 0:
+                        segment_targets.append((curr_r, c))
+                        
+    # Remove duplicates from segment_targets and filter out already shot positions
+    # Need to be careful here - a point might be in segment_targets but already be a 1 or -1
+    # We only want to shoot at 0s
+    valid_segment_targets = []
+    for r, c in segment_targets:
+        if board[r][c] == 0:
+            valid_segment_targets.append((r, c))
+    
+    if valid_segment_targets:
+        # We can pick randomly among these valid targets or just the first.
+        # Randomness might help if the opponent always blocks a certain direction.
+        return random.choice(valid_segment_targets)
+
+    # Priority 2: Follow up on any single hit (isolated or no clear orientation yet)
+    # This covers cases where only one '1' is found, or an existing segment has no valid '0' neighbors in line.
+    
+    # Store candidate shots from isolated hits
+    isolated_hit_targets = []
+
+    for r in range(rows):
+        for c in range(cols):
+            if board[r][c] == 1:
+                # Check all 4 adjacent cells for 0s
+                for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]: # Up, Down, Left, Right
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < rows and 0 <= nc < cols and board[nr][nc] == 0:
+                        isolated_hit_targets.append((nr, nc))
+    
+    if isolated_hit_targets:
+        # Again, pick randomly or first. Random might be better.
+        # But we need to ensure unique points are picked
+        isolated_hit_targets = list(set(isolated_hit_targets)) # remove duplicates if one (0) neighbor is adjacent to many (1)s
+        if isolated_hit_targets:
+            return random.choice(isolated_hit_targets)
+
+    # Priority 3: Hunting phase (checkerboard pattern)
+    # No current hits to follow up on, so search for new ships
+    
+    # Generate checkerboard pattern points
+    checkerboard_targets = []
+    for r in range(rows):
+        for c in range(cols):
+            if (r + c) % 2 == 0 and board[r][c] == 0: # Only shoot at unknown cells
+                checkerboard_targets.append((r, c))
+
+    if checkerboard_targets:
+        # Randomly choose one from the checkerboard pattern for more unpredictability
+        return random.choice(checkerboard_targets)
+    
+    # Priority 4: Fallback (should only be reached if all checkerboard cells are shot at)
+    # Shoot at any remaining unknown cell (those skipped by checkerboard (r + c) % 2 != 0)
+    
+    for r in range(rows):
+        for c in range(cols):
+            if board[r][c] == 0:
+                return r, c
+                
+    # If all cells are either -1 (miss) or 1 (hit), the game should be over.
+    # This point should ideally not be reached.
+    return 0, 0 # Default if absolutely stuck, but implies a problem or game end.
+```
+
+Let's test the logic flow for a specific scenario:
+Board:
+`0 0 0 0 0`
+`0 1 0 0 0`
+`0 0 0 0 0`
+
+1.  `segment_targets` will be empty. (Only one `1` at `(1,1)`)
+2.  `isolated_hit_targets` will fill: `(0,1), (2,1), (1,0), (1,2)` (assuming `0`s at these coords).
+    *   If `board[0][1] == 0`, `(0,1)` might be returned. Let's say we hit `(0,1)`.
+    *   Board becomes:
+        `0 1 0 0 0`
+        `0 1 0 0 0`
+        `0 0 0 0 0`
+3.  Next call:
+    *   `segment_targets`: now `(0,1)` and `(1,1)` form a vertical segment.
+        *   Expanding up from `(0,1)`: `curr_r` goes to `-1`. No shot `(-1,1)`.
+        *   Expanding down from `(1,1)`: `curr_r` goes to `2`. If `board[2][1] == 0`, `(2,1)` is added to `segment_targets`.
+        *   Valid `segment_targets` would contain `(2,1)`. A shot to `(2,1)` is returned.
+    *   This seems to work.
+
+A minor optimization for the `segment_targets` finding: instead of finding segment and then trying to expand in *both* directions from *each* point in the segment, it's better to find the *ends* of the segment.
+
+Example: `0 0 1 1 1 0`
+If `(r,2)` is considered:
+`if c+1 < cols and board[r][c+1] == 1`: True for `c=2`.
+  `curr_c = c` (which is 2). `while board[r][curr_c] == 1`: It will stay at 2 because `board[r][1]` is `0`. So it tries `(r,1)`. Okay.
+  `curr_c = c+1` (which is 3). `while board[r][curr_c] == 1`: It increments to 4, then stops at `curr_c=5`. So it tries `(r,5)`. Okay.
+This logic is sound for identifying segment ends.
+
+Consider the case where a ship is fully sunk.
+` -1 -1 -1 -1 -1`
+` 0  1  1  1  0 ` is not a fully sunk ship. If `0 1 1 1 0` hit, then the logic picks `(r,c=1)` or `(r,c=3)` to expand.
+If it was ` -1 1 1 1 -1 `, it would try to shoot where `-1` already is.
+The `if board[r][c] == 0:` filter for `valid_segment_targets`, `isolated_hit_targets` handles this.
+
+A small point on the "hunting" phase:
+A simple checkerboard `(r + c) % 2 == 0` misses all cells where `(r + c) % 2 == 1`.
+If all ships are detected only by `(r+c)%2 == 0` cells, and are fully sunk within those, the `policy` may exhaust all `(r+c)%2 == 0` cells and then finally look at `(r+c)%2 == 1` cells. This isn't wrong, but it means the second-half of the grid is only searched much later.
+A common strategy is to simply iterate row by row, column by column, firing at any `0`. The checkerboard is an optimization to hit ships *faster* because ships of length 2 or more will always span across a cell of `(r+c)%2 == 0` and `(r+c)%2 == 1`. So, if you pick `(r+c)%2 == 0`, you are guaranteed to hit any ship. Once you hit one, you switch to sinking. If you exhaust all `(r+c)%2 == 0` cells, it means you've either hit and sunk all ships that *started* on an even cell, or they are very short (length 1, not possible here) or very specifically placed.
+
+After exhausting `(r+c)%2 == 0` cells, the policy should look at `(r+c)%2 == 1` cells.
+My `Priority 3` and `Priority 4` combined achieve this:
+`Priority 3` handles `(r+c)%2 == 0` cells.
+`Priority 4` (`for r in range(rows)... if board[r][c] == 0`) will then cover all remaining `(r+c)%2 == 1` cells.
+This is a standard and effective strategy.
+
+Final check on imports: `random` is used. Standard library, so it's fine.
+The board is `list[list[int]]`, so it's a list of lists. Indices `0` to `9` are valid.
+Looks good.
+</thinking>
+```python
+import random
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    rows, cols = 10, 10
+    
+    # --- Phase 1: Sinking identified ships (oriented segments) ---
+    # Search for two or more consecutive hits to infer ship orientation
+    # and extend shots along that line.
+    
+    segment_targets = []
+
+    for r in range(rows):
+        for c in range(cols):
+            if board[r][c] == 1:
+                # Check for horizontal segment (at least '11')
+                if c + 1 < cols and board[r][c+1] == 1:
+                    # Found a horizontal segment. Try to shoot at its ends.
+                    
+                    # Find leftmost '1' in this contiguous segment
+                    leftmost_c = c
+                    while leftmost_c >= 0 and board[r][leftmost_c] == 1:
+                        leftmost_c -= 1
+                    # If the cell to the left of the segment is unknown, target it
+                    if leftmost_c >= 0 and board[r][leftmost_c] == 0:
+                        segment_targets.append((r, leftmost_c))
+                        
+                    # Find rightmost '1' in this contiguous segment
+                    rightmost_c = c + 1
+                    while rightmost_c < cols and board[r][rightmost_c] == 1:
+                        rightmost_c += 1
+                    # If the cell to the right of the segment is unknown, target it
+                    if rightmost_c < cols and board[r][rightmost_c] == 0:
+                        segment_targets.append((r, rightmost_c))
+
+                # Check for vertical segment (at least '1' stacked on '1')
+                if r + 1 < rows and board[r+1][c] == 1:
+                    # Found a vertical segment. Try to shoot at its ends.
+
+                    # Find topmost '1' in this contiguous segment
+                    topmost_r = r
+                    while topmost_r >= 0 and board[topmost_r][c] == 1:
+                        topmost_r -= 1
+                    # If the cell above the segment is unknown, target it
+                    if topmost_r >= 0 and board[topmost_r][c] == 0:
+                        segment_targets.append((topmost_r, c))
+                        
+                    # Find bottommost '1' in this contiguous segment
+                    bottommost_r = r + 1
+                    while bottommost_r < rows and board[bottommost_r][c] == 1:
+                        bottommost_r += 1
+                    # If the cell below the segment is unknown, target it
+                    if bottommost_r < rows and board[bottommost_r][c] == 0:
+                        segment_targets.append((bottommost_r, c))
+    
+    # Filter for unique and valid (unknown) targets from segments
+    valid_segment_targets = list(set(segment_targets))
+    
+    if valid_segment_targets:
+        # Prioritize these shots to sink ships quickly.
+        # Randomly choose one to introduce unpredictability.
+        return random.choice(valid_segment_targets)
+
+    # --- Phase 2: Follow up on isolated hits ---
+    # If no clear oriented segments, but individual hits exist,
+    # expand search around those hits in all four cardinal directions.
+    
+    isolated_hit_targets = []
+
+    for r in range(rows):
+        for c in range(cols):
+            if board[r][c] == 1:
+                # Check adjacent cells (Up, Down, Left, Right)
+                for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                    nr, nc = r + dr, c + dc
+                    # Ensure neighbor is within bounds and unknown
+                    if 0 <= nr < rows and 0 <= nc < cols and board[nr][nc] == 0:
+                        isolated_hit_targets.append((nr, nc))
+    
+    # Filter for unique valid targets from isolated hits
+    valid_isolated_hit_targets = list(set(isolated_hit_targets))
+    
+    if valid_isolated_hit_targets:
+        # Randomly choose one of these potential shots.
+        return random.choice(valid_isolated_hit_targets)
+
+    # --- Phase 3: Hunting phase (checkerboard pattern) ---
+    # No active hits to follow up on, so return to searching for new ships
+    # using a checkerboard pattern to ensure we hit any ship eventually.
+    
+    checkerboard_targets = []
+    for r in range(rows):
+        for c in range(cols):
+            # Target unknown cells following the (row + col) % 2 == 0 pattern
+            if (r + c) % 2 == 0 and board[r][c] == 0:
+                checkerboard_targets.append((r, c))
+
+    if checkerboard_targets:
+        # Randomly choose one from the checkerboard pattern for varied play
+        return random.choice(checkerboard_targets)
+    
+    # --- Phase 4: Fallback (exhaust remaining unknown cells) ---
+    # If the checkerboard pattern is fully explored (all its cells are hit/missed),
+    # there might be ships hiding in the alternating cells.
+    # Shoot at any remaining unknown cell.
+    
+    for r in range(rows):
+        for c in range(cols):
+            if board[r][c] == 0:
+                return r, c
+                
+    # This point should theoretically not be reached in a typical game
+    # unless all cells are either hit or missed (game over).
+    return 0, 0 # Default return, implies an error or game end.
+```

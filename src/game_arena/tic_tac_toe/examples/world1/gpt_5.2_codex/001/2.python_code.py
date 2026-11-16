@@ -1,0 +1,71 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Perfect play minimax with alpha-beta pruning
+    def check_winner(b):
+        # rows, cols, diagonals
+        for i in range(3):
+            s = sum(b[i])
+            if s == 3: return 1
+            if s == -3: return -1
+            s = b[0][i] + b[1][i] + b[2][i]
+            if s == 3: return 1
+            if s == -3: return -1
+        d1 = b[0][0] + b[1][1] + b[2][2]
+        d2 = b[0][2] + b[1][1] + b[2][0]
+        if d1 == 3 or d2 == 3: return 1
+        if d1 == -3 or d2 == -3: return -1
+        return 0
+
+    def moves(b):
+        return [(r, c) for r in range(3) for c in range(3) if b[r][c] == 0]
+
+    def minimax(b, player, alpha, beta):
+        winner = check_winner(b)
+        if winner != 0:
+            return winner, None  # win/loss
+        avail = moves(b)
+        if not avail:
+            return 0, None  # draw
+
+        if player == 1:
+            best_val = -2
+            best_move = None
+            for (r, c) in avail:
+                b[r][c] = 1
+                val, _ = minimax(b, -1, alpha, beta)
+                b[r][c] = 0
+                if val > best_val:
+                    best_val = val
+                    best_move = (r, c)
+                alpha = max(alpha, best_val)
+                if beta <= alpha:
+                    break
+            return best_val, best_move
+        else:
+            best_val = 2
+            best_move = None
+            for (r, c) in avail:
+                b[r][c] = -1
+                val, _ = minimax(b, 1, alpha, beta)
+                b[r][c] = 0
+                if val < best_val:
+                    best_val = val
+                    best_move = (r, c)
+                beta = min(beta, best_val)
+                if beta <= alpha:
+                    break
+            return best_val, best_move
+
+    # If no moves, return a default legal tuple (should not happen in valid play)
+    if not any(0 in row for row in board):
+        return (0, 0)
+
+    _, move = minimax(board, 1, -2, 2)
+    if move is None:
+        # fallback: first legal move
+        for r in range(3):
+            for c in range(3):
+                if board[r][c] == 0:
+                    return (r, c)
+        return (0, 0)
+    return move

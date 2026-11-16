@@ -1,0 +1,127 @@
+
+import heapq
+from typing import List, Tuple, Set
+
+SIZE = 11
+INF = 10**9
+
+def _neighbors(r: int, c: int):
+    """Generate the 6 neighboring hex cells."""
+    for dr, dc in ((0, -1), (0, 1), (-1, 0), (-1, 1), (1, -1), (1, 0)):
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < SIZE and 0 <= nc < SIZE:
+            yield nr, nc
+
+def _dijkstra(my_cells: Set[Tuple[int, int]], opp_cells: Set[Tuple[int, int]], is_black: bool) -> int:
+    """
+    Calculate shortest path cost for `my_cells` to connect their sides.
+    Cost: 0 for own cell, 1 for empty, INF for opponent cell (blocked).
+    """
+    dist = [[INF] * SIZE for _ in range(SIZE)]
+    heap = []
+    
+    if is_black:
+        # Black connects top (row 0) to bottom (row 10)
+        for c in range(SIZE):
+            if (0, c) in opp_cells:
+                continue
+            cost = 0 if (0, c) in my_cells else 1
+            dist[0][c] = cost
+            heapq.heappush(heap, (cost, 0, c))
+        
+        while heap:
+            d, r, c = heapq.heappop(heap)
+            if d != dist[r][c]:
+                continue
+            if r == SIZE - 1:
+                return d
+            for nr, nc in _neighbors(r, c):
+                if (nr, nc) in opp_cells:
+                    continue
+                nd = d + (0 if (nr, nc) in my_cells else 1)
+                if nd < dist[nr][nc]:
+                    dist[nr][nc] = nd
+                    heapq.heappush(heap, (nd, nr, nc))
+    else:
+        # White connects left (col 0) to right (col 10)
+        for r in range(SIZE):
+            if (r, 0) in opp_cells:
+                continue
+            cost = 0 if (r, 0) in my_cells else 1
+            dist[r][0] = cost
+            heapq.heappush(heap, (cost, r, 0))
+        
+        while heap:
+            d, r, c = heapq.heappop(heap)
+            if d != dist[r][c]:
+                continue
+            if c == SIZE - 1:
+                return d
+            for nr, nc in _neighbors(r, c):
+                if (nr, nc) in opp_cells:
+                    continue
+                nd = d + (0 if (nr, nc) in my_cells else 1)
+                if nd < dist[nr][nc]:
+                    dist[nr][nc] = nd
+                    heapq.heappush(heap, (nd, nr, nc))
+    return INF
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[int, int]:
+    my_set = set(me)
+    opp_set = set(opp)
+    is_black = (color == 'b')
+    
+    # List all empty cells
+    empty = [(r, c) for r in range(SIZE) for c in range(SIZE) 
+             if (r, c) not in my_set and (r, c) not in opp_set]
+    
+    if not empty:
+        return (0, 0)  # Should never happen in a valid game
+    
+    # 1. Check for immediate winning move
+    for r, c in empty:
+        my_set.add((r, c))
+        if _dijkstra(my_set, opp_set, is_black) == 0:
+            return (r, c)
+        my_set.remove((r, c))
+    
+    # 2. Check for opponent's immediate winning threats (must block)
+    threats = []
+    for r, c in empty:
+        opp_set.add((r, c))
+        if _dijkstra(opp_set, my_set, not is_black) == 0:
+            threats.append((r, c))
+        opp_set.remove((r, c))
+    
+    if threats:
+        # Block the threat that gives us the best resulting position
+        best_block = threats[0]
+        best_score = -INF
+        for r, c in threats:
+            my_set.add((r, c))
+            my_dist = _dijkstra(my_set, opp_set, is_black)
+            opp_dist = _dijkstra(opp_set, my_set, not is_black)
+            my_set.remove((r, c))
+            score = opp_dist - my_dist
+            if score > best_score:
+                best_score = score
+                best_block = (r, c)
+        return best_block
+    
+    # 3. Evaluate all moves: maximize (opponent_distance - my_distance)
+    best_move = empty[0]
+    best_score = -INF
+    
+    for r, c in empty:
+        my_set.add((r, c))
+        my_dist = _dijkstra(my_set, opp_set, is_black)
+        # With this cell occupied by me, opponent cannot use it
+        opp_dist = _dijkstra(opp_set, my_set, not is_black)
+        my_set.remove((r, c))
+        
+        score = opp_dist - my_dist
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+    
+    return best_move

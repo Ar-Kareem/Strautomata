@@ -1,0 +1,139 @@
+
+import random
+
+def policy(my_men, my_kings, opp_men, opp_kings, color) -> tuple[tuple[int, int], tuple[int, int]]:
+    """
+    Chooses the next move for a Checkers game.
+
+    Args:
+        my_men: A list of squares containing your regular pieces.
+        my_kings: A list of squares containing your kings.
+        opp_men: A list of squares containing opponent regular pieces.
+        opp_kings: A list of squares containing opponent kings.
+        color: Your color: 'b' for black which moves downwards and 'w' for white.
+
+    Returns:
+        A move as a tuple: ((from_row, from_col), (to_row, to_col)).
+    """
+
+    board = {}
+    for r in range(8):
+        for c in range(8):
+            board[(r, c)] = 0  # 0: empty
+
+    for sq in my_men:
+        board[sq] = 1  # 1: my man
+    for sq in my_kings:
+        board[sq] = 2  # 2: my king
+    for sq in opp_men:
+        board[sq] = -1  # -1: opponent man
+    for sq in opp_kings:
+        board[sq] = -2  # -2: opponent king
+
+
+    def get_legal_moves(board, my_men, my_kings, opp_men, opp_kings, color):
+        """
+        Returns a list of all legal moves. Each move is a tuple:
+        ((from_row, from_col), (to_row, to_col), [captured_pieces])
+        """
+        legal_moves = []
+        my_pieces = my_men + my_kings
+        for piece in my_pieces:
+            row, col = piece
+            is_king = piece in my_kings
+
+            # Determine move direction based on color
+            direction = 1 if color == 'w' else -1
+            
+            #Check for jumps
+            for dr, dc in [(direction, 1), (direction, -1)]:
+                new_row, new_col = row + dr, col + dc
+                if 0 <= new_row < 8 and 0 <= new_col < 8:
+                    if board[(new_row, new_col)] < 0:  # Opponent piece
+                        jump_row, jump_col = new_row + dr, new_col + dc
+                        if 0 <= jump_row < 8 and 0 <= jump_col < 8 and board[(jump_row, jump_col)] == 0:
+                                legal_moves.append(((row, col), (jump_row, jump_col), [(new_row, new_col)]))
+                                
+            if is_king:
+                direction = -direction
+                for dr, dc in [(direction, 1), (direction, -1)]:
+                    new_row, new_col = row + dr, col + dc
+                    if 0 <= new_row < 8 and 0 <= new_col < 8:
+                        if board[(new_row, new_col)] < 0:  # Opponent piece
+                            jump_row, jump_col = new_row + dr, new_col + dc
+                            if 0 <= jump_row < 8 and 0 <= jump_col < 8 and board[(jump_row, jump_col)] == 0:
+                                    legal_moves.append(((row, col), (jump_row, jump_col), [(new_row, new_col)]))
+
+
+            #If no jumps are available, check norma moves
+            if not any(move[2] for move in legal_moves if move[0] == (row, col)): #Check if current piece has a jump available
+                direction = 1 if color == 'w' else -1
+                for dr, dc in [(direction, 1), (direction, -1)]:
+                    new_row, new_col = row + dr, col + dc
+                    if 0 <= new_row < 8 and 0 <= new_col < 8 and board[(new_row, new_col)] == 0:
+                        legal_moves.append(((row, col), (new_row, new_col), []))
+
+                if is_king:
+                    direction = -direction
+                    for dr, dc in [(direction, 1), (direction, -1)]:
+                        new_row, new_col = row + dr, col + dc
+                        if 0 <= new_row < 8 and 0 <= new_col < 8 and board[(new_row, new_col)] == 0:
+                            legal_moves.append(((row, col), (new_row, new_col), []))
+
+        return legal_moves
+    
+    legal_moves = get_legal_moves(board, my_men, my_kings, opp_men, opp_kings, color)
+
+    if not legal_moves:
+        # No legal moves available, which means we lost; return a move that does nothing to avoid an illegal move exception
+        if my_men:
+            return ((my_men[0][0], my_men[0][1]), (my_men[0][0], my_men[0][1]))
+        elif my_kings:
+            return ((my_kings[0][0], my_kings[0][1]), (my_kings[0][0], my_kings[0][1]))
+        else:
+            return ((0,1), (0,1)) # game over
+
+
+    # Prioritize captures
+    capture_moves = [move for move in legal_moves if move[2]]
+    if capture_moves:
+        
+        #Further refine by the number of captures
+        best_captures = []
+        max_captures = max(len(move[2]) for move in capture_moves)
+        for move in capture_moves:
+            if len(move[2]) == max_captures:
+                  best_captures.append(move)
+                  
+        if len(best_captures) > 1: #Tie breaker: prioritize king making pieces
+            king_making_moves = []
+            king_row = 7 if color == 'w' else 0
+            for move in best_captures:
+                if move[1][0] == king_row:
+                    king_making_moves.append(move)
+            if king_making_moves:
+                return random.choice(king_making_moves)[:2] #Only return the from and to locations
+        
+        return random.choice(best_captures)[:2] #Only return the from and to locations
+
+    # No captures available, so choose a move based on other criteria.
+    else:
+        # Prioritize moves that lead to the king row, where regular pieces become kings.
+
+        king_row = 7 if color == 'w' else 0
+        king_making_moves = [move for move in legal_moves if move[1][0] == king_row]
+
+        if king_making_moves:
+             return random.choice(king_making_moves)[:2]
+
+        # Prioritize moves toward the center of the board. These pieces are typically safer.
+        center_moves = []
+        for move in legal_moves:
+            row, col = move[1]
+            if 2 <= row <= 5 and 2 <= col <= 5:
+                center_moves.append(move)
+        if center_moves:
+            return random.choice(center_moves)[:2]
+
+        # If no other criteria are met, make a random legal move.
+        return random.choice(legal_moves)[:2]

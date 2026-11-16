@@ -1,0 +1,218 @@
+The strategy for this policy is to perform a **1-ply greedy search** (Minimax Depth 1) that evaluates every possible legal move (movement and arrow shot) to maximize a **Territory-based heuristic**.
+
+1.  **Search Scope**: The policy iterates through all of its own Amazons, generates all valid queen-like moves, and from each landing square, generates all valid arrow shots. This results in a search tree with a branching factor typical of Amazons (often several hundred moves).
+2.  **State Evaluation**: The resulting board state for every legal move is evaluated using a **Territory Heuristic** calculated via **Breadth-First Search (BFS)**.
+    - The algorithm computes the minimum "King's Move" distance (shortest path avoiding obstacles) from all of the player's amazons and all of the opponent's amazons to every empty square on the board.
+    - A square is considered "controlled" by the player who can reach it in fewer steps.
+    - The final score is: `(My Territory Score) - (Opponent Territory Score)`.
+    - Squares are weighted such that territory closer to the amazons yields a slightly higher score, encouraging the AI to stay active and secure immediate space.
+3.  **Efficiency**: Given the 1-second time constraint and the 6x6 board size, a full Depth-2 search can risk valid timeouts due to the massive branching factor. A Depth-1 search with a high-fidelity evaluation (BFS) is computationally safe (taking <0.5s typically) and often outperforms deeper searches with weaker heuristics in territory games like Amazons.
+4.  **Robustness**: The policy tracks `first_legal_move` to ensure that a valid move is always returned, even in the unlikely event of a timeout or logic edge case.
+
+<code>
+import numpy as np
+import time
+from collections import deque
+
+def policy(board) -> str:
+    """
+    Returns the best move for the current player (ID 1) on the given 6x6 Amazons board.
+    The strategy is a 1-ply greedy search maximizing a territory-based heuristic.
+    """
+    
+    # Constants
+    MY_PIECE = 1
+    OPP_PIECE = 2
+    BLOCKED = -1
+    EMPTY = 0
+    BOARD_SIZE = 6
+    TIME_LIMIT = 0.95  # Strict safety buffer within 1.0s
+    
+    start_time = time.time()
+    
+    # Identify my pieces
+    my_amazons = []
+    # Identify opponent pieces for the heuristic later
+    opp_amazons = [] 
+    
+    # scan board once
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            val = board[r, c]
+            if val == MY_PIECE:
+                my_amazons.append((r, c))
+            elif val == OPP_PIECE:
+                opp_amazons.append((r, c))
+    
+    # Directions for Queen moves (orthogonal + diagonal)
+    directions = [
+        (-1, 0), (1, 0), (0, -1), (0, 1), 
+        (-1, -1), (-1, 1), (1, -1), (1, 1)
+    ]
+    
+    best_move_str = ""
+    max_score = float('-inf')
+    first_legal_move = None
+    
+    # Using 1D arrays for BFS distance maps is slightly cumbersome with 2D coords,
+    # keeping 2D numpy or list of lists. Pure python list of lists is fast for small grids.
+    
+    def get_territory_score(current_board, p1_pos, p2_pos):
+        """
+        Calculates territory score: (My Reachable - Opp Reachable).
+        Uses BFS to find shortest path to all empty nodes.
+        """
+        # Initialize distances with a high number
+        dist_p1 = [[999] * BOARD_SIZE for _ in range(BOARD_SIZE)]
+        dist_p2 = [[999] * BOARD_SIZE for _ in range(BOARD_SIZE)]
+        
+        # BFS for Player 1 (Me)
+        q = deque()
+        for r, c in p1_pos:
+            dist_p1[r][c] = 0
+            q.append((r, c))
+        
+        while q:
+            r, c = q.popleft()
+            d = dist_p1[r][c]
+            next_d = d + 1
+            for dr, dc in directions:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE:
+                    # Obstacle check: Pass blocked squares is not allowed
+                    # We can land on EMPTY squares.
+                    # Note: p1_pos are sources (MY_PIECE), effectively distance 0.
+                    if current_board[nr, nc] == EMPTY and dist_p1[nr][nc] > next_d:
+                        dist_p1[nr][nc] = next_d
+                        q.append((nr, nc))
+                        
+        # BFS for Player 2 (Opponent)
+        q = deque()
+        for r, c in p2_pos:
+            dist_p2[r][c] = 0
+            q.append((r, c))
+            
+        while q:
+            r, c = q.popleft()
+            d = dist_p2[r][c]
+            next_d = d + 1
+            for dr, dc in directions:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE:
+                    if current_board[nr, nc] == EMPTY and dist_p2[nr][nc] > next_d:
+                        dist_p2[nr][nc] = next_d
+                        q.append((nr, nc))
+        
+        score = 0.0
+        # Compute score based on ownership
+        for r in range(BOARD_SIZE):
+            for c in range(BOARD_SIZE):
+                if current_board[r, c] == EMPTY:
+                    d1 = dist_p1[r][c]
+                    d2 = dist_p2[r][c]
+                    
+                    if d1 < d2:
+                        # My territory
+                        score += 1.0 + (0.1 / (d1 + 1.0))
+                    elif d2 < d1:
+                        # Opponent territory
+                        score -= 1.0 + (0.1 / (d2 + 1.0))
+                    # Else Tie or Unreachable -> 0
+        return score
+
+    # --- Search Loop ---
+    # Iterate over all my amazons
+    for i, (r_from, c_from) in enumerate(my_amazons):
+        
+        # Generate moves for this amazon
+        for dr, dc in directions:
+            r_to, c_to = r_from, c_from
+            while True:
+                # Time Check inside tight loops
+                if (time.time() - start_time) > TIME_LIMIT:
+                    break
+                    
+                r_to += dr
+                c_to += dc
+                
+                # Check bounds and obstruction
+                if not (0 <= r_to < BOARD_SIZE and 0 <= c_to < BOARD_SIZE):
+                    break
+                if board[r_to, c_to] != EMPTY:
+                    break
+                
+                # Valid Move Found: r_from, c_from -> r_to, c_to
+                
+                # To generate arrows, we simulate the board state where the amazon has moved.
+                # (r_from, c_from) becomes empty. (r_to, c_to) is the shooter.
+                
+                for adr, adc in directions:
+                    r_arr, c_arr = r_to, c_to
+                    while True:
+                        r_arr += adr
+                        c_arr += adc
+                        
+                        if not (0 <= r_arr < BOARD_SIZE and 0 <= c_arr < BOARD_SIZE):
+                            break
+                        
+                        # Arrow Obstruction Check
+                        # Special logic: r_from is logically empty now.
+                        is_vacated_start = (r_arr == r_from and c_arr == c_from)
+                        
+                        if not is_vacated_start:
+                            if board[r_arr, c_arr] != EMPTY:
+                                break
+                        
+                        # Valid Arrow Found
+                        move_str = f"{r_from},{c_from}:{r_to},{c_to}:{r_arr},{c_arr}"
+                        if first_legal_move is None:
+                            first_legal_move = move_str
+                            best_move_str = move_str # default
+                        
+                        # --- Evaluate ---
+                        # Apply Move
+                        orig_val_start = board[r_from, c_from] # 1
+                        orig_val_dest = board[r_to, c_to]      # 0
+                        orig_val_arrow = board[r_arr, c_arr]   # 0 or 1 (if vacated)
+                        
+                        board[r_from, c_from] = EMPTY
+                        board[r_to, c_to] = MY_PIECE
+                        board[r_arr, c_arr] = BLOCKED
+                        
+                        # Update positions list for evaluation (faster than rescanning board)
+                        current_my_pos = my_amazons.copy()
+                        current_my_pos[i] = (r_to, c_to)
+                        
+                        score = get_territory_score(board, current_my_pos, opp_amazons)
+                        
+                        # Backtrack / Revert
+                        # We must revert in specific order to handle r_arr == r_from case correctly
+                        board[r_arr, c_arr] = orig_val_arrow
+                        # If arrow was on vacated square, orig_val_arrow was 1. 
+                        # But wait, logic above says we set r_from to empty.
+                        # So if r_arr == r_from, the board[arr] was set to -1, overwriting the 0.
+                        # Actually simpler: Just forcefully restore the exact values known.
+                        
+                        # 1. Restore Arrow square. 
+                        # If it was a normal empty square, set to 0. 
+                        # If it was the vacated start, it doesn't matter yet, we overwrite step 3.
+                        if not is_vacated_start:
+                             board[r_arr, c_arr] = EMPTY
+                        
+                        # 2. Restore Dest
+                        board[r_to, c_to] = EMPTY
+                        
+                        # 3. Restore Start
+                        board[r_from, c_from] = MY_PIECE
+                        
+                        if score > max_score:
+                            max_score = score
+                            best_move_str = move_str
+                            
+            if (time.time() - start_time) > TIME_LIMIT:
+                break
+        if (time.time() - start_time) > TIME_LIMIT:
+            break
+
+    return best_move_str if best_move_str else (first_legal_move if first_legal_move else "")
+</code>

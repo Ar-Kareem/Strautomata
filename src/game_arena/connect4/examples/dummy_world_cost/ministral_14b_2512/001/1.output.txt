@@ -1,0 +1,142 @@
+### Strategy for the Connect 4 Policy
+
+The strategy for this policy is a **hybrid approach** combining **immediate threat blocking**, **pattern recognition**, and **heuristic-based evaluation** to make strong moves. Here's the breakdown:
+
+1. **Immediate Threat Blocking**:
+   - First, check if the opponent has a winning move (3 in a row with an empty cell below). If so, block it immediately.
+   - Similarly, check if you can win in the next move (3 in a row with an empty cell below). If so, take it.
+
+2. **Pattern Recognition**:
+   - Look for **open threes** (3 in a row with empty cells on both sides) or **semi-open threes** (3 in a row with one empty cell on one side). These are high-priority moves.
+   - Look for **open twos** (2 in a row with empty cells on both sides) or **semi-open twos** (2 in a row with one empty cell on one side). These are mid-priority moves.
+
+3. **Heuristic-Based Evaluation**:
+   - If no immediate threats or high-priority patterns are found, evaluate all possible moves using a **weighted scoring system** that considers:
+     - **Center control**: Dropping in the center (column 3) is highly valued.
+     - **Potential for future lines**: Moves that create multiple potential lines (horizontal, vertical, diagonal) are favored.
+     - **Opponent's potential**: Avoid moves that leave the opponent with too many open threes or twos.
+
+4. **Fallback to Randomness**:
+   - If no strong move is found, pick a random legal move to avoid predictable behavior.
+
+5. **Optimization**:
+   - The policy is optimized to run within the 1-second constraint by using efficient checks and avoiding unnecessary computations.
+
+---
+
+### Python Source Code for the Policy
+```python
+import random
+
+def policy(board: list[list[int]]) -> int:
+    # Directions for checking lines (horizontal, vertical, diagonal, anti-diagonal)
+    directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
+
+    def is_valid_move(col):
+        return board[0][col] == 0
+
+    def get_next_open_row(col):
+        for row in range(5, -1, -1):
+            if board[row][col] == 0:
+                return row
+        return -1
+
+    def check_winning_move(player, col):
+        row = get_next_open_row(col)
+        if row == -1:
+            return False
+        # Simulate placing the disc
+        board[row][col] = player
+        # Check all directions for a win
+        for dr, dc in directions:
+            count = 1
+            # Check right/down
+            r, c = row + dr, col + dc
+            while 0 <= r < 6 and 0 <= c < 7 and board[r][c] == player:
+                count += 1
+                r += dr
+                c += dc
+            # Check left/up
+            r, c = row - dr, col - dc
+            while 0 <= r < 6 and 0 <= c < 7 and board[r][c] == player:
+                count += 1
+                r -= dr
+                c -= dc
+            if count >= 4:
+                board[row][col] = 0
+                return True
+        board[row][col] = 0
+        return False
+
+    def evaluate_move(player, col):
+        row = get_next_open_row(col)
+        if row == -1:
+            return -float('inf')
+        # Simulate placing the disc
+        board[row][col] = player
+        score = 0
+        # Check all directions for patterns
+        for dr, dc in directions:
+            count = 1
+            # Check right/down
+            r, c = row + dr, col + dc
+            while 0 <= r < 6 and 0 <= c < 7 and board[r][c] == player:
+                count += 1
+                r += dr
+                c += dc
+            # Check left/up
+            r, c = row - dr, col - dc
+            while 0 <= r < 6 and 0 <= c < 7 and board[r][c] == player:
+                count += 1
+                r -= dr
+                c -= dc
+            # Score based on pattern length
+            if count >= 4:
+                score += 1000  # Winning move
+            elif count == 3:
+                score += 50  # Open three
+            elif count == 2:
+                score += 10  # Open two
+        board[row][col] = 0
+        return score
+
+    # Check for opponent's winning move (block)
+    for col in range(7):
+        if is_valid_move(col) and check_winning_move(-1, col):
+            return col
+
+    # Check for our winning move
+    for col in range(7):
+        if is_valid_move(col) and check_winning_move(1, col):
+            return col
+
+    # Evaluate all possible moves
+    best_score = -float('inf')
+    best_col = -1
+    for col in range(7):
+        if is_valid_move(col):
+            score = evaluate_move(1, col)
+            if score > best_score:
+                best_score = score
+                best_col = col
+
+    # If no strong move, pick a random legal move
+    if best_col == -1:
+        legal_moves = [col for col in range(7) if is_valid_move(col)]
+        return random.choice(legal_moves)
+
+    return best_col
+```
+
+### Explanation of Key Functions:
+1. **`is_valid_move(col)`**: Checks if a column is not full.
+2. **`get_next_open_row(col)`**: Returns the lowest empty row in a column.
+3. **`check_winning_move(player, col)`**: Simulates placing a disc and checks if it results in a win.
+4. **`evaluate_move(player, col)`**: Scores a move based on potential patterns (open threes, twos, etc.).
+5. **Main Logic**:
+   - First, block opponent's winning moves.
+   - Then, take winning moves if available.
+   - Otherwise, evaluate all moves and pick the best one.
+   - Fall back to randomness if no strong move is found.
+
+This policy balances **immediate threats**, **pattern recognition**, and **heuristic evaluation** to perform well in competitive Connect 4 games.

@@ -1,0 +1,341 @@
+The strategy for this policy is an iterative-deepening alpha-beta search with a transposition table, strong move ordering, and a Kalah-specific evaluation function.
+
+In short, it:
+- always returns a legal move,
+- searches deeper when time allows,
+- prioritizes extra turns, captures, and terminal sweeps,
+- reuses previously searched positions through a transposition table,
+- uses a heuristic that values store lead, side-seed balance, mobility, immediate extra-turn setups, and capture potential.
+
+This gives a solid tactical player while staying within the time budget.
+
+<code>
+import time
+
+INF = 10**18
+EXACT, LOWER, UPPER = 0, 1, 2
+
+TT = {}
+HISTORY = [0, 0, 0, 0, 0, 0]
+
+DEADLINE = 0.0
+NODE_COUNT = 0
+
+
+class SearchTimeout(Exception):
+    pass
+
+
+def house_sum(p):
+    return p[0] + p[1] + p[2] + p[3] + p[4] + p[5]
+
+
+def legal_count(p):
+    return (
+        (p[0] > 0)
+        + (p[1] > 0)
+        + (p[2] > 0)
+        + (p[3] > 0)
+        + (p[4] > 0)
+        + (p[5] > 0)
+    )
+
+
+def terminal_value(you, opp):
+    sy = house_sum(you)
+    so = house_sum(opp)
+    return ((you[6] + sy) - (opp[6] + so)) * 100000
+
+
+def evaluate(you, opp):
+    sy = house_sum(you)
+    so = house_sum(opp)
+
+    if sy == 0 or so == 0:
+        return ((you[6] + sy) - (opp[6] + so)) * 100000
+
+    remaining = sy + so
+    if remaining > 30:
+        house_w = 6
+    elif remaining > 18:
+        house_w = 9
+    else:
+        house_w = 14
+
+    my_moves = legal_count(you)
+    op_moves = legal_count(opp)
+
+    my_exact = 0
+    op_exact = 0
+    for i in range(6):
+        yi = you[i]
+        oi = opp[i]
+        if yi and yi % 13 == 6 - i:
+            my_exact += 1
+        if oi and oi % 13 == 6 - i:
+            op_exact += 1
+
+    # Empty houses with many opposite seeds are potential capture targets later.
+    cap_y = (
+        (you[0] == 0) * opp[5]
+        + (you[1] == 0) * opp[4]
+        + (you[2] == 0) * opp[3]
+        + (you[3] == 0) * opp[2]
+        + (you[4] == 0) * opp[1]
+        + (you[5] == 0) * opp[0]
+    )
+    cap_o = (
+        (opp[0] == 0) * you[5]
+        + (opp[1] == 0) * you[4]
+        + (opp[2] == 0) * you[3]
+        + (opp[3] == 0) * you[2]
+        + (opp[4] == 0) * you[1]
+        + (opp[5] == 0) * you[0]
+    )
+
+    near_y = 2 * you[5] + you[4]
+    near_o = 2 * opp[5] + opp[4]
+
+    score = 0
+    score += (you[6] - opp[6]) * 1000
+    score += (sy - so) * house_w
+    score += (my_moves - op_moves) * 12
+    score += (my_exact - op_exact) * 28
+    score += (cap_y - cap_o) * 3
+    score += (near_y - near_o) * 2
+    return score
+
+
+def apply_move(you, opp, move):
+    a = you[:]
+    b = opp[:]
+
+    seeds = a[move]
+    a[move] = 0
+    pos = move
+
+    while seeds:
+        pos += 1
+        if pos == 13:
+            pos = 0
+
+        if pos <= 5:
+            a[pos] += 1
+        elif pos == 6:
+            a[6] += 1
+        else:
+            b[pos - 7] += 1
+
+        seeds -= 1
+
+    again = (pos == 6)
+
+    if 0 <= pos <= 5 and a[pos] == 1 and b[5 - pos] > 0:
+        a[6] += 1 + b[5 - pos]
+        a[pos] = 0
+        b[5 - pos] = 0
+
+    sa = house_sum(a)
+    sb = house_sum(b)
+    terminal = False
+    if sa == 0 or sb == 0:
+        a[6] += sa
+        b[6] += sb
+        a[0] = a[1] = a[2] = a[3] = a[4] = a[5] = 0
+        b[0] = b[1] = b[2] = b[3] = b[4] = b[5] = 0
+        again = False
+        terminal = True
+
+    return a, b, again, terminal
+
+
+def generate_moves(you, opp, tt_move=None):
+    moves = []
+    base_store = you[6]
+
+    for i in range(6):
+        if you[i] <= 0:
+            continue
+
+        a, b, again, terminal = apply_move(you, opp, i)
+        gain = a[6] - base_store
+
+        order = HISTORY[i] + gain * 64
+        if again:
+            order += 256
+        if terminal:
+            order += 100000 + (a[6] - b[6]) * 256
+        if tt_move is not None and i == tt_move:
+            order += 1000000
+
+        moves.append((order, i, a, b, again, terminal))
+
+    moves.sort(key=lambda x: x[0], reverse=True)
+    return moves
+
+
+def negamax(you, opp, depth, alpha, beta):
+    global NODE_COUNT
+
+    NODE_COUNT += 1
+    if (NODE_COUNT & 1023) == 0 and time.perf_counter() >= DEADLINE:
+        raise SearchTimeout
+
+    sy = house_sum(you)
+    so = house_sum(opp)
+
+    if sy == 0 or so == 0:
+        return ((you[6] + sy) - (opp[6] + so)) * 100000
+
+    if depth <= 0:
+        return evaluate(you, opp)
+
+    alpha0 = alpha
+    beta0 = beta
+
+    key = (*you, *opp)
+    tt_move = None
+    entry = TT.get(key)
+    if entry is not None:
+        edepth, flag, val, best_move = entry
+        tt_move = best_move
+        if edepth >= depth:
+            if flag == EXACT:
+                return val
+            if flag == LOWER:
+                if val > alpha:
+                    alpha = val
+            else:
+                if val < beta:
+                    beta = val
+            if alpha >= beta:
+                return val
+
+    best_val = -INF
+    best_move = None
+
+    for _, move, a, b, again, terminal in generate_moves(you, opp, tt_move):
+        if terminal:
+            val = (a[6] - b[6]) * 100000
+        elif again:
+            val = negamax(a, b, depth - 1, alpha, beta)
+        else:
+            val = -negamax(b, a, depth - 1, -beta, -alpha)
+
+        if val > best_val:
+            best_val = val
+            best_move = move
+
+        if val > alpha:
+            alpha = val
+
+        if alpha >= beta:
+            HISTORY[move] += depth * depth
+            break
+
+    if best_move is None:
+        return ((you[6] + sy) - (opp[6] + so)) * 100000
+
+    if best_val <= alpha0:
+        flag = UPPER
+    elif best_val >= beta0:
+        flag = LOWER
+    else:
+        flag = EXACT
+
+    TT[key] = (depth, flag, best_val, best_move)
+    return best_val
+
+
+def search_root(you, opp, depth, hint_move=None):
+    key = (*you, *opp)
+    tt_move = hint_move
+
+    entry = TT.get(key)
+    if entry is not None:
+        bm = entry[3]
+        if bm is not None and 0 <= bm <= 5 and you[bm] > 0:
+            tt_move = bm
+
+    moves = generate_moves(you, opp, tt_move)
+    if not moves:
+        legal = [i for i in range(6) if you[i] > 0]
+        return -INF, legal[0]
+
+    best_move = moves[0][1]
+    best_val = -INF
+    alpha = -INF
+    beta = INF
+
+    for _, move, a, b, again, terminal in moves:
+        if terminal:
+            val = (a[6] - b[6]) * 100000
+        elif again:
+            val = negamax(a, b, depth - 1, alpha, beta)
+        else:
+            val = -negamax(b, a, depth - 1, -beta, -alpha)
+
+        if val > best_val:
+            best_val = val
+            best_move = move
+
+        if val > alpha:
+            alpha = val
+
+        if time.perf_counter() >= DEADLINE:
+            raise SearchTimeout
+
+    TT[key] = (depth, EXACT, best_val, best_move)
+    return best_val, best_move
+
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    global DEADLINE, NODE_COUNT, HISTORY
+
+    legal = [i for i in range(6) if you[i] > 0]
+    if len(legal) == 1:
+        return legal[0]
+
+    if len(TT) > 300000:
+        TT.clear()
+
+    if max(HISTORY) > 1000000:
+        HISTORY = [h // 2 for h in HISTORY]
+
+    DEADLINE = time.perf_counter() + 0.95
+    NODE_COUNT = 0
+
+    entry = TT.get((*you, *opponent))
+    tt_move = entry[3] if entry is not None else None
+
+    ordered = generate_moves(you, opponent, tt_move)
+    best_move = ordered[0][1] if ordered else legal[0]
+
+    remaining = house_sum(you) + house_sum(opponent)
+    if remaining > 36:
+        max_depth = 14
+    elif remaining > 24:
+        max_depth = 18
+    elif remaining > 12:
+        max_depth = 24
+    else:
+        max_depth = 64
+
+    try:
+        for depth in range(1, max_depth + 1):
+            if time.perf_counter() >= DEADLINE:
+                break
+            _, move = search_root(you, opponent, depth, best_move)
+            best_move = move
+    except SearchTimeout:
+        pass
+
+    if 0 <= best_move <= 5 and you[best_move] > 0:
+        return int(best_move)
+
+    for m in legal:
+        if you[m] > 0:
+            return m
+
+    return 0
+</code>

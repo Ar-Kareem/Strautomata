@@ -1,0 +1,63 @@
+
+import random
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    # Convert to sets for faster lookup
+    my_stones = set(me)
+    opp_stones = set(opponent)
+    
+    # If the opponent hasn't played, we might consider passing or playing center
+    if not opponent:
+        # Play in the center if it's not occupied
+        center = (10, 10)
+        if center not in my_stones and center not in opp_stones:
+            return center
+        # Otherwise pass
+        return (0, 0)
+    
+    # Try to secure territory by playing on the third lines
+    third_lines = [3, 17]
+    legal_moves = []
+    
+    for row in third_lines:
+        for col in range(1, 20):
+            move = (row, col)
+            if is_legal(move, my_stones, opp_stones):
+                legal_moves.append(move)
+                
+    for col in third_lines:
+        for row in range(1, 20):
+            move = (row, col)
+            if is_legal(move, my_stones, opp_stones):
+                legal_moves.append(move)
+    
+    # If we have territory securing moves, choose one randomly
+    if legal_moves:
+        return random.choice(legal_moves)
+    
+    # Otherwise, try to find any legal move
+    # We'll check positions in a spiral pattern from center outward
+    center_row, center_col = 10, 10
+    for distance in range(1, 20):
+        for dr in range(-distance, distance + 1):
+            for dc in range(-distance, distance + 1):
+                row = center_row + dr
+                col = center_col + dc
+                move = (row, col)
+                if is_legal(move, my_stones, opp_stones):
+                    return move
+    
+    # If no legal moves found (which shouldn't happen in normal play), pass
+    return (0, 0)
+
+def is_legal(move: tuple[int, int], my_stones: set, opp_stones: set) -> bool:
+    # Check if move is within board
+    row, col = move
+    if row < 1 or row > 19 or col < 1 or col > 19:
+        return False
+    
+    # Check if position is occupied
+    if move in my_stones or move in opp_stones:
+        return False
+    
+    return True

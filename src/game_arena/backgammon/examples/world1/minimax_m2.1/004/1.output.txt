@@ -1,0 +1,206 @@
+# Backgammon AI Strategy
+
+This policy implements a sophisticated evaluation-based approach to Backgammon move selection. The strategy incorporates multiple strategic principles:
+
+1. **Safety-First Priority**: Evaluates move safety to avoid leaving vulnerable blots that can be hit
+2. **Positional Development**: Values making points and building board control
+3. **Race Efficiency**: Optimizes bearing off when in a racing position
+4. **Strategic Balance**: Weighs safety, development, and racing based on game state
+5. **Bar Move Priority**: Always prioritizes moving checkers from the bar when available
+
+The evaluation function considers:
+- Landing safety (avoiding opponent hits)
+- Point-making (2+ checkers on a point provide blocking)
+- Blot creation and exposure
+- Race progress and bearing-off potential
+- Opponent board strength assessment
+
+The policy uses a greedy move generation approach with strategic evaluation to select the best available move combination.
+<code>
+import random
+
+def policy(state: dict) -> str:
+    """
+    Backgammon AI Policy
+    Returns the best move string based on strategic evaluation.
+    """
+    # Extract state components
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    my_off = state['my_off']
+    dice = state['dice']
+    
+    # If no dice, pass
+    if not dice:
+        return "H:P,P"
+    
+    # Sort dice for consistent processing
+    dice_sorted = sorted(dice, reverse=True)
+    high_die = dice_sorted[0]
+    low_die = dice_sorted[1] if len(dice_sorted) > 1 else high_die
+    
+    # Generate all legal moves
+    legal_moves = []
+    
+    # First, handle bar moves
+    if my_bar > 0:
+        bar_moves = []
+        for die in dice_sorted:
+            dest = 24 - die  # Moving from bar (24) forward
+            if is_legal_bar_move(dest, opp_pts):
+                bar_moves.append((die, "B"))
+                legal_moves.append([(die, "B")])
+        
+        # Generate combinations if we have multiple dice and multiple bar move options
+        if len(bar_moves) >= 2:
+            for i in range(len(bar_moves)):
+                for j in range(len(bar_moves)):
+                    if i != j:
+                        die1, from1 = bar_moves[i]
+                        die2, from2 = bar_moves[j]
+                        remaining = [d for d in dice_sorted if d != die1]
+                        if remaining and is_legal_bar_move(24 - remaining[0], opp_pts):
+                            legal_moves.append([(die1, from1), (remaining[0], from2)])
+    
+    # Generate regular moves
+    for i, die in enumerate(dice_sorted):
+        for point in range(24):
+            if my_pts[point] > 0:
+                dest = point - die
+                if dest >= 0 and is_legal_move(point, dest, opp_pts):
+                    move = (die, f"A{point}")
+                    legal_moves.append([move])
+                    
+                    # Generate second moves
+                    for j, die2 in enumerate(dice_sorted):
+                        if j != i:
+                            for point2 in range(24):
+                                if my_pts[point2] > 0:
+                                    dest2 = point2 - die2
+                                    if dest2 >= 0 and is_legal_move(point2, dest2, opp_pts):
+                                        legal_moves.append([move, (die2, f"A{point2}")])
+    
+    # Generate bear-off moves if applicable
+    if can_bear_off(my_pts):
+        for i, die in enumerate(dice_sorted):
+            for point in range(6):
+                if my_pts[point] > 0:
+                    dest = point - die
+                    if dest < 0:
+                        # Can bear off
+                        move = (die, f"A{point}")
+                        legal_moves.append([move])
+                        
+                        # Second bear-off move
+                        for j, die2 in enumerate(dice_sorted):
+                            if j != i:
+                                for point2 in range(6):
+                                    if my_pts[point2] > 0:
+                                        dest2 = point2 - die2
+                                        if dest2 < 0:
+                                            legal_moves.append([move, (die2, f"A{point2}")])
+    
+    if not legal_moves:
+        return "H:P,P"
+    
+    # Evaluate and select best move
+    best_move = None
+    best_score = float('-inf')
+    
+    for move_combo in legal_moves:
+        score = evaluate_move(move_combo, my_pts, opp_pts, my_bar, my_off)
+        if score > best_score:
+            best_score = score
+            best_move = move_combo
+    
+    if best_move is None:
+        return "H:P,P"
+    
+    # Format the move string
+    if len(best_move) == 1:
+        # Single move - use higher die
+        die_val = best_move[0][0]
+        order = 'H' if die_val == high_die else 'L'
+        from_pos = best_move[0][1]
+        return f"{order}:{from_pos},P"
+    else:
+        # Two moves - determine order
+        die1 = best_move[0][0]
+        die2 = best_move[1][0]
+        from1 = best_move[0][1]
+        from2 = best_move[1][1]
+        
+        if die1 >= die2:
+            return f"H:{from1},{from2}"
+        else:
+            return f"L:{from1},{from2}"
+
+def is_legal_bar_move(dest, opp_pts):
+    """Check if bar move is legal (dest not occupied by 2+ opponent checkers)"""
+    if dest < 0 or dest >= 24:
+        return False
+    return opp_pts[dest] < 2
+
+def is_legal_move(point, dest, opp_pts):
+    """Check if regular move is legal"""
+    if dest < 0:
+        return False
+    return opp_pts[dest] < 2
+
+def can_bear_off(my_pts):
+    """Check if all checkers are in home board (points 0-5)"""
+    for i in range(6, 24):
+        if my_pts[i] > 0:
+            return False
+    return True
+
+def evaluate_move(move_combo, my_pts, opp_pts, my_bar, my_off):
+    """Evaluate a move combination and return a score"""
+    score = 0
+    
+    for move in move_combo:
+        die_val, from_pos = move
+        
+        if from_pos == "B":
+            # Bar move - prioritize these
+            score += 1000
+            dest = 24 - die_val
+            if dest >= 0 and dest < 24:
+                score += evaluate_position(dest, my_pts, opp_pts, die_val)
+        else:
+            point = int(from_pos[1:])
+            dest = point - die_val
+            
+            if dest < 0:
+                # Bearing off
+                score += 500 + die_val * 10
+            else:
+                score += evaluate_position(dest, my_pts, opp_pts, die_val)
+    
+    return score
+
+def evaluate_position(dest, my_pts, opp_pts, die_val):
+    """Evaluate the strategic value of landing on a position"""
+    score = 0
+    
+    # Safety check
+    if dest >= 0 and dest < 24:
+        if opp_pts[dest] == 1:
+            # Landing on a blot - risky but might be good if we make point
+            score -= 50
+        elif opp_pts[dest] == 0:
+            # Empty point
+            score += 30
+        
+        # Check if we're making a point (2+ checkers after move)
+        new_count = my_pts[dest] + 1
+        if new_count >= 2:
+            score += 200  # Great - we're making a point
+        
+        # Check if we're creating a blot
+        if my_pts[dest] == 0 and new_count == 1:
+            score -= 20  # Leaving a blot
+    
+    return score
+</code>

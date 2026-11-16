@@ -1,0 +1,124 @@
+
+import random
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    """
+    A Go policy that combines capture opportunities, defense, and territory expansion.
+    """
+    board_size = 19
+    board = [[0 for _ in range(board_size)] for _ in range(board_size)]
+    for r, c in me:
+        board[r-1][c-1] = 1
+    for r, c in opponent:
+        board[r-1][c-1] = 2
+
+    def is_valid_move(row, col):
+        return 0 <= row < board_size and 0 <= col < board_size and board[row][col] == 0
+
+    def get_neighbors(row, col):
+        neighbors = []
+        if row > 0:
+            neighbors.append((row-1, col))
+        if row < board_size - 1:
+            neighbors.append((row+1, col))
+        if col > 0:
+            neighbors.append((row, col-1))
+        if col < board_size - 1:
+            neighbors.append((row, col+1))
+        return neighbors
+
+    def get_group(row, col, player):
+        group = set()
+        visited = set()
+        stack = [(row, col)]
+        while stack:
+            r, c = stack.pop()
+            if (r, c) in visited:
+                continue
+            visited.add((r, c))
+            if board[r][c] == player:
+                group.add((r, c))
+                for nr, nc in get_neighbors(r, c):
+                    if (nr, nc) not in visited:
+                        stack.append((nr, nc))
+        return group
+
+    def get_liberties(group):
+        liberties = set()
+        for row, col in group:
+            for nr, nc in get_neighbors(row, col):
+                if board[nr][nc] == 0:
+                    liberties.add((nr, nc))
+        return liberties
+    
+    def would_be_suicide(row, col, player):
+        board[row][col] = player
+        group = get_group(row, col, player)
+        liberties = get_liberties(group)
+        board[row][col] = 0  # Reset board
+        return len(liberties) == 0
+
+    def find_captures(player):
+        captures = []
+        opponent = 3 - player
+        for row in range(board_size):
+            for col in range(board_size):
+                if board[row][col] == opponent:
+                    group = get_group(row, col, opponent)
+                    if not get_liberties(group):
+                        captures.extend(group)
+        return captures
+
+    # Capture opponent stones
+    for row in range(board_size):
+        for col in range(board_size):
+            if is_valid_move(row, col):
+                board[row][col] = 1
+                captured = []
+                opponent = 2
+                group = []
+
+                for nr, nc in get_neighbors(row, col):
+
+                    if board[nr][nc] == opponent:
+                        group = get_group(nr, nc, opponent)
+                        if not get_liberties(group) and len(group) > 0:
+                            captured.extend(group)
+                        
+                if len(captured) > 0:
+                    board[row][col] = 0
+                    return (row+1, col+1)
+                board[row][col] = 0
+    
+
+    # Defend against capture
+    for r, c in me:
+        row, col = r - 1, c - 1
+        group = get_group(row, col, 1)
+        liberties = get_liberties(group)
+        if len(liberties) == 1:
+            nr, nc = liberties.pop()
+            if is_valid_move(nr, nc) and not would_be_suicide(nr, nc, 1):
+                return (nr + 1, nc + 1)
+    
+
+    # Expand territory
+    for row in range(board_size):
+        for col in range(board_size):
+            if is_valid_move(row, col) and not would_be_suicide(row, col, 1):
+                neighbors = get_neighbors(row, col)
+                friendly_neighbors = sum(1 for nr, nc in neighbors if board[nr][nc] == 1)
+                if friendly_neighbors > 0:
+                    return (row + 1, col + 1)
+
+    # Random move
+    possible_moves = []
+    for row in range(board_size):
+        for col in range(board_size):
+            if is_valid_move(row, col) and not would_be_suicide(row, col, 1):
+                possible_moves.append((row + 1, col + 1))
+
+    if possible_moves:
+        return random.choice(possible_moves)
+
+    return (0, 0)  # Pass

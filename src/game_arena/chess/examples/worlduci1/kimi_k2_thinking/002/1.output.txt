@@ -1,0 +1,387 @@
+The strategy for this policy is to implement a complete chess engine with alpha-beta search that prioritizes checkmate, then material advantage, and adapts search depth based on board complexity to stay within time limits. It uses material evaluation with check bonuses and move ordering by capture value for efficient pruning.
+
+<code>
+import numpy as np
+
+# Piece values in centipawns
+PIECE_VALUES = {'P': 100, 'N': 300, 'B': 300, 'R': 500, 'Q': 900, 'K': 0}
+
+# Movement offsets for each piece type
+KNIGHT_OFFSETS = [(2, 1), (2, -1), (-2, 1), (-2, -1), (1, 2), (1, -2), (-1, 2), (-1, -2)]
+KING_OFFSETS = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)]
+BISHOP_OFFSETS = [(1, 1), (1, -1), (-1, 1), (-1, -1)]
+ROOK_OFFSETS = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+QUEEN_OFFSETS = BISHOP_OFFSETS + ROOK_OFFSETS
+
+def square_to_coords(square):
+    """Convert algebraic notation to board coordinates (rank, file)"""
+    return (int(square[1]) - 1, ord(square[0]) - ord('a'))
+
+def coords_to_square(rank, file):
+    """Convert board coordinates to algebraic notation"""
+    return chr(ord('a') + file) + str(rank + 1)
+
+def is_square_attacked(board, rank, file, attacker_color):
+    """Check if a square is attacked by any piece of attacker_color (0=white, 1=black)"""
+    attacker = 'w' if attacker_color == 0 else 'b'
+    
+    # Pawn attacks
+    if attacker_color == 0:  # White pawns
+        for dr, df in [(-1, -1), (-1, 1)]:
+            r, f = rank + dr, file + df
+            if 0 <= r < 8 and 0 <= f < 8 and board[r][f] == 'wP':
+                return True
+    else:  # Black pawns
+        for dr, df in [(1, -1), (1, 1)]:
+            r, f = rank + dr, file + df
+            if 0 <= r < 8 and 0 <= f < 8 and board[r][f] == 'bP':
+                return True
+    
+    # Knights
+    for dr, df in KNIGHT_OFFSETS:
+        r, f = rank + dr, file + df
+        if 0 <= r < 8 and 0 <= f < 8:
+            piece = board[r][f]
+            if piece and piece[0] == attacker and piece[1] == 'N':
+                return True
+    
+    # King
+    for dr, df in KING_OFFSETS:
+        r, f = rank + dr, file + df
+        if 0 <= r < 8 and 0 <= f < 8:
+            piece = board[r][f]
+            if piece and piece[0] == attacker and piece[1] == 'K':
+                return True
+    
+    # Rooks and Queens (horizontal/vertical)
+    for dr, df in ROOK_OFFSETS:
+        r, f = rank + dr, file + df
+        while 0 <= r < 8 and 0 <= f < 8:
+            piece = board[r][f]
+            if piece:
+                if piece[0] == attacker and piece[1] in ('R', 'Q'):
+                    return True
+                break
+            r += dr
+            f += df
+    
+    # Bishops and Queens (diagonal)
+    for dr, df in BISHOP_OFFSETS:
+        r, f = rank + dr, file + df
+        while 0 <= r < 8 and 0 <= f < 8:
+            piece = board[r][f]
+            if piece:
+                if piece[0] == attacker and piece[1] in ('B', 'Q'):
+                    return True
+                break
+            r += dr
+            f += df
+    
+    return False
+
+def find_king(board, color):
+    """Find the king of the given color (0=white, 1=black)"""
+    king_char = 'w' if color == 0 else 'b'
+    for rank in range(8):
+        for file in range(8):
+            piece = board[rank][file]
+            if piece and piece[0] == king_char and piece[1] == 'K':
+                return (rank, file)
+    return None
+
+def is_in_check(board, color):
+    """Check if the king of the given color is in check"""
+    king_pos = find_king(board, color)
+    if not king_pos:
+        return False
+    return is_square_attacked(board, king_pos[0], king_pos[1], 1 - color)
+
+def generate_pawn_moves(board, rank, file, color):
+    """Generate pseudo-legal pawn moves"""
+    moves = []
+    direction = 1 if color == 0 else -1
+    start_rank = 1 if color == 0 else 6
+    promotion_rank = 7 if color == 0 else 0
+    enemy = 'b' if color == 0 else 'w'
+    
+    # Forward moves
+    new_rank = rank + direction
+    if 0 <= new_rank < 8 and board[new_rank][file] is None:
+        if new_rank == promotion_rank:
+            for promo in 'qrbn':
+                moves.append(coords_to_square(rank, file) + coords_to_square(new_rank, file) + promo)
+        else:
+            moves.append(coords_to_square(rank, file) + coords_to_square(new_rank, file))
+        
+        # Double move
+        if rank == start_rank:
+            new_rank2 = rank + 2 * direction
+            if 0 <= new_rank2 < 8 and board[new_rank2][file] is None:
+                moves.append(coords_to_square(rank, file) + coords_to_square(new_rank2, file))
+    
+    # Captures
+    for df in (-1, 1):
+        new_file = file + df
+        new_rank = rank + direction
+        if 0 <= new_rank < 8 and 0 <= new_file < 8:
+            target = board[new_rank][new_file]
+            if target and target[0] == enemy:
+                if new_rank == promotion_rank:
+                    for promo in 'qrbn':
+                        moves.append(coords_to_square(rank, file) + coords_to_square(new_rank, new_file) + promo)
+                else:
+                    moves.append(coords_to_square(rank, file) + coords_to_square(new_rank, new_file))
+    
+    return moves
+
+def generate_piece_moves(board, rank, file, piece_type, color):
+    """Generate pseudo-legal moves for non-pawn pieces"""
+    moves = []
+    color_char = 'w' if color == 0 else 'b'
+    
+    if piece_type == 'N':
+        offsets = KNIGHT_OFFSETS
+    elif piece_type == 'B':
+        offsets = BISHOP_OFFSETS
+    elif piece_type == 'R':
+        offsets = ROOK_OFFSETS
+    elif piece_type == 'Q':
+        offsets = QUEEN_OFFSETS
+    elif piece_type == 'K':
+        offsets = KING_OFFSETS
+    else:
+        return moves
+    
+    if piece_type in ('N', 'K'):
+        # Leapers
+        for dr, df in offsets:
+            new_rank, new_file = rank + dr, file + df
+            if 0 <= new_rank < 8 and 0 <= new_file < 8:
+                target = board[new_rank][new_file]
+                if target is None or target[0] != color_char:
+                    moves.append(coords_to_square(rank, file) + coords_to_square(new_rank, new_file))
+    else:
+        # Sliders
+        for dr, df in offsets:
+            new_rank, new_file = rank + dr, file + df
+            while 0 <= new_rank < 8 and 0 <= new_file < 8:
+                target = board[new_rank][new_file]
+                if target is None:
+                    moves.append(coords_to_square(rank, file) + coords_to_square(new_rank, new_file))
+                elif target[0] != color_char:
+                    moves.append(coords_to_square(rank, file) + coords_to_square(new_rank, new_file))
+                    break
+                else:
+                    break
+                new_rank += dr
+                new_file += df
+    
+    return moves
+
+def generate_king_moves_with_castling(board, rank, file, color):
+    """Generate king moves including castling"""
+    moves = generate_piece_moves(board, rank, file, 'K', color)
+    
+    # Castling checks
+    if color == 0 and rank == 0 and file == 4:  # White king on e1
+        enemy = 1
+        # Kingside
+        if (board[0][5] is None and board[0][6] is None and board[0][7] == 'wR' and
+            not is_in_check(board, color) and
+            not is_square_attacked(board, 0, 5, enemy) and
+            not is_square_attacked(board, 0, 6, enemy)):
+            moves.append('e1g1')
+        # Queenside
+        if (board[0][1] is None and board[0][2] is None and board[0][3] is None and
+            board[0][0] == 'wR' and
+            not is_in_check(board, color) and
+            not is_square_attacked(board, 0, 3, enemy) and
+            not is_square_attacked(board, 0, 2, enemy)):
+            moves.append('e1c1')
+    elif color == 1 and rank == 7 and file == 4:  # Black king on e8
+        enemy = 0
+        # Kingside
+        if (board[7][5] is None and board[7][6] is None and board[7][7] == 'bR' and
+            not is_in_check(board, color) and
+            not is_square_attacked(board, 7, 5, enemy) and
+            not is_square_attacked(board, 7, 6, enemy)):
+            moves.append('e8g8')
+        # Queenside
+        if (board[7][1] is None and board[7][2] is None and board[7][3] is None and
+            board[7][0] == 'bR' and
+            not is_in_check(board, color) and
+            not is_square_attacked(board, 7, 3, enemy) and
+            not is_square_attacked(board, 7, 2, enemy)):
+            moves.append('e8c8')
+    
+    return moves
+
+def generate_pseudo_legal_moves(board, color):
+    """Generate all pseudo-legal moves for the given color"""
+    moves = []
+    color_char = 'w' if color == 0 else 'b'
+    
+    for rank in range(8):
+        for file in range(8):
+            piece = board[rank][file]
+            if not piece or piece[0] != color_char:
+                continue
+            
+            piece_type = piece[1]
+            
+            if piece_type == 'P':
+                moves.extend(generate_pawn_moves(board, rank, file, color))
+            elif piece_type == 'K':
+                moves.extend(generate_king_moves_with_castling(board, rank, file, color))
+            else:
+                moves.extend(generate_piece_moves(board, rank, file, piece_type, color))
+    
+    return moves
+
+def make_move(board, move):
+    """Execute a move on a board copy"""
+    new_board = [row[:] for row in board]
+    
+    from_sq = move[:2]
+    to_sq = move[2:4]
+    promotion = move[4:] if len(move) > 4 else None
+    
+    from_rank, from_file = square_to_coords(from_sq)
+    to_rank, to_file = square_to_coords(to_sq)
+    
+    piece = new_board[from_rank][from_file]
+    if not piece:
+        return new_board
+    
+    # Move piece
+    new_board[from_rank][from_file] = None
+    
+    if promotion:
+        new_board[to_rank][to_file] = piece[0] + promotion.upper()
+    else:
+        new_board[to_rank][to_file] = piece
+    
+    # Handle castling
+    if piece[1] == 'K' and abs(to_file - from_file) == 2:
+        rook_from = 7 if to_file > from_file else 0
+        rook_to = 5 if to_file > from_file else 3
+        rook_rank = from_rank
+        rook_piece = new_board[rook_rank][rook_from]
+        if rook_piece and rook_piece[1] == 'R':
+            new_board[rook_rank][rook_from] = None
+            new_board[rook_rank][rook_to] = rook_piece
+    
+    return new_board
+
+def generate_legal_moves(board, color):
+    """Generate legal moves (pseudo-legal moves that don't leave king in check)"""
+    pseudo_moves = generate_pseudo_legal_moves(board, color)
+    legal_moves = []
+    
+    for move in pseudo_moves:
+        new_board = make_move(board, move)
+        if not is_in_check(new_board, color):
+            legal_moves.append(move)
+    
+    return legal_moves
+
+def evaluate(board, color):
+    """Evaluate board from perspective of color"""
+    values = {'P': 100, 'N': 300, 'B': 300, 'R': 500, 'Q': 900, 'K': 0}
+    
+    score = 0
+    for rank in range(8):
+        for file in range(8):
+            piece = board[rank][file]
+            if not piece:
+                continue
+            
+            piece_color = 0 if piece[0] == 'w' else 1
+            piece_type = piece[1]
+            
+            if piece_color == color:
+                score += values[piece_type]
+            else:
+                score -= values[piece_type]
+    
+    if is_in_check(board, 1 - color):
+        score += 200
+    
+    return score
+
+def alpha_beta(board, depth, alpha, beta, color):
+    """Alpha-beta search"""
+    if depth == 0:
+        return evaluate(board, color)
+    
+    moves = generate_legal_moves(board, color)
+    if not moves:
+        return -10000 if is_in_check(board, color) else 0
+    
+    for move in moves:
+        new_board = make_move(board, move)
+        score = -alpha_beta(new_board, depth - 1, -beta, -alpha, 1 - color)
+        
+        if score >= beta:
+            return beta
+        
+        alpha = max(alpha, score)
+    
+    return alpha
+
+def policy(pieces, to_play):
+    """
+    Main policy: choose the best legal move.
+    Prioritizes checkmate, then uses alpha-beta search with adaptive depth.
+    """
+    # Build board
+    board = [[None]*8 for _ in range(8)]
+    for sq, piece in pieces.items():
+        rank, file = square_to_coords(sq)
+        board[rank][file] = piece
+    
+    color = 0 if to_play == 'white' else 1
+    
+    # Generate legal moves
+    moves = generate_legal_moves(board, color)
+    if not moves:
+        return "a1a1"
+    
+    if len(moves) == 1:
+        return moves[0]
+    
+    # Check for immediate mate
+    for move in moves:
+        new_board = make_move(board, move)
+        opp_moves = generate_legal_moves(new_board, 1 - color)
+        if not opp_moves and is_in_check(new_board, 1 - color):
+            return move
+    
+    # Order moves: captures first for better pruning
+    def capture_priority(m):
+        to_rank, to_file = square_to_coords(m[2:4])
+        target = board[to_rank][to_file]
+        return PIECE_VALUES.get(target[1], -1) if target else -1
+    
+    moves.sort(key=capture_priority, reverse=True)
+    
+    # Adaptive depth based on piece count
+    piece_count = sum(1 for row in board for p in row if p)
+    depth = 1 if piece_count > 20 else (2 if piece_count > 10 else 3)
+    
+    # Alpha-beta search
+    best_move = moves[0]
+    best_score = -float('inf')
+    
+    for move in moves:
+        new_board = make_move(board, move)
+        score = -alpha_beta(new_board, depth, -float('inf'), float('inf'), 1 - color)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+            if score > 5000:  # Winning position
+                break
+    
+    return best_move
+</code>

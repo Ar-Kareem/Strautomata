@@ -1,0 +1,333 @@
+**Strategy Overview**
+
+The policy plays Pentago on a 6 × 6 board using a limited‑depth search (2 plies: *our move → opponent’s response*).  
+The search is guided by a fast, line‑based evaluation function that scores the board for “you”.  
+Key ideas:
+
+1. **Immediate win detection** – before any search we try every legal placement + rotation; if one yields a five‑in‑a‑row for us it is returned instantly.
+
+2. **Depth‑2 minimax with α‑β pruning** –  
+   * Max node (our turn) tries to maximise the score.  
+   * Min node (opponent’s turn) tries to minimise the score (i.e. the opponent tries to give us the worst outcome).  
+
+   The leaf nodes (depth = 0) are evaluated with the heuristic, so the whole tree consists of at most  
+   ≈ 200 × 200 ≈ 40 000 leaf evaluations – easily fast enough in Python.
+
+3. **Evaluation function** – for every possible 5‑cell line (horizontal, vertical, both diagonals) it counts  
+   * your stones, opponent stones, empties, and whether the line is *open* (has an empty cell at either end).  
+   * Strong patterns (4 in a row, 3 in a row, …) are weighted heavily, with open lines receiving a larger bonus.  
+   * A small centre‑control bonus favours placing stones near the board centre.
+
+4. **Move ordering** – before the full minimax is run, each move is given a quick heuristic score
+   (immediate win → ∞, draw → 0, otherwise the line‑based heuristic + centre bonus).  
+   Moves are sorted descending (or ascending for the opponent) which dramatically improves α‑β pruning.
+
+5. **Blocking checks** – if a move lets the opponent win on his next turn it receives a very low score, so the search naturally avoids it unless forced.
+
+The whole policy is deterministic, never returns an illegal move, and finishes well inside the 1 second limit on modern hardware.
+
+---
+
+```python
+import sys
+
+# ------------------------------------------------------------
+# Constants and helper utilities
+# ------------------------------------------------------------
+SIZE = 6                     # board dimension
+QUAD = 3                     # each quadrant is 3x3
+INF = 1e6                    # large positive/negative value
+
+# ------------------------------------------------------------
+# Quadrant rotation (in‑place, 3x3 sub‑board)
+# ------------------------------------------------------------
+def _rotate_quadrant(board, quad, direction):
+    """Rotate one 3×3 quadrant of `board` clockwise (dir='R') or anticlockwise (dir='L')."""
+    r0 = (quad // 2) * QUAD
+    c0 = (quad % 2) * QUAD
+    # extract sub‑grid
+    sub = [[board[r0 + i][c0 + j] for j in range(QUAD)] for i in range(QUAD)]
+    if direction == 'R':                     # clockwise
+        rot = [[sub[QUAD - 1 - j][i] for j in range(QUAD)] for i in range(QUAD)]
+    else:                                     # anticlockwise
+        rot = [[sub[j][QUAD - 1 - i] for j in range(QUAD)] for i in range(QUAD)]
+    # write back
+    for i in range(QUAD):
+        for j in range(QUAD):
+            board[r0 + i][c0 + j] = rot[i][j]
+
+# ------------------------------------------------------------
+# Simulate a single move (placement + rotation)
+# ------------------------------------------------------------
+def _simulate(you, opp, r, c, quad, direction, player):
+    """
+    Return new board state after a move.
+    `player == 0` -> we place a stone on `you`, otherwise on `opp`.
+    """
+    new_you = [row[:] for row in you]
+    new_opp = [row[:] for row in opp]
+    if player == 0:
+        new_you[r][c] = 1
+    else:
+        new_opp[r][c] = 1
+    # rotation touches both players
+    _rotate_quadrant(new_you, quad, direction)
+    _rotate_quadrant(new_opp, quad, direction)
+    return new_you, new_opp
+
+# ------------------------------------------------------------
+# Win detection
+# ------------------------------------------------------------
+def _check_win(you, opp):
+    """
+    Return one of: 'you', 'opp', 'both', None.
+    """
+    win_you = win_opp = False
+    dirs = [(0, 1), (1, 0), (1, 1), (1, -1)]
+    for dr, dc in dirs:
+        for r in range(SIZE):
+            for c in range(SIZE):
+                if 0 <= r + 4 * dr < SIZE and 0 <= c + 4 * dc < SIZE:
+                    cnt_you = cnt_opp = 0
+                    for k in range(5):
+                        rr = r + k * dr
+                        cc = c + k * dc
+                        if you[rr][cc]:
+                            cnt_you += 1
+                        elif opp[rr][cc]:
+                            cnt_opp += 1
+                    if cnt_you == 5:
+                        win_you = True
+                    if cnt_opp == 5:
+                        win_opp = True
+    if win_you and win_opp:
+        return 'both'
+    if win_you:
+        return 'you'
+    if win_opp:
+        return 'opp'
+    return None
+
+# ------------------------------------------------------------
+# Heuristic evaluation (positive = good for "you")
+# ------------------------------------------------------------
+def _evaluate(you, opp):
+    """
+    Simple line‑based heuristic.  Returns a floating point score.
+    """
+    # Immediate terminal checks (normally caught earlier, but cheap to repeat)
+    terminal = _check_win(you, opp)
+    if terminal == 'you':
+        return INF
+    if terminal == 'opp':
+        return -INF
+    if terminal == 'both':
+        return 0.0
+
+    score = 0.0
+    dirs = [(0, 1), (1, 0), (1, 1), (1, -1)]
+
+    for dr, dc in dirs:
+        for r in range(SIZE):
+            for c in range(SIZE):
+                if 0 <= r + 4 * dr < SIZE and 0 <= c + 4 * dc < SIZE:
+                    cnt_you = cnt_opp = empties = 0
+                    for k in range(5):
+                        rr = r + k * dr
+                        cc = c + k * dc
+                        if you[rr][cc]:
+                            cnt_you += 1
+                        elif opp[rr][cc]:
+                            cnt_opp += 1
+                        else:
+                            empties += 1
+
+                    # Open ends?
+                    left_r, left_c = r - dr, c - dc
+                    left_open = (0 <= left_r < SIZE and 0 <= left_c < SIZE
+                                 and you[left_r][left_c] == 0 and opp[left_r][left_c] == 0)
+                    right_r, right_c = r + 5 * dr, c + 5 * dc
+                    right_open = (0 <= right_r < SIZE and 0 <= right_c < SIZE
+                                  and you[right_r][right_c] == 0 and opp[right_r][right_c] == 0)
+                    open = left_open or right_open
+
+                    # Strong patterns
+                    if cnt_you == 4:
+                        score += 5000 if open else 1000
+                    elif cnt_opp == 4:
+                        score -= 5000 if open else 1000
+                    elif cnt_you == 3:
+                        score += 200 if open else 50
+                    elif cnt_opp == 3:
+                        score -= 200 if open else 50
+                    elif cnt_you == 2:
+                        score += 20 if open else 5
+                    elif cnt_opp == 2:
+                        score -= 20 if open else 5
+                    elif cnt_you == 1:
+                        score += 2 if open else 0.5
+                    elif cnt_opp == 1:
+                        score -= 2 if open else 0.5
+                    # empty cells contribute nothing
+
+    # Small centre‑control bonus
+    centre = (SIZE - 1) / 2.0
+    for r in range(SIZE):
+        for c in range(SIZE):
+            if you[r][c]:
+                dist = abs(r - centre) + abs(c - centre)
+                score += max(0, 3 - dist) * 0.1
+    return score
+
+# ------------------------------------------------------------
+# Move generation
+# ------------------------------------------------------------
+def _generate_moves(you, opp, player):
+    """Yield all legal moves for the given player (0=us, 1=opp)."""
+    for r in range(SIZE):
+        for c in range(SIZE):
+            if you[r][c] == 0 and opp[r][c] == 0:
+                for quad in range(4):
+                    for direction in ('L', 'R'):
+                        yield (r, c, quad, direction)
+
+# ------------------------------------------------------------
+# Move ordering (simple heuristic)
+# ------------------------------------------------------------
+def _order_moves(you, opp, moves, opponent=False):
+    """
+    Return a list of moves sorted by a quick heuristic.
+    For `opponent=True` we assume the opponent is the maximiser of *their* score,
+    therefore we sort by `-score` (lowest for us first).
+    """
+    scored = []
+    for r, c, quad, direction in moves:
+        new_you, new_opp = _simulate(you, opp, r, c, quad, direction,
+                                     player=0 if not opponent else 1)
+        terminal = _check_win(new_you, new_opp)
+
+        if not opponent:
+            if terminal == 'you':
+                return [(r, c, quad, direction)]          # instant win – highest priority
+            if terminal == 'both':
+                score = 0.0
+            else:
+                score = _evaluate(new_you, new_opp)
+            # centre bonus
+            centre = (SIZE - 1) / 2.0
+            dist = abs(r - centre) + abs(c - centre)
+            score += (10 - dist * 2) * 0.5
+            scored.append((score, (r, c, quad, direction)))
+        else:
+            if terminal == 'opp':
+                return [(r, c, quad, direction)]          # opponent can win – minimise us
+            if terminal == 'both':
+                score = 0.0
+            else:
+                # evaluate from opponent's perspective (swap boards)
+                score = _evaluate(new_opp, new_you)
+            # we want moves that give opponent a high score, i.e. a low score for us
+            scored.append((-score, (r, c, quad, direction)))
+
+    if not opponent:
+        scored.sort(reverse=True)                       # highest score first
+    else:
+        scored.sort()                                    # lowest (most negative) first
+    return [mv for _, mv in scored]
+
+# ------------------------------------------------------------
+# Minimax (α‑β) with depth 2
+# ------------------------------------------------------------
+def _minimax_max(you, opp, depth, alpha, beta):
+    """Our turn (maximiser). Returns (score, move)."""
+    if depth == 0:
+        return _evaluate(you, opp), None
+
+    moves = list(_generate_moves(you, opp, player=0))
+    moves = _order_moves(you, opp, moves, opponent=False)
+
+    best_score = -INF
+    best_move = None
+
+    for r, c, quad, direction in moves:
+        new_you, new_opp = _simulate(you, opp, r, c, quad, direction, player=0)
+        terminal = _check_win(new_you, new_opp)
+
+        if terminal == 'you':
+            return INF, (r, c, quad, direction)
+        if terminal == 'both':
+            score = 0.0
+        else:
+            score, _ = _minimax_min(new_you, new_opp, depth - 1, alpha, beta)
+
+        if score > best_score:
+            best_score = score
+            best_move = (r, c, quad, direction)
+        alpha = max(alpha, best_score)
+        if beta <= alpha:
+            break
+    return best_score, best_move
+
+
+def _minimax_min(you, opp, depth, alpha, beta):
+    """Opponent's turn (minimiser). Returns (score, move)."""
+    if depth == 0:
+        return _evaluate(you, opp), None
+
+    moves = list(_generate_moves(you, opp, player=1))
+    moves = _order_moves(you, opp, moves, opponent=True)
+
+    best_score = INF
+    best_move = None
+
+    for r, c, quad, direction in moves:
+        new_you, new_opp = _simulate(you, opp, r, c, quad, direction, player=1)
+        terminal = _check_win(new_you, new_opp)
+
+        if terminal == 'opp':
+            return -INF, (r, c, quad, direction)
+        if terminal == 'both':
+            score = 0.0
+        else:
+            score, _ = _minimax_max(new_you, new_opp, depth - 1, alpha, beta)
+
+        if score < best_score:
+            best_score = score
+            best_move = (r, c, quad, direction)
+        beta = min(beta, best_score)
+        if beta <= alpha:
+            break
+    return best_score, best_move
+
+# ------------------------------------------------------------
+# Public API – the policy that the arena calls
+# ------------------------------------------------------------
+def policy(you, opponent):
+    """
+    Given two 6×6 binary matrices (you, opponent) return a legal move
+    as a string "row,col,quad,dir" (rows/cols are 1‑based).
+    """
+    # Ensure we work with plain Python lists (in case numpy arrays are passed)
+    you = [list(row) for row in you]
+    opponent = [list(row) for row in opponent]
+
+    # -----------------------------------------------------------------
+    # 1. Immediate winning move?
+    # -----------------------------------------------------------------
+    for r in range(SIZE):
+        for c in range(SIZE):
+            if you[r][c] == 0 and opponent[r][c] == 0:
+                for quad in range(4):
+                    for direction in ('L', 'R'):
+                        new_you, new_opp = _simulate(you, opponent, r, c, quad,
+                                                     direction, player=0)
+                        if _check_win(new_you, new_opp) == 'you':
+                            return f"{r+1},{c+1},{quad},{direction}"
+
+    # -----------------------------------------------------------------
+    # 2. No immediate win – run depth‑2 minimax
+    # -----------------------------------------------------------------
+    _, move = _minimax_max(you, opponent, depth=2, alpha=-INF, beta=INF)
+    r, c, quad, direction = move
+    return f"{r+1},{c+1},{quad},{direction}"
+```

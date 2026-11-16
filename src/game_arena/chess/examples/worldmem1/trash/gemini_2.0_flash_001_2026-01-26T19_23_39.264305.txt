@@ -1,0 +1,90 @@
+The strategy for this policy is to implement a simple evaluation function and a search algorithm to select the best move from the list of legal moves, within the time limit. First prioritize checkmates. Then try to capture pieces with higher values. Then look for checks. To prevent brute force checking every possibility, keep it simple and efficient with quick evaluation and move selection.
+
+```python
+import chess
+import time
+
+def evaluate_board(board, to_play):
+    piece_values = {
+        chess.PAWN: 1,
+        chess.KNIGHT: 3,
+        chess.BISHOP: 3,
+        chess.ROOK: 5,
+        chess.QUEEN: 9,
+        chess.KING: 0  # King value is special, could consider king safety
+    }
+
+    score = 0
+    for square in chess.SQUARES:
+        piece = board.piece_at(square)
+        if piece:
+            if piece.color == board.turn:
+                score += piece_values[piece.piece_type]
+            else:
+                score -= piece_values[piece.piece_type]
+
+    # Simple material evaluation
+    return score
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str], memory: dict) -> tuple[str, dict]:
+    start_time = time.time()
+
+    board = chess.Board()
+    board.clear()
+    for square, piece in pieces.items():
+        chess_square = chess.parse_square(square)
+        chess_piece = None
+        if piece[1] == 'K':
+            chess_piece = chess.KING
+        elif piece[1] == 'Q':
+            chess_piece = chess.QUEEN
+        elif piece[1] == 'R':
+            chess_piece = chess.ROOK
+        elif piece[1] == 'B':
+            chess_piece = chess.BISHOP
+        elif piece[1] == 'N':
+            chess_piece = chess.KNIGHT
+        elif piece[1] == 'P':
+            chess_piece = chess.PAWN
+
+        color = chess.WHITE if piece[0] == 'w' else chess.BLACK
+        board.set_piece_at(chess_square, chess.Piece(chess_piece, color))
+
+    if to_play == 'white':
+        board.turn = chess.WHITE
+    else:
+        board.turn = chess.BLACK
+
+    best_move = None
+    best_score = float('-inf') if board.turn == chess.WHITE else float('inf')
+
+    for move_str in legal_moves:
+        try: 
+            move = board.parse_uci(move_str)
+            board.push(move)
+
+            if board.is_checkmate():
+                board.pop()
+                return move_str, memory
+
+            score = evaluate_board(board, to_play)
+
+            if board.turn == chess.WHITE:
+                if score > best_score:
+                    best_score = score
+                    best_move = move_str
+            else:
+                if score < best_score:
+                    best_score = score
+                    best_move = move_str
+            board.pop()
+        except ValueError:
+            print(f"Invalid move string: {move_str}")
+            continue
+
+    if best_move is None:
+        # If no best move was found (e.g. all moves are invalid somehow), return the first legal move as a failsafe
+        return legal_moves[0], memory
+
+    return best_move, memory
+```

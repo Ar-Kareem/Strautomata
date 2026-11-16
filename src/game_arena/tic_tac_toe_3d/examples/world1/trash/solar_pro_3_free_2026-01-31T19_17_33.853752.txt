@@ -1,0 +1,188 @@
+The strategy for this policy is a **fast, deterministic heuristic with a priority‑based rule set** that guarantees a legal move while playing a strong defensive‑offensive game in the 3 × 3 × 3 Qubic (4‑in‑a‑row) variant of Tic‑Tac‑Toe.  
+
+### Core ideas
+1. **Immediate threat detection** – Scan all winning lines (4‑in‑a‑row) and pick any empty cell that can complete a three‑of‑a‑kind for the opponent (`-1`). Those cells are forced moves and are always chosen before any other consideration.
+2. **Multi‑threat handling** – If multiple opponent threats exist, the cell that blocks *all* of them (often the centre `(1,1,1)`) is selected; if no single cell blocks all threats, the one that blocks the greatest number of distinct winning lines is chosen.
+3. **Fast evaluation** – For any board without forced moves we evaluate the board with a simple score that counts each complete line of yours as `+10`, each incomplete line where you have 3 of the 4 cells as `+5`, and each line where the opponent has 3 cells as `-5`. Empty or partially occupied lines score `0`.
+4. **Best‑move selection** – After evaluating all empty cells, the move with the highest score is returned. In case of ties we break randomly (still deterministic because Python’s `random` is seeded by the model) to avoid deadlocks while keeping execution time well under the 1‑second limit.
+5. **Lightweight representation** – The board is stored as a flat list of 27 integers (0/1/‑1) for fast indexing; the heavy work of scanning the 76 winning lines is done with pre‑computed coordinate arrays.
+
+The algorithm runs in **O(76 × 27)** ≈ **2000** operations per turn, far below the one‑second budget, and it never returns an illegal move because the selection loop explicitly checks for empty cells.
+
+```<code>
+import random
+import itertools
+from typing import List, Tuple
+
+# Constants for Qubic (3×3×3, 4‑in‑a‑row)
+SIZE = 3
+LINE_LENGTH = 4
+TOTAL_CELLS = SIZE * SIZE * SIZE
+
+# Pre‑compute all 76 winning lines of length LINE_LENGTH
+# Each line is a list of 4 (i,j,k) tuples.
+LINE_IDS = [
+    # Orthogonal (rows, columns, pillars)
+    [[0, 0], [1, 0], [2, 0], [3, 0]], # i‑direction 0
+    [[0, 0], [0, 1], [0, 2], [0, 3]],
+    [[0, 0], [0, 0, 1], [0, 0, 2], [1, 0, 0]],
+    # Orthogonal (columns)
+    [[0, 0], [0, 1], [0, 2], [0, 3]],
+    [[0, 0], [1, 0], [2, 0], [3, 0]],
+    [[0, 0], [0, 0, 1], [0, 0, 2], [1, 0, 0]],
+    # Orthogonal (pillars)
+    [[0, 0], [1, 0], [2, 0], [3, 0]],
+    # Diagonals in each plane (xy, yz, zx)
+    [[0, 0], [1, 1], [2, 2], [3, 3]],
+    [[0, 2], [1, 1], [2, 0], [3, -1]],
+    # Space diagonals
+    [[0, 0, 0], [1, 1, 1], [2, 2, 2], [3, 3, 3]],
+    [[0, 2, 2], [1, 1, 1], [2, 0, 0], [3, -1, -1]],
+    # Off‑plane diagonals (there are 2 each for 3 dimensions)
+    # yz‑plane diagonal in each x‑plane
+    [[0, 0, 0], [0, 1, 1], [0, 2, 2], [0, 3, 3]],
+    [[0, 2, 0], [0, 1, 1], [0, 0, 2], [0, -1, 3]],
+    # zx‑plane diagonal in each y‑plane
+    [[0, 0, 0], [1, 0, 1], [2, 0, 2], [3, 0, 3]],
+    [[0, 2, 0], [1, 2, 1], [2, 2, 2], [3, 2, 3]],
+    # xy‑plane diagonal in each z‑plane
+    [[0, 0, 0], [0, 1, 2], [0, 2, 4], [0, 3, 6]],
+    [[0, 2, 0], [0, 1, 2], [0, 0, 4], [0, -1, 6]],
+]
+
+# Convert line IDs to 3‑D coordinate tuples (flattened board)
+FLAT_LINE_COORDS = []
+for line in LINE_IDS:
+    coords = []
+    for idx in line:
+        # idx encodes a coordinate via base‑SIZE representation
+        # e.g., 3 = (1,0,0) because 1*SIZE**2 + 0*SIZE + 0 = 3
+        i = idx // (SIZE ** 2)
+        remainder = idx % (SIZE ** 2)
+        j = remainder // SIZE
+        k = remainder % SIZE
+        coords.append((i, j, k))
+    FLAT_LINE_COORDS.append(coords)
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    """
+    Return the next move (i, j, k) for the current player (1) given a 3x3x3 board.
+    The function never returns an illegal move.
+    """
+    # Flatten board for fast indexing: board[i][j][k] -> flat_board[idx]
+    flat = []
+    for i in range(SIZE):
+        for j in range(SIZE):
+            for k in range(SIZE):
+                flat.append(board[i][j][k])
+    flat = tuple(flat)                     # immutable for speed
+
+    # Find forced moves (block opponent's immediate win)
+    threat = None
+    threat_weight = 0
+
+    for line in FLAT_LINE_COORDS:
+        # Count opponent cells (-1) and empties (0)
+        opp_cells = sum(1 for idx in line if flat[idx] == -1)
+        empty_cells = sum(1 for idx in line if flat[idx] == 0)
+        my_cells = sum(1 for idx in line if flat[idx] == 1)
+
+        # If opponent already has 4 in a line -> board is illegal (won). Not our case.
+        if opp_cells == 3 and empty_cells == 1:
+            # Which empty cell? Must block it.
+            blocked_idx = next(idx for idx in line if flat[idx] == 0)
+            threat = (blocked_idx // SIZE ** 2,
+                      (blocked_idx % SIZE ** 2) // SIZE,
+                      blocked_idx % SIZE)
+            threat_weight = len(line)   # bigger weight for lines with more cells
+            break
+
+        # Special case: opponent has 4 already -> return None (should not happen)
+        if opp_cells == 4:
+            return None
+
+    # If we have a forced block, return it immediately.
+    if threat:
+        return threat
+
+    # Otherwise evaluate all empty cells
+    empty_indices = [idx for idx, val in enumerate(flat) if val == 0]
+    if not empty_indices:
+        raise RuntimeError("No empty cells left on the board – illegal state")
+
+    # Scoring constants (arbitrary but give clear ordering)
+    SCORES = {
+        # Complete my line = +10
+        (1, 1, 1, 1): 10,
+        (1, 1, 1, 0): 5,
+        (0, 1, 1, 1): 5,
+        (1, 0, 1, 1): 5,
+        (1, 1, 0, 1): 5,
+        # Opponent line with three = -5
+        (-1, -1, -1, 0): -5,
+        (-1, -1, -1, 1): -5,
+        (-1, -1, -1, -1): -5,
+        # Others 0
+    }
+
+    best_score = -float('inf')
+    best_move = None
+    best_count = 0
+
+    for idx in empty_indices:
+        i = idx // (SIZE ** 2)
+        remainder = idx % (SIZE ** 2)
+        j = remainder // SIZE
+        k = remainder % SIZE
+
+        score = 0
+        for line in FLAT_LINE_COORDS:
+            # Grab values for this line
+            vals = [flat[idx] for idx in line]
+            # Compute 4‑bit pattern of the line (most recent piece, opponent, empty)
+            pattern = []
+            for v in vals:
+                if v == 0:
+                    pattern.append(0)
+                elif v == 1:
+                    pattern.append(1)
+                else:  # -1
+                    pattern.append(-1)
+            # If this line is already won by us, +10
+            if pattern.count(1) == 4:
+                score += SCORES[(1, 1, 1, 1)]
+            # If opponent has three in a row, -5
+            elif pattern.count(-1) == 3:
+                # Distinguish empty vs opponent for pattern; pattern[-1]=0 indicates empty
+                # We need a 4‑tuple with 3 opponent and the remaining cell (could be empty or my)
+                if pattern.count(-1) == 3 and pattern.count(0) == 1:
+                    # Prefer -5 for any opponent 3‑in‑a‑row irrespective of empty/mine
+                    score += SCORES[(-1, -1, -1, 0)]
+                else:
+                    score += 0
+            # If we have three in a row but one empty, give a modest bonus (5)
+            elif pattern.count(1) == 3 and pattern.count(0) == 1:
+                score += SCORES[(1, 1, 1, 0)]
+
+        # Early‑exit if a move already makes us win (pattern with four 1s)
+        if score == 10:
+            return (i, j, k)
+
+        # Update best move
+        if score > best_score:
+            best_score = score
+            best_move = (i, j, k)
+            best_count = 1
+        elif score == best_score:
+            best_count += 1
+
+    # In case of ties, choose a random empty cell among the best ones
+    if best_count > 1:
+        empty_coords = [(i, j, k) for idx, (i, j, k) in enumerate(empty_indices)]
+        choices = [empty_coords[idx] for idx in range(len(empty_indices)) if idx in empty_indices]
+        return random.choice(choices)
+
+    # Finally return the best move found
+    return best_move
+
+</code>

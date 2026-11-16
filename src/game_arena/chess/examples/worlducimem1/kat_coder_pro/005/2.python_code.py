@@ -1,0 +1,247 @@
+
+import numpy as np
+from copy import deepcopy
+
+# Piece values: King=0 (not captured), Queen=9, Rook=5, Bishop=3, Knight=3, Pawn=1
+PIECE_VALUES = {
+    'Q': 9, 'R': 5, 'B': 3, 'N': 3, 'P': 1,
+    'q': -9, 'r': -5, 'b': -3, 'n': -3, 'p': -1
+}
+
+def policy(pieces: dict[str, str], to_play: str, memory: dict) -> tuple[str, dict]:
+    # Update memory with current position
+    memory.setdefault('move_history', [])
+    memory['move_history'].append(pieces.copy())
+    if len(memory['move_history']) > 10:
+        memory['move_history'].pop(0)
+    
+    # Determine player color
+    is_white = to_play == 'white'
+    
+    # Get legal moves
+    legal_moves = get_legal_moves(pieces, to_play)
+    
+    # If only one legal move, take it
+    if len(legal_moves) == 1:
+        return legal_moves[0], memory
+    
+    # Evaluate each move
+    best_score = -np.inf
+    best_move = legal_moves[0]
+    
+    for move in legal_moves:
+        # Simulate the move
+        new_pieces = make_move(pieces, move)
+        
+        # Calculate material score after the move
+        score = evaluate_position(new_pieces, is_white)
+        
+        # Bonus for captures
+        if is_capture_move(pieces, move):
+            captured_piece = get_captured_piece(pieces, move)
+            score += PIECE_VALUES.get(captured_piece[1], 0) * (1 if is_white else -1)
+        
+        # Penalize moves that leave pieces hanging
+        score -= evaluate_hanging_pieces(new_pieces, 'black' if is_white else 'white') * 0.5
+        
+        # Bonus for king safety (center files are slightly penalized for kings)
+        score += evaluate_king_safety(new_pieces, is_white)
+        
+        # Prefer moves that don't repeat recent positions
+        if new_pieces in memory['move_history']:
+            score -= 0.1
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move, memory
+
+def get_legal_moves(pieces: dict[str, str], to_play: str) -> list[str]:
+    """Generate legal moves using a simplified chess rules implementation"""
+    # This is a simplified version - in a real implementation, you'd need full chess rules
+    # For now, return a basic set of moves based on piece types
+    moves = []
+    is_white = to_play == 'white'
+    
+    for square, piece in pieces.items():
+        if (piece.startswith('w') and not is_white) or (piece.startswith('b') and is_white):
+            continue
+            
+        file, rank = square[0], square[1]
+        piece_type = piece[1]
+        
+        if piece_type == 'P':
+            # Pawn moves
+            if is_white:
+                # Move forward
+                if rank != '8':
+                    new_rank = str(int(rank) + 1)
+                    if f"{file}{new_rank}" not in pieces:
+                        moves.append(f"{square}{file}{new_rank}")
+                        # Double move from starting position
+                        if rank == '2' and f"{file}{str(int(rank) + 2)}" not in pieces:
+                            moves.append(f"{square}{file}{str(int(rank) + 2)}")
+                # Captures
+                for df in [-1, 1]:
+                    new_file = chr(ord(file) + df)
+                    if 'a' <= new_file <= 'h' and rank != '8':
+                        new_rank = str(int(rank) + 1)
+                        target = f"{new_file}{new_rank}"
+                        if target in pieces and pieces[target][0] != piece[0]:
+                            moves.append(f"{square}{target}")
+            else:
+                # Black pawn moves (simplified)
+                if rank != '1':
+                    new_rank = str(int(rank) - 1)
+                    if f"{file}{new_rank}" not in pieces:
+                        moves.append(f"{square}{file}{new_rank}")
+                        if rank == '7' and f"{file}{str(int(rank) - 2)}" not in pieces:
+                            moves.append(f"{square}{file}{str(int(rank) - 2)}")
+                for df in [-1, 1]:
+                    new_file = chr(ord(file) + df)
+                    if 'a' <= new_file <= 'h' and rank != '1':
+                        new_rank = str(int(rank) - 1)
+                        target = f"{new_file}{new_rank}"
+                        if target in pieces and pieces[target][0] != piece[0]:
+                            moves.append(f"{square}{target}")
+        
+        elif piece_type == 'K':
+            # King moves
+            for df in [-1, 0, 1]:
+                for dr in [-1, 0, 1]:
+                    if df == 0 and dr == 0:
+                        continue
+                    new_file = chr(ord(file) + df)
+                    new_rank = str(int(rank) + dr)
+                    if 'a' <= new_file <= 'h' and '1' <= new_rank <= '8':
+                        target = f"{new_file}{new_rank}"
+                        if target not in pieces or pieces[target][0] != piece[0]:
+                            moves.append(f"{square}{target}")
+        
+        elif piece_type == 'Q':
+            # Queen moves (rook + bishop)
+            moves.extend(get_rook_moves(pieces, square, piece[0]))
+            moves.extend(get_bishop_moves(pieces, square, piece[0]))
+        
+        elif piece_type == 'R':
+            moves.extend(get_rook_moves(pieces, square, piece[0]))
+        
+        elif piece_type == 'B':
+            moves.extend(get_bishop_moves(pieces, square, piece[0]))
+        
+        elif piece_type == 'N':
+            # Knight moves
+            knight_moves = [
+                (-2, -1), (-2, 1), (-1, -2), (-1, 2),
+                (1, -2), (1, 2), (2, -1), (2, 1)
+            ]
+            for df, dr in knight_moves:
+                new_file = chr(ord(file) + df)
+                new_rank = str(int(rank) + dr)
+                if 'a' <= new_file <= 'h' and '1' <= new_rank <= '8':
+                    target = f"{new_file}{new_rank}"
+                    if target not in pieces or pieces[target][0] != piece[0]:
+                        moves.append(f"{square}{target}")
+    
+    return moves
+
+def get_rook_moves(pieces: dict[str, str], square: str, color: str) -> list[str]:
+    moves = []
+    file, rank = square[0], square[1]
+    
+    # Horizontal and vertical moves
+    for df, dr in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+        for i in range(1, 8):
+            new_file = chr(ord(file) + df * i)
+            new_rank = str(int(rank) + dr * i)
+            if not ('a' <= new_file <= 'h' and '1' <= new_rank <= '8'):
+                break
+            target = f"{new_file}{new_rank}"
+            if target in pieces:
+                if pieces[target][0] != color:
+                    moves.append(f"{square}{target}")
+                break
+            moves.append(f"{square}{target}")
+    
+    return moves
+
+def get_bishop_moves(pieces: dict[str, str], square: str, color: str) -> list[str]:
+    moves = []
+    file, rank = square[0], square[1]
+    
+    # Diagonal moves
+    for df, dr in [(1, 1), (1, -1), (-1, 1), (-1, -1)]:
+        for i in range(1, 8):
+            new_file = chr(ord(file) + df * i)
+            new_rank = str(int(rank) + dr * i)
+            if not ('a' <= new_file <= 'h' and '1' <= new_rank <= '8'):
+                break
+            target = f"{new_file}{new_rank}"
+            if target in pieces:
+                if pieces[target][0] != color:
+                    moves.append(f"{square}{target}")
+                break
+            moves.append(f"{square}{target}")
+    
+    return moves
+
+def make_move(pieces: dict[str, str], move: str) -> dict[str, str]:
+    """Apply a move to the board and return new pieces dict"""
+    new_pieces = pieces.copy()
+    from_sq = move[:2]
+    to_sq = move[2:4]
+    
+    # Handle promotion
+    if len(move) == 5:
+        promotion = move[4]
+        new_pieces[to_sq] = promotion.upper() if new_pieces[from_sq][0] == 'w' else promotion.lower()
+    else:
+        new_pieces[to_sq] = new_pieces[from_sq]
+    
+    del new_pieces[from_sq]
+    return new_pieces
+
+def is_capture_move(pieces: dict[str, str], move: str) -> bool:
+    to_sq = move[2:4]
+    return to_sq in pieces
+
+def get_captured_piece(pieces: dict[str, str], move: str) -> str:
+    to_sq = move[2:4]
+    return pieces.get(to_sq, '')
+
+def evaluate_position(pieces: dict[str, str], is_white: bool) -> float:
+    """Evaluate material balance"""
+    score = 0
+    for piece in pieces.values():
+        score += PIECE_VALUES.get(piece[1], 0) * (1 if piece[0] == 'w' else -1)
+    return score if is_white else -score
+
+def evaluate_hanging_pieces(pieces: dict[str, str], opponent_color: str) -> float:
+    """Count pieces that could be captured next move"""
+    # Simplified - just count undefended pieces
+    hanging_score = 0
+    for square, piece in pieces.items():
+        if piece[0] != opponent_color[0]:  # Only evaluate opponent pieces
+            continue
+        # Check if piece can be captured (simplified)
+        # In a real implementation, you'd check if any of our pieces attack this square
+        pass
+    return hanging_score
+
+def evaluate_king_safety(pieces: dict[str, str], is_white: bool) -> float:
+    """Evaluate king safety (simplified)"""
+    king_pos = None
+    for square, piece in pieces.items():
+        if piece[1] == 'K' and piece[0] == ('w' if is_white else 'b'):
+            king_pos = square
+            break
+    
+    if not king_pos:
+        return 0
+    
+    # Penalize kings in center files
+    file = king_pos[0]
+    if file in ['d', 'e']:
+        return -0.1 if is_white else 0.1
+    return 0

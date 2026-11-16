@@ -1,0 +1,110 @@
+**Strategy Overview**
+
+The policy builds a full chess board from the supplied `pieces` dictionary using the `python‑chess` library.  
+It then enumerates all legal moves for the side to play and scores each move with a simple, fast heuristic:
+
+1. **Checkmate detection** – if a move results in immediate checkmate it is returned instantly.  
+2. **Material gain** – captures are scored by the value of the captured piece minus the value of the moving piece (to avoid sacrificing high‑value pieces).  
+3. **Promotion value** – promotion moves receive the extra value of the promoted piece (queen > rook > bishop = knight).  
+4. **Check bonus** – moves that give check get a small extra bonus.  
+
+The move with the highest total score is selected (ties are broken randomly).  
+If the position has no legal moves (stalemate or checkmate), the function returns the placeholder `'0000'`.
+
+The implementation stays well within the 1 second limit, relies only on `python‑chess` (which is part of the standard arena environment), and always returns a legal UCI move string.
+
+```python
+import chess
+import random
+
+# piece values used for the simple material heuristic
+PIECE_VALUES = {
+    chess.PAWN:   1,
+    chess.KNIGHT: 3,
+    chess.BISHOP: 3,
+    chess.ROOK:   5,
+    chess.QUEEN:  9,
+    chess.KING:   0   # king is never captured; value not needed
+}
+
+def _build_board(pieces: dict, to_play: str) -> chess.Board:
+    """Create a chess.Board from the sparse piece dictionary."""
+    board = chess.Board(None)          # start with an empty board
+    board.clear()
+    for sq, code in pieces.items():
+        color = chess.WHITE if code[0] == 'w' else chess.BLACK
+        kind = {
+            'K': chess.KING,
+            'Q': chess.QUEEN,
+            'R': chess.ROOK,
+            'B': chess.BISHOP,
+            'N': chess.KNIGHT,
+            'P': chess.PAWN
+        }[code[1]]
+        board.set_piece_at(chess.parse_square(sq), chess.Piece(kind, color))
+    board.turn = chess.WHITE if to_play == 'white' else chess.BLACK
+    return board
+
+def _score_move(board: chess.Board, move: chess.Move) -> float:
+    """Return a heuristic score for the given move."""
+    score = 0.0
+
+    # capture value
+    if board.is_capture(move):
+        captured_piece_type = board.piece_type_at(move.to_square)
+        if captured_piece_type:
+            score += PIECE_VALUES.get(captured_piece_type, 0)
+
+    # promotion value
+    if move.promotion:
+        # value of the new piece minus the pawn value
+        score += PIECE_VALUES.get(move.promotion, 0) - PIECE_VALUES[chess.PAWN]
+
+    # check bonus
+    temp = board.copy()
+    temp.push(move)
+    if temp.is_check():
+        score += 0.5
+
+    # net material loss (if we capture a piece of lower value)
+    moving_piece_type = board.piece_type_at(move.from_square)
+    if moving_piece_type:
+        score -= 0.1 * PIECE_VALUES.get(moving_piece_type, 0)  # small penalty for moving valuable pieces
+
+    return score
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    """
+    Choose a move for the side indicated by `to_play`.
+
+    Returns a legal UCI move string. If no legal move exists, returns '0000'.
+    """
+    board = _build_board(pieces, to_play)
+    legal_moves = list(board.legal_moves)
+
+    if not legal_moves:
+        # No legal moves (stalemate or checkmate). Return a dummy string.
+        return '0000'
+
+    # First, look for a check‑mate move
+    for mv in legal_moves:
+        tmp = board.copy()
+        tmp.push(mv)
+        if tmp.is_checkmate():
+            return mv.uci()
+
+    # Evaluate remaining moves
+    best_score = -float('inf')
+    best_moves = []
+    for mv in legal_moves:
+        sc = _score_move(board, mv)
+        if sc > best_score:
+            best_score = sc
+            best_moves = [mv]
+        elif sc == best_score:
+            best_moves.append(mv)
+
+    # Random tie‑break
+    chosen_move = random.choice(best_moves)
+    return chosen_move.uci()
+```

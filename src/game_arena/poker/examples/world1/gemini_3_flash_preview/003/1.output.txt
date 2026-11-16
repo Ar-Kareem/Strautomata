@@ -1,0 +1,68 @@
+### Strategy Description
+
+This policy employs a **Simplified Strength-Based Threshold** strategy, specifically tailored for 1-card poker (often called "Kuwaiti" or "1-card Hold 'em"). 
+
+1.  **Hand Strength Evaluation**: Since each player has only one private card, the strength is determined purely by the rank (0-12, usually representing 2-Ace).
+2.  **Dynamic Thresholds**:
+    *   **Pre-flop (No public cards)**: It plays aggressively with high ranks (Ranks 10-12 are used for raises/all-ins) and conservatively with middle-to-low ranks. It folds very low ranks (3 or below) only if there is a significant bet to call.
+    *   **Post-flop (With public cards)**: It compares the private card against the board. If the private card is higher than all public cards, it treats the hand as high strength. If the board contains cards higher than the hole card, the policy becomes more risk-averse.
+3.  **Pot Committed Logic**: If the policy has already committed a significant portion of its stack or the amount `to_call` is very small relative to the pot (providing good "pot odds"), it is programmed to call rather than fold to avoid being exploited by bluffs.
+4.  **Safety Net**: It checks against the `allowed_actions` list to ensure it never returns an illegal move, defaulting to 'call' (the safest neutral move) if logic fails.
+
+<code>
+import random
+
+def policy(state: dict) -> str:
+    # Extract state variables
+    hole_card = state['private_cards'][0]
+    rank = hole_card['rank']
+    to_call = state['to_call']
+    allowed = state['allowed_actions']
+    pot = state['pot']
+    public_cards = state['public_cards']
+    
+    # Calculate hand strength relative to board
+    is_top_pair = True
+    if public_cards:
+        for card in public_cards:
+            if card['rank'] > rank:
+                is_top_pair = False
+                break
+    
+    # Simple strategy thresholds
+    # Rank range is assumed 0-12 (13 cards)
+    
+    # 1. High Strength: Ranks 10, 11, 12 (Jack, Queen, King, Ace equivalents)
+    if rank >= 10 or (public_cards and is_top_pair and rank >= 8):
+        if 'raise' in allowed and random.random() < 0.7:
+            return 'raise'
+        if 'all-in' in allowed and rank == 12:
+            return 'all-in'
+        return 'call'
+    
+    # 2. Medium Strength: Ranks 6, 7, 8, 9
+    if rank >= 6:
+        if to_call > pot * 0.5: # If opponent bets huge
+            if rank >= 8:
+                return 'call'
+            return 'fold' if 'fold' in allowed else 'call'
+        return 'call'
+    
+    # 3. Low Strength: Ranks 0 - 5
+    if to_call == 0:
+        return 'call' # Check
+    
+    # Pot odds calculation: if it's cheap to stay in, stay in
+    pot_odds = to_call / (pot + to_call)
+    if pot_odds < 0.2: # Very cheap to call
+        return 'call'
+        
+    # If the opponent is aggressive and we have a weak hand, fold
+    if to_call > 0 and 'fold' in allowed:
+        # Never fold if it's the very first round (rule requirement)
+        if state['my_spent'] <= 100 and state['opponent_spent'] <= 100:
+            return 'call'
+        return 'fold'
+
+    return 'call'
+</code>

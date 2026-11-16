@@ -1,0 +1,76 @@
+
+def policy(state: list[list[object]], role: str) -> str:
+    # Parse the state to find legal moves and board configuration
+    board_state = {}  # (board_row, board_col, cell_row, cell_col) -> player
+    
+    for prop in state:
+        if prop[0] == "cell" and len(prop) == 5:
+            board_row, board_col, cell_row, cell_col = int(prop[1]), int(prop[2]), int(prop[3]), int(prop[4])
+            player = prop[4] if isinstance(prop[4], str) and prop[4] in ['x', 'o', 'b'] else 'b'
+            if len(prop) == 6:
+                player = prop[5]
+            board_state[(board_row, board_col, cell_row, cell_col)] = player
+    
+    # Find all legal moves
+    legal_moves = []
+    for prop in state:
+        if prop[0] == "cell" and len(prop) == 5:
+            board_row, board_col, cell_row, cell_col = int(prop[1]), int(prop[2]), int(prop[3]), int(prop[4])
+            if prop[4] == "b":
+                legal_moves.append((board_row, board_col, cell_row, cell_col))
+    
+    # If no legal moves found via that method, search differently
+    if not legal_moves:
+        for prop in state:
+            if prop[0] == "cell" and len(prop) == 6 and prop[5] == "b":
+                board_row, board_col, cell_row, cell_col = int(prop[1]), int(prop[2]), int(prop[3]), int(prop[4])
+                legal_moves.append((board_row, board_col, cell_row, cell_col))
+    
+    # Fallback: generate all possible moves and filter
+    if not legal_moves:
+        all_cells = set()
+        for prop in state:
+            if prop[0] == "cell" and len(prop) >= 5:
+                board_row, board_col, cell_row, cell_col = int(prop[1]), int(prop[2]), int(prop[3]), int(prop[4])
+                all_cells.add((board_row, board_col, cell_row, cell_col))
+        
+        occupied = set()
+        for prop in state:
+            if prop[0] == "cell" and len(prop) == 6 and prop[5] in ['x', 'o']:
+                board_row, board_col, cell_row, cell_col = int(prop[1]), int(prop[2]), int(prop[3]), int(prop[4])
+                occupied.add((board_row, board_col, cell_row, cell_col))
+        
+        legal_moves = list(all_cells - occupied)
+    
+    if not legal_moves:
+        # Last resort: try any position
+        legal_moves = [(2, 2, 2, 2)]
+    
+    def score_move(board_row, board_col, cell_row, cell_col):
+        score = 0
+        
+        # Strongly prioritize center board
+        if board_row == 2 and board_col == 2:
+            score += 10000
+            
+            # On center board, prioritize center cell
+            if cell_row == 2 and cell_col == 2:
+                score += 5000
+            # Corners are valuable
+            elif (cell_row, cell_col) in [(1, 1), (1, 3), (3, 1), (3, 3)]:
+                score += 1000
+            # Edges
+            else:
+                score += 100
+        else:
+            # Other boards are less important
+            score += 1
+        
+        return score
+    
+    # Sort legal moves by score
+    legal_moves.sort(key=lambda m: score_move(m[0], m[1], m[2], m[3]), reverse=True)
+    
+    # Return best move
+    best_move = legal_moves[0]
+    return f"mark({best_move[0]},{best_move[1]},{best_move[2]},{best_move[3]})"

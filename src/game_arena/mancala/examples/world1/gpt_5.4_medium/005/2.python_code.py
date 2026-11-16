@@ -1,0 +1,246 @@
+
+import time
+from typing import List, Tuple, Optional, Dict
+
+INF = 10**18
+TERMINAL_SCALE = 100000
+
+_DEADLINE = 0.0
+_NODES = 0
+_TT: Dict[Tuple[Tuple[int, ...], Tuple[int, ...]], Tuple[int, int, Optional[int]]] = {}
+
+
+class SearchTimeout(Exception):
+    pass
+
+
+def _check_time() -> None:
+    global _NODES
+    _NODES += 1
+    if (_NODES & 127) == 0 and time.perf_counter() > _DEADLINE:
+        raise SearchTimeout
+
+
+def _terminal_value(you: List[int], opp: List[int]) -> int:
+    your_total = you[6] + sum(you[:6])
+    opp_total = opp[6] + sum(opp[:6])
+    return TERMINAL_SCALE * (your_total - opp_total)
+
+
+def _is_terminal(you: List[int], opp: List[int]) -> bool:
+    return not any(you[:6]) or not any(opp[:6])
+
+
+def _count_extra_turns(side: List[int]) -> int:
+    cnt = 0
+    for i in range(6):
+        s = side[i]
+        if s > 0 and ((i + s) % 13 == 6):
+            cnt += 1
+    return cnt
+
+
+def _evaluate(you: List[int], opp: List[int]) -> int:
+    if _is_terminal(you, opp):
+        return _terminal_value(you, opp)
+
+    store_diff = you[6] - opp[6]
+    house_diff = sum(you[:6]) - sum(opp[:6])
+    pos_diff = sum((i + 1) * (you[i] - opp[i]) for i in range(6))
+    legal_diff = sum(1 for x in you[:6] if x) - sum(1 for x in opp[:6] if x)
+    extra_diff = _count_extra_turns(you) - _count_extra_turns(opp)
+
+    return (
+        260 * store_diff
+        + 12 * house_diff
+        + 6 * pos_diff
+        + 7 * legal_diff
+        + 22 * extra_diff
+    )
+
+
+def _make_move(you: List[int], opp: List[int], move: int) -> Tuple[List[int], List[int], bool]:
+    y = you[:]
+    o = opp[:]
+
+    seeds = y[move]
+    y[move] = 0
+
+    side = 0  # 0 = current player side, 1 = opponent side
+    pos = move
+
+    while seeds > 0:
+        if side == 0:
+            if pos == 6:
+                side = 1
+                pos = 0
+            else:
+                pos += 1
+        else:
+            if pos == 5:
+                side = 0
+                pos = 0
+            else:
+                pos += 1
+
+        if side == 0:
+            y[pos] += 1
+        else:
+            o[pos] += 1
+
+        seeds -= 1
+
+    same_turn = (side == 0 and pos == 6)
+
+    if side == 0 and pos < 6 and y[pos] == 1 and o[5 - pos] > 0:
+        y[6] += y[pos] + o[5 - pos]
+        y[pos] = 0
+        o[5 - pos] = 0
+
+    if not any(y[:6]):
+        o[6] += sum(o[:6])
+        for i in range(6):
+            o[i] = 0
+        same_turn = False
+    elif not any(o[:6]):
+        y[6] += sum(y[:6])
+        for i in range(6):
+            y[i] = 0
+        same_turn = False
+
+    return y, o, same_turn
+
+
+def _ordered_children(
+    you: List[int],
+    opp: List[int],
+    preferred: Optional[int] = None
+) -> List[Tuple[int, List[int], List[int], bool]]:
+    children = []
+
+    for move in range(6):
+        if you[move] <= 0:
+            continue
+        y2, o2, same_turn = _make_move(you, opp, move)
+        immediate_gain = y2[6] - you[6]
+        heuristic = (
+            (100000 if move == preferred else 0)
+            + (1000 if same_turn else 0)
+            + 50 * immediate_gain
+            + 8 * (y2[6] - o2[6])
+            + (sum(y2[:6]) - sum(o2[:6]))
+        )
+        children.append((heuristic, move, y2, o2, same_turn))
+
+    children.sort(key=lambda t: t[0], reverse=True)
+    return [(move, y2, o2, same_turn) for _, move, y2, o2, same_turn in children]
+
+
+def _search(you: List[int], opp: List[int], depth: int, alpha: int, beta: int) -> int:
+    _check_time()
+
+    key = (tuple(you), tuple(opp))
+    entry = _TT.get(key)
+    if entry is not None:
+        stored_depth, stored_score, _ = entry
+        if stored_depth >= depth:
+            return stored_score
+
+    if _is_terminal(you, opp):
+        return _terminal_value(you, opp)
+
+    if depth <= 0:
+        return _evaluate(you, opp)
+
+    preferred = entry[2] if entry is not None else None
+    best = -INF
+    best_move = None
+
+    for move, y2, o2, same_turn in _ordered_children(you, opp, preferred):
+        if same_turn:
+            val = _search(y2, o2, depth - 1, alpha, beta)
+        else:
+            val = -_search(o2, y2, depth - 1, -beta, -alpha)
+
+        if val > best:
+            best = val
+            best_move = move
+
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+
+    _TT[key] = (depth, best, best_move)
+    return best
+
+
+def _root_search(
+    you: List[int],
+    opp: List[int],
+    depth: int,
+    preferred: Optional[int]
+) -> Tuple[int, int]:
+    key = (tuple(you), tuple(opp))
+    entry = _TT.get(key)
+    hint = preferred if preferred is not None else (entry[2] if entry is not None else None)
+
+    alpha = -INF
+    beta = INF
+    best = -INF
+    best_move = None
+
+    for move, y2, o2, same_turn in _ordered_children(you, opp, hint):
+        _check_time()
+
+        if same_turn:
+            val = _search(y2, o2, depth - 1, alpha, beta)
+        else:
+            val = -_search(o2, y2, depth - 1, -beta, -alpha)
+
+        if val > best:
+            best = val
+            best_move = move
+
+        if best > alpha:
+            alpha = best
+
+    if best_move is None:
+        for i in range(6):
+            if you[i] > 0:
+                return i, 0
+
+    _TT[key] = (depth, best, best_move)
+    return best_move, best
+
+
+def policy(you: List[int], opponent: List[int]) -> int:
+    legal_moves = [i for i in range(6) if you[i] > 0]
+    if len(legal_moves) == 1:
+        return legal_moves[0]
+
+    global _DEADLINE, _NODES, _TT
+    _DEADLINE = time.perf_counter() + 0.93
+    _NODES = 0
+    _TT = {}
+
+    initial_children = _ordered_children(you, opponent, None)
+    best_move = initial_children[0][0] if initial_children else legal_moves[0]
+
+    try:
+        for depth in range(1, 32):
+            move, _score = _root_search(you, opponent, depth, best_move)
+            best_move = move
+            if time.perf_counter() > _DEADLINE:
+                break
+    except SearchTimeout:
+        pass
+
+    if 0 <= best_move <= 5 and you[best_move] > 0:
+        return best_move
+
+    for i in range(6):
+        if you[i] > 0:
+            return i
+
+    return legal_moves[0]

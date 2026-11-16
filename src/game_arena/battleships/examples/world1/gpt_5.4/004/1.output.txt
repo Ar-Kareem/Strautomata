@@ -1,0 +1,207 @@
+The strategy for this policy is a probability-based hunter-target approach.
+
+- In hunt mode, it scores each unknown cell by counting how many valid placements of the remaining ship lengths could include that cell, given current misses and hits.
+- In target mode, when there are known hits, it identifies connected hit clusters and strongly prioritizes extending them in the most likely ship direction to finish ships quickly.
+- It also uses parity-style preference through the placement counting itself, which naturally favors cells compatible with more ship placements.
+- If the board state is unusual or no scored move is found, it safely falls back to the first legal unknown cell, guaranteeing a legal move.
+
+This is strong because it combines:
+1. Global ship-placement probability for efficient searching.
+2. Local tactical finishing around hits.
+3. Guaranteed legal fallback behavior.
+
+<code>
+from collections import deque
+
+SHIP_LENGTHS = [5, 4, 3, 3, 2]
+N = 10
+
+def _in_bounds(r, c):
+    return 0 <= r < N and 0 <= c < N
+
+def _neighbors(r, c):
+    for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        nr, nc = r + dr, c + dc
+        if _in_bounds(nr, nc):
+            yield nr, nc
+
+def _get_hit_clusters(board):
+    visited = [[False] * N for _ in range(N)]
+    clusters = []
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 1 and not visited[r][c]:
+                q = deque([(r, c)])
+                visited[r][c] = True
+                cluster = []
+                while q:
+                    cr, cc = q.popleft()
+                    cluster.append((cr, cc))
+                    for nr, nc in _neighbors(cr, cc):
+                        if board[nr][nc] == 1 and not visited[nr][nc]:
+                            visited[nr][nc] = True
+                            q.append((nr, nc))
+                clusters.append(cluster)
+    return clusters
+
+def _placement_valid(board, cells):
+    # A candidate ship placement is valid if it avoids known misses
+    # and includes all hit cells that lie on those cells only when
+    # relevant to the chosen cluster logic. For global hunt scoring,
+    # we simply require no misses.
+    for r, c in cells:
+        if board[r][c] == -1:
+            return False
+    return True
+
+def _compute_global_scores(board):
+    scores = [[0] * N for _ in range(N)]
+    hit_cells = {(r, c) for r in range(N) for c in range(N) if board[r][c] == 1}
+
+    for L in SHIP_LENGTHS:
+        # Horizontal placements
+        for r in range(N):
+            for c in range(N - L + 1):
+                cells = [(r, c + k) for k in range(L)]
+                if not _placement_valid(board, cells):
+                    continue
+                # Reject placements that ignore isolated known hits elsewhere?
+                # No; keep broad compatibility for robustness.
+                for rr, cc in cells:
+                    if board[rr][cc] == 0:
+                        scores[rr][cc] += 1
+
+        # Vertical placements
+        for r in range(N - L + 1):
+            for c in range(N):
+                cells = [(r + k, c) for k in range(L)]
+                if not _placement_valid(board, cells):
+                    continue
+                for rr, cc in cells:
+                    if board[rr][cc] == 0:
+                        scores[rr][cc] += 1
+    return scores
+
+def _compute_target_scores(board):
+    scores = [[0] * N for _ in range(N)]
+    clusters = _get_hit_clusters(board)
+
+    for cluster in clusters:
+        if not cluster:
+            continue
+
+        rows = {r for r, _ in cluster}
+        cols = {c for _, c in cluster}
+
+        # Determine orientation if possible
+        if len(rows) == 1 and len(cluster) >= 2:
+            # Horizontal cluster
+            r = next(iter(rows))
+            min_c = min(c for _, c in cluster)
+            max_c = max(c for _, c in cluster)
+
+            for c in (min_c - 1, max_c + 1):
+                if _in_bounds(r, c) and board[r][c] == 0:
+                    scores[r][c] += 1000
+
+            # Also score cells that could participate in valid ship completions
+            span = max_c - min_c + 1
+            for L in SHIP_LENGTHS:
+                if L < span:
+                    continue
+                for start_c in range(max(0, max_c - L + 1), min(min_c, N - L) + 1):
+                    cells = [(r, start_c + k) for k in range(L)]
+                    if any(board[rr][cc] == -1 for rr, cc in cells):
+                        continue
+                    if all((hr, hc) in cells for hr, hc in cluster):
+                        for rr, cc in cells:
+                            if board[rr][cc] == 0:
+                                scores[rr][cc] += 50
+
+        elif len(cols) == 1 and len(cluster) >= 2:
+            # Vertical cluster
+            c = next(iter(cols))
+            min_r = min(r for r, _ in cluster)
+            max_r = max(r for r, _ in cluster)
+
+            for r in (min_r - 1, max_r + 1):
+                if _in_bounds(r, c) and board[r][c] == 0:
+                    scores[r][c] += 1000
+
+            span = max_r - min_r + 1
+            for L in SHIP_LENGTHS:
+                if L < span:
+                    continue
+                for start_r in range(max(0, max_r - L + 1), min(min_r, N - L) + 1):
+                    cells = [(start_r + k, c) for k in range(L)]
+                    if any(board[rr][cc] == -1 for rr, cc in cells):
+                        continue
+                    if all((hr, hc) in cells for hr, hc in cluster):
+                        for rr, cc in cells:
+                            if board[rr][cc] == 0:
+                                scores[rr][cc] += 50
+
+        else:
+            # Single hit or ambiguous shape: prioritize adjacent unknowns
+            for r, c in cluster:
+                for nr, nc in _neighbors(r, c):
+                    if board[nr][nc] == 0:
+                        scores[nr][nc] += 200
+
+                # Add line-extension likelihood for each ship length
+                for L in SHIP_LENGTHS:
+                    # Horizontal placements containing (r,c)
+                    for start_c in range(max(0, c - L + 1), min(c, N - L) + 1):
+                        cells = [(r, start_c + k) for k in range(L)]
+                        if any(board[rr][cc] == -1 for rr, cc in cells):
+                            continue
+                        if (r, c) in cells:
+                            for rr, cc in cells:
+                                if board[rr][cc] == 0:
+                                    scores[rr][cc] += 20
+                    # Vertical placements containing (r,c)
+                    for start_r in range(max(0, r - L + 1), min(r, N - L) + 1):
+                        cells = [(start_r + k, c) for k in range(L)]
+                        if any(board[rr][cc] == -1 for rr, cc in cells):
+                            continue
+                        if (r, c) in cells:
+                            for rr, cc in cells:
+                                if board[rr][cc] == 0:
+                                    scores[rr][cc] += 20
+
+    return scores
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Compute scores
+    global_scores = _compute_global_scores(board)
+    target_scores = _compute_target_scores(board)
+
+    best_move = None
+    best_score = -1
+
+    # Prefer target opportunities while still using global probabilities
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] != 0:
+                continue
+            score = global_scores[r][c] + target_scores[r][c]
+
+            # Mild central preference as a tiebreaker
+            score -= abs(r - 4.5) * 0.01 + abs(c - 4.5) * 0.01
+
+            if score > best_score:
+                best_score = score
+                best_move = (r, c)
+
+    if best_move is not None:
+        return best_move
+
+    # Guaranteed legal fallback
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 0:
+                return (r, c)
+
+    # Fully explored board; return a valid tuple anyway
+    return (0, 0)
+</code>

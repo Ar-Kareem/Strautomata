@@ -1,0 +1,73 @@
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    def simulate_move(you_state, opponent_state, move):
+        you = list(you_state)
+        opponent = list(opponent_state)
+        seeds = you[move]
+        if seeds == 0:
+            return you, opponent, False, 0
+        you[move] = 0
+        pos = move + 1
+        current_player = True
+        last_seed = (None, None)
+        
+        for _ in range(seeds):
+            if current_player:
+                if pos < 6:
+                    you[pos] += 1
+                    last_seed = (True, pos)
+                    pos += 1
+                elif pos == 6:
+                    you[6] += 1
+                    last_seed = (True, 6)
+                    pos = 0
+                    current_player = False
+                else:
+                    pos = 0
+                    current_player = False
+            else:
+                if pos < 6:
+                    opponent[pos] += 1
+                    last_seed = (False, pos)
+                    pos += 1
+                else:
+                    pos = 0
+                    current_player = True
+        
+        extra_turn = False
+        captured = 0
+        last_is_you, last_pos = last_seed
+        
+        if last_is_you:
+            if last_pos == 6:
+                extra_turn = True
+            elif you[last_pos] == 1:
+                opposite = 5 - last_pos
+                if opponent[opposite] > 0:
+                    captured = 1 + opponent[opposite]
+                    you[6] += captured
+                    you[last_pos] = 0
+                    opponent[opposite] = 0
+        
+        return you, opponent, extra_turn, captured
+    
+    best_move = None
+    best_score = -float('inf')
+    
+    for i in range(6):
+        if you[i] == 0:
+            continue
+        new_you, new_opponent, extra_turn, captured = simulate_move(you, opponent, i)
+        score = 0
+        
+        if extra_turn:
+            score += 1000
+        score += captured * 100
+        score += (new_you[6] - you[6]) * 10
+        score += (sum(new_you[:6]) - sum(new_opponent[:6]))
+        
+        if score > best_score or (score == best_score and (best_move is None or i < best_move)):
+            best_score = score
+            best_move = i
+    
+    return best_move if best_move is not None else next(i for i in range(6) if you[i] > 0)

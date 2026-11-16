@@ -1,0 +1,139 @@
+To solve this problem, we need to implement an AI that plays the game Dots and Boxes on a 4x4 grid. The AI must make the optimal move to either capture as many boxes as possible or avoid giving the opponent an opportunity to capture a box. The solution involves evaluating all possible legal moves and selecting the one that either captures the most boxes or minimizes the risk of the opponent capturing a box in the next move.
+
+### Approach
+1. **Collect Legal Moves**: Identify all possible moves where the current player can draw an edge (horizontal or vertical) that hasn't been drawn yet.
+2. **Evaluate Moves**: For each legal move, calculate the number of boxes that can be captured immediately and the number of boxes that would be left with exactly three edges drawn (which the opponent could capture on their next turn).
+3. **Select Best Move**: Prioritize moves that capture the most boxes. If multiple moves capture the same number of boxes, choose the one that leaves the fewest opportunities for the opponent. If no moves result in capturing boxes, select the move that minimizes the number of three-edge boxes the opponent could capture.
+
+### Solution Code
+```python
+import numpy as np
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    legal_moves = []
+    # Collect all possible legal moves (unoccupied edges)
+    for r in range(5):
+        for c in range(5):
+            if horizontal[r, c] == 0:
+                legal_moves.append((r, c, 'H'))
+            if vertical[r, c] == 0:
+                legal_moves.append((r, c, 'V'))
+    
+    if not legal_moves:
+        return None  # This case should not occur as the game would have ended
+    
+    # Evaluate each move to compute captures and risk (opponent's possible captures)
+    evaluated_moves = []
+    for move in legal_moves:
+        r, c, dir = move
+        capture_count = 0
+        bad_box_count = 0
+        
+        # Calculate captures from this move
+        affected_boxes = set()
+        if dir == 'H':
+            if r < 4:
+                affected_boxes.add((r, c))
+            if r > 0:
+                affected_boxes.add((r - 1, c))
+        else:  # 'V'
+            affected_boxes.add((r, c))
+            if c > 0:
+                affected_boxes.add((r, c - 1))
+        
+        for (br, bc) in affected_boxes:
+            if capture[br, bc] != 0:
+                continue  # Box already captured
+            
+            # Check all four edges of the box (br, bc)
+            top = horizontal[br, bc] != 0
+            bottom = horizontal[br + 1, bc] != 0
+            left = vertical[br, bc] != 0
+            right = vertical[br, bc + 1] != 0
+            
+            # Adjust edges based on the move
+            if dir == 'H':
+                if br == r and bc == c:
+                    top = True
+                elif (r - 1 == br) and (c == bc):
+                    bottom = True
+            
+            elif dir == 'V':
+                if br == r and bc == c:
+                    left = True
+                elif (br == r) and (c - 1 == bc):
+                    right = True
+            
+            sum_edges = sum([top, bottom, left, right])
+            if sum_edges == 4:
+                capture_count += 1
+        
+        # Calculate the number of three-edge boxes the opponent could capture next
+        three_edge_count = 0
+        for i in range(4):
+            for j in range(4):
+                if capture[i, j] != 0:
+                    continue
+                edges_filled = [
+                    horizontal[i, j] != 0,
+                    horizontal[i + 1, j] != 0,
+                    vertical[i, j] != 0,
+                    vertical[i, j + 1] != 0
+                ]
+                sum_edges = sum(edges_filled)
+                # Adjust edges for the current move
+                if dir == 'H':
+                    if (i == r and j == c) or (i == r - 1 and j == c):
+                        # Account for the current move's edge
+                        edges_filled[0] = True  # top of (r,c) is moved edge
+                        edges_filled[1] = True  # bottom of (r-1,c) is moved edge
+                elif dir == 'V':
+                    if (i == r and j == c):
+                        edges_filled[1] = True  # right edge of (r, c-1)
+                        edges_filled[2] = True  # left edge of (r, c)
+                    elif (i == r and j == c - 1):
+                        edges_filled[0] = True  # right edge of (r, c-1)
+                        edges_filled[2] = True  # left edge of (r, c)
+                # Recalculate sum_edges after adjusting the relevant edges
+                if dir == 'H':
+                    sum_edges = sum([edges_filled[0], horizontal[i + 1, j] != 0, vertical[i, j] != 0, vertical[i, j + 1] != 0])
+                elif dir == 'V':
+                    sum_edges = sum([edges_filled[0], edges_filled[1], edges_filled[2], edges_filled[3]])
+                if sum_edges == 3:
+                    three_edge_count += 1
+        
+        evaluated_moves.append((capture_count, -bad, mv))
+    
+    # Initialize best move
+    best_move = None
+    max_captured = -1
+    min_bad = float('inf')
+    
+    # Check for moves that capture boxes
+    for mv in evaluated_moves:
+        cap_count, risk, m = mv
+        if cap_count > 0:
+            if cap_count > max_captured or (cap_count == max_captured and risk < min_bad):
+                max_captured = cap_count
+                min_bad = risk
+                best_move = m
+    
+    # Check for non-capturing moves with least risk
+    if not best_move:
+        for mv in evaluated_moves:
+            _, risk, m = mv
+            if risk < min_bad:
+                best_move = m
+                min_bad = risk
+    
+    # Format the best move
+    r, c, direc = best_move
+    return f"{r},{c},{direc}"
+```
+
+### Explanation
+1. **Collect Legal Moves**: The code first gathers all possible moves where the current player can draw either a horizontal or vertical edge that hasn't been drawn yet.
+2. **Evaluate Moves**: Each move is evaluated to determine:
+   - **Capture Count**: The number of boxes the current player would capture by making that move.
+   - **Bad Box Count**: The number of boxes that would be left with exactly three edges drawn, allowing the opponent to capture them next turn.
+3. **Select Best Move**: Moves are prioritized based on the number of boxes captured. If multiple moves capture the same number of boxes, the one that leaves the fewest three-edge boxes for the opponent is chosen. If no moves capture boxes, the move with the least risk (fewest three-edge boxes) is selected.

@@ -1,0 +1,126 @@
+
+import math
+
+def is_on_board(r, c):
+    return 0 <= r < 8 and 0 <= c < 8
+
+def get_directions(is_king, color):
+    if is_king:
+        return [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+    elif color == 'b':
+        return [(-1, -1), (-1, 1)]
+    else:  # 'w'
+        return [(1, -1), (1, 1)]
+
+def can_jump(piece_pos, is_king, color, state):
+    my_men, my_kings, opp_men, opp_kings = state
+    all_opp = opp_men + opp_kings
+    all_pieces = my_men + my_kings + all_opp
+    directions = get_directions(is_king, color)
+    for dr, dc in directions:
+        jump_to = (piece_pos[0] + 2 * dr, piece_pos[1] + 2 * dc)
+        jumped_pos = (piece_pos[0] + dr, piece_pos[1] + dc)
+        if is_on_board(jump_to[0], jump_to[1]) and jumped_pos in all_opp and jump_to not in all_pieces:
+            return True
+    return False
+
+def generate_legal_moves(state):
+    my_men, my_kings, opp_men, opp_kings, color = state
+    my_pieces = my_men + my_kings
+    all_opp = opp_men + opp_kings
+    all_pieces = my_pieces + all_opp
+    has_jumps = any(can_jump(pos, pos in my_kings, color, state) for pos in my_pieces)
+    moves = []
+    for pos in my_pieces:
+        is_king = pos in my_kings
+        directions = get_directions(is_king, color)
+        for dr, dc in directions:
+            to = (pos[0] + dr, pos[1] + dc)
+            if is_on_board(to[0], to[1]) and to not in all_pieces:
+                if has_jumps:
+                    jumped_pos = (pos[0] + dr, pos[1] + dc)
+                    jump_to = (pos[0] + 2 * dr, pos[1] + 2 * dc)
+                    if is_on_board(jump_to[0], jump_to[1]) and jumped_pos in all_opp and jump_to not in all_pieces:
+                        moves.append((pos, jump_to))
+                else:
+                    moves.append((pos, to))
+    return moves
+
+def pos_value(r, c, is_black):
+    row_bonus = 7 - r if is_black else r
+    col_bonus = 0 if c == 0 or c == 7 else 1 if c == 1 or c == 6 else 2
+    return row_bonus + col_bonus
+
+def eval_state(state):
+    my_men, my_kings, opp_men, opp_kings, color = state
+    my_score = len(my_men) + 5 * len(my_kings)
+    opp_score = len(opp_men) + 5 * len(opp_kings)
+    is_black = color == 'b'
+    my_pos = sum(pos_value(r, c, is_black) for r, c in my_men + my_kings)
+    opp_pos = sum(pos_value(r, c, not is_black) for r, c in opp_men + opp_kings)
+    return my_score - opp_score + 0.1 * (my_pos - opp_pos)
+
+def make_move(state, move):
+    my_men, my_kings, opp_men, opp_kings, color = state
+    from_pos, to_pos = move
+    dr = to_pos[0] - from_pos[0]
+    dc = to_pos[1] - from_pos[1]
+    is_jump = abs(dr) == 2
+    new_my_men = [p for p in my_men if p != from_pos]
+    new_my_kings = [p for p in my_kings if p != from_pos]
+    new_opp_men, new_opp_kings = opp_men[:], opp_kings[:]
+    if is_jump:
+        jumped_pos = ((from_pos[0] + to_pos[0]) // 2, (from_pos[1] + to_pos[1]) // 2)
+        if jumped_pos in new_opp_men:
+            new_opp_men = [p for p in new_opp_men if p != jumped_pos]
+        elif jumped_pos in new_opp_kings:
+            new_opp_kings = [p for p in new_opp_kings if p != jumped_pos]
+    # Handle promotion
+    promote_row = 0 if color == 'b' else 7
+    if to_pos[0] == promote_row and from_pos in my_men:
+        new_my_men = [p for p in new_my_men if p != to_pos]
+        new_my_kings = new_my_kings + [to_pos]
+    else:
+        if from_pos in my_men:
+            new_my_men = new_my_men + [to_pos]
+        else:
+            new_my_kings = new_my_kings + [to_pos]
+    new_color = 'b' if color == 'w' else 'w'
+    return (new_opp_men, new_opp_kings, new_my_men, new_my_kings, new_color)
+
+def minimax(state, depth, maximizing):
+    if depth == 0:
+        return eval_state(state)
+    moves = generate_legal_moves(state)
+    if not moves:
+        return -1000 if maximizing else 1000
+    if maximizing:
+        max_eval = -math.inf
+        for move in moves:
+            new_state = make_move(state, move)
+            eval_val = minimax(new_state, depth - 1, False)
+            max_eval = max(max_eval, eval_val)
+        return max_eval
+    else:
+        min_eval = math.inf
+        for move in moves:
+            new_state = make_move(state, move)
+            eval_val = minimax(new_state, depth - 1, True)
+            min_eval = min(min_eval, eval_val)
+        return min_eval
+
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    state = (my_men, my_kings, opp_men, opp_kings, color)
+    moves = generate_legal_moves(state)
+    if not moves:
+        # This should not happen, but as a safeguard, return invalid move to signal issue
+        return ((-1, -1), (-1, -1))
+    best_move = None
+    best_eval = -math.inf
+    for move in moves:
+        new_state = make_move(state, move)
+        eval_val = minimax(new_state, 3, False)
+        if eval_val > best_eval:
+            best_eval = eval_val
+            best_move = move
+    return best_move

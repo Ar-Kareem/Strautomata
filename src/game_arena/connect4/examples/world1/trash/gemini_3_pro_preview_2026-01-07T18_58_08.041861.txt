@@ -1,0 +1,187 @@
+```python
+import time
+
+class Connect4Solver:
+    def __init__(self):
+        # Allow up to 0.85 seconds to ensure we return within 1s.
+        self.time_limit = 0.85
+        self.start_time = 0
+        self.nodes = 0
+        self.tt = {}
+        # Precompute bit count for numbers 0-63 for fast column height calculation
+        self.POPCOUNT = [bin(i).count('1') for i in range(64)]
+        # Heuristic weights for columns: preferring center [0..6]
+        self.weights = [3, 4, 5, 7, 5, 4, 3]
+
+    def check_win(self, pos):
+        """
+        Check if the position 'pos' has a connect 4.
+        Returns True if 4 connected bits are found.
+        """
+        # Horizontal (step 7)
+        m = pos & (pos >> 7)
+        if m & (m >> 14): return True
+        # Vertical (step 1)
+        m = pos & (pos >> 1)
+        if m & (m >> 2): return True
+        # Diagonal \ (step 6)
+        m = pos & (pos >> 6)
+        if m & (m >> 12): return True
+        # Diagonal / (step 8)
+        m = pos & (pos >> 8)
+        if m & (m >> 16): return True
+        return False
+
+    def negamax(self, pos, mask, depth, alpha, beta):
+        self.nodes += 1
+        # Periodically check for timeout
+        if (self.nodes & 1023) == 0:
+            if time.time() - self.start_time > self.time_limit:
+                raise TimeoutError
+
+        key = (pos, mask)
+        # Transposition Table Lookup
+        if key in self.tt:
+            d_stored, flag, val = self.tt[key]
+            if d_stored >= depth:
+                if flag == 0: return val # Exact
+                elif flag == 1: alpha = max(alpha, val) # Lower bound
+                elif flag == 2: beta = min(beta, val) # Upper bound
+                if alpha >= beta: return val
+
+        # Helper to calculate heuristic score at leaf
+        if depth == 0:
+            opp = mask ^ pos
+            score = 0
+            for c in range(7):
+                shift = c * 7
+                # Extract column bits (6 bits max)
+                col_p = (pos >> shift) & 0x3F
+                col_o = (opp >> shift) & 0x3F
+                if col_p: score += self.POPCOUNT[col_p] * self.weights[c]
+                if col_o: score -= self.POPCOUNT[col_o] * self.weights[c]
+            return score
+
+        # Center-out move ordering
+        cols = [3, 2, 4, 1, 5, 0, 6]
+        possible_moves = []
+        
+        for c in cols:
+            # Check if column is full (bit 5 of column c)
+            # Column c occupies bits c*7 to c*7+5
+            if (mask >> (c*7 + 5)) & 1:
+                continue
+            
+            # Determine the move bit (lowest unset bit in column)
+            col_data = (mask >> (c*7)) & 0x3F
+            h = self.POPCOUNT[col_data]
+            move = 1 << (c*7 + h)  # Position of the new piece
+            
+            # Optimization: Immediate win check
+            if self.check_win(pos | move):
+                val = 10000 + depth
+                self.tt[key] = (depth, 0, val)
+                return val
+            
+            possible_moves.append((c, move))
+            
+        if not possible_moves:
+            return 0 # Draw
+
+        best = -999999999
+        flag = 2 # Upper bound
+        
+        for c, move in possible_moves:
+            # Recurse
+            # New mask: mask | move
+            # New pos (opponent's turn): old opponent pieces = mask ^ pos
+            v = -self.negamax(mask ^ pos, mask | move, depth - 1, -beta, -alpha)
+            
+            if v > best:
+                best = v
+                flag = 0 # Exact (if we raise alpha, roughly)
+            
+            alpha = max(alpha, v)
+            if alpha >= beta:
+                flag = 1 
+                break
+
+        self.tt[key] = (depth, flag, best)
+        return best
+
+    def solve(self, board):
+        self.start_time = time.time()
+        
+        # Parse board list[list[int]] to bitboards
+        # Board: 6 rows (0..5), 7 cols. 0=top, 5=bottom.
+        # Bitboard: 0=bottom-left, column-major.
+        pos = 0 # Current player bits
+        mask = 0 # All occupied bits
+        for r in range(6):
+            for c in range(7):
+                val = board[r][c]
+                if val != 0:
+                    # Map (r,c) to bit index
+                    # r=5 -> bit 0 (in col 0). r=0 -> bit 5.
+                    idx = c * 7 + (5 - r)
+                    mask |= (1 << idx)
+                    if val == 1:
+                        pos |= (1 << idx)
+        
+        # Generate valid initial moves
+        candidates = []
+        # Center column preference for sorting
+        for c in [3, 2, 4, 1, 5, 0, 6]:
+             # Check if col full
+             if not ((mask >> (c*7 + 5)) & 1):
+                 col_data = (mask >> (c*7)) & 0x3F
+                 move = 1 << (c*7 + self.POPCOUNT[col_data])
+                 
+                 # Win immediately if possible
+                 if self.check_win(pos | move):
+                     return c
+                 candidates.append((c, move))
+        
+        if not candidates:
+            return 0 # Should not happen unless board full
+        
+        best_move = candidates[0][0]
+        
+        # Iterative Deepening
+        try:
+            # Depth max 42 (board size)
+            for depth in range(1, 43):
+                alpha = -999999999
+                beta = 999999999
+                current_best_move = best_move
+                current_best_val = -999999999
+                
+                # Search at this depth
+                for c, move in candidates:
+                    v = -self.negamax(mask ^ pos, mask | move, depth, -beta, -alpha)
+                    
+                    if v > current_best_val:
+                        current_best_val = v
+                        current_best_move = c
+                    
+                    alpha = max(alpha, v)
+                    
+                    # Check time explicitly inside the loop to catch timeout early
+                    if time.time() - self.start_time > self.time_limit:
+                        raise TimeoutError
+
+                best_move = current_best_move
+                
+                # If we found a forced win, no need to search deeper
+                if current_best_val > 9000:
+                    break
+                    
+        except TimeoutError:
+            pass
+            
+        return best_move
+
+def policy(board: list[list[int]]) -> int:
+    solver = Connect4Solver()
+    return solver.solve(board)
+```

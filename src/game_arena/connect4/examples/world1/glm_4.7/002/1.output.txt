@@ -1,0 +1,223 @@
+The strategy for this policy is to utilize a high-performance bitboard representation of the Connect 4 board combined with a Negamax search algorithm featuring Alpha-Beta pruning and Iterative Deepening. By representing the board as two 64-bit integers (one for the current player's pieces and one for the opponent's pieces), we can rapidly evaluate moves, check for win conditions using bitwise operations, and explore the game tree efficiently. The search explores moves starting from the center column outward to maximize pruning efficiency. The evaluation function heuristically scores positions based on center control and connectivity of pieces (pairs and triplets) to guide the search when the depth limit is reached.
+
+```python
+import math
+import time
+
+def policy(board: list[list[int]]) -> int:
+    # Constants
+    WIDTH = 7
+    HEIGHT = 6
+    # Bitboard indices: row + col * (HEIGHT + 1)
+    # row 0 is bottom (actual piece), row 6 is sentinel (top)
+    # Sentinel bits help prevent overflow in column operations
+    BOTTOM_MASK = 0x000000000000007F  # Bits 0-6 set
+    COLUMN_MASK = 0x0000000001010101  # Not used directly, but good for conceptualization
+    
+    # Precompute bit offsets for columns (bottom bit of each column)
+    # col 0 -> 0, col 1 -> 7, col 2 -> 14, ...
+    # This is handled via shift in the loop, but conceptually c * 7
+
+    # Convert input board (6x7 list) to bitboards
+    # board[r][c]: r=0 (top) to 5 (bottom), c=0 to 6
+    # bit index = (5 - r) + c * 7
+    mask = 0
+    pos = 0
+    
+    for r in range(HEIGHT):
+        for c in range(WIDTH):
+            idx = (HEIGHT - 1 - r) + c * (HEIGHT + 1)
+            if board[r][c] != 0:
+                mask |= 1 << idx
+                if board[r][c] == 1:
+                    pos |= 1 << idx
+
+    # --- Helper functions using bitboards ---
+
+    def can_play(m, c):
+        # Check if column c is not full
+        # Column c is full if the sentinel bit (index HEIGHT + c*7) is set
+        return not (m & (1 << (HEIGHT + c * (HEIGHT + 1))))
+
+    def play(m, c):
+        # Simulate dropping a piece in column c
+        # mask | (mask + bottom_bit)
+        return m | (m + (1 << (c * (HEIGHT + 1))))
+
+    def is_winning(b):
+        # Check 4 directions for 4 connected pieces
+        # Horizontal: b & (b >> 7) & (b >> 14) & (b >> 21)
+        # Vertical:   b & (b >> 1) & (b >> 2)  & (b >> 3)
+        # Diag \:     b & (b >> 8) & (b >> 16) & (b >> 24)
+        # Diag /:     b & (b >> 6) & (b >> 12) & (b >> 18)
+        
+        # Sentinel bits (indices 6, 13, 20...) prevent wrapping between columns
+        if (b & (b >> 1) & (b >> 2) & (b >> 3)): return True
+        if (b & (b >> 7) & (b >> 14) & (b >> 21)): return True
+        if (b & (b >> 8) & (b >> 16) & (b >> 24)): return True
+        if (b & (b >> 6) & (b >> 12) & (b >> 18)): return True
+        return False
+
+    def evaluate(m, p):
+        # Heuristic evaluation
+        o = m ^ p
+        score = 0
+        
+        # Center column preference (indices 21-26)
+        center_mask = 0x3F << (3 * 7)
+        score += 3 * ((p & center_mask).bit_count() - (o & center_mask).bit_count())
+        
+        # Connectivity: Count 2-in-rows and 3-in-rows (threats)
+        # This is a simplified check for speed
+        # Vertical pairs
+        vp = (p & (p >> 1)).bit_count()
+        vo = (o & (o >> 1)).bit_count()
+        score += (vp - vo) * 2
+        
+        # Horizontal pairs
+        hp = (p & (p >> 7)).bit_count()
+        ho = (o & (o >> 7)).bit_count()
+        score += (hp - ho) * 2
+        
+        # Diagonal pairs
+        dp = (p & (p >> 8)).bit_count()
+        do = (o & (o >> 8)).bit_count()
+        score += (dp - do) * 2
+        
+        dm = (p & (p >> 6)).bit_count()
+        dom = (o & (o >> 6)).bit_count()
+        score += (dm - dom) * 2
+
+        return score
+
+    # --- Negamax with Alpha-Beta Pruning ---
+    
+    # Move ordering: Center columns first to maximize pruning
+    order = [3, 2, 4, 1, 5, 0, 6]
+    
+    start_time = time.time()
+    best_col = -1
+    
+    # Find a fallback move (first valid column) in case of timeout
+    for c in order:
+        if can_play(mask, c):
+            best_col = c
+            break
+            
+    # Check for immediate win (Depth 1)
+    for c in order:
+        if can_play(mask, c):
+            new_m = play(mask, c)
+            new_p = pos | (new_m ^ mask)
+            if is_winning(new_p):
+                return c
+
+    # Iterative Deepening
+    # We try to search deeper as long as time permits
+    for depth in range(2, 10): # Search depths 2 to 9
+        # Timeout check
+        if time.time() - start_time > 0.95:
+            break
+            
+        alpha = -math.inf
+        beta = math.inf
+        
+        for c in order:
+            if can_play(mask, c):
+                new_m = play(mask, c)
+                # New position is current position + the new bit
+                # The new bit is (new_m ^ mask)
+                new_p = pos | (new_m ^ mask)
+                
+                # In Negamax, we swap players. Next player's board is (new_m ^ new_p)
+                val = -negamax(new_m, new_m ^ new_p, depth - 1, -beta, -alpha)
+                
+                if val > alpha:
+                    alpha = val
+                    best_col = c
+                
+                # Prune remaining siblings if we found a better move than opponent can allow elsewhere
+                if alpha >= beta:
+                    break
+
+    return best_col
+
+def negamax(mask, pos, depth, alpha, beta):
+    # Check terminal states
+    if is_winning(pos):
+        return 100000 + depth # Win sooner is better
+    if is_winning(mask ^ pos):
+        return -100000 - depth # Lose later is better
+        
+    if depth == 0:
+        return evaluate(mask, pos)
+        
+    # Check for draw (board full)
+    # Top row bits are indices 5, 12, 19, 26, 33, 40, 47
+    # If all top bits are set in mask, board is full
+    if (mask & 0x01010101010100) == 0x01010101010100:
+        return 0
+
+    order = [3, 2, 4, 1, 5, 0, 6]
+    best_score = -math.inf
+    
+    for c in order:
+        if can_play(mask, c):
+            new_m = play(mask, c)
+            new_p = pos | (new_m ^ mask)
+            # Swap players for recursive call
+            val = -negamax(new_m, new_m ^ new_p, depth - 1, -beta, -alpha)
+            
+            if val > best_score:
+                best_score = val
+            if val > alpha:
+                alpha = val
+            if alpha >= beta:
+                break
+        
+    return best_score
+
+# Helper defined outside for closure access
+def is_winning(b):
+    if (b & (b >> 1) & (b >> 2) & (b >> 3)): return True
+    if (b & (b >> 7) & (b >> 14) & (b >> 21)): return True
+    if (b & (b >> 8) & (b >> 16) & (b >> 24)): return True
+    if (b & (b >> 6) & (b >> 12) & (b >> 18)): return True
+    return False
+
+def can_play(m, c):
+    return not (m & (1 << (6 + c * 7)))
+
+def play(m, c):
+    return m | (m + (1 << (c * 7)))
+
+def evaluate(m, p):
+    o = m ^ p
+    score = 0
+    center_mask = 0x3F << 21
+    score += 3 * ((p & center_mask).bit_count() - (o & center_mask).bit_count())
+    vp = (p & (p >> 1)).bit_count()
+    vo = (o & (o >> 1)).bit_count()
+    score += (vp - vo) * 2
+    hp = (p & (p >> 7)).bit_count()
+    ho = (o & (o >> 7)).bit_count()
+    score += (hp - ho) * 2
+    return score
+
+def negamax(mask, pos, depth, alpha, beta):
+    if is_winning(pos): return 100000 + depth
+    if is_winning(mask ^ pos): return -100000 - depth
+    if depth == 0: return evaluate(mask, pos)
+    if (mask & 0x01010101010100) == 0x01010101010100: return 0
+    
+    best = -math.inf
+    for c in [3, 2, 4, 1, 5, 0, 6]:
+        if can_play(mask, c):
+            new_m = play(mask, c)
+            new_p = pos | (new_m ^ mask)
+            val = -negamax(new_m, new_m ^ new_p, depth - 1, -beta, -alpha)
+            if val > best: best = val
+            if val > alpha: alpha = val
+            if alpha >= beta: break
+    return best
+```

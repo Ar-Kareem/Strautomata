@@ -1,0 +1,288 @@
+
+import numpy as np
+
+# 8 queen directions
+DIRS = [(-1, -1), (-1, 0), (-1, 1),
+        (0, -1),           (0, 1),
+        (1, -1),  (1, 0),  (1, 1)]
+
+
+def in_bounds(r, c):
+    return 0 <= r < 6 and 0 <= c < 6
+
+
+def ray_moves(board, r, c):
+    """All empty squares reachable by queen move from (r,c)."""
+    out = []
+    for dr, dc in DIRS:
+        nr, nc = r + dr, c + dc
+        while 0 <= nr < 6 and 0 <= nc < 6 and board[nr, nc] == 0:
+            out.append((nr, nc))
+            nr += dr
+            nc += dc
+    return out
+
+
+def ray_count(board, r, c):
+    """Number of reachable empty squares by queen move from (r,c)."""
+    cnt = 0
+    for dr, dc in DIRS:
+        nr, nc = r + dr, c + dc
+        while 0 <= nr < 6 and 0 <= nc < 6 and board[nr, nc] == 0:
+            cnt += 1
+            nr += dr
+            nc += dc
+    return cnt
+
+
+def all_legal_moves(board, player=1):
+    """Generate all legal moves as tuples (fr,fc,tr,tc,ar,ac)."""
+    moves = []
+    pieces = np.argwhere(board == player)
+    for fr, fc in pieces:
+        for tr, tc in ray_moves(board, fr, fc):
+            b2 = board.copy()
+            b2[fr, fc] = 0
+            b2[tr, tc] = player
+            for ar, ac in ray_moves(b2, tr, tc):
+                moves.append((int(fr), int(fc), int(tr), int(tc), int(ar), int(ac)))
+    return moves
+
+
+def apply_move(board, move, player=1):
+    fr, fc, tr, tc, ar, ac = move
+    b = board.copy()
+    b[fr, fc] = 0
+    b[tr, tc] = player
+    b[ar, ac] = -1
+    return b
+
+
+def mobility(board, player):
+    pieces = np.argwhere(board == player)
+    total = 0
+    for r, c in pieces:
+        total += ray_count(board, int(r), int(c))
+    return total
+
+
+def flood_distances(board, starts):
+    """
+    Multi-source queen-distance BFS over empty cells.
+    Distance = minimum number of queen moves to reach a square.
+    """
+    dist = np.full((6, 6), 99, dtype=np.int16)
+    frontier = []
+
+    for r, c in starts:
+        r = int(r)
+        c = int(c)
+        # Expand one queen move from each amazon into empty cells
+        for dr, dc in DIRS:
+            nr, nc = r + dr, c + dc
+            while 0 <= nr < 6 and 0 <= nc < 6 and board[nr, nc] == 0:
+                if dist[nr, nc] > 1:
+                    dist[nr, nc] = 1
+                    frontier.append((nr, nc))
+                nr += dr
+                nc += dc
+
+    head = 0
+    while head < len(frontier):
+        r, c = frontier[head]
+        head += 1
+        d = dist[r, c] + 1
+        for dr, dc in DIRS:
+            nr, nc = r + dr, c + dc
+            while 0 <= nr < 6 and 0 <= nc < 6 and board[nr, nc] == 0:
+                if dist[nr, nc] > d:
+                    dist[nr, nc] = d
+                    frontier.append((nr, nc))
+                nr += dr
+                nc += dc
+    return dist
+
+
+def territory_score(board):
+    """
+    Compare queen-distance territorial control.
+    Positive means better for player 1.
+    """
+    my_pos = np.argwhere(board == 1)
+    op_pos = np.argwhere(board == 2)
+
+    myd = flood_distances(board, my_pos)
+    opd = flood_distances(board, op_pos)
+
+    score = 0.0
+    for r in range(6):
+        for c in range(6):
+            if board[r, c] != 0:
+                continue
+            a = int(myd[r, c])
+            b = int(opd[r, c])
+            if a < b:
+                score += 1.0
+            elif b < a:
+                score -= 1.0
+            elif a < 99:
+                # tie on reachable square: tiny preference neutral
+                score += 0.0
+    return score
+
+
+def center_bonus_for_move(tr, tc, ar, ac):
+    # Prefer central landing squares and arrows that constrain center.
+    center = [(2, 2), (2, 3), (3, 2), (3, 3)]
+    score = 0.0
+    for rr, cc, w in [(tr, tc, 0.4), (ar, ac, 0.15)]:
+        d = min(abs(rr - cr) + abs(cc - cc2) for cr, cc2 in center)
+        score += w * (3 - min(d, 3))
+    return score
+
+
+def quick_move_heuristic(board, move):
+    """
+    Cheap ordering heuristic before deeper evaluation.
+    """
+    fr, fc, tr, tc, ar, ac = move
+
+    # Count mobility from landing square after move, before arrow
+    b2 = board.copy()
+    b2[fr, fc] = 0
+    b2[tr, tc] = 1
+    land_mob = ray_count(b2, tr, tc)
+
+    # Arrow effectiveness: how many rays from arrow square existed before blocking?
+    # Use b2 since arrow is shot after movement.
+    arrow_block = 0
+    for dr, dc in DIRS:
+        nr, nc = ar + dr, ac + dc
+        while 0 <= nr < 6 and 0 <= nc < 6 and b2[nr, nc] == 0:
+            arrow_block += 1
+            nr += dr
+            nc += dc
+
+    return 1.5 * land_mob + 0.35 * arrow_block + center_bonus_for_move(tr, tc, ar, ac)
+
+
+def evaluate(board):
+    """
+    Static evaluation for player 1.
+    """
+    my_moves = mobility(board, 1)
+    op_moves = mobility(board, 2)
+
+    # Terminal-like pressure
+    if my_moves == 0 and op_moves == 0:
+        return 0.0
+    if op_moves == 0:
+        return 1e6
+    if my_moves == 0:
+        return -1e6
+
+    terr = territory_score(board)
+
+    # Piece centralization
+    cent = 0.0
+    for r, c in np.argwhere(board == 1):
+        cent -= 0.08 * (abs(int(r) - 2.5) + abs(int(c) - 2.5))
+    for r, c in np.argwhere(board == 2):
+        cent += 0.08 * (abs(int(r) - 2.5) + abs(int(c) - 2.5))
+
+    return 2.4 * (my_moves - op_moves) + 1.6 * terr + cent
+
+
+def opponent_best_response_value(board_after_our_move, max_reply_considered=18):
+    """
+    Approximate opponent's best response:
+    generate opponent moves, order quickly, evaluate top few.
+    Returns evaluation after opponent response, from player 1 perspective.
+    """
+    opp_moves = all_legal_moves(board_after_our_move, player=2)
+    if not opp_moves:
+        return 1e6
+
+    # Order using mirrored quick heuristic
+    scored = []
+    for mv in opp_moves:
+        fr, fc, tr, tc, ar, ac = mv
+        b2 = board_after_our_move.copy()
+        b2[fr, fc] = 0
+        b2[tr, tc] = 2
+        land_mob = ray_count(b2, tr, tc)
+        arrow_block = 0
+        for dr, dc in DIRS:
+            nr, nc = ar + dr, ac + dc
+            while 0 <= nr < 6 and 0 <= nc < 6 and b2[nr, nc] == 0:
+                arrow_block += 1
+                nr += dr
+                nc += dc
+        h = 1.5 * land_mob + 0.35 * arrow_block + center_bonus_for_move(tr, tc, ar, ac)
+        scored.append((h, mv))
+
+    scored.sort(reverse=True, key=lambda x: x[0])
+
+    best = float('inf')
+    for _, mv in scored[:max_reply_considered]:
+        b3 = apply_move(board_after_our_move, mv, player=2)
+        val = evaluate(b3)
+        if val < best:
+            best = val
+    return best
+
+
+def move_to_str(move):
+    fr, fc, tr, tc, ar, ac = move
+    return f"{fr},{fc}:{tr},{tc}:{ar},{ac}"
+
+
+def policy(board) -> str:
+    board = np.asarray(board)
+
+    legal = all_legal_moves(board, player=1)
+    if not legal:
+        # Robust fallback; environment says this should not happen.
+        return "0,0:0,0:0,0"
+
+    # Safe fallback is always first legal move
+    fallback = legal[0]
+
+    # Fast ordering of all moves
+    prelim = []
+    for mv in legal:
+        try:
+            h = quick_move_heuristic(board, mv)
+        except Exception:
+            h = 0.0
+        prelim.append((h, mv))
+    prelim.sort(reverse=True, key=lambda x: x[0])
+
+    # Candidate limits keep us fast on 6x6
+    top_k = 14 if len(prelim) > 14 else len(prelim)
+
+    best_move = fallback
+    best_val = -float('inf')
+
+    # Evaluate top candidates with opponent reply approximation
+    for i in range(top_k):
+        mv = prelim[i][1]
+        b_after = apply_move(board, mv, player=1)
+
+        # Immediate winning detection
+        opp_legal = all_legal_moves(b_after, player=2)
+        if not opp_legal:
+            return move_to_str(mv)
+
+        static_val = evaluate(b_after)
+        reply_val = opponent_best_response_value(b_after, max_reply_considered=14)
+        val = 0.35 * static_val + 0.65 * reply_val
+
+        # Tiny tie-break by ordering heuristic
+        val += 0.01 * prelim[i][0]
+
+        if val > best_val:
+            best_val = val
+            best_move = mv
+
+    return move_to_str(best_move)

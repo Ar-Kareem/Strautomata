@@ -1,0 +1,182 @@
+**Strategy:**
+
+This policy uses a multi-layered approach:
+1. **Immediate win detection**: First check for checkmate moves
+2. **Immediate threat response**: Look for moves that capture the opponent's king (if somehow legal)
+3. **Material evaluation**: Use piece values with positional bonuses
+4. **King safety**: Prioritize castling and avoid moving king to dangerous squares
+5. **Center control**: Bonus for moves that control central squares
+6. **Development**: Bonus for developing pieces in the opening
+7. **Attack patterns**: Extra points for checks and threats to valuable pieces
+8. **Move history**: Store previous moves in memory to detect repetitions
+
+Piece values: Queen=9, Rook=5, Bishop=3, Knight=3, Pawn=1, King=0 (too valuable to assign)
+
+<code>
+import numpy as np
+from collections import defaultdict
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str], memory: dict) -> tuple[str, dict]:
+    # Initialize memory if empty
+    if not memory:
+        memory = {
+            'move_history': [],
+            'piece_values': {'Q': 9, 'R': 5, 'B': 3, 'N': 3, 'P': 1, 'K': 0},
+            'center_squares': ['d4', 'd5', 'e4', 'e5'],
+            'attack_bonus': 0.5,
+            'development_bonus': 0.3,
+            'castling_bonus': 1.0,
+            'king_safety_penalty': -2.0
+        }
+    
+    # Extract our color code for pieces
+    our_color = 'w' if to_play == 'white' else 'b'
+    opponent_color = 'b' if our_color == 'w' else 'w'
+    
+    # Create board representation
+    board = {}
+    for square, piece in pieces.items():
+        board[square] = piece
+    
+    # Check for immediate checkmate
+    mate_moves = []
+    for move in legal_moves:
+        if move.endswith('#'):
+            mate_moves.append(move)
+    if mate_moves:
+        memory['move_history'].append(mate_moves[0])
+        return (mate_moves[0], memory)
+    
+    # Check for checks (high priority)
+    check_moves = []
+    for move in legal_moves:
+        if move.endswith('+') or 'x' in move and any(piece.startswith(opponent_color) and piece[1] == 'K' for piece in board.values()):
+            if any(sq == move.split('x')[-1] and board.get(sq, '')[1] == 'K' for sq in board):
+                check_moves.append(move)
+    if check_moves:
+        memory['move_history'].append(check_moves[0])
+        return (check_moves[0], memory)
+    
+    # Evaluate all moves and choose the best one
+    best_score = float('-inf')
+    best_move = legal_moves[0]  # Default to first move
+    
+    for move in legal_moves:
+        score = evaluate_move(move, board, our_color, opponent_color, memory)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    memory['move_history'].append(best_move)
+    return (best_move, memory)
+
+def evaluate_move(move, board, our_color, opponent_color, memory):
+    score = 0
+    
+    # Material capture evaluation
+    if 'x' in move:
+        target_square = move.split('x')[1].split('+')[0].split('#')[0]
+        if target_square in board:
+            captured_piece = board[target_square]
+            if captured_piece[0] == opponent_color:
+                score += memory['piece_values'][captured_piece[1]]
+    
+    # Check/checkmate bonus
+    if move.endswith('+'):
+        score += 0.8
+    elif move.endswith('#'):
+        score += 1000  # Should have been caught earlier
+    
+    # Castling bonus
+    if move in ['O-O', 'O-O-O']:
+        score += memory['castling_bonus']
+    
+    # King safety penalty (avoid moving king unless necessary)
+    moving_piece = get_moving_piece(move, board, our_color)
+    if moving_piece and moving_piece[1] == 'K' and 'x' not in move:
+        score += memory['king_safety_penalty']
+    
+    # Center control bonus
+    target_square = get_target_square(move)
+    if target_square in memory['center_squares']:
+        score += 0.2
+    
+    # Development bonus (moving pieces from starting squares)
+    if is_developing_move(move, board, our_color):
+        score += memory['development_bonus']
+    
+    # Simple repetition avoidance
+    if move in memory.get('move_history', []):
+        score -= 0.5
+    
+    return score
+
+def get_moving_piece(move, board, our_color):
+    if move == 'O-O' or move == 'O-O-O':
+        return our_color + 'K'
+    
+    # Extract the piece type from move notation
+    piece_letter = move[0]
+    if piece_letter in 'KQRBN':
+        return our_color + piece_letter
+    else:
+        # Pawn move or other special case
+        return our_color + 'P'
+
+def get_target_square(move):
+    if move in ['O-O', 'O-O-O']:
+        return 'g1' if move == 'O-O' else 'c1'
+    
+    # Extract target square from move string
+    for i, char in enumerate(move):
+        if char in 'abcdefgh' and i < len(move) - 1 and move[i+1] in '12345678':
+            return move[i:i+2]
+    
+    return move[-2:]  # Fallback
+
+def is_developing_move(move, board, our_color):
+    moving_piece = get_moving_piece(move, board, our_color)
+    if not moving_piece:
+        return False
+    
+    # Check if piece is moving from starting position
+    piece_type = moving_piece[1]
+    source_square = get_source_square(move, board, our_color)
+    
+    if not source_square:
+        return False
+    
+    # Define typical starting squares for each piece type
+    starting_ranks = {'1', '2'} if our_color == 'w' else {'7', '8'}
+    
+    if source_square[1] in starting_ranks:
+        if piece_type == 'P' and source_square[1] == ('2' if our_color == 'w' else '7'):
+            return True
+        elif piece_type in ['N', 'B'] and source_square in [
+            'b1', 'g1', 'b8', 'g8', 'c1', 'f1', 'c8', 'f8'
+        ]:
+            return True
+    
+    return False
+
+def get_source_square(move, board, our_color):
+    if move in ['O-O', 'O-O-O']:
+        return 'e1' if our_color == 'w' else 'e8'
+    
+    # Try to extract source square from disambiguated moves
+    if any(move.startswith(piece) for piece in ['K', 'Q', 'R', 'B', 'N']):
+        # Piece move with possible disambiguation
+        if len(move) >= 4 and move[1] in 'abcdefgh' and move[2] in '12345678':
+            return move[1:3]
+        elif len(move) >= 3 and move[1] in 'abcdefgh12345678':
+            # Could be file/rank disambiguation
+            for square in board:
+                if board[square] == our_color + move[0]:
+                    # Very simple heuristic - not perfect but works for basic cases
+                    return square
+    
+    # For pawn moves or other cases, we'd need more complex logic
+    # For simplicity, return None if we can't determine
+    return None
+</code>

@@ -1,0 +1,65 @@
+
+import numpy as np
+
+def get_queen_moves(board, r, c):
+    moves = []
+    directions = [(-1,0), (-1,1), (0,1), (1,1), (1,0), (1,-1), (0,-1), (-1,-1)]
+    for dr, dc in directions:
+        nr, nc = r + dr, c + dc
+        while 0 <= nr < 6 and 0 <= nc < 6:
+            if board[nr, nc] != 0:
+                break
+            moves.append((nr, nc))
+            nr += dr
+            nc += dc
+    return moves
+
+def compute_centrality(r, c):
+    return (3.0 - abs(r - 2.5)) + (3.0 - abs(c - 2.5))
+
+def compute_mobility(board, player):
+    mobility = 0
+    amazons = np.argwhere(board == player)
+    for r, c in amazons:
+        for dr, dc in [(-1,0), (-1,1), (0,1), (1,1), (1,0), (1,-1), (0,-1), (-1,-1)]:
+            steps = 0
+            nr, nc = r + dr, c + dc
+            while 0 <= nr < 6 and 0 <= nc < 6:
+                if board[nr, nc] != 0:
+                    break
+                steps += 1
+                nr += dr
+                nc += dc
+            mobility += steps
+    return mobility
+
+def evaluate_board(board):
+    mobility_1 = compute_mobility(board, 1)
+    mobility_2 = compute_mobility(board, 2)
+    centrality_1 = sum(compute_centrality(r, c) for r, c in np.argwhere(board == 1))
+    centrality_2 = sum(compute_centrality(r, c) for r, c in np.argwhere(board == 2))
+    return (mobility_1 - mobility_2) + 0.5 * (centrality_1 - centrality_2)
+
+def policy(board):
+    best_score = -float('inf')
+    best_move = "0,0:0,0:0,0"
+    player_amazons = np.argwhere(board == 1)
+    
+    for r, c in player_amazons:
+        moves = get_queen_moves(board, r, c)
+        for move_r, move_c in moves:
+            moved_board = board.copy()
+            moved_board[r, c] = 0
+            moved_board[move_r, move_c] = 1
+            
+            arrows = get_queen_moves(moved_board, move_r, move_c)
+            for arr_r, arr_c in arrows:
+                arrow_board = moved_board.copy()
+                arrow_board[arr_r, arr_c] = -1
+                score = evaluate_board(arrow_board)
+                
+                if score > best_score:
+                    best_score = score
+                    best_move = f"{r},{c}:{move_r},{move_c}:{arr_r},{arr_c}"
+
+    return best_move

@@ -1,0 +1,122 @@
+
+import math
+from collections import defaultdict
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    # Determine movement direction based on color
+    direction = 1 if color == 'w' else -1
+    
+    # Convert to sets for faster lookup
+    my_pieces = set(me)
+    opp_pieces = set(opp)
+    all_pieces = my_pieces.union(opp_pieces)
+    
+    # Check for immediate winning moves first
+    for (r, c) in my_pieces:
+        target_row = r + direction
+        if (color == 'w' and target_row == 7) or (color == 'b' and target_row == 0):
+            # Check if we can move forward to win
+            if (target_row, c) not in all_pieces:
+                return ((r, c), (target_row, c))
+            # Check if we can capture to win
+            for dc in [-1, 1]:
+                if (target_row, c + dc) in opp_pieces:
+                    return ((r, c), (target_row, c + dc))
+    
+    # Evaluate all possible moves with a simple scoring system
+    best_score = -math.inf
+    best_move = None
+    
+    for (r, c) in my_pieces:
+        # Possible moves: forward, diagonal left, diagonal right
+        target_row = r + direction
+        if target_row < 0 or target_row > 7:
+            continue  # invalid row
+            
+        # Forward move
+        if (target_row, c) not in all_pieces:
+            score = evaluate_move((r, c), (target_row, c), my_pieces, opp_pieces, color)
+            if score > best_score:
+                best_score = score
+                best_move = ((r, c), (target_row, c))
+        
+        # Diagonal captures
+        for dc in [-1, 1]:
+            if 0 <= c + dc <= 7 and (target_row, c + dc) in opp_pieces:
+                score = evaluate_move((r, c), (target_row, c + dc), my_pieces, opp_pieces, color)
+                if score > best_score:
+                    best_score = score
+                    best_move = ((r, c), (target_row, c + dc))
+    
+    # If no move found (shouldn't happen as game would be over), return first legal move
+    if best_move is None:
+        for (r, c) in my_pieces:
+            target_row = r + direction
+            if 0 <= target_row <= 7:
+                if (target_row, c) not in all_pieces:
+                    return ((r, c), (target_row, c))
+                for dc in [-1, 1]:
+                    if 0 <= c + dc <= 7 and (target_row, c + dc) not in all_pieces:
+                        return ((r, c), (target_row, c + dc))
+    
+    return best_move
+
+def evaluate_move(from_pos, to_pos, my_pieces, opp_pieces, color):
+    from_r, from_c = from_pos
+    to_r, to_c = to_pos
+    
+    # Base score components
+    score = 0
+    
+    # Advancement: prefer moving forward
+    advancement = to_r if color == 'w' else (7 - to_r)
+    score += advancement * 2
+    
+    # Center control: prefer center columns
+    center_bonus = 1 - abs(to_c - 3.5) / 3.5  # 1 for center, 0 for edges
+    score += center_bonus * 1.5
+    
+    # Capture bonus
+    if to_pos in opp_pieces:
+        score += 5  # significant bonus for captures
+        
+        # Check if this capture leaves us vulnerable
+        opp_dir = -1 if color == 'w' else 1
+        for dc in [-1, 1]:
+            if (to_r + opp_dir, to_c + dc) in opp_pieces and (to_r, to_c + dc) in my_pieces:
+                score -= 3  # penalty for vulnerable captures
+    
+    # Check if this move creates a breakthrough path
+    if creates_breakthrough_path(to_pos, my_pieces, opp_pieces, color):
+        score += 4
+    
+    # Protect our pieces - penalty for leaving pieces vulnerable
+    opp_dir = -1 if color == 'w' else 1
+    for dc in [-1, 1]:
+        if (from_r + opp_dir, from_c + dc) in opp_pieces and (from_r, from_c + dc) not in my_pieces:
+            score += 2  # bonus for moving out of danger
+    
+    return score
+
+def creates_breakthrough_path(pos, my_pieces, opp_pieces, color):
+    r, c = pos
+    direction = 1 if color == 'w' else -1
+    path_length = 0
+    max_path = 0
+    
+    # Check vertical path
+    while 0 <= r <= 7:
+        if (r, c) in opp_pieces:
+            break
+        path_length += 1
+        r += direction
+        if (color == 'w' and r == 7) or (color == 'b' and r == 0):
+            return True
+        if (r, c) in my_pieces:
+            path_length += 1
+            break
+    
+    if path_length >= 5:  # arbitrary threshold for "good path"
+        return True
+    
+    return False

@@ -1,0 +1,92 @@
+
+import numpy as np
+
+def get_hand_value(hand: list[str], target: int) -> int:
+    """Calculate the current value of the hand with optimal Aces."""
+    num_aces = hand.count("A")
+    non_ace_total = sum(
+        10 if card in ["J", "Q", "K"] else int(card) if card.isdigit() else 0
+        for card in hand if card != "A"
+    )
+    
+    # Start with all Aces as 11
+    total = non_ace_total + 11 * num_aces
+    
+    # Convert Aces from 11 to 1 if needed to avoid busting
+    while total > target and num_aces > 0:
+        total -= 10
+        num_aces -= 1
+        
+    return total
+
+def policy(hand: list[str], target: int) -> str:
+    # If we have no cards, always hit
+    if len(hand) == 0:
+        return "HIT"
+    
+    # Calculate current hand value
+    current_value = get_hand_value(hand, target)
+    
+    # If we're already at or above target, stay
+    if current_value >= target:
+        return "STAY"
+    
+    # Calculate how many cards we've played (to estimate remaining deck)
+    cards_played = len(hand)
+    cards_remaining = 13 - cards_played
+    
+    # If we're very close to target, stay
+    if current_value >= target - 1:
+        return "STAY"
+    
+    # Calculate the safe range for next card (won't cause bust)
+    safe_threshold = target - current_value
+    
+    # Estimate probability of drawing a safe card
+    safe_cards = 0
+    for card in ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]:
+        if card not in hand:  # Card is still in deck
+            card_value = 11 if card == "A" else 10 if card in ["J", "Q", "K"] else int(card)
+            # Ace can be 1 if needed
+            if card == "A":
+                if current_value + 1 <= target:  # Can use as 1
+                    safe_cards += 1
+            else:
+                if card_value <= safe_threshold:
+                    safe_cards += 1
+    
+    safe_probability = safe_cards / cards_remaining if cards_remaining > 0 else 0
+    
+    # Calculate risk based on safe probability and proximity to target
+    if safe_probability < 0.3:  # High risk of busting
+        return "STAY"
+    
+    # More aggressive when target is higher
+    conservative_threshold = target * 0.85
+    
+    if current_value >= conservative_threshold:
+        # Be more careful as we approach threshold
+        if safe_probability < 0.5:
+            return "STAY"
+    
+    # If we're far from target, keep hitting
+    if current_value < target * 0.7:
+        return "HIT"
+    
+    # Closer evaluation when in decision zone
+    if current_value >= target * 0.7:
+        distance = target - current_value
+        if distance <= 3:
+            # Very close - only hit if high chance of safe card
+            if safe_probability > 0.6:
+                return "HIT"
+            else:
+                return "STAY"
+        elif distance <= 6:
+            # Moderate distance - hit if reasonable chance
+            if safe_probability > 0.4:
+                return "HIT"
+            else:
+                return "STAY"
+    
+    return "HIT"

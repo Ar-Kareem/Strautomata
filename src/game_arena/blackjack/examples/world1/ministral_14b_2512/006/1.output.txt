@@ -1,0 +1,85 @@
+### Strategy for this Policy
+
+The strategy I'll implement is a **dynamic threshold-based policy** that balances risk and reward. The key idea is to:
+
+1. **Calculate the current hand value** (with Aces treated as 11 when ≤ target, otherwise 1).
+2. **Determine the remaining cards** in the deck (since we have a fixed 13-card deck, we can track which cards are left).
+3. **Use a probabilistic approach** to decide whether to `HIT` or `STAY`:
+   - If the current hand value is already very close to the target (e.g., within ±2), `STAY` to avoid overshooting.
+   - If the current hand value is far from the target and the remaining cards are mostly high-value (e.g., many 10s, J, Q, K left), `HIT` to increase the chance of reaching the target.
+   - If the current hand value is far from the target but the remaining cards are mostly low-value (e.g., many 2s, 3s left), `STAY` to avoid busting.
+   - If the current hand value is exactly the target, `STAY` immediately.
+   - If the current hand value is already > target, `STAY` (bust).
+
+This strategy is designed to be **adaptive** to the remaining deck composition, making it more robust against other policies in the arena.
+
+### Python Implementation
+```python
+def policy(hand: list[str], target: int) -> str:
+    # Calculate current hand value
+    def calculate_value(h):
+        value = 0
+        aces = 0
+        for card in h:
+            if card == "A":
+                aces += 1
+                value += 11
+            elif card in ["J", "Q", "K"]:
+                value += 10
+            else:
+                value += int(card)
+        # Adjust for aces if value > target
+        while value > target and aces > 0:
+            value -= 10
+            aces -= 1
+        return value
+
+    current_value = calculate_value(hand)
+
+    # If already bust or exactly at target, stay
+    if current_value > target or current_value == target:
+        return "STAY"
+
+    # Track remaining cards in the deck (initially all 13 cards)
+    full_deck = {"A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"}
+    remaining_cards = full_deck - set(hand)
+
+    # Calculate expected value of remaining cards
+    expected_value = 0
+    for card in remaining_cards:
+        if card == "A":
+            # A can be 11 or 1, but we approximate its expected value
+            expected_value += 6.5  # (11 + 1) / 2
+        elif card in ["J", "Q", "K"]:
+            expected_value += 10
+        else:
+            expected_value += int(card)
+
+    # Calculate probability of busting if we hit
+    # This is a simplified approximation (exact calculation is complex)
+    # We assume the worst-case scenario where we draw the highest remaining card
+    max_possible_draw = max(int(card) if card not in ["J", "Q", "K"] else 10 for card in remaining_cards) if remaining_cards else 0
+    potential_bust = current_value + max_possible_draw > target
+
+    # Decision logic
+    if current_value >= target - 2:  # Close to target, stay to avoid overshooting
+        return "STAY"
+    elif potential_bust and (current_value + expected_value / len(remaining_cards)) < target - 2:
+        # If hitting risks busting and we're not close to target, stay
+        return "STAY"
+    else:
+        # Otherwise, hit to improve chances of reaching target
+        return "HIT"
+```
+
+### Explanation of the Policy:
+1. **Hand Value Calculation**: The `calculate_value` function computes the current hand value, treating Aces as 11 if the total is ≤ target, otherwise as 1.
+2. **Bust Check**: If the current value exceeds the target or matches it exactly, the policy immediately returns `"STAY"`.
+3. **Remaining Cards Analysis**: The policy tracks which cards are left in the deck (since the deck is fixed and known). It calculates the expected value of the remaining cards to estimate the potential gain from hitting.
+4. **Bust Probability Estimation**: A simplified check for the worst-case scenario (drawing the highest remaining card) is used to estimate the risk of busting.
+5. **Decision Logic**:
+   - If the current value is within 2 of the target, `STAY` to avoid overshooting.
+   - If hitting risks busting (based on the worst-case draw) and the expected value doesn't justify the risk, `STAY`.
+   - Otherwise, `HIT` to improve the chance of reaching the target.
+
+This strategy is designed to be **adaptive** and **risk-aware**, making it competitive in the arena.

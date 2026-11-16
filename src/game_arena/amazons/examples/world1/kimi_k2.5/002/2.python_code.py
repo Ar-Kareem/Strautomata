@@ -1,0 +1,142 @@
+
+import numpy as np
+
+# 8 directions for queen moves
+DIRS = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+
+def get_queen_moves(board, r, c):
+    """Return all squares reachable from (r,c) by queen moves on empty squares."""
+    moves = []
+    for dr, dc in DIRS:
+        nr, nc = r + dr, c + dc
+        while 0 <= nr < 6 and 0 <= nc < 6 and board[nr, nc] == 0:
+            moves.append((nr, nc))
+            nr += dr
+            nc += dc
+    return moves
+
+def get_all_moves(board, player):
+    """Generate all legal moves for player (1 or 2). Returns list of (fr,fc,tr,tc,ar,ac)."""
+    moves = []
+    amazons = [(r, c) for r in range(6) for c in range(6) if board[r, c] == player]
+    for fr, fc in amazons:
+        for tr, tc in get_queen_moves(board, fr, fc):
+            # Simulate amazon move to generate arrow shots
+            temp_board = board.copy()
+            temp_board[fr, fc] = 0
+            temp_board[tr, tc] = player
+            for ar, ac in get_queen_moves(temp_board, tr, tc):
+                moves.append((fr, fc, tr, tc, ar, ac))
+    return moves
+
+def apply_move(board, move, player):
+    """Apply a move to the board and return new board state."""
+    fr, fc, tr, tc, ar, ac = move
+    new_board = board.copy()
+    new_board[fr, fc] = 0
+    new_board[tr, tc] = player
+    new_board[ar, ac] = -1
+    return new_board
+
+def count_mobility(board, player):
+    """Count total queen-move reachability for all amazons of player."""
+    count = 0
+    for r in range(6):
+        for c in range(6):
+            if board[r, c] == player:
+                count += len(get_queen_moves(board, r, c))
+    return count
+
+def evaluate(board):
+    """Evaluate position from player 1's perspective (positive = good)."""
+    my_mob = count_mobility(board, 1)
+    opp_mob = count_mobility(board, 2)
+    return my_mob - opp_mob
+
+def minimax(board, depth, alpha, beta, maximizing):
+    """Minimax with alpha-beta pruning."""
+    if maximizing:
+        moves = get_all_moves(board, 1)
+        if not moves:
+            return -10000  # Loss
+        if depth == 0:
+            return evaluate(board)
+        max_eval = -float('inf')
+        for move in moves:
+            new_board = apply_move(board, move, 1)
+            eval = minimax(new_board, depth - 1, alpha, beta, False)
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        moves = get_all_moves(board, 2)
+        if not moves:
+            return 10000  # Win
+        if depth == 0:
+            return evaluate(board)
+        min_eval = float('inf')
+        for move in moves:
+            new_board = apply_move(board, move, 2)
+            eval = minimax(new_board, depth - 1, alpha, beta, True)
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def policy(board):
+    """Select the best move using depth-2 minimax with move ordering."""
+    moves = get_all_moves(board, 1)
+    
+    # Should not happen per problem statement, but handle gracefully
+    if not moves:
+        return "0,0:0,0:0,0"
+    
+    if len(moves) == 1:
+        m = moves[0]
+        return f"{m[0]},{m[1]}:{m[2]},{m[3]}:{m[4]},{m[5]}"
+    
+    # Move ordering: evaluate immediate result to sort moves
+    scored_moves = []
+    for move in moves:
+        new_board = apply_move(board, move, 1)
+        score = evaluate(new_board)
+        scored_moves.append((score, move))
+    
+    scored_moves.sort(reverse=True, key=lambda x: x[0])
+    
+    # Adaptive search: deeper search if fewer moves, limit breadth if many
+    n_moves = len(moves)
+    if n_moves <= 30:
+        depth = 2
+        top_n = n_moves
+    elif n_moves <= 80:
+        depth = 2
+        top_n = 25
+    else:
+        depth = 1
+        top_n = min(30, n_moves)
+    
+    best_move = scored_moves[0][1]
+    best_val = -float('inf')
+    alpha = -float('inf')
+    beta = float('inf')
+    
+    for i in range(top_n):
+        score, move = scored_moves[i]
+        new_board = apply_move(board, move, 1)
+        
+        if depth == 1:
+            val = evaluate(new_board)
+        else:
+            val = minimax(new_board, depth - 1, alpha, beta, False)
+        
+        if val > best_val:
+            best_val = val
+            best_move = move
+        alpha = max(alpha, val)
+    
+    fr, fc, tr, tc, ar, ac = best_move
+    return f"{fr},{fc}:{tr},{tc}:{ar},{ac}"

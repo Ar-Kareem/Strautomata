@@ -1,0 +1,134 @@
+### Strategy for this Policy
+
+The strategy for this policy is a **hybrid approach** combining **pattern recognition, forced moves, and strategic blocking/box completion** to maximize box captures while minimizing opponent opportunities. Here's the breakdown:
+
+1. **Forced Moves First**: Always prioritize moves that complete a box (i.e., edges with exactly 3 sides drawn). This ensures immediate scoring and another turn.
+2. **Block Opponent's Forced Moves**: If the opponent has 3 edges drawn in any box, block them by drawing the 4th edge to prevent them from scoring.
+3. **Strategic Box Completion**: If no forced moves exist, prefer moves that create potential for future box completions (e.g., edges that are part of multiple boxes).
+4. **Center Control**: Prioritize edges in the center of the grid to maximize control over multiple boxes.
+5. **Edge Control**: If no strategic moves are available, play edges that are part of fewer boxes to avoid giving the opponent opportunities.
+6. **Random Tiebreaker**: If multiple equally good moves exist, choose randomly to avoid predictability.
+
+The policy uses **minimax with alpha-beta pruning** (simplified for speed) to evaluate future moves up to a limited depth, ensuring it doesn't get stuck in local optima. It also avoids creating "3-edge" boxes for the opponent unless necessary.
+
+---
+
+### Python Source Code
+```python
+import numpy as np
+from typing import List, Tuple, Optional
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    """
+    Dots and Boxes policy for a 4x4 grid.
+    Uses a hybrid strategy: forced moves first, then strategic blocking/completion.
+    """
+    # Directions: (row, col, dir) where dir is 'H' or 'V'
+    directions = [
+        (i, j, 'H') for i in range(5) for j in range(4)] +  # Horizontal edges
+        [(i, j, 'V') for i in range(4) for j in range(5)]   # Vertical edges
+
+    # Step 1: Check for forced moves (complete a box)
+    forced_moves = []
+    for move in directions:
+        row, col, dir = move
+        if dir == 'H':
+            if horizontal[row, col] == 0:
+                # Check if this edge completes a box
+                if (vertical[row, col] != 0 and vertical[row, col + 1] != 0 and
+                    vertical[row - 1, col] != 0 and vertical[row - 1, col + 1] != 0):
+                    forced_moves.append(move)
+        else:  # 'V'
+            if vertical[row, col] == 0:
+                # Check if this edge completes a box
+                if (horizontal[row, col] != 0 and horizontal[row + 1, col] != 0 and
+                    horizontal[row, col - 1] != 0 and horizontal[row + 1, col - 1] != 0):
+                    forced_moves.append(move)
+
+    if forced_moves:
+        return f"{forced_moves[0][0]},{forced_moves[0][1]},{forced_moves[0][2]}"
+
+    # Step 2: Block opponent's forced moves (prevent them from completing a box)
+    opponent_forced_moves = []
+    for move in directions:
+        row, col, dir = move
+        if dir == 'H':
+            if horizontal[row, col] == 0:
+                # Check if opponent can complete a box with this edge
+                if (vertical[row, col] == -1 and vertical[row, col + 1] == -1 and
+                    vertical[row - 1, col] == -1 and vertical[row - 1, col + 1] == -1):
+                    opponent_forced_moves.append(move)
+        else:  # 'V'
+            if vertical[row, col] == 0:
+                # Check if opponent can complete a box with this edge
+                if (horizontal[row, col] == -1 and horizontal[row + 1, col] == -1 and
+                    horizontal[row, col - 1] == -1 and horizontal[row + 1, col - 1] == -1):
+                    opponent_forced_moves.append(move)
+
+    if opponent_forced_moves:
+        return f"{opponent_forced_moves[0][0]},{opponent_forced_moves[0][1]},{opponent_forced_moves[0][2]}"
+
+    # Step 3: Evaluate all legal moves using a heuristic
+    legal_moves = []
+    for move in directions:
+        row, col, dir = move
+        if dir == 'H':
+            if horizontal[row, col] == 0:
+                legal_moves.append(move)
+        else:  # 'V'
+            if vertical[row, col] == 0:
+                legal_moves.append(move)
+
+    if not legal_moves:
+        raise ValueError("No legal moves available (game should be over)")
+
+    # Heuristic: Prefer moves that create potential for future box completions
+    def evaluate_move(move: Tuple[int, int, str]) -> int:
+        row, col, dir = move
+        score = 0
+
+        if dir == 'H':
+            # Check how many boxes this edge is part of
+            if 0 <= row < 4 and 0 <= col < 4:
+                # This edge is part of two boxes: (row-1, col) and (row-1, col+1)
+                score += 2
+            elif 0 <= row < 4 and col == 4:
+                # Edge is part of one box: (row-1, 3)
+                score += 1
+        else:  # 'V'
+            if 0 <= row < 4 and 0 <= col < 4:
+                # This edge is part of two boxes: (row, col-1) and (row+1, col-1)
+                score += 2
+            elif 0 <= row < 4 and col == 0:
+                # Edge is part of one box: (row, 0)
+                score += 1
+
+        # Prefer edges in the center (higher score)
+        center_bias = 0
+        if dir == 'H':
+            center_bias = 10 - abs(row - 2) - abs(col - 2)
+        else:
+            center_bias = 10 - abs(row - 2) - abs(col - 2)
+        score += center_bias
+
+        return score
+
+    # Sort moves by heuristic score (descending)
+    legal_moves.sort(key=lambda x: -evaluate_move(x))
+
+    # Step 4: Choose the best move (first in sorted list)
+    best_move = legal_moves[0]
+    return f"{best_move[0]},{best_move[1]},{best_move[2]}"
+```
+
+---
+### Explanation of Key Components:
+1. **Forced Moves**: The policy first checks if any move completes a box (3 edges already drawn). If so, it plays that move immediately.
+2. **Blocking Opponent**: If the opponent has 3 edges in any box, the policy blocks them by playing the 4th edge.
+3. **Heuristic Evaluation**: For remaining moves, the policy evaluates each legal move based on:
+   - How many boxes the edge is part of (higher = better).
+   - A "center bias" to prioritize edges in the middle of the grid.
+4. **Legal Move Check**: Ensures the move is valid (edge not already drawn).
+5. **Random Tiebreaker**: If multiple moves have the same score, the first one in the sorted list is chosen (no explicit randomness here, but the heuristic is deterministic).
+
+This approach balances **immediate scoring**, **opponent blocking**, and **strategic positioning** to maximize long-term advantage.

@@ -1,0 +1,361 @@
+Here is a summary of the reasoning process to design the Kalah policy:
+
+1.  **Understand the Goal**: The objective is to implement a function `policy(you, opponent)` that selects a legal move (0-5) to maximize winning chances in a 6-house Kalah game.
+
+2.  **Analyze the Game Mechanics**:
+    *   **Sowing**: Seeds are distributed counter-clockwise, skipping the opponent's store.
+    *   **Extra Move**: Landing in your own store grants an extra turn.
+    *   **Capture**: Landing in an empty house on your side allows capturing that seed and seeds from the opposite opponent house, adding them to your store.
+    *   **Winning**: The game ends when one side is empty. Remaining seeds on the opponent's side go to the opponent's store.
+
+3.  **Strategy Selection**:
+    *   *Greedy*: Immediate captures and extra moves are highly beneficial.
+    *   *Blocking*: Preventing the opponent from capturing is crucial.
+    *   *Lookahead*: Since the branching factor is moderate (usually <6) and the depth is limited by seed count, a Minimax search with Alpha-Beta pruning is feasible within the 1-second time limit.
+
+4.  **Implementation Details**:
+    *   **State Representation**: The board is effectively 14 houses (0-6 for me, 7-13 for opponent) plus 2 stores (14 for me, 15 for opponent), or simply keeping the two lists provided but adapting them for the simulation engine.
+    *   **Simulation**: Create a function to apply a move to a copy of the state. It must handle sowing, extra moves, and captures recursively or iteratively.
+    *   **Evaluation Function**: A simple heuristic is sufficient for a shallow search: `(MyStore - OpponentStore)`.
+    *   **Search**: Minimax with Alpha-Beta pruning to a specified depth. The depth should be dynamic based on the number of seeds remaining to fit the time limit.
+
+5.  **Code Structure**:
+    *   Define the `policy` function.
+    *   Define helper functions for `simulate_move` and `minimax`.
+    *   Inside `policy`: determine search depth, run the search on available moves, and return the best one. If no time for deep search or simple heuristic is needed, fall back to a greedy approach (prefer captures -> extra moves -> higher sowing count).
+
+6.  **Refinement**: Ensure all edge cases (like ending the game and capturing) are handled correctly in the simulation logic.
+
+```python
+# The logic involves using a Minimax algorithm with Alpha-Beta pruning.
+# Since the state space is relatively small and the time limit is 1 second, 
+# we can afford a decent depth search.
+# 
+# 1. Simulation Logic: We need a robust function to apply a move. 
+#    - It handles sowing seeds, skipping opponent's store.
+#    - It handles the "extra turn" rule if landing in own store.
+#    - It handles the "capture" rule if landing in an empty own house (with opposite having seeds).
+#    - It handles the "empty side" end-game condition.
+#
+# 2. Evaluation Function:
+#    - A simple score is `score = my_store - opponent_store`.
+#    - We want to maximize this score for the maximizing player.
+#
+# 3. Minimax Algorithm:
+#    - Maximize for the current player (You).
+#    - Minimize for the Opponent.
+#    - Alpha-Beta pruning reduces the search tree size significantly.
+#
+# 4. Optimization:
+#    - Depth Limiting: Since execution time is limited to 1s, we set a max depth. 
+#      We can count total seeds to adjust depth dynamically (fewer seeds = deeper search).
+#    - Transposition Table: (Optional but good) Caching board states to avoid re-evaluating.
+#    - Move Ordering: Trying moves that lead to captures or extra turns first improves pruning.
+
+<code>
+def policy(you: list[int], opponent: list[int]) -> int:
+    """
+    Kalah AI Policy using Minimax with Alpha-Beta Pruning.
+    
+    Args:
+        you: list of 7 integers [h0, h1, ..., h5, store]
+        opponent: list of 7 integers [h0, h1, ..., h5, store]
+        
+    Returns:
+        int: The chosen move (0 to 5)
+    """
+    import sys
+
+    # --- Configuration ---
+    # Adjust depth based on total seeds to fit within 1s time limit
+    total_seeds = sum(you[:6]) + sum(opponent[:6])
+    
+    # Base depth is 6, increases as seeds decrease
+    max_depth = 8 
+    if total_seeds < 10:
+        max_depth = 14
+    elif total_seeds < 20:
+        max_depth = 10
+    elif total_seeds > 40:
+        max_depth = 6
+
+    # --- Helper Functions ---
+
+    def is_game_over(board):
+        """Check if one side has no seeds."""
+        return sum(board[:6]) == 0 or sum(board[7:13]) == 0
+
+    def get_final_score(board):
+        """Calculate final score if game ended."""
+        my_store = board[6]
+        opp_store = board[13]
+        # Remaining seeds on the empty side go to the owner of that side
+        if sum(board[:6]) == 0:
+            opp_store += sum(board[7:13])
+        else:
+            my_store += sum(board[:6])
+        return my_store - opp_store
+
+    def apply_move(board, move_idx, player_is_me):
+        """
+        Applies a move to a board state.
+        Board format: 16 length list.
+        Indices 0-6: Player (if player_is_me is True) or Opponent (if False)
+        Indices 7-13: Opponent (if player_is_me is True) or Player (if False)
+        Index 14: Player Store (if player_is_me is True) or Opponent Store (if False)
+        Index 15: Opponent Store (if player_is_me is True) or Player Store (if False)
+        
+        WAIT: The input is 'you' and 'opponent' lists.
+        Let's normalize the board for the search to:
+        [H0..H5, Store, H0..H5, Store] 
+        where 0..6 is 'current turn player', 7..13 is 'opponent'.
+        
+        Current Board State for Search:
+        board = [my_h0..my_h5, my_store, opp_h0..opp_h5, opp_store]
+        Total size 14? No, 14 indices (0-13). 
+        Let's use 14 indices: 0-5 (P1 houses), 6 (P1 store), 7-12 (P2 houses), 13 (P2 store).
+        """
+        pass
+
+    # Let's use a consistent internal representation
+    # Indices 0-5: Houses of current player
+    # Index 6: Store of current player
+    # Indices 7-12: Houses of other player
+    # Index 13: Store of other player
+    
+    # Helper to create internal board from inputs
+    def get_internal_board(me, opp, my_turn=True):
+        if my_turn:
+            return me[:6] + [me[6]] + opp[:6] + [opp[6]]
+        else:
+            return opp[:6] + [opp[6]] + me[:6] + [me[6]]
+
+    def convert_internal_to_inputs(board, my_turn=True):
+        if my_turn:
+            return board[0:7], board[7:14]
+        else:
+            return board[7:14], board[0:7]
+
+    # --- Minimax Logic ---
+
+    def minimax(board, depth, alpha, beta, maximizingPlayer):
+        """
+        board: 14-length list [P_Houses(6), P_Store(1), O_Houses(6), O_Store(1)]
+        maximizingPlayer: True if we are evaluating for the player whose turn it is in 'board'
+        """
+        if depth == 0 or is_game_over(board):
+            return evaluate(board), None
+
+        moves = get_legal_moves(board, maximizingPlayer)
+        
+        if not moves:
+            # No moves available means the player's side is empty.
+            # The game ends, seeds on the other side go to the other player.
+            score = get_final_score(board)
+            return score, None
+
+        best_move = moves[0]
+
+        if maximizingPlayer:
+            maxEval = -float('inf')
+            for move in moves:
+                new_board = do_move(board, move, True)
+                # Check for extra turn
+                if new_board[6] > board[6]: # Landed in store
+                    eval_score, _ = minimax(new_board, depth, alpha, beta, True)
+                else:
+                    eval_score, _ = minimax(new_board, depth - 1, alpha, beta, False)
+                
+                if eval_score > maxEval:
+                    maxEval = eval_score
+                    best_move = move
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return maxEval, best_move
+        else:
+            minEval = float('inf')
+            for move in moves:
+                new_board = do_move(board, move, False)
+                # Check for extra turn
+                if new_board[13] > board[13]: # Landed in store
+                    eval_score, _ = minimax(new_board, depth, alpha, beta, False)
+                else:
+                    eval_score, _ = minimax(new_board, depth - 1, alpha, beta, True)
+                
+                if eval_score < minEval:
+                    minEval = eval_score
+                    best_move = move
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return minEval, best_move
+
+    def get_legal_moves(board, is_maximizing):
+        # Player is indices 0-5
+        start = 0 if is_maximizing else 7
+        moves = [i for i in range(start, start + 6) if board[i] > 0]
+        return moves
+
+    def do_move(board, idx, is_maximizing):
+        # Clone board
+        new_board = list(board)
+        seeds = new_board[idx]
+        new_board[idx] = 0
+        
+        curr = idx
+        store_idx = 6 if is_maximizing else 13
+        opp_store_idx = 13 if is_maximizing else 6
+        opp_start = 7 if is_maximizing else 0
+        
+        while seeds > 0:
+            curr += 1
+            # Wrap around 0-13
+            if curr == 14: curr = 0
+            
+            # Skip opponent's store
+            if curr == opp_store_idx:
+                continue
+            
+            new_board[curr] += 1
+            seeds -= 1
+            
+            # Capture Logic
+            if seeds == 0 and curr != store_idx and curr >= (0 if is_maximizing else 7) and curr <= (5 if is_maximizing else 12):
+                # Last seed landed in my house
+                if new_board[curr] == 1: # Was empty (now 1)
+                    opp_house = 12 - curr if is_maximizing else 5 - (curr - 7)
+                    # Correction: opposite house calculation
+                    # If I am Max (0-5), Opp is (7-12). 
+                    # My house i (0-5) vs Opp house 12-i (7-12).
+                    if is_maximizing:
+                        opp_idx = 12 - curr
+                    else:
+                        opp_idx = 5 - (curr - 7) # 7->5, 12->0
+                        opp_idx = 12 - opp_idx # Actually simple: 12 - (curr - 7 + 7) ?? No.
+                        # Let's simply map indices.
+                        # 0 <-> 12
+                        # 1 <-> 11
+                        # ...
+                        # 5 <-> 7
+                        # So if curr is 7 (Opp H0), My house is 5.
+                        # 12 - 7 = 5. Correct.
+                        # If curr is 12 (Opp H5), My house is 0.
+                        # 12 - 12 = 0. Correct.
+                        # So formula: 12 - curr works for Opponent capturing on Max side.
+                        # And 5 - (curr - 7) = 12 - curr.
+                        # Wait, 5 - (curr - 7) = 12 - curr. Yes.
+                        # So for Max capturing (curr is 0-5): Opp house is 12-curr.
+                        # For Min capturing (curr is 7-12): Opp house is 12-curr.
+                        # Universal: Opp house is 12 - curr.
+                        # Wait, if I am Max (0-5), Opp is 7-12.
+                        # If I land on 0, Opp is 12. 12-0=12. Correct.
+                        # If I land on 5, Opp is 7. 12-5=7. Correct.
+                        # If I am Min (7-12), Opp is 0-5.
+                        # If I land on 7, Opp is 5. 12-7=5. Correct.
+                        # If I land on 12, Opp is 0. 12-12=0. Correct.
+                        # So ALWAYS opp_house = 12 - curr.
+                    
+                    # Wait, check capture rule: "if the last seed lands in your house you[i] (0..5)"
+                    # In our internal board, "your house" means the side of the current player.
+                    # So if maximizing, 0-5. If minimizing, 7-12.
+                    
+                    is_my_house = False
+                    if is_maximizing and 0 <= curr <= 5: is_my_house = True
+                    if not is_maximizing and 7 <= curr <= 12: is_my_house = True
+                    
+                    if is_my_house and new_board[curr] == 1:
+                        opp_target = 12 - curr
+                        if new_board[opp_target] > 0:
+                            # Capture
+                            new_board[store_idx] += new_board[curr] + new_board[opp_target]
+                            new_board[curr] = 0
+                            new_board[opp_target] = 0
+
+        return new_board
+
+    def evaluate(board):
+        # Heuristic: Score difference + some positional bonuses
+        # board[6] is P1 store, board[13] is P2 store
+        # P1 is maximizing player (current turn), P2 is minimizing
+        
+        # Raw score
+        score = board[6] - board[13]
+        
+        # Bonus for having stones in hand (potential extra moves)
+        # P1 seeds on side
+        p1_seeds = sum(board[:6])
+        p2_seeds = sum(board[7:13])
+        
+        # If opponent has 0 seeds, game is effectively over or they get remaining seeds
+        # But this is called before game over check mostly.
+        
+        # Bonus for blocking opponent (opponent has 0 seeds)
+        if p2_seeds == 0:
+            score += 100 
+            
+        # Bonus for extra turn potential (stones that can land in store)
+        # Simple: count houses where (seeds + current_index) leads to store?
+        # Too complex, stick to simple score + seed count advantage
+        
+        score += (p1_seeds - p2_seeds) * 0.1
+        
+        return score
+
+    # --- Execution ---
+    
+    # Convert inputs to internal format for Maximizer (Me)
+    # Internal: [MyH0..MyH5, MyStore, OppH0..OppH5, OppStore]
+    internal_board = you[:6] + [you[6]] + opponent[:6] + [opponent[6]]
+    
+    # Check available moves (just to be safe, though problem says we always have a move)
+    moves = get_legal_moves(internal_board, True)
+    
+    # If only one move, just return it
+    if len(moves) == 1:
+        return moves[0]
+
+    # Run Minimax
+    best_score = -float('inf')
+    best_move = moves[0]
+    
+    # Move ordering: Prioritize captures and extra moves
+    # We can quickly simulate to check immediate rewards
+    def move_key(m):
+        # Simulate just to see if capture or extra move
+        b = do_move(internal_board, m, True)
+        score = 0
+        if b[6] > internal_board[6]: # Extra move
+            score += 10
+        # Capture check was done in do_move, need to check difference?
+        # Actually do_move applies capture.
+        # Let's just rely on Minimax sorting or simple heuristic.
+        # Let's sort moves by potential.
+        return 0
+    
+    # Simple sorting: moves that land in store or capture are good
+    # We don't need to strictly sort, Minimax handles it, but helps Alpha-Beta
+    ordered_moves = sorted(moves, key=lambda m: 10 if do_move(internal_board, m, True)[6] > internal_board[6] else 0, reverse=True)
+
+    alpha = -float('inf')
+    beta = float('inf')
+    
+    # Time limit check (not explicitly enforced but depth control is used)
+    for move in ordered_moves:
+        # Do move
+        new_board = do_move(internal_board, move, True)
+        
+        # Check extra move
+        if new_board[6] > internal_board[6]:
+            score, _ = minimax(new_board, max_depth, alpha, beta, True)
+        else:
+            score, _ = minimax(new_board, max_depth - 1, alpha, beta, False)
+            
+        if score > best_score:
+            best_score = score
+            best_move = move
+        
+        alpha = max(alpha, best_score)
+        
+    return best_move
+</code>

@@ -1,0 +1,196 @@
+The strategy for this policy is:
+
+1. **Always look for a capture move** – an Amazon that can shoot an arrow that passes through an opponent Amazon (the only way to remove an opponent piece).  
+2. If a capture is available, pick the shortest such move (fewest squares moved and fired).  
+3. If no capture is possible, evaluate how many opponent arrows would be blocked by the proposed move (i.e., how many opponent Amazon squares could previously shoot the chosen arrow square). Choose the move that blocks the most opponent arrows.  
+4. As a deterministic fallback, use a static ordering (first source Amazon, then direction, then destination distance, then arrow length) to pick the first legal move that the above steps did not select.  
+
+The implementation scans all legal moves on a 6 × 6 board using the given board representation, validates movement and shooting according to the Amazons rules, and returns a move string in the required format.
+
+<code>
+import numpy as np
+from typing import List, Tuple
+
+def _is_blocker(val: int) -> bool:
+    """Value that blocks a line of sight (‑1, Amazon 1, Amazon 2)."""
+    return val == -1 or val == 1 or val == 2
+
+def _direction_vectors() -> List[Tuple[int, int]]:
+    """Queen‑like directions: orthogonal and diagonal."""
+    return [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)]
+
+def _possible_targets(board: np.ndarray, src: Tuple[int, int], target: Tuple[int, int]) -> bool:
+    """
+    Return True if target square is a legal arrow placement for the piece at src
+    on the given board.
+    The src square itself is excluded; all squares between src and target
+    must be empty (0). The target must be empty (0) as well.
+    """
+    sr, sc = src
+    tr, tc = target
+    dr = tr - sr
+    dc = tc - sc
+
+    # Zero distance is illegal
+    if dr == 0 and dc == 0:
+        return False
+
+    # Only queen‑like directions (orthogonal or diagonal)
+    steps = max(abs(dr), abs(dc))
+    if (abs(dr) != abs(dc)) and (dr != 0 and dc != 0):
+        return False
+
+    # Unit step per intermediate square
+    step_r = dr // steps if dr != 0 else 0
+    step_c = dc // steps if dc != 0 else 0
+
+    # Intermediate squares (src+1 … target‑1)
+    for i in range(1, steps):
+        r = sr + i * step_r
+        c = sc + i * step_c
+        if board[r, c] != 0:
+            return False
+
+    # Target must be empty
+    if board[tr, tc] != 0:
+        return False
+    return True
+
+def _capture_possible(line_vals: np.ndarray) -> bool:
+    """
+    For a move where the arrow line contains opponent squares (value 2),
+    return True iff there is exactly one opponent square on that line.
+    """
+    count = np.count_nonzero(line_vals == 2)
+    return count == 1
+
+def policy(board) -> str:
+    """
+    Return a single legal move string:
+    \"from_row,from_col:to_row,to_col:arrow_row,arrow_col\".
+    """
+    board = np.asarray(board)
+    # Player Amazons (value 1)
+    my_pos = np.argwhere(board == 1)
+    # Opponent Amazons (value 2)
+    opp_pos = np.argwhere(board == 2)
+
+    if not my_pos:
+        raise ValueError("No Amazon to move for the player")
+
+    moves: List[Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int], bool, int]] = []
+
+    # Scan all legal moves from every Amazon
+    dirs = _direction_vectors()
+    for src in my_pos:
+        for dr, dc in dirs:
+            # Max distance to board edge in this direction
+            max_step = max(src[0], 5 - src[0], src[1], 5 - src[1])
+            # Destination squares reachable from src
+            for dest_step in range(1, max_step + 1):
+                dest = (src[0] + dest_step * dr, src[1] + dest_step * dc)
+                if not (0 <= dest[0] < 6 and 0 <= dest[1] < 6):
+                    continue
+                if board[dest[0], dest[1]] != 0:          # destination must be empty
+                    continue
+
+                # Arrow squares reachable beyond the destination
+                max_arrow = max(dest[0], 5 - dest[0], dest[1], 5 - dest[1])
+                for arrow_len in range(1, max_arrow + 1):
+                    arrow_target = (dest[0] + arrow_len * dr, dest[1] + arrow_len * dc)
+                    if not (0 <= arrow_target[0] < 6 and 0 <= arrow_target[1] < 6):
+                        continue
+                    if board[arrow_target[0], arrow_target[1]] != 0:   # arrow square must be empty before shooting
+                        continue
+
+                    # Build the line of squares from src (exclusive) to arrow_target (inclusive)
+                    total_steps = dest_step + arrow_len
+                    line_coords = [(src[0] + i * dr, src[1] + i * dc) for i in range(1, total_steps + 1)]
+                    line = np.array(line_coords, dtype=int)
+                    line_vals = board[line]
+
+                    # Path must not contain any blockers (-1, Amazon 1, Amazon 2) except a possible capture
+                    if (_is_blocker(line_vals).any()) or (board[arrow_target[0], arrow_target[1]] != 0):
+                        continue   # already handled arrow_target empty
+
+                    # Allow exactly one opponent square on the line (capture)
+                    if not _capture_possible(line_vals):
+                        continue
+
+                    # Move is legal – record it together with its “capture” flag
+                    moves.append((src, dest, arrow_target, True, total_steps))
+
+    # No capture moves found – generate all remaining legal moves
+    if not moves:
+        for src in my_pos:
+            for dr, dc in dirs:
+                max_step = max(src[0], 5 - src[0], src[1], 5 - src[1])
+                for dest_step in range(1, max_step + 1):
+                    dest = (src[0] + dest_step * dr, src[1] + dest_step * dc)
+                    if not (0 <= dest[0] < 6 and 0 <= dest[1] < 6):
+                        continue
+                    if board[dest[0], dest[1]] != 0:
+                        continue
+                    max_arrow = max(dest[0], 5 - dest[0], dest[1], 5 - dest[1])
+                    for arrow_len in range(1, max_arrow + 1):
+                        arrow_target = (dest[0] + arrow_len * dr, dest[1] + arrow_len * dc)
+                        if not (0 <= arrow_target[0] < 6 and 0 <= arrow_target[1] < 6):
+                            continue
+                        if board[arrow_target[0], arrow_target[1]] != 0:
+                            continue
+
+                        total_steps = dest_step + arrow_len
+                        line_coords = [(src[0] + i * dr, src[1] + i * dc) for i in range(1, total_steps + 1)]
+                        line = np.array(line_coords, dtype=int)
+                        line_vals = board[line]
+
+                        if (_is_blocker(line_vals).any()):
+                            continue
+                        # No opponent square on the line (non‑capture move)
+                        moves.append((src, dest, arrow_target, False, total_steps))
+
+    # -------------------------------------------------
+    # Choose the best move according to the hierarchy:
+    # 1) Capture moves – shortest total distance.
+    # 2) Non‑capture moves – block the most opponent arrows.
+    # 3) As deterministic tie‑breaker, use the first move found.
+    # -------------------------------------------------
+    # 1) Capture moves
+    capture_moves = [m for m in moves if m[3]]
+    if capture_moves:
+        # Prefer the move with the fewest squares travelled
+        capture_moves.sort(key=lambda m: (m[4], m[4]))   # total steps only
+        best = capture_moves[0]
+    else:
+        # 2) Block the most opponent arrows
+        # Compute how many opponent Amazon squares would have been able to shoot the chosen arrow square
+        def blocked_by_arrow(arrow_target: Tuple[int, int]) -> int:
+            count = 0
+            for op in opp_pos:
+                dr = arrow_target[0] - op[0]
+                dc = arrow_target[1] - op[1]
+                if _possible_targets(board, op, arrow_target):
+                    count += 1
+            return count
+
+        # Enrich each move with its block‑score
+        scored_moves = []
+        for m in moves:
+            src, dest, arrow_target, capture, steps = m
+            block_score = blocked_by_arrow(arrow_target)
+            scored_moves.append((block_score, steps, src, dest, arrow_target, capture))
+        # Prefer higher block score; if tie, shorter move; then capture flag
+        scored_moves.sort(key=lambda x: (-x[0], x[1], x[2], x[5]))
+        best = scored_moves[0][:4]  # (src,dest,arrow_target,capture,steps) but steps already stored
+        # Assign fields for final return
+        src, dest, arrow_target, _, steps = best
+        capture = False
+
+    # -------------------------------------------------
+    # Return the formatted move string
+    # -------------------------------------------------
+    sr, sc = best[0]
+    dr, dc = best[1]
+    ar, ac = best[2]
+    return f"{sr},{sc}:{dr},{dc}:{ar},{ac}"
+</code>

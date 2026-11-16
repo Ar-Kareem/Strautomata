@@ -1,0 +1,64 @@
+
+ALL_CARDS = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K']
+
+def calculate_hand_value(hand, target):
+    has_ace = 'A' in hand
+    total = 0
+    ace_count = 0
+    for card in hand:
+        if card == 'A':
+            ace_count += 1
+        elif card in ['J', 'Q', 'K']:
+            total += 10
+        elif card == '10':
+            total += 10
+        else:
+            total += int(card)
+    if ace_count == 0:
+        return total
+    else:
+        potential_total = total + 11
+        if potential_total <= target:
+            return potential_total
+        else:
+            return total + 1
+
+def policy(hand, target):
+    current_val = calculate_hand_value(hand, target)
+    if current_val >= target:
+        return "STAY"
+    remaining = [c for c in ALL_CARDS if c not in hand]
+    all_safe = True
+    for c in remaining:
+        temp_hand = hand + [c]
+        val = calculate_hand_value(temp_hand, target)
+        if val > target:
+            all_safe = False
+            break
+    if all_safe:
+        best_val = current_val
+        for c in remaining:
+            temp_val = calculate_hand_value(hand + [c], target)
+            if temp_val > best_val:
+                best_val = temp_val
+        if best_val > current_val:
+            return "HIT"
+        else:
+            return "STAY"
+    else:
+        num_safe = 0
+        num_risky = 0
+        best_val = current_val
+        for c in remaining:
+            temp_hand = hand + [c]
+            val = calculate_hand_value(temp_hand, target)
+            if val > target:
+                num_risky += 1
+            else:
+                num_safe += 1
+                if val > best_val:
+                    best_val = val
+        if best_val > current_val and (num_safe >= num_risky or best_val == target):
+            return "HIT"
+        else:
+            return "STAY"

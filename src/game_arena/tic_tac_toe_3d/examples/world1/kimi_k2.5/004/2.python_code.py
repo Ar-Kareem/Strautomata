@@ -1,0 +1,166 @@
+
+import numpy as np
+from typing import List, Tuple
+
+# Generate all 49 winning lines in 3x3x3 Tic Tac Toe
+LINES = []
+
+# Axis-aligned lines (27 total)
+for j in range(3):
+    for k in range(3):
+        LINES.append([(0, j, k), (1, j, k), (2, j, k)])  # x-axis
+for i in range(3):
+    for k in range(3):
+        LINES.append([(i, 0, k), (i, 1, k), (i, 2, k)])  # y-axis
+for i in range(3):
+    for j in range(3):
+        LINES.append([(i, j, 0), (i, j, 1), (i, j, 2)])  # z-axis
+
+# Face diagonals (18 total)
+for i in range(3):
+    LINES.append([(i, 0, 0), (i, 1, 1), (i, 2, 2)])
+    LINES.append([(i, 0, 2), (i, 1, 1), (i, 2, 0)])
+for j in range(3):
+    LINES.append([(0, j, 0), (1, j, 1), (2, j, 2)])
+    LINES.append([(0, j, 2), (1, j, 1), (2, j, 0)])
+for k in range(3):
+    LINES.append([(0, 0, k), (1, 1, k), (2, 2, k)])
+    LINES.append([(0, 2, k), (1, 1, k), (2, 0, k)])
+
+# Space diagonals (4 total)
+LINES.append([(0, 0, 0), (1, 1, 1), (2, 2, 2)])
+LINES.append([(0, 0, 2), (1, 1, 1), (2, 2, 0)])
+LINES.append([(0, 2, 0), (1, 1, 1), (2, 0, 2)])
+LINES.append([(2, 0, 0), (1, 1, 1), (0, 2, 2)])
+
+# Map each cell to the lines that pass through it
+CELL_TO_LINES = {(i, j, k): [] for i in range(3) for j in range(3) for k in range(3)}
+for line_idx, line in enumerate(LINES):
+    for cell in line:
+        CELL_TO_LINES[cell].append(line_idx)
+
+
+def _check_win_at(board: np.ndarray, move: Tuple[int, int, int], player: int) -> bool:
+    """Check if placing player at move results in a win."""
+    i, j, k = move
+    original = board[i, j, k]
+    board[i, j, k] = player
+    won = False
+    for line_idx in CELL_TO_LINES[move]:
+        line = LINES[line_idx]
+        if all(board[a, b, c] == player for (a, b, c) in line):
+            won = True
+            break
+    board[i, j, k] = original
+    return won
+
+
+def _evaluate(board: np.ndarray) -> int:
+    """Heuristic evaluation from player 1's perspective."""
+    score = 0
+    for line in LINES:
+        vals = [board[i, j, k] for (i, j, k) in line]
+        if 1 in vals and -1 in vals:
+            continue  # Blocked line
+        ours = vals.count(1)
+        theirs = vals.count(-1)
+        
+        if ours == 3:
+            score += 1000
+        elif ours == 2:
+            score += 10
+        elif ours == 1:
+            score += 1
+            
+        if theirs == 3:
+            score -= 1000
+        elif theirs == 2:
+            score -= 50  # Penalize opponent threats heavily
+        elif theirs == 1:
+            score -= 1
+    return score
+
+
+def _minimax(board: np.ndarray, depth: int, alpha: float, beta: float, is_maximizing: bool) -> float:
+    """Minimax with alpha-beta pruning."""
+    empty = list(zip(*np.where(board == 0)))
+    
+    if depth == 0 or len(empty) == 0:
+        return _evaluate(board)
+    
+    if is_maximizing:
+        max_eval = -float('inf')
+        for move in empty:
+            i, j, k = move
+            if _check_win_at(board, move, 1):
+                return 1000  # Immediate win found
+            board[i, j, k] = 1
+            eval_score = _minimax(board, depth - 1, alpha, beta, False)
+            board[i, j, k] = 0
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for move in empty:
+            i, j, k = move
+            if _check_win_at(board, move, -1):
+                return -1000  # Opponent can win
+            board[i, j, k] = -1
+            eval_score = _minimax(board, depth - 1, alpha, beta, True)
+            board[i, j, k] = 0
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval
+
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    board_np = np.array(board, dtype=int)
+    empty = list(zip(*np.where(board_np == 0)))
+    
+    if not empty:
+        return (0, 0, 0)  # No valid moves (should not happen in valid game)
+    
+    # 1. Immediate win
+    for move in empty:
+        if _check_win_at(board_np, move, 1):
+            return move
+    
+    # 2. Immediate block
+    for move in empty:
+        if _check_win_at(board_np, move, -1):
+            return move
+    
+    # 3. Determine search depth based on remaining moves
+    n_empty = len(empty)
+    if n_empty > 16:
+        depth = 2
+    elif n_empty > 8:
+        depth = 3
+    else:
+        depth = 4
+    
+    # Move ordering: prioritize center for better alpha-beta pruning
+    center = (1, 1, 1)
+    if center in empty:
+        empty.remove(center)
+        empty.insert(0, center)
+    
+    best_score = -float('inf')
+    best_move = empty[0]
+    
+    for move in empty:
+        i, j, k = move
+        board_np[i, j, k] = 1
+        score = _minimax(board_np, depth - 1, -float('inf'), float('inf'), False)
+        board_np[i, j, k] = 0
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+            
+    return best_move

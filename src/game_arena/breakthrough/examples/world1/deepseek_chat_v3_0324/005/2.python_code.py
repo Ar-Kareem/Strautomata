@@ -1,0 +1,122 @@
+
+import math
+from collections import defaultdict
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    # Determine forward direction based on color
+    forward = 1 if color == 'b' else -1
+    
+    # Convert positions to sets for faster lookup
+    my_pieces = set(me)
+    opp_pieces = set(opp)
+    all_pieces = my_pieces.union(opp_pieces)
+    
+    def is_valid(pos):
+        return 0 <= pos[0] < 8 and 0 <= pos[1] < 8
+    
+    def generate_moves():
+        moves = []
+        for (r, c) in my_pieces:
+            # Forward move
+            forward_pos = (r + forward, c)
+            if is_valid(forward_pos) and forward_pos not in all_pieces:
+                moves.append(((r, c), forward_pos))
+            
+            # Diagonal captures/moves
+            for dc in [-1, 1]:
+                diag_pos = (r + forward, c + dc)
+                if is_valid(diag_pos):
+                    if diag_pos in opp_pieces:  # Capture
+                        moves.append(((r, c), diag_pos))
+                    elif diag_pos not in all_pieces:  # Diagonal move
+                        moves.append(((r, c), diag_pos))
+        return moves
+    
+    def evaluate_position():
+        score = 0
+        advancement_weight = 5
+        material_weight = 10
+        center_weight = 2
+        defense_weight = 3
+        
+        # Material score
+        material = len(my_pieces) - len(opp_pieces)
+        score += material * material_weight
+        
+        # Advancement score
+        for (r, c) in my_pieces:
+            progress = r if color == 'w' else (7 - r)
+            score += progress * advancement_weight
+            
+            # Center control bonus
+            if 2 <= c <= 5:
+                score += center_weight
+        
+        # Defense score (pieces protecting each other)
+        for (r, c) in my_pieces:
+            protected_pos1 = (r - forward, c - 1)
+            protected_pos2 = (r - forward, c + 1)
+            if protected_pos1 in my_pieces or protected_pos2 in my_pieces:
+                score += defense_weight
+        
+        return score
+    
+    def is_winning_move(move):
+        to_row, to_col = move[1]
+        if color == 'w' and to_row == 7:
+            return True
+        if color == 'b' and to_row == 0:
+            return True
+        return False
+    
+    # Generate all possible moves
+    possible_moves = generate_moves()
+    
+    # First check for immediate winning moves
+    for move in possible_moves:
+        if is_winning_move(move):
+            return move
+    
+    # Evaluate all moves and select the best one
+    best_move = None
+    best_score = -math.inf
+    
+    for move in possible_moves:
+        # Simulate the move
+        simulated_me = my_pieces.copy()
+        simulated_me.remove(move[0])
+        simulated_me.add(move[1])
+        
+        simulated_opp = opp_pieces.copy()
+        if move[1] in simulated_opp:  # Capture
+            simulated_opp.remove(move[1])
+        
+        # Evaluate the resulting position
+        current_my_pieces = my_pieces
+        current_opp_pieces = opp_pieces
+        
+        my_pieces = simulated_me
+        opp_pieces = simulated_opp
+        score = evaluate_position()
+        my_pieces = current_my_pieces
+        opp_pieces = current_opp_pieces
+        
+        # Prefer captures
+        if move[1] in opp_pieces:
+            score += 4
+            
+        # Prefer advancing in more central columns (flexibility)
+        from_col = move[0][1]
+        if 2 <= from_col <= 5:
+            score += 2
+            
+        # Update best move
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    # If no move is found (shouldn't happen as per rules), fallback to first legal move
+    if not best_move and possible_moves:
+        best_move = possible_moves[0]
+    
+    return best_move

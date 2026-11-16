@@ -1,0 +1,472 @@
+
+import time
+
+# ------------------------------------------------------------------
+# Board geometry: 4x4 boxes, 5x5 dots.
+#   H edge id: r*4 + c      (r = 0..4, c = 0..3)   -> ids 0..19
+#   V edge id: 20 + r*5 + c (r = 0..3, c = 0..4)   -> ids 20..39
+# Box (br, bc) edges: H(br,bc) top, H(br+1,bc) bottom,
+#                     V(br,bc) left, V(br,bc+1) right.
+# ------------------------------------------------------------------
+_BOX_EDGES = []
+_EDGE_BOXES = [[] for _ in range(40)]
+for _br in range(4):
+    for _bc in range(4):
+        _b = _br * 4 + _bc
+        _es = (_br * 4 + _bc,
+               (_br + 1) * 4 + _bc,
+               20 + _br * 5 + _bc,
+               20 + _br * 5 + _bc + 1)
+        _BOX_EDGES.append(_es)
+        for _e in _es:
+            _EDGE_BOXES[_e].append(_b)
+_BOX_EDGES = tuple(_BOX_EDGES)
+_EDGE_BOXES = tuple(tuple(_x) for _x in _EDGE_BOXES)
+
+_SOLVER_NODES = 200000
+_SOLVER_TIME = 0.45
+_SAFE_TIME = 0.70
+
+
+class _Abort(Exception):
+    pass
+
+
+def _move_str(e):
+    if e < 20:
+        r, c = divmod(e, 4)
+        return "%d,%d,H" % (r, c)
+    r, c = divmod(e - 20, 5)
+    return "%d,%d,V" % (r, c)
+
+
+# ------------------------------------------------------------------
+# Exact solver: negamax + alpha-beta + transposition table.
+# State = (drawn-edge bitmask D, x) where x = boxes owned by the
+# player to move.  Value = final (mover boxes - opponent boxes).
+# Captures give an extra turn (same player keeps moving).
+# ------------------------------------------------------------------
+def _solve_root(D0, empties, bc, my, completed0, t0):
+    memo = {}
+    nodes = [0]
+    EB = _EDGE_BOXES
+
+    def rec(D, x, bcx, completed, emps, alpha, beta):
+        n = len(emps)
+        if n == 0:
+            return 2 * x - 16
+        key = (D, x)
+        ent = memo.get(key)
+        if ent is not None:
+            lo, hi = ent
+            if lo == hi:
+                return lo
+            if lo >= beta:
+                return lo
+            if hi <= alpha:
+                return hi
+        a0 = alpha
+        b0 = beta
+        moves = []
+        for i in range(n):
+            e = emps[i]
+            caps = 0
+            dg = 0
+            n1 = 0
+            for b in EB[e]:
+                c = bcx[b]
+                if c == 3:
+                    caps += 1
+                elif c == 2:
+                    dg += 1
+                elif c == 1:
+                    n1 += 1
+            if caps:
+                moves.append((0, -caps, i, e, caps))
+            elif dg:
+                moves.append((1, dg, i, e, 0))
+            else:
+                moves.append((2, n1, i, e, 0))
+        if n > 1:
+            moves.sort()
+        best = -100
+        for (_t, _k, i, e, caps) in moves:
+            for b in EB[e]:
+                bcx[b] += 1
+            ne = emps[:i] + emps[i + 1:]
+            if caps:
+                v = rec(D | (1 << e), x + caps, bcx,
+                        completed + caps, ne, alpha, beta)
+            else:
+                v = -rec(D | (1 << e), completed - x, bcx,
+                         completed, ne, -beta, -alpha)
+            for b in EB[e]:
+                bcx[b] -= 1
+            nodes[0] += 1
+            if nodes[0] > _SOLVER_NODES:
+                raise _Abort()
+            if (nodes[0] & 1023) == 0 and (time.time() - t0) > _SOLVER_TIME:
+                raise _Abort()
+            if v > best:
+                best = v
+                if v > alpha:
+                    alpha = v
+                    if alpha >= beta:
+                        break
+        if ent is None:
+            lo0, hi0 = -100, 100
+        else:
+            lo0, hi0 = ent
+        if best <= a0:
+            memo[key] = (lo0, min(hi0, best))
+        elif best >= b0:
+            memo[key] = (max(lo0, best), hi0)
+        else:
+            memo[key] = (best, best)
+        return best
+
+    # ---- root (we are the player to move) ----
+    n = len(empties)
+    if n == 1:
+        return empties[0]
+    moves = []
+    for i in range(n):
+        e = empties[i]
+        caps = 0
+        dg = 0
+        n1 = 0
+        for b in EB[e]:
+            c = bc[b]
+            if c == 3:
+                caps += 1
+            elif c == 2:
+                dg += 1
+            elif c == 1:
+                n1 += 1
+        if caps:
+            moves.append((0, -caps, i, e, caps))
+        elif dg:
+            moves.append((1, dg, i, e, 0))
+        else:
+            moves.append((2, n1, i, e, 0))
+    moves.sort()
+    best_move = None
+    best_val = -100
+    alpha = -100
+    for (_t, _k, i, e, caps) in moves:
+        for b in EB[e]:
+            bc[b] += 1
+        ne = empties[:i] + empties[i + 1:]
+        if caps:
+            v = rec(D0 | (1 << e), my + caps, bc,
+                    completed0 + caps, ne, alpha, 100)
+        else:
+            v = -rec(D0 | (1 << e), completed0 - my, bc,
+                     completed0, ne, -100, -alpha)
+        for b in EB[e]:
+            bc[b] -= 1
+        if v > best_val:
+            best_val = v
+            best_move = e
+            if v > alpha:
+                alpha = v
+    return best_move
+
+
+# ------------------------------------------------------------------
+# Helpers for heuristic fallbacks
+# ------------------------------------------------------------------
+def _comp_analysis(boxcnt, empties, active):
+    parent = list(range(16))
+
+    def find(b):
+        while parent[b] != b:
+            parent[b] = parent[parent[b]]
+            b = parent[b]
+        return b
+
+    for e in empties:
+        bs = _EDGE_BOXES[e]
+        if len(bs) == 2:
+            b1, b2 = bs
+            if active(b1) and active(b2):
+                r1 = find(b1)
+                r2 = find(b2)
+                if r1 != r2:
+                    parent[r1] = r2
+    sizes = {}
+    for b in range(16):
+        if active(b):
+            r = find(b)
+            sizes[r] = sizes.get(r, 0) + 1
+    return find, sizes
+
+
+def _eat_choice(empties, boxcnt, cap_moves, drawn):
+    """Endgame eating fallback: eat, or double-cross (leave 2 boxes)
+    when keeping control is worth more than the two boxes."""
+    cm = sorted(cap_moves, key=lambda t: (-t[1], t[0]))
+    e, caps = cm[0]
+    if caps >= 2:
+        return e
+    bs = _EDGE_BOXES[e]
+    X = None
+    for b in bs:
+        if boxcnt[b] == 3:
+            X = b
+            break
+    if X is None:
+        return e
+    Y = None
+    if len(bs) == 2:
+        for b in bs:
+            if b != X and boxcnt[b] == 2:
+                Y = b
+                break
+    if Y is None:
+        return e
+    f = None
+    for ee in _BOX_EDGES[Y]:
+        if ee != e and not drawn[ee]:
+            f = ee
+    if f is None:
+        return e
+    for b in _EDGE_BOXES[f]:
+        if boxcnt[b] == 3:
+            return e  # not a clean sacrifice
+    find, sizes = _comp_analysis(
+        boxcnt, empties, lambda b: boxcnt[b] == 2 or boxcnt[b] == 3)
+    compX = find(X)
+    m = sizes.get(compX, 0)
+    if m != 2:
+        return e  # keep eating; decide when 2 boxes remain
+    others = [s for (r, s) in sizes.items() if r != compX]
+    if not others:
+        return e
+    Tp = sum(others)
+    kp = len(others)
+    ctrl = Tp - 2 * (kp - 1)      # controller's take from the rest
+    open_take = 2 * (kp - 1)      # opener's take from the rest
+    eat_diff = (2 + open_take) - ctrl
+    sac_diff = ctrl - (2 + open_take)
+    if sac_diff > eat_diff:
+        return f                  # double-cross: give 2, keep control
+    return e
+
+
+def _open_choice(empties, boxcnt):
+    """Forced to open: open the structure that yields the opponent
+    the least (smallest chain / loop), preferring chain ends."""
+    find, sizes = _comp_analysis(boxcnt, empties, lambda b: boxcnt[b] == 2)
+    edgecount = {}
+    for e in empties:
+        bs = _EDGE_BOXES[e]
+        seen = set()
+        for b in bs:
+            if boxcnt[b] == 2:
+                r = find(b)
+                if r not in seen:
+                    seen.add(r)
+        for r in seen:
+            edgecount[r] = edgecount.get(r, 0) + 1
+    best_e = None
+    best_key = None
+    for e in empties:
+        dg = 0
+        comp = None
+        csz = 0
+        for b in _EDGE_BOXES[e]:
+            if boxcnt[b] == 2:
+                dg += 1
+                r = find(b)
+                s = sizes.get(r, 0)
+                if s > csz:
+                    csz = s
+                    comp = r
+        if comp is None:
+            continue
+        cyc = edgecount.get(comp, 0) == csz
+        est = (csz - 4) if cyc else (csz - 2)
+        if est < 1:
+            est = 1
+        key = (est, dg, e)
+        if best_key is None or key < best_key:
+            best_key = key
+            best_e = e
+    if best_e is None:
+        best_e = empties[0]
+    return best_e
+
+
+def _safe_choice(empties, boxcnt, safe_moves, t0):
+    """Pick the safe move whose greedy self-play playout leaves an EVEN
+    number of remaining safe moves (so the opponent must open first)."""
+    best_e = safe_moves[0]
+    best_key = None
+    for e in safe_moves:
+        if (time.time() - t0) > _SAFE_TIME:
+            break
+        cnt = boxcnt[:]
+        for b in _EDGE_BOXES[e]:
+            cnt[b] += 1
+        rem = [x for x in empties if x != e]
+        R = 0
+        while rem:
+            bm = -1
+            bn1 = 10
+            for e2 in rem:
+                ok = True
+                n1 = 0
+                for b in _EDGE_BOXES[e2]:
+                    c = cnt[b]
+                    if c >= 2:
+                        ok = False
+                        break
+                    if c == 1:
+                        n1 += 1
+                if not ok:
+                    continue
+                if bm < 0 or n1 < bn1:
+                    bm = e2
+                    bn1 = n1
+            if bm < 0:
+                break
+            for b in _EDGE_BOXES[bm]:
+                cnt[b] += 1
+            rem.remove(bm)
+            R += 1
+        new2 = 0
+        for b in _EDGE_BOXES[e]:
+            if boxcnt[b] == 1:
+                new2 += 1
+        key = (R & 1, new2, e)
+        if best_key is None or key < best_key:
+            best_key = key
+            best_e = e
+    return best_e
+
+
+# ------------------------------------------------------------------
+# Main policy
+# ------------------------------------------------------------------
+def _policy_impl(horizontal, vertical, capture):
+    t0 = time.time()
+    h = horizontal.tolist() if hasattr(horizontal, "tolist") else [list(r) for r in horizontal]
+    v = vertical.tolist() if hasattr(vertical, "tolist") else [list(r) for r in vertical]
+    cp = capture.tolist() if hasattr(capture, "tolist") else [list(r) for r in capture]
+
+    drawn = [False] * 40
+    for r in range(min(5, len(h))):
+        row = h[r]
+        for c in range(min(4, len(row))):
+            if row[c] != 0:
+                drawn[r * 4 + c] = True
+    for r in range(min(4, len(v))):
+        row = v[r]
+        for c in range(min(5, len(row))):
+            if row[c] != 0:
+                drawn[20 + r * 5 + c] = True
+
+    my = 0
+    for r in range(min(4, len(cp))):
+        row = cp[r]
+        for c in range(min(4, len(row))):
+            if row[c] == 1:
+                my += 1
+
+    boxcnt = [0] * 16
+    for b in range(16):
+        s = 0
+        for e in _BOX_EDGES[b]:
+            if drawn[e]:
+                s += 1
+        boxcnt[b] = s
+
+    D = 0
+    for e in range(40):
+        if drawn[e]:
+            D |= (1 << e)
+    empties = tuple(x for x in range(40) if not drawn[x])
+    n = len(empties)
+    if n == 0:
+        return "0,0,H"
+
+    completed0 = 0
+    for b in range(16):
+        if boxcnt[b] == 4:
+            completed0 += 1
+
+    cap_moves = []
+    safe_moves = []
+    for e in empties:
+        caps = 0
+        dg = 0
+        for b in _EDGE_BOXES[e]:
+            c = boxcnt[b]
+            if c == 3:
+                caps += 1
+            elif c == 2:
+                dg += 1
+        if caps:
+            cap_moves.append((e, caps))
+        elif dg == 0:
+            safe_moves.append(e)
+    no_safe = len(safe_moves) == 0
+
+    # ---- exact search when feasible ----
+    if n <= 12 or no_safe or (n <= 15 and not cap_moves):
+        try:
+            mv = _solve_root(D, empties, list(boxcnt), my, completed0, t0)
+            if mv is not None:
+                return _move_str(mv)
+        except Exception:
+            pass
+
+    # ---- free phase: take captures (never decline while safe exist) ----
+    if cap_moves:
+        cm = sorted(cap_moves, key=lambda t: (-t[1], t[0]))
+        if not no_safe:
+            return _move_str(cm[0][0])
+        try:
+            return _move_str(_eat_choice(empties, boxcnt, cap_moves, drawn))
+        except Exception:
+            return _move_str(cm[0][0])
+
+    # ---- free phase: play a safe move chosen by parity heuristic ----
+    if safe_moves:
+        try:
+            return _move_str(_safe_choice(empties, boxcnt, safe_moves, t0))
+        except Exception:
+            return _move_str(safe_moves[0])
+
+    # ---- forced to open: give away as little as possible ----
+    try:
+        return _move_str(_open_choice(empties, boxcnt))
+    except Exception:
+        return _move_str(empties[0])
+
+
+def policy(horizontal, vertical, capture):
+    try:
+        res = _policy_impl(horizontal, vertical, capture)
+        if isinstance(res, str) and len(res) > 0:
+            return res
+    except Exception:
+        pass
+    # last-resort: any legal-looking move
+    try:
+        h = horizontal.tolist() if hasattr(horizontal, "tolist") else horizontal
+        for r in range(len(h)):
+            row = h[r]
+            for c in range(min(4, len(row))):
+                if row[c] == 0:
+                    return "%d,%d,H" % (r, c)
+        v = vertical.tolist() if hasattr(vertical, "tolist") else vertical
+        for r in range(min(4, len(v))):
+            row = v[r]
+            for c in range(len(row)):
+                if row[c] == 0:
+                    return "%d,%d,V" % (r, c)
+    except Exception:
+        pass
+    return "0,0,H"

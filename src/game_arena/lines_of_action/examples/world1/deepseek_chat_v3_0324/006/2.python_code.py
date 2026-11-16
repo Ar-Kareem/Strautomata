@@ -1,0 +1,318 @@
+
+import numpy as np
+from collections import deque
+import time
+import math
+
+def policy(board):
+    start_time = time.time()
+    board = np.array(board)
+    player = 1
+    opponent = -1
+    
+    # First check if we can win immediately
+    winning_move = find_winning_move(board, player)
+    if winning_move:
+        return winning_move
+    
+    # Get all legal moves
+    legal_moves = get_all_legal_moves(board, player)
+    
+    # If only one move, return it immediately
+    if len(legal_moves) == 1:
+        return legal_moves[0]
+    
+    # Order moves by heuristic quality
+    ordered_moves = order_moves(board, legal_moves, player)
+    
+    # Initialize best move with first legal move (fallback)
+    best_move = ordered_moves[0]
+    best_value = -math.inf
+    
+    # Alpha-beta pruning parameters
+    alpha = -math.inf
+    beta = math.inf
+    depth = 3  # Search depth
+    
+    # Evaluate moves with alpha-beta pruning
+    for move in ordered_moves:
+        if time.time() - start_time > 0.9:  # Leave 100ms buffer
+            break
+            
+        new_board = apply_move(board, move, player)
+        move_value = alphabeta(new_board, depth-1, alpha, beta, False, player, opponent, start_time)
+        
+        if move_value > best_value:
+            best_value = move_value
+            best_move = move
+            
+        alpha = max(alpha, best_value)
+        if alpha >= beta:
+            break
+    
+    return best_move
+
+def alphabeta(board, depth, alpha, beta, maximizing_player, player, opponent, start_time):
+    if depth == 0 or time.time() - start_time > 0.9:
+        return evaluate_position(board, player, opponent)
+    
+    if maximizing_player:
+        value = -math.inf
+        legal_moves = get_all_legal_moves(board, player)
+        ordered_moves = order_moves(board, legal_moves, player)
+        
+        for move in ordered_moves:
+            if time.time() - start_time > 0.9:
+                break
+                
+            new_board = apply_move(board, move, player)
+            value = max(value, alphabeta(new_board, depth-1, alpha, beta, False, player, opponent, start_time))
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+        return value
+    else:
+        value = math.inf
+        legal_moves = get_all_legal_moves(board, opponent)
+        ordered_moves = order_moves(board, legal_moves, opponent)
+        
+        for move in ordered_moves:
+            if time.time() - start_time > 0.9:
+                break
+                
+            new_board = apply_move(board, move, opponent)
+            value = min(value, alphabeta(new_board, depth-1, alpha, beta, True, player, opponent, start_time))
+            beta = min(beta, value)
+            if beta <= alpha:
+                break
+        return value
+
+def evaluate_position(board, player, opponent):
+    # Evaluate based on connectivity, piece count, and board control
+    player_connectivity = calculate_connectivity(board, player)
+    opponent_connectivity = calculate_connectivity(board, opponent)
+    
+    player_pieces = np.count_nonzero(board == player)
+    opponent_pieces = np.count_nonzero(board == opponent)
+    
+    # Mobility evaluation
+    player_mobility = len(get_all_legal_moves(board, player))
+    opponent_mobility = len(get_all_legal_moves(board, opponent))
+    
+    # Center control evaluation
+    player_center = center_control(board, player)
+    opponent_center = center_control(board, opponent)
+    
+    # Weighted sum of factors
+    evaluation = (
+        2.0 * (player_connectivity - opponent_connectivity) +
+        1.5 * (player_pieces - opponent_pieces) +
+        0.5 * (player_mobility - opponent_mobility) +
+        0.3 * (player_center - opponent_center)
+    )
+    
+    return evaluation
+
+def calculate_connectivity(board, player):
+    # Count how many separate groups of pieces exist (fewer is better)
+    pieces = np.argwhere(board == player)
+    if len(pieces) == 0:
+        return 0
+    
+    visited = set()
+    groups = 0
+    
+    for piece in pieces:
+        pos = tuple(piece)
+        if pos not in visited:
+            groups += 1
+            # BFS to find all connected pieces
+            queue = deque([pos])
+            visited.add(pos)
+            
+            while queue:
+                current = queue.popleft()
+                for dr in [-1, 0, 1]:
+                    for dc in [-1, 0, 1]:
+                        if dr == 0 and dc == 0:
+                            continue
+                        r, c = current[0] + dr, current[1] + dc
+                        if 0 <= r < 8 and 0 <= c < 8 and board[r][c] == player and (r, c) not in visited:
+                            visited.add((r, c))
+                            queue.append((r, c))
+    
+    # Return inverse of groups (more groups = worse connectivity)
+    return 1.0 / groups
+
+def center_control(board, player):
+    # Evaluate control of center squares
+    center_squares = [(3,3), (3,4), (4,3), (4,4)]
+    control = 0
+    for r, c in center_squares:
+        if board[r][c] == player:
+            control += 1
+    return control
+
+def order_moves(board, moves, player):
+    # Order moves by heuristic quality
+    scored_moves = []
+    opponent = -player
+    
+    for move in moves:
+        from_row, from_col, to_row, to_col = parse_move(move)
+        score = 0
+        
+        # Prefer captures
+        if board[to_row][to_col] == opponent:
+            score += 10
+        
+        # Prefer moves that improve connectivity
+        new_board = apply_move(board, move, player)
+        old_connectivity = calculate_connectivity(board, player)
+        new_connectivity = calculate_connectivity(new_board, player)
+        score += 5 * (new_connectivity - old_connectivity)
+        
+        # Prefer center moves
+        center_dist = abs(to_row - 3.5) + abs(to_col - 3.5)
+        score += 2 * (4 - center_dist)
+        
+        scored_moves.append((score, move))
+    
+    # Sort by score descending
+    scored_moves.sort(reverse=True, key=lambda x: x[0])
+    return [move for score, move in scored_moves]
+
+def find_winning_move(board, player):
+    # Check if any move would connect all pieces
+    moves = get_all_legal_moves(board, player)
+    for move in moves:
+        new_board = apply_move(board, move, player)
+        if is_fully_connected(new_board, player):
+            return move
+    return None
+
+def is_fully_connected(board, player):
+    pieces = np.argwhere(board == player)
+    if len(pieces) <= 1:
+        return True
+    
+    # BFS from first piece to see if all are connected
+    visited = set()
+    queue = deque([tuple(pieces[0])])
+    visited.add(tuple(pieces[0]))
+    count = 1
+    
+    while queue:
+        current = queue.popleft()
+        for dr in [-1, 0, 1]:
+            for dc in [-1, 0, 1]:
+                if dr == 0 and dc == 0:
+                    continue
+                r, c = current[0] + dr, current[1] + dc
+                if 0 <= r < 8 and 0 <= c < 8 and board[r][c] == player and (r, c) not in visited:
+                    visited.add((r, c))
+                    queue.append((r, c))
+                    count += 1
+    
+    return count == len(pieces)
+
+def get_all_legal_moves(board, player):
+    moves = []
+    pieces = np.argwhere(board == player)
+    
+    for piece in pieces:
+        from_row, from_col = piece
+        # Check all 8 directions
+        for dr, dc in [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]:
+            # Find maximum possible distance
+            max_dist = 0
+            pieces_in_line = 0
+            
+            # Count pieces in this line
+            r, c = from_row, from_col
+            while True:
+                r += dr
+                c += dc
+                if r < 0 or r >= 8 or c < 0 or c >= 8:
+                    break
+                max_dist += 1
+                if board[r][c] != 0:
+                    pieces_in_line += 1
+            
+            # Check possible moves in this direction
+            if pieces_in_line > 0:
+                for dist in range(1, max_dist + 1):
+                    to_row = from_row + dr * dist
+                    to_col = from_col + dc * dist
+                    if 0 <= to_row < 8 and 0 <= to_col < 8:
+                        if is_legal_move(board, from_row, from_col, to_row, to_col, player):
+                            moves.append(f"{from_row},{from_col}:{to_row},{to_col}")
+    
+    return moves
+
+def is_legal_move(board, from_row, from_col, to_row, to_col, player):
+    # Check if move is legal according to LoA rules
+    if board[from_row][from_col] != player:
+        return False
+    
+    if from_row == to_row and from_col == to_col:
+        return False
+    
+    dr = to_row - from_row
+    dc = to_col - from_col
+    
+    # Must move in straight line (horizontal, vertical, or diagonal)
+    if abs(dr) != abs(dc) and dr != 0 and dc != 0:
+        return False
+    
+    # Calculate direction vectors
+    step_r = 0 if dr == 0 else (1 if dr > 0 else -1)
+    step_c = 0 if dc == 0 else (1 if dc > 0 else -1)
+    
+    distance = max(abs(dr), abs(dc))
+    
+    # Count pieces in the line of movement
+    pieces_in_line = 0
+    r, c = from_row, from_col
+    for _ in range(distance + 1):
+        if board[r][c] != 0:
+            pieces_in_line += 1
+        r += step_r
+        c += step_c
+        if r < 0 or r >= 8 or c < 0 or c >= 8:
+            break
+    
+    # Must move exactly the number of pieces in the line
+    if distance != pieces_in_line - 1:  # Subtract 1 because we count the moving piece
+        return False
+    
+    # Check for enemy pieces in the path (can't jump over enemies)
+    r, c = from_row + step_r, from_col + step_c
+    for _ in range(distance - 1):
+        if board[r][c] == -player:
+            return False
+        r += step_r
+        c += step_c
+    
+    # Landing square must be empty or enemy
+    if board[to_row][to_col] == player:
+        return False
+    
+    return True
+
+def apply_move(board, move_str, player):
+    # Create a new board with the move applied
+    new_board = np.array(board)
+    from_row, from_col, to_row, to_col = parse_move(move_str)
+    
+    new_board[from_row][from_col] = 0
+    new_board[to_row][to_col] = player
+    
+    return new_board
+
+def parse_move(move_str):
+    # Parse "from_row,from_col:to_row,to_col" into integers
+    from_part, to_part = move_str.split(':')
+    from_row, from_col = map(int, from_part.split(','))
+    to_row, to_col = map(int, to_part.split(','))
+    return from_row, from_col, to_row, to_col

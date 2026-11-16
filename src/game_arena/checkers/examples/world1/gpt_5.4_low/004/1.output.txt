@@ -1,0 +1,347 @@
+The strategy for this policy is:
+
+1. Generate all legal moves, respecting mandatory captures.
+2. If captures exist, only consider captures.
+3. Score moves with a shallow minimax search:
+   - Apply each candidate move.
+   - Generate the opponent’s best reply.
+   - Choose the move with the best worst-case evaluation.
+4. Use a fast heuristic evaluation that values:
+   - material advantage,
+   - kings,
+   - promotion opportunities,
+   - center control,
+   - mobility,
+   - piece safety,
+   - avoiding immediate recapture.
+5. Always keep a legal fallback move, so the policy never fails to return a legal action.
+
+This gives a solid tactical policy while staying safely within time limits.
+
+<code>
+from typing import List, Tuple
+
+Square = Tuple[int, int]
+Move = Tuple[Square, Square]
+
+
+def policy(my_men, my_kings, opp_men, opp_kings, color) -> Move:
+    my_men = set(map(tuple, my_men))
+    my_kings = set(map(tuple, my_kings))
+    opp_men = set(map(tuple, opp_men))
+    opp_kings = set(map(tuple, opp_kings))
+
+    state = (my_men, my_kings, opp_men, opp_kings, color)
+    moves = generate_legal_moves(state)
+
+    # Guaranteed legal fallback if anything strange happens
+    if not moves:
+        # Should not happen in valid game states, but return something deterministic
+        # Arena expects legal move; if no move exists, return a harmless placeholder.
+        return ((0, 0), (0, 0))
+
+    fallback = moves[0]
+
+    best_move = fallback
+    best_score = -10**18
+
+    for mv in order_moves(moves, state):
+        next_state = apply_move(state, mv)
+
+        # If opponent has no moves after this, that's effectively winning.
+        opp_moves = generate_legal_moves(next_state)
+        if not opp_moves:
+            score = 10**9 + static_eval(next_state)
+        else:
+            worst_reply_score = 10**18
+            # Search opponent replies, but in our state convention they are always "my" side to move.
+            for reply in order_moves(opp_moves, next_state)[:16]:
+                reply_state = apply_move(next_state, reply)
+                score_after_reply = static_eval(reply_state)
+                if score_after_reply < worst_reply_score:
+                    worst_reply_score = score_after_reply
+            score = worst_reply_score
+
+        # Small direct move bonus helps tie-breaking
+        score += move_heuristic(state, mv)
+
+        if score > best_score:
+            best_score = score
+            best_move = mv
+
+    return best_move
+
+
+def opponent_color(color: str) -> str:
+    return 'w' if color == 'b' else 'b'
+
+
+def in_bounds(r: int, c: int) -> bool:
+    return 0 <= r < 8 and 0 <= c < 8
+
+
+def playable(r: int, c: int) -> bool:
+    return (r + c) % 2 == 1
+
+
+def forward_dir(color: str) -> int:
+    return -1 if color == 'b' else 1
+
+
+def man_dirs(color: str):
+    d = forward_dir(color)
+    return [(d, -1), (d, 1)]
+
+
+def king_dirs():
+    return [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+
+def occupied_sets(state):
+    my_men, my_kings, opp_men, opp_kings, _ = state
+    my_all = my_men | my_kings
+    opp_all = opp_men | opp_kings
+    occ = my_all | opp_all
+    return my_all, opp_all, occ
+
+
+def generate_legal_moves(state) -> List[Move]:
+    captures = generate_captures(state)
+    if captures:
+        return captures
+    return generate_simple_moves(state)
+
+
+def generate_captures(state) -> List[Move]:
+    my_men, my_kings, opp_men, opp_kings, color = state
+    _, opp_all, occ = occupied_sets(state)
+    moves = []
+
+    for r, c in my_men:
+        for dr, dc in man_dirs(color):
+            mr, mc = r + dr, c + dc
+            tr, tc = r + 2 * dr, c + 2 * dc
+            if in_bounds(tr, tc) and playable(tr, tc):
+                if (mr, mc) in opp_all and (tr, tc) not in occ:
+                    moves.append(((r, c), (tr, tc)))
+
+    for r, c in my_kings:
+        for dr, dc in king_dirs():
+            mr, mc = r + dr, c + dc
+            tr, tc = r + 2 * dr, c + 2 * dc
+            if in_bounds(tr, tc) and playable(tr, tc):
+                if (mr, mc) in opp_all and (tr, tc) not in occ:
+                    moves.append(((r, c), (tr, tc)))
+
+    return moves
+
+
+def generate_simple_moves(state) -> List[Move]:
+    my_men, my_kings, opp_men, opp_kings, color = state
+    _, _, occ = occupied_sets(state)
+    moves = []
+
+    for r, c in my_men:
+        for dr, dc in man_dirs(color):
+            tr, tc = r + dr, c + dc
+            if in_bounds(tr, tc) and playable(tr, tc) and (tr, tc) not in occ:
+                moves.append(((r, c), (tr, tc)))
+
+    for r, c in my_kings:
+        for dr, dc in king_dirs():
+            tr, tc = r + dr, c + dc
+            if in_bounds(tr, tc) and playable(tr, tc) and (tr, tc) not in occ:
+                moves.append(((r, c), (tr, tc)))
+
+    return moves
+
+
+def apply_move(state, move):
+    my_men, my_kings, opp_men, opp_kings, color = state
+    my_men = set(my_men)
+    my_kings = set(my_kings)
+    opp_men = set(opp_men)
+    opp_kings = set(opp_kings)
+
+    (fr, fc), (tr, tc) = move
+    is_king = (fr, fc) in my_kings
+
+    if is_king:
+        my_kings.remove((fr, fc))
+    else:
+        my_men.remove((fr, fc))
+
+    # Capture
+    if abs(tr - fr) == 2 and abs(tc - fc) == 2:
+        mr, mc = (fr + tr) // 2, (fc + tc) // 2
+        if (mr, mc) in opp_men:
+            opp_men.remove((mr, mc))
+        elif (mr, mc) in opp_kings:
+            opp_kings.remove((mr, mc))
+
+    # Promotion
+    if is_king:
+        my_kings.add((tr, tc))
+    else:
+        if (color == 'b' and tr == 0) or (color == 'w' and tr == 7):
+            my_kings.add((tr, tc))
+        else:
+            my_men.add((tr, tc))
+
+    # Swap perspective: opponent becomes "my" side to move
+    return (opp_men, opp_kings, my_men, my_kings, opponent_color(color))
+
+
+def static_eval(state) -> int:
+    """
+    Evaluation is from the perspective of the side to move in `state`.
+    Higher is better for that side.
+    """
+    my_men, my_kings, opp_men, opp_kings, color = state
+
+    score = 0
+
+    # Material
+    score += 100 * len(my_men) + 175 * len(my_kings)
+    score -= 100 * len(opp_men) + 175 * len(opp_kings)
+
+    # Advancement for men
+    for r, c in my_men:
+        adv = (7 - r) if color == 'b' else r
+        # Since black wants to move downward to row 0, more advanced means closer to 0
+        adv = r if color == 'b' else (7 - r)
+        # invert so higher is better as row approaches promotion
+        prog = (7 - adv)
+        score += 8 * prog
+        if c in (2, 3, 4, 5):
+            score += 3
+        if c in (0, 7):
+            score += 2
+
+    opp_color = opponent_color(color)
+    for r, c in opp_men:
+        adv = r if opp_color == 'b' else (7 - r)
+        prog = (7 - adv)
+        score -= 8 * prog
+        if c in (2, 3, 4, 5):
+            score -= 3
+        if c in (0, 7):
+            score -= 2
+
+    # King placement
+    for r, c in my_kings:
+        if 2 <= r <= 5 and 2 <= c <= 5:
+            score += 8
+        else:
+            score += 4
+
+    for r, c in opp_kings:
+        if 2 <= r <= 5 and 2 <= c <= 5:
+            score -= 8
+        else:
+            score -= 4
+
+    # Mobility
+    my_moves = generate_legal_moves(state)
+    score += 3 * len(my_moves)
+
+    opp_state = (opp_men, opp_kings, my_men, my_kings, opp_color)
+    opp_moves = generate_legal_moves(opp_state)
+    score -= 3 * len(opp_moves)
+
+    # Immediate tactical vulnerability
+    score -= 20 * count_hanging_pieces(state)
+    score += 20 * count_hanging_pieces(opp_state)
+
+    return score
+
+
+def count_hanging_pieces(state) -> int:
+    """
+    Count how many of the current player's pieces can be captured immediately
+    by the opponent on the opponent's next move.
+    """
+    my_men, my_kings, opp_men, opp_kings, color = state
+    threatened = set()
+
+    my_all = my_men | my_kings
+    occ = my_all | opp_men | opp_kings
+    opp_color = opponent_color(color)
+
+    # Opponent men threatening our pieces
+    for r, c in opp_men:
+        for dr, dc in man_dirs(opp_color):
+            mr, mc = r + dr, c + dc
+            tr, tc = r + 2 * dr, c + 2 * dc
+            if in_bounds(tr, tc) and playable(tr, tc):
+                if (mr, mc) in my_all and (tr, tc) not in occ:
+                    threatened.add((mr, mc))
+
+    # Opponent kings threatening our pieces
+    for r, c in opp_kings:
+        for dr, dc in king_dirs():
+            mr, mc = r + dr, c + dc
+            tr, tc = r + 2 * dr, c + 2 * dc
+            if in_bounds(tr, tc) and playable(tr, tc):
+                if (mr, mc) in my_all and (tr, tc) not in occ:
+                    threatened.add((mr, mc))
+
+    return len(threatened)
+
+
+def move_heuristic(state, move) -> int:
+    """
+    Fast move-level heuristic for ordering and tie-breaking.
+    """
+    my_men, my_kings, opp_men, opp_kings, color = state
+    (fr, fc), (tr, tc) = move
+    score = 0
+
+    is_capture = abs(tr - fr) == 2
+    is_king = (fr, fc) in my_kings
+
+    if is_capture:
+        score += 80
+        mr, mc = (fr + tr) // 2, (fc + tc) // 2
+        if (mr, mc) in opp_kings:
+            score += 40
+        else:
+            score += 20
+
+    # Promotion
+    if not is_king:
+        if (color == 'b' and tr == 0) or (color == 'w' and tr == 7):
+            score += 120
+
+    # Centralization
+    if 2 <= tr <= 5 and 2 <= tc <= 5:
+        score += 10
+
+    # Advancement for men
+    if not is_king:
+        if color == 'b':
+            score += 5 * (fr - tr)
+        else:
+            score += 5 * (tr - fr)
+
+    # Edge pieces are sometimes safer
+    if tc in (0, 7):
+        score += 4
+
+    # Penalize obvious self-exposure after move
+    next_state = apply_move(state, move)
+    # After apply_move, perspective swaps. Convert back to mover's perspective to inspect moved side.
+    ns_my_men = next_state[2]
+    ns_my_kings = next_state[3]
+    ns_opp_men = next_state[0]
+    ns_opp_kings = next_state[1]
+    ns_color = color
+    mover_perspective = (ns_my_men, ns_my_kings, ns_opp_men, ns_opp_kings, ns_color)
+    score -= 25 * count_hanging_pieces(mover_perspective)
+
+    return score
+
+
+def order_moves(moves: List[Move], state) -> List[Move]:
+    return sorted(moves, key=lambda mv: move_heuristic(state, mv), reverse=True)
+</code>

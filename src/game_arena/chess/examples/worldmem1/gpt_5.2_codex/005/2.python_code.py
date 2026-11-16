@@ -1,0 +1,64 @@
+
+import random
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str], memory: dict):
+    # Piece values for capture evaluation
+    piece_value = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 100}
+
+    def clean_move(move: str) -> str:
+        return move.replace('+', '').replace('#', '')
+
+    def dest_square(move: str):
+        if move in ('O-O', 'O-O-O'):
+            return None
+        m = clean_move(move)
+        if '=' in m:
+            m = m.split('=')[0]
+        # destination is last two chars
+        return m[-2:]
+
+    def score(move: str) -> float:
+        # Immediate mate
+        if '#' in move:
+            return 10000.0
+        s = 0.0
+        if '+' in move:
+            s += 30.0
+
+        # Promotions
+        if '=Q' in move:
+            s += 80.0
+        elif '=' in move:
+            s += 50.0
+
+        # Castling
+        if move in ('O-O', 'O-O-O'):
+            s += 5.0
+
+        # Captures
+        if 'x' in move:
+            target = dest_square(move)
+            if target and target in pieces:
+                val = piece_value.get(pieces[target][1], 0)
+                s += val * 10.0
+            else:
+                s += 1.0  # unknown capture (e.g., en passant)
+
+        # Central control bonus
+        target = dest_square(move)
+        if target in ('d4', 'e4', 'd5', 'e5'):
+            s += 2.0
+
+        return s
+
+    # Choose the move with the highest score
+    best_move = legal_moves[0]
+    best_score = score(best_move)
+
+    for mv in legal_moves[1:]:
+        sc = score(mv)
+        if sc > best_score:
+            best_score = sc
+            best_move = mv
+
+    return best_move, memory

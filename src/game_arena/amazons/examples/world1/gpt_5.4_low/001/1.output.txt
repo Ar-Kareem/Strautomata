@@ -1,0 +1,251 @@
+The strategy for this policy is:
+
+- Always generate legal moves exactly, so it never risks disqualification.
+- Score positions using:
+  - immediate mobility difference,
+  - territorial control based on queen-move reachability,
+  - a small preference for centralization.
+- Use a shallow adversarial search:
+  - if a move immediately leaves the opponent with no legal move, play it,
+  - otherwise evaluate candidate moves and, when feasible, look one opponent reply ahead.
+- Use move ordering and candidate limits so it stays fast within the 1-second budget.
+- Include a safe fallback that returns the first legal move if anything unexpected happens.
+
+<code>
+import numpy as np
+import time
+from collections import deque
+
+DIRS = [(-1, -1), (-1, 0), (-1, 1),
+        (0, -1),           (0, 1),
+        (1, -1),  (1, 0),  (1, 1)]
+
+N = 6
+
+
+def inb(r, c):
+    return 0 <= r < N and 0 <= c < N
+
+
+def move_to_str(m):
+    fr, fc, tr, tc, ar, ac = m
+    return f"{fr},{fc}:{tr},{tc}:{ar},{ac}"
+
+
+def legal_dests(board, start, vacate=None):
+    sr, sc = start
+    out = []
+    for dr, dc in DIRS:
+        r, c = sr + dr, sc + dc
+        while inb(r, c):
+            if vacate is not None and (r, c) == vacate:
+                out.append((r, c))
+            elif board[r, c] != 0:
+                break
+            else:
+                out.append((r, c))
+            r += dr
+            c += dc
+    return out
+
+
+def generate_moves(board, player):
+    pieces = np.argwhere(board == player)
+    moves = []
+    for fr, fc in pieces:
+        from_sq = (int(fr), int(fc))
+        tos = legal_dests(board, from_sq)
+        for tr, tc in tos:
+            for ar, ac in legal_dests(board, (tr, tc), vacate=from_sq):
+                moves.append((from_sq[0], from_sq[1], tr, tc, ar, ac))
+    return moves
+
+
+def count_moves(board, player, limit=None):
+    pieces = np.argwhere(board == player)
+    total = 0
+    for fr, fc in pieces:
+        from_sq = (int(fr), int(fc))
+        tos = legal_dests(board, from_sq)
+        for tr, tc in tos:
+            total += len(legal_dests(board, (tr, tc), vacate=from_sq))
+            if limit is not None and total >= limit:
+                return total
+    return total
+
+
+def apply_move(board, move, player):
+    fr, fc, tr, tc, ar, ac = move
+    b = board.copy()
+    b[fr, fc] = 0
+    b[tr, tc] = player
+    b[ar, ac] = -1
+    return b
+
+
+def queen_dist_map(board, starts):
+    dist = np.full((N, N), -1, dtype=np.int16)
+    q = deque()
+    seen = np.zeros((N, N), dtype=bool)
+
+    for sr, sc in starts:
+        sr, sc = int(sr), int(sc)
+        for dr, dc in DIRS:
+            r, c = sr + dr, sc + dc
+            while inb(r, c) and board[r, c] == 0:
+                if not seen[r, c]:
+                    seen[r, c] = True
+                    dist[r, c] = 1
+                    q.append((r, c))
+                r += dr
+                c += dc
+
+    while q:
+        r0, c0 = q.popleft()
+        d = dist[r0, c0] + 1
+        for dr, dc in DIRS:
+            r, c = r0 + dr, c0 + dc
+            while inb(r, c) and board[r, c] == 0:
+                if not seen[r, c]:
+                    seen[r, c] = True
+                    dist[r, c] = d
+                    q.append((r, c))
+                r += dr
+                c += dc
+    return dist
+
+
+def territory_score(board):
+    my_starts = np.argwhere(board == 1)
+    op_starts = np.argwhere(board == 2)
+    d1 = queen_dist_map(board, my_starts)
+    d2 = queen_dist_map(board, op_starts)
+
+    score = 0.0
+    empties = np.argwhere(board == 0)
+    for r, c in empties:
+        a = d1[r, c]
+        b = d2[r, c]
+        if a == -1 and b == -1:
+            continue
+        if b == -1:
+            score += 1.5
+        elif a == -1:
+            score -= 1.5
+        elif a < b:
+            score += 1.0
+        elif a > b:
+            score -= 1.0
+        else:
+            score += 0.0
+    return score
+
+
+def centrality_bonus(move):
+    _, _, tr, tc, ar, ac = move
+    center = 2.5
+    to_bonus = 3.0 - (abs(tr - center) + abs(tc - center))
+    ar_bonus = 1.5 - 0.5 * (abs(ar - center) + abs(ac - center))
+    return 0.2 * to_bonus + 0.05 * ar_bonus
+
+
+def evaluate(board):
+    my_mob = count_moves(board, 1, limit=200)
+    op_mob = count_moves(board, 2, limit=200)
+
+    if my_mob == 0 and op_mob == 0:
+        return 0.0
+    if op_mob == 0:
+        return 1e9
+    if my_mob == 0:
+        return -1e9
+
+    terr = territory_score(board)
+    return 4.0 * (my_mob - op_mob) + 2.5 * terr
+
+
+def quick_move_score(board, move):
+    b = apply_move(board, move, 1)
+    op_mob = count_moves(b, 2, limit=60)
+    my_mob = count_moves(b, 1, limit=60)
+    return 3.0 * (my_mob - op_mob) + centrality_bonus(move)
+
+
+def opponent_quick_score(board, move):
+    b = apply_move(board, move, 2)
+    my_mob = count_moves(b, 1, limit=50)
+    op_mob = count_moves(b, 2, limit=50)
+    return 3.0 * (op_mob - my_mob)
+
+
+def policy(board) -> str:
+    try:
+        start_time = time.perf_counter()
+
+        legal = generate_moves(board, 1)
+        if not legal:
+            return "0,0:0,0:0,0"
+
+        if len(legal) == 1:
+            return move_to_str(legal[0])
+
+        root_scored = [(quick_move_score(board, m), m) for m in legal]
+        root_scored.sort(key=lambda x: x[0], reverse=True)
+
+        if len(root_scored) <= 12:
+            root_candidates = [m for _, m in root_scored]
+        elif len(root_scored) <= 40:
+            root_candidates = [m for _, m in root_scored[:12]]
+        else:
+            root_candidates = [m for _, m in root_scored[:10]]
+
+        best_move = root_candidates[0]
+        best_val = -1e18
+
+        for idx, move in enumerate(root_candidates):
+            if time.perf_counter() - start_time > 0.92:
+                break
+
+            b1 = apply_move(board, move, 1)
+            opp_moves = generate_moves(b1, 2)
+
+            if not opp_moves:
+                return move_to_str(move)
+
+            if len(opp_moves) <= 8:
+                opp_candidates = opp_moves
+            else:
+                opp_scored = [(opponent_quick_score(b1, om), om) for om in opp_moves]
+                opp_scored.sort(key=lambda x: x[0], reverse=True)
+                limit = 8 if len(root_candidates) <= 10 else 6
+                opp_candidates = [m for _, m in opp_scored[:limit]]
+
+            worst_reply_val = 1e18
+            for om in opp_candidates:
+                if time.perf_counter() - start_time > 0.97:
+                    break
+                b2 = apply_move(b1, om, 2)
+                v = evaluate(b2)
+                if v < worst_reply_val:
+                    worst_reply_val = v
+
+            if worst_reply_val == 1e18:
+                worst_reply_val = evaluate(b1)
+
+            move_val = worst_reply_val + 0.1 * centrality_bonus(move)
+
+            if move_val > best_val:
+                best_val = move_val
+                best_move = move
+
+        return move_to_str(best_move)
+
+    except Exception:
+        try:
+            legal = generate_moves(board, 1)
+            if legal:
+                return move_to_str(legal[0])
+        except Exception:
+            pass
+        return "0,0:0,0:0,0"
+</code>

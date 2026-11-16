@@ -1,0 +1,126 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    def check_line_score(line, player):
+        """Score a line for a given player. Returns (score, empty_positions)"""
+        player_count = sum(1 for cell in line if cell == player)
+        opponent_count = sum(1 for cell in line if cell == -player)
+        empty_count = sum(1 for cell in line if cell == 0)
+        
+        if opponent_count > 0 and player_count > 0:
+            return 0, []  # Mixed line, no value
+        
+        if player_count == 4:
+            return 10000, []  # Win
+        elif player_count == 3 and empty_count == 1:
+            return 1000, []  # About to win
+        elif player_count == 2 and empty_count == 2:
+            return 100, []  # Good position
+        elif player_count == 1 and empty_count == 3:
+            return 10, []  # Okay position
+        
+        return 0, []
+    
+    def get_all_lines_with_positions(board):
+        """Get all possible winning lines with their board positions"""
+        lines = []
+        
+        # Rows
+        for r in range(4):
+            line = [(board[r][c], (r, c)) for c in range(4)]
+            lines.append(line)
+        
+        # Columns  
+        for c in range(4):
+            line = [(board[r][c], (r, c)) for r in range(4)]
+            lines.append(line)
+        
+        # Main diagonal
+        line = [(board[i][i], (i, i)) for i in range(4)]
+        lines.append(line)
+        
+        # Anti-diagonal
+        line = [(board[i][3-i], (i, 3-i)) for i in range(4)]
+        lines.append(line)
+        
+        return lines
+    
+    def find_winning_move(board, player):
+        """Find if there's an immediate winning move"""
+        lines = get_all_lines_with_positions(board)
+        
+        for line in lines:
+            values = [cell[0] for cell in line]
+            positions = [cell[1] for cell in line]
+            
+            player_count = sum(1 for v in values if v == player)
+            empty_positions = [pos for i, pos in enumerate(positions) if values[i] == 0]
+            
+            if player_count == 3 and len(empty_positions) == 1:
+                return empty_positions[0]
+        
+        return None
+    
+    def evaluate_move(board, row, col, player):
+        """Evaluate the quality of a move"""
+        if board[row][col] != 0:
+            return -10000  # Invalid move
+        
+        # Make the move temporarily
+        board[row][col] = player
+        
+        score = 0
+        lines = get_all_lines_with_positions(board)
+        
+        for line in lines:
+            values = [cell[0] for cell in line]
+            if (row, col) in [cell[1] for cell in line]:
+                line_score, _ = check_line_score(values, player)
+                score += line_score
+        
+        # Bonus for center positions
+        center_positions = [(1, 1), (1, 2), (2, 1), (2, 2)]
+        if (row, col) in center_positions:
+            score += 50
+        
+        # Undo the move
+        board[row][col] = 0
+        
+        return score
+    
+    # Check for immediate win
+    winning_move = find_winning_move(board, 1)
+    if winning_move:
+        return winning_move
+    
+    # Check for immediate block needed
+    blocking_move = find_winning_move(board, -1)
+    if blocking_move:
+        return blocking_move
+    
+    # Find best move based on evaluation
+    best_score = -10000
+    best_moves = []
+    
+    for row in range(4):
+        for col in range(4):
+            if board[row][col] == 0:
+                score = evaluate_move(board, row, col, 1)
+                
+                # Also consider defensive value
+                defensive_score = evaluate_move(board, row, col, -1)
+                total_score = score + defensive_score * 0.5
+                
+                if total_score > best_score:
+                    best_score = total_score
+                    best_moves = [(row, col)]
+                elif total_score == best_score:
+                    best_moves.append((row, col))
+    
+    # If multiple moves have same score, prefer center
+    if len(best_moves) > 1:
+        center_positions = [(1, 1), (1, 2), (2, 1), (2, 2)]
+        for pos in center_positions:
+            if pos in best_moves:
+                return pos
+    
+    return best_moves[0] if best_moves else (0, 0)

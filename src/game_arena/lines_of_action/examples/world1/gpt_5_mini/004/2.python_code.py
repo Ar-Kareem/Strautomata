@@ -1,0 +1,299 @@
+
+import math
+import random
+import time
+from collections import deque
+
+# Lines of Action policy
+# Returns a move string "r1,c1:r2,c2" for the current player (1).
+def policy(board):
+    # Config
+    MAX_TIME = 0.95  # seconds (not strictly enforced but we keep quick)
+    START = time.time()
+    SEARCH_DEPTH = 3
+
+    # Directions: 8-neighbor
+    DIRS = [(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(-1,1),(1,-1),(1,1)]
+
+    # Helper: inside board
+    def in_board(r,c):
+        return 0 <= r < 8 and 0 <= c < 8
+
+    # Count number of pieces along the line relevant for movement from (r,c) in direction (dx,dy)
+    def count_pieces_in_line(bd, r, c, dx, dy):
+        # For horizontal
+        if dx == 0:
+            cnt = 0
+            for cc in range(8):
+                if bd[r][cc] != 0:
+                    cnt += 1
+            return cnt
+        # For vertical
+        if dy == 0:
+            cnt = 0
+            for rr in range(8):
+                if bd[rr][c] != 0:
+                    cnt += 1
+            return cnt
+        # For diagonal: detect which diagonal (main or anti) by sign of dx*dy
+        cnt = 0
+        if dx * dy > 0:
+            # main diagonal: r-c constant
+            key = r - c
+            for rr in range(8):
+                cc = rr - key
+                if 0 <= cc < 8 and bd[rr][cc] != 0:
+                    cnt += 1
+            return cnt
+        else:
+            # anti-diagonal: r+c constant
+            key = r + c
+            for rr in range(8):
+                cc = key - rr
+                if 0 <= cc < 8 and bd[rr][cc] != 0:
+                    cnt += 1
+            return cnt
+
+    # Generate legal moves for player (1 or -1)
+    def generate_moves(bd, player):
+        moves = []
+        for r in range(8):
+            for c in range(8):
+                if bd[r][c] != player:
+                    continue
+                for dx,dy in DIRS:
+                    dist = count_pieces_in_line(bd, r, c, dx, dy)
+                    if dist == 0:
+                        continue
+                    tr = r + dx * dist
+                    tc = c + dy * dist
+                    if not in_board(tr,tc):
+                        continue
+                    # Can't land on friendly
+                    if bd[tr][tc] == player:
+                        continue
+                    # Can't jump over enemy pieces: check intermediate squares
+                    blocked = False
+                    for step in range(1, dist):
+                        ir = r + dx * step
+                        ic = c + dy * step
+                        if bd[ir][ic] == -player:
+                            blocked = True
+                            break
+                    if blocked:
+                        continue
+                    moves.append((r,c,tr,tc))
+        return moves
+
+    # Apply move and return new board
+    def apply_move(bd, move, player):
+        r,c,tr,tc = move
+        new_bd = [row[:] for row in bd]
+        new_bd[r][c] = 0
+        new_bd[tr][tc] = player
+        return new_bd
+
+    # Count components and largest component size for a player
+    def components_info(bd, player):
+        visited = [[False]*8 for _ in range(8)]
+        comps = 0
+        largest = 0
+        for r in range(8):
+            for c in range(8):
+                if bd[r][c] == player and not visited[r][c]:
+                    comps += 1
+                    # BFS
+                    q = deque()
+                    q.append((r,c))
+                    visited[r][c] = True
+                    size = 0
+                    while q:
+                        rr,cc = q.popleft()
+                        size += 1
+                        for dr in (-1,0,1):
+                            for dc in (-1,0,1):
+                                if dr == 0 and dc == 0:
+                                    continue
+                                nr = rr + dr
+                                nc = cc + dc
+                                if 0 <= nr < 8 and 0 <= nc < 8 and not visited[nr][nc] and bd[nr][nc] == player:
+                                    visited[nr][nc] = True
+                                    q.append((nr,nc))
+                    if size > largest:
+                        largest = size
+        return comps, largest
+
+    # Mobility (number of legal moves)
+    def mobility(bd, player):
+        return len(generate_moves(bd, player))
+
+    # Centering metric: sum squared distance to center (3.5,3.5)
+    def center_metric(bd, player):
+        total = 0.0
+        for r in range(8):
+            for c in range(8):
+                if bd[r][c] == player:
+                    dr = r - 3.5
+                    dc = c - 3.5
+                    total += dr*dr + dc*dc
+        return total
+
+    # Pieces count
+    def pieces_count(bd, player):
+        cnt = 0
+        for row in bd:
+            for v in row:
+                if v == player:
+                    cnt += 1
+        return cnt
+
+    # Static evaluation from perspective of root_player
+    def evaluate(bd, root_player):
+        my = root_player
+        opp = -root_player
+
+        my_comps, my_largest = components_info(bd, my)
+        opp_comps, opp_largest = components_info(bd, opp)
+
+        # Terminal checks: if connected to 1 component
+        if my_comps == 1:
+            return 100000  # big win
+        if opp_comps == 1:
+            return -100000  # big loss
+
+        my_mob = mobility(bd, my)
+        opp_mob = mobility(bd, opp)
+
+        my_pieces = pieces_count(bd, my)
+        opp_pieces = pieces_count(bd, opp)
+
+        my_center = center_metric(bd, my)
+        opp_center = center_metric(bd, opp)
+
+        # Heuristic formula (weights tuned experimentally)
+        score = 0
+        # fewer components is better
+        score += (opp_comps - my_comps) * 2000
+        # larger largest component better
+        score += (my_largest - opp_largest) * 800
+        # piece advantage
+        score += (my_pieces - opp_pieces) * 400
+        # mobility
+        score += (my_mob - opp_mob) * 12
+        # center preference (smaller better)
+        score += (opp_center - my_center) * 0.5
+
+        return score
+
+    # Alpha-beta search
+    def alphabeta(bd, depth, alpha, beta, player, root_player):
+        # Terminal or depth 0
+        my_comps, _ = components_info(bd, root_player)
+        opp_comps, _ = components_info(bd, -root_player)
+        if my_comps == 1:
+            return 100000, None
+        if opp_comps == 1:
+            return -100000, None
+        if depth == 0:
+            return evaluate(bd, root_player), None
+
+        moves = generate_moves(bd, player)
+        if not moves:
+            # No moves: treat as very bad for side to move
+            if player == root_player:
+                return -100000, None
+            else:
+                return 100000, None
+
+        # Move ordering: sort by static eval after move (descending for maximizing)
+        scored_moves = []
+        for m in moves:
+            nb = apply_move(bd, m, player)
+            sc = evaluate(nb, root_player)
+            scored_moves.append((sc, m))
+        # If player == root_player we want high first (maximize), else low first
+        scored_moves.sort(reverse=(player == root_player), key=lambda x: x[0])
+        best_move = None
+
+        if player == root_player:
+            value = -1e9
+            for sc, m in scored_moves:
+                # time check to avoid overrunning
+                if time.time() - START > MAX_TIME:
+                    break
+                nb = apply_move(bd, m, player)
+                val, _ = alphabeta(nb, depth-1, alpha, beta, -player, root_player)
+                if val > value:
+                    value = val
+                    best_move = m
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break
+            return value, best_move
+        else:
+            value = 1e9
+            for sc, m in scored_moves:
+                if time.time() - START > MAX_TIME:
+                    break
+                nb = apply_move(bd, m, player)
+                val, _ = alphabeta(nb, depth-1, alpha, beta, -player, root_player)
+                if val < value:
+                    value = val
+                    best_move = m
+                beta = min(beta, value)
+                if alpha >= beta:
+                    break
+            return value, best_move
+
+    # Root: generate our moves and search
+    root_player = 1
+    moves = generate_moves(board, root_player)
+    if not moves:
+        # As fallback try to find any legal move by brute force (shouldn't happen)
+        for r in range(8):
+            for c in range(8):
+                if board[r][c] != root_player:
+                    continue
+                for dx,dy in DIRS:
+                    for dist in range(1,8):
+                        tr = r + dx*dist
+                        tc = c + dy*dist
+                        if not in_board(tr,tc):
+                            continue
+                        # naive fallback: ensure not landing on friend
+                        if board[tr][tc] == root_player:
+                            continue
+                        # ensure path has no enemy
+                        blocked = False
+                        for step in range(1,dist):
+                            ir = r + dx*step; ic = c + dy*step
+                            if board[ir][ic] == -root_player:
+                                blocked = True; break
+                        if blocked:
+                            continue
+                        # Return this move
+                        return f"{r},{c}:{tr},{tc}"
+        # If still nothing, return a dummy (shouldn't be reached)
+        return "0,0:0,0"
+
+    # Try to find best using alpha-beta
+    best_val = -1e9
+    best_move = moves[0]
+    # Order root moves by shallow eval
+    move_evals = []
+    for m in moves:
+        nb = apply_move(board, m, root_player)
+        move_evals.append((evaluate(nb, root_player), m))
+    move_evals.sort(reverse=True, key=lambda x: x[0])
+
+    for sc, m in move_evals:
+        if time.time() - START > MAX_TIME:
+            break
+        nb = apply_move(board, m, root_player)
+        val, _ = alphabeta(nb, SEARCH_DEPTH-1, -1e9, 1e9, -root_player, root_player)
+        if val > best_val:
+            best_val = val
+            best_move = m
+
+    r,c,tr,tc = best_move
+    return f"{r},{c}:{tr},{tc}"

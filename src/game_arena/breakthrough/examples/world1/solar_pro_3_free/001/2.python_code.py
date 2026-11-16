@@ -1,0 +1,179 @@
+
+import random
+from typing import List, Tuple
+
+# --------------------------------------------------------------
+# Helper functions
+# --------------------------------------------------------------
+
+def _home_target(color: str) -> int:
+    """Return the row index that counts as a win for the given player."""
+    return 7 if color == 'w' else 0
+
+def _opponent_home_target(color: str) -> int:
+    """Return the row index that the opponent uses as their win target."""
+    return 7 if color == 'b' else 0
+
+def _forward_dir(color: str) -> int:
+    """Row delta for a forward move."""
+    return 1 if color == 'w' else -1
+
+def _piece_distance(r: int, color: str, home: int) -> int:
+    """Manhattan distance to the home row (only row matters)."""
+    return home - r if color == 'w' else r - home
+
+def _capture_opponent_distance(tr: int, tc: int, opponent_color: str) -> int:
+    """
+    Distance of the opponent piece at (tr, tc) from its own home row.
+    Black pieces (opponent_color == 'b') home row is 0, white pieces home row is 7.
+    """
+    opponent_home = _opponent_home_target('w' if opponent_color == 'b' else 'b')
+    if opponent_color == 'w':  # opponent's home is 7
+        return 7 - tr
+    else:  # opponent's home is 0
+        return tr
+
+def _is_capturable(tr: int, tc: int, opponent: List[Tuple[int, int]],
+                   color: str, captured_piece: Tuple[int, int] | None = None) -> int:
+    """
+    Count how many opponent pieces could capture our piece at (tr, tc) on their next turn.
+    If we performed a capture, the captured piece is removed from the opponent set.
+    Returns 0, 1 or 2.
+    """
+    opponent_home = _home_target('w' if color == 'b' else 'b')
+    if color == 'w':  # opponent is black, moves downwards
+        opp_dir = -1
+        capture_cond = lambda q: q[0] - 1 == tr and abs(q[1] - tc) == 1
+    else:  # opponent is white, moves upwards
+        opp_dir = +1
+        capture_cond = lambda q: q[0] + 1 == tr and abs(q[1] - tc) == 1
+
+    captured_idx = None
+    if captured_piece is not None:
+        # locate index of the piece we captured
+        for idx, q in enumerate(opponent):
+            if q == captured_piece:
+                captured_idx = idx
+                break
+    # Build a temporary list without the captured piece
+    opp_temp = opponent[:captured_idx] + opponent[captured_idx+1:]
+
+    risk = sum(1 for q in opp_temp if capture_cond(q))
+    return risk
+
+# --------------------------------------------------------------
+# Core policy function
+# --------------------------------------------------------------
+
+def policy(me: List[Tuple[int, int]],
+           opp: List[Tuple[int, int]],
+           color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    """
+    Select a legal move for the player `color` (`'w'` for white, `'b'` for black).
+
+    Returns:
+        ((from_row, from_col), (to_row, to_col)) – a tuple describing a legal move.
+    """
+    # Basic constants
+    HOME = _home_target(color)
+    FORWARD_DELTA = _forward_dir(color)
+    RISK_PENALTY = 200  # penalty for landing where opponent can recapture
+    # Score weights
+    CAPTURE_BASE = 1000   # captures are always weighted heavily
+    # ----------------------------------------------------------
+    # 1. Generate all legal forward moves (non‑capture) and capture moves
+    # ----------------------------------------------------------
+
+    candidates = []  # list of dicts: {move, score, risk}
+    # keep indices to access original opponent pieces for risk calculation
+    me_indices = list(range(len(me)))
+    me_rows = [p[0] for p in me]
+    me_cols = [p[1] for p in me]
+
+    # Helper: quick membership checks
+    me_set = set(me)
+    opp_set = set(opp)
+
+    # Forward (non‑capture) moves
+    for i, (r, c) in enumerate(me):
+        tr = r + FORWARD_DELTA
+        if not (0 <= tr <= 7):
+            continue
+        # Straight forward
+        if (tr, c) not in opp_set and (tr, c) not in me_set:
+            # this move reduces distance by exactly 1
+            reduction = _piece_distance(tr, color, HOME)
+            # reduction equals old_distance - new_distance; both are 1 apart
+            # (old_distance is simply reduction+1)
+            # compute risk after move
+            risk = _is_capturable(tr, c, opp, color, captured_piece=None)
+            score = reduction - risk * RISK_PENALTY
+            candidates.append({
+                'move': ((r, c), (tr, c)),
+                'score': score,
+                'risk': risk,
+                'type': 'forward',
+                'original_index': i,
+            })
+
+        # Diagonal forward – captures only
+        for dc in (-1, 1):
+            tr = r + FORWARD_DELTA
+            tc = c + dc
+            if not (0 <= tc <= 7):
+                continue
+            if (tr, tc) in opp_set:
+                # Capture possible
+                # Compute distances
+                old_dist = _piece_distance(r, color, HOME)
+                new_dist = _piece_distance(tr, color, HOME)
+                reduction = old_dist - new_dist   # always 1 (or 0 if already at HOME)
+                # Distance of captured opponent piece from its own home row
+                captured_opponent_dist = _capture_opponent_distance(tr, tc,
+                                                                  opponent_color='b' if color == 'w' else 'w')
+                # Compute risk after capture (remove captured opponent piece)
+                risk = _is_capturable(tr, tc, opp, color,
+                                     captured_piece=((tr, tc)))
+                score = reduction + CAPTURE_BASE + captured_opponent_dist \
+                        - risk * RISK_PENALTY
+                candidates.append({
+                    'move': ((r, c), (tr, tc)),
+                    'score': score,
+                    'risk': risk,
+                    'type': 'capture',
+                    'original_index': i,
+                })
+
+    # ----------------------------------------------------------
+    # 2. If at least one move exists, pick the highest‑scoring one
+    # ----------------------------------------------------------
+    if not candidates:
+        # In a real Breakthrough game this should never happen,
+        # but we guard against it by returning the first forward move that
+        # we might find by scanning a bit more (e.g., capture of own piece,
+        # which is illegal – but just in case). Fall back to a random safe
+        # move among the forward possibilities (including illegal ones) –
+        # this branch is only hit in pathological states.
+        for i, (r, c) in enumerate(me):
+            tr = r + FORWARD_DELTA
+            if 0 <= tr <= 7:
+                # assume forward move; if occupied we ignore it later
+                candidates.append({
+                    'move': ((r, c), (tr, c)),
+                    'score': 1,   # minimal fallback
+                    'risk': 0,
+                    'type': 'forward',
+                    'original_index': i,
+                })
+        # Now pick the first candidate (the fallback is never triggered in normal play)
+
+    # Choose the best candidate
+    # First prioritize captures (already baked into scoring), then forward moves
+    candidates.sort(key=lambda x: x['score'], reverse=True)
+
+    best = candidates[0]
+
+    # ----------------------------------------------------------
+    # 3. Return the move as a tuple
+    # ----------------------------------------------------------
+    return best['move']

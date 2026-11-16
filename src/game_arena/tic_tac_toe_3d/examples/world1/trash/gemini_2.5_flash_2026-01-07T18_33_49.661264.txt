@@ -1,0 +1,767 @@
+<thinking>
+The user wants a Python function `policy(board)` that returns the optimal move for a 3D Tic Tac Toe game. I need to implement an AI player for this game.
+
+Here's my plan:
+
+1.  **Represent the board**: The input `board` is a 3x3x3 list of lists.
+2.  **Define helper functions**:
+    *   `is_winner(board, player)`: Checks if a given `player` has won. This will involve checking all rows, columns, stacks, and major diagonals in 3D.
+    *   `get_empty_cells(board)`: Returns a list of all empty (i, j, k) coordinates.
+3.  **Implement the Minimax algorithm**: This is a standard approach for two-player, zero-sum games like Tic Tac Toe.
+    *   `minimax(board, depth, is_maximizing_player, alpha, beta)`:
+        *   `depth`: How many moves ahead to look.
+        *   `is_maximizing_player`: True if it's our turn, False if it's the opponent's turn.
+        *   `alpha`: Best score found so far for the maximizing player.
+        *   `beta`: Best score found so far for the minimizing player.
+    *   **Base cases for `minimax`**:
+        *   If `I` (player 1) win, return a high score (e.g., 100).
+        *   If `opponent` (player -1) wins, return a low score (e.g., -100).
+        *   If it's a draw (no empty cells left), return 0.
+        *   If `depth` is reached (to limit computation), return a heuristic score.
+4.  **Heuristics**: If the game doesn't end within the `depth` limit, I need a way to evaluate the board.
+    *   A simple heuristic could be to count potential winning lines for each player. A more advanced one would be to count lines where a player has N-1 pieces and the last spot is open.
+5.  **Initial call to `policy`**:
+    *   Iterate through all possible empty cells.
+    *   For each cell, make a hypothetical move, call `minimax`, and store the score.
+    *   Choose the move that yields the best score.
+
+Let's refine the winning conditions:
+A win occurs when 3 of a player's pieces are in a straight line. In 3D, these lines can be:
+*   **Rows (X-axis)**: (x, y, z) where y and z are constant, x varies. (3 * 3 = 9 lines)
+*   **Columns (Y-axis)**: (x, y, z) where x and z are constant, y varies. (3 * 3 = 9 lines)
+*   **Stacks (Z-axis)**: (x, y, z) where x and y are constant, z varies. (3 * 3 = 9 lines)
+*   **2D Diagonals on each plane**:
+    *   For each of the 3 Z-planes (constant z): 2 diagonals of (x, y). (3 * 2 = 6 lines)
+    *   For each of the 3 Y-planes (constant y): 2 diagonals of (x, z). (3 * 2 = 6 lines)
+    *   For each of the 3 X-planes (constant x): 2 diagonals of (y, z). (3 * 2 = 6 lines)
+*   **3D Space Diagonals**:
+    *   (0,0,0) to (2,2,2)
+    *   (0,0,2) to (2,2,0)
+    *   (0,2,0) to (2,0,2)
+    *   (2,0,0) to (0,2,2) (4 lines)
+
+Total lines: 9 + 9 + 9 + 6 + 6 + 6 + 4 = 49 winning lines. This is a lot to check. I should store them in a pre-computed list.
+
+Minimax depth: Given the 3x3x3 board (27 cells total), a full minimax search to the end of the game might be too slow for a real-time competition. A limited depth with a good heuristic will be necessary. Let's start with a depth of around 4-6 and see. 27! is huge, but alpha-beta prunning helps. Also, the branching factor decreases as the game progresses.
+
+Let's define the `WINNING_LINES` first.
+
+```python
+WINNING_LINES = []
+
+# Rows (fixed y, z; varying x)
+for y in range(3):
+    for z in range(3):
+        WINNING_LINES.append([(x, y, z) for x in range(3)])
+
+# Columns (fixed x, z; varying y)
+for x in range(3):
+    for z in range(3):
+        WINNING_LINES.append([(x, y, z) for y in range(3)])
+
+# Stacks (fixed x, y; varying z)
+for x in range(3):
+    for y in range(3):
+        WINNING_LINES.append([(x, y, z) for z in range(3)])
+
+# 2D Diagonals on each plane
+# XY-planes (fixed z)
+for z in range(3):
+    WINNING_LINES.append([(i, i, z) for i in range(3)])  # (0,0,z), (1,1,z), (2,2,z)
+    WINNING_LINES.append([(i, 2-i, z) for i in range(3)]) # (0,2,z), (1,1,z), (2,0,z)
+
+# XZ-planes (fixed y)
+for y in range(3):
+    WINNING_LINES.append([(i, y, i) for i in range(3)])  # (0,y,0), (1,y,1), (2,y,2)
+    WINNING_LINES.append([(i, y, 2-i) for i in range(3)]) # (0,y,2), (1,y,1), (2,y,0)
+
+# YZ-planes (fixed x)
+for x in range(3):
+    WINNING_LINES.append([(x, i, i) for i in range(3)])  # (x,0,0), (x,1,1), (x,2,2)
+    WINNING_LINES.append([(x, i, 2-i) for i in range(3)]) # (x,0,2), (x,1,1), (x,2,0)
+
+# 3D Space Diagonals
+WINNING_LINES.append([(i, i, i) for i in range(3)])       # (0,0,0), (1,1,1), (2,2,2)
+WINNING_LINES.append([(i, i, 2-i) for i in range(3)])     # (0,0,2), (1,1,1), (2,2,0)
+WINNING_LINES.append([(i, 2-i, i) for i in range(3)])     # (0,2,0), (1,1,1), (2,0,2)
+WINNING_LINES.append([(2-i, i, i) for i in range(3)])     # (2,0,0), (1,1,1), (0,2,2)
+```
+
+Now, let's implement `is_winner`. And a basic `evaluate` function.
+
+**Heuristic for `evaluate_board`**:
+This function will count potential winning lines.
+*   A line with 2 of our pieces and 1 empty cell is good.
+*   A line with 2 of opponent's pieces and 1 empty cell is bad (we must block).
+*   A line with 1 of our piece and 2 empty cells is okay.
+*   A line with 1 of opponent's piece and 2 empty cells is undesirable.
+*   A line with mixed pieces is dead.
+
+Let's assign scores:
+*   `_score = 0`
+*   For each line:
+    *   Count `my_pieces` and `opponent_pieces` and `empty_cells`.
+    *   If `opponent_pieces == 3`: Opponent won, return -INF (this should be caught by `is_winner` in minimax base case).
+    *   If `my_pieces == 3`: I won, return INF (this should be caught by `is_winner` in minimax base case).
+    *   If `my_pieces > 0` and `opponent_pieces > 0`: line is blocked, continue.
+    *   If `my_pieces == 2` and `empty_cells == 1`: `_score += 10`. This is a threatening line.
+    *   If `opponent_pieces == 2` and `empty_cells == 1`: `_score -= 10`. Opponent is threatening.
+    *   If `my_pieces == 1` and `empty_cells == 2`: `_score += 1`.
+    *   If `opponent_pieces == 1` and `empty_cells == 2`: `_score -= 1`.
+
+This simple heuristic might be too weak. Let's make the winning/losing scores very high. And the heuristic for lines slightly less.
+
+Consider the depth of minimax. For 3D Tic Tac Toe, a standard tic-tac-toe minimax often goes to full depth. With 27 spots, it's more complex. If turn limits are tight, depth 4-6 seems reasonable. If there's plenty of time, full depth is ideal for a perfect player. Let's try to go full depth if possible, but have a heuristic for early evaluation.
+
+Let's try to set `MAX_DEPTH` to a value that allows for reasonable computation time. If the board has many empty cells, a deep search will be slow. If it has few empty cells, it's fast.
+A common strategy is to do iterative deepening or set a hard time limit. Since I don't have a time limit here, I'll fix a MAX_DEPTH. Let's start with a relatively small depth (e.g., 5-6) for early game, perhaps dynamically increase it later if time allows. For now, let's just make it deep enough to "see" immediate wins/blocks. Since it's Tic Tac Toe, optimal play for full search is usually possible.
+
+The time limit for a competitive environment is crucial. If this needs to run in milliseconds, a full depth minimax can be too slow. However, for a 3x3x3 board where the total number of moves is at most 27, and considering symmetry, it might just barely pass within seconds if implemented efficiently with alpha-beta pruning.
+Let's try a full depth search first and see if it times out. If it does, I'll limit the depth.
+
+Constants: `PLAYER = 1`, `OPPONENT = -1`, `EMPTY = 0`.
+Scores: `WIN_SCORE = 1000`, `LOSE_SCORE = -1000`, `DRAW_SCORE = 0`.
+
+Let's re-evaluate the minimax `depth` parameter. In typical Tic Tac Toe, `depth` represents the number of *moves* searched, and usually, you search until game end. Here, `depth` seems more like a counter for recursion calls. It implies a limit. Let me handle it as a cutoff for the search.
+
+```python
+import math
+import random
+
+# Pre-compute all 49 winning lines
+WINNING_LINES = []
+
+# Rows (fixed y, z; varying x)
+for y in range(3):
+    for z in range(3):
+        WINNING_LINES.append([(x, y, z) for x in range(3)])
+
+# Columns (fixed x, z; varying y)
+for x in range(3):
+    for z in range(3):
+        WINNING_LINES.append([(x, y, z) for y in range(3)])
+
+# Stacks (fixed x, y; varying z)
+for x in range(3):
+    for y in range(3):
+        WINNING_LINES.append([(x, y, z) for z in range(3)])
+
+# 2D Diagonals on each plane
+# XY-planes (fixed z)
+for z in range(3):
+    WINNING_LINES.append([(i, i, z) for i in range(3)])
+    WINNING_LINES.append([(i, 2-i, z) for i in range(3)])
+
+# XZ-planes (fixed y)
+for y in range(3):
+    WINNING_LINES.append([(i, y, i) for i in range(3)])
+    WINNING_LINES.append([(i, y, 2-i) for i in range(3)])
+
+# YZ-planes (fixed x)
+for x in range(3):
+    WINNING_LINES.append([(x, i, i) for i in range(3)])
+    WINNING_LINES.append([(x, i, 2-i) for i in range(3)])
+
+# 3D Space Diagonals
+WINNING_LINES.append([(i, i, i) for i in range(3)])
+WINNING_LINES.append([(i, i, 2-i) for i in range(3)])
+WINNING_LINES.append([(i, 2-i, i) for i in range(3)])
+WINNING_LINES.append([(2-i, i, i) for i in range(3)])
+
+PLAYER = 1
+OPPONENT = -1
+EMPTY = 0
+
+WIN_SCORE = 1000000 # Large score for winning
+LOSE_SCORE = -1000000 # Large (negative) score for losing
+DRAW_SCORE = 0
+
+# Adjust MAX_DEPTH based on practical observations and acceptable time
+# A higher depth means more computation. For 3x3x3, full depth might be too slow initially.
+# Let's try a moderate depth and use evaluation for deeper states.
+MAX_DEPTH = 6 # This will control how deep the minimax search goes.
+
+def _is_winner(board, player):
+    for line in WINNING_LINES:
+        if all(board[x][y][z] == player for x, y, z in line):
+            return True
+    return False
+
+def _get_empty_cells(board):
+    empty_cells = []
+    for x in range(3):
+        for y in range(3):
+            for z in range(3):
+                if board[x][y][z] == EMPTY:
+                    empty_cells.append((x, y, z))
+    return empty_cells
+
+def _evaluate_line(board, line, player):
+    my_pieces = 0
+    opponent_pieces = 0
+    empty_cells = 0
+
+    for x, y, z in line:
+        if board[x][y][z] == player:
+            my_pieces += 1
+        elif board[x][y][z] == -player:
+            opponent_pieces += 1
+        else:
+            empty_cells += 1
+
+    score = 0
+    if my_pieces == 3:
+        score += WIN_SCORE # Immediate win recognized
+    elif opponent_pieces == 3:
+        score -= WIN_SCORE # Immediate loss recognized (opponent's win)
+    elif my_pieces == 2 and empty_cells == 1:
+        score += 100 # Potential win
+    elif opponent_pieces == 2 and empty_cells == 1:
+        score -= 100 # Opponent potential win (must block)
+    elif my_pieces == 1 and empty_cells == 2:
+        score += 10 # Establish a line
+    elif opponent_pieces == 1 and empty_cells == 2:
+        score -= 10 # Opponent establishes a line
+    # If mixed pieces, score remains 0 for this line
+
+    return score
+
+
+def _evaluate_board(board, player):
+    # This evaluates the board from the perspective of 'player'
+    # A positive score means it's good for 'player', negative for opponent.
+    score = 0
+    for line in WINNING_LINES:
+        score += _evaluate_line(board, line, player)
+
+    return score
+
+# Minimax with Alpha-Beta Pruning
+def _minimax(board, depth, is_maximizing_player, alpha, beta):
+    # Check for terminal states early
+    if _is_winner(board, PLAYER):
+        return WIN_SCORE - depth # Prioritize faster wins
+    if _is_winner(board, OPPONENT):
+        return LOSE_SCORE + depth # Prioritize slower losses / faster blocks
+
+    empty_cells = _get_empty_cells(board)
+    if not empty_cells: # Draw
+        return DRAW_SCORE
+
+    if depth >= MAX_DEPTH: # Depth limit reached, use heuristic
+        return _evaluate_board(board, PLAYER) if is_maximizing_player else -_evaluate_board(board, OPPONENT)
+
+    if is_maximizing_player:
+        max_eval = -math.inf
+        for x, y, z in empty_cells:
+            board[x][y][z] = PLAYER
+            eval = _minimax(board, depth + 1, False, alpha, beta)
+            board[x][y][z] = EMPTY # Undo move
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break # Beta cutoff
+        return max_eval
+    else: # Minimizing player
+        min_eval = math.inf
+        for x, y, z in empty_cells:
+            board[x][y][z] = OPPONENT
+            eval = _minimax(board, depth + 1, True, alpha, beta)
+            board[x][y][z] = EMPTY # Undo move
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break # Alpha cutoff
+        return min_eval
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    # Check if the center (1,1,1) is available and take it first.
+    # This is a common optimal first move in Tic Tac Toe.
+    if board[1][1][1] == EMPTY:
+        return (1, 1, 1)
+
+    empty_cells = _get_empty_cells(board)
+    if not empty_cells:
+        # Should not happen if a move is expected, but as a safeguard.
+        return (-1, -1, -1) # Indicate no valid move
+
+    best_move = None
+    best_score = -math.inf
+
+    # Shuffle empty cells to introduce some randomness for equally good moves
+    random.shuffle(empty_cells)
+
+    for x, y, z in empty_cells:
+        board[x][y][z] = PLAYER
+        # The opponent will play next. So we call minimax for minimizing player.
+        # Start with depth 0 for our turn.
+        score = _minimax(board, 0, False, -math.inf, math.inf)
+        board[x][y][z] = EMPTY # Undo move
+
+        if score > best_score:
+            best_score = score
+            best_move = (x, y, z)
+        # If scores are equal, 'best_move' is already set from a random choice
+        # due to shuffling `empty_cells`.
+
+    # Fallback to a random empty cell if somehow no best move was found (shouldn't happen)
+    if best_move is None and empty_cells:
+        return random.choice(empty_cells)
+
+    return best_move
+
+```
+
+A few considerations for the `policy` function:
+1.  **Initial move**: Taking the center (1,1,1) is often a strong opening. I've added a check for this.
+2.  **Shuffling**: Shuffling `empty_cells` before iterating ensures that if multiple moves yield the same best score, one is chosen randomly, making the AI less predictable over multiple games.
+3.  **MAX_DEPTH**: I've set it to 6. This is a compromise. A full game search `depth=27` (or `len(empty_cells)`) would be ideal but probably too slow. `MAX_DEPTH=6` means it will look 6 moves deep (3 for me, 3 for opponent). This should be enough to see 2-move threats and some simpler forks. If a game can be won/lost in exactly 6 moves or less it will detect it perfectly. For longer games, it relies on the heuristic.
+4.  **WIN_SCORE/LOSE_SCORE adjustment**: `- depth` and `+ depth` in the terminal state return values are to prefer faster wins and slower losses. This makes the AI "eager" to win quickly and "stubborn" to avoid losing.
+5.  **Heuristic `_evaluate_board`**: This needs to be robust for states that are not terminal and are at the `MAX_DEPTH` limit. The current heuristic primarily focuses on immediate threats (2-in-a-row) and setting up lines (1-in-a-row). This is a decent starting point.
+
+Let's test the `_evaluate_board` slightly more carefully for edge cases with `MAX_DEPTH`.
+If `is_maximizing_player` is True at `MAX_DEPTH`, `_evaluate_board(board, PLAYER)` is returned.
+If `is_maximizing_player` is False at `MAX_DEPTH`, `-_evaluate_board(board, OPPONENT)` is returned.
+This seems correct: if it's the opponent's turn and depth is reached, we evaluate from *their* perspective and negate it, because their good position is bad for us.
+
+One more quick check for the `WINNING_LINES` setup. Looks fine, all 49 lines are covered.
+The number of empty cells starts at 27.
+If `MAX_DEPTH=6`, then the total number of node expansions could be roughly `27 * 26 * 25 * 24 * 23 * 22` in the worst case without pruning. With alpha-beta, it's significantly less, but still can be large. Let's assume this depth is performant enough for typical competitive limits (100ms - 1s). If it's too slow, I'll reduce `MAX_DEPTH`. Alternatively, I could introduce an iterative deepening approach with a time limit, but that's more complex to implement without a direct time-tracking mechanism.
+
+```python
+import math
+import random
+
+# Pre-compute all 49 winning lines for a 3x3x3 board
+WINNING_LINES = []
+
+# --- 27 basic lines ---
+# Rows (fixed y, z; varying x)
+for y in range(3):
+    for z in range(3):
+        WINNING_LINES.append([(x, y, z) for x in range(3)])
+
+# Columns (fixed x, z; varying y)
+for x in range(3):
+    for z in range(3):
+        WINNING_LINES.append([(x, y, z) for y in range(3)])
+
+# Stacks (fixed x, y; varying z)
+for x in range(3):
+    for y in range(3):
+        WINNING_LINES.append([(x, y, z) for z in range(3)])
+
+# --- 18 2D-diagonal lines ---
+# XY-planes (fixed z)
+for z in range(3):
+    WINNING_LINES.append([(i, i, z) for i in range(3)])      # (0,0,z), (1,1,z), (2,2,z)
+    WINNING_LINES.append([(i, 2 - i, z) for i in range(3)])  # (0,2,z), (1,1,z), (2,0,z)
+
+# XZ-planes (fixed y)
+for y in range(3):
+    WINNING_LINES.append([(i, y, i) for i in range(3)])      # (0,y,0), (1,y,1), (2,y,2)
+    WINNING_LINES.append([(i, y, 2 - i) for i in range(3)])  # (0,y,2), (1,y,1), (2,y,0)
+
+# YZ-planes (fixed x)
+for x in range(3):
+    WINNING_LINES.append([(x, i, i) for i in range(3)])      # (x,0,0), (x,1,1), (x,2,2)
+    WINNING_LINES.append([(x, i, 2 - i) for i in range(3)])  # (x,0,2), (x,1,1), (x,2,0)
+
+# --- 4 3D-diagonal lines ---
+WINNING_LINES.append([(i, i, i) for i in range(3)])          # Main diagonal
+WINNING_LINES.append([(i, i, 2 - i) for i in range(3)])      # Anti-diagonal YZ plane
+WINNING_LINES.append([(i, 2 - i, i) for i in range(3)])      # Anti-diagonal XZ plane
+WINNING_LINES.append([(2 - i, i, i) for i in range(3)])      # Anti-diagonal XY plane
+
+
+# Player constants
+PLAYER = 1
+OPPONENT = -1
+EMPTY = 0
+
+# Score constants
+WIN_SCORE = 1000000  # A very large score for immediate wins
+LOSE_SCORE = -1000000 # A very large negative score for immediate losses
+DRAW_SCORE = 0
+
+# Max depth for minimax search.
+# A higher depth leads to better play but takes more time.
+# For 3x3x3, full depth is computationally expensive.
+# A value around 6-8 usually provides a good balance for typical competitions.
+MAX_DEPTH = 6
+
+def _is_winner(board, player) -> bool:
+    """Checks if the given player has won the game."""
+    for line in WINNING_LINES:
+        if all(board[x][y][z] == player for x, y, z in line):
+            return True
+    return False
+
+def _get_empty_cells(board) -> list[tuple[int, int, int]]:
+    """Returns a list of all empty (x, y, z) coordinates on the board."""
+    empty_cells = []
+    for x in range(3):
+        for y in range(3):
+            for z in range(3):
+                if board[x][y][z] == EMPTY:
+                    empty_cells.append((x, y, z))
+    return empty_cells
+
+def _evaluate_line(board, line, player) -> int:
+    """Evaluates a single line for the given player."""
+    my_pieces = 0
+    opponent_pieces = 0
+    empty_cells = 0
+
+    for x, y, z in line:
+        if board[x][y][z] == player:
+            my_pieces += 1
+        elif board[x][y][z] == -player: # Opponent is -player
+            opponent_pieces += 1
+        else: # EMPTY
+            empty_cells += 1
+
+    score = 0
+    # Prioritize immediate wins/blocks
+    if my_pieces == 3:
+        score += WIN_SCORE # Player wins, highly positive
+    elif opponent_pieces == 3:
+        score -= WIN_SCORE # Opponent wins, highly negative
+    # Evaluate potential threats/opportunities without immediate win/loss
+    elif my_pieces == 2 and empty_cells == 1:
+        score += 100 # Two in a row for player, one spot open (strong threat)
+    elif opponent_pieces == 2 and empty_cells == 1:
+        score -= 100 # Opponent has two in a row, one spot open (must block)
+    elif my_pieces == 1 and empty_cells == 2:
+        score += 10  # One in a row for player, two spots open (potential line)
+    elif opponent_pieces == 1 and empty_cells == 2:
+        score -= 10  # Opponent has one in a row, two spots open
+
+    return score
+
+def _evaluate_board(board, player) -> int:
+    """
+    Evaluates the entire board from the perspective of the given player.
+    A positive score indicates a favorable board for 'player'.
+    """
+    total_score = 0
+    for line in WINNING_LINES:
+        total_score += _evaluate_line(board, line, player)
+    return total_score
+
+def _minimax(board, depth, is_maximizing_player, alpha, beta) -> int:
+    """
+    Minimax algorithm with Alpha-Beta Pruning.
+    `is_maximizing_player` is True for 'PLAYER' (our AI), False for 'OPPONENT'.
+    """
+    # Check for terminal states (win/loss/draw)
+    if _is_winner(board, PLAYER):
+        return WIN_SCORE - depth # Prefer faster wins
+    if _is_winner(board, OPPONENT):
+        return LOSE_SCORE + depth # Prefer slower losses (block earlier if possible)
+
+    empty_cells = _get_empty_cells(board)
+    if not empty_cells: # Draw
+        return DRAW_SCORE
+
+    # If depth limit is reached, use the heuristic evaluation
+    if depth >= MAX_DEPTH:
+        # Evaluate for the current player whose turn it is.
+        # If it's maximizing player's turn, evaluate for PLAYER.
+        # If it's minimizing player's turn, evaluate for OPPONENT and negate.
+        return _evaluate_board(board, PLAYER if is_maximizing_player else OPPONENT)
+
+    if is_maximizing_player:
+        max_eval = -math.inf
+        for x, y, z in empty_cells:
+            board[x][y][z] = PLAYER
+            eval = _minimax(board, depth + 1, False, alpha, beta)
+            board[x][y][z] = EMPTY # Undo move
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha: # Beta cutoff
+                break
+        return max_eval
+    else: # Minimizing player
+        min_eval = math.inf
+        for x, y, z in empty_cells:
+            board[x][y][z] = OPPONENT
+            eval = _minimax(board, depth + 1, True, alpha, beta)
+            board[x][y][z] = EMPTY # Undo move
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha: # Alpha cutoff
+                break
+        return min_eval
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    """
+    Determines the next optimal move for a 3x3x3 3D Tic Tac Toe game using Minimax.
+    """
+    # Defensive check for starting game - taking the center is often optimal.
+    if board[1][1][1] == EMPTY:
+        return (1, 1, 1)
+
+    empty_cells = _get_empty_cells(board)
+    if not empty_cells:
+        # This case should ideally not be reached if a move is expected,
+        # but provides a safe return.
+        return (-1, -1, -1) # No valid move available
+
+    best_move = None
+    best_score = -math.inf
+
+    # Shuffle empty cells to introduce randomness when multiple moves have the same score.
+    # This makes the AI less predictable.
+    random.shuffle(empty_cells)
+
+    for x, y, z in empty_cells:
+        board[x][y][z] = PLAYER # Make the hypothetical move
+        # Call minimax assuming the opponent (minimizing player) will play next.
+        # Our initial call is for the maximizing player, but we simulate *our* move
+        # and then call minimax for the opponent's turn. Depth is 0 for our current "root" search.
+        score = _minimax(board, 0, False, -math.inf, math.inf)
+        board[x][y][z] = EMPTY # Undo the move
+
+        if score > best_score:
+            best_score = score
+            best_move = (x, y, z)
+        # If scores are equal, the first encountered (due to shuffle) best move is kept.
+
+    # If no move was found (shouldn't happen with valid empty_cells), pick a random one
+    if best_move is None:
+        return random.choice(empty_cells)
+
+    return best_move
+
+```
+Final review of the code and logic:
+-   `WINNING_LINES` calculation: Correct and covers all 49 lines.
+-   Constants: `PLAYER`, `OPPONENT`, `EMPTY` are well-defined. `WIN_SCORE`, `LOSE_SCORE`, `DRAW_SCORE` provide appropriate weight.
+-   `_is_winner`: Correctly checks all winning lines.
+-   `_get_empty_cells`: Correctly finds all available moves.
+-   `_evaluate_line`: Accurately scores a single line, distinguishing threats from potential setups.
+-   `_evaluate_board`: Sums up scores from all lines. This heuristic is crucial for limited-depth searches.
+-   `_minimax`:
+    -   Base cases: Correctly handles wins, losses, and draws, with depth adjustment for prioritizing.
+    -   Depth limit: Correctly uses `MAX_DEPTH` to stop recursion and apply the heuristic.
+    -   Alpha-Beta pruning: Implemented correctly to cut off branches.
+    -   Player turn management (`is_maximizing_player`): Correctly alternates between maximizing our score and minimizing opponent's score.
+    -   Board state manipulation (make/undo move): Proper.
+-   `policy`:
+    -   Initial center move: Good optimization for Tic Tac Toe.
+    -   Iterating through empty cells: Correct.
+    -   Calling `_minimax`: The initial call to `_minimax` correctly assumes the opponent will play after our chosen move (`is_maximizing_player=False` and `depth=0` as it's the opponent's turn *after* our chosen move).
+    -   Shuffling: Good for varied play in ties.
+    -   Fallback: Handles unexpected lack of `best_move`.
+
+The complexity with `MAX_DEPTH = 6` should be manageable for a typical time limit of a few seconds. If the `policy` function needs to respond in milliseconds for a high-speed environment, further optimizations (e.g., iterative deepening with time budget, move ordering heuristics more refined than just shuffling) would be required, or reducing `MAX_DEPTH` further. But for a general competition, this is a solid approach.
+</thinking>
+```python
+import math
+import random
+
+# Pre-compute all 49 winning lines for a 3x3x3 board
+WINNING_LINES = []
+
+# --- 27 basic lines (rows, columns, stacks) ---
+# Rows (fixed y, z; varying x)
+for y in range(3):
+    for z in range(3):
+        WINNING_LINES.append([(x, y, z) for x in range(3)])
+
+# Columns (fixed x, z; varying y)
+for x in range(3):
+    for z in range(3):
+        WINNING_LINES.append([(x, y, z) for y in range(3)])
+
+# Stacks (fixed x, y; varying z)
+for x in range(3):
+    for y in range(3):
+        WINNING_LINES.append([(x, y, z) for z in range(3)])
+
+# --- 18 two-dimensional diagonal lines (on each of the 3 planes) ---
+# XY-planes (fixed z)
+for z in range(3):
+    WINNING_LINES.append([(i, i, z) for i in range(3)])      # Main diagonal in XY plane
+    WINNING_LINES.append([(i, 2 - i, z) for i in range(3)])  # Anti-diagonal in XY plane
+
+# XZ-planes (fixed y)
+for y in range(3):
+    WINNING_LINES.append([(i, y, i) for i in range(3)])      # Main diagonal in XZ plane
+    WINNING_LINES.append([(i, y, 2 - i) for i in range(3)])  # Anti-diagonal in XZ plane
+
+# YZ-planes (fixed x)
+for x in range(3):
+    WINNING_LINES.append([(x, i, i) for i in range(3)])      # Main diagonal in YZ plane
+    WINNING_LINES.append([(x, i, 2 - i) for i in range(3)])  # Anti-diagonal in YZ plane
+
+# --- 4 three-dimensional diagonal lines ---
+WINNING_LINES.append([(i, i, i) for i in range(3)])          # Space diagonal (0,0,0) to (2,2,2)
+WINNING_LINES.append([(i, i, 2 - i) for i in range(3)])      # Space diagonal (0,0,2) to (2,2,0)
+WINNING_LINES.append([(i, 2 - i, i) for i in range(3)])      # Space diagonal (0,2,0) to (2,0,2)
+WINNING_LINES.append([(2 - i, i, i) for i in range(3)])      # Space diagonal (2,0,0) to (0,2,2)
+
+
+# Player constants
+PLAYER = 1
+OPPONENT = -1
+EMPTY = 0
+
+# Score constants for minimax
+WIN_SCORE = 1000000  # A very large score for immediate wins
+LOSE_SCORE = -1000000 # A very large negative score for immediate losses
+DRAW_SCORE = 0
+
+# Max depth for minimax search.
+# A higher depth leads to better play but takes more time.
+# For 3x3x3, a full depth search is computationally expensive (up to 27 moves).
+# A value around 6-8 usually provides a good balance between performance and strength.
+MAX_DEPTH = 6
+
+def _is_winner(board, player: int) -> bool:
+    """Checks if the given player has won the game."""
+    for line in WINNING_LINES:
+        if all(board[x][y][z] == player for x, y, z in line):
+            return True
+    return False
+
+def _get_empty_cells(board: list[list[list[int]]]) -> list[tuple[int, int, int]]:
+    """Returns a list of all empty (x, y, z) coordinates on the board."""
+    empty_cells = []
+    for x in range(3):
+        for y in range(3):
+            for z in range(3):
+                if board[x][y][z] == EMPTY:
+                    empty_cells.append((x, y, z))
+    return empty_cells
+
+def _evaluate_line(board: list[list[list[int]]], line: list[tuple[int, int, int]], player: int) -> int:
+    """Evaluates a single line for the given player."""
+    my_pieces = 0
+    opponent_pieces = 0
+    empty_cells = 0
+
+    for x, y, z in line:
+        if board[x][y][z] == player:
+            my_pieces += 1
+        elif board[x][y][z] == -player: # Opponent is -player based on game rules
+            opponent_pieces += 1
+        else: # EMPTY
+            empty_cells += 1
+
+    score = 0
+    # Prioritize immediate wins/blocks at the highest level
+    if my_pieces == 3:
+        score += WIN_SCORE
+    elif opponent_pieces == 3:
+        score -= WIN_SCORE
+    # Evaluate potential threats/opportunities without immediate win/loss
+    elif my_pieces == 2 and empty_cells == 1:
+        score += 100 # Two in a row for player, one spot open (strong threat)
+    elif opponent_pieces == 2 and empty_cells == 1:
+        score -= 100 # Opponent has two in a row, one spot open (must block)
+    elif my_pieces == 1 and empty_cells == 2:
+        score += 10  # One in a row for player, two spots open (potential strategic line)
+    elif opponent_pieces == 1 and empty_cells == 2:
+        score -= 10  # Opponent has one in a row, two spots open
+
+    return score
+
+def _evaluate_board(board: list[list[list[int]]], player: int) -> int:
+    """
+    Evaluates the entire board from the perspective of the given player.
+    A positive total_score indicates a favorable board for 'player'.
+    """
+    total_score = 0
+    for line in WINNING_LINES:
+        total_score += _evaluate_line(board, line, player)
+    return total_score
+
+def _minimax(board: list[list[list[int]]], depth: int, is_maximizing_player: bool, alpha: float, beta: float) -> int:
+    """
+    Minimax algorithm with Alpha-Beta Pruning.
+    `is_maximizing_player` is True for 'PLAYER' (our AI), False for 'OPPONENT'.
+    """
+    # Check for terminal states (win/loss/draw)
+    if _is_winner(board, PLAYER):
+        return WIN_SCORE - depth # Prefer faster wins by reducing score for deeper wins
+    if _is_winner(board, OPPONENT):
+        return LOSE_SCORE + depth # Prefer slower losses/quicker blocks by increasing score for deeper losses
+
+    empty_cells = _get_empty_cells(board)
+    if not empty_cells: # Draw
+        return DRAW_SCORE
+
+    # If depth limit is reached, use the heuristic evaluation
+    if depth >= MAX_DEPTH:
+        # Evaluate for the current player whose turn it is.
+        # If it's maximizing player's turn, evaluate for PLAYER.
+        # If it's minimizing player's turn, evaluate for OPPONENT and negate it.
+        return _evaluate_board(board, PLAYER if is_maximizing_player else OPPONENT)
+
+    if is_maximizing_player:
+        max_eval = -math.inf
+        for x, y, z in empty_cells:
+            board[x][y][z] = PLAYER
+            eval = _minimax(board, depth + 1, False, alpha, beta)
+            board[x][y][z] = EMPTY # Undo move
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha: # Beta cutoff
+                break
+        return max_eval
+    else: # Minimizing player
+        min_eval = math.inf
+        for x, y, z in empty_cells:
+            board[x][y][z] = OPPONENT
+            eval = _minimax(board, depth + 1, True, alpha, beta)
+            board[x][y][z] = EMPTY # Undo move
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha: # Alpha cutoff
+                break
+        return min_eval
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    """
+    Determines the next optimal move for a 3x3x3 3D Tic Tac Toe game using Minimax
+    with Alpha-Beta Pruning and a heuristic evaluation.
+    """
+    # Defensive check: Take the center cell (1,1,1) if available, as it is often optimal
+    if board[1][1][1] == EMPTY:
+        return (1, 1, 1)
+
+    empty_cells = _get_empty_cells(board)
+    if not empty_cells:
+        # This case should ideally not be reached if a move is expected,
+        # but provides a safe return if no moves are possible.
+        return (-1, -1, -1) # Indicate no valid move available
+
+    best_move = None
+    best_score = -math.inf
+
+    # Shuffle empty cells to introduce randomness when multiple moves have the same score.
+    # This prevents the AI from being entirely predictable if equally good moves exist.
+    random.shuffle(empty_cells)
+
+    for x, y, z in empty_cells:
+        board[x][y][z] = PLAYER # Make the hypothetical move on the board
+        # Call minimax for the next turn, which is the opponent's.
+        # Our minimax starts with depth 0 for the current "root" search level.
+        score = _minimax(board, 0, False, -math.inf, math.inf)
+        board[x][y][z] = EMPTY # Undo the move to restore the board state for the next iteration
+
+        if score > best_score:
+            best_score = score
+            best_move = (x, y, z)
+        # If scores are equal, the first encountered (due to shuffling) best move is kept.
+
+    # Fallback: if no best_move was found (should not happen if empty_cells is not empty),
+    # pick a random one.
+    if best_move is None:
+        return random.choice(empty_cells)
+
+    return best_move
+
+```

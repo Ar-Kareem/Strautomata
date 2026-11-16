@@ -1,0 +1,305 @@
+
+from typing import List, Tuple, Dict
+import math
+
+BOARD_SIZE = 19
+PASS_MOVE = (0, 0)
+
+def policy(me: List[Tuple[int, int]], opponent: List[Tuple[int, int]], memory: Dict) -> Tuple[Tuple[int, int], Dict]:
+    my_set = set(me)
+    opp_set = set(opponent)
+    occupied = my_set | opp_set
+
+    # Safety: if input is malformed and overlaps exist, prefer legal output by ignoring impossible overlap in opp.
+    if my_set & opp_set:
+        opp_set = opp_set - my_set
+        occupied = my_set | opp_set
+
+    def on_board(r, c):
+        return 1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE
+
+    def neighbors(p):
+        r, c = p
+        out = []
+        if r > 1:
+            out.append((r - 1, c))
+        if r < BOARD_SIZE:
+            out.append((r + 1, c))
+        if c > 1:
+            out.append((r, c - 1))
+        if c < BOARD_SIZE:
+            out.append((r, c + 1))
+        return out
+
+    def get_group_and_liberties(start, stones):
+        stack = [start]
+        seen = {start}
+        group = []
+        libs = set()
+        while stack:
+            p = stack.pop()
+            group.append(p)
+            for nb in neighbors(p):
+                if nb in stones:
+                    if nb not in seen:
+                        seen.add(nb)
+                        stack.append(nb)
+                elif nb not in occupied_sim:
+                    libs.add(nb)
+        return group, libs
+
+    def all_groups(stones, occ):
+        groups = []
+        seen = set()
+        for s in stones:
+            if s in seen:
+                continue
+            stack = [s]
+            seen.add(s)
+            group = []
+            libs = set()
+            while stack:
+                p = stack.pop()
+                group.append(p)
+                for nb in neighbors(p):
+                    if nb in stones:
+                        if nb not in seen:
+                            seen.add(nb)
+                            stack.append(nb)
+                    elif nb not in occ:
+                        libs.add(nb)
+            groups.append((group, libs))
+        return groups
+
+    # Precompute current groups
+    my_groups = all_groups(my_set, occupied)
+    opp_groups = all_groups(opp_set, occupied)
+
+    my_atari_libs = set()
+    for g, libs in my_groups:
+        if len(libs) == 1:
+            my_atari_libs |= libs
+
+    opp_atari_libs = set()
+    for g, libs in opp_groups:
+        if len(libs) == 1:
+            opp_atari_libs |= libs
+
+    candidate_moves = set()
+
+    # Always consider tactical points first
+    candidate_moves |= my_atari_libs
+    candidate_moves |= opp_atari_libs
+
+    # Consider empty neighbors around stones
+    for s in my_set | opp_set:
+        for nb in neighbors(s):
+            if nb not in occupied:
+                candidate_moves.add(nb)
+
+    # Opening / sparse-board shape points
+    if len(occupied) < 8:
+        for p in [(4, 4), (4, 10), (4, 16), (10, 4), (10, 10), (10, 16), (16, 4), (16, 10), (16, 16)]:
+            if p not in occupied:
+                candidate_moves.add(p)
+
+    # Add center-ish fallback points
+    for p in [(10, 10), (10, 9), (10, 11), (9, 10), (11, 10), (4, 4), (4, 16), (16, 4), (16, 16)]:
+        if p not in occupied:
+            candidate_moves.add(p)
+
+    # If still too small, add all empties only if needed
+    if not candidate_moves:
+        for r in range(1, BOARD_SIZE + 1):
+            for c in range(1, BOARD_SIZE + 1):
+                if (r, c) not in occupied:
+                    candidate_moves.add((r, c))
+
+    def simulate_move(move):
+        """Return (legal, capture_count, my_new_libs, connect_count, opp_adj, my_adj, total_score_hint)."""
+        if move == PASS_MOVE:
+            return True, 0, 0, 0, 0, 0, 0
+        if move in occupied:
+            return False, 0, 0, 0, 0, 0, 0
+
+        r, c = move
+        my_new = set(my_set)
+        opp_new = set(opp_set)
+        my_new.add(move)
+
+        # Capture opponent groups with no liberties after move
+        captured = 0
+        checked = set()
+        occ_after_place = my_new | opp_new
+
+        def group_and_libs_local(start, stones, occ):
+            stack = [start]
+            seen = {start}
+            group = []
+            libs = set()
+            while stack:
+                p = stack.pop()
+                group.append(p)
+                for nb in neighbors(p):
+                    if nb in stones:
+                        if nb not in seen:
+                            seen.add(nb)
+                            stack.append(nb)
+                    elif nb not in occ:
+                        libs.add(nb)
+            return group, libs
+
+        for nb in neighbors(move):
+            if nb in opp_new and nb not in checked:
+                g, libs = group_and_libs_local(nb, opp_new, occ_after_place)
+                checked.update(g)
+                if len(libs) == 0:
+                    captured += len(g)
+                    for x in g:
+                        opp_new.remove(x)
+
+        # Check suicide
+        occ_final = my_new | opp_new
+        my_group, my_libs = group_and_libs_local(move, my_new, occ_final)
+        if len(my_libs) == 0:
+            return False, 0, 0, 0, 0, 0, 0
+
+        # Simple ko avoidance using previous board if available
+        prev_opp = set(memory.get("prev_opponent", []))
+        prev_me = set(memory.get("prev_me", []))
+        # Since we are always player to move, after our move the resulting board from our perspective is:
+        # next state's opponent stones = my_new, next state's my stones = opp_new after turn swap
+        # Avoid exact repetition of previous seen position after one-ply if stored.
+        if prev_opp and prev_me:
+            if opp_new == prev_me and my_new == prev_opp:
+                return False, 0, 0, 0, 0, 0, 0
+
+        connect_friendly = sum(1 for nb in neighbors(move) if nb in my_set)
+        adjacent_enemy = sum(1 for nb in neighbors(move) if nb in opp_set)
+        libs_count = len(my_libs)
+
+        return True, captured, libs_count, connect_friendly, adjacent_enemy, sum(1 for nb in neighbors(move) if nb in my_set), 0
+
+    def distance_to_center(move):
+        r, c = move
+        return abs(r - 10) + abs(c - 10)
+
+    def star_point_bonus(move):
+        stars = {(4, 4), (4, 10), (4, 16), (10, 4), (10, 10), (10, 16), (16, 4), (16, 10), (16, 16)}
+        return 2.5 if move in stars else 0.0
+
+    def local_density(move):
+        r, c = move
+        score = 0
+        for rr in range(max(1, r - 2), min(BOARD_SIZE, r + 2) + 1):
+            for cc in range(max(1, c - 2), min(BOARD_SIZE, c + 2) + 1):
+                p = (rr, cc)
+                if p == move:
+                    continue
+                d = abs(rr - r) + abs(cc - c)
+                if d == 0 or d > 3:
+                    continue
+                if p in my_set:
+                    score += 1.2 / d
+                elif p in opp_set:
+                    score += 0.9 / d
+        return score
+
+    def move_score(move):
+        legal, captured, libs_count, connect_friendly, adjacent_enemy, my_adj, _ = simulate_move(move)
+        if not legal:
+            return -10**9
+
+        score = 0.0
+
+        # Tactical urgency
+        if move in opp_atari_libs:
+            score += 1000.0
+        if move in my_atari_libs:
+            score += 900.0
+
+        score += captured * 120.0
+
+        # Prefer healthy liberties, but avoid overvaluing empty jumps
+        score += min(libs_count, 4) * 18.0
+
+        # Connection and fighting
+        score += connect_friendly * 14.0
+        score += adjacent_enemy * 8.0
+
+        # Influence / locality
+        score += local_density(move) * 6.0
+
+        # Opening preference
+        stones = len(occupied)
+        if stones < 20:
+            score += max(0, 8 - distance_to_center(move)) * 2.0
+            score += star_point_bonus(move)
+
+        # Slight penalty on first line / corners unless tactical
+        r, c = move
+        edge_dist = min(r - 1, BOARD_SIZE - r, c - 1, BOARD_SIZE - c)
+        if edge_dist == 0:
+            score -= 8.0
+        elif edge_dist == 1:
+            score -= 3.0
+
+        # Prefer moves adjacent to weak enemy groups
+        for g, libs in opp_groups:
+            if move in libs:
+                if len(libs) == 1:
+                    score += 500.0
+                elif len(libs) == 2:
+                    score += 45.0
+                elif len(libs) == 3:
+                    score += 12.0
+
+        # Prefer saving weak friendly groups
+        for g, libs in my_groups:
+            if move in libs:
+                if len(libs) == 1:
+                    score += 400.0
+                elif len(libs) == 2:
+                    score += 35.0
+
+        return score
+
+    # Score candidates
+    best_move = None
+    best_score = -10**18
+
+    # Deterministic tie-breaking favors center then lexicographic
+    ordered_candidates = sorted(candidate_moves, key=lambda p: (distance_to_center(p), p[0], p[1]))
+    for mv in ordered_candidates:
+        sc = move_score(mv)
+        if sc > best_score:
+            best_score = sc
+            best_move = mv
+
+    # Guaranteed legal fallback over all empty points
+    def is_legal(move):
+        return simulate_move(move)[0]
+
+    if best_move is None or not is_legal(best_move):
+        empties = []
+        for r in range(1, BOARD_SIZE + 1):
+            for c in range(1, BOARD_SIZE + 1):
+                p = (r, c)
+                if p not in occupied:
+                    empties.append(p)
+
+        empties.sort(key=lambda p: (distance_to_center(p), p[0], p[1]))
+        for mv in empties:
+            if is_legal(mv):
+                best_move = mv
+                break
+
+    if best_move is None:
+        best_move = PASS_MOVE
+
+    # Store previous position for simple ko-like repetition avoidance
+    new_memory = dict(memory) if isinstance(memory, dict) else {}
+    new_memory["prev_me"] = list(my_set)
+    new_memory["prev_opponent"] = list(opp_set)
+
+    return best_move, new_memory

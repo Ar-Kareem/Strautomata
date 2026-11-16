@@ -1,0 +1,131 @@
+The strategy for this policy is to always search for an immediate winning move first, avoid moves that allow an immediate opponent win, and otherwise choose a move that maximizes a heuristic evaluation of the board (favoring longer uninterrupted lines of our marbles while penalizing the opponent’s). It also checks if the opponent has any direct winning response and avoids those moves if possible.
+
+<code>
+import math
+
+# Precompute all length-5 segments on 6x6 board
+SEGMENTS = []
+dirs = [(1,0),(0,1),(1,1),(1,-1)]
+for r in range(6):
+    for c in range(6):
+        for dr, dc in dirs:
+            r2 = r + 4*dr
+            c2 = c + 4*dc
+            if 0 <= r2 < 6 and 0 <= c2 < 6:
+                seg = [(r+i*dr, c+i*dc) for i in range(5)]
+                SEGMENTS.append(seg)
+
+WEIGHTS = {0:0,1:1,2:5,3:25,4:100,5:100000}
+
+def rotate_quadrant(board, quad, direction):
+    r0 = 0 if quad in (0,1) else 3
+    c0 = 0 if quad in (0,2) else 3
+    # extract 3x3
+    temp = [[board[r0+i][c0+j] for j in range(3)] for i in range(3)]
+    # rotate
+    newtemp = [[0]*3 for _ in range(3)]
+    if direction == 'L':
+        for i in range(3):
+            for j in range(3):
+                newtemp[i][j] = temp[j][2-i]
+    else: # 'R'
+        for i in range(3):
+            for j in range(3):
+                newtemp[i][j] = temp[2-j][i]
+    # place back
+    for i in range(3):
+        for j in range(3):
+            board[r0+i][c0+j] = newtemp[i][j]
+
+def apply_move(you, opp, r, c, quad, direction):
+    y = [row[:] for row in you]
+    o = [row[:] for row in opp]
+    y[r][c] = 1
+    rotate_quadrant(y, quad, direction)
+    rotate_quadrant(o, quad, direction)
+    return y, o
+
+def check_win(board):
+    for seg in SEGMENTS:
+        if all(board[r][c] == 1 for r,c in seg):
+            return True
+    return False
+
+def heuristic(you, opp):
+    score = 0
+    for seg in SEGMENTS:
+        ycnt = 0
+        ocnt = 0
+        for r,c in seg:
+            if you[r][c] == 1:
+                ycnt += 1
+            elif opp[r][c] == 1:
+                ocnt += 1
+        if ocnt == 0:
+            score += WEIGHTS[ycnt]
+        if ycnt == 0:
+            score -= WEIGHTS[ocnt]
+    # center preference
+    centers = [(2,2),(2,3),(3,2),(3,3)]
+    for r,c in centers:
+        if you[r][c] == 1:
+            score += 2
+        elif opp[r][c] == 1:
+            score -= 2
+    return score
+
+def policy(you, opponent) -> str:
+    # Ensure list of lists
+    you = [list(row) for row in you]
+    opponent = [list(row) for row in opponent]
+
+    empties = [(r,c) for r in range(6) for c in range(6) if you[r][c]==0 and opponent[r][c]==0]
+    moves = []
+    for r,c in empties:
+        for quad in range(4):
+            for d in ('L','R'):
+                moves.append((r,c,quad,d))
+
+    best_move = moves[0]
+    best_score = -1e18
+
+    # First pass: immediate win
+    for r,c,quad,d in moves:
+        y2,o2 = apply_move(you, opponent, r, c, quad, d)
+        yw = check_win(y2)
+        ow = check_win(o2)
+        if yw and not ow:
+            return f"{r+1},{c+1},{quad},{d}"
+
+    # Otherwise evaluate
+    for r,c,quad,d in moves:
+        y2,o2 = apply_move(you, opponent, r, c, quad, d)
+        yw = check_win(y2)
+        ow = check_win(o2)
+        if ow and not yw:
+            score = -1e12
+        else:
+            # check if opponent has immediate winning response
+            opp_can_win = False
+            empties2 = [(rr,cc) for rr in range(6) for cc in range(6) if y2[rr][cc]==0 and o2[rr][cc]==0]
+            for rr,cc in empties2:
+                for q2 in range(4):
+                    for d2 in ('L','R'):
+                        oy2, oo2 = apply_move(o2, y2, rr, cc, q2, d2)  # opponent move
+                        if check_win(oy2) and not check_win(oo2):
+                            opp_can_win = True
+                            break
+                    if opp_can_win: break
+                if opp_can_win: break
+            if opp_can_win:
+                score = -1e10
+            else:
+                score = heuristic(y2, o2)
+
+        if score > best_score:
+            best_score = score
+            best_move = (r,c,quad,d)
+
+    r,c,quad,d = best_move
+    return f"{r+1},{c+1},{quad},{d}"
+</code>

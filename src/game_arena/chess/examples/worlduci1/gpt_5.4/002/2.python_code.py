@@ -1,0 +1,598 @@
+
+from typing import Dict, List, Tuple, Optional
+
+FILES = "abcdefgh"
+RANKS = "12345678"
+
+PIECE_VALUES = {
+    "P": 100,
+    "N": 320,
+    "B": 330,
+    "R": 500,
+    "Q": 900,
+    "K": 0,
+}
+
+MATE_SCORE = 1000000
+
+def sq_to_xy(s: str) -> Tuple[int, int]:
+    return FILES.index(s[0]), RANKS.index(s[1])
+
+def xy_to_sq(x: int, y: int) -> str:
+    return FILES[x] + RANKS[y]
+
+def on_board(x: int, y: int) -> bool:
+    return 0 <= x < 8 and 0 <= y < 8
+
+def color_char(to_play: str) -> str:
+    return "w" if to_play == "white" else "b"
+
+def opp(c: str) -> str:
+    return "b" if c == "w" else "w"
+
+def piece_at(board: Dict[str, str], x: int, y: int) -> Optional[str]:
+    if not on_board(x, y):
+        return None
+    return board.get(xy_to_sq(x, y))
+
+def clone_board(board: Dict[str, str]) -> Dict[str, str]:
+    return dict(board)
+
+def infer_ep_square(board: Dict[str, str], side: str) -> Optional[str]:
+    # Infer possible en-passant target from static board only.
+    # This is necessarily uncertain, but valid if previous move plausibly was a double pawn push.
+    # For side to move, enemy pawn must be on rank 5 (if white to move) or rank 4 (if black to move),
+    # with empty square behind and empty start square.
+    enemy = opp(side)
+    if side == "w":
+        # black just moved from rank 7 to 5 -> pawn on y=4, target y=5
+        for x in range(8):
+            sq = xy_to_sq(x, 4)
+            if board.get(sq) == "bP":
+                if board.get(xy_to_sq(x, 5)) is None and board.get(xy_to_sq(x, 6)) is None:
+                    return xy_to_sq(x, 5)
+    else:
+        # white just moved from rank 2 to 4 -> pawn on y=3, target y=2
+        for x in range(8):
+            sq = xy_to_sq(x, 3)
+            if board.get(sq) == "wP":
+                if board.get(xy_to_sq(x, 2)) is None and board.get(xy_to_sq(x, 1)) is None:
+                    return xy_to_sq(x, 2)
+    return None
+
+def infer_castling_rights(board: Dict[str, str]) -> Dict[str, bool]:
+    rights = {
+        "wK": False, "wQ": False, "bK": False, "bQ": False
+    }
+    if board.get("e1") == "wK":
+        if board.get("h1") == "wR":
+            rights["wK"] = True
+        if board.get("a1") == "wR":
+            rights["wQ"] = True
+    if board.get("e8") == "bK":
+        if board.get("h8") == "bR":
+            rights["bK"] = True
+        if board.get("a8") == "bR":
+            rights["bQ"] = True
+    return rights
+
+def king_square(board: Dict[str, str], side: str) -> Optional[str]:
+    target = side + "K"
+    for sq, p in board.items():
+        if p == target:
+            return sq
+    return None
+
+def attacks_square(board: Dict[str, str], from_sq: str, piece: str, target_sq: str) -> bool:
+    fx, fy = sq_to_xy(from_sq)
+    tx, ty = sq_to_xy(target_sq)
+    c, pt = piece[0], piece[1]
+    dx, dy = tx - fx, ty - fy
+
+    if pt == "P":
+        step = 1 if c == "w" else -1
+        return dy == step and abs(dx) == 1
+
+    if pt == "N":
+        return (abs(dx), abs(dy)) in {(1, 2), (2, 1)}
+
+    if pt == "K":
+        return max(abs(dx), abs(dy)) == 1
+
+    if pt in ("B", "R", "Q"):
+        dirs = []
+        if pt in ("B", "Q"):
+            dirs += [(1,1), (1,-1), (-1,1), (-1,-1)]
+        if pt in ("R", "Q"):
+            dirs += [(1,0), (-1,0), (0,1), (0,-1)]
+        for sx, sy in dirs:
+            x, y = fx + sx, fy + sy
+            while on_board(x, y):
+                sq = xy_to_sq(x, y)
+                if sq == target_sq:
+                    return True
+                if sq in board:
+                    break
+                x += sx
+                y += sy
+    return False
+
+def is_in_check(board: Dict[str, str], side: str) -> bool:
+    ksq = king_square(board, side)
+    if ksq is None:
+        return True
+    enemy = opp(side)
+    for sq, p in board.items():
+        if p[0] == enemy and attacks_square(board, sq, p, ksq):
+            return True
+    return False
+
+def gen_pseudo_moves(board: Dict[str, str], side: str,
+                     castling_rights: Dict[str, bool],
+                     ep_square: Optional[str]) -> List[str]:
+    moves = []
+    enemy = opp(side)
+
+    for sq, piece in board.items():
+        if piece[0] != side:
+            continue
+        x, y = sq_to_xy(sq)
+        pt = piece[1]
+
+        if pt == "P":
+            step = 1 if side == "w" else -1
+            start_rank = 1 if side == "w" else 6
+            promo_rank = 7 if side == "w" else 0
+
+            ny = y + step
+            if on_board(x, ny) and piece_at(board, x, ny) is None:
+                to_sq = xy_to_sq(x, ny)
+                if ny == promo_rank:
+                    for pr in "qrbn":
+                        moves.append(sq + to_sq + pr)
+                else:
+                    moves.append(sq + to_sq)
+                    if y == start_rank:
+                        ny2 = y + 2 * step
+                        if on_board(x, ny2) and piece_at(board, x, ny2) is None:
+                            moves.append(sq + xy_to_sq(x, ny2))
+
+            for dx in (-1, 1):
+                nx, ny = x + dx, y + step
+                if not on_board(nx, ny):
+                    continue
+                target_sq = xy_to_sq(nx, ny)
+                target = board.get(target_sq)
+                if target is not None and target[0] == enemy:
+                    if ny == promo_rank:
+                        for pr in "qrbn":
+                            moves.append(sq + target_sq + pr)
+                    else:
+                        moves.append(sq + target_sq)
+                elif ep_square == target_sq:
+                    # must be adjacent enemy pawn
+                    cap_sq = xy_to_sq(nx, y)
+                    cap = board.get(cap_sq)
+                    if cap == enemy + "P":
+                        moves.append(sq + target_sq)
+
+        elif pt == "N":
+            for dx, dy in [(1,2),(2,1),(-1,2),(-2,1),(1,-2),(2,-1),(-1,-2),(-2,-1)]:
+                nx, ny = x + dx, y + dy
+                if not on_board(nx, ny):
+                    continue
+                target = piece_at(board, nx, ny)
+                if target is None or target[0] == enemy:
+                    moves.append(sq + xy_to_sq(nx, ny))
+
+        elif pt in ("B", "R", "Q"):
+            dirs = []
+            if pt in ("B", "Q"):
+                dirs += [(1,1),(1,-1),(-1,1),(-1,-1)]
+            if pt in ("R", "Q"):
+                dirs += [(1,0),(-1,0),(0,1),(0,-1)]
+            for dx, dy in dirs:
+                nx, ny = x + dx, y + dy
+                while on_board(nx, ny):
+                    target = piece_at(board, nx, ny)
+                    if target is None:
+                        moves.append(sq + xy_to_sq(nx, ny))
+                    else:
+                        if target[0] == enemy:
+                            moves.append(sq + xy_to_sq(nx, ny))
+                        break
+                    nx += dx
+                    ny += dy
+
+        elif pt == "K":
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    if dx == 0 and dy == 0:
+                        continue
+                    nx, ny = x + dx, y + dy
+                    if not on_board(nx, ny):
+                        continue
+                    target = piece_at(board, nx, ny)
+                    if target is None or target[0] == enemy:
+                        moves.append(sq + xy_to_sq(nx, ny))
+
+            # castling
+            if side == "w" and sq == "e1" and not is_in_check(board, side):
+                if castling_rights.get("wK", False):
+                    if board.get("f1") is None and board.get("g1") is None:
+                        if not square_attacked(board, "f1", enemy) and not square_attacked(board, "g1", enemy):
+                            moves.append("e1g1")
+                if castling_rights.get("wQ", False):
+                    if board.get("d1") is None and board.get("c1") is None and board.get("b1") is None:
+                        if not square_attacked(board, "d1", enemy) and not square_attacked(board, "c1", enemy):
+                            moves.append("e1c1")
+            elif side == "b" and sq == "e8" and not is_in_check(board, side):
+                if castling_rights.get("bK", False):
+                    if board.get("f8") is None and board.get("g8") is None:
+                        if not square_attacked(board, "f8", enemy) and not square_attacked(board, "g8", enemy):
+                            moves.append("e8g8")
+                if castling_rights.get("bQ", False):
+                    if board.get("d8") is None and board.get("c8") is None and board.get("b8") is None:
+                        if not square_attacked(board, "d8", enemy) and not square_attacked(board, "c8", enemy):
+                            moves.append("e8c8")
+
+    return moves
+
+def square_attacked(board: Dict[str, str], sq: str, by_side: str) -> bool:
+    for from_sq, p in board.items():
+        if p[0] == by_side and attacks_square(board, from_sq, p, sq):
+            return True
+    return False
+
+def apply_move(board: Dict[str, str], move: str, side: str,
+               castling_rights: Dict[str, bool],
+               ep_square: Optional[str]) -> Tuple[Dict[str, str], Dict[str, bool], Optional[str]]:
+    nb = clone_board(board)
+    nrights = dict(castling_rights)
+    nep = None
+
+    from_sq = move[:2]
+    to_sq = move[2:4]
+    promo = move[4] if len(move) == 5 else None
+
+    piece = nb.pop(from_sq)
+    target = nb.get(to_sq)
+
+    # update castling rights due to moving piece
+    if piece == "wK":
+        nrights["wK"] = False
+        nrights["wQ"] = False
+    elif piece == "bK":
+        nrights["bK"] = False
+        nrights["bQ"] = False
+    elif piece == "wR":
+        if from_sq == "h1":
+            nrights["wK"] = False
+        elif from_sq == "a1":
+            nrights["wQ"] = False
+    elif piece == "bR":
+        if from_sq == "h8":
+            nrights["bK"] = False
+        elif from_sq == "a8":
+            nrights["bQ"] = False
+
+    # update castling rights due to captured rook
+    if target == "wR":
+        if to_sq == "h1":
+            nrights["wK"] = False
+        elif to_sq == "a1":
+            nrights["wQ"] = False
+    elif target == "bR":
+        if to_sq == "h8":
+            nrights["bK"] = False
+        elif to_sq == "a8":
+            nrights["bQ"] = False
+
+    # en passant capture
+    if piece[1] == "P" and ep_square == to_sq and target is None:
+        fx, fy = sq_to_xy(from_sq)
+        tx, ty = sq_to_xy(to_sq)
+        if abs(tx - fx) == 1:
+            cap_sq = xy_to_sq(tx, fy)
+            if nb.get(cap_sq) == opp(side) + "P":
+                nb.pop(cap_sq, None)
+
+    # castling move
+    if piece[1] == "K":
+        if from_sq == "e1" and to_sq == "g1":
+            nb.pop("h1", None)
+            nb["f1"] = "wR"
+        elif from_sq == "e1" and to_sq == "c1":
+            nb.pop("a1", None)
+            nb["d1"] = "wR"
+        elif from_sq == "e8" and to_sq == "g8":
+            nb.pop("h8", None)
+            nb["f8"] = "bR"
+        elif from_sq == "e8" and to_sq == "c8":
+            nb.pop("a8", None)
+            nb["d8"] = "bR"
+
+    # normal capture overwrite
+    nb.pop(to_sq, None)
+
+    # promotion
+    if promo is not None and piece[1] == "P":
+        nb[to_sq] = side + promo.upper()
+    else:
+        nb[to_sq] = piece
+
+    # new en passant square after double pawn push
+    if piece[1] == "P":
+        fx, fy = sq_to_xy(from_sq)
+        tx, ty = sq_to_xy(to_sq)
+        if fx == tx and abs(ty - fy) == 2:
+            nep = xy_to_sq(fx, (fy + ty) // 2)
+
+    return nb, nrights, nep
+
+def legal_moves(board: Dict[str, str], side: str,
+                castling_rights: Dict[str, bool],
+                ep_square: Optional[str]) -> List[str]:
+    pm = gen_pseudo_moves(board, side, castling_rights, ep_square)
+    out = []
+    for m in pm:
+        nb, nr, ne = apply_move(board, m, side, castling_rights, ep_square)
+        if not is_in_check(nb, side):
+            out.append(m)
+    return out
+
+def pst(piece: str, x: int, y: int) -> int:
+    c, pt = piece[0], piece[1]
+    ry = y if c == "w" else 7 - y
+
+    if pt == "P":
+        table = [
+            [0,0,0,0,0,0,0,0],
+            [5,10,10,-20,-20,10,10,5],
+            [5,-5,-10,0,0,-10,-5,5],
+            [0,0,0,20,20,0,0,0],
+            [5,5,10,25,25,10,5,5],
+            [10,10,20,30,30,20,10,10],
+            [50,50,50,50,50,50,50,50],
+            [0,0,0,0,0,0,0,0],
+        ]
+        return table[ry][x]
+    if pt == "N":
+        table = [
+            [-50,-40,-30,-30,-30,-30,-40,-50],
+            [-40,-20,0,0,0,0,-20,-40],
+            [-30,0,10,15,15,10,0,-30],
+            [-30,5,15,20,20,15,5,-30],
+            [-30,0,15,20,20,15,0,-30],
+            [-30,5,10,15,15,10,5,-30],
+            [-40,-20,0,5,5,0,-20,-40],
+            [-50,-40,-30,-30,-30,-30,-40,-50],
+        ]
+        return table[ry][x]
+    if pt == "B":
+        table = [
+            [-20,-10,-10,-10,-10,-10,-10,-20],
+            [-10,0,0,0,0,0,0,-10],
+            [-10,0,5,10,10,5,0,-10],
+            [-10,5,5,10,10,5,5,-10],
+            [-10,0,10,10,10,10,0,-10],
+            [-10,10,10,10,10,10,10,-10],
+            [-10,5,0,0,0,0,5,-10],
+            [-20,-10,-10,-10,-10,-10,-10,-20],
+        ]
+        return table[ry][x]
+    if pt == "R":
+        table = [
+            [0,0,0,5,5,0,0,0],
+            [-5,0,0,0,0,0,0,-5],
+            [-5,0,0,0,0,0,0,-5],
+            [-5,0,0,0,0,0,0,-5],
+            [-5,0,0,0,0,0,0,-5],
+            [-5,0,0,0,0,0,0,-5],
+            [5,10,10,10,10,10,10,5],
+            [0,0,0,0,0,0,0,0],
+        ]
+        return table[ry][x]
+    if pt == "Q":
+        table = [
+            [-20,-10,-10,-5,-5,-10,-10,-20],
+            [-10,0,0,0,0,0,0,-10],
+            [-10,0,5,5,5,5,0,-10],
+            [-5,0,5,5,5,5,0,-5],
+            [0,0,5,5,5,5,0,-5],
+            [-10,5,5,5,5,5,0,-10],
+            [-10,0,5,0,0,0,0,-10],
+            [-20,-10,-10,-5,-5,-10,-10,-20],
+        ]
+        return table[ry][x]
+    if pt == "K":
+        table = [
+            [-30,-40,-40,-50,-50,-40,-40,-30],
+            [-30,-40,-40,-50,-50,-40,-40,-30],
+            [-30,-40,-40,-50,-50,-40,-40,-30],
+            [-30,-40,-40,-50,-50,-40,-40,-30],
+            [-20,-30,-30,-40,-40,-30,-30,-20],
+            [-10,-20,-20,-20,-20,-20,-20,-10],
+            [20,20,0,0,0,0,20,20],
+            [20,30,10,0,0,10,30,20],
+        ]
+        return table[ry][x]
+    return 0
+
+def evaluate(board: Dict[str, str], side: str,
+             castling_rights: Dict[str, bool],
+             ep_square: Optional[str]) -> int:
+    score = 0
+    white_bishops = 0
+    black_bishops = 0
+
+    for sq, p in board.items():
+        x, y = sq_to_xy(sq)
+        val = PIECE_VALUES[p[1]] + pst(p, x, y)
+        if p[0] == "w":
+            score += val
+            if p[1] == "B":
+                white_bishops += 1
+        else:
+            score -= val
+            if p[1] == "B":
+                black_bishops += 1
+
+        if p[1] == "P":
+            if p[0] == "w":
+                score += y * 8
+            else:
+                score -= (7 - y) * 8
+
+    if white_bishops >= 2:
+        score += 25
+    if black_bishops >= 2:
+        score -= 25
+
+    # Mobility
+    wm = len(legal_moves(board, "w", castling_rights, ep_square))
+    bm = len(legal_moves(board, "b", castling_rights, ep_square))
+    score += 3 * (wm - bm)
+
+    # King safety / castling bonus
+    wk = king_square(board, "w")
+    bk = king_square(board, "b")
+    if wk in ("g1", "c1"):
+        score += 35
+    if bk in ("g8", "c8"):
+        score -= 35
+
+    # Encourage central control
+    center = {"d4", "e4", "d5", "e5"}
+    for sq, p in board.items():
+        if sq in center:
+            score += 15 if p[0] == "w" else -15
+
+    return score if side == "w" else -score
+
+def move_order_key(board: Dict[str, str], move: str, side: str,
+                   ep_square: Optional[str]) -> int:
+    from_sq = move[:2]
+    to_sq = move[2:4]
+    mover = board[from_sq]
+    captured = board.get(to_sq)
+    score = 0
+
+    if len(move) == 5:
+        promo_piece = move[4].upper()
+        score += 800 + PIECE_VALUES.get(promo_piece, 0)
+
+    if captured is None and mover[1] == "P" and ep_square == to_sq and from_sq[0] != to_sq[0]:
+        captured = opp(side) + "P"
+
+    if captured is not None:
+        score += 10 * PIECE_VALUES[captured[1]] - PIECE_VALUES[mover[1]] + 5000
+
+    # checks
+    try:
+        rights = infer_castling_rights(board)
+        nb, nr, ne = apply_move(board, move, side, rights, ep_square)
+        if is_in_check(nb, opp(side)):
+            score += 1500
+    except Exception:
+        pass
+
+    # prefer castling
+    if mover[1] == "K" and from_sq in ("e1", "e8") and to_sq in ("g1", "c1", "g8", "c8"):
+        score += 1200
+
+    return score
+
+def search(board: Dict[str, str], side: str,
+           castling_rights: Dict[str, bool],
+           ep_square: Optional[str],
+           depth: int, alpha: int, beta: int) -> int:
+    moves = legal_moves(board, side, castling_rights, ep_square)
+    if not moves:
+        if is_in_check(board, side):
+            return -MATE_SCORE + (4 - depth)
+        return 0
+    if depth == 0:
+        return evaluate(board, side, castling_rights, ep_square)
+
+    moves.sort(key=lambda m: move_order_key(board, m, side, ep_square), reverse=True)
+
+    best = -10**18
+    for m in moves:
+        nb, nr, ne = apply_move(board, m, side, castling_rights, ep_square)
+        val = -search(nb, opp(side), nr, ne, depth - 1, -beta, -alpha)
+        if val > best:
+            best = val
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+    return best
+
+def choose_move(board: Dict[str, str], side: str) -> str:
+    rights = infer_castling_rights(board)
+    ep = infer_ep_square(board, side)
+    moves = legal_moves(board, side, rights, ep)
+    if not moves:
+        # Should not happen in valid arena positions, but must return something.
+        return "a1a1"
+
+    # Immediate mate
+    ordered = sorted(moves, key=lambda m: move_order_key(board, m, side, ep), reverse=True)
+    for m in ordered:
+        nb, nr, ne = apply_move(board, m, side, rights, ep)
+        reply = legal_moves(nb, opp(side), nr, ne)
+        if not reply and is_in_check(nb, opp(side)):
+            return m
+
+    piece_count = len(board)
+    if piece_count >= 24:
+        depth = 2
+    elif piece_count >= 12:
+        depth = 3
+    else:
+        depth = 4
+
+    best_move = ordered[0]
+    best_val = -10**18
+    alpha = -10**18
+    beta = 10**18
+
+    for m in ordered:
+        nb, nr, ne = apply_move(board, m, side, rights, ep)
+        val = -search(nb, opp(side), nr, ne, depth - 1, -beta, -alpha)
+        if val > best_val:
+            best_val = val
+            best_move = m
+        if val > alpha:
+            alpha = val
+
+    return best_move
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    side = color_char(to_play)
+    try:
+        move = choose_move(pieces, side)
+        rights = infer_castling_rights(pieces)
+        ep = infer_ep_square(pieces, side)
+        lm = legal_moves(pieces, side, rights, ep)
+        if move in lm:
+            return move
+        if lm:
+            return lm[0]
+        # Emergency fallback: generate pseudo and return one if any
+        pm = gen_pseudo_moves(pieces, side, rights, ep)
+        if pm:
+            return pm[0]
+        # Last-resort deterministic string
+        return "a1a1"
+    except Exception:
+        try:
+            rights = infer_castling_rights(pieces)
+            ep = infer_ep_square(pieces, side)
+            lm = legal_moves(pieces, side, rights, ep)
+            if lm:
+                return lm[0]
+        except Exception:
+            pass
+        return "a1a1"

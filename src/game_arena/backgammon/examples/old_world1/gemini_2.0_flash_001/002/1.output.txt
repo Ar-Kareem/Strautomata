@@ -1,0 +1,102 @@
+Let's outline a backgammon strategy and then implement it in the `policy` function. The strategy will prioritize:
+
+1.  **Moving off the bar:** If there are checkers on the bar, the first priority is to move them back into the game.
+2.  **Hitting opponent checkers:** If possible, hit opponent checkers to put them on the bar and disrupt their game.
+3.  **Making points:** Create blocks of two or more checkers on a point to make it harder for the opponent to move past.
+4.  **Moving towards home board:** Move checkers towards the home board to prepare for bearing off.
+5.  **Bearing off:** If all checkers are in the home board, bear them off as quickly as possible.
+6.  **Avoiding leaving blots:** Avoid leaving single checkers (blots) that can be easily hit by the opponent.
+7.  **Playing the highest die:** If only one die can be played, play the higher die. If both can be played, try to play both.
+
+I will implement this general strategy by prioritizing the moves, considering the state of board, and dice values.
+
+```python
+import random
+
+def policy(state: dict) -> str:
+    """
+    A backgammon policy that prioritizes:
+    1. Moving off the bar
+    2. Hitting opponent checkers
+    3. Making points
+    4. Moving towards home board
+    5. Bearing off
+    6. Avoiding leaving blots
+    7. Playing the highest die
+    """
+
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+    dice = sorted(state['dice'], reverse=True)  # Sort dice in descending order
+
+    def find_possible_moves(die_order):
+        moves = []
+        used_dice = []
+
+        def find_move(remaining_dice, current_move):
+            nonlocal moves, used_dice
+            if not remaining_dice:
+                moves.append(current_move)
+                return
+
+            for die_index, die in enumerate(remaining_dice):
+                if my_bar > 0:
+                    start_point = 'B'
+                else:
+                    start_point_candidates = [f'A{i}' for i, count in enumerate(my_pts) if count > 0]
+
+                for start_point in ['B'] if my_bar > 0 else [f'A{i}' for i, count in enumerate(my_pts) if count > 0]:
+                    action_string = f"{die_order}:{','.join(current_move + [start_point] if start_point != 'P' else current_move + ['P'])}"
+                    try:
+                        # This is a simplified check. The engine will enforce legality.
+                        # More sophisticated move generation would be ideal.
+
+                        #if all from locations are P, continue
+                        if not any(x != 'P' for x in (current_move + [start_point] if start_point != 'P' else current_move + ['P'])):
+                            continue
+
+                        # Simulate taking the move from the current state
+                        temp_my_pts = my_pts[:]
+                        temp_my_bar = my_bar
+                        
+                        if start_point == 'B':
+                            if my_bar > 0:
+                                temp_my_bar -= 1
+                        else:
+                            point_index = int(start_point[1:])
+                            if temp_my_pts[point_index] > 0:
+                                temp_my_pts[point_index] -= 1
+
+                        find_move(remaining_dice[:die_index] + remaining_dice[die_index+1:], current_move + [start_point] if start_point != 'P' else current_move + ['P'])
+                    except:
+                        pass
+
+        find_move(dice, [])
+        return moves
+
+
+    possible_moves_high_low = find_possible_moves('H')
+    possible_moves_low_high = find_possible_moves('L')
+
+    # Prioritize playing both dice if possible
+    if possible_moves_high_low:
+        # Filter out Pass moves if other valid moves are available
+        valid_moves = [move for move in possible_moves_high_low if not all(p == 'P' for p in move.split(':')[1].split(','))]
+        if valid_moves:
+            return random.choice(valid_moves) #randomly select one of the legal moves
+        else:
+            return 'H:P,P'
+    elif possible_moves_low_high:
+        # Filter out Pass moves if other valid moves are available
+        valid_moves = [move for move in possible_moves_low_high if not all(p == 'P' for p in move.split(':')[1].split(','))]
+        if valid_moves:
+            return random.choice(valid_moves)  #randomly select one of the legal moves
+        else:
+            return 'L:P,P'
+    else:
+        return 'H:P,P'
+```

@@ -1,0 +1,329 @@
+
+import itertools
+import random
+
+def policy(state):
+    # ----------------------------
+    # 1. Decode state
+    # ----------------------------
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+    dice = state['dice']
+    
+    # ----------------------------
+    # 2. Helper: absolute index to token
+    # ----------------------------
+    def idx_to_token(i):
+        if i == -1:
+            return 'B'
+        elif i == -2:
+            return 'P'
+        else:
+            return f'A{i}'
+    
+    def token_to_idx(t):
+        if t == 'B':
+            return -1
+        elif t == 'P':
+            return -2
+        else:
+            return int(t[1:])
+    
+    # ----------------------------
+    # 3. Generate legal moves
+    # ----------------------------
+    # We'll generate moves as (order, from1_idx, from2_idx)
+    # order: 'H' means first move uses higher die
+    # from_idx: -1 = bar, -2 = pass, 0..23 = point
+    
+    # Sort dice
+    if len(dice) == 2:
+        die1, die2 = dice
+        higher = max(die1, die2)
+        lower = min(die1, die2)
+    elif len(dice) == 1:
+        higher = dice[0]
+        lower = dice[0]
+    else:
+        higher = lower = 0
+    
+    # Helper: can move from src with die?
+    def can_move_from(src_idx, die, first_move=True):
+        if src_idx == -2:  # Pass
+            return False  # We only pass if forced
+        if src_idx == -1:  # Bar
+            if my_bar == 0:
+                return False
+            # Entering: dest = die-1 (since opp home board is 0..5)
+            dest = die - 1
+            # Blocked if opp_pts[dest] >= 2
+            if opp_pts[dest] >= 2:
+                return False
+            return True
+        else:
+            # Normal point
+            if my_pts[src_idx] == 0:
+                return False
+            dest = src_idx - die  # We move from 23 to 0, so decrease index
+            if dest < 0:
+                # Bearing off possible only if all in home board
+                if all(my_pts[i] == 0 for i in range(0, 18)):
+                    # Can bear off if exact roll or no smaller point occupied
+                    # Standard rule: can bear off if die == src_idx+1 or all points lower are empty
+                    # Actually: dest < 0 means we can bear off if all checkers are in home (indices 18..23)
+                    # And if die > src_idx+1, must have no checkers on higher points.
+                    # Simplified: allow if src_idx in home (18..23) and no checker outside home
+                    home = list(range(18, 24))
+                    if any(my_pts[i] > 0 for i in range(0, 18)):
+                        return False
+                    # Check if die is larger than needed and there are higher points occupied
+                    if die > src_idx - 17:
+                        # Must have no checkers on higher points than src_idx in home
+                        if any(my_pts[i] > 0 for i in range(src_idx + 1, 24)):
+                            return False
+                    return True
+                else:
+                    return False
+            else:
+                # Normal move to dest point
+                if opp_pts[dest] >= 2:
+                    return False
+                return True
+    
+    # Helper: apply move and return new temp state
+    def apply_move(temp_state, src_idx, die):
+        my_pts2 = temp_state['my_pts'][:]
+        opp_pts2 = temp_state['opp_pts'][:]
+        my_bar2 = temp_state['my_bar']
+        opp_bar2 = temp_state['opp_bar']
+        my_off2 = temp_state['my_off']
+        
+        if src_idx == -1:  # Bar
+            my_bar2 -= 1
+            dest = die - 1
+            # Hit if opp has exactly 1 there
+            if opp_pts2[dest] == 1:
+                opp_pts2[dest] = 0
+                opp_bar2 += 1
+            my_pts2[dest] += 1
+        elif src_idx >= 0:
+            my_pts2[src_idx] -= 1
+            dest = src_idx - die
+            if dest < 0:  # Bear off
+                my_off2 += 1
+            else:
+                # Hit if opp has exactly 1 there
+                if opp_pts2[dest] == 1:
+                    opp_pts2[dest] = 0
+                    opp_bar2 += 1
+                my_pts2[dest] += 1
+        # else pass: do nothing
+        return {
+            'my_pts': my_pts2,
+            'opp_pts': opp_pts2,
+            'my_bar': my_bar2,
+            'opp_bar': opp_bar2,
+            'my_off': my_off2,
+            'opp_off': temp_state['opp_off'],
+            'dice': temp_state['dice']
+        }
+    
+    # ----------------------------
+    # 4. Generate all legal (order, from1, from2)
+    # ----------------------------
+    # We brute-force combinations of up to two moves
+    possible_moves = []
+    
+    # First: must move bar if any
+    if my_bar > 0:
+        # One die moves
+        if len(dice) == 1:
+            die = dice[0]
+            if can_move_from(-1, die):
+                possible_moves.append(('H', -1, -2))
+        else:
+            # Two dice: try both orders
+            # Order H: higher then lower
+            if can_move_from(-1, higher):
+                temp = apply_move({
+                    'my_pts': my_pts[:],
+                    'opp_pts': opp_pts[:],
+                    'my_bar': my_bar,
+                    'opp_bar': opp_bar,
+                    'my_off': my_off,
+                    'opp_off': opp_off,
+                    'dice': dice
+                }, -1, higher)
+                # Second move from bar again if still bar, else from points
+                if temp['my_bar'] > 0:
+                    if can_move_from(-1, lower):
+                        possible_moves.append(('H', -1, -1))
+                else:
+                    # Try from any point for second die
+                    for src2 in range(24):
+                        if can_move_from(src2, lower):
+                            possible_moves.append(('H', -1, src2))
+                    # Also pass if no second move
+                    possible_moves.append(('H', -1, -2))
+            # Order L: lower then higher
+            if can_move_from(-1, lower):
+                temp = apply_move({
+                    'my_pts': my_pts[:],
+                    'opp_pts': opp_pts[:],
+                    'my_bar': my_bar,
+                    'opp_bar': opp_bar,
+                    'my_off': my_off,
+                    'opp_off': opp_off,
+                    'dice': dice
+                }, -1, lower)
+                if temp['my_bar'] > 0:
+                    if can_move_from(-1, higher):
+                        possible_moves.append(('L', -1, -1))
+                else:
+                    for src2 in range(24):
+                        if can_move_from(src2, higher):
+                            possible_moves.append(('L', -1, src2))
+                    possible_moves.append(('L', -1, -2))
+    else:
+        # No bar, move checkers
+        if len(dice) == 1:
+            die = dice[0]
+            for src1 in range(24):
+                if can_move_from(src1, die):
+                    possible_moves.append(('H', src1, -2))
+        else:
+            # Two dice, try all combos
+            # Try H order
+            for src1 in range(24):
+                if can_move_from(src1, higher):
+                    temp = apply_move({
+                        'my_pts': my_pts[:],
+                        'opp_pts': opp_pts[:],
+                        'my_bar': my_bar,
+                        'opp_bar': opp_bar,
+                        'my_off': my_off,
+                        'opp_off': opp_off,
+                        'dice': dice
+                    }, src1, higher)
+                    # Second move
+                    for src2 in range(24):
+                        if can_move_from(src2, lower, first_move=False):
+                            possible_moves.append(('H', src1, src2))
+                    # Also allow second pass if no move
+                    possible_moves.append(('H', src1, -2))
+            # Try L order
+            for src1 in range(24):
+                if can_move_from(src1, lower):
+                    temp = apply_move({
+                        'my_pts': my_pts[:],
+                        'opp_pts': opp_pts[:],
+                        'my_bar': my_bar,
+                        'opp_bar': opp_bar,
+                        'my_off': my_off,
+                        'opp_off': opp_off,
+                        'dice': dice
+                    }, src1, lower)
+                    for src2 in range(24):
+                        if can_move_from(src2, higher, first_move=False):
+                            possible_moves.append(('L', src1, src2))
+                    possible_moves.append(('L', src1, -2))
+    
+    # If no moves found, must pass
+    if not possible_moves:
+        return 'H:P,P'
+    
+    # ----------------------------
+    # 5. Score each move
+    # ----------------------------
+    def score_move(order, src1_idx, src2_idx):
+        # Simulate moves
+        temp_state = {
+            'my_pts': my_pts[:],
+            'opp_pts': opp_pts[:],
+            'my_bar': my_bar,
+            'opp_bar': opp_bar,
+            'my_off': my_off,
+            'opp_off': opp_off,
+            'dice': dice
+        }
+        die1 = higher if order == 'H' else lower
+        die2 = lower if order == 'H' else higher
+        
+        hits = 0
+        new_blots = 0
+        points_made = 0
+        moved_into_home = 0
+        borne_off = 0
+        move_distance = 0
+        
+        # First move
+        if src1_idx != -2:
+            src = src1_idx
+            die = die1
+            # Check if moving creates a blot (leaving single checker)
+            if src != -1 and temp_state['my_pts'][src] == 1:
+                new_blots += 1
+            # Apply
+            dest = src - die if src >= 0 else die - 1
+            if dest < 0:
+                borne_off += 1
+            else:
+                move_distance += die
+                if dest >= 18:
+                    moved_into_home += 1
+                # Check if hitting
+                if temp_state['opp_pts'][dest] == 1:
+                    hits += 1
+                # Check if making a point (2 checkers now)
+                if temp_state['my_pts'][dest] == 1 and src != -1:
+                    points_made += 1
+            temp_state = apply_move(temp_state, src, die)
+        
+        # Second move
+        if src2_idx != -2:
+            src = src2_idx
+            die = die2
+            if src != -1 and temp_state['my_pts'][src] == 1:
+                new_blots += 1
+            dest = src - die if src >= 0 else die - 1
+            if dest < 0:
+                borne_off += 1
+            else:
+                move_distance += die
+                if dest >= 18:
+                    moved_into_home += 1
+                if temp_state['opp_pts'][dest] == 1:
+                    hits += 1
+                if temp_state['my_pts'][dest] == 1 and src != -1:
+                    points_made += 1
+        
+        # Compute score
+        total_score = (
+            hits * 10
+            - new_blots * 5
+            + points_made * 2
+            + moved_into_home * 1
+            + borne_off * 3
+            + move_distance * 0.1
+        )
+        return total_score
+    
+    scored = []
+    for order, s1, s2 in possible_moves:
+        s = score_move(order, s1, s2)
+        scored.append((s, order, s1, s2))
+    
+    # Choose best
+    best = max(scored, key=lambda x: x[0])
+    _, order, s1, s2 = best
+    
+    # Convert to token
+    t1 = idx_to_token(s1)
+    t2 = idx_to_token(s2)
+    
+    return f'{order}:{t1},{t2}'
+

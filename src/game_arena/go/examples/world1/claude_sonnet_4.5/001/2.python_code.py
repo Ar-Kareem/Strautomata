@@ -1,0 +1,155 @@
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    import random
+    
+    BOARD_SIZE = 19
+    me_set = set(me)
+    opp_set = set(opponent)
+    occupied = me_set | opp_set
+    
+    def is_valid(row, col):
+        return 1 <= row <= BOARD_SIZE and 1 <= col <= BOARD_SIZE
+    
+    def get_neighbors(row, col):
+        neighbors = []
+        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nr, nc = row + dr, col + dc
+            if is_valid(nr, nc):
+                neighbors.append((nr, nc))
+        return neighbors
+    
+    def count_liberties(stones, all_occupied):
+        liberties = set()
+        for stone in stones:
+            for neighbor in get_neighbors(stone[0], stone[1]):
+                if neighbor not in all_occupied:
+                    liberties.add(neighbor)
+        return len(liberties)
+    
+    def get_group(stone, stone_set):
+        group = set()
+        to_check = [stone]
+        while to_check:
+            current = to_check.pop()
+            if current in group:
+                continue
+            group.add(current)
+            for neighbor in get_neighbors(current[0], current[1]):
+                if neighbor in stone_set and neighbor not in group:
+                    to_check.append(neighbor)
+        return group
+    
+    def would_capture(move, target_set, all_occupied):
+        captured = []
+        test_occupied = all_occupied | {move}
+        for neighbor in get_neighbors(move[0], move[1]):
+            if neighbor in target_set:
+                group = get_group(neighbor, target_set)
+                if count_liberties(group, test_occupied) == 0:
+                    captured.extend(group)
+        return captured
+    
+    def is_legal_move(move):
+        if move in occupied:
+            return False
+        
+        # Check if move would capture opponent stones
+        if would_capture(move, opp_set, occupied):
+            return True
+        
+        # Check if move would be suicide
+        test_occupied = occupied | {move}
+        test_me = me_set | {move}
+        group = get_group(move, test_me)
+        if count_liberties(group, test_occupied) == 0:
+            return False
+        
+        return True
+    
+    def evaluate_move(move):
+        score = 0.0
+        row, col = move
+        
+        # Prefer center influence early game
+        if len(occupied) < 30:
+            center_dist = abs(row - 10) + abs(col - 10)
+            score -= center_dist * 0.1
+        
+        # Check for captures
+        captured = would_capture(move, opp_set, occupied)
+        score += len(captured) * 15
+        
+        # Check for saving our stones in atari
+        for neighbor in get_neighbors(row, col):
+            if neighbor in me_set:
+                group = get_group(neighbor, me_set)
+                libs = count_liberties(group, occupied)
+                if libs == 1:
+                    score += 20  # Save stones in atari
+                elif libs == 2:
+                    score += 5
+        
+        # Check for attacking opponent weak groups
+        for neighbor in get_neighbors(row, col):
+            if neighbor in opp_set:
+                group = get_group(neighbor, opp_set)
+                libs = count_liberties(group, occupied | {move})
+                if libs == 1:
+                    score += 12  # Put opponent in atari
+                elif libs == 2:
+                    score += 4
+        
+        # Count liberties this move would have
+        test_occupied = occupied | {move}
+        test_me = me_set | {move}
+        group = get_group(move, test_me)
+        my_libs = count_liberties(group, test_occupied)
+        score += my_libs * 0.5
+        
+        # Proximity to own stones (not too close, not too far)
+        min_dist_me = float('inf')
+        for stone in me_set:
+            dist = abs(row - stone[0]) + abs(col - stone[1])
+            min_dist_me = min(min_dist_me, dist)
+        
+        if min_dist_me == float('inf'):
+            pass  # First move
+        elif 2 <= min_dist_me <= 4:
+            score += 3
+        elif min_dist_me == 1:
+            score += 1
+        
+        return score
+    
+    # Opening book moves
+    opening_moves = [
+        (4, 4), (16, 16), (4, 16), (16, 4),  # 4-4 points
+        (4, 3), (3, 4), (16, 3), (3, 16),    # 3-4 points
+        (10, 10),  # Tengen
+    ]
+    
+    if len(occupied) < 8:
+        for move in opening_moves:
+            if is_legal_move(move):
+                return move
+    
+    # Generate and evaluate all legal moves
+    legal_moves = []
+    for row in range(1, BOARD_SIZE + 1):
+        for col in range(1, BOARD_SIZE + 1):
+            move = (row, col)
+            if is_legal_move(move):
+                score = evaluate_move(move)
+                legal_moves.append((score, move))
+    
+    if not legal_moves:
+        return (0, 0)  # Pass
+    
+    # Sort by score and pick best move
+    legal_moves.sort(reverse=True)
+    
+    # Add some randomness among top moves to avoid predictability
+    top_n = min(5, len(legal_moves))
+    best_moves = legal_moves[:top_n]
+    
+    return best_moves[0][1]

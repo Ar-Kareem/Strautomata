@@ -1,0 +1,158 @@
+
+import numpy as np
+from collections import defaultdict
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    # Initialize board state
+    board = np.zeros((21, 21))  # 1-indexed with padding
+    for r, c in me:
+        board[r, c] = 1
+    for r, c in opponent:
+        board[r, c] = 2
+    
+    # Helper functions
+    def get_neighbors(r, c):
+        return [(r-1, c), (r+1, c), (r, c-1), (r, c+1)]
+    
+    def is_on_board(r, c):
+        return 1 <= r <= 19 and 1 <= c <= 19
+    
+    def get_group(r, c):
+        """Get connected group and its liberties"""
+        if not is_on_board(r, c) or board[r, c] == 0:
+            return set(), set()
+        
+        color = board[r, c]
+        group = set()
+        liberties = set()
+        stack = [(r, c)]
+        visited = set()
+        
+        while stack:
+            pos = stack.pop()
+            if pos in visited:
+                continue
+            visited.add(pos)
+            
+            pr, pc = pos
+            if not is_on_board(pr, pc):
+                continue
+                
+            if board[pr, pc] == color:
+                group.add(pos)
+                for nr, nc in get_neighbors(pr, pc):
+                    if (nr, nc) not in visited:
+                        stack.append((nr, nc))
+            elif board[pr, pc] == 0:
+                liberties.add(pos)
+                
+        return group, liberties
+    
+    def would_be_capture(r, c, player_color):
+        """Check if placing a stone would capture opponent"""
+        board[r, c] = player_color
+        captured = False
+        
+        opponent_color = 2 if player_color == 1 else 1
+        for nr, nc in get_neighbors(r, c):
+            if is_on_board(nr, nc) and board[nr, nc] == opponent_color:
+                group, liberties = get_group(nr, nc)
+                if len(liberties) == 0:
+                    captured = True
+                    break
+                    
+        board[r, c] = 0
+        return captured
+    
+    def is_legal_move(r, c):
+        """Check if move is legal (not occupied, no suicide)"""
+        if not is_on_board(r, c) or board[r, c] != 0:
+            return False
+            
+        # Temporarily place stone
+        board[r, c] = 1
+        
+        # Check if own group has liberties
+        group, liberties = get_group(r, c)
+        legal = len(liberties) > 0
+        
+        # Check if move captures opponent (makes move legal even if self-atari)
+        if not legal:
+            for nr, nc in get_neighbors(r, c):
+                if is_on_board(nr, nc) and board[nr, nc] == 2:
+                    opp_group, opp_liberties = get_group(nr, nc)
+                    if len(opp_liberties) == 1:  # About to capture
+                        legal = True
+                        break
+                        
+        board[r, c] = 0
+        return legal
+    
+    # Territory/influence map
+    influence = np.zeros((20, 20))
+    
+    # Add influence from both players
+    for r, c in me:
+        for dr in range(-3, 4):
+            for dc in range(-3, 4):
+                nr, nc = r + dr, c + dc
+                if is_on_board(nr, nc):
+                    dist = abs(dr) + abs(dc)
+                    if dist > 0:
+                        influence[nr, nc] += 1.0 / (dist * dist + 1)
+                        
+    for r, c in opponent:
+        for dr in range(-3, 4):
+            for dc in range(-3, 4):
+                nr, nc = r + dr, c + dc
+                if is_on_board(nr, nc):
+                    dist = abs(dr) + abs(dc)
+                    if dist > 0:
+                        influence[nr, nc] -= 1.0 / (dist * dist + 1)
+    
+    # Priority move candidates
+    candidates = []
+    
+    # First check for captures
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if board[r, c] == 0 and is_legal_move(r, c):
+                if would_be_capture(r, c, 1):
+                    return ((r, c), memory)
+    
+    # Then consider strategic positions
+    # Corner approach moves (4-4 points)
+    corners = [(4, 4), (4, 16), (16, 4), (16, 16)]
+    for r, c in corners:
+        if board[r, c] == 0 and is_legal_move(r, c):
+            candidates.append((influence[r, c] + 2.0, r, c))  # Bonus for corners
+    
+    # Star points
+    star_points = [(4, 4), (4, 10), (4, 16), (10, 4), (10, 10), (10, 16), (16, 4), (16, 10), (16, 16)]
+    for r, c in star_points:
+        if board[r, c] == 0 and is_legal_move(r, c):
+            candidates.append((influence[r, c] + 1.0, r, c))  # Bonus for star points
+    
+    # All empty intersections near existing stones
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if board[r, c] == 0 and is_legal_move(r, c):
+                # Only consider moves near existing stones for efficiency
+                nearby = False
+                for nr, nc in get_neighbors(r, c):
+                    if is_on_board(nr, nc) and board[nr, nc] != 0:
+                        nearby = True
+                        break
+                if nearby:
+                    candidates.append((influence[r, c], r, c))
+    
+    # Sort by influence score (descending)
+    candidates.sort(reverse=True)
+    
+    # Return best legal move or pass if none found
+    for _, r, c in candidates[:20]:  # Check top candidates for efficiency
+        if is_legal_move(r, c):
+            return ((r, c), memory)
+    
+    # Fallback: pass
+    return ((0, 0), memory)

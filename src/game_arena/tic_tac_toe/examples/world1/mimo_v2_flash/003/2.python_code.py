@@ -1,0 +1,156 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Tic Tac Toe Policy.
+    Strategy:
+    1. Win if possible.
+    2. Block opponent from winning.
+    3. Play Center if empty and relevant.
+    4. Play Corner if taking center is not applicable.
+    5. Block specific traps (e.g., opponent Center + Side).
+    6. Pick any empty cell (safety net).
+    """
+    
+    # Helper to get 8 lines (3 rows, 3 cols, 2 diagonals)
+    def get_lines(b):
+        lines = []
+        # Rows and Cols
+        for i in range(3):
+            lines.append([b[i][0], b[i][1], b[i][2]]) # Row i
+            lines.append([b[0][i], b[1][i], b[2][i]]) # Col i
+        # Diagonals
+        lines.append([b[0][0], b[1][1], b[2][2]])
+        lines.append([b[0][2], b[1][1], b[2][0]])
+        return lines
+
+    # Helper to check if a line has N of a specific value and 1 empty
+    def check_line(lines, val, count):
+        for line in lines:
+            if line.count(val) == count and line.count(0) == 3 - count:
+                return line
+        return None
+
+    # Helper to find coordinates in a line
+    def find_pos_in_line(line, target_val):
+        for r in range(3):
+            for c in range(3):
+                if board[r][c] == target_val:
+                    # Check if this cell matches the line pattern
+                    # We need to verify the specific cell coordinate belongs to this line
+                    # It is safer to reconstruct the specific coordinates based on the line type
+                    pass 
+        # Instead, let's use a direct coordinate check on the board
+        
+        # We know the line pattern. We search the board for the coordinate that has the target_val
+        # and is part of the set of cells in this line.
+        # But it's faster to just check what we need: the empty spot in the winning line.
+        # Since we have the line object, we know the sequence of values.
+        # We need to map that sequence back to coordinates.
+        # Actually, simpler: return the empty cell in that line.
+        # We need to find which coordinate in the 3x3 corresponds to the 0 in the line.
+        
+        # Let's map coordinates to line index logic
+        # Rows: r, 0,1,2 -> (r,0), (r,1), (r,2)
+        # Cols: c, 0,1,2 -> (0,c), (1,c), (2,c)
+        # Diag 1: (0,0), (1,1), (2,2)
+        # Diag 2: (0,2), (1,1), (2,0)
+        
+        # We will identify the empty spot directly in the main logic below
+        pass
+
+    # 1. Identify Legal Moves and Map Coordinates to Lines
+    # Pre-calculate lines to check for Win/Block
+    lines = get_lines(board)
+    
+    # Check for Immediate Win (My val is 1)
+    # If a line has two 1s and one 0, the 0 is the winning move
+    for i, line in enumerate(lines):
+        if line.count(1) == 2 and line.count(0) == 1:
+            # Find the empty cell in this line
+            idx = line.index(0)
+            if i < 3: # Rows 0, 1, 2
+                return (i, idx)
+            elif i < 6: # Cols 0, 1, 2
+                return (idx, i - 3)
+            elif i == 6: # Main Diag
+                return (idx, idx)
+            else: # Anti Diag
+                return (idx, 2 - idx)
+
+    # Check for Block (Opponent val is -1)
+    for i, line in enumerate(lines):
+        if line.count(-1) == 2 and line.count(0) == 1:
+            idx = line.index(0)
+            if i < 3: return (i, idx)
+            elif i < 6: return (idx, i - 3)
+            elif i == 6: return (idx, idx)
+            else: return (idx, 2 - idx)
+
+    # 2. Strategic Opening / Standard Play
+    
+    # Get empty cells
+    empties = [(r, c) for r in range(3) for c in range(3) if board[r][c] == 0]
+    
+    # If board is empty, take a corner (e.g., top-left)
+    if len(empties) == 9:
+        return (0, 0)
+        
+    # If I have 0 moves (first move by me), check opponent state
+    my_moves = sum(row.count(1) for row in board)
+    opp_moves = sum(row.count(-1) for row in board)
+    
+    # If I am playing first (board had 0s, now I play)
+    # Logic: First move usually handled by "board is empty" check above if I'm first in the game.
+    # But if the arena framework calls policy with an empty board, we return (0,0).
+    
+    # If opponent played first:
+    if my_moves == 0 and opp_moves == 1:
+        # Find opponent position
+        for r in range(3):
+            for c in range(3):
+                if board[r][c] == -1:
+                    # If Opponent took Center, take a Corner
+                    if (r, c) == (1, 1):
+                        return (0, 0)
+                    # If Opponent took Corner, take Center
+                    if (r, c) in [(0,0), (0,2), (2,0), (2,2)]:
+                        return (1, 1)
+                    # If Opponent took Side, take Center
+                    if (r, c) in [(0,1), (1,0), (1,2), (2,1)]:
+                        return (1, 1)
+
+    # 3. Trap Avoidance / Fork Block
+    # Scenario: I took Corner (0,0). Opponent took Center (1,1).
+    # I must take the opposite corner (2,2) to avoid a fork.
+    # Or if I took (0,0) and Opponent took Side, I take Center (handled above).
+    # Let's check if I have one corner and opponent has center.
+    # Then take opposite corner.
+    if my_moves == 1 and opp_moves == 1:
+        my_pos = None
+        opp_pos = None
+        for r in range(3):
+            for c in range(3):
+                if board[r][c] == 1: my_pos = (r, c)
+                if board[r][c] == -1: opp_pos = (r, c)
+        
+        if my_pos in [(0,0), (0,2), (2,0), (2,2)] and opp_pos == (1,1):
+            # Return opposite corner
+            return (2 - my_pos[0], 2 - my_pos[1])
+
+    # 4. Play available corners (good strategy)
+    corners = [(0, 0), (0, 2), (2, 0), (2, 2)]
+    for corner in corners:
+        if corner in empties:
+            return corner
+
+    # 5. Play available sides
+    sides = [(0, 1), (1, 0), (1, 2), (2, 1)]
+    for side in sides:
+        if side in empties:
+            return side
+
+    # 6. Fallback (should be center if somehow missed, or any empty)
+    if (1, 1) in empties:
+        return (1, 1)
+        
+    return empties[0]

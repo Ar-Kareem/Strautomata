@@ -1,0 +1,110 @@
+
+import math
+
+def simulate_move(current, opponent, move):
+    seeds = current[move]
+    new_current = current[:]
+    new_opponent = opponent[:]
+    new_current[move] = 0
+    index = move
+    count = seeds
+    last_house = None
+    last_house_was_empty = False
+    
+    while count > 0:
+        index = (index + 1) % 14
+        if index == 13:
+            continue
+        if count == 1 and index < 7 and index < 6:
+            last_house = index
+            if new_current[index] == 0:
+                last_house_was_empty = True
+        if index < 7:
+            new_current[index] += 1
+        else:
+            new_opponent[index-7] += 1
+        count -= 1
+    
+    if last_house is not None and last_house_was_empty:
+        opposite = 5 - last_house
+        if new_opponent[opposite] > 0:
+            new_current[6] += 1 + new_opponent[opposite]
+            new_current[last_house] = 0
+            new_opponent[opposite] = 0
+    
+    extra_move = (index == 6)
+    return new_current, new_opponent, extra_move
+
+def game_over(current, opponent):
+    return (sum(current[0:6]) == 0) or (sum(opponent[0:6]) == 0)
+
+def evaluate(current, opponent):
+    if game_over(current, opponent):
+        current_copy = current[:]
+        opponent_copy = opponent[:]
+        if sum(current_copy[0:6]) == 0 and sum(opponent_copy[0:6]) == 0:
+            return current_copy[6] - opponent_copy[6]
+        elif sum(current_copy[0:6]) == 0:
+            opponent_copy[6] += sum(opponent_copy[0:6])
+            return current_copy[6] - opponent_copy[6]
+        else:
+            current_copy[6] += sum(current_copy[0:6])
+            return current_copy[6] - opponent_copy[6]
+    else:
+        return (current[6] - opponent[6]) + 0.1 * (sum(current[0:6]) - sum(opponent[0:6]))
+
+def minimax(current, opponent, depth, alpha, beta, maximizing):
+    if depth == 0 or game_over(current, opponent):
+        return evaluate(current, opponent)
+    
+    moves = [i for i in range(6) if current[i] > 0]
+    if len(moves) == 0:
+        return evaluate(current, opponent)
+    
+    if maximizing:
+        best = -math.inf
+        for move in moves:
+            new_current, new_opponent, extra = simulate_move(current, opponent, move)
+            if extra:
+                value = minimax(new_current, new_opponent, depth-1, alpha, beta, True)
+            else:
+                value = minimax(new_opponent, new_current, depth-1, alpha, beta, False)
+            best = max(best, value)
+            alpha = max(alpha, best)
+            if beta <= alpha:
+                break
+        return best
+    else:
+        best = math.inf
+        for move in moves:
+            new_current, new_opponent, extra = simulate_move(current, opponent, move)
+            if extra:
+                value = minimax(new_current, new_opponent, depth-1, alpha, beta, False)
+            else:
+                value = minimax(new_opponent, new_current, depth-1, alpha, beta, True)
+            best = min(best, value)
+            beta = min(beta, best)
+            if beta <= alpha:
+                break
+        return best
+
+def policy(you, opponent):
+    DEPTH = 3
+    best_move = None
+    best_value = -math.inf
+    alpha = -math.inf
+    beta = math.inf
+    
+    moves = [i for i in range(6) if you[i] > 0]
+    for move in moves:
+        new_you, new_opponent, extra = simulate_move(you, opponent, move)
+        if extra:
+            value = minimax(new_you, new_opponent, DEPTH-1, alpha, beta, True)
+        else:
+            value = minimax(new_opponent, new_you, DEPTH-1, alpha, beta, False)
+        if value > best_value:
+            best_value = value
+            best_move = move
+        alpha = max(alpha, best_value)
+    
+    return best_move

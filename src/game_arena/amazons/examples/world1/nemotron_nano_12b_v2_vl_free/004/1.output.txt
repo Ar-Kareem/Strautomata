@@ -1,0 +1,122 @@
+To solve this problem, we need to create a policy function for the game Amazons that selects a legal move and arrow shot for a given board state. The solution must ensure that the move is legal, adhering to the game's rules. The policy should prioritize moves that maximize the opponent's mobility constraints.
+
+### Approach
+1. **Identify Valid Moves**: For each of your amazons, generate all possible queen-like moves. A valid move is a straight line (orthogonal or diagonal) to an empty square without any obstructions.
+2. **Generate Arrow Shots**: After moving the amazon, determine all valid arrow shots in all 8 directions from the new position. The arrow must land on an empty square and its path must be unobstructed.
+3. **Evaluate Candidates**: For each valid move and arrow, evaluate the candidate based on the length of the arrow path and the mobility of the amazon in its new position. The mobility is the number of queen moves available from the new position.
+4. **Select Best Move**: Prioritize candidates with the longest arrow path and, in case of ties, the one with the highest mobility to ensure a strong offensive stance.
+
+### Solution Code
+```python
+import numpy as np
+
+def policy(board):
+    my_amazons = list(np.argwhere(board == 1))
+    if not my_amazons:
+        return ""
+    
+    directions = [(0, 1), (0, -1), (1, 0), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1)]
+    candidates = []
+    
+    for from_pos in my_amazons:
+        from_r, from_c = from_pos
+        
+        for move_dr, move_dc in directions:
+            step = 1
+            while True:
+                newr = from_r + move_dr * step
+                newc = from_c + move_dc * step
+                
+                if newr < 0 or newr >= 6 or newc < 0 or newc >= 6:
+                    break
+                if board[newr, newc] != 0:
+                    break
+                
+                # Generate new board state after moving the amazon
+                temp_board = board.copy()
+                temp_board[from_r, from_c] = 0
+                temp_board[newr, newc] = 1
+                
+                moved_pos = (newr, newc)
+                
+                # Generate all possible arrows
+                for arrow_dr, arrow_dc in directions:
+                    arrow_positions = []
+                    step_arrow = 1
+                    while True:
+                        ar = newr + arrow_dr * step_arrow
+                        ac = newc + arrow_dc * step_arrow
+                        if not (0 <= ar < 6 and 0 <= ac < 6):
+                            break
+                        if temp_board[ar, ac] != 0:
+                            break
+                        arrow_positions.append((ar, ac))
+                        step_arrow += 1
+                    
+                    # If arrows are possible in this direction
+                    if arrow_positions:
+                        # Move through the arrow positions in reverse order to get the longest path
+                        arrow_positions_rev = arrow_positions[::-1]
+                        ar, ac = arrow_positions_rev[0]
+                        move_str = f"{from_r},{from_c}:{new_r},{newc}:{ar},{ac}"
+                        candidates.append(move_str)
+                
+                # Exit loop after finding the first move in a direction
+                break
+    
+    if not candidates:
+        return "0,0:0,1:0,0"  # Default fallback (should not occur)
+    
+    # Select candidate with longest arrow and highest mobility
+    best_candidate = None
+    best_arrow_length = -1
+    best_candidate_move_str = None
+    
+    for move_str in candidates:
+        from_indices = move_str.split(':')
+        new_board = board.copy()
+        from_r_shot = int(from_indices[0])
+        from_c_shot = int(from_indices[1])
+        new_r = int(from_indices[2])
+        new_c = int(from_indices[3])
+        ar = int(from_indices[4])
+        ac = int(from_indices[5])
+        
+        # Simulate the new board with arrow shot
+        new_board = board.copy()
+        new_board[from_r_shot, from_c_shot] = 0
+        new_board[new_r, new_c] = 1
+        new_board[ar, ac] = -1  # Block with arrow
+        
+        # Calculate mobility after arrow is placed
+        mobility = 0
+        for arrow_dir in directions:
+            leg = 0
+            ar_check = new_r
+            ac_check = new_c
+            while True:
+                ar_check += arrow_dir[0]
+                ac_check += arrow_dir[1]
+                if not (0 <= ar_check < 6 and 0 <= ac_check < 6) or new_board[ar_check, ac_check] != 0:
+                    break
+                leg += 1
+            mobility += leg
+        
+        # Calculate arrow length
+        ar_start_r = ar - arrow_dr * len(arrow_positions_rev)
+        ar_start_c = ac - arrow_dc * len(arrow_positions_rev)
+        arrow_length = len(arrow_positions)
+        
+        if arrow_length > best_arrow_length:
+            best_arrow_length = arrow_length
+            best_candidate_move_str = move_str
+        elif arrow_length == best_arrow_length:
+            if mobility > best_mobility:
+                best_mobility = mobility
+                best_candidate_move_str = move_str
+    
+    return best_candidate_move_str
+```
+
+### Explanation
+The `policy` function generates all valid moves for the current amazons, ensuring each move is followed by a legal arrow shot. It then selects the best move based on a heuristic that prioritizes the longest arrow length to maximize blocking effects, combined with the mobility of the amazon after moving. This balance of long-range blocking and flexibility ensures a strategic advantage in the game.

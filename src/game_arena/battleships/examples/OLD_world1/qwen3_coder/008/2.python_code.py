@@ -1,0 +1,133 @@
+
+import numpy as np
+from collections import deque
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Implements a Battleship targeting policy using a combination of
+    search patterns for unsunk ships and targeted attacks around hits.
+    """
+    # Convert to numpy array for easier handling
+    grid = np.array(board)
+    
+    # Find all hit positions
+    hits = np.where(grid == 1)
+    hit_positions = list(zip(hits[0], hits[1]))
+    
+    # Find all unsunk hits (hits that are part of ships not yet sunk)
+    unsunk_hits = []
+    for r, c in hit_positions:
+        # Check if this hit is part of a sunk ship
+        # A hit is part of a sunk ship if it's connected to enough other hits
+        # to form a complete ship (but we don't know ship orientations)
+        # For now, we'll consider all hits as unsunk unless isolated
+        unsunk_hits.append((r, c))
+    
+    # If we have unsunk hits, target adjacent cells to try to sink them
+    if unsunk_hits:
+        # Try to determine ship orientations from multiple hits
+        potential_targets = set()
+        
+        for r, c in unsunk_hits:
+            # Check horizontal and vertical lines of hits
+            # Look for horizontal alignments
+            hr, hc = r, c
+            while hc > 0 and grid[hr, hc-1] == 1:
+                hc -= 1
+            h_start = hc
+            hc = c
+            while hc < 9 and grid[hr, hc+1] == 1:
+                hc += 1
+            h_end = hc
+            
+            # If we found a horizontal line of hits
+            if h_end - h_start > 0:
+                # Target ends of the line
+                if h_start > 0 and grid[hr, h_start-1] == 0:
+                    potential_targets.add((hr, h_start-1))
+                if h_end < 9 and grid[hr, h_end+1] == 0:
+                    potential_targets.add((hr, h_end+1))
+            
+            # Look for vertical alignments
+            vr, vc = r, c
+            while vr > 0 and grid[vr-1, vc] == 1:
+                vr -= 1
+            v_start = vr
+            vr = r
+            while vr < 9 and grid[vr+1, vc] == 1:
+                vr += 1
+            v_end = vr
+            
+            # If we found a vertical line of hits
+            if v_end - v_start > 0:
+                # Target ends of the line
+                if v_start > 0 and grid[v_start-1, vc] == 0:
+                    potential_targets.add((v_start-1, vc))
+                if v_end < 9 and grid[v_end+1, vc] == 0:
+                    potential_targets.add((v_end+1, vc))
+        
+        # If we have potential targets from ship alignment, pick one
+        if potential_targets:
+            # Prioritize targets that haven't been fired at
+            valid_targets = [(r, c) for r, c in potential_targets if grid[r, c] == 0]
+            if valid_targets:
+                return valid_targets[0]
+    
+    # If we have isolated hits, target adjacent cells
+    if unsunk_hits:
+        for r, c in unsunk_hits:
+            # Check adjacent cells (up, right, down, left)
+            for dr, dc in [(-1, 0), (0, 1), (1, 0), (0, -1)]:
+                nr, nc = r + dr, c + dc
+                # Check bounds and if not fired at
+                if 0 <= nr < 10 and 0 <= nc < 10 and grid[nr, nc] == 0:
+                    return (nr, nc)
+    
+    # If no strategic targets, use a checkerboard pattern for search
+    # This pattern is efficient for finding ships
+    # We'll also consider ship lengths to optimize search
+    
+    # Create a priority map - cells that are more likely to contain ships
+    priority = np.zeros((10, 10))
+    
+    # Prefer checkerboard pattern with offset based on ship sizes
+    for r in range(10):
+        for c in range(10):
+            if grid[r, c] == 0:  # Not fired at yet
+                # Prioritize checkerboard pattern
+                if (r + c) % 2 == 0:
+                    priority[r, c] += 1
+                    
+                # Boost priority for center areas (ships need space)
+                if 2 <= r <= 7 and 2 <= c <= 7:
+                    priority[r, c] += 0.5
+                    
+                # Boost priority near edges of misses (sometimes indicates ships)
+                for dr in [-1, 0, 1]:
+                    for dc in [-1, 0, 1]:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < 10 and 0 <= nc < 10 and grid[nr, nc] == -1:
+                            priority[r, c] += 0.1
+    
+    # Find the highest priority unfired cell
+    max_priority = -1
+    target = None
+    
+    for r in range(10):
+        for c in range(10):
+            if grid[r, c] == 0 and priority[r, c] > max_priority:
+                max_priority = priority[r, c]
+                target = (r, c)
+    
+    # If we found a target, return it
+    if target:
+        return target
+    
+    # Fallback: find any unfired cell
+    for r in range(10):
+        for c in range(10):
+            if grid[r, c] == 0:
+                return (r, c)
+    
+    # Should never reach here, but just in case
+    return (0, 0)

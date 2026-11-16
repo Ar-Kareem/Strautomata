@@ -1,0 +1,101 @@
+The strategy for this policy is to prioritize moves that hit opponent blots, bear off when possible, and choose the most aggressive or safe moves based on the current state of the game. The code handles re-entering checkers from the bar first, then focuses on hitting blots, bearing off, and finally moving to safe positions. The policy uses heuristics to determine the best move based on the dice rolls and board state, aiming to maximize the chances of winning while adhering to the rules of Backgammon.
+
+<code>
+```python
+import numpy as np
+
+def policy(state):
+    my_pts = np.array(state['my_pts'])
+    opp_pts = np.array(state['opp_pts'])
+    my_bar = state['my_bar']
+    dice = state['dice']
+    
+    # Handle bar first
+    if my_bar > 0:
+        valid_dies = []
+        for d in dice:
+            entry_point = 24 - d
+            if 0 <= entry_point < 24 and opp_pts[entry_point] < 2:
+                valid_dies.append(d)
+        if not valid_dies:
+            return "H:P,P"
+        if len(dice) == 1:
+            return "H:B,P"
+        else:
+            d1, d2 = sorted(dice)
+            valid = [d for d in dice if 0 <= (24 - d) < 24 and opp_pts[24 - d] < 2]
+            if len(valid) == 2:
+                return "H:B,B" if dice[0] > dice[1] else "L:B,B"
+            elif len(valid) == 1:
+                d = valid[0]
+                return "H:B,P" if d == d1 else "L:B,P"
+            else:
+                return "H:P,P"
+    else:
+        all_in_home = np.all(my_pts[:18] == 0)
+        if all_in_home:
+            borne_off = min(255, state['my_off'])
+            if borne_off == 255:
+                return "H:P,P"
+            possible = []
+            for i in range(24):
+                if my_pts[i] == 0:
+                    continue
+                for d in dice:
+                    if i <= d:
+                        possible.append((i, d))
+            if possible:
+                possible.sort(key=lambda x: (-x[1], -x[0]))
+                best = possible[0]
+                if len(dice) == 1:
+                    return f"H:A{best[0]},P"
+                else:
+                    d1, d2 = dice
+                    if best[1] == d1:
+                        return "H:A" + f"{best[0]}" + (",A" + f"{possible[1][0]}" if len(possible) > 1 else ",P")
+                    else:
+                        return "L:A" + f"{best[0]}" + (",A" + f"{possible[1][0]}" if len(possible) > 1 else ",P")
+            else:
+                return "H:P,P"
+        # Look for hitting moves
+        hitting = []
+        for i in range(24):
+            if my_pts[i] == 0:
+                continue
+            for d in dice:
+                dest = i + d
+                if dest < 24 and opp_pts[dest] == 1:
+                    hitting.append((i, d))
+        if hitting:
+            hitting.sort(key=lambda x: (-x[1], -x[0]))
+            best = hitting[0]
+            if len(dice) == 1:
+                return f"H:A{best[0]},P"
+            else:
+                d1, d2 = dice
+                if best[1] == d1:
+                    return f"H:A{best[0]},P"
+                else:
+                    return f"L:A{best[0]},P"
+        # Safe moves
+        safe_moves = []
+        for i in range(24):
+            if my_pts[i] == 0:
+                continue
+            for d in dice:
+                dest = i + d
+                if dest < 24 and (opp_pts[dest] <= 1 or my_pts[dest] > 0):
+                    safe_moves.append((i, d))
+        if not safe_moves:
+            return "H:P,P"
+        safe_moves.sort(key=lambda x: (-x[1], -x[0]))
+        best = safe_moves[0]
+        if len(dice) == 1:
+            return f"H:A{best[0]},P"
+        else:
+            d1, d2 = dice
+            if best[1] == d1:
+                return f"H:A{best[0]},P"
+            else:
+                return f"L:A{best[0]},P"
+```

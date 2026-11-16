@@ -1,0 +1,152 @@
+The strategy for this policy is a simple, fast heuristic that guarantees a legal move while giving high priority to any cell that would let the opponent win immediately (a bridge, a fork, or a ring).  
+If no such “danger” cells exist, each playable cell receives a score based on:  
+
+* **Own adjacency** – how many of the six hex‑neighbors are already my stones (reward).  
+* **Opponent adjacency** – how many neighbors are opponent stones (penalty).  
+* **Distance to the board edge** – interior cells are penalised because they are farther from the edges that later enable bridges or forks.  
+* **Edge bonus** – cells on a board edge (but not a corner) receive a small extra boost.  
+
+A large boost is added to any danger cell, forcing the AI to block an opponent’s one‑move win.  
+All calculations are limited to O(N²) for a 15 × 15 board, well within the 1 second time budget.
+
+<code>
+import numpy as np
+from typing import List, Tuple, Set
+
+SIZE = 15
+OFFSETS = [(1, 0), (-1, 0), (1, -1), (-1, -1), (1, 1), (-1, 1)]
+CORNERS = {(0, 0), (0, SIZE - 1), (SIZE - 1, 0), (SIZE - 1, SIZE - 1)}
+RADIUS = (SIZE - 1) // 2          # 7 for a 15×15 board
+
+def hex_distance(r: int, c: int) -> int:
+    """Manhattan‑style distance on the axial (r, c) hex grid."""
+    return (abs(r) + abs(c) + abs(r + c)) // 2
+
+def compute_distance_to_edge() -> np.ndarray:
+    """0 at the outer ring, 1 in the next ring, …, RADIUS in the centre."""
+    r_arr = np.arange(SIZE)
+    c_arr = np.arange(SIZE)
+    R, C = np.meshgrid(r_arr, c_arr, indexing='ij')
+    dist = RADIUS - hex_distance(R, C)
+    return dist.astype(int)
+
+distance_to_edge = compute_distance_to_edge()
+EDGES = {pos for pos in np.argwhere(distance_to_edge == 0).tolist() if pos not in CORNERS}
+EDGES_SET: Set[tuple[int, int]] = set(map(tuple, EDGES))
+
+# -------------------------------------------------------------
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], valid_mask) -> Tuple[int, int]:
+    """Return the best legal move for the current player."""
+    # -----------------------------------------------------------------
+    # Normalise the mask (list‑of‑lists or numpy array)
+    if isinstance(valid_mask, list):
+        valid_mask = np.array(valid_mask, dtype=bool)
+    elif not isinstance(valid_mask, np.ndarray):
+        raise TypeError("valid_mask must be a list‑of‑lists or a numpy array")
+    # -----------------------------------------------------------------
+    # Fast set access
+    my_stones: Set[tuple[int, int]] = set(map(tuple, me))
+    opp_stones: Set[tuple[int, int]] = set(map(tuple, opp))
+    occupied = my_stones | opp_stones
+
+    # List of currently empty playable cells
+    empty_cells: List[tuple[int, int]] = [
+        (r, c) for r in range(SIZE) for c in range(SIZE)
+        if valid_mask[r, c] and (r, c) not in occupied
+    ]
+    if not empty_cells:                # defensive fallback – should never happen
+        empty_cells = [(r, c) for r in range(SIZE) for c in range(SIZE) if valid_mask[r, c]]
+
+    # -----------------------------------------------------------------
+    # 1️⃣ Detect opponent one‑move wins (danger cells)
+    # -----------------------------------------------------------------
+    DANGER_SET: Set[tuple[int, int]] = set()
+    for cand in empty_cells:
+        test_opp = opp_stones | {cand}
+
+        # ---- Ring win: an empty cell surrounded by opp stones ----
+        loop_win = False
+        for empty in empty_cells:
+            if empty in test_opp or empty in my_stones:   # ignore cells that are already occupied
+                continue
+            nb_cnt = 0
+            for dr, dc in OFFSETS:
+                nb = (empty[0] + dr, empty[1] + dc)
+                if 0 <= nb[0] < SIZE and 0 <= nb[1] < SIZE and nb in test_opp:
+                    nb_cnt += 1
+            if nb_cnt == 6:
+                loop_win = True
+                break
+        if loop_win:
+            DANGER_SET.add(cand)
+            continue
+
+        # ---- Bridge: a component that contains ≥2 corners ----
+        # ---- Fork: a component that contains ≥3 edges (non‑corner) ----
+        visited: Set[tuple[int, int]] = set()
+        found_bridge = False
+        found_fork = False
+
+        for node in test_opp:
+            if node in visited:
+                continue
+            stack = [node]
+            visited.add(node)
+            component: Set[tuple[int, int]] = set()
+            while stack:
+                cur = stack.pop()
+                component.add(cur)
+                for dr, dc in OFFSETS:
+                    nb = (cur[0] + dr, cur[1] + dc)
+                    if nb in test_opp and nb not in visited:
+                        visited.add(nb)
+                        stack.append(nb)
+
+            if len(CORNERS.intersection(component)) >= 2:
+                found_bridge = True
+                break
+            if len(EDGES_SET.intersection(component)) >= 3:
+                found_fork = True
+                break
+
+        if found_bridge or found_fork:
+            DANGER_SET.add(cand)
+
+    # -----------------------------------------------------------------
+    # 2️⃣ Score every playable cell
+    # -----------------------------------------------------------------
+    W_MY_ADJ = 2
+    W_OPP_ADJ = 2
+    W_DIST   = 1
+    W_EDGE   = 5
+    BLOCK_BOOST = 10000          # huge boost for danger cells
+
+    best_score = -np.inf
+    best_move = None
+
+    for r, c in empty_cells:
+        my_adj = sum(
+            1 for dr, dc in OFFSETS
+            if 0 <= r + dr < SIZE and 0 <= c + dc < SIZE and (r + dr, c + dc) in my_stones
+        )
+        opp_adj = sum(
+            1 for dr, dc in OFFSETS
+            if 0 <= r + dr < SIZE and 0 <= c + dc < SIZE and (r + dr, c + dc) in opp_stones
+        )
+        base = W_MY_ADJ * my_adj - W_OPP_ADJ * opp_adj - W_DIST * distance_to_edge[r, c]
+
+        if (r, c) in EDGES_SET:
+            base += W_EDGE
+        if (r, c) in DANGER_SET:
+            base += BLOCK_BOOST
+
+        if base > best_score:
+            best_score = base
+            best_move = (r, c)
+
+    # If everything is tied, just take the first legal move.
+    if best_move is None:
+        best_move = empty_cells[0]
+
+    return best_move
+</code>

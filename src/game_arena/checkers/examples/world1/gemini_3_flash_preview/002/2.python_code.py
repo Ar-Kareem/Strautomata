@@ -1,0 +1,145 @@
+
+import random
+
+def get_all_moves(my_men, my_kings, opp_men, opp_kings, color):
+    # Mandatory captures first
+    captures = []
+    my_pieces = [(r, c, False) for r, c in my_men] + [(r, c, True) for r, c in my_kings]
+    opp_occupied = set(opp_men) | set(opp_kings)
+    my_occupied = set(my_men) | set(my_kings)
+    all_occupied = my_occupied | opp_occupied
+
+    def get_jumps(curr_pos, is_king, current_opp_occupied):
+        r, c = curr_pos
+        jumps = []
+        directions = []
+        if is_king or color == 'w': # White moves up (inc row)
+            directions.extend([(1, -1), (1, 1)])
+        if is_king or color == 'b': # Black moves down (dec row)
+            directions.extend([(-1, -1), (-1, 1)])
+        
+        for dr, dc in directions:
+            mid = (r + dr, c + dc)
+            end = (r + 2 * dr, c + 2 * dc)
+            if 0 <= end[0] <= 7 and 0 <= end[1] <= 7:
+                if mid in current_opp_occupied and end not in all_occupied and end not in path:
+                    jumps.append(end)
+        return jumps
+
+    for p_pos, p_is_king in [( (r,c), k) for r,c,k in my_pieces]:
+        path = [p_pos]
+        possible_jumps = get_jumps(p_pos, p_is_king, opp_occupied)
+        for j in possible_jumps:
+            captures.append((p_pos, j))
+
+    if captures:
+        return captures, True
+
+    # Simple moves
+    moves = []
+    for r, c, is_king in my_pieces:
+        directions = []
+        if is_king or color == 'w':
+            directions.extend([(1, -1), (1, 1)])
+        if is_king or color == 'b':
+            directions.extend([(-1, -1), (-1, 1)])
+        
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr <= 7 and 0 <= nc <= 7 and (nr, nc) not in all_occupied:
+                moves.append(((r, c), (nr, nc)))
+    
+    return moves, False
+
+def evaluate(my_men, my_kings, opp_men, opp_kings, color):
+    score = 0
+    # Material and Position
+    for r, c in my_men:
+        score += 10
+        # Encourage advancement
+        score += (r if color == 'w' else (7 - r)) * 0.1
+    for r, c in my_kings:
+        score += 15
+    
+    for r, c in opp_men:
+        score -= 10
+        score -= ((7 - r) if color == 'w' else r) * 0.1
+    for r, c in opp_kings:
+        score -= 15
+        
+    return score
+
+def minimax(my_men, my_kings, opp_men, opp_kings, color, depth, alpha, beta, maximizing, original_color):
+    # Simplified minimax for move selection
+    if depth == 0:
+        return evaluate(my_men, my_kings, opp_men, opp_kings, original_color)
+
+    moves, is_capture = get_all_moves(my_men, my_kings, opp_men, opp_kings, color)
+    if not moves:
+        return -1000 if maximizing else 1000
+
+    if maximizing:
+        max_eval = -float('inf')
+        for start, end in moves:
+            # Simulate move (simplistic)
+            new_my_men = [m for m in my_men if m != start]
+            new_my_kings = [k for k in my_kings if k != start]
+            if start in my_kings or (color == 'w' and end[0] == 7) or (color == 'b' and end[0] == 0):
+                new_my_kings.append(end)
+            else:
+                new_my_men.append(end)
+            
+            # Opponent turn
+            opp_color = 'w' if color == 'b' else 'b'
+            eval = minimax(opp_men, opp_kings, new_my_men, new_my_kings, opp_color, depth - 1, alpha, beta, False, original_color)
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for start, end in moves:
+            new_opp_men = [m for m in opp_men if m != start]
+            new_opp_kings = [k for k in opp_kings if k != start]
+            if start in opp_kings or (color == 'w' and end[0] == 7) or (color == 'b' and end[0] == 0):
+                new_opp_kings.append(end)
+            else:
+                new_opp_men.append(end)
+
+            next_color = 'w' if color == 'b' else 'b'
+            eval = minimax(new_opp_men, new_opp_kings, my_men, my_kings, next_color, depth - 1, alpha, beta, True, original_color)
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def policy(my_men, my_kings, opp_men, opp_kings, color) -> tuple[tuple[int, int], tuple[int, int]]:
+    moves, is_capture = get_all_moves(my_men, my_kings, opp_men, opp_kings, color)
+    
+    if not moves:
+        return ((0,0), (0,0)) # Should not happen in valid state
+
+    best_move = moves[0]
+    best_val = -float('inf')
+    
+    # Search depth 4
+    for move in moves:
+        start, end = move
+        # Quick simulation
+        new_my_men = [m for m in my_men if m != start]
+        new_my_kings = [k for k in my_kings if k != start]
+        if start in my_kings or (color == 'w' and end[0] == 7) or (color == 'b' and end[0] == 0):
+            new_my_kings.append(end)
+        else:
+            new_my_men.append(end)
+            
+        opp_color = 'w' if color == 'b' else 'b'
+        move_val = minimax(opp_men, opp_kings, new_my_men, new_my_kings, opp_color, 3, -float('inf'), float('inf'), False, color)
+        
+        if move_val > best_val:
+            best_val = move_val
+            best_move = move
+            
+    return best_move

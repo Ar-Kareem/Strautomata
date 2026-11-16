@@ -1,0 +1,202 @@
+
+import numpy as np
+from typing import List, Tuple, Set, Dict
+from collections import deque, defaultdict
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Intelligent Battleship targeting policy using hit propagation and probabilistic
+    ship placement analysis.
+    """
+    board = np.array(board)
+    n = 10
+    
+    # Find all unexplored cells
+    unknown_cells = []
+    hit_cells = []
+    
+    for i in range(n):
+        for j in range(n):
+            if board[i, j] == 0:
+                unknown_cells.append((i, j))
+            elif board[i, j] == 1:
+                hit_cells.append((i, j))
+    
+    # If we have hits but no ongoing pattern, use hit propagation
+    if hit_cells:
+        # Group hits into potential ship segments
+        hit_groups = find_connected_hits(board, hit_cells)
+        
+        # For each group of hits, try to extend in possible directions
+        for group in hit_groups:
+            target = try_to_extend_ship(board, group)
+            if target:
+                return target
+    
+    # No promising extensions, fall back to probabilistic targeting
+    # Calculate ship placement probabilities
+    probabilities = np.zeros((n, n))
+    ship_lengths = [5, 4, 3, 3, 2]
+    
+    # For each ship length, calculate valid placements
+    for length in ship_lengths:
+        # Count valid horizontal placements
+        for r in range(n):
+            for c in range(n - length + 1):
+                valid = True
+                for k in range(length):
+                    if board[r, c + k] == -1:  # Miss
+                        valid = False
+                        break
+                    if board[r, c + k] == 1:  # Hit
+                        # Make sure this hit is consistent with the ship placement
+                        pass
+                if valid:
+                    for k in range(length):
+                        if board[r, c + k] == 0:  # Only count unknown cells
+                            probabilities[r, c + k] += 1
+        
+        # Count valid vertical placements
+        for r in range(n - length + 1):
+            for c in range(n):
+                valid = True
+                for k in range(length):
+                    if board[r + k, c] == -1:  # Miss
+                        valid = False
+                        break
+                    if board[r + k, c] == 1:  # Hit
+                        # Make sure this hit is consistent with the ship placement
+                        pass
+                if valid:
+                    for k in range(length):
+                        if board[r + k, c] == 0:  # Only count unknown cells
+                            probabilities[r + k, c] += 1
+    
+    # Boost probabilities near hits
+    for r, c in hit_cells:
+        for dr in [-1, 0, 1]:
+            for dc in [-1, 0, 1]:
+                nr, nc = r + dr, c + dc
+                if (0 <= nr < n and 0 <= nc < n and 
+                    board[nr, nc] == 0 and (dr != 0 or dc != 0)):
+                    # Prefer orthogonally adjacent cells over diagonally
+                    bonus = 2 if (dr == 0 or dc == 0) else 1
+                    probabilities[nr, nc] += 5 * bonus
+    
+    # Find the unknown cell with highest probability
+    best_score = -1
+    best_pos = None
+    
+    for r, c in unknown_cells:
+        score = probabilities[r, c]
+        # Break ties by preferring center of board slightly
+        if hit_cells:  # If we have hits, prefer proximity to hits
+            min_dist = min(abs(r - hr) + abs(c - hc) for hr, hc in hit_cells)
+            score -= min_dist * 0.1
+        else:  # Initially prefer center
+            center_dist = abs(r - 4.5) + abs(c - 4.5)
+            score -= center_dist * 0.01
+            
+        if score > best_score:
+            best_score = score
+            best_pos = (r, c)
+    
+    # If we have a best position, return it
+    if best_pos:
+        return best_pos
+    
+    # Fallback: return first unknown cell
+    return unknown_cells[0] if unknown_cells else (0, 0)
+
+def find_connected_hits(board: np.ndarray, hit_cells: List[Tuple[int, int]]) -> List[List[Tuple[int, int]]]:
+    """Group hit cells that are connected orthogonally."""
+    if not hit_cells:
+        return []
+    
+    visited = set()
+    groups = []
+    directions = [(0, 1), (1, 0), (0, -1), (-1, 0)]
+    
+    for cell in hit_cells:
+        if cell in visited:
+            continue
+            
+        # Start new group with BFS
+        group = []
+        queue = deque([cell])
+        visited.add(cell)
+        
+        while queue:
+            r, c = queue.popleft()
+            group.append((r, c))
+            
+            for dr, dc in directions:
+                nr, nc = r + dr, c + dc
+                if (0 <= nr < 10 and 0 <= nc < 10 and 
+                    board[nr, nc] == 1 and (nr, nc) not in visited):
+                    visited.add((nr, nc))
+                    queue.append((nr, nc))
+        
+        groups.append(group)
+    
+    return groups
+
+def try_to_extend_ship(board: np.ndarray, group: List[Tuple[int, int]]) -> Tuple[int, int] or None:
+    """Try to extend a group of hits in a likely direction."""
+    if not group:
+        return None
+    
+    # Sort group to find orientation
+    sorted_by_row = sorted(group)
+    sorted_by_col = sorted(group, key=lambda x: x[1])
+    
+    min_r, max_r = sorted_by_row[0][0], sorted_by_row[-1][0]
+    min_c, max_c = sorted_by_col[0][1], sorted_by_col[-1][1]
+    
+    # Determine likely orientation
+    horizontal = (max_c - min_c) > (max_r - min_r)
+    
+    # Try to extend in both directions along the likely axis
+    directions = []
+    if horizontal:
+        # Left and right
+        directions = [(0, -1), (0, 1)]
+    else:
+        # Up and down
+        directions = [(-1, 0), (1, 0)]
+    
+    # Also try perpendicular directions if the group has size 1
+    if len(group) == 1:
+        if not horizontal:  # Was considered vertical
+            directions.extend([(0, -1), (0, 1)])  # Add horizontal
+        else:  # Was considered horizontal
+            directions.extend([(-1, 0), (1, 0)])  # Add vertical
+    
+    # For each direction, check extension
+    for dr, dc in directions:
+        # Find endpoints in this direction
+        endpoints = find_endpoints_in_direction(group, dr, dc)
+        
+        for r, c in endpoints:
+            nr, nc = r + dr, c + dc
+            if (0 <= nr < 10 and 0 <= nc < 10 and board[nr, nc] == 0):
+                return (nr, nc)
+    
+    return None
+
+def find_endpoints_in_direction(group: List[Tuple[int, int]], dr: int, dc: int) -> List[Tuple[int, int]]:
+    """Find endpoints of a group when projected along a direction."""
+    if not group:
+        return []
+    
+    # Project cells along the direction vector
+    if dr != 0:  # Vertical
+        if dr > 0:
+            return [max(group, key=lambda x: x[0])]
+        else:
+            return [min(group, key=lambda x: x[0])]
+    else:  # Horizontal
+        if dc > 0:
+            return [max(group, key=lambda x: x[1])]
+        else:
+            return [min(group, key=lambda x: x[1])]

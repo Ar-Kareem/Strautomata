@@ -1,0 +1,143 @@
+
+import heapq
+import random
+
+BOARD_SIZE = 11
+# neighbours on a hex board (6 directions)
+NEIGHBOURS = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, 1), (1, -1)]
+
+
+def source_cells(color):
+    """Return the list of coordinates that belong to the “source” edge."""
+    if color == "b":
+        return [(0, c) for c in range(BOARD_SIZE)]
+    else:                     # white needs to connect left–right
+        return [(r, 0) for r in range(BOARD_SIZE)]
+
+
+def target_cells(color):
+    """Return the list of coordinates that belong to the “target” edge."""
+    if color == "b":
+        return [(10, c) for c in range(BOARD_SIZE)]
+    else:
+        return [(r, 10) for r in range(BOARD_SIZE)]
+
+
+def distance(player, opponent, color):
+    """
+    Minimal number of empty cells that *player* still has to fill to connect the
+    two sides.  Player stones cost 0, empty cells cost 1, opponent stones are
+    impassable.  Returns a large number (INF) if connection is impossible.
+    """
+    INF = 10 ** 9
+    targets = set(target_cells(color))
+
+    # priority queue for Dijkstra (0‑1 BFS using a heap)
+    pq = []
+    dist = {}
+
+    for cell in source_cells(color):
+        if cell in opponent:                     # blocked by opponent
+            continue
+        cost = 0 if cell in player else 1
+        dist[cell] = cost
+        heapq.heappush(pq, (cost, cell))
+
+    while pq:
+        cost, cell = heapq.heappop(pq)
+        if cost != dist.get(cell, INF):
+            continue
+        if cell in targets:
+            return cost
+
+        r, c = cell
+        for dr, dc in NEIGHBOURS:
+            nr, nc = r + dr, c + dc
+            if not (0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE):
+                continue
+            nb = (nr, nc)
+            if nb in opponent:                   # blocked
+                continue
+            new_cost = cost + (0 if nb in player else 1)
+            if new_cost < dist.get(nb, INF):
+                dist[nb] = new_cost
+                heapq.heappush(pq, (new_cost, nb))
+
+    return INF
+
+
+def empty_cells(me, opp):
+    """Return a list of coordinates that are still free."""
+    free = []
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            cell = (r, c)
+            if cell not in me and cell not in opp:
+                free.append(cell)
+    return free
+
+
+def policy(me, opp, color):
+    """
+    Return a legal move for the current player.
+    `me`  – list of the player's own stones.
+    `opp` – list of opponent stones.
+    `color` – 'b' (black) or 'w' (white).
+    """
+    me_set = set(me)
+    opp_set = set(opp)
+    opp_color = "w" if color == "b" else "b"
+
+    # all legal moves
+    possible = empty_cells(me_set, opp_set)
+
+    # ------------------------------------------------------------
+    # 1) Immediate winning moves
+    winning = []
+    for cell in possible:
+        if distance(me_set | {cell}, opp_set, color) == 0:
+            winning.append(cell)
+    if winning:
+        # any winning move is fine – return the first
+        return winning[0]
+
+    # ------------------------------------------------------------
+    # 2) Moves that block an opponent win on the next turn
+    must_block = []
+    for cell in possible:
+        if distance(opp_set | {cell}, me_set, opp_color) == 0:
+            must_block.append(cell)
+    if must_block:
+        # among blocking moves pick the one that also improves our distance
+        best = None
+        best_score = 10 ** 9
+        for cell in must_block:
+            my_dist = distance(me_set | {cell}, opp_set, color)
+            opp_dist = distance(opp_set, me_set | {cell}, opp_color)
+            score = my_dist - opp_dist
+            if score < best_score:
+                best_score = score
+                best = cell
+        return best
+
+    # ------------------------------------------------------------
+    # 3) General evaluation – minimise (our distance – opponent distance)
+    best_move = None
+    best_score = 10 ** 9
+    best_my_dist = 10 ** 9
+
+    for cell in possible:
+        my_dist = distance(me_set | {cell}, opp_set, color)
+        opp_dist = distance(opp_set, me_set | {cell}, opp_color)
+        score = my_dist - opp_dist
+
+        # tie‑break: smaller own distance is preferred
+        if score < best_score or (score == best_score and my_dist < best_my_dist):
+            best_score = score
+            best_my_dist = my_dist
+            best_move = cell
+
+    # Fallback (should never happen – there is always a legal move)
+    if best_move is None:
+        best_move = random.choice(possible)
+    return best_move

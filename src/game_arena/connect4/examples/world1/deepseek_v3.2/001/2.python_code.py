@@ -1,0 +1,216 @@
+
+import numpy as np
+from typing import List, Tuple, Optional
+
+def policy(board: List[List[int]]) -> int:
+    """
+    Returns the column index (0-6) where the current player should drop a disc.
+    The board uses:
+      0 = empty, 1 = current player (us), -1 = opponent.
+    """
+    # Convert to numpy array for easier manipulation
+    board_np = np.array(board, dtype=int)
+    
+    # Check for immediate win
+    for col in range(7):
+        if is_valid_move(board_np, col):
+            # Simulate move
+            row = get_next_empty_row(board_np, col)
+            board_np[row, col] = 1
+            if check_win(board_np, 1):
+                # Undo move
+                board_np[row, col] = 0
+                return col
+            # Undo move
+            board_np[row, col] = 0
+    
+    # Check if opponent can win next move, then block
+    for col in range(7):
+        if is_valid_move(board_np, col):
+            row = get_next_empty_row(board_np, col)
+            board_np[row, col] = -1
+            if check_win(board_np, -1):
+                # Undo move
+                board_np[row, col] = 0
+                # But we need to make sure blocking is valid
+                # (it is because we checked is_valid_move)
+                return col
+            board_np[row, col] = 0
+    
+    # Use minimax with alpha-beta pruning
+    depth = 6  # Adjustable depth
+    best_score = -float('inf')
+    best_col = None
+    
+    # Order moves by center preference for better pruning
+    move_order = [3, 2, 4, 1, 5, 0, 6]
+    
+    for col in move_order:
+        if not is_valid_move(board_np, col):
+            continue
+        
+        row = get_next_empty_row(board_np, col)
+        board_np[row, col] = 1
+        score = minimax(board_np, depth - 1, -float('inf'), float('inf'), False)
+        board_np[row, col] = 0
+        
+        if score > best_score:
+            best_score = score
+            best_col = col
+    
+    # If no move found (should not happen), return first valid move
+    if best_col is None:
+        for col in range(7):
+            if is_valid_move(board_np, col):
+                return col
+    
+    return best_col
+
+
+def is_valid_move(board: np.ndarray, col: int) -> bool:
+    """Check if column has an empty cell."""
+    return board[0, col] == 0
+
+
+def get_next_empty_row(board: np.ndarray, col: int) -> int:
+    """Return the row index of the lowest empty cell in the column."""
+    # From bottom to top
+    for row in range(5, -1, -1):
+        if board[row, col] == 0:
+            return row
+    return -1  # Should not happen if column is valid
+
+
+def check_win(board: np.ndarray, player: int) -> bool:
+    """Check if the given player has four in a row."""
+    rows, cols = board.shape
+    # Check horizontal
+    for r in range(rows):
+        for c in range(cols - 3):
+            if all(board[r, c + i] == player for i in range(4)):
+                return True
+    # Check vertical
+    for r in range(rows - 3):
+        for c in range(cols):
+            if all(board[r + i, c] == player for i in range(4)):
+                return True
+    # Check diagonal (down-right)
+    for r in range(rows - 3):
+        for c in range(cols - 3):
+            if all(board[r + i, c + i] == player for i in range(4)):
+                return True
+    # Check diagonal (down-left)
+    for r in range(rows - 3):
+        for c in range(3, cols):
+            if all(board[r + i, c - i] == player for i in range(4)):
+                return True
+    return False
+
+
+def evaluate_board(board: np.ndarray) -> float:
+    """
+    Evaluate the board from the perspective of the maximizing player (us=1).
+    Higher score is better for us.
+    """
+    score = 0
+    rows, cols = board.shape
+    
+    # Prefer center column
+    center_col = cols // 2
+    for r in range(rows):
+        if board[r, center_col] == 1:
+            score += 3
+        elif board[r, center_col] == -1:
+            score -= 3
+    
+    # Evaluate all possible 4-in-a-row segments
+    segments = []
+    # Horizontal
+    for r in range(rows):
+        for c in range(cols - 3):
+            segments.append([(r, c + i) for i in range(4)])
+    # Vertical
+    for r in range(rows - 3):
+        for c in range(cols):
+            segments.append([(r + i, c) for i in range(4)])
+    # Diagonal down-right
+    for r in range(rows - 3):
+        for c in range(cols - 3):
+            segments.append([(r + i, c + i) for i in range(4)])
+    # Diagonal down-left
+    for r in range(rows - 3):
+        for c in range(3, cols):
+            segments.append([(r + i, c - i) for i in range(4)])
+    
+    for segment in segments:
+        player_count = 0
+        opponent_count = 0
+        for (r, c) in segment:
+            if board[r, c] == 1:
+                player_count += 1
+            elif board[r, c] == -1:
+                opponent_count += 1
+        
+        if player_count > 0 and opponent_count == 0:
+            # Only our pieces in this segment
+            if player_count == 2:
+                score += 10
+            elif player_count == 3:
+                score += 50
+            elif player_count == 4:
+                score += 10000  # Should have been caught earlier
+        elif opponent_count > 0 and player_count == 0:
+            # Only opponent pieces
+            if opponent_count == 2:
+                score -= 10
+            elif opponent_count == 3:
+                score -= 50
+            elif opponent_count == 4:
+                score -= 10000
+        # Mixed segments are neutral
+    
+    return score
+
+
+def minimax(board: np.ndarray, depth: int, alpha: float, beta: float, maximizing_player: bool) -> float:
+    """
+    Minimax with alpha-beta pruning.
+    maximizing_player: True if it's our turn (player 1), False if opponent's turn (player -1).
+    """
+    # Check terminal states
+    if check_win(board, 1):
+        return 100000 + depth  # Prefer faster win
+    if check_win(board, -1):
+        return -100000 - depth  # Prefer slower loss
+    
+    if depth == 0:
+        return evaluate_board(board)
+    
+    if maximizing_player:
+        max_eval = -float('inf')
+        for col in range(7):
+            if not is_valid_move(board, col):
+                continue
+            row = get_next_empty_row(board, col)
+            board[row, col] = 1
+            eval_score = minimax(board, depth - 1, alpha, beta, False)
+            board[row, col] = 0
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break  # Beta cutoff
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for col in range(7):
+            if not is_valid_move(board, col):
+                continue
+            row = get_next_empty_row(board, col)
+            board[row, col] = -1
+            eval_score = minimax(board, depth - 1, alpha, beta, True)
+            board[row, col] = 0
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break  # Alpha cutoff
+        return min_eval

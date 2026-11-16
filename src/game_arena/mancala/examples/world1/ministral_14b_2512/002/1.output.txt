@@ -1,0 +1,331 @@
+<thinking>
+Alright, I need to implement a move-selection policy for the game Kalah. The goal is to write a function `policy(you, opponent)` that returns a legal move (an index `i` between 0 and 5 where `you[i] > 0`). The policy should be strategic and aim to maximize the chance of winning the game.
+
+### Understanding the Game Mechanics
+First, I need to fully understand the rules:
+1. **Move Selection**: On my turn, I can choose any non-empty house (indices 0-5) from my side (`you`). I must pick a house with seeds (`you[i] > 0`).
+2. **Seed Distribution**: After selecting a house, I remove all seeds from it and distribute them one by one in a clockwise manner:
+   - From `you[i+1]` to `you[5]` (my remaining houses),
+   - Then to `you[6]` (my store),
+   - Then to `opponent[0]` to `opponent[5]` (opponent's houses),
+   - Then back to `you[0]` to `you[5]` (my houses again), and so on.
+   - The opponent's store (`opponent[6]`) is skipped.
+3. **Special Effects**:
+   - **Extra Move**: If the last seed lands in my store (`you[6]`), I get another move immediately.
+   - **Capture**: If the last seed lands in one of my empty houses (`you[i]`), and the opposite house on the opponent's side (`opponent[5 - i]`) has seeds, then I capture all seeds from both houses and add them to my store (`you[6]`).
+
+### Objective
+The goal is to maximize the number of seeds in my store (`you[6]`) at the end of the game. The game ends when one player has no seeds left in their houses (indices 0-5). The remaining seeds in the opponent's houses are then moved to their store.
+
+### Strategy Considerations
+A good policy should consider several factors:
+1. **Immediate Capture**: Choosing a move that leads to a capture is highly beneficial because it removes seeds from the opponent's side and adds them to my store.
+2. **Extra Move**: If a move results in the last seed landing in my store, I get an extra move, which can be advantageous.
+3. **Balancing the Board**: Avoiding moves that leave the opponent with an easy opportunity to capture or gain an extra move.
+4. **Endgame Strategy**: When the game is near the end, it's important to move seeds to my store to maximize the final count.
+
+### Approach
+I need to evaluate potential moves based on the following criteria:
+1. **Capture Potential**: For each possible move, simulate the distribution of seeds and check if the last seed lands in an empty house that can lead to a capture.
+2. **Extra Move Potential**: Check if the last seed lands in my store.
+3. **Opponent's Response**: After my move, the opponent will make a move. I need to consider how my move affects the opponent's potential moves and captures.
+4. **Balancing**: Ensure that I don't leave too many seeds in one house that the opponent can easily capture.
+
+### Implementation Steps
+1. **Simulate Moves**: For each possible move (i.e., each non-empty house in `you`), simulate the distribution of seeds and check for captures or extra moves.
+2. **Evaluate Moves**: Assign a score to each move based on:
+   - Whether it leads to a capture.
+   - Whether it leads to an extra move.
+   - The resulting state of the board after the move and the opponent's potential response.
+3. **Select Best Move**: Choose the move with the highest score.
+
+### Simulating a Move
+To simulate a move, I need to:
+1. Take all seeds from `you[i]`.
+2. Distribute them one by one in the specified order.
+3. Check the position of the last seed to see if it triggers a capture or extra move.
+
+### Handling Captures
+If the last seed lands in an empty house `you[j]` and the opposite house `opponent[5 - j]` has seeds, then:
+- All seeds from `you[j]` and `opponent[5 - j]` are moved to `you[6]`.
+- The houses `you[j]` and `opponent[5 - j]` are set to zero.
+
+### Handling Extra Move
+If the last seed lands in `you[6]`, the player gets another move.
+
+### Evaluating Moves
+For each move, I can evaluate it based on:
+1. **Immediate Gain**: Seeds captured or moved to my store.
+2. **Future Potential**: The resulting board state might affect future moves.
+
+### Simple Heuristic
+A simple heuristic could be:
+- Prefer moves that lead to a capture.
+- Prefer moves that lead to an extra move.
+- Otherwise, prefer moves that leave the opponent with fewer seeds or more balanced houses.
+
+### Implementation
+I'll implement a function that:
+1. Iterates over all possible moves (non-empty houses in `you`).
+2. For each move, simulates the distribution of seeds.
+3. Checks for captures and extra moves.
+4. Scores each move based on the immediate benefits and the resulting board state.
+5. Selects the move with the highest score.
+
+### Code Outline
+```python
+def policy(you, opponent):
+    best_move = -1
+    best_score = -float('inf')
+
+    for i in range(6):
+        if you[i] == 0:
+            continue  # Skip empty houses
+
+        # Simulate the move
+        new_you = you.copy()
+        new_opponent = opponent.copy()
+        seeds = new_you[i]
+        new_you[i] = 0
+
+        # Distribute seeds
+        pos = i
+        for seed in range(seeds):
+            pos = (pos + 1) % 14  # 14 positions: 6 you + 6 opponent + 2 stores (but skip opponent's store)
+            # Map pos to actual indices
+            if pos < 6:
+                new_you[pos] += 1
+            elif pos < 12:
+                new_opponent[pos - 6] += 1
+            # pos == 12 or 13: skip opponent's store (pos 12 is you[6], pos 13 is opponent[6], but we skip opponent[6])
+
+        # Check for capture or extra move
+        last_pos = (i + seeds) % 14
+        if last_pos < 6:
+            # Last seed in my house
+            if new_you[last_pos] == 1 and new_opponent[5 - last_pos] > 0:
+                # Capture
+                captured = new_opponent[5 - last_pos] + 1
+                new_you[6] += captured
+                new_you[last_pos] = 0
+                new_opponent[5 - last_pos] = 0
+                score = captured * 100  # High score for capture
+            else:
+                score = 0
+        elif last_pos == 6:
+            # Last seed in my store, extra move
+            score = 10  # Moderate score for extra move
+        else:
+            score = 0
+
+        # Additional scoring based on board state
+        # For example, prefer moves that leave opponent with fewer seeds
+        opponent_total = sum(new_opponent[:6])
+        score += -opponent_total  # Higher score if opponent has fewer seeds
+
+        # Update best move
+        if score > best_score:
+            best_score = score
+            best_move = i
+
+    return best_move
+```
+
+### Refinements
+The above code is a basic heuristic. To improve it, I can:
+1. **Look Ahead**: Simulate the opponent's best response to my move and evaluate the resulting state.
+2. **More Sophisticated Scoring**: Consider the potential for future captures and extra moves.
+3. **Endgame Handling**: When the game is near the end, prioritize moving seeds to my store.
+
+### Final Implementation
+Here's a more refined version that includes some of these considerations:
+
+```python
+def policy(you, opponent):
+    best_move = -1
+    best_score = -float('inf')
+
+    for i in range(6):
+        if you[i] == 0:
+            continue
+
+        # Simulate the move
+        new_you = you.copy()
+        new_opponent = opponent.copy()
+        seeds = new_you[i]
+        new_you[i] = 0
+
+        # Distribute seeds
+        pos = i
+        for seed in range(seeds):
+            pos = (pos + 1) % 14
+            if pos < 6:
+                new_you[pos] += 1
+            elif pos < 12:
+                new_opponent[pos - 6] += 1
+
+        # Check for capture or extra move
+        last_pos = (i + seeds) % 14
+        if last_pos < 6:
+            if new_you[last_pos] == 1 and new_opponent[5 - last_pos] > 0:
+                # Capture
+                captured = new_opponent[5 - last_pos] + 1
+                new_you[6] += captured
+                new_you[last_pos] = 0
+                new_opponent[5 - last_pos] = 0
+                score = captured * 100
+            else:
+                score = 0
+        elif last_pos == 6:
+            # Extra move
+            score = 10
+        else:
+            score = 0
+
+        # Additional scoring: prefer moves that leave opponent with fewer seeds
+        opponent_total = sum(new_opponent[:6])
+        score += -opponent_total
+
+        # Prefer moves that leave my houses more balanced
+        you_variance = sum((x - (sum(new_you[:6]) / 6)) ** 2 for x in new_you[:6])
+        score += -you_variance / 100  # Lower variance is better
+
+        # Update best move
+        if score > best_score:
+            best_score = score
+            best_move = i
+
+    return best_move
+```
+
+### Testing and Validation
+To ensure the policy works correctly, I should test it with various board states:
+1. **Simple Capture**: If a move leads to a capture, it should be prioritized.
+2. **Extra Move**: If a move leads to an extra move, it should be considered valuable.
+3. **Balancing**: The policy should avoid leaving the opponent with an easy capture opportunity.
+
+### Final Answer
+Here's the final implementation of the `policy` function:
+
+<code>
+def policy(you, opponent):
+    best_move = -1
+    best_score = -float('inf')
+
+    for i in range(6):
+        if you[i] == 0:
+            continue
+
+        # Simulate the move
+        new_you = you.copy()
+        new_opponent = opponent.copy()
+        seeds = new_you[i]
+        new_you[i] = 0
+
+        # Distribute seeds
+        pos = i
+        for seed in range(seeds):
+            pos = (pos + 1) % 14
+            if pos < 6:
+                new_you[pos] += 1
+            elif pos < 12:
+                new_opponent[pos - 6] += 1
+
+        # Check for capture or extra move
+        last_pos = (i + seeds) % 14
+        if last_pos < 6:
+            if new_you[last_pos] == 1 and new_opponent[5 - last_pos] > 0:
+                # Capture
+                captured = new_opponent[5 - last_pos] + 1
+                new_you[6] += captured
+                new_you[last_pos] = 0
+                new_opponent[5 - last_pos] = 0
+                score = captured * 100
+            else:
+                score = 0
+        elif last_pos == 6:
+            # Extra move
+            score = 10
+        else:
+            score = 0
+
+        # Additional scoring: prefer moves that leave opponent with fewer seeds
+        opponent_total = sum(new_opponent[:6])
+        score += -opponent_total
+
+        # Prefer moves that leave my houses more balanced
+        you_sum = sum(new_you[:6])
+        if you_sum > 0:
+            avg = you_sum / 6
+            variance = sum((x - avg) ** 2 for x in new_you[:6])
+            score += -variance / 100  # Lower variance is better
+
+        # Update best move
+        if score > best_score:
+            best_score = score
+            best_move = i
+
+    return best_move
+</code>
+</thinking>
+
+<code>
+def policy(you, opponent):
+    best_move = -1
+    best_score = -float('inf')
+
+    for i in range(6):
+        if you[i] == 0:
+            continue
+
+        # Simulate the move
+        new_you = you.copy()
+        new_opponent = opponent.copy()
+        seeds = new_you[i]
+        new_you[i] = 0
+
+        # Distribute seeds
+        pos = i
+        for seed in range(seeds):
+            pos = (pos + 1) % 14
+            if pos < 6:
+                new_you[pos] += 1
+            elif pos < 12:
+                new_opponent[pos - 6] += 1
+
+        # Check for capture or extra move
+        last_pos = (i + seeds) % 14
+        if last_pos < 6:
+            if new_you[last_pos] == 1 and new_opponent[5 - last_pos] > 0:
+                # Capture
+                captured = new_opponent[5 - last_pos] + 1
+                new_you[6] += captured
+                new_you[last_pos] = 0
+                new_opponent[5 - last_pos] = 0
+                score = captured * 100
+            else:
+                score = 0
+        elif last_pos == 6:
+            # Extra move
+            score = 10
+        else:
+            score = 0
+
+        # Additional scoring: prefer moves that leave opponent with fewer seeds
+        opponent_total = sum(new_opponent[:6])
+        score += -opponent_total
+
+        # Prefer moves that leave my houses more balanced
+        you_sum = sum(new_you[:6])
+        if you_sum > 0:
+            avg = you_sum / 6
+            variance = sum((x - avg) ** 2 for x in new_you[:6])
+            score += -variance / 100  # Lower variance is better
+
+        # Update best move
+        if score > best_score:
+            best_score = score
+            best_move = i
+
+    return best_move
+</code>

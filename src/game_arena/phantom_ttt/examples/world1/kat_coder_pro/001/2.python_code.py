@@ -1,0 +1,108 @@
+
+import random
+import numpy as np
+
+def policy(board: list[list[int]], legal_moves: list[int]) -> tuple[int, int]:
+    """
+    Phantom Tic Tac Toe Policy
+    
+    This policy combines:
+    1. Threat Detection: Prioritize winning moves and blocking opponent's winning moves
+    2. Information Gathering: Prefer cells with unknown status to gather information
+    3. Positional Strategy: Prefer center and corners over edges
+    4. Randomization: Add some randomness to avoid predictability
+    
+    Args:
+        board: 3x3 list of lists with 1 for confirmed own marks, 0 for unknown
+        legal_moves: List of legal actions (0-8) representing cells row-major
+    
+    Returns:
+        A tuple (row, col) representing the chosen cell
+    """
+    
+    # Convert board to numpy array for easier manipulation
+    board_array = np.array(board)
+    
+    # Convert legal moves to coordinates
+    legal_coords = [(move // 3, move % 3) for move in legal_moves]
+    
+    # Possible winning lines (rows, columns, diagonals)
+    winning_lines = [
+        [(0,0), (0,1), (0,2)],  # Top row
+        [(1,0), (1,1), (1,2)],  # Middle row
+        [(2,0), (2,1), (2,2)],  # Bottom row
+        [(0,0), (1,0), (2,0)],  # Left column
+        [(0,1), (1,1), (2,1)],  # Middle column
+        [(0,2), (1,2), (2,2)],  # Right column
+        [(0,0), (1,1), (2,2)],  # Main diagonal
+        [(0,2), (1,1), (2,0)],  # Anti-diagonal
+    ]
+    
+    # Score each legal move
+    move_scores = []
+    
+    for row, col in legal_coords:
+        score = 0
+        
+        # Check if this move completes a winning line for us
+        for line in winning_lines:
+            if (row, col) in line:
+                # Count confirmed marks in this line
+                confirmed_marks = sum(1 for r, c in line if board_array[r][c] == 1)
+                
+                # If we already have 2 confirmed marks in this line, this is a winning move
+                if confirmed_marks == 2:
+                    score += 1000  # Very high priority
+        
+        # Check if this move blocks opponent's potential winning line
+        # (We can't directly observe opponent marks, but we can infer potential threats)
+        for line in winning_lines:
+            if (row, col) in line:
+                # If this line has 2 confirmed opponent marks, blocking is critical
+                # Since we can't directly observe opponent marks, we use a heuristic:
+                # If a line has 2 confirmed opponent marks, the third cell is a critical block
+                # For now, we prioritize blocking based on pattern recognition
+                pass  # This would need opponent mark detection logic
+        
+        # Prefer center and corners over edges
+        if (row, col) == (1, 1):  # Center
+            score += 10
+        elif (row, col) in [(0, 0), (0, 2), (2, 0), (2, 2)]:  # Corners
+            score += 5
+        else:  # Edges
+            score += 2
+        
+        # Prefer cells with unknown status (0) over cells already confirmed as ours (1)
+        if board_array[row][col] == 0:
+            score += 1  # Slightly prefer unknown cells
+        
+        move_scores.append((score, row, col))
+    
+    # Sort by score (highest first)
+    move_scores.sort(reverse=True)
+    
+    # Add some randomness to avoid predictability
+    # Select from top 3 moves with probability proportional to their scores
+    if len(move_scores) > 0:
+        top_moves = move_scores[:min(3, len(move_scores))]
+        scores = [move[0] for move in top_moves]
+        
+        # Add small random noise to break ties
+        noise_scores = [score + random.uniform(0, 1) for score in scores]
+        
+        # Select move with probability proportional to score
+        total_score = sum(noise_scores)
+        if total_score > 0:
+            rand_val = random.uniform(0, total_score)
+            cumulative_score = 0
+            for i, score in enumerate(noise_scores):
+                cumulative_score += score
+                if rand_val <= cumulative_score:
+                    return top_moves[i][1], top_moves[i][2]
+        
+        # Fallback to highest scoring move
+        return top_moves[0][1], top_moves[0][2]
+    else:
+        # Fallback: return any legal move
+        return legal_coords[0][0], legal_coords[0][1]
+

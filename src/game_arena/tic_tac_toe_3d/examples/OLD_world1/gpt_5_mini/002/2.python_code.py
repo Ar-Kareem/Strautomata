@@ -1,0 +1,167 @@
+
+from typing import List, Tuple
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    """
+    Choose a move for n x n x n Tic-Tac-Toe (works for n==3 but generalized).
+    board[z][y][x] or board[x][y][z]? The prompt describes e.g. [[[...]]] but
+    uses generic list[list[list[int]]]. We will treat the first index as x,
+    second as y, third as z so board[x][y][z]. The move returned is (x,y,z).
+    """
+    # Normalize indices: assume board is cube and shape n x n x n
+    n = len(board)
+    assert n >= 1
+    for layer in board:
+        assert len(layer) == n
+        for row in layer:
+            assert len(row) == n
+
+    # Helper to access cell value
+    def cell(x, y, z):
+        return board[x][y][z]
+
+    # Generate all winning lines (each line is a tuple of (x,y,z) coords)
+    lines = []
+    seen = set()
+
+    # Rows and columns in each z-layer and each x/y slice
+    # For each fixed z and y: vary x (rows)
+    for z in range(n):
+        for y in range(n):
+            line = tuple((x, y, z) for x in range(n))
+            key = tuple(sorted(line))
+            if key not in seen:
+                seen.add(key); lines.append(line)
+    # For each fixed z and x: vary y (columns in layer)
+    for z in range(n):
+        for x in range(n):
+            line = tuple((x, y, z) for y in range(n))
+            key = tuple(sorted(line))
+            if key not in seen:
+                seen.add(key); lines.append(line)
+    # For each fixed x and y: vary z (verticals through layers)
+    for x in range(n):
+        for y in range(n):
+            line = tuple((x, y, z) for z in range(n))
+            key = tuple(sorted(line))
+            if key not in seen:
+                seen.add(key); lines.append(line)
+
+    # Diagonals inside each z-layer (xy-plane)
+    for z in range(n):
+        main = tuple((i, i, z) for i in range(n))
+        anti = tuple((i, n - 1 - i, z) for i in range(n))
+        for line in (main, anti):
+            key = tuple(sorted(line))
+            if key not in seen:
+                seen.add(key); lines.append(line)
+
+    # Diagonals inside each x-slice (yz-plane) (x fixed)
+    for x in range(n):
+        main = tuple((x, i, i) for i in range(n))
+        anti = tuple((x, i, n - 1 - i) for i in range(n))
+        for line in (main, anti):
+            key = tuple(sorted(line))
+            if key not in seen:
+                seen.add(key); lines.append(line)
+
+    # Diagonals inside each y-slice (xz-plane) (y fixed)
+    for y in range(n):
+        main = tuple((i, y, i) for i in range(n))
+        anti = tuple((i, y, n - 1 - i) for i in range(n))
+        for line in (main, anti):
+            key = tuple(sorted(line))
+            if key not in seen:
+                seen.add(key); lines.append(line)
+
+    # Space diagonals (4)
+    space_diags = [
+        tuple((i, i, i) for i in range(n)),
+        tuple((i, i, n - 1 - i) for i in range(n)),
+        tuple((i, n - 1 - i, i) for i in range(n)),
+        tuple((n - 1 - i, i, i) for i in range(n)),
+    ]
+    for line in space_diags:
+        key = tuple(sorted(line))
+        if key not in seen:
+            seen.add(key); lines.append(line)
+
+    # immediate winning move for us (1) or block opponent (-1)
+    my_mark = 1
+    opp_mark = -1
+
+    # helper to check lines for single-empty win/block
+    for target_mark in (my_mark, opp_mark):
+        for line in lines:
+            values = [cell(x, y, z) for (x, y, z) in line]
+            if values.count(0) == 1 and values.count(target_mark) == n - 1:
+                # pick the empty cell
+                for (x, y, z), v in zip(line, values):
+                    if v == 0:
+                        # If it's a winning move for us (target_mark == my_mark) choose it.
+                        # If it's an opponent threat (target_mark == opp_mark) this blocks.
+                        return (x, y, z)
+
+    # If center exists and empty, take it (good strategic move for odd n)
+    if n % 2 == 1:
+        c = n // 2
+        if cell(c, c, c) == 0:
+            return (c, c, c)
+
+    # Evaluate heuristic score for each empty cell
+    # We prefer moves that extend our lines and avoid those that help opponent.
+    def cell_score(x, y, z):
+        if cell(x, y, z) != 0:
+            return -10**9
+        score = 0
+        for line in lines:
+            if (x, y, z) not in line:
+                continue
+            vals = [cell(a, b, c) for (a, b, c) in line]
+            my_count = vals.count(my_mark)
+            opp_count = vals.count(opp_mark)
+            empty_count = vals.count(0)
+            # If line already contains opponent, it can't be completed by us
+            if opp_count == 0:
+                # reward lines where we already have some markers; exponential grows with count
+                if my_count > 0:
+                    score += 10 ** my_count
+                else:
+                    # neutral empty line
+                    score += 1
+            if my_count == 0:
+                # penalize moves that open up opponent threats; stronger penalty for lines where opponent already has markers
+                if opp_count > 0:
+                    score -= 4 ** opp_count
+        # slight preference for corners then edges then faces (deterministic)
+        corner = all(coord in (0, n - 1) for coord in (x, y, z))
+        face_center = sum(1 for coord in (x, y, z) if coord in (0, n - 1)) == 2  # an edge on face could be True
+        if corner:
+            score += 3
+        elif face_center:
+            score += 1
+        return score
+
+    # find best empty cell
+    best = None
+    best_score = -10**12
+    for x in range(n):
+        for y in range(n):
+            for z in range(n):
+                if cell(x, y, z) != 0:
+                    continue
+                s = cell_score(x, y, z)
+                if s > best_score or (s == best_score and (best is None or (x, y, z) < best)):
+                    best_score = s
+                    best = (x, y, z)
+
+    # fallback: choose first empty if something went wrong
+    if best is None:
+        for x in range(n):
+            for y in range(n):
+                for z in range(n):
+                    if cell(x, y, z) == 0:
+                        return (x, y, z)
+        # no moves
+        return (0, 0, 0)
+    return best

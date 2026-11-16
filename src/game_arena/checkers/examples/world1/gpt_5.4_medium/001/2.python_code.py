@@ -1,0 +1,531 @@
+
+import time
+
+INF = 10**9
+
+ROW = [i >> 3 for i in range(64)]
+COL = [i & 7 for i in range(64)]
+
+CENTER = [0] * 64
+MAN_B = [0] * 64
+MAN_W = [0] * 64
+KING_P = [0] * 64
+
+for i in range(64):
+    r = ROW[i]
+    c = COL[i]
+    center = 4 - max(abs(r - 3), abs(c - 3))
+    if center < 0:
+        center = 0
+    edge_pen = 2 if c == 0 or c == 7 else 0
+    CENTER[i] = center * 4
+    MAN_B[i] = (7 - r) * 7 + center * 3 - edge_pen
+    MAN_W[i] = r * 7 + center * 3 - edge_pen
+    KING_P[i] = center * 6 + min(r, 7 - r) + min(c, 7 - c)
+
+MASK_ROW0 = sum(1 << c for c in range(8))
+MASK_ROW7 = sum(1 << (56 + c) for c in range(8))
+
+
+def _bits_to_bb(pieces):
+    bb = 0
+    for r, c in pieces:
+        bb |= 1 << (r * 8 + c)
+    return bb
+
+
+def _idx_to_coord(idx):
+    return (idx >> 3, idx & 7)
+
+
+def _iter_bits(bb):
+    while bb:
+        lsb = bb & -bb
+        idx = lsb.bit_length() - 1
+        yield idx
+        bb ^= lsb
+
+
+def _gen_captures(bm, bk, wm, wk, side):
+    occ = bm | bk | wm | wk
+    moves = []
+
+    if side == 'b':
+        opp = wm | wk
+
+        men = bm
+        while men:
+            lsb = men & -men
+            idx = lsb.bit_length() - 1
+            men ^= lsb
+            r = idx >> 3
+            c = idx & 7
+            if r >= 2:
+                mr = r - 1
+                tr = r - 2
+                if c >= 2:
+                    mid = (mr << 3) | (c - 1)
+                    to = (tr << 3) | (c - 2)
+                    if ((opp >> mid) & 1) and not ((occ >> to) & 1):
+                        moves.append((idx, to, mid))
+                if c <= 5:
+                    mid = (mr << 3) | (c + 1)
+                    to = (tr << 3) | (c + 2)
+                    if ((opp >> mid) & 1) and not ((occ >> to) & 1):
+                        moves.append((idx, to, mid))
+
+        kings = bk
+        while kings:
+            lsb = kings & -kings
+            idx = lsb.bit_length() - 1
+            kings ^= lsb
+            r = idx >> 3
+            c = idx & 7
+
+            if r >= 2:
+                mr = r - 1
+                tr = r - 2
+                if c >= 2:
+                    mid = (mr << 3) | (c - 1)
+                    to = (tr << 3) | (c - 2)
+                    if ((opp >> mid) & 1) and not ((occ >> to) & 1):
+                        moves.append((idx, to, mid))
+                if c <= 5:
+                    mid = (mr << 3) | (c + 1)
+                    to = (tr << 3) | (c + 2)
+                    if ((opp >> mid) & 1) and not ((occ >> to) & 1):
+                        moves.append((idx, to, mid))
+
+            if r <= 5:
+                mr = r + 1
+                tr = r + 2
+                if c >= 2:
+                    mid = (mr << 3) | (c - 1)
+                    to = (tr << 3) | (c - 2)
+                    if ((opp >> mid) & 1) and not ((occ >> to) & 1):
+                        moves.append((idx, to, mid))
+                if c <= 5:
+                    mid = (mr << 3) | (c + 1)
+                    to = (tr << 3) | (c + 2)
+                    if ((opp >> mid) & 1) and not ((occ >> to) & 1):
+                        moves.append((idx, to, mid))
+
+    else:
+        opp = bm | bk
+
+        men = wm
+        while men:
+            lsb = men & -men
+            idx = lsb.bit_length() - 1
+            men ^= lsb
+            r = idx >> 3
+            c = idx & 7
+            if r <= 5:
+                mr = r + 1
+                tr = r + 2
+                if c >= 2:
+                    mid = (mr << 3) | (c - 1)
+                    to = (tr << 3) | (c - 2)
+                    if ((opp >> mid) & 1) and not ((occ >> to) & 1):
+                        moves.append((idx, to, mid))
+                if c <= 5:
+                    mid = (mr << 3) | (c + 1)
+                    to = (tr << 3) | (c + 2)
+                    if ((opp >> mid) & 1) and not ((occ >> to) & 1):
+                        moves.append((idx, to, mid))
+
+        kings = wk
+        while kings:
+            lsb = kings & -kings
+            idx = lsb.bit_length() - 1
+            kings ^= lsb
+            r = idx >> 3
+            c = idx & 7
+
+            if r >= 2:
+                mr = r - 1
+                tr = r - 2
+                if c >= 2:
+                    mid = (mr << 3) | (c - 1)
+                    to = (tr << 3) | (c - 2)
+                    if ((opp >> mid) & 1) and not ((occ >> to) & 1):
+                        moves.append((idx, to, mid))
+                if c <= 5:
+                    mid = (mr << 3) | (c + 1)
+                    to = (tr << 3) | (c + 2)
+                    if ((opp >> mid) & 1) and not ((occ >> to) & 1):
+                        moves.append((idx, to, mid))
+
+            if r <= 5:
+                mr = r + 1
+                tr = r + 2
+                if c >= 2:
+                    mid = (mr << 3) | (c - 1)
+                    to = (tr << 3) | (c - 2)
+                    if ((opp >> mid) & 1) and not ((occ >> to) & 1):
+                        moves.append((idx, to, mid))
+                if c <= 5:
+                    mid = (mr << 3) | (c + 1)
+                    to = (tr << 3) | (c + 2)
+                    if ((opp >> mid) & 1) and not ((occ >> to) & 1):
+                        moves.append((idx, to, mid))
+
+    return moves
+
+
+def _gen_moves(bm, bk, wm, wk, side):
+    caps = _gen_captures(bm, bk, wm, wk, side)
+    if caps:
+        return caps, True
+
+    occ = bm | bk | wm | wk
+    moves = []
+
+    if side == 'b':
+        men = bm
+        while men:
+            lsb = men & -men
+            idx = lsb.bit_length() - 1
+            men ^= lsb
+            r = idx >> 3
+            c = idx & 7
+            if r >= 1:
+                tr = r - 1
+                if c >= 1:
+                    to = (tr << 3) | (c - 1)
+                    if not ((occ >> to) & 1):
+                        moves.append((idx, to, -1))
+                if c <= 6:
+                    to = (tr << 3) | (c + 1)
+                    if not ((occ >> to) & 1):
+                        moves.append((idx, to, -1))
+
+        kings = bk
+        while kings:
+            lsb = kings & -kings
+            idx = lsb.bit_length() - 1
+            kings ^= lsb
+            r = idx >> 3
+            c = idx & 7
+
+            if r >= 1:
+                tr = r - 1
+                if c >= 1:
+                    to = (tr << 3) | (c - 1)
+                    if not ((occ >> to) & 1):
+                        moves.append((idx, to, -1))
+                if c <= 6:
+                    to = (tr << 3) | (c + 1)
+                    if not ((occ >> to) & 1):
+                        moves.append((idx, to, -1))
+
+            if r <= 6:
+                tr = r + 1
+                if c >= 1:
+                    to = (tr << 3) | (c - 1)
+                    if not ((occ >> to) & 1):
+                        moves.append((idx, to, -1))
+                if c <= 6:
+                    to = (tr << 3) | (c + 1)
+                    if not ((occ >> to) & 1):
+                        moves.append((idx, to, -1))
+
+    else:
+        men = wm
+        while men:
+            lsb = men & -men
+            idx = lsb.bit_length() - 1
+            men ^= lsb
+            r = idx >> 3
+            c = idx & 7
+            if r <= 6:
+                tr = r + 1
+                if c >= 1:
+                    to = (tr << 3) | (c - 1)
+                    if not ((occ >> to) & 1):
+                        moves.append((idx, to, -1))
+                if c <= 6:
+                    to = (tr << 3) | (c + 1)
+                    if not ((occ >> to) & 1):
+                        moves.append((idx, to, -1))
+
+        kings = wk
+        while kings:
+            lsb = kings & -kings
+            idx = lsb.bit_length() - 1
+            kings ^= lsb
+            r = idx >> 3
+            c = idx & 7
+
+            if r >= 1:
+                tr = r - 1
+                if c >= 1:
+                    to = (tr << 3) | (c - 1)
+                    if not ((occ >> to) & 1):
+                        moves.append((idx, to, -1))
+                if c <= 6:
+                    to = (tr << 3) | (c + 1)
+                    if not ((occ >> to) & 1):
+                        moves.append((idx, to, -1))
+
+            if r <= 6:
+                tr = r + 1
+                if c >= 1:
+                    to = (tr << 3) | (c - 1)
+                    if not ((occ >> to) & 1):
+                        moves.append((idx, to, -1))
+                if c <= 6:
+                    to = (tr << 3) | (c + 1)
+                    if not ((occ >> to) & 1):
+                        moves.append((idx, to, -1))
+
+    return moves, False
+
+
+def _apply_move(bm, bk, wm, wk, side, mv):
+    fr, to, cap = mv
+    mfr = 1 << fr
+    mto = 1 << to
+
+    if side == 'b':
+        if bm & mfr:
+            bm ^= mfr
+            if ROW[to] == 0:
+                bk |= mto
+            else:
+                bm |= mto
+        else:
+            bk = (bk ^ mfr) | mto
+
+        if cap != -1:
+            mcap = 1 << cap
+            if wm & mcap:
+                wm ^= mcap
+            else:
+                wk ^= mcap
+        return bm, bk, wm, wk, 'w'
+
+    else:
+        if wm & mfr:
+            wm ^= mfr
+            if ROW[to] == 7:
+                wk |= mto
+            else:
+                wm |= mto
+        else:
+            wk = (wk ^ mfr) | mto
+
+        if cap != -1:
+            mcap = 1 << cap
+            if bm & mcap:
+                bm ^= mcap
+            else:
+                bk ^= mcap
+        return bm, bk, wm, wk, 'b'
+
+
+def _eval_abs(bm, bk, wm, wk):
+    score = 0
+
+    score += 100 * (bm.bit_count() - wm.bit_count())
+    score += 175 * (bk.bit_count() - wk.bit_count())
+
+    x = bm
+    while x:
+        lsb = x & -x
+        idx = lsb.bit_length() - 1
+        x ^= lsb
+        score += MAN_B[idx]
+
+    x = wm
+    while x:
+        lsb = x & -x
+        idx = lsb.bit_length() - 1
+        x ^= lsb
+        score -= MAN_W[idx]
+
+    x = bk
+    while x:
+        lsb = x & -x
+        idx = lsb.bit_length() - 1
+        x ^= lsb
+        score += KING_P[idx]
+
+    x = wk
+    while x:
+        lsb = x & -x
+        idx = lsb.bit_length() - 1
+        x ^= lsb
+        score -= KING_P[idx]
+
+    score += 5 * ((bm & MASK_ROW7).bit_count())
+    score -= 5 * ((wm & MASK_ROW0).bit_count())
+
+    return score
+
+
+def _eval_for_side(bm, bk, wm, wk, side):
+    v = _eval_abs(bm, bk, wm, wk)
+    return v if side == 'b' else -v
+
+
+def policy(my_men, my_kings, opp_men, opp_kings, color) -> tuple[tuple[int, int], tuple[int, int]]:
+    start = time.perf_counter()
+    time_limit = 0.90
+
+    if color == 'b':
+        bm = _bits_to_bb(my_men)
+        bk = _bits_to_bb(my_kings)
+        wm = _bits_to_bb(opp_men)
+        wk = _bits_to_bb(opp_kings)
+    else:
+        wm = _bits_to_bb(my_men)
+        wk = _bits_to_bb(my_kings)
+        bm = _bits_to_bb(opp_men)
+        bk = _bits_to_bb(opp_kings)
+
+    history = {}
+    pv_move = {}
+    nodes = 0
+
+    def out_of_time():
+        return (time.perf_counter() - start) >= time_limit
+
+    def check_time():
+        nonlocal nodes
+        nodes += 1
+        if (nodes & 2047) == 0 and out_of_time():
+            raise TimeoutError
+
+    def order_moves(moves, side, bm, bk, wm, wk, tt_move=None):
+        opp_kings = wk if side == 'b' else bk
+        own_men = bm if side == 'b' else wm
+        ordered = []
+
+        for mv in moves:
+            fr, to, cap = mv
+            s = history.get((side, fr, to), 0)
+
+            if mv == tt_move:
+                s += 1_000_000
+
+            if cap != -1:
+                s += 1000
+                if (opp_kings >> cap) & 1:
+                    s += 180
+                else:
+                    s += 90
+
+            if (own_men >> fr) & 1:
+                tr = ROW[to]
+                if (side == 'b' and tr == 0) or (side == 'w' and tr == 7):
+                    s += 220
+            else:
+                s += 25
+
+            s += CENTER[to]
+            ordered.append((s, mv))
+
+        ordered.sort(key=lambda x: (-x[0], x[1][0], x[1][1], x[1][2]))
+        return [mv for _, mv in ordered]
+
+    def qsearch(bm, bk, wm, wk, side, alpha, beta, qd=0):
+        check_time()
+
+        stand = _eval_for_side(bm, bk, wm, wk, side)
+        if stand >= beta:
+            return stand
+        if stand > alpha:
+            alpha = stand
+        if qd >= 6:
+            return stand
+
+        caps = _gen_captures(bm, bk, wm, wk, side)
+        if not caps:
+            return stand
+
+        tt = pv_move.get((bm, bk, wm, wk, side))
+        for mv in order_moves(caps, side, bm, bk, wm, wk, tt):
+            nbm, nbk, nwm, nwk, nside = _apply_move(bm, bk, wm, wk, side, mv)
+            score = -qsearch(nbm, nbk, nwm, nwk, nside, -beta, -alpha, qd + 1)
+            if score >= beta:
+                return score
+            if score > alpha:
+                alpha = score
+        return alpha
+
+    def search(bm, bk, wm, wk, side, depth, alpha, beta):
+        check_time()
+
+        moves, _ = _gen_moves(bm, bk, wm, wk, side)
+        if not moves:
+            return -100000
+
+        if depth <= 0:
+            return qsearch(bm, bk, wm, wk, side, alpha, beta)
+
+        key = (bm, bk, wm, wk, side)
+        tt = pv_move.get(key)
+        best = -INF
+        best_move = None
+
+        for mv in order_moves(moves, side, bm, bk, wm, wk, tt):
+            nbm, nbk, nwm, nwk, nside = _apply_move(bm, bk, wm, wk, side, mv)
+            score = -search(nbm, nbk, nwm, nwk, nside, depth - 1, -beta, -alpha)
+
+            if score > best:
+                best = score
+                best_move = mv
+            if score > alpha:
+                alpha = score
+                best_move = mv
+            if alpha >= beta:
+                history[(side, mv[0], mv[1])] = history.get((side, mv[0], mv[1]), 0) + depth * depth
+                break
+
+        if best_move is not None:
+            pv_move[key] = best_move
+        return best
+
+    root_moves, _ = _gen_moves(bm, bk, wm, wk, color)
+
+    if not root_moves:
+        pieces = my_men if my_men else my_kings
+        if pieces:
+            p = pieces[0]
+            return p, p
+        return (0, 0), (0, 0)
+
+    root_best = order_moves(root_moves, color, bm, bk, wm, wk)[0]
+
+    max_depth = 12
+    for depth in range(1, max_depth + 1):
+        if out_of_time():
+            break
+        try:
+            alpha = -INF
+            beta = INF
+            best_score = -INF
+            best_move = root_best
+
+            ordered = order_moves(
+                root_moves, color, bm, bk, wm, wk, pv_move.get((bm, bk, wm, wk, color), root_best)
+            )
+
+            for mv in ordered:
+                nbm, nbk, nwm, nwk, nside = _apply_move(bm, bk, wm, wk, color, mv)
+                score = -search(nbm, nbk, nwm, nwk, nside, depth - 1, -beta, -alpha)
+
+                if score > best_score:
+                    best_score = score
+                    best_move = mv
+                if score > alpha:
+                    alpha = score
+
+            root_best = best_move
+            pv_move[(bm, bk, wm, wk, color)] = root_best
+
+        except TimeoutError:
+            break
+
+    return _idx_to_coord(root_best[0]), _idx_to_coord(root_best[1])

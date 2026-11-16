@@ -1,0 +1,143 @@
+<thinking>
+To implement a solid Connect 4 targeting policy, I'll need to consider several strategic aspects:
+
+1. **Immediate Wins**: First, check if there's a column that would give me a win immediately (4 in a row)
+2. **Block Opponent Wins**: Check if the opponent has 3 in a row that I need to block
+3. **Create Opportunities**: Look for columns that would create multiple potential winning opportunities for me
+4. **Center Preference**: Prefer center columns as they offer more winning possibilities
+5. **Prevent Opponent Opportunities**: Avoid moves that would give the opponent a forced win next turn
+
+The implementation will use a priority-based approach:
+1. Highest priority: winning moves
+2. Next: blocking opponent's winning moves
+3. Then: creating double threats (where I have two ways to win next turn)
+4. Finally: strategic positioning preferring center columns
+
+I'll use helper functions to:
+- Check for immediate wins
+- Evaluate potential threats
+- Score possible moves
+- Validate columns
+
+The algorithm will evaluate all possible moves and assign them scores based on their strategic value.
+</thinking>
+
+<code>
+import numpy as np
+from collections import defaultdict
+
+def policy(board: list[list[int]]) -> int:
+    def get_valid_columns(board):
+        return [col for col in range(7) if board[0][col] == 0]
+
+    def make_move(board, col, player):
+        new_board = [row.copy() for row in board]
+        for row in range(5, -1, -1):
+            if new_board[row][col] == 0:
+                new_board[row][col] = player
+                break
+        return new_board
+
+    def check_winner(board, player, length=4):
+        directions = [(0, 1), (1, 0), (1, 1), (1, -1)]  # horizontal, vertical, diagonal right, diagonal left
+        for row in range(6):
+            for col in range(7):
+                if board[row][col] == player:
+                    for dr, dc in directions:
+                        count = 1
+                        for step in range(1, 4):
+                            r, c = row + dr * step, col + dc * step
+                            if 0 <= r < 6 and 0 <= c < 7 and board[r][c] == player:
+                                count += 1
+                            else:
+                                break
+                        if count >= length:
+                            return True
+        return False
+
+    def score_position(board, player):
+        score = 0
+        # Prefer center column
+        center_col = 3
+        for r in range(6):
+            if board[r][center_col] == player:
+                score += 3
+        
+        # Score horizontal
+        for r in range(6):
+            for c in range(4):
+                window = board[r][c:c+4]
+                if window.count(player) == 3 and window.count(0) == 1:
+                    score += 100
+                elif window.count(player) == 2 and window.count(0) == 2:
+                    score += 5
+                elif window.count(-player) == 3 and window.count(0) == 1:
+                    score += 80  # block opponent
+
+        # Score vertical
+        for c in range(7):
+            for r in range(3):
+                window = [board[r+i][c] for i in range(4)]
+                if window.count(player) == 3 and window.count(0) == 1:
+                    score += 100
+                elif window.count(player) == 2 and window.count(0) == 2:
+                    score += 5
+                elif window.count(-player) == 3 and window.count(0) == 1:
+                    score += 80  # block opponent
+
+        # Score diagonals
+        for r in range(3):
+            for c in range(4):
+                window = [board[r+i][c+i] for i in range(4)]
+                if window.count(player) == 3 and window.count(0) == 1:
+                    score += 100
+                elif window.count(player) == 2 and window.count(0) == 2:
+                    score += 5
+                elif window.count(-player) == 3 and window.count(0) == 1:
+                    score += 80  # block opponent
+                
+                window = [board[r+i][c+3-i] for i in range(4)]
+                if window.count(player) == 3 and window.count(0) == 1:
+                    score += 100
+                elif window.count(player) == 2 and window.count(0) == 2:
+                    score += 5
+                elif window.count(-player) == 3 and window.count(0) == 1:
+                    score += 80  # block opponent
+        
+        return score
+
+    valid_columns = get_valid_columns(board)
+    
+    # First, check for immediate winning moves
+    for col in valid_columns:
+        new_board = make_move(board, col, 1)
+        if check_winner(new_board, 1):
+            return col
+    
+    # Then block opponent's winning moves
+    for col in valid_columns:
+        new_board = make_move(board, col, -1)
+        if check_winner(new_board, -1):
+            return col
+    
+    # Find the move with highest score
+    best_score = -10000
+    best_col = valid_columns[0]
+    for col in valid_columns:
+        new_board = make_move(board, col, 1)
+        score = score_position(new_board, 1)
+        # Additionally check if this move creates multiple threats
+        threats = 0
+        for new_col in get_valid_columns(new_board):
+            final_board = make_move(new_board, new_col, 1)
+            if check_winner(final_board, 1):
+                threats += 1
+                if threats > 1:
+                    score += 1000  # double threat bonus
+        
+        if score > best_score:
+            best_score = score
+            best_col = col
+    
+    return best_col
+</code>

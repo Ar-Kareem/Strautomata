@@ -1,0 +1,119 @@
+
+import numpy as np
+
+def policy(board: list[list[int]]) -> int:
+    # Convert board to numpy array for easier manipulation
+    board = np.array(board)
+    current_player = 1
+    opponent = -1
+    
+    # Check for immediate winning move
+    for col in range(7):
+        if is_valid_move(board, col):
+            temp_board = make_move(board.copy(), col, current_player)
+            if check_win(temp_board, current_player):
+                return col
+    
+    # Check for opponent's winning move to block
+    for col in range(7):
+        if is_valid_move(board, col):
+            temp_board = make_move(board.copy(), col, opponent)
+            if check_win(temp_board, opponent):
+                return col
+    
+    # If no immediate win/block, use heuristic to choose best column
+    best_col = 3  # default to center column
+    best_score = -1
+    
+    # Evaluate each column based on potential
+    for col in range(7):
+        if not is_valid_move(board, col):
+            continue
+            
+        score = evaluate_move(board, col, current_player)
+        
+        # Prefer center columns when scores are equal
+        if score > best_score or (score == best_score and abs(col - 3) < abs(best_col - 3)):
+            best_score = score
+            best_col = col
+    
+    return best_col
+
+def is_valid_move(board, col):
+    """Check if a column has space for a move"""
+    return 0 in board[:, col]
+
+def make_move(board, col, player):
+    """Simulate making a move in the given column"""
+    row = np.where(board[:, col] == 0)[0][-1]  # Find lowest empty row
+    board[row, col] = player
+    return board
+
+def check_win(board, player):
+    """Check if the given player has won"""
+    # Check horizontal
+    for row in range(6):
+        for col in range(4):
+            if all(board[row, col+i] == player for i in range(4)):
+                return True
+    
+    # Check vertical
+    for row in range(3):
+        for col in range(7):
+            if all(board[row+i, col] == player for i in range(4)):
+                return True
+    
+    # Check diagonal (positive slope)
+    for row in range(3):
+        for col in range(4):
+            if all(board[row+i, col+i] == player for i in range(4)):
+                return True
+    
+    # Check diagonal (negative slope)
+    for row in range(3, 6):
+        for col in range(4):
+            if all(board[row-i, col+i] == player for i in range(4)):
+                return True
+    
+    return False
+
+def evaluate_move(board, col, player):
+    """Evaluate the quality of a potential move"""
+    if not is_valid_move(board, col):
+        return -1
+    
+    temp_board = make_move(board.copy(), col, player)
+    score = 0
+    
+    # Count potential 4-in-a-row opportunities
+    for row in range(6):
+        for c in range(7):
+            if temp_board[row, c] == player:
+                # Check horizontal potential
+                if c <= 3:
+                    window = temp_board[row, c:c+4]
+                    if sum(window == player) >= 2 and sum(window == -player) == 0:
+                        score += sum(window == player)
+                
+                # Check vertical potential
+                if row <= 2:
+                    window = temp_board[row:row+4, c]
+                    if sum(window == player) >= 2 and sum(window == -player) == 0:
+                        score += sum(window == player)
+                
+                # Check diagonal (positive slope) potential
+                if row <= 2 and c <= 3:
+                    window = [temp_board[row+i, c+i] for i in range(4)]
+                    if sum(window == player) >= 2 and sum(window == -player) == 0:
+                        score += sum(window == player)
+                
+                # Check diagonal (negative slope) potential
+                if row >= 3 and c <= 3:
+                    window = [temp_board[row-i, c+i] for i in range(4)]
+                    if sum(window == player) >= 2 and sum(window == -player) == 0:
+                        score += sum(window == player)
+    
+    # Prefer center columns
+    score += (3 - abs(col - 3)) * 0.5
+    
+    return score

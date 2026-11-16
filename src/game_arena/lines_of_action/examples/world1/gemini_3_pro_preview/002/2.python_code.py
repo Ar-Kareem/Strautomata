@@ -1,0 +1,280 @@
+
+import time
+
+def policy(board) -> str:
+    """
+    Lines of Action bot for 8x8 board.
+    Implements Iterative Deepening Negamax with Alpha-Beta pruning.
+    """
+    
+    start_time = time.time()
+    TIME_LIMIT = 0.95  # Seconds
+    
+    # Constants
+    # Axes: (row_step, col_step) -> Horizontal, Vertical, Diag \, Diag /
+    AXES = [(0, 1), (1, 0), (1, 1), (1, -1)]
+    WIN_SCORE = 10_000_000
+    
+    class TimeoutException(Exception):
+        pass
+
+    def count_components(b, p):
+        """
+        Counts the number of connected components for player p using BFS.
+        8-way connectivity.
+        """
+        pieces = []
+        for r in range(8):
+            for c in range(8):
+                if b[r][c] == p:
+                    pieces.append((r, c))
+        
+        if not pieces: 
+            return 0
+        
+        visited = set()
+        comps = 0
+        for start_node in pieces:
+            if start_node in visited:
+                continue
+            comps += 1
+            # BFS to find all connected pieces in this group
+            q = [start_node]
+            visited.add(start_node)
+            while q:
+                curr_r, curr_c = q.pop(0)
+                # Check 8 neighbors
+                for dr in [-1, 0, 1]:
+                    for dc in [-1, 0, 1]:
+                        if dr == 0 and dc == 0: continue
+                        nr, nc = curr_r + dr, curr_c + dc
+                        if 0 <= nr < 8 and 0 <= nc < 8:
+                            if b[nr][nc] == p and (nr, nc) not in visited:
+                                visited.add((nr, nc))
+                                q.append((nr, nc))
+        return comps
+
+    def get_concentration_score(b, p):
+        """
+        Calculates a score based on how tightly grouped the pieces are.
+        Uses sum of squared distances to the Center of Mass.
+        """
+        pieces = []
+        sum_r, sum_c = 0, 0
+        for r in range(8):
+            for c in range(8):
+                if b[r][c] == p:
+                    pieces.append((r, c))
+                    sum_r += r
+                    sum_c += c
+        
+        n = len(pieces)
+        if n == 0: return 0
+        
+        com_r = sum_r / n
+        com_c = sum_c / n
+        
+        score = 0
+        for r, c in pieces:
+            score += (r - com_r)**2 + (c - com_c)**2
+        return score
+
+    def evaluate(b):
+        """
+        Heuristic evaluation from the perspective of Player 1.
+        Positive = Good for P1, Negative = Good for P-1.
+        """
+        # 1. Connectivity Check (Terminal States)
+        # Check P1
+        p1_comps = count_components(b, 1)
+        if p1_comps == 1:
+            return WIN_SCORE
+        
+        # Check P-1
+        p2_comps = count_components(b, -1)
+        if p2_comps == 1:
+            return -WIN_SCORE
+        
+        score = 0
+        
+        # 2. Component Penalty 
+        # Heavily penalize having multiple components.
+        # This drives the AI to merge groups.
+        score -= (p1_comps - 1) * 50_000
+        score += (p2_comps - 1) * 50_000
+        
+        # 3. Concentration
+        # Penalize spread (minimize distance score)
+        c1 = get_concentration_score(b, 1)
+        c2 = get_concentration_score(b, -1)
+        score -= c1 * 10
+        score += c2 * 10
+        
+        # 4. Centralization Bonus
+        # Small bonus for pieces in the inner 4x4 square
+        def center_val(p):
+            val = 0
+            for r in range(2, 6):
+                for c in range(2, 6):
+                    if b[r][c] == p:
+                        val += 50
+            return val
+            
+        score += center_val(1)
+        score -= center_val(-1)
+        
+        return score
+
+    def get_moves(b, p):
+        """Generates all legal moves for player p."""
+        moves = []
+        pieces = []
+        for r in range(8):
+            for c in range(8):
+                if b[r][c] == p:
+                    pieces.append((r, c))
+        
+        for r, c in pieces:
+            for dr, dc in AXES:
+                # 1. Count pieces on the line of action
+                count = 1 # The piece itself
+                
+                # Scan positive direction
+                cr, cc = r + dr, c + dc
+                while 0 <= cr < 8 and 0 <= cc < 8:
+                    if b[cr][cc] != 0: count += 1
+                    cr += dr
+                    cc += dc
+                
+                # Scan negative direction
+                cr, cc = r - dr, c - dc
+                while 0 <= cr < 8 and 0 <= cc < 8:
+                    if b[cr][cc] != 0: count += 1
+                    cr -= dr
+                    cc -= dc
+                
+                # 2. Verify moves in both directions
+                for sign in [1, -1]:
+                    step_r = dr * sign
+                    step_c = dc * sign
+                    
+                    target_r = r + (step_r * count)
+                    target_c = c + (step_c * count)
+                    
+                    # Bounds check
+                    if not (0 <= target_r < 8 and 0 <= target_c < 8):
+                        continue
+                    
+                    # Cannot land on own piece
+                    if b[target_r][target_c] == p:
+                        continue
+                    
+                    # Cannot jump over enemy pieces
+                    path_blocked = False
+                    # Check intermediate squares (1 to count-1)
+                    for k in range(1, count):
+                        ir = r + step_r * k
+                        ic = c + step_c * k
+                        if b[ir][ic] == -p:
+                            path_blocked = True
+                            break
+                    
+                    if not path_blocked:
+                        moves.append(((r, c), (target_r, target_c)))
+        return moves
+
+    def negamax(b, depth, alpha, beta, p):
+        # Time check
+        if (time.time() - start_time) > TIME_LIMIT:
+            raise TimeoutException()
+        
+        # Check Win/Loss based on previous move
+        # If the opponent (who just moved) connected their pieces, I lost.
+        opp_comps = count_components(b, -p)
+        if opp_comps == 1:
+            return -WIN_SCORE, None
+        
+        # If I am connected (rare, simultaneous win case), I win.
+        my_comps = count_components(b, p)
+        if my_comps == 1:
+            return WIN_SCORE, None
+
+        # Leaf node evaluation
+        if depth == 0:
+            val = evaluate(b)
+            return val * p, None
+            
+        moves = get_moves(b, p)
+        if not moves:
+            # Stalemated / No moves implies loss in most variants or just bad state
+            return -WIN_SCORE, None
+
+        # Move Ordering optimization
+        # Prioritize captures and moves toward center
+        def order_heuristic(m):
+            fr, to = m
+            score = 0
+            # Capture bonus
+            if b[to[0]][to[1]] == -p:
+                score += 1000
+            # Moves that end in center
+            if 2 <= to[0] <= 5 and 2 <= to[1] <= 5:
+                score += 50
+            return score
+            
+        moves.sort(key=order_heuristic, reverse=True)
+        
+        best_val = -float('inf')
+        best_move = moves[0]
+        
+        for m in moves:
+            fr, to = m
+            
+            # Apply move on a copy
+            new_b = [row[:] for row in b]
+            new_b[to[0]][to[1]] = p
+            new_b[fr[0]][fr[1]] = 0
+            
+            # Recursive call
+            val, _ = negamax(new_b, depth - 1, -beta, -alpha, -p)
+            val = -val
+            
+            if val > best_val:
+                best_val = val
+                best_move = m
+            
+            alpha = max(alpha, val)
+            if alpha >= beta:
+                break
+                
+        return best_val, best_move
+
+    # -------------------------------------------------------------------------
+    # Driver Code
+    # -------------------------------------------------------------------------
+    
+    # Generate initial valid moves for Player 1
+    valid_moves = get_moves(board, 1)
+    if not valid_moves:
+        return "0,0:0,0" # No moves available
+        
+    best_move_global = valid_moves[0]
+    
+    # Iterative Deepening
+    # Start from depth 1 and go deeper until time runs out
+    for d in range(1, 25):
+        try:
+            val, move = negamax(board, d, -float('inf'), float('inf'), 1)
+            if move:
+                best_move_global = move
+            
+            # If we found a guaranteed win, we can stop searching or just return
+            if val > (WIN_SCORE - 1000):
+                break
+                
+        except TimeoutException:
+            # Time is up, return the best move from the last completed depth
+            break
+            
+    f, t = best_move_global
+    return f"{f[0]},{f[1]}:{t[0]},{t[1]}"

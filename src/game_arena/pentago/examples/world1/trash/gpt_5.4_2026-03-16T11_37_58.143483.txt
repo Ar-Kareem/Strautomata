@@ -1,0 +1,345 @@
+The strategy for this policy is a fast tactical Pentago agent with strong safety guarantees:
+
+1. Enumerate all legal moves.
+2. If any move wins immediately, play it.
+3. Otherwise, reject moves that allow the opponent an immediate winning reply when possible.
+4. Score remaining moves using a heuristic based on:
+   - creating/maintaining your lines of length 2/3/4,
+   - blocking opponent lines,
+   - center preference,
+   - post-rotation tactical pressure,
+   - avoiding moves that create strong opponent threats.
+5. Use a shallow minimax-style evaluation:
+   - evaluate each of your moves,
+   - for each, consider all opponent replies,
+   - if opponent has a winning reply, heavily penalize,
+   - otherwise use the worst opponent heuristic response.
+6. Always fall back to the first legal move if needed, guaranteeing a legal output.
+
+<code>
+import math
+
+# Pentago policy
+# Returns move string: "row,col,quad,dir"
+
+DIRS = ("L", "R")
+
+
+def policy(you, opponent) -> str:
+    Y = [[int(you[r][c]) for c in range(6)] for r in range(6)]
+    O = [[int(opponent[r][c]) for c in range(6)] for r in range(6)]
+
+    moves = legal_moves(Y, O)
+    if not moves:
+        return "1,1,0,L"
+
+    # 1) Immediate winning move
+    for mv in moves:
+        y2, o2 = apply_move(Y, O, mv, me=True)
+        yw = has_five(y2)
+        ow = has_five(o2)
+        if yw and not ow:
+            return move_to_str(mv)
+        if yw and ow:
+            # draw by simultaneous five; keep as fallback if nothing better
+            pass
+
+    # 2) Minimax-ish selection with tactical filters
+    best_move = moves[0]
+    best_score = -10**18
+
+    for mv in ordered_moves(Y, O, moves):
+        y2, o2 = apply_move(Y, O, mv, me=True)
+
+        yw = has_five(y2)
+        ow = has_five(o2)
+        if yw and not ow:
+            return move_to_str(mv)
+        if yw and ow:
+            score = 500000  # draw via simultaneous line is often acceptable
+            if score > best_score:
+                best_score = score
+                best_move = mv
+            continue
+
+        # Opponent replies
+        opp_moves = legal_moves(o2, y2)  # from opponent perspective
+        if not opp_moves:
+            score = static_eval(y2, o2)
+            if score > best_score:
+                best_score = score
+                best_move = mv
+            continue
+
+        opp_can_win = False
+        worst_reply_score = 10**18
+
+        # check opponent immediate wins first
+        for omv in ordered_moves(o2, y2, opp_moves)[:80]:
+            o3, y3 = apply_move(o2, y2, omv, me=True)  # opponent is "me" in this perspective
+            ow2 = has_five(o3)
+            yw2 = has_five(y3)
+            if ow2 and not yw2:
+                opp_can_win = True
+                break
+
+            # our next immediate win count after their move
+            my_wins_next = count_immediate_wins(y3, o3, limit=6)
+            score_reply = static_eval(y3, o3) + 8000 * my_wins_next
+
+            if score_reply < worst_reply_score:
+                worst_reply_score = score_reply
+
+        if opp_can_win:
+            score = -900000000
+        else:
+            # our move quality before opponent acts
+            pressure = count_immediate_wins(y2, o2, limit=8)
+            opp_pressure = count_immediate_wins(o2, y2, limit=8)
+            score = static_eval(y2, o2) + 12000 * pressure - 9000 * opp_pressure
+            if worst_reply_score != 10**18:
+                score += worst_reply_score * 0.9
+
+        if score > best_score:
+            best_score = score
+            best_move = mv
+
+    return move_to_str(best_move)
+
+
+def move_to_str(mv):
+    r, c, q, d = mv
+    return f"{r+1},{c+1},{q},{d}"
+
+
+def legal_moves(me, opp):
+    moves = []
+    for r in range(6):
+        for c in range(6):
+            if me[r][c] == 0 and opp[r][c] == 0:
+                for q in range(4):
+                    for d in DIRS:
+                        moves.append((r, c, q, d))
+    return moves
+
+
+def ordered_moves(me, opp, moves):
+    scored = []
+    center_weights = [
+        [0, 1, 1, 1, 1, 0],
+        [1, 3, 4, 4, 3, 1],
+        [1, 4, 5, 5, 4, 1],
+        [1, 4, 5, 5, 4, 1],
+        [1, 3, 4, 4, 3, 1],
+        [0, 1, 1, 1, 1, 0],
+    ]
+    for mv in moves:
+        r, c, q, d = mv
+        score = center_weights[r][c] * 10
+        y2, o2 = apply_move(me, opp, mv, me=True)
+        yw = has_five(y2)
+        ow = has_five(o2)
+        if yw and not ow:
+            score += 10**9
+        elif yw and ow:
+            score += 10**6
+        score += rough_eval(y2, o2)
+        scored.append((score, mv))
+    scored.sort(reverse=True, key=lambda x: x[0])
+    return [mv for _, mv in scored]
+
+
+def apply_move(me, opp, mv, me=True):
+    r, c, q, d = mv
+    me2 = [row[:] for row in me]
+    opp2 = [row[:] for row in opp]
+    me2[r][c] = 1
+    rotate_both(me2, opp2, q, d)
+    return me2, opp2
+
+
+def rotate_both(me, opp, quad, dir_):
+    rs = 0 if quad < 2 else 3
+    cs = 0 if quad % 2 == 0 else 3
+
+    sub_me = [row[cs:cs+3] for row in me[rs:rs+3]]
+    sub_opp = [row[cs:cs+3] for row in opp[rs:rs+3]]
+
+    sub_me_r = rotate3(sub_me, dir_)
+    sub_opp_r = rotate3(sub_opp, dir_)
+
+    for i in range(3):
+        for j in range(3):
+            me[rs+i][cs+j] = sub_me_r[i][j]
+            opp[rs+i][cs+j] = sub_opp_r[i][j]
+
+
+def rotate3(a, dir_):
+    if dir_ == "R":
+        return [
+            [a[2][0], a[1][0], a[0][0]],
+            [a[2][1], a[1][1], a[0][1]],
+            [a[2][2], a[1][2], a[0][2]],
+        ]
+    else:  # L
+        return [
+            [a[0][2], a[1][2], a[2][2]],
+            [a[0][1], a[1][1], a[2][1]],
+            [a[0][0], a[1][0], a[2][0]],
+        ]
+
+
+def has_five(board):
+    for line in all_lines(board):
+        cnt = 0
+        for v in line:
+            if v:
+                cnt += 1
+                if cnt >= 5:
+                    return True
+            else:
+                cnt = 0
+    return False
+
+
+def all_lines(board):
+    lines = []
+    # rows
+    for r in range(6):
+        lines.append(board[r][:])
+    # cols
+    for c in range(6):
+        lines.append([board[r][c] for r in range(6)])
+    # diagonals down-right
+    for start_c in range(6):
+        line = []
+        r, c = 0, start_c
+        while r < 6 and c < 6:
+            line.append(board[r][c])
+            r += 1
+            c += 1
+        if len(line) >= 5:
+            lines.append(line)
+    for start_r in range(1, 6):
+        line = []
+        r, c = start_r, 0
+        while r < 6 and c < 6:
+            line.append(board[r][c])
+            r += 1
+            c += 1
+        if len(line) >= 5:
+            lines.append(line)
+    # diagonals down-left
+    for start_c in range(6):
+        line = []
+        r, c = 0, start_c
+        while r < 6 and c >= 0:
+            line.append(board[r][c])
+            r += 1
+            c -= 1
+        if len(line) >= 5:
+            lines.append(line)
+    for start_r in range(1, 6):
+        line = []
+        r, c = start_r, 5
+        while r < 6 and c >= 0:
+            line.append(board[r][c])
+            r += 1
+            c -= 1
+        if len(line) >= 5:
+            lines.append(line)
+    return lines
+
+
+def static_eval(me, opp):
+    my5 = has_five(me)
+    op5 = has_five(opp)
+    if my5 and not op5:
+        return 10**9
+    if op5 and not my5:
+        return -10**9
+    if my5 and op5:
+        return 0
+
+    score = 0
+    score += line_features(me) * 1.0
+    score -= line_features(opp) * 1.1
+
+    # positional preference
+    pos = [
+        [1, 2, 2, 2, 2, 1],
+        [2, 3, 4, 4, 3, 2],
+        [2, 4, 5, 5, 4, 2],
+        [2, 4, 5, 5, 4, 2],
+        [2, 3, 4, 4, 3, 2],
+        [1, 2, 2, 2, 2, 1],
+    ]
+    for r in range(6):
+        for c in range(6):
+            if me[r][c]:
+                score += pos[r][c] * 8
+            elif opp[r][c]:
+                score -= pos[r][c] * 8
+
+    return int(score)
+
+
+def rough_eval(me, opp):
+    return line_features(me) - line_features(opp)
+
+
+def line_features(board):
+    total = 0
+    for line in all_lines(board):
+        n = len(line)
+        for k in (5, 6):
+            if n < k:
+                continue
+            for i in range(n - k + 1):
+                seg = line[i:i+k]
+                stones = sum(seg)
+                if k == 5:
+                    if stones == 5:
+                        total += 500000
+                    elif stones == 4:
+                        total += 12000
+                    elif stones == 3:
+                        total += 1200
+                    elif stones == 2:
+                        total += 120
+                    elif stones == 1:
+                        total += 8
+                else:  # k == 6
+                    if stones == 5:
+                        total += 20000
+                    elif stones == 4:
+                        total += 2400
+                    elif stones == 3:
+                        total += 240
+                    elif stones == 2:
+                        total += 20
+
+        # consecutive runs bonus
+        run = 0
+        for v in line:
+            if v:
+                run += 1
+            else:
+                if run >= 2:
+                    total += run * run * 150
+                run = 0
+        if run >= 2:
+            total += run * run * 150
+    return total
+
+
+def count_immediate_wins(me, opp, limit=999):
+    cnt = 0
+    for mv in ordered_moves(me, opp, legal_moves(me, opp))[:120]:
+        y2, o2 = apply_move(me, opp, mv, me=True)
+        if has_five(y2) and not has_five(o2):
+            cnt += 1
+            if cnt >= limit:
+                return cnt
+    return cnt
+</code>

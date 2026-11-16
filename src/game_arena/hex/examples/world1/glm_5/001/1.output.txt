@@ -1,0 +1,180 @@
+The strategy for this policy is to use a **Minimax search with Alpha-Beta pruning** guided by a **Shortest Path Heuristic (Virtual Connection)**.
+
+1.  **Board Representation**: The board is treated as a graph where nodes are empty cells or friendly stones. Enemy stones are removed from the graph.
+2.  **Heuristic Evaluation**: We calculate the minimum number of stones required to connect the two sides (Top-Bottom for Black, Left-Right for White). This is computed efficiently using a **0-1 Breadth-First Search**, where traversing an empty cell costs 1 and traversing a friendly cell costs 0. The score is the difference between the opponent's distance and our distance.
+3.  **Search Algorithm**:
+    *   **Depth 1**: Evaluate all legal moves to find immediate wins or block opponent wins.
+    *   **Depth 2**: For the most promising moves, simulate the opponent's best response to ensure the move is robust.
+4.  **Move Ordering**: Moves are prioritized based on the Depth 1 score to maximize pruning efficiency.
+5.  **Connectivity**: The specific Hex neighbor definition provided in the prompt is strictly followed.
+
+<code>
+import collections
+import random
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    N = 11
+    me_set = set(me)
+    opp_set = set(opp)
+    occupied = me_set | opp_set
+    
+    # Neighbors definition based on prompt:
+    # 8 neighbors excluding (r-1, c-1) and (r+1, c+1)
+    NEIGHBOR_OFFSETS = [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0)]
+    
+    def get_neighbors(r, c):
+        for dr, dc in NEIGHBOR_OFFSETS:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < N and 0 <= nc < N:
+                yield nr, nc
+
+    # 0-1 BFS to find shortest path cost (number of empty cells to fill)
+    def calculate_distance(player_stones, opponent_stones, player_color):
+        dist = [[float('inf')] * N for _ in range(N)]
+        dq = collections.deque()
+        
+        # Define Start and Target based on color
+        # Black (b): Top (row 0) -> Bottom (row 10)
+        # White (w): Left (col 0) -> Right (col 10)
+        if player_color == 'b':
+            start_nodes = [(0, c) for c in range(N)]
+            is_target = lambda r, c: r == N - 1
+        else:
+            start_nodes = [(r, 0) for r in range(N)]
+            is_target = lambda r, c: c == N - 1
+            
+        for r, c in start_nodes:
+            if (r, c) in opponent_stones:
+                continue
+            cost = 0 if (r, c) in player_stones else 1
+            dist[r][c] = cost
+            if cost == 0:
+                dq.appendleft((r, c))
+            else:
+                dq.append((r, c))
+                
+        while dq:
+            r, c = dq.popleft()
+            d = dist[r][c]
+            
+            if is_target(r, c):
+                return d
+            
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) in opponent_stones:
+                    continue
+                
+                cost = 0 if (nr, nc) in player_stones else 1
+                nd = d + cost
+                
+                if nd < dist[nr][nc]:
+                    dist[nr][nc] = nd
+                    if cost == 0:
+                        dq.appendleft((nr, nc))
+                    else:
+                        dq.append((nr, nc))
+                        
+        return float('inf')
+
+    def evaluate(my_stones, opp_stones, my_color):
+        opp_color = 'w' if my_color == 'b' else 'b'
+        my_dist = calculate_distance(my_stones, opp_stones, my_color)
+        opp_dist = calculate_distance(opp_stones, my_stones, opp_color)
+        # We want to maximize (Opponent Difficulty - My Difficulty)
+        return opp_dist - my_dist
+
+    # 1. Identify all legal moves
+    legal_moves = []
+    for r in range(N):
+        for c in range(N):
+            if (r, c) not in occupied:
+                legal_moves.append((r, c))
+    
+    # If board is empty, play center
+    if not occupied:
+        return (N // 2, N // 2)
+
+    # 2. Depth 1 Evaluation
+    # Check for immediate win or evaluate positions
+    scored_moves = []
+    opp_color = 'w' if color == 'b' else 'b'
+    
+    # Calculate current distances for immediate threat/wins check
+    # My current distance
+    my_curr_dist = calculate_distance(me_set, opp_set, color)
+    # Opponent current distance (if they were to play? No, dist from current state)
+    opp_curr_dist = calculate_distance(opp_set, me_set, opp_color)
+
+    for r, c in legal_moves:
+        new_me = me_set | {(r, c)}
+        
+        # Check if I win
+        if calculate_distance(new_me, opp_set, color) == 0:
+            return (r, c)
+            
+        score = evaluate(new_me, opp_set, color)
+        scored_moves.append(((r, c), score))
+    
+    # Sort moves by score descending
+    scored_moves.sort(key=lambda x: x[1], reverse=True)
+    
+    # Limit candidates for Depth 2 search to top moves to fit in time
+    # 11x11 has at most 121 moves. checking all is fine, but we can prune.
+    # Let's take top 15 candidates
+    candidates = scored_moves[:15]
+    
+    # 3. Depth 2 Search (Minimax)
+    best_move = scored_moves[0][0] # Default to best depth 1 move
+    best_value = -float('inf')
+    
+    for move, d1_score in candidates:
+        r, c = move
+        new_me = me_set | {(r, c)}
+        
+        # Find opponent's best response to this move
+        # Generate opponent responses (neighbors of occupied + random empty if needed)
+        opp_legal = []
+        # Focus on neighbors for opponent moves
+        potential_opp_moves = set()
+        for gr, gc in occupied | {(r,c)}:
+            for nr, nc in get_neighbors(gr, gc):
+                if (nr, nc) not in new_me and (nr, nc) not in opp_set:
+                    potential_opp_moves.add((nr, nc))
+        
+        # If for some reason no neighbors (shouldn't happen), add some random
+        if not potential_opp_moves:
+             opp_legal = [legal_moves[0]] if legal_moves else []
+        else:
+            opp_legal = list(potential_opp_moves)
+            
+        min_opponent_score = float('inf')
+        
+        # We can optimize: if opponent has a winning move, this branch value is -infinity
+        # Check if opponent can win immediately
+        found_opp_win = False
+        for o_r, o_c in opp_legal:
+            new_opp = opp_set | {(o_r, o_c)}
+            if calculate_distance(new_opp, new_me, opp_color) == 0:
+                # Opponent wins, this move 'move' is bad (score -inf)
+                min_opponent_score = -float('inf')
+                found_opp_win = True
+                break
+        
+        if found_opp_win:
+            current_value = -float('inf')
+        else:
+            # Evaluate best opponent move (heuristic)
+            # We don't need to go depth 3, just evaluate opponent positions
+            for o_r, o_c in opp_legal:
+                new_opp = opp_set | {(o_r, o_c)}
+                score = evaluate(new_me, new_opp, color) # Score from my perspective
+                if score < min_opponent_score:
+                    min_opponent_score = score
+            current_value = min_opponent_score
+            
+        if current_value > best_value:
+            best_value = current_value
+            best_move = move
+
+    return best_move
+</code>

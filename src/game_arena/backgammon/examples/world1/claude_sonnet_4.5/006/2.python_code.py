@@ -1,0 +1,215 @@
+
+def policy(state: dict) -> str:
+    import itertools
+    
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+    dice = state['dice']
+    
+    if not dice:
+        return "H:P,P"
+    
+    # Generate all legal moves
+    legal_moves = generate_legal_moves(state)
+    
+    if not legal_moves:
+        return "H:P,P"
+    
+    # Evaluate and select best move
+    best_move = None
+    best_score = float('-inf')
+    
+    for move in legal_moves:
+        score = evaluate_move(state, move)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move
+
+def generate_legal_moves(state):
+    my_pts = state['my_pts'][:]
+    opp_pts = state['opp_pts'][:]
+    my_bar = state['my_bar']
+    dice = sorted(state['dice'], reverse=True)
+    
+    if not dice:
+        return ["H:P,P"]
+    
+    moves = []
+    
+    # Handle doubles
+    if len(dice) == 2 and dice[0] == dice[1]:
+        die = dice[0]
+        moves.extend(generate_doubles_moves(my_pts, opp_pts, my_bar, die))
+    else:
+        # Regular moves
+        if len(dice) == 1:
+            moves.extend(generate_single_die_moves(my_pts, opp_pts, my_bar, dice[0], "H"))
+        else:
+            high_die, low_die = dice[0], dice[1]
+            moves.extend(generate_two_dice_moves(my_pts, opp_pts, my_bar, high_die, low_die))
+    
+    return moves if moves else ["H:P,P"]
+
+def can_bear_off(my_pts):
+    return all(my_pts[i] == 0 for i in range(6, 24))
+
+def apply_move_from(pts, bar, from_loc, die, opp_pts):
+    pts = pts[:]
+    opp_pts = opp_pts[:]
+    new_bar = bar
+    
+    if from_loc == -1:  # Bar
+        if new_bar <= 0:
+            return None, None, None
+        dest = 24 - die
+        if dest < 0 or dest > 23:
+            return None, None, None
+        if opp_pts[dest] >= 2:
+            return None, None, None
+        new_bar -= 1
+        pts[dest] += 1
+        return pts, opp_pts, new_bar
+    else:
+        if pts[from_loc] <= 0:
+            return None, None, None
+        
+        dest = from_loc - die
+        
+        # Bearing off
+        if dest < 0:
+            if not can_bear_off(pts):
+                return None, None, None
+            if dest < -1:
+                # Can only bear off from further if no checkers on closer points
+                for i in range(from_loc):
+                    if pts[i] > 0:
+                        return None, None, None
+            pts[from_loc] -= 1
+            return pts, opp_pts, new_bar
+        
+        # Normal move
+        if opp_pts[dest] >= 2:
+            return None, None, None
+        pts[from_loc] -= 1
+        pts[dest] += 1
+        return pts, opp_pts, new_bar
+
+def generate_single_die_moves(my_pts, opp_pts, my_bar, die, order):
+    moves = []
+    
+    # Must move from bar first
+    if my_bar > 0:
+        result = apply_move_from(my_pts, my_bar, -1, die, opp_pts)
+        if result[0] is not None:
+            moves.append(f"{order}:B,P")
+        return moves if moves else [f"{order}:P,P"]
+    
+    # Try moving from each point
+    for i in range(24):
+        result = apply_move_from(my_pts, my_bar, i, die, opp_pts)
+        if result[0] is not None:
+            moves.append(f"{order}:A{i},P")
+    
+    return moves if moves else [f"{order}:P,P"]
+
+def generate_two_dice_moves(my_pts, opp_pts, my_bar, high_die, low_die):
+    moves = []
+    
+    # Try high first, then low
+    for from1 in get_possible_froms(my_pts, my_bar):
+        pts1, opp1, bar1 = apply_move_from(my_pts, my_bar, from1, high_die, opp_pts)
+        if pts1 is None:
+            continue
+        
+        for from2 in get_possible_froms(pts1, bar1):
+            pts2, opp2, bar2 = apply_move_from(pts1, bar1, from2, low_die, opp1)
+            if pts2 is not None:
+                f1 = "B" if from1 == -1 else f"A{from1}"
+                f2 = "B" if from2 == -1 else f"A{from2}"
+                moves.append(f"H:{f1},{f2}")
+        
+        # If second move not possible, try just first
+        if not any(m.startswith("H:") and m.split(',')[0].endswith(("B" if from1 == -1 else f"A{from1}")) for m in moves):
+            f1 = "B" if from1 == -1 else f"A{from1}"
+            moves.append(f"H:{f1},P")
+    
+    # Try low first, then high
+    for from1 in get_possible_froms(my_pts, my_bar):
+        pts1, opp1, bar1 = apply_move_from(my_pts, my_bar, from1, low_die, opp_pts)
+        if pts1 is None:
+            continue
+        
+        for from2 in get_possible_froms(pts1, bar1):
+            pts2, opp2, bar2 = apply_move_from(pts1, bar1, from2, high_die, opp1)
+            if pts2 is not None:
+                f1 = "B" if from1 == -1 else f"A{from1}"
+                f2 = "B" if from2 == -1 else f"A{from2}"
+                moves.append(f"L:{f1},{f2}")
+        
+        f1 = "B" if from1 == -1 else f"A{from1}"
+        moves.append(f"L:{f1},P")
+    
+    return moves if moves else ["H:P,P"]
+
+def generate_doubles_moves(my_pts, opp_pts, my_bar, die):
+    # Simplified: try to use die up to 4 times
+    moves = []
+    moves.append("H:P,P")  # Always have fallback
+    
+    # Try various combinations (simplified)
+    for from1 in get_possible_froms(my_pts, my_bar):
+        f1 = "B" if from1 == -1 else f"A{from1}"
+        pts1, opp1, bar1 = apply_move_from(my_pts, my_bar, from1, die, opp_pts)
+        if pts1 is not None:
+            for from2 in get_possible_froms(pts1, bar1):
+                f2 = "B" if from2 == -1 else f"A{from2}"
+                moves.append(f"H:{f1},{f2}")
+    
+    return moves
+
+def get_possible_froms(my_pts, my_bar):
+    if my_bar > 0:
+        return [-1]
+    return [-1] + list(range(24))
+
+def evaluate_move(state, move_str):
+    # Simulate the move and evaluate resulting position
+    my_pts = state['my_pts'][:]
+    opp_pts = state['opp_pts'][:]
+    
+    score = 0.0
+    
+    # Reward bearing off
+    score += state['my_off'] * 100
+    
+    # Reward checkers in home board
+    for i in range(6):
+        score += my_pts[i] * 10
+    
+    # Reward making points (2+ checkers)
+    for i in range(24):
+        if my_pts[i] >= 2:
+            score += 20
+            if i < 6:  # Home board points worth more
+                score += 10
+    
+    # Penalize blots (exposed checkers)
+    for i in range(24):
+        if my_pts[i] == 1:
+            score -= 15
+            if i > 18:  # Blots in opponent's home are very bad
+                score -= 20
+    
+    # Penalize bar checkers
+    score -= state['my_bar'] * 50
+    
+    # Reward hitting opponent
+    score += state['opp_bar'] * 30
+    
+    return score

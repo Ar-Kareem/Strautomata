@@ -1,0 +1,282 @@
+
+#!/usr/bin/env python3
+import random
+import math
+import time
+from copy import deepcopy
+
+ROWS = 6
+COLUMNS = 7
+PLAYER = 1
+OPPONENT = -1
+
+# Adjustable parameters
+MAX_TIME = 0.95  # seconds; keep some margin
+BASE_DEPTH = 5   # base search depth (will adapt based on empties)
+INF = 10**9
+
+def valid_locations(board):
+    cols = []
+    for c in range(COLUMNS):
+        if board[0][c] == 0:
+            cols.append(c)
+    return cols
+
+def get_next_open_row(board, col):
+    for r in range(ROWS-1, -1, -1):
+        if board[r][col] == 0:
+            return r
+    return None
+
+def drop_piece(board, row, col, piece):
+    board[row][col] = piece
+
+def winning_move(board, piece):
+    # horizontal
+    for r in range(ROWS):
+        for c in range(COLUMNS-3):
+            if all(board[r][c+i] == piece for i in range(4)):
+                return True
+    # vertical
+    for c in range(COLUMNS):
+        for r in range(ROWS-3):
+            if all(board[r+i][c] == piece for i in range(4)):
+                return True
+    # positive diagonal
+    for r in range(ROWS-3):
+        for c in range(COLUMNS-3):
+            if all(board[r+i][c+i] == piece for i in range(4)):
+                return True
+    # negative diagonal
+    for r in range(3, ROWS):
+        for c in range(COLUMNS-3):
+            if all(board[r-i][c+i] == piece for i in range(4)):
+                return True
+    return False
+
+def is_terminal_node(board):
+    return winning_move(board, PLAYER) or winning_move(board, OPPONENT) or len(valid_locations(board)) == 0
+
+def score_window(window, piece):
+    score = 0
+    opp_piece = OPPONENT if piece == PLAYER else PLAYER
+    count_piece = window.count(piece)
+    count_opp = window.count(opp_piece)
+    count_empty = window.count(0)
+
+    if count_piece == 4:
+        score += 100000
+    elif count_piece == 3 and count_empty == 1:
+        score += 100
+    elif count_piece == 2 and count_empty == 2:
+        score += 10
+
+    if count_opp == 3 and count_empty == 1:
+        score -= 80  # immediate threat by opponent is bad
+    elif count_opp == 2 and count_empty == 2:
+        score -= 5
+
+    return score
+
+def score_position(board, piece):
+    score = 0
+    # Score center column
+    center_array = [board[r][COLUMNS//2] for r in range(ROWS)]
+    center_count = center_array.count(piece)
+    score += center_count * 6
+
+    # Horizontal
+    for r in range(ROWS):
+        row_array = [board[r][c] for c in range(COLUMNS)]
+        for c in range(COLUMNS - 3):
+            window = row_array[c:c+4]
+            score += score_window(window, piece)
+    # Vertical
+    for c in range(COLUMNS):
+        col_array = [board[r][c] for r in range(ROWS)]
+        for r in range(ROWS - 3):
+            window = col_array[r:r+4]
+            score += score_window(window, piece)
+    # Positive diagonal
+    for r in range(ROWS - 3):
+        for c in range(COLUMNS - 3):
+            window = [board[r+i][c+i] for i in range(4)]
+            score += score_window(window, piece)
+    # Negative diagonal
+    for r in range(3, ROWS):
+        for c in range(COLUMNS - 3):
+            window = [board[r-i][c+i] for i in range(4)]
+            score += score_window(window, piece)
+
+    return score
+
+def order_moves(board, moves, piece):
+    # order by heuristic score after making move (descending)
+    scored = []
+    for col in moves:
+        row = get_next_open_row(board, col)
+        if row is None:
+            scored.append((0, col))
+            continue
+        temp = deepcopy(board)
+        temp[row][col] = piece
+        sc = score_position(temp, piece)
+        scored.append((sc, col))
+    scored.sort(reverse=True)
+    return [col for (_, col) in scored]
+
+def minimax(board, depth, alpha, beta, maximizingPlayer, start_time):
+    valid_cols = valid_locations(board)
+    is_terminal = is_terminal_node(board)
+    # Time cutoff
+    if time.time() - start_time > MAX_TIME:
+        # abort search: return heuristic evaluation
+        return (None, score_position(board, PLAYER))
+
+    if depth == 0 or is_terminal:
+        if is_terminal:
+            if winning_move(board, PLAYER):
+                return (None, INF)
+            elif winning_move(board, OPPONENT):
+                return (None, -INF)
+            else:  # no more moves
+                return (None, 0)
+        else:
+            return (None, score_position(board, PLAYER))
+
+    if maximizingPlayer:
+        value = -math.inf
+        best_col = random.choice(valid_cols) if valid_cols else None
+        ordered_cols = order_moves(board, valid_cols, PLAYER)
+        for col in ordered_cols:
+            row = get_next_open_row(board, col)
+            if row is None:
+                continue
+            b_copy = deepcopy(board)
+            drop_piece(b_copy, row, col, PLAYER)
+            new_score = minimax(b_copy, depth-1, alpha, beta, False, start_time)[1]
+            if new_score > value:
+                value = new_score
+                best_col = col
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+            # time check
+            if time.time() - start_time > MAX_TIME:
+                break
+        return best_col, value
+    else:
+        value = math.inf
+        best_col = random.choice(valid_cols) if valid_cols else None
+        ordered_cols = order_moves(board, valid_cols, OPPONENT)
+        for col in ordered_cols:
+            row = get_next_open_row(board, col)
+            if row is None:
+                continue
+            b_copy = deepcopy(board)
+            drop_piece(b_copy, row, col, OPPONENT)
+            new_score = minimax(b_copy, depth-1, alpha, beta, True, start_time)[1]
+            if new_score < value:
+                value = new_score
+                best_col = col
+            beta = min(beta, value)
+            if alpha >= beta:
+                break
+            if time.time() - start_time > MAX_TIME:
+                break
+        return best_col, value
+
+def immediate_win_or_block(board):
+    valid = valid_locations(board)
+    # Check immediate win for us
+    for col in valid:
+        row = get_next_open_row(board, col)
+        if row is None:
+            continue
+        temp = deepcopy(board)
+        temp[row][col] = PLAYER
+        if winning_move(temp, PLAYER):
+            return col
+    # Check immediate win for opponent and block
+    for col in valid:
+        row = get_next_open_row(board, col)
+        if row is None:
+            continue
+        temp = deepcopy(board)
+        temp[row][col] = OPPONENT
+        if winning_move(temp, OPPONENT):
+            return col
+    return None
+
+def adaptive_depth(board):
+    empties = sum(1 for r in range(ROWS) for c in range(COLUMNS) if board[r][c] == 0)
+    # fewer empties => can search deeper
+    if empties >= 36:
+        return max(3, BASE_DEPTH - 2)
+    elif empties >= 28:
+        return max(4, BASE_DEPTH - 1)
+    elif empties >= 20:
+        return BASE_DEPTH
+    elif empties >= 12:
+        return BASE_DEPTH + 1
+    else:
+        return BASE_DEPTH + 2
+
+def fallback_move(board):
+    valid = valid_locations(board)
+    if not valid:
+        return 0
+    # prefer center, then neighbors
+    order = [3,2,4,1,5,0,6]
+    for c in order:
+        if c in valid:
+            return c
+    return random.choice(valid)
+
+def policy(board):
+    """
+    board: list[list[int]] 6x7 with 0 empty, 1=us, -1=opponent
+    returns: int column 0-6 which is not full
+    """
+    start_time = time.time()
+    # Safety: ensure board dimensions
+    if not board or len(board) != ROWS or any(len(row) != COLUMNS for row in board):
+        # invalid board; choose center
+        return 3
+
+    valid = valid_locations(board)
+    if not valid:
+        return 0  # no legal move, but must return something
+
+    # 1) Immediate win or block
+    col = immediate_win_or_block(board)
+    if col is not None:
+        if board[0][col] == 0:
+            return col
+
+    # 2) If center available, consider it early as default bias
+    if 3 in valid and len(valid) == COLUMNS:
+        # opening move: center
+        return 3
+
+    # 3) Minimax with alpha-beta
+    depth = adaptive_depth(board)
+    try:
+        best_col, best_score = minimax(board, depth, -math.inf, math.inf, True, start_time)
+    except Exception:
+        best_col = None
+
+    # If minimax returned None or illegal, fallback
+    if best_col is None or board[0][best_col] != 0:
+        # As extra safety: attempt to find any winning move (maybe we timed out)
+        col = immediate_win_or_block(board)
+        if col is not None and board[0][col] == 0:
+            return col
+        return fallback_move(board)
+
+    return best_col
+
+# If this module is run directly, demonstrate with an empty board move
+if __name__ == "__main__":
+    empty_board = [[0]*COLUMNS for _ in range(ROWS)]
+    print("Demo move (empty board):", policy(empty_board))

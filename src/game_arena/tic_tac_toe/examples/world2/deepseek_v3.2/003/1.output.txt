@@ -1,0 +1,229 @@
+<thinking>
+We need to design a policy for 4x4 Tic Tac Toe. The board is 4x4, with 0 empty, 1 (us), -1 (opponent). The goal is to win by placing four of our marks in a row, column, or diagonal. This is a larger board than traditional 3x3, so we need to think about strategy.
+
+We must write a function `policy(board)` that returns a tuple (row, col). The code must run within 1 second.
+
+Approach: Since the board is 4x4, the game tree is large. However, we can implement a simple but decent strategy. We can do a minimax with alpha-beta pruning with limited depth? But given 1 second time limit, we can probably run a decent depth for 4x4.
+
+Alternatively, we could use heuristic evaluation and a depth-limited minimax. We can also consider that we are player 1 (us) and opponent is -1.
+
+We need to consider winning moves, blocking opponent's winning moves, creating forks, etc.
+
+Let's design a simple evaluation function:
+- For each row, column, diagonal, count the number of our pieces and opponent pieces.
+- If a line has both our and opponent pieces, it's dead (no one can win there). But we can still count for potential?
+- We can assign scores for each line based on number of our pieces and empty squares.
+Example: if we have 3 in a line with 1 empty, that's a winning threat. Similarly for opponent.
+
+Evaluation function could be:
+score = (sum of our threats) - (sum of opponent threats) + some center control? For 4x4, the center 4 squares (1,1),(1,2),(2,1),(2,2) are more valuable.
+
+But we can implement minimax with depth maybe 3 or 4? Since 4x4, branching factor at start is up to 16, but reduces quickly. At depth 4, that's 16*15*14*13 ~ 43k nodes, which is fine. But minimax with alpha-beta will be fine.
+
+We can also add move ordering: prioritize winning moves, then blocking, then center, etc.
+
+We'll implement minimax with alpha-beta pruning, depth limited to maybe 5 or until game over. We'll use a simple evaluation function that counts potential lines.
+
+Let's define the winning lines: rows (4), columns (4), two main diagonals (top-left to bottom-right, top-right to bottom-left). That's 10 lines.
+
+We can precompute all lines.
+
+Evaluation function:
+For each line:
+- count us, opponent, empty.
+- if count_us == 4: we win -> evaluate as +infinity.
+- if count_opponent == 4: opponent wins -> -infinity.
+- if count_opponent > 0 and count_us > 0: line is dead, score 0.
+- else if count_us == 3 and empty == 1: score 100 (big threat)
+- else if count_opponent == 3 and empty == 1: score -100 (block threat)
+- else if count_us == 2 and empty == 2: score 10 (potential)
+- else if count_opponent == 2 and empty == 2: score -10
+- else if count_us == 1 and empty == 3: score 1
+- else if count_opponent == 1 and empty == 3: score -1
+- else: 0
+
+Also add a small bonus for center squares: if we occupy center squares (positions (1,1),(1,2),(2,1),(2,2)), add small bonus.
+
+We'll sum over all lines? But each square belongs to multiple lines, so summing per line might overcount. But it's okay for heuristic.
+
+Alternatively, we can just compute the sum for each line and add.
+
+We'll implement minimax recursively. Since we are the maximizing player (us as 1). The opponent is minimizing.
+
+We'll also implement a function to check if the game is over (someone has 4 in a line or board full).
+
+We'll use depth limit, say 5. If depth == 0 or game over, return evaluation.
+
+We'll also prioritize moves: first check winning moves for us, then blocking moves (opponent winning), then other moves sorted by heuristic (maybe center moves first).
+
+Implementation steps in policy:
+1. Check if there is a winning move for us (immediate win). If yes, return that move.
+2. Check if opponent has a winning move (immediate threat). If yes, block it.
+3. Otherwise, run minimax with alpha-beta to depth 5 to choose best move.
+
+But we need to be careful: if we have multiple winning moves, any is fine. Similarly for blocking.
+
+We'll implement helper functions:
+- get_available_moves(board): returns list of (r,c) where board[r][c]==0.
+- check_winner(board): returns 1 if we win, -1 if opponent wins, 0 otherwise.
+- evaluate(board): returns heuristic score.
+
+We'll also consider that we are player 1, opponent -1.
+
+Let's code.
+
+Potential improvements: iterative deepening? But depth 5 may be enough given time.
+
+We'll also add transposition table? Might not be necessary.
+
+Let's design the code.
+
+</thinking>
+<code>
+import math
+import random
+from typing import Optional
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Precompute all winning lines: each line is a list of (r,c)
+    lines = []
+    # rows
+    for r in range(4):
+        lines.append([(r, c) for c in range(4)])
+    # columns
+    for c in range(4):
+        lines.append([(r, c) for r in range(4)])
+    # diagonals
+    lines.append([(i, i) for i in range(4)])  # main diag
+    lines.append([(i, 3 - i) for i in range(4)])  # anti diag
+
+    # Helper to get list of empty cells
+    def empty_cells(b):
+        return [(r, c) for r in range(4) for c in range(4) if b[r][c] == 0]
+
+    # Check for winner (1, -1, or 0)
+    def get_winner(b):
+        for line in lines:
+            values = [b[r][c] for (r, c) in line]
+            if all(v == 1 for v in values):
+                return 1
+            if all(v == -1 for v in values):
+                return -1
+        return 0
+
+    # Evaluation function
+    def evaluate(b):
+        score = 0
+        # center bonus
+        center_squares = [(1, 1), (1, 2), (2, 1), (2, 2)]
+        for r, c in center_squares:
+            if b[r][c] == 1:
+                score += 2
+            elif b[r][c] == -1:
+                score -= 2
+        # line evaluation
+        for line in lines:
+            us = 0
+            them = 0
+            empty = 0
+            for r, c in line:
+                val = b[r][c]
+                if val == 1:
+                    us += 1
+                elif val == -1:
+                    them += 1
+                else:
+                    empty += 1
+            if us > 0 and them > 0:
+                continue  # dead line, no threat
+            if us == 4:
+                score += 10000
+            elif them == 4:
+                score -= 10000
+            elif us == 3 and empty == 1:
+                score += 100
+            elif them == 3 and empty == 1:
+                score -= 100
+            elif us == 2 and empty == 2:
+                score += 10
+            elif them == 2 and empty == 2:
+                score -= 10
+            elif us == 1 and empty == 3:
+                score += 1
+            elif them == 1 and empty == 3:
+                score -= 1
+        return score
+
+    # Minimax with alpha-beta, depth limited
+    def minimax(b, depth, alpha, beta, maximizing):
+        winner = get_winner(b)
+        if winner != 0:
+            return winner * 100000  # large number, positive for us, negative for opponent
+        if depth == 0 or not empty_cells(b):
+            return evaluate(b)
+
+        if maximizing:
+            value = -math.inf
+            moves = empty_cells(b)
+            # move ordering: maybe sort by heuristic? For simplicity, random
+            random.shuffle(moves)
+            for r, c in moves:
+                b[r][c] = 1
+                value = max(value, minimax(b, depth - 1, alpha, beta, False))
+                b[r][c] = 0
+                if value >= beta:
+                    break
+                alpha = max(alpha, value)
+            return value
+        else:
+            value = math.inf
+            moves = empty_cells(b)
+            random.shuffle(moves)
+            for r, c in moves:
+                b[r][c] = -1
+                value = min(value, minimax(b, depth - 1, alpha, beta, True))
+                b[r][c] = 0
+                if value <= alpha:
+                    break
+                beta = min(beta, value)
+            return value
+
+    # First, check immediate winning move for us
+    for r in range(4):
+        for c in range(4):
+            if board[r][c] == 0:
+                board[r][c] = 1
+                if get_winner(board) == 1:
+                    board[r][c] = 0
+                    return (r, c)
+                board[r][c] = 0
+
+    # Then, check opponent's winning move (block)
+    for r in range(4):
+        for c in range(4):
+            if board[r][c] == 0:
+                board[r][c] = -1
+                if get_winner(board) == -1:
+                    board[r][c] = 0
+                    return (r, c)
+                board[r][c] = 0
+
+    # No immediate win/block, run minimax with depth
+    best_move = None
+    best_value = -math.inf
+    moves = empty_cells(board)
+    if not moves:
+        return (0, 0)  # should not happen if game not over
+    # Shuffle to add variety
+    random.shuffle(moves)
+    for r, c in moves:
+        board[r][c] = 1
+        move_value = minimax(board, depth=4, alpha=-math.inf, beta=math.inf, maximizing=False)
+        board[r][c] = 0
+        if move_value > best_value:
+            best_value = move_value
+            best_move = (r, c)
+    if best_move is None:
+        best_move = moves[0]
+    return best_move
+</code>

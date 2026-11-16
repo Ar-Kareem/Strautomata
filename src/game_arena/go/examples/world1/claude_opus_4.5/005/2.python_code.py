@@ -1,0 +1,111 @@
+
+import random
+from collections import deque
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    me_set = set(me)
+    opp_set = set(opponent)
+    occupied = me_set | opp_set
+    
+    def neighbors(r, c):
+        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+            nr, nc = r+dr, c+dc
+            if 1 <= nr <= 19 and 1 <= nc <= 19:
+                yield nr, nc
+    
+    def get_group_and_liberties(r, c, stones_set):
+        if (r, c) not in stones_set:
+            return set(), set()
+        group = set()
+        liberties = set()
+        queue = deque([(r, c)])
+        group.add((r, c))
+        while queue:
+            cr, cc = queue.popleft()
+            for nr, nc in neighbors(cr, cc):
+                if (nr, nc) in stones_set and (nr, nc) not in group:
+                    group.add((nr, nc))
+                    queue.append((nr, nc))
+                elif (nr, nc) not in me_set and (nr, nc) not in opp_set:
+                    liberties.add((nr, nc))
+        return group, liberties
+    
+    def would_capture(r, c, my_stones, opp_stones):
+        captured = set()
+        for nr, nc in neighbors(r, c):
+            if (nr, nc) in opp_stones:
+                grp, libs = get_group_and_liberties(nr, nc, opp_stones)
+                remaining_libs = libs - {(r, c)}
+                if len(remaining_libs) == 0:
+                    captured |= grp
+        return captured
+    
+    def is_legal(r, c, my_stones, opp_stones):
+        if (r, c) in my_stones or (r, c) in opp_stones:
+            return False
+        captured = would_capture(r, c, my_stones, opp_stones)
+        new_opp = opp_stones - captured
+        new_me = my_stones | {(r, c)}
+        grp, libs = get_group_and_liberties(r, c, new_me)
+        actual_libs = set()
+        for sr, sc in grp:
+            for nr, nc in neighbors(sr, sc):
+                if (nr, nc) not in new_me and (nr, nc) not in new_opp:
+                    actual_libs.add((nr, nc))
+        return len(actual_libs) > 0 or len(captured) > 0
+    
+    def score_move(r, c):
+        score = 0
+        captured = would_capture(r, c, me_set, opp_set)
+        score += len(captured) * 50
+        
+        for nr, nc in neighbors(r, c):
+            if (nr, nc) in opp_set:
+                grp, libs = get_group_and_liberties(nr, nc, opp_set)
+                actual_libs = libs - {(r, c)}
+                if len(actual_libs) == 1:
+                    score += 30
+                elif len(actual_libs) == 2:
+                    score += 10
+        
+        for nr, nc in neighbors(r, c):
+            if (nr, nc) in me_set:
+                score += 8
+        
+        dist_center = abs(r - 10) + abs(c - 10)
+        score += max(0, 10 - dist_center)
+        
+        star_points = [(4,4),(4,10),(4,16),(10,4),(10,10),(10,16),(16,4),(16,10),(16,16)]
+        if (r, c) in star_points:
+            score += 15
+        
+        if r in [3,4,5,15,16,17] and c in [3,4,5,15,16,17]:
+            score += 12
+        
+        edge_dist = min(r-1, 19-r, c-1, 19-c)
+        if edge_dist == 0:
+            score -= 5
+        elif edge_dist == 1:
+            score -= 2
+        
+        return score
+    
+    candidates = []
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if is_legal(r, c, me_set, opp_set):
+                candidates.append((r, c))
+    
+    if not candidates:
+        return (0, 0)
+    
+    best_score = -float('inf')
+    best_move = candidates[0]
+    
+    for move in candidates:
+        s = score_move(move[0], move[1])
+        if s > best_score:
+            best_score = s
+            best_move = move
+    
+    return best_move

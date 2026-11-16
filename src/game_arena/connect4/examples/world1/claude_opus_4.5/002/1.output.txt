@@ -1,0 +1,383 @@
+<thinking>
+I need to implement a Connect 4 policy. Let me think about a good approach:
+
+1. **Minimax with Alpha-Beta Pruning**: This is a classic approach for two-player games. I'll implement a minimax algorithm with alpha-beta pruning to search the game tree.
+
+2. **Evaluation Function**: I need a good heuristic to evaluate board positions when I can't search to the end of the game.
+
+3. **Move Ordering**: To make alpha-beta pruning more effective, I should order moves (prefer center columns, check winning/blocking moves first).
+
+4. **Depth Limit**: I need to balance search depth with the 1-second time limit.
+
+Let me implement this:
+
+```python
+def policy(board: list[list[int]]) -> int:
+```
+
+Key considerations:
+- Check for immediate wins
+- Check for immediate blocks (opponent about to win)
+- Use minimax with alpha-beta pruning
+- Good evaluation function considering:
+  - Center control
+  - Potential lines of 4
+  - Threats
+
+Let me write a solid implementation:
+
+1. First, helper functions to check valid moves, make moves, check for wins
+2. Evaluation function
+3. Minimax with alpha-beta pruning
+4. Iterative deepening if time permits
+
+For the evaluation function, I'll consider:
+- Count of potential 4-in-a-rows (windows of 4 that could become wins)
+- Weight center columns higher
+- Detect threats (3 in a row with open space)
+
+Let me code this up:
+
+```python
+import numpy as np
+
+def policy(board: list[list[int]]) -> int:
+    ROWS = 6
+    COLS = 7
+    
+    board = np.array(board)
+    
+    def get_valid_moves(b):
+        return [c for c in range(COLS) if b[0][c] == 0]
+    
+    def drop_piece(b, col, piece):
+        new_board = b.copy()
+        for row in range(ROWS-1, -1, -1):
+            if new_board[row][col] == 0:
+                new_board[row][col] = piece
+                break
+        return new_board
+    
+    def check_win(b, piece):
+        # Horizontal
+        for r in range(ROWS):
+            for c in range(COLS-3):
+                if all(b[r][c+i] == piece for i in range(4)):
+                    return True
+        # Vertical
+        for r in range(ROWS-3):
+            for c in range(COLS):
+                if all(b[r+i][c] == piece for i in range(4)):
+                    return True
+        # Diagonal (positive slope)
+        for r in range(ROWS-3):
+            for c in range(COLS-3):
+                if all(b[r+i][c+i] == piece for i in range(4)):
+                    return True
+        # Diagonal (negative slope)
+        for r in range(3, ROWS):
+            for c in range(COLS-3):
+                if all(b[r-i][c+i] == piece for i in range(4)):
+                    return True
+        return False
+    
+    def evaluate_window(window, piece):
+        score = 0
+        opp = -piece
+        
+        if window.count(piece) == 4:
+            score += 100
+        elif window.count(piece) == 3 and window.count(0) == 1:
+            score += 5
+        elif window.count(piece) == 2 and window.count(0) == 2:
+            score += 2
+        
+        if window.count(opp) == 3 and window.count(0) == 1:
+            score -= 4
+        
+        return score
+    
+    def evaluate(b, piece):
+        score = 0
+        
+        # Center column preference
+        center_col = list(b[:, COLS//2])
+        score += center_col.count(piece) * 3
+        
+        # Horizontal
+        for r in range(ROWS):
+            for c in range(COLS-3):
+                window = list(b[r, c:c+4])
+                score += evaluate_window(window, piece)
+        
+        # Vertical
+        for r in range(ROWS-3):
+            for c in range(COLS):
+                window = list(b[r:r+4, c])
+                score += evaluate_window(window, piece)
+        
+        # Diagonals
+        for r in range(ROWS-3):
+            for c in range(COLS-3):
+                window = [b[r+i][c+i] for i in range(4)]
+                score += evaluate_window(window, piece)
+        
+        for r in range(3, ROWS):
+            for c in range(COLS-3):
+                window = [b[r-i][c+i] for i in range(4)]
+                score += evaluate_window(window, piece)
+        
+        return score
+    
+    def minimax(b, depth, alpha, beta, maximizing):
+        valid_moves = get_valid_moves(b)
+        
+        if check_win(b, 1):
+            return (None, 100000 + depth)
+        if check_win(b, -1):
+            return (None, -100000 - depth)
+        if len(valid_moves) == 0:
+            return (None, 0)
+        if depth == 0:
+            return (None, evaluate(b, 1))
+        
+        # Order moves - prefer center
+        valid_moves.sort(key=lambda x: abs(x - 3))
+        
+        if maximizing:
+            value = -float('inf')
+            best_col = valid_moves[0]
+            for col in valid_moves:
+                new_board = drop_piece(b, col, 1)
+                _, new_score = minimax(new_board, depth-1, alpha, beta, False)
+                if new_score > value:
+                    value = new_score
+                    best_col = col
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break
+            return best_col, value
+        else:
+            value = float('inf')
+            best_col = valid_moves[0]
+            for col in valid_moves:
+                new_board = drop_piece(b, col, -1)
+                _, new_score = minimax(new_board, depth-1, alpha, beta, True)
+                if new_score < value:
+                    value = new_score
+                    best_col = col
+                beta = min(beta, value)
+                if alpha >= beta:
+                    break
+            return best_col, value
+    
+    # Main logic
+    valid_moves = get_valid_moves(board)
+    
+    # Check for immediate win
+    for col in valid_moves:
+        temp = drop_piece(board, col, 1)
+        if check_win(temp, 1):
+            return col
+    
+    # Check for immediate block
+    for col in valid_moves:
+        temp = drop_piece(board, col, -1)
+        if check_win(temp, -1):
+            return col
+    
+    # Use minimax
+    best_col, _ = minimax(board, 5, -float('inf'), float('inf'), True)
+    return best_col
+```
+
+This should work well. Let me refine it a bit more and make sure the depth is appropriate for the time limit. With alpha-beta pruning, depth 5-6 should be achievable in under 1 second.
+</thinking>
+
+<code>
+import numpy as np
+
+def policy(board: list[list[int]]) -> int:
+    ROWS = 6
+    COLS = 7
+    
+    board = np.array(board)
+    
+    def get_valid_moves(b):
+        return [c for c in range(COLS) if b[0][c] == 0]
+    
+    def drop_piece(b, col, piece):
+        new_board = b.copy()
+        for row in range(ROWS-1, -1, -1):
+            if new_board[row][col] == 0:
+                new_board[row][col] = piece
+                break
+        return new_board
+    
+    def check_win(b, piece):
+        # Horizontal
+        for r in range(ROWS):
+            for c in range(COLS-3):
+                if b[r][c] == piece and b[r][c+1] == piece and b[r][c+2] == piece and b[r][c+3] == piece:
+                    return True
+        # Vertical
+        for r in range(ROWS-3):
+            for c in range(COLS):
+                if b[r][c] == piece and b[r+1][c] == piece and b[r+2][c] == piece and b[r+3][c] == piece:
+                    return True
+        # Diagonal (positive slope)
+        for r in range(ROWS-3):
+            for c in range(COLS-3):
+                if b[r][c] == piece and b[r+1][c+1] == piece and b[r+2][c+2] == piece and b[r+3][c+3] == piece:
+                    return True
+        # Diagonal (negative slope)
+        for r in range(3, ROWS):
+            for c in range(COLS-3):
+                if b[r][c] == piece and b[r-1][c+1] == piece and b[r-2][c+2] == piece and b[r-3][c+3] == piece:
+                    return True
+        return False
+    
+    def evaluate_window(window, piece):
+        score = 0
+        opp = -piece
+        p_count = np.sum(window == piece)
+        o_count = np.sum(window == opp)
+        e_count = np.sum(window == 0)
+        
+        if p_count == 4:
+            score += 100
+        elif p_count == 3 and e_count == 1:
+            score += 10
+        elif p_count == 2 and e_count == 2:
+            score += 2
+        
+        if o_count == 3 and e_count == 1:
+            score -= 8
+        
+        return score
+    
+    def evaluate(b, piece):
+        score = 0
+        
+        # Center column preference
+        center_col = b[:, COLS//2]
+        score += np.sum(center_col == piece) * 3
+        
+        # Horizontal
+        for r in range(ROWS):
+            for c in range(COLS-3):
+                window = b[r, c:c+4]
+                score += evaluate_window(window, piece)
+        
+        # Vertical
+        for r in range(ROWS-3):
+            for c in range(COLS):
+                window = b[r:r+4, c]
+                score += evaluate_window(window, piece)
+        
+        # Diagonals
+        for r in range(ROWS-3):
+            for c in range(COLS-3):
+                window = np.array([b[r+i][c+i] for i in range(4)])
+                score += evaluate_window(window, piece)
+        
+        for r in range(3, ROWS):
+            for c in range(COLS-3):
+                window = np.array([b[r-i][c+i] for i in range(4)])
+                score += evaluate_window(window, piece)
+        
+        return score
+    
+    def is_terminal(b):
+        return check_win(b, 1) or check_win(b, -1) or len(get_valid_moves(b)) == 0
+    
+    def minimax(b, depth, alpha, beta, maximizing):
+        valid_moves = get_valid_moves(b)
+        terminal = is_terminal(b)
+        
+        if terminal:
+            if check_win(b, 1):
+                return (None, 1000000 + depth)
+            elif check_win(b, -1):
+                return (None, -1000000 - depth)
+            else:
+                return (None, 0)
+        
+        if depth == 0:
+            return (None, evaluate(b, 1))
+        
+        # Order moves - prefer center
+        valid_moves = sorted(valid_moves, key=lambda x: abs(x - 3))
+        
+        if maximizing:
+            value = -float('inf')
+            best_col = valid_moves[0]
+            for col in valid_moves:
+                new_board = drop_piece(b, col, 1)
+                _, new_score = minimax(new_board, depth-1, alpha, beta, False)
+                if new_score > value:
+                    value = new_score
+                    best_col = col
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break
+            return best_col, value
+        else:
+            value = float('inf')
+            best_col = valid_moves[0]
+            for col in valid_moves:
+                new_board = drop_piece(b, col, -1)
+                _, new_score = minimax(new_board, depth-1, alpha, beta, True)
+                if new_score < value:
+                    value = new_score
+                    best_col = col
+                beta = min(beta, value)
+                if alpha >= beta:
+                    break
+            return best_col, value
+    
+    # Main logic
+    valid_moves = get_valid_moves(board)
+    
+    if not valid_moves:
+        return 3  # Fallback
+    
+    # Check for immediate win
+    for col in valid_moves:
+        temp = drop_piece(board, col, 1)
+        if check_win(temp, 1):
+            return col
+    
+    # Check for immediate block
+    for col in valid_moves:
+        temp = drop_piece(board, col, -1)
+        if check_win(temp, -1):
+            return col
+    
+    # Avoid moves that let opponent win next turn
+    safe_moves = []
+    for col in valid_moves:
+        temp = drop_piece(board, col, 1)
+        opponent_wins = False
+        for opp_col in get_valid_moves(temp):
+            temp2 = drop_piece(temp, opp_col, -1)
+            if check_win(temp2, -1):
+                opponent_wins = True
+                break
+        if not opponent_wins:
+            safe_moves.append(col)
+    
+    if safe_moves:
+        valid_moves = safe_moves
+    
+    # Use minimax with appropriate depth
+    best_col, _ = minimax(board, 6, -float('inf'), float('inf'), True)
+    
+    if best_col is None or best_col not in get_valid_moves(board):
+        # Fallback to center-preferring valid move
+        valid = get_valid_moves(board)
+        valid.sort(key=lambda x: abs(x - 3))
+        return valid[0]
+    
+    return best_col
+</code>

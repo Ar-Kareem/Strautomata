@@ -1,0 +1,102 @@
+
+import numpy as np
+
+def policy(board) -> str:
+    # Directions: 8 queen-move directions (dy, dx)
+    directions = [(-1,-1), (-1,0), (-1,1),
+                  (0,-1),           (0,1),
+                  (1,-1),  (1,0),   (1,1)]
+    
+    def is_inside(r, c):
+        return 0 <= r < 6 and 0 <= c < 6
+
+    def trace_moves(start_r, start_c, valid_start=True):
+        """Yield all reachable squares from (start_r, start_c) following queen moves."""
+        moves = []
+        for dr, dc in directions:
+            r, c = start_r + dr, start_c + dc
+            while is_inside(r, c) and board[r, c] == 0:
+                moves.append((r, c))
+                r += dr
+                c += dc
+            # If we stopped on a non-empty cell, don't include it
+        return moves
+
+    def trace_shots(start_r, start_c):
+        """Yield all arrow landing squares from (start_r, start_c), after moving."""
+        shots = []
+        for dr, dc in directions:
+            r, c = start_r + dr, start_c + dc
+            while is_inside(r, c):
+                if board[r, c] == -1:
+                    break
+                if r == start_r and c == start_c:
+                    pass  # should not happen
+                if board[r, c] == 1 or board[r, c] == 2:
+                    break
+                shots.append((r, c))
+                r += dr
+                c += dc
+        return shots
+
+    def count_opponent_mobility(sim_board):
+        """Count how many moves the opponent (player 2) can make on sim_board."""
+        opp_mobility = 0
+        for r in range(6):
+            for c in range(6):
+                if sim_board[r, c] == 2:
+                    for to_r, to_c in trace_moves(r, c):
+                        # Temporarily remove amazon to simulate
+                        sim_board[r, c] = 0
+                        for ar_r, ar_c in trace_shots(to_r, to_c):
+                            opp_mobility += 1
+                        sim_board[r, c] = 2  # restore
+        return opp_mobility
+
+    # Find all legal moves
+    legal_moves = []  # list of (from, to, arrow)
+    for r in range(6):
+        for c in range(6):
+            if board[r, c] == 1:  # our amazon
+                for to_r, to_c in trace_moves(r, c):
+                    # Simulate move: amazon moves to (to_r, to_c), (r,c) becomes empty
+                    sim_board = board.copy()
+                    sim_board[r, c] = 0
+                    sim_board[to_r, to_c] = 1
+                    for ar_r, ar_c in trace_shots(to_r, to_c):
+                        if sim_board[ar_r, ar_c] == 0:  # arrow target must be empty
+                            legal_moves.append((r, c, to_r, to_c, ar_r, ar_c))
+
+    # If no legal move found (shouldn't happen), try to find any
+    if not legal_moves:
+        # Last resort: try every square
+        for r in range(6):
+            for c in range(6):
+                if board[r, c] == 1:
+                    for dr, dc in directions:
+                        rr, cc = r + dr, c + dc
+                        while is_inside(rr, cc) and board[rr, cc] == 0:
+                            tr, tc = rr + dr, cc + dc
+                            while is_inside(tr, tc):
+                                if board[tr, tc] in (1, 2, -1):
+                                    break
+                                return f"{r},{c}:{rr},{cc}:{tr},{tc}"
+                            cc += dc
+                            rr += dr
+
+    # Sort moves by minimizing opponent's next mobility
+    scored_moves = []
+    for move in legal_moves:
+        from_r, from_c, to_r, to_c, ar_r, ar_c = move
+        sim_board = board.copy()
+        sim_board[from_r, from_c] = 0
+        sim_board[to_r, to_c] = 1
+        sim_board[ar_r, ar_c] = -1  # place arrow
+        opp_mob = count_opponent_mobility(sim_board)
+        scored_moves.append((opp_mob, move))
+
+    # Choose move that minimizes opponent's mobility
+    scored_moves.sort(key=lambda x: x[0])  # ascending: fewer opponent moves is better
+    best_move = scored_moves[0][1]
+
+    return f"{best_move[0]},{best_move[1]}:{best_move[2]},{best_move[3]}:{best_move[4]},{best_move[5]}"

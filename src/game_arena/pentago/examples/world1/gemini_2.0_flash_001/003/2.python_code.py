@@ -1,0 +1,159 @@
+
+import random
+import numpy as np
+
+def check_win(board):
+    """Checks for a 5-in-a-row win condition on the board."""
+    n = 6
+    # Horizontal
+    for r in range(n):
+        for c in range(n - 4):
+            if board[r][c] == board[r][c+1] == board[r][c+2] == board[r][c+3] == board[r][c+4] != 0:
+                return True
+    # Vertical
+    for c in range(n):
+        for r in range(n - 4):
+            if board[r][c] == board[r+1][c] == board[r+2][c] == board[r+3][c] == board[r+4][c] != 0:
+                return True
+    # Diagonal (top-left to bottom-right)
+    for r in range(n - 4):
+        for c in range(n - 4):
+            if board[r][c] == board[r+1][c+1] == board[r+2][c+2] == board[r+3][c+3] == board[r+4][c+4] != 0:
+                return True
+    # Diagonal (top-right to bottom-left)
+    for r in range(n - 4):
+        for c in range(4, n):
+            if board[r][c] == board[r+1][c-1] == board[r+2][c-2] == board[r+3][c-3] == board[r+4][c-4] != 0:
+                return True
+    return False
+
+def rotate_quadrant(board, quad, direction):
+    """Rotates a quadrant of the board."""
+    new_board = np.copy(board)
+    if quad == 0:
+        sub_board = board[:3, :3]
+        if direction == 'R':
+            rotated_sub_board = np.rot90(sub_board, k=-1)
+        else:  # direction == 'L'
+            rotated_sub_board = np.rot90(sub_board, k=1)
+        new_board[:3, :3] = rotated_sub_board
+    elif quad == 1:
+        sub_board = board[:3, 3:]
+        if direction == 'R':
+            rotated_sub_board = np.rot90(sub_board, k=-1)
+        else:  # direction == 'L'
+            rotated_sub_board = np.rot90(sub_board, k=1)
+        new_board[:3, 3:] = rotated_sub_board
+    elif quad == 2:
+        sub_board = board[3:, :3]
+        if direction == 'R':
+            rotated_sub_board = np.rot90(sub_board, k=-1)
+        else:  # direction == 'L'
+            rotated_sub_board = np.rot90(sub_board, k=1)
+        new_board[3:, :3] = rotated_sub_board
+    elif quad == 3:
+        sub_board = board[3:, 3:]
+        if direction == 'R':
+            rotated_sub_board = np.rot90(sub_board, k=-1)
+        else:  # direction == 'L'
+            rotated_sub_board = np.rot90(sub_board, k=1)
+        new_board[3:, 3:] = rotated_sub_board
+    return new_board
+
+def evaluate_board(board, player):
+    """Evaluates the board state for a given player."""
+    score = 0
+    n = 6
+    # Horizontal
+    for r in range(n):
+        for c in range(n - 4):
+            if all(board[r][c+i] == player for i in range(5)):
+                score += 1000
+            else:
+                count = sum(1 for i in range(5) if board[r][c+i] == player)
+                score += count**2 # Reward consecutive marbles
+
+    # Vertical
+    for c in range(n):
+        for r in range(n - 4):
+            if all(board[r+i][c] == player for i in range(5)):
+                 score += 1000
+            else:
+                count = sum(1 for i in range(5) if board[r+i][c] == player)
+                score += count**2
+
+    # Diagonal (top-left to bottom-right)
+    for r in range(n - 4):
+        for c in range(n - 4):
+            if all(board[r+i][c+i] == player for i in range(5)):
+                score += 1000
+            else:
+                count = sum(1 for i in range(5) if board[r+i][c+i] == player)
+                score += count**2
+
+    # Diagonal (top-right to bottom-left)
+    for r in range(n - 4):
+        for c in range(4, n):
+            if all(board[r+i][c-i] == player for i in range(5)):
+                score += 1000
+            else:
+                count = sum(1 for i in range(5) if board[r+i][c-i] == player)
+                score += count**2
+
+    return score
+
+def policy(you, opponent) -> str:
+    """Chooses the next move based on the board state."""
+    you_board = np.array(you)
+    opponent_board = np.array(opponent)
+    board = np.zeros((6, 6))
+    for r in range(6):
+        for c in range(6):
+            if you_board[r][c] == 1:
+                board[r][c] = 1
+            elif opponent_board[r][c] == 1:
+                board[r][c] = 2
+
+    best_move = None
+    best_score = -float('inf')
+    possible_moves = []
+
+    for row in range(6):
+        for col in range(6):
+            if board[row][col] == 0:
+                for quad in range(4):
+                    for direction in ['L', 'R']:
+                        possible_moves.append((row, col, quad, direction))
+
+    random.shuffle(possible_moves)
+
+    for row, col, quad, direction in possible_moves:
+        temp_board = np.copy(board)
+        temp_board[row][col] = 1 # Place marble
+
+        rotated_board = rotate_quadrant(temp_board, quad, direction)
+
+        you_score = evaluate_board(rotated_board, 1)
+        opponent_score = evaluate_board(rotated_board, 2)
+
+        score = you_score - opponent_score # Simple evaluation
+
+        if score > best_score:
+          best_score = score
+          best_move = (row, col, quad, direction)
+
+    if best_move is None:
+        #Pick a random legal move if no move improves the board state
+        for row in range(6):
+            for col in range(6):
+                if board[row][col] == 0:
+                    rand_quad = random.randint(0,3)
+                    rand_dir = random.choice(['L','R'])
+                    best_move = (row,col,rand_quad,rand_dir)
+                    break
+            if best_move is not None:
+              break
+
+
+    row, col, quad, direction = best_move
+    return f"{row+1},{col+1},{quad},{direction}"

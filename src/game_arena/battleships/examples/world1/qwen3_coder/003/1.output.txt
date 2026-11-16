@@ -1,0 +1,92 @@
+<thinking>
+I need to create a Battleship targeting policy that intelligently chooses the next cell to fire at. Here's my approach:
+
+1. **Understand the game state**: 
+   - 0 = unknown (haven't fired here)
+   - -1 = miss (water)
+   - 1 = hit (ship part)
+   
+2. **Strategy priority**:
+   - If there are hits without sunk ships, focus on those areas
+   - Otherwise, use a search pattern that efficiently finds ships
+
+3. **Implementation plan**:
+   - First, check if we have any hits that aren't part of completely sunk ships
+   - For active hits, try to extend in the direction of the ship
+   - If no active hits, use a probabilistic approach or search pattern
+   
+4. **More detailed approach**:
+   - If there are hits, look for adjacent cells in horizontal/vertical directions
+   - Prioritize cells that could complete a ship (based on ship lengths: 5,4,3,3,2)
+   - When no hits, use checkerboard pattern for efficiency or simply target unknown cells
+
+Let me refine this:
+- When we hit a ship, the next logical shots are adjacent (up/down/left/right)
+- We should prioritize directions that make sense for remaining ship lengths
+- We need to avoid shooting the same cell twice
+- We might want to weight cells that are more likely to contain ships
+
+Actually, let me think of a better heuristic:
+- Hunt mode: When no ships are hit or all hits are surrounded, we search for new ships
+- Target mode: When we have a hit with open adjacent cells, we target those
+
+For Hunt mode:
+- A probabilistic approach would be ideal but complex
+- Simpler approach: shoot in a pattern that maximizes ship discovery (checkerboard)
+
+For Target mode:
+- Find all hit cells (value 1)
+- For each hit cell, check if it has unshot neighbors (value 0)
+- Preferentially shoot neighbors in straight lines (ships are linear)
+
+Let's simplify and build a robust policy:
+1. If there are any hits with adjacent unknown cells, target those first
+2. Otherwise, target unknown cells in a good search pattern (like checkerboard)
+3. Failing that, target any unknown cell
+
+This approach balances efficiency and effectiveness.
+</thinking>
+
+<code>
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Convert to tuples for easier handling
+    board = [tuple(row) for row in board]
+    
+    # Find all hit positions (value = 1)
+    hits = []
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1:
+                hits.append((r, c))
+    
+    # If we have hits, look for adjacent unknown cells to continue the attack
+    if hits:
+        # For each hit, check adjacent cells
+        for r, c in hits:
+            # Check in all four directions
+            directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]  # up, down, left, right
+            for dr, dc in directions:
+                nr, nc = r + dr, c + dc
+                # Check if the adjacent cell is within bounds and unknown
+                if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                    return (nr, nc)
+    
+    # If no hits to follow up on or no hits at all, use checkerboard pattern for efficiency
+    # This prioritizes cells that could contain ships based on their lengths
+    # Even row + even col OR odd row + odd col pattern increases chances of hitting ships
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0:  # unknown cell
+                # Prefer checkerboard pattern
+                if (r + c) % 2 == 0:
+                    return (r, c)
+    
+    # Fallback to any unknown cell
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0:
+                return (r, c)
+    
+    # This should never happen in a valid game
+    raise RuntimeError("No valid moves available")
+</code>

@@ -1,0 +1,325 @@
+<thinking>
+To implement a strong policy for Kalah, I need a strategy that balances immediate gains (captures, extra moves) with long-term board control. Since the problem allows up to 1 second of computation, I can implement a minimax search with alpha-beta pruning to a reasonable depth.
+
+Key considerations:
+1. The game state space is manageable for depth 4-6 with pruning.
+2. A good evaluation function should prioritize:
+   - Difference in store counts (primary goal)
+   - Potential captures
+   - Possibility of gaining an extra turn
+   - Balancing seeds in own houses to avoid being blocked
+   - Opponent's potential captures
+
+I'll implement a minimax algorithm with alpha-beta pruning to depth 5. The evaluation function will be primarily the difference in stores, with minor bonuses for captures and extra moves, and penalties for leaving opponent opportunities.
+
+Steps:
+1. Check all legal moves (non-empty houses).
+2. For each move, simulate the entire move sequence (including extra moves if any).
+3. Recursively evaluate resulting positions with minimax.
+4. Use alpha-beta pruning to reduce search space.
+5. Return the move with the highest minimax value.
+
+The simulation of a move must correctly handle:
+- Distributing seeds starting from the chosen house
+- Skipping opponent's store
+- Triggering captures when last seed lands in an empty own house and opponent's opposite house is non-empty
+- Triggering extra move when last seed lands in own store
+
+I'll optimize by memoizing board states if needed, but with depth 5 and max ~6 branches per level, it's feasible without heavy memoization.
+
+Evaluation function:
+score = (your_store - opponent_store) + 
+        0.5 * (captures_made) + 
+        0.3 * (extra_move_gained) - 
+        0.1 * (opponent_capture_opportunities)
+
+This encourages aggressive play while maintaining balance.
+</thinking>
+<code>
+import numpy as np
+from typing import List, Tuple
+
+def policy(you: List[int], opponent: List[int]) -> int:
+    """
+    Implements a minimax search with alpha-beta pruning to select the best move in Kalah.
+    We search to a depth of 5 to balance quality and speed.
+    """
+    
+    # Convert to numpy arrays for easier manipulation
+    you_arr = np.array(you, dtype=int)
+    opponent_arr = np.array(opponent, dtype=int)
+    
+    # Get legal moves (non-empty houses)
+    legal_moves = [i for i in range(6) if you_arr[i] > 0]
+    if len(legal_moves) == 0:
+        raise ValueError("No legal moves available")
+    
+    # If only one move, return it
+    if len(legal_moves) == 1:
+        return legal_moves[0]
+    
+    # Best move and value
+    best_move = legal_moves[0]
+    best_value = float('-inf')
+    alpha = float('-inf')
+    beta = float('inf')
+    
+    # Try each move and simulate
+    for move in legal_moves:
+        # Create a copy of the current state
+        new_you = you_arr.copy()
+        new_opponent = opponent_arr.copy()
+        
+        # Simulate the move
+        extra_turn = simulate_move(new_you, new_opponent, move)
+        
+        # Evaluate the resulting state using minimax
+        # We pass depth=1, and we want to minimize opponent's advantage
+        value = minimax(new_you, new_opponent, depth=4, alpha=alpha, beta=beta, maximizing_player=False, extra_turn=extra_turn)
+        
+        # Update best move if this is better
+        if value > best_value:
+            best_value = value
+            best_move = move
+        
+        # Alpha-beta pruning
+        alpha = max(alpha, best_value)
+        if beta <= alpha:
+            break  # Prune remaining moves
+    
+    return int(best_move)
+
+
+def simulate_move(you: np.ndarray, opponent: np.ndarray, house_index: int) -> bool:
+    """
+    Simulate a move from house_index on the 'you' side.
+    Returns True if the player gets an extra turn, False otherwise.
+    
+    Modifies you and opponent arrays in place.
+    """
+    seeds = you[house_index]
+    you[house_index] = 0  # Clear the chosen house
+    
+    current_player = 0  # 0 = you, 1 = opponent
+    current_arrays = [you, opponent]
+    current_index = house_index + 1  # Next house to distribute to
+    
+    while seeds > 0:
+        if current_player == 0:  # You's turn
+            # Distribute in your houses 0-5, then store
+            while seeds > 0 and current_index < 6:
+                current_arrays[current_player][current_index] += 1
+                seeds -= 1
+                current_index += 1
+            
+            if seeds > 0:
+                # Place seed in own store
+                current_arrays[current_player][6] += 1
+                seeds -= 1
+                current_index = 0  # Wrap to opponent's first house
+                current_player = 1  # Switch to opponent
+                
+        else:  # Opponent's turn (current_player == 1)
+            # Distribute in opponent's houses 0-5 (skip their store)
+            while seeds > 0 and current_index < 6:
+                current_arrays[current_player][current_index] += 1
+                seeds -= 1
+                current_index += 1
+            
+            if seeds > 0:
+                # Skip opponent's store, move to your houses
+                current_index = 0
+                current_player = 0  # Switch to you
+    
+    # Last seed placement was at: current_arrays[current_player][current_index-1]
+    # But we need the position just before the increment, so we need to backtrack
+    # Recalculate the exact last position
+    last_seed_was_in_store = False
+    last_house_index = -1
+    last_player = -1
+    
+    # Rerun simulation just to find last position
+    temp_you = you.copy()
+    temp_opponent = opponent.copy()
+    seeds = temp_you[house_index]
+    temp_you[house_index] = 0
+    current_player = 0
+    current_index = house_index + 1
+    
+    while seeds > 0:
+        if current_player == 0:
+            if current_index < 6:
+                temp_you[current_index] += 1
+                seeds -= 1
+                last_house_index = current_index
+                last_player = 0
+                current_index += 1
+            else:
+                temp_you[6] += 1
+                seeds -= 1
+                last_seed_was_in_store = True
+                current_index = 0
+                current_player = 1
+        else:
+            if current_index < 6:
+                temp_opponent[current_index] += 1
+                seeds -= 1
+                last_house_index = current_index
+                last_player = 1
+                current_index += 1
+            else:
+                current_index = 0
+                current_player = 0
+    
+    # Now check for capture condition
+    # Capture if: last seed landed in your house (0-5), that house was empty before placement,
+    # and opponent's opposite house has seeds.
+    if last_player == 0 and 0 <= last_house_index <= 5 and temp_you[last_house_index] == 1:
+        opposite_house = 5 - last_house_index
+        if temp_opponent[opposite_house] > 0:
+            # Capture: move seeds from your house and opponent's opposite house to your store
+            captured_seeds = 1 + temp_opponent[opposite_house]
+            temp_you[6] += captured_seeds
+            temp_you[last_house_index] = 0
+            temp_opponent[opposite_house] = 0
+            
+            # Update the real arrays
+            you[6] = temp_you[6]
+            you[last_house_index] = 0
+            opponent[opposite_house] = 0
+    
+    # Return true if last seed landed in your store (extra turn)
+    return last_seed_was_in_store
+
+
+def minimax(you: np.ndarray, opponent: np.ndarray, depth: int, alpha: float, beta: float, 
+            maximizing_player: bool, extra_turn: bool) -> float:
+    """
+    Minimax algorithm with alpha-beta pruning for Kalah.
+    
+    maximizing_player: True if it's the original player's turn (maximizing their advantage)
+    extra_turn: True if the player gets an extra move from last placement
+    
+    Returns: evaluation score from the perspective of the original player (who called policy)
+    """
+    
+    # Check if game is over (one player has no seeds in houses)
+    if sum(you[:6]) == 0:
+        # You have no seeds left, opponent moves all remaining to their store
+        opponent[6] += sum(opponent[:6])
+        # Return score from original player's perspective
+        return float(you[6] - opponent[6])
+    
+    if sum(opponent[:6]) == 0:
+        # Opponent has no seeds left, you move all remaining to your store
+        you[6] += sum(you[:6])
+        return float(you[6] - opponent[6])
+        
+    # If depth is 0, evaluate the board
+    if depth == 0:
+        return evaluate_board(you, opponent)
+    
+    # If it's an extra turn, the same player goes again
+    if extra_turn:
+        # Same player continues
+        return minimax(you, opponent, depth, alpha, beta, maximizing_player, False)
+    
+    # Get legal moves for current player
+    if maximizing_player:
+        # You're maximizing - you are the current player
+        legal_moves = [i for i in range(6) if you[i] > 0]
+        if len(legal_moves) == 0:
+            return float(you[6] - opponent[6])
+        
+        max_eval = float('-inf')
+        for move in legal_moves:
+            # Clone state
+            new_you = you.copy()
+            new_opponent = opponent.copy()
+            extra_move = simulate_move(new_you, new_opponent, move)
+            
+            # Recursively evaluate
+            eval_score = minimax(new_you, new_opponent, depth-1, alpha, beta, True, extra_move)
+            
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, max_eval)
+            if beta <= alpha:
+                break  # Alpha-beta pruning
+            
+        return max_eval
+        
+    else:
+        # You're minimizing - opponent is the current player
+        legal_moves = [i for i in range(6) if opponent[i] > 0]
+        if len(legal_moves) == 0:
+            return float(you[6] - opponent[6])
+        
+        min_eval = float('inf')
+        for move in legal_moves:
+            # Clone state
+            new_you = you.copy()
+            new_opponent = opponent.copy()
+            extra_move = simulate_move(new_opponent, new_you, move)
+            # Note: simulate_move expects (you, opponent) so we swap args: opponent is the 'you' array here
+            
+            # After the move, it's your turn again (we've just played opponent)
+            # The next turn is for the original player (maximizing player)
+            eval_score = minimax(new_you, new_opponent, depth-1, alpha, beta, True, extra_move)
+            
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, min_eval)
+            if beta <= alpha:
+                break  # Alpha-beta pruning
+            
+        return min_eval
+
+
+def evaluate_board(you: np.ndarray, opponent: np.ndarray) -> float:
+    """
+    Evaluates the board state from your (player's) perspective.
+    
+    We use a weighted score:
+    - Main: store difference (primary goal)
+    - Bonus for potential captures
+    - Bonus for having seeds on your side (prevents being blocked)
+    - Penalty for opponent having capture opportunities
+    """
+    
+    # Primary metric: difference in stores
+    score = float(you[6] - opponent[6])
+    
+    # Add bonus for seeds in your houses (to avoid being blocked)
+    score += 0.1 * sum(you[:6])
+    
+    # Subtract penalty for opponent's seeds in houses
+    score -= 0.1 * sum(opponent[:6])
+    
+    # Check for potential immediate captures for you
+    for i in range(6):
+        if you[i] == 1:  # Only 1 seed, could capture if opponent opposite is non-zero
+            # If we were to move to this position, could we capture?
+            # But we need to check if from an adjacent house we could land here
+            # Simple heuristic: if opponent's opposite has seeds, this position is valuable
+            if opponent[5-i] > 0:
+                score += 0.5  # Potential capture
+    
+    # Check for potential immediate captures for opponent
+    for i in range(6):
+        if opponent[i] == 1:
+            if you[5-i] > 0:
+                score -= 0.5  # Opponent could capture next turn
+    
+    # Check for opportunity to get an extra turn (last seed lands in store)
+    # We'll check: if any of your houses has number of seeds equal to distance to store
+    for i in range(6):
+        distance_to_store = 6 - i  # houses from i to store: positions i+1, i+2, ..., 5 (5-i), then store
+        if you[i] == distance_to_store:
+            score += 0.3  # Can get extra move!
+        elif you[i] > distance_to_store and you[i] <= distance_to_store + 6:  # Could land in store after looping
+            # Need to check if seeds can reach the store without being intercepted by opponent's side
+            # Simple approximation: if seeds can reach store and no opponent seeds are blocking
+            # We'll be generous and give a small bonus
+            score += 0.2
+    
+    return score
+</code>

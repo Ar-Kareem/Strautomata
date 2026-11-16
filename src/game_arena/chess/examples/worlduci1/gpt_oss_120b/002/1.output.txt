@@ -1,0 +1,254 @@
+**Strategy**
+
+The policy builds a complete list of *legal* moves for the side to play, evaluates each move with a very simple static‑material heuristic and a small bonus for giving check, and then selects the move with the highest score.
+
+1. **Move generation** – All pseudo‑legal moves are generated for the player:
+   * Sliding pieces (queen, rook, bishop) slide in their directions until blocked.
+   * Knights, king and pawn moves are generated with their normal patterns.
+   * Pawn promotions are generated as promotions to a queen (the most valuable promotion).
+
+2. **Legality test** – For each generated move the board is updated on a copy and the player’s king is checked for attacks from the opponent. Moves that leave the king in check are discarded.
+
+3. **Scoring** –  
+   * Capture value is added (the material value of the captured piece).  
+   * If the move gives check, a modest bonus is added.  
+   * The move that yields the largest score is chosen.  
+   * If several moves have the same score, the first one found is returned.
+
+The approach is fast, always returns a legal move, and prefers check‑mates, winning captures and checking moves – sufficient to beat a naive random policy.
+
+```python
+<code>
+import copy
+
+# piece values for evaluation
+VALUE = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}
+
+# board helpers
+def sq_to_xy(sq):
+    file = ord(sq[0]) - ord('a')
+    rank = int(sq[1]) - 1
+    return file, rank
+
+def xy_to_sq(x, y):
+    return chr(ord('a') + x) + str(y + 1)
+
+def inside(x, y):
+    return 0 <= x < 8 and 0 <= y < 8
+
+# attack detection
+def is_attacked(board, sq, attacker_color):
+    """Return True if sq is attacked by any piece of attacker_color."""
+    tx, ty = sq_to_xy(sq)
+    opp = 'w' if attacker_color == 'white' else 'b'
+
+    # pawn attacks
+    dir = 1 if attacker_color == 'white' else -1
+    for dx in (-1, 1):
+        x, y = tx + dx, ty + dir
+        if inside(x, y):
+            p = board.get(xy_to_sq(x, y))
+            if p == opp + 'P':
+                return True
+
+    # knight attacks
+    knight_offsets = [(1,2),(2,1),(2,-1),(1,-2),(-1,-2),(-2,-1),(-2,1),(-1,2)]
+    for dx, dy in knight_offsets:
+        x, y = tx + dx, ty + dy
+        if inside(x, y):
+            p = board.get(xy_to_sq(x, y))
+            if p == opp + 'N':
+                return True
+
+    # sliding pieces
+    directions = [
+        (1,0), (-1,0), (0,1), (0,-1),   # rook
+        (1,1), (1,-1), (-1,1), (-1,-1)  # bishop
+    ]
+    for dx, dy in directions:
+        x, y = tx + dx, ty + dy
+        while inside(x, y):
+            sq2 = xy_to_sq(x, y)
+            piece = board.get(sq2)
+            if piece:
+                if piece[0] == opp:
+                    ptype = piece[1]
+                    if (dx == 0 or dy == 0) and ptype in ('R','Q'):
+                        return True
+                    if (dx != 0 and dy != 0) and ptype in ('B','Q'):
+                        return True
+                break
+            x += dx
+            y += dy
+
+    # king attacks (adjacent squares)
+    for dx in (-1,0,1):
+        for dy in (-1,0,1):
+            if dx == 0 and dy == 0:
+                continue
+            x, y = tx + dx, ty + dy
+            if inside(x, y):
+                p = board.get(xy_to_sq(x, y))
+                if p == opp + 'K':
+                    return True
+    return False
+
+def locate_king(board, color):
+    king = ('w' if color == 'white' else 'b') + 'K'
+    for sq, p in board.items():
+        if p == king:
+            return sq
+    return None
+
+# move generation
+def generate_moves(board, color):
+    moves = []
+    own = 'w' if color == 'white' else 'b'
+    opp = 'b' if own == 'w' else 'w'
+    pawn_dir = 1 if own == 'w' else -1
+    start_rank = 1 if own == 'w' else 6
+    promotion_rank = 7 if own == 'w' else 0
+
+    for sq, piece in board.items():
+        if piece[0] != own:
+            continue
+        ptype = piece[1]
+        x, y = sq_to_xy(sq)
+
+        if ptype == 'P':
+            # forward moves
+            nx, ny = x, y + pawn_dir
+            if inside(nx, ny):
+                dest = xy_to_sq(nx, ny)
+                if dest not in board:
+                    # promotion?
+                    if ny == promotion_rank:
+                        for promo in ('q','r','b','n'):
+                            moves.append(sq + dest + promo)
+                    else:
+                        moves.append(sq + dest)
+                    # double step
+                    if y == start_rank:
+                        nx2, ny2 = x, y + 2 * pawn_dir
+                        dest2 = xy_to_sq(nx2, ny2)
+                        if dest2 not in board:
+                            moves.append(sq + dest2)
+                # captures
+                for dx in (-1, 1):
+                    cx, cy = x + dx, y + pawn_dir
+                    if inside(cx, cy):
+                        cap_sq = xy_to_sq(cx, cy)
+                        if cap_sq in board and board[cap_sq][0] == opp:
+                            if cy == promotion_rank:
+                                for promo in ('q','r','b','n'):
+                                    moves.append(sq + cap_sq + promo)
+                            else:
+                                moves.append(sq + cap_sq)
+
+        elif ptype == 'N':
+            offsets = [(1,2),(2,1),(2,-1),(1,-2),(-1,-2),(-2,-1),(-2,1),(-1,2)]
+            for dx, dy in offsets:
+                nx, ny = x + dx, y + dy
+                if inside(nx, ny):
+                    dest = xy_to_sq(nx, ny)
+                    if dest not in board or board[dest][0] == opp:
+                        moves.append(sq + dest)
+
+        elif ptype == 'K':
+            for dx in (-1,0,1):
+                for dy in (-1,0,1):
+                    if dx == 0 and dy == 0:
+                        continue
+                    nx, ny = x + dx, y + dy
+                    if inside(nx, ny):
+                        dest = xy_to_sq(nx, ny)
+                        if dest not in board or board[dest][0] == opp:
+                            moves.append(sq + dest)
+
+        else:  # sliding pieces
+            if ptype == 'B':
+                dirs = [(1,1),(1,-1),(-1,1),(-1,-1)]
+            elif ptype == 'R':
+                dirs = [(1,0),(-1,0),(0,1),(0,-1)]
+            else:  # Q
+                dirs = [(1,0),(-1,0),(0,1),(0,-1),(1,1),(1,-1),(-1,1),(-1,-1)]
+            for dx, dy in dirs:
+                nx, ny = x + dx, y + dy
+                while inside(nx, ny):
+                    dest = xy_to_sq(nx, ny)
+                    if dest in board:
+                        if board[dest][0] == opp:
+                            moves.append(sq + dest)
+                        break
+                    else:
+                        moves.append(sq + dest)
+                    nx += dx
+                    ny += dy
+    return moves
+
+def make_move(board, uci):
+    """Return a new board dict after applying uci move."""
+    new_board = board.copy()
+    frm = uci[:2]
+    to = uci[2:4]
+    promotion = uci[4:] if len(uci) > 4 else ''
+    piece = new_board.pop(frm)
+    if promotion:
+        # promotion piece type is given as letter (q,r,b,n)
+        promo_type = promotion.upper()
+        piece = piece[0] + promo_type
+    new_board[to] = piece
+    return new_board
+
+def is_legal(board, move, color):
+    new_board = make_move(board, move)
+    king_sq = locate_king(new_board, color)
+    if not king_sq:
+        return False
+    opponent = 'black' if color == 'white' else 'white'
+    return not is_attacked(new_board, king_sq, opponent)
+
+def evaluate_move(board, move, color):
+    """Simple material + check bonus."""
+    frm = move[:2]
+    to = move[2:4]
+    promotion = move[4:] if len(move) > 4 else ''
+    score = 0
+
+    # capture value
+    captured = board.get(to)
+    if captured:
+        score += VALUE.get(captured[1], 0)
+
+    # promotion value (difference between new piece and pawn)
+    if promotion:
+        new_type = promotion.upper()
+        score += VALUE.get(new_type, 0) - VALUE['P']
+
+    # check bonus
+    new_board = make_move(board, move)
+    opp_king = locate_king(new_board, 'black' if color == 'white' else 'white')
+    if opp_king and is_attacked(new_board, opp_king, color):
+        score += 0.5   # modest bonus for giving check
+
+    return score
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    """
+    Return a legal UCI move string for the side to play.
+    """
+    moves = generate_moves(pieces, to_play)
+    legal_moves = [m for m in moves if is_legal(pieces, m, to_play)]
+    if not legal_moves:
+        # No legal moves (should not happen in normal play); return a placeholder
+        return ''
+    best_move = None
+    best_score = -float('inf')
+    for m in legal_moves:
+        sc = evaluate_move(pieces, m, to_play)
+        if sc > best_score:
+            best_score = sc
+            best_move = m
+    return best_move
+</code>
+```

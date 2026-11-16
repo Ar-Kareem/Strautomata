@@ -1,0 +1,81 @@
+
+from typing import List
+
+RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+VALUE_MAP = {
+    "A": 11,  # starting value for Ace; will be adjusted in total_value()
+    "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9,
+    "10": 10, "J": 10, "Q": 10, "K": 10
+}
+
+
+def total_value(hand: List[str], target: int) -> int:
+    """
+    Compute the hand total applying the Ace rule:
+    - Start by counting each Ace as 11.
+    - While total > target and there are Aces counted as 11, reduce an Ace from 11 to 1 (subtract 10).
+    This handles the dynamic revaluation of Ace when a new card is drawn.
+    """
+    total = 0
+    aces = 0
+    for c in hand:
+        if c == "A":
+            aces += 1
+            total += 11
+        else:
+            total += VALUE_MAP[c]
+    # Reduce aces valued at 11 to 1 as needed to avoid exceeding target
+    while total > target and aces > 0:
+        total -= 10  # convert one Ace from 11 to 1
+        aces -= 1
+    return total
+
+
+def utility(total: int, target: int) -> float:
+    """
+    Map a hand total to a utility in [-1, 1].
+    - If bust (total > target): utility = -1
+    - Otherwise utility = 1 - normalized distance to target (closer to target => higher)
+    This gives an interpretable scalar to compare expected outcomes of hitting vs staying.
+    """
+    if total > target:
+        return -1.0
+    # distance penalty scaled by target so different T still comparable
+    return 1.0 - (abs(target - total) / target)
+
+
+def policy(hand: List[str], target: int) -> str:
+    """
+    Decide whether to 'HIT' or 'STAY' based on a one-step lookahead expected utility.
+    We compute the utility of staying now, and the expected utility of drawing one more card
+    (averaged over the remaining ranks in our deck). If the expected utility of hitting
+    is strictly greater than staying, return 'HIT', otherwise 'STAY'.
+    """
+    # If we've already busted, don't hit (game is over effectively)
+    current_total = total_value(hand, target)
+    if current_total > target:
+        return "STAY"
+
+    # Build remaining ranks in our personal deck (one of each rank originally)
+    remaining = [r for r in RANKS if r not in hand]
+    if not remaining:
+        return "STAY"
+
+    u_stay = utility(current_total, target)
+
+    # Compute expected utility if we draw one more card (uniform over remaining ranks)
+    sum_u = 0.0
+    for r in remaining:
+        new_hand = hand + [r]
+        new_total = total_value(new_hand, target)
+        sum_u += utility(new_total, target)
+    u_hit = sum_u / len(remaining)
+
+    # Simple decision: hit if expected utility increases
+    if u_hit > u_stay:
+        return "HIT"
+    else:
+        return "STAY"
+
+
+# Expose the policy function at module level (already defined).

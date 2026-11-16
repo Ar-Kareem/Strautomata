@@ -1,0 +1,168 @@
+<thinking>
+We are to implement a Kalah AI policy. The board has 6 houses per side and 1 store per side.
+The state is represented by two lists: `you` and `opponent`, each of length 7.
+Indices 0 to 5 are houses; index 6 is the store.
+
+Rules:
+- On your turn, choose a non-empty house (index 0..5).
+- Remove all seeds from that house and distribute them one by one in order: 
+  your next houses, your store, opponent houses, then skip opponent store, and repeat.
+- After distributing, if the last seed lands in your store, you get an extra move.
+- If the last seed lands in one of your houses and that house was empty before the drop, and the opposite opponent house has seeds, then capture: 
+  move the seed in your house and all seeds from the opposite opponent house to your store.
+
+The game ends when one player has no seeds in their houses. Then the other player moves all their remaining seeds to their store.
+
+We use a minimax search with alpha-beta pruning and a fixed depth (4) for move selection.
+
+Evaluation function for non-terminal states:
+- For terminal states, we compute the final scores based on the rules and return from the perspective of the current player.
+- For non-terminal states at depth 0, we return the difference in store seeds (from the current player's perspective).
+
+Implementation:
+1. Helper function `terminal_state` checks if the game is over.
+2. Helper function `final_score` computes the final score from our perspective in a terminal state.
+3. Helper function `simulate_move` applies a move to the state and returns the new state and whether an extra move is granted.
+4. Minimax function with alpha-beta pruning: returns the best value for the current player (1 for us, -1 for opponent) at a given depth.
+5. Policy function: tries all legal moves, simulates each, and uses minimax to evaluate. Returns the move with the best value.
+
+Note: We use depth=4 (4 plies, i.e., 4 moves by the current player and 4 by the opponent) as a balance between speed and accuracy.
+
+Let's code accordingly.
+</thinking>
+
+<code>
+import math
+from typing import List
+
+def terminal_state(you: List[int], opponent: List[int]) -> bool:
+    # Check if either player has no seeds in their houses (0..5)
+    return (all(h == 0 for h in you[0:6]) or all(h == 0 for h in opponent[0:6]))
+
+def final_score(you: List[int], opponent: List[int]) -> int:
+    # Computes the final score from our perspective in a terminal state.
+    if all(h == 0 for h in you[0:6]) and all(h == 0 for h in opponent[0:6]):
+        # Both players have no seeds in houses: return difference in stores
+        return you[6] - opponent[6]
+    elif all(h == 0 for h in opponent[0:6]):
+        # Opponent has no seeds in houses: we collect our remaining houses
+        return (you[6] + sum(you[0:6])) - opponent[6]
+    else:  # You have no seeds in houses
+        return you[6] - (opponent[6] + sum(opponent[0:6]))
+
+def simulate_move(you: List[int], opponent: List[int], index: int) -> (List[int], List[int], bool):
+    # Returns the new state after making the move and whether an extra move is granted.
+    if you[index] == 0:
+        # Should not happen, but return as if no move and no extra move.
+        return you, opponent, False
+
+    # Make copies to avoid mutating the original state.
+    you_copy = you[:]
+    opponent_copy = opponent[:]
+    seeds = you_copy[index]
+    you_copy[index] = 0  # Remove seeds from the chosen house
+
+    # Save the state of our houses before the drop (for capture condition)
+    you_houses_before = you[:6]  # The original state of our houses
+
+    current = (index + 1) % 14  # 14 positions: 0-5 (our houses), 6 (our store), 7-12 (opponent houses), 13 (skip)
+    positions = []
+    while seeds > 0:
+        if current == 13:  # Skip opponent's store
+            current = 0
+        else:
+            positions.append(current)
+            seeds -= 1
+            current = (current + 1) % 14
+
+    extra_move = False
+    if positions:
+        last_pos = positions[-1]
+        # Update the state for each position in the list.
+        for i, pos in enumerate(positions):
+            if pos < 7:  # In our side (you_copy)
+                if pos == 6:  # Our store
+                    you_copy[6] += 1
+                else:
+                    # Update the house
+                    you_copy[pos] += 1
+                    # Check if this is the last seed and capture condition
+                    if i == len(positions) - 1 and you_houses_before[pos] == 0:
+                        # Capture condition: last seed in an empty house of ours, and opposite opponent house has seeds.
+                        captured = opponent_copy[5 - pos]
+                        if captured > 0:
+                            # Capture: move to our store and clear both houses.
+                            you_copy[6] += captured + 1  # +1 for the seed just dropped
+                            you_copy[pos] = 0
+                            opponent_copy[5 - pos] = 0
+                        else:
+                            # Only the last seed remains in the house
+                            you_copy[pos] = 1
+            else:  # In opponent's side (opponent_copy)
+                idx = pos - 7
+                opponent_copy[idx] += 1
+
+        # Check for extra move: if the last seed landed in our store
+        extra_move = (last_pos == 6)
+    else:
+        extra_move = False
+
+    return you_copy, opponent_copy, extra_move
+
+def minimax(you: List[int], opponent: List[int], depth: int, player: int, alpha: float, beta: float) -> int:
+    # player: 1 for current player (us), -1 for opponent.
+    if depth == 0:
+        return (you[6] - opponent[6]) * player
+
+    # Check for terminal state
+    if terminal_state(you, opponent):
+        return final_score(you, opponent) * player
+
+    if player == 1:  # Our turn (maximizing)
+        moves = [i for i in range(6) if you[i] > 0]
+        best = -math.inf
+        for i in moves:
+            new_you, new_opponent, extra_move = simulate_move(you, opponent, i)
+            if extra_move:
+                value = minimax(new_you, new_opponent, depth - 1, player, alpha, beta)
+            else:
+                value = minimax(new_you, new_opponent, depth - 1, -player, alpha, beta)
+            if value > best:
+                best = value
+                alpha = max(alpha, value)
+                if beta <= alpha:
+                    break
+        return best
+    else:  # Opponent's turn (minimizing)
+        moves = [i for i in range(6) if opponent[i] > 0]
+        best = math.inf
+        for i in moves:
+            # Simulate opponent's move: they are the current player, so we pass (opponent, you)
+            new_opponent, new_you, extra_move = simulate_move(opponent, you, i)
+            if extra_move:
+                value = minimax(new_you, new_opponent, depth - 1, player, alpha, beta)
+            else:
+                value = minimax(new_you, new_opponent, depth - 1, -player, alpha, beta)
+            if value < best:
+                best = value
+                beta = min(beta, value)
+                if beta <= alpha:
+                    break
+        return best
+
+def policy(you: List[int], opponent: List[int]) -> int:
+    depth = 4
+    moves = [i for i in range(6) if you[i] > 0]
+    best_move = None
+    best_value = -math.inf
+    for i in moves:
+        new_you, new_opponent, extra_move = simulate_move(you, opponent, i)
+        if extra_move:
+            value = minimax(new_you, new_opponent, depth - 1, 1, -math.inf, math.inf)
+        else:
+            value = minimax(new_you, new_opponent, depth - 1, -1, -math.inf, math.inf)
+        if value > best_value:
+            best_value = value
+            best_move = i
+    return best_move
+</code>

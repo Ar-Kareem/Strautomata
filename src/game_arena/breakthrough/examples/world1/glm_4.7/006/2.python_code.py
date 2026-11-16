@@ -1,0 +1,213 @@
+
+import math
+import random
+from typing import List, Tuple
+
+# Search Depth
+MAX_DEPTH = 3
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    """
+    Returns the best move for the current player using Minimax with Alpha-Beta pruning.
+    """
+    # Convert lists to sets for O(1) lookups
+    me_set = set(me)
+    opp_set = set(opp)
+
+    # Direction: White ('w') moves +1 (row 0->7), Black ('b') moves -1 (row 7->0)
+    direction = 1 if color == 'w' else -1
+    target_row = 7 if color == 'w' else 0
+
+    # 1. Check for immediate winning moves
+    # If any piece can reach the target row, do it immediately.
+    for r, c in me_set:
+        if r + direction == target_row:
+            potential_moves = [
+                ((r, c), (r + direction, c)),
+                ((r, c), (r + direction, c - 1)),
+                ((r, c), (r + direction, c + 1))
+            ]
+            for move in potential_moves:
+                fr, fc = move[0]
+                tr, tc = move[1]
+                if 0 <= tr < 8 and 0 <= tc < 8:
+                    # Check legality
+                    if (tr, tc) in me_set:
+                        continue
+                    if (tr, tc) in opp_set:
+                        # Capture only allowed diagonally
+                        if fc == tc:
+                            continue
+                        return move
+                    else:
+                        # Empty square
+                        return move
+
+    # 2. Helper: Generate all legal moves for a given board state
+    def get_moves(current_me: set, current_opp: set, current_color: str) -> List[Tuple]:
+        moves = []
+        d = 1 if current_color == 'w' else -1
+        for r, c in current_me:
+            # Straight move
+            nr, nc = r + d, c
+            if 0 <= nr < 8:
+                if (nr, nc) not in current_me and (nr, nc) not in current_opp:
+                    moves.append(((r, c), (nr, nc)))
+            
+            # Diagonal moves
+            for dc in [-1, 1]:
+                nr, nc = r + d, c + dc
+                if 0 <= nr < 8 and 0 <= nc < 8:
+                    if (nr, nc) in current_me:
+                        continue # Blocked by own piece
+                    # Valid if empty OR capturing opponent
+                    moves.append(((r, c), (nr, nc)))
+        return moves
+
+    # 3. Helper: Evaluate board state
+    # Returns a score: Positive = White winning, Negative = Black winning
+    def evaluate(pieces: set, opp_pieces: set, turn_color: str) -> float:
+        # Identify white and black sets
+        white_pieces = pieces if turn_color == 'w' else opp_pieces
+        black_pieces = opp_pieces if turn_color == 'w' else pieces
+
+        # Terminal conditions
+        if not white_pieces: return -100000.0
+        if not black_pieces: return 100000.0
+        
+        # Win detection on board
+        if any(r == 7 for r, _ in white_pieces): return 100000.0
+        if any(r == 0 for r, _ in black_pieces): return -100000.0
+
+        score = 0.0
+        
+        # Material and Position Heuristics
+        # White wants high row index (closer to 7)
+        for r, c in white_pieces:
+            score += 100.0       # Material
+            score += r * 10.0    # Progression
+            score += (3.5 - abs(c - 3.5)) # Center control
+            
+        # Black wants low row index (closer to 0)
+        for r, c in black_pieces:
+            score -= 100.0       # Material
+            score -= (7 - r) * 10.0 # Progression
+            score -= (3.5 - abs(c - 3.5)) # Center control
+
+        return score
+
+    # 4. Alpha-Beta Pruning Search
+    def alphabeta(me_s: set, opp_s: set, curr_color: str, depth: int, alpha: float, beta: float, is_maximizing: bool) -> float:
+        if depth == 0:
+            return evaluate(me_s, opp_s, curr_color)
+        
+        moves = get_moves(me_s, opp_s, curr_color)
+        
+        if not moves:
+            # No moves available -> Loss (or stalemate treated poorly)
+            return -100000.0 if is_maximizing else 100000.0
+
+        # Sort moves: Captures first to improve pruning
+        # Heuristic: capture if target in opp_s
+        def is_capture(move):
+            return move[1] in opp_s
+        
+        moves.sort(key=is_capture, reverse=True)
+
+        if is_maximizing:
+            max_eval = -math.inf
+            for move in moves:
+                fr, fc = move[0]
+                tr, tc = move[1]
+                
+                # Apply move
+                new_me = me_s.copy()
+                new_me.remove((fr, fc))
+                new_me.add((tr, tc))
+                
+                new_opp = opp_s.copy()
+                if (tr, tc) in new_opp:
+                    new_opp.remove((tr, tc))
+                
+                # Recurse
+                eval_score = alphabeta(new_opp, new_me, 'b' if curr_color == 'w' else 'w', depth - 1, alpha, beta, False)
+                
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                if max_eval > beta:
+                    break
+                alpha = max(alpha, max_eval)
+            return max_eval
+        else:
+            min_eval = math.inf
+            for move in moves:
+                fr, fc = move[0]
+                tr, tc = move[1]
+                
+                # Apply move
+                new_me = me_s.copy()
+                new_me.remove((fr, fc))
+                new_me.add((tr, tc))
+                
+                new_opp = opp_s.copy()
+                if (tr, tc) in new_opp:
+                    new_opp.remove((tr, tc))
+                
+                # Recurse
+                eval_score = alphabeta(new_opp, new_me, 'b' if curr_color == 'w' else 'w', depth - 1, alpha, beta, True)
+                
+                if eval_score < min_eval:
+                    min_eval = eval_score
+                if min_eval < alpha:
+                    break
+                beta = min(beta, min_eval)
+            return min_eval
+
+    # 5. Execute Root Search
+    possible_moves = get_moves(me_set, opp_set, color)
+    best_move = None
+    best_val = -math.inf if color == 'w' else math.inf
+    
+    # Ensure we process captures first for consistency and heuristic benefit
+    def is_capture_root(move):
+        return move[1] in opp_set
+    
+    possible_moves.sort(key=is_capture_root, reverse=True)
+
+    for move in possible_moves:
+        fr, fc = move[0]
+        tr, tc = move[1]
+        
+        # Simulate move
+        new_me = me_set.copy()
+        new_me.remove((fr, fc))
+        new_me.add((tr, tc))
+        
+        new_opp = opp_set.copy()
+        if (tr, tc) in new_opp:
+            new_opp.remove((tr, tc))
+            
+        # Next color
+        next_color = 'b' if color == 'w' else 'w'
+        
+        # If we are White, we want to Maximize. If Black, Minimize.
+        val = alphabeta(new_opp, new_me, next_color, MAX_DEPTH - 1, -math.inf, math.inf, color == 'b')
+        
+        is_better = False
+        if color == 'w':
+            if val > best_val:
+                best_val = val
+                is_better = True
+        else:
+            if val < best_val:
+                best_val = val
+                is_better = True
+        
+        if is_better:
+            best_move = move
+
+    # Fallback
+    if best_move is None and possible_moves:
+        return random.choice(possible_moves)
+        
+    return best_move

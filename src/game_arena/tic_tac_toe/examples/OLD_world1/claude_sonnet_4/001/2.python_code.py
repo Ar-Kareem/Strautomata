@@ -1,0 +1,92 @@
+
+def policy(board: list[list[int]]) -> int:
+    def get_empty_positions(board):
+        positions = []
+        for i in range(3):
+            for j in range(3):
+                if board[i][j] == 0:
+                    positions.append(i * 3 + j + 1)
+        return positions
+    
+    def position_to_coords(pos):
+        return (pos - 1) // 3, (pos - 1) % 3
+    
+    def check_winner(board):
+        # Check rows
+        for row in board:
+            if row[0] == row[1] == row[2] != 0:
+                return row[0]
+        
+        # Check columns
+        for col in range(3):
+            if board[0][col] == board[1][col] == board[2][col] != 0:
+                return board[0][col]
+        
+        # Check diagonals
+        if board[0][0] == board[1][1] == board[2][2] != 0:
+            return board[0][0]
+        if board[0][2] == board[1][1] == board[2][0] != 0:
+            return board[0][2]
+        
+        return 0
+    
+    def is_terminal(board):
+        winner = check_winner(board)
+        if winner != 0:
+            return True
+        # Check if board is full
+        for row in board:
+            if 0 in row:
+                return False
+        return True
+    
+    def minimax(board, depth, is_maximizing, alpha, beta):
+        winner = check_winner(board)
+        
+        if winner == 1:  # AI wins
+            return 10 - depth
+        elif winner == -1:  # Opponent wins
+            return depth - 10
+        elif is_terminal(board):  # Draw
+            return 0
+        
+        if is_maximizing:
+            max_eval = float('-inf')
+            for pos in get_empty_positions(board):
+                row, col = position_to_coords(pos)
+                board[row][col] = 1
+                eval_score = minimax(board, depth + 1, False, alpha, beta)
+                board[row][col] = 0
+                max_eval = max(max_eval, eval_score)
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for pos in get_empty_positions(board):
+                row, col = position_to_coords(pos)
+                board[row][col] = -1
+                eval_score = minimax(board, depth + 1, True, alpha, beta)
+                board[row][col] = 0
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval
+    
+    # Find the best move
+    best_score = float('-inf')
+    best_move = None
+    
+    for pos in get_empty_positions(board):
+        row, col = position_to_coords(pos)
+        board[row][col] = 1
+        score = minimax(board, 0, False, float('-inf'), float('inf'))
+        board[row][col] = 0
+        
+        if score > best_score:
+            best_score = score
+            best_move = pos
+    
+    return best_move if best_move is not None else get_empty_positions(board)[0]

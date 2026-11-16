@@ -1,0 +1,127 @@
+
+import random
+import numpy as np
+from collections import deque
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    # Convert to 0-indexed coordinates for internal use
+    me = [(r-1, c-1) for r, c in me]
+    opponent = [(r-1, c-1) for r, c in opponent]
+    
+    # Create board state
+    board = np.zeros((19, 19), dtype=int)
+    for r, c in me:
+        board[r, c] = 1
+    for r, c in opponent:
+        board[r, c] = -1
+    
+    # Check for empty spaces near existing stones
+    empty_spaces = set()
+    for r, c in me + opponent:
+        for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 19 and 0 <= nc < 19:
+                if board[nr, nc] == 0:
+                    empty_spaces.add((nr, nc))
+    
+    # If no moves possible, pass
+    if not empty_spaces:
+        return (0, 0)
+    
+    # Try to find a good move using multiple heuristics
+    def is_valid_move(r, c):
+        return 0 <= r < 19 and 0 <= c < 19 and board[r, c] == 0
+    
+    def count_liberties(r, c, visited=None):
+        if visited is None:
+            visited = set()
+        if not is_valid_move(r, c) or (r, c) in visited:
+            return 0
+        if board[r, c] != 0:
+            return 0
+        visited.add((r, c))
+        libs = 0
+        for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+            nr, nc = r + dr, c + dc
+            if is_valid_move(nr, nc):
+                libs += count_liberties(nr, nc, visited)
+            elif 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] != 0:
+                libs += 1
+        return libs
+    
+    def get_nearby_stones(r, c):
+        nearby = []
+        for dr, dc in [(-1,0), (1,0), (0,-1), (0,1), (-1,-1), (-1,1), (1,-1), (1,1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 19 and 0 <= nc < 19:
+                nearby.append((nr, nc))
+        return nearby
+    
+    # Pattern-based move selection
+    def evaluate_pattern(r, c):
+        # Check for potential eye formation
+        score = 0
+        # Check if this move surrounded by own stones (creates an eye possibility)
+        nearby = get_nearby_stones(r, c)
+        own_neighbors = sum(1 for nr, nc in nearby if board[nr, nc] == 1)
+        if own_neighbors >= 2:
+            score += 2
+        # Count opponent neighbors
+        opp_neighbors = sum(1 for nr, nc in nearby if board[nr, nc] == -1)
+        if opp_neighbors == 0:
+            score += 1
+        return score
+    
+    # Simpler fallback: return first good move
+    candidates = list(empty_spaces)
+    
+    # Prefer moves near existing stones
+    # Also prioritize moves that may prevent opponent captures
+    def get_move_score(r, c):
+        score = 0
+        # Avoid moves that directly threaten capture
+        for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == -1:
+                # Check if this move would be immediately captured 
+                temp_board = board.copy()
+                temp_board[r, c] = 1
+                # Check if this captures opponent stones
+                if count_liberties(nr, nc) <= 1:
+                    score += 10  # Favor capturing
+                # If this creates a safe territory
+                elif count_liberties(r, c) >= 2:
+                    score += 5
+                    # Try to make moves near own groups
+                    for dr2, dc2 in [(-1,0), (1,0), (0,-1), (0,1)]:
+                        nr2, nc2 = r + dr2, c + dc2
+                        if 0 <= nr2 < 19 and 0 <= nc2 < 19 and board[nr2, nc2] == 1:
+                            score += 2
+        return score
+    
+    # First try pattern-based scoring  
+    best_move = None
+    best_score = -1
+
+    # Try MCTS with simple simulations - simulate a few random games
+    # Just a heuristic to find a reasonably strong move
+    for r, c in candidates:
+        # Simple evaluation
+        score = evaluate_pattern(r, c) + get_move_score(r, c)
+        # Prefer moves near existing stones
+        for mr, mc in me:
+            if (r-mr)**2 + (c-mc)**2 <= 4:
+                score += 2
+        # Prefer center moves (if no strong preference)
+        if (r-9)**2 + (c-9)**2 < 10:  # 3x3 center region
+            score += 1
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+    
+    # If we found a move, return it
+    if best_move:
+        return (best_move[0] + 1, best_move[1] + 1)
+    
+    # Fallback to simple first empty space
+    return (candidates[0][0] + 1, candidates[0][1] + 1)

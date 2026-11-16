@@ -1,0 +1,329 @@
+# Strategy for Lines of Action
+
+My strategy focuses on creating a smart policy that balances multiple objectives:
+
+1. **Connectivity Priority**: Since the win condition is connecting all pieces, I'll prioritize moves that bring disconnected pieces together
+2. **Center Control**: Pieces in the center have more movement options and better connectivity potential
+3. **Blocking Opponent**: I'll evaluate moves that prevent the opponent from connecting their pieces
+4. **Capturing**: Removing opponent pieces can both reduce their connectivity and free up movement paths
+5. **Positional Evaluation**: I'll score moves based on how they improve the overall board position
+
+The policy will:
+1. Generate all legal moves for the current player
+2. Evaluate each move using a scoring function that considers connectivity, position, and captures
+3. Return the highest-scoring move
+
+Let me implement this strategy:
+<code>
+import numpy as np
+from collections import deque
+from copy import deepcopy
+
+def policy(board) -> str:
+    """
+    Returns the next move for the Lines of Action game.
+    
+    Args:
+        board: 8x8 numpy array with 0=empty, 1=current player, -1=opponent
+    
+    Returns:
+        Move string in format "from_row,from_col:to_row,to_col"
+    """
+    board = np.array(board)
+    
+    # Generate all legal moves
+    legal_moves = generate_legal_moves(board, 1)
+    
+    if not legal_moves:
+        # No legal moves available
+        return ""
+    
+    # Evaluate each move and return the best one
+    best_move = max(legal_moves, key=lambda move: evaluate_move(board, move, 1))
+    
+    return f"{move_to_str(best_move)}"
+
+def generate_legal_moves(board, player):
+    """
+    Generate all legal moves for the given player.
+    
+    Args:
+        board: 8x8 numpy array
+        player: 1 for current player, -1 for opponent
+    
+    Returns:
+        List of tuples ((from_row, from_col), (to_row, to_col))
+    """
+    moves = []
+    player_pieces = []
+    
+    # Find all player pieces
+    for row in range(8):
+        for col in range(8):
+            if board[row][col] == player:
+                player_pieces.append((row, col))
+    
+    # For each piece, try all 8 directions
+    directions = [
+        (-1, -1), (-1, 0), (-1, 1),  # diagonal up-left, up, up-right
+        (0, -1),           (0, 1),   # left, right
+        (1, -1),  (1, 0),  (1, 1)    # diagonal down-left, down, down-right
+    ]
+    
+    for from_pos in player_pieces:
+        from_row, from_col = from_pos
+        
+        # Count pieces in each line for this piece
+        for direction in directions:
+            distance = count_pieces_in_line(board, from_row, from_col, direction)
+            
+            if distance <= 0:
+                continue
+                
+            # Try to move in this direction
+            to_row = from_row + direction[0] * distance
+            to_col = from_col + direction[1] * distance
+            
+            # Check if target is on board
+            if not (0 <= to_row < 8 and 0 <= to_col < 8):
+                continue
+            
+            # Check if move is valid
+            if is_valid_move(board, from_row, from_col, to_row, to_col, direction, distance):
+                moves.append(((from_row, from_col), (to_row, to_col)))
+    
+    return moves
+
+def count_pieces_in_line(board, row, col, direction):
+    """
+    Count total pieces (both players) in the line of movement.
+    
+    Args:
+        board: 8x8 numpy array
+        row, col: current position
+        direction: movement direction tuple
+    
+    Returns:
+        Number of pieces in the line, or 0 if invalid
+    """
+    count = 0
+    
+    # Count in positive direction
+    r, c = row, col
+    while 0 <= r < 8 and 0 <= c < 8:
+        if board[r][c] != 0:
+            count += 1
+        r += direction[0]
+        c += direction[1]
+    
+    # Count in negative direction (excluding starting position)
+    r, c = row - direction[0], col - direction[1]
+    while 0 <= r < 8 and 0 <= c < 8:
+        if board[r][c] != 0:
+            count += 1
+        r -= direction[0]
+        c -= direction[1]
+    
+    return count
+
+def is_valid_move(board, from_row, from_col, to_row, to_col, direction, distance):
+    """
+    Check if a move is valid according to the rules.
+    
+    Args:
+        board: 8x8 numpy array
+        from_row, from_col: starting position
+        to_row, to_col: target position
+        direction: movement direction
+        distance: number of squares to move
+    
+    Returns:
+        True if move is valid, False otherwise
+    """
+    # Can't land on own piece
+    if board[to_row][to_col] == board[from_row][from_col]:
+        return False
+    
+    # Check path for obstacles
+    dr, dc = direction
+    for step in range(1, distance):
+        r = from_row + dr * step
+        c = from_col + dc * step
+        
+        # Can't jump over enemy pieces
+        if board[r][c] == -board[from_row][from_col]:
+            return False
+    
+    return True
+
+def move_to_str(move):
+    """Convert move tuple to string format."""
+    (from_row, from_col), (to_row, to_col) = move
+    return f"{from_row},{from_col}:{to_row},{to_col}"
+
+def evaluate_move(board, move, player):
+    """
+    Evaluate the quality of a move.
+    
+    Args:
+        board: current board state (8x8 numpy array)
+        move: tuple ((from_row, from_col), (to_row, to_col))
+        player: current player (1 or -1)
+    
+    Returns:
+        Score for the move (higher is better)
+    """
+    from_pos, to_pos = move
+    from_row, from_col = from_pos
+    to_row, to_col = to_pos
+    
+    # Create a copy of the board with the move applied
+    new_board = board.copy()
+    new_board[to_row][to_col] = new_board[from_row][from_col]
+    new_board[from_row][from_col] = 0
+    
+    # Calculate different aspects of the move
+    score = 0
+    
+    # 1. Win condition: check if this move connects all pieces
+    if is_connected(new_board, player):
+        score += 10000
+    
+    # 2. Connectivity improvement
+    old_connectivity = count_reachable_pieces(board, from_pos, player)
+    new_connectivity = count_reachable_pieces(new_board, to_pos, player)
+    score += (new_connectivity - old_connectivity) * 100
+    
+    # 3. Center control (pieces in center have more options)
+    old_center_dist = abs(from_row - 3.5) + abs(from_col - 3.5)
+    new_center_dist = abs(to_row - 3.5) + abs(to_col - 3.5)
+    score += (old_center_dist - new_center_dist) * 5
+    
+    # 4. Capture opponent piece
+    if board[to_row][to_col] == -player:
+        score += 50
+    
+    # 5. Number of pieces after move (more pieces = harder to connect, but also more options)
+    player_piece_count = np.sum(new_board == player)
+    score += player_piece_count * 2
+    
+    # 6. Mobility: check how many moves this piece will have after moving
+    new_moves = len(generate_legal_moves(new_board, player))
+    score += new_moves * 3
+    
+    # 7. Block opponent connectivity
+    opponent_moves_before = len(generate_legal_moves(board, -player))
+    opponent_moves_after = len(generate_legal_moves(new_board, -player))
+    score += (opponent_moves_before - opponent_moves_after) * 2
+    
+    # 8. Position quality: prefer edges and center based on piece count
+    player_pieces = np.sum(board == player)
+    if player_pieces <= 4:
+        # With few pieces, prefer edges (easier to connect)
+        if is_edge(to_row, to_col):
+            score += 10
+    else:
+        # With many pieces, prefer center (better mobility)
+        if is_center_area(to_row, to_col):
+            score += 10
+    
+    # 9. Avoid moving towards edges unnecessarily
+    if is_edge(from_row, from_col) and not is_edge(to_row, to_col):
+        score += 5
+    
+    return score
+
+def is_connected(board, player):
+    """
+    Check if all pieces of the player are connected.
+    
+    Args:
+        board: 8x8 numpy array
+        player: player to check (1 or -1)
+    
+    Returns:
+        True if all pieces are connected, False otherwise
+    """
+    # Find all player pieces
+    pieces = []
+    for row in range(8):
+        for col in range(8):
+            if board[row][col] == player:
+                pieces.append((row, col))
+    
+    if not pieces:
+        return False
+    
+    # BFS to count reachable pieces
+    visited = set()
+    queue = deque([pieces[0]])
+    visited.add(pieces[0])
+    
+    directions = [
+        (-1, -1), (-1, 0), (-1, 1),
+        (0, -1),           (0, 1),
+        (1, -1),  (1, 0),  (1, 1)
+    ]
+    
+    while queue:
+        row, col = queue.popleft()
+        
+        for dr, dc in directions:
+            new_row, new_col = row + dr, col + dc
+            
+            if (0 <= new_row < 8 and 0 <= new_col < 8 and
+                board[new_row][new_col] == player and
+                (new_row, new_col) not in visited):
+                visited.add((new_row, new_col))
+                queue.append((new_row, new_col))
+    
+    return len(visited) == len(pieces)
+
+def count_reachable_pieces(board, start_pos, player):
+    """
+    Count how many pieces of the player are reachable from start_pos.
+    
+    Args:
+        board: 8x8 numpy array
+        start_pos: starting position (row, col)
+        player: player to check
+    
+    Returns:
+        Number of reachable pieces
+    """
+    row, col = start_pos
+    if not (0 <= row < 8 and 0 <= col < 8) or board[row][col] != player:
+        return 0
+    
+    visited = set()
+    queue = deque([(row, col)])
+    visited.add((row, col))
+    
+    directions = [
+        (-1, -1), (-1, 0), (-1, 1),
+        (0, -1),           (0, 1),
+        (1, -1),  (1, 0),  (1, 1)
+    ]
+    
+    while queue:
+        r, c = queue.popleft()
+        
+        for dr, dc in directions:
+            new_r, new_c = r + dr, c + dc
+            
+            if (0 <= new_r < 8 and 0 <= new_c < 8 and
+                board[new_r][new_c] == player and
+                (new_r, new_c) not in visited):
+                visited.add((new_r, new_c))
+                queue.append((new_r, new_c))
+    
+    return len(visited)
+
+def is_edge(row, col):
+    """Check if position is on the edge of the board."""
+    return row == 0 or row == 7 or col == 0 or col == 7
+
+def is_center_area(row, col):
+    """Check if position is in the center area (better mobility)."""
+    return 2 <= row <= 5 and 2 <= col <= 5
+</code>

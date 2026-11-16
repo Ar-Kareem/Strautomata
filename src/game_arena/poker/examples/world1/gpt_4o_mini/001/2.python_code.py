@@ -1,0 +1,40 @@
+
+def policy(state: dict) -> str:
+    my_card = state['private_cards'][0]
+    public_cards = state['public_cards']
+    pot = state['pot']
+    my_spent = state['my_spent']
+    opponent_spent = state['opponent_spent']
+    to_call = state['to_call']
+    allowed_actions = state['allowed_actions']
+    
+    # Calculate the hand strength
+    hand_rank = my_card['rank']
+    hand_strength = 0
+
+    # Evaluate the strength based on the card and public cards
+    if hand_rank >= 10:  # High cards are usually strong
+        hand_strength += 2
+    if any(card['rank'] == hand_rank for card in public_cards):  # Pair check
+        hand_strength += 3
+    if len(public_cards) >= 3:  # More cards increase the possibility of making higher hands
+        hand_strength += 1
+
+    # Determine the action
+    if 'all-in' in allowed_actions:
+        # Go all-in if we have a strong hand or if we are already behind and need to risk it all
+        if hand_strength >= 4 or (my_spent + to_call) < opponent_spent:
+            return 'all-in'
+    
+    if 'raise' in allowed_actions:
+        if hand_strength >= 4:  # Strong enough hand to raise
+            return 'raise'
+
+    if to_call > 0:
+        if 'call' in allowed_actions:
+            return 'call'  # We can match the opponent's bet if we have a good hand
+    
+    if 'fold' in allowed_actions:
+        return 'fold'  # Fold as a last resort if nothing else is applicable
+
+    return 'call'  # Fallback to call if no other option fits well

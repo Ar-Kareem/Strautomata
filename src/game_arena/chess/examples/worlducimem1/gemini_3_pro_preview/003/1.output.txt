@@ -1,0 +1,359 @@
+The strategy for this policy is to implement a 1-ply Minimax search (Depth 2 using terminologies where root is 0) with a custom board representation and move generator. Since the `chess` module is not allowed, the policy parses the input dictionary into a 64-element array for efficiency. It uses a Piece-Square Table (PST) and material evaluation function to score positions. 
+
+The policy prioritizes selecting from the `legal_moves` provided by the environment. For each candidate move, it simulates the resulting board state and then explores the opponent's best possible responses (pseudo-legal moves filtered for basic legality). It assumes the opponent plays optimally to minimize the player's score (Minimax). 
+
+Alpha-Beta pruning logic is applied implicitly: as soon as an opponent's response refutes a move (makes the position worse than a previously found guaranteed score), the search for that candidate move stops. To handle execution time constraints (1 second), the code monitors the clock and falls back to the best move found so far if time is running out. Special moves like castling and promotion are handled in the board update logic to ensure accurate evaluation.
+
+<code>
+import time
+
+def policy(pieces: dict, to_play: str, memory: dict, *args, **kwargs) -> tuple:
+    # -------------------------------------------------------------------------
+    # 1. Setup & Configuration
+    # -------------------------------------------------------------------------
+    start_time = time.time()
+    
+    # Retrieve legal moves from args if available (Arena usually passes them)
+    # The signature in prompt didn't include it explicitly, but description did.
+    # We allow flexiblity: kwargs or last arg.
+    candidates = kwargs.get('legal_moves')
+    if candidates is None and args:
+        # Heuristic: usually the last arg is legal_moves list if checking loosely
+        if isinstance(args[0], list):
+            candidates = args[0]
+            
+    # Constants
+    COLOR_W = 'w'
+    COLOR_B = 'b'
+    my_color = COLOR_W if to_play == 'white' else COLOR_B
+    opp_color = COLOR_B if my_color == COLOR_W else COLOR_W
+    
+    # Piece Values
+    VALS = {'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000}
+    
+    # Board indices: 0=a1, ..., 7=h1, ..., 63=h8
+    # Helper to convert algebraic to index
+    def to_idx(sq):
+        return (int(sq[1]) - 1) * 8 + (ord(sq[0]) - ord('a'))
+    
+    # Helper to convert index to algebraic
+    def to_alg(idx):
+        r, c = divmod(idx, 8)
+        return f"{chr(c + ord('a'))}{r + 1}"
+
+    # Initialize Board Array
+    board = [None] * 64
+    for sq, p in pieces.items():
+        board[to_idx(sq)] = p
+
+    # -------------------------------------------------------------------------
+    # 2. Engine Logic (Helpers)
+    # -------------------------------------------------------------------------
+    
+    def evaluate(bd, color_perspective):
+        """Static evaluation of the board."""
+        score = 0
+        w_mat = 0
+        b_mat = 0
+        
+        for i, p in enumerate(bd):
+            if p is None: continue
+            c, pt = p[0], p[1]
+            
+            # Material
+            mat = VALS.get(pt, 0)
+            
+            # Simple PST / Positional heuristics
+            r, f = divmod(i, 8)
+            
+            # Centralization (Encourage pieces to be near center)
+            # Center is 3.5, 3.5
+            dist = abs(r - 3.5) + abs(f - 3.5)
+            pos = (8 - dist) * 2
+            
+            # Pawn advancement
+            if pt == 'P':
+                # White wants rank 6/7, Black wants 1/0
+                pr = r if c == COLOR_W else (7 - r)
+                pos += pr * 10
+            
+            if c == COLOR_W:
+                w_mat += mat + pos
+            else:
+                b_mat += mat + pos
+                
+        # Return score from perspective of color_perspective
+        total = w_mat - b_mat
+        if color_perspective == COLOR_B:
+            total = -total
+        return total
+
+    def is_attacked(bd, sq_idx, by_color):
+        """Check if sq_idx is attacked by 'by_color'."""
+        r, c = divmod(sq_idx, 8)
+        
+        # 1. Pawn attacks
+        # Attacker is White: attacks N+1, N-1 from lower rank.
+        # So we look South-West and South-East for a White Pawn.
+        pawn_dir = -1 if by_color == COLOR_W else 1
+        # Check diagonals "behind" the square relative to pawn movement
+        for dc in [-1, 1]:
+            tr, tc = r - pawn_dir, c - dc
+            if 0 <= tr < 8 and 0 <= tc < 8:
+                tp = bd[tr * 8 + tc]
+                if tp == by_color + 'P': return True
+        
+        # 2. Knight
+        for dr, dc in [(-2,-1),(-2,1),(-1,-2),(-1,2),(1,-2),(1,2),(2,-1),(2,1)]:
+            tr, tc = r + dr, c + dc
+            if 0 <= tr < 8 and 0 <= tc < 8:
+                tp = bd[tr * 8 + tc]
+                if tp == by_color + 'N': return True
+                
+        # 3. King
+        for dr in [-1,0,1]:
+            for dc in [-1,0,1]:
+                if dr==0 and dc==0: continue
+                tr, tc = r + dr, c + dc
+                if 0 <= tr < 8 and 0 <= tc < 8:
+                    tp = bd[tr * 8 + tc]
+                    if tp == by_color + 'K': return True
+                    
+        # 4. Sliding (Rook/Queen)
+        for dr, dc in [(0,1),(0,-1),(1,0),(-1,0)]:
+            tr, tc = r, c
+            while True:
+                tr += dr
+                tc += dc
+                if not (0 <= tr < 8 and 0 <= tc < 8): break
+                tp = bd[tr * 8 + tc]
+                if tp:
+                    if tp[0] == by_color and tp[1] in ('R', 'Q'): return True
+                    break
+
+        # 5. Sliding (Bishop/Queen)
+        for dr, dc in [(1,1),(1,-1),(-1,1),(-1,-1)]:
+            tr, tc = r, c
+            while True:
+                tr += dr
+                tc += dc
+                if not (0 <= tr < 8 and 0 <= tc < 8): break
+                tp = bd[tr * 8 + tc]
+                if tp:
+                    if tp[0] == by_color and tp[1] in ('B', 'Q'): return True
+                    break
+        return False
+
+    def is_check(bd, color):
+        # Find King
+        k_code = color + 'K'
+        kp = -1
+        for i, p in enumerate(bd):
+            if p == k_code:
+                kp = i
+                break
+        if kp == -1: return True # King eaten (should not happen in legal chess)
+        enemy = COLOR_W if color == COLOR_B else COLOR_B
+        return is_attacked(bd, kp, enemy)
+
+    def gen_pseudo_moves(bd, color):
+        """Generate pseudo-legal moves for a color."""
+        moves = []
+        enemy = COLOR_W if color == COLOR_B else COLOR_B
+        
+        for i, p in enumerate(bd):
+            if p is None or p[0] != color: continue
+            pt = p[1]
+            r, c = divmod(i, 8)
+            
+            # Pawn
+            if pt == 'P':
+                direction = 1 if color == COLOR_W else -1
+                # Forward
+                tgt = i + direction * 8
+                if 0 <= tgt < 64 and bd[tgt] is None:
+                    # Promote?
+                    tr = tgt // 8
+                    prom = 'q' if (tr == 0 or tr == 7) else ''
+                    moves.append((i, tgt, prom))
+                    # Double
+                    start_rank = 1 if color == COLOR_W else 6
+                    tgt2 = i + direction * 16
+                    if r == start_rank and bd[tgt2] is None:
+                        moves.append((i, tgt2, ''))
+                # Capture
+                for dc in [-1, 1]:
+                    if 0 <= c + dc < 8:
+                        tgt = i + direction * 8 + dc
+                        if 0 <= tgt < 64:
+                            tp = bd[tgt]
+                            if tp and tp[0] == enemy:
+                                tr = tgt // 8
+                                prom = 'q' if (tr == 0 or tr == 7) else ''
+                                moves.append((i, tgt, prom))
+                                
+            # Knight
+            elif pt == 'N':
+                for dr, dc in [(-2,-1),(-2,1),(-1,-2),(-1,2),(1,-2),(1,2),(2,-1),(2,1)]:
+                    tr, tc = r + dr, c + dc
+                    if 0 <= tr < 8 and 0 <= tc < 8:
+                        ti = tr*8 + tc
+                        tp = bd[ti]
+                        if tp is None or tp[0] == enemy:
+                            moves.append((i, ti, ''))
+
+            # King (ignore castling for opponent gen to be safe/fast)
+            elif pt == 'K':
+                for dr in [-1,0,1]:
+                    for dc in [-1,0,1]:
+                        if dr==0 and dc==0: continue
+                        tr, tc = r+dr, c+dc
+                        if 0 <= tr < 8 and 0 <= tc < 8:
+                            ti = tr*8 + tc
+                            tp = bd[ti]
+                            if tp is None or tp[0] == enemy:
+                                moves.append((i, ti, ''))
+            
+            # Sliders
+            elif pt in ('B', 'R', 'Q'):
+                dirs = []
+                if pt in ('B', 'Q'): dirs.extend([(1,1),(1,-1),(-1,1),(-1,-1)])
+                if pt in ('R', 'Q'): dirs.extend([(0,1),(0,-1),(1,0),(-1,0)])
+                
+                for dr, dc in dirs:
+                    tr, tc = r, c
+                    while True:
+                        tr += dr
+                        tc += dc
+                        if not(0 <= tr < 8 and 0 <= tc < 8): break
+                        ti = tr*8 + tc
+                        tp = bd[ti]
+                        if tp is None:
+                            moves.append((i, ti, ''))
+                        elif tp[0] == enemy:
+                            moves.append((i, ti, ''))
+                            break
+                        else:
+                            break
+        return moves
+
+    def make_move(bd, start, end, prom=''):
+        """Apply move, handling basic Castling and promotion."""
+        new_bd = list(bd)
+        p = new_bd[start]
+        new_bd[start] = None
+        
+        # Promotion
+        if prom:
+            new_bd[end] = p[0] + prom.upper()
+        else:
+            new_bd[end] = p
+            
+        # Castling Logic (Heuristic based on King move distance)
+        if p[1] == 'K' and abs(start - end) == 2:
+            # Kingside: g1(6) or g8(62). RooK h->f
+            if end > start: # Kingside
+                ri = start + 3 # h file
+                rf = start + 1 # f file
+                new_bd[rf] = new_bd[ri]
+                new_bd[ri] = None
+            else: # Queenside c1(2) or c8(58). Rook a->d
+                ri = start - 4 # a file
+                rf = start - 1 # d file
+                new_bd[rf] = new_bd[ri]
+                new_bd[ri] = None
+                
+        # En Passant logic omitted for code golf/safety (rarely critical in depth 1 capture search)
+        
+        return new_bd
+
+    # -------------------------------------------------------------------------
+    # 3. Main Search
+    # -------------------------------------------------------------------------
+    
+    # Needs a move generator if legal moves not provided
+    if not candidates:
+        # Generate our own legal moves
+        # This is slow and risky, but necessary if API fails to provide
+        raw = gen_pseudo_moves(board, my_color)
+        candidates = []
+        for s, e, pr in raw:
+            n_bd = make_move(board, s, e, pr)
+            if not is_check(n_bd, my_color):
+                m_str = to_alg(s) + to_alg(e) + pr
+                candidates.append(m_str)
+    
+    # Default selection
+    best_move = candidates[0] if candidates else '0000'
+    best_score = -float('inf')
+    
+    # Minimax Depth 1 (Me -> Opponent -> Eval)
+    
+    for move_str in candidates:
+        # Time check
+        if time.time() - start_time > 0.9:
+            break
+            
+        s = to_idx(move_str[0:2])
+        e = to_idx(move_str[2:4])
+        prom = move_str[4] if len(move_str) > 4 else ''
+        
+        # My move
+        nb = make_move(board, s, e, prom)
+        
+        # Estimate Opponent Response (Min Node)
+        # We need to find the move that minimizes (Evaluate(nb, my_color))
+        # Or simply minimizes the score.
+        
+        current_move_score = float('inf') # Start with +Inf (Opponent's best case is my worst)
+        
+        # Generate opponent candidates
+        # Optimization: Prioritize captures to prune faster?
+        opp_raw = gen_pseudo_moves(nb, opp_color)
+        
+        has_legal_reply = False
+        
+        # If no moves, checkmate or stalemate
+        if not opp_raw:
+            if is_check(nb, opp_color):
+                current_move_score = 99999 # I win
+            else:
+                current_move_score = 0 # Draw
+            has_legal_reply = True # Handled conceptually
+            
+        else:
+            for ops, ope, oppr in opp_raw:
+                # Fast legality check: does this move capture my king? (Impossible if I was legal)
+                # Does it leave opp king in check?
+                nnb = make_move(nb, ops, ope, oppr)
+                
+                # Check if Opponent left themselves in check (Illegal move)
+                if is_check(nnb, opp_color):
+                    continue
+                
+                has_legal_reply = True
+                
+                # Static Eval
+                val = evaluate(nnb, my_color)
+                
+                if val < current_move_score:
+                    current_move_score = val
+                    
+                # Alpha-pruning equivalent
+                # If valid reply makes this move worse than what I already have, stop checking opponent moves
+                if current_move_score < best_score:
+                    break
+        
+        if not has_legal_reply and current_move_score == float('inf'):
+            # Opponent has no legal moves (Mate or Stalemate)
+            if is_check(nb, opp_color):
+                current_move_score = 99999
+            else:
+                current_move_score = 0
+                
+        if current_move_score > best_score:
+            best_score = current_move_score
+            best_move = move_str
+            
+    return best_move, memory
+</code>

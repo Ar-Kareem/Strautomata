@@ -1,0 +1,340 @@
+```reasoning
+The game is Amazons on a 6x6 board. I need to select a move that is legal. The prompt implies this is a turn-based adversarial game where I am the maximizing player. Although the prompt mentions a "1 second" time limit, it also explicitly allows using any standard Python imports including numpy. Given the small board size ($6 \times 6$) and the complexity of Amazons, I will implement an Alpha-Beta search with iterative deepening and a heuristic evaluation function. Since the code runs in a single function call, I will include the search logic within the `policy` function. To ensure performance within the time limit while maintaining a strong strategy, I will implement the search in pure Python using flat lists for the board representation to avoid the overhead of numpy array slicing during the search. I will perform a static analysis (monte carlo rollout) for the root node to prioritize moves that have a higher chance of being strong, reducing the search space for the explicit Alpha-Beta search to fit the time limit while effectively utilizing the allowed imports if needed.
+
+I will implement the following:
+1.  **Move Generation**: A generator for queen moves (both movement and arrow shots).
+2.  **Evaluation**: A heuristic based on the number of legal moves (mobility) and territory control (influence map).
+3.  **Search**: A Depth-Limited Search (DLS) at the root node. I will use a Monte Carlo simulation to filter the root moves to the top 3-5 candidates before running the Alpha-Beta search on them. This ensures we don't waste time analyzing bad moves deeply.
+4.  **Time Management**: The code checks elapsed time frequently and returns the best move found so far if the limit is approached.
+
+The board is 0-indexed as required.
+
+```python
+import time
+import random
+
+def policy(board) -> str:
+    """
+    Selects a move for Amazons on a 6x6 board using Alpha-Beta search with 
+    Monte Carlo filtering for root move ordering.
+    """
+    start_time = time.time()
+    TIMEOUT = 0.85  # Seconds
+
+    # Constants
+    SIZE = 6
+    EMPTY = 0
+    ME = 1
+    OPP = 2
+    ARROW = -1
+
+    # Precomputed direction vectors for Queen moves (dx, dy)
+    DIRS = [(-1, -1), (-1, 0), (-1, 1),
+            (0, -1),           (0, 1),
+            (1, -1),  (1, 0),  (1, 1)]
+
+    # Convert numpy board to flat list for faster access in pure Python loops
+    # board is given as a 6x6 numpy array
+    flat_board = board.flatten().tolist()
+
+    def get_moves(player, brd):
+        """Generator for all legal moves for a given player."""
+        opponent = OPP if player == ME else ME
+        
+        for i, val in enumerate(brd):
+            if val == player:
+                r, c = divmod(i, SIZE)
+                # Try all 8 directions for movement
+                for dr, dc in DIRS:
+                    # Step 1: Move the Amazon
+                    step = 1
+                    while True:
+                        nr, nc = r + dr * step, c + dc * step
+                        if not (0 <= nr < SIZE and 0 <= nc < SIZE):
+                            break
+                        
+                        n_idx = nr * SIZE + nc
+                        # Check if square is empty
+                        if brd[n_idx] != EMPTY:
+                            # If blocked by opponent or me or arrow, we can't go further
+                            break
+                        
+                        # Valid landing spot for the amazon (temporarily)
+                        # Now generate arrow shots from this new position
+                        # We simulate the board state for arrow generation:
+                        # Old pos is EMPTY, New pos is Amazon (blocked for arrow)
+                        # (Actually, the amazon occupies the new spot, so arrow can't land there,
+                        # but can it pass through? No, the amazon is there. 
+                        # Wait, the arrow is shot *after* the amazon moves.
+                        # So the path for the arrow cannot cross the amazon's new position.
+                        # The amazon's old position becomes empty.
+                        
+                        # Let's define the state for the arrow search:
+                        # current_pos (nr, nc) is blocked (occupied by us)
+                        # old_pos (r, c) is empty
+                        
+                        # Generate arrows from (nr, nc)
+                        for adr, adc in DIRS:
+                            astep = 1
+                            while True:
+                                anr, anc = nr + adr * astep, nc + adc * astep
+                                if not (0 <= anr < SIZE and 0 <= anc < SIZE):
+                                    break
+                                
+                                an_idx = anr * SIZE + anc
+                                
+                                # Check if square is occupied in the ORIGINAL board
+                                # EXCEPT we treat (r, c) as EMPTY and (nr, nc) as BLOCKED
+                                
+                                # Is this square the amazon's new spot?
+                                if an_idx == n_idx:
+                                    break # Cannot shoot through own new spot immediately? 
+                                    # Actually, queen moves cannot pass through pieces. 
+                                    # So (nr, nc) blocks the arrow path.
+                                
+                                # Is this square the amazon's old spot?
+                                is_old = (an_idx == (r * SIZE + c))
+                                
+                                occupant = brd[an_idx]
+                                
+                                # If it's an old spot, it's effectively empty for the arrow
+                                # unless it's also occupied by something else (impossible by rules)
+                                if is_old:
+                                    occupant = EMPTY
+                                
+                                if occupant != EMPTY:
+                                    break # Blocked by something
+                                
+                                # If we are here, this is a valid arrow landing spot
+                                # Yield the move string
+                                yield f"{r},{c}:{nr},{nc}:{anr},{anc}"
+                                
+                                astep += 1
+                        step += 1
+
+    def evaluate(brd, player):
+        """
+        Heuristic evaluation of the board state.
+        Returns a score relative to the maximizing player (ME).
+        """
+        opponent = OPP if player == ME else ME
+        
+        # 1. Mobility (Number of legal moves)
+        my_moves = len(list(get_moves(player, brd)))
+        opp_moves = len(list(get_moves(opponent, brd)))
+        
+        # 2. Territory (Influence)
+        # Count empty squares reachable by a single queen step (influence)
+        my_influence = 0
+        opp_influence = 0
+        
+        for i, val in enumerate(brd):
+            if val == EMPTY:
+                r, c = divmod(i, SIZE)
+                # Check if influenced by ME
+                influenced_me = False
+                influenced_opp = False
+                
+                # Check neighbors in 8 directions
+                for dr, dc in DIRS:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < SIZE and 0 <= nc < SIZE:
+                        n_idx = nr * SIZE + nc
+                        if brd[n_idx] == player: influenced_me = True
+                        elif brd[n_idx] == opponent: influenced_opp = True
+                    if influenced_me and influenced_opp: break
+                
+                if influenced_me and not influenced_opp: my_influence += 1
+                elif influenced_opp and not influenced_me: opp_influence += 1
+                
+        # Score calculation
+        # Mobility is usually the strongest indicator
+        # Influence adds positional value
+        score = (my_moves - opp_moves) * 2.0 + (my_influence - opp_influence) * 0.5
+        
+        # If the opponent has no moves, we win (huge score)
+        if opp_moves == 0:
+            return 100000
+        
+        # If we have no moves, we lose (huge negative score)
+        if my_moves == 0:
+            return -100000
+            
+        return score
+
+    def make_move(brd, move_str):
+        """Returns a new board list after applying move."""
+        f_r, f_c, t_r, t_c, a_r, a_c = map(int, move_str.replace(':', ',').split(','))
+        f_idx = f_r * SIZE + f_c
+        t_idx = t_r * SIZE + t_c
+        a_idx = a_r * SIZE + a_c
+        
+        new_brd = brd[:] # Copy
+        new_brd[f_idx] = EMPTY
+        new_brd[t_idx] = ME # It's always my move when I generate
+        new_brd[a_idx] = ARROW
+        return new_brd
+
+    def alpha_beta(brd, depth, alpha, beta, maximizing, root_moves=None):
+        """Alpha-Beta Search. If root_moves provided, only considers those at root."""
+        if time.time() - start_time > TIMEOUT:
+            return None, 0 # Timeout signal
+
+        if depth == 0:
+            return None, evaluate(brd, ME if maximizing else OPP)
+        
+        player = ME if maximizing else OPP
+        
+        # Generate moves
+        if root_moves:
+            moves = root_moves
+        else:
+            moves = list(get_moves(player, brd))
+            
+        if not moves:
+            # Terminal node
+            return None, -100000 if maximizing else 100000
+            
+        best_move = moves[0]
+        
+        if maximizing:
+            max_eval = -float('inf')
+            for move in moves:
+                new_brd = make_move(brd, move)
+                # Opponent plays after my move
+                _, val = alpha_beta(new_brd, depth - 1, alpha, beta, False)
+                
+                if val is None: # Timeout
+                    return best_move, max_eval
+                
+                if val > max_eval:
+                    max_eval = val
+                    best_move = move
+                alpha = max(alpha, val)
+                if beta <= alpha:
+                    break
+            return best_move, max_eval
+        else:
+            min_eval = float('inf')
+            for move in moves:
+                # In the search, we need to simulate opponent moves
+                # Note: The move generation logic is generic, but we need to apply it for opponent
+                # Since `make_move` hardcodes ME, we need a generic one or adaptation.
+                # Let's quickly adapt make_move inside the loop for opponent?
+                # Actually, simpler: modify make_move to take player.
+                # But to keep code tight, let's handle opponent generation manually or wrap it.
+                # Let's just create a generic move applicator.
+                
+                # Generic move applicator:
+                parts = list(map(int, move.replace(':', ',').split(',')))
+                f_idx = parts[0] * SIZE + parts[1]
+                t_idx = parts[2] * SIZE + parts[3]
+                a_idx = parts[4] * SIZE + parts[5]
+                
+                new_brd = brd[:]
+                new_brd[f_idx] = EMPTY
+                new_brd[t_idx] = player # Apply opponent
+                new_brd[a_idx] = ARROW
+                
+                # Next is maximizing (ME)
+                _, val = alpha_beta(new_brd, depth - 1, alpha, beta, True)
+                
+                if val is None:
+                    return best_move, min_eval
+                
+                if val < min_eval:
+                    min_eval = val
+                    best_move = move
+                beta = min(beta, val)
+                if beta <= alpha:
+                    break
+            return best_move, min_eval
+
+    # --- Main Logic ---
+
+    # 1. Generate all root moves
+    all_root_moves = list(get_moves(ME, flat_board))
+    
+    if not all_root_moves:
+        # Should not happen based on prompt, but safety
+        # Return a dummy move? No, prompt says assume legal.
+        # We can't pass empty string, so let's hope we never get here.
+        # If we are here, we have no moves. The game is lost.
+        # But the prompt says "output a legal move string". 
+        # If no moves, there is no legal move string.
+        # We'll just return a placeholder that might crash, or pick a dummy.
+        # Let's try to return the first move generated by empty check.
+        return "0,0:0,0:0,0" 
+
+    # 2. Monte Carlo Filtering (if too many moves)
+    # We want to pick the best candidates to search deeply.
+    # If we have few moves, search all.
+    # If many, run a quick rollout on them.
+    
+    candidates = all_root_moves
+    
+    if len(all_root_moves) > 5:
+        # Run quick evaluations (1-ply look ahead or just static eval)
+        # Static eval is fast.
+        scored_moves = []
+        for move in all_root_moves:
+            new_brd = make_move(flat_board, move)
+            # Evaluate from perspective of ME (next turn is opponent, but eval function handles it)
+            # Actually, evaluate takes the board and the perspective player.
+            # After I move, opponent moves. The eval function calculates score for ME.
+            # Let's use the evaluate function which compares ME vs OPP.
+            # But evaluate expects the board state *after* my move? Yes.
+            # It will calculate MOBILITY for ME (who just moved) vs OPP.
+            # Wait, usually we want to maximize OUR mobility.
+            # But strictly, after I move, it's opponent's turn.
+            # However, mobility is a good heuristic.
+            
+            # Let's do a quick static eval of the new board state
+            # We need a generic evaluator that doesn't rely on `get_moves` too heavily if we want speed,
+            # but `get_moves` is Python, so it's okay for a few moves.
+            
+            # Optimization: Just use the evaluate function which calls get_moves.
+            # This is expensive if done for 50 moves.
+            # Let's filter purely by influence for speed if move count is very high.
+            # Or just take top 5 random? No, let's calculate static score.
+            
+            score = evaluate(new_brd, ME) # Score of the resulting board
+            scored_moves.append((score, move))
+        
+        # Sort by score descending
+        scored_moves.sort(key=lambda x: x[0], reverse=True)
+        # Take top 30% or max 5
+        cut = max(3, len(scored_moves) // 3)
+        candidates = [m for _, m in scored_moves[:cut]]
+
+    # 3. Alpha-Beta Search
+    best_move = candidates[0]
+    
+    # Determine depth based on time and complexity
+    # Start with depth 2, try 3 if time permits
+    # With filtering, we can search deeper.
+    
+    # We perform iterative deepening only on candidates
+    depth = 2
+    while depth <= 4:
+        # Safety check before starting depth
+        if time.time() - start_time > TIMEOUT:
+            break
+            
+        # We need to handle the root separately because `alpha_beta` recursively calls itself.
+        # The candidates list is passed only at the root.
+        
+        # To use alpha_beta recursively, it needs to generate moves for children normally.
+        # The root search:
+        current_best, _ = alpha_beta(flat_board, depth, -float('inf'), float('inf'), True, root_moves=candidates)
+        
+        if current_best:
+            best_move = current_best
+        
+        # If we finished depth 4 or time is low, stop
+        depth += 1
+        if time.time() - start_time > TIMEOUT:
+            break
+
+    return best_move
+```

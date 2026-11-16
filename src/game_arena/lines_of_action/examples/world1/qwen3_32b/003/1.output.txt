@@ -1,0 +1,118 @@
+The strategy for this policy is to generate all legal moves and evaluate each based on its impact on the connected components of both players and whether it captures an opponent's piece. The evaluation prioritizes moves that reduce the current player's connected components, increase the opponent's connected components, and capture pieces. The move with the highest score is selected, ensuring a balance between immediate tactical gains and long-term game objectives.
+
+<code>
+import copy
+
+def policy(board):
+    # Helper function to generate all legal moves
+    def generate_moves(current_board):
+        legal_moves = []
+        directions = [(0,1), (0,-1), (1,0), (-1,0), (1,1), (1,-1), (-1,1), (-1,-1)]
+        for r in range(8):
+            for c in range(8):
+                if current_board[r][c] == 1:
+                    for dr, dc in directions:
+                        # Determine line cells based on direction
+                        if dr == 0:
+                            line_cells = [(r, col) for col in range(8)]
+                        elif dc == 0:
+                            line_cells = [(row, c) for row in range(8)]
+                        else:
+                            if dr * dc > 0:
+                                k = r - c
+                                min_r = max(0, k)
+                                max_r = min(7, 7 + k)
+                                line_cells = [(r_i, r_i - k) for r_i in range(min_r, max_r + 1)]
+                            else:
+                                s = r + c
+                                min_r = max(0, s - 7)
+                                max_r = min(7, s)
+                                line_cells = [(r_i, s - r_i) for r_i in range(min_r, max_r + 1)]
+                        # Calculate move count
+                        line = [current_board[i][j] for (i, j) in line_cells]
+                        move_count = sum(1 for cell in line if cell != 0)
+                        # Compute destination
+                        dest_r = r + dr * move_count
+                        dest_c = c + dc * move_count
+                        if not (0 <= dest_r < 8 and 0 <= dest_c < 8):
+                            continue
+                        # Check path validity
+                        valid = True
+                        for i in range(1, move_count):
+                            step_r = r + dr * i
+                            step_c = c + dc * i
+                            if not (0 <= step_r < 8 and 0 <= step_c < 8):
+                                valid = False
+                                break
+                            if current_board[step_r][step_c] == -1:
+                                valid = False
+                                break
+                        if not valid:
+                            continue
+                        # Check destination cell
+                        dest_cell = current_board[dest_r][dest_c]
+                        if dest_cell == 1:
+                            continue
+                        legal_moves.append((r, c, dest_r, dest_c))
+        return legal_moves
+
+    # Helper function to count connected components
+    def count_components(current_board, player):
+        visited = [[False for _ in range(8)] for _ in range(8)]
+        components = 0
+        for r in range(8):
+            for c in range(8):
+                if current_board[r][c] == player and not visited[r][c]:
+                    components += 1
+                    stack = [(r, c)]
+                    visited[r][c] = True
+                    while stack:
+                        x, y = stack.pop()
+                        for dx in (-1, 0, 1):
+                            for dy in (-1, 0, 1):
+                                if dx == 0 and dy == 0:
+                                    continue
+                                nx = x + dx
+                                ny = y + dy
+                                if 0 <= nx < 8 and 0 <= ny < 8:
+                                    if current_board[nx][ny] == player and not visited[nx][ny]:
+                                        visited[nx][ny] = True
+                                        stack.append((nx, ny))
+        return components
+
+    # Generate all legal moves
+    legal_moves = generate_moves(board)
+    if not legal_moves:
+        return ""
+    
+    # Calculate connected components before any move
+    player_before = count_components(board, 1)
+    opponent_before = count_components(board, -1)
+
+    best_score = float('-inf')
+    best_move = None
+
+    for move in legal_moves:
+        from_r, from_c, to_r, to_c = move
+        new_board = [row[:] for row in board]
+        new_board[from_r][from_c] = 0
+        dest_val = new_board[to_r][to_c]
+        new_board[to_r][to_c] = 1
+        # Calculate connected components after the move
+        player_after = count_components(new_board, 1)
+        opponent_after = count_components(new_board, -1)
+        # Calculate score based on heuristics
+        delta_player = player_after - player_before
+        delta_opponent = opponent_after - opponent_before
+        capture = (dest_val == -1)
+        score = (-delta_player) * 100 + delta_opponent * 50
+        if capture:
+            score += 100
+        if player_after == 1:
+            score += 1000
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return f"{best_move[0]},{best_move[1]}:{best_move[2]},{best_move[3]}"
+</code>

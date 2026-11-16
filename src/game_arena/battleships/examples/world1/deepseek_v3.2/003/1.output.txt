@@ -1,0 +1,173 @@
+<thinking>
+We are to design a targeting policy for Battleship. The board is a 10x10 grid. Ships lengths: 5,4,3,3,2. We need to implement a policy that picks a shot (row, col) based on current board state (0=unknown, -1=miss, 1=hit).
+
+We must only shoot at unknown cells (0). The policy should efficiently hunt for ships and, once a hit is found, target adjacent cells to sink the ship.
+
+We'll design a two-phase approach:
+1. Hunt mode: When no hits are pending, we shoot at cells with highest probability of containing a ship. We precompute all possible ship placements and count how many valid placements include each cell.
+2. Target mode: When we have hits, we group them into connected components (ships). For each ship, we determine its orientation and target the ends. We process ships from largest to smallest.
+
+We'll implement helper functions for generating placements, finding connected components, and generating candidate shots for a component.
+
+The policy function will:
+- If there are hits, group them into components, sort by size, and for each component generate candidate shots. Return the first valid candidate.
+- If no hits or no candidates from hits, go to hunt mode: compute a probability map and pick the unknown cell with the highest probability.
+
+We'll precompute all ship placements globally for efficiency.
+
+We must ensure we only shoot at unknown cells.
+
+Implementation details:
+- Use BFS for connected components (4-neighbors).
+- For a single hit, candidates are the four adjacent cells.
+- For a horizontal component, candidates are left and right ends.
+- For a vertical component, candidates are top and bottom ends.
+- In hunt mode, compute probability by counting placements that fit entirely in unknown cells.
+
+We'll use deterministic tie-breaking (row, then column) when needed.
+
+We must output the complete Python code.
+</thinking>
+
+<code>
+import itertools
+
+# Precompute all possible ship placements for lengths 2,3,3,4,5.
+# We treat the two length-3 ships separately by duplicating placements.
+PLACEMENTS = []
+for length in [2, 3, 3, 4, 5]:
+    # horizontal placements
+    for r in range(10):
+        for c in range(10 - length + 1):
+            placement = set()
+            for i in range(length):
+                placement.add((r, c + i))
+            PLACEMENTS.append(placement)
+    # vertical placements
+    for r in range(10 - length + 1):
+        for c in range(10):
+            placement = set()
+            for i in range(length):
+                placement.add((r + i, c))
+            PLACEMENTS.append(placement)
+
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """Return the next shot (row, col) based on the current board state."""
+
+    def get_components(hits):
+        """Return list of connected components (sets of coordinates) from hits."""
+        components = []
+        visited = set()
+        for hit in hits:
+            if hit in visited:
+                continue
+            # start BFS
+            queue = [hit]
+            component = set()
+            while queue:
+                r, c = queue.pop()
+                if (r, c) in component:
+                    continue
+                component.add((r, c))
+                visited.add((r, c))
+                # 4-neighbors
+                for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 10 and 0 <= nc < 10 and (nr, nc) in hits and (nr, nc) not in component:
+                        queue.append((nr, nc))
+            components.append(component)
+        return components
+
+    def get_candidates(component, board):
+        """Return a list of candidate shots for a given component, in a fixed order."""
+        if len(component) == 1:
+            # single hit: try up, down, left, right
+            r, c = next(iter(component))
+            candidates = []
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                    candidates.append((nr, nc))
+            return candidates
+        else:
+            # multiple hits: determine orientation
+            rows = {r for (r, c) in component}
+            cols = {c for (r, c) in component}
+            if len(rows) == 1:
+                # horizontal
+                row = list(rows)[0]
+                cols_sorted = sorted(cols)
+                min_c = cols_sorted[0]
+                max_c = cols_sorted[-1]
+                candidates = []
+                # left end
+                if min_c - 1 >= 0 and board[row][min_c - 1] == 0:
+                    candidates.append((row, min_c - 1))
+                # right end
+                if max_c + 1 < 10 and board[row][max_c + 1] == 0:
+                    candidates.append((row, max_c + 1))
+                return candidates
+            elif len(cols) == 1:
+                # vertical
+                col = list(cols)[0]
+                rows_sorted = sorted(rows)
+                min_r = rows_sorted[0]
+                max_r = rows_sorted[-1]
+                candidates = []
+                # top end
+                if min_r - 1 >= 0 and board[min_r - 1][col] == 0:
+                    candidates.append((min_r - 1, col))
+                # bottom end
+                if max_r + 1 < 10 and board[max_r + 1][col] == 0:
+                    candidates.append((max_r + 1, col))
+                return candidates
+            else:
+                # should not happen for straight ships; return no candidates
+                return []
+
+    # Collect all hit coordinates
+    hits = [(r, c) for r in range(10) for c in range(10) if board[r][c] == 1]
+
+    if hits:
+        # Group hits into connected components
+        components = get_components(hits)
+        # Sort components by size descending, then by min row, min col for tie-breaking
+        components.sort(key=lambda comp: (-len(comp), min(comp)))
+        for comp in components:
+            candidates = get_candidates(comp, board)
+            if candidates:
+                # Return the first candidate (fixed order from get_candidates)
+                return candidates[0]
+
+    # Hunt mode: no hits or no candidates from hits
+    # Compute probability map
+    prob_map = [[0] * 10 for _ in range(10)]
+    for placement in PLACEMENTS:
+        # Check if placement is still possible (all cells unknown)
+        valid = True
+        for r, c in placement:
+            if board[r][c] != 0:
+                valid = False
+                break
+        if valid:
+            for r, c in placement:
+                prob_map[r][c] += 1
+
+    # Find the unknown cell with highest probability
+    best_prob = -1
+    best_cell = None
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0:
+                if prob_map[r][c] > best_prob:
+                    best_prob = prob_map[r][c]
+                    best_cell = (r, c)
+                elif prob_map[r][c] == best_prob and best_cell is not None:
+                    # tie-break: smaller row, then smaller column
+                    if r < best_cell[0] or (r == best_cell[0] and c < best_cell[1]):
+                        best_cell = (r, c)
+
+    # There will always be at least one unknown cell
+    return best_cell
+</code>

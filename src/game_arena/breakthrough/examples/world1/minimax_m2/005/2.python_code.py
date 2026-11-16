@@ -1,0 +1,161 @@
+
+import time
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    top_color = color
+    best_move = None
+    best_score = -10000
+    depth = 1
+    start_time = time.time()
+    max_time = 0.9  # seconds, leave time for move processing
+    
+    while depth <= 2 and (time.time() - start_time) < max_time:
+        moves = generate_moves(me, opp, color)
+        if not moves:
+            # Fallback: if no moves, return None (shouldn't happen in legal game state)
+            return None
+        current_best_move = None
+        current_best_score = -10000
+        for move in moves:
+            new_me, new_opp = apply_move(me, opp, move, color)
+            next_me = new_opp
+            next_opp = new_me
+            next_color = 'w' if color == 'b' else 'b'
+            if depth == 1:
+                score = evaluation(next_me, next_opp, next_color, top_color)
+            else:
+                score = minimax(next_me, next_opp, next_color, depth-1, -10000, 10000, top_color)
+            if score > current_best_score:
+                current_best_score = score
+                current_best_move = move
+        best_move = current_best_move
+        best_score = current_best_score
+        depth += 1
+    
+    # Fallback: if best_move is still None (shouldn't happen), return first move
+    if best_move is None and moves:
+        best_move = moves[0]
+    return best_move
+
+def generate_moves(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> list[tuple[tuple[int, int], tuple[int, int]]]:
+    moves = []
+    me_set = set(me)
+    opp_set = set(opp)
+    for (r, c) in me:
+        if color == 'w': 
+            forward = r + 1
+        else: 
+            forward = r - 1
+        # Straight forward
+        if 0 <= forward <= 7 and (forward, c) not in me_set and (forward, c) not in opp_set:
+            moves.append(((r, c), (forward, c)))
+        # Diagonal forward
+        for dc in [-1, 1]:
+            nc = c + dc
+            if 0 <= nc <= 7 and 0 <= forward <= 7:
+                if (forward, nc) in opp_set:  # Capture
+                    moves.append(((r, c), (forward, nc)))
+                elif (forward, nc) not in me_set and (forward, nc) not in opp_set:  # Empty
+                    moves.append(((r, c), (forward, nc)))
+    return moves
+
+def apply_move(me: list[tuple[int, int]], opp: list[tuple[int, int]], move: tuple[tuple[int, int], tuple[int, int]], color: str) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+    (from_r, from_c), (to_r, to_c) = move
+    new_me = []
+    new_opp = []
+    for (r, c) in me:
+        if (r, c) == (from_r, from_c):
+            new_me.append((to_r, to_c))
+        else:
+            new_me.append((r, c))
+    for (r, c) in opp:
+        if (r, c) == (to_r, to_c):
+            continue  # Captured piece removed
+        else:
+            new_opp.append((r, c))
+    return (new_me, new_opp)
+
+def evaluation(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str, top_color: str) -> int:
+    # Terminal conditions
+    if len(opp) == 0:
+        return 10000
+    if len(me) == 0:
+        return -10000
+    if color == 'w': 
+        if me and max(r for (r, c) in me) >= 7:
+            return 10000
+        if opp and min(r for (r, c) in opp) <= 0:
+            return -10000
+    if color == 'b': 
+        if me and min(r for (r, c) in me) <= 0:
+            return 10000
+        if opp and max(r for (r, c) in opp) >= 7:
+            return -10000
+
+    # Determine pieces by color
+    if color == 'b':
+        black_pieces = me
+        white_pieces = opp
+    else:
+        black_pieces = opp
+        white_pieces = me
+
+    # Top player's perspective
+    if top_color == 'b':
+        top_me = black_pieces
+        top_opp = white_pieces
+    else:
+        top_me = white_pieces
+        top_opp = black_pieces
+
+    # Material score
+    material = len(top_me) - len(top_opp)
+    
+    # Position scores
+    if top_color == 'w': 
+        pos_own = sum(r for (r, c) in top_me)
+        pos_opp = sum((7 - r) for (r, c) in top_opp)
+    else: 
+        pos_own = sum((7 - r) for (r, c) in top_me)
+        pos_opp = sum(r for (r, c) in top_opp)
+
+    score = material * 100 + pos_own - pos_opp
+    return score
+
+def minimax(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str, depth: int, alpha: int, beta: int, top_color: str) -> int:
+    score = evaluation(me, opp, color, top_color)
+    if depth == 0 or abs(score) == 10000:
+        return score
+    
+    moves = generate_moves(me, opp, color)
+    if not moves:
+        return score  # No moves, return current score
+    
+    if color == top_color:  # Maximizing player
+        max_eval = -10000
+        for move in moves:
+            new_me, new_opp = apply_move(me, opp, move, color)
+            next_me = new_opp
+            next_opp = new_me
+            next_color = 'w' if color == 'b' else 'b'
+            eval_score = minimax(next_me, next_opp, next_color, depth-1, alpha, beta, top_color)
+            if eval_score > max_eval:
+                max_eval = eval_score
+            alpha = max(alpha, eval_score)
+            if max_eval >= beta:
+                break
+        return max_eval
+    else:  # Minimizing player
+        min_eval = 10000
+        for move in moves:
+            new_me, new_opp = apply_move(me, opp, move, color)
+            next_me = new_opp
+            next_opp = new_me
+            next_color = 'w' if color == 'b' else 'b'
+            eval_score = minimax(next_me, next_opp, next_color, depth-1, alpha, beta, top_color)
+            if eval_score < min_eval:
+                min_eval = eval_score
+            beta = min(beta, eval_score)
+            if min_eval <= alpha:
+                break
+        return min_eval

@@ -1,0 +1,82 @@
+The strategy for this policy is a solid, safe Dots-and-Boxes heuristic:  
+1) **Always take captures** if available (prioritize moves that capture the most boxes).  
+2) If no capture is possible, **prefer safe moves** that do **not** create any 3‑sided box for the opponent.  
+3) If no safe move exists, choose the move that **minimizes the number of 3‑sided boxes** it creates (to reduce opponent gains).  
+This keeps control when possible and avoids gifting the opponent easy chains.
+
+<code>
+import numpy as np
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    # Generate all legal moves
+    moves = []
+    for r in range(5):
+        for c in range(5):
+            if horizontal[r, c] == 0:
+                moves.append((r, c, 'H'))
+            if vertical[r, c] == 0:
+                moves.append((r, c, 'V'))
+
+    # If no legal moves (should only happen when game is over), return a default
+    if not moves:
+        return "0,0,H"
+
+    # Evaluate a move: number of boxes captured and boxes made vulnerable (3 sides)
+    def evaluate_move(mr, mc, mdir):
+        captured = 0
+        vuln = 0
+        two = 0  # number of boxes with exactly two sides after move (used for tie-break)
+        for br in range(4):
+            for bc in range(4):
+                if capture[br, bc] != 0:
+                    continue  # already owned
+                count = 0
+                # top
+                if horizontal[br, bc] != 0 or (mdir == 'H' and mr == br and mc == bc):
+                    count += 1
+                # bottom
+                if horizontal[br + 1, bc] != 0 or (mdir == 'H' and mr == br + 1 and mc == bc):
+                    count += 1
+                # left
+                if vertical[br, bc] != 0 or (mdir == 'V' and mr == br and mc == bc):
+                    count += 1
+                # right
+                if vertical[br, bc + 1] != 0 or (mdir == 'V' and mr == br and mc == bc + 1):
+                    count += 1
+
+                if count == 4:
+                    captured += 1
+                elif count == 3:
+                    vuln += 1
+                elif count == 2:
+                    two += 1
+        return captured, vuln, two
+
+    # Evaluate all moves
+    evaluated = []
+    for r, c, d in moves:
+        cap, vuln, two = evaluate_move(r, c, d)
+        evaluated.append((cap, vuln, two, r, c, d))
+
+    # 1) If any capture exists, choose the move with maximum capture
+    max_cap = max(e[0] for e in evaluated)
+    if max_cap > 0:
+        candidates = [e for e in evaluated if e[0] == max_cap]
+        # Tie-break by fewer vulnerabilities, then fewer two-sided boxes
+        candidates.sort(key=lambda x: (x[1], x[2], x[3], x[4], x[5]))
+        _, _, _, r, c, d = candidates[0]
+        return f"{r},{c},{d}"
+
+    # 2) Otherwise, choose safe moves (no 3-sided boxes)
+    safe_moves = [e for e in evaluated if e[1] == 0]
+    if safe_moves:
+        # Prefer creating fewer two-sided boxes
+        safe_moves.sort(key=lambda x: (x[2], x[3], x[4], x[5]))
+        _, _, _, r, c, d = safe_moves[0]
+        return f"{r},{c},{d}"
+
+    # 3) If no safe moves, minimize the number of vulnerable boxes created
+    evaluated.sort(key=lambda x: (x[1], x[2], x[3], x[4], x[5]))
+    _, _, _, r, c, d = evaluated[0]
+    return f"{r},{c},{d}"
+</code>

@@ -1,0 +1,47 @@
+
+def policy(board: list[list[int]]) -> int:
+    # Check for a winning move
+    lines = [
+        # Rows
+        [(0,0), (0,1), (0,2)],
+        [(1,0), (1,1), (1,2)],
+        [(2,0), (2,1), (2,2)],
+        # Columns
+        [(0,0), (1,0), (2,0)],
+        [(0,1), (1,1), (2,1)],
+        [(0,2), (1,2), (2,2)],
+        # Diagonals
+        [(0,0), (1,1), (2,2)],
+        [(0,2), (1,1), (2,0)]
+    ]
+    
+    for line in lines:
+        values = [board[r][c] for r, c in line]
+        if sum(values) == 2:
+            for i, val in enumerate(values):
+                if val == 0:
+                    r, c = line[i]
+                    if board[r][c] == 0:
+                        return (r, c)
+    
+    # Take center if available
+    if board[1][1] == 0:
+        return (1, 1)
+    
+    # Take first available corner
+    corners = [(0,0), (0,2), (2,0), (2,2)]
+    for r, c in corners:
+        if board[r][c] == 0:
+            return (r, c)
+    
+    # Take first available edge
+    edges = [(0,1), (1,0), (1,2), (2,1)]
+    for r, c in edges:
+        if board[r][c] == 0:
+            return (r, c)
+    
+    # Fallback (should not be reached as per game rules)
+    for r in range(3):
+        for c in range(3):
+            if board[r][c] == 0:
+                return (r, c)

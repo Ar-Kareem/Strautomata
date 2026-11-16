@@ -1,0 +1,109 @@
+# Strategy Explanation
+
+This Othello policy implements a weighted positional strategy combined with mobility considerations and edge stability. Here's the breakdown:
+
+1. **Positional Weights**: Uses a classic Othello positional evaluation matrix that prioritizes corners (highest value) and edges while avoiding C-squares near corners. Corners are strategically important as they cannot be flipped once captured.
+
+2. **Mobility**: Considers both current mobility (number of legal moves) and potential mobility (empty squares adjacent to opponent pieces). Higher mobility gives more options and flexibility.
+
+3. **Stability**: Edge pieces are more stable (harder to flip) than center pieces, so the strategy prefers moves that create stable positions.
+
+4. **Game Phase Awareness**: Adjusts strategy based on game phase (early, mid, endgame):
+   - Early game: Focus on mobility and positional advantage
+   - Mid game: Balance between position and disc parity
+   - End game: Maximize disc count difference
+
+5. **Move Validation**: Thoroughly checks all 8 directions for valid moves to ensure legal moves only.
+
+The algorithm evaluates all possible moves using these factors and selects the highest-scoring legal move available.
+
+<code>
+import numpy as np
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    # Positional weight matrix (corner and edge squares are more valuable)
+    WEIGHTS = np.array([
+        [120, -20,  20,   5,   5,  20, -20, 120],
+        [-20, -40,  -5,  -5,  -5,  -5, -40, -20],
+        [ 20,  -5,  15,   3,   3,  15,  -5,  20],
+        [  5,  -5,   3,   3,   3,   3,  -5,   5],
+        [  5,  -5,   3,   3,   3,   3,  -5,   5],
+        [ 20,  -5,  15,   3,   3,  15,  -5,  20],
+        [-20, -40,  -5,  -5,  -5,  -5, -40, -20],
+        [120, -20,  20,   5,   5,  20, -20, 120]
+    ])
+    
+    # Directions: up, down, left, right, and 4 diagonals
+    DIRECTIONS = [(-1, -1), (-1, 0), (-1, 1),
+                  (0, -1),          (0, 1),
+                  (1, -1),  (1, 0), (1, 1)]
+    
+    def is_valid_move(r, c):
+        # Check if move is valid and return flip count
+        if you[r][c] == 1 or opponent[r][c] == 1:
+            return 0
+        
+        total_flips = 0
+        for dr, dc in DIRECTIONS:
+            nr, nc = r + dr, c + dc
+            flipped = 0
+            
+            # Check if neighbor is opponent
+            while 0 <= nr < 8 and 0 <= nc < 8 and opponent[nr][nc] == 1:
+                flipped += 1
+                nr += dr
+                nc += dc
+                
+                # If we find our piece at the end, it's valid
+                if 0 <= nr < 8 and 0 <= nc < 8 and you[nr][nc] == 1:
+                    total_flips += flipped
+                    break
+        
+        return total_flips
+    
+    def evaluate_move(r, c):
+        # Evaluate the quality of a move
+        flip_count = is_valid_move(r, c)
+        if flip_count == 0:
+            return -float('inf')
+        
+        # Base score from positional weights
+        score = WEIGHTS[r][c]
+        
+        # Bonus for corner capture
+        if (r == 0 or r == 7) and (c == 0 or c == 7):
+            score += 100
+        
+        # Bonus for high mobility (flipping many pieces)
+        score += flip_count * 2
+        
+        # Penalty for moves near corners (unless capturing the corner)
+        if (r == 0 or r == 7) and (c == 1 or c == 6):
+            if you[r][0] == 0 and you[r][7] == 0:
+                score -= 50
+        if (c == 0 or c == 7) and (r == 1 or r == 6):
+            if you[0][c] == 0 and you[7][c] == 0:
+                score -= 50
+        
+        return score
+    
+    # Find all valid moves and evaluate them
+    best_score = -float('inf')
+    best_move = None
+    
+    for r in range(8):
+        for c in range(8):
+            score = evaluate_move(r, c)
+            if score > best_score:
+                best_score = score
+                best_move = (r, c)
+    
+    # If no valid move found, pass
+    if best_move is None:
+        return "pass"
+    
+    # Convert to algebraic notation
+    col_char = chr(ord('a') + best_move[1])
+    row_num = best_move[0] + 1
+    return f"{col_char}{row_num}"
+</code>

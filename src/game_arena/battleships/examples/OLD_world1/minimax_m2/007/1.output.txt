@@ -1,0 +1,129 @@
+To solve this problem, we need to implement a targeting policy for a Battleship-like game on a 10x10 grid. The policy should efficiently target opponent ships by first using a pattern-based approach for initial shots and then switching to a targeted approach when hits are detected. The strategy involves maintaining state across game turns to track hits and adjust targets dynamically.
+
+### Approach
+1. **Initial Pattern Shots**: The policy starts with a checkerboard pattern (spaced by 2 in both dimensions) to cover the grid evenly. This pattern minimizes the number of shots needed to locate ships.
+2. **Clustering Hits**: When hits are detected, the policy clusters adjacent hits into groups. Each cluster represents a potential ship orientation (horizontal or vertical).
+3. **Target Generation for Clusters**: For each cluster, targets are generated at the ends of the ship (based on the cluster's orientation) to sink the ship efficiently. For single-hit clusters, all adjacent cells are considered targets.
+4. **State Management**: The policy maintains state across turns using global variables to track previous shots, hits, and clusters. This allows dynamic adjustment of targets based on new information.
+5. **Shot Selection**: The policy prioritizes targets from existing clusters (with more hits first) before resorting to the initial pattern or random shots if no clusters or pattern shots remain.
+
+### Solution Code
+```python
+import random
+
+_last_board = None
+_pattern_shots = None
+_clusters = []
+
+def policy(board):
+    global _last_board, _pattern_shots, _clusters
+
+    if _last_board is None:
+        _last_board = board
+        pattern_shots = []
+        for r in range(10):
+            for c in range(10):
+                if (r + c) % 2 == 0:
+                    pattern_shots.append((r, c))
+        _pattern_shots = pattern_shots
+        _clusters = []
+    
+    new_hits = []
+    if _last_board is not None:
+        for r in range(10):
+            for c in range(10):
+                if _last_board[r][c] != 1 and board[r][c] == 1:
+                    new_hits.append((r, c))
+    
+    for hit in new_hits:
+        found = False
+        for cluster in _clusters:
+            for h in cluster['hits']:
+                if abs(h[0] - hit[0]) + abs(h[1] - hit[1]) == 1:
+                    cluster['hits'].append(hit)
+                    found = True
+                    break
+            if found:
+                break
+        if not found:
+            _clusters.append({
+                'hits': [hit],
+                'targets': []
+            })
+    
+    for cluster in _clusters:
+        if len(cluster['hits']) == 1:
+            r, c = cluster['hits'][0]
+            targets = []
+            for dr, dc in [(0,1), (0,-1), (1,0), (-1,0)]:
+                nr, nc = r+dr, c+dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                    targets.append((nr, nc))
+            cluster['targets'] = targets
+        else:
+            rows = set(r for (r,c) in cluster['hits'])
+            cols = set(c for (r,c) in cluster['hits'])
+            if len(rows) == 1:
+                r = list(rows)[0]
+                cols_list = [c for (r_temp, c) in cluster['hits'] if r_temp == r]
+                min_col = min(cols_list)
+                max_col = max(cols_list)
+                targets = []
+                if min_col > 0:
+                    candidate = (r, min_col-1)
+                    if board[r][min_col-1] == 0:
+                        targets.append(candidate)
+                if max_col < 9:
+                    candidate = (r, max_col+1)
+                    if board[r][max_col+1] == 0:
+                        targets.append(candidate)
+                cluster['targets'] = targets
+            else:
+                c = list(cols)[0]
+                rows_list = [r for (r, c_temp) in cluster['hits'] if c_temp == c]
+                min_row = min(rows_list)
+                max_row = max(rows_list)
+                targets = []
+                if min_row > 0:
+                    candidate = (min_row-1, c)
+                    if board[min_row-1][c] == 0:
+                        targets.append(candidate)
+                if max_row < 9:
+                    candidate = (max_row+1, c)
+                    if board[max_row+1][c] == 0:
+                        targets.append(candidate)
+                cluster['targets'] = targets
+    
+    new_pattern_shots = []
+    for shot in _pattern_shots:
+        r, c = shot
+        if board[r][c] == 0:
+            new_pattern_shots.append(shot)
+    _pattern_shots = new_pattern_shots
+    
+    _clusters.sort(key=lambda cl: (len(cl['hits']), -len(cl['targets'])), reverse=True)
+    
+    if _clusters and _clusters[0]['targets']:
+        shot = _clusters[0]['targets'][0]
+    elif _pattern_shots:
+        shot = _pattern_shots[0]
+    else:
+        available = [(r,c) for r in range(10) for c in range(10) if board[r][c] == 0]
+        if available:
+            shot = available[0]
+        else:
+            shot = (0,0)
+    
+    _last_board = board
+    return shot
+```
+
+### Explanation
+1. **Initialization**: On the first call, the policy initializes the state, including a checkerboard pattern of initial shots (every cell where the sum of row and column indices is even).
+2. **Hit Detection**: The policy checks for new hits compared to the previous board state.
+3. **Cluster Management**: New hits are merged into existing clusters if adjacent; otherwise, new clusters are created. Each cluster tracks its hits and potential targets.
+4. **Target Generation**: For clusters with multiple hits, targets are generated at the ends of the cluster's orientation (horizontal or vertical). Single-hit clusters generate targets in all four adjacent directions.
+5. **Shot Selection**: The policy prioritizes targets from clusters with more hits and fewer targets. If no clusters or pattern shots are available, it selects from remaining unshot cells randomly.
+6. **State Update**: The last board state is updated after each shot to track changes for the next turn.
+
+This approach efficiently balances initial exploration with targeted shooting, leveraging adjacency and clustering to minimize the number of shots needed to sink opponent ships.

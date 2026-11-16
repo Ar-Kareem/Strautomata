@@ -1,0 +1,129 @@
+The strategy for this policy is to play perfect Tic Tac Toe using a cached minimax search. It evaluates every legal continuation, so it cannot be beaten on a valid board. Among equally optimal moves, it prefers center, then corners, then edges, which tends to perform well against weaker opponents too. It also includes a fallback that always picks an empty cell if one exists.
+
+<code>
+from functools import lru_cache
+from typing import List, Tuple
+
+Move = Tuple[int, int]
+
+LINES = (
+    ((0, 0), (0, 1), (0, 2)),
+    ((1, 0), (1, 1), (1, 2)),
+    ((2, 0), (2, 1), (2, 2)),
+    ((0, 0), (1, 0), (2, 0)),
+    ((0, 1), (1, 1), (2, 1)),
+    ((0, 2), (1, 2), (2, 2)),
+    ((0, 0), (1, 1), (2, 2)),
+    ((0, 2), (1, 1), (2, 0)),
+)
+
+# Good tie-breaking order for equally strong moves.
+PREFERRED_MOVES = (
+    (1, 1),          # center
+    (0, 0), (0, 2), (2, 0), (2, 2),  # corners
+    (0, 1), (1, 0), (1, 2), (2, 1),  # edges
+)
+
+
+def _to_state(board: List[List[int]]) -> Tuple[Tuple[int, int, int], Tuple[int, int, int], Tuple[int, int, int]]:
+    # Defensive conversion to a fixed immutable 3x3 state.
+    rows = []
+    for r in range(3):
+        row = []
+        for c in range(3):
+            try:
+                v = board[r][c]
+            except Exception:
+                v = 0
+            if v not in (-1, 0, 1):
+                v = 0
+            row.append(int(v))
+        rows.append(tuple(row))
+    return tuple(rows)  # type: ignore
+
+
+def _empty_moves(state: Tuple[Tuple[int, ...], ...]) -> list[Move]:
+    return [(r, c) for (r, c) in PREFERRED_MOVES if state[r][c] == 0]
+
+
+def _winner(state: Tuple[Tuple[int, ...], ...]) -> int | None:
+    for line in LINES:
+        s = sum(state[r][c] for r, c in line)
+        if s == 3:
+            return 1
+        if s == -3:
+            return -1
+    if any(state[r][c] == 0 for r in range(3) for c in range(3)):
+        return None
+    return 0  # draw
+
+
+def _play(state: Tuple[Tuple[int, ...], ...], move: Move, player: int) -> Tuple[Tuple[int, ...], ...]:
+    r, c = move
+    new_rows = [list(row) for row in state]
+    new_rows[r][c] = player
+    return tuple(tuple(row) for row in new_rows)
+
+
+@lru_cache(maxsize=None)
+def _minimax(state: Tuple[Tuple[int, ...], ...], player: int) -> int:
+    """
+    Returns a score from our perspective.
+    Larger is better for us.
+
+    Terminal scoring prefers:
+    - faster wins
+    - slower losses
+    """
+    w = _winner(state)
+    if w is not None:
+        empties = sum(1 for r in range(3) for c in range(3) if state[r][c] == 0)
+        if w == 1:
+            return 10 + empties
+        if w == -1:
+            return -(10 + empties)
+        return 0
+
+    moves = _empty_moves(state)
+
+    if player == 1:
+        best = -10**9
+        for mv in moves:
+            score = _minimax(_play(state, mv, 1), -1)
+            if score > best:
+                best = score
+        return best
+    else:
+        best = 10**9
+        for mv in moves:
+            score = _minimax(_play(state, mv, -1), 1)
+            if score < best:
+                best = score
+        return best
+
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    state = _to_state(board)
+    legal = _empty_moves(state)
+
+    # If no legal move exists, return a fixed coordinate.
+    # In a valid arena state this should never happen.
+    if not legal:
+        return (0, 0)
+
+    # If the game is already terminal but there are empty cells,
+    # still return a legal empty move.
+    if _winner(state) is not None:
+        return legal[0]
+
+    best_move = legal[0]
+    best_score = -10**9
+
+    for mv in legal:
+        score = _minimax(_play(state, mv, 1), -1)
+        if score > best_score:
+            best_score = score
+            best_move = mv
+
+    return best_move
+</code>

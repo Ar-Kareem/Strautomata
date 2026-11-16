@@ -1,0 +1,122 @@
+
+import random
+from collections import deque
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Find all unknown cells (value 0)
+    unknown_cells = []
+    hits = []
+    
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0:
+                unknown_cells.append((r, c))
+            elif board[r][c] == 1:
+                hits.append((r, c))
+    
+    # If no unknown cells, something is wrong
+    if not unknown_cells:
+        return (0, 0)
+    
+    # Find unsunk ships (hits that are part of incomplete ships)
+    def is_ship_sunk(hit_r, hit_c):
+        # Check if this hit is part of a sunk ship by looking for
+        # complete sequences of hits with misses or edges on both ends
+        directions = [(0, 1), (1, 0), (0, -1), (-1, 0)]
+        
+        for dr, dc in directions:
+            # Look in positive direction
+            length = 1
+            r, c = hit_r + dr, hit_c + dc
+            while 0 <= r < 10 and 0 <= c < 10 and board[r][c] == 1:
+                length += 1
+                r += dr
+                c += dc
+            
+            # Look in negative direction
+            r, c = hit_r - dr, hit_c - dc
+            while 0 <= r < 10 and 0 <= c < 10 and board[r][c] == 1:
+                length += 1
+                r += dr
+                c += dc
+            
+            # If we found a ship of length >= 2, check if it's complete
+            if length >= 2:
+                # Check if both ends are terminated (miss or edge)
+                pos_end_r, pos_end_c = hit_r + dr * (length//2 + 1), hit_c + dc * (length//2 + 1)
+                neg_end_r, neg_end_c = hit_r - dr * (length//2 + 1), hit_c - dc * (length//2 + 1)
+                
+                # For now, assume unsunk if we found a multi-cell ship
+                return False
+        
+        return True
+    
+    # Find active targets (hits that need follow-up)
+    active_targets = []
+    for hit_r, hit_c in hits:
+        # Check adjacent cells for unknown cells
+        for dr, dc in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+            adj_r, adj_c = hit_r + dr, hit_c + dc
+            if 0 <= adj_r < 10 and 0 <= adj_c < 10 and board[adj_r][adj_c] == 0:
+                active_targets.append((adj_r, adj_c))
+    
+    # Remove duplicates from active targets
+    active_targets = list(set(active_targets))
+    
+    # If we have active targets (adjacent to hits), prioritize them
+    if active_targets:
+        # Try to find linear patterns first
+        best_targets = []
+        
+        for target_r, target_c in active_targets:
+            score = 0
+            # Check if this target would extend a line of hits
+            for dr, dc in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+                # Check if there are hits in a line through this point
+                hits_in_line = 0
+                for mult in [1, -1]:
+                    r, c = target_r + dr * mult, target_c + dc * mult
+                    while 0 <= r < 10 and 0 <= c < 10 and board[r][c] == 1:
+                        hits_in_line += 1
+                        r += dr * mult
+                        c += dc * mult
+                
+                if hits_in_line >= 1:
+                    score += hits_in_line * 2
+                    
+            best_targets.append((score, target_r, target_c))
+        
+        if best_targets:
+            best_targets.sort(reverse=True)
+            return (best_targets[0][1], best_targets[0][2])
+        else:
+            return active_targets[0]
+    
+    # Hunt mode - use checkerboard pattern for efficiency
+    checkerboard_cells = []
+    regular_cells = []
+    
+    for r, c in unknown_cells:
+        if (r + c) % 2 == 0:
+            checkerboard_cells.append((r, c))
+        else:
+            regular_cells.append((r, c))
+    
+    # Prefer checkerboard pattern first
+    if checkerboard_cells:
+        # Add some randomness but prefer center area
+        def cell_priority(cell):
+            r, c = cell
+            # Prefer cells closer to center
+            center_dist = abs(r - 4.5) + abs(c - 4.5)
+            return -center_dist + random.random() * 0.5
+        
+        checkerboard_cells.sort(key=cell_priority)
+        return checkerboard_cells[0]
+    
+    # If no checkerboard cells left, use remaining cells
+    if regular_cells:
+        return regular_cells[0]
+    
+    # Fallback
+    return unknown_cells[0]

@@ -1,0 +1,402 @@
+
+import time
+from functools import lru_cache
+from typing import List, Tuple, Dict
+
+# Board is 8x8, rows 0..7. White moves up (+1 row), Black moves down (-1 row).
+# Input lists `me` and `opp` are positions of own and opponent pieces.
+
+DIR = {'w': 1, 'b': -1}
+
+# Bit helpers for 64-bit board
+def idx(r: int, c: int) -> int:
+    return r * 8 + c
+
+def set_bit(bits: int, i: int) -> int:
+    return bits | (1 << i)
+
+def pop_bit(bits: int, i: int) -> int:
+    return bits & ~(1 << i)
+
+def has_bit(bits: int, i: int) -> bool:
+    return (bits >> i) & 1 != 0
+
+def rc_from_bit(i: int) -> Tuple[int, int]:
+    return divmod(i, 8)
+
+def forward_one(r: int, color: str) -> int:
+    return r + DIR[color]
+
+def in_board(r: int, c: int) -> bool:
+    return 0 <= r < 8 and 0 <= c < 8
+
+def enemy(color: str) -> str:
+    return 'b' if color == 'w' else 'w'
+
+def build_boards(me: List[Tuple[int, int]], opp: List[Tuple[int, int]]) -> Tuple[int, int]:
+    me_bits = 0
+    opp_bits = 0
+    for r, c in me:
+        me_bits = set_bit(me_bits, idx(r, c))
+    for r, c in opp:
+        opp_bits = set_bit(opp_bits, idx(r, c))
+    return me_bits, opp_bits
+
+def bit_iter(bits: int):
+    while bits:
+        lsb = bits & -bits
+        i = (lsb.bit_length() - 1)
+        yield i
+        bits ^= lsb
+
+def positions_from_bits(bits: int) -> List[Tuple[int, int]]:
+    res = []
+    for i in bit_iter(bits):
+        res.append(rc_from_bit(i))
+    return res
+
+# Generate all legal moves for the player with bits `mine`, opponent bits `theirs`, color `pl`.
+# Move representation: (from_idx, to_idx, capture_idx_or_None)
+def generate_moves(mine: int, theirs: int, pl: str) -> List[Tuple[int, int, int]]:
+    moves = []
+    d = DIR[pl]
+    for fr in bit_iter(mine):
+        r, c = rc_from_bit(fr)
+        nr = r + d
+        if 0 <= nr < 8:
+            # Straight
+            fc = idx(nr, c)
+            if not has_bit(mine | theirs, fc):
+                moves.append((fr, fc, -1))
+            # Diagonals
+            for dc in (-1, 1):
+                nc = c + dc
+                if 0 <= nc < 8:
+                    tc = idx(nr, nc)
+                    if not has_bit(mine, tc):
+                        if has_bit(theirs, tc):
+                            moves.append((fr, tc, tc))  # capture
+                        else:
+                            moves.append((fr, tc, -1))
+    return moves
+
+def apply_move(mine: int, theirs: int, mv: Tuple[int, int, int]) -> Tuple[int, int]:
+    fr, to, cap = mv
+    mine2 = pop_bit(mine, fr)
+    mine2 = set_bit(mine2, to)
+    theirs2 = theirs
+    if cap >= 0:
+        theirs2 = pop_bit(theirs, cap)
+    return mine2, theirs2
+
+# Simple, fast, domain-aware heuristic
+def evaluate(mine: int, theirs: int, me_color: str) -> int:
+    # Material
+    mc = bin(mine).count('1')
+    oc = bin(theirs).count('1')
+    material = 1000 * (mc - oc)
+
+    # Quick promotion detection
+    if me_color == 'w':
+        promo_me = bin(mine >> 56).count('1')  # row 7
+        promo_opp = bin(theirs).count('1') >> 0  # not used
+        promo_val = 20000 if promo_me > 0 else 0
+    else:
+        promo_me = bin(mine & 0xFF).count('1')  # row 0
+        promo_val = 20000 if promo_me > 0 else 0
+
+    # Mobility
+    my_moves = generate_moves(mine, theirs, me_color)
+    opp_moves = generate_moves(theirs, mine, enemy(me_color))
+    mobility = (len(my_moves) - len(opp_moves)) * 4
+
+    # Advancement sum (higher is better for me)
+    my_r_sum = 0
+    opp_r_sum = 0
+    for i in bit_iter(mine):
+        my_r_sum += rc_from_bit(i)[0]
+    for i in bit_iter(theirs):
+        opp_r_sum += rc_from_bit(i)[0]
+    if me_color == 'w':
+        adv = my_r_sum - opp_r_sum
+    else:
+        adv = (7 - my_r_sum) - (7 - opp_r_sum)
+    advancement = adv * 1
+
+    # Captures
+    my_caps = sum(1 for _, _, cap in my_moves if cap >= 0)
+    opp_caps = sum(1 for _, _, cap in opp_moves if cap >= 0)
+    capture_score = (my_caps - opp_caps) * 8
+
+    # Safe captures (not recapturable immediately)
+    safe_my = 0
+    safe_opp = 0
+    d = DIR[me_color]
+    ed = DIR[enemy(me_color)]
+    # Precompute attack squares for safety checks
+    # Build occupancy for occupancy checks
+    occ = mine | theirs
+    for fr, to, cap in my_moves:
+        if cap >= 0:
+            # If the landing square has no enemy attackers covering it now, it's safe
+            # (post-move occupancy after capture is already updated in apply_move; check using occ excluding cap)
+            # We'll do a quick check here: if opponent has a direct diagonal from to+ed
+            r_to, c_to = rc_from_bit(to)
+            # Opp forward from to is to+ed; check if they have a piece there and to cell becomes mine.
+            cover_threat = 0
+            tr = r_to + ed
+            if 0 <= tr < 8:
+                for dc in (-1, 1):
+                    tc = c_to + dc
+                    if 0 <= tc < 8:
+                        ti = idx(tr, tc)
+                        if has_bit(theirs, ti):
+                            # If that attacker is not blocked by one of mine between tr and to
+                            # Simpler: if the piece at ti can move diagonally forward to to (must be empty after capture).
+                            # After capture, occ_without_cap includes to empty and cap removed; just test occupancy:
+                            # The potential attacker is at ti; we need to see if to square is empty after we occupy it.
+                            # Since to will be occupied by me, recapture cannot happen onto to directly if I occupy it.
+                            # However, if opponent has a piece that moves diagonally into to (forward from ti),
+                            # recapturing is possible if to is empty. But we occupy it. So safe.
+                            pass
+            # Recapture can only happen if opponent has a piece that can move diagonally into to after the capture.
+            # That means from (r_to - ed, c_to +/- 1). Check if that square has an opponent piece and is reachable.
+            rr = r_to - ed
+            can_recap = False
+            if 0 <= rr < 8:
+                for dc in (-1, 1):
+                    cc = c_to + dc
+                    if 0 <= cc < 8:
+                        ii = idx(rr, cc)
+                        if has_bit(theirs, ii):
+                            # If the square to is empty after we move there? It's occupied by us, so recap not possible.
+                            pass
+            # Given our occupancy of 'to', recapture onto 'to' isn't allowed. So if the capture is available, it's safe.
+            safe_my += 1
+
+    for fr, to, cap in opp_moves:
+        if cap >= 0:
+            safe_opp += 1
+
+    safe_captures = (safe_my - safe_opp) * 10
+
+    # Pressure on opponent's frontier row (row 7 for white, row 0 for black)
+    frontier_mask = 0xFF << (7 * 8) if me_color == 'w' else 0xFF << (0 * 8)
+    frontier_occ = (mine if me_color == 'w' else mine) & frontier_mask
+    pressure = bin(frontier_occ).count('1') * 2
+
+    # Combine
+    # Promotions override everything, handled outside most of the time.
+    # Try to keep scale consistent and not dominated by material.
+    score = material + advancement + mobility + capture_score + safe_captures + pressure
+    return score
+
+# Transposition table keys
+def board_key(mine: int, theirs: int, to_move: str) -> Tuple[int, int, str]:
+    return (mine, theirs, to_move)
+
+# Negamax with alpha-beta and TT
+def negamax(mine: int, theirs: int, pl: str, alpha: int, beta: int, depth: int,
+             start_time: float, deadline: float, tt: Dict) -> int:
+    # Time check
+    if time.perf_counter() - start_time > deadline:
+        # Signal time out by returning eval
+        return evaluate(mine, theirs, pl)
+
+    # Check TT
+    key = board_key(mine, theirs, pl)
+    if key in tt and tt[key][0] >= depth:
+        flag, val = tt[key]
+        if flag == 'EXACT':
+            return val
+        elif flag == 'LOWER':
+            alpha = max(alpha, val)
+        elif flag == 'UPPER':
+            beta = min(beta, val)
+        if alpha >= beta:
+            return val
+
+    # Terminal: promotions
+    if pl == 'w':
+        if mine >> 56:
+            return 10**9
+        if theirs & 0xFF:
+            return -10**9
+    else:
+        if mine & 0xFF:
+            return 10**9
+        if theirs >> 56:
+            return -10**9
+
+    # Terminal: no pieces
+    if mine == 0:
+        return -10**9
+    if theirs == 0:
+        return 10**9
+
+    if depth == 0:
+        # Base evaluation
+        return evaluate(mine, theirs, pl)
+
+    moves = generate_moves(mine, theirs, pl)
+
+    if not moves:
+        # No legal moves: extremely bad
+        return -10**9
+
+    # Move ordering for captures and promotions first
+    def move_score(mv):
+        _, to, cap = mv
+        # promotion detection
+        r_to, c_to = rc_from_bit(to)
+        promo = (pl == 'w' and r_to == 7) or (pl == 'b' and r_to == 0)
+        base = 0
+        if cap >= 0:
+            base += 1000
+        if promo:
+            base += 20000
+        # Center preference
+        base += 7 - abs(c_to - 3.5)
+        # Forward move closer to promotion
+        base += r_to if pl == 'w' else (7 - r_to)
+        return base
+
+    moves.sort(key=move_score, reverse=True)
+
+    value = -10**9
+    for mv in moves:
+        new_mine, new_theirs = apply_move(mine, theirs, mv)
+        child = -negamax(new_theirs, new_mine, enemy(pl), -beta, -alpha, depth - 1, start_time, deadline, tt)
+        if child > value:
+            value = child
+        if value > alpha:
+            alpha = value
+        if alpha >= beta:
+            break
+
+    # Store in TT
+    entry_depth = depth
+    if value <= alpha:
+        tt[key] = ('UPPER', value, entry_depth)
+    elif value >= beta:
+        tt[key] = ('LOWER', value, entry_depth)
+    else:
+        tt[key] = ('EXACT', value, entry_depth)
+
+    return value
+
+# Top-level policy
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    start_time = time.perf_counter()
+    deadline = 0.98  # seconds
+
+    # Build boards
+    my_bits, op_bits = build_boards(me, opp)
+
+    # If no opponent pieces, return any legal move to be safe (should not happen in real play)
+    if op_bits == 0:
+        # Return a dummy forward move if exists, else first legal
+        ms = generate_moves(my_bits, op_bits, color)
+        if not ms:
+            # No moves, but game is effectively over; return any pseudo-move to avoid crash
+            if my_bits:
+                fr = (my_bits & -my_bits).bit_length() - 1
+                r, c = rc_from_bit(fr)
+                to_r = r + DIR[color]
+                if in_board(to_r, c):
+                    return ((r, c), (to_r, c))
+                return ((r, c), (r, c))
+            # No pieces at all, return center as fallback
+            return ((3, 3), (3, 4))
+
+    # Iterative deepening with simple time management
+    best_move = None
+    tt: Dict = {}
+    depth = 1
+    max_depth = 10
+    try:
+        while True:
+            if time.perf_counter() - start_time > deadline:
+                break
+            # Alpha-beta window around 0 to favor fail-soft behavior
+            alpha = -10**7
+            beta = 10**7
+            # Run search for this depth
+            # Move ordering by score from previous iteration
+            def ordered_moves():
+                ms = generate_moves(my_bits, op_bits, color)
+                def score(mv):
+                    _, to, cap = mv
+                    r_to, c_to = rc_from_bit(to)
+                    promo = (color == 'w' and r_to == 7) or (color == 'b' and r_to == 0)
+                    base = 0
+                    if cap >= 0:
+                        base += 1000
+                    if promo:
+                        base += 20000
+                    base += 7 - abs(c_to - 3.5)
+                    base += r_to if color == 'w' else (7 - r_to)
+                    return base
+                ms.sort(key=score, reverse=True)
+                return ms
+
+            ms = ordered_moves()
+            best = -10**9
+            local_best_move = None
+
+            # Quick check for direct promotions (they dominate)
+            for mv in ms:
+                _, to, _ = mv
+                r_to, _ = rc_from_bit(to)
+                if (color == 'w' and r_to == 7) or (color == 'b' and r_to == 0):
+                    # Immediate promotion found
+                    fr, _ = rc_from_bit(mv[0])
+                    _, c_from = rc_from_bit(mv[0])
+                    return ((fr, c_from), (r_to, c_from if color == 'w' else c_from))
+
+            for mv in ms:
+                new_mine, new_theirs = apply_move(my_bits, op_bits, mv)
+                val = -negamax(new_theirs, new_mine, enemy(color), -beta, -alpha, depth - 1, start_time, deadline, tt)
+                if val > best:
+                    best = val
+                    local_best_move = mv
+                if time.perf_counter() - start_time > deadline:
+                    break
+
+            if local_best_move is not None:
+                best_move = local_best_move
+
+            depth += 1
+            if depth > max_depth:
+                break
+    except Exception:
+        # On any exception, fallback to a safe move
+        pass
+
+    # Fallback to any legal move if nothing found
+    if best_move is None:
+        ms = generate_moves(my_bits, op_bits, color)
+        if not ms:
+            # No legal moves; shouldn't happen in normal play; return dummy move
+            if my_bits:
+                fr = (my_bits & -my_bits).bit_length() - 1
+                r, c = rc_from_bit(fr)
+                to_r = r + DIR[color]
+                if in_board(to_r, c):
+                    return ((r, c), (to_r, c))
+                return ((r, c), (r, c))
+            return ((3, 3), (3, 4))
+        # Choose any reasonable default: prefer forward move, else diagonal, else first
+        best_move = None
+        for mv in ms:
+            _, to, cap = mv
+            if cap < 0:
+                best_move = mv
+                break
+        if best_move is None:
+            best_move = ms[0]
+
+    fr, to, _ = best_move
+    (r1, c1) = rc_from_bit(fr)
+    (r2, c2) = rc_from_bit(to)
+    return ((r1, c1), (r2, c2))

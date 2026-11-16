@@ -1,0 +1,165 @@
+The game is Clobber on a 5x6 board. I will implement a heuristic-based policy that prioritizes capturing the opponent's King (represented by the 1 piece, as K must be present and Pawns are usually 0, or vice-versa; in this binary representation, the specific identity doesn't change the value of capturing) or the piece that allows me to move into a corner (safety). If no immediate capture leads to a safe position, I will prioritize captures that take opponent pieces off the board entirely (though they always are, I mean removing the opponent's central presence or moving to a position with fewer than 4 neighbors). I will also implement a small search for "stalemate" threats.
+
+Here is the strategy summary:
+1.  Identify all legal captures.
+2.  If only one capture exists, play it (winning condition or forced move).
+3.  Score each capture:
+    *   +1000 if the destination is a corner (0,0), (0,5), (4,0), (4,5).
+    *   +50 if the destination is an edge (but not a corner).
+    *   -50 if the start cell is adjacent to an empty cell (potentially allowing opponent to capture us back, though opponent moves next so we want to leave opponent with no moves).
+    *   We want to maximize the opponent's "mobility" (number of moves they have) if we cannot win immediately? No, we want to Minimize opponent's mobility.
+4.  To compute opponent mobility accurately, we simulate the board state after our move and count the number of legal moves the opponent would have. We pick the move that results in the fewest opponent moves (ideally 0).
+
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    # Directions mapping
+    dirs = {'U': (-1, 0), 'R': (0, 1), 'D': (1, 0), 'L': (0, -1)}
+    inv_dirs = {(-1, 0): 'U', (0, 1): 'R', (1, 0): 'D', (0, -1): 'L'}
+    
+    moves = []
+    # Find all legal moves for you
+    for r in range(5):
+        for c in range(6):
+            if you[r][c] == 1:
+                for d_name, (dr, dc) in dirs.items():
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 5 and 0 <= nc < 6:
+                        if opponent[nr][nc] == 1:
+                            moves.append((r, c, d_name))
+    
+    # If only one move, take it
+    if len(moves) == 1:
+        return f"{moves[0][0]},{moves[0][1]},{moves[0][2]}"
+    
+    best_move = None
+    min_opponent_moves = float('inf')
+    max_corner_score = -1
+    
+    for r, c, d_name in moves:
+        dr, dc = dirs[d_name]
+        nr, nc = r + dr, c + dc
+        
+        # Simulate the move
+        new_you = [row[:] for row in you]
+        new_opponent = [row[:] for row in opponent]
+        
+        new_you[r][c] = 0
+        new_opponent[nr][nc] = 0
+        new_you[nr][nc] = 1
+        
+        # Count opponent moves after our move
+        opp_moves = 0
+        for or_ in range(5):
+            for oc in range(6):
+                if new_opponent[or_][oc] == 1:
+                    for (ddr, ddc) in dirs.values():
+                        nnr, nnc = or_ + ddr, oc + ddc
+                        if 0 <= nnr < 5 and 0 <= nnc < 6:
+                            if new_you[nnr][nnc] == 1:
+                                opp_moves += 1
+        
+        # Heuristic scoring
+        # Prioritize moves that leave opponent with fewer moves
+        # If opp_moves is 0, we win (provided we also don't have 0 moves, but since we just moved, if they have 0, they lose)
+        # We already handled single move, so here we are choosing among multiple winning moves or non-winning moves.
+        
+        # Score for corners/edges to reduce our vulnerability (though opponent moves next)
+        score = 0
+        if (nr == 0 or nr == 4) and (nc == 0 or nc == 5):
+            score = 10  # Corner safety
+        elif nr == 0 or nr == 4 or nc == 0 or nc == 5:
+            score = 5   # Edge safety
+        
+        # Primary criteria: minimize opponent moves
+        # Secondary criteria: maximize our safety score
+        # Tie-breaker: any move
+        
+        if opp_moves < min_opponent_moves:
+            min_opponent_moves = opp_moves
+            best_move = (r, c, d_name)
+            max_corner_score = score
+        elif opp_moves == min_opponent_moves:
+            if score > max_corner_score:
+                best_move = (r, c, d_name)
+                max_corner_score = score
+            # Keep first one if scores equal
+    
+    return f"{best_move[0]},{best_move[1]},{best_move[2]}"
+```
+
+The strategy involves identifying all valid capture moves, simulating the outcome of each, and selecting the move that minimizes the opponent's subsequent mobility. If multiple moves result in the same opponent mobility, we prioritize moving to safer squares (corners or edges). If only one move is available, we take it immediately.
+
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    # Directions mapping: U, R, D, L
+    dirs = {'U': (-1, 0), 'R': (0, 1), 'D': (1, 0), 'L': (0, -1)}
+    
+    # 1. Identify all legal moves
+    legal_moves = []
+    for r in range(5):
+        for c in range(6):
+            if you[r][c] == 1:
+                for d_name, (dr, dc) in dirs.items():
+                    nr, nc = r + dr, c + dc
+                    # Check bounds and opponent presence
+                    if 0 <= nr < 5 and 0 <= nc < 6 and opponent[nr][nc] == 1:
+                        legal_moves.append((r, c, d_name))
+    
+    # 2. If there is only one legal move, return it immediately
+    if len(legal_moves) == 1:
+        return f"{legal_moves[0][0]},{legal_moves[0][1]},{legal_moves[0][2]}"
+    
+    # 3. Evaluate moves to find the best one
+    best_move = None
+    min_opponent_moves = float('inf')
+    best_corner_score = -1
+    
+    for r, c, d_name in legal_moves:
+        dr, dc = dirs[d_name]
+        nr, nc = r + dr, c + dc
+        
+        # Simulate the board state after this move
+        # Create deep copies to avoid modifying the original lists
+        sim_you = [row[:] for row in you]
+        sim_opp = [row[:] for row in opponent]
+        
+        # Apply move: remove from start, remove from opponent dest, place at dest
+        sim_you[r][c] = 0
+        sim_opp[nr][nc] = 0
+        sim_you[nr][nc] = 1
+        
+        # 4. Calculate opponent's potential moves in the simulated state
+        opp_move_count = 0
+        for or_ in range(5):
+            for oc in range(6):
+                if sim_opp[or_][oc] == 1:
+                    for (ddr, ddc) in dirs.values():
+                        nnr, nnc = or_ + ddr, oc + ddc
+                        if 0 <= nnr < 5 and 0 <= nnc < 6 and sim_you[nnr][nnc] == 1:
+                            opp_move_count += 1
+        
+        # 5. Heuristic Scoring
+        # Priority 1: Minimize opponent's move count (Ideally 0, which is a win)
+        # Priority 2: Move to corners/edges to reduce our vulnerability in the next turn (if opponent survives)
+        
+        # Score for destination safety (corner/edge)
+        dest_score = 0
+        if (nr == 0 or nr == 4) and (nc == 0 or nc == 5):
+            dest_score = 5  # Corner is safest
+        elif nr == 0 or nr == 4 or nc == 0 or nc == 5:
+            dest_score = 2  # Edge is safer than center
+        
+        # Selection logic
+        if opp_move_count < min_opponent_moves:
+            min_opponent_moves = opp_move_count
+            best_move = (r, c, d_name)
+            best_corner_score = dest_score
+        elif opp_move_count == min_opponent_moves:
+            # If move counts are equal, prefer the safer destination
+            if dest_score > best_corner_score:
+                best_move = (r, c, d_name)
+                best_corner_score = dest_score
+    
+    # 6. Return the selected move
+    return f"{best_move[0]},{best_move[1]},{best_move[2]}"
+```

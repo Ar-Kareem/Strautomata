@@ -1,0 +1,115 @@
+
+import numpy as np
+from collections import deque
+
+class BattleshipPolicy:
+    def __init__(self):
+        self.size = 10
+        self.ship_lengths = [5, 4, 3, 3, 2]
+        self.directions = [(0, 1), (1, 0), (0, -1), (-1, 0)]
+        self.reset()
+        
+    def reset(self):
+        self.probability_map = np.zeros((self.size, self.size))
+        self.hits = set()
+        self.misses = set()
+        self.target_queue = deque()
+        self.hunt_mode = True
+        
+    def update_knowledge(self, board):
+        self.hits = set()
+        self.misses = set()
+        
+        for i in range(self.size):
+            for j in range(self.size):
+                if board[i][j] == 1:
+                    self.hits.add((i, j))
+                elif board[i][j] == -1:
+                    self.misses.add((i, j))
+        
+        # If we have hits but no targets, switch to target mode
+        if self.hits and not self.target_queue:
+            self.hunt_mode = False
+            self._find_targets()
+        
+        # If we're in target mode but no more targets, switch back to hunt
+        if not self.hunt_mode and not self.target_queue:
+            self.hunt_mode = True
+    
+    def _find_targets(self):
+        """Find all adjacent cells to hits that haven't been shot at yet"""
+        for (i, j) in self.hits:
+            for di, dj in self.directions:
+                ni, nj = i + di, j + dj
+                if (0 <= ni < self.size and 0 <= nj < self.size and 
+                    (ni, nj) not in self.hits and (ni, nj) not in self.misses):
+                    self.target_queue.append((ni, nj))
+    
+    def _calculate_probabilities(self):
+        """Calculate probability map based on possible ship placements"""
+        self.probability_map = np.zeros((self.size, self.size))
+        
+        for length in self.ship_lengths:
+            # Horizontal placements
+            for i in range(self.size):
+                for j in range(self.size - length + 1):
+                    valid = True
+                    for k in range(length):
+                        if (i, j + k) in self.misses:
+                            valid = False
+                            break
+                    if valid:
+                        for k in range(length):
+                            if (i, j + k) not in self.hits:
+                                self.probability_map[i, j + k] += 1
+            
+            # Vertical placements
+            for i in range(self.size - length + 1):
+                for j in range(self.size):
+                    valid = True
+                    for k in range(length):
+                        if (i + k, j) in self.misses:
+                            valid = False
+                            break
+                    if valid:
+                        for k in range(length):
+                            if (i + k, j) not in self.hits:
+                                self.probability_map[i + k, j] += 1
+    
+    def get_next_shot(self):
+        """Get the next shot coordinate based on current strategy"""
+        # If in target mode and we have targets, shoot at them
+        if not self.hunt_mode and self.target_queue:
+            return self.target_queue.popleft()
+        
+        # Otherwise, calculate probabilities and pick the highest
+        self._calculate_probabilities()
+        
+        # Set probability to 0 for already shot cells
+        for (i, j) in self.hits | self.misses:
+            self.probability_map[i, j] = 0
+        
+        # Find the cell with maximum probability
+        max_prob = np.max(self.probability_map)
+        candidates = np.argwhere(self.probability_map == max_prob)
+        
+        # If multiple cells have same probability, pick one with checkerboard pattern preference
+        if len(candidates) > 1:
+            # Prefer cells that are part of a checkerboard pattern (more efficient hunting)
+            checkerboard_pref = []
+            for (i, j) in candidates:
+                if (i + j) % 2 == 0:  # Adjust this pattern based on your preference
+                    checkerboard_pref.append((i, j))
+            if checkerboard_pref:
+                candidates = checkerboard_pref
+        
+        # Pick the first candidate (random if multiple remain)
+        i, j = candidates[0]
+        return (i.item(), j.item())
+
+# Global instance of the policy
+policy_engine = BattleshipPolicy()
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    policy_engine.update_knowledge(board)
+    return policy_engine.get_next_shot()

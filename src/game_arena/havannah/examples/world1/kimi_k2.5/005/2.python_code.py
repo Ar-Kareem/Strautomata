@@ -1,0 +1,173 @@
+
+import numpy as np
+from collections import deque
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    me_set = set(me)
+    opp_set = set(opp)
+    n = len(valid_mask)
+    
+    # Precompute valid cells
+    valid_cells = set()
+    for r in range(n):
+        for c in range(n):
+            if valid_mask[r][c]:
+                valid_cells.add((r, c))
+    
+    if not valid_cells:
+        return (0, 0)
+    
+    # Precompute neighbors for each valid cell (hex grid adjacency)
+    neighbors = {}
+    corners = []
+    for cell in valid_cells:
+        r, c = cell
+        nbs = []
+        # Six directions as specified in problem: up, down, up-left, down-left, up-right, down-right
+        for dr, dc in [(-1, 0), (1, 0), (-1, -1), (0, -1), (-1, 1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if (nr, nc) in valid_cells:
+                nbs.append((nr, nc))
+        neighbors[cell] = nbs
+        # Corners have exactly 2 neighbors in a hex grid
+        if len(nbs) == 2:
+            corners.append(cell)
+    
+    # Ensure we have exactly 6 corners (handle edge cases)
+    corners = corners[:6]
+    corners_set = set(corners)
+    
+    def is_connected(a, b, player_set):
+        """BFS to check if a and b are connected via player stones"""
+        if a == b:
+            return True
+        if a not in player_set or b not in player_set:
+            # Check if a or b is the new stone being tested
+            pass
+        
+        queue = deque([a])
+        seen = {a}
+        while queue:
+            cur = queue.popleft()
+            for nb in neighbors[cur]:
+                if nb in player_set and nb not in seen:
+                    if nb == b:
+                        return True
+                    seen.add(nb)
+                    queue.append(nb)
+        return False
+    
+    def check_ring(cell, player_set):
+        """Check if placing stone at cell creates a ring (cycle)"""
+        # A ring is formed if two neighbors of cell are already connected via player stones
+        my_neighbors = [nb for nb in neighbors[cell] if nb in player_set]
+        if len(my_neighbors) < 2:
+            return False
+        
+        # Check if any pair of neighbors are connected
+        for i in range(len(my_neighbors)):
+            for j in range(i + 1, len(my_neighbors)):
+                if is_connected(my_neighbors[i], my_neighbors[j], player_set):
+                    return True
+        return False
+    
+    def check_bridge(cell, player_set):
+        """Check if placing stone at cell creates a bridge (connects 2 corners)"""
+        new_set = player_set | {cell}
+        
+        # If cell is a corner, check if it connects to any other corner
+        if cell in corners_set:
+            for c in corners:
+                if c != cell and c in new_set:
+                    if is_connected(cell, c, new_set):
+                        return True
+        
+        # Check if cell connects two different corners that weren't connected before
+        # This happens if cell has neighbors leading to different corners
+        corner_neighbors = [nb for nb in neighbors[cell] if nb in player_set]
+        if len(corner_neighbors) < 2:
+            return False
+            
+        # For each pair of neighbors, check if they lead to different corners
+        for i in range(len(corner_neighbors)):
+            for j in range(i + 1, len(corner_neighbors)):
+                n1, n2 = corner_neighbors[i], corner_neighbors[j]
+                # Find which corner n1 reaches (if any) and which corner n2 reaches
+                # Simplified: check if n1 and n2 are connected to different corners
+                c1_reached = None
+                c2_reached = None
+                for c in corners:
+                    if c in new_set:
+                        if c1_reached is None and is_connected(n1, c, new_set):
+                            c1_reached = c
+                        if c2_reached is None and is_connected(n2, c, new_set):
+                            c2_reached = c
+                if c1_reached is not None and c2_reached is not None and c1_reached != c2_reached:
+                    return True
+        return False
+    
+    def is_winning_move(cell, player_set):
+        """Check if move creates ring or bridge"""
+        return check_ring(cell, player_set) or check_bridge(cell, player_set)
+    
+    # Get empty cells
+    empty_cells = [c for c in valid_cells if c not in me_set and c not in opp_set]
+    
+    if not empty_cells:
+        # Should not happen, but return first valid
+        return list(valid_cells)[0]
+    
+    # 1. Check for immediate winning move
+    for cell in empty_cells:
+        if is_winning_move(cell, me_set):
+            return cell
+    
+    # 2. Check for opponent winning moves to block
+    for cell in empty_cells:
+        if is_winning_move(cell, opp_set):
+            return cell
+    
+    # 3. Evaluate all moves and pick best
+    best_move = empty_cells[0]
+    best_score = -float('inf')
+    
+    # Precompute center
+    center_r, center_c = n // 2, n // 2
+    
+    for cell in empty_cells:
+        r, c = cell
+        score = 0
+        
+        # Connectivity: prefer cells adjacent to friendly stones
+        my_neighbors = [nb for nb in neighbors[cell] if nb in me_set]
+        opp_neighbors = [nb for nb in neighbors[cell] if nb in opp_set]
+        
+        # Strong bonus for connecting to own stones
+        score += len(my_neighbors) * 15
+        
+        # Medium bonus for blocking opponent
+        score += len(opp_neighbors) * 8
+        
+        # Bonus for being close to multiple friendly stones (potential ring formation)
+        if len(my_neighbors) >= 2:
+            score += 20
+        
+        # Centrality: prefer center for flexibility
+        dist_to_center = abs(r - center_r) + abs(c - center_c)
+        score -= dist_to_center * 0.5
+        
+        # Corner proximity: for bridge threats
+        for corn in corners:
+            cr, cc = corn
+            dist = abs(r - cr) + abs(c - cc)
+            if dist <= 3:
+                score += (4 - dist) * 3  # Closer to corners is better
+        
+        # Edge preference: cells with many valid neighbors (interior) are generally better
+        score += len(neighbors[cell]) * 2
+        
+        if score > best_score:
+            best_score = score
+            best_move = cell
+    
+    return best_move

@@ -1,0 +1,206 @@
+
+import time
+import random
+
+# --- Precomputation for Performance ---
+
+# Precompute popcount (number of set bits) for all 16-bit integers
+# This allows O(1) counting of pieces on a line.
+POPCOUNT_TABLE = [bin(i).count('1') for i in range(1 << 16)]
+
+# Precompute the 10 winning lines (4 rows, 4 cols, 2 diags) as bitmasks
+WIN_MASKS = []
+# Rows
+for r in range(4):
+    mask = 0
+    for c in range(4):
+        mask |= 1 << (r * 4 + c)
+    WIN_MASKS.append(mask)
+# Columns
+for c in range(4):
+    mask = 0
+    for r in range(4):
+        mask |= 1 << (r * 4 + c)
+    WIN_MASKS.append(mask)
+# Diagonals
+mask_diag1 = 0
+mask_diag2 = 0
+for i in range(4):
+    mask_diag1 |= 1 << (i * 4 + i)
+    mask_diag2 |= 1 << (i * 4 + (3 - i))
+WIN_MASKS.append(mask_diag1)
+WIN_MASKS.append(mask_diag2)
+
+# --- Helper Functions ---
+
+def check_win(board_int):
+    """Check if the given bitboard configuration contains a winning line."""
+    for mask in WIN_MASKS:
+        if (board_int & mask) == mask:
+            return True
+    return False
+
+def get_moves(me, opp):
+    """Return a list of indices (0-15) representing empty cells."""
+    empty_mask = ~(me | opp) & 0xFFFF
+    moves = []
+    for i in range(16):
+        if (empty_mask >> i) & 1:
+            moves.append(i)
+    return moves
+
+def evaluate(me, opp):
+    """
+    Heuristic evaluation function for non-terminal states.
+    Scores based on open lines (unblocked rows/cols/diags).
+    """
+    score = 0
+    for mask in WIN_MASKS:
+        c_me = POPCOUNT_TABLE[me & mask]
+        c_opp = POPCOUNT_TABLE[opp & mask]
+        
+        # If the line is blocked by both, it contributes 0
+        if c_me > 0 and c_opp > 0:
+            continue
+        
+        # Weighted scores for lines with 1, 2, or 3 pieces
+        # Using cubic weights (n^3) to strongly favor completed/near-completed lines
+        score += (c_me ** 3) * 10
+        score -= (c_opp ** 3) * 10
+        
+    return score
+
+# --- Minimax Algorithm ---
+
+def minimax(me, opp, depth, alpha, beta, is_maximizing):
+    """
+    Minimax with Alpha-Beta pruning.
+    me: bitboard of the player who is currently 'maximizing' in the root call context
+    opp: bitboard of the opponent
+    However, standard minimax switches perspective. 
+    Here: is_maximizing=True means it is 'me' turn to play.
+    """
+    
+    # Terminal checks
+    if check_win(me):
+        return 1000000  # Win
+    if check_win(opp):
+        return -1000000 # Loss
+    
+    if depth == 0:
+        return evaluate(me, opp)
+
+    moves = get_moves(me, opp)
+    if not moves:
+        return 0 # Draw
+
+    if is_maximizing:
+        max_eval = -float('inf')
+        for m in moves:
+            bit = 1 << m
+            
+            # Optimization: If a move wins immediately, don't search deeper
+            if check_win(me | bit):
+                return 1000000
+            
+            eval_val = minimax(me | bit, opp, depth - 1, alpha, beta, False)
+            max_eval = max(max_eval, eval_val)
+            alpha = max(alpha, eval_val)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for m in moves:
+            bit = 1 << m
+            
+            # Optimization: If opponent wins immediately, don't search deeper
+            if check_win(opp | bit):
+                return -1000000
+            
+            eval_val = minimax(me, opp | bit, depth - 1, alpha, beta, True)
+            min_eval = min(min_eval, eval_val)
+            beta = min(beta, eval_val)
+            if beta <= alpha:
+                break
+        return min_eval
+
+# --- Policy API ---
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    start_time = time.time()
+    
+    # Convert board to bitboards
+    me = 0
+    opp = 0
+    empty_count = 0
+    
+    for r in range(4):
+        for c in range(4):
+            val = board[r][c]
+            bit = 1 << (r * 4 + c)
+            if val == 1:
+                me |= bit
+            elif val == -1:
+                opp |= bit
+            else:
+                empty_count += 1
+                
+    possible_moves = get_moves(me, opp)
+    
+    # Fallback if board is full (shouldn't happen in valid game)
+    if not possible_moves:
+        return (0, 0)
+    
+    # 1. Check for immediate Win
+    for m in possible_moves:
+        if check_win(me | (1 << m)):
+            return (m // 4, m % 4)
+            
+    # 2. Check for immediate Block (Opponent win)
+    for m in possible_moves:
+        if check_win(opp | (1 << m)):
+            return (m // 4, m % 4)
+            
+    # 3. Opening Heuristic: Play center if empty
+    if empty_count == 16:
+        return (1, 1)
+        
+    # 4. Adaptive Depth Minimax
+    # Determine search depth based on game complexity (empty cells)
+    # High branching factor early on -> lower depth
+    # Low branching factor late game -> higher depth (solve it)
+    if empty_count > 10:
+        depth = 4
+    elif empty_count > 7:
+        depth = 6
+    else:
+        depth = empty_count # Attempt to solve the endgame
+
+    # Move ordering: Heuristic prioritization for Alpha-Beta efficiency
+    # Center > Corners > Edges
+    def heuristic_order(m):
+        if m in [5, 6, 9, 10]: return 2 # Center 2x2
+        if m in [0, 3, 12, 15]: return 1 # Corners
+        return 0
+        
+    possible_moves.sort(key=lambda x: -heuristic_order(x))
+    
+    best_score = -float('inf')
+    best_move = possible_moves[0]
+    
+    # Search root
+    for m in possible_moves:
+        # Time safety check: stop if we are running out of time
+        if time.time() - start_time > 0.9:
+            break
+            
+        bit = 1 << m
+        # Start recursion. Next turn is opponent (False)
+        val = minimax(me | bit, opp, depth - 1, -float('inf'), float('inf'), False)
+        
+        if val > best_score:
+            best_score = val
+            best_move = m
+            
+    return (best_move // 4, best_move % 4)

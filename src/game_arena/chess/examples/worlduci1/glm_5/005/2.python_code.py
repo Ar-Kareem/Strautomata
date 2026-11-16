@@ -1,0 +1,416 @@
+
+import time
+
+# Piece values for evaluation
+PIECE_VALUES = {'P': 100, 'N': 300, 'B': 300, 'R': 500, 'Q': 900, 'K': 20000}
+
+# Piece-Square Tables (PST) for positional evaluation
+# Values are added to base piece values. 
+# Arranged from rank 1 to 8 (index 0 to 63). 
+# We use simple symmetric tables for white; for black, we flip the rank.
+
+PST = {
+    'P': [0]*8 + [0, 0, 0, 0, 0, 0, 0, 0] + [0, 10, 10, 10, 10, 10, 10, 0] + \
+         [0, 5, -5, -10, -10, -5, 5, 0] + [0, 0, 0, 20, 20, 0, 0, 0] + \
+         [5, 10, 10, 25, 25, 10, 10, 5] + [50, 50, 50, 50, 50, 50, 50, 50] + [0]*8,
+    'N': [-50, -40, -30, -30, -30, -30, -40, -50] + [-40, -20, 0, 0, 0, 0, -20, -40] + \
+         [-30, 0, 10, 15, 15, 10, 0, -30] + [-30, 5, 15, 20, 20, 15, 5, -30] + \
+         [-30, 0, 15, 20, 20, 15, 0, -30] + [-30, 5, 10, 15, 15, 10, 5, -30] + \
+         [-40, -20, 0, 5, 5, 0, -20, -40] + [-50, -40, -30, -30, -30, -30, -40, -50],
+    'B': [-20, -10, -10, -10, -10, -10, -10, -20] + [-10, 0, 0, 0, 0, 0, 0, -10] + \
+         [-10, 0, 10, 10, 10, 10, 0, -10] + [-10, 5, 5, 10, 10, 5, 5, -10] + \
+         [-10, 0, 5, 10, 10, 5, 0, -10] + [-10, 0, 5, 5, 5, 5, 0, -10] + \
+         [-10, 0, 0, 0, 0, 0, 0, -10] + [-20, -10, -10, -10, -10, -10, -10, -20],
+    'R': [0]*8 + [0, 0, 0, 0, 0, 0, 0, 0] + [0, 0, 10, 10, 10, 10, 0, 0] + \
+         [0, 0, 0, 0, 0, 0, 0, 0] + [0]*8 + [0, 0, 0, 0, 0, 0, 0, 0] + \
+         [5, 10, 10, 10, 10, 10, 10, 5] + [0]*8,
+    'Q': [-20, -10, -10, -5, -5, -10, -10, -20] + [-10, 0, 0, 0, 0, 0, 0, -10] + \
+         [-10, 0, 5, 5, 5, 5, 0, -10] + [-5, 0, 5, 5, 5, 5, 0, -5] + \
+         [0, 0, 5, 5, 5, 5, 0, -5] + [-10, 5, 5, 5, 5, 5, 0, -10] + \
+         [-10, 0, 5, 0, 0, 0, 0, -10] + [-20, -10, -10, -5, -5, -10, -10, -20],
+    'K': [-30, -40, -40, -50, -50, -40, -40, -30] + [-30, -40, -40, -50, -50, -40, -40, -30] + \
+         [-30, -40, -40, -50, -50, -40, -40, -30] + [-30, -40, -40, -50, -50, -40, -40, -30] + \
+         [-20, -30, -30, -40, -40, -30, -30, -20] + [-10, -20, -20, -20, -20, -20, -20, -10] + \
+         [20, 20, 0, 0, 0, 0, 20, 20] + [20, 30, 10, 0, 0, 10, 30, 20]
+}
+
+def sq_to_idx(sq):
+    return (ord(sq[0]) - ord('a')) + (int(sq[1]) - 1) * 8
+
+def idx_to_sq(idx):
+    return chr(ord('a') + (idx % 8)) + str(idx // 8 + 1)
+
+def is_white(piece):
+    return piece[0] == 'w'
+
+def get_piece_type(piece):
+    return piece[1]
+
+def evaluate_board(pieces, my_color_code):
+    score = 0
+    for sq, piece in pieces.items():
+        idx = sq_to_idx(sq)
+        p_type = get_piece_type(piece)
+        val = PIECE_VALUES[p_type]
+        
+        # Positional value from PST
+        # If White, read directly. If Black, flip rank (7 - rank_idx).
+        # Board idx = file + rank*8.
+        # Rank idx = idx // 8.
+        # Flipped rank idx = 7 - rank_idx.
+        if is_white(piece):
+            pos_val = PST[p_type][idx]
+        else:
+            rank_idx = idx // 8
+            file_idx = idx % 8
+            flip_idx = file_idx + (7 - rank_idx) * 8
+            pos_val = PST[p_type][flip_idx]
+            
+        total_val = val + pos_val
+        if piece[0] == my_color_code:
+            score += total_val
+        else:
+            score -= total_val
+    return score
+
+def get_attackers(pieces, sq, by_color):
+    """Returns list of squares containing pieces of `by_color` attacking `sq`."""
+    attackers = []
+    t_file = ord(sq[0]) - ord('a')
+    t_rank = int(sq[1]) - 1
+    t_idx = t_file + t_rank * 8
+    
+    # Knight attacks
+    knight_offsets = [(-2,-1),(-2,1),(-1,-2),(-1,2),(1,-2),(1,2),(2,-1),(2,1)]
+    for df, dr in knight_offsets:
+        f, r = t_file + df, t_rank + dr
+        if 0 <= f < 8 and 0 <= r < 8:
+            att_sq = idx_to_sq(f + r*8)
+            if pieces.get(att_sq) == by_color + 'N':
+                attackers.append(att_sq)
+
+    # King attacks
+    king_offsets = [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)]
+    for df, dr in king_offsets:
+        f, r = t_file + df, t_rank + dr
+        if 0 <= f < 8 and 0 <= r < 8:
+            att_sq = idx_to_sq(f + r*8)
+            if pieces.get(att_sq) == by_color + 'K':
+                attackers.append(att_sq)
+
+    # Pawn attacks
+    # If by_color is 'w', pawns attack upwards (rank+1). 
+    # Target sq is attacked from below (rank-1).
+    # If by_color is 'b', pawns attack downwards (rank-1).
+    # Target sq is attacked from above (rank+1).
+    pawn_dir = -1 if by_color == 'w' else 1
+    for df in [-1, 1]:
+        f, r = t_file + df, t_rank + pawn_dir
+        if 0 <= f < 8 and 0 <= r < 8:
+            att_sq = idx_to_sq(f + r*8)
+            if pieces.get(att_sq) == by_color + 'P':
+                attackers.append(att_sq)
+
+    # Sliding pieces (R, B, Q)
+    # Rook/Queen directions
+    for df, dr in [(0,1),(0,-1),(1,0),(-1,0)]:
+        f, r = t_file + df, t_rank + dr
+        while 0 <= f < 8 and 0 <= r < 8:
+            curr_sq = idx_to_sq(f + r*8)
+            piece = pieces.get(curr_sq)
+            if piece:
+                if piece[0] == by_color and piece[1] in ['R', 'Q']:
+                    attackers.append(curr_sq)
+                break # Blocked
+            f += df
+            r += dr
+            
+    # Bishop/Queen directions
+    for df, dr in [(1,1),(1,-1),(-1,1),(-1,-1)]:
+        f, r = t_file + df, t_rank + dr
+        while 0 <= f < 8 and 0 <= r < 8:
+            curr_sq = idx_to_sq(f + r*8)
+            piece = pieces.get(curr_sq)
+            if piece:
+                if piece[0] == by_color and piece[1] in ['B', 'Q']:
+                    attackers.append(curr_sq)
+                break
+            f += df
+            r += dr
+            
+    return attackers
+
+def is_square_attacked(pieces, sq, by_color):
+    return len(get_attackers(pieces, sq, by_color)) > 0
+
+def generate_moves(pieces, turn_color):
+    moves = []
+    my_col = 'w' if turn_color == 'white' else 'b'
+    opp_col = 'b' if my_col == 'w' else 'w'
+    
+    for sq, piece in pieces.items():
+        if piece[0] != my_col: continue
+        
+        f = ord(sq[0]) - ord('a')
+        r = int(sq[1]) - 1
+        p_type = piece[1]
+        
+        if p_type == 'P':
+            # Forward
+            direction = 1 if my_col == 'w' else -1
+            start_rank = 1 if my_col == 'w' else 6
+            promo_rank = 7 if my_col == 'w' else 0
+            
+            next_r = r + direction
+            if 0 <= next_r < 8:
+                next_sq = idx_to_sq(f + next_r*8)
+                if next_sq not in pieces:
+                    if next_r == promo_rank:
+                        for promo in ['q', 'r', 'b', 'n']:
+                            moves.append(sq + next_sq + promo)
+                    else:
+                        moves.append(sq + next_sq)
+                        # Double push
+                        if r == start_rank:
+                            double_r = r + 2*direction
+                            double_sq = idx_to_sq(f + double_r*8)
+                            if double_sq not in pieces:
+                                moves.append(sq + double_sq)
+            
+            # Captures
+            for df in [-1, 1]:
+                cf = f + df
+                if 0 <= cf < 8:
+                    cap_sq = idx_to_sq(cf + next_r*8)
+                    if cap_sq in pieces and pieces[cap_sq][0] == opp_col:
+                        if next_r == promo_rank:
+                            for promo in ['q', 'r', 'b', 'n']:
+                                moves.append(sq + cap_sq + promo)
+                        else:
+                            moves.append(sq + cap_sq)
+                            
+        elif p_type == 'N':
+            for df, dr in [(-2,-1),(-2,1),(-1,-2),(-1,2),(1,-2),(1,2),(2,-1),(2,1)]:
+                nf, nr = f + df, r + dr
+                if 0 <= nf < 8 and 0 <= nr < 8:
+                    target = idx_to_sq(nf + nr*8)
+                    if target not in pieces or pieces[target][0] == opp_col:
+                        moves.append(sq + target)
+                        
+        elif p_type == 'K':
+            for df in [-1, 0, 1]:
+                for dr in [-1, 0, 1]:
+                    if df == 0 and dr == 0: continue
+                    nf, nr = f + df, r + dr
+                    if 0 <= nf < 8 and 0 <= nr < 8:
+                        target = idx_to_sq(nf + nr*8)
+                        if target not in pieces or pieces[target][0] == opp_col:
+                            moves.append(sq + target)
+            
+            # Castling
+            # Check rights by position only (simple heuristic)
+            # White King e1 (4,0)
+            if my_col == 'w' and sq == 'e1':
+                # Kingside
+                if 'h1' in pieces and pieces['h1'] == 'wR':
+                    if 'f1' not in pieces and 'g1' not in pieces:
+                        # Check safety
+                        if not is_square_attacked(pieces, 'e1', 'b') and \
+                           not is_square_attacked(pieces, 'f1', 'b') and \
+                           not is_square_attacked(pieces, 'g1', 'b'):
+                            moves.append('e1g1')
+                # Queenside
+                if 'a1' in pieces and pieces['a1'] == 'wR':
+                    if 'b1' not in pieces and 'c1' not in pieces and 'd1' not in pieces:
+                        if not is_square_attacked(pieces, 'e1', 'b') and \
+                           not is_square_attacked(pieces, 'd1', 'b') and \
+                           not is_square_attacked(pieces, 'c1', 'b'):
+                            moves.append('e1c1')
+            elif my_col == 'b' and sq == 'e8':
+                if 'h8' in pieces and pieces['h8'] == 'bR':
+                    if 'f8' not in pieces and 'g8' not in pieces:
+                        if not is_square_attacked(pieces, 'e8', 'w') and \
+                           not is_square_attacked(pieces, 'f8', 'w') and \
+                           not is_square_attacked(pieces, 'g8', 'w'):
+                            moves.append('e8g8')
+                if 'a8' in pieces and pieces['a8'] == 'bR':
+                    if 'b8' not in pieces and 'c8' not in pieces and 'd8' not in pieces:
+                        if not is_square_attacked(pieces, 'e8', 'w') and \
+                           not is_square_attacked(pieces, 'd8', 'w') and \
+                           not is_square_attacked(pieces, 'c8', 'w'):
+                            moves.append('e8c8')
+
+        elif p_type in ['R', 'B', 'Q']:
+            dirs = []
+            if p_type in ['R', 'Q']:
+                dirs.extend([(0,1),(0,-1),(1,0),(-1,0)])
+            if p_type in ['B', 'Q']:
+                dirs.extend([(1,1),(1,-1),(-1,1),(-1,-1)])
+            
+            for df, dr in dirs:
+                nf, nr = f + df, r + dr
+                while 0 <= nf < 8 and 0 <= nr < 8:
+                    target = idx_to_sq(nf + nr*8)
+                    if target in pieces:
+                        if pieces[target][0] == opp_col:
+                            moves.append(sq + target)
+                        break
+                    moves.append(sq + target)
+                    nf += df
+                    nr += dr
+
+    # Filter illegal moves (leaving king in check)
+    legal_moves = []
+    for move in moves:
+        # Simulate
+        new_pieces = pieces.copy()
+        start, end = move[:2], move[2:4]
+        
+        # Handle Castling move
+        if move in ['e1g1', 'e1c1', 'e8g8', 'e8c8']:
+            if move == 'e1g1':
+                new_pieces['g1'] = new_pieces.pop('e1')
+                new_pieces['f1'] = new_pieces.pop('h1')
+            elif move == 'e1c1':
+                new_pieces['c1'] = new_pieces.pop('e1')
+                new_pieces['d1'] = new_pieces.pop('a1')
+            elif move == 'e8g8':
+                new_pieces['g8'] = new_pieces.pop('e8')
+                new_pieces['f8'] = new_pieces.pop('h8')
+            elif move == 'e8c8':
+                new_pieces['c8'] = new_pieces.pop('e8')
+                new_pieces['d8'] = new_pieces.pop('a8')
+        else:
+            piece = new_pieces.pop(start)
+            # Promotion
+            if len(move) == 5:
+                promo_piece = move[4].upper()
+                piece = piece[0] + promo_piece
+            new_pieces[end] = piece
+            
+        # Check if my king is attacked
+        my_king_pos = None
+        for s, p in new_pieces.items():
+            if p[0] == my_col and p[1] == 'K':
+                my_king_pos = s
+                break
+        
+        if my_king_pos and not is_square_attacked(new_pieces, my_king_pos, opp_col):
+            legal_moves.append(move)
+            
+    return legal_moves
+
+def minimax(pieces, depth, alpha, beta, maximizing_player, my_color_code):
+    turn = 'white' if maximizing_player else 'black'
+    moves = generate_moves(pieces, turn)
+    
+    if depth == 0 or not moves:
+        return evaluate_board(pieces, my_color_code), None
+    
+    # Move ordering: prioritize captures
+    def move_score(m):
+        end_sq = m[2:4]
+        score = 0
+        if end_sq in pieces:
+            score += 10 * PIECE_VALUES.get(pieces[end_sq][1], 0) - PIECE_VALUES.get(pieces[m[:2]][1], 0)
+        return -score # descending
+    
+    moves.sort(key=move_score)
+    
+    best_move = moves[0] if moves else None
+    
+    if maximizing_player:
+        max_eval = -float('inf')
+        for move in moves:
+            # Copy and make move
+            new_pieces = pieces.copy()
+            start, end = move[:2], move[3] # Standard indexing
+            # Handling promotion
+            if len(move) == 5:
+                p = new_pieces.pop(start)
+                new_pieces[end] = p[0] + move[4].upper()
+            else:
+                # Handle Castling internal move
+                if move in ['e1g1', 'e1c1', 'e8g8', 'e8c8']:
+                    if move == 'e1g1':
+                        new_pieces['g1'] = new_pieces.pop('e1')
+                        new_pieces['f1'] = new_pieces.pop('h1')
+                    elif move == 'e1c1':
+                        new_pieces['c1'] = new_pieces.pop('e1')
+                        new_pieces['d1'] = new_pieces.pop('a1')
+                    elif move == 'e8g8':
+                        new_pieces['g8'] = new_pieces.pop('e8')
+                        new_pieces['f8'] = new_pieces.pop('h8')
+                    elif move == 'e8c8':
+                        new_pieces['c8'] = new_pieces.pop('e8')
+                        new_pieces['d8'] = new_pieces.pop('a8')
+                else:
+                    new_pieces[end] = new_pieces.pop(start)
+            
+            eval_score, _ = minimax(new_pieces, depth - 1, alpha, beta, False, my_color_code)
+            if eval_score > max_eval:
+                max_eval = eval_score
+                best_move = move
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval, best_move
+    else:
+        min_eval = float('inf')
+        for move in moves:
+            new_pieces = pieces.copy()
+            start, end = move[:2], move[3]
+            if len(move) == 5:
+                p = new_pieces.pop(start)
+                new_pieces[end] = p[0] + move[4].upper()
+            else:
+                if move in ['e1g1', 'e1c1', 'e8g8', 'e8c8']:
+                    if move == 'e1g1':
+                        new_pieces['g1'] = new_pieces.pop('e1')
+                        new_pieces['f1'] = new_pieces.pop('h1')
+                    elif move == 'e1c1':
+                        new_pieces['c1'] = new_pieces.pop('e1')
+                        new_pieces['d1'] = new_pieces.pop('a1')
+                    elif move == 'e8g8':
+                        new_pieces['g8'] = new_pieces.pop('e8')
+                        new_pieces['f8'] = new_pieces.pop('h8')
+                    elif move == 'e8c8':
+                        new_pieces['c8'] = new_pieces.pop('e8')
+                        new_pieces['d8'] = new_pieces.pop('a8')
+                else:
+                    new_pieces[end] = new_pieces.pop(start)
+            
+            eval_score, _ = minimax(new_pieces, depth - 1, alpha, beta, True, my_color_code)
+            if eval_score < min_eval:
+                min_eval = eval_score
+                best_move = move
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval, best_move
+
+def policy(pieces: dict[str, str], to_play: str, *args) -> str:
+    legal_moves = None
+    if args and isinstance(args[0], list):
+        legal_moves = args[0]
+        
+    my_col = 'w' if to_play == 'white' else 'b'
+    
+    # If legal moves provided, we should use them. 
+    # If not, we generate them (minimax does this internally).
+    # But for the root call, we want to iterate over moves.
+    
+    if legal_moves is None:
+        # Fallback to generator if not provided
+        legal_moves = generate_moves(pieces, to_play)
+        if not legal_moves:
+            return ""
+
+    # Depth 3 search
+    _, best_move = minimax(pieces, 3, -float('inf'), float('inf'), True, my_col)
+    
+    if best_move:
+        return best_move
+    
+    # Should not happen if legal_moves is not empty, but return first move as fail-safe
+    return legal_moves[0]

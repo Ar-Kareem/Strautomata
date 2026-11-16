@@ -1,0 +1,263 @@
+
+import random
+
+# Piece values (centipawns)
+PIECE_VALUES = {
+    'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000
+}
+
+# Piece-square tables for positional evaluation (simplified)
+# These tables encourage pieces to occupy better squares
+PAWN_TABLE = [
+    [0,  0,  0,  0,  0,  0,  0,  0],
+    [50, 50, 50, 50, 50, 50, 50, 50],
+    [10, 10, 20, 30, 30, 20, 10, 10],
+    [5,  5, 10, 25, 25, 10,  5,  5],
+    [0,  0,  0, 20, 20,  0,  0,  0],
+    [5, -5,-10,  0,  0,-10, -5,  5],
+    [5, 10, 10,-20,-20, 10, 10,  5],
+    [0,  0,  0,  0,  0,  0,  0,  0]
+]
+
+KNIGHT_TABLE = [
+    [-50,-40,-30,-30,-30,-30,-40,-50],
+    [-40,-20,  0,  0,  0,  0,-20,-40],
+    [-30,  0, 10, 15, 15, 10,  0,-30],
+    [-30,  5, 15, 20, 20, 15,  5,-30],
+    [-30,  0, 15, 20, 20, 15,  0,-30],
+    [-30,  5, 10, 15, 15, 10,  5,-30],
+    [-40,-20,  0,  5,  5,  0,-20,-40],
+    [-50,-40,-30,-30,-30,-30,-40,-50]
+]
+
+BISHOP_TABLE = [
+    [-20,-10,-10,-10,-10,-10,-10,-20],
+    [-10,  0,  0,  0,  0,  0,  0,-10],
+    [-10,  0,  5, 10, 10,  5,  0,-10],
+    [-10,  5,  5, 10, 10,  5,  5,-10],
+    [-10,  0, 10, 10, 10, 10,  0,-10],
+    [-10, 10, 10, 10, 10, 10, 10,-10],
+    [-10,  5,  0,  0,  0,  0,  5,-10],
+    [-20,-10,-10,-10,-10,-10,-10,-20]
+]
+
+ROOK_TABLE = [
+    [0,  0,  0,  0,  0,  0,  0,  0],
+    [5, 10, 10, 10, 10, 10, 10,  5],
+    [-5,  0,  0,  0,  0,  0,  0, -5],
+    [-5,  0,  0,  0,  0,  0,  0, -5],
+    [-5,  0,  0,  0,  0,  0,  0, -5],
+    [-5,  0,  0,  0,  0,  0,  0, -5],
+    [-5,  0,  0,  0,  0,  0,  0, -5],
+    [0,  0,  0,  5,  5,  0,  0,  0]
+]
+
+QUEEN_TABLE = [
+    [-20,-10,-10, -5, -5,-10,-10,-20],
+    [-10,  0,  0,  0,  0,  0,  0,-10],
+    [-10,  0,  5,  5,  5,  5,  0,-10],
+    [-5,  0,  5,  5,  5,  5,  0, -5],
+    [0,  0,  5,  5,  5,  5,  0, -5],
+    [-10,  5,  5,  5,  5,  5,  0,-10],
+    [-10,  0,  5,  0,  0,  0,  0,-10],
+    [-20,-10,-10, -5, -5,-10,-10,-20]
+]
+
+KING_TABLE = [
+    [-30,-40,-40,-50,-50,-40,-40,-30],
+    [-30,-40,-40,-50,-50,-40,-40,-30],
+    [-30,-40,-40,-50,-50,-40,-40,-30],
+    [-30,-40,-40,-50,-50,-40,-40,-30],
+    [-20,-30,-30,-40,-40,-30,-30,-20],
+    [-10,-20,-20,-20,-20,-20,-20,-10],
+    [20, 20,  0,  0,  0,  0, 20, 20],
+    [20, 30, 10,  0,  0, 10, 30, 20]
+]
+
+KING_ENDGAME_TABLE = [
+    [-50,-40,-30,-20,-20,-30,-40,-50],
+    [-30,-20,-10,  0,  0,-10,-20,-30],
+    [-30,-10, 20, 30, 30, 20,-10,-30],
+    [-30,-10, 30, 40, 40, 30,-10,-30],
+    [-30,-10, 30, 40, 40, 30,-10,-30],
+    [-30,-10, 20, 30, 30, 20,-10,-30],
+    [-30,-30,  0,  0,  0,  0,-30,-30],
+    [-50,-30,-30,-30,-30,-30,-30,-50]
+]
+
+def square_to_coords(square):
+    """Convert algebraic notation to (rank, file) coordinates"""
+    file = ord(square[0]) - ord('a')
+    rank = int(square[1]) - 1
+    return rank, file
+
+def coords_to_square(rank, file):
+    """Convert (rank, file) coordinates to algebraic notation"""
+    return chr(ord('a') + file) + str(rank + 1)
+
+def get_piece_value(piece):
+    """Get the material value of a piece"""
+    if not piece:
+        return 0
+    return PIECE_VALUES.get(piece[1], 0)
+
+def evaluate_position(pieces, to_play):
+    """Evaluate the current position"""
+    score = 0
+    white_material = 0
+    black_material = 0
+    white_position = 0
+    black_position = 0
+    
+    # Count pieces to determine if it's endgame
+    piece_count = 0
+    for piece in pieces.values():
+        if piece[1] != 'K':
+            piece_count += 1
+    
+    is_endgame = piece_count <= 10
+    
+    for square, piece in pieces.items():
+        if not piece:
+            continue
+            
+        rank, file = square_to_coords(square)
+        piece_type = piece[1]
+        value = PIECE_VALUES.get(piece_type, 0)
+        
+        # Material evaluation
+        if piece[0] == 'w':
+            white_material += value
+        else:
+            black_material += value
+            
+        # Positional evaluation
+        positional_bonus = 0
+        if piece_type == 'P':
+            table = PAWN_TABLE
+        elif piece_type == 'N':
+            table = KNIGHT_TABLE
+        elif piece_type == 'B':
+            table = BISHOP_TABLE
+        elif piece_type == 'R':
+            table = ROOK_TABLE
+        elif piece_type == 'Q':
+            table = QUEEN_TABLE
+        elif piece_type == 'K':
+            table = KING_ENDGAME_TABLE if is_endgame else KING_TABLE
+        else:
+            table = [[0]*8 for _ in range(8)]
+            
+        # Flip tables for black pieces
+        if piece[0] == 'b':
+            positional_bonus = table[7-rank][file]
+        else:
+            positional_bonus = table[rank][file]
+            
+        if piece[0] == 'w':
+            white_position += positional_bonus
+        else:
+            black_position += positional_bonus
+    
+    # Calculate total score from white's perspective
+    material_score = white_material - black_material
+    positional_score = white_position - black_position
+    score = material_score + positional_score
+    
+    # Adjust for whose turn it is
+    if to_play == 'black':
+        score = -score
+        
+    return score
+
+def make_move(pieces, move_str):
+    """Apply a move to the board and return the new pieces dict"""
+    new_pieces = pieces.copy()
+    
+    # Parse move
+    from_square = move_str[:2]
+    to_square = move_str[2:4]
+    
+    # Handle castling
+    if len(move_str) == 4 and from_square[0] == 'e' and to_square[0] in ['c', 'g']:
+        # King move
+        king = new_pieces.get(from_square)
+        if not king:
+            return new_pieces
+            
+        new_pieces.pop(from_square, None)
+        new_pieces[to_square] = king
+        
+        # Move rook
+        if to_square == 'g1':  # White kingside
+            new_pieces.pop('h1', None)
+            new_pieces['f1'] = 'wR'
+        elif to_square == 'c1':  # White queenside
+            new_pieces.pop('a1', None)
+            new_pieces['d1'] = 'wR'
+        elif to_square == 'g8':  # Black kingside
+            new_pieces.pop('h8', None)
+            new_pieces['f8'] = 'bR'
+        elif to_square == 'c8':  # Black queenside
+            new_pieces.pop('a8', None)
+            new_pieces['d8'] = 'bR'
+    else:
+        # Regular move or promotion
+        piece = new_pieces.get(from_square)
+        if not piece:
+            return new_pieces
+            
+        new_pieces.pop(from_square, None)
+        if len(move_str) > 4:  # Promotion
+            promoted_piece = move_str[4].upper()
+            if piece[0] == 'w':
+                new_pieces[to_square] = 'w' + promoted_piece
+            else:
+                new_pieces[to_square] = 'b' + promoted_piece
+        else:
+            new_pieces[to_square] = piece
+            
+    return new_pieces
+
+def is_in_check(pieces, color):
+    """Simple check detection - this is a placeholder implementation"""
+    # For simplicity, we'll just return False since full check detection
+    # would require move generation which isn't available
+    return False
+
+def policy(pieces: dict[str, str], to_play: str, memory: dict) -> tuple[str, dict]:
+    """Select the best move based on evaluation"""
+    # Get legal moves from memory (assuming they are provided in memory)
+    legal_moves = memory.get('legal_moves', [])
+    
+    if not legal_moves:
+        # Fallback if no legal moves provided - shouldn't happen in real games
+        return ('', memory)
+    
+    # If only one move available, play it
+    if len(legal_moves) == 1:
+        return (legal_moves[0], memory)
+    
+    # Convert color representation
+    my_color = 'w' if to_play == 'white' else 'b'
+    
+    # Evaluate each move
+    best_move = legal_moves[0]
+    best_score = float('-inf')
+    
+    for move in legal_moves:
+        # Simulate the move
+        new_pieces = make_move(pieces, move)
+        
+        # Evaluate resulting position
+        score = evaluate_position(new_pieces, to_play)
+        
+        # Add small random factor to avoid deterministic play
+        score += random.uniform(-0.1, 0.1)
+        
+        # Update best move if this is better
+        if score > best_score:
+            best_score = score
+            best_move = move
+            
+    return (best_move, memory)

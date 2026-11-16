@@ -1,0 +1,288 @@
+The strategy for this policy is a strong 3D Tic Tac Toe solver based on:
+
+1. Enumerating all 49 winning lines in a 3x3x3 cube.
+2. Always taking an immediate win if available.
+3. Always blocking an opponent immediate win if necessary.
+4. Using a depth-limited minimax search with alpha-beta pruning on the small remaining game tree.
+5. Applying move ordering and a positional heuristic favoring center, corners, and moves that participate in many winning lines.
+6. Falling back safely to the first legal move if anything unexpected happens, ensuring a legal move is always returned.
+
+This makes the policy robust, tactical, and generally difficult to beat while always guaranteeing a legal action.
+
+<code>
+from typing import List, Tuple, Optional
+
+Move = Tuple[int, int, int]
+
+# Precompute all 49 winning lines in 3x3x3 tic tac toe.
+def _generate_lines() -> List[List[Move]]:
+    lines = []
+
+    # Straight lines along each axis
+    for j in range(3):
+        for k in range(3):
+            lines.append([(i, j, k) for i in range(3)])  # vary i
+    for i in range(3):
+        for k in range(3):
+            lines.append([(i, j, k) for j in range(3)])  # vary j
+    for i in range(3):
+        for j in range(3):
+            lines.append([(i, j, k) for k in range(3)])  # vary k
+
+    # Diagonals in planes
+    for k in range(3):
+        lines.append([(d, d, k) for d in range(3)])
+        lines.append([(d, 2 - d, k) for d in range(3)])
+    for j in range(3):
+        lines.append([(d, j, d) for d in range(3)])
+        lines.append([(d, j, 2 - d) for d in range(3)])
+    for i in range(3):
+        lines.append([(i, d, d) for d in range(3)])
+        lines.append([(i, d, 2 - d) for d in range(3)])
+
+    # Space diagonals
+    lines.append([(d, d, d) for d in range(3)])
+    lines.append([(d, d, 2 - d) for d in range(3)])
+    lines.append([(d, 2 - d, d) for d in range(3)])
+    lines.append([(d, 2 - d, 2 - d) for d in range(3)])
+
+    return lines
+
+
+LINES = _generate_lines()
+
+# For move ordering / heuristic: how many winning lines each cell belongs to.
+CELL_LINE_COUNT = [[[0 for _ in range(3)] for _ in range(3)] for _ in range(3)]
+for line in LINES:
+    for i, j, k in line:
+        CELL_LINE_COUNT[i][j][k] += 1
+
+
+def _legal_moves(board: List[List[List[int]]]) -> List[Move]:
+    moves = []
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board[i][j][k] == 0:
+                    moves.append((i, j, k))
+    return moves
+
+
+def _winner(board: List[List[List[int]]]) -> int:
+    for line in LINES:
+        s = sum(board[i][j][k] for i, j, k in line)
+        if s == 3:
+            return 1
+        if s == -3:
+            return -1
+    return 0
+
+
+def _is_full(board: List[List[List[int]]]) -> bool:
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board[i][j][k] == 0:
+                    return False
+    return True
+
+
+def _immediate_winning_moves(board: List[List[List[int]]], player: int) -> List[Move]:
+    wins = []
+    for line in LINES:
+        vals = [board[i][j][k] for i, j, k in line]
+        if vals.count(player) == 2 and vals.count(0) == 1:
+            idx = vals.index(0)
+            wins.append(line[idx])
+    # Deduplicate while preserving order
+    seen = set()
+    out = []
+    for mv in wins:
+        if mv not in seen:
+            seen.add(mv)
+            out.append(mv)
+    return out
+
+
+def _heuristic(board: List[List[List[int]]]) -> int:
+    w = _winner(board)
+    if w == 1:
+        return 100000
+    if w == -1:
+        return -100000
+
+    score = 0
+
+    # Line-based evaluation
+    for line in LINES:
+        vals = [board[i][j][k] for i, j, k in line]
+        c1 = vals.count(1)
+        c2 = vals.count(-1)
+        c0 = vals.count(0)
+
+        if c1 > 0 and c2 > 0:
+            continue
+
+        if c1 == 2 and c0 == 1:
+            score += 120
+        elif c1 == 1 and c0 == 2:
+            score += 12
+        elif c1 == 3:
+            score += 100000
+
+        if c2 == 2 and c0 == 1:
+            score -= 140
+        elif c2 == 1 and c0 == 2:
+            score -= 12
+        elif c2 == 3:
+            score -= 100000
+
+    # Positional value
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                v = board[i][j][k]
+                if v != 0:
+                    score += v * CELL_LINE_COUNT[i][j][k] * 2
+
+    # Center bonus
+    score += board[1][1][1] * 10
+
+    return score
+
+
+def _ordered_moves(board: List[List[List[int]]], player: int) -> List[Move]:
+    moves = _legal_moves(board)
+
+    opp = -player
+    opp_wins = set(_immediate_winning_moves(board, opp))
+
+    def key(mv: Move):
+        i, j, k = mv
+        score = 0
+
+        # Prefer immediate win
+        board[i][j][k] = player
+        if _winner(board) == player:
+            score += 100000
+        board[i][j][k] = 0
+
+        # Prefer blocking current opponent win threats
+        if mv in opp_wins:
+            score += 50000
+
+        # Positional / combinational preference
+        score += CELL_LINE_COUNT[i][j][k] * 10
+
+        # Center / corners / edges
+        if mv == (1, 1, 1):
+            score += 30
+        elif sum(coord in (0, 2) for coord in mv) == 3:
+            score += 20
+        elif sum(coord in (0, 2) for coord in mv) == 2:
+            score += 8
+
+        return -score  # ascending sort
+
+    moves.sort(key=key)
+    return moves
+
+
+def _minimax(board: List[List[List[int]]], depth: int, alpha: int, beta: int, player: int) -> int:
+    w = _winner(board)
+    if w == 1:
+        return 100000 + depth
+    if w == -1:
+        return -100000 - depth
+    if depth == 0 or _is_full(board):
+        return _heuristic(board)
+
+    moves = _ordered_moves(board, player)
+
+    if player == 1:
+        value = -10**9
+        for i, j, k in moves:
+            board[i][j][k] = 1
+            value = max(value, _minimax(board, depth - 1, alpha, beta, -1))
+            board[i][j][k] = 0
+            alpha = max(alpha, value)
+            if beta <= alpha:
+                break
+        return value
+    else:
+        value = 10**9
+        for i, j, k in moves:
+            board[i][j][k] = -1
+            value = min(value, _minimax(board, depth - 1, alpha, beta, 1))
+            board[i][j][k] = 0
+            beta = min(beta, value)
+            if beta <= alpha:
+                break
+        return value
+
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    try:
+        legal = _legal_moves(board)
+        if not legal:
+            return (0, 0, 0)  # should not occur in valid game states
+
+        # 1. Immediate win
+        my_wins = _immediate_winning_moves(board, 1)
+        if my_wins:
+            return my_wins[0]
+
+        # 2. Block immediate loss
+        opp_wins = _immediate_winning_moves(board, -1)
+        if opp_wins:
+            # If one move blocks multiple threats, prefer it
+            best_block = None
+            best_count = -1
+            for mv in legal:
+                count = sum(1 for x in opp_wins if x == mv)
+                if count > best_count:
+                    best_count = count
+                    best_block = mv
+            if best_block is not None and board[best_block[0]][best_block[1]][best_block[2]] == 0:
+                return best_block
+
+        empties = len(legal)
+
+        # Search deeper in late game, shallower in opening.
+        if empties >= 20:
+            depth = 2
+        elif empties >= 14:
+            depth = 3
+        elif empties >= 9:
+            depth = 4
+        else:
+            depth = 6
+
+        best_move = legal[0]
+        best_value = -10**9
+
+        for i, j, k in _ordered_moves(board, 1):
+            board[i][j][k] = 1
+            value = _minimax(board, depth - 1, -10**9, 10**9, -1)
+            board[i][j][k] = 0
+
+            if value > best_value:
+                best_value = value
+                best_move = (i, j, k)
+
+        # Safety: ensure legal
+        i, j, k = best_move
+        if 0 <= i < 3 and 0 <= j < 3 and 0 <= k < 3 and board[i][j][k] == 0:
+            return best_move
+
+        return legal[0]
+
+    except Exception:
+        # Always return a legal move if possible
+        for i in range(3):
+            for j in range(3):
+                for k in range(3):
+                    if board[i][j][k] == 0:
+                        return (i, j, k)
+        return (0, 0, 0)
+</code>

@@ -1,0 +1,150 @@
+
+import numpy as np
+import itertools
+
+def policy(you, opponent):
+    # Convert to numpy arrays for easier manipulation
+    you_board = np.array(you, dtype=int)
+    opp_board = np.array(opponent, dtype=int)
+    empty = (you_board + opp_board) == 0
+    
+    # Quadrant definitions: (row_start, row_end, col_start, col_end)
+    QUADS = [
+        (0, 3, 0, 3),   # quad 0
+        (0, 3, 3, 6),   # quad 1
+        (3, 6, 0, 3),   # quad 2
+        (3, 6, 3, 6),   # quad 3
+    ]
+    
+    # Precompute all lines: horizontal, vertical, diagonals
+    LINES = []
+    # horizontals
+    for r in range(6):
+        LINES.append([(r, c) for c in range(6)])
+    # verticals
+    for c in range(6):
+        LINES.append([(r, c) for r in range(6)])
+    # main diagonals (length >= 5)
+    for r_start in range(2):
+        for c_start in range(2):
+            diag = []
+            r, c = r_start, c_start
+            while r < 6 and c < 6:
+                diag.append((r, c))
+                r += 1
+                c += 1
+            if len(diag) >= 5:
+                LINES.append(diag)
+    # anti-diagonals
+    for r_start in range(2):
+        for c_start in range(4, 6):
+            diag = []
+            r, c = r_start, c_start
+            while r < 6 and c >= 0:
+                diag.append((r, c))
+                r += 1
+                c -= 1
+            if len(diag) >= 5:
+                LINES.append(diag)
+    
+    # Helper: check if a player has won given boards
+    def has_won(board):
+        for line in LINES:
+            count = sum(board[r][c] for r, c in line)
+            if count >= 5:
+                return True
+        return False
+    
+    # Helper: rotate a quadrant
+    def rotate_quad(board, quad, direction):
+        # board is a numpy array
+        r0, r1, c0, c1 = QUADS[quad]
+        sub = board[r0:r1, c0:c1].copy()
+        if direction == 'R':  # clockwise
+            sub = np.rot90(sub, k=-1)
+        else:  # 'L' anticlockwise
+            sub = np.rot90(sub, k=1)
+        new_board = board.copy()
+        new_board[r0:r1, c0:c1] = sub
+        return new_board
+    
+    # Evaluation: score a board from our perspective
+    def evaluate(yb, ob):
+        # Immediate win/loss
+        if has_won(yb):
+            return 10000
+        if has_won(ob):
+            return -10000
+        
+        score = 0
+        # Potential lines: count how many lines we could still make 5
+        for line in LINES:
+            our = sum(yb[r][c] for r, c in line)
+            their = sum(ob[r][c] for r, c in line)
+            empty_cells = sum(1 for r, c in line if yb[r][c]==0 and ob[r][c]==0)
+            if their == 0:
+                # line uncontested
+                if our == 4 and empty_cells >= 1:
+                    score += 500  # immediate threat next turn
+                elif our == 3 and empty_cells >= 2:
+                    score += 100
+                elif our == 2 and empty_cells >= 3:
+                    score += 30
+            if our == 0:
+                # opponent uncontested
+                if their == 4 and empty_cells >= 1:
+                    score -= 600  # block threat next turn
+                elif their == 3 and empty_cells >= 2:
+                    score -= 120
+                elif their == 2 and empty_cells >= 3:
+                    score -= 40
+        
+        # Center control bonus
+        center_squares = [(2,2),(2,3),(3,2),(3,3)]
+        for r,c in center_squares:
+            if yb[r][c]:
+                score += 10
+            if ob[r][c]:
+                score -= 10
+        
+        # Mobility: number of empty cells adjacent to ours
+        for r in range(6):
+            for c in range(6):
+                if yb[r][c]:
+                    for dr in [-1,0,1]:
+                        for dc in [-1,0,1]:
+                            nr, nc = r+dr, c+dc
+                            if 0 <= nr < 6 and 0 <= nc < 6:
+                                if yb[nr][nc]==0 and ob[nr][nc]==0:
+                                    score += 2
+        return score
+    
+    # Generate all legal moves
+    best_move = None
+    best_score = -float('inf')
+    
+    # Precompute empty positions
+    empty_positions = list(zip(*np.where(empty)))
+    
+    for r_idx, c_idx in empty_positions:
+        for quad in range(4):
+            for dir in ['L', 'R']:
+                # Simulate move
+                new_yb = you_board.copy()
+                new_ob = opp_board.copy()
+                # Place marble
+                new_yb[r_idx][c_idx] = 1
+                # Rotate
+                new_yb = rotate_quad(new_yb, quad, dir)
+                new_ob = rotate_quad(new_ob, quad, dir)
+                # Evaluate
+                score = evaluate(new_yb, new_ob)
+                # Add a small random tiebreaker
+                score += np.random.rand() * 0.1
+                if score > best_score:
+                    best_score = score
+                    best_move = (r_idx+1, c_idx+1, quad, dir)
+    
+    # Format move
+    row, col, quad, dir = best_move
+    return f"{row},{col},{quad},{dir}"

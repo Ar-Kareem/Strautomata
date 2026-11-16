@@ -1,0 +1,138 @@
+
+from typing import List, Tuple
+import math
+
+# Precompute all 49 winning lines in 3x3x3
+LINES = []
+
+# Straight lines along axes
+for i in range(3):
+    for j in range(3):
+        # along k
+        LINES.append([(i, j, k) for k in range(3)])
+        # along j
+        LINES.append([(i, k, j) for k in range(3)])
+        # along i
+        LINES.append([(k, i, j) for k in range(3)])
+
+# Diagonals on each plane
+for i in range(3):
+    # yz planes (x fixed)
+    LINES.append([(i, 0, 0), (i, 1, 1), (i, 2, 2)])
+    LINES.append([(i, 0, 2), (i, 1, 1), (i, 2, 0)])
+for j in range(3):
+    # xz planes (y fixed)
+    LINES.append([(0, j, 0), (1, j, 1), (2, j, 2)])
+    LINES.append([(0, j, 2), (1, j, 1), (2, j, 0)])
+for k in range(3):
+    # xy planes (z fixed)
+    LINES.append([(0, 0, k), (1, 1, k), (2, 2, k)])
+    LINES.append([(0, 2, k), (1, 1, k), (2, 0, k)])
+
+# Space diagonals
+LINES.append([(0,0,0),(1,1,1),(2,2,2)])
+LINES.append([(0,0,2),(1,1,1),(2,2,0)])
+LINES.append([(0,2,0),(1,1,1),(2,0,2)])
+LINES.append([(0,2,2),(1,1,1),(2,0,0)])
+
+WEIGHTS = [0, 1, 10, 100]
+
+def check_win(board, player):
+    for line in LINES:
+        if all(board[i][j][k] == player for i,j,k in line):
+            return True
+    return False
+
+def evaluate(board):
+    score = 0
+    for line in LINES:
+        vals = [board[i][j][k] for i,j,k in line]
+        if 1 in vals and -1 in vals:
+            continue
+        c1 = vals.count(1)
+        c2 = vals.count(-1)
+        if c2 == 0 and c1 > 0:
+            score += WEIGHTS[c1]
+        elif c1 == 0 and c2 > 0:
+            score -= WEIGHTS[c2]
+    return score
+
+def get_empty(board):
+    empties = []
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board[i][j][k] == 0:
+                    empties.append((i,j,k))
+    return empties
+
+def minimax(board, depth, maximizing, alpha, beta):
+    if check_win(board, 1):
+        return 10000 + depth
+    if check_win(board, -1):
+        return -10000 - depth
+    empties = get_empty(board)
+    if depth == 0 or not empties:
+        return evaluate(board)
+
+    if maximizing:
+        best = -math.inf
+        for (i,j,k) in empties:
+            board[i][j][k] = 1
+            val = minimax(board, depth-1, False, alpha, beta)
+            board[i][j][k] = 0
+            if val > best:
+                best = val
+            alpha = max(alpha, best)
+            if beta <= alpha:
+                break
+        return best
+    else:
+        best = math.inf
+        for (i,j,k) in empties:
+            board[i][j][k] = -1
+            val = minimax(board, depth-1, True, alpha, beta)
+            board[i][j][k] = 0
+            if val < best:
+                best = val
+            beta = min(beta, best)
+            if beta <= alpha:
+                break
+        return best
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    empties = get_empty(board)
+    if not empties:
+        return (0,0,0)
+
+    # 1. Immediate win
+    for (i,j,k) in empties:
+        board[i][j][k] = 1
+        if check_win(board, 1):
+            board[i][j][k] = 0
+            return (i,j,k)
+        board[i][j][k] = 0
+
+    # 2. Immediate block
+    for (i,j,k) in empties:
+        board[i][j][k] = -1
+        if check_win(board, -1):
+            board[i][j][k] = 0
+            return (i,j,k)
+        board[i][j][k] = 0
+
+    # 3. Minimax
+    empties = get_empty(board)
+    depth = 4 if len(empties) <= 10 else 3
+    best_val = -math.inf
+    best_move = empties[0]
+
+    for (i,j,k) in empties:
+        board[i][j][k] = 1
+        val = minimax(board, depth-1, False, -math.inf, math.inf)
+        board[i][j][k] = 0
+        if val > best_val:
+            best_val = val
+            best_move = (i,j,k)
+
+    return best_move

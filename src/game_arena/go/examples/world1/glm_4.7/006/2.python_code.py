@@ -1,0 +1,195 @@
+
+import numpy as np
+import random
+import time
+from collections import deque
+from itertools import product
+
+# Constants
+BOARD_SIZE = 19
+EMPTY = 0
+ME = 1
+OPPONENT = -1
+
+# Precompute neighbors for 0-indexed board (0..18)
+NEIGHBORS = {}
+for r in range(BOARD_SIZE):
+    for c in range(BOARD_SIZE):
+        neighs = []
+        if r > 0: neighs.append((r-1, c))
+        if r < BOARD_SIZE - 1: neighs.append((r+1, c))
+        if c > 0: neighs.append((r, c-1))
+        if c < BOARD_SIZE - 1: neighs.append((r, c+1))
+        NEIGHBORS[(r, c)] = neighs
+
+def get_group_info(board, r, c):
+    """
+    Returns a list of stones in the group and the number of liberties 
+    for the group at (r, c).
+    """
+    color = board[r, c]
+    if color == EMPTY:
+        return [], 0
+        
+    group = []
+    liberties = set()
+    visited = set()
+    queue = deque()
+    
+    queue.append((r, c))
+    visited.add((r, c))
+    group.append((r, c))
+    
+    while queue:
+        curr_r, curr_c = queue.popleft()
+        for nr, nc in NEIGHBORS[(curr_r, curr_c)]:
+            if board[nr, nc] == EMPTY:
+                liberties.add((nr, nc))
+            elif board[nr, nc] == color and (nr, nc) not in visited:
+                visited.add((nr, nc))
+                queue.append((nr, nc))
+                group.append((nr, nc))
+                
+    return group, len(liberties)
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    start_time = time.time()
+    time_limit = 0.95
+    
+    # Initialize Board (0-indexed)
+    board = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=int)
+    for (r, c) in me:
+        board[r-1, c-1] = ME
+    for (r, c) in opponent:
+        board[r-1, c-1] = OPPONENT
+        
+    total_stones = len(me) + len(opponent)
+    
+    # Opening Book
+    if total_stones == 0:
+        return (4, 4)
+    if total_stones == 1 and len(me) == 0:
+        # If opponent played first, play a diagonal response or standard opening
+        # Simple heuristic: Play far enough away
+        opp_move = opponent[0]
+        # Mirroring logic or just standard star point
+        if opp_move == (4, 4): return (16, 16)
+        if opp_move == (16, 16): return (4, 4)
+        return (4, 4)
+
+    # Generate Candidates
+    candidates = set()
+    all_stones = me + opponent
+    
+    for r, c in all_stones:
+        r0, c0 = r-1, c-1
+        for nr, nc in NEIGHBORS[(r0, c0)]:
+            if board[nr, nc] == EMPTY:
+                candidates.add((nr+1, nc+1)) # Store as 1-indexed
+                
+    # If few moves available (start of game or isolated), add star points
+    if len(candidates) < 10 and total_stones < 10:
+        star_points = [(4,4), (4,16), (16,4), (16,16), (10,10), (3,3), (3,17), (17,3), (17,17)]
+        for sp in star_points:
+             if board[sp[0]-1, sp[1]-1] == 0:
+                 candidates.add(sp)
+
+    if not candidates:
+        return (0, 0)
+
+    best_move = None
+    best_score = -float('inf')
+    
+    # Shuffle candidates to ensure variety when scores are equal
+    candidate_list = list(candidates)
+    random.shuffle(candidate_list)
+    
+    for r, c in candidate_list:
+        # Time check
+        if time.time() - start_time > time_limit:
+            break
+        
+        if board[r-1, c-1] != EMPTY:
+            continue
+            
+        # --- Simulation ---
+        temp_board = board.copy()
+        r0, c0 = r-1, c-1
+        temp_board[r0, c0] = ME
+        
+        # 1. Check Captures (Opponent groups that die)
+        captured_opp_stones = 0
+        processed_neighbors = set()
+        
+        for nr, nc in NEIGHBORS[(r0, c0)]:
+            if temp_board[nr, nc] == OPPONENT and (nr, nc) not in processed_neighbors:
+                grp, libs = get_group_info(temp_board, nr, nc)
+                # Add all stones in this group to processed set
+                for gr, gc in grp:
+                    processed_neighbors.add((gr, gc))
+                
+                if libs == 0:
+                    for gr, gc in grp:
+                        temp_board[gr, gc] = EMPTY
+                        captured_opp_stones += 1
+        
+        # 2. Check Suicide (My group dies without capturing)
+        my_grp, my_libs = get_group_info(temp_board, r0, c0)
+        if my_libs == 0:
+            # Illegal suicide
+            continue
+            
+        # --- Scoring ---
+        score = 0.0
+        
+        # Tactical: Capture
+        if captured_opp_stones > 0:
+            score += 100.0 * captured_opp_stones
+            
+        # Tactical: Atari (Reduce opponent liberties to 1)
+        # We need to re-evaluate neighbors because we might have captured some stones
+        # actually, checking the board state after capture is correct
+        atari_count = 0
+        for nr, nc in NEIGHBORS[(r0, c0)]:
+            if temp_board[nr, nc] == OPPONENT:
+                grp, libs = get_group_info(temp_board, nr, nc)
+                if libs == 1:
+                    atari_count += 1
+        score += 20.0 * atari_count
+        
+        # Tactical: Safety (Self liberties)
+        if my_libs == 1:
+            # Self-Atari is generally bad
+            score -= 50.0
+        elif my_libs == 2:
+            score -= 10.0
+        else:
+            score += 5.0 # Safe move
+            
+        # Positional: Edge preference
+        dist_edge = min(r-1, 19-r, c-1, 19-c)
+        if dist_edge == 0: score -= 20.0 # 1st line
+        elif dist_edge == 1: score -= 10.0 # 2nd line
+        elif dist_edge in [2, 3]: score += 5.0 # 3rd/4th line
+        
+        # Positional: Connectivity
+        friendly_neighbors = 0
+        enemy_neighbors = 0
+        for nr, nc in NEIGHBORS[(r0, c0)]:
+            if temp_board[nr, nc] == ME: friendly_neighbors += 1
+            elif temp_board[nr, nc] == OPPONENT: enemy_neighbors += 1
+            
+        if friendly_neighbors > 0: score += 10.0
+        if enemy_neighbors > 0: score += 2.0 # Contact is better than isolation
+        
+        # Random jitter
+        score += random.random() * 1.5
+        
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+            
+    if best_move:
+        return best_move
+        
+    return (0, 0)

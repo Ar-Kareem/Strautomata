@@ -1,0 +1,100 @@
+
+def policy(board: list[list[int]]) -> int:
+    available_columns = [c for c in range(7) if board[0][c] == 0]
+    
+    if not available_columns:
+        return 0  # Should not happen in valid gameplay, but return 0 as fallback
+
+    best_score = -10**18
+    best_col = 0
+
+    for col in available_columns:
+        # Find the lowest available row in the column
+        row_index = -1
+        for r in range(5, -1, -1):
+            if board[r][col] == 0:
+                row_index = r
+                break
+
+        # Create a new board with the current player's move
+        new_board = [row[:] for row in board]
+        new_board[row_index][col] = 1  # Current player is 1
+
+        # Evaluate the new board
+        score = evaluate_board(new_board, 1)
+
+        if score > best_score:
+            best_score = score
+            best_col = col
+
+    return best_col
+
+
+def evaluate_board(board, player):
+    score = 0
+    # Check all horizontal windows
+    for r in range(6):
+        for c in range(4):
+            window = [
+                board[r][c], board[r][c+1], 
+                board[r][c+2], board[r][c+3]
+            ]
+            score += evaluate_window(window, player)
+    
+    # Check all vertical windows
+    for r in range(3):
+        for c in range(7):
+            window = [
+                board[r][c], board[r+1][c], 
+                board[r+2][c], board[r+3][c]
+            ]
+            score += evaluate_window(window, player)
+    
+    # Check all diagonal (down-right) windows
+    for r in range(3):
+        for c in range(4):
+            window = [
+                board[r][c], board[r+1][c+1], 
+                board[r+2][c+2], board[r+3][c+3]
+            ]
+            score += evaluate_window(window, player)
+    
+    # Check all diagonal (down-left) windows
+    for r in range(3):
+        for c in range(3, 7):
+            window = [
+                board[r][c], board[r+1][c-1], 
+                board[r+2][c-2], board[r+3][c-3]
+            ]
+            score += evaluate_window(window, player)
+    
+    return score
+
+
+def evaluate_window(window, player):
+    count_player = window.count(player)
+    count_opponent = window.count(-player)
+    count_empty = window.count(0)
+    
+    score = 0
+    # Reward for current player patterns
+    if count_player == 4:
+        score += 100000
+    elif count_player == 3 and count_empty == 1:
+        score += 1000
+    elif count_player == 2 and count_empty == 2:
+        score += 100
+    elif count_player == 1 and count_empty == 3:
+        score += 10
+    
+    # Penalty for opponent patterns
+    if count_opponent == 4:
+        score -= 100000
+    elif count_opponent == 3 and count_empty == 1:
+        score -= 1000
+    elif count_opponent == 2 and count_empty == 2:
+        score -= 100
+    elif count_opponent == 1 and count_empty == 3:
+        score -= 10
+    
+    return score

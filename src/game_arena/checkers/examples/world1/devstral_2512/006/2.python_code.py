@@ -1,0 +1,172 @@
+
+import numpy as np
+from typing import List, Tuple
+
+def policy(my_men: List[Tuple[int, int]], my_kings: List[Tuple[int, int]],
+           opp_men: List[Tuple[int, int]], opp_kings: List[Tuple[int, int]],
+           color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    # Combine all pieces
+    my_pieces = my_men + my_kings
+    opp_pieces = opp_men + opp_kings
+
+    # Create board representation
+    board = np.zeros((8, 8), dtype=int)
+    for piece in my_men:
+        board[piece] = 1  # My men
+    for piece in my_kings:
+        board[piece] = 2  # My kings
+    for piece in opp_men:
+        board[piece] = -1  # Opponent men
+    for piece in opp_kings:
+        board[piece] = -2  # Opponent kings
+
+    # Determine direction based on color
+    direction = 1 if color == 'w' else -1
+
+    # First check for captures (mandatory)
+    captures = find_all_captures(board, my_pieces, opp_pieces, direction)
+    if captures:
+        # Find the best capture sequence
+        best_capture = max(captures, key=lambda x: len(x[0]) * 10 + evaluate_move(board, x[0][-1], x[1], direction))
+        return (best_capture[0][-1], best_capture[1])
+
+    # If no captures, find regular moves
+    moves = find_all_moves(board, my_pieces, opp_pieces, direction)
+    if not moves:
+        # No legal moves (shouldn't happen as game would be over)
+        return ((0, 0), (0, 0))
+
+    # Evaluate and select best move
+    best_move = max(moves, key=lambda x: evaluate_move(board, x[0], x[1], direction))
+    return best_move
+
+def find_all_captures(board, my_pieces, opp_pieces, direction):
+    captures = []
+    for piece in my_pieces:
+        piece_type = board[piece]
+        capture_sequences = find_capture_sequences(board, piece, piece_type, direction, opp_pieces)
+        for seq in capture_sequences:
+            captures.append((seq, seq[-1]))
+    return captures
+
+def find_capture_sequences(board, piece, piece_type, direction, opp_pieces, path=None, visited=None):
+    if path is None:
+        path = [piece]
+    if visited is None:
+        visited = set()
+
+    sequences = []
+    current_pos = path[-1]
+
+    # Get possible capture directions
+    if piece_type == 1:  # Regular piece
+        capture_dirs = [(direction, 1), (direction, -1)]
+    else:  # King
+        capture_dirs = [(1, 1), (1, -1), (-1, 1), (-1, -1)]
+
+    for dr, dc in capture_dirs:
+        mid_row, mid_col = current_pos[0] + dr, current_pos[1] + dc
+        end_row, end_col = current_pos[0] + 2*dr, current_pos[1] + 2*dc
+
+        # Check if capture is possible
+        if (0 <= mid_row < 8 and 0 <= mid_col < 8 and
+            0 <= end_row < 8 and 0 <= end_col < 8 and
+            (mid_row, mid_col) in opp_pieces and
+            board[end_row, end_col] == 0 and
+            (end_row, end_col) not in visited):
+
+            new_path = path + [(end_row, end_col)]
+            new_visited = visited | {current_pos, (mid_row, mid_col)}
+
+            # Check for further captures from the new position
+            further_sequences = find_capture_sequences(
+                board, (end_row, end_col),
+                piece_type if piece_type == 2 else (2 if (end_row == 0 or end_row == 7) else 1),
+                direction, opp_pieces, new_path, new_visited
+            )
+
+            if further_sequences:
+                sequences.extend(further_sequences)
+            else:
+                sequences.append(new_path)
+
+    return sequences
+
+def find_all_moves(board, my_pieces, opp_pieces, direction):
+    moves = []
+    for piece in my_pieces:
+        piece_type = board[piece]
+        if piece_type == 1:  # Regular piece
+            # Regular moves
+            for dc in [-1, 1]:
+                new_row = piece[0] + direction
+                new_col = piece[1] + dc
+                if (0 <= new_row < 8 and 0 <= new_col < 8 and
+                    board[new_row, new_col] == 0):
+                    moves.append((piece, (new_row, new_col)))
+        else:  # King
+            # King moves in all directions
+            for dr, dc in [(1, 1), (1, -1), (-1, 1), (-1, -1)]:
+                new_row = piece[0] + dr
+                new_col = piece[1] + dc
+                if (0 <= new_row < 8 and 0 <= new_col < 8 and
+                    board[new_row, new_col] == 0):
+                    moves.append((piece, (new_row, new_col)))
+    return moves
+
+def evaluate_move(board, from_pos, to_pos, direction):
+    score = 0
+    piece_type = board[from_pos]
+
+    # King promotion
+    if (to_pos[0] == 0 and direction == -1) or (to_pos[0] == 7 and direction == 1):
+        score += 50
+
+    # Center control (distance to center)
+    center = (3.5, 3.5)
+    from_dist = ((from_pos[0] - center[0])**2 + (from_pos[1] - center[1])**2)**0.5
+    to_dist = ((to_pos[0] - center[0])**2 + (to_pos[1] - center[1])**2)**0.5
+    score += 10 * (from_dist - to_dist)  # Prefer moving toward center
+
+    # Forward movement
+    if piece_type == 1:  # Only for regular pieces
+        score += 5 * direction * (to_pos[0] - from_pos[0])
+
+    # Piece safety (check if new position is vulnerable)
+    if is_vulnerable(board, to_pos, direction):
+        score -= 20
+
+    return score
+
+def is_vulnerable(board, pos, direction):
+    # Check if the piece at pos can be captured by opponent
+    opp_direction = -direction
+    row, col = pos
+
+    # Check for regular opponent pieces
+    for dc in [-1, 1]:
+        opp_row = row + opp_direction
+        opp_col = col + dc
+        if (0 <= opp_row < 8 and 0 <= opp_col < 8 and
+            board[opp_row, opp_col] in [-1, -2]):
+            # Check if the square behind is empty
+            behind_row = row + 2 * opp_direction
+            behind_col = col + 2 * dc
+            if (0 <= behind_row < 8 and 0 <= behind_col < 8 and
+                board[behind_row, behind_col] == 0):
+                return True
+
+    # Check for opponent kings
+    for dr, dc in [(1, 1), (1, -1), (-1, 1), (-1, -1)]:
+        opp_row = row + dr
+        opp_col = col + dc
+        if (0 <= opp_row < 8 and 0 <= opp_col < 8 and
+            board[opp_row, opp_col] == -2):
+            # Check if the square behind is empty
+            behind_row = row + 2 * dr
+            behind_col = col + 2 * dc
+            if (0 <= behind_row < 8 and 0 <= behind_col < 8 and
+                board[behind_row, behind_col] == 0):
+                return True
+
+    return False

@@ -1,0 +1,316 @@
+The strategy for this policy is a fast tactical search with safe fallbacks:
+
+1. Generate all legal Pentago moves.
+2. Immediately play a winning move if one exists.
+3. Otherwise, avoid moves that allow the opponent an immediate forced win on the next turn when possible.
+4. Score remaining moves using strong tactical features:
+   - create your own 5-in-a-row
+   - block opponent threats
+   - prefer longer lines and open-ended patterns
+   - prefer central placements
+5. Use a shallow minimax-style evaluation with opponent best reply, but keep it efficient enough for the time limit.
+6. Always return a legal move string, even in worst-case timing situations.
+
+This policy is designed to be robust, legal, and tactically strong under a strict runtime budget.
+
+<code>
+import math
+import time
+
+def policy(you, opponent) -> str:
+    start = time.time()
+
+    Y = [[1 if you[r][c] else 0 for c in range(6)] for r in range(6)]
+    O = [[1 if opponent[r][c] else 0 for c in range(6)] for r in range(6)]
+
+    quads = {
+        0: (0, 0),
+        1: (0, 3),
+        2: (3, 0),
+        3: (3, 3),
+    }
+
+    center_weight = [
+        [0, 1, 1, 1, 1, 0],
+        [1, 2, 2, 2, 2, 1],
+        [1, 2, 3, 3, 2, 1],
+        [1, 2, 3, 3, 2, 1],
+        [1, 2, 2, 2, 2, 1],
+        [0, 1, 1, 1, 1, 0],
+    ]
+
+    all_lines = []
+
+    # horizontals length 5 and 6 windows
+    for r in range(6):
+        for c in range(2):
+            all_lines.append([(r, c + k) for k in range(5)])
+        all_lines.append([(r, c) for c in range(6)])
+
+    # verticals
+    for c in range(6):
+        for r in range(2):
+            all_lines.append([(r + k, c) for k in range(5)])
+        all_lines.append([(r, c) for r in range(6)])
+
+    # diagonals down-right
+    starts = [(0,0),(0,1),(1,0)]
+    for sr, sc in starts:
+        diag = []
+        r, c = sr, sc
+        while r < 6 and c < 6:
+            diag.append((r,c))
+            r += 1
+            c += 1
+        if len(diag) >= 5:
+            if len(diag) == 5:
+                all_lines.append(diag)
+            else:
+                all_lines.append(diag[:5])
+                all_lines.append(diag[1:])
+                all_lines.append(diag)
+
+    # diagonals down-left
+    starts = [(0,5),(0,4),(1,5)]
+    for sr, sc in starts:
+        diag = []
+        r, c = sr, sc
+        while r < 6 and c >= 0:
+            diag.append((r,c))
+            r += 1
+            c -= 1
+        if len(diag) >= 5:
+            if len(diag) == 5:
+                all_lines.append(diag)
+            else:
+                all_lines.append(diag[:5])
+                all_lines.append(diag[1:])
+                all_lines.append(diag)
+
+    def copy_board(B):
+        return [row[:] for row in B]
+
+    def rotate_subgrid(grid, quad, direction):
+        r0, c0 = quads[quad]
+        sub = [row[c0:c0+3] for row in grid[r0:r0+3]]
+        new = [[0]*3 for _ in range(3)]
+        if direction == 'R':
+            for i in range(3):
+                for j in range(3):
+                    new[j][2-i] = sub[i][j]
+        else:
+            for i in range(3):
+                for j in range(3):
+                    new[2-j][i] = sub[i][j]
+        for i in range(3):
+            for j in range(3):
+                grid[r0+i][c0+j] = new[i][j]
+
+    def apply_move(yb, ob, move, my_turn=True):
+        r, c, q, d = move
+        ny = copy_board(yb)
+        no = copy_board(ob)
+        if my_turn:
+            ny[r][c] = 1
+        else:
+            no[r][c] = 1
+        rotate_subgrid(ny, q, d)
+        rotate_subgrid(no, q, d)
+        return ny, no
+
+    def has_five(board):
+        # horizontal
+        for r in range(6):
+            for c in range(2):
+                ok = True
+                for k in range(5):
+                    if board[r][c+k] == 0:
+                        ok = False
+                        break
+                if ok:
+                    return True
+        # vertical
+        for c in range(6):
+            for r in range(2):
+                ok = True
+                for k in range(5):
+                    if board[r+k][c] == 0:
+                        ok = False
+                        break
+                if ok:
+                    return True
+        # diag down-right
+        for sr, sc in [(0,0),(0,1),(1,0)]:
+            diag = []
+            r, c = sr, sc
+            while r < 6 and c < 6:
+                diag.append(board[r][c])
+                r += 1
+                c += 1
+            if len(diag) >= 5:
+                for i in range(len(diag)-4):
+                    if all(diag[i+k] for k in range(5)):
+                        return True
+        # diag down-left
+        for sr, sc in [(0,5),(0,4),(1,5)]:
+            diag = []
+            r, c = sr, sc
+            while r < 6 and c >= 0:
+                diag.append(board[r][c])
+                r += 1
+                c -= 1
+            if len(diag) >= 5:
+                for i in range(len(diag)-4):
+                    if all(diag[i+k] for k in range(5)):
+                        return True
+        return False
+
+    def legal_moves(yb, ob):
+        moves = []
+        for r in range(6):
+            for c in range(6):
+                if yb[r][c] == 0 and ob[r][c] == 0:
+                    for q in range(4):
+                        moves.append((r, c, q, 'L'))
+                        moves.append((r, c, q, 'R'))
+        return moves
+
+    def line_score(myc, opc, empties, length):
+        if myc > 0 and opc > 0:
+            return 0
+        if myc == 0 and opc == 0:
+            return 0
+        if length == 5:
+            vals = {1: 2, 2: 10, 3: 80, 4: 1200, 5: 1000000}
+        else:
+            vals = {1: 1, 2: 6, 3: 35, 4: 500, 5: 40000, 6: 2000000}
+        if opc == 0:
+            return vals.get(myc, 0)
+        else:
+            return -vals.get(opc, 0) * 1.1
+
+    def evaluate(yb, ob):
+        my_win = has_five(yb)
+        op_win = has_five(ob)
+        if my_win and op_win:
+            return 0
+        if my_win:
+            return 10_000_000
+        if op_win:
+            return -10_000_000
+
+        score = 0.0
+
+        for line in all_lines:
+            myc = 0
+            opc = 0
+            for r, c in line:
+                myc += yb[r][c]
+                opc += ob[r][c]
+            score += line_score(myc, opc, len(line) - myc - opc, len(line))
+
+        for r in range(6):
+            for c in range(6):
+                if yb[r][c]:
+                    score += 3 * center_weight[r][c]
+                elif ob[r][c]:
+                    score -= 3 * center_weight[r][c]
+
+        return score
+
+    def immediate_outcome_score(yb, ob):
+        my_win = has_five(yb)
+        op_win = has_five(ob)
+        if my_win and op_win:
+            return 0
+        if my_win:
+            return 1
+        if op_win:
+            return -1
+        return 0
+
+    moves = legal_moves(Y, O)
+    first_move = moves[0]
+
+    # 1. Immediate winning move
+    for mv in moves:
+        ny, no = apply_move(Y, O, mv, True)
+        out = immediate_outcome_score(ny, no)
+        if out == 1:
+            r, c, q, d = mv
+            return f"{r+1},{c+1},{q},{d}"
+
+    # 2. Pre-score moves
+    scored = []
+    for mv in moves:
+        ny, no = apply_move(Y, O, mv, True)
+        out = immediate_outcome_score(ny, no)
+        if out == -1:
+            base = -9_000_000
+        else:
+            base = evaluate(ny, no)
+        r, c, q, d = mv
+        base += center_weight[r][c] * 2
+        scored.append((base, mv, ny, no))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    # 3. Reduced opponent-reply search on top candidates
+    top_k = 14 if len(moves) > 60 else 20
+    opp_k = 14 if len(moves) > 60 else 20
+
+    best_val = -10**18
+    best_move = scored[0][1]
+
+    for idx, (base, mv, ny, no) in enumerate(scored[:top_k]):
+        if time.time() - start > 0.92:
+            break
+
+        opp_moves = legal_moves(no, ny)
+
+        # Opponent immediate win check
+        opp_win_found = False
+        opp_scored = []
+
+        for omv in opp_moves:
+            nny, nno = apply_move(no, ny, omv, True)  # from opponent perspective
+            # map back: opponent board = nny, our board = nno
+            out = immediate_outcome_score(nno, nny)
+            if out == -1:
+                opp_win_found = True
+                break
+            opp_scored.append((evaluate(nno, nny), omv, nno, nny))
+
+        if opp_win_found:
+            val = -8_000_000 + base * 0.01
+        else:
+            if not opp_scored:
+                val = evaluate(ny, no)
+            else:
+                opp_scored.sort(key=lambda x: x[0])  # bad for us first
+                worst_reply = opp_scored[0][0]
+                sample = opp_scored[:opp_k]
+                reply_worst = worst_reply
+                for rep_eval, omv, y2, o2 in sample:
+                    if rep_eval < reply_worst:
+                        reply_worst = rep_eval
+                val = reply_worst
+
+        if val > best_val:
+            best_val = val
+            best_move = mv
+
+    r, c, q, d = best_move
+    move_str = f"{r+1},{c+1},{q},{d}"
+
+    # Final legality guard
+    try:
+        rr, cc, qq, dd = best_move
+        if 0 <= rr < 6 and 0 <= cc < 6 and 0 <= qq < 4 and dd in ('L', 'R') and Y[rr][cc] == 0 and O[rr][cc] == 0:
+            return move_str
+    except Exception:
+        pass
+
+    rr, cc, qq, dd = first_move
+    return f"{rr+1},{cc+1},{qq},{dd}"
+</code>

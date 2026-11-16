@@ -1,0 +1,101 @@
+
+import numpy as np
+
+def get_captures(h, v):
+    count = 0
+    for r in range(4):
+        for c in range(4):
+            if h[r, c] != 0 and h[r+1, c] != 0 and v[r, c] != 0 and v[r, c+1] != 0:
+                count += 1
+    return count
+
+def count_opponent_capturing(h, v):
+    # Generate all legal moves for opponent
+    opp_moves = []
+    for r in range(5):
+        for c in range(4):
+            if h[r, c] == 0:
+                opp_moves.append((r, c, 'H'))
+    for r in range(4):
+        for c in range(5):
+            if v[r, c] == 0:
+                opp_moves.append((r, c, 'V'))
+    
+    count_cap = 0
+    for move in opp_moves:
+        rr, cc, dd = move
+        oh = h.copy()
+        ov = v.copy()
+        if dd == 'H':
+            oh[rr, cc] = 1
+        else:
+            ov[rr, cc] = 1
+        # Count captures after this move
+        current_cap = get_captures(oh, ov)
+        if current_cap > 0:
+            count_cap += 1
+    return count_cap
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    # Get all legal moves
+    legal_moves = []
+    capturing_moves = []
+    for r in range(5):
+        for c in range(4):
+            if horizontal[r, c] == 0:
+                move = f"{r},{c},H"
+                legal_moves.append(move)
+                # Check if capturing
+                h_sim = horizontal.copy()
+                v_sim = vertical.copy()
+                h_sim[r, c] = 1
+                before = get_captures(horizontal, vertical)  # Note: capture array is not needed for count, as we're simulating based on edges
+                after = get_captures(h_sim, v_sim)
+                if after > before:
+                    capturing_moves.append(move)
+    
+    for r in range(4):
+        for c in range(5):
+            if vertical[r, c] == 0:
+                move = f"{r},{c},V"
+                legal_moves.append(move)
+                # Check if capturing
+                h_sim = horizontal.copy()
+                v_sim = vertical.copy()
+                v_sim[r, c] = 1
+                before = get_captures(horizontal, vertical)
+                after = get_captures(h_sim, v_sim)
+                if after > before:
+                    capturing_moves.append(move)
+    
+    # If capturing moves exist, pick the first one
+    if capturing_moves:
+        return capturing_moves[0]
+    
+    # Otherwise, evaluate non-capturing moves to minimize opponent's immediate capturing opportunities
+    if not legal_moves:
+        # Should not happen, but just in case, return something invalid to be safe (though game should end)
+        return "0,0,H"
+    
+    best_score = float('-inf')
+    best_moves = []
+    for move in legal_moves:
+        r, c, d = move.split(',')
+        r, c = int(r), int(c)
+        h_sim = horizontal.copy()
+        v_sim = vertical.copy()
+        if d == 'H':
+            h_sim[r, c] = 1
+        else:
+            v_sim[r, c] = 1
+        # Since it's non-capturing, opponent capturing count in new state
+        opp_cap = count_opponent_capturing(h_sim, v_sim)
+        score = -opp_cap
+        if score > best_score:
+            best_score = score
+            best_moves = [move]
+        elif score == best_score:
+            best_moves.append(move)
+    
+    # Return the first best move
+    return best_moves[0]

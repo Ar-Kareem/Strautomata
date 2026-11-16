@@ -1,0 +1,348 @@
+
+import time
+
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    start_time = time.time()
+    
+    my_men = set(map(tuple, my_men))
+    my_kings = set(map(tuple, my_kings))
+    opp_men = set(map(tuple, opp_men))
+    opp_kings = set(map(tuple, opp_kings))
+    
+    # State: (my_men, my_kings, opp_men, opp_kings, is_my_turn)
+    # color tells us direction: 'b' moves down (row decreases), 'w' moves up (row increases)
+    
+    my_dir = 1 if color == 'w' else -1
+    opp_dir = -my_dir
+    
+    def get_moves(men, kings, o_men, o_kings, direction):
+        """Get all legal moves for the side with given direction."""
+        all_pieces = men | kings | o_men | o_kings
+        captures = []
+        
+        # Find captures
+        for piece in men:
+            chains = find_capture_chains(piece, False, men, kings, o_men, o_kings, all_pieces, direction)
+            for chain in chains:
+                captures.append((piece, chain[-1]))
+        for piece in kings:
+            chains = find_capture_chains(piece, True, men, kings, o_men, o_kings, all_pieces, direction)
+            for chain in chains:
+                captures.append((piece, chain[-1]))
+        
+        if captures:
+            return captures
+        
+        # Simple moves
+        moves = []
+        for piece in men:
+            r, c = piece
+            for dc in [-1, 1]:
+                nr, nc = r + direction, c + dc
+                if 0 <= nr < 8 and 0 <= nc < 8 and (nr, nc) not in all_pieces:
+                    moves.append((piece, (nr, nc)))
+        for piece in kings:
+            r, c = piece
+            for dr in [-1, 1]:
+                for dc in [-1, 1]:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 8 and 0 <= nc < 8 and (nr, nc) not in all_pieces:
+                        moves.append((piece, (nr, nc)))
+        return moves
+    
+    def find_capture_chains(pos, is_king, men, kings, o_men, o_kings, all_pieces, direction):
+        r, c = pos
+        dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)] if is_king else [(direction, -1), (direction, 1)]
+        
+        chains = []
+        for dr, dc in dirs:
+            mr, mc = r + dr, c + dc
+            lr, lc = r + 2*dr, c + 2*dc
+            if 0 <= lr < 8 and 0 <= lc < 8:
+                if (mr, mc) in o_men or (mr, mc) in o_kings:
+                    if (lr, lc) not in all_pieces:
+                        # Make capture
+                        new_o_men = o_men - {(mr, mc)}
+                        new_o_kings = o_kings - {(mr, mc)}
+                        new_all = all_pieces - {pos, (mr, mc)} | {(lr, lc)}
+                        
+                        new_is_king = is_king or (direction == 1 and lr == 7) or (direction == -1 and lr == 0)
+                        
+                        sub_chains = find_capture_chains((lr, lc), new_is_king, men, kings, new_o_men, new_o_kings, new_all, direction)
+                        if sub_chains:
+                            for sc in sub_chains:
+                                chains.append([(lr, lc)] + sc)
+                        else:
+                            chains.append([(lr, lc)])
+        return chains
+    
+    def apply_move(men, kings, o_men, o_kings, direction, frm, to):
+        men = set(men)
+        kings = set(kings)
+        o_men = set(o_men)
+        o_kings = set(o_kings)
+        
+        is_king = frm in kings
+        if is_king:
+            kings.remove(frm)
+        else:
+            men.remove(frm)
+        
+        # Check if capture
+        fr, fc = frm
+        tr, tc = to
+        dr = 1 if tr > fr else -1
+        dc = 1 if tc > fc else -1
+        
+        cr, cc = fr, fc
+        while (cr, cc) != (tr, tc):
+            nr, nc = cr + dr, cc + dc
+            # Check if we jumped over opponent
+            if abs(nr - cr) == 1 and ((nr, nc) in o_men or (nr, nc) in o_kings):
+                # This might be a captured piece
+                lr, lc = nr + dr, nc + dc
+                if (lr, lc) == (tr, tc) or abs(tr - fr) > 2:
+                    o_men.discard((nr, nc))
+                    o_kings.discard((nr, nc))
+                    cr, cc = lr, lc
+                    continue
+            cr, cc = nr, nc
+        
+        # Actually let me redo capture detection more carefully
+        # Revert and redo
+        # Simpler: if |tr-fr| >= 2, it's a capture sequence
+        if abs(tr - fr) >= 2:
+            # Need to trace the capture path - but we only have start and end
+            # For multi-jumps the intermediate path is ambiguous
+            # Let me just remove any opponent between start and end on the diagonal
+            # Actually for the search, let me do a proper simulation
+            pass
+        
+        promote_row = 7 if direction == 1 else 0
+        if is_king:
+            kings.add(to)
+        elif to[0] == promote_row:
+            kings.add(to)
+        else:
+            men.add(to)
+        
+        return frozenset(men), frozenset(kings), frozenset(o_men), frozenset(o_kings)
+    
+    # Better approach: generate full game states from moves
+    def get_moves_with_states(men, kings, o_men, o_kings, direction):
+        all_occ = men | kings | o_men | o_kings
+        captures = []
+        
+        for piece in men:
+            chains = find_capture_chains_full(piece, False, men - {piece}, kings, o_men, o_kings, all_occ, direction)
+            for (dest, captured, promoted) in chains:
+                new_men = men - {piece}
+                new_kings = set(kings)
+                new_o_men = o_men - captured
+                new_o_kings = o_kings - captured
+                promote_row = 7 if direction == 1 else 0
+                if dest[0] == promote_row or promoted:
+                    new_kings.add(dest)
+                else:
+                    new_men.add(dest)
+                captures.append(((piece, dest), (frozenset(new_men), frozenset(new_kings), frozenset(new_o_men), frozenset(new_o_kings))))
+        
+        for piece in kings:
+            chains = find_capture_chains_full(piece, True, men, kings - {piece}, o_men, o_kings, all_occ, direction)
+            for (dest, captured, promoted) in chains:
+                new_men = set(men)
+                new_kings = kings - {piece}
+                new_o_men = o_men - captured
+                new_o_kings = o_kings - captured
+                new_kings.add(dest)
+                captures.append(((piece, dest), (frozenset(new_men), frozenset(new_kings), frozenset(new_o_men), frozenset(new_o_kings))))
+        
+        if captures:
+            return captures
+        
+        moves = []
+        promote_row = 7 if direction == 1 else 0
+        for piece in men:
+            r, c = piece
+            for dc in [-1, 1]:
+                nr, nc = r + direction, c + dc
+                if 0 <= nr < 8 and 0 <= nc < 8 and (nr, nc) not in all_occ:
+                    new_men = men - {piece}
+                    new_kings = set(kings)
+                    if nr == promote_row:
+                        new_kings.add((nr, nc))
+                    else:
+                        new_men.add((nr, nc))
+                    moves.append(((piece, (nr, nc)), (frozenset(new_men), frozenset(new_kings), frozenset(o_men), frozenset(o_kings))))
+        for piece in kings:
+            r, c = piece
+            for dr in [-1, 1]:
+                for dc in [-1, 1]:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 8 and 0 <= nc < 8 and (nr, nc) not in all_occ:
+                        new_kings = kings - {piece} | {(nr, nc)}
+                        moves.append(((piece, (nr, nc)), (frozenset(men), frozenset(new_kings), frozenset(o_men), frozenset(o_kings))))
+        return moves
+    
+    def find_capture_chains_full(pos, is_king, men, kings, o_men, o_kings, all_occ, direction):
+        """Returns list of (final_dest, captured_set, was_promoted_during_chain)"""
+        r, c = pos
+        dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)] if is_king else [(direction, -1), (direction, 1)]
+        promote_row = 7 if direction == 1 else 0
+        
+        results = []
+        for dr, dc in dirs:
+            mr, mc = r + dr, c + dc
+            lr, lc = r + 2*dr, c + 2*dc
+            if 0 <= lr < 8 and 0 <= lc < 8:
+                if (mr, mc) in o_men or (mr, mc) in o_kings:
+                    if (lr, lc) not in all_occ or (lr, lc) == pos:
+                        captured_piece = (mr, mc)
+                        new_o_men = o_men - {captured_piece}
+                        new_o_kings = o_kings - {captured_piece}
+                        new_all = (all_occ - {pos, captured_piece}) | {(lr, lc)}
+                        
+                        promoted = (not is_king) and (lr == promote_row)
+                        new_is_king = is_king or promoted
+                        
+                        sub = find_capture_chains_full((lr, lc), new_is_king, men, kings, new_o_men, new_o_kings, new_all, direction)
+                        if sub:
+                            for (dest, cap_set, sub_promoted) in sub:
+                                results.append((dest, cap_set | {captured_piece}, promoted or sub_promoted))
+                        else:
+                            results.append(((lr, lc), {captured_piece}, promoted))
+        return results
+    
+    def evaluate(men, kings, o_men, o_kings, direction):
+        my_count = len(men) + len(kings)
+        opp_count = len(o_men) + len(o_kings)
+        
+        if my_count == 0:
+            return -1000
+        if opp_count == 0:
+            return 1000
+        
+        score = 0
+        # Material
+        score += len(men) * 100 + len(kings) * 160
+        score -= len(o_men) * 100 - len(o_kings) * 160
+        score -= (len(o_men) * 100 + len(o_kings) * 160)
+        score += (len(men) * 100 + len(kings) * 160)
+        # Hmm let me simplify
+        score = 0
+        score += (len(men) - len(o_men)) * 100
+        score += (len(kings) - len(o_kings)) * 160
+        
+        # Positional
+        promote_row = 7 if direction == 1 else 0
+        for r, c in men:
+            # Advancement
+            if direction == 1:
+                score += r * 5
+            else:
+                score += (7 - r) * 5
+            # Center control
+            score += (3.5 - abs(c - 3.5)) * 3
+            # Back row
+            back_row = 0 if direction == 1 else 7
+            if r == back_row:
+                score += 8
+        
+        for r, c in kings:
+            score += (3.5 - abs(c - 3.5)) * 2
+            score += (3.5 - abs(r - 3.5)) * 2
+        
+        for r, c in o_men:
+            if opp_dir == 1:
+                score -= r * 5
+            else:
+                score -= (7 - r) * 5
+            score -= (3.5 - abs(c - 3.5)) * 3
+        
+        return score
+    
+    def minimax(men, kings, o_men, o_kings, direction, depth, alpha, beta, maximizing):
+        if time.time() - start_time > 0.85:
+            return evaluate(men, kings, o_men, o_kings, direction if maximizing else -direction), None
+        
+        if maximizing:
+            cur_dir = direction
+        else:
+            cur_dir = -direction
+        
+        moves = get_moves_with_states(men if maximizing else o_men, 
+                                       kings if maximizing else o_kings,
+                                       o_men if maximizing else men,
+                                       o_kings if maximizing else kings,
+                                       cur_dir)
+        
+        if not moves:
+            if maximizing:
+                return -1000, None
+            else:
+                return 1000, None
+        
+        if depth == 0:
+            return evaluate(men, kings, o_men, o_kings, direction), None
+        
+        best_move = moves[0][0] if maximizing else moves[0][0]
+        
+        if maximizing:
+            max_eval = -10000
+            for move, state in moves:
+                if time.time() - start_time > 0.85:
+                    break
+                # state = (new_my_men, new_my_kings, new_opp_men, new_opp_kings)
+                nm, nk, nom, nok = state
+                ev, _ = minimax(nm, nk, nom, nok, direction, depth - 1, alpha, beta, False)
+                if ev > max_eval:
+                    max_eval = ev
+                    best_move = move
+                alpha = max(alpha, ev)
+                if beta <= alpha:
+                    break
+            return max_eval, best_move
+        else:
+            min_eval = 10000
+            for move, state in moves:
+                if time.time() - start_time > 0.85:
+                    break
+                # Opponent moved, so state is from opponent's perspective
+                # state = (opp_new_men, opp_new_kings, my_new_men, my_new_kings)
+                nom, nok, nm, nk = state
+                ev, _ = minimax(nm, nk, nom, nok, direction, depth - 1, alpha, beta, True)
+                if ev < min_eval:
+                    min_eval = ev
+                    best_move = move
+                beta = min(beta, ev)
+                if beta <= alpha:
+                    break
+            return min_eval, best_move
+    
+    total_pieces = len(my_men) + len(my_kings) + len(opp_men) + len(opp_kings)
+    if total_pieces <= 6:
+        max_depth = 10
+    elif total_pieces <= 10:
+        max_depth = 8
+    else:
+        max_depth = 6
+    
+    best_move = None
+    for depth in range(1, max_depth + 1):
+        if time.time() - start_time > 0.7:
+            break
+        ev, move = minimax(frozenset(my_men), frozenset(my_kings), frozenset(opp_men), frozenset(opp_kings), my_dir, depth, -10000, 10000, True)
+        if move is not None:
+            best_move = move
+    
+    if best_move is None:
+        moves = get_moves_with_states(my_men, my_kings, opp_men, opp_kings, my_dir)
+        if moves:
+            best_move = moves[0][0]
+        else:
+            # Should not happen if we have legal moves
+            for p in my_men | my_kings:
+                best_move = (p, p)
+                break
+    
+    return best_move

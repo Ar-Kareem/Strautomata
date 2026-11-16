@@ -1,0 +1,219 @@
+
+import numpy as np
+from typing import List, Tuple, Set
+
+def policy(my_men: List[Tuple[int, int]], 
+           my_kings: List[Tuple[int, int]], 
+           opp_men: List[Tuple[int, int]], 
+           opp_kings: List[Tuple[int, int]], 
+           color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+
+    # Direction mappings
+    if color == 'b':
+        my_directions = [(-1, -1), (-1, 1)]  # Black moves up (decreasing row)
+        opp_directions = [(1, -1), (1, 1)]   # White moves down
+        promotion_row = 7
+    else:
+        my_directions = [(1, -1), (1, 1)]    # White moves down (increasing row)
+        opp_directions = [(-1, -1), (-1, 1)] # Black moves up
+        promotion_row = 0
+
+    # Combine all opponent and my pieces for quick lookup
+    my_pieces = set(my_men) | set(my_kings)
+    opp_pieces = set(opp_men) | set(opp_kings)
+    all_pieces = my_pieces | opp_pieces
+
+    def is_dark_square(r: int, c: int) -> bool:
+        return (r + c) % 2 == 1
+
+    def in_bounds(r: int, c: int) -> bool:
+        return 0 <= r < 8 and 0 <= c < 8
+
+    def get_simple_moves(piece: Tuple[int, int], directions: List[Tuple[int, int]], is_king: bool) -> List[Tuple[Tuple[int, int], Tuple[int, int]]]:
+        r, c = piece
+        moves = []
+        dirs = directions + [(-dr, -dc) for dr, dc in directions] if is_king else directions
+        for dr, dc in dirs:
+            nr, nc = r + dr, c + dc
+            if in_bounds(nr, nc) and is_dark_square(nr, nc) and (nr, nc) not in all_pieces:
+                moves.append(((r, c), (nr, nc)))
+        return moves
+
+    def get_capture_targets(piece: Tuple[int, int], directions: List[Tuple[int, int]], is_king: bool) -> List[Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]]]:
+        r, c = piece
+        captures = []
+        dirs = directions + [(-dr, -dc) for dr, dc in directions] if is_king else directions
+        for dr, dc in dirs:
+            mid_r, mid_c = r + dr, c + dc
+            dst_r, dst_c = r + 2*dr, c + 2*dc
+            if (in_bounds(mid_r, mid_c) and in_bounds(dst_r, dst_c) and
+                is_dark_square(dst_r, dst_c) and (mid_r, mid_c) in opp_pieces and
+                (dst_r, dst_c) not in all_pieces):
+                captures.append(((r, c), (mid_r, mid_c), (dst_r, dst_c)))
+        return captures
+
+    def can_capture() -> bool:
+        # Check if any of my pieces can capture
+        for piece in my_men:
+            if get_capture_targets(piece, my_directions, False):
+                return True
+        for piece in my_kings:
+            if get_capture_targets(piece, my_directions, True):
+                return True
+        return False
+
+    def generate_moves() -> List[Tuple[Tuple[int, int], Tuple[int, int]]]:
+        moves = []
+        # First, check for captures (mandatory)
+        if can_capture():
+            for piece in my_men:
+                captures = get_capture_targets(piece, my_directions, False)
+                for _, mid, dst in captures:
+                    moves.append((piece, dst))
+            for piece in my_kings:
+                captures = get_capture_targets(piece, my_directions, True)
+                for _, mid, dst in captures:
+                    moves.append((piece, dst))
+        else:
+            # No captures, generate simple moves
+            for piece in my_men:
+                moves.extend(get_simple_moves(piece, my_directions, False))
+            for piece in my_kings:
+                moves.extend(get_simple_moves(piece, my_directions, True))
+        return moves
+
+    def make_move(piece: Tuple[int, int], dest: Tuple[int, int]):
+        # Create new states after a move
+        new_my_men = my_men[:]
+        new_my_kings = my_kings[:]
+        new_opp_men = opp_men[:]
+        new_opp_kings = opp_kings[:]
+        
+        # Determine if promotion occurs
+        promote = False
+        if piece in my_men:
+            if dest[0] == promotion_row:
+                promote = True
+                new_my_men.remove(piece)
+                new_my_kings.append(dest)
+            else:
+                new_my_men.remove(piece)
+                new_my_men.append(dest)
+        else:  # piece is a king
+            new_my_kings.remove(piece)
+            new_my_kings.append(dest)
+
+        # Check if it's a capture
+        dr = dest[0] - piece[0]
+        dc = dest[1] - piece[1]
+        if abs(dr) == 2:  # Capture
+            mid_r, mid_c = piece[0] + dr//2, piece[1] + dc//2
+            mid = (mid_r, mid_c)
+            if mid in new_opp_men:
+                new_opp_men.remove(mid)
+            elif mid in new_opp_kings:
+                new_opp_kings.remove(mid)
+        
+        return new_my_men, new_my_kings, new_opp_men, new_opp_kings
+
+    def evaluate() -> float:
+        # Simple evaluation function
+        score = 0
+        # Material
+        score += 100 * (len(my_men) - len(opp_men))
+        score += 200 * (len(my_kings) - len(opp_kings))  # Kings are more valuable
+
+        # Positional and advancement
+        for r, c in my_men:
+            # Encourage advancing (closer to promotion)
+            if color == 'b':
+                advancement = r
+            else:
+                advancement = 7 - r
+            score += advancement
+        
+        for r, c in opp_men:
+            if color == 'b':
+                advancement = 7 - r  # Opponent farther from promotion is better
+            else:
+                advancement = r
+            score -= advancement
+
+        # Prefer center control
+        center_squares = [(3,3), (3,4), (4,3), (4,4)]
+        for r, c in my_pieces:
+            if (r, c) in center_squares:
+                score += 5
+        for r, c in opp_pieces:
+            if (r, c) in center_squares:
+                score -= 5
+
+        return score
+
+    def minimax(depth: int, alpha: float, beta: float, maximizing: bool) -> float:
+        if depth == 0:
+            return evaluate()
+
+        # Check if game is over (no pieces or no moves)
+        moves = generate_moves()
+        if not moves:
+            return -10000 if maximizing else 10000
+
+        if maximizing:
+            max_eval = -np.inf
+            for move in moves:
+                new_state = make_move(move[0], move[1])
+                new_my_men, new_my_kings, new_opp_men, new_opp_kings = new_state
+                # Swap roles for opponent
+                eval_score = minimax(depth - 1, alpha, beta, False)
+                max_eval = max(max_eval, eval_score)
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = np.inf
+            for move in moves:
+                new_state = make_move(move[0], move[1])
+                new_my_men, new_my_kings, new_opp_men, new_opp_kings = new_state
+                # Swap roles for opponent
+                eval_score = minimax(depth - 1, alpha, beta, True)
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval
+
+    # Generate all legal moves
+    legal_moves = generate_moves()
+    
+    if not legal_moves:
+        # Fallback: return a dummy move (should not happen in valid game)
+        return ((0, 0), (0, 0))
+    
+    # If only one legal move, return it
+    if len(legal_moves) == 1:
+        return legal_moves[0]
+
+    # Order moves: captures first, then others
+    captures = [m for m in legal_moves if abs(m[1][0] - m[0][0]) == 2]
+    quiet = [m for m in legal_moves if abs(m[1][0] - m[0][0]) == 1]
+    ordered_moves = captures + quiet
+
+    # Use iterative deepening within time limit
+    best_move = ordered_moves[0]
+    for depth in range(1, 6):  # Limit depth to avoid timeout
+        try:
+            best_score = -np.inf
+            for move in ordered_moves:
+                new_state = make_move(move[0], move[1])
+                new_my_men, new_my_kings, new_opp_men, new_opp_kings = new_state
+                score = minimax(depth - 1, -np.inf, np.inf, False)
+                if score > best_score:
+                    best_score = score
+                    best_move = move
+        except:
+            # If we run out of time, return the best move found so far
+            break
+
+    return best_move

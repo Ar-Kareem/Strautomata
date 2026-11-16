@@ -1,0 +1,91 @@
+The strategy for this policy involves a two-phase approach: **Target Mode** and **Hunt Mode**.
+
+1.  **Target Mode**: If there are known hits (`1`) on the board, the policy prioritizes sinking the struck ship. It identifies cells adjacent to hits. It assigns a higher score to cells that "extend a line" of existing hits (i.e., if a hit exists at (r, c) and (r, c+1), then (r, c-1) and (r, c+2) are high-priority targets) rather than just perpendicular neighbors. This efficiently determines the ship's orientation and sinks it quickly.
+
+2.  **Hunt Mode**: When there are no active hits to pursue, the policy switches to a probabilistic search using a checkerboard pattern (parity). Since the smallest ship is of length 2, checking every other cell (e.g., `(row + col) % 2 == 0`) guarantees that a hit will eventually be found on any possible ship placement while minimizing the number of shots required to locate a target.
+
+<code>
+import random
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Battleship policy implementing a Hunt/Target strategy.
+    - Target Mode: Focuses on cells adjacent to hits to sink ships.
+    - Hunt Mode: Uses a checkerboard parity search to find new ships.
+    """
+    
+    # Define grid size and directions (N, S, W, E)
+    GRID_SIZE = 10
+    DIRECTIONS = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    
+    # 1. Identify all potential target cells adjacent to existing hits
+    candidates = []
+    hits_found = False
+    
+    # Iterate over board to find hits (value 1)
+    for r in range(GRID_SIZE):
+        for c in range(GRID_SIZE):
+            if board[r][c] == 1:
+                hits_found = True
+                # Check all 4 neighbors
+                for dr, dc in DIRECTIONS:
+                    nr, nc = r + dr, c + dc
+                    
+                    # Check bounds and if cell is unknown (0)
+                    if 0 <= nr < GRID_SIZE and 0 <= nc < GRID_SIZE and board[nr][nc] == 0:
+                        # Scoring heuristic
+                        score = 1  # Base score for being next to a hit
+                        
+                        # "Line Extension Bonus":
+                        # If we look past the hit cell in the same direction and see another hit,
+                        # this cell is extending a known line of the ship.
+                        nnr, nnc = nr + dr, nc + dc
+                        if 0 <= nnr < GRID_SIZE and 0 <= nnc < GRID_SIZE:
+                            if board[nnr][nnc] == 1:
+                                score += 10 # Strong preference to extend lines
+                        
+                        # Also count how many hits this specific cell is adjacent to
+                        # (Helpful for crossing ships or tight clusters, though rare)
+                        adj_hit_count = 0
+                        for adr, adc in DIRECTIONS:
+                            ar, ac = nr + adr, nc + adc
+                            if 0 <= ar < GRID_SIZE and 0 <= ac < GRID_SIZE:
+                                if board[ar][ac] == 1:
+                                    adj_hit_count += 1
+                        score += adj_hit_count
+                        
+                        candidates.append((nr, nc, score))
+
+    # If we have candidates from hits, pick the best one
+    if candidates:
+        # Sort by score descending
+        candidates.sort(key=lambda x: x[2], reverse=True)
+        
+        # Get the max score to handle ties randomly
+        max_score = candidates[0][2]
+        best_moves = [move for move in candidates if move[2] == max_score]
+        
+        # Return a random move among the best candidates
+        r, c, _ = random.choice(best_moves)
+        return (r, c)
+
+    # 2. Hunt Mode: No hits or unresolved targets found.
+    # Use checkerboard strategy (Parity) to efficiently scan the board.
+    # Since smallest ship is length 2, (r+c)%2 == 0 covers all possible ship locations.
+    hunt_candidates = []
+    for r in range(GRID_SIZE):
+        for c in range(GRID_SIZE):
+            if board[r][c] == 0:
+                if (r + c) % 2 == 0:
+                    hunt_candidates.append((r, c))
+    
+    # Fallback if checkerboard is exhausted (unlikely to happen before game ends)
+    if not hunt_candidates:
+        for r in range(GRID_SIZE):
+            for c in range(GRID_SIZE):
+                if board[r][c] == 0:
+                    hunt_candidates.append((r, c))
+
+    return random.choice(hunt_candidates)
+</code>

@@ -1,0 +1,196 @@
+
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    my_men = set(my_men)
+    my_kings = set(my_kings)
+    opp_men = set(opp_men)
+    opp_kings = set(opp_kings)
+    
+    direction = -1 if color == 'b' else 1
+    promo_row = 0 if color == 'b' else 7
+    opp_promo_row = 7 if color == 'b' else 0
+    
+    def get_captures(men, kings, o_men, o_kings, is_king, pos):
+        captures = []
+        r, c = pos
+        dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)] if is_king else [(direction, -1), (direction, 1)]
+        for dr, dc in dirs:
+            mr, mc = r + dr, c + dc
+            lr, lc = r + 2*dr, c + 2*dc
+            if 0 <= lr < 8 and 0 <= lc < 8:
+                if (mr, mc) in o_men or (mr, mc) in o_kings:
+                    if (lr, lc) not in men and (lr, lc) not in kings and (lr, lc) not in o_men and (lr, lc) not in o_kings:
+                        captures.append(((lr, lc), (mr, mc)))
+        return captures
+    
+    def get_all_captures(men, kings, o_men, o_kings, promo):
+        all_caps = []
+        for pos in men:
+            caps = get_captures(men, kings, o_men, o_kings, False, pos)
+            for (land, capt) in caps:
+                nm, nk, nom, nok = set(men), set(kings), set(o_men), set(o_kings)
+                nm.discard(pos)
+                if capt in nom: nom.discard(capt)
+                else: nok.discard(capt)
+                promoted = (land[0] == promo)
+                if promoted:
+                    nk.add(land)
+                else:
+                    nm.add(land)
+                if not promoted:
+                    further = get_captures(nm, nk, nom, nok, False, land)
+                    if further:
+                        for seq in expand_captures(nm, nk, nom, nok, False, land, promo):
+                            all_caps.append((pos, [capt] + seq[0], seq[1]))
+                    else:
+                        all_caps.append((pos, [capt], land))
+                else:
+                    all_caps.append((pos, [capt], land))
+        for pos in kings:
+            caps = get_captures(men, kings, o_men, o_kings, True, pos)
+            for (land, capt) in caps:
+                nm, nk, nom, nok = set(men), set(kings), set(o_men), set(o_kings)
+                nk.discard(pos)
+                nk.add(land)
+                if capt in nom: nom.discard(capt)
+                else: nok.discard(capt)
+                further = get_captures(nm, nk, nom, nok, True, land)
+                if further:
+                    for seq in expand_captures(nm, nk, nom, nok, True, land, promo):
+                        all_caps.append((pos, [capt] + seq[0], seq[1]))
+                else:
+                    all_caps.append((pos, [capt], land))
+        return all_caps
+    
+    def expand_captures(men, kings, o_men, o_kings, is_king, pos, promo):
+        caps = get_captures(men, kings, o_men, o_kings, is_king, pos)
+        if not caps:
+            return [([], pos)]
+        results = []
+        for (land, capt) in caps:
+            nm, nk, nom, nok = set(men), set(kings), set(o_men), set(o_kings)
+            if is_king:
+                nk.discard(pos)
+                nk.add(land)
+            else:
+                nm.discard(pos)
+                nm.add(land)
+            if capt in nom: nom.discard(capt)
+            else: nok.discard(capt)
+            for seq in expand_captures(nm, nk, nom, nok, is_king, land, promo):
+                results.append(([capt] + seq[0], seq[1]))
+        return results
+    
+    def get_simple_moves(men, kings, o_men, o_kings, d, promo):
+        moves = []
+        occupied = men | kings | o_men | o_kings
+        for pos in men:
+            r, c = pos
+            for dc in [-1, 1]:
+                nr, nc = r + d, c + dc
+                if 0 <= nr < 8 and 0 <= nc < 8 and (nr, nc) not in occupied:
+                    moves.append((pos, (nr, nc)))
+        for pos in kings:
+            r, c = pos
+            for dr in [-1, 1]:
+                for dc in [-1, 1]:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 8 and 0 <= nc < 8 and (nr, nc) not in occupied:
+                        moves.append((pos, (nr, nc)))
+        return moves
+    
+    def get_moves(men, kings, o_men, o_kings, d, promo):
+        caps = get_all_captures(men, kings, o_men, o_kings, promo)
+        if caps:
+            return [('c', c) for c in caps]
+        simples = get_simple_moves(men, kings, o_men, o_kings, d, promo)
+        return [('s', s) for s in simples]
+    
+    def apply_move(men, kings, o_men, o_kings, move, promo):
+        nm, nk, nom, nok = set(men), set(kings), set(o_men), set(o_kings)
+        mtype, data = move
+        if mtype == 's':
+            frm, to = data
+            if frm in nm:
+                nm.discard(frm)
+                if to[0] == promo:
+                    nk.add(to)
+                else:
+                    nm.add(to)
+            else:
+                nk.discard(frm)
+                nk.add(to)
+        else:
+            frm, capts, to = data
+            if frm in nm:
+                nm.discard(frm)
+                if to[0] == promo:
+                    nk.add(to)
+                else:
+                    nm.add(to)
+            else:
+                nk.discard(frm)
+                nk.add(to)
+            for cp in capts:
+                nom.discard(cp)
+                nok.discard(cp)
+        return nm, nk, nom, nok
+    
+    def evaluate(men, kings, o_men, o_kings, d, promo, opp_promo):
+        score = len(men) * 100 + len(kings) * 180
+        score -= len(o_men) * 100 + len(o_kings) * 180
+        for r, c in men:
+            adv = r if d == 1 else (7 - r)
+            score += adv * 5
+            if 2 <= c <= 5:
+                score += 3
+        for r, c in kings:
+            if 2 <= c <= 5 and 2 <= r <= 5:
+                score += 5
+        back = 0 if d == 1 else 7
+        for r, c in men:
+            if r == back:
+                score += 8
+        return score
+    
+    def minimax(men, kings, o_men, o_kings, d, promo, opp_promo, depth, alpha, beta, maximizing):
+        if depth == 0:
+            return evaluate(men, kings, o_men, o_kings, d, promo, opp_promo), None
+        moves = get_moves(men, kings, o_men, o_kings, d, promo)
+        if not moves:
+            return -10000, None
+        best_move = moves[0]
+        if maximizing:
+            max_eval = -100000
+            for move in moves:
+                nm, nk, nom, nok = apply_move(men, kings, o_men, o_kings, move, promo)
+                ev, _ = minimax(nom, nok, nm, nk, -d, opp_promo, promo, depth-1, alpha, beta, False)
+                if ev > max_eval:
+                    max_eval = ev
+                    best_move = move
+                alpha = max(alpha, ev)
+                if beta <= alpha:
+                    break
+            return max_eval, best_move
+        else:
+            min_eval = 100000
+            for move in moves:
+                nm, nk, nom, nok = apply_move(men, kings, o_men, o_kings, move, promo)
+                ev, _ = minimax(nom, nok, nm, nk, -d, opp_promo, promo, depth-1, alpha, beta, True)
+                if ev < min_eval:
+                    min_eval = ev
+                    best_move = move
+                beta = min(beta, ev)
+                if beta <= alpha:
+                    break
+            return min_eval, best_move
+    
+    moves = get_moves(my_men, my_kings, opp_men, opp_kings, direction, promo_row)
+    if not moves:
+        return ((0, 0), (0, 0))
+    
+    _, best = minimax(my_men, my_kings, opp_men, opp_kings, direction, promo_row, opp_promo_row, 5, -100000, 100000, True)
+    
+    if best[0] == 's':
+        return best[1]
+    else:
+        return (best[1][0], best[1][2])

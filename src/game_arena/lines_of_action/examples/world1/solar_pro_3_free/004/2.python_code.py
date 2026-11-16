@@ -1,0 +1,130 @@
+
+import copy
+from typing import List, Tuple, Dict
+
+# Four directions plus the four diagonals
+DIRS = [(0, 1), (0, -1), (1, 0), (-1, 0),
+        (1, 1), (-1, -1), (1, -1), (-1, 1)]
+
+def adjacent(r1: int, c1: int, r2: int, c2: int) -> bool:
+    """Return True if two squares touch orthogonally or diagonally."""
+    return abs(r1 - r2) <= 1 and abs(c1 - c2) <= 1
+
+def count_groups(board: List[List[int]], player: int) -> int:
+    """BFS to count the number of 8‑neighbour connected components belonging to `player`."""
+    pieces = [(r, c) for r in range(8) for c in range(8) if board[r][c] == player]
+    visited = set()
+    group_id = 0
+    for p in pieces:
+        if p in visited:
+            continue
+        stack = [p]
+        visited.add(p)
+        while stack:
+            r, c = stack.pop()
+            for dr in (-1, 0, 1):
+                for dc in (-1, 0, 1):
+                    if dr == 0 and dc == 0:
+                        continue
+                    nr, nc = r + dr, c + dc
+                    if (0 <= nr < 8) and (0 <= nc < 8) and board[nr][nc] == player and (nr, nc) not in visited:
+                        visited.add((nr, nc))
+                        stack.append((nr, nc))
+        group_id += 1
+    return group_id
+
+def generate_moves(board: List[List[int]], player: int) -> List[Dict]:
+    """Return a list of legal moves for `player` on the given board."""
+    moves = []
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] != player:
+                continue
+            for dr, dc in DIRS:
+                pieces_seen = 1          # our moving piece itself
+                distance = 0             # squares travelled so far (0 = source)
+                while True:
+                    nr = r + dr * (distance + 1)
+                    nc = c + dc * (distance + 1)
+                    if not (0 <= nr < 8 and 0 <= nc < 8):
+                        break
+                    distance += 1
+                    val = board[nr][nc]
+                    if val == player:          # friendly piece – can count it, cannot land on it
+                        pieces_seen += 1
+                        continue
+                    if val == -player:         # opponent piece – capture possible?
+                        if distance == pieces_seen + 1:
+                            moves.append({
+                                'src': (r, c),
+                                'dst': (nr, nc),
+                                'capture': True,
+                                'steps': distance
+                            })
+                        break                     # cannot go past an opponent piece
+                    # Empty square
+                    if distance == pieces_seen:
+                        moves.append({
+                            'src': (r, c),
+                            'dst': (nr, nc),
+                            'capture': False,
+                            'steps': distance
+                        })
+                # loop continues for the next direction
+    return moves
+
+def policy(board: List[List[int]]) -> str:
+    """
+    Return a single legal move as a string: "from_row,from_col:to_row,to_col".
+    """
+    # Work on a mutable copy of the supplied board
+    mutable = [row[:] for row in board]
+
+    # Gather all legal moves for the player (value 1)
+    candidates = generate_moves(mutable, 1)
+
+    # Safety fallback – should never be needed in a normal position
+    if not candidates:
+        # Brute‑force an adjacent empty cell (distance 1 always legal for a single piece)
+        for r in range(8):
+            for c in range(8):
+                if mutable[r][c] != 1:
+                    continue
+                for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 8 and 0 <= nc < 8 and mutable[nr][nc] == 0:
+                        return f"{r},{c}:{nr},{nc}"
+        # Unexpected – return a dummy (will never be used)
+        return "0,0:0,0"
+
+    # Simulate each candidate and evaluate its effect
+    simulated = []
+    for cand in candidates:
+        src, dst = cand['src'], cand['dst']
+        sr, sc = src
+        dr, dc = dst
+        # Deep copy board and apply the move
+        new_board = copy.deepcopy(mutable)
+        new_board[sr][sc] = 0                     # remove from source
+        if cand['capture']:
+            new_board[dr][dc] = 0                # capture opponent
+        else:
+            new_board[dr][dc] = 1                # land on empty
+
+        # Compute how many groups of our pieces we have after the move
+        groups = count_groups(new_board, 1)
+
+        simulated.append({
+            'move': cand,
+            'groups': groups,
+            'steps': cand['steps'],
+            'captured': cand['capture']
+        })
+
+    # Prefer captures → fewer groups → shorter distance
+    simulated.sort(key=lambda m: (-m['captured'], m['groups'], m['steps']))
+
+    best = simulated[0]
+    sr, sc = best['move']['src']
+    dr, dc = best['move']['dst']
+    return f"{sr},{sc}:{dr},{dc}"

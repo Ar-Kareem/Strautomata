@@ -1,0 +1,136 @@
+The strategy for this policy is to use a dynamic programming approach to precompute the optimal action for every possible state (hand and target) in the game. The key components include:
+
+1. **Hand Value Calculation**: A function that computes the optimal value of a hand (treating Aces as 11 or 1 to maximize value without exceeding the target).
+
+2. **Opponent Distribution Simulation**: For each target value, simulate the opponent's behavior (hitting until reaching at least target-4) to compute the probability distribution of their final hand values when starting from an empty hand.
+
+3. **Stay Value Precomputation**: Calculate the expected outcome (win probability) for staying with a given hand value and target, considering the opponent's distribution.
+
+4. **Dynamic Programming for Optimal Policy**: Precompute the expected value for every possible hand and target by evaluating both "HIT" and "STAY" actions, using memoization to efficiently compute values for larger hands.
+
+5. **Action Selection**: In the policy function, select the action ("HIT" or "STAY") that maximizes the expected outcome based on the precomputed optimal policy.
+
+This approach ensures the policy is computationally efficient during gameplay by shifting the heavy computation to initialization time.
+<code>
+import itertools
+from collections import defaultdict
+
+# Define the card deck
+ALL_CARDS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+
+# Precompute opponent distributions for each target value (10 to 30)
+opponent_dist = {}
+for target in range(10, 31):
+    # Create a dictionary to store distributions for each hand (tuple of sorted cards)
+    dist_table = {}
+    
+    # Iterate over hand sizes from 13 down to 0
+    for size in range(13, -1, -1):
+        for hand_tuple in itertools.combinations(ALL_CARDS, size):
+            hand = tuple(sorted(hand_tuple))
+            value = hand_value(hand, target)
+            if value >= target - 4:
+                # Stop and return this value with probability 1
+                dist_table[hand] = {value: 1.0}
+            else:
+                # Hit: draw a card from the deck (complement of hand)
+                deck = [c for c in ALL_CARDS if c not in hand]
+                dist = defaultdict(float)
+                for c in deck:
+                    new_hand = tuple(sorted(hand + (c,)))
+                    sub_dist = dist_table[new_hand]
+                    for val, prob in sub_dist.items():
+                        dist[val] += prob * (1.0 / len(deck))
+                dist_table[hand] = dist
+    
+    # Store the distribution for the empty hand (starting state for opponent)
+    opponent_dist[target] = dist_table[()]
+
+# Precompute stay values for each hand value and target
+stay_value = {}
+for target in range(10, 31):
+    dist = opponent_dist[target]
+    bust_prob = sum(prob for val, prob in dist.items() if val > target)
+    non_bust_dist = {val: prob for val, prob in dist.items() if val <= target}
+    for hand_value_val in range(0, target + 1):
+        non_bust_val_lt_hand = sum(prob for val, prob in non_bust_dist.items() if val < hand_value_val)
+        non_bust_val_eq_hand = non_bust_dist.get(hand_value_val, 0.0)
+        stay_value[(hand_value_val, target)] = bust_prob + non_bust_val_lt_hand + 0.5 * non_bust_val_eq_hand
+
+# Precompute expected values and optimal actions for all states
+expected_value_table = {}
+action_table = {}
+for target in range(10, 31):
+    # Iterate over hand sizes from 13 down to 0
+    for size in range(13, -1, -1):
+        for hand_tuple in itertools.combinations(ALL_CARDS, size):
+            hand = tuple(sorted(hand_tuple))
+            current_value = hand_value(hand, target)
+            if current_value > target:
+                # Bust: expected value 0, action STAY
+                expected_value_table[(hand, target)] = 0.0
+                action_table[(hand, target)] = "STAY"
+                continue
+            
+            value_STAY = stay_value[(current_value, target)]
+            
+            # Calculate value_HIT
+            deck = [c for c in ALL_CARDS if c not in hand]
+            if len(deck) == 0:
+                value_HIT = value_STAY
+            else:
+                total = 0.0
+                for c in deck:
+                    new_hand = tuple(sorted(hand + (c,)))
+                    new_value = hand_value(new_hand, target)
+                    if new_value > target:
+                        outcome = 0.0
+                    else:
+                        outcome = expected_value_table[(new_hand, target)]
+                    total += outcome
+                value_HIT = total / len(deck)
+            
+            # Determine optimal action
+            if value_HIT > value_STAY:
+                action = "HIT"
+                expected_value = value_HIT
+            else:
+                action = "STAY"
+                expected_value = value_STAY
+            
+            expected_value_table[(hand, target)] = expected_value
+            action_table[(hand, target)] = action
+
+def hand_value(hand, target):
+    """Calculate the optimal value of a hand (treating Aces as 11 or 1)"""
+    non_ace_total = 0
+    aces = 0
+    for card in hand:
+        if card == "A":
+            aces += 1
+        elif card in ["J", "Q", "K"]:
+            non_ace_total += 10
+        else:
+            non_ace_total += int(card)
+    
+    total = non_ace_total + 11 * aces
+    if aces == 0:
+        return total
+    
+    if total <= target:
+        return total
+    
+    # Convert Aces from 11 to 1 until we get a value <= target
+    k = 0
+    while k <= aces and total - 10 * k > target:
+        k += 1
+    if k <= aces:
+        return total - 10 * k
+    else:
+        return total - 10 * aces
+
+def policy(hand, target):
+    """Determine the optimal action based on the current hand and target"""
+    hand_tuple = tuple(sorted(hand))
+    return action_table[(hand_tuple, target)]
+</code>

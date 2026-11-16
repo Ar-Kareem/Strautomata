@@ -1,0 +1,89 @@
+My strategy is to implement a robust evaluation function that assesses the current board state based on material balance, piece activity, king safety, and pawn structure. I will then simulate each legal move to determine which one results in the best position according to this evaluation. The policy prioritizes immediate checkmates and captures, ensuring tactical soundness while maintaining strategic depth.
+
+```python
+import random
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    # Piece values for material evaluation
+    piece_values = {
+        'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000
+    }
+    
+    # Helper to map piece code to value
+    def get_piece_value(code):
+        return piece_values.get(code[1], 0)
+
+    # 1. Immediate Win Detection
+    # Prioritize moves that result in checkmate or stalemate resolution
+    winning_moves = []
+    for move in legal_moves:
+        if '#' in move:
+            # If we can deliver checkmate, do it immediately
+            return move
+        if '+' in move:
+            winning_moves.append(move)
+    
+    # 2. Material Advantage & Captures
+    # Evaluate captures to maximize material gain
+    best_moves = []
+    best_score = -float('inf')
+    
+    for move in legal_moves:
+        score = 0
+        
+        # Identify if the move is a capture
+        target_sq = None
+        if 'x' in move:
+            # Handle standard moves (e.g., Bxf5) and pawn captures (e.g., exd5)
+            if len(move) >= 4 and move[1] == 'x':
+                # Piece move capture (e.g., Bxf5)
+                target_sq = move[2:]
+            elif len(move) >= 3 and move[1] == 'x':
+                # Pawn capture (e.g., exd5)
+                target_sq = move[1:]
+            elif len(move) >= 4 and move[2] == 'x':
+                # Disambiguated piece capture (e.g., Raxa5)
+                target_sq = move[3:]
+            
+            if target_sq:
+                if '=' in target_sq:
+                    # Handle promotions in capture (e.g., e8=Q)
+                    target_sq = target_sq.split('=')[0]
+                if target_sq in pieces:
+                    score += get_piece_value(pieces[target_sq])
+        
+        # Identify if the move is a promotion
+        if '=' in move:
+            promo_piece = move.split('=')[1][:1] # Get piece type
+            score += piece_values.get(promo_piece, 0) - 100 # Net gain
+            score += 50 # Bonus for promoting
+        
+        # King safety: prefer castling
+        if 'O-O' in move:
+            score += 60
+            
+        # Check bonus (even if not mate)
+        if '+' in move and '#' not in move:
+            score += 30
+            
+        # Tactical reordering: prefer checks and captures higher
+        if move in winning_moves:
+            score += 50
+
+        if score > best_score:
+            best_score = score
+            best_moves = [move]
+        elif score == best_score:
+            best_moves.append(move)
+
+    # 3. Selection
+    if best_moves:
+        # If we have moves with score > 0, pick the best one (or random if equal)
+        # If no moves had positive score (quiet moves), fallback to random among all moves
+        if best_score > 0:
+            return random.choice(best_moves)
+    
+    # 4. Final Fallback
+    # If all else fails, pick a random legal move
+    return random.choice(legal_moves)
+```

@@ -1,0 +1,302 @@
+
+import sys
+import time
+
+# Set recursion limit to handle potential deep searches if needed
+sys.setrecursionlimit(2000)
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    """
+    Alpha-Beta search with iterative deepening for Breakthrough.
+    """
+    
+    # --- Constants and Configuration ---
+    TIMEOUT = 0.9  # Seconds (safety margin for 1s limit)
+    MAX_DEPTH = 15
+    
+    # Scoring Weights
+    WIN_SCORE = 100000
+    MATERIAL_WEIGHT = 100
+    MOBILITY_WEIGHT = 2
+    PROGRESS_WEIGHT = 5
+    CONNECTIVITY_WEIGHT = 2
+    
+    # Board Dimensions
+    ROWS = 8
+    COLS = 8
+    
+    # Determine directions based on color
+    if color == 'b':
+        # Black moves downwards (row decreases)
+        FORWARD_DIR = -1
+        HOME_ROW = 0
+    else:
+        # White moves upwards (row increases)
+        FORWARD_DIR = 1
+        HOME_ROW = 7
+        
+    # --- Helper Functions ---
+
+    def get_neighbors(r, c):
+        """Returns list of neighbor coordinates (r, c)."""
+        return [(r-1, c-1), (r-1, c), (r-1, c+1), 
+                (r, c-1), (r, c+1),
+                (r+1, c-1), (r+1, c), (r+1, c+1)]
+
+    def evaluate(me_set, opp_set):
+        """
+        Heuristic evaluation function.
+        Returns score relative to current player.
+        Positive score means favorable for current player.
+        """
+        # 1. Material
+        material = len(me_set) - len(opp_set)
+        
+        # 2. Win Condition (Terminal State)
+        if not opp_set:
+            return WIN_SCORE
+        if not me_set:
+            return -WIN_SCORE
+            
+        # Check for promotion
+        for r, c in me_set:
+            if r == HOME_ROW:
+                return WIN_SCORE
+        for r, c in opp_set:
+            if r == (ROWS - 1 - HOME_ROW): # Opponent home row
+                return -WIN_SCORE
+
+        # 3. Mobility (Legal moves count)
+        # We estimate mobility by checking potential moves without full legality check (speed)
+        my_mobility = 0
+        for r, c in me_set:
+            # Straight forward
+            fr = r + FORWARD_DIR
+            if 0 <= fr < ROWS:
+                # Check occupancy later, just count potential directions for now
+                if (fr, c) not in me_set and (fr, c) not in opp_set: my_mobility += 1
+                # Diagonals
+                if c > 0 and (fr, c-1) not in me_set: my_mobility += 1
+                if c < 7 and (fr, c+1) not in me_set: my_mobility += 1
+        
+        opp_mobility = 0
+        opp_forward = -FORWARD_DIR
+        for r, c in opp_set:
+            fr = r + opp_forward
+            if 0 <= fr < ROWS:
+                if (fr, c) not in opp_set and (fr, c) not in me_set: opp_mobility += 1
+                if c > 0 and (fr, c-1) not in opp_set: opp_mobility += 1
+                if c < 7 and (fr, c+1) not in opp_set: opp_mobility += 1
+                
+        mobility = my_mobility - opp_mobility
+
+        # 4. Progress (Distance to goal)
+        # Reward getting closer, penalize getting further
+        my_progress = sum((ROWS - 1 - r) if color == 'w' else r for r, c in me_set)
+        opp_progress = sum((ROWS - 1 - r) if color == 'b' else r for r, c in opp_set)
+        progress = my_progress - opp_progress
+
+        # 5. Connectivity (Defense/Support)
+        # Reward if pieces are adjacent (diagonally) to other friendly pieces
+        # This helps block diagonal captures by enemy
+        my_con = 0
+        me_set_local = set(me_set)
+        for r, c in me_set:
+            # Check diagonals
+            if (r-1, c-1) in me_set_local or (r-1, c+1) in me_set_local: my_con += 1
+            if (r+1, c-1) in me_set_local or (r+1, c+1) in me_set_local: my_con += 1
+        
+        opp_con = 0
+        opp_set_local = set(opp_set)
+        for r, c in opp_set:
+            if (r-1, c-1) in opp_set_local or (r-1, c+1) in opp_set_local: opp_con += 1
+            if (r+1, c-1) in opp_set_local or (r+1, c+1) in opp_set_local: opp_con += 1
+            
+        connectivity = my_con - opp_con
+
+        score = (material * MATERIAL_WEIGHT) + \
+                (mobility * MOBILITY_WEIGHT) + \
+                (progress * PROGRESS_WEIGHT) + \
+                (connectivity * CONNECTIVITY_WEIGHT)
+        
+        return score
+
+    def generate_moves(m_set, o_set, current_color):
+        """
+        Generate all legal moves.
+        Returns list of ((from_r, from_c), (to_r, to_c)) tuples.
+        """
+        moves = []
+        forward = FORWARD_DIR if current_color == color else -FORWARD_DIR
+        
+        for r, c in m_set:
+            fr = r + forward
+            
+            # 1. Straight Forward (Must be empty)
+            if 0 <= fr < ROWS:
+                if (fr, c) not in m_set and (fr, c) not in o_set:
+                    moves.append(((r, c), (fr, c)))
+            
+            # 2. Diagonals
+            for dc in [-1, 1]:
+                tc = c + dc
+                if 0 <= fr < ROWS and 0 <= tc < COLS:
+                    target = (fr, tc)
+                    # Capture: Target has enemy piece
+                    if target in o_set:
+                        moves.append(((r, c), target))
+                    # Safe Move: Target is empty
+                    elif target not in m_set:
+                        moves.append(((r, c), target))
+        return moves
+
+    def sort_moves(moves, me_set, opp_set):
+        """
+        Move Ordering: Captures first, then promotions, then other moves.
+        """
+        def score_move(move):
+            _, (to_r, to_c) = move
+            # High priority for captures
+            if (to_r, to_c) in opp_set:
+                return 1000
+            # High priority for promotion
+            if to_r == HOME_ROW:
+                return 999
+            # Priority for forward movement
+            if to_r == (list(me_set)[0][0] + FORWARD_DIR): # Approximate
+                return 100
+            return 0
+        
+        return sorted(moves, key=score_move, reverse=True)
+
+    def alpha_beta(me_list, opp_list, depth, alpha, beta, maximizing_player):
+        """
+        Recursive Alpha-Beta search.
+        maximizing_player: True if we are evaluating from our perspective.
+        """
+        # Time Check
+        if time.time() - start_time > TIMEOUT:
+            raise TimeoutError
+
+        # Terminal Checks
+        me_set = set(me_list)
+        opp_set = set(opp_list)
+        
+        # Check Win/Loss immediately
+        if not opp_set: return (WIN_SCORE, None)
+        if not me_set: return (-WIN_SCORE, None)
+        
+        # Check promotion
+        for r, c in me_set:
+            if r == HOME_ROW: return (WIN_SCORE, None)
+        for r, c in opp_set:
+            if r == (ROWS - 1 - HOME_ROW): return (-WIN_SCORE, None)
+
+        if depth == 0:
+            return (evaluate(me_set, opp_set), None)
+
+        # Determine current player's pieces based on turn parity logic
+        # Since we know 'me' is always the side to move in the root, 
+        # but inside recursion we swap lists.
+        # To simplify, we assume the first list argument is the "current" mover.
+        # Wait, in the root call: me=me, opp=opp. 
+        # In recursion, if maximizing, we iterate moves of the maximizing player.
+        
+        # Actually, let's track whose turn it is explicitly or infer from list sizes? 
+        # Better: Pass the color of the mover.
+        
+        current_mover_color = color if maximizing_player else ('b' if color == 'w' else 'w')
+        
+        moves = generate_moves(me_list, opp_list, current_mover_color)
+        
+        # If no moves (stalemate/blockade), it's a loss for the mover
+        if not moves:
+            return (-WIN_SCORE if maximizing_player else WIN_SCORE), None
+
+        moves = sort_moves(moves, set(me_list), set(opp_list))
+
+        best_move = moves[0]
+        
+        if maximizing_player:
+            max_eval = -float('inf')
+            for move in moves:
+                src, dst = move
+                # Simulate move
+                next_me = list(me_list)
+                next_opp = list(opp_list)
+                
+                # Update lists
+                next_me.remove(src)
+                next_me.append(dst)
+                
+                # Capture check
+                if dst in next_opp:
+                    next_opp.remove(dst)
+                
+                val, _ = alpha_beta(next_opp, next_me, depth - 1, alpha, beta, False) # Swap lists and turn
+                
+                if val > max_eval:
+                    max_eval = val
+                    best_move = move
+                
+                alpha = max(alpha, val)
+                if beta <= alpha:
+                    break
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            for move in moves:
+                src, dst = move
+                # Simulate move (Opponent moves me_list)
+                next_opp = list(me_list)
+                next_me = list(opp_list)
+                
+                next_opp.remove(src)
+                next_opp.append(dst)
+                
+                if dst in next_me:
+                    next_me.remove(dst)
+                
+                val, _ = alpha_beta(next_me, next_opp, depth - 1, alpha, beta, True)
+                
+                if val < min_eval:
+                    min_eval = val
+                    best_move = move
+                
+                beta = min(beta, val)
+                if beta <= alpha:
+                    break
+            return min_eval, best_move
+
+    # --- Main Execution ---
+    start_time = time.time()
+    best_move_global = None
+    
+    # Initial Move Generation (for fallback)
+    initial_moves = generate_moves(me, opp, color)
+    if not initial_moves:
+        # Should not happen usually unless blocked, but if so, return any valid placeholder or raise
+        # Just return the first move from generate_moves if empty (should crash but handled)
+        # Let's try to return a move to self-destruct or pass
+        return ((0,0), (0,0)) # Illegal, but prevents crash. Better to pick a random valid move if any existed.
+    initial_moves = sort_moves(initial_moves, set(me), set(opp))
+    best_move_global = initial_moves[0]
+
+    # Iterative Deepening
+    for depth in range(1, MAX_DEPTH + 1):
+        try:
+            # Call alpha-beta with maximizing=True (we are the root player)
+            # Arguments: my_pieces, opp_pieces, depth, alpha, beta, maximizing
+            score, move = alpha_beta(me, opp, depth, -float('inf'), float('inf'), True)
+            
+            if move is not None:
+                best_move_global = move
+            
+            # If we found a winning move, stop early
+            if score >= WIN_SCORE - 100: # Fuzzy match for win
+                break
+                
+        except TimeoutError:
+            break
+            
+    return best_move_global

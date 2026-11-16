@@ -1,0 +1,248 @@
+The strategy for this policy is to play **path-focused Hex**: it models the board as a hex-graph and uses **Dijkstra shortest-path** (with your stones cost 0, empty cells cost 1, opponent stones blocked) to estimate how many moves are needed to connect your sides. Each turn it:
+1) plays an **immediate winning move** if available,  
+2) **blocks any opponent immediate win** if threatened,  
+3) otherwise chooses the move that best improves *(opponent shortest path length − our shortest path length)*, with small positional bonuses (center, adjacency, and playing on/against current principal shortest paths).
+
+<code>
+import heapq
+import zlib
+from typing import List, Tuple, Set, Optional
+
+N = 11
+INF = 10**9
+
+# Hex neighbors in this coordinate system:
+# all 8 grid neighbors except (i-1,j-1) and (i+1,j+1)
+NEI_DELTAS = [(-1, 0), (-1, 1),
+              (0, -1), (0, 1),
+              (1, -1), (1, 0)]
+
+
+def inb(r: int, c: int) -> bool:
+    return 0 <= r &lt; N and 0 &lt;= c &lt; N
+
+
+def neighbors(r: int, c: int):
+    for dr, dc in NEI_DELTAS:
+        rr, cc = r + dr, c + dc
+        if 0 &lt;= rr &lt; N and 0 &lt;= cc &lt; N:
+            yield rr, cc
+
+
+def has_won(stones: Set[Tuple[int, int]], color: str) -&gt; bool:
+    """Pure connectivity win check using BFS over own stones."""
+    from collections import deque
+
+    dq = deque()
+    seen = set()
+
+    if color == 'b':
+        # top to bottom: start at row 0, reach row N-1
+        for c in range(N):
+            if (0, c) in stones:
+                dq.append((0, c))
+                seen.add((0, c))
+        goal_row = N - 1
+        while dq:
+            r, c = dq.popleft()
+            if r == goal_row:
+                return True
+            for rr, cc in neighbors(r, c):
+                if (rr, cc) in stones and (rr, cc) not in seen:
+                    seen.add((rr, cc))
+                    dq.append((rr, cc))
+        return False
+    else:
+        # left to right: start at col 0, reach col N-1
+        for r in range(N):
+            if (r, 0) in stones:
+                dq.append((r, 0))
+                seen.add((r, 0))
+        goal_col = N - 1
+        while dq:
+            r, c = dq.popleft()
+            if c == goal_col:
+                return True
+            for rr, cc in neighbors(r, c):
+                if (rr, cc) in stones and (rr, cc) not in seen:
+                    seen.add((rr, cc))
+                    dq.append((rr, cc))
+        return False
+
+
+def dijkstra_shortest(player: Set[Tuple[int, int]],
+                     opp: Set[Tuple[int, int]],
+                     color: str,
+                     want_path: bool = False):
+    """
+    Shortest path length in "empty cells needed" metric:
+      cost(cell)=0 if player's stone, 1 if empty, blocked if opponent's.
+    Returns (best_dist, path_cells) where path_cells is one reconstructed best path (optional).
+    """
+    dist = [[INF] * N for _ in range(N)]
+    parent: List[List[Optional[Tuple[int, int]]]] = [[None] * N for _ in range(N)]
+
+    heap = []
+
+    def cell_cost(rc):
+        return 0 if rc in player else 1
+
+    # Multi-source initialization from the appropriate side
+    if color == 'b':
+        starts = [(0, c) for c in range(N)]
+        is_goal = lambda r, c: (r == N - 1)
+    else:
+        starts = [(r, 0) for r in range(N)]
+        is_goal = lambda r, c: (c == N - 1)
+
+    for r, c in starts:
+        if (r, c) in opp:
+            continue
+        w = cell_cost((r, c))
+        if w &lt; dist[r][c]:
+            dist[r][c] = w
+            parent[r][c] = None
+            heapq.heappush(heap, (w, r, c))
+
+    best_goal = None
+    best_d = INF
+
+    while heap:
+        d, r, c = heapq.heappop(heap)
+        if d != dist[r][c]:
+            continue
+        if d &gt;= best_d:
+            continue
+        if is_goal(r, c):
+            best_d = d
+            best_goal = (r, c)
+            # We can break early because Dijkstra pops nondecreasing d
+            break
+
+        for rr, cc in neighbors(r, c):
+            if (rr, cc) in opp:
+                continue
+            nd = d + cell_cost((rr, cc))
+            if nd &lt; dist[rr][cc]:
+                dist[rr][cc] = nd
+                parent[rr][cc] = (r, c)
+                heapq.heappush(heap, (nd, rr, cc))
+
+    if not want_path or best_goal is None:
+        return best_d, []
+
+    # Reconstruct one shortest path
+    path = []
+    cur = best_goal
+    while cur is not None:
+        path.append(cur)
+        r, c = cur
+        cur = parent[r][c]
+    path.reverse()
+    return best_d, path
+
+
+def stable_state_hash(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -&gt; int:
+    s = f"{color}|M:{sorted(me)}|O:{sorted(opp)}".encode("utf-8")
+    return zlib.crc32(s) &amp; 0xffffffff
+
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -&gt; Tuple[int, int]:
+    me_set = set(me)
+    opp_set = set(opp)
+    occ = me_set | opp_set
+
+    empties = [(r, c) for r in range(N) for c in range(N) if (r, c) not in occ]
+    if not empties:
+        # Should never happen in normal Hex, but must return something legal.
+        return (0, 0)
+
+    # Opening: take center if available (very strong on 11x11)
+    if len(occ) &lt;= 1 and (5, 5) in empties:
+        return (5, 5)
+
+    # 1) Immediate winning move
+    for (r, c) in empties:
+        new_me = me_set | {(r, c)}
+        if has_won(new_me, color):
+            return (r, c)
+
+    # 2) Block opponent immediate win (if any)
+    opp_color = 'w' if color == 'b' else 'b'
+    threats = []
+    for (r, c) in empties:
+        new_opp = opp_set | {(r, c)}
+        if has_won(new_opp, opp_color):
+            threats.append((r, c))
+    if threats:
+        # If multiple threats, pick the block that also helps us most by heuristic eval.
+        best_move = threats[0]
+        best_score = -10**18
+        for (r, c) in threats:
+            # quick heuristic: improve our shortest path and worsen theirs if possible
+            sim_me = me_set | {(r, c)}
+            d_my, _ = dijkstra_shortest(sim_me, opp_set, color, want_path=False)
+            d_opp, _ = dijkstra_shortest(opp_set, sim_me, opp_color, want_path=False)
+            adj_my = sum(((rr, cc) in me_set) for rr, cc in neighbors(r, c))
+            adj_opp = sum(((rr, cc) in opp_set) for rr, cc in neighbors(r, c))
+            center = - (abs(r - 5) + abs(c - 5))
+            score = (d_opp - d_my) * 100 + 3 * (adj_my - adj_opp) + 2 * center
+            if score &gt; best_score:
+                best_score = score
+                best_move = (r, c)
+        return best_move
+
+    # Precompute principal shortest paths on current board for bonuses
+    cur_my_d, cur_my_path = dijkstra_shortest(me_set, opp_set, color, want_path=True)
+    cur_opp_d, cur_opp_path = dijkstra_shortest(opp_set, me_set, opp_color, want_path=True)
+    cur_my_path_empty = {p for p in cur_my_path if p not in occ}
+    cur_opp_path_empty = {p for p in cur_opp_path if p not in occ}
+
+    # 3) One-ply search with path-based evaluation
+    h = stable_state_hash(me, opp, color)
+
+    best_move = None
+    best_score = -10**18
+
+    for (r, c) in empties:
+        sim_me = me_set | {(r, c)}
+        sim_opp = opp_set  # unchanged stones, but our added stone blocks them
+
+        d_my, _ = dijkstra_shortest(sim_me, sim_opp, color, want_path=False)
+        d_opp, _ = dijkstra_shortest(sim_opp, sim_me, opp_color, want_path=False)
+
+        # Local features
+        adj_my = sum(((rr, cc) in me_set) for rr, cc in neighbors(r, c))
+        adj_opp = sum(((rr, cc) in opp_set) for rr, cc in neighbors(r, c))
+        center = - (abs(r - 5) + abs(c - 5))
+
+        on_my_path = 1 if (r, c) in cur_my_path_empty else 0
+        on_opp_path = 1 if (r, c) in cur_opp_path_empty else 0
+
+        # Slight bias for progressing along your connection axis:
+        if color == 'b':
+            axis = -abs(c - 5)  # prefer central columns
+        else:
+            axis = -abs(r - 5)  # prefer central rows
+
+        # Main evaluation: maximize (opponent difficulty - our difficulty)
+        score = 0
+        score += 200 * (d_opp - d_my)
+        score += -30 * d_my + 10 * d_opp  # additional shaping
+        score += 6 * adj_my - 8 * adj_opp
+        score += 3 * center + 2 * axis
+        score += 18 * on_my_path + 14 * on_opp_path
+
+        # Deterministic tiny tie-breaker (avoid predictable fixed tie ordering)
+        tie = ((r * 131 + c * 313 + h) % 1000) / 1000000.0
+        score += tie
+
+        if score &gt; best_score or best_move is None:
+            best_score = score
+            best_move = (r, c)
+
+    if best_move is None:
+        # Fallback: first legal move
+        return empties[0]
+    return best_move
+</code>

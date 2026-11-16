@@ -1,0 +1,173 @@
+
+import random
+import numpy as np
+
+PIECE_VALUES = {
+    'P': 1,
+    'N': 3,
+    'B': 3,
+    'R': 5,
+    'Q': 9,
+    'K': 100
+}
+
+def policy(pieces: dict[str, str], to_play: str, memory: dict) -> tuple[str, dict]:
+    # Generate legal moves - in a real implementation, this would be provided
+    # But for this exercise, we'll use a simplified approach to find possible moves
+    
+    # Convert to_play to color code
+    my_color = 'w' if to_play == 'white' else 'b'
+    
+    # Try to find the best move based on simple heuristics
+    best_move = None
+    best_score = -float('inf')
+    
+    # Get all possible moves based on piece positions
+    legal_moves = generate_simple_legal_moves(pieces, my_color)
+    
+    if not legal_moves:
+        # Should not happen in a real arena, but just in case
+        return random.choice(list(pieces.keys())[:2] + list(pieces.keys())[2:])[:4], memory if list(pieces.keys()) else ("a1a2", memory)
+    
+    # Evaluate each move
+    for move in legal_moves:
+        score = evaluate_move(move, pieces, my_color)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    # If we found a good move, play it; otherwise play a random legal move
+    if best_move:
+        return best_move, memory
+    else:
+        return random.choice(legal_moves), memory
+
+def generate_simple_legal_moves(pieces: dict[str, str], my_color: str) -> list[str]:
+    """Generate a simplified list of legal moves for our pieces"""
+    moves = []
+    
+    # This is a very simplified move generator - in reality, this would be much more complex
+    # For the purpose of this exercise, we'll simulate some plausible moves
+    
+    piece_positions = [(square, piece) for square, piece in pieces.items() if piece[0] == my_color]
+    
+    for square, piece in piece_positions:
+        piece_type = piece[1]
+        # Generate some example moves for each piece type
+        if piece_type == 'P':
+            # Pawn moves
+            file, rank = square[0], int(square[1])
+            if my_color == 'w':
+                # White pawn moves
+                new_rank = rank + 1
+                if '1' <= str(new_rank) <= '8':
+                    moves.append(f"{square}{file}{new_rank}")
+                    # Capture moves
+                    left_file = chr(ord(file) - 1) if ord(file) > ord('a') else None
+                    right_file = chr(ord(file) + 1) if ord(file) < ord('h') else None
+                    if left_file:
+                        moves.append(f"{square}{left_file}{new_rank}")
+                    if right_file:
+                        moves.append(f"{square}{right_file}{new_rank}")
+            else:
+                # Black pawn moves
+                new_rank = rank - 1
+                if '1' <= str(new_rank) <= '8':
+                    moves.append(f"{square}{file}{new_rank}")
+                    # Capture moves
+                    left_file = chr(ord(file) - 1) if ord(file) > ord('a') else None
+                    right_file = chr(ord(file) + 1) if ord(file) < ord('h') else None
+                    if left_file:
+                        moves.append(f"{square}{left_file}{new_rank}")
+                    if right_file:
+                        moves.append(f"{square}{right_file}{new_rank}")
+        elif piece_type == 'N':
+            # Knight moves
+            file, rank = square[0], int(square[1])
+            for df, dr in [(2,1), (2,-1), (-2,1), (-2,-1), (1,2), (1,-2), (-1,2), (-1,-2)]:
+                new_file = chr(ord(file) + df) if 'a' <= chr(ord(file) + df) <= 'h' else None
+                new_rank = rank + dr
+                if new_file and 1 <= new_rank <= 8:
+                    moves.append(f"{square}{new_file}{new_rank}")
+        elif piece_type == 'B':
+            # Bishop moves (simplified)
+            file, rank = square[0], int(square[1])
+            for df, dr in [(1,1), (1,-1), (-1,1), (-1,-1)]:
+                for i in range(1, 8):
+                    new_file = chr(ord(file) + df*i) if 'a' <= chr(ord(file) + df*i) <= 'h' else None
+                    new_rank = rank + dr*i
+                    if new_file and 1 <= new_rank <= 8:
+                        moves.append(f"{square}{new_file}{new_rank}")
+                    else:
+                        break
+        elif piece_type == 'R':
+            # Rook moves (simplified)
+            file, rank = square[0], int(square[1])
+            for df, dr in [(1,0), (-1,0), (0,1), (0,-1)]:
+                for i in range(1, 8):
+                    new_file = chr(ord(file) + df*i) if 'a' <= chr(ord(file) + df*i) <= 'h' else None
+                    new_rank = rank + dr*i
+                    if new_file and 1 <= new_rank <= 8:
+                        moves.append(f"{square}{new_file}{new_rank}")
+                    else:
+                        break
+        elif piece_type == 'Q':
+            # Queen moves (simplified)
+            file, rank = square[0], int(square[1])
+            for df, dr in [(1,0), (-1,0), (0,1), (0,-1), (1,1), (1,-1), (-1,1), (-1,-1)]:
+                for i in range(1, 8):
+                    new_file = chr(ord(file) + df*i) if 'a' <= chr(ord(file) + df*i) <= 'h' else None
+                    new_rank = rank + dr*i
+                    if new_file and 1 <= new_rank <= 8:
+                        moves.append(f"{square}{new_file}{new_rank}")
+                    else:
+                        break
+        elif piece_type == 'K':
+            # King moves
+            file, rank = square[0], int(square[1])
+            for df in [-1, 0, 1]:
+                for dr in [-1, 0, 1]:
+                    if df == 0 and dr == 0:
+                        continue
+                    new_file = chr(ord(file) + df) if 'a' <= chr(ord(file) + df) <= 'h' else None
+                    new_rank = rank + dr
+                    if new_file and 1 <= new_rank <= 8:
+                        moves.append(f"{square}{new_file}{new_rank}")
+    
+    # Filter to only include moves that are either captures or to empty squares
+    filtered_moves = []
+    for move in moves:
+        if len(move) == 4:  # Basic move
+            from_square = move[:2]
+            to_square = move[2:]
+            # Only allow moves to empty squares or captures
+            if to_square not in pieces or pieces[to_square][0] != my_color:
+                filtered_moves.append(move)
+    
+    return filtered_moves if filtered_moves else ["e1e2"]  # Fallback move
+
+def evaluate_move(move: str, pieces: dict[str, str], my_color: str) -> float:
+    """Evaluate a move and return a score"""
+    if len(move) < 4:
+        return 0
+    
+    from_square = move[:2]
+    to_square = move[2:4]
+    
+    # If not my piece, skip
+    if from_square not in pieces or pieces[from_square][0] != my_color:
+        return -1000
+    
+    # Check if it's a capture
+    if to_square in pieces and pieces[to_square][0] != my_color:
+        captured_piece = pieces[to_square]
+        return PIECE_VALUES[captured_piece[1]] * 10
+    
+    # Piece development bonus (moving from starting position)
+    if my_color == 'w' and from_square[1] in ['1', '2']:
+        return 1
+    elif my_color == 'b' and from_square[1] in ['7', '8']:
+        return 1
+    
+    # Default small positive value for legal moves
+    return 0.1

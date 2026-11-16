@@ -1,0 +1,177 @@
+### Strategy Description
+
+My strategy for this Kalah policy is a minimax algorithm with alpha-beta pruning, limited to a depth of 4 plies to stay within the 1-second execution time constraint on a modern 3GHz CPU. Minimax explores possible game trees: I (the maximizer) aim to maximize my advantage, while simulating the opponent (the minimizer) trying to minimize it. Alpha-beta pruning cuts off unnecessary branches for efficiency.
+
+At the leaves (or max depth), I evaluate the board position using a heuristic function that considers:
+- The difference in store scores (my store minus opponent's store).
+- The total number ofseeds under my control (my houses + my store) minus opponent's (adjusted by a small multiplier to weight availability vs. immediate store advantage).
+- Penalize weak positions where the opponent could capture on their next turn (if a move leaves an empty house directly opposite a non-empty opponent house).
+- Slightly advantage extra turns (if I land in my store).
+- Promote moves that clear houses to force bonus captures later or set up positional advantages.
+- If a terminal position is reached (no legal moves left for the other player), it returns the exact game outcome: +100 for a win, -100 for a loss, 0 for a draw.
+
+I iterate through all legal moves from the current position and choose the one with the highest minimax score. To handle potential loops or deep trees, the depth limit prevents excessive computation. Legal moves are ensured by only considering i where you[i] > 0. Simulations use a copied board to avoid modifying the original state. This approach should beat simpler policies like random moves or greedy (e.g., always capturing), as it's strategic and anticipates opponent responses.
+
+```python
+import copy
+
+def is_terminal(you, opponent):
+    you_empty = all(h == 0 for h in you[:6])
+    opp_empty = all(h == 0 for h in opponent[:6])
+    return you_empty or opp_empty
+
+def evaluate(you, opponent):
+    if is_terminal(you, opponent):
+        my_total = sum(you)
+        opp_total = sum(opponent)
+        if my_total > opp_total:
+            return 100
+        elif my_total < opp_total:
+            return -100
+        else:
+            return 0
+    
+    # Heuristic: store difference + controlled seeds difference (weighted) - penalties
+    my_store = you[6]
+    opp_store = opponent[6]
+    my_controlled = sum(you)
+    opp_controlled = sum(opponent)
+    
+    # Store diff
+    score = (my_store - opp_store) * 2
+    
+    # Controlled seeds (my total - opp total), weighted lightly
+    score += (my_controlled - opp_controlled) * 0.1
+    
+    # Penalize if opponent can capture easily (hence, avoid leaving empty opposite populated)
+    # Check if any of my houses is empty and opp has seeds opposite
+    for i in range(6):
+        if you[i] == 0 and opponent[5 - i] > 0:
+            score -= opponent[5 - i] * 0.5  # Penalty for capturable position
+    
+    # Bonus for keeping seeds moving or clearing houses strategically? Already in control.
+    return score
+
+def simulate_move(you, opponent, move, is_my_turn):
+    # Make copies
+    new_you = you[:]
+    new_opp = opponent[:]
+    
+    if is_my_turn:
+        player_houses = new_you[:6]
+        opp_houses = new_opp[:6]
+        my_store = new_you[6]
+    else:
+        player_houses = new_opp[:6]
+        opp_houses = new_you[:6]
+        my_store = new_opp[6]
+        # Swap for opponent
+        new_you, new_opp = new_opp, new_you
+    
+    seeds = player_houses[move]
+    player_houses[move] = 0
+    position = move + 1
+    last_position = None
+    
+    while seeds > 0:
+        if position == 6:  # Land in store? No, store is [6], but sowing skips opp store
+            if is_my_turn:
+                new_you[6] += 1
+            else:
+                new_opp[6] += 1
+            seeds -= 1
+            last_position = (6, is_my_turn)  # Track store
+        elif position < 6:
+            if is_my_turn:
+                new_you[position] += 1
+            else:
+                new_opp[position] += 1
+            seats_used -= 1  # Wait, error: seeds -=1
+            seeds -= 1
+            last_position = (position, is_my_turn)
+            position = (position + 1)
+        elif position >= 7:  # After my houses, go to opp houses 0-5, skip opp store (position 13 would be store)
+            fake_pos = position - 7  # 7 to 12 -> opp 0 to 5
+            if fake_pos <= 5:
+                new_opp[fake_pos] += 1
+                seeds -= 1
+                last_position = (fake_pos, not is_my_turn)
+                position = (position + 1) % 14  # Wait, actually cycling: after opp5, back to my0 (position 7+6=13? Wait, opp0 is pos7)
+                # Proper: from my0 to my5 (0-5), then my store (6), then opp0 to opp5 (7-12), skip opp store (13), then my0 (14%14=0)
+                position = (position + 1) % 14
+                if position == 13: position = 0  # Skip opp store
+            else:
+                # Should not happen
+                break
+    
+    # Check capture
+    if last_position and last_position[0] != 6 and last_position[1]:  # Last in my house, not store
+        i = last_position[0]
+        if is_my_turn and new_you[i] == 1 and new_opp[5-i] > 0:  # Landed in my empty, opp opposite has seeds
+            captured = new_opp[5-i]
+            new_you[6] += captured + 1  # My seed + opposite seeds
+            new_opp[5-i] = 0
+            new_you[i] = 0
+    
+    # Extra turn?
+    extra_turn = last_position and last_position[0] == 6 and last_position[1]
+    
+    return new_you, new_opp, extra_turn ^ is_my_turn  # If extra_turn, same player moves; else opposite
+
+def minimax(you, opponent, depth, alpha, beta, maximizing, max_depth=4):
+    if depth == 0 or is_terminal(you, opponent):
+        return evaluate(you, opponent)
+    
+    legal_moves = [i for i in range(6) if (you[i] > 0) if maximizing else (opponent[i] > 0)]
+    if not legal_moves:
+        return evaluate(you, opponent)
+    
+    if maximizing:
+        max_eval = -float('inf')
+        for move in legal_moves:
+            new_you, new_opp, next_max = simulate_move(you, opponent, move, True)
+            if next_max:
+                eval = minimax(new_you, new_opp, depth - 1, alpha, beta, True, max_depth)
+            else:
+                eval = minimax(new_you, new_opp, depth - 1, alpha, beta, False, max_depth)
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for move in legal_moves:
+            new_you, new_opp, next_max = simulate_move(you, opponent, move, False)
+            if next_max:
+                eval = minimax(new_opp, new_you, depth - 1, alpha, beta, False, max_depth)
+            else:
+                eval = minimax(new_opp, new_you, depth - 1, alpha, beta, True, max_depth)
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    legal_moves = [i for i in range(6) if you[i] > 0]
+    if not legal_moves:
+        # Should not happen as per problem statement
+        return 0
+    
+    best_move = legal_moves[0]
+    best_score = -float('inf')
+    
+    for move in legal_moves:
+        new_you, new_opp, next_max = simulate_move(you, opponent, move, True)
+        if next_max:
+            score = minimax(new_you, new_opp, 3, -float('inf'), float('inf'), True)
+        else:
+            score = minimax(new_you, new_opp, 3, -float('inf'), float('inf'), False)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move
+```

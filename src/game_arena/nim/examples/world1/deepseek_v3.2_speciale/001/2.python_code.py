@@ -1,0 +1,56 @@
+
+def policy(piles: list[int]) -> str:
+    """
+    Returns an optimal move for 4-pile misère Nim.
+    Format: 'pile,take' where pile is 0‑based index, take is a positive integer.
+    """
+    # 1. All piles are 0 or 1
+    if max(piles) <= 1:
+        # Find any pile with a 1 (there must be at least one, game not over)
+        for i in range(4):
+            if piles[i] == 1:
+                return f"{i},1"
+        # Should never reach here, but fallback
+        return "0,1"
+
+    # 2. There is at least one pile > 1
+    # Compute nim‑sum (xor of all piles)
+    s = piles[0] ^ piles[1] ^ piles[2] ^ piles[3]
+
+    # 2a. Losing position (nim‑sum == 0)
+    if s == 0:
+        # Any move loses against perfect play; take 1 from the largest pile
+        idx = max(range(4), key=lambda i: piles[i])
+        return f"{idx},1"
+
+    # 2b. Winning position (nim‑sum != 0)
+    # Identify piles > 1
+    gt1 = [i for i in range(4) if piles[i] > 1]
+    if len(gt1) == 1:
+        # Special case: exactly one pile > 1
+        i = gt1[0]
+        # Count how many other piles are exactly 1
+        k = sum(1 for j in range(4) if j != i and piles[j] == 1)
+        if k % 2 == 0:
+            # Make number of ones odd: leave 1 in the large pile
+            take = piles[i] - 1
+        else:
+            # Make number of ones odd: remove the whole large pile
+            take = piles[i]
+        return f"{i},{take}"
+    else:
+        # Multiple piles > 1: normal Nim zeroing move
+        for i in range(4):
+            if piles[i] == 0:
+                continue
+            target = piles[i] ^ s
+            if target < piles[i]:
+                # This move makes nim‑sum zero and leaves at least one pile > 1
+                take = piles[i] - target
+                return f"{i},{take}"
+        # Fallback (should never be reached)
+        for i in range(4):
+            if piles[i] > 0:
+                return f"{i},1"
+        # Ultimate fallback (impossible)
+        return "0,1"

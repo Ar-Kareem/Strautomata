@@ -1,0 +1,208 @@
+
+import numpy as np
+import sys
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    # Combine boards to identify empty squares
+    board = you + opponent
+    empty = (board == 0)
+    
+    # Get all legal moves
+    legal_moves = get_legal_moves(you, opponent)
+    
+    if len(legal_moves) == 0:
+        return "pass"
+    
+    # If we can take a corner, always take it
+    corner_moves = [move for move in legal_moves if move in [("a1", 0, 0), ("h1", 0, 7), ("a8", 7, 0), ("h8", 7, 7)]]
+    if corner_moves:
+        return corner_moves[0][0]
+    
+    # Otherwise, use minimax with alpha-beta pruning
+    # Depth 5 is safe within 1 second on modern hardware
+    best_move = None
+    best_score = -float('inf')
+    alpha = -float('inf')
+    beta = float('inf')
+    
+    for move_str, r, c in legal_moves:
+        # Simulate move
+        new_you, new_opponent = make_move(you, opponent, r, c)
+        score = minimax(new_opponent, new_you, 4, alpha, beta, False)  # opponent's turn next
+        if score > best_score:
+            best_score = score
+            best_move = move_str
+        alpha = max(alpha, best_score)
+        if beta <= alpha:
+            break  # alpha-beta pruning
+    
+    return best_move if best_move else legal_moves[0][0]
+
+
+def get_legal_moves(you, opponent):
+    """Return list of legal moves as (move_string, row, col)"""
+    moves = []
+    directions = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+    
+    for r in range(8):
+        for c in range(8):
+            if you[r][c] == 0 and opponent[r][c] == 0:  # empty square
+                for dr, dc in directions:
+                    if is_flip(you, opponent, r, c, dr, dc):
+                        # Convert to algebraic notation
+                        move_str = chr(ord('a') + c) + str(r + 1)
+                        moves.append((move_str, r, c))
+                        break  # no need to check other directions for this square
+    return moves
+
+
+def is_flip(you, opponent, r, c, dr, dc):
+    """Check if placing at (r,c) flips at least one opponent disc in direction (dr,dc)"""
+    opponent_found = False
+    r += dr
+    c += dc
+    while 0 <= r < 8 and 0 <= c < 8:
+        if opponent[r][c] == 1:
+            opponent_found = True
+        elif you[r][c] == 1:
+            return opponent_found
+        else:
+            break
+        r += dr
+        c += dc
+    return False
+
+
+def make_move(you, opponent, r, c):
+    """Return new you and opponent arrays after placing disc at (r,c)"""
+    new_you = you.copy()
+    new_opponent = opponent.copy()
+    new_you[r][c] = 1
+    
+    directions = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+    for dr, dc in directions:
+        to_flip = []
+        r2, c2 = r + dr, c + dc
+        while 0 <= r2 < 8 and 0 <= c2 < 8:
+            if new_opponent[r2][c2] == 1:
+                to_flip.append((r2, c2))
+            elif new_you[r2][c2] == 1:
+                for fr, fc in to_flip:
+                    new_you[fr][fc] = 1
+                    new_opponent[fr][fc] = 0
+                break
+            else:
+                break
+            r2 += dr
+            c2 += dc
+    
+    return new_you, new_opponent
+
+
+def minimax(you, opponent, depth, alpha, beta, maximizing_player):
+    """Minimax with alpha-beta pruning"""
+    if depth == 0:
+        return evaluate_board(you, opponent)
+    
+    legal_moves = get_legal_moves(you, opponent)
+    
+    if len(legal_moves) == 0:
+        # Pass turn, check if opponent can move
+        opp_legal = get_legal_moves(opponent, you)
+        if len(opp_legal) == 0:
+            # Game over
+            return evaluate_board(you, opponent)
+        else:
+            # Opponent moves, we pass
+            return minimax(opponent, you, depth - 1, alpha, beta, not maximizing_player)
+    
+    if maximizing_player:
+        max_eval = -float('inf')
+        for move_str, r, c in legal_moves:
+            new_you, new_opponent = make_move(you, opponent, r, c)
+            eval_score = minimax(new_opponent, new_you, depth - 1, alpha, beta, False)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for move_str, r, c in legal_moves:
+            new_you, new_opponent = make_move(you, opponent, r, c)
+            eval_score = minimax(new_opponent, new_you, depth - 1, alpha, beta, True)
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval
+
+
+def evaluate_board(you, opponent):
+    """Heuristic evaluation function"""
+    # Count of your discs
+    your_discs = np.sum(you)
+    opp_discs = np.sum(opponent)
+    
+    # Corner control (valuable, hard to flip)
+    corners = [(0,0), (0,7), (7,0), (7,7)]
+    corner_score = 0
+    for r, c in corners:
+        if you[r][c] == 1:
+            corner_score += 25
+        elif opponent[r][c] == 1:
+            corner_score -= 25
+    
+    # Edge control (non-corner)
+    edge_score = 0
+    edges = []
+    for r in [0, 7]:
+        for c in range(1, 7):
+            edges.append((r, c))
+    for c in [0, 7]:
+        for r in range(1, 7):
+            edges.append((r, c))
+    
+    for r, c in edges:
+        if you[r][c] == 1:
+            edge_score += 5
+        elif opponent[r][c] == 1:
+            edge_score -= 5
+    
+    # Mobility (number of legal moves)
+    your_moves = len(get_legal_moves(you, opponent))
+    opp_moves = len(get_legal_moves(opponent, you))
+    mobility_score = (your_moves - opp_moves) * 2
+    
+    # Stability (number of discs that cannot be flipped)
+    # Simple approximation: count discs not adjacent to empty squares as stable
+    stable_you = 0
+    stable_opp = 0
+    directions = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+    for r in range(8):
+        for c in range(8):
+            if you[r][c] == 1:
+                is_stable = True
+                for dr, dc in directions:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 8 and 0 <= nc < 8 and (you[nr][nc] == 0 and opponent[nr][nc] == 0):
+                        is_stable = False
+                        break
+                if is_stable:
+                    stable_you += 1
+            elif opponent[r][c] == 1:
+                is_stable = True
+                for dr, dc in directions:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 8 and 0 <= nc < 8 and (you[nr][nc] == 0 and opponent[nr][nc] == 0):
+                        is_stable = False
+                        break
+                if is_stable:
+                    stable_opp += 1
+    stability_score = (stable_you - stable_opp) * 3
+    
+    # Disc count difference (small weight)
+    disc_score = (your_discs - opp_discs) * 1.0
+    
+    total_score = corner_score + edge_score + mobility_score + stability_score + disc_score
+    return total_score

@@ -1,0 +1,103 @@
+
+def check_winner(board):
+    """
+    Check if there is a winner on the board.
+    Returns 1 if player 1 wins, -1 if player 2 wins, 0 if no winner.
+    """
+    # Check rows
+    for i in range(3):
+        if board[i][0] != 0 and board[i][0] == board[i][1] == board[i][2]:
+            return board[i][0]
+    # Check columns
+    for j in range(3):
+        if board[0][j] != 0 and board[0][j] == board[1][j] == board[2][j]:
+            return board[0][j]
+    # Check diagonals
+    if board[0][0] != 0 and board[0][0] == board[1][1] == board[2][2]:
+        return board[0][0]
+    if board[0][2] != 0 and board[0][2] == board[1][1] == board[2][0]:
+        return board[0][2]
+    return 0
+
+def is_board_full(board):
+    """
+    Check if the board is full (all cells filled).
+    Returns True if full, False otherwise.
+    """
+    for i in range(3):
+        for j in range(3):
+            if board[i][j] == 0:
+                return False
+    return True
+
+def get_current_player(board):
+    """
+    Determine whose turn it is based on the board state.
+    Returns 1 if it's player 1's turn, -1 if it's player 2's turn.
+    """
+    count_1 = 0
+    count_minus1 = 0
+    for i in range(3):
+        for j in range(3):
+            if board[i][j] == 1:
+                count_1 += 1
+            elif board[i][j] == -1:
+                count_minus1 += 1
+    if count_1 == count_minus1:
+        return 1
+    elif count_1 == count_minus1 + 1:
+        return -1
+    else:
+        # Default to player 1's turn for invalid states
+        return 1
+
+def minimax(board, depth):
+    """
+    Minimax algorithm to find the best move for the current player.
+    Returns a tuple (best_score, best_move) where best_move is (row, col) or None if game over.
+    """
+    winner = check_winner(board)
+    if winner == 1:
+        return (10 - depth, None)
+    elif winner == -1:
+        return (depth - 10, None)
+    elif is_board_full(board):
+        return (0, None)
+    
+    current_player = get_current_player(board)
+    
+    if current_player == 1:
+        best_score = -10**9
+        best_move = None
+        for i in range(3):
+            for j in range(3):
+                if board[i][j] == 0:
+                    board[i][j] = 1
+                    score, _ = minimax(board, depth + 1)
+                    board[i][j] = 0  # Backtrack
+                    if score > best_score:
+                        best_score = score
+                        best_move = (i, j)
+        return (best_score, best_move)
+    else:  # current_player == -1
+        best_score = 10**9
+        best_move = None
+        for i in range(3):
+            for j in range(3):
+                if board[i][j] == 0:
+                    board[i][j] = -1
+                    score, _ = minimax(board, depth + 1)
+                    board[i][j] = 0  # Backtrack
+                    if score < best_score:
+                        best_score = score
+                        best_move = (i, j)
+        return (best_score, best_move)
+
+def policy(board):
+    """
+    Main function to provide the next move for player 1.
+    Assumes the board has at least one empty cell and it's player 1's turn.
+    Returns a tuple (row, col) indicating the chosen move.
+    """
+    _, best_move = minimax(board, 0)
+    return best_move

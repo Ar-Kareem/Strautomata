@@ -1,0 +1,139 @@
+
+import numpy as np
+from collections import deque
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    # Convert to sets for faster lookups
+    my_stones = set(me)
+    opp_stones = set(opp)
+    empty_cells = [(r, c) for r in range(15) for c in range(15) if valid_mask[r][c] and (r, c) not in my_stones and (r, c) not in opp_stones]
+    
+    # Check adjacent cells in hexagonal grid
+    def get_neighbors(r, c):
+        neighbors = []
+        # Same column moves
+        if r > 0: neighbors.append((r-1, c))
+        if r < 14: neighbors.append((r+1, c))
+        # Left column moves
+        if c > 0:
+            neighbors.append((r, c-1))
+            if r < 14: neighbors.append((r+1, c-1))
+        # Right column moves
+        if c < 14:
+            neighbors.append((r, c+1))
+            if r > 0: neighbors.append((r-1, c+1))
+        return neighbors
+    
+    # Check if a move completes a winning structure
+    def is_winning_move(r, c, stones):
+        stones = stones | {(r, c)}
+        
+        # Check for bridge (connects 2 corners)
+        corners = {(0,0), (0,14), (14,0), (14,14)}
+        my_corners = stones & corners
+        if len(my_corners) >= 2:
+            for c1 in my_corners:
+                for c2 in my_corners:
+                    if c1 != c2 and connected(c1, c2, stones):
+                        return True
+        
+        # Check for fork (connects 3 edges)
+        edges = []
+        if r == 0: edges.append('top')
+        if r == 14: edges.append('bottom')
+        if c == 0: edges.append('left')
+        if c == 14: edges.append('right')
+        if r + c == 14: edges.append('diag1')
+        if r == c: edges.append('diag2')
+        
+        if len(edges) >= 3:
+            return True
+        
+        # Check for ring (closed loop)
+        if len(stones) >= 6:
+            neighbors = get_neighbors(r, c)
+            for (nr, nc) in neighbors:
+                if (nr, nc) in stones:
+                    visited = set()
+                    stack = [(nr, nc, None)]
+                    while stack:
+                        cr, cc, parent = stack.pop()
+                        if (cr, cc) == (nr, nc) and parent is not None and parent != (r, c):
+                            return True
+                        if (cr, cc) in visited:
+                            continue
+                        visited.add((cr, cc))
+                        for (ar, ac) in get_neighbors(cr, cc):
+                            if (ar, ac) in stones and (ar, ac) != parent:
+                                stack.append((ar, ac, (cr, cc)))
+        return False
+    
+    # Check if two points are connected via stones
+    def connected(a, b, stones):
+        visited = set()
+        queue = deque([a])
+        while queue:
+            current = queue.popleft()
+            if current == b:
+                return True
+            if current in visited:
+                continue
+            visited.add(current)
+            for neighbor in get_neighbors(*current):
+                if neighbor in stones:
+                    queue.append(neighbor)
+        return False
+    
+    # Check for immediate winning moves
+    for r, c in empty_cells:
+        if is_winning_move(r, c, my_stones):
+            return (r, c)
+    
+    # Check for opponent's winning moves and block them
+    for r, c in empty_cells:
+        if is_winning_move(r, c, opp_stones):
+            return (r, c)
+    
+    # Heuristic evaluation for non-immediate moves
+    def evaluate_move(r, c):
+        score = 0
+        stones = my_stones | {(r, c)}
+        
+        # Prefer corners and edges early
+        if len(my_stones) + len(opp_stones) < 15:
+            if r == 0 or r == 14 or c == 0 or c == 14:
+                score += 5
+            if (r == 0 and c == 0) or (r == 0 and c == 14) or (r == 14 and c == 0) or (r == 14 and c == 14):
+                score += 10
+        
+        # Maximize connectivity
+        neighbors = get_neighbors(r, c)
+        for nr, nc in neighbors:
+            if (nr, nc) in my_stones:
+                score += 3
+        
+        # Center control
+        distance_to_center = abs(r-7) + abs(c-7)
+        if len(my_stones) + len(opp_stones) > 30:
+            score += (14 - distance_to_center)
+        
+        # Potential to create multiple threats
+        stones = my_stones | {(r, c)}
+        for dr, dc in [(0,1), (1,0), (1,-1), (-1,1)]:
+            for i in range(1, 4):
+                nr, nc = r + i*dr, c + i*dc
+                if 0 <= nr < 15 and 0 <= nc < 15 and (nr, nc) in stones:
+                    score += 2
+        
+        return score
+    
+    # Select best heuristic move
+    best_move = None
+    best_score = -1
+    for r, c in empty_cells:
+        score = evaluate_move(r, c)
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+    
+    return best_move if best_move is not None else empty_cells[0]

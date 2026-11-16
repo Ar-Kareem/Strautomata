@@ -1,0 +1,128 @@
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    me_set = set(me)
+    opp_set = set(opponent)
+    occupied = me_set | opp_set
+    
+    def neighbors(r, c):
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if 1 <= nr <= 19 and 1 <= nc <= 19:
+                yield nr, nc
+    
+    def get_group_and_liberties(start, stone_set):
+        group = set()
+        liberties = set()
+        stack = [start]
+        while stack:
+            pos = stack.pop()
+            if pos in group:
+                continue
+            group.add(pos)
+            for nb in neighbors(*pos):
+                if nb in stone_set and nb not in group:
+                    stack.append(nb)
+                elif nb not in occupied:
+                    liberties.add(nb)
+        return group, liberties
+    
+    def would_capture(move, target_set):
+        for nb in neighbors(*move):
+            if nb in target_set:
+                group, libs = get_group_and_liberties(nb, target_set)
+                remaining_libs = libs - {move}
+                if len(remaining_libs) == 0:
+                    return True
+        return False
+    
+    def is_legal(move):
+        if move in occupied:
+            return False
+        r, c = move
+        if not (1 <= r <= 19 and 1 <= c <= 19):
+            return False
+        
+        temp_occ = occupied | {move}
+        temp_me = me_set | {move}
+        
+        if would_capture(move, opp_set):
+            return True
+        
+        group, libs = get_group_and_liberties(move, temp_me)
+        if len(libs) == 0:
+            return False
+        return True
+    
+    # Priority 1: Capture opponent stones
+    for opp in opp_set:
+        group, libs = get_group_and_liberties(opp, opp_set)
+        if len(libs) == 1:
+            move = list(libs)[0]
+            if is_legal(move):
+                return move
+    
+    # Priority 2: Save our stones in atari
+    for stone in me_set:
+        group, libs = get_group_and_liberties(stone, me_set)
+        if len(libs) == 1:
+            for lib in libs:
+                for ext in neighbors(*lib):
+                    if ext not in occupied and is_legal(ext):
+                        return ext
+            move = list(libs)[0]
+            if is_legal(move):
+                return move
+    
+    # Opening / general moves
+    star_points = [(4,4), (4,10), (4,16), (10,4), (10,10), (10,16), (16,4), (16,10), (16,16)]
+    for sp in star_points:
+        if sp not in occupied and is_legal(sp):
+            return sp
+    
+    # Extend from our stones
+    best_move = None
+    best_score = -1000
+    
+    candidates = []
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if (r, c) not in occupied:
+                candidates.append((r, c))
+    
+    for move in candidates:
+        if not is_legal(move):
+            continue
+        
+        r, c = move
+        score = 0
+        
+        # Prefer center-ish
+        score += (10 - abs(r - 10)) * 0.1 + (10 - abs(c - 10)) * 0.1
+        
+        # Proximity to friendly stones
+        for fr, fc in me_set:
+            dist = abs(r - fr) + abs(c - fc)
+            if dist <= 3:
+                score += (4 - dist) * 2
+        
+        # Reduce opponent liberties
+        for nb in neighbors(r, c):
+            if nb in opp_set:
+                _, libs = get_group_and_liberties(nb, opp_set)
+                if len(libs) <= 3:
+                    score += (4 - len(libs)) * 3
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    if best_move:
+        return best_move
+    
+    # Fallback: any legal move
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if is_legal((r, c)):
+                return (r, c)
+    
+    return (0, 0)

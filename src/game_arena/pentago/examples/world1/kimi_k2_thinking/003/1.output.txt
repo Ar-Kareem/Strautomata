@@ -1,0 +1,250 @@
+**Strategy Overview**
+
+The AI uses a depth‑limited minimax search with alpha‑beta pruning.  
+For each legal move it looks one opponent reply ahead (depth = 2).  
+The evaluation function rewards immediate wins, blocks immediate losses and otherwise counts potential 4‑in‑a‑row and 3‑in‑a‑row threats.  
+A small opening book handles the empty board.
+
+**Key Ideas**
+
+1. **Board representation** – 6 × 6 integer grid: 0 empty, 1 for the current player, –1 for the opponent.  
+2. **Move generation** – Place a marble on any empty cell, then rotate any quadrant that is not empty (or the quadrant just placed in).  
+3. **Win detection** – Check all 5‑cell windows in the four directions (horizontal, vertical, two diagonals).  
+4. **Evaluation** –  
+   * +1000 if we win, –1000 if we lose, 0 for a draw.  
+   * Otherwise score = (our 4‑threats – opponent 4‑threats) × 10 + (our 3‑threats – opponent 3‑threats).  
+5. **Search** – Minimax with α‑β pruning, depth = 2 (our move + opponent reply).  
+6. **Opening book** – On an empty board the AI plays the central cell (3,3) and rotates the top‑left quadrant left.
+
+The code follows exactly the required API and returns a legal move string for every possible input.
+
+<code>
+import time
+from math import inf
+
+# ----------------------------------------------------------------------
+# Constants and pre‑computed windows
+# ----------------------------------------------------------------------
+WIN_SCORE = 1000
+LOSS_SCORE = -1000
+DRAW_SCORE = 0
+
+# All 5‑cell windows on a 6×6 board (each window is a list of (r,c) tuples)
+WINDOWS = []
+# Horizontal (rows 0‑5, start col 0‑1)
+for r in range(6):
+    for c in range(2):
+        WINDOWS.append([(r, c + i) for i in range(5)])
+# Vertical (cols 0‑5, start row 0‑1)
+for c in range(6):
+    for r in range(2):
+        WINDOWS.append([(r + i, c) for i in range(5)])
+# Diagonal down‑right (start row 0‑1, start col 0‑1)
+for r in range(2):
+    for c in range(2):
+        WINDOWS.append([(r + i, c + i) for i in range(5)])
+# Diagonal down‑left (start row 0‑1, start col 4‑5)
+for r in range(2):
+    for c in range(4, 6):
+        WINDOWS.append([(r + i, c - i) for i in range(5)])
+
+# ----------------------------------------------------------------------
+# Helper functions
+# ----------------------------------------------------------------------
+def is_empty(board):
+    """True if board has no stones."""
+    for r in range(6):
+        for c in range(6):
+            if board[r][c] != 0:
+                return False
+    return True
+
+def quadrant_of(r, c):
+    """Return quadrant index (0‑3) for cell (r,c)."""
+    return (0 if r < 3 else 2) + (0 if c < 3 else 1)
+
+def quadrant_empty(board, q):
+    """True if quadrant q contains no stones."""
+    if q == 0:
+        r0, c0 = 0, 0
+    elif q == 1:
+        r0, c0 = 0, 3
+    elif q == 2:
+        r0, c0 = 3, 0
+    else:  # q == 3
+        r0, c0 = 3, 3
+    for i in range(3):
+        for j in range(3):
+            if board[r0 + i][c0 + j] != 0:
+                return False
+    return True
+
+def rotate_quadrant(board, q, direc):
+    """Rotate quadrant q in‑place: 'L' = 90° anticlockwise, 'R' = 90° clockwise."""
+    if q == 0:
+        r0, c0 = 0, 0
+    elif q == 1:
+        r0, c0 = 0, 3
+    elif q == 2:
+        r0, c0 = 3, 0
+    else:  # q == 3
+        r0, c0 = 3, 3
+    # Extract 3×3 sub‑grid
+    sub = [[board[r0 + i][c0 + j] for j in range(3)] for i in range(3)]
+    if direc == 'L':        # anticlockwise
+        rot = [[sub[j][2 - i] for j in range(3)] for i in range(3)]
+    else:                    # clockwise
+        rot = [[sub[2 - j][i] for j in range(3)] for i in range(3)]
+    # Write back
+    for i in range(3):
+        for j in range(3):
+            board[r0 + i][c0 + j] = rot[i][j]
+
+def apply_move(board, player, move):
+    """Return a new board after applying move (r,c,q,direc)."""
+    r, c, q, direc = move
+    new_board = [row[:] for row in board]   # copy
+    new_board[r][c] = player                 # place stone
+    rotate_quadrant(new_board, q, direc)      # rotate quadrant
+    return new_board
+
+def generate_moves(board, player):
+    """Yield all legal moves for player (player = 1 or -1)."""
+    # Determine which quadrants are currently empty (so we can skip rotating them
+    # unless we are placing a stone inside them).
+    empty_quad = [quadrant_empty(board, q) for q in range(4)]
+    for r in range(6):
+        for c in range(6):
+            if board[r][c] != 0:
+                continue
+            q_cell = quadrant_of(r, c)
+            for q in range(4):
+                # Skip rotating an empty quadrant that is not the one we are placing in
+                if empty_quad[q] and q != q_cell:
+                    continue
+                for direc in ('L', 'R'):
+                    yield (r, c, q, direc)
+
+def check_win(board, player):
+    """True if player has a five‑in‑a‑row (>=5 contiguous stones)."""
+    for win in WINDOWS:
+        cnt = 0
+        for (rr, cc) in win:
+            if board[rr][cc] == player:
+                cnt += 1
+        if cnt == 5:
+            return True
+    return False
+
+def count_potential_lines(board, player):
+    """Return (count4, count3) of open 4‑ and 3‑stone lines for player."""
+    cnt4 = cnt3 = 0
+    opp = -player
+    for win in WINDOWS:
+        ours = 0
+        blocked = False
+        for (rr, cc) in win:
+            val = board[rr][cc]
+            if val == opp:
+                blocked = True
+                break
+            if val == player:
+                ours += 1
+        if blocked:
+            continue
+        if ours == 4:
+            cnt4 += 1
+        elif ours == 3:
+            cnt3 += 1
+    return cnt4, cnt3
+
+def evaluate(board):
+    """Static evaluation from the viewpoint of player 1 (our AI)."""
+    we_win = check_win(board, 1)
+    opp_win = check_win(board, -1)
+    if we_win and not opp_win:
+        return WIN_SCORE
+    if opp_win and not we_win:
+        return LOSS_SCORE
+    if we_win and opp_win:
+        return DRAW_SCORE
+
+    our4, our3 = count_potential_lines(board, 1)
+    opp4, opp3 = count_potential_lines(board, -1)
+    # Weight 4‑threats more heavily than 3‑threats
+    return (our4 - opp4) * 10 + (our3 - opp3)
+
+def minimax(board, depth, maximizing_player, alpha, beta):
+    """Minimax with α‑β pruning. Returns (best_value, best_move)."""
+    # Terminal test
+    we_win = check_win(board, 1)
+    opp_win = check_win(board, -1)
+    if we_win or opp_win or depth == 0:
+        return evaluate(board), None
+
+    player = 1 if maximizing_player else -1
+    best_move = None
+
+    if maximizing_player:
+        best_value = -inf
+        for move in generate_moves(board, player):
+            new_board = apply_move(board, player, move)
+            # Immediate win for the player who just moved?
+            if check_win(new_board, player) and not check_win(new_board, -player):
+                return WIN_SCORE, move
+            value, _ = minimax(new_board, depth - 1, False, alpha, beta)
+            if value > best_value:
+                best_value = value
+                best_move = move
+            alpha = max(alpha, best_value)
+            if beta <= alpha:
+                break
+        return best_value, best_move
+    else:  # minimizing player
+        best_value = inf
+        for move in generate_moves(board, player):
+            new_board = apply_move(board, player, move)
+            # Immediate win for opponent?
+            if check_win(new_board, player) and not check_win(new_board, -player):
+                return LOSS_SCORE, move
+            value, _ = minimax(new_board, depth - 1, True, alpha, beta)
+            if value < best_value:
+                best_value = value
+                best_move = move
+            beta = min(beta, best_value)
+            if beta <= alpha:
+                break
+        return best_value, best_move
+
+def choose_move(board):
+    """Select the best move using depth‑2 minimax."""
+    # Fixed depth 2 gives a good balance between strength and speed.
+    _, move = minimax(board, depth=2, maximizing_player=True, alpha=-inf, beta=inf)
+    return move
+
+def policy(you, opponent):
+    """
+    Required API: you[r][c] == 1 means our stone,
+                  opponent[r][c] == 1 means opponent stone.
+    Returns a move string "row,col,quad,dir".
+    """
+    # Build internal board representation
+    board = [[0] * 6 for _ in range(6)]
+    for r in range(6):
+        for c in range(6):
+            if you[r][c] == 1:
+                board[r][c] = 1
+            elif opponent[r][c] == 1:
+                board[r][c] = -1
+
+    # Opening book: empty board
+    if is_empty(board):
+        # Place at centre (row 3, col 3) and rotate top‑left quadrant left
+        return "3,3,0,L"
+
+    # Otherwise search
+    move = choose_move(board)
+    # Convert to 1‑based indices and string format
+    r, c, q, d = move
+    return f"{r+1},{c+1},{q},{d}"
+</code>

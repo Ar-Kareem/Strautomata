@@ -1,0 +1,369 @@
+**Chain of Thought:**
+
+1.  **Understand the Goal**: Implement a heuristic-based AI for Pentago. The AI must prioritize immediate wins, block opponent wins, and maximize positional advantage using a scoring function. The output must be a valid move string.
+
+2.  **Game State Representation**:
+    *   Input: `you` and `opponent` (6x6 arrays of 0/1).
+    *   Internal Representation: Use `numpy` for efficient 2D array manipulation. Map rows/cols 0-5 for internal logic (inputs are likely 0-indexed lists, as is standard in Python, though the prompt text describes 1-indexed coordinates for the output).
+
+3.  **Move Mechanics**:
+    *   **Placement**: Select an empty cell $(r, c)$.
+    *   **Rotation**: Select a quadrant $q \in [0, 3]$ and direction $d \in \{L, R\}$.
+    *   **Application**: Create a new board state by placing the marble, then rotating the specific quadrant.
+
+4.  **Win Detection**:
+    *   Need a function to check for 5-in-a-row (horizontal, vertical, diagonal) on a given 6x6 grid.
+
+5.  **Evaluation Strategy (Minimax/Heuristics)**:
+    *   **Depth 0 (Terminal Checks)**:
+        *   Iterate through all possible moves (Placement $\times$ Rotation).
+        *   Check if any move results in an immediate win for the AI. If yes, take it.
+        *   Check if any move results in an immediate win for the Opponent (necessary to block). If yes, take the blocking move.
+    *   **Depth 1 (Lookahead)**:
+        *   If no immediate win/loss is found, evaluate moves based on the resulting board state. To save time (1 second limit), we can use a heuristic scoring function rather than full Minimax recursion, or limit the depth significantly.
+    *   **Heuristic Scoring**:
+        *   We need to count "potential" lines. A common heuristic for Pentago/Connect-6 is to weight lines by the number of friendly pieces and empty slots, while penalizing opponent lines.
+        *   Score for AI: Sum of weights for lines containing AI pieces (more weight for more pieces).
+        *   Score for Opponent: Sum of weights for lines containing Opponent pieces (these subtract from the total score, to prioritize blocking).
+        *   We can pre-calculate weights for 5-in-a-row possibilities (e.g., a line with 4 AI pieces and 1 empty is very high value).
+
+6.  **Optimization**:
+    *   Generating every board state (9 empty spots max * 4 quads * 2 dirs = 72 moves) is trivial for Python. We can afford to simulate every move.
+    *   Checking the board for 5-in-a-row for every simulation can be expensive if done naively. However, with only 36 cells, direct checking is fine.
+    *   We can optimize by only checking lines relevant to the move, but full board check is safer and fast enough.
+
+7.  **Implementation Steps**:
+    *   **Helper `check_win(board)`**: Iterates all directions to find 5 consecutive 1s.
+    *   **Helper `rotate_quadrant(board, quad, direction)`**: Extracts the 3x3 quadrant, rotates it (numpy `rot90`), and puts it back.
+    *   **Main Loop in `policy`**:
+        1.  Identify empty cells.
+        2.  Initialize `best_move` (default fallback).
+        3.  Iterate all combinations of empty cells, quadrants, and directions.
+        4.  Apply move $\to$ New Board.
+        5.  **Priority 1**: If `check_win(New Board, AI)`: Return this move immediately (guaranteed win).
+        6.  **Priority 2**: If `check_win(New Board, Opponent)`: Save as "must block".
+        7.  **Priority 3 (Heuristic)**: If neither, calculate a score for the New Board. Score = AI_Potential - Opponent_Potential.
+            *   *Scoring Heuristic*: Iterate all possible 5-length segments on the board. Count AI pieces and Opponent pieces in the segment. If both present, ignore. If only AI, add weighted score. If only Opp, subtract weighted score. (e.g., 5 pieces = 1000, 4 pieces = 100, etc.).
+        8.  If a "must block" move was found but no immediate win, return the block move (standard Pentago strategy: don't ignore a forced loss if you can't win).
+        9.  Otherwise, return the move with the best heuristic score.
+
+8.  **Refining the "Must Block" Logic**:
+    *   In Pentago, if the opponent has 5-in-a-row, you lose immediately. Unless you can make 5-in-a-row yourself (which wins), you *must* disrupt the opponent's 5-in-a-row.
+    *   However, the "Must Block" logic is tricky because a rotation might break the line *without* placing a piece on it. My simulation (place + rotate) handles this implicitly. If I simulate a move and the opponent *still* has 5, that move is bad. If I simulate a move and the opponent *no longer* has 5, I am safe.
+    *   Actually, the prompt says: "If both players have a 5-in-a-row after your move is applied, the result is a draw." So if I can't win, but I can draw by creating my own 5 while opponent has 5, that's acceptable. But usually, we just want to stop them from winning.
+    *   Let's stick to the plan: 
+        *   Win? Take it.
+        *   Block? If `check_opponent_win` is true on the new board, that move is bad. Wait, if `check_opponent_win` is true on the new board, *I lose* (unless I also win). So I should *avoid* moves that result in opponent win.
+    *   Correction: If I am considering a move, and after the move, the opponent *does not* have 5, it's safe. If the opponent *does* have 5, it's a loss (unless I also have 5, which is a draw).
+    *   Therefore:
+        *   Iterate moves.
+        *   If move makes *me* win: Return immediately.
+        *   If move makes *opponent* win: Skip this move (unless all moves result in opponent win, then pick one arbitrarily, or check for draw).
+        *   Otherwise, score the board.
+
+9.  **Corner Cases**:
+    *   Board full? The prompt says policy is called only when legal moves exist.
+    *   Importing `numpy`: The prompt allows it.
+
+10. **Code Structure**:
+    *   Define `policy(you, opponent)`.
+    *   Inside: Define helper functions (or nested functions).
+    *   Use `numpy` arrays for board manipulation.
+
+11. **Refining the Scoring (Heuristic)**:
+    *   Standard "Connect N" heuristics usually involve sliding windows.
+    *   For a 6x6 board looking for 5:
+        *   Rows: (0..5) x (0..1) windows.
+        *   Cols: (0..1) x (0..5) windows.
+        *   Diagonals (top-left to bottom-right): Starts at (0,0) to (1,1) size 5.
+        *   Anti-diagonals (top-right to bottom-left): Starts at (0,5) to (1,4) size 5.
+    *   Count content of window:
+        *   `my_count`, `opp_count`, `empty`.
+        *   If `my_count > 0` and `opp_count == 0`: Add `weight[my_count]`.
+        *   If `opp_count > 0` and `my_count == 0`: Subtract `weight[opp_count]`.
+
+12. **Pseudo-code**:
+    ```python
+    def policy(you, opponent):
+        board = you + opponent (or just treat them as separate for checks)
+        empty_cells = find_zeros(you, opponent)
+        best_move = random.choice(empty_cells) + "0,L" (fallback)
+        best_score = -inf
+        potential_block = None
+
+        for (r, c) in empty_cells:
+            for q in 0..3:
+                for d in ['L', 'R']:
+                    # Simulate
+                    new_you = place(you, r, c)
+                    new_opp = opponent # unchanged by placement
+                    # Apply rotation to both (new_you, new_opp)
+                    rotate_board(new_you, q, d)
+                    rotate_board(new_opp, q, d)
+
+                    # Check Win
+                    if check_win(new_you):
+                        return f"{r+1},{c+1},{q},{d}"
+                    
+                    if check_win(new_opp):
+                        # This move is dangerous, opponent wins. 
+                        # Only pick if no other option (safety check at end).
+                        if potential_block is None: 
+                            potential_block = f"{r+1},{c+1},{q},{d}"
+                        continue
+
+                    # Heuristic Score
+                    score = evaluate_board(new_you, new_opp)
+                    if score > best_score:
+                        best_score = score
+                        best_move = f"{r+1},{c+1},{q},{d}"
+
+        # If we found a winning move, we returned already.
+        # If we found no safe moves (only moves where opponent wins), return the block (which loses? No, if I can't avoid loss, I must play something. But usually there is a safe move).
+        # Actually, if `potential_block` is set, it means that move *resulted* in opponent win. I should NOT pick it.
+        # I should pick `best_move` (which might be a move where I lose if all moves cause loss, but `best_score` initialized to -inf handles it).
+        # Wait, if all moves result in opponent win, `best_score` remains -inf. 
+        # In that case, return a legal move. I can return `best_move` (randomly set) or `potential_block`.
+        # If I *must* lose, any move is fine. But usually there is a move that doesn't lose.
+        
+        return best_move
+    ```
+
+13. **Final Check on Imports**:
+    *   `import numpy as np`. It is standard and allowed.
+
+14. **Writing the Code**:
+    *   Ensure 1-based indexing for output string.
+    *   Ensure board access is 0-based.
+    *   Optimization: `rotate_quadrant` using slices is faster than iterating.
+
+15. **Specific Logic for Rotation**:
+    *   Quadrant 0: rows 0-2, cols 0-2.
+    *   Quadrant 1: rows 0-2, cols 3-5.
+    *   Quadrant 2: rows 3-5, cols 0-2.
+    *   Quadrant 3: rows 3-5, cols 3-5.
+    *   `np.rot90(m, k=1)` rotates counter-clockwise (Left). `np.rot90(m, k=-1)` rotates clockwise (Right).
+
+16. **Heuristic Weights**:
+    *   1 in line: 1
+    *   2 in line: 4
+    *   3 in line: 9
+    *   4 in line: 100 (critical)
+    *   5 in line: 1000 (winning)
+
+17. **Handling `you` and `opponent`**:
+    *   The inputs are lists of lists or arrays. I will convert them to `np.ndarray` to be safe.
+
+18. **Edge Case: Full Board**:
+    *   The prompt says `policy` is never called when there are no empty cells. So `empty_cells` will not be empty.
+
+19. **Execution Time**:
+    *   Max moves: 36 empty cells * 4 quads * 2 dirs = 288 moves.
+    *   For each move: 1 simulation + 1 win check (36*4 checks) + 1 evaluation (approx 50 checks).
+    *   Total ops ~ 288 * 200 = 57,600. This is well within 1 second on a 3GHz CPU.
+
+20. **Construction of Output**:
+    *   The prompt requires `return "row,col,quad,dir"`.
+    *   Example: `return f"{row},{col},{quad},{dir}"`.
+    *   Rows/Cols are 1-6.
+    *   Quadrants 0-3.
+    *   Dir is 'L' or 'R'.
+
+This plan covers the requirements. I will now generate the code.
+
+```python
+import numpy as np
+
+def policy(you, opponent):
+    # Convert inputs to numpy arrays for easier manipulation
+    # Assuming inputs are list of lists or similar array-like structures
+    you_arr = np.array(you, dtype=np.int8)
+    opp_arr = np.array(opponent, dtype=np.int8)
+    
+    # Board State: 1 = You, -1 = Opponent, 0 = Empty
+    # We'll use this combined representation for evaluation and win checking
+    board = you_arr - opp_arr
+
+    # Find all empty cells
+    # np.where returns a tuple of arrays (rows, cols)
+    empty_rows, empty_cols = np.where(board == 0)
+    empty_cells = list(zip(empty_rows, empty_cols))
+    
+    # Pre-calculate empty cells to iterate over
+    # If no empty cells (should not happen based on prompt), return a dummy move (though prompt says it's always legal)
+    if not empty_cells:
+        return "1,1,0,L"
+
+    # Helper function to check for 5-in-a-row
+    def check_win(b, target_val):
+        # Check horizontal
+        for r in range(6):
+            for c in range(2): # 0, 1
+                if np.all(b[r, c:c+5] == target_val):
+                    return True
+        # Check vertical
+        for r in range(2): # 0, 1
+            for c in range(6):
+                if np.all(b[r:r+5, c] == target_val):
+                    return True
+        # Check diagonal (top-left to bottom-right)
+        for r in range(2):
+            for c in range(2):
+                if b[r, c] == target_val and b[r+1, c+1] == target_val and b[r+2, c+2] == target_val and b[r+3, c+3] == target_val and b[r+4, c+4] == target_val:
+                    return True
+        # Check diagonal (top-right to bottom-left)
+        for r in range(2):
+            for c in range(4, 6):
+                if b[r, c] == target_val and b[r+1, c-1] == target_val and b[r+2, c-2] == target_val and b[r+3, c-3] == target_val and b[r+4, c-4] == target_val:
+                    return True
+        return False
+
+    # Helper function to rotate a specific quadrant of a board
+    def rotate_quadrant_local(b, quad, direction):
+        # Create a copy to modify
+        b_new = b.copy()
+        
+        # Define slices
+        if quad == 0: sl = (slice(0, 3), slice(0, 3))
+        elif quad == 1: sl = (slice(0, 3), slice(3, 6))
+        elif quad == 2: sl = (slice(3, 6), slice(0, 3))
+        elif quad == 3: sl = (slice(3, 6), slice(3, 6))
+        
+        # Extract quadrant
+        sub = b_new[sl]
+        
+        # Rotate
+        if direction == 'L': # Counter-clockwise
+            b_new[sl] = np.rot90(sub, 1)
+        else: # 'R' - Clockwise
+            b_new[sl] = np.rot90(sub, -1)
+            
+        return b_new
+
+    # Helper function to evaluate the board (Heuristic)
+    # Returns a score: higher is better for 'you' (player 1)
+    def evaluate(b):
+        score = 0
+        # Weights for number of pieces in a line (1, 2, 3, 4, 5)
+        weights = [0, 1, 4, 9, 100, 1000]
+        
+        # Check all possible lines of length 5
+        # Rows
+        for r in range(6):
+            for c in range(2):
+                seg = b[r, c:c+5]
+                score += evaluate_segment(seg)
+        # Cols
+        for r in range(2):
+            for c in range(6):
+                seg = b[r:r+5, c]
+                score += evaluate_segment(seg)
+        # Diagonals (TL to BR)
+        for r in range(2):
+            for c in range(2):
+                seg = [b[r+i, c+i] for i in range(5)]
+                score += evaluate_segment(seg)
+        # Diagonals (TR to BL)
+        for r in range(2):
+            for c in range(4, 6):
+                seg = [b[r+i, c-i] for i in range(5)]
+                score += evaluate_segment(seg)
+        
+        return score
+
+    def evaluate_segment(seg):
+        # seg is a list or array of 5 values: 1 (me), -1 (opp), 0 (empty)
+        my_count = np.sum(seg == 1)
+        opp_count = np.sum(seg == -1)
+        
+        if my_count > 0 and opp_count > 0:
+            return 0 # Blocked line, useless
+        
+        if my_count > 0:
+            return [0, 1, 4, 9, 100, 1000][my_count]
+        elif opp_count > 0:
+            return -[0, 1, 4, 9, 100, 1000][opp_count]
+        else:
+            return 0
+
+    # Main search loop
+    best_move = None
+    best_score = -float('inf')
+    
+    # Storage for a move that prevents immediate loss (if no winning move found)
+    # Actually, we prefer moves that don't allow opponent win.
+    # We will prioritize: 1. Win, 2. Don't Lose, 3. Maximize Score.
+    # If all moves lead to opponent win, we are doomed, but we must play one.
+    
+    for r, c in empty_cells:
+        # Optimization: The rotation part doesn't affect the placement cell if it's outside the quad?
+        # No, rotation rearranges everything.
+        # We try all 8 combos (4 quads * 2 dirs)
+        for q in range(4):
+            for d in ['L', 'R']:
+                # 1. Apply Move
+                # Place my piece
+                # We need to track 'you' and 'opponent' separately for the rotation logic
+                # Since rotation affects both, we simulate on separate arrays
+                
+                # Create temp arrays
+                sim_you = you_arr.copy()
+                sim_opp = opp_arr.copy()
+                
+                # Place piece
+                sim_you[r, c] = 1
+                
+                # Rotate
+                # We need a function that rotates both arrays the same way
+                def rotate_both(arr, q, d):
+                    sl = None
+                    if q == 0: sl = (slice(0, 3), slice(0, 3))
+                    elif q == 1: sl = (slice(0, 3), slice(3, 6))
+                    elif q == 2: sl = (slice(3, 6), slice(0, 3))
+                    elif q == 3: sl = (slice(3, 6), slice(3, 6))
+                    
+                    sub = arr[sl]
+                    k = 1 if d == 'L' else -1
+                    arr[sl] = np.rot90(sub, k)
+                    return arr
+
+                sim_you = rotate_both(sim_you, q, d)
+                sim_opp = rotate_both(sim_opp, q, d)
+                
+                # Construct combined board for checks
+                sim_board = sim_you - sim_opp
+                
+                # 2. Check Win
+                if check_win(sim_board, 1):
+                    # Immediate win
+                    return f"{r+1},{c+1},{q},{d}"
+                
+                # 3. Check Loss (Opponent Win)
+                # If opponent wins on this board, this move is dangerous.
+                if check_win(sim_board, -1):
+                    # We avoid this move if possible.
+                    # However, if we can't block the opponent by placement, we might lose.
+                    # We don't return here, we just skip scoring (or score very low).
+                    # We keep track of a 'desperation move' if all else fails.
+                    if best_move is None:
+                        best_move = f"{r+1},{c+1},{q},{d}"
+                    continue
+                
+                # 4. Heuristic Evaluation
+                current_score = evaluate(sim_board)
+                
+                if current_score > best_score:
+                    best_score = current_score
+                    best_move = f"{r+1},{c+1},{q},{d}"
+
+    # If we found a move with positive score (or just best available), return it.
+    # If best_move is still None (unlikely, but possible if all moves result in loss), 
+    # we return a valid move (the first empty cell with a dummy rotation).
+    # The logic above ensures best_move is set if there's at least one legal move.
+    if best_move is None:
+        # Fallback (should be covered by the loop, but safe fallback)
+        r, c = empty_cells[0]
+        return f"{r+1},{c+1},0,L"
+
+    return best_move
+```

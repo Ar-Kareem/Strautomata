@@ -1,0 +1,75 @@
+
+import numpy as np
+import time
+
+def policy(you_list, opponent_list):
+    you = np.array(you_list)
+    opp = np.array(opponent_list)
+    ROWS, COLS = 5, 6
+    DIRS = [(-1,0,'U'),(1,0,'D'),(0,-1,'L'),(0,1,'R')]
+    
+    def get_moves(board_you, board_opp):
+        moves = []
+        for r in range(ROWS):
+            for c in range(COLS):
+                if board_you[r][c]:
+                    for dr,dc,d in DIRS:
+                        nr,nc = r+dr,c+dc
+                        if 0<=nr<ROWS and 0<=nc<COLS and board_opp[nr][nc]:
+                            moves.append((r,c,nr,nc,d))
+        return moves
+    
+    def apply_move(by, bo, r,c,nr,nc):
+        ny, no = by.copy(), bo.copy()
+        ny[r][c]=0; no[nr][nc]=0; ny[nr][nc]=1
+        return ny, no
+    
+    def alphabeta(by, bo, depth, alpha, beta, maximizing, deadline):
+        if time.time() > deadline:
+            return 0, None
+        moves = get_moves(by, bo)
+        if not moves:
+            return -1000 if maximizing else 1000, None
+        if depth == 0:
+            opp_moves = len(get_moves(bo, by))
+            return len(moves) - opp_moves, None
+        
+        best_move = moves[0]
+        if maximizing:
+            val = -9999
+            for r,c,nr,nc,d in moves:
+                ny, no = apply_move(by, bo, r,c,nr,nc)
+                v, _ = alphabeta(no, ny, depth-1, alpha, beta, False, deadline)
+                if v > val:
+                    val = v; best_move = (r,c,nr,nc,d)
+                alpha = max(alpha, val)
+                if alpha >= beta: break
+            return val, best_move
+        else:
+            val = 9999
+            for r,c,nr,nc,d in moves:
+                ny, no = apply_move(by, bo, r,c,nr,nc)
+                v, _ = alphabeta(no, ny, depth-1, alpha, beta, True, deadline)
+                if v < val:
+                    val = v; best_move = (r,c,nr,nc,d)
+                beta = min(beta, val)
+                if alpha >= beta: break
+            return val, best_move
+    
+    deadline = time.time() + 0.85
+    moves = get_moves(you, opp)
+    if len(moves) == 1:
+        m = moves[0]
+        return f"{m[0]},{m[1]},{m[4]}"
+    
+    best_move = moves[0]
+    for depth in range(1, 30):
+        if time.time() > deadline:
+            break
+        val, move = alphabeta(you, opp, depth, -9999, 9999, True, deadline)
+        if move:
+            best_move = move
+        if abs(val) >= 1000:
+            break
+    
+    return f"{best_move[0]},{best_move[1]},{best_move[4]}"

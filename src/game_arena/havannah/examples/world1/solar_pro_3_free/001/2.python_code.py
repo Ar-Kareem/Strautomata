@@ -1,0 +1,223 @@
+
+import itertools
+from collections import deque
+from typing import List, Tuple, Set
+
+# Hexagonal adjacency offsets for the Havannah board orientation described.
+# Each cell touches 6 others: up, down, left, right, up‑left, up‑right.
+NEIGHBOR_OFFSETS = [(-1, 0), (1, 0), (0, 1), (0, -1), (-1, -1), (-1, 1)]
+
+# Fixed board size and corner/edge coordinates.
+BOARD_SIZE = 15
+CORNERS = {(0, 0), (0, 14), (14, 0), (14, 14), (0, 7), (14, 7)}
+# All cells on the outer ring that are *not* corners.
+EDGES = {
+    (r, c)
+    for r in range(BOARD_SIZE)
+    for c in range(BOARD_SIZE)
+    if (r == 0 or r == BOARD_SIZE - 1 or c == 0 or c == BOARD_SIZE - 1)
+    and (r, c) not in CORNERS
+}
+
+def is_adjacent(r: int, c: int, rr: int, cc: int) -> bool:
+    """True if (rr, cc) is a hexagonal neighbour of (r, c)."""
+    for dr, dc in NEIGHBOR_OFFSETS:
+        nb = (rr + dr, cc + dc)
+        if (r, c) == nb:
+            return True
+    return False
+
+def get_components(stones: Set[Tuple[int, int]]) -> List[Set[Tuple[int, int]]]:
+    """Return a list of disjoint connected components using the hexagonal graph."""
+    visited = set()
+    components = []
+    for stone in stones:
+        if stone in visited:
+            continue
+        comp = set()
+        queue = deque([stone])
+        visited.add(stone)
+        while queue:
+            cur = queue.popleft()
+            comp.add(cur)
+            for dr, dc in NEIGHBOR_OFFSETS:
+                nb = (cur[0] + dr, cur[1] + dc)
+                if 0 <= nb[0] < BOARD_SIZE and 0 <= nb[1] < BOARD_SIZE:
+                    nb_tuple = (nb[0], nb[1])
+                    if nb_tuple in stones and nb_tuple not in visited:
+                        visited.add(nb_tuple)
+                        queue.append(nb_tuple)
+        components.append(comp)
+    return components
+
+def _has_cycle(component: Set[Tuple[int, int]]) -> bool:
+    """Detect a cycle in a component (a ring). Simple DFS with parent tracking."""
+    if len(component) < 3:
+        return False
+    visited = set()
+    for node in component:
+        if node in visited:
+            continue
+        stack = [(node, None)]
+        while stack:
+            cur, parent = stack.pop()
+            visited.add(cur)
+            for dr, dc in NEIGHBOR_OFFSETS:
+                nb = (cur[0] + dr, cur[1] + dc)
+                if 0 <= nb[0] < BOARD_SIZE and 0 <= nb[1] < BOARD_SIZE:
+                    nb_tuple = (nb[0], nb[1])
+                    if nb_tuple in component and nb_tuple != parent:
+                        # Already visited -> a back edge → a cycle.
+                        return True
+            for dr, dc in NEIGHBOR_OFFSETS:
+                nb = (cur[0] + dr, cur[1] + dc)
+                if 0 <= nb[0] < BOARD_SIZE and 0 <= nb[1] < BOARD_SIZE:
+                    nb_tuple = (nb[0], nb[1])
+                    if nb_tuple in component and nb_tuple not in visited:
+                        stack.append((nb_tuple, cur))
+    return False
+
+def _has_bridge(component: Set[Tuple[int, int]]) -> bool:
+    return sum(1 for corner in CORNERS if corner in component) >= 2
+
+def _has_fork(component: Set[Tuple[int, int]]) -> bool:
+    return sum(1 for edge in EDGES if edge in component) >= 3
+
+def _has_ring(component: Set[Tuple[int, int]]) -> bool:
+    return _has_cycle(component)
+
+def is_winning(stones: Set[Tuple[int, int]]) -> bool:
+    """Return True if any component of `stones` already forms a winning structure."""
+    comps = get_components(stones)
+    for comp in comps:
+        if _has_bridge(comp) or _has_fork(comp) or _has_ring(comp):
+            return True
+    return False
+
+def corner_adjacent(comp: Set[Tuple[int, int]]) -> int:
+    """10 points for being adjacent to a corner (0,0) etc."""
+    score = 0
+    for corner in CORNERS:
+        for dr, dc in NEIGHBOR_OFFSETS:
+            nb = (corner[0] + dr, corner[1] + dc)
+            if 0 <= nb[0] < BOARD_SIZE and 0 <= nb[1] < BOARD_SIZE:
+                if nb in comp:
+                    score += 10
+                    break  # only count once per corner
+    return score
+
+def edge_adjacent(comp: Set[Tuple[int, int]]) -> int:
+    """5 points for being adjacent to any edge cell."""
+    score = 0
+    for edge in EDGES:
+        for dr, dc in NEIGHBOR_OFFSETS:
+            nb = (edge[0] + dr, edge[1] + dc)
+            if 0 <= nb[0] < BOARD_SIZE and 0 <= nb[1] < BOARD_SIZE:
+                if nb in comp:
+                    score += 5
+                    break
+    return score
+
+def evaluate_move(
+    me: Set[Tuple[int, int]],
+    add: Tuple[int, int],
+    valid_mask: List[List[bool]],
+) -> Tuple[int, int, int]:
+    """
+    Returns a tuple (score, merges, dist_to_center) for a candidate move `add`.
+    Higher score is better; ties are broken by fewer merges and then smaller Manhattan distance.
+    """
+    # New stone set
+    new_me = me | {add}
+    # components before move
+    prev_comps = get_components(me)
+    prev_cnt = len(prev_comps)
+    # components after move
+    new_comps = get_components(new_me)
+    new_cnt = len(new_comps)
+    merges = max(prev_cnt - new_cnt, 0)      # bonus for reducing components
+
+    # corner & edge bonuses
+    corner_bonus = 0
+    edge_bonus = 0
+    for comp in new_comps:
+        corner_bonus += corner_adjacent(comp)
+        edge_bonus += edge_adjacent(comp)
+
+    # distance to centre for tie‑breaking
+    centre = (BOARD_SIZE // 2, BOARD_SIZE // 2)
+    manhattan = abs(add[0] - centre[0]) + abs(add[1] - centre[1])
+
+    score = merges * 10 + corner_bonus * 5 + edge_bonus * 2
+    return score, merges, manhattan
+
+def policy(me: List[Tuple[int, int]],
+          opp: List[Tuple[int, int]],
+          valid_mask: List[List[bool]]
+          ) -> Tuple[int, int]:
+    """
+    Return a single legal (row, col) tuple for the next Havannah move.
+    """
+    # Convert lists to fast sets
+    me_set = set(me)
+    opp_set = set(opp)
+
+    # Pre‑compute legal empty cells
+    empty_cells = [
+        (r, c) for r in range(BOARD_SIZE)
+        for c in range(BOARD_SIZE)
+        if valid_mask[r][c] and (r, c) not in me_set and (r, c) not in opp_set
+    ]
+    if not empty_cells:
+        # No empty cells – board full; return the first playable cell that exists.
+        # (the arena should never reach this state before we win)
+        for r in range(BOARD_SIZE):
+            for c in range(BOARD_SIZE):
+                if valid_mask[r][c]:
+                    return r, c
+
+    # ------------------------------------------------------------------
+    # 1. Immediate winning moves for us
+    # ------------------------------------------------------------------
+    for (r, c) in empty_cells:
+        if is_winning(me_set | {(r, c)}):
+            return r, c
+
+    # ------------------------------------------------------------------
+    # 2. Opponent immediate win cells (threats) – block if possible
+    # ------------------------------------------------------------------
+    opp_threat_cells: List[Tuple[int, int]] = []
+    for (r, c) in empty_cells:
+        if is_winning(opp_set | {(r, c)}):
+            opp_threat_cells.append((r, c))
+    if opp_threat_cells:
+        # block the most threatening one – simple lexicographic order is enough.
+        return opp_threat_cells[0]
+
+    # ------------------------------------------------------------------
+    # 3. Heuristic search – choose the move that maximises our development
+    # ------------------------------------------------------------------
+    best = None
+    best_score = -1
+    best_merge = -1
+    best_dist = float('inf')
+
+    # Helper to compute current component count (before any move)
+    prev_comps = get_components(me_set)
+    prev_cnt = len(prev_comps)
+
+    for (r, c) in empty_cells:
+        # Evaluate this move
+        score, merges, dist = evaluate_move(me_set, (r, c), valid_mask)
+
+        if score > best_score or (score == best_score and merges > best_merge) or (score == best_score and merges == best_merge and dist < best_dist):
+            best_score = score
+            best_merge = merges
+            best_dist = dist
+            best = (r, c)
+
+    # Safety fallback – if somehow best is None (should not happen)
+    if best is None:
+        best = empty_cells[0]
+
+    return best

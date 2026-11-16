@@ -1,0 +1,353 @@
+The strategy uses a depth-limited Minimax algorithm with Alpha-Beta pruning (search depth 2) to select moves.
+
+1.  **State Evaluation**: I use a heuristic function combining:
+    *   `Mobility`: Number of legal moves available to the current player vs the opponent.
+    *   `Positional`: Sum of distances of the player's amazons from the center, encouraging expansion.
+    *   `Parity`: A bias towards occupying squares with even Manhattan distance sum to potentially limit opponent's movement on a grid graph.
+2.  **Search**: The algorithm explores possible moves. To handle the "shoot an arrow" part of the move, it samples a set of potential arrow shots (near the landing square, near the opponent, and random) rather than exploring all possibilities blindly. This keeps the search focused on impactful moves.
+3.  **Move Generation**: Generates all Queen-like moves (orthogonal and diagonal) for both the Amazon and the arrow, ensuring paths are unobstructed.
+
+```python
+import numpy as np
+import time
+
+# Precompute move directions for Queen-like moves
+DIRECTIONS = [
+    (-1, 0), (1, 0), (0, -1), (0, 1),  # Orthogonal
+    (-1, -1), (-1, 1), (1, -1), (1, 1)  # Diagonal
+]
+
+# Helper to check if a coordinate is within the 6x6 board
+def is_on_board(r, c):
+    return 0 <= r < 6 and 0 <= c < 6
+
+def generate_positions(board, player_id):
+    """
+    Returns a list of (row, col) for amazons of the given player_id.
+    """
+    positions = []
+    for r in range(6):
+        for c in range(6):
+            if board[r, c] == player_id:
+                positions.append((r, c))
+    return positions
+
+def generate_moves_for_amazon(board, r, c):
+    """
+    Generates all valid moves (landing positions) for a specific amazon.
+    """
+    moves = []
+    board_h, board_w = board.shape
+    
+    for dr, dc in DIRECTIONS:
+        nr, nc = r + dr, c + dc
+        while is_on_board(nr, nc):
+            if board[nr, nc] == 0:
+                moves.append((nr, nc))
+                nr += dr
+                nc += dc
+            else:
+                # Blocked by another piece or arrow
+                break
+    return moves
+
+def generate_arrows_for_pos(board, start_r, start_c):
+    """
+    Generates all valid arrow landing positions from a specific starting position.
+    """
+    arrows = []
+    # Treat the starting position as empty (since the amazon is there, but we are shooting from it)
+    # The only blocker on the path is other pieces (1, 2, -1).
+    
+    for dr, dc in DIRECTIONS:
+        nr, nc = start_r + dr, start_c + dc
+        while is_on_board(nr, nc):
+            val = board[nr, nc]
+            # Can land on empty squares (0)
+            if val == 0:
+                arrows.append((nr, nc))
+            # Cannot pass through or land on non-empty squares (1, 2, -1)
+            # If we hit a non-empty square (even if we land on it), we stop.
+            # Logic: if val != 0, we stop expanding in this direction.
+            # Note: We can't land on non-empty, so we don't add it.
+            if val != 0:
+                break
+            nr += dr
+            nc += dc
+    return arrows
+
+def apply_move(board, from_pos, to_pos, arrow_pos, player_id):
+    """
+    Applies the move to a copy of the board and returns the new board.
+    Assumes the move is valid.
+    """
+    new_board = board.copy()
+    
+    # 1. Move the amazon
+    new_board[from_pos] = 0
+    new_board[to_pos] = player_id
+    
+    # 2. Shoot the arrow
+    new_board[arrow_pos] = -1
+    
+    return new_board
+
+def evaluate_board(board, player_id):
+    """
+    Heuristic evaluation function.
+    Returns a score from the perspective of 'player_id'.
+    Higher score is better for player_id.
+    """
+    opponent_id = 2 if player_id == 1 else 1
+    
+    my_amazons = generate_positions(board, player_id)
+    opp_amazons = generate_positions(board, opponent_id)
+    
+    # 1. Mobility: Count of possible moves (Amazon + Arrow combos)
+    # To save time, we approximate mobility by counting valid landing spots for amazons
+    # and valid arrow spots from those.
+    
+    my_mobility = 0
+    for (r, c) in my_amazons:
+        moves = generate_moves_for_amazon(board, r, c)
+        my_mobility += len(moves)
+        # If we want to be more precise, we'd count arrows for each move, but that's expensive.
+        # Just counting moves is a good proxy for board control.
+        
+    opp_mobility = 0
+    for (r, c) in opp_amazons:
+        moves = generate_moves_for_amazon(board, r, c)
+        opp_mobility += len(moves)
+        
+    # 2. Positional: Distance from center (encourage expansion)
+    # Center of 6x6 is roughly (2.5, 2.5). We prefer positions like (0,0) or (5,5) or corners
+    # later in the game, but generally spreading out is good.
+    # Let's use a simple penalty for being close to edges initially, but reward being in corners later?
+    # Actually, simply counting distinct rows/cols occupied or maximizing distances is better.
+    
+    my_position_score = 0
+    for (r, c) in my_amazons:
+        # Parity: Even Manhattan distance sum is often slightly better (bipartite graph coloring)
+        if (r + c) % 2 == 0:
+            my_position_score += 1
+        # Distance from center
+        dist = abs(r - 2.5) + abs(c - 2.5)
+        my_position_score += dist * 0.1 # Slight reward for being away from center (spread out)
+        
+    opp_position_score = 0
+    for (r, c) in opp_amazons:
+        if (r + c) % 2 == 0:
+            opp_position_score += 1
+        dist = abs(r - 2.5) + abs(c - 2.5)
+        opp_position_score += dist * 0.1
+
+    # 3. Material (constant usually, but good to check)
+    # If opponent has 0 amazons, win.
+    if not opp_amazons:
+        return 100000
+    if not my_amazons:
+        return -100000
+
+    # Combine
+    score = (my_mobility - opp_mobility) * 2.0
+    score += (my_position_score - opp_position_score) * 1.0
+    
+    # Encourage blocking opponents
+    # If we can block their moves, mobility drops.
+    
+    return score
+
+def get_all_moves(board, player_id):
+    """
+    Generator that yields (from_pos, to_pos, arrow_pos, new_board) tuples.
+    Uses sampling for arrow generation to save time.
+    """
+    amazons = generate_positions(board, player_id)
+    moves = []
+    
+    for fr, fc in amazons:
+        # Get all legal landing spots for this amazon
+        possible_landings = generate_moves_for_amazon(board, fr, fc)
+        
+        for tr, tc in possible_landings:
+            # For each landing spot, we need to pick an arrow.
+            # We cannot generate all 100+ arrows for every move.
+            # We will sample a smart set of arrows.
+            
+            # 1. Arrows that land near the opponent (pressure)
+            # 2. Arrows that land near the new position (safety/defense)
+            # 3. Arrows that are generally good (random sample)
+            
+            # To do this efficiently, we need the arrow generation helper, 
+            # but we should limit the calls or filter the results.
+            
+            # Let's generate ALL arrows for this specific landing spot first.
+            # If there are too many, we prune.
+            all_arrows = generate_arrows_for_pos(board, tr, tc)
+            
+            if not all_arrows:
+                continue # No arrow possible (should be rare if move is valid)
+                
+            # Strategy: Prioritize arrows based on simple heuristics
+            # We will pick the top K candidates to simulate.
+            # K=3 seems reasonable for speed.
+            
+            # Heuristic 1: Block opponent amazons (land next to them)
+            # Heuristic 2: Land far away (randomize)
+            
+            candidate_arrows = []
+            
+            # Try to find arrows blocking opponents
+            opp_positions = generate_positions(board, 2 if player_id == 1 else 1)
+            
+            # Add arrows that are next to opponents
+            for arrow in all_arrows:
+                for orow, ocol in opp_positions:
+                    if abs(arrow[0] - orow) <= 1 and abs(arrow[1] - ocol) <= 1:
+                        candidate_arrows.append(arrow)
+                        break
+                if len(candidate_arrows) >= 2:
+                    break
+            
+            # Add random arrows to fill up candidates
+            if len(candidate_arrows) < 3:
+                # Shuffle remaining arrows and take some
+                # Note: random is not allowed if we want deterministic output for same board state?
+                # The prompt doesn't explicitly require determinism, but usually it's preferred.
+                # Let's just take the first few to be deterministic and fast.
+                for arrow in all_arrows:
+                    if arrow not in candidate_arrows:
+                        candidate_arrows.append(arrow)
+                    if len(candidate_arrows) >= 3:
+                        break
+            
+            # If we have very few arrows (or none), just take what we have
+            final_arrows = candidate_arrows if candidate_arrows else all_arrows
+            
+            for ar, ac in final_arrows:
+                # Create the move tuple
+                move_data = ((fr, fc), (tr, tc), (ar, ac))
+                
+                # We only need the board state for the recursive search.
+                # We can generate it on demand in the search to save memory, or precompute.
+                # Let's precompute it here.
+                new_board = apply_move(board, (fr, fc), (tr, tc), (ar, ac), player_id)
+                moves.append((move_data, new_board))
+                
+    return moves
+
+def minimax(board, depth, alpha, beta, maximizing_player, player_id, start_time):
+    """
+    Alpha-Beta pruning Minimax.
+    """
+    # Time check
+    if time.time() - start_time > 0.8: # Leave buffer
+        return evaluate_board(board, player_id)
+        
+    if depth == 0:
+        return evaluate_board(board, player_id)
+        
+    current_player = player_id if maximizing_player else (2 if player_id == 1 else 1)
+    
+    moves = get_all_moves(board, current_player)
+    
+    if not moves:
+        # No moves available. This player loses.
+        # If maximizing player has no moves, it's bad (score -10000).
+        # If minimizing player has no moves, it's good (score +10000).
+        if maximizing_player:
+            return -10000
+        else:
+            return 10000
+            
+    if maximizing_player:
+        max_eval = -float('inf')
+        for move_data, next_board in moves:
+            eval_score = minimax(next_board, depth - 1, alpha, beta, False, player_id, start_time)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for move_data, next_board in moves:
+            eval_score = minimax(next_board, depth - 1, alpha, beta, True, player_id, start_time)
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def policy(board) -> str:
+    start_time = time.time()
+    player_id = 1 # We are always player 1
+    
+    # Get all possible moves
+    # We will do a 1-ply lookahead (select best immediate move)
+    # Actually, let's try 2-ply (depth 2 in minimax = my move -> opponent move -> evaluate)
+    # This requires checking all my moves, then for each, sampling opponent moves.
+    
+    moves = get_all_moves(board, player_id)
+    
+    if not moves:
+        # Should not happen if called correctly, but fallback
+        # Return a dummy move if desperate (though invalid)
+        # We must return a string. If no moves, we can't return a legal one.
+        # But prompt says we won't be called if no legal move.
+        # To be safe, let's return a move that exists. If moves is empty, we are stuck.
+        # Raising an error might be better than an illegal string.
+        # We will assume moves is not empty.
+        return ""
+
+    best_score = -float('inf')
+    best_move_str = ""
+    
+    # First, try a quick evaluation of immediate moves to see if we can win immediately
+    # or if we are desperate.
+    
+    # We'll do a 2-depth search.
+    # Depth 1: Our move.
+    # Depth 2: Sample of Opponent's best counter-move.
+    # Depth 3: Evaluate resulting board.
+    
+    # Optimization: If we have few moves, we can search deeper.
+    
+    # Let's implement a loop that performs the search manually to control time and 
+    # select the best move.
+    
+    # 1. Generate candidates
+    # 2. Evaluate candidates
+    
+    # If time is short, just pick best immediate move (Greedy)
+    
+    elapsed = time.time() - start_time
+    
+    # We will iterate through our moves and evaluate them.
+    # We use a depth of 1 (our move) + 1 (opponent response) = 2.
+    
+    depth = 2
+    
+    for move_data, next_board in moves:
+        (from_pos, to_pos, arrow_pos) = move_data
+        
+        # Calculate score for this move
+        # We want to minimize opponent's best response (Minimax logic)
+        
+        # Check time before deep search
+        if time.time() - start_time > 0.7:
+            # Time is running out, revert to greedy (immediate evaluation)
+            score = evaluate_board(next_board, player_id)
+        else:
+            # Look ahead: Opponent's turn
+            # We need to find the best move for the opponent (min score for us)
+            # We can just call minimax on next_board with depth 1.
+            score = minimax(next_board, depth - 1, -float('inf'), float('inf'), False, player_id, start_time)
+            
+        if score > best_score:
+            best_score = score
+            # Format the move string
+            best_move_str = f"{from_pos[0]},{from_pos[1]}:{to_pos[0]},{to_pos[1]}:{arrow_pos[0]},{arrow_pos[1]}"
+            
+    return best_move_str
+```

@@ -1,0 +1,108 @@
+
+import numpy as np
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    board = np.array(board, dtype=np.int8)
+    # If the board is empty, take the center
+    if np.sum(np.abs(board)) == 0:
+        return (1, 1)
+    
+    # Convert board to a more convenient format
+    # 1 for agent, -1 for opponent, 0 for empty
+    def make_move(board, r, c, player):
+        new_board = board.copy()
+        new_board[r, c] = player
+        return new_board
+    
+    def check_winner(board):
+        # Check rows, columns, and diagonals
+        for i in range(3):
+            if np.all(board[i, :] == 1):
+                return 1
+            if np.all(board[:, i] == 1):
+                return 1
+            if np.all(board[i, :] == -1):
+                return -1
+            if np.all(board[:, i] == -1):
+                return -1
+        if np.all(np.diag(board) == 1) or np.all(np.diag(np.fliplr(board)) == 1):
+            return 1
+        if np.all(np.diag(board) == -1) or np.all(np.diag(np.fliplr(board)) == -1):
+            return -1
+        if np.all(board != 0):
+            return 0  # Draw
+        return None  # Game not over
+    
+    def available_moves(board):
+        return [(i, j) for i in range(3) for j in range(3) if board[i, j] == 0]
+    
+    def minimax(board, depth, is_maximizing, alpha=-np.inf, beta=np.inf):
+        winner = check_winner(board)
+        if winner is not None:
+            if winner == 1:
+                return 10 - depth
+            elif winner == -1:
+                return depth - 10
+            else:
+                return 0
+        
+        if is_maximizing:
+            best_score = -np.inf
+            for move in available_moves(board):
+                new_board = make_move(board, move[0], move[1], 1)
+                score = minimax(new_board, depth + 1, False, alpha, beta)
+                best_score = max(score, best_score)
+                alpha = max(alpha, best_score)
+                if beta <= alpha:
+                    break
+            return best_score
+        else:
+            best_score = np.inf
+            for move in available_moves(board):
+                new_board = make_move(board, move[0], move[1], -1)
+                score = minimax(new_board, depth + 1, True, alpha, beta)
+                best_score = min(score, best_score)
+                beta = min(beta, best_score)
+                if beta <= alpha:
+                    break
+            return best_score
+    
+    # If we can win in one move, do it
+    for move in available_moves(board):
+        test_board = make_move(board, move[0], move[1], 1)
+        if check_winner(test_board) == 1:
+            return move
+    
+    # If the opponent can win in one move, block them
+    for move in available_moves(board):
+        test_board = make_move(board, move[0], move[1], -1)
+        if check_winner(test_board) == -1:
+            return move
+    
+    # Otherwise, use minimax to choose the best move
+    best_score = -np.inf
+    best_moves = []
+    
+    for move in available_moves(board):
+        new_board = make_move(board, move[0], move[1], 1)
+        score = minimax(new_board, 0, False)
+        if score > best_score:
+            best_score = score
+            best_moves = [move]
+        elif score == best_score:
+            best_moves.append(move)
+    
+    # If there are multiple equally good moves, choose one that prefers center and corners
+    if best_moves:
+        center = (1, 1)
+        corners = [(0, 0), (0, 2), (2, 0), (2, 2)]
+        
+        if center in best_moves:
+            return center
+        for corner in corners:
+            if corner in best_moves:
+                return corner
+        return best_moves[0]
+    
+    # Fallback (shouldn't happen in normal play)
+    return available_moves(board)[0]

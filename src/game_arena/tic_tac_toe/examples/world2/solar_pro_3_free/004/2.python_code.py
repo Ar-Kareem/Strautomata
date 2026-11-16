@@ -1,0 +1,234 @@
+
+import random
+from typing import List, Tuple
+
+# ----------------------------------------------------------------------
+# Winning and threat detection
+# ----------------------------------------------------------------------
+# All 4‑cell winning lines in a 4×4 board
+LINES4: List[List[Tuple[int, int]]] = [
+    [(0, 0), (0, 1), (0, 2), (0, 3)],  # row 0
+    [(1, 0), (1, 1), (1, 2), (1, 3)],  # row 1
+    [(2, 0), (2, 1), (2, 2), (2, 3)],  # row 2
+    [(3, 0), (3, 1), (3, 2), (3, 3)],  # row 3
+
+    [(0, 0), (1, 0), (2, 0), (3, 0)],  # col 0
+    [(0, 1), (1, 1), (2, 1), (3, 1)],  # col 1
+    [(0, 2), (1, 2), (2, 2), (3, 2)],  # col 2
+    [(0, 3), (1, 3), (2, 3), (3, 3)],  # col 3
+
+    [(0, 0), (1, 1), (2, 2), (3, 3)],  # main diagonal
+    [(0, 3), (1, 2), (2, 1), (3, 0)],  # anti diagonal
+]
+
+# All 3‑cell horizontal and vertical lines
+LINES3: List[List[Tuple[int, int]]] = [
+    # horizontal
+    [(r, c), (r, c + 1), (r, c + 2)] for r in range(4) for c in range(2)
+] + [
+    # vertical
+    [(r, c), (r + 1, c), (r + 2, c)] for c in range(4) for r in range(2)
+]
+
+# ----------------------------------------------------------------------
+# Helper functions
+# ----------------------------------------------------------------------
+def check_win(board: List[List[int]]) -> int | None:
+    """Return 1 if I have a 4‑in‑a‑row, -1 if opponent does, None otherwise."""
+    # 4‑cell lines
+    for line in LINES4:
+        vals = [board[r][c] for r, c in line]
+        if all(v == 1 for v in vals):
+            return 1
+        if all(v == -1 for v in vals):
+            return -1
+    return None
+
+
+def find_winning_move(board: List[List[int]], player: int) -> Tuple[int, int] | None:
+    """Return an empty cell that completes a 4‑cell line for `player`."""
+    for line in LINES4:
+        vals = [board[r][c] for r, c in line]
+        empty = [i for i, v in enumerate(vals) if v == 0]
+        player_count = sum(1 for v in vals if v == player)
+        opponent_count = sum(1 for v in vals if v == -player)
+        if empty and player_count == 3 and opponent_count == 0:
+            # The line has exactly three of my marks – the fourth empty wins.
+            if len(empty) != 1:
+                continue  # should not happen, but be safe
+            r, c = empty[0]
+            return (r, c)
+    return None
+
+
+def find_blocking_move(board: List[List[int]]) -> Tuple[int, int] | None:
+    """Return an empty cell that blocks opponent from winning on the next turn."""
+    # If opponent already has three in a line, we must block.
+    for line in LINES4:
+        vals = [board[r][c] for r, c in line]
+        empty = [i for i, v in enumerate(vals) if v == 0]
+        opponent_count = sum(1 for v in vals if v == -1)
+        my_count = sum(1 for v in vals if v == 1)
+        if empty and opponent_count == 3 and my_count == 0:
+            if len(empty) != 1:
+                continue
+            r, c = empty[0]
+            return (r, c)
+    return None
+
+
+def empty_cells(board: List[List[int]]) -> List[Tuple[int, int]]:
+    return [(r, c) for r in range(4) for c in range(4) if board[r][c] == 0]
+
+
+# ----------------------------------------------------------------------
+# Heuristic evaluation
+# ----------------------------------------------------------------------
+def evaluate(board: List[List[int]]) -> float:
+    """Simple heuristic: more 4‑in‑a‑rows, more central control."""
+    score = 0
+    # 4‑cell lines
+    for line in LINES4:
+        vals = [board[r][c] for r, c in line]
+        p = sum(1 for v in vals if v == 1)
+        o = sum(1 for v in vals if v == -1)
+        # The function will never be called on a terminal win state.
+        score += p * 10
+        score -= o * 10
+
+    # 3‑cell lines (value for longer lines; helps detect forks)
+    for line in LINES3:
+        vals = [board[r][c] for r, c in line]
+        p = sum(1 for v in vals if v == 1)
+        o = sum(1 for v in vals if v == -1)
+        score += p * 5
+        score -= o * 5
+
+    # central 2×2 area bonus / penalty
+    central_bonus = 5
+    for r in [1, 2]:
+        for c in [1, 2]:
+            val = board[r][c]
+            if val == 1:
+                score += central_bonus
+            elif val == -1:
+                score -= central_bonus
+    return score
+
+
+# ----------------------------------------------------------------------
+# Minimax with α‑β pruning and caching
+# ----------------------------------------------------------------------
+CACHE: dict[Tuple[Tuple[int, ...], ...], float] = {}
+
+MAX_DEPTH = 5
+
+def minimax(board: List[List[int]], depth: int, maximizing: bool,
+            alpha: float, beta: float) -> float:
+    """Return the minimax value of `board` for the player who is to move next."""
+    # Represent board for cache lookup
+    key = tuple(tuple(row) for row in board)
+    if key in CACHE:
+        return CACHE[key]
+
+    # Terminal checks
+    winner = check_win(board)
+    if winner == 1:
+        CACHE[key] = float('inf')
+        return float('inf')
+    if winner == -1:
+        CACHE[key] = float('-inf')
+        return float('-inf')
+    if depth == 0 or not empty_cells(board):
+        CACHE[key] = evaluate(board)
+        return evaluate(board)
+
+    best = float('-inf') if maximizing else float('inf')
+    for r, c in empty_cells(board):
+        board[r][c] = 1 if maximizing else -1  # simulate my/opponent move
+        val = minimax(board, depth - 1, not maximizing, alpha, beta)
+        if maximizing:
+            best = max(best, val)
+            alpha = max(alpha, best)
+        else:
+            best = min(best, val)
+            beta = min(beta, best)
+        # Undo the simulation
+        board[r][c] = 0
+        if beta <= alpha:  # α‑β cutoff
+            break
+
+    CACHE[key] = best
+    return best
+
+
+def best_minimax_move(board: List[List[int]]) -> Tuple[int, int]:
+    """Return the move (row, col) with the highest minimax score."""
+    best_move: Tuple[int, int] | None = None
+    best_score: float = None
+    random_ties = random.Random(0).randint(0, 1000)  # fixed seed for reproducibility
+    for r, c in empty_cells(board):
+        board[r][c] = 1
+        move_score = minimax(board, MAX_DEPTH, False, float('-inf'), float('inf'))
+        if best_score is None or move_score > best_score:
+            best_score = move_score
+            best_move = (r, c)
+        elif move_score == best_score:
+            # Small chance to switch to a tie‑breaker later
+            if random_ties % 2 == 0:
+                best_score = move_score
+                best_move = (r, c)
+        board[r][c] = 0  # revert
+
+    # For the first move of an empty board we bias toward central cells
+    empties = empty_cells(board)
+    if board and len(empties) == 16:  # the board is completely empty
+        central = [(r, c) for r, c in empties if r in (1, 2) and c in (1, 2)]
+        if central:
+            # recompute scores only for central cells to avoid unnecessary work
+            for r, c in central:
+                board[r][c] = 1
+                move_score = minimax(board, MAX_DEPTH, False,
+                                    float('-inf'), float('inf'))
+                if best_score is None or move_score > best_score:
+                    best_score = move_score
+                    best_move = (r, c)
+                elif move_score == best_score and random.randrange(2):
+                    best_score = move_score
+                    best_move = (r, c)
+                board[r][c] = 0
+    return best_move  # guaranteed to exist because board always has empties
+
+
+# ----------------------------------------------------------------------
+# Public API
+# ----------------------------------------------------------------------
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Choose the next move for a 4×4 Tic‑Tac‑Toe game.
+
+    Parameters
+    ----------
+    board : list[list[int]]
+        Current board state where:
+        0 = empty,
+        1 = my mark,
+        -1 = opponent’s mark.
+
+    Returns
+    -------
+    tuple[int, int]
+        (row, col) of a legal empty cell.
+    """
+    # 1️⃣ Immediate win for me
+    win = find_winning_move(board, 1)
+    if win:
+        return win
+
+    # 2️⃣ Immediate block for opponent
+    block = find_blocking_move(board)
+    if block:
+        return block
+
+    # 3️⃣ General look‑ahead: return the best minimax move
+    return best_minimax_move(board)

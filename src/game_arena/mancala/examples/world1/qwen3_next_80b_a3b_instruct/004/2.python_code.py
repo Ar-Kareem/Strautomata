@@ -1,0 +1,318 @@
+
+import numpy as np
+from typing import List, Tuple
+
+def policy(you: List[int], opponent: List[int]) -> int:
+    # Convert to numpy arrays for easier manipulation
+    you_arr = np.array(you, dtype=int)
+    opponent_arr = np.array(opponent, dtype=int)
+    
+    # Find all legal moves
+    legal_moves = [i for i in range(6) if you_arr[i] > 0]
+    if not legal_moves:
+        # This should not happen per problem statement, but for safety
+        return 0
+    
+    # Use minimax with alpha-beta pruning
+    best_move = None
+    best_score = float('-inf')
+    
+    # Try moves in order of heuristic desirability to improve pruning
+    # Order by: extra turn potential, capture potential, then by house position
+    def move_heuristic(move):
+        # Check if this move leads to extra turn (landing in store)
+        seeds = you_arr[move]
+        # Simulate the move to see where last seed lands
+        house_idx = move
+        remaining = seeds
+        # Sow seeds
+        current = move + 1
+        while remaining > 0:
+            if current < 6:  # Your houses
+                if remaining == 1 and you_arr[current] == 0:
+                    # Potential capture: check opposite house
+                    opp_pos = 5 - current
+                    if opponent_arr[opp_pos] > 0:
+                        return 10 + (6 - current)  # High priority for captures
+                current += 1
+            elif current == 6:  # Your store
+                if remaining == 1:
+                    return 15  # Extra turn - highest priority
+                current += 1
+            elif current < 13:  # Opponent's houses (7-12)
+                if current == 13:  # Skip opponent's store
+                    current = 0
+                else:
+                    current += 1
+            else:  # Back to your houses (13-18)
+                current = current % 7
+                if current == move and remaining == 1:
+                    # This shouldn't happen in normal sowing, but just in case
+                    if you_arr[current] == 0:
+                        opp_pos = 5 - current
+                        if opponent_arr[opp_pos] > 0:
+                            return 10
+                current += 1
+            remaining -= 1
+        
+        # Default priority: favor higher seed count and left positions
+        return seeds + (6 - move) * 0.1
+    
+    # Sort moves by heuristic
+    legal_moves.sort(key=move_heuristic, reverse=True)
+    
+    # Depth limit based on number of seeds left (more seeds = deeper search)
+    total_seeds = sum(you_arr) + sum(opponent_arr)
+    depth_limit = 4 if total_seeds > 30 else 5
+    
+    for move in legal_moves:
+        # Simulate the move
+        next_you, next_opponent = simulate_move(you_arr.copy(), opponent_arr.copy(), move)
+        
+        # Evaluate the resulting position
+        score = minimax(next_you, next_opponent, depth_limit-1, float('-inf'), float('inf'), False)
+        
+        # Add heuristic bonus for immediate benefits
+        bonus = 0
+        # Bonus for extra turn
+        if move_results_in_extra_turn(you_arr, opponent_arr, move):
+            bonus += 20
+        # Bonus for capture
+        if move_results_in_capture(you_arr, opponent_arr, move):
+            bonus += 15
+            
+        score += bonus
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    # Fallback: if no best move found (shouldn't happen)
+    if best_move is None:
+        best_move = legal_moves[0]
+    
+    return best_move
+
+
+def move_results_in_extra_turn(you: np.ndarray, opponent: np.ndarray, move: int) -> bool:
+    """Check if moving from 'move' results in last seed landing in your store"""
+    seeds = you[move]
+    current_pos = move + 1
+    remaining = seeds
+    
+    while remaining > 0:
+        if remaining == 1:
+            # Last seed
+            if current_pos == 6:  # Your store
+                return True
+            # If we're at opponent's store, skip it
+            elif current_pos == 13:  # Opponent's store position (after 6 opponent houses)
+                current_pos = 0
+                remaining -= 1
+                continue
+        
+        # Move to next position
+        if current_pos < 6:  # Your houses (0-5)
+            current_pos += 1
+        elif current_pos == 6:  # Your store
+            current_pos += 1
+        elif current_pos < 13:  # Opponent's houses (7-12)
+            current_pos += 1
+        else:  # Back to your houses (13-18)
+            current_pos = (current_pos + 1) % 7
+            
+        remaining -= 1
+    
+    return False
+
+
+def move_results_in_capture(you: np.ndarray, opponent: np.ndarray, move: int) -> bool:
+    """Check if moving from 'move' results in a capture"""
+    seeds = you[move]
+    current_pos = move + 1
+    remaining = seeds
+    
+    # Simulate the move to find final position
+    while remaining > 0:
+        if remaining == 1:
+            # Last seed
+            if 0 <= current_pos <= 5:  # In your houses
+                if you[current_pos] == 0:  # Empty house
+                    opp_pos = 5 - current_pos
+                    if opponent[opp_pos] > 0:
+                        return True
+        
+        # Move to next position
+        if current_pos < 6:  # Your houses (0-5)
+            current_pos += 1
+        elif current_pos == 6:  # Your store
+            current_pos += 1
+        elif current_pos < 13:  # Opponent's houses (7-12) - note: we skip store
+            current_pos += 1
+        else:  # Back to your houses (13-18)
+            current_pos = current_pos % 7
+            
+        remaining -= 1
+    
+    return False
+
+
+def simulate_move(you: np.ndarray, opponent: np.ndarray, move: int) -> Tuple[np.ndarray, np.ndarray]:
+    """Simulate a move and return new game state"""
+    seeds = you[move]
+    you[move] = 0  # Clear the chosen house
+    
+    current_pos = move + 1
+    while seeds > 0:
+        if current_pos < 6:  # Your houses (0-5)
+            you[current_pos] += 1
+            seeds -= 1
+        elif current_pos == 6:  # Your store
+            you[current_pos] += 1
+            seeds -= 1
+        elif current_pos < 13:  # Opponent's houses (7-12)
+            opponent[current_pos - 7] += 1
+            seeds -= 1
+        else:  # Back to your houses (13-18)
+            you[current_pos % 7] += 1
+            seeds -= 1
+        
+        current_pos += 1
+        
+        # Skip opponent's store (index 6 of opponent) - it's at index 6, which corresponds to position 13
+        # When current_pos == 13, we want to skip it by incrementing one more time
+        if current_pos == 13:  # We just placed in opponent's last house, next is their store
+            current_pos += 1  # Skip opponent's store
+    
+    # Check for capture
+    # Last position was current_pos - 1 before increment at end
+    last_pos = current_pos - 1
+    
+    # Determine where the last seed landed
+    if last_pos >= 0 and last_pos <= 5:  # Landed in your house
+        if you[last_pos] == 1:  # Was empty before (we just placed 1)
+            opp_pos = 5 - last_pos
+            if opponent[opp_pos] > 0:
+                # Capture: add your seed and opponent's seeds to your store
+                you[6] += 1 + opponent[opp_pos]
+                opponent[opp_pos] = 0
+                you[last_pos] = 0
+    elif last_pos == 6:  # Landed in your store - extra turn, no capture
+        pass
+    elif last_pos >= 7 and last_pos <= 12:  # Landed in opponent's house
+        # No capture for opponent here - we only care about our captures
+        pass
+    else:  # Landed back in your houses after wrapping (13-18)
+        actual_pos = last_pos % 7
+        if actual_pos >= 0 and actual_pos <= 5:
+            if you[actual_pos] == 1:
+                opp_pos = 5 - actual_pos
+                if opponent[opp_pos] > 0:
+                    you[6] += 1 + opponent[opp_pos]
+                    opponent[opp_pos] = 0
+                    you[actual_pos] = 0
+    
+    return you, opponent
+
+
+def minimax(you: np.ndarray, opponent: np.ndarray, depth: int, alpha: float, beta: float, maximizing_player: bool) -> float:
+    """Minimax with alpha-beta pruning"""
+    # Check if game is over
+    if sum(you[:6]) == 0 or sum(opponent[:6]) == 0:
+        # Game over - calculate final score
+        final_you_score = sum(you)  # All remaining seeds go to your store
+        final_opponent_score = sum(opponent)  # All remaining seeds go to opponent's store
+        return final_you_score - final_opponent_score
+    
+    # Depth limit reached
+    if depth == 0:
+        return evaluate_position(you, opponent)
+    
+    if maximizing_player:
+        max_eval = float('-inf')
+        legal_moves = [i for i in range(6) if you[i] > 0]
+        
+        # Sort moves for better pruning
+        legal_moves.sort(key=lambda m: move_heuristic_for_eval(you, opponent, m), reverse=True)
+        
+        for move in legal_moves:
+            new_you, new_opponent = simulate_move(you.copy(), opponent.copy(), move)
+            
+            # If move resulted in extra turn, player gets another turn (maximizing again)
+            if move_results_in_extra_turn(you, opponent, move):
+                eval_score = minimax(new_you, new_opponent, depth, alpha, beta, True)
+            else:
+                eval_score = minimax(new_you, new_opponent, depth - 1, alpha, beta, False)
+            
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break  # Beta cutoff
+        
+        return max_eval
+    else:
+        min_eval = float('inf')
+        legal_moves = [i for i in range(6) if opponent[i] > 0]
+        
+        # Sort moves for better pruning
+        legal_moves.sort(key=lambda m: move_heuristic_for_eval(opponent, you, m), reverse=True)
+        
+        for move in legal_moves:
+            # Opponent's move - simulate
+            new_opponent, new_you = simulate_move(opponent.copy(), you.copy(), move)
+            
+            # If move resulted in extra turn, opponent gets another turn (minimizing again)
+            if move_results_in_extra_turn(opponent, you, move):
+                eval_score = minimax(new_you, new_opponent, depth, alpha, beta, False)
+            else:
+                eval_score = minimax(new_you, new_opponent, depth - 1, alpha, beta, True)
+            
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break  # Alpha cutoff
+        
+        return min_eval
+
+
+def move_heuristic_for_eval(you: np.ndarray, opponent: np.ndarray, move: int) -> float:
+    """Heuristic for ordering moves in minimax"""
+    seeds = you[move]
+    
+    # Check for extra turn
+    if move_results_in_extra_turn(you, opponent, move):
+        return 100
+    
+    # Check for capture
+    if move_results_in_capture(you, opponent, move):
+        return 80
+    
+    # Prefer moves with more seeds and leftmost positions
+    return seeds * 10 + (6 - move)
+
+
+def evaluate_position(you: np.ndarray, opponent: np.ndarray) -> float:
+    """Evaluate the current board state"""
+    # Base evaluation: store difference
+    score = you[6] - opponent[6]
+    
+    # Add bonus for number of seeds in your houses
+    score += sum(you[:6]) * 0.5
+    score -= sum(opponent[:6]) * 0.5
+    
+    # Add small bonus for having more houses occupied (avoid empty clusters)
+    your_occupied = sum(1 for x in you[:6] if x > 0)
+    opp_occupied = sum(1 for x in opponent[:6] if x > 0)
+    score += (your_occupied - opp_occupied) * 0.3
+    
+    # Add bonus for seeds in left side (avoid clustering on right)
+    for i in range(6):
+        score += you[i] * (0.1 if i < 3 else 0.05)
+        score -= opponent[i] * (0.1 if i < 3 else 0.05)
+    
+    # Penalty for leaving opponent with easy captures
+    for i in range(6):
+        if you[i] == 0 and opponent[5-i] > 0:
+            score -= 1  # Penalty for potential future capture by opponent
+    
+    return score

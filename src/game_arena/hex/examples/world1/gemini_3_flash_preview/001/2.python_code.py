@@ -1,0 +1,126 @@
+
+import collections
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    BOARD_SIZE = 11
+    all_occupied = set(me) | set(opp)
+
+    def get_neighbors(r, c):
+        # Hex neighbors for (r, c)
+        potential = [(r, c-1), (r, c+1), (r-1, c), (r-1, c+1), (r+1, c-1), (r+1, c)]
+        return [(nr, nc) for nr, nc in potential if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE]
+
+    def shortest_path_dist(player_stones, opponent_stones, is_black):
+        # Dijkstra to find the minimum hexes needed to connect
+        # target_nodes: for black (top-bottom) effectively row -1 to row 11
+        # for white (left-right) effectively col -1 to col 11
+        q = collections.deque()
+        dist = {}
+        
+        # Virtual start and end nodes logic
+        if is_black: # rows
+            start_cells = [(0, c) for c in range(BOARD_SIZE) if (0, c) not in opponent_stones]
+            target_dim = 0 # row
+        else: # white cols
+            start_cells = [(r, 0) for r in range(BOARD_SIZE) if (r, 0) not in opponent_stones]
+            target_dim = 1 # col
+
+        for r, c in start_cells:
+            cost = 0 if (r, c) in player_stones else 1
+            dist[(r, c)] = cost
+            q.append((r, c))
+
+        min_total = float('inf')
+        visited_costs = dist.copy()
+
+        # Simple BFS/Dijkstra (weights are 0 or 1, so deque is fine)
+        # Using a sorted list or deque for 0-1 BFS
+        sorted_q = collections.deque(sorted([(d, p) for p, d in dist.items()]))
+        
+        final_dist = {}
+        
+        while sorted_q:
+            d, (r, c) = sorted_q.popleft()
+            if d > final_dist.get((r, c), float('inf')): continue
+            final_dist[(r, c)] = d
+            
+            # Check if reached the end
+            if (is_black and r == BOARD_SIZE - 1) or (not is_black and c == BOARD_SIZE - 1):
+                min_total = min(min_total, d)
+
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) in opponent_stones:
+                    continue
+                weight = 0 if (nr, nc) in player_stones else 1
+                new_dist = d + weight
+                if new_dist < final_dist.get((nr, nc), float('inf')):
+                    final_dist[(nr, nc)] = new_dist
+                    if weight == 0:
+                        sorted_q.appendleft((new_dist, (nr, nc)))
+                    else:
+                        sorted_q.append((new_dist, (nr, nc)))
+        
+        return min_total, final_dist
+
+    # 1. Opening Move
+    if not me and not opp:
+        return (5, 5)
+    if len(all_occupied) < 2:
+        if (5, 5) not in all_occupied: return (5, 5)
+        else: return (5, 4)
+
+    # 2. Heuristic: Find move that minimizes my distance and maximizes opponent's
+    my_color_is_black = (color == 'b')
+    best_move = None
+    max_score = -float('inf')
+
+    # Candidate moves: empty cells adjacent to existing stones or center
+    candidates = []
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if (r, c) not in all_occupied:
+                candidates.append((r, c))
+
+    # Evaluate candidates
+    # To keep it within 1s, we use a subset if candidates are too many
+    if len(candidates) > 40:
+        # Prioritize moves near existing stones
+        scored_candidates = []
+        for r, c in candidates:
+            prox = 0
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) in all_occupied: prox += 1
+            scored_candidates.append((prox, (r, c)))
+        candidates = [p[1] for p in sorted(scored_candidates, reverse=True)[:40]]
+
+    base_me, _ = shortest_path_dist(me, opp, my_color_is_black)
+    base_opp, _ = shortest_path_dist(opp, me, not my_color_is_black)
+
+    for r, c in candidates:
+        # Simulate move
+        new_me = me + [(r, c)]
+        new_dist_me, _ = shortest_path_dist(new_me, opp, my_color_is_black)
+        
+        new_opp_blocking = opp + [(r, c)]
+        new_dist_opp, _ = shortest_path_dist(opp, new_opp_blocking, not my_color_is_black)
+        
+        # Score: how much it helps me + how much it hurts opponent
+        # We weight hurting the opponent slightly more if they are close to winning
+        opp_danger = (BOARD_SIZE - new_dist_opp)
+        my_gain = (base_me - new_dist_me)
+        opp_loss = (new_dist_opp - base_opp)
+        
+        score = my_gain * 1.5 + opp_loss * 2.0
+        
+        if score > max_score:
+            max_score = score
+            best_move = (r, c)
+
+    if best_move:
+        return best_move
+
+    # Emergency Fallback
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if (r, c) not in all_occupied:
+                return (r, c)

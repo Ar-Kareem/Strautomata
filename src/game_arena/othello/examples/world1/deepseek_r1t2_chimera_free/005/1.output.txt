@@ -1,0 +1,113 @@
+
+
+The strategy for this policy is to prioritize corner positions while avoiding moves that allow the opponent to capture corners. It uses a static evaluation matrix to assess cell importance, favoring positions that provide long-term stability (like edges and corners) while avoiding high-risk areas near corners. For each legal move, the policy simulates the move checks if the opponent could capture a corner in their next turn—penalizing such moves heavily. The final move is selected based on a combination of cell value from the evaluation matrix and the number of discs flipped, ensuring the chosen move maximizes positional advantage and minimizes opponent opportunities.
+
+<code>
+import numpy as np
+
+EVAL_MATRIX = [
+    [100, -20, 10, 5, 5, 10, -20, 100],
+    [-20, -50, -2, -2, -2, -2, -50, -20],
+    [10, -2, -1, -1, -1, -1, -2, 10],
+    [5, -2, -1, -1, -1, -1, -2, 5],
+    [5, -2, -1, -1, -1, -1, -2, 5],
+    [10, -2, -1, -1, -1, -1, -2, 10],
+    [-20, -50, -2, -2, -2, -2, -50, -20],
+    [100, -20, 10, 5, 5, 10, -20, 100],
+]
+
+def get_move_string(r, c):
+    """Convert row and column indices to algebraic notation (e.g., (3, 0) -> 'a4')."""
+    return chr(ord('a') + c) + str(r + 1)
+
+def get_legal_moves(you, opponent):
+    """Identify all legal moves for the current player along with the number of discs flipped."""
+    moves = []
+    directions = [(dr, dc) for dr in (-1, 0, 1) for dc in (-1, 0, 1) if dr != 0 or dc != 0]
+    for r in range(8):
+        for c in range(8):
+            if you[r][c] == 0 and opponent[r][c] == 0:
+                total_flips = 0
+                valid_move = False
+                for dr, dc in directions:
+                    nr, nc = r + dr, c + dc
+                    flips_in_dir = 0
+                    while 0 <= nr < 8 and 0 <= nc < 8 and opponent[nr][nc] == 1:
+                        flips_in_dir += 1
+                        nr += dr
+                        nc += dc
+                    if 0 <= nr < 8 and 0 <= nc < 8 and you[nr][nc] == 1 and flips_in_dir > 0:
+                        total_flips += flips_in_dir
+                        valid_move = True
+                if valid_move:
+                    moves.append((r, c, total_flips))
+    return moves
+
+def simulate_move(r, c, you, opponent):
+    """Simulate placing a disc at (r, c) and return the new board state."""
+    new_you = you.copy()
+    new_opponent = opponent.copy()
+    new_you[r][c] = 1
+    directions = [(dr, dc) for dr in (-1, 0, 1) for dc in (-1, 0, 1) if dr != 0 or dc != 0]
+    for dr, dc in directions:
+        to_flip = []
+        nr, nc = r + dr, c + dc
+        while 0 <= nr < 8 and 0 <= nc < 8 and new_opponent[nr][nc] == 1:
+            to_flip.append((nr, nc))
+            nr += dr
+            nc += dc
+        if 0 <= nr < 8 and 0 <= nc < 8 and new_you[nr][nc] == 1 and to_flip:
+            for flip_r, flip_c in to_flip:
+                new_you[flip_r][flip_c] = 1
+                new_opponent[flip_r][flip_c] = 0
+    return new_you, new_opponent
+
+def is_corner_available(new_you, new_opponent, corner_r, corner_c):
+    """Check if the opponent can take a corner after the current player's move."""
+    if new_you[corner_r][corner_c] == 0 and new_opponent[corner_r][corner_c] == 0:
+        opp_you = new_opponent  # Opponent's discs after the move
+        opp_opponent = new_you  # Current player's discs after the move
+        directions = [(dr, dc) for dr in (-1, 0, 1) for dc in (-1, 0, 1) if dr != 0 or dc != 0]
+        for dr, dc in directions:
+            nr, nc = corner_r + dr, corner_c + dc
+            flip_count = 0
+            while 0 <= nr < 8 and 0 <= nc < 8 and opp_opponent[nr][nc] == 1:
+                flip_count += 1
+                nr += dr
+                nc += dc
+            if 0 <= nr < 8 and 0 <= nc < 8 and opp_you[nr][nc] == 1 and flip_count > 0:
+                return True
+    return False
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    legal_moves = get_legal_moves(you, opponent)
+    if not legal_moves:
+        return "pass"
+    
+    # Prioritize capturing corners immediately
+    corners = [(0, 0), (0, 7), (7, 0), (7, 7)]
+    corner_moves = [(r, c) for (r, c, flips) in legal_moves if (r, c) in corners]
+    if corner_moves:
+        r, c = corner_moves[0][0], corner_moves[0][1]
+        return get_move_string(r, c)
+    
+    # Evaluate all other moves
+    best_score = -float('inf')
+    best_move = None
+    for (r, c, flips) in legal_moves:
+        new_you, new_opponent = simulate_move(r, c, you.copy(), opponent.copy())
+        penalty = False
+        for corner in corners:
+            if is_corner_available(new_you, new_opponent, *corner):
+                penalty = True
+                break
+        if penalty:
+            score = -100000  # Heavy penalty for enabling opponent corner move
+        else:
+            score = EVAL_MATRIX[r][c] * 10 + flips  # Weighted evaluation
+        if score > best_score or best_move is None:
+            best_score = score
+            best_move = (r, c)
+    
+    return get_move_string(best_move[0], best_move[1])
+</code>

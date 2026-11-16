@@ -1,0 +1,152 @@
+### Strategy Overview
+
+My strategy is a **hybrid approach** combining **hand strength evaluation**, **pot odds**, **stack size considerations**, and **position awareness** (though position isn't explicitly provided, we infer it from the betting round). The policy is designed to be **aggressive but disciplined**, balancing between exploiting weak opponents and avoiding unnecessary risks.
+
+#### Key Components:
+1. **Hand Strength Evaluation**:
+   - Use a **preflop hand strength table** (e.g., based on standard poker rankings) and **postflop hand strength** (e.g., using a simple heuristic or a lookup table for common board textures).
+   - For simplicity, I'll use a **predefined hand strength score** (0-9) where higher = stronger (e.g., AA=9, AK=8, etc.).
+
+2. **Pot Odds and Bet Sizing**:
+   - Calculate **pot odds** to determine if a call is profitable.
+   - Adjust aggression based on **stack-to-pot ratio (SPR)** and **opponent's bet size**.
+
+3. **Betting Rounds**:
+   - **Preflop**: Aggressive with strong hands, tight with weak hands.
+   - **Postflop**: Adjust based on board texture and opponent's actions (e.g., raise if opponent checks to you).
+
+4. **Bluffing and Semi-Bluffing**:
+   - Bluff fold when facing large bets with weak hands.
+   - Semi-bluff with draws (e.g., flush draws, straight draws).
+
+5. **Stack Management**:
+   - Go **all-in** with strong hands when facing large bets.
+   - Avoid unnecessary raises with marginal hands.
+
+6. **Default Actions**:
+   - **Fold** weak hands (e.g., <5 strength preflop).
+   - **Call** with medium-strength hands when pot odds justify it.
+   - **Raise** with strong hands or strong draws.
+   - **All-in** with premium hands when facing large bets.
+
+---
+
+### Python Implementation
+Here’s the policy implementation:
+
+```python
+import math
+
+def policy(state: dict) -> str:
+    # Preflop hand strength lookup (simplified)
+    def get_preflop_strength(cards):
+        if len(cards) != 2:
+            return 0  # Shouldn't happen per problem statement
+
+        rank1, rank2 = sorted([cards[0]['rank'], cards[1]['rank']], reverse=True)
+        if rank1 == 14 and rank2 == 13: return 9  # AA
+        if rank1 == 14 and rank2 >= 12: return 8  # AK, AQ
+        if rank1 == 13 and rank2 >= 12: return 7  # KK, KQ
+        if rank1 == 12 and rank2 >= 11: return 6  # QQ, QJ
+        if rank1 == 11 and rank2 >= 10: return 5  # JJ, JT
+        if rank1 == 10 and rank2 >= 9: return 4  # TT, T9
+        if rank1 >= 9 and rank2 >= 8: return 3  # 99, 98, 88
+        if rank1 >= 8 and rank2 >= 7: return 2  # 87, 77
+        return 1  # Weak hands (e.g., 76, 65)
+
+    # Postflop hand strength heuristic (simplified)
+    def get_postflop_strength(private_cards, public_cards):
+        # Count pairs, flushes, straights, etc.
+        ranks = [c['rank'] for c in private_cards + public_cards]
+        suits = [c['suit'] for c in private_cards + public_cards]
+
+        # Pair strength
+        pair_rank = max(set(ranks), key=ranks.count)
+        pair_count = ranks.count(pair_rank)
+        if pair_count >= 2:
+            return 5 + (pair_rank // 2)  # Higher pair = stronger
+
+        # Flush potential
+        flush_suit = max(set(suits), key=suits.count)
+        if suits.count(flush_suit) >= 4:
+            return 4  # Nut flush
+
+        # Straight potential
+        unique_ranks = sorted(set(ranks))
+        if len(unique_ranks) >= 5:
+            for i in range(len(unique_ranks) - 4):
+                if unique_ranks[i+4] - unique_ranks[i] == 4:
+                    return 3  # Straight
+
+        # High card
+        return 1 + (max(ranks) // 3)  # Higher card = slightly stronger
+
+    # Determine if we're preflop or postflop
+    is_preflop = len(state['public_cards']) == 0
+    hand_strength = get_preflop_strength(state['private_cards']) if is_preflop else get_postflop_strength(state['private_cards'], state['public_cards'])
+
+    # Stack sizes (assuming 100 chips starting stack)
+    my_stack = 100 - state['my_spent']
+    opponent_stack = 100 - state['opponent_spent']
+    pot = state['pot']
+    to_call = state['to_call']
+
+    # Pot odds
+    pot_odds = (pot + to_call) / to_call if to_call > 0 else float('inf')
+
+    # Aggression factor (higher = more aggressive)
+    aggression = 1.0
+    if is_preflop:
+        aggression = 1.5 if hand_strength >= 5 else 0.5  # Aggressive with strong hands
+    else:
+        aggression = 1.2 if hand_strength >= 3 else 0.7  # Moderate postflop
+
+    # Decide action
+    if 'fold' in state['allowed_actions']:
+        # Fold weak hands
+        if hand_strength < 2 and to_call > 0:
+            return 'fold'
+
+    if 'all-in' in state['allowed_actions']:
+        # All-in with premium hands when facing large bets
+        if hand_strength >= 7 and to_call > 0 and to_call > my_stack * 0.5:
+            return 'all-in'
+
+    if 'raise' in state['allowed_actions']:
+        # Raise with strong hands or strong draws
+        if (hand_strength >= 5 and is_preflop) or (hand_strength >= 3 and not is_preflop):
+            return 'raise'
+
+    if 'call' in state['allowed_actions']:
+        # Call if pot odds justify it
+        if to_call == 0 or (hand_strength >= 2 and pot_odds >= 2.0):
+            return 'call'
+
+    # Default to call if no other action is better
+    return 'call'
+```
+
+---
+
+### Explanation of Key Logic:
+1. **Hand Strength**:
+   - Preflop: Uses a simple lookup table (e.g., AA=9, AK=8, etc.).
+   - Postflop: Heuristic based on pairs, flushes, and straights.
+
+2. **Pot Odds**:
+   - If `pot_odds >= 2.0`, the call is profitable (e.g., calling 10 chips into a 20-chip pot is +EV).
+
+3. **Aggression**:
+   - Preflop: Aggressive with strong hands (`hand_strength >= 5`).
+   - Postflop: Moderate aggression (`hand_strength >= 3`).
+
+4. **All-in**:
+   - Go all-in with premium hands (`hand_strength >= 7`) when facing large bets.
+
+5. **Folding**:
+   - Fold weak hands (`hand_strength < 2`) when facing a bet.
+
+6. **Raising**:
+   - Raise with strong hands or strong draws (e.g., flush draws postflop).
+
+This policy balances **exploitation** (raising with strong hands) and **avoiding unnecessary risks** (folding weak hands). It can be further refined with more sophisticated hand strength evaluation or opponent modeling.

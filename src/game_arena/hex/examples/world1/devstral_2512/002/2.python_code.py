@@ -1,0 +1,213 @@
+
+import numpy as np
+from collections import deque
+import random
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    # Initialize board representation
+    board = np.zeros((11, 11), dtype=int)
+    for i, j in me:
+        board[i, j] = 1
+    for i, j in opp:
+        board[i, j] = 2
+
+    # Determine target sides based on color
+    if color == 'b':  # Black connects top (row 0) to bottom (row 10)
+        target_sides = [(0, j) for j in range(11)] + [(10, j) for j in range(11)]
+    else:  # White connects left (col 0) to right (col 10)
+        target_sides = [(i, 0) for i in range(11)] + [(i, 10) for i in range(11)]
+
+    # Get all empty cells
+    empty_cells = []
+    for i in range(11):
+        for j in range(11):
+            if board[i, j] == 0:
+                empty_cells.append((i, j))
+
+    # 1. Check for immediate win
+    for move in empty_cells:
+        if is_winning_move(board, move, color):
+            return move
+
+    # 2. Check for immediate block
+    for move in empty_cells:
+        if is_winning_move(board, move, 'w' if color == 'b' else 'b'):
+            return move
+
+    # 3. Create distance transform
+    distance_map = create_distance_map(board, color)
+
+    # 4. Create influence map
+    influence_map = create_influence_map(board, color)
+
+    # 5. Combine heuristics
+    scores = []
+    for i, j in empty_cells:
+        # Base score from distance map
+        score = distance_map[i, j]
+
+        # Add influence score
+        score += influence_map[i, j] * 2
+
+        # Edge bonus
+        if i == 0 or i == 10 or j == 0 or j == 10:
+            score += 0.5
+
+        # Centrality bonus (avoid corners)
+        center_dist = abs(i - 5.5) + abs(j - 5.5)
+        score += (10 - center_dist) * 0.1
+
+        scores.append(score)
+
+    # Normalize scores
+    if max(scores) > 0:
+        scores = [s / max(scores) for s in scores]
+
+    # Select top candidates
+    top_candidates = []
+    if len(scores) > 0:
+        max_score = max(scores)
+        top_candidates = [empty_cells[i] for i in range(len(empty_cells)) if scores[i] >= max_score * 0.8]
+
+    # If we have top candidates, choose among them with some randomness
+    if top_candidates:
+        # Bias toward more central positions among top candidates
+        weights = [1.0 / (abs(i-5.5) + abs(j-5.5) + 1) for i, j in top_candidates]
+        total_weight = sum(weights)
+        if total_weight > 0:
+            weights = [w/total_weight for w in weights]
+            return random.choices(top_candidates, weights=weights, k=1)[0]
+        else:
+            return random.choice(top_candidates)
+
+    # Fallback: return first empty cell (shouldn't happen with proper implementation)
+    return empty_cells[0]
+
+def is_winning_move(board: np.ndarray, move: tuple[int, int], color: str) -> bool:
+    """Check if placing a stone at move creates a winning path."""
+    i, j = move
+    if board[i, j] != 0:
+        return False
+
+    # Create temporary board with the move
+    temp_board = board.copy()
+    temp_board[i, j] = 1 if color == 'b' else 2
+
+    # Determine target sides
+    if color == 'b':
+        start_sides = [(0, j) for j in range(11) if temp_board[0, j] == 1]
+        target_sides = [(10, j) for j in range(11)]
+    else:
+        start_sides = [(i, 0) for i in range(11) if temp_board[i, 0] == 2]
+        target_sides = [(i, 10) for i in range(11)]
+
+    # BFS to check connection
+    visited = set()
+    queue = deque(start_sides)
+
+    while queue:
+        x, y = queue.popleft()
+        if (x, y) in visited:
+            continue
+        visited.add((x, y))
+
+        # Check if we reached target side
+        if color == 'b' and x == 10:
+            return True
+        if color == 'w' and y == 10:
+            return True
+
+        # Get neighbors
+        neighbors = get_neighbors(x, y)
+        for nx, ny in neighbors:
+            if 0 <= nx < 11 and 0 <= ny < 11:
+                if temp_board[nx, ny] == (1 if color == 'b' else 2) and (nx, ny) not in visited:
+                    queue.append((nx, ny))
+
+    return False
+
+def get_neighbors(x: int, y: int) -> list[tuple[int, int]]:
+    """Get all 6 neighbors of a hex cell."""
+    # Hex grid neighbors (excluding the two diagonal ones)
+    return [
+        (x, y-1), (x, y+1),  # same row
+        (x-1, y), (x-1, y+1),  # top row
+        (x+1, y-1), (x+1, y)   # bottom row
+    ]
+
+def create_distance_map(board: np.ndarray, color: str) -> np.ndarray:
+    """Create a distance transform showing how close each cell is to the player's target sides."""
+    distance = np.full((11, 11), np.inf)
+
+    if color == 'b':  # Connect top to bottom
+        # Initialize top side
+        for j in range(11):
+            if board[0, j] == 0:  # Only empty cells
+                distance[0, j] = 0
+
+        # Propagate distances
+        changed = True
+        while changed:
+            changed = False
+            for i in range(11):
+                for j in range(11):
+                    if board[i, j] != 0:  # Skip occupied cells
+                        continue
+                    current = distance[i, j]
+                    neighbors = get_neighbors(i, j)
+                    for ni, nj in neighbors:
+                        if 0 <= ni < 11 and 0 <= nj < 11:
+                            if distance[ni, nj] + 1 < current:
+                                distance[i, j] = distance[ni, nj] + 1
+                                changed = True
+    else:  # Connect left to right
+        # Initialize left side
+        for i in range(11):
+            if board[i, 0] == 0:  # Only empty cells
+                distance[i, 0] = 0
+
+        # Propagate distances
+        changed = True
+        while changed:
+            changed = False
+            for i in range(11):
+                for j in range(11):
+                    if board[i, j] != 0:  # Skip occupied cells
+                        continue
+                    current = distance[i, j]
+                    neighbors = get_neighbors(i, j)
+                    for ni, nj in neighbors:
+                        if 0 <= ni < 11 and 0 <= nj < 11:
+                            if distance[ni, nj] + 1 < current:
+                                distance[i, j] = distance[ni, nj] + 1
+                                changed = True
+
+    return distance
+
+def create_influence_map(board: np.ndarray, color: str) -> np.ndarray:
+    """Create an influence map showing strategic importance of each cell."""
+    influence = np.zeros((11, 11))
+
+    # Player's influence
+    player_stones = [(i, j) for i in range(11) for j in range(11) if board[i, j] == (1 if color == 'b' else 2)]
+    for i, j in player_stones:
+        for di in [-1, 0, 1]:
+            for dj in [-1, 0, 1]:
+                if di == -1 and dj == -1: continue  # Skip invalid hex neighbor
+                if di == 1 and dj == 1: continue    # Skip invalid hex neighbor
+                ni, nj = i + di, j + dj
+                if 0 <= ni < 11 and 0 <= nj < 11 and board[ni, nj] == 0:
+                    influence[ni, nj] += 1
+
+    # Opponent's influence (negative)
+    opp_stones = [(i, j) for i in range(11) for j in range(11) if board[i, j] == (2 if color == 'b' else 1)]
+    for i, j in opp_stones:
+        for di in [-1, 0, 1]:
+            for dj in [-1, 0, 1]:
+                if di == -1 and dj == -1: continue
+                if di == 1 and dj == 1: continue
+                ni, nj = i + di, j + dj
+                if 0 <= ni < 11 and 0 <= nj < 11 and board[ni, nj] == 0:
+                    influence[ni, nj] -= 0.5
+
+    return influence

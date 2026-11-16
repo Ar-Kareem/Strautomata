@@ -1,0 +1,443 @@
+The strategy for this policy is a heuristic-based evaluation that prioritizes board safety, the removal of checkers from the bar, and aggressive hitting of opponent blots. It selects moves that maximize a positional score, which heavily rewards avoiding hits on the board and leaving only safe points (0 or 1 checker). The policy first generates all legal moves, then computes a score for each potential outcome, and finally selects the move that results in the highest evaluation.
+
+<code>
+def policy(state: dict) -> str:
+    def get_outcomes(state, dice):
+        # Returns list of (next_state, move_string)
+        # Implements BFS to find all distinct resulting board states from legal moves
+        
+        if len(dice) == 0:
+            return [(state, "P:P")]
+
+        initial_config = (tuple(state['my_pts']), tuple(state['opp_pts']), state['my_bar'], state['opp_bar'], state['my_off'])
+        # Queue: (my_pts, opp_pts, my_bar, opp_bar, my_off, used_dice, path_indices)
+        queue = [(list(state['my_pts']), list(state['opp_pts']), state['my_bar'], state['opp_bar'], state['my_off'], frozenset(), [])]
+        visited = {initial_config: []}
+        
+        final_outcomes = []
+        best_usage_len = -1
+        
+        while queue:
+            c_my_pts, c_opp_pts, c_my_bar, c_opp_bar, c_my_off, used_dice, path = queue.pop(0)
+            
+            usage_len = len(used_dice)
+            if usage_len > best_usage_len:
+                best_usage_len = usage_len
+                final_outcomes = []
+            
+            if usage_len == len(dice):
+                final_outcomes.append(((tuple(c_my_pts), tuple(c_opp_pts), c_my_bar, c_opp_bar, c_my_off), path))
+                continue
+                
+            # Determine playable dice
+            playable = []
+            if usage_len == 0:
+                # Play any
+                playable = list(dice)
+            elif usage_len == 1:
+                # Play remaining
+                played_val = dice[path[0]]
+                playable = [d for d in dice if d != played_val]
+            else:
+                continue # Should be handled by check above
+
+            moves_found = False
+            
+            # Try all playable dice values
+            for die_val in playable:
+                if die_val in used_dice: continue
+                
+                # Try Bar moves first if applicable
+                if c_my_bar > 0:
+                    dest = 23 - die_val
+                    if dest >= 0:
+                        if c_opp_pts[dest] < 2:
+                            new_my_pts = list(c_my_pts)
+                            new_opp_pts = list(c_opp_pts)
+                            new_my_bar = c_my_bar - 1
+                            hit = False
+                            if new_opp_pts[dest] == 1:
+                                hit = True
+                                new_opp_pts[dest] = 0
+                                new_opp_bar = c_opp_bar + 1
+                            else:
+                                new_opp_bar = c_opp_bar
+                            
+                            new_my_pts[dest] += 1
+                            
+                            config = (tuple(new_my_pts), tuple(new_opp_pts), new_my_bar, new_opp_bar, c_my_off)
+                            new_used = used_dice | {die_val}
+                            new_path = path + [dice.index(die_val)]
+                            
+                            if config not in visited or len(visited[config]) < len(new_path):
+                                visited[config] = new_path
+                                queue.append((new_my_pts, new_opp_pts, new_my_bar, new_opp_bar, c_my_off, new_used, new_path))
+                                moves_found = True
+                else:
+                    # Normal moves
+                    for start in range(24):
+                        if c_my_pts[start] == 0: continue
+                        
+                        # Check if bearing off
+                        is_bearing_off = True
+                        for i in range(6, 24):
+                            if c_my_pts[i] > 0:
+                                is_bearing_off = False
+                                break
+                        
+                        if is_bearing_off:
+                            # Check if die allows bearing off
+                            dist = start - 0
+                            can_bear_off = False
+                            if dist == die_val:
+                                can_bear_off = True
+                            elif dist < die_val:
+                                # Only if no checkers behind
+                                empty_behind = True
+                                for k in range(start - 1, -1, -1):
+                                    if c_my_pts[k] > 0:
+                                        empty_behind = False
+                                        break
+                                if empty_behind: can_bear_off = True
+                            
+                            if can_bearing_off:
+                                new_my_pts = list(c_my_pts)
+                                new_opp_pts = list(c_opp_pts)
+                                new_my_pts[start] -= 1
+                                new_my_off = c_my_off + 1
+                                
+                                config = (tuple(new_my_pts), tuple(new_opp_pts), c_my_bar, c_opp_bar, new_my_off)
+                                new_used = used_dice | {die_val}
+                                new_path = path + [dice.index(die_val)]
+                                
+                                if config not in visited or len(visited[config]) < len(new_path):
+                                    visited[config] = new_path
+                                    queue.append((new_my_pts, new_opp_pts, c_my_bar, c_opp_bar, new_my_off, new_used, new_path))
+                                    moves_found = True
+                        else:
+                            # Normal move
+                            dest = start - die_val
+                            if dest >= 0:
+                                if c_opp_pts[dest] < 2:
+                                    new_my_pts = list(c_my_pts)
+                                    new_opp_pts = list(c_opp_pts)
+                                    new_my_pts[start] -= 1
+                                    hit = False
+                                    if new_opp_pts[dest] == 1:
+                                        hit = True
+                                        new_opp_pts[dest] = 0
+                                        new_opp_bar = c_opp_bar + 1
+                                    else:
+                                        new_opp_bar = c_opp_bar
+                                    
+                                    new_my_pts[dest] += 1
+                                    
+                                    config = (tuple(new_my_pts), tuple(new_opp_pts), c_my_bar, c_opp_bar, c_my_off)
+                                    new_used = used_dice | {die_val}
+                                    new_path = path + [dice.index(die_val)]
+                                    
+                                    if config not in visited or len(visited[config]) < len(new_path):
+                                        visited[config] = new_path
+                                        queue.append((new_my_pts, new_opp_pts, c_my_bar, new_opp_bar, c_my_off, new_used, new_path))
+                                        moves_found = True
+
+            if not moves_found:
+                # Dead end, but if we have a path length > 0, it's a partial move
+                if len(path) > 0:
+                    final_outcomes.append(((tuple(c_my_pts), tuple(c_opp_pts), c_my_bar, c_opp_bar, c_my_off), path))
+
+        if not final_outcomes:
+            return "H:P,P"
+        
+        return final_outcomes
+
+    def evaluate(state):
+        my_pts, opp_pts, my_bar, opp_bar, my_off = state
+        score = 0
+        
+        # 1. Preference for max moves played
+        # We assume the caller passes the length of the move, handled in main loop
+        
+        # 2. Safety & Primes
+        for i in range(24):
+            if my_pts[i] >= 2:
+                score += 10 # Safe point
+            elif my_pts[i] == 1:
+                hits = 0
+                for d in range(1, 7):
+                    if i - d >= 0:
+                        if opp_pts[i-d] >= 2: # Opponent anchor blocks hit
+                            continue
+                        if opp_pts[i-d] == 1:
+                            hits += 1
+                if hits == 0: score += 2
+                else: score -= 5 * hits
+            elif my_pts[i] == 0:
+                # Holes
+                pass
+        
+        # 3. Hitting
+        hits_inflicted = (state[3] - state_old_opp_bar) # Increase in opp bar
+        score += hits_inflicted * 100
+        if state[2] < my_bar_old: # Entered from bar
+            score += 200
+            
+        # 4. Running game (bearing off)
+        if my_off > state_old_my_off:
+            score += 50
+            
+        # 5. Bar re-entry penalty
+        if my_bar > 0:
+            score -= 50 * my_bar
+            
+        # 6. Blot vulnerability penalty (heavy)
+        # Only count if on main board
+        if my_bar == 0:
+            blot_count = 0
+            for i in range(24):
+                if my_pts[i] == 1:
+                    blot_count += 1
+            score -= blot_count * 10 # Base penalty, hits handled separately
+            
+        return score
+
+    # --- Main Policy Logic ---
+    
+    # Store old values for delta calculation
+    my_bar_old = state['my_bar']
+    state_old_opp_bar = state['opp_bar']
+    state_old_my_off = state['my_off']
+    
+    outcomes = get_outcomes(state, tuple(state['dice']))
+    
+    # We need to distinguish move ordering H vs L.
+    # outcomes contains paths (indices into dice list).
+    # Sort outcomes by score
+    
+    if not outcomes:
+        return "H:P,P"
+        
+    best_score = -float('inf')
+    best_path = None
+    best_result = None
+    
+    for result_state_tuple, path in outcomes:
+        # Reconstruct dict for evaluation
+        eval_state = (
+            result_state_tuple[0], # my_pts
+            result_state_tuple[1], # opp_pts
+            result_state_tuple[2], # my_bar
+            result_state_tuple[3], # opp_bar
+            result_state_tuple[4]  # my_off
+        )
+        sc = evaluate(eval_state)
+        # Tie break: more dice used
+        sc += len(path) * 0.1
+        
+        if sc > best_score:
+            best_score = sc
+            best_path = path
+            best_result = result_state_tuple
+            
+    if best_path is None:
+        return "H:P,P"
+        
+    # Format output
+    # Determine if we have 0, 1, or 2 moves
+    if len(state['dice']) == 0:
+        return "H:P,P"
+        
+    if len(best_path) == 0:
+        return "H:P,P"
+    
+    # Get dice values played
+    played_indices = best_path
+    played_values = [state['dice'][i] for i in played_indices]
+    
+    if len(best_path) == 1:
+        # Only one move played (either forced or choice)
+        # If there are two dice, we must pick order based on size
+        if len(state['dice']) == 2:
+            d1 = state['dice'][0]
+            d2 = state['dice'][1]
+            if d1 > d2:
+                order = 'H'
+                from1 = 'P' # We only have one move. Is it the H die or L die?
+                # The move uses one die. We need to format it as <ORDER>:<FROM1>,<FROM2>
+                # If we play the H die, order is H. From1 is the source. From2 is P.
+                # If we play the L die, order is L. From1 is source. From2 is P.
+                # Wait, if we play L die, we can't say order is L because we must play higher die if possible?
+                # But if we only play L die (because H is impossible), the move is legal.
+                # The engine checks "must play higher if possible".
+                # So if we play only one die, it must be the case that only one die could be played.
+                # Or both could be played but we choose to play only one? No, must play both.
+                # Exception: If one die can be played, play it. If both can be played, play both.
+                # So if len(best_path) == 1, it means only one die could be played.
+                # Which one? The played_values[0].
+                # If played_values[0] is the higher die, we must use order 'H'.
+                # If played_values[0] is the lower die, we must use order 'L'.
+                # But wait, "You must play the higher die when possible".
+                # If only L is possible, we play L. Order 'L' is correct.
+                if played_values[0] == max(d1, d2):
+                    order = 'H'
+                else:
+                    order = 'L'
+            else:
+                # Same check
+                if played_values[0] == max(d1, d2):
+                    order = 'H'
+                else:
+                    order = 'L'
+        else:
+            order = 'H' # Single die
+        # We need to find the source of the move.
+        # We need to diff best_result with state.
+        # But we don't have the source readily available in outcome tuple.
+        # We must re-simulate or store source in outcome. 
+        # Storing source is cleaner but complicates the generic solver.
+        # Let's just find the source by diffing the paths.
+        # Actually, get_outcomes returned path (indices).
+        # We need the source point.
+        # Let's re-simulate the winning move or change get_outcomes to store move string.
+        # Since get_outcomes is inside, let's define a helper to find sources.
+        # Or, simpler: modify get_outcomes to return sources.
+        
+        # Let's fix get_outcomes return value to include sources.
+        # Re-defining locally or just assuming we need to search.
+        # Given the complexity, let's assume we can re-find the move.
+        # Actually, since I'm writing the whole code, I can change get_outcomes to return sources.
+        
+        # Let's restart the get_outcomes logic slightly to be cleaner for this specific need.
+        # But wait, I can't easily change previous code block in thought process.
+        # Okay, I will assume `get_outcomes` returns ((state_tuple), path_indices).
+        # I will write a helper to find the source for the single move case.
+        
+        src = find_source(state, best_result, played_values[0])
+        return f"{order}:{src},P"
+
+    elif len(best_path) == 2:
+        # Two moves.
+        # We need to order them. H first or L first?
+        # The move string is <ORDER>:<FROM1>,<FROM2>
+        # FROM1 is the first move in the sequence.
+        # If we choose to play High first, ORDER=H.
+        # If we choose to play Low first, ORDER=L.
+        # Note: Order of moves doesn't affect outcome, only the string format.
+        # However, the engine might enforce "must play higher if possible" for the FIRST move?
+        # Yes. If both dice can be played, you can play either. But you must play both.
+        # If you play H first, then L. If you play L first, then H.
+        # Both are valid if both moves are valid.
+        # We just need to provide one valid format.
+        # Which order gives a valid string?
+        # If we play (d1, d2) where d1 > d2.
+        # Option 1: H:first_src, second_src (High die used first).
+        # Option 2: L:second_src, first_src (Low die used first).
+        # Wait, if d1 > d2.
+        # If we play d1 first. FROM1 uses d1. FROM2 uses d2. ORDER=H.
+        # If we play d2 first. FROM1 uses d2. FROM2 uses d1. ORDER=L.
+        # Both are valid if the moves are valid.
+        # We just need to pick one.
+        
+        # Reconstruct sources
+        # We have path [idx1, idx2].
+        # We need src1, src2 corresponding to idx1, idx2.
+        # We need to re-simulate or store sources.
+        # Let's write a small helper that replays the moves to find sources.
+        src1 = find_source(state, best_result, played_values[0]) # Source for first played die (index in path)
+        # But wait, the `best_result` is the final state.
+        # To find the source of the second move, we need the intermediate state.
+        # Or, simply, `find_source` should return all sources in order.
+        # Since `best_path` is ordered by play sequence, we can find sources sequentially.
+        
+        # Let's assume `find_source` finds the source of a move given (start_state, end_state, die_val).
+        # We need to apply it twice.
+        
+        # Simulate intermediate state
+        state_intermediate = apply_move(state, played_values[0], find_source(state, best_result, played_values[0]))
+        src2 = find_source(state_intermediate, best_result, played_values[1])
+        
+        src1 = find_source(state, best_result, played_values[0])
+        
+        # Determine order
+        d_vals = state['dice']
+        high_val = max(d_vals)
+        low_val = min(d_vals)
+        
+        # If played_values[0] is high_val, then order H is valid.
+        # If played_values[0] is low_val, order L is valid.
+        if played_values[0] == high_val:
+            order = 'H'
+        else:
+            order = 'L'
+            
+        return f"{order}:{src1},{src2}"
+
+    return "H:P,P"
+
+# Helper function to find the source of a move
+def find_source(start_state, end_state_tuple, die_val):
+    # end_state_tuple is (my_pts, opp_pts, my_bar, opp_bar, my_off)
+    # Compare start and end to find what moved
+    # Since we know die_val, we can check possible sources
+    
+    # Check Bar
+    if start_state['my_bar'] > end_state_tuple[2]:
+        # Bar -> Dest
+        return "B"
+        
+    # Check Off
+    if start_state['my_off'] < end_state_tuple[4]:
+        # Must have borne off from some point
+        # Find which point decreased
+        for i in range(24):
+            if start_state['my_pts'][i] > end_state_tuple[0][i]:
+                return f"A{i}"
+                
+    # Normal move
+    for i in range(24):
+        if start_state['my_pts'][i] > end_state_tuple[0][i]:
+            # Source decreased
+            # Check if dest increased at i - die_val
+            dest = i - die_val
+            if dest >= 0:
+                if start_state['my_pts'][dest] < end_state_tuple[0][dest]:
+                    return f"A{i}"
+            elif dest < 0:
+                # Off
+                if start_state['my_off'] < end_state_tuple[4]:
+                    return f"A{i}"
+    return "P"
+
+def apply_move(state, die_val, source_str):
+    # Returns a copy of state after applying move
+    # Used to trace sequence for 2-move case
+    new_state = {
+        'my_pts': list(state['my_pts']),
+        'opp_pts': list(state['opp_pts']),
+        'my_bar': state['my_bar'],
+        'opp_bar': state['opp_bar'],
+        'my_off': state['my_off'],
+        'opp_off': state['opp_off'],
+        'dice': state['dice']
+    }
+    
+    if source_str == "B":
+        new_state['my_bar'] -= 1
+        dest = 23 - die_val
+        if new_state['opp_pts'][dest] == 1:
+            new_state['opp_pts'][dest] = 0
+            new_state['opp_bar'] += 1
+        new_state['my_pts'][dest] += 1
+    elif source_str.startswith("A"):
+        idx = int(source_str[1:])
+        new_state['my_pts'][idx] -= 1
+        dest = idx - die_val
+        if dest >= 0:
+            if new_state['opp_pts'][dest] == 1:
+                new_state['opp_pts'][dest] = 0
+                new_state['opp_bar'] += 1
+            new_state['my_pts'][dest] += 1
+        else:
+            new_state['my_off'] += 1
+    return new_state
+</code>

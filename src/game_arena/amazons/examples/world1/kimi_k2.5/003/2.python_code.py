@@ -1,0 +1,134 @@
+
+import numpy as np
+import time
+from collections import deque
+
+def policy(board):
+    start_time = time.time()
+    timeout = 0.95
+    
+    # Find all my amazons
+    my_amazons = [(int(r), int(c)) for r, c in np.argwhere(board == 1)]
+    if not my_amazons:
+        return "0,0:0,0:0,0"
+    
+    # Generate all legal moves
+    all_moves = []
+    for amz in my_amazons:
+        all_moves.extend(generate_moves_for_amazon(board, amz))
+    
+    if not all_moves:
+        return "0,0:0,0:0,0"
+    
+    best_move = None
+    best_score = -float('inf')
+    
+    # Evaluate each move with 1-ply search
+    for move in all_moves:
+        if time.time() - start_time > timeout:
+            break
+        new_board = apply_move(board, move)
+        score = evaluate_board(new_board)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    if best_move is None:
+        best_move = all_moves[0]
+    
+    f, t, a = best_move
+    return f"{f[0]},{f[1]}:{t[0]},{t[1]}:{a[0]},{a[1]}"
+
+def generate_moves_for_amazon(board, pos):
+    """Generate all legal (from, to, arrow) moves for an amazon at pos."""
+    r, c = pos
+    moves = []
+    directions = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+    
+    # Amazon movement
+    for dr, dc in directions:
+        nr, nc = r + dr, c + dc
+        while 0 <= nr < 6 and 0 <= nc < 6 and board[nr, nc] == 0:
+            # Arrow shot from new position
+            for dr2, dc2 in directions:
+                ar, ac = nr + dr2, nc + dc2
+                while 0 <= ar < 6 and 0 <= ac < 6:
+                    # Check if blocked (original position is now empty)
+                    if board[ar, ac] != 0 and not (ar == r and ac == c):
+                        break
+                    moves.append(((r, c), (nr, nc), (ar, ac)))
+                    ar += dr2
+                    ac += dc2
+            nr += dr
+            nc += dc
+    return moves
+
+def apply_move(board, move):
+    """Apply a move to the board and return new board state."""
+    f, t, a = move
+    new_board = board.copy()
+    new_board[f[0], f[1]] = 0
+    new_board[t[0], t[1]] = 1
+    new_board[a[0], a[1]] = -1
+    return new_board
+
+def evaluate_board(board):
+    """Evaluate board using territory control (queen-distance to empty squares)."""
+    # Check for terminal positions
+    if not has_any_move(board, 1):
+        return -1000
+    if not has_any_move(board, 2):
+        return 1000
+    
+    # Compute distance maps for both players
+    dist_me = get_distance_map(board, 1)
+    dist_opp = get_distance_map(board, 2)
+    
+    # Count territory
+    score = 0
+    for r in range(6):
+        for c in range(6):
+            if board[r, c] == 0:
+                if dist_me[r][c] < dist_opp[r][c]:
+                    score += 1
+                elif dist_opp[r][c] < dist_me[r][c]:
+                    score -= 1
+    return score
+
+def get_distance_map(board, player):
+    """Compute minimum queen-move distance from player amazons to all squares."""
+    dist = [[99]*6 for _ in range(6)]
+    q = deque()
+    
+    amazons = [(int(r), int(c)) for r, c in np.argwhere(board == player)]
+    for r, c in amazons:
+        dist[r][c] = 0
+        q.append((r, c))
+    
+    directions = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+    
+    while q:
+        r, c = q.popleft()
+        d = dist[r][c]
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            # Slide in this direction until blocked
+            while 0 <= nr < 6 and 0 <= nc < 6 and board[nr, nc] == 0:
+                if dist[nr][nc] > d + 1:
+                    dist[nr][nc] = d + 1
+                    q.append((nr, nc))
+                nr += dr
+                nc += dc
+    return dist
+
+def has_any_move(board, player):
+    """Check if player has any legal move."""
+    amazons = [(int(r), int(c)) for r, c in np.argwhere(board == player)]
+    directions = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+    
+    for r, c in amazons:
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 6 and 0 <= nc < 6 and board[nr, nc] == 0:
+                return True
+    return False

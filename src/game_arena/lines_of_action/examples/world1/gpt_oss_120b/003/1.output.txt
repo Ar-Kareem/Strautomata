@@ -1,0 +1,170 @@
+<thinking>
+The policy must generate legal Lines of Action moves and choose the one that best improves the player’s connectivity.  
+Key steps:
+
+1. **Legal move generation** – For each own piece, consider the 8 directions that correspond to a row, column or diagonal.  
+   * The required travel distance is the total number of pieces (both colours) on that line.  
+   * The target square must stay on the board, may be empty or capture an opponent piece, and the path may not contain any opponent pieces (friendly pieces may be jumped over).
+
+2. **Evaluation** – After each legal move we simulate the board and count how many connected components the player’s pieces form (8‑direction adjacency).  
+   * Fewer components are better; a capture is a secondary bonus.
+
+3. **Selection** – Choose the move with the smallest component count, breaking ties by preferring captures, then randomly among equal candidates.
+
+All helper functions (`count_line`, `is_valid_direction`, `components`) are lightweight, so the whole policy runs far below the 1 second limit.
+
+The final code implements the `policy(board)` function together with the necessary helpers.
+</thinking>
+<code>
+import random
+from collections import deque
+from typing import List, Tuple
+
+# ------------------------------------------------------------
+# Helper functions for Lines of Action
+# ------------------------------------------------------------
+
+# 8 possible unit directions (row, column)
+DIRS = [(-1, -1), (-1, 0), (-1, 1),
+        (0, -1),          (0, 1),
+        (1, -1),  (1, 0), (1, 1)]
+
+def in_board(r: int, c: int) -> bool:
+    """Return True if (r,c) is inside the 8×8 board."""
+    return 0 <= r < 8 and 0 <= c < 8
+
+def is_valid_direction(dx: int, dy: int) -> bool:
+    """A direction is valid if it represents a row, column or diagonal."""
+    return (dx == 0) ^ (dy == 0) or abs(dx) == abs(dy)
+
+def count_line(board: List[List[int]], r: int, c: int, dx: int, dy: int) -> int:
+    """
+    Count the total number of pieces (both colours) that lie on the
+    line (row / column / diagonal) defined by the direction (dx,dy)
+    and passing through (r,c). The moving piece itself is included.
+    """
+    cnt = 0
+    if dx == 0:          # horizontal line (row)
+        for cc in range(8):
+            if board[r][cc] != 0:
+                cnt += 1
+    elif dy == 0:        # vertical line (column)
+        for rr in range(8):
+            if board[rr][c] != 0:
+                cnt += 1
+    else:                # diagonal
+        if dx * dy > 0:   # main diagonal (r - c constant)
+            diff = r - c
+            for rr in range(8):
+                cc = rr - diff
+                if 0 <= cc < 8 and board[rr][cc] != 0:
+                    cnt += 1
+        else:            # anti‑diagonal (r + c constant)
+            summ = r + c
+            for rr in range(8):
+                cc = summ - rr
+                if 0 <= cc < 8 and board[rr][cc] != 0:
+                    cnt += 1
+    return cnt
+
+def path_is_clear(board: List[List[int]], r: int, c: int,
+                  dx: int, dy: int, steps: int) -> bool:
+    """Return True if all intermediate squares (excluding target) are free of opponent pieces."""
+    for k in range(1, steps):
+        nr, nc = r + dx * k, c + dy * k
+        if board[nr][nc] == -1:   # opponent blocks the path
+            return False
+    return True
+
+def generate_moves(board: List[List[int]]) -> List[Tuple[Tuple[int,int,int,int], bool]]:
+    """
+    Produce all legal moves for the player to move.
+    Returns a list of ((fr,fc,tr,tc), capture_flag) entries.
+    """
+    moves = []
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] != 1:
+                continue
+            for dx, dy in DIRS:
+                if not is_valid_direction(dx, dy):
+                    continue
+                distance = count_line(board, r, c, dx, dy)
+                if distance == 0:
+                    continue
+                tr, tc = r + dx * distance, c + dy * distance
+                if not in_board(tr, tc):
+                    continue
+                if not path_is_clear(board, r, c, dx, dy, distance):
+                    continue
+                if board[tr][tc] == 1:          # cannot land on own piece
+                    continue
+                capture = board[tr][tc] == -1
+                moves.append(((r, c, tr, tc), capture))
+    return moves
+
+def count_components(board: List[List[int]]) -> int:
+    """Count the number of 8‑connected components formed by the player's pieces."""
+    visited = [[False]*8 for _ in range(8)]
+    comp = 0
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] != 1 or visited[r][c]:
+                continue
+            comp += 1
+            # BFS/DFS flood fill
+            dq = deque([(r,c)])
+            visited[r][c] = True
+            while dq:
+                cr, cc = dq.popleft()
+                for dr, dc in DIRS:
+                    nr, nc = cr + dr, cc + dc
+                    if in_board(nr, nc) and not visited[nr][nc] and board[nr][nc] == 1:
+                        visited[nr][nc] = True
+                        dq.append((nr, nc))
+    return comp
+
+def simulate_move(board: List[List[int]],
+                  fr: int, fc: int, tr: int, tc: int) -> List[List[int]]:
+    """Return a new board after applying the move (including a capture)."""
+    new_board = [row[:] for row in board]
+    new_board[fr][fc] = 0
+    new_board[tr][tc] = 1
+    return new_board
+
+# ------------------------------------------------------------
+# Main policy function
+# ------------------------------------------------------------
+
+def policy(board) -> str:
+    """
+    Choose a legal Lines of Action move for the player to move.
+    The strategy prefers moves that minimise the number of the
+    player's connected components, with a secondary bias toward captures.
+    """
+    # Ensure board is a list of lists of ints
+    board = [list(row) for row in board]
+
+    legal_moves = generate_moves(board)
+    if not legal_moves:
+        # No legal move should never happen; return a dummy move
+        return "0,0:0,0"
+
+    best_score = None          # (components, -capture_flag)
+    best_moves = []
+
+    for (fr, fc, tr, tc), capture in legal_moves:
+        new_board = simulate_move(board, fr, fc, tr, tc)
+        comps = count_components(new_board)
+        score = (comps, -int(capture))   # fewer components better; capture better
+
+        if best_score is None or score < best_score:
+            best_score = score
+            best_moves = [(fr, fc, tr, tc)]
+        elif score == best_score:
+            best_moves.append((fr, fc, tr, tc))
+
+    # If several equally good moves exist, pick one at random
+    fr, fc, tr, tc = random.choice(best_moves)
+    return f"{fr},{fc}:{tr},{tc}"
+</code>

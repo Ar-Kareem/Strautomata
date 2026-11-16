@@ -1,0 +1,110 @@
+
+import numpy as np
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    # Convert stone positions to a 19x19 grid representation
+    board = np.zeros((19, 19), dtype=int)
+    for r, c in me:
+        board[r-1, c-1] = 1
+    for r, c in opponent:
+        board[r-1, c-1] = 2
+    
+    # Check for immediate captures
+    captures = []
+    for r in range(19):
+        for c in range(19):
+            if board[r, c] == 0:
+                # Check if move captures opponent stones
+                captures.append((r, c))
+                for dr, dc in [(1,0), (-1,0), (0,1), (0,-1)]:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == 2:
+                        # Check if opponent stone has only one liberty
+                        liberties = 0
+                        for dr2, dc2 in [(1,0), (-1,0), (0,1), (0,-1)]:
+                            nr2, nc2 = nr + dr2, nc + dc2
+                            if 0 <= nr2 < 19 and 0 <= nc2 < 19 and board[nr2, nc2] == 0:
+                                liberties += 1
+                        if liberties == 1:
+                            captures.append((r, c))
+    
+    # Filter captures to only include legal moves
+    legal_moves = []
+    for move in captures:
+        r, c = move
+        # Check for self-capture
+        if board[r, c] == 0:
+            # Check liberties after placing stone
+            liberties = 0
+            for dr, dc in [(1,0), (-1,0), (0,1), (0,-1)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == 0:
+                    liberties += 1
+            if liberties > 0:
+                legal_moves.append(move)
+    
+    # Default to pass if no captures available
+    if not legal_moves:
+        return (0, 0), memory
+    
+    # MCTS simulation with heuristic evaluation
+    best_move = None
+    best_score = -float('inf')
+    simulations = 100
+    
+    for move in legal_moves:
+        move_score = 0
+        for _ in range(simulations):
+            # Clone current board state
+            sim_board = board.copy()
+            sim_board[move[0], move[1]] = 1
+            
+            # Simulate random moves
+            while True:
+                # Generate legal moves
+                legal = []
+                for r in range(19):
+                    for c in range(19):
+                        if sim_board[r, c] == 0:
+                            # Check for captures
+                            captures = []
+                            for dr, dc in [(1,0), (-1,0), (0,1), (0,-1)]:
+                                nr, nc = r + dr, c + dc
+                                if 0 <= nr < 19 and 0 <= nc < 19 and sim_board[nr, nc] == 2:
+                                    liberties = 0
+                                    for dr2, dc2 in [(1,0), (-1,0), (0,1), (0,-1)]:
+                                        nr2, nc2 = nr + dr2, nc + dc2
+                                        if 0 <= nr2 < 19 and 0 <= nc2 < 19 and sim_board[nr2, nc2] == 0:
+                                            liberties += 1
+                                    if liberties == 1:
+                                        captures.append((r, c))
+                            if captures:
+                                legal.append((r, c))
+                if not legal:
+                    break
+                # Choose random legal move
+                r, c = legal[np.random.randint(len(legal))]
+                # Place stone and capture opponents
+                sim_board[r, c] = 1
+                for dr, dc in [(1,0), (-1,0), (0,1), (0,-1)]:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 19 and 0 <= nc < 19 and sim_board[nr, nc] == 2:
+                        liberties = 0
+                        for dr2, dc2 in [(1,0), (-1,0), (0,1), (0,-1)]:
+                            nr2, nc2 = nr + dr2, nc + dc2
+                            if 0 <= nr2 < 19 and 0 <= nc2 < 19 and sim_board[nr2, nc2] == 0:
+                                liberties += 1
+                        if liberties == 1:
+                            sim_board[nr, nc] = 0
+                # Check for pass
+                if (r, c) == (0, 0):
+                    break
+            # Evaluate final board state
+            my_stones = np.sum(sim_board == 1)
+            opp_stones = np.sum(sim_board == 2)
+            move_score += (my_stones - opp_stones)
+        if move_score > best_score:
+            best_score = move_score
+            best_move = move
+    
+    return best_move, memory

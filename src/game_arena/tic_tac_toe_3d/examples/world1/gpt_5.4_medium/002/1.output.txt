@@ -1,0 +1,418 @@
+The strategy for this policy is: use a strong tactical-first engine with bitboards. It always plays a legal move, instantly takes wins, blocks immediate losses, prefers the center in the opening, looks for safe fork-creating moves, and otherwise runs iterative-deepening alpha-beta search with a heuristic based on the 49 winning lines of 3x3x3 Tic Tac Toe. The search uses move ordering, a transposition table, and fast bit operations so it stays within the time limit while still handling tactics well.
+
+<code>
+import time
+
+# 3x3x3 Tic Tac Toe policy
+# board[i][j][k] in {-1, 0, 1}
+# return (i, j, k) for our move (player 1)
+
+INF = 10**18
+WIN_SCORE = 10**9
+
+IDX_TO_COORD = [(i, j, k) for i in range(3) for j in range(3) for k in range(3)]
+BIT_TO_IDX = {1 << idx: idx for idx in range(27)}
+FULL_MASK = (1 << 27) - 1
+CENTER_IDX = 13
+CENTER_BIT = 1 << CENTER_IDX
+
+
+def _idx(i, j, k):
+    return i * 9 + j * 3 + k
+
+
+def _line_mask(coords):
+    m = 0
+    for i, j, k in coords:
+        m |= 1 << _idx(i, j, k)
+    return m
+
+
+def _build_lines():
+    lines = []
+
+    # Axis-aligned lines
+    for j in range(3):
+        for k in range(3):
+            lines.append(_line_mask([(i, j, k) for i in range(3)]))
+    for i in range(3):
+        for k in range(3):
+            lines.append(_line_mask([(i, j, k) for j in range(3)]))
+    for i in range(3):
+        for j in range(3):
+            lines.append(_line_mask([(i, j, k) for k in range(3)]))
+
+    # Plane diagonals
+    for i in range(3):
+        lines.append(_line_mask([(i, d, d) for d in range(3)]))
+        lines.append(_line_mask([(i, d, 2 - d) for d in range(3)]))
+    for j in range(3):
+        lines.append(_line_mask([(d, j, d) for d in range(3)]))
+        lines.append(_line_mask([(d, j, 2 - d) for d in range(3)]))
+    for k in range(3):
+        lines.append(_line_mask([(d, d, k) for d in range(3)]))
+        lines.append(_line_mask([(d, 2 - d, k) for d in range(3)]))
+
+    # Space diagonals
+    lines.append(_line_mask([(d, d, d) for d in range(3)]))
+    lines.append(_line_mask([(d, d, 2 - d) for d in range(3)]))
+    lines.append(_line_mask([(d, 2 - d, d) for d in range(3)]))
+    lines.append(_line_mask([(d, 2 - d, 2 - d) for d in range(3)]))
+
+    # Deduplicate just in case
+    lines = list(dict.fromkeys(lines))
+    return lines
+
+
+LINES = _build_lines()
+
+CELL_TO_LINES = [[] for _ in range(27)]
+for lm in LINES:
+    x = lm
+    while x:
+        lsb = x & -x
+        CELL_TO_LINES[BIT_TO_IDX[lsb]].append(lm)
+        x ^= lsb
+
+CELL_WEIGHTS = [len(CELL_TO_LINES[i]) for i in range(27)]
+
+
+def _iter_indices(mask):
+    while mask:
+        lsb = mask & -mask
+        yield BIT_TO_IDX[lsb]
+        mask ^= lsb
+
+
+def _first_index(mask):
+    lsb = mask & -mask
+    return BIT_TO_IDX[lsb]
+
+
+def _best_index_by_weight(mask):
+    best_idx = None
+    best_score = -10**9
+    for idx in _iter_indices(mask):
+        score = CELL_WEIGHTS[idx]
+        if score > best_score:
+            best_score = score
+            best_idx = idx
+    return best_idx
+
+
+def _board_to_bits(board):
+    my_bits = 0
+    opp_bits = 0
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                v = board[i][j][k]
+                bit = 1 << _idx(i, j, k)
+                if v == 1:
+                    my_bits |= bit
+                elif v == -1:
+                    opp_bits |= bit
+    return my_bits, opp_bits
+
+
+def _has_win(bits):
+    for lm in LINES:
+        if (bits & lm) == lm:
+            return True
+    return False
+
+
+def _winning_move_mask(player_bits, enemy_bits):
+    occupied = player_bits | enemy_bits
+    res = 0
+    for lm in LINES:
+        if lm & enemy_bits:
+            continue
+        if (lm & player_bits).bit_count() == 2:
+            res |= lm & ~occupied
+    return res
+
+
+def _evaluate(me, them):
+    if _has_win(me):
+        return WIN_SCORE
+    if _has_win(them):
+        return -WIN_SCORE
+
+    score = 0
+    me_twos = 0
+    them_twos = 0
+
+    for lm in LINES:
+        mc = (me & lm).bit_count()
+        tc = (them & lm).bit_count()
+
+        if mc and tc:
+            continue
+
+        if tc == 0:
+            if mc == 1:
+                score += 4
+            elif mc == 2:
+                score += 90
+                me_twos += 1
+        elif mc == 0:
+            if tc == 1:
+                score -= 4
+            elif tc == 2:
+                score -= 100
+                them_twos += 1
+
+    score += 45 * (me_twos - them_twos)
+
+    # Positional bonus: cells lying on many winning lines are more valuable.
+    for idx in range(27):
+        bit = 1 << idx
+        if me & bit:
+            score += CELL_WEIGHTS[idx]
+        elif them & bit:
+            score -= CELL_WEIGHTS[idx]
+
+    # Immediate tactical pressure
+    my_wins = _winning_move_mask(me, them).bit_count()
+    their_wins = _winning_move_mask(them, me).bit_count()
+    score += 120 * (my_wins - their_wins)
+
+    return score
+
+
+def _order_moves(me, them, legal_mask, tt_move=None):
+    my_wins = _winning_move_mask(me, them)
+    their_wins = _winning_move_mask(them, me)
+
+    scored = []
+    for idx in _iter_indices(legal_mask):
+        bit = 1 << idx
+        s = CELL_WEIGHTS[idx] * 6
+
+        if my_wins & bit:
+            s += 10_000_000
+        if their_wins & bit:
+            s += 5_000_000
+
+        # Local line-based move quality
+        for lm in CELL_TO_LINES[idx]:
+            mc = (me & lm).bit_count()
+            tc = (them & lm).bit_count()
+
+            if tc == 0:
+                if mc == 0:
+                    s += 3
+                elif mc == 1:
+                    s += 40
+                elif mc == 2:
+                    s += 4000
+            elif mc == 0:
+                if tc == 1:
+                    s += 15
+                elif tc == 2:
+                    s += 2500
+
+        # Small bonus for center
+        if idx == CENTER_IDX:
+            s += 50
+
+        scored.append((s, idx))
+
+    scored.sort(reverse=True)
+    ordered = [idx for _, idx in scored]
+
+    if tt_move is not None and ((1 << tt_move) & legal_mask):
+        if tt_move in ordered:
+            ordered.remove(tt_move)
+        ordered.insert(0, tt_move)
+
+    return ordered
+
+
+class _Timeout(Exception):
+    pass
+
+
+def policy(board):
+    my_bits, opp_bits = _board_to_bits(board)
+    occupied = my_bits | opp_bits
+    legal_mask = FULL_MASK & ~occupied
+
+    # Safety fallback: arena should never call on a full board.
+    if legal_mask == 0:
+        return (0, 0, 0)
+
+    # Opening preference: center is strongest.
+    occupied_count = occupied.bit_count()
+    if occupied_count == 0 and (legal_mask & CENTER_BIT):
+        return (1, 1, 1)
+    if occupied_count <= 2 and (legal_mask & CENTER_BIT):
+        return (1, 1, 1)
+
+    # Immediate win.
+    my_win_mask = _winning_move_mask(my_bits, opp_bits)
+    if my_win_mask:
+        idx = _best_index_by_weight(my_win_mask)
+        return IDX_TO_COORD[idx]
+
+    # Immediate block if necessary.
+    opp_win_mask = _winning_move_mask(opp_bits, my_bits)
+    if opp_win_mask and (opp_win_mask & (opp_win_mask - 1)) == 0:
+        idx = _first_index(opp_win_mask)
+        return IDX_TO_COORD[idx]
+
+    # Safe fork creation if available and no urgent block required.
+    if opp_win_mask == 0:
+        fork_mask = 0
+        temp = legal_mask
+        while temp:
+            lsb = temp & -temp
+            new_my = my_bits | lsb
+            if _winning_move_mask(new_my, opp_bits).bit_count() >= 2:
+                # Prefer forks that do not allow an immediate reply win.
+                if _winning_move_mask(opp_bits, new_my) == 0:
+                    fork_mask |= lsb
+            temp ^= lsb
+        if fork_mask:
+            idx = _best_index_by_weight(fork_mask)
+            return IDX_TO_COORD[idx]
+
+    # Search setup
+    deadline = time.perf_counter() + 0.92
+    node_counter = 0
+    transposition = {}
+
+    # Root candidates: if opponent has an immediate threat, search only blocks.
+    root_mask = opp_win_mask if opp_win_mask else legal_mask
+
+    # Fallback move if we time out immediately.
+    fallback_idx = _best_index_by_weight(root_mask if root_mask else legal_mask)
+
+    def negamax(me, them, depth, alpha, beta, ply):
+        nonlocal node_counter
+
+        node_counter += 1
+        if (node_counter & 255) == 0 and time.perf_counter() >= deadline:
+            raise _Timeout
+
+        # Terminal checks
+        if _has_win(me):
+            return WIN_SCORE - ply
+        if _has_win(them):
+            return -WIN_SCORE + ply
+
+        legal = FULL_MASK & ~(me | them)
+        if legal == 0:
+            return 0
+
+        # Quiescence-like tactical resolution at horizon
+        if depth == 0:
+            me_wins = _winning_move_mask(me, them)
+            if me_wins:
+                return WIN_SCORE - ply
+            them_wins = _winning_move_mask(them, me)
+            if them_wins:
+                return -WIN_SCORE + ply
+            return _evaluate(me, them)
+
+        key = (me, them, depth)
+        tt_entry = transposition.get(key)
+        tt_move = None
+        alpha0, beta0 = alpha, beta
+
+        if tt_entry is not None:
+            stored_depth, flag, val, best_move = tt_entry
+            tt_move = best_move
+            if stored_depth >= depth:
+                if flag == 0:
+                    return val
+                elif flag == 1:
+                    alpha = max(alpha, val)
+                else:
+                    beta = min(beta, val)
+                if alpha >= beta:
+                    return val
+
+        best_val = -INF
+        best_move = None
+
+        ordered = _order_moves(me, them, legal, tt_move)
+
+        for idx in ordered:
+            bit = 1 << idx
+            val = -negamax(them, me | bit, depth - 1, -beta, -alpha, ply + 1)
+            if val > best_val:
+                best_val = val
+                best_move = idx
+            if val > alpha:
+                alpha = val
+            if alpha >= beta:
+                break
+
+        if best_val <= alpha0:
+            flag = -1  # upper bound
+        elif best_val >= beta0:
+            flag = 1   # lower bound
+        else:
+            flag = 0   # exact
+
+        transposition[key] = (depth, flag, best_val, best_move)
+        return best_val
+
+    def search_root(depth):
+        if time.perf_counter() >= deadline:
+            raise _Timeout
+
+        alpha = -INF
+        beta = INF
+        best_val = -INF
+        best_idx = None
+
+        root_order = _order_moves(my_bits, opp_bits, root_mask)
+
+        for idx in root_order:
+            if time.perf_counter() >= deadline:
+                raise _Timeout
+            bit = 1 << idx
+            val = -negamax(opp_bits, my_bits | bit, depth - 1, -beta, -alpha, 1)
+            if val > best_val:
+                best_val = val
+                best_idx = idx
+            if val > alpha:
+                alpha = val
+
+        return best_val, best_idx
+
+    empties = legal_mask.bit_count()
+    if empties <= 8:
+        max_depth = empties
+    elif empties <= 12:
+        max_depth = 7
+    elif empties <= 16:
+        max_depth = 6
+    elif empties <= 20:
+        max_depth = 5
+    else:
+        max_depth = 4
+
+    best_idx = fallback_idx
+    best_val = -INF
+
+    for depth in range(1, max_depth + 1):
+        try:
+            val, idx = search_root(depth)
+            if idx is not None:
+                best_idx = idx
+                best_val = val
+            if best_val >= WIN_SCORE // 2:
+                break
+        except _Timeout:
+            break
+
+    # Final legality guard
+    if best_idx is None or not (legal_mask & (1 << best_idx)):
+        best_idx = _first_index(legal_mask)
+
+    return IDX_TO_COORD[best_idx]
+</code>

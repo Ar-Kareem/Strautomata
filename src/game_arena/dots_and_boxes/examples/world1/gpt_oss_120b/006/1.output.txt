@@ -1,0 +1,130 @@
+**Strategy Overview**
+
+The policy follows the classic “avoid‑giving‑away‑a‑box” principle used in optimal Dots‑and‑Boxes play.
+
+1. **Take any available box** –  
+   If an empty edge would close one or more boxes, we play it immediately.  
+   Capturing a box gives an extra turn, so these moves are always optimal.
+
+2. **Play safe moves** –  
+   When no box can be taken, we look for edges that **do not** create a box with three sides already drawn (i.e. do not give the opponent an immediate scoring chance).  
+   All such “danger‑free” moves are candidates; one of them is chosen at random.
+
+3. **When forced to be dangerous** –  
+   If every remaining move would create at least one three‑sided box, we pick the move that creates the **fewest** such boxes (again breaking ties randomly).
+
+The implementation enumerates all legal horizontal and vertical edges, evaluates each candidate by simulating the move, and selects the best according to the rules above.  The returned string follows the required `'row,col,dir'` format.
+
+```python
+import numpy as np
+import random
+from typing import List, Tuple
+
+def _box_side_count(h: np.ndarray, v: np.ndarray, i: int, j: int) -> int:
+    """Return the number of drawn sides of the box at (i, j)."""
+    cnt = 0
+    cnt += 1 if h[i, j] != 0 else 0          # top
+    cnt += 1 if h[i + 1, j] != 0 else 0      # bottom
+    cnt += 1 if v[i, j] != 0 else 0          # left
+    cnt += 1 if v[i, j + 1] != 0 else 0      # right
+    return cnt
+
+def _evaluate_move(
+    h: np.ndarray,
+    v: np.ndarray,
+    move: Tuple[int, int, str]
+) -> Tuple[int, int]:
+    """
+    Simulate playing `move` on copies of the board.
+    Returns a tuple (boxes_completed, new_three_sided_boxes)
+    """
+    row, col, d = move
+    # copy only the needed parts (we just need counts)
+    completed = 0
+    new_three = 0
+
+    # which boxes are affected?
+    boxes = []
+    if d == "H":
+        # top box (if any)
+        if row > 0 and col < 4:
+            boxes.append((row - 1, col))
+        # bottom box (if any)
+        if row < 4 and col < 4:
+            boxes.append((row, col))
+    else:  # "V"
+        # left box
+        if col > 0 and row < 4:
+            boxes.append((row, col - 1))
+        # right box
+        if col < 4 and row < 4:
+            boxes.append((row, col))
+
+    for i, j in boxes:
+        before = _box_side_count(h, v, i, j)
+        after = before + 1   # the simulated edge will be filled
+        if after == 4:
+            completed += 1
+        elif after == 3:
+            new_three += 1
+
+    return completed, new_three
+
+
+def _legal_moves(h: np.ndarray, v: np.ndarray) -> List[Tuple[int, int, str]]:
+    """Return a list of all currently empty edges as (row, col, dir)."""
+    moves = []
+    # Horizontal edges: rows 0‑4, cols 0‑3
+    for r in range(5):
+        for c in range(4):
+            if h[r, c] == 0:
+                moves.append((r, c, "H"))
+    # Vertical edges: rows 0‑3, cols 0‑4
+    for r in range(4):
+        for c in range(5):
+            if v[r, c] == 0:
+                moves.append((r, c, "V"))
+    return moves
+
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    """
+    Choose the next move for a 4x4 Dots and Boxes board.
+    Returns a string 'row,col,dir' where dir is 'H' or 'V'.
+    """
+    moves = _legal_moves(horizontal, vertical)
+
+    # 1) Prefer moves that complete at least one box
+    best_moves = []
+    best_complete = -1
+    for m in moves:
+        completed, _ = _evaluate_move(horizontal, vertical, m)
+        if completed > best_complete:
+            best_complete = completed
+            best_moves = [m]
+        elif completed == best_complete:
+            best_moves.append(m)
+
+    if best_complete > 0:
+        chosen = random.choice(best_moves)
+        return f"{chosen[0]},{chosen[1]},{chosen[2]}"
+
+    # 2) No immediate boxes – look for safe moves (no new 3‑sided boxes)
+    safe_moves = []
+    min_new_three = 10
+    for m in moves:
+        _, new_three = _evaluate_move(horizontal, vertical, m)
+        if new_three == 0:
+            safe_moves.append(m)
+        if new_three < min_new_three:
+            min_new_three = new_three
+
+    if safe_moves:
+        chosen = random.choice(safe_moves)
+        return f"{chosen[0]},{chosen[1]},{chosen[2]}"
+
+    # 3) Forced to be dangerous – choose the move that creates the fewest 3‑sided boxes
+    candidates = [m for m in moves if _evaluate_move(horizontal, vertical, m)[1] == min_new_three]
+    chosen = random.choice(candidates)
+    return f"{chosen[0]},{chosen[1]},{chosen[2]}"
+```

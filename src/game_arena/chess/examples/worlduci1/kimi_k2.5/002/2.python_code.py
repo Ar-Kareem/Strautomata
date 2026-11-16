@@ -1,0 +1,219 @@
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    color = 'w' if to_play == 'white' else 'b'
+    enemy = 'b' if color == 'w' else 'w'
+    
+    def sq_to_coord(s):
+        return (ord(s[0]) - 97, int(s[1]) - 1)
+    
+    def coord_to_sq(c):
+        return chr(c[0] + 97) + str(c[1] + 1)
+    
+    # Initialize board
+    board = {}
+    for sq, pc in pieces.items():
+        board[sq_to_coord(sq)] = pc
+    
+    def is_attacked(brd, pos, by_color):
+        f, r = pos
+        # Pawns
+        d = 1 if by_color == 'w' else -1
+        for df in (-1, 1):
+            if (f+df, r-d) in brd and brd[(f+df, r-d)] == by_color + 'P':
+                return True
+        # Knights
+        for df, dr in ((2,1),(2,-1),(-2,1),(-2,-1),(1,2),(1,-2),(-1,2),(-1,-2)):
+            if (f+df, r+dr) in brd and brd[(f+df, r+dr)] == by_color + 'N':
+                return True
+        # King
+        for df, dr in ((1,0),(-1,0),(0,1),(0,-1),(1,1),(1,-1),(-1,1),(-1,-1)):
+            if (f+df, r+dr) in brd and brd[(f+df, r+dr)] == by_color + 'K':
+                return True
+        # Sliders (Bishop/Queen)
+        for df, dr in ((1,1),(1,-1),(-1,1),(-1,-1)):
+            for i in range(1,8):
+                nf, nr = f+df*i, r+dr*i
+                if not (0 <= nf < 8 and 0 <= nr < 8):
+                    break
+                if (nf, nr) in brd:
+                    if brd[(nf, nr)] in (by_color + 'B', by_color + 'Q'):
+                        return True
+                    break
+        # Sliders (Rook/Queen)
+        for df, dr in ((1,0),(-1,0),(0,1),(0,-1)):
+            for i in range(1,8):
+                nf, nr = f+df*i, r+dr*i
+                if not (0 <= nf < 8 and 0 <= nr < 8):
+                    break
+                if (nf, nr) in brd:
+                    if brd[(nf, nr)] in (by_color + 'R', by_color + 'Q'):
+                        return True
+                    break
+        return False
+    
+    def find_king(brd, c):
+        for pos, pc in brd.items():
+            if pc == c + 'K':
+                return pos
+        return None
+    
+    def generate_moves(brd, c):
+        moves = []
+        e = 'b' if c == 'w' else 'w'
+        for (f, r), pc in list(brd.items()):
+            if pc[0] != c:
+                continue
+            p = pc[1]
+            if p == 'P':
+                d = 1 if c == 'w' else -1
+                start = 1 if c == 'w' else 6
+                promo = 7 if c == 'w' else 0
+                # Single push
+                nf, nr = f, r+d
+                if 0 <= nr < 8 and (nf, nr) not in brd:
+                    if nr == promo:
+                        for pr in ('q', 'r', 'b', 'n'):
+                            moves.append((f, r, nf, nr, pr))
+                    else:
+                        moves.append((f, r, nf, nr, ''))
+                        # Double
+                        if r == start:
+                            nf2, nr2 = f, r+2*d
+                            if (nf2, nr2) not in brd:
+                                moves.append((f, r, nf2, nr2, ''))
+                # Captures
+                for df in (-1, 1):
+                    nf, nr = f+df, r+d
+                    if 0 <= nf < 8 and 0 <= nr < 8:
+                        if (nf, nr) in brd and brd[(nf, nr)][0] == e:
+                            if nr == promo:
+                                for pr in ('q', 'r', 'b', 'n'):
+                                    moves.append((f, r, nf, nr, pr))
+                            else:
+                                moves.append((f, r, nf, nr, ''))
+            elif p == 'N':
+                for df, dr in ((2,1),(2,-1),(-2,1),(-2,-1),(1,2),(1,-2),(-1,2),(-1,-2)):
+                    nf, nr = f+df, r+dr
+                    if 0 <= nf < 8 and 0 <= nr < 8 and ((nf, nr) not in brd or brd[(nf, nr)][0] == e):
+                        moves.append((f, r, nf, nr, ''))
+            elif p == 'K':
+                for df, dr in ((1,0),(-1,0),(0,1),(0,-1),(1,1),(1,-1),(-1,1),(-1,-1)):
+                    nf, nr = f+df, r+dr
+                    if 0 <= nf < 8 and 0 <= nr < 8 and ((nf, nr) not in brd or brd[(nf, nr)][0] == e):
+                        moves.append((f, r, nf, nr, ''))
+                # Castling
+                if c == 'w' and (f, r) == (4, 0):
+                    if (7,0) in brd and brd[(7,0)] == 'wR' and (5,0) not in brd and (6,0) not in brd:
+                        if not is_attacked(brd, (4,0), e) and not is_attacked(brd, (5,0), e) and not is_attacked(brd, (6,0), e):
+                            moves.append((4, 0, 6, 0, ''))
+                    if (0,0) in brd and brd[(0,0)] == 'wR' and (1,0) not in brd and (2,0) not in brd and (3,0) not in brd:
+                        if not is_attacked(brd, (4,0), e) and not is_attacked(brd, (3,0), e) and not is_attacked(brd, (2,0), e):
+                            moves.append((4, 0, 2, 0, ''))
+                elif c == 'b' and (f, r) == (4, 7):
+                    if (7,7) in brd and brd[(7,7)] == 'bR' and (5,7) not in brd and (6,7) not in brd:
+                        if not is_attacked(brd, (4,7), e) and not is_attacked(brd, (5,7), e) and not is_attacked(brd, (6,7), e):
+                            moves.append((4, 7, 6, 7, ''))
+                    if (0,7) in brd and brd[(0,7)] == 'bR' and (1,7) not in brd and (2,7) not in brd and (3,7) not in brd:
+                        if not is_attacked(brd, (4,7), e) and not is_attacked(brd, (3,7), e) and not is_attacked(brd, (2,7), e):
+                            moves.append((4, 7, 2, 7, ''))
+            elif p in ('B', 'R', 'Q'):
+                dirs = []
+                if p in ('B', 'Q'):
+                    dirs += [(1,1),(1,-1),(-1,1),(-1,-1)]
+                if p in ('R', 'Q'):
+                    dirs += [(1,0),(-1,0),(0,1),(0,-1)]
+                for df, dr in dirs:
+                    for i in range(1,8):
+                        nf, nr = f+df*i, r+dr*i
+                        if not (0 <= nf < 8 and 0 <= nr < 8):
+                            break
+                        if (nf, nr) in brd:
+                            if brd[(nf, nr)][0] == e:
+                                moves.append((f, r, nf, nr, ''))
+                            break
+                        moves.append((f, r, nf, nr, ''))
+        return moves
+    
+    def legal_moves_list(brd, c):
+        all_moves = generate_moves(brd, c)
+        legal = []
+        k_pos = find_king(brd, c)
+        for f, r, nf, nr, prom in all_moves:
+            new_board = brd.copy()
+            piece = new_board.pop((f, r))
+            new_board.pop((nf, nr), None)
+            if prom:
+                new_board[(nf, nr)] = c + prom.upper()
+            else:
+                new_board[(nf, nr)] = piece
+            # Update king pos if moved
+            test_king = (nf, nr) if piece[1] == 'K' else k_pos
+            if not is_attacked(new_board, test_king, 'b' if c == 'w' else 'w'):
+                move_str = coord_to_sq((f,r)) + coord_to_sq((nf,nr)) + prom
+                legal.append(move_str)
+        return legal
+    
+    # Evaluation
+    values = {'P':100, 'N':320, 'B':330, 'R':500, 'Q':900, 'K':0}
+    
+    def evaluate(brd):
+        score = 0
+        for pc in brd.values():
+            v = values[pc[1]]
+            if pc[0] == color:
+                score += v
+            else:
+                score -= v
+        return score
+    
+    # Minimax depth 2
+    my_moves = legal_moves_list(board, color)
+    if not my_moves:
+        return "a1a1"  # Should not happen in valid game
+    
+    best_move = my_moves[0]
+    best_score = -999999
+    
+    for move in my_moves:
+        # Make move
+        f = sq_to_coord(move[:2])
+        t = sq_to_coord(move[2:4])
+        prom = move[4:] if len(move) > 4 else ''
+        new_board = board.copy()
+        piece = new_board.pop(f)
+        new_board.pop(t, None)
+        new_board[t] = color + prom.upper() if prom else piece
+        
+        # Get enemy moves (depth 1)
+        enemy_moves = legal_moves_list(new_board, enemy)
+        if not enemy_moves:
+            # Checkmate or stalemate
+            enemy_king = find_king(new_board, enemy)
+            if enemy_king and is_attacked(new_board, enemy_king, color):
+                return move  # Immediate checkmate
+            score = 99999  # Stalemate is good if winning, but usually rare
+        else:
+            # Find worst case (enemy best reply)
+            worst = 999999
+            for em in enemy_moves:
+                ef = sq_to_coord(em[:2])
+                et = sq_to_coord(em[2:4])
+                eprom = em[4:] if len(em) > 4 else ''
+                eb = new_board.copy()
+                ep = eb.pop(ef)
+                eb.pop(et, None)
+                eb[et] = enemy + eprom.upper() if eprom else ep
+                sc = evaluate(eb)
+                # Bonus for our check in reply
+                our_king = find_king(eb, color)
+                if our_king and is_attacked(eb, our_king, enemy):
+                    sc -= 100  # Bad, we're in check
+                if sc < worst:
+                    worst = sc
+            score = worst
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move

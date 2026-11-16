@@ -1,0 +1,87 @@
+
+import numpy as np
+
+def policy(board: list[list[int]]) -> int:
+    """
+    Makes a move in a Tic Tac Toe game using a simple AI logic.
+    Prioritizes winning, then blocking, then taking the center,
+    then corners, then sides.
+
+    Args:
+        board: A 3x3 list of lists representing the Tic Tac Toe board.
+               0: empty, 1: AI, -1: opponent.
+
+    Returns:
+        An integer 1-9 indicating the chosen empty cell.
+    """
+    flat_board = [cell for row in board for cell in row]
+    empty_cells = [i + 1 for i, cell in enumerate(flat_board) if cell == 0]
+
+    # Convert board to numpy array for easier manipulation
+    np_board = np.array(board)
+
+    # 1. Check for a winning move
+    for move in empty_cells:
+        r, c = (move - 1) // 3, (move - 1) % 3
+        temp_board = np.copy(np_board)
+        temp_board[r, c] = 1
+        if check_win(temp_board, 1):
+            return move
+
+    # 2. Check to block opponent's winning move
+    for move in empty_cells:
+        r, c = (move - 1) // 3, (move - 1) % 3
+        temp_board = np.copy(np_board)
+        temp_board[r, c] = -1
+        if check_win(temp_board, -1):
+            return move
+
+    # 3. Take the center if available
+    if 5 in empty_cells:
+        return 5
+
+    # 4. Take a corner if available
+    corners = [1, 3, 7, 9]
+    for move in corners:
+        if move in empty_cells:
+            return move
+
+    # 5. Take any remaining side cell
+    sides = [2, 4, 6, 8]
+    for move in sides:
+        if move in empty_cells:
+            return move
+
+    # Should not reach here if the board is not full and there are empty cells
+    # As a fallback, return the first available empty cell
+    if empty_cells:
+        return empty_cells[0]
+    
+    return -1 # Should not happen in a valid game state
+
+def check_win(board: np.ndarray, player: int) -> bool:
+    """
+    Checks if the given player has won on the board.
+
+    Args:
+        board: A 3x3 numpy array representing the board.
+        player: The player to check (1 for AI, -1 for opponent).
+
+    Returns:
+        True if the player has won, False otherwise.
+    """
+    # Check rows
+    for row in board:
+        if np.all(row == player):
+            return True
+    # Check columns
+    for col in board.T:
+        if np.all(col == player):
+            return True
+    # Check diagonals
+    if np.all(np.diag(board) == player):
+        return True
+    if np.all(np.diag(np.fliplr(board)) == player):
+        return True
+    return False
+

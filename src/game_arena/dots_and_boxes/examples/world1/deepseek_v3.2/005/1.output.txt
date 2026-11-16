@@ -1,0 +1,245 @@
+Strategy:  
+My policy will be a two-stage strategy: early game uses a heuristic to avoid giving away easy boxes, while the mid-to-late game switches to a minimax search with alpha-beta pruning to capture chains efficiently. Because the grid is 4×4 (small enough for search in ~1 second), I can look ahead 2–3 ply (half-moves) safely.  
+Key principles:  
+1. **Avoid giving away a third side** of a box unless it cannot be avoided or if taking it leads to a capturing chain.  
+2. Prioritize moves that **do not create new 3-sided boxes** for the opponent.  
+3. In forced-capture situations, **maximize chain captures** using known double-cross strategies.  
+4. If no immediate captures are possible, choose the move that minimizes opponent's future opportunities by evaluating a simple heuristic (count of potential future boxes controlled).  
+
+I will implement:  
+- A function to generate all legal moves.  
+- A function to simulate a move and return the resulting state plus any extra turns earned.  
+- An evaluation function that estimates the advantage:  
+  `score = (my_boxes - opponent_boxes) + 0.2 * (my_potential - opponent_potential)`, where potential is the number of boxes where I have more marked edges than the opponent (but box not yet captured).  
+- A minimax search with alpha-beta, considering extra-turn continuations within a single player's turn.  
+
+To stay within 1 second, search depth will be adaptive: up to 6 ply if fewer than 10 moves remain, else 4 ply.
+
+<code>
+import numpy as np
+import itertools
+import time
+
+# ---------- Helper functions for game logic ----------
+def get_legal_moves(horizontal, vertical):
+    moves = []
+    for r in range(5):
+        for c in range(4):
+            if horizontal[r, c] == 0:
+                moves.append((r, c, 'H'))
+        for c in range(5):
+            if vertical[r, c] == 0:
+                moves.append((r, c, 'V'))
+    return moves
+
+def apply_move(horizontal, vertical, capture, move, player=1):
+    """Return new state (h, v, cap) after move, extra turns earned, and boxes captured this move."""
+    r, c, d = move
+    h = horizontal.copy()
+    v = vertical.copy()
+    cap = capture.copy()
+    boxes_captured = 0
+    if d == 'H':
+        h[r, c] = player
+        # check boxes above and below this horizontal edge
+        if r > 0:
+            # box above: (r-1, c)
+            if (h[r-1, c] != 0 and h[r, c] != 0 and
+                v[r-1, c] != 0 and v[r-1, c+1] != 0):
+                if cap[r-1, c] == 0:
+                    cap[r-1, c] = player
+                    boxes_captured += 1
+        if r < 4:
+            # box below: (r, c)
+            if (h[r+1, c] != 0 and h[r, c] != 0 and
+                v[r, c] != 0 and v[r, c+1] != 0):
+                if cap[r, c] == 0:
+                    cap[r, c] = player
+                    boxes_captured += 1
+    else:  # 'V'
+        v[r, c] = player
+        # check boxes left and right of this vertical edge
+        if c > 0:
+            # box left: (r, c-1)
+            if (v[r, c-1] != 0 and v[r, c] != 0 and
+                h[r, c-1] != 0 and h[r+1, c-1] != 0):
+                if cap[r, c-1] == 0:
+                    cap[r, c-1] = player
+                    boxes_captured += 1
+        if c < 4:
+            # box right: (r, c)
+            if (v[r, c+1] != 0 and v[r, c] != 0 and
+                h[r, c] != 0 and h[r+1, c] != 0):
+                if cap[r, c] == 0:
+                    cap[r, c] = player
+                    boxes_captured += 1
+    return h, v, cap, boxes_captured
+
+def boxes_completed_by_edge(horizontal, vertical, move, player=1):
+    """Return how many boxes would be captured by playing move (quick check)."""
+    r, c, d = move
+    count = 0
+    if d == 'H':
+        if r > 0:
+            if (horizontal[r-1, c] != 0 and horizontal[r, c] == 0 and
+                vertical[r-1, c] != 0 and vertical[r-1, c+1] != 0):
+                count += 1
+        if r < 4:
+            if (horizontal[r+1, c] != 0 and horizontal[r, c] == 0 and
+                vertical[r, c] != 0 and vertical[r, c+1] != 0):
+                count += 1
+    else:  # 'V'
+        if c > 0:
+            if (vertical[r, c-1] != 0 and vertical[r, c] == 0 and
+                horizontal[r, c-1] != 0 and horizontal[r+1, c-1] != 0):
+                count += 1
+        if c < 4:
+            if (vertical[r, c+1] != 0 and vertical[r, c] == 0 and
+                horizontal[r, c] != 0 and horizontal[r+1, c] != 0):
+                count += 1
+    return count
+
+# ---------- Evaluation function ----------
+def evaluate(horizontal, vertical, capture, player=1):
+    """Return heuristic score for player."""
+    my_boxes = np.sum(capture == player)
+    opp_boxes = np.sum(capture == -player)
+    # potential boxes: boxes not captured, count edges owned
+    my_pot = 0
+    opp_pot = 0
+    for r in range(4):
+        for c in range(4):
+            if capture[r, c] == 0:
+                edges = [
+                    horizontal[r, c],
+                    horizontal[r+1, c],
+                    vertical[r, c],
+                    vertical[r, c+1]
+                ]
+                my_edges = sum(1 for e in edges if e == player)
+                opp_edges = sum(1 for e in edges if e == -player)
+                if my_edges > opp_edges:
+                    my_pot += 1
+                elif opp_edges > my_edges:
+                    opp_pot += 1
+    score = (my_boxes - opp_boxes) + 0.2 * (my_pot - opp_pot)
+    return score
+
+# ---------- Search ----------
+def alpha_beta(horizontal, vertical, capture, depth, alpha, beta, maximizing, player, start_time, time_limit):
+    """Return (score, move sequence) for current player."""
+    if depth == 0 or time.time() - start_time > time_limit:
+        return evaluate(horizontal, vertical, capture, player), []
+    moves = get_legal_moves(horizontal, vertical)
+    if not moves:
+        return evaluate(horizontal, vertical, capture, player), []
+    
+    # move ordering: captures first
+    moves.sort(key=lambda m: -boxes_completed_by_edge(horizontal, vertical, m, player))
+    
+    if maximizing:
+        best_score = -float('inf')
+        best_seq = []
+        for move in moves:
+            # immediate captures?
+            boxes = boxes_completed_by_edge(horizontal, vertical, move, player)
+            h2, v2, cap2, captured = apply_move(horizontal, vertical, capture, move, player)
+            if captured > 0:
+                # extra turn: continue as same player
+                score, seq = alpha_beta(h2, v2, cap2, depth-1, alpha, beta, True, player, start_time, time_limit)
+                seq = [move] + seq
+            else:
+                score, seq = alpha_beta(h2, v2, cap2, depth-1, alpha, beta, False, -player, start_time, time_limit)
+                seq = [move] + seq
+            if score > best_score:
+                best_score = score
+                best_seq = seq
+            alpha = max(alpha, best_score)
+            if beta <= alpha:
+                break
+        return best_score, best_seq
+    else:
+        best_score = float('inf')
+        best_seq = []
+        for move in moves:
+            boxes = boxes_completed_by_edge(horizontal, vertical, move, -player)
+            h2, v2, cap2, captured = apply_move(horizontal, vertical, capture, move, -player)
+            if captured > 0:
+                score, seq = alpha_beta(h2, v2, cap2, depth-1, alpha, beta, False, -player, start_time, time_limit)
+                seq = [move] + seq
+            else:
+                score, seq = alpha_beta(h2, v2, cap2, depth-1, alpha, beta, True, player, start_time, time_limit)
+                seq = [move] + seq
+            if score < best_score:
+                best_score = score
+                best_seq = seq
+            beta = min(beta, best_score)
+            if beta <= alpha:
+                break
+        return best_score, best_seq
+
+# ---------- Policy ----------
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    start_time = time.time()
+    time_limit = 0.95  # stay under 1 second
+    player = 1  # we are always player 1
+    moves = get_legal_moves(horizontal, vertical)
+    if not moves:
+        return "0,0,H"  # should never happen
+    
+    # If early game (few edges drawn), use heuristic to avoid 3-sided boxes
+    filled_edges = np.sum(horizontal != 0) + np.sum(vertical != 0)
+    if filled_edges < 10:
+        # Choose a move that does not create a 3-sided box for opponent
+        safe_moves = []
+        for move in moves:
+            # test if move gives opponent a 3-sided box next turn
+            r, c, d = move
+            gives_three = False
+            # quick simulation
+            h2, v2, cap2, _ = apply_move(horizontal, vertical, capture, move, player)
+            # check if any box adjacent to this edge now has 3 sides filled for opponent
+            # (opponent edges are -1, but since we just played, only our edges are 1)
+            # we need to see if any box gets 3 edges total (any nonzero) and still unclaimed
+            # simpler: after our move, if any box has 3 edges filled (any player) and uncaptured, that's dangerous
+            for br in range(4):
+                for bc in range(4):
+                    if cap2[br, bc] != 0:
+                        continue
+                    edges = [
+                        h2[br, bc],
+                        h2[br+1, bc],
+                        v2[br, bc],
+                        v2[br, bc+1]
+                    ]
+                    filled = sum(1 for e in edges if e != 0)
+                    if filled == 3:
+                        gives_three = True
+                        break
+                if gives_three:
+                    break
+            if not gives_three:
+                safe_moves.append(move)
+        if safe_moves:
+            moves = safe_moves
+    
+    # Decide depth based on remaining moves
+    remaining_moves = len(moves)
+    if remaining_moves <= 10:
+        depth = 6
+    elif remaining_moves <= 20:
+        depth = 5
+    else:
+        depth = 4
+    
+    # Run search
+    _, seq = alpha_beta(horizontal, vertical, capture, depth, -float('inf'), float('inf'), True, player, start_time, time_limit)
+    if seq:
+        best_move = seq[0]
+    else:
+        # fallback: first legal move
+        best_move = moves[0]
+    
+    r, c, d = best_move
+    return f"{r},{c},{d}"
+</code>

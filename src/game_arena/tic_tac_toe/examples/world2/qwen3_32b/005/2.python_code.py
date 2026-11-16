@@ -1,0 +1,93 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    def is_win(current_board, player):
+        # Check rows
+        for row in current_board:
+            if all(cell == player for cell in row):
+                return True
+        # Check columns
+        for col in range(4):
+            if all(current_board[row][col] == player for row in range(4)):
+                return True
+        # Check main diagonals
+        if all(current_board[i][i] == player for i in range(4)):
+            return True
+        if all(current_board[i][3 - i] == player for i in range(4)):
+            return True
+        return False
+
+    def get_priority(r, c):
+        if r in [1, 2] and c in [1, 2]:
+            return 4
+        if (r, c) in [(0, 0), (0, 3), (3, 0), (3, 3)]:
+            return 3
+        if r in [0, 3] or c in [0, 3]:
+            return 2
+        return 1
+
+    # Step 1: Check for immediate win
+    winning_moves = []
+    for r in range(4):
+        for c in range(4):
+            if board[r][c] == 0:
+                board[r][c] = 1
+                if is_win(board, 1):
+                    winning_moves.append((r, c))
+                board[r][c] = 0
+    if winning_moves:
+        return max(winning_moves, key=lambda move: get_priority(*move))
+
+    # Step 2: Check for opponent's immediate win
+    blocking_moves = []
+    for r in range(4):
+        for c in range(4):
+            if board[r][c] == 0:
+                board[r][c] = -1
+                if is_win(board, -1):
+                    blocking_moves.append((r, c))
+                board[r][c] = 0
+    if blocking_moves:
+        return max(blocking_moves, key=lambda move: get_priority(*move))
+
+    # Step 3: Choose best move based on scoring
+    def calculate_score(current_board, r, c):
+        directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
+        total_score = 0
+        for dr, dc in directions:
+            count = 0
+            # Check in negative direction
+            temp_r, temp_c = r - dr, c - dc
+            while 0 <= temp_r < 4 and 0 <= temp_c < 4 and current_board[temp_r][temp_c] == 1:
+                count += 1
+                temp_r -= dr
+                temp_c -= dc
+            # Check in positive direction
+            temp_r, temp_c = r + dr, c + dc
+            while 0 <= temp_r < 4 and 0 <= temp_c < 4 and current_board[temp_r][temp_c] == 1:
+                count += 1
+                temp_r += dr
+                temp_c += dc
+            seq_length = count + 1
+            if seq_length == 4:
+                total_score += 1000
+            elif seq_length == 3:
+                total_score += 100
+            elif seq_length == 2:
+                total_score += 10
+            elif seq_length == 1:
+                total_score += 1
+        return total_score
+
+    best_score = -1
+    best_priority = -1
+    best_move = (0, 0)
+    for r in range(4):
+        for c in range(4):
+            if board[r][c] == 0:
+                score = calculate_score(board, r, c)
+                priority = get_priority(r, c)
+                if (best_move is None) or (score > best_score) or (score == best_score and priority > best_priority):
+                    best_score = score
+                    best_priority = priority
+                    best_move = (r, c)
+    return best_move

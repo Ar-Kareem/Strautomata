@@ -1,0 +1,221 @@
+The strategy for this policy is to maximize the probability of winning while accounting for the uncertainty inherent in Phantom Tic Tac Toe. It uses a Monte Carlo simulation approach to estimate the best move by sampling possible opponent board states and simulating games from each state. The policy prioritizes moves that lead to high win rates and low loss rates across simulations.
+
+<code>
+import random
+import numpy as np
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Phantom Tic Tac Toe policy using Monte Carlo simulation.
+    
+    Args:
+        board: 3x3 list of lists where 1 indicates confirmed player mark,
+               0 indicates unconfirmed (empty or opponent)
+    
+    Returns:
+        (row, col) tuple for the next move
+    """
+    # Convert to numpy array for easier manipulation
+    board_array = np.array(board)
+    
+    # Get available moves (cells that are not confirmed player marks)
+    available_moves = []
+    for i in range(3):
+        for j in range(3):
+            if board_array[i, j] != 1:
+                available_moves.append((i, j))
+    
+    if not available_moves:
+        # Fallback - shouldn't happen in normal play
+        return (0, 0)
+    
+    if len(available_moves) == 9:
+        # First move - take center if available, otherwise corner
+        if (1, 1) in available_moves:
+            return (1, 1)
+        return random.choice([(0, 0), (0, 2), (2, 0), (2, 2)])
+    
+    # Monte Carlo simulation parameters
+    simulations_per_move = 50
+    total_simulations = len(available_moves) * simulations_per_move
+    
+    best_move = available_moves[0]
+    best_score = -1
+    
+    for move in available_moves:
+        win_count = 0
+        total_count = 0
+        
+        for _ in range(simulations_per_move):
+            # Sample opponent board state
+            opponent_board = sample_opponent_board(board_array, move)
+            
+            # Simulate game from this state
+            result = simulate_game(board_array.copy(), opponent_board, move)
+            if result == 1:  # Win
+                win_count += 1
+            total_count += 1
+        
+        # Calculate score (win rate)
+        if total_count > 0:
+            score = win_count / total_count
+            
+            # Boost score for moves that create immediate winning opportunities
+            if creates_winning_opportunity(board_array, move):
+                score += 0.1
+            
+            # Penalize moves that block opponent wins (since we want to win, not just block)
+            # Actually, in Phantom Tic Tac Toe, blocking is still important
+            if blocks_opponent_win(board_array, move):
+                score += 0.05
+                
+            if score > best_score:
+                best_score = score
+                best_move = move
+    
+    return best_move
+
+def sample_opponent_board(board: np.ndarray, player_move: Tuple[int, int]) -> np.ndarray:
+    """
+    Sample a possible opponent board state given partial information.
+    
+    Args:
+        board: Current observed board state
+        player_move: The move the player is about to make
+    
+    Returns:
+        Sampled opponent board where 1 indicates opponent marks
+    """
+    opponent_board = np.zeros((3, 3), dtype=int)
+    
+    # Cells confirmed to be player's marks cannot be opponent's
+    player_cells = np.where(board == 1)
+    for i, j in zip(player_cells[0], player_cells[1]):
+        opponent_board[i, j] = 0  # Definitely not opponent
+    
+    # Sample remaining cells
+    for i in range(3):
+        for j in range(3):
+            if board[i, j] != 1 and (i, j) != player_move:
+                # Randomly assign as opponent or empty
+                if random.random() < 0.3:  # 30% chance opponent has mark here
+                    opponent_board[i, j] = 1
+    
+    return opponent_board
+
+def simulate_game(player_board: np.ndarray, opponent_board: np.ndarray, 
+                 first_move: Tuple[int, int]) -> int:
+    """
+    Simulate a complete game from the current state.
+    
+    Args:
+        player_board: Player's confirmed marks
+        opponent_board: Sampled opponent board
+        first_move: Player's next move
+    
+    Returns:
+        1 if player wins, -1 if opponent wins, 0 if draw
+    """
+    # Make the first move
+    if player_board[first_move[0], first_move[1]] == 1:
+        # Failed placement - cell already occupied
+        return -1  # Opponent effectively gets extra turn
+    
+    player_board[first_move[0], first_move[1]] = 1
+    
+    # Check for immediate win
+    if check_win(player_board):
+        return 1
+    
+    # Simple simulation loop
+    current_player = -1  # -1 for opponent, 1 for player
+    moves_made = 1
+    
+    while moves_made < 9:
+        if current_player == 1:  # Player's turn
+            # Simple heuristic for player moves in simulation
+            move = choose_best_move_simulation(player_board, opponent_board, current_player)
+            if player_board[move[0], move[1]] == 1:
+                # Failed placement
+                current_player = -1
+                continue
+            
+            player_board[move[0], move[1]] = 1
+            if check_win(player_board):
+                return 1
+            current_player = -1
+        else:  # Opponent's turn
+            # Simple heuristic for opponent moves
+            move = choose_best_move_simulation(player_board, opponent_board, current_player)
+            if opponent_board[move[0], move[1]] == 0:
+                # Failed placement (cell empty from opponent's perspective)
+                current_player = 1
+                continue
+            
+            opponent_board[move[0], move[1]] = 0  # Remove opponent mark
+            if check_win_opponent(opponent_board):
+                return -1
+            current_player = 1
+        
+        moves_made += 1
+    
+    return 0  # Draw
+
+def choose_best_move_simulation(player_board: np.ndarray, opponent_board: np.ndarray, 
+                              player: int) -> Tuple[int, int]:
+    """Choose best move for simulation using simple heuristics."""
+    available_moves = []
+    for i in range(3):
+        for j in range(3):
+            if player_board[i, j] != 1:
+                available_moves.append((i, j))
+    
+    if not available_moves:
+        return (0, 0)
+    
+    # Prefer center, then corners, then edges
+    center_first = [(1, 1), (0, 0), (0, 2), (2, 0), (2, 2), 
+                    (0, 1), (1, 0), (1, 2), (2, 1)]
+    
+    for move in center_first:
+        if move in available_moves:
+            return move
+    
+    return random.choice(available_moves)
+
+def check_win(board: np.ndarray) -> bool:
+    """Check if player has won."""
+    # Check rows, columns, diagonals
+    for i in range(3):
+        if np.all(board[i, :] == 1) or np.all(board[:, i] == 1):
+            return True
+    if np.all(np.diag(board) == 1) or np.all(np.diag(np.fliplr(board)) == 1):
+        return True
+    return False
+
+def check_win_opponent(board: np.ndarray) -> bool:
+    """Check if opponent has won (opponent marks are 1 in their board)."""
+    # In opponent's board, 1 means opponent mark, 0 means empty
+    # So we check for rows/cols/diags that are all 1
+    for i in range(3):
+        if np.all(board[i, :] == 1) or np.all(board[:, i] == 1):
+            return True
+    if np.all(np.diag(board) == 1) or np.all(np.diag(np.fliplr(board)) == 1):
+        return True
+    return False
+
+def creates_winning_opportunity(board: np.ndarray, move: Tuple[int, int]) -> bool:
+    """Check if making this move creates a winning opportunity."""
+    temp_board = board.copy()
+    temp_board[move[0], move[1]] = 1
+    return check_win(temp_board)
+
+def blocks_opponent_win(board: np.ndarray, move: Tuple[int, int]) -> bool:
+    """
+    Check if this move blocks a potential opponent win.
+    Since we don't know opponent's exact board, this is a heuristic.
+    """
+    # Simple heuristic: if move completes a line that could be opponent's
+    return False  # Simplified for this implementation
+</code>

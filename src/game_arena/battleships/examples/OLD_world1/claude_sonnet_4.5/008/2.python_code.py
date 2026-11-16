@@ -1,0 +1,212 @@
+
+import random
+from collections import deque
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Advanced Battleship targeting policy that combines:
+    1. Hunt mode: Strategic parity-based search
+    2. Target mode: When a hit is found, aggressively pursue the ship
+    3. Smart ship-fitting to prioritize high-probability cells
+    """
+    n = len(board)
+    ship_lengths = [5, 4, 3, 3, 2]
+    
+    # Find all hits and determine which ships are likely still alive
+    hits = []
+    misses = []
+    unknowns = []
+    
+    for r in range(n):
+        for c in range(n):
+            if board[r][c] == 1:
+                hits.append((r, c))
+            elif board[r][c] == -1:
+                misses.append((r, c))
+            else:
+                unknowns.append((r, c))
+    
+    # Find unsunk hits (hits that are not part of a complete ship pattern)
+    unsunk_hits = find_unsunk_hits(board, hits, n)
+    
+    # TARGET MODE: If there are unsunk hits, target around them
+    if unsunk_hits:
+        target = get_best_target_around_hits(board, unsunk_hits, n)
+        if target:
+            return target
+    
+    # HUNT MODE: Use probability density to find best cells
+    # Calculate probability map based on possible ship placements
+    prob_map = calculate_probability_map(board, ship_lengths, n)
+    
+    # Find the cell with highest probability
+    best_prob = -1
+    best_cells = []
+    
+    for r, c in unknowns:
+        if prob_map[r][c] > best_prob:
+            best_prob = prob_map[r][c]
+            best_cells = [(r, c)]
+        elif prob_map[r][c] == best_prob:
+            best_cells.append((r, c))
+    
+    if best_cells:
+        return random.choice(best_cells)
+    
+    # Fallback: choose random unknown cell
+    return random.choice(unknowns) if unknowns else (0, 0)
+
+
+def find_unsunk_hits(board, hits, n):
+    """Find hits that are not part of completely sunk ships."""
+    if not hits:
+        return []
+    
+    # Group connected hits
+    visited = set()
+    groups = []
+    
+    for hit in hits:
+        if hit in visited:
+            continue
+        
+        group = []
+        queue = deque([hit])
+        visited.add(hit)
+        
+        while queue:
+            r, c = queue.popleft()
+            group.append((r, c))
+            
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < n and 0 <= nc < n and (nr, nc) not in visited:
+                    if board[nr][nc] == 1:
+                        visited.add((nr, nc))
+                        queue.append((nr, nc))
+        
+        groups.append(group)
+    
+    # A group is unsunk if it has an unknown cell adjacent to it
+    unsunk = []
+    for group in groups:
+        has_unknown_adjacent = False
+        for r, c in group:
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < n and 0 <= nc < n and board[nr][nc] == 0:
+                    has_unknown_adjacent = True
+                    break
+            if has_unknown_adjacent:
+                break
+        
+        if has_unknown_adjacent:
+            unsunk.extend(group)
+    
+    return unsunk
+
+
+def get_best_target_around_hits(board, hits, n):
+    """Get the best cell to target around known unsunk hits."""
+    candidates = {}
+    
+    for r, c in hits:
+        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < n and 0 <= nc < n and board[nr][nc] == 0:
+                # Prioritize cells that continue a line of hits
+                priority = calculate_target_priority(board, nr, nc, hits, n)
+                if (nr, nc) not in candidates or priority > candidates[(nr, nc)]:
+                    candidates[(nr, nc)] = priority
+    
+    if candidates:
+        max_priority = max(candidates.values())
+        best = [cell for cell, pri in candidates.items() if pri == max_priority]
+        return random.choice(best)
+    
+    return None
+
+
+def calculate_target_priority(board, r, c, hits, n):
+    """Calculate priority for a target cell based on hit alignment."""
+    priority = 1
+    
+    # Check if this cell aligns with multiple hits
+    for dr, dc in [(0, 1), (1, 0)]:  # horizontal and vertical
+        count = 0
+        # Check both directions
+        for direction in [1, -1]:
+            for dist in range(1, 5):
+                nr = r + dr * dist * direction
+                nc = c + dc * dist * direction
+                if 0 <= nr < n and 0 <= nc < n and (nr, nc) in hits:
+                    count += 1
+                else:
+                    break
+        
+        if count > 0:
+            priority += count * 10
+    
+    return priority
+
+
+def calculate_probability_map(board, ship_lengths, n):
+    """Calculate probability of each cell containing a ship."""
+    prob_map = [[0] * n for _ in range(n)]
+    
+    # Estimate remaining ships based on hit count
+    total_hits = sum(1 for r in range(n) for c in range(n) if board[r][c] == 1)
+    remaining_ships = estimate_remaining_ships(board, ship_lengths, n)
+    
+    # For each remaining ship length, count valid placements
+    for ship_len in remaining_ships:
+        # Horizontal placements
+        for r in range(n):
+            for c in range(n - ship_len + 1):
+                if can_place_ship(board, r, c, ship_len, 0, 1, n):
+                    for i in range(ship_len):
+                        prob_map[r][c + i] += 1
+        
+        # Vertical placements
+        for r in range(n - ship_len + 1):
+            for c in range(n):
+                if can_place_ship(board, r, c, ship_len, 1, 0, n):
+                    for i in range(ship_len):
+                        prob_map[r + i][c] += 1
+    
+    return prob_map
+
+
+def can_place_ship(board, r, c, length, dr, dc, n):
+    """Check if a ship can be placed at the given position."""
+    must_have_hit = False
+    
+    for i in range(length):
+        nr, nc = r + i * dr, c + i * dc
+        if board[nr][nc] == -1:  # Miss
+            return False
+        if board[nr][nc] == 1:  # Hit
+            must_have_hit = True
+    
+    # If there are hits on the board, prioritize placements that cover hits
+    total_hits = sum(1 for row in board for cell in row if cell == 1)
+    if total_hits > 0:
+        return must_have_hit
+    
+    return True
+
+
+def estimate_remaining_ships(board, ship_lengths, n):
+    """Estimate which ships are still remaining."""
+    total_hits = sum(1 for r in range(n) for c in range(n) if board[r][c] == 1)
+    
+    # Simple heuristic: assume ships are sunk in order of size
+    # This is rough but works for probability estimation
+    remaining = ship_lengths[:]
+    
+    # If we have many hits, some ships are likely sunk
+    # This is a simplification - in reality we'd need more complex logic
+    if total_hits == 0:
+        return remaining
+    
+    return remaining

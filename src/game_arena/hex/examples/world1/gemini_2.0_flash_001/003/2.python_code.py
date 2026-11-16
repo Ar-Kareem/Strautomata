@@ -1,0 +1,223 @@
+
+import random
+import time
+import copy
+
+BOARD_SIZE = 11
+COLOR_MAP = {'b': 0, 'w': 1}
+OPPONENT_MAP = {0: 1, 1: 0}
+
+
+def get_neighbors(row, col):
+    neighbors = []
+    if row > 0:
+        neighbors.append((row - 1, col))
+    if row < BOARD_SIZE - 1:
+        neighbors.append((row + 1, col))
+    if col > 0:
+        neighbors.append((row, col - 1))
+    if col < BOARD_SIZE - 1:
+        neighbors.append((row, col + 1))
+    if row > 0 and col < BOARD_SIZE - 1:
+        neighbors.append((row - 1, col + 1))
+    if row < BOARD_SIZE - 1 and col > 0:
+        neighbors.append((row + 1, col - 1))
+    return neighbors
+
+
+def check_win(board, color_index):
+    """Checks if the given color has won the game."""
+
+    visited = set()
+
+    def dfs(row, col):
+        if (row, col) in visited:
+            return False
+        if row < 0 or row >= BOARD_SIZE or col < 0 or col >= BOARD_SIZE:
+            return False
+        if board[row][col] != color_index:
+            return False
+
+        visited.add((row, col))
+
+        if color_index == 0 and row == BOARD_SIZE - 1:
+            return True
+        if color_index == 1 and col == BOARD_SIZE - 1:
+            return True
+
+        neighbors = get_neighbors(row, col)
+        for r, c in neighbors:
+            if dfs(r, c):
+                return True
+        return False
+
+    if color_index == 0:
+        for col in range(BOARD_SIZE):
+            if board[0][col] == color_index:
+                if dfs(0, col):
+                    return True
+    else:
+        for row in range(BOARD_SIZE):
+            if board[row][0] == color_index:
+                if dfs(row, 0):
+                    return True
+
+    return False
+
+
+class Node:
+    def __init__(self, row=None, col=None, parent=None, player=None, board=None):
+        self.row = row
+        self.col = col
+        self.parent = parent
+        self.player = player
+        self.children = {}
+        self.visits = 0
+        self.wins = 0
+        self.board = board if board else [[-1] * BOARD_SIZE for _ in range(BOARD_SIZE)]
+
+    def fully_expanded(self, legal_moves):
+        return len(self.children) == len(legal_moves)
+
+
+def get_legal_moves(board):
+    moves = []
+    for row in range(BOARD_SIZE):
+        for col in range(BOARD_SIZE):
+            if board[row][col] == -1:
+                moves.append((row, col))
+    return moves
+
+
+def simulate(node, color_index):
+    board = copy.deepcopy(node.board)
+    current_player = OPPONENT_MAP[node.player] if node.player is not None else color_index
+    legal_moves = get_legal_moves(board)
+
+    while legal_moves:
+        row, col = random.choice(legal_moves)
+        board[row][col] = current_player
+        if check_win(board, current_player):
+            return 1 if current_player == color_index else 0
+
+        current_player = OPPONENT_MAP[current_player]
+        legal_moves = get_legal_moves(board)
+
+    return 0  # Draw if no moves left
+
+
+def backpropagate(node, result):
+    while node is not None:
+        node.visits += 1
+        node.wins += result
+        node = node.parent
+
+
+def uct(node, total_visits, c=1.41):
+    if node.visits == 0:
+        return float('inf')
+    return (node.wins / node.visits) + c * (math.sqrt(math.log(total_visits) / node.visits))
+
+
+def choose_best_child(node, legal_moves):
+  best_score = -float('inf')
+  best_child = None
+  for move in legal_moves:
+        if move not in node.children:
+            continue
+
+        child = node.children[move]
+        score = child.wins / child.visits if child.visits > 0 else 0  # exploitation
+
+        if score > best_score:
+          best_score = score
+          best_child = child
+  return best_child
+
+
+
+import math
+
+def mcts(root, color_index, time_limit=0.9):
+    start_time = time.time()
+    while time.time() - start_time < time_limit:
+        # Selection
+        current = root
+        board = copy.deepcopy(current.board)
+        legal_moves = get_legal_moves(board)
+
+        while current.fully_expanded(legal_moves) and legal_moves:
+
+            best_score = -float('inf')
+            best_child = None
+            for move in legal_moves:
+                if move not in current.children:
+                    continue
+
+                child = current.children[move]
+
+                score = uct(child, current.visits)
+                if score > best_score:
+                    best_score = score
+                    best_child = child
+
+            if best_child is None:
+                break # no children nodes, should not occur
+
+            current = best_child
+            row, col = current.row, current.col
+            board[row][col] = OPPONENT_MAP[current.player]
+            legal_moves = get_legal_moves(board)
+
+
+        # Expansion
+        if legal_moves:
+            move = random.choice(legal_moves)
+            row, col = move
+            board[row][col] = OPPONENT_MAP[current.player] if current.player is not None else color_index
+            new_node = Node(row=row, col=col, parent=current, player=color_index if current.player == 1 or current.player is None else 1-color_index, board=board)
+
+            current.children[move] = new_node
+
+            # Simulation
+            result = simulate(new_node, color_index)
+            # Backpropagation
+            backpropagate(new_node, result)
+        else:
+           result = 0.5
+           backpropagate(current, result)
+
+
+
+    # Choose best move
+    best_move = None
+    best_win_rate = -1
+    for move, child in root.children.items():
+        win_rate = child.wins / child.visits if child.visits > 0 else 0
+        if win_rate > best_win_rate:
+            best_win_rate = win_rate
+            best_move = move
+
+    return best_move
+
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    color_index = COLOR_MAP[color]
+    board = [[-1] * BOARD_SIZE for _ in range(BOARD_SIZE)]
+    for r, c in me:
+        board[r][c] = color_index
+    for r, c in opp:
+        board[r][c] = OPPONENT_MAP[color_index]
+
+    root = Node(board=board)
+    best_move = mcts(root, color_index)
+    if best_move is None:
+      legal_moves = get_legal_moves(board)
+      if len(legal_moves) > 0:
+        best_move = random.choice(legal_moves)
+      else: # Should not occur
+        best_move = (0,0)
+
+
+
+    return best_move

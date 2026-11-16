@@ -1,0 +1,112 @@
+The strategy for this policy is to model the game as “Caterpillar/Tron” on the remaining leaves: each player’s next move must go to an adjacent leaf (up/down/left/right), and the current player wins immediately if the opponent has no legal adjacent leaves after your move. So we (1) parse both caterpillar positions and the remaining leaf set from `state`, (2) generate all legal moves for `role`, (3) if any move leaves the opponent with zero moves, play it, otherwise (4) choose the move that minimizes the opponent’s number of replies (with a small tie-break to maximize our own mobility).
+
+<code>
+import re
+from typing import List, Tuple, Optional
+
+def policy(state: list[list[object]], role: str) -> str:
+    # Parse board and player positions
+    leaves = set()
+    pos = {}  # role_color -> (r,c)
+    control = None
+    for fact in state:
+        if not fact:
+            continue
+        if fact[0] == "leaf" and len(fact) >= 3:
+            r, c = fact[1], fact[2]
+            leaves.add((int(r), int(c)))
+        elif fact[0] == "isplayer" and len(fact) >= 4:
+            r, c, who = int(fact[1]), int(fact[2]), fact[3]
+            pos[who] = (r, c)
+        elif fact[0] == "control":
+            if len(fact) >= 2:
+                control = fact[1]
+
+    # Role in this game is directly the color (red/blue)
+    me = role
+    opp = "red" if role == "blue" else "blue"
+
+    mypos = pos.get(me, None)
+    opppos = pos.get(opp, None)
+
+    # If for some reason position missing, fall back to a legal-looking first move
+    # (should not happen in valid game states).
+    def neighbors(p: Tuple[int,int]) -> List[Tuple[int,int]]:
+        r,c = p
+        cand = [(r-1,c),(r+1,c),(r,c-1),(r,c+1)]
+        return cand
+
+    # Generate legal moves for a given player color from its current position:
+    def legal_moves(p: Tuple[int,int]) -> List[Tuple[int,int]]:
+        if p is None:
+            return []
+        res = []
+        for q in neighbors(p):
+            if q in leaves:
+                res.append(q)
+        return res
+
+    my_moves = legal_moves(mypos)
+
+    # Ensure we always return a legal move string.
+    # If no legal moves, the game likely ends; but still return something syntactically valid.
+    if not my_moves:
+        # Try to find any leaf to move to adjacent not guaranteed legal; this should be unreachable.
+        # Use deterministic placeholder:
+        return "move(1,1)"
+
+    # Compute opponent mobility after a move:
+    def opp_moves_after(my_next: Tuple[int,int]) -> List[Tuple[int,int]]:
+        # When a player moves, it eats the leaf behind it, so my old position becomes empty.
+        # Opponent's position is unchanged; leaves set changes by removing mypos.
+        # Thus opponent moves are any adjacent leaves of opppos in the updated leaves.
+        if opppos is None:
+            return []
+        updated_leaves = set(leaves)
+        if mypos in updated_leaves:
+            updated_leaves.remove(mypos)
+        res = []
+        for q in neighbors(opppos):
+            if q in updated_leaves:
+                res.append(q)
+        return res
+
+    def my_moves_after_after(my_next: Tuple[int,int]) -> int:
+        # My next mobility after performing my move (again update leaves by removing mypos).
+        if mypos is None:
+            return 0
+        updated_leaves = set(leaves)
+        if mypos in updated_leaves:
+            updated_leaves.remove(mypos)
+        cnt = 0
+        for q in neighbors(my_next):
+            if q in updated_leaves:
+                cnt += 1
+        return cnt
+
+    # Choose winning/defensive move
+    best_move = None
+    best_tuple = None  # (win_flag, -opp_mobility, -my_mobility, tie-break)
+
+    for q in my_moves:
+        opp_m = opp_moves_after(q)
+        opp_mob = len(opp_m)
+        win = 1 if opp_mob == 0 else 0
+        my_mob = my_moves_after_after(q)
+
+        # Tie-break: prefer smaller manhattan distance to center (helps late-game),
+        # and deterministic order.
+        center = (4,4)
+        man = abs(q[0]-center[0]) + abs(q[1]-center[1])
+
+        # We want: win first, then minimize opponent mobility, then maximize ours,
+        # then prefer being closer to center, then lexicographic.
+        cand_tuple = (win, -opp_mob, my_mob, -man, -q[0], -q[1])
+
+        if best_tuple is None or cand_tuple > best_tuple:
+            best_tuple = cand_tuple
+            best_move = q
+
+    r,c = best_move
+    return f"move({r},{c})"
+</code>

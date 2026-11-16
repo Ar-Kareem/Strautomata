@@ -1,0 +1,341 @@
+The strategy for this policy is a fast heuristic-based backgammon mover that always generates legal moves. Key ideas:
+
+- Always re-enter from the bar first when required.
+- Prefer moves that hit opponent checkers (increase opponent bar).
+- Prefer bearing off checkers and reducing pip-count (advance).
+- Prefer reducing vulnerable singletons (safety).
+- If both dice can be played, plays both; if only one die can be played, follows the rule to use the higher die when possible.
+- Simulates sequential moves to check exact legality (including hits and bearing-off rules) and scores resulting positions to pick the best move.
+
+This keeps the policy simple but robust and legal against arbitrary states/dice.
+
+<code>
+#!/usr/bin/env python3
+from typing import List, Tuple, Optional, Dict
+import copy
+
+def policy(state: dict) -> str:
+    """
+    Returns a move string for the given backgammon state according to the required API.
+    """
+
+    # Helper conversions
+    def token_from_index(i: int) -> str:
+        return f"A{i}"
+
+    # Deep-copying utility
+    def copy_state(s: dict) -> dict:
+        return {
+            'my_pts': s['my_pts'][:],
+            'opp_pts': s['opp_pts'][:],
+            'my_bar': int(s['my_bar']),
+            'opp_bar': int(s['opp_bar']),
+            'my_off': int(s['my_off']),
+            'opp_off': int(s['opp_off'])
+        }
+
+    # Compute whether bearing off is allowed (all checkers in home board 0..5 and none on bar)
+    def bear_off_allowed(s: dict) -> bool:
+        if s['my_bar'] > 0:
+            return False
+        # count checkers on board (exclude off)
+        total_on_board = sum(s['my_pts'])
+        # home checkers are those on points 0..5
+        home = sum(s['my_pts'][0:6])
+        return home == total_on_board
+
+    # Check if a single move from start (index or 'B') by die is legal on the given state.
+    # Also simulate the move and return the resulting state and some meta info.
+    def simulate_move(s: dict, start_token: str, die: int) -> Optional[dict]:
+        st = copy_state(s)
+        # Determine start
+        if start_token == 'B':
+            # must have checkers on bar
+            if st['my_bar'] <= 0:
+                return None
+            dest = 24 - die  # bar re-entry destination
+            # blocked?
+            if dest >= 0 and st['opp_pts'][dest] >= 2:
+                return None
+            # perform re-entry
+            st['my_bar'] -= 1
+            # hit?
+            if st['opp_pts'][dest] == 1:
+                st['opp_pts'][dest] -= 1
+                st['opp_bar'] += 1
+                st['my_pts'][dest] += 1
+            else:
+                st['my_pts'][dest] += 1
+            return st
+        elif start_token.startswith('A'):
+            try:
+                p = int(start_token[1:])
+            except:
+                return None
+            # must have checker at p
+            if p < 0 or p > 23 or st['my_pts'][p] <= 0:
+                return None
+            dest = p - die
+            # Bearing off?
+            if dest < 0:
+                # allowed only if bear_off_allowed and additional bearing-off rules
+                if not bear_off_allowed(st):
+                    return None
+                # For bearing off, exact or highest-checker rule:
+                # distance to off from p is p+1
+                dist = p + 1
+                if die == dist:
+                    # exact bear off
+                    st['my_pts'][p] -= 1
+                    st['my_off'] += 1
+                    return st
+                elif die > dist:
+                    # allowed only if no checkers on higher points (indices > p) within home (p+1..5)
+                    higher_exists = False
+                    for q in range(p+1, 6):
+                        if st['my_pts'][q] > 0:
+                            higher_exists = True
+                            break
+                    if higher_exists:
+                        return None
+                    # allow bearing off from p
+                    st['my_pts'][p] -= 1
+                    st['my_off'] += 1
+                    return st
+                else:
+                    # die < dist -> cannot bear off, must move to dest >=0 (but dest<0 here, so illegal)
+                    return None
+            else:
+                # Normal move to dest >=0
+                if st['opp_pts'][dest] >= 2:
+                    return None
+                # execute move
+                st['my_pts'][p] -= 1
+                if st['opp_pts'][dest] == 1:
+                    st['opp_pts'][dest] -= 1
+                    st['opp_bar'] += 1
+                    st['my_pts'][dest] += 1
+                else:
+                    st['my_pts'][dest] += 1
+                return st
+        elif start_token == 'P':
+            # pass: legal only if no move possible
+            # We'll allow simulate_move to return the state unchanged; legality is handled at higher level
+            return st
+        else:
+            return None
+
+    # Utility: list possible start tokens for a single die from a given state (without simulating consequences)
+    def possible_starts_for_die(s: dict, die: int) -> List[str]:
+        tokens = []
+        # If we have checkers on bar, we must re-enter from bar
+        if s['my_bar'] > 0:
+            # check whether bar re-entry is blocked
+            dest = 24 - die
+            if dest >= 0 and s['opp_pts'][dest] < 2:
+                tokens.append('B')
+            # If blocked, no starts available (will force pass)
+            return tokens
+        # Otherwise we can try all points with our checkers
+        for p in range(24):
+            if s['my_pts'][p] <= 0:
+                continue
+            # simulate quick legality check for move (without changing state)
+            dest = p - die
+            if dest < 0:
+                # potential bearing off
+                if not bear_off_allowed(s):
+                    continue
+                # check exact or highest rule
+                dist = p + 1
+                if die == dist:
+                    tokens.append(token_from_index(p))
+                elif die > dist:
+                    # allowed only if no checkers on higher points (p+1..5)
+                    higher_exists = False
+                    for q in range(p+1, 6):
+                        if s['my_pts'][q] > 0:
+                            higher_exists = True
+                            break
+                    if not higher_exists:
+                        tokens.append(token_from_index(p))
+                else:
+                    # die < dist -> cannot bear off from that p
+                    continue
+            else:
+                if s['opp_pts'][dest] < 2:
+                    tokens.append(token_from_index(p))
+        return tokens
+
+    # Score a state using heuristics: hits, bearing off, pip reduction, singletons reduction.
+    def score_state(s_before: dict, s_after: dict) -> float:
+        # hits (opponent bar increase)
+        hits = s_after['opp_bar'] - s_before['opp_bar']
+        # off gain
+        off_gain = s_after['my_off'] - s_before['my_off']
+        # pip counts (approx): sum (point_index+1) * count
+        def pip_sum(s):
+            return sum((i + 1) * c for i, c in enumerate(s['my_pts']))
+        pip_before = pip_sum(s_before)
+        pip_after = pip_sum(s_after)
+        pip_reduction = pip_before - pip_after
+        # singletons: fewer singletons is safer
+        single_before = sum(1 for c in s_before['my_pts'] if c == 1)
+        single_after = sum(1 for c in s_after['my_pts'] if c == 1)
+        delta_single = single_before - single_after
+        # also penalize leaving checkers on high indices (far from home) a bit
+        distance_after = pip_after
+        # weights tuned for quick play
+        score = 0.0
+        score += hits * 150.0
+        score += off_gain * 300.0
+        score += pip_reduction * 1.0
+        score += delta_single * 25.0
+        score -= (distance_after * 0.01)
+        # small tie-breaker: prefer using moves (non-pass)
+        return score
+
+    # Pack a candidate result
+    class Candidate:
+        def __init__(self, order_char: str, s1: str, s2: str, after_state: dict, uses_first: bool, uses_second: bool, score_val: float):
+            self.order = order_char
+            self.s1 = s1
+            self.s2 = s2
+            self.after = after_state
+            self.uses_first = uses_first
+            self.uses_second = uses_second
+            self.score = score_val
+
+    # Main generation logic
+    dice = state.get('dice', [])
+    # Normalize dice to list of ints
+    dice = [int(d) for d in dice]
+    # If no dice, return pass
+    if len(dice) == 0:
+        return "H:P,P"
+
+    # Precompute initial pip etc
+    initial_state = copy_state(state)
+
+    candidates: List[Candidate] = []
+
+    # Single die case
+    if len(dice) == 1:
+        d = dice[0]
+        starts = possible_starts_for_die(initial_state, d)
+        # If no starts, must pass
+        if not starts:
+            return "H:P,P"
+        # Evaluate each start
+        best = None
+        for s1 in starts:
+            after1 = simulate_move(initial_state, s1, d)
+            if after1 is None:
+                continue
+            sc = score_state(initial_state, after1)
+            cand = Candidate('H', s1, 'P', after1, True, False, sc)
+            candidates.append(cand)
+        # choose best
+        if not candidates:
+            return "H:P,P"
+        best = max(candidates, key=lambda c: (c.score))
+        return f"{best.order}:{best.s1},{best.s2}"
+
+    # Two-dice case
+    if len(dice) >= 2:
+        d1 = dice[0]
+        d2 = dice[1]
+        # Determine high/low values
+        if d1 >= d2:
+            high, low = d1, d2
+        else:
+            high, low = d2, d1
+
+        orders = []
+        # H-order: first higher die, then lower
+        orders.append(('H', high, low))
+        # L-order: first lower die, then higher (if different)
+        if high != low:
+            orders.append(('L', low, high))
+        else:
+            # doubles: both orders identical; just one is enough
+            pass
+
+        # For each order, generate sequences by simulating first move then second move
+        for order_char, first_die, second_die in orders:
+            # list possible starts for first die
+            starts1 = possible_starts_for_die(initial_state, first_die)
+            if not starts1:
+                # If no legal first moves in this order, we might still be able to pass (P,P)
+                # but we will handle global pass later. Continue.
+                continue
+            for s1 in starts1:
+                after1 = simulate_move(initial_state, s1, first_die)
+                if after1 is None:
+                    continue
+                # Now compute possible starts for second die on resulting board
+                starts2 = possible_starts_for_die(after1, second_die)
+                if starts2:
+                    # for each start2, simulate and accept
+                    for s2 in starts2:
+                        after2 = simulate_move(after1, s2, second_die)
+                        if after2 is None:
+                            continue
+                        sc = score_state(initial_state, after2)
+                        cand = Candidate(order_char, s1, s2, after2, True, True, sc)
+                        candidates.append(cand)
+                else:
+                    # No second move possible -> sequence plays only first die; second is pass.
+                    # This is allowed only if there is truly no legal second move after the first.
+                    sc = score_state(initial_state, after1)
+                    cand = Candidate(order_char, s1, 'P', after1, True, False, sc)
+                    candidates.append(cand)
+
+        # Now interpret candidates according to rules:
+        # If any candidate uses both dice (uses_second == True), we must choose among them (must play both when possible).
+        both_playable = [c for c in candidates if c.uses_first and c.uses_second]
+        if both_playable:
+            best = max(both_playable, key=lambda c: (c.score))
+            return f"{best.order}:{best.s1},{best.s2}"
+        # Otherwise only single-die candidates exist (or none)
+        single_playable = [c for c in candidates if c.uses_first and (not c.uses_second)]
+        if single_playable:
+            # Must play the higher die if possible. If any single_playable candidate corresponds to playing the higher die as the one move, prefer them.
+            # Which of our generated candidates correspond to playing the higher die? They will have order_char 'H' and first die == high OR order_char 'L' and first_die==high depending on construction.
+            # Simpler: Check which candidates correspond to using the higher die: simulate by checking what die the order implies on first token.
+            high_candidates = []
+            for c in single_playable:
+                # determine first die used by this candidate
+                if c.order == 'H':
+                    first_used = max(d1, d2)
+                else:
+                    first_used = min(d1, d2)
+                if first_used == max(d1, d2):
+                    high_candidates.append(c)
+            if high_candidates:
+                best = max(high_candidates, key=lambda c: c.score)
+                return f"{best.order}:{best.s1},{best.s2}"
+            # else choose best single-play candidate
+            best = max(single_playable, key=lambda c: c.score)
+            return f"{best.order}:{best.s1},{best.s2}"
+
+        # If no candidate found (no legal moves), return pass
+        return "H:P,P"
+
+    # Fallback
+    return "H:P,P"
+
+# Example debug call (comment out when used by the arena)
+if __name__ == "__main__":
+    # trivial test
+    test_state = {
+        'my_pts': [0]*24,
+        'opp_pts': [0]*24,
+        'my_bar': 0,
+        'opp_bar': 0,
+        'my_off': 0,
+        'opp_off': 0,
+        'dice': []
+    }
+    print(policy(test_state))
+</code>

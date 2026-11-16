@@ -1,0 +1,127 @@
+### **Strategy for this Battleship-like Policy**
+
+The goal is to sink all opponent ships (lengths 5, 4, 3, 3, 2) as efficiently as possible while minimizing wasted shots. My strategy will be a **hybrid of random and targeted attacks**, optimized for speed and accuracy:
+
+1. **Initial Phase (First 20 Shots):**
+   - Fire randomly at unexplored cells (`0`) to quickly gather information about ship locations.
+   - This helps identify potential clusters of hits (`1`s) early.
+
+2. **Targeted Phase (After 20 Shots):**
+   - When a hit (`1`) is found, **prioritize exploring adjacent cells** (horizontally and vertically) to confirm ship boundaries.
+   - If a ship is detected (a line of `1`s), **attack along the length** of the ship to sink it quickly.
+   - If a ship is **not** detected (no adjacent `1`s), **switch to a new unexplored area** to avoid wasting shots on water.
+   - Use **probability-based targeting** to focus on cells with the highest chance of being part of a ship (e.g., extending existing hit lines).
+
+3. **Edge Cases:**
+   - If no hits are found, **continue random firing** but avoid revisiting missed cells (`-1`).
+   - If a ship is partially sunk (some `1`s but not all in a line), **continue attacking its remaining cells** until fully sunk.
+   - If multiple ships are detected, **prioritize the largest remaining ship** (5 > 4 > 3 > 2).
+
+4. **Optimizations:**
+   - Track **potential ship positions** (likely `1`s) and **water clusters** (`-1`s) to avoid redundant shots.
+   - Use **BFS (Breadth-First Search)** to explore ship boundaries efficiently.
+   - If a ship is fully sunk (all its cells are `1`), **mark its cells as blocked** to avoid re-firing.
+
+This approach balances **exploration** (finding ships) and **exploitation** (sinking them) while ensuring legal moves are always returned.
+
+---
+
+### **Python Implementation**
+```python
+import random
+from collections import deque
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Flatten board to track visited cells (0: unexplored, -1: miss, 1: hit)
+    unexplored_cells = []
+    for i in range(10):
+        for j in range(10):
+            if board[i][j] == 0:
+                unexplored_cells.append((i, j))
+
+    # If fewer than 20 shots fired, randomize to explore
+    if len(unexplored_cells) > 80:  # First ~20 shots (10x10=100, so 80 unexplored means ~20 fired)
+        return random.choice(unexplored_cells)
+
+    # Find all hit cells (1) and their adjacent unexplored cells
+    hit_cells = [(i, j) for i in range(10) for j in range(10) if board[i][j] == 1]
+    potential_moves = []
+
+    for (i, j) in hit_cells:
+        # Check adjacent cells (up, down, left, right)
+        for di, dj in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            ni, nj = i + di, j + dj
+            if 0 <= ni < 10 and 0 <= nj < 10 and board[ni][nj] == 0:
+                potential_moves.append((ni, nj))
+
+    # If no adjacent unexplored cells (isolated hit), pick a random unexplored cell
+    if not potential_moves:
+        return random.choice(unexplored_cells)
+
+    # Prioritize moves that extend existing hit lines (likely part of a ship)
+    # Group adjacent hits into potential ships
+    ships = []
+    visited = set()
+    for (i, j) in hit_cells:
+        if (i, j) not in visited:
+            queue = deque([(i, j)])
+            visited.add((i, j))
+            current_ship = []
+            while queue:
+                x, y = queue.popleft()
+                current_ship.append((x, y))
+                for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                    nx, ny = x + dx, y + dy
+                    if 0 <= nx < 10 and 0 <= ny < 10 and board[nx][ny] == 1 and (nx, ny) not in visited:
+                        visited.add((nx, ny))
+                        queue.append((nx, ny))
+            ships.append(current_ship)
+
+    # If no ships detected (unlikely due to hit_cells), randomize
+    if not ships:
+        return random.choice(unexplored_cells)
+
+    # Find the largest remaining ship (5,4,3,3,2) and prioritize its unexplored adjacent cells
+    largest_ship = max(ships, key=lambda s: len(s))
+    best_moves = []
+
+    for (i, j) in largest_ship:
+        for di, dj in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            ni, nj = i + di, j + dj
+            if 0 <= ni < 10 and 0 <= nj < 10 and board[ni][nj] == 0:
+                best_moves.append((ni, nj))
+
+    # If no best moves (ship fully surrounded), pick a random unexplored cell
+    if not best_moves:
+        return random.choice(unexplored_cells)
+
+    # Return the first best move (prioritize extending largest ship)
+    return best_moves[0]
+```
+
+---
+### **Key Features of the Implementation**
+1. **Random Exploration (Early Game):**
+   - If fewer than ~20 shots are fired, the policy picks random unexplored cells to gather data.
+
+2. **Adjacent Cell Targeting (Mid Game):**
+   - When hits (`1`s) are found, the policy checks adjacent cells to confirm ship boundaries.
+
+3. **Ship Detection & Prioritization:**
+   - Uses BFS to group `1`s into potential ships.
+   - Focuses on the **largest remaining ship** (5 > 4 > 3 > 2) to maximize sinking efficiency.
+
+4. **Legal Move Guarantee:**
+   - Always returns a valid `(row, col)` where `board[row][col] == 0`.
+   - Falls back to random unexplored cells if no targeted moves are available.
+
+5. **Performance Constraints:**
+   - Runs in **O(n)** time (where n is the number of hits), well within the 1-second limit.
+
+---
+### **Possible Improvements (If Allowed)**
+- **Track Missed Ships:** If a ship of length `L` is sunk, mark its cells as blocked to avoid re-firing.
+- **Probability-Based Targeting:** Assign higher priority to cells that are more likely to be part of a ship (e.g., extending confirmed lines).
+- **Memory of Past Shots:** Store a history of shots to avoid redundant attacks.
+
+Would you like any refinements or additional features?

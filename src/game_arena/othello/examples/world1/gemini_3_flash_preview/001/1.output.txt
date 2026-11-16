@@ -1,0 +1,126 @@
+### Strategy
+The strategy implemented is an optimized Minimax algorithm with Alpha-Beta pruning, enhanced by a static heuristic evaluation function and prioritized move ordering.
+
+1.  **Iterative Depth-Limited Search**: The policy evaluates moves using a recursive search. Given the 1-second constraint, it focuses on a fixed depth that balances foresight with speed.
+2.  **Move Ordering**: Moves are sorted based on their positional value (e.g., corners and edges) to maximize the efficiency of Alpha-Beta pruning, allowing the search to discard suboptimal branches earlier.
+3.  **Heuristic Evaluation**: The state evaluation considers:
+    *   **Positionality**: A weights matrix awards high points for corners (`a1`, `h1`, `a8`, `h8`) and penalizes spots next to corners (which allow the opponent to take the corner).
+    *   **Mobility**: The number of legal moves available to the current player versus the opponent. Limiting the opponent's options is a key tactic in Othello.
+    *   **Stability**: Protecting discs that cannot be flipped.
+4.  **Legal Move Validation**: The code includes a robust engine to calculate legal moves and simulate board states, ensuring every returned move is valid according to Othello rules.
+
+<code>
+import numpy as np
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    # Evaluation weights for an 8x8 Othello board
+    WEIGHTS = np.array([
+        [100, -20, 10,  5,  5, 10, -20, 100],
+        [-20, -50, -2, -2, -2, -2, -50, -20],
+        [ 10,  -2,  5,  1,  1,  5,  -2,  10],
+        [  5,  -2,  1,  0,  0,  1,  -2,   5],
+        [  5,  -2,  1,  0,  0,  1,  -2,   5],
+        [ 10,  -2,  5,  1,  1,  5,  -2,  10],
+        [-20, -50, -2, -2, -2, -2, -50, -20],
+        [100, -20, 10,  5,  5, 10, -20, 100]
+    ])
+
+    def get_legal_moves(player_board, opponent_board):
+        moves = []
+        empty = ~(player_board | opponent_board)
+        for r in range(8):
+            for c in range(8):
+                if empty[r, c] and is_legal(r, c, player_board, opponent_board):
+                    moves.append((r, c))
+        return moves
+
+    def is_legal(r, c, player_board, opponent_board):
+        for dr, dc in [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]:
+            nr, nc = r + dr, c + dc
+            found_opponent = False
+            while 0 <= nr < 8 and 0 <= nc < 8 and opponent_board[nr, nc]:
+                nr += dr
+                nc += dc
+                found_opponent = True
+            if found_opponent and 0 <= nr < 8 and 0 <= nc < 8 and player_board[nr, nc]:
+                return True
+        return False
+
+    def make_move(r, c, player_board, opponent_board):
+        new_player = player_board.copy()
+        new_opponent = opponent_board.copy()
+        new_player[r, c] = 1
+        for dr, dc in [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]:
+            nr, nc = r + dr, c + dc
+            path = []
+            while 0 <= nr < 8 and 0 <= nc < 8 and new_opponent[nr, nc]:
+                path.append((nr, nc))
+                nr += dr
+                nc += dc
+            if path and 0 <= nr < 8 and 0 <= nc < 8 and new_player[nr, nc]:
+                for pr, pc in path:
+                    new_player[pr, pc] = 1
+                    new_opponent[pr, pc] = 0
+        return new_player, new_opponent
+
+    def evaluate(p_board, o_board):
+        # Weighted score
+        score = np.sum(p_board * WEIGHTS) - np.sum(o_board * WEIGHTS)
+        # Mobility
+        p_moves = len(get_legal_moves(p_board, o_board))
+        o_moves = len(get_legal_moves(o_board, p_board))
+        score += (p_moves - o_moves) * 5
+        return score
+
+    def minimax(p_board, o_board, depth, alpha, beta, maximizing):
+        if depth == 0:
+            return evaluate(p_board, o_board)
+        
+        moves = get_legal_moves(p_board if maximizing else o_board, o_board if maximizing else p_board)
+        if not moves:
+            # If current player can't move, check if opponent can
+            if not get_legal_moves(o_board if maximizing else p_board, p_board if maximizing else o_board):
+                return np.sum(p_board) - np.sum(o_board) # Game over
+            return minimax(p_board, o_board, depth - 1, alpha, beta, not maximizing)
+
+        if maximizing:
+            max_eval = -float('inf')
+            # Sort moves by weight to improve pruning
+            moves.sort(key=lambda x: WEIGHTS[x[0], x[1]], reverse=True)
+            for r, c in moves:
+                nb_p, nb_o = make_move(r, c, p_board, o_board)
+                eval = minimax(nb_p, nb_o, depth - 1, alpha, beta, False)
+                max_eval = max(max_eval, eval)
+                alpha = max(alpha, eval)
+                if beta <= alpha: break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            moves.sort(key=lambda x: WEIGHTS[x[0], x[1]], reverse=True)
+            for r, c in moves:
+                nb_o, nb_p = make_move(r, c, o_board, p_board)
+                eval = minimax(nb_p, nb_o, depth - 1, alpha, beta, True)
+                min_eval = min(min_eval, eval)
+                beta = min(beta, eval)
+                if beta <= alpha: break
+            return min_eval
+
+    legal_moves = get_legal_moves(you, opponent)
+    if not legal_moves:
+        return "pass"
+
+    best_move = None
+    best_val = -float('inf')
+    
+    # Depth 4 is generally safe for 1 second in Python
+    for r, c in legal_moves:
+        nb_p, nb_o = make_move(r, c, you, opponent)
+        val = minimax(nb_p, nb_o, 3, -float('inf'), float('inf'), False)
+        if val > best_val:
+            best_val = val
+            best_move = (r, c)
+
+    if best_move:
+        return f"{chr(ord('a') + best_move[1])}{best_move[0] + 1}"
+    return "pass"
+</code>

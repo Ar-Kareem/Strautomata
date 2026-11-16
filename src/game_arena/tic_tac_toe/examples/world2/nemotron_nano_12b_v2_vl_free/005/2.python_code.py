@@ -1,0 +1,85 @@
+
+from copy import deepcopy
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    def is_terminal(b):
+        # Check for player 1's win
+        for row in board:
+            if row[0] == row[1] == row[2] == row[3] == 1:
+                return True, 1
+        for col in range(4):
+            if all(board[row][col] == 1 for row in range(4)):
+                return True, 1
+        if all(board[i][i] == 1 for i in range(4)) or all(board[i][3-i] == 1 for i in range(4)):
+            return True, 1
+        # Check for player -1's win
+        for row in board:
+            if row[0] == row[1] == row[2] == row[3] == -1:
+                return True, -1
+        for col in range(4):
+            if all(board[row][col] == -1 for row in range(4)):
+                return True, -1
+        if all(board[i][i] == -1 for i in range(4)) or all(board[i][3-i] == -1 for i in range(4)):
+            return True, -1
+        # Check for draw
+        if any(cell == 0 for row in board for cell in row):
+            return False, None
+        return True, 0
+
+    def apply_move(board, move, player):
+        new_board = [row.copy() for row in board]
+        new_board[move[0]][move[1]] = player
+        return new_board
+
+    def get_heuristic(move):
+        r, c = move
+        corners = {(0, 0), (0, 3), (3, 0), (3, 3)}
+        center = {(1, 1), (1, 2), (2, 1), (2, 2)}
+        if move in center:
+            return 4
+        if move in corners:
+            return 3
+        edges = set(range(4)).union(set(range(4, 8)), set(range(8, 12)))
+        if r % 4 in edges or c % 4 in edges:
+            return 2
+        return 1
+
+    def minimax(b, alpha, beta, player):
+        terminal, result = is_terminal(b)
+        if terminal:
+            return result
+
+        moves = [(r, c) for r in range(4) for c in range(4) if b[r][c] == 0]
+        score = float('-inf') if player == 1 else float('inf')
+
+        for move in moves:
+            new_board = deepcopy(board)
+            new_board[move[0]][move[1]] = player
+            val = minimax(new_board, alpha, beta, -player)
+            if player == 1:
+                if val > score:
+                    score = val
+                alpha = max(alpha, val)
+            else:
+                if val < score:
+                    score = val
+                beta = min(beta, val)
+            if beta <= alpha:
+                break
+
+        return score
+
+    possible_moves = [(r, c) for r in range(4) for c in range(4) if board[r][c] == 0]
+    possible_moves.sort(key=lambda move: -get_heuristic(move))
+
+    best_move = possible_moves[0]
+    best_score = float('-inf')
+
+    for move in possible_moves:
+        new_board = apply_move(board, move, 1)
+        score = minimax(new_board, float('-inf'), float('inf'), -1)
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return best_move

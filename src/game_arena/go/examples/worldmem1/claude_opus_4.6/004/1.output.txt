@@ -1,0 +1,213 @@
+## Strategy
+
+My strategy implements a Go policy based on several key principles:
+
+1. **Opening Book**: Play standard opening moves (star points/hoshi) in the early game to establish influence across the board.
+
+2. **Capture Detection**: Prioritize capturing opponent stones that are in atari (have only one liberty left).
+
+3. **Self-Atari Avoidance**: Avoid moves that would put our own groups into atari or capture.
+
+4. **Territory/Influence Scoring**: Evaluate moves based on:
+   - Proximity to the center (slight preference for influence)
+   - Distance from existing friendly stones (encourage spreading out)
+   - Adjacency to opponent stones (contest territory)
+   - Liberty counting for resulting groups
+
+5. **Ko and Suicide Prevention**: Avoid illegal moves (occupied points, suicide moves).
+
+6. **Group Liberty Analysis**: Track connected groups and their liberties to make tactical decisions.
+
+The policy uses a scoring heuristic for each candidate move, considering captures, territory influence, group safety, and strategic positioning. It doesn't do full Monte Carlo tree search due to time constraints but uses fast heuristic evaluation.
+
+<code>
+import numpy as np
+from collections import deque
+
+def policy(me, opponent, memory):
+    BOARD_SIZE = 19
+    me_set = set(me)
+    opp_set = set(opponent)
+    occupied = me_set | opp_set
+    
+    move_number = memory.get('move_number', 0)
+    memory['move_number'] = move_number + 1
+    
+    def neighbors(r, c):
+        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+            nr, nc = r+dr, c+dc
+            if 1 <= nr <= BOARD_SIZE and 1 <= nc <= BOARD_SIZE:
+                yield nr, nc
+    
+    def get_group(r, c, stone_set):
+        group = set()
+        queue = deque([(r, c)])
+        group.add((r, c))
+        while queue:
+            cr, cc = queue.popleft()
+            for nr, nc in neighbors(cr, cc):
+                if (nr, nc) in stone_set and (nr, nc) not in group:
+                    group.add((nr, nc))
+                    queue.append((nr, nc))
+        return group
+    
+    def get_liberties(group, me_s, opp_s):
+        libs = set()
+        for r, c in group:
+            for nr, nc in neighbors(r, c):
+                if (nr, nc) not in me_s and (nr, nc) not in opp_s:
+                    libs.add((nr, nc))
+        return libs
+    
+    def would_capture(r, c, me_s, opp_s):
+        captured = set()
+        for nr, nc in neighbors(r, c):
+            if (nr, nc) in opp_s:
+                grp = get_group(nr, nc, opp_s)
+                libs = get_liberties(grp, me_s | {(r,c)}, opp_s)
+                if len(libs) == 0:
+                    captured |= grp
+        return captured
+    
+    def is_suicide(r, c, me_s, opp_s):
+        caps = would_capture(r, c, me_s, opp_s)
+        if caps:
+            return False
+        new_me = me_s | {(r,c)}
+        new_opp = opp_s - caps
+        # Check if our stone/group has liberties
+        grp = get_group(r, c, new_me)
+        libs = get_liberties(grp, new_me, new_opp)
+        return len(libs) == 0
+    
+    # Opening moves - star points
+    star_points = [(4,4),(4,16),(16,4),(16,16),(4,10),(16,10),(10,4),(10,16),(10,10)]
+    if move_number < 6:
+        for sp in star_points:
+            if sp not in occupied:
+                if not is_suicide(sp[0], sp[1], me_set, opp_set):
+                    return (sp, memory)
+    
+    best_score = -1e9
+    best_move = (0, 0)
+    
+    candidates = set()
+    for r, c in occupied:
+        for dr in range(-3, 4):
+            for dc in range(-3, 4):
+                nr, nc = r+dr, c+dc
+                if 1 <= nr <= BOARD_SIZE and 1 <= nc <= BOARD_SIZE and (nr,nc) not in occupied:
+                    candidates.add((nr, nc))
+    
+    if not candidates:
+        for r in range(1, BOARD_SIZE+1):
+            for c in range(1, BOARD_SIZE+1):
+                if (r,c) not in occupied:
+                    candidates.add((r,c))
+    
+    if not candidates:
+        return ((0, 0), memory)
+    
+    # Pre-compute opponent groups in atari
+    opp_visited = set()
+    atari_libs = {}  # liberty point -> total capturable stones
+    for sr, sc in opp_set:
+        if (sr, sc) not in opp_visited:
+            grp = get_group(sr, sc, opp_set)
+            opp_visited |= grp
+            libs = get_liberties(grp, me_set, opp_set)
+            if len(libs) == 1:
+                lib = next(iter(libs))
+                atari_libs[lib] = atari_libs.get(lib, 0) + len(grp)
+    
+    for r, c in candidates:
+        if is_suicide(r, c, me_set, opp_set):
+            continue
+        
+        score = 0.0
+        
+        # Capture bonus
+        caps = would_capture(r, c, me_set, opp_set)
+        score += len(caps) * 15
+        
+        # Atari capture (from precomputed)
+        if (r, c) in atari_libs:
+            score += atari_libs[(r, c)] * 20
+        
+        # Check if move puts opponent groups under pressure (reduces liberties to 1)
+        for nr, nc in neighbors(r, c):
+            if (nr, nc) in opp_set:
+                grp = get_group(nr, nc, opp_set)
+                libs = get_liberties(grp, me_set | {(r,c)}, opp_set - caps)
+                if len(libs) == 1:
+                    score += len(grp) * 8  # atari threat
+                elif len(libs) == 2:
+                    score += len(grp) * 2
+        
+        # Check safety of our resulting group
+        new_me = me_set | {(r,c)}
+        new_opp = opp_set - caps
+        our_grp = get_group(r, c, new_me)
+        our_libs = get_liberties(our_grp, new_me, new_opp)
+        lib_count = len(our_libs)
+        
+        if lib_count <= 1:
+            score -= 50
+        elif lib_count == 2:
+            score -= 5
+        else:
+            score += min(lib_count, 6) * 1.5
+        
+        # Territory / influence
+        # Adjacency to friendly stones (connection)
+        friendly_adj = sum(1 for nr, nc in neighbors(r, c) if (nr, nc) in me_set)
+        enemy_adj = sum(1 for nr, nc in neighbors(r, c) if (nr, nc) in opp_set)
+        
+        score += enemy_adj * 3
+        score += friendly_adj * 1
+        
+        # Prefer edges of groups, not filling own territory
+        empty_adj = 4 - friendly_adj - enemy_adj
+        # Count out of board
+        oob = sum(1 for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)] if not (1 <= r+dr <= BOARD_SIZE and 1 <= c+dc <= BOARD_SIZE))
+        empty_adj -= oob
+        
+        # Slight center preference
+        dist_center = abs(r - 10) + abs(c - 10)
+        score += max(0, (18 - dist_center)) * 0.15
+        
+        # Edge penalty for very edge moves
+        edge_dist = min(r-1, BOARD_SIZE-r, c-1, BOARD_SIZE-c)
+        if edge_dist == 0:
+            score -= 3
+        elif edge_dist == 1:
+            score -= 1
+        
+        # Spread out - don't clump too much
+        if me_set:
+            min_dist = min(abs(r-mr) + abs(c-mc) for mr, mc in me_set)
+            if min_dist == 0:
+                score -= 10
+            elif min_dist <= 2:
+                score += 2
+            elif min_dist <= 5:
+                score += 3
+            else:
+                score += 1
+        
+        # Small random tiebreaker
+        score += np.random.random() * 0.1
+        
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+    
+    if best_move == (0, 0):
+        # Try to find any legal move
+        for r in range(1, BOARD_SIZE+1):
+            for c in range(1, BOARD_SIZE+1):
+                if (r,c) not in occupied and not is_suicide(r, c, me_set, opp_set):
+                    return ((r, c), memory)
+    
+    return (best_move, memory)
+</code>

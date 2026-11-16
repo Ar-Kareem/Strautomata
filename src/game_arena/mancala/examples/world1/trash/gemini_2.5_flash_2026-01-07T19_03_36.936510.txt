@@ -1,0 +1,879 @@
+<thinking>
+I will implement a minimax algorithm with alpha-beta pruning for my Kalah policy.
+
+**State Representation:**
+* `you`: `list[int]` of length 7
+* `opponent`: `list[int]` of length 7
+
+**Move Function (`make_move`):**
+This function will take `(you, opponent, move_idx)` and return `(new_you, new_opponent, player_to_move, extra_turn_given)`.
+* It needs to simulate the seed distribution carefully, skipping the opponent's store.
+* It must handle the extra move condition (last seed lands in `you[6]`).
+* It must handle the capture condition (last seed lands in empty `you[i]` and `opponent[5-i]` has seeds).
+* It must detect game termination and transfer remaining seeds.
+
+**Evaluation Function (`evaluate`):**
+A simple evaluation function will be `you[6] - opponent[6]`. I'll consider more sophisticated evaluations later if performance allows. For now, this baseline is good.
+
+**Minimax with Alpha-Beta Pruning:**
+* **`minimax(you, opponent, depth, alpha, beta, maximizing_player)`:**
+    * Base cases:
+        * If `depth == 0` or game ends, return `evaluate(you, opponent)`.
+    * If `maximizing_player` (my turn):
+        * Initialize `max_eval = -infinity`
+        * Iterate through all possible moves `i` (0-5, `you[i] > 0`).
+            * `new_you, new_opponent, next_player, extra_turn = make_move(you, opponent, i)`
+            * If `extra_turn` is True, it's still my turn, so call `minimax` as `maximizing_player` again with the *same* depth. This is crucial for handling extra turns correctly within the depth limit.
+            * Else, `eval = minimax(new_you, new_opponent, depth - 1, alpha, beta, not maximizing_player)`
+            * `max_eval = max(max_eval, eval)`
+            * `alpha = max(alpha, eval)`
+            * If `beta <= alpha`, break (pruning).
+        * Return `max_eval`
+    * If `not maximizing_player` (opponent's turn):
+        * Initialize `min_eval = +infinity`
+        * Iterate through all possible moves `i` (0-5, `opponent houses` > 0).
+            * **Important:** This needs to simulate an opponent's move. So `make_move_opponent` or modify `make_move` to handle `(current_player_you, current_player_opponent)` and pass `(opponent, you, i)` as parameters, then reverse results.
+            * `new_opponent_you, new_opponent_opponent, next_player, extra_turn = make_move(opponent, you, i)` (simulating opponent's move)
+            * If `extra_turn`, opponent gets another turn, so `minimax` called as `not maximizing_player` again.
+            * Else, `eval = minimax(new_opponent_you, new_opponent_opponent, depth - 1, alpha, beta, not next_player)` (i.e., `maximizing_player` if `next_player` is false, which is `not (not maximizing_player)` which is `maximizing_player`).
+            * `min_eval = min(min_eval, eval)`
+            * `beta = min(beta, eval)`
+            * If `beta <= alpha`, break (pruning).
+        * Return `min_eval`
+
+**Game End Check (`is_game_over`):**
+* Check if `sum(you[0:6]) == 0` or `sum(opponent[0:6]) == 0`.
+* If so, then transfer remaining seeds to respective stores. This will affect `evaluate`.
+* `get_final_scores(you, opponent)`: returns `(final_you_score, final_opponent_score)`.
+
+**Refinement of `make_move`:**
+I'll create a single `_simulate_move` function that takes `(player_board, opponent_board, house_idx)` and returns the resulting state and whether an extra turn was granted and if the game ended. This function needs to be generic enough to be called for both `you` and `opponent`.
+
+Let's break down `_simulate_move(current_player_board, other_player_board, move_idx)`:
+1. Copy boards to avoid modifying original state.
+2. Get seeds from `current_player_board[move_idx]`. Set `current_player_board[move_idx] = 0`.
+3. Distribute seeds:
+    * Use a counter `current_hand = seeds`.
+    * `current_idx = move_idx`.
+    * `current_board = current_player_board`.
+    * `other_board = other_player_board`.
+    * Loop while `current_hand > 0`:
+        * `current_idx += 1`
+        * If `current_idx == 7` (passed my store):
+            * Switch boards: `current_board, other_board = other_board, current_board`.
+            * `current_idx = 0`.
+            * If `current_board` is the `other_player_board` (i.e., this is the opponent's houses), we need to skip their store. If we are now placing into `other_player_board` and `current_idx` points to their store (index 6, which we effectively skip to 0), continue and handle `current_board` and `current_idx` accordingly.
+            * The logic needs to be:
+                * Houses `0..5` of `current_player_board`
+                * Store `6` of `current_player_board`
+                * Houses `0..5` of `other_player_board`
+                * Cycle back. The opponent's store is *never* filled.
+
+Revised distribution logic:
+`board = current_player_board[:]`
+`opponent_board = other_player_board[:]`
+`seeds_to_distribute = board[move_idx]`
+`board[move_idx] = 0`
+`current_pos = move_idx`
+`current_player_is_me = True` # Tracks whose board we are currently on
+
+while `seeds_to_distribute > 0`:
+    `current_pos += 1`
+    if `current_player_is_me`:
+        if `current_pos < 6`: # My houses
+            `board[current_pos] += 1`
+            `seeds_to_distribute -= 1`
+        elif `current_pos == 6`: # My store
+            `board[current_pos] += 1`
+            `seeds_to_distribute -= 1`
+            `last_landed_in_store = True`
+            `last_landed_house_idx = 6`
+        else: # Passed my store, go to opponent's houses
+            `current_player_is_me = False`
+            `current_pos = -1` # Will become 0 after increment
+    else: # On opponent's side
+        if `current_pos < 6`: # Opponent's houses
+            `opponent_board[current_pos] += 1`
+            `seeds_to_distribute -= 1`
+            `last_landed_house_idx = current_pos`
+            `last_landed_in_store = False`
+        else: # Passed opponent's houses, back to my board
+            `current_player_is_me = True`
+            `current_pos = -1` # Will become 0 after increment
+
+`extra_turn = False`
+`capture_occurred = False`
+
+if `last_landed_in_store`:
+    `extra_turn = True`
+elif `current_player_is_me` and `last_landed_house_idx < 6`: # Last seed landed in one of current player's houses
+    `if board[last_landed_house_idx] == 1` (was empty before this last seed)
+    `and opponent_board[5 - last_landed_house_idx] > 0`:
+        `board[6] += opponent_board[5 - last_landed_house_idx] + 1`
+        `opponent_board[5 - last_landed_house_idx] = 0`
+        `board[last_landed_house_idx] = 0`
+        `capture_occurred = True`
+
+
+`game_is_over = False`
+`if sum(board[0:6]) == 0 or sum(opponent_board[0:6]) == 0:`
+    `game_is_over = True`
+    `for i in range(6):`
+        `board[6] += board[i]`
+        `opponent_board[6] += opponent_board[i]`
+        `board[i] = 0`
+        `opponent_board[i] = 0`
+
+Return `(board, opponent_board, extra_turn, game_is_over)`
+
+This `_simulate_move` function will be called by `minimax`.
+
+**Depth:**
+A depth of 5-7 might be reasonable given the time limit, considering branching factor (6 moves per turn, potentially extra turns).
+
+**Initial thoughts on `evaluate`:**
+Just `you[6] - opponent[6]` is a good starting point.
+Pondering adding:
+* `sum(you[0:6])` and `sum(opponent[0:6])` (number of seeds on board) - might be useful to encourage clearing the board towards the end.
+* Captures are very powerful. Maybe a bonus for capturing or capturing potential.
+* Extra moves are also very powerful.
+
+For now, `you[6] - opponent[6]` is sufficient, as the game logic naturally favors these actions.
+
+**Final `policy` structure:**
+1. Global `MAX_DEPTH`
+2. `policy(you, opponent)`:
+    * Initialize `best_move = -1`
+    * Initialize `max_eval = -infinity`
+    * Iterate through `i` from `0` to `5`:
+        * If `you[i] == 0`, continue (not a legal move).
+        * `current_you, current_opponent, extra_turn, game_over = _simulate_move(you[:], opponent[:], i, is_my_move=True)`
+        * If `extra_turn`:
+            * `eval = minimax(current_you, current_opponent, MAX_DEPTH - 1, -inf, inf, True)` (still my turn as maximizing player)
+        * Else:
+            * `eval = minimax(current_you, current_opponent, MAX_DEPTH - 1, -inf, inf, False)` (opponent's turn as minimizing player)
+        * If `eval > max_eval`:
+            * `max_eval = eval`
+            * `best_move = i`
+    * Return `best_move`
+
+**MAX_DEPTH consideration:**
+For 1 second, a depth of 5 or 6 might be achievable. I'll start with 6 and test. Python execution can be slower for recursion compared to compiled languages.
+
+Let's refine the `_simulate_move` and `minimax` arguments to be clear about whose turn it is.
+
+`_simulate_move(player_board, opponent_board, move_idx)`:
+  * Returns `(next_player_board, next_opponent_board, extra_turn, game_over)`
+  * `player_board` is the board of the current player making the move
+  * `opponent_board` is the board of the other player
+
+`minimax(current_you, current_opponent, depth, alpha, beta, maximizing_player)`:
+  * `current_you`: The board view from *my* perspective
+  * `current_opponent`: The board view from the *other* perspective
+
+**Handling Game Over in `minimax`:**
+If `game_is_over` from `_simulate_move`:
+  * Call `_get_final_score(current_you, current_opponent)`
+  * Return this score. This score needs to be relative to the maximizing player.
+
+`_get_final_score(you, opponent)`:
+  * Modifies `you` and `opponent` to dump remaining seeds into stores.
+  * Returns `you[6] - opponent[6]`.
+
+Let's refine the core loop of seed distribution. It's complex to get right.
+
+```python
+# Helper function for distributing seeds
+def _distribute_seeds(player_board, opponent_board, start_house_idx):
+    current_player_board = player_board[:]
+    current_opponent_board = opponent_board[:]
+
+    seeds = current_player_board[start_house_idx]
+    current_player_board[start_house_idx] = 0
+
+    current_idx = start_house_idx
+    board_turn = 0 # 0 for current_player_board, 1 for current_opponent_board
+
+    last_landed_house = -1
+    last_landed_on_my_side = False
+
+    while seeds > 0:
+        if board_turn == 0: # Current player's board
+            current_idx += 1
+            if current_idx < 6: # My houses
+                current_player_board[current_idx] += 1
+                last_landed_house = current_idx
+                last_landed_on_my_side = True
+            elif current_idx == 6: # My store
+                current_player_board[current_idx] += 1
+                last_landed_house = -1 # Special code for store
+                last_landed_on_my_side = True
+                board_turn = 1 # Switch to opponent's board for next seed
+                current_idx = -1 # Reset index for opponent's houses
+            else: # Should not happen, implies current_idx > 6
+                pass # Error or logic issue
+        else: # Opponent's board
+            current_idx += 1
+            if current_idx < 6: # Opponent's houses
+                current_opponent_board[current_idx] += 1
+                last_landed_house = current_idx
+                last_landed_on_my_side = False
+            else: # Skip opponent's store, switch back to my board
+                board_turn = 0
+                current_idx = -1 # Reset index for my houses
+                continue # Do not consume a seed for skipping store
+
+        seeds -= 1
+
+    extra_turn_granted = False
+    if last_landed_on_my_side and last_landed_house == -1: # Landed in my store
+        extra_turn_granted = True
+    elif last_landed_on_my_side and current_player_board[last_landed_house] == 1 and current_opponent_board[5 - last_landed_house] > 0:
+        # Capture: my house was empty, now has 1 seed, opponent's opposite house has seeds
+        current_player_board[6] += current_opponent_board[5 - last_landed_house] + current_player_board[last_landed_house]
+        current_opponent_board[5 - last_landed_house] = 0
+        current_player_board[last_landed_house] = 0
+
+    return current_player_board, current_opponent_board, extra_turn_granted
+
+
+# Check for game end and finalize scores
+def _check_game_over(player_board, opponent_board):
+    game_over = False
+    if sum(player_board[0:6]) == 0:
+        game_over = True
+        for i in range(6):
+            opponent_board[6] += opponent_board[i]
+            opponent_board[i] = 0
+    elif sum(opponent_board[0:6]) == 0:
+        game_over = True
+        for i in range(6):
+            player_board[6] += player_board[i]
+            player_board[i] = 0
+    return player_board, opponent_board, game_over
+
+# Evaluation function
+def _evaluate(you_board, opponent_board):
+    return you_board[6] - opponent_board[6]
+
+# Minimax with Alpha-Beta Pruning
+# Arguments:
+#   you: YOUR board state
+#   opponent: OPPONENT's board state
+#   depth: current depth in search tree
+#   alpha: alpha value for pruning
+#   beta: beta value for pruning
+#   maximizing_player: True if it's YOUR turn, False if it's OPPONENT's turn
+def _minimax(you, opponent, depth, alpha, beta, maximizing_player):
+    if depth == 0 or _is_terminal_state(you, opponent): # _is_terminal_state will call _check_game_over for final scores
+        # Ensure game is finalized for evaluation if it was over
+        temp_you, temp_opponent, game_over = _check_game_over(you[:], opponent[:])
+        return _evaluate(temp_you, temp_opponent)
+
+    if maximizing_player:
+        max_eval = float('-inf')
+        # Iterate through your possible moves
+        for i in range(6):
+            if you[i] == 0:
+                continue
+
+            next_you, next_opponent, extra_turn = _distribute_seeds(you[:], opponent[:], i)
+            
+            # Recalculate game_over for the check, as _distribute_seeds doesn't return that
+            _, _, game_over = _check_game_over(next_you[:], next_opponent[:]) 
+
+            if game_over:
+                # If game ends, evaluate immediately
+                temp_you, temp_opponent, _ = _check_game_over(next_you[:], next_opponent[:])
+                eval = _evaluate(temp_you, temp_opponent)
+            elif extra_turn:
+                eval = _minimax(next_you, next_opponent, depth - 0, alpha, beta, True) # Same depth because it's still MY turn
+            else:
+                eval = _minimax(next_you, next_opponent, depth - 1, alpha, beta, False) # Opponent's turn
+
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break
+        return max_eval
+    else: # Minimizing player (opponent's turn)
+        min_eval = float('inf')
+        # Iterate through opponent's possible moves
+        for i in range(6):
+            if opponent[i] == 0:
+                continue
+
+            # Simulate opponent's move by swapping perspectives for _distribute_seeds
+            # _distribute_seeds expects (player_board, opponent_board, move_idx)
+            # So, opponent is 'player_board' and I am 'opponent_board'
+            next_opponent, next_you, extra_turn = _distribute_seeds(opponent[:], you[:], i)
+
+            # Recalculate game_over for the check
+            _, _, game_over = _check_game_over(next_you[:], next_opponent[:])
+
+            if game_over:
+                # If game ends, evaluate immediately (from my perspective)
+                temp_you, temp_opponent, _ = _check_game_over(next_you[:], next_opponent[:])
+                eval = _evaluate(temp_you, temp_opponent)
+            elif extra_turn:
+                # Opponent gets extra turn, they are still minimizing player
+                eval = _minimax(next_you, next_opponent, depth - 0, alpha, beta, False)
+            else:
+                # My turn next, I am maximizing player
+                eval = _minimax(next_you, next_opponent, depth - 1, alpha, beta, True)
+
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break
+        return min_eval
+
+# Helper to check if a state is terminal for minimax pruning early
+def _is_terminal_state(you_board, opponent_board):
+    return sum(you_board[0:6]) == 0 or sum(opponent_board[0:6]) == 0
+```
+
+The `_distribute_seeds` logic seems okay. The main complexity is ensuring the `current_idx` and `board_turn` updates are always correct and that skipping the opponent's store works.
+
+Let's trace `_distribute_seeds` carefully with an example: `(3,0,0,0,0,0,0)` for `player_board`, `(0,0,0,0,0,0,0)` for `opponent_board`, `start_house_idx=0`.
+`seeds = 3`, `player_board = [0,0,0,0,0,0,0]`
+`current_idx = 0`, `board_turn = 0`
+
+1. `seeds = 3`. `board_turn = 0`. `current_idx` becomes `1`. `player_board[1] += 1`. `player_board = [0,1,0,0,0,0,0]`. `last_landed_house = 1`, `on_my_side = True`. `seeds = 2`.
+2. `seeds = 2`. `board_turn = 0`. `current_idx` becomes `2`. `player_board[2] += 1`. `player_board = [0,1,1,0,0,0,0]`. `last_landed_house = 2`, `on_my_side = True`. `seeds = 1`.
+3. `seeds = 1`. `board_turn = 0`. `current_idx` becomes `3`. `player_board[3] += 1`. `player_board = [0,1,1,1,0,0,0]`. `last_landed_house = 3`, `on_my_side = True`. `seeds = 0`.
+
+Loop ends. No extra turn. No capture. Result: `([0,1,1,1,0,0,0], [0,0,0,0,0,0,0], False)`. This seems correct.
+
+Example with full lap: `player_board = [7,0,0,0,0,0,0]`, `start_house_idx = 0`.
+`seeds = 7`. `player_board = [0,0,0,0,0,0,0]`
+`current_idx = 0`, `board_turn = 0`
+
+1. `idx=1, p_b[1]+=1, seeds=6`. `last=1, my_side=T`
+2. `idx = 2, p_b[2]+=1, seeds=5`. `last=2, my_side=T`
+3. `idx = 3, p_b[3]+=1, seeds=4`. `last=3, my_side=T`
+4. `idx = 4, p_b[4]+=1, seeds=3`. `last=4, my_side=T`
+5. `idx = 5, p_b[5]+=1, seeds=2`. `last=5, my_side=T`
+6. `idx = 6, p_b[6]+=1, seeds=1`. `last=-1, my_side=T`. `board_turn = 1`. `current_idx = -1`. `extra_turn = True`
+7. `seeds = 1`. `board_turn = 1`. `current_idx` becomes `0`. `o_b[0]+=1`. `seeds=0`. `last=0, my_side=F`.
+
+Loop ends. `extra_turn_granted = True`.
+Result: `([0,1,1,1,1,1,1], [1,0,0,0,0,0,0], True)`. This is correct.
+
+Example with capture: `player_board = [1,0,0,0,0,0,0], opponent_board = [0,0,0,0,0,5,0]`, `start_house_idx=0`.
+`seeds = 1`. `player_board = [0,0,0,0,0,0,0]`
+`current_idx = 0`, `board_turn = 0`
+
+1. `seeds = 1`. `idx=1, p_b[1]+=1`. `seeds=0`. `last=1, my_side=T`. `player_board = [0,1,0,0,0,0,0]`
+
+Loop ends.
+`extra_turn_granted = False`
+`last_landed_on_my_side = True`, `last_landed_house = 1`.
+`current_player_board[1]` is `1`. This house `was empty` before this seed.
+`opponent_board[5 - 1]` i.e. `opponent_board[4]` which is `0` in `[0,0,0,0,0,5,0]`. My example is bad for capture.
+
+Let's fix capture example:
+`player_board = [1,0,0,0,0,0,0], opponent_board = [0,0,0,0,5,0,0]` (opponent's house 4 has 5 seeds).
+`start_house_idx = 0`.
+`seeds=1`. `player_board = [0,0,0,0,0,0,0]`
+`current_idx=0`, `board_turn=0`
+
+1. `idx=1, p_b[1]+=1, seeds=0`. `last=1, my_side=T`. `p_b = [0,1,0,0,0,0,0]`.
+
+Loop ends.
+`extra_turn_granted = False`.
+`last_landed_on_my_side = True`, `last_landed_house = 1`.
+Condition check: `current_player_board[1] == 1` (True, `[0,1,0,0,0,0,0]`)
+AND `opponent_board[5 - 1]` (i.e. `opponent_board[4]`) has `5` seeds (True).
+Capture occurs!
+`current_player_board[6] += opponent_board[4] + current_player_board[1]`
+`opponent_board[4]` was `5`, `current_player_board[1]` was `1`. So `current_player_board[6] += (5 + 1) = 6`.
+`current_player_board = [0,1,0,0,0,0,6]`
+`current_opponent_board[4] = 0`. `current_opponent_board = [0,0,0,0,0,0,0]` (assuming initial state `[0,0,0,0,5,0,0]` was a copy which is modified)
+`current_player_board[1] = 0`. `current_player_board = [0,0,0,0,0,0,6]`
+
+Correct. The `_distribute_seeds` function correctly handles the crucial rules.
+
+**MAX_DEPTH constant**:
+Given a 1-second time limit, Python's recursion depth might be an issue. A depth of 6 or 7 would imply $6^6$ to $6^7$ states without pruning, but with pruning and extra turns, it can vary. Python's default recursion limit is 1000, so that's not an issue. The problem is computation time.
+Let's set `MAX_DEPTH = 6`. This is a reasonable trade-off between search breadth and depth.
+
+Final check on `_check_game_over`:
+The `_check_game_over` is called in `minimax` before evaluation. This needs to *modify* the boards passed to it before evaluation if the game ends.
+I'm copying the boards `you[:]`, `opponent[:]` when calling `_check_game_over`. This means the `_evaluate` function will see the "finalized" scores if the game ended. This is correct.
+
+```python
+import math
+
+class KalahAI:
+    MAX_DEPTH = 6  # Adjust this based on performance
+
+    def policy(self, you: list[int], opponent: list[int]) -> int:
+        best_move = -1
+        max_eval = float('-inf')
+
+        # Find all legal moves
+        possible_moves = [i for i in range(6) if you[i] > 0]
+        
+        # If no legal moves, the game should have ended.
+        # The problem statement guarantees "policy is never called when you have no legal move."
+        # So this case should ideally not be hit, but defensive check
+        if not possible_moves:
+             return -1 # Should not happen
+
+        for move_idx in possible_moves:
+            # Simulate the move for 'you'
+            next_you, next_opponent, extra_turn_granted = self._distribute_seeds(you[:], opponent[:], move_idx)
+            
+            # Check if the game ended after this simulated move
+            final_you_if_game_over, final_opponent_if_game_over, game_over = self._check_game_over(next_you[:], next_opponent[:])
+
+            current_eval = 0
+            if game_over:
+                current_eval = self._evaluate(final_you_if_game_over, final_opponent_if_game_over)
+            elif extra_turn_granted:
+                # If extra turn, we remain the maximizing player
+                current_eval = self._minimax(next_you, next_opponent, self.MAX_DEPTH - 0, float('-inf'), float('inf'), True)
+            else:
+                # Otherwise, it's opponent's turn, we are minimizing
+                current_eval = self._minimax(next_you, next_opponent, self.MAX_DEPTH - 1, float('-inf'), float('inf'), False)
+
+            if current_eval > max_eval:
+                max_eval = current_eval
+                best_move = move_idx
+            
+        # If best_move is still -1, it means no valid moves were found,
+        # which again, should not happen based on problem statement.
+        # As a fallback, just pick the first legal move available.
+        if best_move == -1 and possible_moves:
+            return possible_moves[0]
+
+        return best_move
+
+    def _distribute_seeds(self, player_board: list[int], opponent_board: list[int], start_house_idx: int) -> tuple[list[int], list[int], bool]:
+        """
+        Simulates distributing seeds from a given house.
+        Returns the new board states and whether an extra turn was granted.
+        """
+        
+        # Make copies to avoid modifying original state passed from higher calls
+        current_player_board = list(player_board) 
+        current_opponent_board = list(opponent_board)
+
+        seeds_to_distribute = current_player_board[start_house_idx]
+        current_player_board[start_house_idx] = 0 # Empty the starting house
+
+        # Variables to track where the last seed landed
+        last_landed_house_idx = -1
+        last_landed_on_player_side = False
+
+        board_iterator = 0 # 0 for player's side, 1 for opponent's side
+        current_pos = start_house_idx
+
+        # Simulate seed distribution
+        while seeds_to_distribute > 0:
+            if board_iterator == 0: # Currently on player's side houses or store
+                current_pos += 1
+                if current_pos < 6: # Player's houses (0-5)
+                    current_player_board[current_pos] += 1
+                    last_landed_house_idx = current_pos
+                    last_landed_on_player_side = True
+                elif current_pos == 6: # Player's store (6)
+                    current_player_board[current_pos] += 1
+                    last_landed_house_idx = current_pos # Indicate landing in store
+                    last_landed_on_player_side = True
+                    board_iterator = 1 # Switch to opponent's side
+                    current_pos = -1 # Reset index for opponent's houses
+                # No 'else' for >6 here; 'else' block below will handle switching boards
+            else: # Currently on opponent's side houses
+                current_pos += 1
+                if current_pos < 6: # Opponent's houses (0-5)
+                    current_opponent_board[current_pos] += 1
+                    last_landed_house_idx = current_pos
+                    last_landed_on_player_side = False
+                else: # Skip opponent's store (index 6), cycle back to player's board
+                    board_iterator = 0 # Switch to player's side
+                    current_pos = -1 # Reset index for player's houses
+                    continue # Do not decrement seeds_to_distribute as no seed was placed
+
+            seeds_to_distribute -= 1
+
+        extra_turn_granted = False
+        # Check for special conditions (extra move or capture)
+        if last_landed_on_player_side and last_landed_house_idx == 6: # Last seed landed in player's store
+            extra_turn_granted = True
+        elif last_landed_on_player_side and 0 <= last_landed_house_idx < 6: # Last seed landed in player's empty house
+            # Note: current_player_board[last_landed_house_idx] should be 1 if it was empty before the last seed
+            if current_player_board[last_landed_house_idx] == 1 and current_opponent_board[5 - last_landed_house_idx] > 0:
+                # Capture: move seeds from opponent's opposite house and the one seed from player's house to player's store
+                current_player_board[6] += (current_opponent_board[5 - last_landed_house_idx] + current_player_board[last_landed_house_idx])
+                current_opponent_board[5 - last_landed_house_idx] = 0 # Empty opponent's house
+                current_player_board[last_landed_house_idx] = 0 # Empty player's house
+
+        return current_player_board, current_opponent_board, extra_turn_granted
+
+    def _check_game_over(self, player_board: list[int], opponent_board: list[int]) -> tuple[list[int], list[int], bool]:
+        """
+        Checks if the game has ended and finalizes scores if so.
+        Returns modified boards and a boolean indicating if game is over.
+        """
+        game_over = False
+        temp_player_board = list(player_board)
+        temp_opponent_board = list(opponent_board)
+
+        player_houses_empty = sum(temp_player_board[0:6]) == 0
+        opponent_houses_empty = sum(temp_opponent_board[0:6]) == 0
+
+        if player_houses_empty or opponent_houses_empty:
+            game_over = True
+            # Move all remaining seeds to respective stores
+            for i in range(6):
+                temp_player_board[6] += temp_player_board[i]
+                temp_player_board[i] = 0
+                temp_opponent_board[6] += temp_opponent_board[i]
+                temp_opponent_board[i] = 0
+                
+        return temp_player_board, temp_opponent_board, game_over
+
+    def _evaluate(self, you_board: list[int], opponent_board: list[int]) -> int:
+        """
+        Simple evaluation function: difference in score.
+        """
+        return you_board[6] - opponent_board[6]
+
+    def _minimax(self, you: list[int], opponent: list[int], depth: int, alpha: float, beta: float, maximizing_player: bool) -> int:
+        """
+        Minimax algorithm with alpha-beta pruning.
+        `you` and `opponent` are the current board states from the perspective of the maximizing_player.
+        """
+        
+        # Check for terminal state or depth limit
+        final_you, final_opponent, game_over = self._check_game_over(you[:], opponent[:])
+        if depth == 0 or game_over:
+            return self._evaluate(final_you, final_opponent)
+
+        if maximizing_player:
+            max_eval = float('-inf')
+            for i in range(6):
+                if you[i] == 0:
+                    continue # Skip empty houses
+
+                # Simulate my move
+                next_you, next_opponent, extra_turn = self._distribute_seeds(you[:], opponent[:], i)
+                
+                if extra_turn:
+                    # If I get an extra turn, I am still the maximizing player, depth doesn't decrease
+                    eval = self._minimax(next_you, next_opponent, depth - 0, alpha, beta, True)
+                else:
+                    # My turn ends, opponent (minimizing player) moves next
+                    eval = self._minimax(next_you, next_opponent, depth - 1, alpha, beta, False)
+                
+                max_eval = max(max_eval, eval)
+                alpha = max(alpha, eval)
+                if beta <= alpha: # Alpha-beta pruning
+                    break
+            return max_eval
+        else: # Minimizing player (opponent's turn)
+            min_eval = float('inf')
+            for i in range(6):
+                if opponent[i] == 0:
+                    continue # Skip empty houses for opponent
+
+                # Simulate opponent's move.
+                # `_distribute_seeds` expects (player_board, opponent_board).
+                # So we pass current_opponent as 'player_board' and current_you as 'opponent_board'.
+                next_opponent, next_you, extra_turn = self._distribute_seeds(opponent[:], you[:], i)
+                
+                if extra_turn:
+                    # Opponent gets an extra turn, they are still the minimizing player, depth doesn't decrease
+                    eval = self._minimax(next_you, next_opponent, depth - 0, alpha, beta, False)
+                else:
+                    # Opponent's turn ends, it's my turn (maximizing player) next
+                    eval = self._minimax(next_you, next_opponent, depth - 1, alpha, beta, True)
+                
+                min_eval = min(min_eval, eval)
+                beta = min(beta, eval)
+                if beta <= alpha: # Alpha-beta pruning
+                    break
+            return min_eval
+
+# Instantiate the AI and expose the policy function
+kalah_ai_instance = KalahAI()
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    return kalah_ai_instance.policy(you, opponent)
+
+```
+A small detail - the `_distribute_seeds` function returns `(player_board, opponent_board)` where `player_board` refers to the board of the player who made the move. When calling `_minimax`, I need to maintain the convention that `you` is always *my* perspective and `opponent` is the *other* player's perspective.
+
+In `policy` and `_minimax` for `maximizing_player`:
+`_distribute_seeds(you[:], opponent[:], i)` -> `(next_you, next_opponent, extra_turn)`
+This is already consistent since `you` is `player_board` and `opponent` is `opponent_board`.
+
+In `_minimax` for `not maximizing_player`:
+`_distribute_seeds(opponent[:], you[:], i)` -> `(next_opponent_from_their_perspective, next_my_board_from_their_perspective, extra_turn)`
+This means `next_opponent_from_their_perspective` is what `opponent` would be FROM MY PERSPECTIVE after their move.
+And `next_my_board_from_their_perspective` is what `you` would be FROM MY PERSPECTIVE after their move.
+So, when passing to `_minimax`:
+`eval = self._minimax(next_my_board_from_their_perspective, next_opponent_from_their_perspective, ...)`
+This appears correct. I have swapped the arguments when calling `_minimax` after opponent's move.
+
+It seems alright. The use of `list(...)` or `[:]` for copying lists is important to prevent side effects on higher-level states within the recursive calls.
+
+Added `math` import (though not strictly needed if we just use `float('-inf')` and `float('inf')`). Standard library `math` is typically allowed.
+
+Final quick check for `MAX_DEPTH` for Python. For deep recursion, `sys.setrecursionlimit()` might be needed, but for depth 6-7, the default 1000 should be fine. The main constraint will be execution time due to Python's interpretation and function call overhead.
+
+One small edge case to consider: if `policy` is called where all `you[0:6]` houses are empty, it would mean the game is over and the function should not be called. The problem statement guarantees "policy is never called when you have no legal move," so I don't need to explicitly handle `possible_moves` being empty.
+
+The handling of `depth - 0` for extra turns is correct because an extra turn does not count as a 'full turn' in terms of depth. It's still part of the same player's move sequence.
+
+Okay, this looks like a solid implementation for a minimax with alpha-beta pruning.
+</thinking>
+```python
+import math
+
+class KalahAI:
+    MAX_DEPTH = 6  # Maximum search depth for the minimax algorithm
+
+    def policy(self, you: list[int], opponent: list[int]) -> int:
+        """
+        Determines the best move for the current player using a minimax algorithm
+        with alpha-beta pruning.
+        
+        Args:
+            you: A list representing the current player's board state (houses 0-5, store 6).
+            opponent: A list representing the opponent's board state (houses 0-5, store 6).
+            
+        Returns:
+            An integer (0-5) representing the index of the house to move from.
+        """
+        best_move = -1
+        max_eval = float('-inf')
+
+        # Identify all legal moves (houses with seeds)
+        # The problem statement guarantees this function is never called when you have no legal move.
+        possible_moves = [i for i in range(6) if you[i] > 0]
+        
+        for move_idx in possible_moves:
+            # Simulate the chosen move
+            # _distribute_seeds returns the board states AFTER the move and whether an extra turn was granted
+            next_you, next_opponent, extra_turn_granted = self._distribute_seeds(list(you), list(opponent), move_idx)
+            
+            # After a move, check if the game has ended for evaluation
+            final_you_if_game_over, final_opponent_if_game_over, game_over = self._check_game_over(list(next_you), list(next_opponent))
+
+            current_eval = 0
+            if game_over:
+                # If the game ends, simply evaluate the final score
+                current_eval = self._evaluate(final_you_if_game_over, final_opponent_if_game_over)
+            elif extra_turn_granted:
+                # If an extra turn is granted, it's still our turn (maximizing player).
+                # Depth does not decrease as it's part of the same player's sequence of moves.
+                current_eval = self._minimax(next_you, next_opponent, self.MAX_DEPTH - 0, float('-inf'), float('inf'), True)
+            else:
+                # If no extra turn, it's the opponent's turn (minimizing player).
+                # Depth decreases by one
+                current_eval = self._minimax(next_you, next_opponent, self.MAX_DEPTH - 1, float('-inf'), float('inf'), False)
+
+            # Update best move if current move leads to a better outcome
+            if current_eval > max_eval:
+                max_eval = current_eval
+                best_move = move_idx
+        
+        # If no best move was found (e.g., all moves lead to -inf), or as a fallback
+        # This branch should rarely/never be hit if `possible_moves` is guaranteed to be non-empty.
+        if best_move == -1 and possible_moves:
+            return possible_moves[0] # Return the first legal move as a failsafe
+
+        return best_move
+
+    def _distribute_seeds(self, player_board: list[int], opponent_board: list[int], start_house_idx: int) -> tuple[list[int], list[int], bool]:
+        """
+        Simulates the distribution of seeds from a given house.
+        Handles wrapping around the board, landing in stores, captures, and extra turns.
+        
+        Args:
+            player_board: The board state of the player making the move.
+            opponent_board: The board state of the other player.
+            start_house_idx: The index (0-5) of the house from which seeds are picked.
+            
+        Returns:
+            A tuple containing:
+            - The new state of player_board.
+            - The new state of opponent_board.
+            - A boolean indicating whether an extra turn was granted.
+        """
+        
+        # Make copies of the boards to simulate without affecting the original state
+        current_player_board = list(player_board)
+        current_opponent_board = list(opponent_board)
+
+        seeds_to_distribute = current_player_board[start_house_idx]
+        current_player_board[start_house_idx] = 0 # Empty the starting house
+
+        last_landed_house_idx = -1
+        last_landed_on_player_side = False
+
+        board_iterator_state = 0 # 0 for current player's side, 1 for opponent's side
+        current_pos_in_bank = start_house_idx # Position within the current 'bank' (0-6 for player, 0-5 for opponent)
+
+        while seeds_to_distribute > 0:
+            if board_iterator_state == 0: # Current player's side (houses or store)
+                current_pos_in_bank += 1
+                if current_pos_in_bank < 6: # Player's houses (0-5)
+                    current_player_board[current_pos_in_bank] += 1
+                    last_landed_house_idx = current_pos_in_bank
+                    last_landed_on_player_side = True
+                elif current_pos_in_bank == 6: # Player's store (6)
+                    current_player_board[current_pos_in_bank] += 1
+                    last_landed_house_idx = current_pos_in_bank # Mark as landed in store (index 6)
+                    last_landed_on_player_side = True
+                    board_iterator_state = 1 # Switch to opponent's side for next seeds
+                    current_pos_in_bank = -1 # Reset index for next iteration to start at opponent's house 0
+                # No other `current_pos_in_bank` values are valid here; control flows to seeds_to_distribute -= 1
+            else: # Opponent's side (houses only, skipping their store)
+                current_pos_in_bank += 1
+                if current_pos_in_bank < 6: # Opponent's houses (0-5)
+                    current_opponent_board[current_pos_in_bank] += 1
+                    last_landed_house_idx = current_pos_in_bank
+                    last_landed_on_player_side = False
+                else: # Pass opponent's houses, skip their store, cycle back to player's board
+                    board_iterator_state = 0 # Switch back to player's side
+                    current_pos_in_bank = -1 # Reset index for next iteration to start at player's house 0
+                    seeds_to_distribute -= 1 # Crucially, a seed was NOT placed, but iteration happens. So decrement here.
+                    continue # Skip general seed decrement at bottom of loop as no seed was placed
+
+            seeds_to_distribute -= 1 # Decrement for each seed placed
+
+        extra_turn_granted = False
+        # Check for special conditions (extra move or capture)
+        if last_landed_on_player_side and last_landed_house_idx == 6:
+            extra_turn_granted = True
+        elif last_landed_on_player_side and 0 <= last_landed_house_idx < 6:
+            # Capture condition: last seed landed in current player's house, and it was empty before this seed
+            # (which means it now contains exactly 1 seed), and the opponent's opposite house has seeds.
+            if current_player_board[last_landed_house_idx] == 1 and current_opponent_board[5 - last_landed_house_idx] > 0:
+                # Move seeds from opponent's opposite house and the one seed from player's house to player's store
+                current_player_board[6] += (current_opponent_board[5 - last_landed_house_idx] + current_player_board[last_landed_house_idx])
+                current_opponent_board[5 - last_landed_house_idx] = 0 # Empty opponent's house
+                current_player_board[last_landed_house_idx] = 0 # Empty player's house
+
+        return current_player_board, current_opponent_board, extra_turn_granted
+
+    def _check_game_over(self, player_board: list[int], opponent_board: list[int]) -> tuple[list[int], list[int], bool]:
+        """
+        Checks if the game has ended based on either player having no seeds in their houses.
+        If the game is over, remaining seeds are moved to the respective stores.
+        
+        Args:
+            player_board: The current player's board state.
+            opponent_board: The opponent's board state.
+            
+        Returns:
+            A tuple containing:
+            - The finalized player_board.
+            - The finalized opponent_board.
+            - A boolean indicating if the game is over.
+        """
+        game_over = False
+        temp_player_board = list(player_board) # Work on copies
+        temp_opponent_board = list(opponent_board)
+
+        player_houses_empty = sum(temp_player_board[0:6]) == 0
+        opponent_houses_empty = sum(temp_opponent_board[0:6]) == 0
+
+        if player_houses_empty or opponent_houses_empty:
+            game_over = True
+            # Move all remaining seeds to respective stores
+            for i in range(6):
+                temp_player_board[6] += temp_player_board[i]
+                temp_player_board[i] = 0
+                temp_opponent_board[6] += temp_opponent_board[i]
+                temp_opponent_board[i] = 0
+                
+        return temp_player_board, temp_opponent_board, game_over
+
+    def _evaluate(self, you_board: list[int], opponent_board: list[int]) -> int:
+        """
+        Evaluation function: simply returns the difference in seeds in stores.
+        Positive values favor 'you', negative values favor 'opponent'.
+        """
+        return you_board[6] - opponent_board[6]
+
+    def _minimax(self, you: list[int], opponent: list[int], depth: int, alpha: float, beta: float, maximizing_player: bool) -> int:
+        """
+        Minimax algorithm with alpha-beta pruning.
+        
+        Args:
+            you: The 'you' player's board state.
+            opponent: The 'opponent' player's board state.
+            depth: The current remaining search depth.
+            alpha: The alpha value for alpha-beta pruning.
+            beta: The beta value for alpha-beta pruning.
+            maximizing_player: True if it's the current player's turn to maximize score, False for opponent.
+            
+        Returns:
+            The evaluated score for the current state.
+        """
+        
+        # Check for terminal state or depth limit
+        final_you, final_opponent, game_over = self._check_game_over(list(you), list(opponent))
+        if depth == 0 or game_over:
+            return self._evaluate(final_you, final_opponent)
+
+        if maximizing_player:
+            max_eval = float('-inf')
+            # Iterate through all possible moves for the maximizing player
+            for i in range(6):
+                if you[i] == 0:
+                    continue # Skip empty houses
+
+                next_you, next_opponent, extra_turn = self._distribute_seeds(list(you), list(opponent), i)
+                
+                if extra_turn:
+                    # If an extra turn is granted, recursively call minimax for the SAME player (maximizing)
+                    # Depth does not decrease as it's part of the same player's turn
+                    eval = self._minimax(next_you, next_opponent, depth - 0, alpha, beta, True)
+                else:
+                    # If turn passes, recursively call minimax for the opponent (minimizing)
+                    eval = self._minimax(next_you, next_opponent, depth - 1, alpha, beta, False)
+                
+                max_eval = max(max_eval, eval)
+                alpha = max(alpha, eval)
+                if beta <= alpha: # Alpha-beta pruning
+                    break # Prune this branch
+            return max_eval
+        else: # Minimizing player (opponent's turn)
+            min_eval = float('inf')
+            # Iterate through all possible moves for the minimizing player
+            for i in range(6):
+                if opponent[i] == 0:
+                    continue # Skip empty houses for opponent
+
+                # Simulate opponent's move.
+                # _distribute_seeds expects `player_board` first, so we pass opponent's board as `player_board`
+                # and our board (`you`) as `opponent_board`.
+                next_opponent_board, next_my_board, extra_turn = self._distribute_seeds(list(opponent), list(you), i)
+                
+                if extra_turn:
+                    # Opponent gets an extra turn, so they are still the minimizing player
+                    eval = self._minimax(next_my_board, next_opponent_board, depth - 0, alpha, beta, False)
+                else:
+                    # Opponent's turn ends, it's our turn (maximizing player) next
+                    eval = self._minimax(next_my_board, next_opponent_board, depth - 1, alpha, beta, True)
+                
+                min_eval = min(min_eval, eval)
+                beta = min(beta, eval)
+                if beta <= alpha: # Alpha-beta pruning
+                    break # Prune this branch
+            return min_eval
+
+# Create a single instance of the AI class
+kalah_ai_instance = KalahAI()
+
+# Expose the policy function expected by the game
+def policy(you: list[int], opponent: list[int]) -> int:
+    return kalah_ai_instance.policy(you, opponent)
+
+```

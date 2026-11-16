@@ -1,0 +1,34 @@
+
+import random
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    """
+    Selects a legal move for Kalah.
+
+    Args:
+        you: Your board state [h0, h1, h2, h3, h4, h5, store].
+        opponent: Opponent's board state [h0, h1, h2, h3, h4, h5, store].
+
+    Returns:
+        An integer i (0 <= i <= 5) representing the house to move from.
+    """
+
+    legal_moves = [i for i in range(6) if you[i] > 0]
+
+    # Try to choose a move that lands in the store for an extra turn.
+    for move in legal_moves:
+        num_seeds = you[move]
+        landing_position = (move + num_seeds) % 12
+        if landing_position == 6:
+            return move
+
+    # Try to choose a move that results in a capture.
+    for move in legal_moves:
+        num_seeds = you[move]
+        landing_position = (move + num_seeds) % 12
+        if landing_position < 6:
+            if you[landing_position] == 0 and opponent[5 - landing_position] > 0:
+                return move
+
+    # If no strategic moves available, choose a random legal move.
+    return random.choice(legal_moves)

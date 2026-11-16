@@ -1,0 +1,132 @@
+
+import numpy as np
+import random
+from copy import deepcopy
+
+# 6x6 Amazons policy
+# Returns a move string: "fr,fc:tr,tc:ar,ac"
+# Board encoding: 0 empty, 1 our amazon, 2 opponent amazon, -1 arrow
+
+DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+def in_bounds(r, c):
+    return 0 <= r < 6 and 0 <= c < 6
+
+def ray_moves(board, r, c):
+    # Return list of reachable empty squares from (r,c) following queen moves
+    moves = []
+    for dr, dc in DIRS:
+        rr, cc = r + dr, c + dc
+        while in_bounds(rr, cc) and board[rr, cc] == 0:
+            moves.append((rr, cc))
+            rr += dr
+            cc += dc
+    return moves
+
+def all_full_moves(board, player=1):
+    # Generate all legal moves for 'player' (1 or 2).
+    moves = []
+    positions = list(zip(*np.where(board == player)))
+    for (fr, fc) in positions:
+        destinations = ray_moves(board, fr, fc)
+        for (tr, tc) in destinations:
+            # simulate move: vacate from, occupy to
+            board2 = board.copy()
+            board2[fr, fc] = 0
+            board2[tr, tc] = player
+            # generate arrows from (tr,tc)
+            arrow_sqs = ray_moves(board2, tr, tc)
+            for (ar, ac) in arrow_sqs:
+                moves.append((fr, fc, tr, tc, ar, ac))
+    return moves
+
+def mobility_metric(board, player):
+    # Sum of reachable squares (queen rays) from each amazon of player
+    total = 0
+    positions = list(zip(*np.where(board == player)))
+    for (r, c) in positions:
+        for dr, dc in DIRS:
+            rr, cc = r + dr, c + dc
+            while in_bounds(rr, cc) and board[rr, cc] == 0:
+                total += 1
+                rr += dr
+                cc += dc
+    return total
+
+def center_proximity(r, c):
+    # Reward being near the board center (for 6x6 center ~ (2.5,2.5))
+    # Use negative squared distance (higher is better).
+    cr, cc = 2.5, 2.5
+    return -((r - cr) ** 2 + (c - cc) ** 2)
+
+def format_move(m):
+    fr, fc, tr, tc, ar, ac = m
+    return f"{fr},{fc}:{tr},{tc}:{ar},{ac}"
+
+def policy(board) -> str:
+    # Ensure numpy array
+    board = np.array(board, copy=False)
+
+    # Generate all our full moves
+    my_moves = all_full_moves(board, player=1)
+
+    # If no legal moves found (should not be called in that state), attempt a fallback:
+    if not my_moves:
+        # Try to produce any legal slide+arrow by scanning
+        positions = list(zip(*np.where(board == 1)))
+        for (fr, fc) in positions:
+            for dr, dc in DIRS:
+                tr, tc = fr + dr, fc + dc
+                if in_bounds(tr, tc) and board[tr, tc] == 0:
+                    # simulate single-step move
+                    board2 = board.copy()
+                    board2[fr, fc] = 0
+                    board2[tr, tc] = 1
+                    for adr, adc in DIRS:
+                        ar, ac = tr + adr, tc + adc
+                        if in_bounds(ar, ac) and board2[ar, ac] == 0:
+                            return format_move((fr, fc, tr, tc, ar, ac))
+        # As absolute last resort (shouldn't happen), return a dummy but legal-looking string
+        # This may be illegal; hoping environment never triggers this branch.
+        return "0,0:0,0:0,1"
+
+    best_moves = []
+    best_score = -1e9
+
+    # Evaluate each move by resulting mobility difference (us - opponent), with tie-breakers
+    for m in my_moves:
+        fr, fc, tr, tc, ar, ac = m
+        b2 = board.copy()
+        b2[fr, fc] = 0
+        b2[tr, tc] = 1
+        b2[ar, ac] = -1
+
+        my_mob = mobility_metric(b2, 1)
+        opp_mob = mobility_metric(b2, 2)
+        score = my_mob - opp_mob
+
+        # small tie-breaker: prefer moving toward center and giving our piece more local reach
+        score += 0.01 * center_proximity(tr, tc)
+        # prefer moves that keep our total mobility larger (extra small weight)
+        score += 0.001 * my_mob
+
+        if score > best_score + 1e-9:
+            best_score = score
+            best_moves = [m]
+        elif abs(score - best_score) <= 1e-9:
+            best_moves.append(m)
+
+    # Choose randomly among best moves to add variety
+    chosen = random.choice(best_moves)
+
+    return format_move(chosen)
+
+# If module is run directly, provide a trivial test
+if __name__ == "__main__":
+    # Example empty-ish board with two amazons each
+    b = np.zeros((6,6), dtype=int)
+    b[0,0] = 1
+    b[0,5] = 1
+    b[5,0] = 2
+    b[5,5] = 2
+    print(policy(b))

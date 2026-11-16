@@ -1,0 +1,154 @@
+
+import time
+import random
+
+def policy(board: list[list[int]]) -> int:
+    ROWS, COLS = 6, 7
+    grid = [row[:] for row in board]
+    
+    def get_valid_cols():
+        return [c for c in range(COLS) if grid[0][c] == 0]
+    
+    def drop(g, col, player):
+        for r in range(ROWS - 1, -1, -1):
+            if g[r][col] == 0:
+                g[r][col] = player
+                return r
+        return -1
+    
+    def undrop(g, col, row):
+        g[row][col] = 0
+    
+    def check_win(g, player):
+        for r in range(ROWS):
+            for c in range(COLS):
+                if g[r][c] != player:
+                    continue
+                # horizontal
+                if c + 3 < COLS and all(g[r][c+i] == player for i in range(4)):
+                    return True
+                # vertical
+                if r + 3 < ROWS and all(g[r+i][c] == player for i in range(4)):
+                    return True
+                # diagonal down-right
+                if r + 3 < ROWS and c + 3 < COLS and all(g[r+i][c+i] == player for i in range(4)):
+                    return True
+                # diagonal up-right
+                if r - 3 >= 0 and c + 3 < COLS and all(g[r-i][c+i] == player for i in range(4)):
+                    return True
+        return False
+    
+    def evaluate(g):
+        score = 0
+        # Center column preference
+        for r in range(ROWS):
+            if g[r][3] == 1:
+                score += 3
+            elif g[r][3] == -1:
+                score -= 3
+        
+        # Evaluate all windows of 4
+        for r in range(ROWS):
+            for c in range(COLS):
+                # directions: right, down, down-right, up-right
+                for dr, dc in [(0,1),(1,0),(1,1),(-1,1)]:
+                    if 0 <= r + 3*dr < ROWS and 0 <= c + 3*dc < COLS:
+                        window = [g[r+i*dr][c+i*dc] for i in range(4)]
+                        p1 = window.count(1)
+                        p2 = window.count(-1)
+                        if p2 == 0:
+                            if p1 == 4: score += 100000
+                            elif p1 == 3: score += 50
+                            elif p1 == 2: score += 5
+                        if p1 == 0:
+                            if p2 == 4: score -= 100000
+                            elif p2 == 3: score -= 50
+                            elif p2 == 2: score -= 5
+        return score
+    
+    def order_moves(valid_cols):
+        return sorted(valid_cols, key=lambda c: abs(c - 3))
+    
+    start_time = time.time()
+    TIME_LIMIT = 0.75
+    
+    def minimax(g, depth, alpha, beta, maximizing):
+        if time.time() - start_time > TIME_LIMIT:
+            return evaluate(g), -1
+        
+        valid = get_valid_cols()
+        if not valid:
+            return 0, -1
+        
+        if depth == 0:
+            return evaluate(g), -1
+        
+        ordered = order_moves(valid)
+        
+        if maximizing:
+            best_score = -float('inf')
+            best_col = ordered[0]
+            for col in ordered:
+                row = drop(g, col, 1)
+                if check_win(g, 1):
+                    undrop(g, col, row)
+                    return 1000000 + depth, col
+                s, _ = minimax(g, depth - 1, alpha, beta, False)
+                undrop(g, col, row)
+                if s > best_score:
+                    best_score = s
+                    best_col = col
+                alpha = max(alpha, s)
+                if alpha >= beta:
+                    break
+            return best_score, best_col
+        else:
+            best_score = float('inf')
+            best_col = ordered[0]
+            for col in ordered:
+                row = drop(g, col, -1)
+                if check_win(g, -1):
+                    undrop(g, col, row)
+                    return -1000000 - depth, col
+                s, _ = minimax(g, depth - 1, alpha, beta, True)
+                undrop(g, col, row)
+                if s < best_score:
+                    best_score = s
+                    best_col = col
+                beta = min(beta, s)
+                if alpha >= beta:
+                    break
+            return best_score, best_col
+    
+    valid = get_valid_cols()
+    if not valid:
+        return 0
+    
+    # Check immediate wins
+    for c in valid:
+        r = drop(grid, c, 1)
+        if check_win(grid, 1):
+            undrop(grid, c, r)
+            return c
+        undrop(grid, c, r)
+    
+    # Block immediate opponent wins
+    for c in valid:
+        r = drop(grid, c, -1)
+        if check_win(grid, -1):
+            undrop(grid, c, r)
+            return c
+        undrop(grid, c, r)
+    
+    # Iterative deepening
+    best_move = valid[min(range(len(valid)), key=lambda i: abs(valid[i] - 3))]
+    for depth in range(1, 30):
+        if time.time() - start_time > TIME_LIMIT:
+            break
+        score, move = minimax(grid, depth, -float('inf'), float('inf'), True)
+        if move in valid:
+            best_move = move
+        if abs(score) > 500000:
+            break
+    
+    return best_move

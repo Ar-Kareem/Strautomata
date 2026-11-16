@@ -1,0 +1,249 @@
+
+from math import inf
+
+N = 4
+
+def _legal_moves(board):
+    moves = []
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 0:
+                moves.append((r, c))
+    return moves
+
+def _lines():
+    lines = []
+    for r in range(N):
+        lines.append([(r, c) for c in range(N)])
+    for c in range(N):
+        lines.append([(r, c) for r in range(N)])
+    lines.append([(i, i) for i in range(N)])
+    lines.append([(i, N - 1 - i) for i in range(N)])
+    return lines
+
+ALL_LINES = _lines()
+CENTER_WEIGHTS = [
+    [3, 4, 4, 3],
+    [4, 6, 6, 4],
+    [4, 6, 6, 4],
+    [3, 4, 4, 3],
+]
+
+def _check_winner(board):
+    for line in ALL_LINES:
+        s = sum(board[r][c] for r, c in line)
+        if s == N:
+            return 1
+        if s == -N:
+            return -1
+    return 0
+
+def _is_full(board):
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 0:
+                return False
+    return True
+
+def _make_move(board, move, player):
+    r, c = move
+    board[r][c] = player
+
+def _undo_move(board, move):
+    r, c = move
+    board[r][c] = 0
+
+def _winning_moves(board, player):
+    wins = []
+    for move in _legal_moves(board):
+        _make_move(board, move, player)
+        if _check_winner(board) == player:
+            wins.append(move)
+        _undo_move(board, move)
+    return wins
+
+def _count_threats(board, player):
+    count = 0
+    for line in ALL_LINES:
+        vals = [board[r][c] for r, c in line]
+        if vals.count(-player) == 0 and vals.count(player) == N - 1 and vals.count(0) == 1:
+            count += 1
+    return count
+
+def _evaluate(board):
+    winner = _check_winner(board)
+    if winner == 1:
+        return 10_000_000
+    if winner == -1:
+        return -10_000_000
+    if _is_full(board):
+        return 0
+
+    score = 0
+
+    # Positional preference
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 1:
+                score += CENTER_WEIGHTS[r][c]
+            elif board[r][c] == -1:
+                score -= CENTER_WEIGHTS[r][c]
+
+    # Line-based evaluation
+    for line in ALL_LINES:
+        vals = [board[r][c] for r, c in line]
+        mine = vals.count(1)
+        opp = vals.count(-1)
+        empty = vals.count(0)
+
+        if opp == 0:
+            if mine == 1:
+                score += 8
+            elif mine == 2:
+                score += 40
+            elif mine == 3 and empty == 1:
+                score += 500
+        elif mine == 0:
+            if opp == 1:
+                score -= 8
+            elif opp == 2:
+                score -= 45
+            elif opp == 3 and empty == 1:
+                score -= 700
+
+    # Fork / multi-threat awareness
+    my_threats = _count_threats(board, 1)
+    opp_threats = _count_threats(board, -1)
+    score += my_threats * 200
+    score -= opp_threats * 240
+
+    return score
+
+def _ordered_moves(board, player):
+    moves = _legal_moves(board)
+    scored = []
+    for move in moves:
+        r, c = move
+        s = CENTER_WEIGHTS[r][c]
+
+        _make_move(board, move, player)
+        if _check_winner(board) == player:
+            s += 100000
+        else:
+            my_threats = _count_threats(board, player)
+            opp_threats = _count_threats(board, -player)
+            s += my_threats * 200
+            s -= opp_threats * 50
+        _undo_move(board, move)
+
+        _make_move(board, move, -player)
+        if _check_winner(board) == -player:
+            s += 50000
+        _undo_move(board, move)
+
+        scored.append((s, move))
+
+    scored.sort(reverse=True)
+    return [m for _, m in scored]
+
+def _minimax(board, depth, alpha, beta, player):
+    winner = _check_winner(board)
+    if winner != 0 or depth == 0 or _is_full(board):
+        return _evaluate(board), None
+
+    moves = _ordered_moves(board, player)
+    if not moves:
+        return _evaluate(board), None
+
+    best_move = moves[0]
+
+    if player == 1:
+        best_score = -inf
+        for move in moves:
+            _make_move(board, move, player)
+            score, _ = _minimax(board, depth - 1, alpha, beta, -1)
+            _undo_move(board, move)
+
+            if score > best_score:
+                best_score = score
+                best_move = move
+            alpha = max(alpha, best_score)
+            if beta <= alpha:
+                break
+        return best_score, best_move
+    else:
+        best_score = inf
+        for move in moves:
+            _make_move(board, move, player)
+            score, _ = _minimax(board, depth - 1, alpha, beta, 1)
+            _undo_move(board, move)
+
+            if score < best_score:
+                best_score = score
+                best_move = move
+            beta = min(beta, best_score)
+            if beta <= alpha:
+                break
+        return best_score, best_move
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    legal = _legal_moves(board)
+    if not legal:
+        return (0, 0)
+
+    # 1. Immediate win
+    wins = _winning_moves(board, 1)
+    if wins:
+        return wins[0]
+
+    # 2. Immediate block
+    opp_wins = _winning_moves(board, -1)
+    if opp_wins:
+        return opp_wins[0]
+
+    # 3. Prefer moves that create multiple threats or prevent them
+    best_forcing = None
+    best_forcing_score = -inf
+    for move in legal:
+        _make_move(board, move, 1)
+        if _check_winner(board) == 1:
+            _undo_move(board, move)
+            return move
+        my_threats = _count_threats(board, 1)
+        opp_threats = _count_threats(board, -1)
+        score = my_threats * 300 - opp_threats * 200 + CENTER_WEIGHTS[move[0]][move[1]]
+        _undo_move(board, move)
+
+        if score > best_forcing_score:
+            best_forcing_score = score
+            best_forcing = move
+
+    empties = len(legal)
+
+    # 4. Search depth based on game stage
+    if empties >= 12:
+        depth = 4
+    elif empties >= 8:
+        depth = 5
+    elif empties >= 5:
+        depth = 7
+    else:
+        depth = 10
+
+    score, move = _minimax(board, depth, -inf, inf, 1)
+    if move is not None and board[move[0]][move[1]] == 0:
+        return move
+
+    if best_forcing is not None and board[best_forcing[0]][best_forcing[1]] == 0:
+        return best_forcing
+
+    # 5. Safe fallback: best positional legal move
+    best_move = legal[0]
+    best_score = -inf
+    for move in legal:
+        r, c = move
+        s = CENTER_WEIGHTS[r][c]
+        if s > best_score:
+            best_score = s
+            best_move = move
+    return best_move

@@ -1,0 +1,187 @@
+The strategy for this policy is to use an **Iterative Deepening Alpha-Beta Search**. This allows the AI to search as deeply as possible within the strict 1-second time limit. The board state is represented using **bitboards** (64-bit integers) for highly efficient move generation and state updates. The evaluation function is based on **mobility** (the number of available moves), which is a strong heuristic in Clobber. The AI aims to maximize its own mobility while restricting the opponent's, effectively controlling the board state.
+
+<code>
+import time
+import random
+
+# Precompute neighbors for each cell index (0-29) on the 5x6 grid
+# Grid indices:
+#  0  1  2  3  4  5
+#  6  7  8  9 10 11
+# ...
+# 24 25 26 27 28 29
+NEIGHBORS = []
+for r in range(5):
+    for c in range(6):
+        idx = r * 6 + c
+        neigh = []
+        if r > 0: neigh.append(idx - 6) # Up
+        if r < 4: neigh.append(idx + 6) # Down
+        if c > 0: neigh.append(idx - 1) # Left
+        if c < 5: neigh.append(idx + 1) # Right
+        NEIGHBORS.append(neigh)
+
+def policy(you: list[int], opponent: list[int]) -> str:
+    start_time = time.time()
+    time_limit = 0.95 # seconds
+
+    # 1. Input Normalization
+    # Handle flattened (len 30) or 2D (len 5) list inputs
+    flat_you = []
+    flat_opp = []
+
+    if len(you) == 30:
+        flat_you = you
+        flat_opp = opponent
+    elif len(you) == 5:
+        try:
+            for r in range(5):
+                flat_you.extend(you[r])
+                flat_opp.extend(opponent[r])
+        except:
+            # Fallback if structure is unexpected
+            flat_you = you
+            flat_opp = opponent
+    else:
+        # Unknown format, try to proceed with raw
+        flat_you = you
+        flat_opp = opponent
+
+    # 2. Convert to Bitboards
+    # my_mask: bit i is 1 if I have a piece at i
+    # opp_mask: bit i is 1 if opponent has a piece at i
+    my_mask = 0
+    opp_mask = 0
+    
+    for i in range(30):
+        if flat_you[i] == 1:
+            my_mask |= (1 << i)
+        if flat_opp[i] == 1:
+            opp_mask |= (1 << i)
+
+    # 3. Move Generation Helpers
+    def get_moves(my_m, opp_m):
+        moves = []
+        temp = my_m
+        while temp:
+            lsb = temp & -temp
+            src = (lsb.bit_length() - 1)
+            temp ^= lsb
+            for dst in NEIGHBORS[src]:
+                if (opp_m >> dst) & 1:
+                    moves.append((src, dst))
+        return moves
+
+    def count_moves(my_m, opp_m):
+        count = 0
+        temp = my_m
+        while temp:
+            lsb = temp & -temp
+            src = (lsb.bit_length() - 1)
+            temp ^= lsb
+            for dst in NEIGHBORS[src]:
+                if (opp_m >> dst) & 1:
+                    count += 1
+        return count
+
+    # 4. Evaluation Function
+    def evaluate(my_m, opp_m):
+        # Mobility heuristic: difference in available moves
+        return count_moves(my_m, opp_m) - count_moves(opp_m, my_m)
+
+    # 5. Alpha-Beta Search
+    def search(my_m, opp_m, depth, alpha, beta, is_maximizing):
+        if depth == 0:
+            return evaluate(my_m, opp_m), None
+        
+        if is_maximizing:
+            moves = get_moves(my_m, opp_m)
+            if not moves:
+                return -10000 + (10 - depth), None # Loss penalty
+            
+            best_score = -float('inf')
+            best_move = None
+            
+            # Move ordering: random shuffling helps prevent deterministic stalls
+            # and improves pruning variety across depths
+            random.shuffle(moves)
+            
+            for src, dst in moves:
+                # Apply move
+                src_b = 1 << src
+                dst_b = 1 << dst
+                new_my = (my_m ^ src_b) | dst_b
+                new_opp = opp_m ^ dst_b
+                
+                score, _ = search(new_my, new_opp, depth - 1, alpha, beta, False)
+                
+                if score > best_score:
+                    best_score = score
+                    best_move = (src, dst)
+                
+                alpha = max(alpha, score)
+                if beta <= alpha:
+                    break
+            return best_score, best_move
+        else:
+            moves = get_moves(opp_m, my_m)
+            if not moves:
+                return 10000 - (10 - depth), None # Win bonus
+            
+            best_score = float('inf')
+            best_move = None
+            random.shuffle(moves)
+            
+            for src, dst in moves:
+                src_b = 1 << src
+                dst_b = 1 << dst
+                new_opp = (opp_m ^ src_b) | dst_b
+                new_my = my_m ^ dst_b
+                
+                score, _ = search(new_my, new_opp, depth - 1, alpha, beta, True)
+                
+                if score < best_score:
+                    best_score = score
+                    best_move = (src, dst)
+                
+                beta = min(beta, score)
+                if beta <= alpha:
+                    break
+            return best_score, best_move
+
+    # 6. Iterative Deepening Driver
+    root_moves = get_moves(my_mask, opp_mask)
+    if not root_moves:
+        return "0,0,U" # No moves available (should not happen in valid game)
+
+    best_move = root_moves[0] # Default fallback
+    
+    # Iterative deepening
+    for depth in range(1, 15):
+        if time.time() - start_time > time_limit * 0.8: # Reserve time for return
+            break
+            
+        try:
+            score, move = search(my_mask, opp_mask, depth, -float('inf'), float('inf'), True)
+            if move:
+                best_move = move
+            # Early exit if winning sequence found
+            if score > 5000:
+                break
+        except:
+            break
+
+    # 7. Format Output
+    src, dst = best_move
+    r1, c1 = src // 6, src % 6
+    r2, c2 = dst // 6, dst % 6
+    
+    dr, dc = r2 - r1, c2 - c1
+    direction = '?'
+    if dr == -1: direction = 'U'
+    elif dr == 1: direction = 'D'
+    elif dc == -1: direction = 'L'
+    elif dc == 1: direction = 'R'
+    
+    return f"{r1},{c1},{direction}"
+</code>

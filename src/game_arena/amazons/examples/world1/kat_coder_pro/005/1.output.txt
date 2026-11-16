@@ -1,0 +1,110 @@
+<code>
+import numpy as np
+
+def policy(board):
+    # Find all amazons
+    amazons = np.where(board == 1)
+    amazon_list = list(zip(amazons[0], amazons[1]))
+    
+    # Generate all legal moves
+    legal_moves = []
+    
+    for a_row, a_col in amazon_list:
+        # All possible directions (queen moves)
+        for dr in [-1, 0, 1]:
+            for dc in [-1, 0, 1]:
+                if dr == 0 and dc == 0:
+                    continue
+                
+                # Move along this direction until blocked
+                r, c = a_row + dr, a_col + dc
+                while 0 <= r < 6 and 0 <= c < 6 and board[r, c] == 0:
+                    # From this landing square, generate arrow shots
+                    for adr in [-1, 0, 1]:
+                        for adc in [-1, 0, 1]:
+                            if adr == 0 and adc == 0:
+                                continue
+                            
+                            ar, ac = r + adr, c + adc
+                            while 0 <= ar < 6 and 0 <= ac < 6 and (board[ar, ac] == 0 or (ar == a_row and ac == a_col)):
+                                # Valid move! Record it
+                                legal_moves.append((a_row, a_col, r, c, ar, ac))
+                                ar += adr
+                                ac += adc
+                            # Stop at first non-empty square (or edge)
+                            if 0 <= ar < 6 and 0 <= ac < 6 and not (ar == a_row and ac == a_col):
+                                break
+                    r += dr
+                    c += dc
+                # Stop at first non-empty square
+                if 0 <= r < 6 and 0 <= c < 6:
+                    break
+    
+    # If no moves, return a dummy string (shouldn't happen if called correctly)
+    if not legal_moves:
+        return "0,0:0,0:0,0"
+    
+    # Heuristic evaluation
+    best_move = None
+    best_score = -np.inf
+    
+    for move in legal_moves:
+        a_row, a_col, r, c, ar, ac = move
+        
+        # Simulate the board after the move
+        # (We don't need the full board, just calculate scores)
+        
+        # Score based on mobility reduction for opponent
+        # Count reachable squares from opponent amazons
+        opp_amazons = np.where(board == 2)
+        opp_list = list(zip(opp_amazons[0], opp_amazons[1]))
+        
+        # Temporarily mark the move and arrow
+        # (We can calculate mobility without fully copying the board)
+        
+        mobility_reduction = 0
+        for o_row, o_col in opp_list:
+            for dr in [-1, 0, 1]:
+                for dc in [-1, 0, 1]:
+                    if dr == 0 and dc == 0:
+                        continue
+                    or_, oc = o_row + dr, o_col + dc
+                    blocked = False
+                    while 0 <= or_ < 6 and 0 <= oc < 6 and not blocked:
+                        # Check if blocked by original pieces, new arrow, or new amazon position
+                        if (or_ == ar and oc == ac) or (or_ == r and oc == c):
+                            blocked = True
+                        elif board[or_, oc] != 0:
+                            blocked = True
+                        else:
+                            mobility_reduction += 1
+                            or_ += dr
+                            oc += dc
+                        if not blocked:
+                            # Check if blocked by the vacated square (from)
+                            if board[or_, oc] == 1 and or_ == a_row and oc == a_col:
+                                # This path is blocked by the moved amazon's old position
+                                pass
+                            elif board[or_, oc] != 0:
+                                blocked = True
+                            else:
+                                mobility_reduction += 1
+                        else:
+                            break
+        
+        # Bonus for moves that increase our own mobility or block opponent more
+        score = mobility_reduction
+        
+        # Prevent self-blocks
+        # Simple check: don't shoot arrow to a square that blocks our own amazon
+        # (More complex evaluation could consider future paths)
+        # For now, prioritize moves that don't immediately block our own amazon's potential moves
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    # Convert move to string format
+    a_row, a_col, r, c, ar, ac = best_move
+    return f"{a_row},{a_col}:{r},{c}:{ar},{ac}"
+</code>

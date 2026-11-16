@@ -1,0 +1,299 @@
+<thinking>
+The user wants a Python function `policy(board)` that returns an integer representing the column to drop a disc in a Connect 4 game.
+
+Here's my plan:
+
+1.  **Understand the Game and Objective:**
+    *   6x7 grid.
+    *   `0`: empty, `1`: my disc, `-1`: opponent's disc.
+    *   Rows: 0 (top) to 5 (bottom). Columns: 0 to 6.
+    *   Return a valid column (not full).
+    *   Goal: create 4-in-a-row (horizontal, vertical, diagonal) or block the opponent from doing so.
+
+2.  **Basic Strategy - Prioritization:**
+    *   **Winning Move:** If I can win in the next move, take it.
+    *   **Blocking Opponent's Win:** If the opponent can win in their next move, block it.
+    *   **Creating Threats (2-in-a-row, 3-in-a-row):** Prioritize moves that lead to future wins.
+    *   **Blocking Opponent's Threats:** Block opponent's threats as well.
+    *   **Center Preference:** Generally, the center columns (2, 3, 4) are more strategic because they offer more potential winning lines.
+    *   **Random/Fallback:** If no strategic move is found, pick a random valid column.
+
+3.  **Helper Functions:**
+
+    *   `is_valid_location(board, col)`: Checks if a column is not full.
+    *   `get_next_open_row(board, col)`: Finds the lowest open row in a given column.
+    *   `check_win(board, player)`: Checks if a given `player` has won. This will be crucial for evaluating moves.
+        *   Need to check horizontal, vertical, and both diagonal directions.
+    *   `place_piece(board, row, col, piece)`: Returns a new board state after placing a piece. (Or just modify in place and then undo for local checks).
+
+4.  **Implementing the `policy` function:**
+
+    *   **Step 0: Get available columns.**
+        Iterate through columns 0-6. If `board[0][col] == 0`, it's an available column. Store these.
+
+    *   **Step 1: Check for an immediate win (player `1`).**
+        For each available column:
+        *   Simulate dropping my disc (`1`) in that column.
+        *   Check if `check_win(simulated_board, 1)` is true. If yes, return that column.
+        *   Undo the move (important if modifying the board directly, less so if creating copies).
+
+    *   **Step 2: Check for opponent's immediate win (block opponent ` -1`).**
+        For each available column:
+        *   Simulate dropping opponent's disc (`-1`) in that column.
+        *   Check if `check_win(simulated_board, -1)` is true. If yes, return *this same column* (where I would block).
+        *   Undo the move.
+
+    *   **Step 3: Look for "fork" opportunities or 3-in-a-row threats (more advanced).**
+        This can get complex and computationally expensive. A simpler approach for now:
+        *   Evaluate moves based on how many 2-in-a-row and 3-in-a-row lines they create for me, or block for the opponent.
+        *   Assign a score to each move.
+        *   Center columns are generally better.
+
+    *   **Step 4: Prioritize center columns.**
+        If no immediate win or block is found, iterate through available columns focusing on the center (e.g., 3, then 2/4, then 1/5, then 0/6). This is a simple heuristic.
+
+    *   **Step 5: Fallback - Pick a random valid column.**
+        If all else fails (shouldn't happen if `available_columns` is correct), just pick the first available one or a random one.
+
+5.  **Refining `check_win` and `place_piece`:**
+
+    *   `get_next_open_row(board, col)`:
+        Iterate `r` from 5 down to 0. If `board[r][col] == 0`, return `r`. Else return -1 (column full, though `is_valid_location` should prevent this).
+
+    *   `check_win(board, player)`:
+        *   **Horizontal:** Iterate `r` from 0 to 5, `c` from 0 to 3. Check `board[r][c:c+4]`.
+        *   **Vertical:** Iterate `r` from 0 to 2, `c` from 0 to 6. Check `board[r:r+4][c]`.
+        *   **Positive Diagonal:** Iterate `r` from 0 to 2, `c` from 0 to 3. Check `board[r][c]`, `board[r+1][c+1]`, etc.
+        *   **Negative Diagonal:** Iterate `r` from 0 to 2, `c` from 3 to 6. Check `board[r][c]`, `board[r+1][c-1]`, etc.
+
+        For each check, sum the values. If `abs(sum) == 4 * abs(player)`, then win.
+
+    *   **Simulation:** When simulating a move, it's best to create a *copy* of the board, make the move on the copy, check the win, and then discard the copy. This avoids modifying the original board unexpectedly.
+
+6.  **Detailed Logic for `policy`:**
+
+    ```python
+    def policy(board: list[list[int]]) -> int:
+        ROWS = 6
+        COLS = 7
+        MY_PIECE = 1
+        OPPONENT_PIECE = -1
+
+        def is_valid_location(board, col):
+            return board[0][col] == 0
+
+        def get_next_open_row(board, col):
+            for r in range(ROWS - 1, -1, -1):
+                if board[r][col] == 0:
+                    return r
+            return -1 # Should not happen if is_valid_location is checked
+
+        def check_win(board, player_piece):
+            # Check horizontal locations for win
+            for c in range(COLS - 3):
+                for r in range(ROWS):
+                    if board[r][c] == player_piece and board[r][c+1] == player_piece and board[r][c+2] == player_piece and board[r][c+3] == player_piece:
+                        return True
+
+            # Check vertical locations for win
+            for c in range(COLS):
+                for r in range(ROWS - 3):
+                    if board[r][c] == player_piece and board[r+1][c] == player_piece and board[r+2][c] == player_piece and board[r+3][c] == player_piece:
+                        return True
+
+            # Check positively sloped diagonals
+            for c in range(COLS - 3):
+                for r in range(ROWS - 3):
+                    if board[r][c] == player_piece and board[r+1][c+1] == player_piece and board[r+2][c+2] == player_piece and board[r+3][c+3] == player_piece:
+                        return True
+
+            # Check negatively sloped diagonals
+            for c in range(COLS - 3):
+                for r in range(3, ROWS):
+                    if board[r][c] == player_piece and board[r-1][c+1] == player_piece and board[r-2][c+2] == player_piece and board[r-3][c+3] == player_piece:
+                        return True
+            return False
+
+        # Get all valid columns
+        valid_cols = [c for c in range(COLS) if is_valid_location(board, c)]
+
+        # 1. Check for immediate win
+        for col in valid_cols:
+            row = get_next_open_row(board, col)
+            temp_board = [r[:] for r in board] # Deep copy
+            temp_board[row][col] = MY_PIECE
+            if check_win(temp_board, MY_PIECE):
+                return col
+
+        # 2. Check for opponent's immediate win and block
+        for col in valid_cols:
+            row = get_next_open_row(board, col)
+            temp_board = [r[:] for r in board] # Deep copy
+            temp_board[row][col] = OPPONENT_PIECE # Simulate opponent's move
+            if check_win(temp_board, OPPONENT_PIECE):
+                return col
+
+        # 3. Simple heuristic: prioritize center columns (3, 2, 4, 1, 5, 0, 6)
+        # This is a common strategy as center columns offer more connections.
+        preferred_cols = [3, 2, 4, 1, 5, 0, 6]
+        for col in preferred_cols:
+            if col in valid_cols:
+                return col
+
+        # 4. Fallback: If no strategic move and preferred columns are full (shouldn't happen with valid_cols check)
+        # Just pick the first valid column
+        if valid_cols:
+            return valid_cols[0]
+
+        # This case should theoretically not be reached in a valid game state unless the board is full.
+        # But for robustness, raise an error or return a default (e.g., -1 for invalid or a specific column to indicate error)
+        # For Connect 4, if policy is called, there must be at least one valid move.
+        raise Exception("No valid moves available, board must be full.")
+
+    ```
+
+7.  **Consider Edge Cases / Improvements:**
+    *   **Performance:** Copying the board `[r[:] for r in board]` for every simulated move is fine for checking immediate wins/blocks. For deeper searches (Minimax/Alpha-Beta), it would be too slow. Given the 1-second limit and this simple strategy, it should be fine.
+    *   **Threat Detection (more advanced):**
+        *   A more sophisticated AI would also look for "forks" (moves that create two simultaneous threats).
+        *   It would also evaluate if a blocking move creates an *unintended* win for the opponent on the *next* move after the block (e.g., blocking a 3-in-a-row allows them to place a piece that completes another 3-in-a-row into a 4-in-a-row next turn). This gets into minimax territory, which isn't explicitly requested and adds significant complexity. For a basic policy, the current approach is good.
+    *   **Center Column Heuristic:** The `preferred_cols` list is a reasonable simple heuristic.
+    *   **Randomness:** Adding some randomness might make it less predictable for an opponent if multiple "equal" moves exist, but for a submission focusing on core logic, deterministic is fine. Sticking to `preferred_cols` provides deterministic behavior.
+
+This plan seems comprehensive for a non-Minimax policy within the given constraints.
+Double-check `check_win` logic, especially diagonals, they are often tricky.
+*   Positive diagonal: `board[r][c]`, `board[r+1][c+1]`, `board[r+2][c+2]`, `board[r+3][c+3]`. Rows and cols both increase. `r` goes from 0 to `ROWS-4`, `c` goes from 0 to `COLS-4`.
+*   Negative diagonal: `board[r][c]`, `board[r-1][c+1]`, `board[r-2][c+2]`, `board[r-3][c+3]`. Rows decrease, cols increase. `r` goes from 3 to `ROWS-1`, `c` goes from 0 to `COLS-4`. (My previous thought was `c` from 3 to 6, this is incorrect).
+
+Let's refine the loop ranges for `check_win` diagonals.
+For `ROWS = 6`, `COLS = 7`:
+*   Positive diagonal (`r` increasing, `c` increasing):
+    `r` from 0 to `ROWS - 4` (i.e., 0, 1, 2)
+    `c` from 0 to `COLS - 4` (i.e., 0, 1, 2, 3)
+*   Negative diagonal (`r` decreasing, `c` increasing):
+    `r` from `3` to `ROWS - 1` (i.e., 3, 4, 5)
+    `c` from 0 to `COLS - 4` (i.e., 0, 1, 2, 3)
+
+The current `check_win` implementation for negative diagonals:
+`for c in range(COLS - 3):` (0 to 3) - Correct for columns
+`for r in range(3, ROWS):` (3 to 5) - Correct for rows
+This looks correct.
+
+Final check on the `preferred_cols` order.
+`[3, 2, 4, 1, 5, 0, 6]`
+This is a standard heuristic order: center, then outwards alternating left/right. This is good.
+The fallback to `valid_cols[0]` if `preferred_cols` are somehow all full *and* yet `valid_cols` exists would be fine, but the `preferred_cols` loop already checks `if col in valid_cols`, so it will pick the first valid preferred column.
+If `valid_cols` is empty, an Exception is raised. This is correct as per game rules there must be an available move.
+</thinking>
+```python
+import random
+
+def policy(board: list[list[int]]) -> int:
+    """
+    A Connect 4 AI policy that prioritizes winning, blocking the opponent,
+    and then placing discs in center columns.
+
+    Args:
+        board: A 6x7 grid representing the Connect 4 board.
+               0: empty cell
+               1: your disc (current player)
+               -1: opponent's disc
+
+    Returns:
+        An integer (0-6) representing the chosen column to drop a disc.
+    """
+    ROWS = 6
+    COLS = 7
+    MY_PIECE = 1
+    OPPONENT_PIECE = -1
+
+    def is_valid_location(board, col):
+        """Checks if a column is not full (i.e., the top row is empty)."""
+        return board[0][col] == 0
+
+    def get_next_open_row(board, col):
+        """Finds the lowest empty row for a given column."""
+        for r in range(ROWS - 1, -1, -1):
+            if board[r][col] == 0:
+                return r
+        return -1 # Should not be reached if is_valid_location is checked
+
+    def check_win(board, player_piece):
+        """Checks if the given player has won on the current board."""
+        # Check horizontal locations for win
+        for c in range(COLS - 3):
+            for r in range(ROWS):
+                if board[r][c] == player_piece and \
+                   board[r][c+1] == player_piece and \
+                   board[r][c+2] == player_piece and \
+                   board[r][c+3] == player_piece:
+                    return True
+
+        # Check vertical locations for win
+        for c in range(COLS):
+            for r in range(ROWS - 3):
+                if board[r][c] == player_piece and \
+                   board[r+1][c] == player_piece and \
+                   board[r+2][c] == player_piece and \
+                   board[r+3][c] == player_piece:
+                    return True
+
+        # Check positively sloped diagonals
+        for c in range(COLS - 3):
+            for r in range(ROWS - 3):
+                if board[r][c] == player_piece and \
+                   board[r+1][c+1] == player_piece and \
+                   board[r+2][c+2] == player_piece and \
+                   board[r+3][c+3] == player_piece:
+                    return True
+
+        # Check negatively sloped diagonals
+        for c in range(COLS - 3):
+            for r in range(3, ROWS): # Start at row 3 and go up to ROWS-1
+                if board[r][c] == player_piece and \
+                   board[r-1][c+1] == player_piece and \
+                   board[r-2][c+2] == player_piece and \
+                   board[r-3][c+3] == player_piece:
+                    return True
+        return False
+
+    # Get all valid columns where a disc can be dropped
+    valid_cols = [c for c in range(COLS) if is_valid_location(board, c)]
+
+    # --- Strategy Steps ---
+
+    # 1. Check for immediate win: If I can win on this turn, make that move.
+    for col in valid_cols:
+        row = get_next_open_row(board, col)
+        # Create a deep copy of the board to simulate the move
+        temp_board = [r[:] for r in board]
+        temp_board[row][col] = MY_PIECE
+        if check_win(temp_board, MY_PIECE):
+            return col
+
+    # 2. Block opponent's immediate win: If the opponent can win on their next turn, block them.
+    for col in valid_cols:
+        row = get_next_open_row(board, col)
+        # Create a deep copy of the board to simulate the opponent's move
+        temp_board = [r[:] for r in board]
+        temp_board[row][col] = OPPONENT_PIECE
+        if check_win(temp_board, OPPONENT_PIECE):
+            return col
+
+    # 3. Prioritize center columns: If no immediate wins or blocks, choose a column
+    #    from the center outwards, as these offer more strategic opportunities.
+    #    Order: 3 (center), 2, 4, 1, 5, 0, 6
+    preferred_cols = [3, 2, 4, 1, 5, 0, 6]
+    for col in preferred_cols:
+        if col in valid_cols:
+            return col
+
+    # This case should ideally not be reached in a valid game state, as there
+    # must always be an available move if policy is called.
+    # However, as a fallback, if for some reason valid_cols is empty (e.g., board is full),
+    # it would raise an error.
+    # In Connect 4, a game ends when a player wins or the board is full.
+    # If the board is full and no one has won, it's a draw, and `policy` shouldn't be called.
+    raise Exception("No valid moves available. This state should not occur if the game is ongoing.")
+
+```

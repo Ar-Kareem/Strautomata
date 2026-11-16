@@ -1,0 +1,134 @@
+The strategy for this policy is a fast alpha–beta minimax (2-ply) that always returns a legal move. It first checks for immediate wins, then blocks immediate losses, and otherwise evaluates positions with a heuristic that scores all possible 5-in-a-row lines. Quadrant rotations are simulated exactly, and the move with the best worst-case response is chosen.
+
+<code>
+import math
+
+# Precompute all 5-length lines on a 6x6 board
+LINES = []
+DIRS = [(0,1),(1,0),(1,1),(1,-1)]
+for r in range(6):
+    for c in range(6):
+        for dr,dc in DIRS:
+            cells = []
+            for k in range(5):
+                rr = r + dr*k
+                cc = c + dc*k
+                if 0 <= rr < 6 and 0 <= cc < 6:
+                    cells.append((rr,cc))
+                else:
+                    break
+            if len(cells) == 5:
+                LINES.append(cells)
+
+# Weights for line evaluation
+WEIGHTS = {0:0,1:1,2:5,3:25,4:125,5:100000}
+
+def rotate_quadrant(board, quad, direction):
+    sr = 0 if quad in (0,1) else 3
+    sc = 0 if quad in (0,2) else 3
+    # extract 3x3
+    old = [[board[sr+i][sc+j] for j in range(3)] for i in range(3)]
+    new = [[0]*3 for _ in range(3)]
+    if direction == 'R':
+        for i in range(3):
+            for j in range(3):
+                new[i][j] = old[2-j][i]
+    else:  # 'L'
+        for i in range(3):
+            for j in range(3):
+                new[i][j] = old[j][2-i]
+    for i in range(3):
+        for j in range(3):
+            board[sr+i][sc+j] = new[i][j]
+
+def check_win(board, player):
+    for line in LINES:
+        if all(board[r][c] == player for r,c in line):
+            return True
+    return False
+
+def evaluate(board):
+    # positive good for player 1, negative for player 2
+    score = 0
+    for line in LINES:
+        p1 = 0
+        p2 = 0
+        for r,c in line:
+            if board[r][c] == 1:
+                p1 += 1
+            elif board[r][c] == 2:
+                p2 += 1
+        if p1 and p2:
+            continue
+        if p1:
+            score += WEIGHTS[p1]
+        elif p2:
+            score -= WEIGHTS[p2]
+    return score
+
+def apply_move(board, move, player):
+    r,c,quad,dirc = move
+    newb = [row[:] for row in board]
+    newb[r][c] = player
+    rotate_quadrant(newb, quad, dirc)
+    return newb
+
+def generate_moves(board):
+    moves = []
+    for r in range(6):
+        for c in range(6):
+            if board[r][c] == 0:
+                for quad in range(4):
+                    for dirc in ('L','R'):
+                        moves.append((r,c,quad,dirc))
+    return moves
+
+def policy(you, opponent) -> str:
+    # build combined board
+    board = [[0]*6 for _ in range(6)]
+    for r in range(6):
+        for c in range(6):
+            if you[r][c]:
+                board[r][c] = 1
+            elif opponent[r][c]:
+                board[r][c] = 2
+
+    moves = generate_moves(board)
+    if not moves:
+        return "1,1,0,L"
+
+    # immediate win
+    for mv in moves:
+        nb = apply_move(board, mv, 1)
+        if check_win(nb, 1):
+            r,c,quad,dirc = mv
+            return f"{r+1},{c+1},{quad},{dirc}"
+
+    best_score = -math.inf
+    best_move = moves[0]
+
+    # minimax depth 2 (us then opponent)
+    for mv in moves:
+        nb = apply_move(board, mv, 1)
+        if check_win(nb, 2):  # avoid self-checking loss
+            continue
+        # opponent response
+        opp_moves = generate_moves(nb)
+        worst = math.inf
+        for omv in opp_moves:
+            nb2 = apply_move(nb, omv, 2)
+            if check_win(nb2, 2):
+                worst = -1000000
+                break
+            score = evaluate(nb2)
+            if score < worst:
+                worst = score
+            if worst <= best_score:
+                break
+        if worst > best_score:
+            best_score = worst
+            best_move = mv
+
+    r,c,quad,dirc = best_move
+    return f"{r+1},{c+1},{quad},{dirc}"
+</code>

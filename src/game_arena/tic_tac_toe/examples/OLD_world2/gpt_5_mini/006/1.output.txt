@@ -1,0 +1,164 @@
+```python
+from typing import List, Tuple
+
+# 4x4 Tic-Tac-Toe policy function
+# board: list[list[int]] with values 0 (empty), 1 (us), -1 (opponent)
+# returns (row, col) with 0 <= row,col <= 3
+
+# Precompute lines (rows, columns, two diagonals)
+_LINES = []
+# rows
+for r in range(4):
+    _LINES.append([(r, c) for c in range(4)])
+# cols
+for c in range(4):
+    _LINES.append([(r, c) for r in range(4)])
+# main diag
+_LINES.append([(i, i) for i in range(4)])
+# anti diag
+_LINES.append([(i, 3 - i) for i in range(4)])
+
+# map cell to lines indices for quick evaluation
+_CELL_LINES = {(r, c): [] for r in range(4) for c in range(4)}
+for idx, line in enumerate(_LINES):
+    for (r, c) in line:
+        _CELL_LINES[(r, c)].append(idx)
+
+
+def _check_winner(board: List[List[int]]) -> int:
+    """
+    Returns 1 if player 1 wins, -1 if player -1 wins, 0 otherwise.
+    """
+    for line in _LINES:
+        s = board[line[0][0]][line[0][1]] + board[line[1][0]][line[1][1]] + board[line[2][0]][line[2][1]] + board[line[3][0]][line[3][1]]
+        if s == 4:
+            return 1
+        if s == -4:
+            return -1
+    return 0
+
+
+def _is_full(board: List[List[int]]) -> bool:
+    for r in range(4):
+        for c in range(4):
+            if board[r][c] == 0:
+                return False
+    return True
+
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Choose the next move for player 1.
+    """
+
+    # Flatten tuple key generator
+    def _key(bd: List[List[int]], player: int):
+        return (tuple(bd[0] + bd[1] + bd[2] + bd[3]), player)
+
+    # Quick check: if any immediate winning move, take it.
+    empties = [(r, c) for r in range(4) for c in range(4) if board[r][c] == 0]
+    for (r, c) in empties:
+        board[r][c] = 1
+        if _check_winner(board) == 1:
+            board[r][c] = 0
+            return (r, c)
+        board[r][c] = 0
+
+    # If opponent has immediate winning move, try to block (try each blocking move)
+    opponent_wins = []
+    for (r, c) in empties:
+        board[r][c] = -1
+        if _check_winner(board) == -1:
+            opponent_wins.append((r, c))
+        board[r][c] = 0
+    if len(opponent_wins) == 1:
+        return opponent_wins[0]
+    # If there are multiple immediate opponent wins, no single block; continue searching.
+
+    # Heuristic scoring for move ordering
+    centers = {(1, 1), (1, 2), (2, 1), (2, 2)}
+    corners = {(0, 0), (0, 3), (3, 0), (3, 3)}
+
+    def _move_score(r: int, c: int, player: int) -> int:
+        score = 0
+        if (r, c) in centers:
+            score += 4
+        if (r, c) in corners:
+            score += 3
+        # lines potential
+        for li in _CELL_LINES[(r, c)]:
+            line = _LINES[li]
+            cnt_p = 0
+            cnt_o = 0
+            for (rr, cc) in line:
+                v = board[rr][cc]
+                if v == player:
+                    cnt_p += 1
+                elif v == -player:
+                    cnt_o += 1
+            # prefer moves that extend player's lines and block opponent's
+            score += (cnt_p * 2) - (cnt_o * 1)
+        return score
+
+    # Negamax with alpha-beta and memoization; returns score from perspective of player 1: 1 win, 0 draw, -1 loss
+    memo = {}
+
+    def _negamax(player: int, alpha: int, beta: int) -> int:
+        k = _key(board, player)
+        if k in memo:
+            return memo[k]
+        winner = _check_winner(board)
+        if winner != 0:
+            # winner is 1 or -1; return 1 if player 1 wins, -1 if player 1 loses
+            res = 1 if winner == 1 else -1
+            memo[k] = res
+            return res
+        if _is_full(board):
+            memo[k] = 0
+            return 0
+
+        best = -2  # worse than -1
+        # generate moves and order them by heuristic (descending)
+        moves = [(r, c) for r in range(4) for c in range(4) if board[r][c] == 0]
+        moves.sort(key=lambda rc: _move_score(rc[0], rc[1], player), reverse=True)
+
+        for (r, c) in moves:
+            board[r][c] = player
+            val = _negamax(-player, -beta, -alpha)
+            board[r][c] = 0
+            val = -val
+            if val > best:
+                best = val
+            if best > alpha:
+                alpha = best
+            if alpha >= beta:
+                break
+        memo[k] = best
+        return best
+
+    # Choose best move by trying all empties (with ordering) and using negamax
+    best_move = None
+    best_val = -2
+    # order root moves by heuristic for speed
+    moves_root = empties.copy()
+    moves_root.sort(key=lambda rc: _move_score(rc[0], rc[1], 1), reverse=True)
+    for (r, c) in moves_root:
+        board[r][c] = 1
+        val = _negamax(-1, -2, 2)
+        board[r][c] = 0
+        # val is from perspective of player 1 (1 win, 0 draw, -1 loss)
+        if val > best_val:
+            best_val = val
+            best_move = (r, c)
+            if best_val == 1:
+                break
+
+    # fallback: if somehow no move selected (shouldn't happen), pick first empty
+    if best_move is None:
+        if empties:
+            return empties[0]
+        # no empties (shouldn't be called), return (0,0)
+        return (0, 0)
+
+    return best_move
+```

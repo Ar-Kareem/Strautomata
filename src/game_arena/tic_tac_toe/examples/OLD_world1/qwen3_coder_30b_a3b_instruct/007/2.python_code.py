@@ -1,0 +1,112 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Determine the next move for Tic Tac Toe using a minimax algorithm with alpha-beta pruning.
+    """
+    import numpy as np
+    
+    def check_winner(board_state):
+        # Check rows, columns, and diagonals for a winner
+        for i in range(3):
+            if board_state[i][0] == board_state[i][1] == board_state[i][2] != 0:
+                return board_state[i][0]
+            if board_state[0][i] == board_state[1][i] == board_state[2][i] != 0:
+                return board_state[0][i]
+        
+        if board_state[0][0] == board_state[1][1] == board_state[2][2] != 0:
+            return board_state[0][0]
+        if board_state[0][2] == board_state[1][1] == board_state[2][0] != 0:
+            return board_state[0][2]
+        
+        return 0  # No winner
+    
+    def is_board_full(board_state):
+        for i in range(3):
+            for j in range(3):
+                if board_state[i][j] == 0:
+                    return False
+        return True
+    
+    def minimax(board_state, depth, is_maximizing, alpha, beta):
+        winner = check_winner(board_state)
+        
+        # Terminal states
+        if winner == 1:  # AI wins
+            return 10 - depth
+        elif winner == -1:  # Opponent wins
+            return depth - 10
+        elif is_board_full(board_state):  # Draw
+            return 0
+        
+        if is_maximizing:
+            max_eval = float('-inf')
+            for i in range(3):
+                for j in range(3):
+                    if board_state[i][j] == 0:
+                        board_state[i][j] = 1  # AI's move
+                        eval_score = minimax(board_state, depth + 1, False, alpha, beta)
+                        board_state[i][j] = 0  # Undo move
+                        max_eval = max(max_eval, eval_score)
+                        alpha = max(alpha, eval_score)
+                        if beta <= alpha:
+                            break  # Alpha-beta pruning
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for i in range(3):
+                for j in range(3):
+                    if board_state[i][j] == 0:
+                        board_state[i][j] = -1  # Opponent's move
+                        eval_score = minimax(board_state, depth + 1, True, alpha, beta)
+                        board_state[i][j] = 0  # Undo move
+                        min_eval = min(min_eval, eval_score)
+                        beta = min(beta, eval_score)
+                        if beta <= alpha:
+                            break  # Alpha-beta pruning
+            return min_eval
+    
+    # Find all empty positions
+    empty_positions = []
+    for i in range(3):
+        for j in range(3):
+            if board[i][j] == 0:
+                empty_positions.append((i, j))
+    
+    # If no empty positions, return an invalid move (should not happen in valid game)
+    if not empty_positions:
+        return (0, 0)
+    
+    # If we're the first move, take center or corner
+    if len(empty_positions) == 9:
+        return (1, 1)  # Center position
+    
+    # Try to win or block opponent
+    for i, j in empty_positions:
+        board[i][j] = 1  # Try AI move
+        if check_winner(board) == 1:
+            board[i][j] = 0  # Undo
+            return (i, j)
+        board[i][j] = 0  # Undo
+    
+    # Try to block opponent from winning
+    for i, j in empty_positions:
+        board[i][j] = -1  # Try opponent move
+        if check_winner(board) == -1:
+            board[i][j] = 0  # Undo
+            return (i, j)
+        board[i][j] = 0  # Undo
+    
+    # If we can't win or block, use minimax for best move
+    best_score = float('-inf')
+    best_move = None
+    
+    for i, j in empty_positions:
+        board[i][j] = 1  # AI move
+        score = minimax(board, 0, False, float('-inf'), float('inf'))
+        board[i][j] = 0  # Undo move
+        
+        if score > best_score:
+            best_score = score
+            best_move = (i, j)
+    
+    return best_move

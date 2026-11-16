@@ -1,0 +1,291 @@
+
+import random
+import time
+from collections import defaultdict
+from typing import List, Tuple, Set
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[int, int]:
+    # Convert to sets for faster lookup
+    me_set = set(me)
+    opp_set = set(opp)
+    all_positions = me_set | opp_set
+    
+    # Define the board size
+    BOARD_SIZE = 11
+    
+    # Helper function to check if a position is valid
+    def is_valid(row: int, col: int) -> bool:
+        return 0 <= row < BOARD_SIZE and 0 <= col < BOARD_SIZE
+    
+    # Helper function to get neighbors of a position
+    def get_neighbors(row: int, col: int) -> List[Tuple[int, int]]:
+        neighbors = []
+        # Hex neighbors (excluding diagonals that are not part of hex grid)
+        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0), (1, -1), (-1, 1)]:
+            nr, nc = row + dr, col + dc
+            if is_valid(nr, nc):
+                neighbors.append((nr, nc))
+        return neighbors
+    
+    # Check if a player has won by checking if they connect their sides
+    def check_win(player_positions: Set[Tuple[int, int]], color: str) -> bool:
+        if color == 'b':  # Black connects top to bottom
+            # Check if any stone in the top row connects to any stone in the bottom row
+            top_rows = set()
+            bottom_rows = set()
+            for row, col in player_positions:
+                if row == 0:
+                    top_rows.add((row, col))
+                elif row == BOARD_SIZE - 1:
+                    bottom_rows.add((row, col))
+            
+            # If no positions on top or bottom, no win
+            if not top_rows or not bottom_rows:
+                return False
+                
+            # Use BFS to see if top row connects to bottom row
+            visited = set()
+            queue = list(top_rows)
+            for pos in queue:
+                visited.add(pos)
+                
+            while queue:
+                row, col = queue.pop(0)
+                if row == BOARD_SIZE - 1:  # Reached bottom
+                    return True
+                
+                # Check neighbors
+                for neighbor in get_neighbors(row, col):
+                    if neighbor not in visited and neighbor in player_positions:
+                        visited.add(neighbor)
+                        queue.append(neighbor)
+            
+            return False
+            
+        elif color == 'w':  # White connects left to right
+            # Check if any stone in the left column connects to any stone in the right column
+            left_cols = set()
+            right_cols = set()
+            for row, col in player_positions:
+                if col == 0:
+                    left_cols.add((row, col))
+                elif col == BOARD_SIZE - 1:
+                    right_cols.add((row, col))
+            
+            # If no positions on left or right, no win
+            if not left_cols or not right_cols:
+                return False
+                
+            # Use BFS to see if left column connects to right column  
+            visited = set()
+            queue = list(left_cols)
+            for pos in queue:
+                visited.add(pos)
+                
+            while queue:
+                row, col = queue.pop(0)
+                if col == BOARD_SIZE - 1:  # Reached right
+                    return True
+                
+                # Check neighbors
+                for neighbor in get_neighbors(row, col):
+                    if neighbor not in visited and neighbor in player_positions:
+                        visited.add(neighbor)
+                        queue.append(neighbor)
+            
+            return False
+        return False
+    
+    # Simple MCTS approach for Hex
+    class MCTSNode:
+        def __init__(self, state, parent=None, action=None):
+            self.state = state  # (me_positions, opp_positions, current_player)
+            self.parent = parent
+            self.action = action  # Action taken to reach this node
+            self.children = []
+            self.visits = 0
+            self.wins = 0
+            self.untried_actions = self.get_legal_actions()
+            
+        def get_legal_actions(self):
+            # Generate all empty positions
+            me_positions, opp_positions, current_player = self.state
+            all_positions = me_positions | opp_positions
+            legal_actions = []
+            for i in range(BOARD_SIZE):
+                for j in range(BOARD_SIZE):
+                    if (i, j) not in all_positions:
+                        legal_actions.append((i, j))
+            return legal_actions
+            
+        def is_terminal(self):
+            me_positions, opp_positions, current_player = self.state
+            if len(me_positions) > 0 and check_win(me_positions, 'b' if current_player == 'b' else 'w'):
+                return True
+            if len(opp_positions) > 0 and check_win(opp_positions, 'b' if current_player == 'w' else 'w'):
+                return True
+            return False
+            
+        def expand(self):
+            action = self.untried_actions.pop()
+            new_me, new_opp, new_player = self.state
+            
+            if self.state[2] == 'b':
+                new_me = new_me | {action}
+                new_player = 'w'
+            else:
+                new_opp = new_opp | {action}
+                new_player = 'b'
+                
+            new_state = (new_me, new_opp, new_player)
+            child = MCTSNode(new_state, self, action)
+            self.children.append(child)
+            return child
+            
+        def is_fully_expanded(self):
+            return len(self.untried_actions) == 0
+            
+        def best_child(self, exploration_weight=1.41):
+            best_value = float('-inf')
+            best_child = None
+            
+            for child in self.children:
+                if child.visits == 0:
+                    value = float('inf')  # Prioritize unvisited nodes
+                else:
+                    exploitation = child.wins / child.visits
+                    exploration = exploration_weight * (2 * (child.parent.visits + 1) ** 0.5 / (1 + child.visits)) ** 0.5
+                    value = exploitation + exploration
+                    
+                if value > best_value:
+                    best_value = value
+                    best_child = child
+                    
+            return best_child
+            
+    # UCB1 selection
+    def ucb1_select(node):
+        exploration_weight = 1.41
+        best_score = float('-inf')
+        best_child = None
+
+        for child in node.children:
+            if child.visits == 0:
+                return child
+                
+            exploitation = child.wins / child.visits
+            exploration = exploration_weight * (2 * (node.visits + 1) ** 0.5 / (1 + child.visits)) ** 0.5
+            score = exploitation + exploration
+            
+            if score > best_score:
+                best_score = score
+                best_child = child
+                
+        return best_child
+    
+    # Simulate a random game
+    def random_playout(node):
+        current_state = node.state
+        me_positions, opp_positions, current_player = current_state
+        
+        # Create a new board copy to play on
+        board = set()
+        board.update(me_positions)
+        board.update(opp_positions)
+        
+        # Play until game over
+        for _ in range(BOARD_SIZE * BOARD_SIZE):
+            # Get legal actions
+            legal_actions = []
+            for i in range(BOARD_SIZE):
+                for j in range(BOARD_SIZE):
+                    if (i, j) not in board:
+                        legal_actions.append((i, j))
+            
+            if not legal_actions:
+                break
+                
+            # Play a random action
+            action = random.choice(legal_actions)
+            board.add(action)
+            
+            # Check win condition
+            if current_player == 'b':
+                player_positions = board.copy()
+                if len(player_positions) > 0 and check_win(player_positions, 'b'):
+                    return 1
+            else:
+                player_positions = board.copy()
+                if len(player_positions) > 0 and check_win(player_positions, 'w'):
+                    return 1
+                    
+            # Switch player
+            current_player = 'w' if current_player == 'b' else 'b'
+            
+        # No winner found, draw (return 0.5)
+        return 0.5
+    
+    # MCTS search
+    def mcts_search(initial_state, time_limit=0.9):
+        root = MCTSNode(initial_state)
+        
+        start_time = time.time()
+        iterations = 0
+        
+        while time.time() - start_time < time_limit:
+            # Selection
+            current = root
+            while not current.is_terminal() and current.is_fully_expanded():
+                current = ucb1_select(current)
+                
+            # Expansion (if not terminal)
+            if not current.is_terminal():
+                current = current.expand()
+                
+            # Simulation
+            result = random_playout(current)
+            
+            # Backpropagation
+            current = current.parent
+            while current is not None:
+                current.visits += 1
+                current.wins += result
+                current = current.parent
+            
+            iterations += 1
+            
+        # Return the best action (most visited child)
+        best_child = None
+        best_visits = -1
+        for child in root.children:
+            if child.visits > best_visits:
+                best_visits = child.visits
+                best_child = child
+                
+        return best_child.action if best_child else None
+    
+    # If we have positions already (not just empty board), use MCTS
+    if len(me) + len(opp) > 0:
+        # Prepare state for MCTS
+        me_positions = frozenset(me_set)  # Use frozenset for hashing
+        opp_positions = frozenset(opp_set)
+        current_player = color
+        
+        state = (me_positions, opp_positions, current_player)
+        
+        # Run MCTS
+        try:
+            action = mcts_search(state)
+            if action:
+                return action
+        except:
+            pass
+        
+    # Fallback policy - choose a central position (0,0) if empty, else first empty cell
+    for i in range(BOARD_SIZE):
+        for j in range(BOARD_SIZE):
+            if (i, j) not in all_positions:
+                return (i, j)
+
+    # Should not happen, but fallback
+    return (0, 0)

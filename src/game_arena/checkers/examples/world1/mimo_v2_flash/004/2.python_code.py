@@ -1,0 +1,242 @@
+
+import time
+import sys
+
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    start_time = time.time()
+    
+    # Board representation: 0 empty, 1 my_men, 2 my_kings, 3 opp_men, 4 opp_kings
+    # Note: Dark squares only (row+col)%2==1
+    board = [[0]*8 for _ in range(8)]
+    for r, c in my_men:
+        if (r + c) % 2 == 1:
+            board[r][c] = 1
+    for r, c in my_kings:
+        if (r + c) % 2 == 1:
+            board[r][c] = 2
+    for r, c in opp_men:
+        if (r + c) % 2 == 1:
+            board[r][c] = 3
+    for r, c in opp_kings:
+        if (r + c) % 2 == 1:
+            board[r][c] = 4
+    
+    # Directions: men move differently based on color
+    # For black (b): men move down (row+1), kings move both
+    # For white (w): men move up (row-1), kings move both
+    if color == 'b':
+        my_men_dirs = [(1, -1), (1, 1)]  # down-left, down-right
+        opp_men_dirs = [(-1, -1), (-1, 1)]  # up-left, up-right (opponent is white)
+        my_king_dirs = [(1, -1), (1, 1), (-1, -1), (-1, 1)]
+        opp_king_dirs = [(1, -1), (1, 1), (-1, -1), (-1, 1)]
+    else:  # white
+        my_men_dirs = [(-1, -1), (-1, 1)]  # up-left, up-right
+        opp_men_dirs = [(1, -1), (1, 1)]  # down-left, down-right (opponent is black)
+        my_king_dirs = [(1, -1), (1, 1), (-1, -1), (-1, 1)]
+        opp_king_dirs = [(1, -1), (1, 1), (-1, -1), (-1, 1)]
+    
+    def is_dark(r, c):
+        return (r + c) % 2 == 1
+    
+    def in_board(r, c):
+        return 0 <= r < 8 and 0 <= c < 8
+    
+    def get_all_moves(board, is_my_turn):
+        """Get all legal moves for the current player, prioritizing captures.
+           Returns list of ((from_r, from_c), [(to_r, to_c), ...]) for multi-jump, or just single moves."""
+        moves = []
+        if is_my_turn:
+            pieces = [(r, c) for r in range(8) for c in range(8) if board[r][c] in (1, 2)]
+            dirs = my_men_dirs if color == 'b' else my_men_dirs
+            king_dirs = my_king_dirs
+        else:
+            pieces = [(r, c) for r in range(8) for c in range(8) if board[r][c] in (3, 4)]
+            dirs = opp_men_dirs if (opp_men_dirs[0][0] == 1) else opp_men_dirs  # based on color
+            king_dirs = opp_king_dirs
+        
+        for r, c in pieces:
+            piece_type = board[r][c]
+            if piece_type == 1 or piece_type == 3:  # man
+                cur_dirs = dirs
+            else:  # king
+                cur_dirs = king_dirs
+            
+            # Check for captures first (mandatory)
+            captures = []
+            for dr, dc in cur_dirs:
+                r1, c1 = r + dr, c + dc
+                r2, c2 = r + 2*dr, c + 2*dc
+                if in_board(r2, c2) and is_dark(r2, c2) and board[r2][c2] == 0:
+                    if is_my_turn:
+                        if board[r1][c1] in (3, 4):  # opponent piece
+                            captures.append(((r, c), (r2, c2)))
+                    else:
+                        if board[r1][c1] in (1, 2):  # opponent piece
+                            captures.append(((r, c), (r2, c2)))
+            
+            if captures:
+                # For simple search, we only consider immediate captures (depth 1 for this policy)
+                # In full minimax, we'd need recursive capture sequences.
+                # Here we return the capture move and later in evaluation we'll handle forced multi-captures in the search.
+                moves.extend(captures)
+        
+        # If no captures, get non-capture moves
+        if not moves:
+            for r, c in pieces:
+                piece_type = board[r][c]
+                if piece_type == 1 or piece_type == 3:
+                    cur_dirs = dirs
+                else:
+                    cur_dirs = king_dirs
+                for dr, dc in cur_dirs:
+                    r1, c1 = r + dr, c + dc
+                    if in_board(r1, c1) and is_dark(r1, c1) and board[r1][c1] == 0:
+                        moves.append(((r, c), (r1, c1)))
+        
+        return moves
+    
+    def evaluate(board):
+        """Heuristic evaluation: material + mobility + king safety."""
+        my_men_count = sum(1 for r in range(8) for c in range(8) if board[r][c] == 1)
+        my_kings_count = sum(1 for r in range(8) for c in range(8) if board[r][c] == 2)
+        opp_men_count = sum(1 for r in range(8) for c in range(8) if board[r][c] == 3)
+        opp_kings_count = sum(1 for r in range(8) for c in range(8) if board[r][c] == 4)
+        
+        material = (my_men_count * 1 + my_kings_count * 3) - (opp_men_count * 1 + opp_kings_count * 3)
+        
+        # Mobility: number of possible moves (non-capture)
+        my_moves = len(get_all_moves(board, True))
+        opp_moves = len(get_all_moves(board, False))
+        mobility = my_moves - opp_moves
+        
+        # King safety: kings on back row (protective)
+        my_back = 0
+        opp_back = 0
+        if color == 'b':
+            my_back_row = 0
+            opp_back_row = 7
+        else:
+            my_back_row = 7
+            opp_back_row = 0
+        for c in range(8):
+            if is_dark(my_back_row, c) and board[my_back_row][c] == 2:
+                my_back += 1
+            if is_dark(opp_back_row, c) and board[opp_back_row][c] == 4:
+                opp_back += 1
+        king_safe = my_back - opp_back
+        
+        return material * 10 + mobility * 2 + king_safe * 5
+    
+    def alpha_beta(board, depth, alpha, beta, maximizing, start_time):
+        """Minimax with alpha-beta pruning."""
+        if time.time() - start_time > 0.8:
+            return evaluate(board), None  # Timeout fallback
+        
+        if depth == 0:
+            return evaluate(board), None
+        
+        moves = get_all_moves(board, maximizing)
+        if not moves:
+            return -1000 if maximizing else 1000, None  # Loss/wins
+        
+        # Move ordering: captures first
+        moves.sort(key=lambda m: 1 if abs(m[0][0] - m[1][0]) == 2 else 0, reverse=True)
+        
+        best_move = None
+        if maximizing:
+            max_eval = -float('inf')
+            for move in moves:
+                # Simulate move (simple for single jump; multi-jump not fully simulated here)
+                from_r, from_c = move[0]
+                to_r, to_c = move[1]
+                piece = board[from_r][from_c]
+                captured = None
+                if abs(from_r - to_r) == 2:  # capture
+                    mid_r, mid_c = (from_r + to_r) // 2, (from_c + to_c) // 2
+                    captured = board[mid_r][mid_c]
+                    board[mid_r][mid_c] = 0
+                
+                board[to_r][to_c] = piece
+                board[from_r][from_c] = 0
+                
+                # Check for promotion
+                promoted = False
+                if piece == 1:
+                    if (color == 'b' and to_r == 7) or (color == 'w' and to_r == 0):
+                        board[to_r][to_c] = 2
+                        promoted = True
+                
+                eval, _ = alpha_beta(board, depth - 1, alpha, beta, False, start_time)
+                
+                # Undo move
+                if promoted:
+                    board[to_r][to_c] = 1
+                board[from_r][from_c] = piece
+                board[to_r][to_c] = 0
+                if captured:
+                    board[mid_r][mid_c] = captured
+                
+                if eval > max_eval:
+                    max_eval = eval
+                    best_move = move
+                alpha = max(alpha, eval)
+                if beta <= alpha:
+                    break
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            for move in moves:
+                from_r, from_c = move[0]
+                to_r, to_c = move[1]
+                piece = board[from_r][from_c]
+                captured = None
+                if abs(from_r - to_r) == 2:
+                    mid_r, mid_c = (from_r + to_r) // 2, (from_c + to_c) // 2
+                    captured = board[mid_r][mid_c]
+                    board[mid_r][mid_c] = 0
+                
+                board[to_r][to_c] = piece
+                board[from_r][from_c] = 0
+                
+                promoted = False
+                if piece == 3:  # opp man
+                    if (color == 'b' and to_r == 0) or (color == 'w' and to_r == 7):  # opp promotion row
+                        board[to_r][to_c] = 4
+                        promoted = True
+                
+                eval, _ = alpha_beta(board, depth - 1, alpha, beta, True, start_time)
+                
+                if promoted:
+                    board[to_r][to_c] = 3
+                board[from_r][from_c] = piece
+                board[to_r][to_c] = 0
+                if captured:
+                    board[mid_r][mid_c] = captured
+                
+                if eval < min_eval:
+                    min_eval = eval
+                    best_move = move
+                beta = min(beta, eval)
+                if beta <= alpha:
+                    break
+            return min_eval, best_move
+    
+    # Start with iterative deepening from depth 1 to 6 (or until time)
+    best_move = None
+    for depth in range(1, 7):
+        if time.time() - start_time > 0.7:
+            break
+        eval, move = alpha_beta(board, depth, -float('inf'), float('inf'), True, start_time)
+        if move:
+            best_move = move
+    
+    # Fallback: if no move found (shouldn't happen), pick first legal move
+    if not best_move:
+        all_moves = get_all_moves(board, True)
+        if all_moves:
+            best_move = all_moves[0]
+        else:
+            # No moves? Return something illegal to avoid crash, but shouldn't occur
+            best_move = ((0, 1), (1, 0))  # Invalid, but we assume moves exist
+    
+    return best_move

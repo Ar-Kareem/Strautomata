@@ -1,0 +1,27 @@
+
+def policy(board):
+    # Precompute the probability grid
+    prob = [[0]*10 for _ in range(10)]
+    ships = [5,4,3,3,2]
+    for L in ships:
+        for r in range(10):
+            for c in range(10 - L + 1):
+                # Horizontal placement
+                for i in range(L):
+                    prob[r][c+i] += 1
+        for r in range(10 - L + 1):
+            for c in range(10):
+                # Vertical placement
+                for i in range(L):
+                    prob[r+i][c] += 1
+    best_prob = -1
+    best_cell = None
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0:
+                if prob[r][c] > best_prob:
+                    best_prob = prob[r][c]
+                    best_cell = (r, c)
+    if best_cell is None:
+        return (0, 0)
+    return best_cell

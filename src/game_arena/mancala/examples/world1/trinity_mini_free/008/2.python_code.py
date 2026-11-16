@@ -1,0 +1,64 @@
+
+def apply_move(you, opponent, move):
+    # Save original state for capture checks
+    original_you = you.copy()
+    original_opponent = opponent.copy()
+    
+    seeds = you[move]
+    you[move] = 0
+    current = move
+    
+    # Sow seeds one by one
+    while seeds > 0:
+        # Skip opponent's store (index 6)
+        if current == 6:
+            current = 0
+            continue
+        # Place seed in current house
+        if current < 6:
+            you[current] += 1
+        else:
+            you[6] += 1
+        seeds -= 1
+        current += 1
+    
+    # Check for capture
+    if current - 1 == move and original_you[move] == 0 and original_opponent[5 - move] > 0:
+        you[6] += 1 + original_opponent[5 - move]
+        opponent[5 - move] = 0
+    
+    return you, opponent
+
+def evaluate_state(you, opponent):
+    # Calculate heuristic score
+    your_seeds = sum(you[0:6]) + you[6]
+    opponent_seeds = sum(opponent[0:6]) + opponent[6]
+    diff = your_seeds - opponent_seeds
+    your_houses = sum(you[0:6])
+    opponent_houses = sum(opponent[0:6])
+    
+    # Weight factors: immediate difference, house seeds, opponent's houses
+    score = diff + (your_houses * 0.1) - (opponent_houses * 0.1)
+    return score
+
+def policy(you, opponent):
+    best_move = None
+    best_score = -float('inf')
+    
+    # Try each valid move
+    for move in range(6):
+        if you[move] == 0:
+            continue
+            
+        # Simulate move
+        you_new, opponent_new = apply_move(you.copy(), opponent.copy(), move)
+        
+        # Evaluate new state
+        score = evaluate_state(you_new, opponent_new)
+        
+        # Select move with highest score
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move

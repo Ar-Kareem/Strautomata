@@ -1,0 +1,78 @@
+Here's a complete Python implementation of a `policy` function that plays the simplified Blackjack-like game. The policy uses a **heuristic-based strategy** that estimates the risk of busting based on the player's current hand and the target score while trying to maximize the hand value without exceeding the target. It also takes into account the probability of useful cards being left in the player's and opponent's decks.
+
+```python
+import numpy as np
+from typing import List
+
+def card_value(card: str, hand_sum: int, target: int) -> int:
+    if card in ['2', '3', '4', '5', '6', '7', '8', '9', '10']:
+        return int(card)
+    elif card in ['J', 'Q', 'K']:
+        return 10
+    elif card == 'A':
+        return 11 if hand_sum <= target else 1
+    return 0  # fallback, should not happen
+
+
+def hand_score(hand: List[str], target: int) -> int:
+    total = 0
+    for card in hand:
+        total += card_value(card, total, target)
+        if total > target:
+            return -1  # Busted hand
+    return total
+
+
+def expected_hand_value_after_hit(hand: List[str], target: int, own_deck: List[str]) -> float:
+    total = hand_score(hand, target)
+    if total == -1:
+        return -1  # Already busted
+    if not own_deck:
+        return total  # No more cards to draw
+    return np.mean([
+        expected_hand_value_after_hit(hand + [card], target, [c for c in own_deck if c != card])
+        for card in own_deck
+    ])
+
+
+def policy(hand: List[str], target: int) -> str:
+    current_value = hand_score(hand, target)
+    if current_value == -1:
+        return "STAY"  # Already busted, should not hit
+    own_deck = [card for card in ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"] if card not in hand]
+    expected_value = expected_hand_value_after_hit(hand, target, own_deck)
+
+    # Opponent has 13 cards and `len(hand)` in common, assume they draw remaining cards
+    opponent_hand = own_deck[:len(own_deck) - 1]  # opponent will draw (n - 1) unobserved cards
+    opponent_value = hand_score(opponent_hand, target)
+
+    # If expected hand after hit is better than current and doesn't bust
+    if expected_value > current_value:
+        return "HIT"
+    elif current_value >= target - 3:  # Close enough, stay
+        return "STAY"
+    elif ballast(hand, target):
+        # Too risky to hit, stay if score is strong enough
+        return "STAY"
+    else:
+        return "HIT"
+
+
+def ballast(hand: List[str], target: int) -> bool:
+    current_value = hand_score(hand, target)
+    if current_value == -1:
+        return True  # Busted already
+    safe_remaining = 0
+    for card in ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]:
+        if card not in hand:
+            new_value = current_value + card_value(card, current_value, target)
+            if new_value > target:
+                continue
+            elif new_value >= target - 3:
+                safe_remaining += 1
+    # If most remaining cards would improve or finalize our position, we feel more confident to stay
+    own_deck_length = 13 - len(hand)
+    if safe_remaining / own_deck_length < 0.5:
+        return True  # Too risky to lose value or bust, no ballast for hitting
+    return False
+```

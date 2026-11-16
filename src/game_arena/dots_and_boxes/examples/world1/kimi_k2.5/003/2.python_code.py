@@ -1,0 +1,116 @@
+
+import numpy as np
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    """
+    Dots and Boxes policy for 4x4 grid.
+    """
+    
+    def get_boxes(r, c, d):
+        """Return list of box coordinates (br, bc) adjacent to edge (r,c,d)."""
+        boxes = []
+        if d == 'H':
+            # Horizontal edge at (r, c) is top of box (r, c) if r < 4
+            if r < 4 and c < 4:
+                boxes.append((r, c))
+            # Bottom of box (r-1, c) if r > 0
+            if r > 0 and c < 4:
+                boxes.append((r-1, c))
+        else:  # 'V'
+            # Vertical edge at (r, c) is left of box (r, c) if c < 4
+            if r < 4 and c < 4:
+                boxes.append((r, c))
+            # Right of box (r, c-1) if c > 0
+            if r < 4 and c > 0:
+                boxes.append((r, c-1))
+        return boxes
+    
+    def count_edges(br, bc):
+        """Count filled edges around box (br, bc)."""
+        cnt = 0
+        # Top
+        if horizontal[br, bc] != 0:
+            cnt += 1
+        # Bottom
+        if horizontal[br + 1, bc] != 0:
+            cnt += 1
+        # Left
+        if vertical[br, bc] != 0:
+            cnt += 1
+        # Right
+        if vertical[br, bc + 1] != 0:
+            cnt += 1
+        return cnt
+    
+    # Generate all legal moves within valid ranges for 4x4 boxes
+    legal_moves = []
+    # Horizontal: 5 rows x 4 cols (col 4 is padding)
+    for r in range(5):
+        for c in range(4):
+            if horizontal[r, c] == 0:
+                legal_moves.append((r, c, 'H'))
+    # Vertical: 4 rows x 5 cols (row 4 is padding)
+    for r in range(4):
+        for c in range(5):
+            if vertical[r, c] == 0:
+                legal_moves.append((r, c, 'V'))
+    
+    if not legal_moves:
+        return "0,0,H"  # Should not occur in valid game
+    
+    # Phase 1: Capture - find moves that complete boxes (boxes with 3 sides)
+    best_capture_move = None
+    max_captures = 0
+    
+    for r, c, d in legal_moves:
+        boxes = get_boxes(r, c, d)
+        num_captures = 0
+        for br, bc in boxes:
+            if count_edges(br, bc) == 3:
+                num_captures += 1
+        if num_captures > max_captures:
+            max_captures = num_captures
+            best_capture_move = (r, c, d)
+    
+    if best_capture_move:
+        r, c, d = best_capture_move
+        return f"{r},{c},{d}"
+    
+    # Phase 2: Safe moves - avoid creating boxes with 3 sides
+    safe_moves = []
+    for r, c, d in legal_moves:
+        boxes = get_boxes(r, c, d)
+        is_safe = True
+        for br, bc in boxes:
+            if count_edges(br, bc) == 2:
+                is_safe = False
+                break
+        if is_safe:
+            safe_moves.append((r, c, d))
+    
+    if safe_moves:
+        # Pick the first safe move found (could randomize, but deterministic is fine)
+        r, c, d = safe_moves[0]
+        return f"{r},{c},{d}"
+    
+    # Phase 3: No safe moves - minimize the number of 3-sided boxes created
+    best_move = None
+    min_damage = float('inf')
+    
+    for r, c, d in legal_moves:
+        boxes = get_boxes(r, c, d)
+        damage = 0
+        for br, bc in boxes:
+            if count_edges(br, bc) == 2:
+                damage += 1
+        if damage < min_damage:
+            min_damage = damage
+            best_move = (r, c, d)
+    
+    if best_move:
+        r, c, d = best_move
+        return f"{r},{c},{d}"
+    
+    # Fallback (should never reach here)
+    r, c, d = legal_moves[0]
+    return f"{r},{c},{d}"

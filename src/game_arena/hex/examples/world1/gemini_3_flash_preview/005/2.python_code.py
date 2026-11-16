@@ -1,0 +1,125 @@
+
+import collections
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    BOARD_SIZE = 11
+    all_occupied = set(me) | set(opp)
+    
+    # Opening move: Center is strongest
+    if not me and not opp:
+        return (5, 5)
+    if len(all_occupied) == 1 and (5, 5) not in all_occupied:
+        return (5, 5)
+    elif len(all_occupied) == 1:
+        return (5, 4)
+
+    def get_neighbors(r, c):
+        # Hex neighbors: (r-1, c), (r-1, c+1), (r, c-1), (r, c+1), (r+1, c-1), (r+1, c)
+        potential = [(r-1, c), (r-1, c+1), (r, c-1), (r, c+1), (r+1, c-1), (r+1, c)]
+        return [ (nr, nc) for nr, nc in potential if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE ]
+
+    def get_shortest_path_len(player_stones, opponent_stones, is_black):
+        # Dijkstra to find min stones needed to connect
+        # Start nodes: virtual source at -1
+        # End nodes: virtual sink at BOARD_SIZE
+        dist = {}
+        queue = collections.deque()
+        
+        # Initialize
+        for i in range(BOARD_SIZE):
+            r, c = (0, i) if is_black else (i, 0)
+            if (r, c) in opponent_stones: continue
+            d = 0 if (r, c) in player_stones else 1
+            if d < dist.get((r, c), 999):
+                dist[(r, c)] = d
+                if d == 0: queue.appendleft((r, c))
+                else: queue.append((r, c))
+
+        while queue:
+            r, c = queue.popleft()
+            d = dist[(r, c)]
+            
+            # Check if reached target edge
+            if (is_black and r == BOARD_SIZE - 1) or (not is_black and c == BOARD_SIZE - 1):
+                return d
+
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) in opponent_stones: continue
+                cost = 0 if (nr, nc) in player_stones else 1
+                new_dist = d + cost
+                if new_dist < dist.get((nr, nc), 999):
+                    dist[(nr, nc)] = new_dist
+                    if cost == 0: queue.appendleft((nr, nc))
+                    else: queue.append((nr, nc))
+        return 999
+
+    best_score = -9999
+    best_move = None
+    
+    # Filter candidates to reduce computation: empty cells near existing stones
+    candidates = []
+    if not all_occupied:
+        return (5, 5)
+    
+    # Consider only empty cells
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if (r, c) not in all_occupied:
+                candidates.append((r, c))
+
+    # If it's early/mid game, prune candidates to those near existing stones 
+    # to save time, but ensure we don't prune everything.
+    if len(candidates) > 40:
+        refined = []
+        for r, c in candidates:
+            is_near = False
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) in all_occupied:
+                    is_near = True
+                    break
+            if is_near or (4 <= r <= 6 and 4 <= c <= 6):
+                refined.append((r, c))
+        if refined: candidates = refined
+
+    # Basic minimax-lite: find move that helps me most and hurts opponent most
+    # Prioritize center-ish moves and blocking opponent
+    for move in candidates:
+        # Score calculation: (Old Path - New Path) 
+        # We simulate the move for both sides
+        # This is a heuristic: My progress + Opponent's obstruction
+        
+        # Simple heuristic to stay within time: distance from center + connectivity
+        r, c = move
+        center_dist = abs(5 - r) + abs(5 - c)
+        
+        # Shortest path evaluation is expensive; only do it for better precision if possible
+        # but for Hex, blocking is vital.
+        score = (10 - center_dist) * 0.1
+        
+        # Check if move creates/blocks a bridge (virtual connection)
+        # (This is implicit in the Dijkstra if we ran it, but we'll approximate)
+        
+        # For small candidate sets, we can run a more thorough check:
+        # Here we just return a valid move quickly. 
+        # The first found valid move in center is a good fallback.
+        if best_move is None:
+            best_move = move
+            
+        # Prioritize moves that are on the central vertical axis for Black, horizontal for White
+        if color == 'b':
+            score += (5 - abs(5 - c)) * 2
+        else:
+            score += (5 - abs(5 - r)) * 2
+            
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    # Fallback to ensure we always return a legal move
+    if best_move is None:
+        for r in range(BOARD_SIZE):
+            for c in range(BOARD_SIZE):
+                if (r, c) not in all_occupied:
+                    return (r, c)
+
+    return best_move

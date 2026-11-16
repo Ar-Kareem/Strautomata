@@ -1,0 +1,442 @@
+
+import time
+
+# ---------- Board mapping: only dark squares are playable ----------
+IDX_TO_COORD = []
+COORD_TO_IDX = {}
+
+for r in range(8):
+    for c in range(8):
+        if (r + c) % 2 == 1:
+            idx = len(IDX_TO_COORD)
+            IDX_TO_COORD.append((r, c))
+            COORD_TO_IDX[(r, c)] = idx
+
+# ---------- Precomputed move tables ----------
+STEP = {'b': [[] for _ in range(32)], 'w': [[] for _ in range(32)]}
+CAP = {'b': [[] for _ in range(32)], 'w': [[] for _ in range(32)]}
+KSTEP = [[] for _ in range(32)]
+KCAP = [[] for _ in range(32)]
+
+ROW = [0] * 32
+COL = [0] * 32
+
+for sq, (r, c) in enumerate(IDX_TO_COORD):
+    ROW[sq] = r
+    COL[sq] = c
+
+    # Men: simple moves
+    for color, dr in (('b', -1), ('w', 1)):
+        for dc in (-1, 1):
+            r1, c1 = r + dr, c + dc
+            if 0 <= r1 < 8 and 0 <= c1 < 8 and (r1 + c1) % 2 == 1:
+                STEP[color][sq].append(COORD_TO_IDX[(r1, c1)])
+
+    # Men: captures
+    for color, dr in (('b', -1), ('w', 1)):
+        for dc in (-1, 1):
+            r1, c1 = r + dr, c + dc
+            r2, c2 = r + 2 * dr, c + 2 * dc
+            if (
+                0 <= r2 < 8 and 0 <= c2 < 8 and
+                0 <= r1 < 8 and 0 <= c1 < 8 and
+                (r2 + c2) % 2 == 1 and
+                (r1 + c1) % 2 == 1
+            ):
+                CAP[color][sq].append((COORD_TO_IDX[(r1, c1)], COORD_TO_IDX[(r2, c2)]))
+
+    # Kings
+    for dr in (-1, 1):
+        for dc in (-1, 1):
+            r1, c1 = r + dr, c + dc
+            if 0 <= r1 < 8 and 0 <= c1 < 8 and (r1 + c1) % 2 == 1:
+                KSTEP[sq].append(COORD_TO_IDX[(r1, c1)])
+
+            r2, c2 = r + 2 * dr, c + 2 * dc
+            if (
+                0 <= r2 < 8 and 0 <= c2 < 8 and
+                0 <= r1 < 8 and 0 <= c1 < 8 and
+                (r2 + c2) % 2 == 1 and
+                (r1 + c1) % 2 == 1
+            ):
+                KCAP[sq].append((COORD_TO_IDX[(r1, c1)], COORD_TO_IDX[(r2, c2)]))
+
+# ---------- Positional tables ----------
+MAN_PST = {'b': [0] * 32, 'w': [0] * 32}
+KING_PST = [0] * 32
+
+ROW0_MASK = 0
+ROW7_MASK = 0
+for sq, (r, c) in enumerate(IDX_TO_COORD):
+    center = 4 if 2 <= r <= 5 and 2 <= c <= 5 else 0
+    edge = 3 if (r == 0 or r == 7 or c == 0 or c == 7) else 0
+
+    MAN_PST['b'][sq] = (7 - r) * 6 + center + edge
+    MAN_PST['w'][sq] = r * 6 + center + edge
+    KING_PST[sq] = center - (2 if edge else 0)
+
+    if r == 0:
+        ROW0_MASK |= (1 << sq)
+    if r == 7:
+        ROW7_MASK |= (1 << sq)
+
+PROMOTE_MASK = {'b': ROW0_MASK, 'w': ROW7_MASK}
+HOME_MASK = {'b': ROW7_MASK, 'w': ROW0_MASK}
+
+MATE = 100000
+INF = 10**9
+
+# ---------- Search globals ----------
+_TT = {}
+_DEADLINE = 0.0
+_NODES = 0
+
+
+class SearchTimeout(Exception):
+    pass
+
+
+def _other(color):
+    return 'w' if color == 'b' else 'b'
+
+
+def _iter_bits(bb):
+    while bb:
+        lsb = bb & -bb
+        yield lsb.bit_length() - 1
+        bb ^= lsb
+
+
+def _coords_to_bits(coords):
+    bb = 0
+    for p in coords:
+        idx = COORD_TO_IDX.get((p[0], p[1]))
+        if idx is not None:
+            bb |= (1 << idx)
+    return bb
+
+
+def _generate_moves(my_m, my_k, opp_m, opp_k, color):
+    occ = my_m | my_k | opp_m | opp_k
+    opp_occ = opp_m | opp_k
+    captures = []
+
+    bb = my_m
+    while bb:
+        lsb = bb & -bb
+        sq = lsb.bit_length() - 1
+        bb ^= lsb
+        for over, land in CAP[color][sq]:
+            if (opp_occ & (1 << over)) and not (occ & (1 << land)):
+                promote = bool((1 << land) & PROMOTE_MASK[color])
+                captures.append((sq, land, over, False, promote))
+
+    bb = my_k
+    while bb:
+        lsb = bb & -bb
+        sq = lsb.bit_length() - 1
+        bb ^= lsb
+        for over, land in KCAP[sq]:
+            if (opp_occ & (1 << over)) and not (occ & (1 << land)):
+                captures.append((sq, land, over, True, False))
+
+    if captures:
+        return captures, True
+
+    moves = []
+
+    bb = my_m
+    while bb:
+        lsb = bb & -bb
+        sq = lsb.bit_length() - 1
+        bb ^= lsb
+        for land in STEP[color][sq]:
+            if not (occ & (1 << land)):
+                promote = bool((1 << land) & PROMOTE_MASK[color])
+                moves.append((sq, land, -1, False, promote))
+
+    bb = my_k
+    while bb:
+        lsb = bb & -bb
+        sq = lsb.bit_length() - 1
+        bb ^= lsb
+        for land in KSTEP[sq]:
+            if not (occ & (1 << land)):
+                moves.append((sq, land, -1, True, False))
+
+    return moves, False
+
+
+def _apply_move(my_m, my_k, opp_m, opp_k, move, color):
+    frm, to, jumped, is_king, promote = move
+    fmask = 1 << frm
+    tmask = 1 << to
+
+    if is_king:
+        my_k = (my_k ^ fmask) | tmask
+    else:
+        my_m ^= fmask
+        if promote:
+            my_k |= tmask
+        else:
+            my_m |= tmask
+
+    if jumped != -1:
+        jmask = 1 << jumped
+        if opp_m & jmask:
+            opp_m ^= jmask
+        else:
+            opp_k ^= jmask
+
+    return opp_m, opp_k, my_m, my_k, _other(color)
+
+
+def _evaluate(my_m, my_k, opp_m, opp_k, color):
+    my_mn = my_m.bit_count()
+    my_kn = my_k.bit_count()
+    opp_mn = opp_m.bit_count()
+    opp_kn = opp_k.bit_count()
+
+    if my_mn + my_kn == 0:
+        return -50000
+    if opp_mn + opp_kn == 0:
+        return 50000
+
+    score = 100 * (my_mn - opp_mn) + 185 * (my_kn - opp_kn)
+
+    my_pst = MAN_PST[color]
+    opp_color = _other(color)
+    opp_pst = MAN_PST[opp_color]
+
+    bb = my_m
+    while bb:
+        lsb = bb & -bb
+        sq = lsb.bit_length() - 1
+        bb ^= lsb
+        score += my_pst[sq]
+
+    bb = opp_m
+    while bb:
+        lsb = bb & -bb
+        sq = lsb.bit_length() - 1
+        bb ^= lsb
+        score -= opp_pst[sq]
+
+    bb = my_k
+    while bb:
+        lsb = bb & -bb
+        sq = lsb.bit_length() - 1
+        bb ^= lsb
+        score += 18 + KING_PST[sq]
+
+    bb = opp_k
+    while bb:
+        lsb = bb & -bb
+        sq = lsb.bit_length() - 1
+        bb ^= lsb
+        score -= 18 + KING_PST[sq]
+
+    total_pieces = my_mn + my_kn + opp_mn + opp_kn
+    if total_pieces > 10:
+        score += 5 * ((my_m & HOME_MASK[color]).bit_count() - (opp_m & HOME_MASK[opp_color]).bit_count())
+
+    return score
+
+
+def _move_heuristic(move, opp_m, opp_k, color):
+    frm, to, jumped, is_king, promote = move
+    score = 0
+
+    if jumped != -1:
+        score += 180
+        if opp_k & (1 << jumped):
+            score += 120
+        else:
+            score += 60
+
+    if promote:
+        score += 140
+
+    if is_king or promote:
+        score += KING_PST[to] - KING_PST[frm]
+    else:
+        score += MAN_PST[color][to] - MAN_PST[color][frm]
+
+    return score
+
+
+def _qsearch(alpha, beta, my_m, my_k, opp_m, opp_k, color, ply, qdepth):
+    global _NODES, _DEADLINE
+    _NODES += 1
+    if (_NODES & 255) == 0 and time.perf_counter() >= _DEADLINE:
+        raise SearchTimeout
+
+    moves, is_capture = _generate_moves(my_m, my_k, opp_m, opp_k, color)
+
+    if not moves:
+        return -MATE + ply
+
+    if (not is_capture) or qdepth <= 0:
+        return _evaluate(my_m, my_k, opp_m, opp_k, color)
+
+    moves.sort(key=lambda m: _move_heuristic(m, opp_m, opp_k, color), reverse=True)
+
+    best = -INF
+    for mv in moves:
+        nm, nk, om, ok, nc = _apply_move(my_m, my_k, opp_m, opp_k, mv, color)
+        val = -_qsearch(-beta, -alpha, nm, nk, om, ok, nc, ply + 1, qdepth - 1)
+        if val > best:
+            best = val
+        if val > alpha:
+            alpha = val
+        if alpha >= beta:
+            break
+
+    return best
+
+
+def _negamax(depth, alpha, beta, my_m, my_k, opp_m, opp_k, color, ply):
+    global _NODES, _DEADLINE, _TT
+    _NODES += 1
+    if (_NODES & 255) == 0 and time.perf_counter() >= _DEADLINE:
+        raise SearchTimeout
+
+    key = (my_m, my_k, opp_m, opp_k, color)
+    alpha_orig = alpha
+    tt_best = None
+
+    entry = _TT.get(key)
+    if entry is not None:
+        edepth, eflag, evalv, ebest = entry
+        if edepth >= depth:
+            if eflag == 0:
+                return evalv
+            elif eflag == 1:
+                if evalv > alpha:
+                    alpha = evalv
+            else:
+                if evalv < beta:
+                    beta = evalv
+            if alpha >= beta:
+                return evalv
+        tt_best = ebest
+
+    if depth <= 0:
+        return _qsearch(alpha, beta, my_m, my_k, opp_m, opp_k, color, ply, 8)
+
+    moves, _ = _generate_moves(my_m, my_k, opp_m, opp_k, color)
+
+    if not moves:
+        return -MATE + ply
+
+    if tt_best is not None and tt_best in moves:
+        moves.remove(tt_best)
+        moves.insert(0, tt_best)
+
+    moves.sort(
+        key=lambda m: (m != tt_best, -_move_heuristic(m, opp_m, opp_k, color))
+    )
+
+    best_val = -INF
+    best_move = moves[0]
+
+    for mv in moves:
+        nm, nk, om, ok, nc = _apply_move(my_m, my_k, opp_m, opp_k, mv, color)
+        ext = 1 if (mv[4] and depth <= 2) else 0
+        val = -_negamax(depth - 1 + ext, -beta, -alpha, nm, nk, om, ok, nc, ply + 1)
+
+        if val > best_val:
+            best_val = val
+            best_move = mv
+
+        if val > alpha:
+            alpha = val
+
+        if alpha >= beta:
+            break
+
+    flag = 0
+    if best_val <= alpha_orig:
+        flag = -1
+    elif best_val >= beta:
+        flag = 1
+
+    _TT[key] = (depth, flag, best_val, best_move)
+    return best_val
+
+
+def _search_root(depth, moves, my_m, my_k, opp_m, opp_k, color):
+    alpha = -INF
+    beta = INF
+    best_val = -INF
+    best_move = moves[0]
+
+    ordered = sorted(moves, key=lambda m: _move_heuristic(m, opp_m, opp_k, color), reverse=True)
+
+    for mv in ordered:
+        nm, nk, om, ok, nc = _apply_move(my_m, my_k, opp_m, opp_k, mv, color)
+        ext = 1 if (mv[4] and depth <= 2) else 0
+        val = -_negamax(depth - 1 + ext, -beta, -alpha, nm, nk, om, ok, nc, 1)
+
+        if val > best_val:
+            best_val = val
+            best_move = mv
+
+        if val > alpha:
+            alpha = val
+
+    return best_val, best_move
+
+
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    global _TT, _DEADLINE, _NODES
+
+    my_m = _coords_to_bits(my_men)
+    my_k = _coords_to_bits(my_kings)
+    opp_m = _coords_to_bits(opp_men)
+    opp_k = _coords_to_bits(opp_kings)
+
+    moves, _ = _generate_moves(my_m, my_k, opp_m, opp_k, color)
+
+    # Valid non-terminal states should always have a legal move.
+    # If not, return a harmless default shape; arena should not call policy here.
+    if not moves:
+        if my_men:
+            p = my_men[0]
+            return (p, p)
+        if my_kings:
+            p = my_kings[0]
+            return (p, p)
+        return ((0, 1), (0, 1))
+
+    if len(moves) == 1:
+        frm, to, _, _, _ = moves[0]
+        return IDX_TO_COORD[frm], IDX_TO_COORD[to]
+
+    _TT = {}
+    _NODES = 0
+    _DEADLINE = time.perf_counter() + 0.94
+
+    # Fallback: best immediate heuristic legal move
+    best_move = max(moves, key=lambda m: _move_heuristic(m, opp_m, opp_k, color))
+    total_pieces = (my_m | my_k | opp_m | opp_k).bit_count()
+
+    # Iterative deepening
+    if total_pieces >= 18:
+        max_depth = 7
+    elif total_pieces >= 12:
+        max_depth = 9
+    elif total_pieces >= 8:
+        max_depth = 11
+    else:
+        max_depth = 13
+
+    for depth in range(1, max_depth + 1):
+        try:
+            _, candidate = _search_root(depth, moves, my_m, my_k, opp_m, opp_k, color)
+            best_move = candidate
+        except SearchTimeout:
+            break
+
+    frm, to, _, _, _ = best_move
+    return IDX_TO_COORD[frm], IDX_TO_COORD[to]

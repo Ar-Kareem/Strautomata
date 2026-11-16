@@ -1,0 +1,85 @@
+
+import numpy as np
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    legal_moves = []
+    for row in range(5):
+        for col in range(5):
+            if horizontal[row, col] == 0:
+                legal_moves.append((row, col, 'H'))
+            if vertical[row, col] == 0:
+                legal_moves.append((row, col, 'V'))
+    
+    capturing_moves = []
+    non_capturing_moves = []
+    
+    for move in legal_moves:
+        r, c, d = move
+        n_captured = 0
+        captured_boxes = []
+        
+        if d == 'H':
+            if r > 0 and capture[r-1, c] == 0:
+                top = horizontal[r-1, c] != 0
+                left = vertical[r-1, c] != 0
+                right = vertical[r-1, c+1] != 0
+                if top and left and right:
+                    n_captured += 1
+                    captured_boxes.append((r-1, c))
+            if r < 4 and capture[r, c] == 0:
+                bottom = horizontal[r+1, c] != 0
+                left = vertical[r, c] != 0
+                right = vertical[r, c+1] != 0
+                if bottom and left and right:
+                    n_captured += 1
+                    captured_boxes.append((r, c))
+        else:
+            if c > 0 and capture[r, c-1] == 0:
+                left = vertical[r, c-1] != 0
+                top = horizontal[r, c-1] != 0
+                bottom = horizontal[r+1, c-1] != 0
+                if top and bottom and left:
+                    n_captured += 1
+                    captured_boxes.append((r, c-1))
+            if c < 4 and capture[r, c] == 0:
+                right = vertical[r, c+1] != 0
+                top = horizontal[r, c] != 0
+                bottom = horizontal[r+1, c] != 0
+                if top and bottom and right:
+                    n_captured += 1
+                    captured_boxes.append((r, c))
+        
+        three_edges = 0
+        for i in range(4):
+            for j in range(4):
+                if capture[i, j] != 0 or (i, j) in captured_boxes:
+                    continue
+                if d == 'H':
+                    top_edge = horizontal[i, j] != 0 or (i == r and j == c)
+                    bottom_edge = horizontal[i+1, j] != 0 or (i+1 == r and j == c)
+                    left_edge = vertical[i, j] != 0
+                    right_edge = vertical[i, j+1] != 0
+                else:
+                    top_edge = horizontal[i, j] != 0
+                    bottom_edge = horizontal[i+1, j] != 0
+                    left_edge = vertical[i, j] != 0 or (i == r and j == c)
+                    right_edge = vertical[i, j+1] != 0 or (i == r and j+1 == c)
+                filled = sum([top_edge, bottom_edge, left_edge, right_edge])
+                if filled == 3:
+                    three_edges += 1
+        
+        if n_captured > 0:
+            capturing_moves.append((move, n_captured, three_edges))
+        else:
+            non_capturing_moves.append((move, three_edges))
+    
+    if capturing_moves:
+        capturing_moves.sort(key=lambda x: (x[2], -x[1]))
+        best_move = capturing_moves[0][0]
+    elif non_capturing_moves:
+        non_capturing_moves.sort(key=lambda x: x[1])
+        best_move = non_capturing_moves[0][0]
+    else:
+        best_move = legal_moves[0] if legal_moves else (0, 0, 'H')
+    
+    return f"{best_move[0]},{best_move[1]},{best_move[2]}"

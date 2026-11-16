@@ -1,0 +1,228 @@
+```python
+import random
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    A target selection policy for Battleship.
+    
+    Strategy:
+    1. If there are unsolved hits (hits not adjacent to other known hits, or single hits),
+       prioritize targeting adjacent cells to these hits to find the ship orientation.
+    2. If the board is in a 'hunt' state (no active hits), use a checkerboard pattern 
+       (parity) to maximize efficiency against ships of length > 1.
+    3. The pattern is dynamically selected based on the largest remaining ship to ensure 
+       optimal density.
+    4. Tie-breaking is deterministic (or pseudo-random but seeded) to ensure valid moves.
+    """
+    
+    # Ensure reproducible pseudo-randomness if random is used for tie-breaking
+    # Using a hash of the board state to seed allows for deterministic behavior
+    # while appearing randomized across different states.
+    flat_board = [cell for row in board for cell in row]
+    random.seed(hash(tuple(flat_board)))
+
+    rows = 10
+    cols = 10
+
+    # Helper to check if a coordinate is valid and not shot yet
+    def is_unknown(r, c):
+        return 0 <= r < rows and 0 <= c < cols and board[r][c] == 0
+
+    # 1. Identify Unknown Cells
+    unknowns = []
+    for r in range(rows):
+        for c in range(cols):
+            if is_unknown(r, c):
+                unknowns.append((r, c))
+    
+    if not unknowns:
+        # Should not happen in a valid game, but fallback
+        return (0, 0)
+
+    # 2. Identify Hits and Group them into "Clusters" (connected components)
+    # We define a cluster as a group of connected '1's.
+    # A cluster represents a partially discovered ship (or a full one, but we don't know).
+    hits = set()
+    for r in range(rows):
+        for c in range(cols):
+            if board[r][c] == 1:
+                hits.add((r, c))
+
+    # BFS to find connected components of hits
+    visited_clusters = set()
+    clusters = []
+    
+    for hit in hits:
+        if hit in visited_clusters:
+            continue
+        
+        # Start new cluster
+        cluster = []
+        queue = [hit]
+        visited_clusters.add(hit)
+        
+        while queue:
+            curr = queue.pop(0)
+            cluster.append(curr)
+            
+            # Check neighbors (up, down, left, right)
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                neighbor = (curr[0] + dr, curr[1] + dc)
+                if neighbor in hits and neighbor not in visited_clusters:
+                    visited_clusters.add(neighbor)
+                    queue.append(neighbor)
+        
+        clusters.append(cluster)
+
+    # 3. Determine the largest remaining ship
+    # Calculate lengths of all known hits (sum of cluster lengths)
+    # Note: This treats a hit cluster as a ship until proven otherwise.
+    # If we haven't found all ships, we assume the largest unknown ship might be larger
+    # than the current largest cluster.
+    ships_placed = [5, 4, 3, 3, 2]
+    hits_so_far = sum(len(c) for c in clusters)
+    max_remaining_len = 2 # Default minimum
+    
+    if hits_so_far == 0:
+        max_remaining_len = 5
+    else:
+        # We sum the lengths of clusters. 
+        # However, we might have sunk some ships. Let's assume the largest cluster 
+        # is likely the largest remaining or a part of it.
+        current_max_cluster = max(len(c) for c in clusters) if clusters else 0
+        # If we have 0 hits, max is 5. If we have hits, the remaining max ship is at least
+        # max(2, current_max_cluster).
+        # But if we haven't found a 5, it could be 5. 
+        # Let's check if we have accounted for the 5-ship.
+        # Heuristic: if we haven't seen a cluster of size 5, assume 5 is possible.
+        has_size_5 = any(len(c) >= 5 for c in clusters)
+        if not has_size_5:
+            max_remaining_len = 5
+        else:
+            # Check 4, etc.
+            has_size_4 = any(len(c) >= 4 for c in clusters)
+            if not has_size_4: max_remaining_len = 4
+            else: max_remaining_len = 3 # Assuming 3 is always possible until sunk
+
+    # 4. Prioritize Moves
+    
+    candidates = []
+
+    # PRIORITY 1: EXTEND CLUSTERS
+    # If we have clusters, we must find their orientation/ends.
+    if clusters:
+        for cluster in clusters:
+            # Sort cluster to find endpoints easily (line or single point)
+            # Horizontal line: sorted by col
+            # Vertical line: sorted by row
+            # If single point, both.
+            
+            # Check if vertical or horizontal
+            is_vertical = len(cluster) > 1 and all(c[0] == cluster[0][0] for c in cluster)
+            is_horizontal = len(cluster) > 1 and all(c[1] == cluster[0][1] for c in cluster)
+            
+            # Determine ends
+            if is_vertical:
+                endpoints = [min(cluster, key=lambda x: x[1]), max(cluster, key=lambda x: x[1])]
+                # Wait, min by row for vertical
+                endpoints = [min(cluster, key=lambda x: x[0]), max(cluster, key=lambda x: x[0])]
+                # Check above/below these endpoints
+                for r, c in endpoints:
+                    for dr, dc in [(-1, 0), (1, 0)]:
+                        if is_unknown(r + dr, c + dc):
+                            candidates.append(((r + dr, c + dc), 10)) # High priority
+            elif is_horizontal:
+                endpoints = [min(cluster, key=lambda x: x[1]), max(cluster, key=lambda x: x[1])]
+                for r, c in endpoints:
+                    for dr, dc in [(0, -1), (0, 1)]:
+                        if is_unknown(r + dr, c + dc):
+                            candidates.append(((r + dr, c + dc), 10))
+            else:
+                # Single hit or unknown orientation
+                r, c = cluster[0]
+                # Check all 4 neighbors
+                for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                    if is_unknown(r + dr, c + dc):
+                        candidates.append(((r + dr, c + dc), 10))
+
+    # PRIORITY 2: CHECKERBOARD HUNT
+    # Only if we have no active hunt (or if we just want to fill gaps, 
+    # but usually we prioritize clusters).
+    # If no clusters, we fill candidates with checkerboard pattern.
+    if not clusters:
+        # Calculate checkerboard density based on max_remaining_len
+        # Logic: If max ship is 5, we want to be 1 cell apart. 
+        # If max ship is 2, we can be 2 apart (checkerboard).
+        # Parity: (r + c) % 2 == 0 is one checkerboard layer.
+        # Parity: (r + c) % 3 == 0 is another layer.
+        
+        target_parities = set()
+        
+        if max_remaining_len >= 5:
+            # We need a dense search. 
+            # We pick two parities (e.g. mod 2) to cover half the board.
+            target_parities.add(0) # even
+            target_parities.add(1) # odd
+        elif max_remaining_len >= 3:
+            # Pick even parity
+            target_parities.add(0)
+        else:
+            # Max length 2. We can be sparser.
+            # Pick even parity
+            target_parities.add(0)
+            
+        # However, to avoid being too dense if max length is actually small,
+        # if max_remaining_len == 2, we can strictly use mod 2. 
+        # If max_remaining_len == 5, we must use mod 2.
+        # The logic is: we want to maximize probability of hitting a ship.
+        # If max ship is 5, we need mod 2. 
+        # If max ship is 2, mod 2 is sufficient.
+        # So always mod 2 is a safe bet for 'unknown' state, but let's optimize.
+        # Actually, for 5x5 board, 1 ship of size 5. 50% density is optimal (Checkerboard).
+        
+        # Let's refine the hunt:
+        # If we suspect a 5-ship (no hits yet), we must use mod 2.
+        # If we are cleaning up (max_remaining_len = 2), mod 2 is fine.
+        
+        for r in range(rows):
+            for c in range(cols):
+                if is_unknown(r, c):
+                    # Default weight
+                    weight = 1
+                    # Check if it fits desired parity
+                    if ((r + c) % 2) in target_parities:
+                        # If max_remaining_len is high, we prefer center or sparse? 
+                        # Standard Battleship AI usually prefers parity.
+                        # If we have multiple parities, they have equal weight.
+                        candidates.append(((r, c), 2))
+                    else:
+                        # Lower weight for non-target parity
+                        candidates.append(((r, c), 1))
+
+    # 5. Select Best Candidate
+    if not candidates:
+        # Fallback: if no candidates generated (should be rare), pick random unknown
+        return random.choice(unknowns)
+
+    # Sort candidates by weight (descending), then by deterministic tie-breaker
+    # Tie-breaker: Primary: "Chebyshev" distance from center (4.5, 4.5) to prefer center.
+    # Tie-breaker 2: hash of coords for pseudo-randomness
+    center_r, center_c = 4.5, 4.5
+    
+    def sort_key(item):
+        coord, weight = item
+        r, c = coord
+        dist = max(abs(r - center_r), abs(c - center_c)) # Chebyshev distance
+        # We want smaller distance to be better (tie-breaker should be ascending)
+        # But sort is ascending by default.
+        # We want high weight first.
+        # So primary key is -weight.
+        # Secondary key is dist (smaller is better).
+        # Tertiary: something deterministic like r*10+c
+        return (-weight, dist, r, c)
+
+    candidates.sort(key=sort_key)
+    
+    best_move = candidates[0][0]
+    return best_move
+```

@@ -1,0 +1,156 @@
+# Strategy for Othello (Reversi) Policy
+
+The strategy implemented in this Othello policy uses a combination of positional weighting, corner control, mobility consideration, and corner-handing-over penalty to select the best move. The key components are:
+
+1. **Positional Weight Matrix**: Uses a pre-defined weight matrix that values corners highly (100), penalizes squares adjacent to corners (C-squares) to avoid handing corners to the opponent, and assigns moderate values to edges and inner squares.
+
+2. **Corner Control**: Prioritizes moves that take corners while avoiding moves that hand corners to the opponent.
+
+3. **Mobility**: Considers the opponent's available moves after our move, penalizing moves that leave the opponent with many options.
+
+4. **Corner-Handing-Over Penalty**: Applies a large penalty (-1000) for moves that place a disc on a C-square when an adjacent corner remains empty, as this typically hands the corner to the opponent.
+
+5. **Simulation**: For each legal move, simulates the board state after the move to evaluate the resulting position.
+
+The policy evaluates each legal move by computing a score that combines the positional advantage, corner control, and mobility considerations, then selects the move with the highest score.
+
+```python
+import numpy as np
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    """
+    Determines the next move for Othello (Reversi) on an 8x8 board.
+    
+    Args:
+        you: 8x8 numpy array (0/1) representing current player's discs
+        opponent: 8x8 numpy array (0/1) representing opponent's discs
+    
+    Returns:
+        A move string in algebraic notation (e.g., "d3") or "pass" if no moves
+    """
+    
+    # Pre-defined weight matrix for positional evaluation
+    weight_matrix = np.array([
+        [100, -20, 10,  5,  5, 10, -20, 100],
+        [-20, -50, -2, -2, -2, -2, -50, -20],
+        [ 10,  -2, -1, -1, -1, -1,  -2,  10],
+        [  5,  -2, -1, -1, -1, -1,  -2,   5],
+        [  5,  -2, -1, -1, -1, -1,  -2,   5],
+        [ 10,  -2, -1, -1, -1, -1,  -2,  10],
+        [-20, -50, -2, -2, -2, -2, -50, -20],
+        [100, -20, 10,  5,  5, 10, -20, 100]
+    ])
+    
+    # Corner positions
+    corners = [(0,0), (0,7), (7,0), (7,7)]
+    
+    # Directions for checking flips
+    directions = [(-1,-1), (-1,0), (-1,1),
+                 (0,-1),           (0,1),
+                 (1,-1),  (1,0),   (1,1)]
+    
+    def generate_legal_moves(board_current, board_opponent):
+        """Generate all legal moves for the current player."""
+        moves = []
+        for r in range(8):
+            for c in range(8):
+                if board_current[r][c] == 0 and board_opponent[r][c] == 0:
+                    if flips(r, c, board_current, board_opponent):
+                        moves.append((r, c))
+        return moves
+    
+    def flips(r, c, board_current, board_opponent):
+        """Check if move at (r,c) flips any opponent discs."""
+        for dr, dc in directions:
+            if can_flip_in_direction(r, c, dr, dc, board_current, board_opponent):
+                return True
+        return False
+    
+    def can_flip_in_direction(r, c, dr, dc, board_current, board_opponent):
+        """Check if move at (r,c) flips discs in direction (dr,dc)."""
+        r1, c1 = r + dr, c + dc
+        found_opponent = False
+        
+        while 0 <= r1 < 8 and 0 <= c1 < 8:
+            if board_opponent[r1][c1] == 1:
+                found_opponent = True
+            elif board_current[r1][c1] == 1:
+                if found_opponent:
+                    return True
+                else:
+                    return False
+            else:  # empty
+                return False
+            r1 += dr
+            c1 += dc
+        return False
+    
+    def simulate_move(you, opponent, r, c):
+        """Simulate board state after placing at (r,c)."""
+        new_you = you.copy()
+        new_opponent = opponent.copy()
+        new_you[r][c] = 1
+        
+        for dr, dc in directions:
+            flip_list = []
+            r1, c1 = r + dr, c + dc
+            found_opponent = False
+            
+            while 0 <= r1 < 8 and 0 <= c1 < 8:
+                if new_opponent[r1][c1] == 1:
+                    found_opponent = True
+                    flip_list.append((r1, c1))
+                elif new_you[r1][c1] == 1:
+                    if found_opponent:
+                        for r_flip, c_flip in flip_list:
+                            new_you[r_flip][c_flip] = 1
+                            new_opponent[r_flip][c_flip] = 0
+                    break
+                else:  # empty
+                    break
+                r1 += dr
+                c1 += dc
+        
+        return new_you, new_opponent
+    
+    # Get all legal moves for current player
+    legal_moves = generate_legal_moves(you, opponent)
+    
+    if not legal_moves:
+        return "pass"
+    
+    best_move = None
+    best_score = -float('inf')
+    
+    for move in legal_moves:
+        r, c = move
+        new_you, new_opponent = simulate_move(you, opponent, r, c)
+        
+        # Calculate base score: weighted sum of discs
+        base_score = np.sum(weight_matrix * (new_you - new_opponent))
+        
+        # Check for corner-handing-over
+        handing_over = 0
+        for corner in corners:
+            if abs(r - corner[0]) + abs(c - corner[1]) == 1:
+                if new_you[corner[0]][corner[1]] == 0 and new_opponent[corner[0]][corner[1]] == 0:
+                    handing_over = 1
+                    break
+        
+        # Calculate opponent's mobility after our move
+        opponent_moves = generate_legal_moves(new_opponent, new_you)
+        opponent_mobility = len(opponent_moves)
+        
+        # Calculate final score
+        score = base_score - 1000 * handing_over - 10 * opponent_mobility
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    if best_move is None:
+        return "pass"
+    
+    r, c = best_move
+    return chr(ord('a') + c) + str(r + 1)
+```

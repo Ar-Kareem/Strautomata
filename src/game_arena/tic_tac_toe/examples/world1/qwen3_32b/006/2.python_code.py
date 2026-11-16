@@ -1,0 +1,69 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+
+    def check_winner(b):
+        for player in [1, -1]:
+            # Check rows
+            for row in range(3):
+                if all(b[row][col] == player for col in range(3)):
+                    return player
+            # Check columns
+            for col in range(3):
+                if all(b[row][col] == player for row in range(3)):
+                    return player
+            # Check diagonals
+            if all(b[i][i] == player for i in range(3)) or all(b[i][2-i] == player for i in range(3)):
+                return player
+        # Check for draw
+        for r in range(3):
+            for c in range(3):
+                if b[r][c] == 0:
+                    return None
+        return 0
+
+    def get_available_moves(b):
+        available = []
+        # Center has highest priority
+        if b[1][1] == 0:
+            available.append((1, 1))
+        # Check corners in specific order
+        for corner in [(0,0), (0,2), (2,2), (2,0)]:
+            if b[corner[0]][corner[1]] == 0:
+                available.append((corner[0], corner[1]))
+        # Check edges
+        for edge in [(0,1), (1,0), (1,2), (2,1)]:
+            if b[edge[0]][edge[1]] == 0:
+                available.append((edge[0], edge[1]))
+        return available
+
+    def minimax(b, current_player):
+        winner = check_winner(b)
+        if winner is not None:
+            if winner == 0:
+                return (0, None)
+            elif winner == current_player:
+                return (1, None)
+            else:
+                return (-1, None)
+        
+        available = get_available_moves(b)
+        best_score = float('-inf') if current_player == 1 else float('inf')
+        best_move = None
+
+        for r, c in available:
+            # Simulate move
+            new_b = [[cell for cell in row] for row in b]
+            new_b[r][c] = current_player
+            # Recursive call for opponent's turn
+            if current_player == 1:
+                score, _ = minimax(new_b, -1)
+                if score > best_score:
+                    best_score, best_move = score, (r, c)
+            else:
+                score, _ = minimax(new_b, 1)
+                if score < best_score:
+                    best_score, best_move = score, (r, c)
+        return (best_score, best_move)
+
+    _, best_move = minimax(board, 1)
+    return best_move

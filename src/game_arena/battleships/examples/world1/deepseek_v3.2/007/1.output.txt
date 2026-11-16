@@ -1,0 +1,432 @@
+<thinking>
+I need to write an AI for a Battleship game. The board is 10x10, ships are lengths 5, 4, 3, 3, 2. I see my own shots: 0 (unknown), -1 (miss), 1 (hit). I need to return a coordinate (row, col) to shoot at.
+
+Strategy: I should implement a probability density approach or a parity-based search. Common strategies:
+1. Hunt/target mode: When no hits, search efficiently (checkerboard pattern since smallest ship is 2, so parity matters).
+2. When a hit is found, switch to sink mode: try adjacent cells to find ship orientation, then continue along that line until sunk.
+
+Considerations:
+- Ships can't overlap.
+- Ships are straight lines, horizontal or vertical.
+- Need to avoid shooting at already-shot cells (0 means unknown, -1 miss, 1 hit).
+- Objective: minimize expected number of shots to sink all ships.
+
+I'll implement:
+- Use a probability map: for each cell, compute probability that there's an unsunk ship part there given current knowledge.
+- Update probabilities after each shot.
+- Choose cell with highest probability.
+
+To compute probabilities efficiently, I can use the "Karnaugh" method: generate all possible placements of remaining ships consistent with current board, count how many placements have a ship on each cell.
+
+But generating all placements might be computationally heavy. However, board is only 10x10, ships: 5,4,3,3,2 total cells = 17. Number of possible placements? For each ship, orientations and positions. Could be many, but maybe manageable.
+
+Alternatively, I can use a simplified probability calculation: for each cell, consider if it could be part of a ship given hits/misses. But better to do full enumeration.
+
+Given time constraint (1 second per call), I should precompute all possible ship placements at start, then filter based on board state. That's heavy but doable.
+
+Alternatively, I can use Monte Carlo sampling. But I think full enumeration is possible.
+
+Let's estimate: For ship length L, number of placements horizontally: (10)*(10-L+1) = 10*(11-L). Similarly vertical. So total placements for all ships:
+L=5: horizontal 10*(6)=60, vertical same => 120.
+L=4: 10*(7)=70*2=140.
+L=3: 10*(8)=80*2=160 (but there are two ships of length 3) => 320.
+L=2: 10*(9)=90*2=180.
+Total placements if independent: product? Actually ships can't overlap, so we need combinations. That's huge.
+
+But we can precompute all possible board configurations? That's 10x10 = 100 cells, each can be ship or not. Too many.
+
+So maybe a smarter probability calculation:
+- Use parity: since smallest ship is 2, optimal search pattern is checkerboard. But after hits, need to target adjacent.
+
+I'll implement a hybrid:
+1. If no hits (or all hits sunk), use parity search: shoot at cells with (row+col)%2 == parity. But which parity? Since ships have even length? Actually lengths: 5 odd, 4 even, 3 odd, 3 odd, 2 even. So parity doesn't guarantee coverage.
+
+Better: use deterministic pattern that covers all cells efficiently.
+
+Maybe implement Hunt-Parry algorithm:
+- Divide board into zones.
+- When hit, target adjacent cells.
+
+I'll implement a probability map using a simplified model: for each cell, compute number of ways a ship could cover it given constraints.
+
+Algorithm to compute probability map:
+- For each ship length L in remaining ships:
+  - For each orientation (horizontal, vertical):
+    - For each possible placement (top-left cell):
+      - Check if placement is consistent with current board (no misses on ship cells, hits must be on ship cells if any).
+      - If consistent, add 1 to each cell covered by this placement.
+- Sum over all ships to get weights.
+- Choose cell with highest weight.
+
+But we need to consider overlapping ships? Actually ships can't overlap, so placements are not independent. However, for probability estimation, assuming independence might be okay.
+
+Better: We can treat each ship independently and sum. This overestimates probability but works.
+
+I'll keep track of sunk ships: If a ship is sunk (all its hits are accounted for), we can remove it from consideration. How to know if a ship is sunk? When we have a hit segment and all adjacent cells are misses or edges, and we know length? Hard.
+
+Simpler: We'll just treat all ships as remaining unless we have evidence that a ship is sunk (e.g., we hit a ship of length L and we have L contiguous hits with misses at ends). But tracking is complex.
+
+Instead, I'll assume we don't know which ships are sunk; we just know hits. So we need to consider all ships still alive.
+
+But hits could be from multiple ships. So probability map should consider all possible configurations.
+
+Given time, I'll implement a simpler but effective strategy:
+
+Mode 1: Hunt mode (no current hit under pursuit):
+- Use parity: shoot at every other cell in a pattern.
+- But after some misses, need to cover all.
+
+Alternatively, I'll use a deterministic spiral search from center outward.
+
+Mode 2: Target mode (when there is a hit that is not yet sunk):
+- Identify the hit segment (contiguous hits in a line).
+- Determine orientation if possible (if segment length >1 or adjacent hits).
+- Shoot at ends of segment.
+
+Implementation plan:
+- Maintain list of unsunk hits (cells with value 1 that are not yet surrounded by misses).
+- If unsunk hits list empty: hunt mode.
+- Else: target the first unsunk hit.
+
+For hunt mode: I'll use a probability map computed by considering all possible ship placements consistent with board, but simplified: for each cell, count how many ways a ship of each remaining length could cover it without conflicting with misses.
+
+But to save time, I'll precompute all possible ship placements for each length at start, store them in lists. Then on each call, filter placements that are consistent with current board. Then sum occurrences per cell.
+
+That is doable: Number of placements per ship:
+L=5: 120
+L=4: 140
+L=3: 160 (for each of two ships)
+L=2: 180
+Total placements to store: 120+140+320+180 = 760. That's fine.
+
+But we need to consider combinations? Actually we need to consider all possible configurations of all ships together, which is combinatorial explosion.
+
+However, we can approximate by assuming ships are independent and sum probabilities.
+
+So algorithm:
+- Precompute all possible placements for each ship length (including both orientations).
+- On each turn, for each ship length L in [5,4,3,3,2] (but note two length-3 ships), we filter placements that are consistent with current board.
+- For each placement, add weight to each cell it covers.
+- Weight could be 1 for each ship (so total weight per cell is sum over all ships).
+
+But we need to avoid double-counting: a cell could be covered by multiple ships in different configurations, but ships can't overlap in a valid configuration. However, for probability estimation, summing is okay.
+
+We'll then choose the cell with highest weight among unknown cells (value 0).
+
+We must also handle sunk ships: If we have a contiguous hit segment that matches a ship length and ends are misses, we can consider that ship sunk and remove its length from consideration. But tracking is tricky.
+
+Simplify: We'll just use all ships always. The probability map will naturally have low probability around sunk ships because misses will filter out placements.
+
+But we need to know which ships are still alive. Actually, if we have hits that form a segment of length L, and we have sunk that ship (all cells hit and ends are misses), we should not target around it. But our board shows hits (1) even after sink. We don't have separate marker for sunk ship. So we need to infer.
+
+We can maintain a set of hits that are part of unsunk ships. When we hit, add to set. When we determine a ship is sunk (by discovering all its cells), remove those hits from unsunk set.
+
+How to determine sunk? After a hit, if we try adjacent cells and they are misses, and we have a line of hits of length L that matches a ship length, and both ends are bounded by misses or edge, then it's sunk. But there could be multiple ships adjacent.
+
+Simpler: We'll assume a ship is sunk when all cells around its hits are misses (or already hit) and the hit segment is maximal. We'll implement a function to find contiguous hit regions and check if each region is "closed": for each cell in region, all adjacent orthogonal cells that are unknown are not part of ship? Actually if a region is closed, meaning no unknown cells adjacent, then ship is sunk.
+
+But what if unknown cells adjacent but they are water? We don't know. So we cannot be sure.
+
+Therefore, we will not try to infer sunk ships; we will just target based on probability map. The probability map will naturally have zero probability on cells adjacent to a fully hit ship because those placements would conflict with misses around.
+
+But we need to add misses around a sunk ship? Actually after sinking, we might have shots around that area that are misses. Those are already on board as -1.
+
+So probability map will filter placements that put a ship on a miss cell, so placements that include cells adjacent to a sunk ship might be invalid if those cells are misses.
+
+Thus, we can proceed without explicit sunk detection.
+
+Implementation steps:
+
+1. Precompute all placements for each ship length.
+   Placement: list of (r,c) tuples for each cell occupied.
+   Store as list of placements per length.
+
+2. At each policy call:
+   - Build probability map: 10x10 array of zeros.
+   - For each ship length L in [5,4,3,3,2] (treat two length-3 ships separately? Actually they are identical, we can just double count placements for length 3).
+   - For each placement of length L:
+        Check if placement is consistent with board:
+            - No cell in placement is a miss (board value -1).
+            - All cells in placement that are hits (1) must be included? Actually if board has a hit at a cell, that cell must be part of a ship. So any placement that does NOT include that hit cell is invalid for that ship? Wait, different ships. A hit cell could be from any ship. So for a placement to be valid, it must not conflict with misses, but it doesn't need to include hits because hits could be from other ships. However, if a hit cell is not covered by any placement, then that hit must be covered by some other ship. But we are considering each ship independently, so we cannot require that a placement includes all hits because hits could be from other ships. So consistency condition: a placement cannot cover a miss cell. That's all.
+
+        However, if a placement covers a hit cell, that's okay because that hit could be from this ship.
+
+        But we also need to consider that ships cannot overlap. So if two placements overlap, they cannot both be true. But in our independent model, we ignore overlap.
+
+        So we'll use simple filter: placement is valid if it does not cover any cell with board value -1 (miss).
+
+   - For each valid placement, add weight 1 to each cell in placement.
+
+   - Sum over all ships.
+
+   - Then choose the cell with highest probability among cells with board value 0 (unknown).
+
+   - If multiple cells tie, choose one with minimal distance from center? Or just first.
+
+   - If all cells have probability 0 (should not happen), fallback to parity search.
+
+But note: we have two ships of length 3. To account for that, we can either double count length-3 placements (add weight 2 for each placement) or treat them as separate. I'll double count.
+
+Potential issue: This probability map might be biased toward cells that can be part of many placements, which is good.
+
+Performance: For each ship length, we have at most 180 placements, times 5 ships = 900 placements. For each placement, we check up to length 5 cells = 5 checks. So about 4500 operations per call, which is fine.
+
+We need to also consider that after many shots, number of valid placements decreases, so computation becomes faster.
+
+Edge cases: At start, all placements are valid, so probability map will be uniform? Actually not uniform because ships can be placed in many positions, but edges have fewer placements. So center cells have higher probability because they are covered by more placements. That's good.
+
+We'll implement.
+
+Let's code.
+
+We'll precompute placements once as global variable.
+
+We need to know which ship lengths remain. Initially all lengths [5,4,3,3,2]. But as ships get sunk, we should remove them from consideration. However, we don't know which ship is sunk. But we can approximate by checking if there exists any valid placement for a given ship length that is consistent with board? Actually if a ship is sunk, there will still be valid placements for that ship length elsewhere. So we cannot remove.
+
+Instead, we keep all ships always. The probability map will naturally have low probability around sunk ships because misses will block placements.
+
+But we might waste shots targeting cells that are part of already sunk ship? No, because those cells are already hits (1) and we won't target them (board value not 0). So fine.
+
+We'll implement.
+
+We need to be careful: When a ship is sunk, we might have hits that are part of that ship. Those hits are still 1 on board. But we might try to target cells adjacent to those hits, thinking they might be part of another ship. However, ships cannot touch, but they can be adjacent diagonally? Usually in Battleship, ships cannot touch, even diagonally? Standard rules: ships cannot overlap, but can they be adjacent? Usually they can be adjacent as long as they don't overlap. So we can target adjacent cells.
+
+But if a ship is sunk, the hits are still there, and our probability map might still consider placements that cover those hits? Actually placements cannot cover a hit cell if that hit is from another ship? But ships cannot overlap, so a placement that covers a hit cell assumes that hit is from that ship. That's okay because that hit could be from that ship. But if the ship is sunk, that hit is already accounted for, so another ship cannot also cover that cell. However, our independent model doesn't enforce that, so we might overcount.
+
+To improve, we could attempt to infer sunk ships: when a hit segment is surrounded by misses or edges and its length matches a ship length, we mark those cells as "sunk" and treat them as misses for other ships? But we don't have a marker.
+
+Alternatively, we can adjust weights: for each hit cell, we know it belongs to some ship. So we should consider that only one ship can cover it. In probability calculation, we should consider that each hit cell must be covered by exactly one ship placement. That requires considering joint configurations, which is complex.
+
+Given time, I'll stick with independent model; it's a heuristic.
+
+We'll also add a tie-breaking: prefer cells that are more central, and also prefer cells that have higher number of unknown neighbors (to spread out). But probability map already accounts for that.
+
+Implementation details:
+
+Precompute placements:
+
+For each length L in [2,3,3,4,5] (but we'll store per length):
+- For orientation horizontal: for row in range(10), for col in range(10-L+1): placement = [(row, col+i) for i in range(L)]
+- Similarly vertical.
+
+Store as list of lists of tuples.
+
+We'll store in a dictionary: length -> list of placements.
+
+Now policy function:
+
+Initialize probability map 10x10 zeros.
+
+For each length L in [5,4,3,2] (but length 3 appears twice):
+   For each placement in placements[L]:
+        valid = True
+        for (r,c) in placement:
+            if board[r][c] == -1:  # miss
+                valid = False
+                break
+        if valid:
+            weight = 1
+            if L == 3: weight = 2  # because two ships of length 3
+            for (r,c) in placement:
+                probability[r][c] += weight
+
+After summing, we have probabilities.
+
+Now select cell with max probability among cells where board[r][c] == 0.
+
+If there are ties, we can choose based on some criterion: maybe prefer cells that are adjacent to hits? But probability map already accounts for that because placements covering hits get weight.
+
+Actually, if there is a hit, placements that include that hit are valid, so cells adjacent to hits might have higher probability because they extend the ship. But if the ship is already hit, we want to target its ends. Our probability map might not strongly favor ends because many placements could include the hit cell but extend in both directions. However, placements that extend beyond a miss will be invalid, so ends will emerge.
+
+But we can enhance target mode: if there is an unsunk hit, we should prioritize adjacent cells. We can incorporate that by adding extra weight to cells adjacent to hits.
+
+Let's do: For each hit cell (board[r][c]==1), add weight to its unknown orthogonal neighbors. This will direct search around hits.
+
+We'll combine: probability from ship placements + adjacency weight.
+
+Adjacency weight: for each hit cell, for each orthogonal neighbor that is unknown, add a fixed bonus (e.g., 100). But we must ensure we don't override the probability map.
+
+We'll set adjacency bonus high enough to override base probability.
+
+Also, we should avoid shooting cells that are isolated if there are hits.
+
+But we need to ensure we don't get stuck on a sunk ship: if a hit segment is surrounded by misses, adjacency bonus should not be added because all neighbors are misses or hits. Actually, if there is an unknown cell adjacent to a hit, we should target it regardless of probability.
+
+So algorithm:
+- If there exists a hit cell with unknown orthogonal neighbor, target such neighbor with highest adjacency count? Or just pick one.
+
+Simplify: 
+1. Find all unsunk hits: cells with value 1 that have at least one unknown orthogonal neighbor.
+2. If such hits exist, collect all unknown orthogonal neighbors of these hits.
+3. Among those, choose the one with highest probability (from ship placements) to break ties.
+4. If none, fallback to probability map.
+
+But how to know if a hit is unsunk? We don't know. But if a hit has unknown neighbor, it's possibly unsunk. So we'll use that.
+
+Implementation:
+
+Let hits = []
+For each cell with board[r][c]==1:
+   Check four orthogonal directions for cells with board value 0.
+   If any, add this hit to hits.
+
+If hits not empty:
+   For each hit, for each orthogonal neighbor that is 0, add to candidate list.
+   Then among candidates, choose one with highest probability (from our earlier computation).
+   If multiple, choose one arbitrarily.
+
+Else: use probability map.
+
+This gives priority to targeting around hits.
+
+Now probability map computation as before.
+
+We also need to avoid shooting cells that are known misses (-1) or hits (1). Our selection only considers board[r][c]==0.
+
+Edge case: if candidates from hits exist but all have probability 0? That's unlikely because probability map will have some weight. But if so, we still shoot at them.
+
+Now implement.
+
+We'll precompute placements at module level.
+
+We'll also need to consider that after we sink a ship, its hits remain, but we should not keep targeting around them if all neighbors are misses. Our hit detection will see that hit cells have no unknown neighbors, so they won't be selected. So good.
+
+Now code structure:
+
+- Precompute placements for lengths 2,3,4,5.
+- In policy function:
+   - Compute probability map based on placements.
+   - Find candidate cells from hits.
+   - If candidates, choose one with max probability.
+   - Else choose cell with max probability overall.
+
+We'll use numpy for array operations? Not necessary, but can use list comprehensions.
+
+To avoid recomputing placements each call, store globally.
+
+Now write code.
+
+Potential issue: The board is passed as list of list of ints. We'll convert to numpy array for easier indexing? Not necessary.
+
+Let's implement.
+
+We'll define global variable PLACEMENTS as dict.
+
+Now code.
+
+We'll also add a tie-breaker for probability map: if multiple cells have same probability, choose one with minimum distance from center, to favor center shots.
+
+Also, at the very beginning, probability map will be higher in center, so first shot will be near center.
+
+Now implement.
+
+Testing: We'll simulate a few steps.
+
+We must ensure we don't shoot at same cell twice; our selection only from board==0.
+
+Now write code.
+
+</thinking>
+
+<code>
+import itertools
+
+# Precompute all possible ship placements for each ship length
+PLACEMENTS = {}
+for length in [2, 3, 4, 5]:
+    placements = []
+    # Horizontal placements
+    for r in range(10):
+        for c in range(10 - length + 1):
+            placements.append([(r, c + i) for i in range(length)])
+    # Vertical placements
+    for r in range(10 - length + 1):
+        for c in range(10):
+            placements.append([(r + i, c) for i in range(length)])
+    PLACEMENTS[length] = placements
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Convert board to list of lists for easier access
+    # board is 10x10, values: 0 unknown, -1 miss, 1 hit
+    
+    # Step 1: Compute probability map from ship placements
+    prob = [[0 for _ in range(10)] for _ in range(10)]
+    
+    # For each ship length, consider all placements
+    # Lengths: 5,4,3,3,2 -> treat length 3 twice
+    ship_lengths = [5, 4, 3, 3, 2]
+    for length in ship_lengths:
+        weight = 2 if length == 3 else 1  # two ships of length 3
+        for placement in PLACEMENTS[length]:
+            valid = True
+            for (r, c) in placement:
+                if board[r][c] == -1:  # misses cannot be part of a ship
+                    valid = False
+                    break
+            if valid:
+                for (r, c) in placement:
+                    prob[r][c] += weight
+    
+    # Step 2: Find hits that have unknown neighbors
+    hit_candidates = []
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1:
+                # Check orthogonal neighbors
+                neighbors = []
+                if r > 0 and board[r-1][c] == 0:
+                    neighbors.append((r-1, c))
+                if r < 9 and board[r+1][c] == 0:
+                    neighbors.append((r+1, c))
+                if c > 0 and board[r][c-1] == 0:
+                    neighbors.append((r, c-1))
+                if c < 9 and board[r][c+1] == 0:
+                    neighbors.append((r, c+1))
+                if neighbors:
+                    hit_candidates.append((r, c))
+    
+    # If there are hits with unknown neighbors, target those neighbors
+    if hit_candidates:
+        # Collect all unknown neighbors of these hits
+        target_cells = []
+        for (r, c) in hit_candidates:
+            if r > 0 and board[r-1][c] == 0:
+                target_cells.append((r-1, c))
+            if r < 9 and board[r+1][c] == 0:
+                target_cells.append((r+1, c))
+            if c > 0 and board[r][c-1] == 0:
+                target_cells.append((r, c-1))
+            if c < 9 and board[r][c+1] == 0:
+                target_cells.append((r, c+1))
+        # Remove duplicates
+        target_cells = list(set(target_cells))
+        # Choose the target cell with highest probability
+        if target_cells:
+            best_cell = max(target_cells, key=lambda rc: prob[rc[0]][rc[1]])
+            return best_cell
+    
+    # Step 3: No hits to follow, choose cell with highest probability
+    best_prob = -1
+    best_cells = []
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0:  # unknown cell
+                if prob[r][c] > best_prob:
+                    best_prob = prob[r][c]
+                    best_cells = [(r, c)]
+                elif prob[r][c] == best_prob:
+                    best_cells.append((r, c))
+    
+    # Tie-breaker: choose cell closest to center (prefer middle of board)
+    if best_cells:
+        center = (4.5, 4.5)  # center of 10x10 board (indices 0-9)
+        best_cell = min(best_cells, key=lambda rc: (rc[0]-center[0])**2 + (rc[1]-center[1])**2)
+        return best_cell
+    
+    # Fallback: should never happen, but return first unknown cell
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0:
+                return (r, c)
+    return (0, 0)  # no moves left
+</code>

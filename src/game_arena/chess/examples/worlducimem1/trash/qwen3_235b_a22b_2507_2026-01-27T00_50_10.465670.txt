@@ -1,0 +1,218 @@
+The strategy for this policy is to evaluate the best move by combining several heuristics in a lightweight yet effective manner. The policy prioritizes:
+
+1. **Checkmate detection**: If any legal move leads to immediate checkmate (by simulating the move and checking if the opponent has no legal moves and is in check), we take it.
+2. **Material gain**: Capturing higher-value pieces is prioritized. We assign standard piece values (Queen=9, Rook=7, Bishop=3, Knight=3, Pawn=1) and prefer captures that maximize material gain.
+3. **Pawn promotion**: Any move that promotes a pawn to a queen (highest value) is prioritized over others.
+4. Se **curity of the king**: We avoid moves that unnecessarily expose our king, though full safety analysis is limited due to computational cost.
+5. **Development and center control (lightweight)**: Prefer moves that bring pieces to central squares (e4, d4, e5, d5) especially for knights and bishops.
+6. **Fallback to sorted prioritization**: If no tactical move is found, sort moves by a score combining capture, center control, and piece type.
+
+To simulate moves and detect checkmate, we manually implement a minimal `is_in_check` and `get_legal_moves` logic (without relying on `chess` module). This approach ensures we remain within time limits while still detecting key tactical opportunities.
+
+We use the `memory` dictionary to store any state between moves (though currently unused, left available for extensions). The algorithm efficiently filters and ranks legal moves under 1 second.
+
+<code>
+import numpy as np
+
+# Standard piece square values (simplified)
+piece_values = {'P': 1, 'N': 3, 'B': 3, 'R': 7, 'Q': 9, 'K': 0}
+
+# Center squares for bonus
+center_squares = ['e4', 'd4', 'e5', 'd5']
+
+# Function to parse position from square
+def square_to_coords(square):
+    file = ord(square[0]) - ord('a')
+    rank = int(square[1]) - 1
+    return rank, file
+
+# Get all possible moves for a side (without checking for checks, but we'll filter later)
+def get_all_moves(pieces, color):
+    moves = []
+    for sq, piece in pieces.items():
+        if piece[0] != color[0]:
+            continue
+        piece_type = piece[1]
+        r, f = square_to_coords(sq)
+        if piece_type == 'P':
+            if color == 'white':
+                if f < 7 and f >= 0 and r < 7 and f < 7:
+                    if f < 7 and chr(ord('a') + f + 1) + str(r + 2) not in pieces:
+                        moves.append(sq + chr(ord('a') + f + 1) + str(r + 2))
+            else:
+                if f < 7 and f >= 0 and r > 0 and f > 0:
+                    if f > 0 and chr(ord('a') + f - 1) + str(r) not in pieces:
+                        moves.append(sq + chr(ord('a') + f - 1) + str(r))
+        elif piece_type == 'N':
+            knight_moves = [(-2,-1),(-2,1),(-1,-2),(-1,2),(1,-2),(1,2),(2,-1),(2,1)]
+            for dr, df in knight游戏副本
+            for dr, df in knight_moves:
+                nr, nf = r + dr, f + df
+                if 0 <= nr < 8 and 0 <= nf < 8:
+                    nsq = chr(ord('a') + nf) + str(nr + 1)
+                    if nsq not in pieces or pieces[nsq][0] != color[0]:
+                        moves.append(sq + nsq)
+        elif piece_type == 'B':
+            for dr, df in [(-1,-1), (-1,1), (1,-1), (1,1)]:
+                nr, nf = r + dr, f + df
+                while 0 <= nr < 8 and 0 <= nf < 8:
+                    nsq = chr(ord('a') + nf) + str(nr + 1)
+                    if nsq not in pieces:
+                        moves.append(sq + nsq)
+                        nr, nf = nr + dr, nf + df
+                    else:
+                        if pieces[nsq][0] != color[0]:
+                            moves.append(sq + nsq)
+                        break
+        elif piece_type == 'R':
+            for dr, df in [(-1,0), (0,-1), (0,1), (1,0)]:
+                nr, nf = r + dr, f + df
+                while 0 <= nr < 8 and 0 <= nf < 8:
+                    nsq = chr(ord('a') + nf) + str(nr + 1)
+                    if nsq not in pieces:
+                        moves.append(sq + nsq)
+                        nr, nf = nr + dr, nf + df
+                    else:
+                        if pieces[nsq][0] != color[0]:
+                            moves.append(sq + nsq)
+                        break
+        elif piece_type == 'Q':
+            for dr, df in [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]:
+                nr, nf = r + dr, f + df
+                while 0 <= nr < 8 and 0 <= nf < 8:
+                    nsq = chr(ord('a') + nf) + str(nr + 1)
+                    if nsq not in pieces:
+                        moves.append(sq + nsq)
+                        nr, nf = nr + dr, nf + df
+                    else:
+                        if pieces[nsq][0] != color[0]:
+                            moves.append(sq + nsq)
+                        break
+        elif piece_type == 'K':
+            for dr in range(-1,2):
+                for df in range(-1,2):
+                    if dr == 0 and df == 0:
+                        continue
+                    nr, nf = r + dr, f + df
+                    if 0 <= nr < 8 and 0 <= nf < 8:
+                        nsq = chr(ord('a') + nf) + str(nr + 1)
+                        if nsq not in pieces or pieces[nsq][0] != color[0]:
+                            moves.append(sq + nsq)
+    return moves
+
+# Check if the king of given color is in check
+def is_in_check(pieces, color):
+    king_code = 'wK' if color == 'white' else 'bK'
+    opp_color = 'black' if color == 'white' else 'white'
+    opp_moves = get_all_moves(pieces, opp_color)
+    for move in opp_moves:
+        if len(move) == 4 and move[2:4] in pieces and pieces[move[2:4]] == king_code:
+            return True
+    return False
+
+# Apply a move and return the new pieces state
+def make_move(pieces, move):
+    new_pieces = pieces.copy()
+    # Parse move
+    from_sq = move[:2]
+    to_sq = move[2:4]
+    if from_sq not in new_pieces:
+        return new_pieces
+    piece = new_pieces[from_sq]
+    # Pawn promotion
+    if len(move) == 5:
+        promo_piece = move[4].upper()
+        if promo_piece not in 'QRBN':
+            promo_piece = 'Q'
+        new_pieces[to_sq] = piece[0] + promo游戏副本
+        new_pieces[to_sq] = piece[0] + promo_piece
+        del new_pieces[from_sq]
+    else:
+        new_pieces[to_sq] = piece
+        del new_pieces[from_sq]
+    return new_pieces
+
+# Check if a move leaves the king in check
+def is_legal_move(pieces, move, color):
+    temp_pieces = make_move(pieces, move)
+    return not is_in_check(temp_pieces, color)
+
+# Get legal moves that don't leave king in check
+def get_legal_moves(pieces, color):
+    all_moves = get_all_moves(pieces, color)
+    legal = []
+    for move in all_moves:
+        if is_legal_move(pieces, move, color):
+            legal.append(move)
+    return legal
+
+# Evaluate material difference
+def evaluate_material(pieces, color):
+    total = 0
+    for piece in pieces.values():
+        val = piece_values[piece[1]]
+        if piece[0] == ('w' if color == 'white' else 'b'):
+            total += val
+        else:
+            total -= val
+    return total
+
+def policy(pieces: dict[str, str], to_play: str, memory: dict) -> tuple[str, dict]:
+    legal_moves = get_legal_moves(pieces, to_play)
+    
+    if not legal_moves:
+        # Fallback: should not happen, but return first possible move
+        return next(iter(pieces.keys())) + 'a1', memory
+
+    color_char = 'w' if to_play == 'white' else 'b'
+    opp_color = 'black' if to_play == 'white' else 'white'
+    
+    # 1. Check for checkmate
+    for move in legal_moves:
+        new_pieces = make_move(pieces, move)
+        opp_legal_moves = get_legal_moves(new_pieces, opp_color)
+        if not opp_legal_moves and is_in_check(new_pieces, opp_color):
+            return move, memory  # Checkmate: take it
+
+    # 2. Check for pawn promotion to queen
+    promotion_moves = [m for m in legal_moves if len(m) == 5 and m[4] == 'q']
+    if promotion_moves:
+        return promotion_moves[0], memory
+
+    # 3. Score moves based on material gain and center control
+    move_scores = []
+    for move in legal_moves:
+        score = 0.0
+        # Capture bonus
+        to_sq = move[2:4]
+        if to_sq in pieces:
+            captured_piece = pieces[to_sq]
+            score += piece_values[captured_piece[1]]
+        
+        # Promotion bonus (if promoting to non-queen, still good)
+        if len(move) == 5:
+            score += piece_values[move[4].upper()] - 1 0 8:
+                        score +=  score += 10  # Strong bonus
+
+        # Center control bonus for knights and bishops
+        from_sq = move[:2]
+        piece = pieces.get(from_sq, '')
+        if piece[1] in 'NB':
+            if to_sq in center_squares:
+                score += 0.5
+
+        # Penalize moving king early unless castling
+        if piece[1] == 'K':
+            if move in ['e1g1', 'e1c1', 'e8g8', 'e8c8']:  # Castling
+                score += 1.0
+            else:
+                score -= 0.5  # Discourage early king moves
+
+        move_scores.append((score, move))
+
+    # Sort by score descending
+    move_scores.sort(reverse=True, key=lambda x: x[0])
+    best_move = move_scores[0][1]
+    
+    return best_move, memory
+</code>

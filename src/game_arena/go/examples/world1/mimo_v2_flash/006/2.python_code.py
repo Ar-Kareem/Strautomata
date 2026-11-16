@@ -1,0 +1,545 @@
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    import sys
+
+    # Set recursion limit higher to handle deep floods if necessary, 
+    # though 19x19 is usually manageable.
+    sys.setrecursionlimit(5000)
+    
+    BOARD_SIZE = 19
+    PASS = (0, 0)
+
+    # Convert lists to sets for O(1) lookup
+    my_stones = set(me)
+    opp_stones = set(opponent)
+    all_stones = my_stones.union(opp_stones)
+    
+    # Quick check if board is full (or almost full)
+    if len(all_stones) >= 360:
+        return PASS
+
+    def get_neighbors(r, c):
+        neighbors = []
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if 1 <= nr <= BOARD_SIZE and 1 <= nc <= BOARD_SIZE:
+                neighbors.append((nr, nc))
+        return neighbors
+
+    def get_group_liberties(start_stone, owner_stones):
+        """Returns the group set and the count of liberties."""
+        if start_stone not in owner_stones:
+            return set(), 0
+        
+        group = set()
+        liberties = set()
+        stack = [start_stone]
+        visited = set([start_stone])
+        
+        while stack:
+            curr = stack.pop()
+            group.add(curr)
+            
+            for n in get_neighbors(*curr):
+                if n in owner_stones:
+                    if n not in visited:
+                        visited.add(n)
+                        stack.append(n)
+                elif n not in all_stones: # Empty point
+                    liberties.add(n)
+        
+        return group, len(liberties)
+
+    # 1. Identify all my groups and their liberties
+    my_groups = [] 
+    visited_groups = set()
+    for stone in my_stones:
+        if stone not in visited_groups:
+            g, libs = get_group_liberties(stone, my_stones)
+            visited_groups.update(g)
+            my_groups.append({'group': g, 'liberties': libs})
+            
+    # 2. Identify all opponent groups and their liberties
+    opp_groups = []
+    visited_groups = set()
+    for stone in opp_stones:
+        if stone not in visited_groups:
+            g, libs = get_group_liberties(stone, opp_stones)
+            visited_groups.update(g)
+            opp_groups.append({'group': g, 'liberties': libs})
+
+    # Helper to check if a move is legal (not suicide)
+    def is_suicide(move, owner_stones):
+        # Temporarily add the stone
+        temp_stones = owner_stones.union({move})
+        # Check the group formed by the new stone
+        # We need to check neighbors to see if we connect to an existing group 
+        # or form a new one.
+        
+        # Optimization: If we capture neighbors, it's never suicide.
+        # Check for capture opportunities on opponent first is handled in logic,
+        # but here we strictly check if *our* move results in 0 liberties.
+        
+        # Check neighbors for friendly groups
+        neighbors = get_neighbors(*move)
+        friendly_neighbors = [n for n in neighbors if n in temp_stones]
+        
+        if not friendly_neighbors:
+            # New isolated group
+            # Check liberties of the new point alone (plus potential captures)
+            # Liberties are empty neighbors not in opponent stones
+            # Opponent stones are the OTHER player's stones.
+            # But wait, we don't know opponent here easily without passing it. 
+            # Actually, we have `all_stones` which includes opponent.
+            
+            # Liberties of the new stone:
+            lib_count = 0
+            for n in neighbors:
+                if n not in all_stones and n != move: # Empty
+                    lib_count += 1
+            
+            # If we have >1 liberty, safe. If 1 liberty, we might be saving a group? 
+            # No, we are isolated.
+            if lib_count > 0:
+                return False
+            else:
+                return True # Suicide
+        else:
+            # We connect to existing groups. We survive if the combined group has liberties.
+            # We need to do a mini-flood fill on the hypothetical board.
+            # But wait, we might capture stones! Capturing creates liberties.
+            
+            # Let's simulate capture first.
+            # Opponent stones are `opp_stones`.
+            # If we play `move`, which opponent groups lose their last liberty?
+            
+            temp_opp = set(opp_stones)
+            # Remove captured stones
+            captured = set()
+            for n in neighbors:
+                if n in temp_opp:
+                    # Check the group n belongs to.
+                    # We need to see if that group's liberties become 0 with `move` occupied.
+                    # Instead of full group recalc, we can just check: 
+                    # If neighbor is opp, and all its neighbors are either me or opp or boundary,
+                    # and the only empty neighbor was `move`.
+                    # This is complex.
+                    pass
+            
+            # Simplified legality check:
+            # A move is legal if the group formed has >0 liberties OR if it captures stones.
+            # Since calculating exact liberties with capture is heavy, we can rely on:
+            # 1. If the move connects to a friendly group with >1 liberty, safe.
+            # 2. If it connects to a friendly group with 1 liberty, we must capture.
+            # 3. If it creates a new group, it must have >0 liberties (unless capturing).
+            
+            # For the purpose of this heuristic, let's use a strict check:
+            # Calculate liberties of the new group assuming `move` is played.
+            # But this requires simulating capture.
+            
+            # Let's do a proper check.
+            
+            # 1. Find which opponent groups are endangered.
+            captured_groups = []
+            for n in neighbors:
+                if n in opp_stones:
+                    # We need to find the group of n and check its liberties *excluding* `move` as a liberty.
+                    # If that group has 0 liberties, it is captured.
+                    # We can check this by running a liberty count where `move` is treated as occupied by us.
+                    pass
+            
+            # Actually, for the policy, we usually only play moves that we think are good.
+            # We will avoid moves that are definitely suicide by checking liberties of the group we form.
+            # If we form a group with 0 liberties, and we didn't capture anything to open up liberties, it's suicide.
+            
+            # To be safe and simple: 
+            # We check the liberties of the group we are creating/joining *after* hypothetical capture.
+            # Since we are just a policy, we can skip complex legality and assume our moves are valid 
+            # EXCEPT we must ensure we don't return a suicide move.
+            
+            # Let's implement a specific "Is Legal" check.
+            # We will treat `move` as owned by us.
+            # Then run flood fill.
+            # Count liberties.
+            # If liberties == 0, it's suicide (unless we captured, but capture opens liberties).
+            # If we captured, liberties > 0.
+            # So just checking liberties of the resulting group is sufficient.
+            
+            return False # Placeholder, we will handle legal checks in the main loop
+
+    # --- STRATEGY EXECUTION ---
+
+    # 1. DEFEND: Look for my groups with 1 liberty.
+    # Save them.
+    for g_data in my_groups:
+        if g_data['liberties'] == 1:
+            # Find the liberty
+            # We need to know *where* the liberty is.
+            # We can find it by iterating over the group and checking neighbors.
+            # Or we can re-implement get_group_liberties to return the liberty set. 
+            # Let's patch get_group_liberties to return the set.
+            pass
+    
+    # Redefining get_group_liberties to return the liberty SET for functionality
+    def get_group_liberties_and_set(start_stone, owner_stones):
+        if start_stone not in owner_stones:
+            return set(), set()
+        group = set()
+        liberties = set()
+        stack = [start_stone]
+        visited = set([start_stone])
+        while stack:
+            curr = stack.pop()
+            group.add(curr)
+            for n in get_neighbors(*curr):
+                if n in owner_stones:
+                    if n not in visited:
+                        visited.add(n)
+                        stack.append(n)
+                elif n not in all_stones:
+                    liberties.add(n)
+        return group, liberties
+
+    # Re-calculate groups with liberty set
+    my_groups = [] 
+    visited_groups = set()
+    for stone in my_stones:
+        if stone not in visited_groups:
+            g, libs = get_group_liberties_and_set(stone, my_stones)
+            visited_groups.update(g)
+            my_groups.append({'group': g, 'liberties': len(libs), 'liberty_set': libs})
+
+    opp_groups = []
+    visited_groups = set()
+    for stone in opp_stones:
+        if stone not in visited_groups:
+            g, libs = get_group_liberties_and_set(stone, opp_stones)
+            visited_groups.update(g)
+            opp_groups.append({'group': g, 'liberties': len(libs), 'liberty_set': libs})
+
+    # 1. DEFEND
+    for g_data in my_groups:
+        if g_data['liberties'] == 1:
+            move = next(iter(g_data['liberty_set']))
+            # Check if move is legal (not suicide)
+            # If we save a group, it's usually legal unless we are filling our own eye 
+            # (which is bad strategy but technically legal unless it's the last eye).
+            # Actually, filling your own last eye is suicide.
+            # But in Go, you can't fill your own last eye if it's the only liberty. 
+            # Wait, yes you can, it's just suicidal.
+            # Let's check suicide for this move.
+            
+            # To check suicide: simulate group after move.
+            # Temp add to my_stones
+            temp_my = my_stones.union({move})
+            # Check liberties of the group formed by `move` in `temp_my`.
+            # The opponent stones are still `opp_stones`.
+            
+            # New check function
+            def check_liberties_of_move(pos, current_my_stones, current_opp_stones):
+                # Flood fill from pos in current_my_stones
+                stack = [pos]
+                visited = {pos}
+                liberties = 0
+                while stack:
+                    curr = stack.pop()
+                    for n in get_neighbors(*curr):
+                        if n in current_my_stones and n not in visited:
+                            visited.add(n)
+                            stack.append(n)
+                        elif n not in current_my_stones and n not in current_opp_stones:
+                            return 1 # Found a liberty
+                return 0
+
+            # Check if we capture anything
+            # If we capture, we create liberties, so it's safe.
+            # Does `move` capture anything?
+            # It captures if it reduces an opponent group to 0 liberties.
+            captures = False
+            for n in get_neighbors(*move):
+                if n in opp_stones:
+                    # Check if group at n has >1 liberty excluding move
+                    # Actually, if it has 1 liberty total (which is move), then it dies.
+                    # We can check if n is in a group that has exactly 1 liberty.
+                    # We already have opp_groups.
+                    for og in opp_groups:
+                        if n in og['group'] and og['liberties'] == 1:
+                            captures = True
+                            break
+                if captures: break
+            
+            if captures:
+                return move
+
+            # If no capture, check if we die.
+            # We need to check liberties of the group *after* move.
+            # If we connect to a group with >1 liberty, we are safe.
+            # If we connect to a group with 1 liberty, we die (unless we capture).
+            # If we are isolated, we need >0 liberties.
+            
+            # Let's use the helper to check if it's suicide.
+            # It's suicide if the resulting group has 0 liberties.
+            
+            # Optimization: If we connect to a group with >1 liberty, safe.
+            safe = False
+            for n in get_neighbors(*move):
+                if n in my_stones:
+                    # Find the group n belongs to
+                    for mg in my_groups:
+                        if n in mg['group']:
+                            if mg['liberties'] > 1:
+                                safe = True
+                                break
+            if not safe:
+                # Check if isolated
+                if len([n for n in get_neighbors(*move) if n in my_stones]) == 0:
+                    # Isolated. Needs >0 liberties
+                    if len([n for n in get_neighbors(*move) if n not in all_stones]) > 0:
+                        safe = True
+                else:
+                    # Connected to a 1-liberty group.
+                    # If we don't capture, we die. 
+                    # But wait, we might expand the group and find a new liberty elsewhere?
+                    # No, if the group has 1 liberty, and we fill it, and don't capture, 
+                    # the new combined group has 0 liberties (the one we filled is now stone).
+                    safe = False
+            
+            if safe:
+                return move
+            # If not safe (suicide), we don't play it. 
+            # In a real game, we wouldn't play a suicide move, 
+            # but sometimes filling a 1-liberty group is required to kill the opponent 
+            # if it's a mutual life situation? No, that's a snapback.
+            # If it's a snapback (we capture), we handled it.
+            # If it's not a capture, it's suicide. We skip.
+
+    # 2. CAPTURE: Look for opponent groups with 1 liberty.
+    for g_data in opp_groups:
+        if g_data['liberties'] == 1:
+            move = next(iter(g_data['liberty_set']))
+            # Check if move is legal (not suicide)
+            # It's safe if we capture (which we do) OR if we have other liberties.
+            # Since we are capturing, we get the stones back as liberties.
+            # So usually safe.
+            
+            # Let's double check for "Snapback" issues where filling the last liberty 
+            # doesn't capture if the group is in a loop? No, 1 liberty means 1 liberty.
+            # Unless... oh, standard Go rules. 
+            # If we fill the last liberty, the stones are removed first.
+            # So we definitely gain liberties.
+            
+            # However, we must check if the move itself is suicide *before* capture is processed? 
+            # No, capture is processed instantly. 
+            # So if capturing, it's almost always legal.
+            
+            # But there is one edge case: 
+            # We have a group with 1 liberty. Opponent has a group with 1 liberty.
+            # They are adjacent? No.
+            # If we play at the opponent's last liberty, we capture them.
+            # The only way this is suicide is if our group THEN has 0 liberties.
+            # Example: Snapback.
+            #   . O .
+            #   O O O
+            #   . X .
+            #   . X .
+            #   . X .
+            # My O is at (1,2). Opponent X is at (2,2), (3,2), (4,2).
+            # X has 1 liberty at (1,2).
+            # If I play at (1,2), I capture X.
+            # After capture, (1,2) is O. Is it safe? Yes.
+            
+            # Example of suicide capture:
+            #   . . .
+            #   O X O
+            #   . X .
+            #   . X .
+            #   . . .
+            # X has 1 liberty at (1,1).
+            # If O plays at (1,1), captures X.
+            # Now O is at (1,1). It has liberties (1,2) is O? No.
+            # Wait. (1,1) is O. Neighbors: (1,2) is X? No.
+            # If the board is:
+            #   . X .
+            #   X O X
+            #   . X .
+            #   . X .
+            # X has 1 liberty at (0,1). O is in atari.
+            # If O plays at (0,1), captures X.
+            # Then O connects to (0,1)? No.
+            # Actually, if we play at the opponent's last liberty, we capture.
+            # Unless... 
+            # If we play at the opponent's last liberty, and our stone has NO other liberties, 
+            # AND capturing the opponent doesn't give us liberties (because the opponent stones were blocking our liberties?), 
+            # Wait. If opponent stones are blocking our liberties, capturing them gives us liberties.
+            # So it's hard to be suicide.
+            
+            # Except if the move is surrounded by other stones such that capturing doesn't help?
+            # If we are surrounded by our own stones? No.
+            # If we are surrounded by opponent stones that we don't capture?
+            #   O O O
+            #   O X O  (X has 1 liberty at center? No)
+            # Let's assume it's safe for this heuristic. We just check suicide generally.
+            
+            # Check suicide:
+            # Temp add, check liberties. If 0, it's suicide.
+            # Since we capture, we remove opponent stones.
+            # So we check liberties on `my_stones + {move} - {captured_stones}`.
+            # Captured stones are `g_data['group']`.
+            
+            temp_my = my_stones.union({move})
+            temp_opp = opp_stones.difference(g_data['group'])
+            
+            # Check liberties of the new group in this state
+            # We can use the check_liberties_of_move helper adapted
+            def check_liberties(pos, m_stones, o_stones):
+                stack = [pos]
+                visited = {pos}
+                while stack:
+                    curr = stack.pop()
+                    for n in get_neighbors(*curr):
+                        if n in m_stones and n not in visited:
+                            visited.add(n)
+                            stack.append(n)
+                        elif n not in m_stones and n not in o_stones:
+                            return True # Has liberty
+                return False
+
+            if check_liberties(move, temp_my, temp_opp):
+                return move
+            else:
+                # Even after capture, we die. (Rare, but possible if filling an eye)
+                # We should avoid this move.
+                pass
+
+    # 3. EXPAND: Look for the best empty spot to connect to most friendly stones.
+    # We evaluate all empty points (or a subset for speed).
+    # 19x19 = 361 points. We can check all.
+    
+    best_move = None
+    max_score = -1
+    
+    # Optimization: Don't scan empty points if board is very full or we are just starting
+    # But we need to make a move.
+    
+    for r in range(1, BOARD_SIZE + 1):
+        for c in range(1, BOARD_SIZE + 1):
+            pos = (r, c)
+            if pos in all_stones:
+                continue
+            
+            # Check legality first: not suicide
+            # And not atari (unless we capture, but we are expanding, so likely no capture)
+            
+            # Heuristic: 
+            # 1. Connect to my stones (count neighbors)
+            # 2. Don't play too close to opponent (unless forced)
+            
+            # Count connected friendly stones
+            friends = 0
+            empty_neighbors = 0
+            opp_neighbors = 0
+            
+            neighbors = get_neighbors(r, c)
+            for n in neighbors:
+                if n in my_stones:
+                    friends += 1
+                elif n in opp_stones:
+                    opp_neighbors += 1
+                else:
+                    empty_neighbors += 1
+            
+            # If 0 friends, it's an isolated move. Less valuable unless it's an approach move.
+            # But we need to play somewhere.
+            # Let's value connection.
+            
+            # Score:
+            # Base score
+            score = friends * 2 
+            
+            # Penalty for playing near opponent (dangerous)
+            score -= opp_neighbors * 3
+            
+            # Bonus for liberties
+            score += empty_neighbors
+            
+            # If suicide, score is -9999
+            # Check suicide
+            # We need to ensure we don't play suicide.
+            # Simple suicide check:
+            # If we have 0 friends and 0 empty neighbors -> Suicide.
+            # If we have friends, check their liberties.
+            # If all connected friends have 1 liberty (and we are filling it), it's suicide.
+            # This is complex to check perfectly here. 
+            # We will do a simplified check.
+            
+            # If we play here, do we die?
+            # If we have at least 1 empty neighbor -> Safe (unless surrounded by opp? No, empty neighbor is liberty).
+            # If we have 0 empty neighbors (surrounded by stones):
+            #   If surrounded by my stones -> Suicide if filling their last liberty.
+            #   If surrounded by opp stones -> Suicide (no liberties).
+            #   If mixed -> Depends on capture.
+            
+            # Let's check capture first.
+            captured = False
+            for n in neighbors:
+                if n in opp_stones:
+                    # Find if n belongs to a 1-lib group
+                    for og in opp_groups:
+                        if n in og['group'] and og['liberties'] == 1:
+                            captured = True
+                            break
+                if captured: break
+            
+            if captured:
+                # High priority
+                score += 50
+                # We should verify it's not suicide even after capture
+                # But usually safe.
+                # Let's return immediately if capture is found? 
+                # No, we want the BEST capture or best move.
+                # But capture is very good.
+                # If we find a capture, let's return it if it's legal.
+                # Actually, step 2 already handled 1-lib captures. 
+                # Here we might find captures that are not 1-lib? 
+                # No, to capture, the group must have 1 liberty.
+                # So step 2 covered it.
+                # Unless we just reduced it to 1 liberty now?
+                # No, this is a static board evaluation.
+                pass
+            
+            # Suicide Check (Heuristic)
+            # If no empty neighbors and no friends -> Suicide
+            if empty_neighbors == 0 and friends == 0:
+                continue
+            
+            # If friends, check if we are filling their last liberty
+            if friends > 0 and empty_neighbors == 0:
+                # We are surrounded by friends.
+                # Are we filling the last liberty of the group?
+                # If all connected friends have exactly 1 liberty, then we are filling it.
+                # This is suicide (unless capture, handled above).
+                safe = False
+                for n in neighbors:
+                    if n in my_stones:
+                        # Find the group
+                        for mg in my_groups:
+                            if n in mg['group']:
+                                # If the group has >1 liberty, we are safe (we are adding a stone but they still have libs)
+                                if mg['liberties'] > 1:
+                                    safe = True
+                                    break
+                                # If the group has 1 liberty, and we are the only empty neighbor?
+                                # We are definitely filling it.
+                if not safe:
+                    continue # Suicide
+
+            if score > max_score:
+                max_score = score
+                best_move = pos
+
+    if best_move is not None:
+        return best_move
+
+    # If no move found (e.g., only suicide moves left or board full)
+    return PASS
+

@@ -1,0 +1,165 @@
+
+import math
+from typing import List, Tuple, Set
+
+# Helper functions
+
+def inside(r, c):
+    return 0 <= r < 8 and 0 <= c < 8
+
+def is_dark(r, c):
+    return (r + c) % 2 == 1
+
+def king_row(color):
+    return 0 if color == 'b' else 7
+
+def opponent(color):
+    return 'w' if color == 'b' else 'b'
+
+def generate_capture_sequences(start, is_king, my_men, my_kings, opp_men, opp_kings, color):
+    """Return list of sequences: (end_pos, captured_list, became_king)"""
+    my_pieces = set(my_men) | set(my_kings)
+    opp_pieces = set(opp_men) | set(opp_kings)
+
+    results = []
+
+    def dfs(pos, is_king_now, my_p, opp_p, captured):
+        r, c = pos
+        # If man reaches king row, stop (American checkers)
+        if (not is_king_now) and r == king_row(color):
+            results.append((pos, captured[:], True))
+            return
+
+        directions = [(-1,-1), (-1,1), (1,-1), (1,1)]
+        found = False
+        for dr, dc in directions:
+            r1, c1 = r + dr, c + dc
+            r2, c2 = r + 2*dr, c + 2*dc
+            if inside(r2, c2) and inside(r1, c1) and is_dark(r2, c2):
+                if (r1, c1) in opp_p and (r2, c2) not in my_p and (r2, c2) not in opp_p:
+                    # capture
+                    found = True
+                    new_my = set(my_p)
+                    new_opp = set(opp_p)
+                    new_my.discard(pos)
+                    new_my.add((r2, c2))
+                    new_opp.discard((r1, c1))
+                    dfs((r2, c2), is_king_now, new_my, new_opp, captured + [(r1, c1)])
+        if not found:
+            results.append((pos, captured[:], False))
+
+    dfs(start, is_king, set(my_pieces), set(opp_pieces), [])
+    # Filter to only those with at least one capture
+    return [seq for seq in results if len(seq[1]) > 0]
+
+def generate_moves(my_men, my_kings, opp_men, opp_kings, color):
+    """Generate all legal moves. Return list of dicts with keys: start, end, captured, become_king."""
+    moves = []
+    my_pieces = set(my_men) | set(my_kings)
+    opp_pieces = set(opp_men) | set(opp_kings)
+
+    # First generate all captures
+    capture_moves = []
+    for p in my_men:
+        seqs = generate_capture_sequences(p, False, my_men, my_kings, opp_men, opp_kings, color)
+        for end, captured, became_king in seqs:
+            capture_moves.append({"start": p, "end": end, "captured": captured, "become_king": became_king})
+    for p in my_kings:
+        seqs = generate_capture_sequences(p, True, my_men, my_kings, opp_men, opp_kings, color)
+        for end, captured, became_king in seqs:
+            capture_moves.append({"start": p, "end": end, "captured": captured, "become_king": False})
+    if capture_moves:
+        # Must capture
+        return capture_moves
+
+    # Otherwise normal moves
+    directions_man = [(-1,-1), (-1,1)] if color == 'b' else [(1,-1), (1,1)]
+    directions_king = [(-1,-1), (-1,1), (1,-1), (1,1)]
+
+    for p in my_men:
+        r, c = p
+        for dr, dc in directions_man:
+            r2, c2 = r + dr, c + dc
+            if inside(r2, c2) and is_dark(r2, c2) and (r2, c2) not in my_pieces and (r2, c2) not in opp_pieces:
+                become_king = (r2 == king_row(color))
+                moves.append({"start": p, "end": (r2, c2), "captured": [], "become_king": become_king})
+    for p in my_kings:
+        r, c = p
+        for dr, dc in directions_king:
+            r2, c2 = r + dr, c + dc
+            if inside(r2, c2) and is_dark(r2, c2) and (r2, c2) not in my_pieces and (r2, c2) not in opp_pieces:
+                moves.append({"start": p, "end": (r2, c2), "captured": [], "become_king": False})
+    return moves
+
+def apply_move(move, my_men, my_kings, opp_men, opp_kings, color):
+    """Apply move, return new sets."""
+    my_men = set(my_men)
+    my_kings = set(my_kings)
+    opp_men = set(opp_men)
+    opp_kings = set(opp_kings)
+
+    start = move["start"]
+    end = move["end"]
+    captured = move["captured"]
+
+    # Determine if moving piece is king
+    moving_is_king = start in my_kings
+
+    if moving_is_king:
+        my_kings.discard(start)
+    else:
+        my_men.discard(start)
+
+    for c in captured:
+        if c in opp_men:
+            opp_men.discard(c)
+        elif c in opp_kings:
+            opp_kings.discard(c)
+
+    if moving_is_king or (not moving_is_king and move["become_king"]):
+        my_kings.add(end)
+    else:
+        my_men.add(end)
+
+    return my_men, my_kings, opp_men, opp_kings
+
+def evaluate_position(my_men, my_kings, opp_men, opp_kings):
+    return len(my_men) + 1.5 * len(my_kings) - (len(opp_men) + 1.5 * len(opp_kings))
+
+def move_unsafe(move, my_men, my_kings, opp_men, opp_kings, color):
+    """Check if moved piece can be captured immediately by opponent."""
+    my_men2, my_kings2, opp_men2, opp_kings2 = apply_move(move, my_men, my_kings, opp_men, opp_kings, color)
+    opp_moves = generate_moves(opp_men2, opp_kings2, my_men2, my_kings2, opponent(color))
+    if opp_moves and len(opp_moves[0]["captured"]) > 0:
+        # If any capture available, see if moved piece is capturable
+        target = move["end"]
+        for m in opp_moves:
+            if target in m["captured"]:
+                return True
+    return False
+
+def policy(my_men, my_kings, opp_men, opp_kings, color) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    moves = generate_moves(my_men, my_kings, opp_men, opp_kings, color)
+    if not moves:
+        # No legal moves: return a dummy move (should not happen in valid games)
+        return ((0,0),(0,0))
+
+    best_score = -1e9
+    best_move = moves[0]
+
+    for m in moves:
+        my_men2, my_kings2, opp_men2, opp_kings2 = apply_move(m, my_men, my_kings, opp_men, opp_kings, color)
+        score = evaluate_position(my_men2, my_kings2, opp_men2, opp_kings2)
+        # Prefer captures
+        score += 2 * len(m["captured"])
+        # Bonus for kinging
+        if m["become_king"]:
+            score += 1.0
+        # Penalize unsafe moves
+        if move_unsafe(m, my_men, my_kings, opp_men, opp_kings, color):
+            score -= 1.5
+        if score > best_score:
+            best_score = score
+            best_move = m
+
+    return (best_move["start"], best_move["end"])

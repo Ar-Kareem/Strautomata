@@ -1,0 +1,232 @@
+```python
+import sys
+import numpy as np
+
+# Set recursion limit to handle deep recursion if necessary (though iterative approach is used)
+sys.setrecursionlimit(2000)
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    """
+    Determines the optimal move for a 3x3x3 3D Tic-Tac-Toe game.
+    Uses an Alpha-Beta Pruning algorithm with a depth-limited search and heuristic evaluation
+    for non-terminal states.
+    """
+    
+    # Convert board to numpy array for easier manipulation and indexing
+    # We copy to ensure we don't modify the original input within this function's scope
+    # The internal representation uses 0=empty, 1=player, 2=opponent for easier bitwise logic
+    # Original: 0=empty, 1=player, -1=opponent
+    b = np.array(board, dtype=int)
+    current_board = np.zeros((3, 3, 3), dtype=int)
+    
+    # Mapping for internal logic: 1 (Player), 2 (Opponent), 0 (Empty)
+    # Original board uses 1 for AI and -1 for Opponent
+    current_board[b == 1] = 1
+    current_board[b == -1] = 2
+    
+    # Precompute all winning lines (triples) to speed up checking
+    LINES = []
+    # Rows (fixed x, y, varying z)
+    for i in range(3):
+        for j in range(3):
+            LINES.append(((i, j, 0), (i, j, 1), (i, j, 2)))
+    # Columns (fixed x, z, varying y)
+    for i in range(3):
+        for j in range(3):
+            LINES.append(((i, 0, j), (i, 1, j), (i, 2, j)))
+    # Pillars (fixed y, z, varying x)
+    for i in range(3):
+        for j in range(3):
+            LINES.append(((0, i, j), (1, i, j), (2, i, j)))
+    
+    # 2D Diagonals (fixed x)
+    for i in range(3):
+        LINES.append(((i, 0, 0), (i, 1, 1), (i, 2, 2)))
+        LINES.append(((i, 0, 2), (i, 1, 1), (i, 2, 0)))
+    # 2D Diagonals (fixed y)
+    for i in range(3):
+        LINES.append(((0, i, 0), (1, i, 1), (2, i, 2)))
+        LINES.append(((0, i, 2), (1, i, 1), (2, i, 0)))
+    # 2D Diagonals (fixed z)
+    for i in range(3):
+        LINES.append(((0, 0, i), (1, 1, i), (2, 2, i)))
+        LINES.append(((0, 2, i), (1, 1, i), (2, 0, i)))
+    
+    # 3D Main Diagonals
+    LINES.append(((0, 0, 0), (1, 1, 1), (2, 2, 2)))
+    LINES.append(((0, 0, 2), (1, 1, 1), (2, 2, 0)))
+    LINES.append(((0, 2, 0), (1, 1, 1), (2, 0, 2)))
+    LINES.append(((0, 2, 2), (1, 1, 1), (2, 0, 0)))
+    
+    # Helper to get line status
+    def get_line_status(board):
+        for line in LINES:
+            p1, p2, p3 = line
+            vals = {board[p1], board[p2], board[p3]}
+            if len(vals) == 1 and 0 not in vals:
+                # Winner found
+                winner = board[p1]
+                return winner # 1 or 2
+        return 0 # No winner or draw
+
+    # Evaluation function
+    def evaluate(board, depth):
+        status = get_line_status(board)
+        if status == 1: return 1000 + depth # AI wins
+        if status == 2: return -1000 - depth # Opponent wins
+        
+        # Check for draw (board full)
+        if np.count_nonzero(board) == 27: return 0
+        
+        # Heuristic: Count potential lines
+        # We assign points for having 1 or 2 markers in a line, weighted by emptiness
+        score = 0
+        for line in LINES:
+            p1, p2, p3 = line
+            vals = [board[p1], board[p2], board[p3]]
+            counts = {1: 0, 2: 0, 0: 0}
+            for v in vals: counts[v] += 1
+            
+            if counts[0] > 0: # Only count open lines
+                # AI (1) potential
+                if counts[2] == 0: # No opponent markers
+                    if counts[1] == 2: score += 10
+                    elif counts[1] == 1: score += 1
+                
+                # Opponent (2) potential
+                if counts[1] == 0: # No AI markers
+                    if counts[2] == 2: score -= 10
+                    elif counts[2] == 1: score -= 1
+                    
+        return score
+
+    # Minimax with Alpha-Beta Pruning
+    # Returns (score, move)
+    def minimax(board, depth, alpha, beta, is_maximizing):
+        status = get_line_status(board)
+        # Terminal state check
+        if status == 1: return (1000 + depth, None)
+        if status == 2: return (-1000 - depth, None)
+        if np.count_nonzero(board) == 27: return (0, None)
+        if depth >= 3: # Depth limit for heuristic
+            return (evaluate(board, depth), None)
+        
+        best_move = None
+        
+        if is_maximizing:
+            max_eval = -float('inf')
+            # Get valid moves (empty spots)
+            # Optimization: Prioritize center, corners, then edges/face centers
+            # But for correctness, we just need to iterate available spots
+            empty_indices = np.argwhere(board == 0)
+            
+            # Move ordering: prioritize promising spots to improve alpha-beta pruning
+            # Simple heuristic ordering: sort by distance to center (1,1,1)
+            # Center of cube is (1,1,1). Manhattan or Euclidean dist.
+            # Let's just use a fixed preferred order for 3x3x3: Center (1,1,1) -> Corners -> Edges
+            # But generating dynamic order is safer for generalization.
+            # Let's just use a simple score based on current board state to order moves
+            
+            moves = [tuple(idx) for idx in empty_indices]
+            
+            # Simple ordering: lines with potential first
+            # However, for 3x3x3, full sorting is overkill. Random is fine, but let's pick centers first.
+            # Preferred order: (1,1,1), then corners, then edges, then face centers.
+            # Let's just check if specific moves are available and try them.
+            priority = [
+                (1,1,1),
+                # Corners
+                (0,0,0), (0,0,2), (0,2,0), (0,2,2),
+                (2,0,0), (2,0,2), (2,2,0), (2,2,2),
+                # Edges/Rest
+            ]
+            
+            # Construct ordered list
+            ordered_moves = []
+            for m in priority:
+                if board[m] == 0:
+                    ordered_moves.append(m)
+                    moves.remove(m)
+            
+            # Add remaining moves
+            ordered_moves.extend(moves)
+            
+            for move in ordered_moves:
+                board[move] = 1
+                eval_score, _ = minimax(board, depth + 1, alpha, beta, False)
+                board[move] = 0
+                
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_move = move
+                
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return (max_eval, best_move)
+            
+        else: # Minimizing
+            min_eval = float('inf')
+            empty_indices = np.argwhere(board == 0)
+            moves = [tuple(idx) for idx in empty_indices]
+            
+            # Same priority for opponent moves
+            priority = [
+                (1,1,1),
+                (0,0,0), (0,0,2), (0,2,0), (0,2,2),
+                (2,0,0), (2,0,2), (2,2,0), (2,2,2),
+            ]
+            
+            ordered_moves = []
+            for m in priority:
+                if board[m] == 0:
+                    ordered_moves.append(m)
+                    moves.remove(m)
+            ordered_moves.extend(moves)
+            
+            for move in ordered_moves:
+                board[move] = 2
+                eval_score, _ = minimax(board, depth + 1, alpha, beta, True)
+                board[move] = 0
+                
+                if eval_score < min_eval:
+                    min_eval = eval_score
+                    best_move = move
+                
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return (min_eval, best_move)
+
+    # 1. Check for immediate win (1 move)
+    empty_indices = np.argwhere(current_board == 0)
+    for idx in empty_indices:
+        r, c, d = idx
+        current_board[r, c, d] = 1
+        if get_line_status(current_board) == 1:
+            return (r, c, d)
+        current_board[r, c, d] = 0
+        
+    # 2. Check for immediate block (opponent win next move)
+    for idx in empty_indices:
+        r, c, d = idx
+        current_board[r, c, d] = 2
+        if get_line_status(current_board) == 2:
+            return (r, c, d)
+        current_board[r, c, d] = 0
+
+    # 3. Run Minimax for strategic play
+    # Start with depth 0, -inf alpha, +inf beta, maximizing True
+    _, best_move = minimax(current_board, 0, -float('inf'), float('inf'), True)
+    
+    if best_move is None:
+        # Fallback if minimax fails (shouldn't happen unless board is full or logic error)
+        # Pick any empty spot
+        if len(empty_indices) > 0:
+            t = empty_indices[0]
+            return (int(t[0]), int(t[1]), int(t[2]))
+        # Board full, return arbitrary (game should be over)
+        return (0, 0, 0)
+        
+    return (int(best_move[0]), int(best_move[1]), int(best_move[2]))
+```

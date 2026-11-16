@@ -1,0 +1,280 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Battleship Policy: Probabilistic Hunt + Adaptive Targeting
+    
+    Strategy:
+    1. Targeting Mode: If there are hits on the board that are not part of a sunk ship,
+       we prioritize shooting adjacent to them. We calculate which adjacent cell gives us
+       the highest probability of a hit by checking how far a ship can potentially 
+       extend in that direction (and the opposite direction from the source).
+       
+    2. Hunt Mode: If no active hits, we calculate a heat map of the board. For every 
+       unknown cell, we count how many valid placements of any remaining ship length 
+       overlap that cell. We shoot the cell with the highest count.
+    """
+    
+    ROWS, COLS = 10, 10
+    MISS = -1
+    HIT = 1
+
+    # --- Utility Functions ---
+
+    def get_all_hits(board):
+        hits = set()
+        for r in range(ROWS):
+            for c in range(COLS):
+                if board[r][c] == HIT:
+                    hits.add((r, c))
+        return hits
+
+    def count_adjacent_hits(r, c, board, visited):
+        """ BFS to find connected hits """
+        cluster = []
+        stack = [(r, c)]
+        visited.add((r, c))
+        while stack:
+            curr_r, curr_c = stack.pop()
+            cluster.append((curr_r, curr_c))
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nr, nc = curr_r + dr, curr_c + dc
+                if 0 <= nr < ROWS and 0 <= nc < COLS:
+                    if board[nr][nc] == HIT and (nr, nc) not in visited:
+                        visited.add((nr, nc))
+                        stack.append((nr, nc))
+        return cluster
+
+    def get_remaining_lengths(board, all_hits):
+        # Count hits per cluster
+        visited = set()
+        clusters = []
+        for r, c in all_hits:
+            if (r, c) not in visited:
+                clusters.append(count_adjacent_hits(r, c, board, visited))
+        
+        # We assume standard fleet if we don't know sunk ships yet. 
+        # To be safe against arbitrary fleets, we maintain a list of possible lengths.
+        # Standard fleet: [5, 4, 3, 3, 2]
+        # If we have sunk a ship (isolated cluster with no adjacent unknowns or specific heuristics),
+        # we could remove it, but for this simple policy, we just use standard lengths to calculate 
+        # heatmaps unless we want to track "sunk" status strictly. 
+        # Let's just use [5, 4, 3, 3, 2] for probability calculation to be robust.
+        # (A more advanced version would detect sunk ships and remove them).
+        return [5, 4, 3, 3, 2]
+
+    def get_unsunk_clusters(board, all_hits):
+        """
+        Identifies clusters of hits that are likely part of unsunk ships.
+        A cluster is considered 'active' (unsunk) if it has at least one direction 
+        where a ship could plausibly extend (i.e., an adjacent unknown cell).
+        """
+        visited = set()
+        active_clusters = []
+        
+        for r, c in all_hits:
+            if (r, c) not in visited:
+                cluster = count_adjacent_hits(r, c, board, visited)
+                
+                # Check if this cluster is potentially unsunk
+                is_active = False
+                for hr, hc in cluster:
+                    for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                        nr, nc = hr + dr, hc + dc
+                        if 0 <= nr < ROWS and 0 <= nc < COLS:
+                            if board[nr][nc] == 0: # Adjacent unknown
+                                is_active = True
+                                break
+                    if is_active: break
+                
+                if is_active:
+                    active_clusters.append(cluster)
+        
+        return active_clusters
+
+    def calculate_heatmap(board, remaining_lengths):
+        """ Calculate probability of a cell being a ship part """
+        heatmap = [[0 for _ in range(COLS)] for _ in range(ROWS)]
+        
+        for length in remaining_lengths:
+            # Horizontal placements
+            for r in range(ROWS):
+                for c in range(COLS - length + 1):
+                    valid = True
+                    for i in range(length):
+                        if board[r][c+i] == MISS: valid = False
+                        if board[r][c+i] == HIT: valid = False # Should not happen if we are in Hunt mode (no active hits)
+                    if valid:
+                        for i in range(length):
+                            heatmap[r][c+i] += 1
+            
+            # Vertical placements
+            for c in range(COLS):
+                for r in range(ROWS - length + 1):
+                    valid = True
+                    for i in range(length):
+                        if board[r+i][c] == MISS: valid = False
+                        if board[r+i][c] == HIT: valid = False
+                    if valid:
+                        for i in range(length):
+                            heatmap[r+i][c] += 1
+                            
+        # Mask out already fired cells
+        for r in range(ROWS):
+            for c in range(COLS):
+                if board[r][c] != 0:
+                    heatmap[r][c] = -1
+        return heatmap
+
+    # --- Main Logic ---
+
+    all_hits = get_all_hits(board)
+    
+    # 1. Targeting Mode
+    if all_hits:
+        active_clusters = get_unsunk_clusters(board, all_hits)
+        if active_clusters:
+            # We have an active hit/cluster. Target around the first active cluster.
+            # A robust approach is to look at the 'ends' of the cluster or unknowns around it.
+            
+            # Find all unknown neighbors of active hits
+            candidates = {} # (r, c) -> score
+            
+            for cluster in active_clusters:
+                # Find boundary cells of the cluster (unknowns adjacent to hits in cluster)
+                boundary = set()
+                for hr, hc in cluster:
+                    for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                        nr, nc = hr + dr, hc + dc
+                        if 0 <= nr < ROWS and 0 <= nc < COLS and board[nr][nc] == 0:
+                            boundary.add((nr, nc))
+                
+                # Score each boundary cell
+                for (br, bc) in boundary:
+                    # We want to fire where the ship could be longest.
+                    # Check Horizontal Line
+                    h_len = 1 # Start with 1 (the cell we are testing)
+                    # Check Left/Right from (br, bc) excluding cluster hits
+                    # Actually, we just need to count how many consecutive zeros/hits are in line?
+                    # No, we check how far a ship could extend *from* this boundary cell in the direction
+                    # of the cluster, and how far in the opposite direction.
+                    
+                    # Identify direction vectors of the cluster
+                    # If cluster is horizontal, we try extending horizontally.
+                    # If cluster is vertical, we try extending vertically.
+                    # If cluster is size 1 (single hit), try both.
+                    
+                    is_horizontal = False
+                    is_vertical = False
+                    
+                    if len(cluster) > 1:
+                        if cluster[0][0] == cluster[1][0]: is_horizontal = True
+                        else: is_vertical = True
+                    
+                    max_len = 0
+                    
+                    # Directions to test
+                    test_dirs = []
+                    if is_horizontal: test_dirs = [(0, 1), (0, -1)]
+                    elif is_vertical: test_dirs = [(1, 0), (-1, 0)]
+                    else: test_dirs = [(0, 1), (0, -1), (1, 0), (-1, 0)]
+                    
+                    for dr, dc in test_dirs:
+                        # Calculate length in this direction
+                        # We are testing cell (br, bc) which is adjacent to a hit.
+                        # A ship is likely connecting them.
+                        
+                        # 1. Check from boundary IN towards cluster
+                        len_towards = 0
+                        # We expect to hit the cluster immediately? 
+                        # Actually, if (br, bc) is adjacent to (hr, hc), then hitting (br, bc) makes the line (br, bc) -> (hr, hc) ...
+                        # We want to know how long the line can be.
+                        
+                        # Let's simply calculate the length of the line starting at (br, bc) going in (dr, dc)
+                        # extending through the cluster and out the other side.
+                        # But we only know the cluster side. We need to check both sides of the boundary.
+                        
+                        # Let's define the line starting at (br, bc), going IN direction (dr, dc).
+                        # We add 1 for (br, bc). 
+                        # Then we check step 1, 2... until we hit a miss, unknown, or edge.
+                        # Wait, if we are at a boundary, we know one direction hits a hit.
+                        # We want to know the total length of the ship passing through (br, bc).
+                        
+                        # Let's calculate length in the positive direction
+                        len_pos = 0
+                        curr_r, curr_c = br, bc
+                        while True:
+                            curr_r += dr
+                            curr_c += dc
+                            if not (0 <= curr_r < ROWS and 0 <= curr_c < COLS): break
+                            if board[curr_r][curr_c] == MISS: break
+                            # If it's a hit, we can include it (as long as it's part of this cluster)
+                            # But we must ensure we don't cross an empty space (gap in cluster).
+                            if board[curr_r][curr_c] == 0:
+                                # Unknown space - this counts as potential length
+                                len_pos += 1
+                                break # Stop at first unknown for this simple check
+                            len_pos += 1 # It's a hit
+                        
+                        # Length in negative direction (opposite)
+                        len_neg = 0
+                        curr_r, curr_c = br, bc
+                        while True:
+                            curr_r -= dr
+                            curr_c -= dc
+                            if not (0 <= curr_r < ROWS and 0 <= curr_c < COLS): break
+                            if board[curr_r][curr_c] == MISS: break
+                            if board[curr_r][curr_c] == 0:
+                                len_neg += 1
+                                break
+                            len_neg += 1
+                            
+                        # Total potential length if we shoot here
+                        total = 1 + len_pos + len_neg
+                        if total > max_len: max_len = total
+                    
+                    # Parity tie-breaker / Consistency score
+                    # Prefer cells that are 'odds' (1, 3, 5...) relative to hits to resolve ship spacing
+                    # However, just max length is usually good enough.
+                    candidates[(br, bc)] = max_len
+
+            if candidates:
+                # Get best candidate
+                best_cell = max(candidates, key=candidates.get)
+                # Tie breaker: prioritize cells that extend the longest line
+                # If multiple, prefer cells aligned with the cluster direction to be systematic
+                return best_cell
+
+    # 2. Hunt Mode (No active hits or no candidates found - shouldn't happen really)
+    # Calculate heatmap with remaining lengths
+    remaining = get_remaining_lengths(board, all_hits)
+    heatmap = calculate_heatmap(board, remaining)
+    
+    best_score = -1
+    best_moves = []
+    
+    # Find max score
+    for r in range(ROWS):
+        for c in range(COLS):
+            if heatmap[r][c] > best_score:
+                best_score = heatmap[r][c]
+                best_moves = [(r, c)]
+            elif heatmap[r][c] == best_score:
+                best_moves.append((r, c))
+    
+    if best_moves:
+        # Tie-breaker: Prefer checkerboard pattern (parity)
+        # If we have no hits, ships of length 2+ cover both parity cells, but searching 
+        # via parity (checkerboard) can be faster if we just want to find *something* quickly.
+        # However, the heat map usually handles this well. 
+        # Let's just pick the first one for determinism or random if equal.
+        # To be smarter, let's pick one with the most "open space" around it (connectivity).
+        # But simply returning the first is fine.
+        return best_moves[0]
+    
+    # Fallback (should not be reached unless board is full)
+    for r in range(ROWS):
+        for c in range(COLS):
+            if board[r][c] == 0:
+                return (r, c)
+                
+    return (0, 0)

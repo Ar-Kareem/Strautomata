@@ -1,0 +1,230 @@
+
+import random
+from typing import List, Tuple, Dict
+
+# ----------------------------------------------------------------------
+# Pre‑computed data for fast neighbourhood and distance look‑ups.
+# ----------------------------------------------------------------------
+# Neighbour list for each board coordinate (0‑indexed).
+NEIGHBORS: Dict[Tuple[int, int], List[Tuple[int, int]]] = {}
+for r in range(19):
+    for c in range(19):
+        nb = []
+        if r > 0:
+            nb.append((r - 1, c))
+        if r < 18:
+            nb.append((r + 1, c))
+        if c > 0:
+            nb.append((r, c - 1))
+        if c < 18:
+            nb.append((r, c + 1))
+        NEIGHBORS[(r, c)] = nb
+
+# Manhattan distance to the nearest corner (0 at a corner, larger elsewhere).
+DIST_TO_CORNER: Dict[Tuple[int, int], int] = {}
+for r in range(19):
+    for c in range(19):
+        d = min(
+            r + c,
+            r + (18 - c),
+            (18 - r) + c,
+            (18 - r) + (18 - c),
+        )
+        DIST_TO_CORNER[(r, c)] = d
+
+
+# ----------------------------------------------------------------------
+# Helper functions for group / liberty calculations.
+# ----------------------------------------------------------------------
+def bfs_group(board: List[List[int]], r: int, c: int,
+              color: int) -> set[Tuple[int, int]]:
+    """Return all stones of the given colour that belong to the same component as (r,c)."""
+    if board[r][c] != color:
+        return set()
+    stack = [(r, c)]
+    visited = set()
+    while stack:
+        cr, cc = stack.pop()
+        if (cr, cc) in visited:
+            continue
+        visited.add((cr, cc))
+        for nr, nc in NEIGHBORS[(cr, cc)]:
+            if board[nr][nc] == color and (nr, nc) not in visited:
+                stack.append((nr, nc))
+    return visited
+
+
+def get_liberties(board: List[List[int]],
+                  group: set[Tuple[int, int]]) -> set[Tuple[int, int]]:
+    """Return the set of empty points adjacent to the given group."""
+    liberties = set()
+    for (r, c) in group:
+        for nr, nc in NEIGHBORS[(r, c)]:
+            if board[nr][nc] == 0:
+                liberties.add((nr, nc))
+    return liberties
+
+
+def simulate_move(board: List[List[int]], r: int, c: int,
+                 my_color: int, opp_color: int) -> Tuple[List[List[int]] or None, int]:
+    """
+    Play a stone of `my_color` at (r,c) on a copy of the board.
+    Returns (new_board, captured_stones).  If the move is illegal (suicide)
+    returns (None, -1).
+    """
+    if board[r][c] != 0:
+        return None, -1
+    new_board = [row[:] for row in board]
+    new_board[r][c] = my_color
+    captured = 0
+    # Capture opponent groups with no liberties.
+    for nr, nc in NEIGHBORS[(r, c)]:
+        if new_board[nr][nc] == opp_color:
+            group = bfs_group(new_board, nr, nc, opp_color)
+            libs = get_liberties(new_board, group)
+            if not libs:
+                captured += len(group)
+                for gr, gc in group:
+                    new_board[gr][gc] = 0
+    # Verify that we are not committing suicide.
+    my_group = bfs_group(new_board, r, c, my_color)
+    my_libs = get_liberties(new_board, my_group)
+    if captured == 0 and not my_libs:
+        return None, -1  # illegal move
+    return new_board, captured
+
+
+def evaluate_move(board: List[List[int]], r: int, c: int,
+                 my_color: int, opp_color: int) -> float:
+    """Heuristic score for playing at (r,c).  Larger is better."""
+    res = simulate_move(board, r, c, my_color, opp_color)
+    if res[0] is None:
+        return -1e9  # illegal move
+    new_board, captured = res
+
+    score = 0.0
+
+    # 1. Capture bonus.
+    if captured > 0:
+        score += 1000 * captured + 500
+
+    # 2. Immediate adjacency on the original board.
+    adj_own = sum(1 for nr, nc in NEIGHBORS[(r, c)] if board[nr][nc] == my_color)
+    adj_opp = sum(1 for nr, nc in NEIGHBORS[(r, c)] if board[nr][nc] == opp_color)
+    score += adj_own * 5
+    score -= adj_opp * 5
+
+    # 3. Bonus for linking multiple own stones.
+    if adj_own >= 2:
+        score += 10
+    # 4. Penalty for being next to many opponent stones.
+    if adj_opp >= 2:
+        score -= 10
+
+    # 5. Liberty analysis of our new group.
+    my_group = bfs_group(new_board, r, c, my_color)
+    my_libs = get_liberties(new_board, my_group)
+    if captured == 0:
+        if len(my_libs) == 1:
+            score -= 20  # self‑atari
+        elif len(my_libs) >= 3:
+            score += 10  # safe expansion
+    else:
+        score += len(my_libs) * 2  # more liberties after a capture is good
+
+    # 6. Location bias.
+    d_corner = DIST_TO_CORNER[(r, c)]
+    total_stones = sum(1 for row in board for cell in row if cell != 0)
+    if total_stones < 20:
+        score += (18 - d_corner) * 0.2  # early game: corners are valuable
+    else:
+        # Slight centre bias later in the game.
+        score += (9 - abs(r - 9) - abs(c - 9)) * 0.2
+
+    # 7. Tiny random jitter to break ties deterministically.
+    rnd = random.Random((r << 8) ^ (c << 1) ^ total_stones)
+    score += rnd.uniform(-0.01, 0.01)
+
+    return score
+
+
+# ----------------------------------------------------------------------
+# Main policy entry point.
+# ----------------------------------------------------------------------
+def policy(me: List[Tuple[int, int]], opponent: List[Tuple[int, int]],
+          memory: Dict) -> Tuple[Tuple[int, int], Dict]:
+    """
+    Return the next move as (row, col) in 1‑indexed coordinates.
+    If no sensible move exists, return (0, 0) to pass.
+    """
+    # Build the board (0‑indexed).
+    board = [[0] * 19 for _ in range(19)]
+    me_set = set()
+    for (row, col) in me:
+        r, c = row - 1, col - 1
+        board[r][c] = 1
+        me_set.add((r, c))
+    opp_set = set()
+    for (row, col) in opponent:
+        r, c = row - 1, col - 1
+        board[r][c] = 2
+        opp_set.add((r, c))
+
+    # Empty points.
+    empty = [(r, c) for r in range(19) for c in range(19) if board[r][c] == 0]
+    if not empty:
+        return (0, 0), memory
+
+    total_stones = len(me) + len(opponent)
+
+    # ------------------------------------------------------------------
+    # Candidate generation.
+    # ------------------------------------------------------------------
+    if total_stones == 0:
+        # Opening: focus on classical points.
+        candidates = set()
+        # Corners
+        for rc in [(0, 0), (0, 18), (18, 0), (18, 18)]:
+            if board[rc[0]][rc[1]] == 0:
+                candidates.add(rc)
+        # 3‑3 points
+        for rc in [(2, 2), (2, 16), (16, 2), (16, 16)]:
+            if board[rc[0]][rc[1]] == 0:
+                candidates.add(rc)
+        # Star points (≈3‑4)
+        for rc in [(2, 9), (9, 2), (16, 9), (9, 16), (9, 9)]:
+            if board[rc[0]][rc[1]] == 0:
+                candidates.add(rc)
+        if not candidates:
+            candidates = set(empty)
+        candidates = list(candidates)
+    else:
+        # Prefer points adjacent to any existing stone.
+        candidates = []
+        for (r, c) in empty:
+            if any((nr, nc) in me_set or (nr, nc) in opp_set
+                   for nr, nc in NEIGHBORS[(r, c)]):
+                candidates.append((r, c))
+        # Fallback (should not happen often).
+        if not candidates:
+            candidates = empty
+
+    # ------------------------------------------------------------------
+    # Evaluate candidates.
+    # ------------------------------------------------------------------
+    best_score = -1e12
+    best_move = (0, 0)  # default to pass
+    for (r, c) in candidates:
+        if board[r][c] != 0:
+            continue
+        s = evaluate_move(board, r, c, my_color=1, opp_color=2)
+        if s > best_score:
+            best_score = s
+            best_move = (r, c)
+
+    # If every candidate is harmful, pass.
+    if best_score <= 0:
+        return (0, 0), memory
+
+    # Return 1‑indexed coordinates.
+    return (best_move[0] + 1, best_move[1] + 1), memory

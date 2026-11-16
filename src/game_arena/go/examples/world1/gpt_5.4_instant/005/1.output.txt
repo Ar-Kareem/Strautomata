@@ -1,0 +1,280 @@
+The strategy for this policy is a fast tactical Go bot focused on always returning a legal move while exploiting the most important local opportunities:
+
+1. Reconstruct the board from `me` and `opponent`.
+2. Generate only legal moves, including suicide prevention.
+3. Strong tactical priorities:
+   - Play any move that immediately captures the largest opponent group in atari.
+   - If one of our groups is in atari, save the most important one if possible.
+   - Prefer moves that create captures, reduce opponent liberties, and increase our own liberties.
+4. Strategic fallback:
+   - Favor moves near existing stones.
+   - Prefer central influence early and local fighting later.
+   - Avoid self-atari unless it captures.
+5. If no legal board move exists, pass with `(0, 0)`.
+
+This policy is designed to be robust, legal, and reasonably strong under a strict time limit.
+
+<code>
+from collections import deque
+
+BOARD_SIZE = 19
+DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+
+
+def in_bounds(r, c):
+    return 1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE
+
+
+def neighbors(r, c):
+    for dr, dc in DIRS:
+        nr, nc = r + dr, c + dc
+        if in_bounds(nr, nc):
+            yield nr, nc
+
+
+def build_board(me, opponent):
+    board = [[0] * (BOARD_SIZE + 1) for _ in range(BOARD_SIZE + 1)]
+    for r, c in me:
+        if in_bounds(r, c):
+            board[r][c] = 1
+    for r, c in opponent:
+        if in_bounds(r, c):
+            board[r][c] = 2
+    return board
+
+
+def group_and_liberties(board, start_r, start_c):
+    color = board[start_r][start_c]
+    group = []
+    libs = set()
+    q = deque([(start_r, start_c)])
+    seen = {(start_r, start_c)}
+    while q:
+        r, c = q.popleft()
+        group.append((r, c))
+        for nr, nc in neighbors(r, c):
+            v = board[nr][nc]
+            if v == 0:
+                libs.add((nr, nc))
+            elif v == color and (nr, nc) not in seen:
+                seen.add((nr, nc))
+                q.append((nr, nc))
+    return group, libs
+
+
+def simulate_move(board, r, c, color):
+    if not in_bounds(r, c) or board[r][c] != 0:
+        return None
+
+    opp = 3 - color
+    new_board = [row[:] for row in board]
+    new_board[r][c] = color
+
+    captured = 0
+    checked = set()
+    for nr, nc in neighbors(r, c):
+        if new_board[nr][nc] == opp and (nr, nc) not in checked:
+            grp, libs = group_and_liberties(new_board, nr, nc)
+            for p in grp:
+                checked.add(p)
+            if len(libs) == 0:
+                captured += len(grp)
+                for gr, gc in grp:
+                    new_board[gr][gc] = 0
+
+    my_group, my_libs = group_and_liberties(new_board, r, c)
+    if len(my_libs) == 0:
+        return None
+
+    return new_board, captured, len(my_group), len(my_libs)
+
+
+def all_groups(board, color):
+    seen = set()
+    groups = []
+    for r in range(1, BOARD_SIZE + 1):
+        for c in range(1, BOARD_SIZE + 1):
+            if board[r][c] == color and (r, c) not in seen:
+                grp, libs = group_and_liberties(board, r, c)
+                for p in grp:
+                    seen.add(p)
+                groups.append((grp, libs))
+    return groups
+
+
+def distance_to_center(r, c):
+    return abs(r - 10) + abs(c - 10)
+
+
+def local_density(board, r, c, radius=2):
+    my_cnt = 0
+    opp_cnt = 0
+    for rr in range(max(1, r - radius), min(BOARD_SIZE, r + radius) + 1):
+        for cc in range(max(1, c - radius), min(BOARD_SIZE, c + radius) + 1):
+            if rr == r and cc == c:
+                continue
+            if board[rr][cc] == 1:
+                my_cnt += 1
+            elif board[rr][cc] == 2:
+                opp_cnt += 1
+    return my_cnt, opp_cnt
+
+
+def adjacent_counts(board, r, c):
+    my_adj = 0
+    opp_adj = 0
+    empty_adj = 0
+    for nr, nc in neighbors(r, c):
+        v = board[nr][nc]
+        if v == 1:
+            my_adj += 1
+        elif v == 2:
+            opp_adj += 1
+        else:
+            empty_adj += 1
+    return my_adj, opp_adj, empty_adj
+
+
+def score_move(board, me_count, opp_count, move, sim_result, urgent_save_points, urgent_capture_points):
+    r, c = move
+    _, captured, group_size, my_libs = sim_result
+
+    score = 0.0
+
+    if move in urgent_capture_points:
+        score += 100000 + urgent_capture_points[move] * 1000
+
+    if move in urgent_save_points:
+        score += 90000 + urgent_save_points[move] * 800
+
+    score += captured * 5000
+    score += my_libs * 20
+    score += min(group_size, 12) * 8
+
+    my_adj, opp_adj, empty_adj = adjacent_counts(board, r, c)
+    score += opp_adj * 35
+    score += my_adj * 18
+    score += empty_adj * 3
+
+    local_my, local_opp = local_density(board, r, c, radius=2)
+    score += local_opp * 10
+    score += local_my * 6
+
+    # Prefer active local fighting; otherwise centrality in emptier openings
+    total_stones = me_count + opp_count
+    if total_stones < 16:
+        score -= distance_to_center(r, c) * 4
+    else:
+        score -= distance_to_center(r, c) * 1.2
+
+    # Mild preference away from first-line/corner unless tactically justified
+    if r in (1, 19):
+        score -= 8
+    if c in (1, 19):
+        score -= 8
+
+    # Discourage self-atari-ish play that doesn't capture
+    if captured == 0 and my_libs == 1:
+        score -= 600
+
+    # Encourage moves near stones; discourage isolated random plays
+    if my_adj + opp_adj == 0:
+        score -= 80
+
+    # Small tie-breaker for determinism
+    score += (20 - r) * 0.001 + (20 - c) * 0.0001
+
+    return score
+
+
+def policy(me, opponent):
+    board = build_board(me, opponent)
+    me_count = len(me)
+    opp_count = len(opponent)
+
+    legal_moves = []
+    tactical_info = {}
+
+    # Identify urgent opponent atari capture points
+    urgent_capture_points = {}
+    for grp, libs in all_groups(board, 2):
+        if len(libs) == 1:
+            p = next(iter(libs))
+            urgent_capture_points[p] = urgent_capture_points.get(p, 0) + len(grp)
+
+    # Identify urgent save points for our groups in atari
+    urgent_save_points = {}
+    for grp, libs in all_groups(board, 1):
+        if len(libs) == 1:
+            p = next(iter(libs))
+            urgent_save_points[p] = urgent_save_points.get(p, 0) + len(grp)
+
+    # Candidate generation: all empties, but ordered to inspect tactically relevant moves first
+    candidate_set = set()
+
+    for p in urgent_capture_points:
+        candidate_set.add(p)
+    for p in urgent_save_points:
+        candidate_set.add(p)
+
+    stones = list(me) + list(opponent)
+    for r, c in stones:
+        for rr in range(max(1, r - 2), min(BOARD_SIZE, r + 2) + 1):
+            for cc in range(max(1, c - 2), min(BOARD_SIZE, c + 2) + 1):
+                if board[rr][cc] == 0:
+                    candidate_set.add((rr, cc))
+
+    # If board is empty, play center
+    if not stones:
+        return (10, 10)
+
+    # Add all empties only if local candidates somehow fail
+    candidates = list(candidate_set)
+
+    # Sort to check urgent tactical moves first
+    def cand_key(m):
+        r, c = m
+        pri = 0
+        if m in urgent_capture_points:
+            pri -= 100000 + urgent_capture_points[m]
+        if m in urgent_save_points:
+            pri -= 50000 + urgent_save_points[m]
+        pri += distance_to_center(r, c)
+        return pri
+
+    candidates.sort(key=cand_key)
+
+    # Evaluate local candidates
+    best_move = None
+    best_score = -10**18
+
+    for r, c in candidates:
+        sim = simulate_move(board, r, c, 1)
+        if sim is None:
+            continue
+        legal_moves.append((r, c))
+        tactical_info[(r, c)] = sim
+        s = score_move(board, me_count, opp_count, (r, c), sim, urgent_save_points, urgent_capture_points)
+        if s > best_score:
+            best_score = s
+            best_move = (r, c)
+
+    if best_move is not None:
+        return best_move
+
+    # Fallback: exhaustive legal search over whole board
+    for r in range(1, BOARD_SIZE + 1):
+        for c in range(1, BOARD_SIZE + 1):
+            sim = simulate_move(board, r, c, 1)
+            if sim is None:
+                continue
+            s = score_move(board, me_count, opp_count, (r, c), sim, urgent_save_points, urgent_capture_points)
+            if s > best_score:
+                best_score = s
+                best_move = (r, c)
+
+    if best_move is not None:
+        return best_move
+
+    return (0, 0)
+</code>

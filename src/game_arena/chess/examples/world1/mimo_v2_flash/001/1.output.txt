@@ -1,0 +1,304 @@
+```python
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    # Piece values
+    values = {'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000}
+    # Knight position bonuses (8x8)
+    knight_bonus = [
+        -50, -40, -30, -30, -30, -30, -40, -50,
+        -40, -20, 0, 0, 0, 0, -20, -40,
+        -30, 0, 10, 15, 15, 10, 0, -30,
+        -30, 5, 15, 20, 20, 15, 5, -30,
+        -30, 0, 15, 20, 20, 15, 0, -30,
+        -30, 5, 10, 15, 15, 10, 5, -30,
+        -40, -20, 0, 5, 5, 0, -20, -40,
+        -50, -40, -30, -30, -30, -30, -40, -50
+    ]
+    # Bishop position bonuses
+    bishop_bonus = [
+        -20, -10, -10, -10, -10, -10, -10, -20,
+        -10, 0, 0, 0, 0, 0, 0, -10,
+        -10, 0, 5, 10, 10, 5, 0, -10,
+        -10, 5, 5, 10, 10, 5, 5, -10,
+        -10, 0, 10, 10, 10, 10, 0, -10,
+        -10, 10, 10, 10, 10, 10, 10, -10,
+        -10, 5, 0, 0, 0, 0, 5, -10,
+        -20, -10, -10, -10, -10, -10, -10, -20
+    ]
+    # Rook position bonuses
+    rook_bonus = [
+        0, 0, 0, 0, 0, 0, 0, 0,
+        5, 10, 10, 10, 10, 10, 10, 5,
+        -5, 0, 0, 0, 0, 0, 0, -5,
+        -5, 0, 0, 0, 0, 0, 0, -5,
+        -5, 0, 0, 0, 0, 0, 0, -5,
+        -5, 0, 0, 0, 0, 0, 0, -5,
+        -5, 0, 0, 0, 0, 0, 0, -5,
+        0, 0, 0, 5, 5, 0, 0, 0
+    ]
+    # Queen position bonuses
+    queen_bonus = [
+        -20, -10, -10, -5, -5, -10, -10, -20,
+        -10, 0, 0, 0, 0, 0, 0, -10,
+        -10, 0, 5, 5, 5, 5, 0, -10,
+        -5, 0, 5, 5, 5, 5, 0, -5,
+        0, 0, 5, 5, 5, 5, 0, -5,
+        -10, 5, 5, 5, 5, 5, 0, -10,
+        -10, 0, 5, 0, 0, 0, 0, -10,
+        -20, -10, -10, -5, -5, -10, -10, -20
+    ]
+    # King middle game bonuses
+    king_mg_bonus = [
+        20, 30, 10, 0, 0, 10, 30, 20,
+        20, 20, 0, 0, 0, 0, 20, 20,
+        -10, -20, -20, -20, -20, -20, -20, -10,
+        -20, -30, -30, -40, -40, -30, -30, -20,
+        -30, -40, -40, -50, -50, -40, -40, -30,
+        -30, -40, -40, -50, -50, -40, -40, -30,
+        -30, -40, -40, -50, -50, -40, -40, -30,
+        -30, -40, -40, -50, -50, -40, -40, -30
+    ]
+    # Pawn bonuses by rank (White: 0-7 is 1-8, Black: 7-0 is 1-8)
+    pawn_bonus = [0, 10, 20, 30, 40, 50, 60, 0]
+
+    def get_file(s):
+        return ord(s[0]) - ord('a')
+    
+    def get_rank(s):
+        return int(s[1]) - 1
+
+    def get_idx(file, rank):
+        return rank * 8 + file
+
+    def evaluate_board(pieces):
+        score = 0
+        for sq, code in pieces.items():
+            ptype = code[1]
+            pcolor = code[0]
+            val = values[ptype]
+            f = get_file(sq)
+            r = get_rank(sq)
+            
+            # Material
+            material = val
+            
+            # Positional
+            pos = 0
+            if ptype == 'N':
+                pos = knight_bonus[get_idx(f, r)]
+            elif ptype == 'B':
+                pos = bishop_bonus[get_idx(f, r)]
+            elif ptype == 'R':
+                pos = rook_bonus[get_idx(f, r)]
+            elif ptype == 'Q':
+                pos = queen_bonus[get_idx(f, r)]
+            elif ptype == 'K':
+                pos = king_mg_bonus[get_idx(f, r)]
+            elif ptype == 'P':
+                # Pawn structure: center files are better, advancing is better
+                center = abs(3.5 - f)
+                pos = 5 * (4 - center) # bonus for center
+                if pcolor == 'w':
+                    pos += pawn_bonus[r]
+                else:
+                    pos += pawn_bonus[7 - r]
+            
+            # Direction: White wants high rank, Black wants low rank
+            if ptype == 'P':
+                if pcolor == 'w':
+                    material += r * 5
+                else:
+                    material += (7 - r) * 5
+            
+            term = material + pos
+            if pcolor == 'w':
+                score += term
+            else:
+                score -= term
+        
+        return score
+
+    def is_capture(move):
+        return 'x' in move
+
+    def is_promotion(move):
+        return '=' in move
+
+    def evaluate_move(move, current_pieces, side):
+        score = 0
+        
+        # 1. Immediate capture
+        if is_capture(move):
+            # Find victim
+            # Format: e4xe5, e4xd5, Rxe4, Rxd5, Qxg7+, etc.
+            parts = move.split('x')
+            if len(parts) == 2:
+                target = parts[1][:2] # Take first two chars (square)
+                if target in current_pieces:
+                    victim = current_pieces[target]
+                    score += values[victim[1]] * 10
+                # Bonus for capturing with a weaker piece
+                mover = move[0] if move[0].isupper() else 'P'
+                if mover in values and values[mover] < values[victim[1]]:
+                    score += 50
+
+        # 2. Check
+        if '+' in move:
+            score += 200
+
+        # 3. Promotion
+        if is_promotion(move):
+            promo = move.split('=')[1]
+            # Prioritize Queen promotion
+            if promo[0] == 'Q':
+                score += 800
+            elif promo[0] == 'N':
+                score += 300
+            else:
+                score += 200
+
+        # 4. Castling
+        if 'O-O' in move:
+            score += 50
+
+        # 5. Mobility/Positional (Simulate move)
+        # We need to parse the move to get source and destination.
+        src, dst = parse_move(move, current_pieces, side)
+        if src and dst:
+            # Piece value bonus for moving to center
+            df = get_file(dst)
+            dr = get_rank(dst)
+            center_dist = abs(3.5 - df) + abs(3.5 - dr)
+            score += (4 - center_dist) * 5
+            
+            # King safety (avoid moving king early unless castling)
+            ptype = current_pieces.get(src, 'wP')[1]
+            if ptype == 'K':
+                score -= 20 # Penalty for king moves unless necessary
+
+        return score
+
+    def parse_move(move, pieces, side):
+        # Handle castling
+        if move in ['O-O', 'O-O-O']:
+            if side == 'white':
+                if move == 'O-O':
+                    return 'e1', 'g1'
+                else:
+                    return 'e1', 'c1'
+            else:
+                if move == 'O-O':
+                    return 'e8', 'g8'
+                else:
+                    return 'e8', 'c8'
+
+        # Remove check/mate symbols
+        clean = move.replace('+', '').replace('#', '')
+        
+        # Handle promotion (e.g. e8=Q, e8=Q+)
+        if '=' in clean:
+            clean = clean.split('=')[0]
+            
+        # Identify piece type
+        piece_type = 'P'
+        start_idx = 0
+        if clean[0].isupper():
+            piece_type = clean[0]
+            start_idx = 1
+        
+        # Identify destination
+        # The last 2 characters should be the square (unless disambiguation exists)
+        # e.g. Nec3 (N from e to c3), Nf3 (N to f3)
+        # Find the first occurrence of a rank digit (1-8) from the end
+        for i in range(len(clean)-1, -1, -1):
+            if clean[i].isdigit():
+                dest = clean[i-1:i+1]
+                rest = clean[:i-1] # everything before destination
+                break
+        else:
+            return None, None # Should not happen with legal move
+            
+        # Determine source file and rank
+        src_file = None
+        src_rank = None
+        
+        for char in rest:
+            if 'a' <= char <= 'h':
+                src_file = char
+            elif '1' <= char <= '8':
+                src_rank = char
+        
+        # Find the piece
+        target_sq = None
+        for sq, code in pieces.items():
+            if code[1] == piece_type and code[0] == ('w' if side == 'white' else 'b'):
+                # Check constraints
+                if src_file and sq[0] != src_file:
+                    continue
+                if src_rank and sq[1] != src_rank:
+                    continue
+                
+                # Check if this piece can legally move to dest
+                # This is a simplified check to find the correct source piece
+                if can_move(sq, dest, piece_type, pieces, side):
+                    target_sq = sq
+                    break
+        
+        return target_sq, dest
+
+    def can_move(src, dst, ptype, pieces, side):
+        # Very basic reachability check to disambiguate
+        f1, r1 = get_file(src), get_rank(src)
+        f2, r2 = get_file(dst), get_rank(dst)
+        
+        df = f2 - f1
+        dr = r2 - r1
+        
+        if ptype == 'N':
+            return (abs(df) == 2 and abs(dr) == 1) or (abs(df) == 1 and abs(dr) == 2)
+        
+        if ptype == 'K':
+            return max(abs(df), abs(dr)) == 1
+            
+        if ptype == 'R':
+            return df == 0 or dr == 0
+            
+        if ptype == 'B':
+            return abs(df) == abs(dr)
+            
+        if ptype == 'Q':
+            return df == 0 or dr == 0 or abs(df) == abs(dr)
+            
+        if ptype == 'P':
+            dir_mult = 1 if side == 'white' else -1
+            # Single push
+            if df == 0 and dr == dir_mult:
+                return True
+            # Double push
+            if df == 0 and dr == 2 * dir_mult:
+                start_rank = '2' if side == 'white' else '7'
+                return src[1] == start_rank
+            # Capture
+            if abs(df) == 1 and dr == dir_mult:
+                return True
+            # Promotion is handled by dst rank, but logic holds until rank 7/2
+            if abs(df) == 1 and dr == dir_mult and ((side == 'white' and r1 == 6) or (side == 'black' and r1 == 1)):
+                return True
+                
+        return False
+
+    if not legal_moves:
+        return ""
+
+    best_move = legal_moves[0]
+    max_score = -float('inf')
+    current_side = 'white' if to_play == 'white' else 'black'
+
+    for move in legal_moves:
+        score = evaluate_move(move, pieces, current_side)
+        
+        if score > max_score:
+            max_score = score
+            best_move = move
+            
+    return best_move
+```

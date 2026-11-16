@@ -1,0 +1,189 @@
+
+import numpy as np
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    N = 4  # 4x4 boxes, 5x5 edge arrays used by environment
+
+    def box_sides(h, v, r, c):
+        return (
+            1 if h[r, c] != 0 else 0
+        ) + (
+            1 if h[r + 1, c] != 0 else 0
+        ) + (
+            1 if v[r, c] != 0 else 0
+        ) + (
+            1 if v[r, c + 1] != 0 else 0
+        )
+
+    def adjacent_boxes(move):
+        r, c, d = move
+        res = []
+        if d == 'H':
+            if r > 0 and c < N:
+                res.append((r - 1, c))
+            if r < N and c < N:
+                res.append((r, c))
+        else:  # 'V'
+            if c > 0 and r < N:
+                res.append((r, c - 1))
+            if c < N and r < N:
+                res.append((r, c))
+        return res
+
+    def is_legal(move, h, v):
+        r, c, d = move
+        if d == 'H':
+            return 0 <= r <= N and 0 <= c < N and h[r, c] == 0
+        else:
+            return 0 <= r < N and 0 <= c <= N and v[r, c] == 0
+
+    def apply_move(h, v, cap, move, player=1):
+        h2 = h.copy()
+        v2 = v.copy()
+        cap2 = cap.copy()
+        r, c, d = move
+        if d == 'H':
+            h2[r, c] = player
+        else:
+            v2[r, c] = player
+
+        gained = 0
+        for br, bc in adjacent_boxes(move):
+            if cap2[br, bc] == 0 and box_sides(h2, v2, br, bc) == 4:
+                cap2[br, bc] = player
+                gained += 1
+        return h2, v2, cap2, gained
+
+    def all_legal_moves(h, v):
+        moves = []
+        for r in range(N + 1):
+            for c in range(N):
+                if h[r, c] == 0:
+                    moves.append((r, c, 'H'))
+        for r in range(N):
+            for c in range(N + 1):
+                if v[r, c] == 0:
+                    moves.append((r, c, 'V'))
+        return moves
+
+    def creates_third_side(move, h, v, cap):
+        # True if after playing move, any adjacent uncaptured box has exactly 3 sides
+        h2, v2, cap2, gained = apply_move(h, v, cap, move, 1)
+        if gained > 0:
+            return False
+        for br, bc in adjacent_boxes(move):
+            if cap2[br, bc] == 0 and box_sides(h2, v2, br, bc) == 3:
+                return True
+        return False
+
+    def risk_score(move, h, v, cap):
+        # Lower is better
+        h2, v2, cap2, gained = apply_move(h, v, cap, move, 1)
+        if gained > 0:
+            return -100 - gained
+
+        score = 0
+        for br, bc in adjacent_boxes(move):
+            if cap2[br, bc] != 0:
+                continue
+            s = box_sides(h2, v2, br, bc)
+            if s == 3:
+                score += 100
+            elif s == 2:
+                score += 3
+            elif s == 1:
+                score += 1
+        return score
+
+    def count_capturable_boxes(h, v, cap):
+        total = 0
+        for r in range(N):
+            for c in range(N):
+                if cap[r, c] == 0 and box_sides(h, v, r, c) == 3:
+                    total += 1
+        return total
+
+    def estimate_opponent_chain(move, h, v, cap):
+        # After making an unsafe move, estimate how many boxes opponent can force-capture
+        h2, v2, cap2, gained = apply_move(h, v, cap, move, 1)
+        if gained > 0:
+            return 0
+
+        total = 0
+        # Greedy simulation: opponent repeatedly takes any available capture
+        while True:
+            cap_moves = []
+            for m in all_legal_moves(h2, v2):
+                _, _, _, g = apply_move(h2, v2, cap2, m, -1)
+                if g > 0:
+                    cap_moves.append((g, m))
+            if not cap_moves:
+                break
+
+            # Prefer move that captures most now, tie by exposing fewer future captures
+            best_tuple = None
+            best_data = None
+            for g, m in cap_moves:
+                hh, vv, cc, gg = apply_move(h2, v2, cap2, m, -1)
+                future = count_capturable_boxes(hh, vv, cc)
+                t = (-gg, future)
+                if best_tuple is None or t < best_tuple:
+                    best_tuple = t
+                    best_data = (hh, vv, cc, gg)
+
+            h2, v2, cap2, gg = best_data
+            total += gg
+
+            # safety bound
+            if total >= 16:
+                break
+        return total
+
+    moves = all_legal_moves(horizontal, vertical)
+
+    # Absolute fallback for safety
+    if not moves:
+        return "0,0,H"
+
+    # 1. Take captures immediately, preferring bigger captures and lower follow-up risk
+    capture_moves = []
+    for m in moves:
+        _, _, _, gained = apply_move(horizontal, vertical, capture, m, 1)
+        if gained > 0:
+            h2, v2, c2, _ = apply_move(horizontal, vertical, capture, m, 1)
+            future_caps = count_capturable_boxes(h2, v2, c2)
+            capture_moves.append((m, gained, future_caps))
+
+    if capture_moves:
+        capture_moves.sort(key=lambda x: (-x[1], x[2], risk_score(x[0], horizontal, vertical, capture)))
+        r, c, d = capture_moves[0][0]
+        return f"{r},{c},{d}"
+
+    # 2. Prefer safe moves
+    safe_moves = [m for m in moves if not creates_third_side(m, horizontal, vertical, capture)]
+    if safe_moves:
+        safe_moves.sort(key=lambda m: (risk_score(m, horizontal, vertical, capture), m[0], m[1], m[2]))
+        r, c, d = safe_moves[0]
+        return f"{r},{c},{d}"
+
+    # 3. If all moves are unsafe, minimize estimated opponent chain
+    best_move = None
+    best_key = None
+    for m in moves:
+        chain = estimate_opponent_chain(m, horizontal, vertical, capture)
+        key = (chain, risk_score(m, horizontal, vertical, capture), m[0], m[1], m[2])
+        if best_key is None or key < best_key:
+            best_key = key
+            best_move = m
+
+    if best_move is not None and is_legal(best_move, horizontal, vertical):
+        r, c, d = best_move
+        return f"{r},{c},{d}"
+
+    # Final legal fallback
+    for m in moves:
+        if is_legal(m, horizontal, vertical):
+            r, c, d = m
+            return f"{r},{c},{d}"
+
+    return "0,0,H"

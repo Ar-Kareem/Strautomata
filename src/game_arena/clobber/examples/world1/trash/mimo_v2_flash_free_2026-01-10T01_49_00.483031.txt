@@ -1,0 +1,103 @@
+The strategy is to select a move that minimizes the opponent's mobility. A move that removes the opponent's options reduces their chances of winning. Since the game is small (30 cells), we can use a 1-ply lookahead: for every legal move, simulate it and count how many moves the opponent would have in the resulting state. We choose the move that leaves the opponent with the fewest moves. To make the agent deterministic and aggressive, we break ties by preferring moves that capture pieces that are currently threatening our pieces (i.e., those adjacent to our pieces).
+
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    """
+    Selects a move that minimizes the opponent's future mobility.
+    If there are multiple such moves, it prefers to capture a piece that is adjacent
+    to one of our pieces (a defensive/aggressive choice).
+    """
+    R, C = 5, 6
+    DIRS = [(-1, 0, 'U'), (0, 1, 'R'), (1, 0, 'D'), (0, -1, 'L')]
+
+    def get_moves(board_opp, board_you):
+        """Generate moves for a generic player acting as 'current' (opponent of the passed 'you')"""
+        moves = []
+        for r in range(R):
+            for c in range(C):
+                if board_opp[r][c] == 1:
+                    for dr, dc, dname in DIRS:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < R and 0 <= nc < C:
+                            if board_you[nr][nc] == 1:
+                                moves.append(((r, c), (nr, nc), dname))
+        return moves
+
+    def count_mobility(board_opp, board_you):
+        """Count legal moves for board_opp against board_you"""
+        count = 0
+        for r in range(R):
+            for c in range(C):
+                if board_opp[r][c] == 1:
+                    for dr, dc, _ in DIRS:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < R and 0 <= nc < C:
+                            if board_you[nr][nc] == 1:
+                                count += 1
+        return count
+
+    def get_threat_score(src, opp_b):
+        """Calculate how many 'you' pieces are adjacent to the opponent piece at src"""
+        sr, sc = src
+        score = 0
+        for dr, dc, _ in DIRS:
+            nr, nc = sr + dr, sc + dc
+            if 0 <= nr < R and 0 <= nc < C:
+                if you[nr][nc] == 1:
+                    score += 1
+        return score
+
+    best_move = None
+    min_opp_moves = float('inf')
+    max_threat = -1
+
+    # Get all legal moves
+    legal_moves = get_moves(opponent, you)
+
+    if not legal_moves:
+        # Should not happen per prompt, but as a safeguard
+        return "0,0,U"
+
+    for src, dst, dname in legal_moves:
+        sr, sc = src
+        dr, dc = dst
+        
+        # Simulate move: Opponent moves from sr,sc to dr,dc
+        # Create modified boards
+        opp_next = [row[:] for row in opponent]
+        you_next = [row[:] for row in you]
+        
+        opp_next[sr][sc] = 0
+        opp_next[dr][dc] = 0 # Capture removes the opponent piece at destination (which is 'you')
+        # Wait, the destination contains 'you' (1). The opponent moves there.
+        # In the simulation for opponent's turn, 'opponent' acts as the mover.
+        # So opp_next represents the opponent's new position.
+        # The 'you' pieces at the destination are removed.
+        
+        you_next[dr][dc] = 0
+        
+        # Count opponent's moves in this resulting state
+        # Opponent is now opp_next, We are you_next
+        opp_moves = count_mobility(opp_next, you_next)
+        
+        if opp_moves < min_opp_moves:
+            min_opp_moves = opp_moves
+            best_move = (sr, sc, dname)
+            max_threat = get_threat_score(src, opponent)
+        elif opp_moves == min_opp_moves:
+            # Tie-breaker: capture piece that is threatening us most
+            current_threat = get_threat_score(src, opponent)
+            if current_threat > max_threat:
+                best_move = (sr, sc, dname)
+                max_threat = current_threat
+            elif current_threat == max_threat:
+                # Deterministic tie-break: prefer Up, then Right, then Down, then Left
+                # Or just priority on the list order.
+                # The first one encountered is usually fine, but let's enforce order
+                # Current best dirs
+                dir_priority = {'U': 0, 'R': 1, 'D': 2, 'L': 3}
+                if dir_priority[dname] < dir_priority[best_move[2]]:
+                    best_move = (sr, sc, dname)
+
+    return f"{best_move[0]},{best_move[1]},{best_move[2]}"
+```

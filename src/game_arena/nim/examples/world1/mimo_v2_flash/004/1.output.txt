@@ -1,0 +1,86 @@
+# Strategy
+
+The game is Nim played with the misère condition (the player taking the last object loses). To play optimally, we need to calculate the Grundy numbers for each pile, but the misère rule changes the winning condition slightly. However, for Nim with multiple piles, the optimal strategy for misère Nim is similar to normal Nim except when all piles are of size 1. 
+
+In normal Nim, the winning condition is to make the XOR sum (Nim-sum) of the pile sizes non-zero, unless it's zero, in which case you're in a losing position. In misère Nim, the same strategy applies except when all piles are of size 1. In that case, the winning move is to leave an odd number of piles (since taking the last loses, leaving an even number of piles makes the opponent take the last one).
+
+Given this, the policy should:
+1. Check if all piles are of size 1. If so, the current player wins if the number of non-zero piles is odd (since you want the opponent to take the last). So, if the count of non-zero piles is odd, take 1 from any pile to make it even (if possible). Otherwise, if it's even, you're losing, so any move is fine (but we still need to return a legal move).
+2. Otherwise, compute the XOR sum of the piles. If it's zero, we are in a losing position, so we need to make a move that will force the opponent into a losing position. But since it's a losing position, any move is fine, but we can try to minimize the opponent's advantage. If the XOR sum is non-zero, we need to make a move that sets the XOR sum to zero.
+
+The algorithm:
+- Compute nim_sum = piles[0] ^ piles[1] ^ piles[2] ^ piles[3].
+- If all piles are 1: 
+    - If number of non-zero piles is odd: take 1 from any pile (leaving even non-zero piles, which is winning).
+    - Else: take 1 from any pile (losing position, but must make a move).
+- Else:
+    - If nim_sum == 0: we are in a losing position. We need to choose a move that doesn't make the situation worse, but since it's losing, we can choose any move. However, we can try to reduce a pile to something that makes the nim_sum non-zero for the opponent. But since we are in losing position, the opponent can always win. So we just take 1 from the largest pile.
+    - Else: we need to find a move that makes nim_sum zero. For each pile, if (pile_i ^ nim_sum) < pile_i, we can reduce pile_i to (pile_i ^ nim_sum). Then, take (pile_i - (pile_i ^ nim_sum)) objects.
+
+Given that the game ends when all piles are zero, and the last to move loses, the strategy is standard misère Nim.
+
+We'll implement the above logic.
+
+Note: The XOR operation in Python is '^'.
+
+We need to handle the case where all piles are 1. In that case, if the number of non-zero piles is even, the current player loses (since opponent can mirror), but if odd, the current player wins.
+
+But note: if all piles are 1, then each pile has only one possible move: take 1. So the game proceeds by taking piles one by one. If there are k piles of size 1, the player who faces k=1 loses (because they have to take the last). So the winning positions are when k is even? Actually, if k is even, the current player can force the opponent to face an odd number of piles? Let's see:
+
+If k=1: current player loses (must take the last).
+If k=2: current player takes one, leaving 1 for opponent -> opponent loses, so current wins.
+If k=3: current player takes one, leaving 2 for opponent -> opponent can take one, leaving 1 for current -> current loses. So k=3 is losing for current.
+If k=4: current takes one, leaves 3 (losing for opponent) -> current wins.
+So indeed, if k is even, current wins; if k is odd, current loses.
+
+But note: if there are other piles not of size 1, the strategy is different. So we must check the condition: if all non-zero piles are of size 1. If there are piles with more than 1, we use the normal Nim strategy.
+
+So the condition is: if all piles are 0 or 1, and no pile has more than 1, then we are in the "all ones" scenario.
+
+Let's code accordingly.
+
+We'll write the policy function as described.
+
+Edge cases: 
+- If the game is already over (all piles zero), but the function is called, it should not happen because the game ends. But we must return a legal move, so we assume the game is ongoing.
+
+We must return a string in the format 'pile,take'.
+
+We'll choose the first available move if we have multiple choices in losing positions to keep it simple.
+
+Let's code.```python
+def policy(piles: list[int]) -> str:
+    # Check if all non-zero piles are of size 1
+    all_ones = all(p == 1 for p in piles)
+    non_zero_count = sum(1 for p in piles if p > 0)
+    
+    if all_ones:
+        # If the number of non-zero piles is even, current player wins by taking 1 from any pile.
+        # If odd, it's a losing position, but we must make a move; take 1 from the first non-zero pile.
+        for i in range(4):
+            if piles[i] > 0:
+                return f"{i},1"
+    
+    # Compute nim-sum
+    nim_sum = 0
+    for p in piles:
+        nim_sum ^= p
+    
+    if nim_sum == 0:
+        # Losing position: take 1 from the first pile with at least one object.
+        for i in range(4):
+            if piles[i] > 0:
+                return f"{i},1"
+    else:
+        # Winning move: find a pile where reducing it to (pile XOR nim_sum) is possible.
+        for i in range(4):
+            target = piles[i] ^ nim_sum
+            if target < piles[i]:
+                take = piles[i] - target
+                return f"{i},{take}"
+    
+    # Fallback (should not reach here if there is at least one move)
+    for i in range(4):
+        if piles[i] > 0:
+            return f"{i},1"
+```

@@ -1,0 +1,249 @@
+
+from __future__ import annotations
+
+import heapq
+from typing import List, Tuple, Set, Dict, Optional
+
+
+N = 11
+INF = 10**9
+
+# Hex neighbors for axial-ish offset described in prompt:
+# all 8 grid neighbors except (r-1,c-1) and (r+1,c+1)
+# => 6 neighbors: (r,c-1),(r,c+1),(r-1,c),(r-1,c+1),(r+1,c),(r+1,c-1)
+DIRS = [(0, -1), (0, 1), (-1, 0), (-1, 1), (1, 0), (1, -1)]
+
+
+def in_bounds(r: int, c: int) -> bool:
+    return 0 <= r < N and 0 <= c < N
+
+
+def neighbors(cell: Tuple[int, int]) -> List[Tuple[int, int]]:
+    r, c = cell
+    out = []
+    for dr, dc in DIRS:
+        nr, nc = r + dr, c + dc
+        if in_bounds(nr, nc):
+            out.append((nr, nc))
+    return out
+
+
+def other_color(color: str) -> str:
+    return "w" if color == "b" else "b"
+
+
+def cell_cost(cell: Tuple[int, int], player: Set[Tuple[int, int]], opp: Set[Tuple[int, int]]) -> int:
+    if cell in opp:
+        return INF
+    if cell in player:
+        return 0
+    return 1
+
+
+def dijkstra_shortest_path(
+    player: Set[Tuple[int, int]],
+    opp: Set[Tuple[int, int]],
+    color: str,
+) -> Tuple[int, Optional[Tuple[int, int]], Dict[Tuple[int, int], Optional[Tuple[int, int]]], Dict[Tuple[int, int], int]]:
+    """
+    Returns:
+      best_dist: minimal connection cost (number of empty cells needed) to connect sides
+      end_cell: one goal-edge cell achieving best_dist
+      parent: predecessor map for reconstructing one shortest path
+      dist: dist map
+    """
+    dist: Dict[Tuple[int, int], int] = {}
+    parent: Dict[Tuple[int, int], Optional[Tuple[int, int]]] = {}
+
+    pq: List[Tuple[int, Tuple[int, int]]] = []
+
+    if color == "b":
+        # top (row 0) -> bottom (row N-1)
+        for c in range(N):
+            start = (0, c)
+            w = cell_cost(start, player, opp)
+            if w >= INF:
+                continue
+            dist[start] = w
+            parent[start] = None
+            heapq.heappush(pq, (w, start))
+        is_goal = lambda rc: rc[0] == N - 1
+    else:
+        # left (col 0) -> right (col N-1)
+        for r in range(N):
+            start = (r, 0)
+            w = cell_cost(start, player, opp)
+            if w >= INF:
+                continue
+            dist[start] = w
+            parent[start] = None
+            heapq.heappush(pq, (w, start))
+        is_goal = lambda rc: rc[1] == N - 1
+
+    best_end: Optional[Tuple[int, int]] = None
+    best_dist = INF
+
+    while pq:
+        d, u = heapq.heappop(pq)
+        if d != dist.get(u, INF):
+            continue
+        if d >= best_dist:
+            # no need to explore worse than already found goal
+            continue
+        if is_goal(u):
+            best_dist = d
+            best_end = u
+            # With Dijkstra, first time we pop a goal is optimal
+            break
+        for v in neighbors(u):
+            w = cell_cost(v, player, opp)
+            if w >= INF:
+                continue
+            nd = d + w
+            if nd < dist.get(v, INF):
+                dist[v] = nd
+                parent[v] = u
+                heapq.heappush(pq, (nd, v))
+
+    return best_dist, best_end, parent, dist
+
+
+def reconstruct_path(end: Optional[Tuple[int, int]], parent: Dict[Tuple[int, int], Optional[Tuple[int, int]]]) -> List[Tuple[int, int]]:
+    if end is None:
+        return []
+    path = []
+    cur: Optional[Tuple[int, int]] = end
+    while cur is not None:
+        path.append(cur)
+        cur = parent.get(cur)
+    path.reverse()
+    return path
+
+
+def empty_cells(me: Set[Tuple[int, int]], opp: Set[Tuple[int, int]]) -> List[Tuple[int, int]]:
+    out = []
+    for r in range(N):
+        for c in range(N):
+            if (r, c) not in me and (r, c) not in opp:
+                out.append((r, c))
+    return out
+
+
+def local_bonus(move: Tuple[int, int], me: Set[Tuple[int, int]], opp: Set[Tuple[int, int]]) -> int:
+    # Simple connectivity heuristic: prefer moves adjacent to our stones, avoid adjacent to many opponent stones
+    adj_me = 0
+    adj_opp = 0
+    for nb in neighbors(move):
+        if nb in me:
+            adj_me += 1
+        elif nb in opp:
+            adj_opp += 1
+    # Weight our adjacency slightly more than avoiding theirs
+    return 2 * adj_me - adj_opp
+
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[int, int]:
+    me_set: Set[Tuple[int, int]] = set(me)
+    opp_set: Set[Tuple[int, int]] = set(opp)
+
+    # Opening: take center if free (strong and robust)
+    center = (N // 2, N // 2)
+    if center not in me_set and center not in opp_set and len(me_set) + len(opp_set) == 0:
+        return center
+
+    # Compute current shortest paths for both players
+    my_dist, my_end, my_parent, _ = dijkstra_shortest_path(me_set, opp_set, color)
+    opp_color = other_color(color)
+    opp_dist, opp_end, opp_parent, _ = dijkstra_shortest_path(opp_set, me_set, opp_color)
+
+    my_path = reconstruct_path(my_end, my_parent)
+    opp_path = reconstruct_path(opp_end, opp_parent)
+
+    my_path_empties = [p for p in my_path if p not in me_set and p not in opp_set]
+    opp_path_empties = [p for p in opp_path if p not in me_set and p not in opp_set]
+
+    # If we can win in one move, do it.
+    if my_dist == 1 and my_path_empties:
+        return my_path_empties[0]
+
+    # If opponent can win in one move, block it.
+    if opp_dist == 1 and opp_path_empties:
+        return opp_path_empties[0]
+
+    # Candidate generation: focus on likely-relevant cells
+    candidates: Set[Tuple[int, int]] = set()
+
+    # Shortest path cells (both sides)
+    candidates.update(my_path_empties)
+    candidates.update(opp_path_empties)
+
+    # Neighbors of stones (tactical, reduces branching)
+    for s in me_set:
+        for nb in neighbors(s):
+            if nb not in me_set and nb not in opp_set:
+                candidates.add(nb)
+    for s in opp_set:
+        for nb in neighbors(s):
+            if nb not in me_set and nb not in opp_set:
+                candidates.add(nb)
+
+    # Add center if still free (midgame relevance)
+    if center not in me_set and center not in opp_set:
+        candidates.add(center)
+
+    # Ensure non-empty candidate set
+    if not candidates:
+        empties = empty_cells(me_set, opp_set)
+        return empties[0] if empties else (0, 0)  # fallback; game states should always have an empty
+
+    # One-ply evaluation over candidates
+    best_move = None
+    best_score = -10**18
+
+    # Baseline distances for shaping the score
+    base_my = my_dist
+    base_opp = opp_dist
+
+    # Evaluate each candidate by simulating it and recomputing distances
+    for mv in candidates:
+        if mv in me_set or mv in opp_set:
+            continue
+
+        new_me = set(me_set)
+        new_me.add(mv)
+
+        new_my_dist, _, _, _ = dijkstra_shortest_path(new_me, opp_set, color)
+        new_opp_dist, _, _, _ = dijkstra_shortest_path(opp_set, new_me, opp_color)
+
+        # If this move wins immediately, take it
+        if new_my_dist == 0:
+            return mv
+
+        # Primary: reduce our distance, increase opponent distance
+        # Use large weights so it dominates local heuristics.
+        improve_me = base_my - new_my_dist
+        harm_opp = new_opp_dist - base_opp
+
+        score = 1000 * improve_me + 900 * harm_opp
+
+        # Secondary: absolute advantage
+        # smaller (my_dist - opp_dist) is better => add negative of it
+        score += 50 * (new_opp_dist - new_my_dist)
+
+        # Tertiary: local connectivity
+        score += 5 * local_bonus(mv, me_set, opp_set)
+
+        # Small bias toward centrality (generally strong in Hex)
+        r, c = mv
+        score -= (abs(r - N // 2) + abs(c - N // 2))  # lower distance to center => higher score
+
+        if score > best_score:
+            best_score = score
+            best_move = mv
+
+    if best_move is not None:
+        return best_move
+
+    # Absolute fallback: first legal empty
+    empties = empty_cells(me_set, opp_set)
+    return empties[0] if empties else (0, 0)

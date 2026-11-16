@@ -1,0 +1,161 @@
+# Strategy
+
+TTCC4 is a hybrid game combining chess, checkers, tic-tac-toe, and connect-four mechanics. The objective is to get three in a row/column/diagonal in the center 9x9 board (rows/cols 3-5).
+
+**Key Strategic Insights:**
+
+1. **Winning Condition**: Three-in-a-row in the central 3x3 grid (cells 3-5, 3-5) with disks is the primary win condition.
+
+2. **Disk Control**: Dropping disks in columns (1-7) is the most direct path to victory. The disks fall and stack, creating connect-4-like patterns.
+
+3. **Priority Hierarchy**:
+   - **Immediate Win**: If we can complete three-in-a-row on next move, do it
+   - **Block Opponent**: If opponent is about to win, block them
+   - **Build Threats**: Create situations where we have two-in-a-row with open third position
+   - **Strategic Drops**: Drop disks in central columns (3, 4, 5) to control the middle
+   - **Piece Movement**: Move knights/checkers/pawns to support disk positions or capture opponent pieces
+   - **Fallback**: Play `noop` if no better moves
+
+4. **Board Analysis**: 
+   - Check the central 3x3 region (rows 3-5, cols 3-5) for winning patterns
+   - Prefer columns 3, 4, 5 for drops to control the center
+   - Evaluate three-in-a-row patterns: rows, columns, and diagonals
+
+5. **Move Generation**:
+   - Drops are high priority: `drop(col)` for col in 1-7
+   - Piece moves: `knightmove`, `checkermove`, `pawnmove`, `noop`
+
+<code>
+def policy(state: list[list[object]], role: str) -> str:
+    # Parse the board state
+    board = {}
+    for prop in state:
+        if prop[0] == "cell":
+            row, col, piece = int(prop[1]), int(prop[2]), prop[3]
+            board[(row, col)] = piece
+    
+    # Identify our color
+    our_color = role
+    opponent_color = "black" if role == "white" else "white"
+    our_disk = our_color + "disk"
+    opponent_disk = opponent_color + "disk"
+    
+    # Helper function to check three-in-a-row in central 3x3
+    def check_winner_in_center(disk_color):
+        disk = disk_color + "disk"
+        # Check rows 3-5, cols 3-5
+        for row in range(3, 6):
+            for col in range(3, 6):
+                # Horizontal
+                if col <= 3:
+                    if all((row, c) in board and board[(row, c)] == disk for c in range(col, col + 3)):
+                        return True
+                # Vertical
+                if row <= 3:
+                    if all((r, col) in board and board[(r, col)] == disk for r in range(row, row + 3)):
+                        return True
+        
+        # Diagonals
+        for row in range(3, 6):
+            for col in range(3, 6):
+                # Top-left to bottom-right
+                if row <= 3 and col <= 3:
+                    if all((row + i, col + i) in board and board[(row + i, col + i)] == disk for i in range(3)):
+                        return True
+                # Top-right to bottom-left
+                if row <= 3 and col >= 5:
+                    if all((row + i, col - i) in board and board[(row + i, col - i)] == disk for i in range(3)):
+                        return True
+        return False
+    
+    # Helper to find threat positions (two-in-a-row with open third)
+    def find_winning_moves():
+        moves = []
+        for col in range(1, 8):
+            moves.append(("drop", col))
+        
+        # Simulate drops and check for wins
+        winning_drops = []
+        for col in range(1, 8):
+            # Find where disk would land
+            target_row = None
+            for row in range(7, 0, -1):
+                if (row, col) not in board:
+                    target_row = row
+                    break
+            
+            if target_row is None:
+                continue
+            
+            # Simulate
+            board[(target_row, col)] = our_disk
+            if check_winner_in_center(our_color):
+                winning_drops.append(col)
+            del board[(target_row, col)]
+        
+        return winning_drops
+    
+    def find_blocking_moves():
+        blocking_drops = []
+        for col in range(1, 8):
+            target_row = None
+            for row in range(7, 0, -1):
+                if (row, col) not in board:
+                    target_row = row
+                    break
+            
+            if target_row is None:
+                continue
+            
+            # Simulate opponent's disk
+            board[(target_row, col)] = opponent_disk
+            if check_winner_in_center(opponent_color):
+                blocking_drops.append(col)
+            del board[(target_row, col)]
+        
+        return blocking_drops
+    
+    # Check for immediate winning moves
+    winning_moves = find_winning_moves()
+    if winning_moves:
+        return f"drop({winning_moves[0]})"
+    
+    # Check for blocking moves
+    blocking_moves = find_blocking_moves()
+    if blocking_moves:
+        return f"drop({blocking_moves[0]})"
+    
+    # Prefer central columns
+    for col in [4, 3, 5, 2, 6, 1, 7]:
+        for row in range(7, 0, -1):
+            if (row, col) not in board:
+                return f"drop({col})"
+    
+    # Fallback: try to move pieces or noop
+    for prop in state:
+        if prop[0] == "cell" and our_color in prop[3]:
+            piece_type = prop[3].replace(our_color, "")
+            row, col = int(prop[1]), int(prop[2])
+            
+            if piece_type == "knight":
+                for dr, dc in [(-2, -1), (-2, 1), (-1, -2), (-1, 2), (1, -2), (1, 2), (2, -1), (2, 1)]:
+                    nr, nc = row + dr, col + dc
+                    if 1 <= nr <= 7 and 1 <= nc <= 7:
+                        if (nr, nc) not in board or opponent_color in board[(nr, nc)]:
+                            return f"knightmove({col},{row},{nc},{nr})"
+            
+            elif piece_type == "checker":
+                for dr, dc in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                    nr, nc = row + dr, col + dc
+                    if 1 <= nr <= 7 and 1 <= nc <= 7:
+                        if (nr, nc) not in board:
+                            return f"checkermove({col},{row},{nc},{nr})"
+            
+            elif piece_type == "pawn":
+                direction = 1 if our_color == "white" else -1
+                nr, nc = row + direction, col
+                if 1 <= nr <= 7 and (nr, nc) not in board:
+                    return f"pawnmove({col},{row},{nc},{nr})"
+    
+    return "noop"
+</code>

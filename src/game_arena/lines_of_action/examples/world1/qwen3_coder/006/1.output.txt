@@ -1,0 +1,187 @@
+My strategy focuses on balancing immediate tactical gains with long-term strategic positioning:
+
+1. **Piece Connectivity**: Prioritize moves that bring pieces closer together to eventually form a single connected group, as this is the win condition.
+
+2. **Mobility and Control**: Prefer moves that increase my piece mobility or control key central squares. Limit opponent's mobility when possible.
+
+3. **Piece Preservation**: Avoid unnecessary losses of pieces since connecting all pieces is essential.
+
+4. **Progress Toward Goal**: Evaluate moves based on how much they contribute to forming a connected component while considering opponent's threats.
+
+5. **Fallback Safety**: If no clear improvement is found, select a safe legal move that doesn't compromise position.
+
+The implementation uses a heuristic evaluation function that considers:
+- Distance between pieces (Manhattan and Euclidean)
+- Potential to form connections
+- Control of central squares
+- Immediate captures when safe
+
+<code>
+import numpy as np
+from collections import deque
+
+def policy(board) -> str:
+    # Convert board to numpy array for easier manipulation
+    board = np.array(board)
+    
+    # Find all my pieces
+    my_pieces = [(r, c) for r in range(8) for c in range(8) if board[r, c] == 1]
+    
+    # Find all legal moves
+    legal_moves = []
+    
+    for r, c in my_pieces:
+        # Count pieces in all 8 directions
+        directions = [
+            (-1, 0), (1, 0), (0, -1), (0, 1),  # orthogonal
+            (-1, -1), (-1, 1), (1, -1), (1, 1)  # diagonal
+        ]
+        
+        for dr, dc in directions:
+            # Count pieces in this line (including own piece)
+            count = 0
+            tr, tc = r, c
+            while 0 <= tr < 8 and 0 <= tc < 8:
+                if board[tr, tc] != 0:
+                    count += 1
+                tr += dr
+                tc += dc
+            
+            # Move length is exactly the count
+            move_length = count
+            
+            # Calculate destination
+            nr, nc = r + dr * move_length, c + dc * move_length
+            
+            # Check if destination is valid
+            if 0 <= nr < 8 and 0 <= nc < 8:
+                # Cannot land on own piece
+                if board[nr, nc] != 1:
+                    # Cannot jump over enemy pieces (except for landing)
+                    valid = True
+                    step = 1
+                    tr, tc = r + dr * step, c + dc * step
+                    while step < move_length:
+                        if 0 <= tr < 8 and 0 <= tc < 8 and board[tr, tc] == -1:
+                            valid = False
+                            break
+                        step += 1
+                        tr, tc = r + dr * step, c + dc * step
+                    
+                    if valid:
+                        legal_moves.append(((r, c), (nr, nc)))
+    
+    if not legal_moves:
+        # This should not happen in a legal game state
+        return "0,0:0,1"  # Just a fallback
+    
+    # Evaluate moves
+    best_move = None
+    best_score = float('-inf')
+    
+    for (fr, fc), (tr, tc) in legal_moves:
+        # Simulate move
+        new_board = board.copy()
+        new_board[fr, fc] = 0
+        new_board[tr, tc] = 1  # Assume we don't capture for simplicity in eval
+        
+        # Evaluate new board position
+        score = evaluate_position(new_board, (tr, tc))
+        
+        # Add bonus for captures
+        if board[tr, tc] == -1:
+            score += 10  # Capture bonus
+            
+        if score > best_score:
+            best_score = score
+            best_move = (fr, fc, tr, tc)
+    
+    # If no good move found, just return first legal move
+    if best_move is None:
+        (fr, fc), (tr, tc) = legal_moves[0]
+        best_move = (fr, fc, tr, tc)
+        
+    fr, fc, tr, tc = best_move
+    return f"{fr},{fc}:{tr},{tc}"
+
+def evaluate_position(board, moved_piece):
+    """Evaluate a board position based on piece connectivity and control."""
+    my_pieces = [(r, c) for r in range(8) for c in range(8) if board[r, c] == 1]
+    
+    if len(my_pieces) <= 1:
+        return 0
+    
+    # Calculate connectivity score (higher is better)
+    total_distance = 0
+    connected_components = 0
+    
+    # Find connected components using BFS
+    visited = set()
+    for piece in my_pieces:
+        if piece not in visited:
+            connected_components += 1
+            queue = deque([piece])
+            component = []
+            while queue:
+                p = queue.popleft()
+                if p in visited:
+                    continue
+                visited.add(p)
+                component.append(p)
+                # Check 8-directional neighbors
+                for dr in [-1, 0, 1]:
+                    for dc in [-1, 0, 1]:
+                        if dr == 0 and dc == 0:
+                            continue
+                        nr, nc = p[0] + dr, p[1] + dc
+                        if 0 <= nr < 8 and 0 <= nc < 8 and (nr, nc) not in visited:
+                            if board[nr, nc] == 1:
+                                queue.append((nr, nc))
+            
+            # Calculate internal distances within component
+            for i in range(len(component)):
+                for j in range(i+1, len(component)):
+                    p1, p2 = component[i], component[j]
+                    dist = abs(p1[0] - p2[0]) + abs(p1[1] - p2[1])  # Manhattan distance
+                    total_distance += dist
+    
+    # Prefer fewer connected components (toward 1) and shorter distances
+    component_penalty = (connected_components - 1) * 20
+    distance_score = -total_distance * 0.5  # Lower distance is better
+    
+    # Position score: prefer center control
+    center_r, center_c = 3.5, 3.5
+    mr, mc = moved_piece
+    center_distance = abs(mr - center_r) + abs(mc - center_c)
+    center_score = -(center_distance - 3.5) * 2  # Higher score for center positions
+    
+    # Mobility score: count potential moves from this position
+    mobility = 0
+    directions = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
+    for dr, dc in directions:
+        count = 0
+        tr, tc = mr, mc
+        while 0 <= tr < 8 and 0 <= tc < 8:
+            if board[tr, tc] != 0:
+                count += 1
+            tr += dr
+            tc += dc
+        nr, nc = mr + dr * count, mc + dc * count
+        if 0 <= nr < 8 and 0 <= nc < 8 and board[nr, nc] != 1:
+            # Check if jump is valid
+            valid = True
+            step = 1
+            tr, tc = mr + dr * step, mc + dc * step
+            while step < count:
+                if 0 <= tr < 8 and 0 <= tc < 8 and board[tr, tc] == -1:
+                    valid = False
+                    break
+                step += 1
+                tr, tc = mr + dr * step, mc + dc * step
+            if valid:
+                mobility += 1
+                
+    mobility_score = mobility * 3
+    
+    return distance_score - component_penalty + center_score + mobility_score
+</code>

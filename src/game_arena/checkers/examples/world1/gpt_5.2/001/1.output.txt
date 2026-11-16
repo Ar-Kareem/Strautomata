@@ -1,0 +1,440 @@
+The strategy for this policy is a time-bounded, capture-correct alpha-beta search with iterative deepening. It always generates only legal moves and enforces mandatory captures. When multiple moves are legal, it prefers forcing captures, promotions to kings, avoiding immediate recapture, and winning material. The evaluation combines material (kings valued higher), piece advancement toward promotion, central control, mobility, and a “hanging piece” penalty if the opponent has an immediate capture available next turn. A small quiescence extension searches capture sequences at leaf nodes to reduce blunders at the horizon.
+
+<code>
+from __future__ import annotations
+
+from dataclasses import dataclass
+from time import perf_counter
+from typing import Iterable, List, Optional, Set, Tuple, Dict
+
+Square = Tuple[int, int]
+Move = Tuple[Square, Square]
+
+
+INF = 10**9
+
+
+def _other(color: str) -> str:
+    return "w" if color == "b" else "b"
+
+
+def _in_bounds(r: int, c: int) -> bool:
+    return 0 <= r <= 7 and 0 <= c <= 7
+
+
+def _progress(row: int, color: str) -> int:
+    # Higher is "more advanced" toward becoming a king.
+    # White promotes at row 7, black promotes at row 0.
+    return row if color == "w" else 7 - row
+
+
+def _promotion_row(color: str) -> int:
+    return 7 if color == "w" else 0
+
+
+@dataclass(frozen=True)
+class GenMove:
+    frm: Square
+    to: Square
+    is_capture: bool
+    captured: Optional[Square] = None
+
+
+def _gen_moves(
+    men: Set[Square],
+    kings: Set[Square],
+    omen: Set[Square],
+    okings: Set[Square],
+    color: str,
+) -> List[GenMove]:
+    """Generate legal moves for side-to-move. Captures are mandatory if any exist.
+
+    Assumption: men move and capture forward only (standard American/English checkers on 8x8).
+    """
+    occ = men | kings | omen | okings
+    opp = omen | okings
+
+    cap_moves: List[GenMove] = []
+
+    # Movement deltas
+    if color == "w":
+        fdirs = [(1, -1), (1, 1)]
+    else:
+        fdirs = [(-1, -1), (-1, 1)]
+    kdirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+    # Captures
+    for (r, c) in men:
+        for dr, dc in fdirs:
+            mr, mc = r + dr, c + dc
+            tr, tc = r + 2 * dr, c + 2 * dc
+            if not _in_bounds(tr, tc):
+                continue
+            if (mr, mc) in opp and (tr, tc) not in occ:
+                cap_moves.append(GenMove((r, c), (tr, tc), True, (mr, mc)))
+
+    for (r, c) in kings:
+        for dr, dc in kdirs:
+            mr, mc = r + dr, c + dc
+            tr, tc = r + 2 * dr, c + 2 * dc
+            if not _in_bounds(tr, tc):
+                continue
+            if (mr, mc) in opp and (tr, tc) not in occ:
+                cap_moves.append(GenMove((r, c), (tr, tc), True, (mr, mc)))
+
+    if cap_moves:
+        return cap_moves
+
+    # Quiet moves
+    quiet: List[GenMove] = []
+    for (r, c) in men:
+        for dr, dc in fdirs:
+            tr, tc = r + dr, c + dc
+            if _in_bounds(tr, tc) and (tr, tc) not in occ:
+                quiet.append(GenMove((r, c), (tr, tc), False, None))
+
+    for (r, c) in kings:
+        for dr, dc in kdirs:
+            tr, tc = r + dr, c + dc
+            if _in_bounds(tr, tc) and (tr, tc) not in occ:
+                quiet.append(GenMove((r, c), (tr, tc), False, None))
+
+    return quiet
+
+
+def _apply_and_swap(
+    men: Set[Square],
+    kings: Set[Square],
+    omen: Set[Square],
+    okings: Set[Square],
+    color: str,
+    mv: GenMove,
+) -> Tuple[Set[Square], Set[Square], Set[Square], Set[Square], str]:
+    """Apply mv for side-to-move then swap perspective so returned sets are for next player to move."""
+    frm = mv.frm
+    to = mv.to
+
+    men2 = set(men)
+    kings2 = set(kings)
+    omen2 = set(omen)
+    okings2 = set(okings)
+
+    moved_was_king = frm in kings2
+    if moved_was_king:
+        kings2.remove(frm)
+    else:
+        # must be man
+        men2.remove(frm)
+
+    # Capture removal
+    if mv.is_capture and mv.captured is not None:
+        cap = mv.captured
+        if cap in omen2:
+            omen2.remove(cap)
+        else:
+            okings2.remove(cap)
+
+    # Place moved piece, with promotion if it was a man
+    if moved_was_king:
+        kings2.add(to)
+    else:
+        if to[0] == _promotion_row(color):
+            kings2.add(to)
+        else:
+            men2.add(to)
+
+    # Swap turn: opponent becomes side-to-move
+    next_color = _other(color)
+    return omen2, okings2, men2, kings2, next_color
+
+
+def _center_bonus(r: int, c: int) -> int:
+    # Encourage central squares (3-4 are best)
+    return 4 - (abs(3.5 - r) + abs(3.5 - c))
+
+
+def _immediate_captured_squares(
+    men: Set[Square],
+    kings: Set[Square],
+    omen: Set[Square],
+    okings: Set[Square],
+    color: str,
+) -> Set[Square]:
+    """Squares of side-to-move pieces that the opponent can capture immediately."""
+    opp_color = _other(color)
+    opp_caps = _gen_moves(omen, okings, men, kings, opp_color)
+    out: Set[Square] = set()
+    for mv in opp_caps:
+        if mv.is_capture and mv.captured is not None:
+            out.add(mv.captured)
+    return out
+
+
+def _evaluate(
+    men: Set[Square],
+    kings: Set[Square],
+    omen: Set[Square],
+    okings: Set[Square],
+    color: str,
+) -> int:
+    """Evaluation from side-to-move perspective."""
+    # Material
+    score = 0
+    score += 100 * len(men) + 175 * len(kings)
+    score -= 100 * len(omen) + 175 * len(okings)
+
+    # Advancement (men only)
+    adv = sum(_progress(r, color) for (r, _) in men)
+    ocolor = _other(color)
+    oadv = sum(_progress(r, ocolor) for (r, _) in omen)
+    score += 3 * adv
+    score -= 3 * oadv
+
+    # Centering / activity
+    score += 2 * sum(_center_bonus(r, c) for (r, c) in men)
+    score += 3 * sum(_center_bonus(r, c) for (r, c) in kings)
+    score -= 2 * sum(_center_bonus(r, c) for (r, c) in omen)
+    score -= 3 * sum(_center_bonus(r, c) for (r, c) in okings)
+
+    # Mobility (respecting mandatory captures)
+    my_moves = _gen_moves(men, kings, omen, okings, color)
+    op_moves = _gen_moves(omen, okings, men, kings, _other(color))
+    score += 2 * len(my_moves)
+    score -= 2 * len(op_moves)
+
+    # Hanging pieces: if opponent can capture something now, penalize those targets
+    hanging = _immediate_captured_squares(men, kings, omen, okings, color)
+    score -= 35 * len(hanging)
+
+    return score
+
+
+class _Timeout(Exception):
+    pass
+
+
+def _key(
+    men: Set[Square],
+    kings: Set[Square],
+    omen: Set[Square],
+    okings: Set[Square],
+    color: str,
+) -> Tuple:
+    # Deterministic, hashable position signature
+    return (
+        color,
+        tuple(sorted(men)),
+        tuple(sorted(kings)),
+        tuple(sorted(omen)),
+        tuple(sorted(okings)),
+    )
+
+
+def _order_moves(
+    moves: List[GenMove],
+    men: Set[Square],
+    kings: Set[Square],
+    omen: Set[Square],
+    okings: Set[Square],
+    color: str,
+) -> List[GenMove]:
+    """Heuristic ordering for alpha-beta."""
+    prom_row = _promotion_row(color)
+
+    def mv_score(mv: GenMove) -> int:
+        frm = mv.frm
+        to = mv.to
+        s = 0
+        if mv.is_capture:
+            s += 10_000
+            # Capturing a king is usually better
+            if mv.captured in okings:
+                s += 400
+            else:
+                s += 200
+
+        # Promotion
+        if (frm in men) and (to[0] == prom_row):
+            s += 800
+
+        # Prefer center
+        s += 10 * _center_bonus(to[0], to[1])
+
+        # Avoid immediate recapture (very rough but helpful):
+        # simulate and see if moved piece is capturable immediately
+        nmen, nkings, nomen, nokings, ncolor = _apply_and_swap(men, kings, omen, okings, color, mv)
+        # After swap, opponent is to move, so check if they can capture our moved-to square
+        # In swapped perspective, our moved piece is now in opponent sets (nomen/nokings)
+        # So we ask: can side-to-move (ncolor) capture any of their opponent pieces at square `to`?
+        # That's: generate captures for (nmen,nkings) against (nomen,nokings)
+        opp_caps = _gen_moves(nmen, nkings, nomen, nokings, ncolor)
+        for cmv in opp_caps:
+            if cmv.is_capture and cmv.captured == to:
+                s -= 500
+                break
+
+        return s
+
+    return sorted(moves, key=mv_score, reverse=True)
+
+
+def _quiescence(
+    men: Set[Square],
+    kings: Set[Square],
+    omen: Set[Square],
+    okings: Set[Square],
+    color: str,
+    alpha: int,
+    beta: int,
+    end_time: float,
+    qdepth: int,
+) -> int:
+    if perf_counter() > end_time:
+        raise _Timeout
+
+    stand_pat = _evaluate(men, kings, omen, okings, color)
+    if stand_pat >= beta:
+        return beta
+    if stand_pat > alpha:
+        alpha = stand_pat
+
+    if qdepth <= 0:
+        return stand_pat
+
+    moves = _gen_moves(men, kings, omen, okings, color)
+    if not moves or not moves[0].is_capture:
+        return stand_pat
+
+    moves = _order_moves(moves, men, kings, omen, okings, color)
+    for mv in moves:
+        nmen, nkings, nomen, nokings, ncolor = _apply_and_swap(men, kings, omen, okings, color, mv)
+        score = -_quiescence(nmen, nkings, nomen, nokings, ncolor, -beta, -alpha, end_time, qdepth - 1)
+        if score >= beta:
+            return beta
+        if score > alpha:
+            alpha = score
+    return alpha
+
+
+def _negamax(
+    men: Set[Square],
+    kings: Set[Square],
+    omen: Set[Square],
+    okings: Set[Square],
+    color: str,
+    depth: int,
+    alpha: int,
+    beta: int,
+    end_time: float,
+    tt: Dict[Tuple, Tuple[int, int]],
+) -> int:
+    if perf_counter() > end_time:
+        raise _Timeout
+
+    k = _key(men, kings, omen, okings, color)
+    hit = tt.get((k, depth))
+    if hit is not None:
+        return hit[0]
+
+    moves = _gen_moves(men, kings, omen, okings, color)
+    if not moves:
+        # No legal move: losing terminal
+        val = -INF + (10 - depth)
+        tt[(k, depth)] = (val, depth)
+        return val
+
+    if depth <= 0:
+        val = _quiescence(men, kings, omen, okings, color, alpha, beta, end_time, qdepth=6)
+        tt[(k, depth)] = (val, depth)
+        return val
+
+    moves = _order_moves(moves, men, kings, omen, okings, color)
+
+    best = -INF
+    a = alpha
+    for mv in moves:
+        nmen, nkings, nomen, nokings, ncolor = _apply_and_swap(men, kings, omen, okings, color, mv)
+        val = -_negamax(nmen, nkings, nomen, nokings, ncolor, depth - 1, -beta, -a, end_time, tt)
+        if val > best:
+            best = val
+        if best > a:
+            a = best
+        if a >= beta:
+            break
+
+    tt[(k, depth)] = (best, depth)
+    return best
+
+
+def policy(
+    my_men: List[Square],
+    my_kings: List[Square],
+    opp_men: List[Square],
+    opp_kings: List[Square],
+    color: str,
+) -> Move:
+    men = set(map(tuple, my_men))
+    kings = set(map(tuple, my_kings))
+    omen = set(map(tuple, opp_men))
+    okings = set(map(tuple, opp_kings))
+
+    legal = _gen_moves(men, kings, omen, okings, color)
+    if not legal:
+        # Should not happen if the engine calls policy only when a move exists.
+        # Fallback (still return a tuple with valid coordinates).
+        if men:
+            p = next(iter(men))
+            return (p, p)
+        if kings:
+            p = next(iter(kings))
+            return (p, p)
+        return ((0, 0), (0, 0))
+
+    # Always keep a guaranteed legal fallback
+    legal = _order_moves(legal, men, kings, omen, okings, color)
+    best_move = legal[0]
+
+    # Iterative deepening with time budget
+    start = perf_counter()
+    end_time = start + 0.95  # keep margin under 1s
+    tt: Dict[Tuple, Tuple[int, int]] = {}
+
+    # If only one legal move, play it instantly
+    if len(legal) == 1:
+        mv = legal[0]
+        return (mv.frm, mv.to)
+
+    # Depths in plies
+    # Start a bit deeper to outperform purely greedy bots while staying safe on time.
+    max_depth = 9
+
+    try:
+        for depth in range(2, max_depth + 1):
+            if perf_counter() > end_time:
+                break
+
+            cur_best = None
+            cur_best_val = -INF
+
+            alpha = -INF
+            beta = INF
+
+            for mv in legal:
+                if perf_counter() > end_time:
+                    break
+                nmen, nkings, nomen, nokings, ncolor = _apply_and_swap(men, kings, omen, okings, color, mv)
+                val = -_negamax(nmen, nkings, nomen, nokings, ncolor, depth - 1, -beta, -alpha, end_time, tt)
+                if val > cur_best_val:
+                    cur_best_val = val
+                    cur_best = mv
+                if val > alpha:
+                    alpha = val
+
+            if cur_best is not None:
+                best_move = cur_best
+
+    except _Timeout:
+        pass
+
+    return (best_move.frm, best_move.to)
+</code>

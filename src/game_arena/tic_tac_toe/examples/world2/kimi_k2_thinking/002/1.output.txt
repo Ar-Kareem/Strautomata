@@ -1,0 +1,211 @@
+**Strategy**
+
+The policy plays optimal 4×4 Tic‑Tac‑Toe by combining three ideas:
+
+1. **Immediate actions** – If a move wins the game immediately it is taken; if the opponent can win on the next move the policy blocks that cell.
+2. **Minimax with alpha‑beta pruning** – For non‑terminal positions it searches ahead using a classic negamax search.  
+   * The evaluation function counts how many open lines each player can still complete and scores them ≈ 10 ^ (#marks in the line).  
+   * Alpha‑beta pruning cuts off branches that cannot improve the result, keeping the search fast.
+3. **Iterative deepening** – The search is repeated with increasing depth (up to a safe limit of 5 plies on a full board) as long as the move time stays below ≈ 0.9 s. The deepest completed search determines the move.
+
+If the search finishes without a result (e.g. time‑out) the policy falls back to the first empty cell, guaranteeing a legal move.
+
+The implementation uses bitboards (two 16‑bit integers) for fast win‑checks and move generation, and works entirely with the standard library.
+
+<code>
+import time
+
+# ----------------------------------------------------------------------
+# Constants and pre‑computed masks for a 4×4 board (16 cells)
+ALL_MASK = (1 << 16) - 1          # 0b1111111111111111
+
+# All winning lines: 4 rows, 4 columns, 2 diagonals
+WIN_MASKS = []
+# rows
+for r in range(4):
+    mask = 0
+    for c in range(4):
+        mask |= 1 << (r * 4 + c)
+    WIN_MASKS.append(mask)
+# columns
+for c in range(4):
+    mask = 0
+    for r in range(4):
+        mask |= 1 << (r * 4 + c)
+    WIN_MASKS.append(mask)
+# main diagonal
+mask = 0
+for i in range(4):
+    mask |= 1 << (i * 4 + i)
+WIN_MASKS.append(mask)
+# anti diagonal
+mask = 0
+for i in range(4):
+    mask |= 1 << (i * 4 + (3 - i))
+WIN_MASKS.append(mask)
+
+WIN_SCORE = 10 ** 6                # larger than any heuristic value
+INF = 10 ** 9
+
+# ----------------------------------------------------------------------
+def win(bits):
+    """True if the given bitboard contains a full winning line."""
+    for m in WIN_MASKS:
+        if bits & m == m:
+            return True
+    return False
+
+
+def evaluate(bits_us, bits_opp):
+    """
+    Heuristic evaluation from the point of view of player 1.
+    For each open line we add 10 ^ (#player‑stones) for the player that
+    owns the line; blocked lines contribute nothing.
+    """
+    score_us = 0
+    score_opp = 0
+    for m in WIN_MASKS:
+        cnt_us = (bits_us & m).bit_count()
+        cnt_opp = (bits_opp & m).bit_count()
+        if cnt_us > 0 and cnt_opp == 0:
+            score_us += 10 ** cnt_us
+        elif cnt_opp > 0 and cnt_us == 0:
+            score_opp += 10 ** cnt_opp
+    return score_us - score_opp
+
+
+def negamax(bits_us, bits_opp, depth, alpha, beta, player):
+    """
+    Negamax search with alpha‑beta pruning.
+    `player` is 1 when it is our turn, -1 otherwise.
+    The returned score is always from the point of view of player 1.
+    """
+    # terminal states
+    if win(bits_us):
+        return WIN_SCORE * player
+    if win(bits_opp):
+        return -WIN_SCORE * player
+    if (bits_us | bits_opp) == ALL_MASK:          # draw
+        return 0
+    if depth == 0:
+        return evaluate(bits_us, bits_opp) * player
+
+    empties = ~(bits_us | bits_opp) & ALL_MASK
+    while empties:
+        lsb = empties & -empties
+        if player == 1:
+            child_us = bits_us | lsb
+            child_opp = bits_opp
+        else:
+            child_us = bits_us
+            child_opp = bits_opp | lsb
+
+        score = -negamax(child_us, child_opp, depth - 1,
+                         -beta, -alpha, -player)
+
+        if score > alpha:
+            alpha = score
+        if alpha >= beta:
+            break
+        empties ^= lsb
+    return alpha
+
+
+def search_best(bits_us, bits_opp, depth):
+    """
+    Find the best move for player 1 with a limited depth search.
+    Returns a tuple ((row, col), score).
+    """
+    best_move = None
+    best_score = -INF
+    alpha = -INF
+    beta = INF
+
+    empties = ~(bits_us | bits_opp) & ALL_MASK
+    while empties:
+        lsb = empties & -empties
+        child_us = bits_us | lsb
+        child_opp = bits_opp
+        score = -negamax(child_us, child_opp, depth - 1,
+                         -beta, -alpha, -1)
+        if score > best_score:
+            best_score = score
+            best_move = lsb
+        if score > alpha:
+            alpha = score
+        if alpha >= beta:
+            break
+        empties ^= lsb
+
+    idx = best_move.bit_length() - 1
+    return (idx // 4, idx % 4), best_score
+
+
+def policy(board):
+    """
+    Return the next move for player 1 on a 4×4 Tic‑Tac‑Toe board.
+    The board is a list of four lists; 1 = our pieces, -1 = opponent,
+    0 = empty.
+    """
+    start = time.time()
+    TIME_LIMIT = 0.9
+
+    # ---- convert board to two bitboards ---------------------------------
+    us = 0
+    opp = 0
+    for r in range(4):
+        row = board[r]
+        base = r * 4
+        for c in range(4):
+            v = row[c]
+            if v == 1:
+                us |= 1 << (base + c)
+            elif v == -1:
+                opp |= 1 << (base + c)
+
+    empties = ~(us | opp) & ALL_MASK
+
+    # ---- 1) immediate win ------------------------------------------------
+    e = empties
+    while e:
+        lsb = e & -e
+        if win(us | lsb):
+            idx = lsb.bit_length() - 1
+            return (idx // 4, idx % 4)
+        e ^= lsb
+
+    # ---- 2) block opponent's immediate win ------------------------------
+    e = empties
+    block_move = None
+    while e:
+        lsb = e & -e
+        if win(opp | lsb):
+            block_move = lsb
+            break
+        e ^= lsb
+    if block_move is not None:
+        idx = block_move.bit_length() - 1
+        return (idx // 4, idx % 4)
+
+    # ---- 3) iterative deepening search ---------------------------------
+    empty_cnt = empties.bit_count()
+    max_depth = min(empty_cnt, 5)          # 5 plies is safe for the early game
+
+    best_move = None
+    for depth in range(1, max_depth + 1):
+        if time.time() - start > TIME_LIMIT:
+            break
+        try:
+            move, _ = search_best(us, opp, depth)
+            best_move = move
+        except Exception:
+            break
+
+    # ---- fallback: first empty cell ------------------------------------
+    if best_move is None:
+        lsb = empties & -empties
+        idx = lsb.bit_length() - 1
+        best_move = (idx // 4, idx % 4)
+
+    return best_move
+</code>

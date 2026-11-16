@@ -1,0 +1,296 @@
+**Strategy Explanation**
+
+The AI follows a simple but effective three‑step decision process:
+
+1. **Win immediately** – if a legal move creates a ring, a bridge or a fork for us, play it.  
+2. **Block the opponent** – if the opponent can win on the next move, play the blocking move.  
+3. **Heuristic evaluation** – otherwise evaluate every legal move with a static score that rewards:
+
+   * joining our own stones (more adjacent own stones → higher score),
+   * connecting different groups (merging groups gives a large bonus),
+   * being adjacent to a corner (corners are essential for a bridge),
+   * lying on an edge (edges are needed for a fork),
+   * staying close to the centre of the board (central influence is strong).
+
+The static evaluator also penalises moves that touch opponent stones (to avoid helping the opponent).
+
+All three winning conditions are detected with graph‑theoretic checks:
+
+* **Ring** – a cycle in the stone graph (union‑find detects a closing edge).  
+* **Bridge** – any connected component touches two different corner cells.  
+* **Fork** – any connected component touches three different edges.
+
+Because the board is a 15×15 hexagon (side = 8) the six corner cells and the six edges are known, the program pre‑computes them from the `valid_mask` at the beginning of each turn.
+
+The algorithm is very fast – the whole decision usually needs far less than a millisecond, well inside the 1‑second limit.
+
+---
+
+<code>
+import sys
+from collections import deque
+
+# ----------------------------------------------------------------------
+# Board geometry (15×15 Havannah board, side length = 8)
+N = 15                 # board dimension
+S = (N + 1) // 2       # side length of the hexagon (8)
+
+# Neighbour offsets for the flat‑top offset coordinate system
+NEIGHBOR_OFFSETS = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, 1), (1, -1)]
+
+# ----------------------------------------------------------------------
+# Pre‑compute row lengths and left offsets for the hexagon shape
+ROW_LENGTHS = [S + min(r, 2 * S - 2 - r) for r in range(N)]
+ROW_OFFSETS = [(N - L) // 2 for L in ROW_LENGTHS]
+
+# ----------------------------------------------------------------------
+# The six corner cells (top‑left, top‑right, right, bottom‑right, bottom‑left, left)
+CORNERS = [
+    (0, ROW_OFFSETS[0]),                                    # top‑left
+    (0, ROW_OFFSETS[0] + ROW_LENGTHS[0] - 1),            # top‑right
+    (S - 1, ROW_OFFSETS[S - 1] + ROW_LENGTHS[S - 1] - 1),  # right
+    (N - 1, ROW_OFFSETS[N - 1] + ROW_LENGTHS[N - 1] - 1),  # bottom‑right
+    (N - 1, ROW_OFFSETS[N - 1]),                            # bottom‑left
+    (S - 1, ROW_OFFSETS[S - 1])                             # left
+]
+CORNERS_SET = set(CORNERS)
+
+# Edge indices (used for fork detection)
+EDGE_TOP = 0
+EDGE_UPPER_RIGHT = 1
+EDGE_LOWER_RIGHT = 2
+EDGE_BOTTOM = 3
+EDGE_LOWER_LEFT = 4
+EDGE_UPPER_LEFT = 5
+
+# ----------------------------------------------------------------------
+def is_adjacent(a, b):
+    """Return True if cells a and b are neighbours on the hex board."""
+    dr = b[0] - a[0]
+    dc = b[1] - a[1]
+    return (dr, dc) in NEIGHBOR_OFFSETS
+
+def get_groups(stones):
+    """Return a list of connected components (sets) of stones."""
+    visited = set()
+    groups = []
+    for s in stones:
+        if s in visited:
+            continue
+        stack = [s]
+        visited.add(s)
+        cur_group = {s}
+        while stack:
+            cur = stack.pop()
+            for dr, dc in NEIGHBOR_OFFSETS:
+                nb = (cur[0] + dr, cur[1] + dc)
+                if nb in stones and nb not in visited:
+                    visited.add(nb)
+                    stack.append(nb)
+                    cur_group.add(nb)
+        groups.append(cur_group)
+    return groups
+
+def has_cycle(stones):
+    """Detect a cycle (ring) in the stone graph using union‑find."""
+    parent = {}
+    rank = {}
+    for s in stones:
+        parent[s] = s
+        rank[s] = 0
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(x, y):
+        xr, yr = find(x), find(y)
+        if xr == yr:
+            return True          # edge closes a cycle
+        if rank[xr] < rank[yr]:
+            parent[xr] = yr
+        elif rank[xr] > rank[yr]:
+            parent[yr] = xr
+        else:
+            parent[yr] = xr
+            rank[xr] += 1
+        return False
+
+    seen = set()
+    for s in stones:
+        for dr, dc in NEIGHBOR_OFFSETS:
+            nb = (s[0] + dr, s[1] + dc)
+            if nb in stones:
+                a, b = s, nb
+                if (a, b) in seen or (b, a) in seen:
+                    continue
+                seen.add((a, b))
+                if union(a, b):
+                    return True
+    return False
+
+def has_bridge(stones):
+    """Return True if any component touches two different corners."""
+    groups = get_groups(stones)
+    for grp in groups:
+        touched = set()
+        for s in grp:
+            for ci, corner in enumerate(CORNERS):
+                if s == corner or is_adjacent(s, corner):
+                    touched.add(ci)
+        if len(touched) >= 2:
+            return True
+    return False
+
+def has_fork(stones, cell_to_edge):
+    """Return True if any component touches three distinct edges."""
+    groups = get_groups(stones)
+    for grp in groups:
+        touched = set()
+        for s in grp:
+            e = cell_to_edge.get(s)
+            if e is not None:
+                touched.add(e)
+        if len(touched) >= 3:
+            return True
+    return False
+
+def is_win(stones, cell_to_edge):
+    """A player wins if they have a ring, a bridge or a fork."""
+    return has_cycle(stones) or has_bridge(stones) or has_fork(stones, cell_to_edge)
+
+# ----------------------------------------------------------------------
+def evaluate_move(move, my_set, opp_set, group_id, cell_to_edge, valid_set):
+    """
+    Compute a static score for a candidate move (higher is better).
+    The score encourages:
+      – own adjacency,
+      – merging different groups,
+      – touching corners,
+      – lying on an edge,
+      – staying central.
+    """
+    my_adj = 0
+    opp_adj = 0
+    groups_adj = set()
+
+    for dr, dc in NEIGHBOR_OFFSETS:
+        nb = (move[0] + dr, move[1] + dc)
+        if nb not in valid_set:
+            continue
+        if nb in my_set:
+            my_adj += 1
+            groups_adj.add(group_id[nb])
+        if nb in opp_set:
+            opp_adj += 1
+
+    # Bonus for merging several groups
+    merge_bonus = (len(groups_adj) - 1) * 10 if len(groups_adj) > 1 else 0
+
+    # Bonus for touching corners
+    corner_touches = 0
+    for c in CORNERS:
+        if move == c or is_adjacent(move, c):
+            corner_touches += 1
+
+    # Bonus for being on an edge
+    edge_bonus = 0
+    if cell_to_edge.get(move) is not None:
+        edge_bonus = 5
+
+    # Central distance (smaller is better)
+    dr = abs(move[0] - N // 2)
+    dc = abs(move[1] - N // 2)
+    central_bonus = -max(dr, dc)
+
+    return my_adj - opp_adj + merge_bonus + corner_touches * 20 + edge_bonus + central_bonus
+
+# ----------------------------------------------------------------------
+def policy(me, opp, valid_mask):
+    """
+    Return the next move for player 0 (the mover).
+    `me`  – list of (r,c) belonging to us,
+    `opp` – list of (r,c) belonging to the opponent,
+    `valid_mask` – N×N boolean array, True for playable cells.
+    """
+    my_set = set(me)
+    opp_set = set(opp)
+
+    # ------------------------------------------------------------------
+    # Build the set of legal moves
+    N = len(valid_mask)
+    valid_set = {(r, c) for r in range(N) for c in range(N) if valid_mask[r][c]}
+    empty = valid_set - my_set - opp_set
+    if not empty:                     # should never happen, but be safe
+        return (0, 0)
+
+    # ------------------------------------------------------------------
+    # Build a map from cell → edge index (or None) for fork detection
+    cell_to_edge = {}
+    for r in range(N):
+        off = ROW_OFFSETS[r]
+        length = ROW_LENGTHS[r]
+        min_c = off
+        max_c = off + length - 1
+        for c in range(min_c, max_c + 1):
+            if (r, c) not in valid_set:
+                continue
+            # corner ?
+            if (r, c) in CORNERS_SET:
+                cell_to_edge[(r, c)] = None
+            # top edge
+            elif r == 0 and c != min_c and c != max_c:
+                cell_to_edge[(r, c)] = EDGE_TOP
+            # bottom edge
+            elif r == N - 1 and c != min_c and c != max_c:
+                cell_to_edge[(r, c)] = EDGE_BOTTOM
+            # left side
+            elif c == min_c:
+                if r < S - 1:
+                    cell_to_edge[(r, c)] = EDGE_UPPER_LEFT if (r, c) not in (CORNERS[0], CORNERS[5]) else None
+                else:
+                    cell_to_edge[(r, c)] = EDGE_LOWER_LEFT if (r, c) not in (CORNERS[5], CORNERS[4]) else None
+            # right side
+            elif c == max_c:
+                if r < S - 1:
+                    cell_to_edge[(r, c)] = EDGE_UPPER_RIGHT if (r, c) not in (CORNERS[1], CORNERS[2]) else None
+                else:
+                    cell_to_edge[(r, c)] = EDGE_LOWER_RIGHT if (r, c) not in (CORNERS[2], CORNERS[3]) else None
+            else:
+                cell_to_edge[(r, c)] = None
+
+    # ------------------------------------------------------------------
+    # 1) Win immediately if possible
+    for mv in empty:
+        if is_win(my_set | {mv}, cell_to_edge):
+            return mv
+
+    # 2) Block the opponent if they could win next turn
+    for mv in empty:
+        if is_win(opp_set | {mv}, cell_to_edge):
+            return mv
+
+    # ------------------------------------------------------------------
+    # 3) Otherwise choose the move with the highest heuristic score
+    #    – pre‑compute group ids for our stones (used for merge bonus)
+    my_groups = get_groups(my_set)
+    group_id = {}
+    for gid, grp in enumerate(my_groups):
+        for s in grp:
+            group_id[s] = gid
+
+    best_move = None
+    best_score = -10 ** 9
+    for mv in empty:
+        score = evaluate_move(mv, my_set, opp_set, group_id, cell_to_edge, valid_set)
+        if score > best_score:
+            best_score = score
+            best_move = mv
+
+    # Fallback (should never be needed)
+    if best_move is None:
+        best_move = next(iter(empty))
+    return best_move
+</code>

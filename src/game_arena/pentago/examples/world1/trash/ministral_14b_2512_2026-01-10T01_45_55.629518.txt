@@ -1,0 +1,154 @@
+### Thinking Process
+
+**Understanding Pentago Rules and Moves:**
+Pentago is a two-player game where players take turns placing a marble on an empty cell of a 6x6 grid and then rotating one of the four 3x3 quadrants. The goal is to create a line of five marbles in a row (horizontally, vertically, or diagonally) after the placement and rotation. The key aspects to consider are:
+1. **Placement:** Choose an empty cell (1-6, 1-6) where placing a marble could potentially lead to a win or block the opponent.
+2. **Rotation:** After placement, rotate one of the four quadrants (0-3) either left (L) or right (R). The rotation affects both players' marbles in that quadrant.
+
+**Strategy Development:**
+Given the complexity of Pentago, a good strategy should:
+1. **Check for Immediate Wins:** Look for placements and rotations that result in five marbles in a row for the current player.
+2. **Block Opponent Wins:** If the opponent can win on their next move, block them by choosing a placement and rotation that prevents their win.
+3. **Center Control:** Placing marbles in the center (especially near the quadrants' intersections) often gives more flexibility for future moves.
+4. **Quadrant Rotation:** Rotating quadrants can sometimes create new opportunities for lines of five, so choosing the right quadrant and direction is crucial.
+
+**Implementation Approach:**
+1. **Generate All Possible Moves:** For each empty cell, simulate placing a marble and then simulate all possible rotations (4 quadrants × 2 directions) to see the resulting board state.
+2. **Evaluate Board States:** For each resulting board state, check if the current player has a line of five marbles. If so, prioritize such moves.
+3. **Check for Opponent Wins:** Similarly, check if the opponent can win in their next move and block them.
+4. **Fallback Strategy:** If no immediate win or block is found, use a heuristic like placing in the center or choosing rotations that maximize potential future moves.
+
+**Optimizations:**
+- Use efficient board representation and rotation logic to quickly simulate moves.
+- Precompute potential lines (rows, columns, diagonals) to quickly check for wins.
+- Prioritize moves that lead to the most promising board states.
+
+**Edge Cases:**
+- Ensure the move is always legal (empty cell, valid quadrant, valid direction).
+- Handle cases where multiple moves lead to a win or block; choose one arbitrarily or based on additional heuristics.
+
+---
+
+### Python Implementation
+
+```python
+import numpy as np
+
+def policy(you, opponent) -> str:
+    # Convert input to numpy arrays for easier manipulation
+    you_board = np.array(you)
+    opponent_board = np.array(opponent)
+
+    # Directions for checking lines (rows, columns, diagonals)
+    directions = [
+        ((0, 1), (0, -1)),  # horizontal
+        ((1, 0), (-1, 0)),  # vertical
+        ((1, 1), (-1, -1)),  # diagonal down-right
+        ((1, -1), (-1, 1))   # diagonal down-left
+    ]
+
+    # Function to check if a player has a line of 5 in the given board
+    def has_line(board, player):
+        for r in range(6):
+            for c in range(6):
+                if board[r][c] == player:
+                    for dr1, dr2 in directions:
+                        count = 1
+                        # Check one direction
+                        nr, nc = r + dr1[0], c + dr1[1]
+                        while 0 <= nr < 6 and 0 <= nc < 6 and board[nr][nc] == player:
+                            count += 1
+                            nr += dr1[0]
+                            nc += dr1[1]
+                        # Check opposite direction
+                        nr, nc = r + dr2[0], c + dr2[1]
+                        while 0 <= nr < 6 and 0 <= nc < 6 and board[nr][nc] == player:
+                            count += 1
+                            nr += dr2[0]
+                            nc += dr2[1]
+                        if count >= 5:
+                            return True
+        return False
+
+    # Function to rotate a quadrant
+    def rotate_quadrant(board, quad, direction):
+        new_board = board.copy()
+        if quad == 0:  # top-left
+            rows = slice(0, 3)
+            cols = slice(0, 3)
+        elif quad == 1:  # top-right
+            rows = slice(0, 3)
+            cols = slice(3, 6)
+        elif quad == 2:  # bottom-left
+            rows = slice(3, 6)
+            cols = slice(0, 3)
+        else:  # quad == 3, bottom-right
+            rows = slice(3, 6)
+            cols = slice(3, 6)
+
+        sub_board = new_board[rows, cols]
+        if direction == 'L':
+            rotated = np.rot90(sub_board, k=-1)
+        else:  # 'R'
+            rotated = np.rot90(sub_board, k=1)
+        new_board[rows, cols] = rotated
+        return new_board
+
+    # Generate all possible moves
+    moves = []
+    for r in range(6):
+        for c in range(6):
+            if you_board[r][c] == 0 and opponent_board[r][c] == 0:
+                # Place marble
+                new_you = you_board.copy()
+                new_you[r, c] = 1
+                new_opponent = opponent_board.copy()
+                # Try all quadrants and directions
+                for quad in range(4):
+                    for direction in ['L', 'R']:
+                        # Rotate the quadrant
+                        rotated_you = rotate_quadrant(new_you, quad, direction)
+                        rotated_opponent = rotate_quadrant(new_opponent, quad, direction)
+                        # Check if current player wins
+                        if has_line(rotated_you, 1):
+                            moves.append((r, c, quad, direction, 1))  # 1: win
+                        # Check if opponent wins (we don't want this)
+                        elif has_line(rotated_opponent, 1):
+                            moves.append((r, c, quad, direction, -1))  # -1: opponent wins
+                        else:
+                            moves.append((r, c, quad, direction, 0))  # 0: neutral
+
+    # Prioritize moves that lead to a win
+    winning_moves = [m for m in moves if m[4] == 1]
+    if winning_moves:
+        # Choose the first winning move (arbitrary, could add more heuristics)
+        r, c, quad, direction, _ = winning_moves[0]
+        return f"{r+1},{c+1},{quad},{direction}"
+
+    # If no winning move, prioritize blocking opponent's win
+    blocking_moves = [m for m in moves if m[4] == -1]
+    if blocking_moves:
+        # Choose the first blocking move
+        r, c, quad, direction, _ = blocking_moves[0]
+        return f"{r+1},{c+1},{quad},{direction}"
+
+    # If no immediate win or block, choose a move that doesn't lose
+    safe_moves = [m for m in moves if m[4] == 0]
+    if safe_moves:
+        # Choose the first safe move (arbitrary, could add more heuristics)
+        r, c, quad, direction, _ = safe_moves[0]
+        return f"{r+1},{c+1},{quad},{direction}"
+
+    # Fallback: should not reach here as per problem statement
+    return "1,1,0,L"
+```
+
+### Explanation:
+1. **Board Representation:** The input boards are converted to NumPy arrays for efficient manipulation.
+2. **Line Checking:** The `has_line` function checks if a player has five marbles in a row in any direction.
+3. **Rotation:** The `rotate_quadrant` function simulates rotating a quadrant left or right.
+4. **Move Generation:** All possible moves are generated by placing a marble in every empty cell and then rotating each quadrant in both directions.
+5. **Move Evaluation:** Moves are evaluated based on whether they lead to a win, block an opponent's win, or are safe.
+6. **Move Selection:** The policy prioritizes winning moves, then blocking moves, and finally safe moves.
+
+This approach ensures that the policy always returns a legal move and prioritizes winning or blocking strategies. The code is efficient enough to run within the time constraints for a 6x6 board.

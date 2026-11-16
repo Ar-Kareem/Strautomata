@@ -1,0 +1,239 @@
+
+import numpy as np
+import random
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> int:
+    """
+    Implements a Connect 4 AI using minimax with alpha-beta pruning.
+    """
+    # Convert to numpy array for easier manipulation
+    board_np = np.array(board)
+    
+    # Check for immediate win or block
+    col = check_immediate_win_or_block(board_np, 1)
+    if col is not None:
+        return col
+    
+    col = check_immediate_win_or_block(board_np, -1)
+    if col is not None:
+        return col
+    
+    # Use minimax with alpha-beta pruning
+    _, col = minimax(board_np, 5, -np.inf, np.inf, True)  # Depth 5 search
+    if col is not None:
+        return col
+    
+    # Fallback to center-biased random move
+    return fallback_move(board_np)
+
+def check_immediate_win_or_block(board: np.ndarray, player: int) -> int:
+    """
+    Check if player can win in one move or needs to block opponent's win.
+    """
+    for col in range(7):
+        if is_valid_move(board, col):
+            row = get_next_open_row(board, col)
+            board[row][col] = player
+            if winning_move(board, player):
+                board[row][col] = 0  # Undo move
+                return col
+            board[row][col] = 0  # Undo move
+    return None
+
+def is_valid_move(board: np.ndarray, col: int) -> bool:
+    """Check if a move is valid (column not full)."""
+    return board[0][col] == 0
+
+def get_next_open_row(board: np.ndarray, col: int) -> int:
+    """Get the next open row in a column."""
+    for r in range(5, -1, -1):
+        if board[r][col] == 0:
+            return r
+    return -1
+
+def winning_move(board: np.ndarray, player: int) -> bool:
+    """Check if the player has a winning move."""
+    # Check horizontal
+    for r in range(6):
+        for c in range(4):
+            if (board[r][c] == player and 
+                board[r][c+1] == player and 
+                board[r][c+2] == player and 
+                board[r][c+3] == player):
+                return True
+
+    # Check vertical
+    for r in range(3):
+        for c in range(7):
+            if (board[r][c] == player and 
+                board[r+1][c] == player and 
+                board[r+2][c] == player and 
+                board[r+3][c] == player):
+                return True
+
+    # Check positively sloped diagonals
+    for r in range(3):
+        for c in range(4):
+            if (board[r][c] == player and 
+                board[r+1][c+1] == player and 
+                board[r+2][c+2] == player and 
+                board[r+3][c+3] == player):
+                return True
+
+    # Check negatively sloped diagonals
+    for r in range(3, 6):
+        for c in range(4):
+            if (board[r][c] == player and 
+                board[r-1][c+1] == player and 
+                board[r-2][c+2] == player and 
+                board[r-3][c+3] == player):
+                return True
+
+    return False
+
+def evaluate_window(window: np.ndarray, player: int) -> int:
+    """
+    Evaluate a window of 4 positions for a player.
+    """
+    score = 0
+    opponent = -player
+    
+    if np.count_nonzero(window == player) == 4:
+        score += 100
+    elif (np.count_nonzero(window == player) == 3 and 
+          np.count_nonzero(window == 0) == 1):
+        score += 5
+    elif (np.count_nonzero(window == player) == 2 and 
+          np.count_nonzero(window == 0) == 2):
+        score += 2
+        
+    if (np.count_nonzero(window == opponent) == 3 and 
+        np.count_nonzero(window == 0) == 1):
+        score -= 4
+        
+    return score
+
+def score_position(board: np.ndarray, player: int) -> int:
+    """
+    Score the entire board position for a player.
+    """
+    score = 0
+    
+    # Score center column preference
+    center_array = board[:, 3]
+    center_count = np.count_nonzero(center_array == player)
+    score += center_count * 3
+    
+    # Score horizontal
+    for r in range(6):
+        row_array = board[r, :]
+        for c in range(4):
+            window = row_array[c:c+4]
+            score += evaluate_window(window, player)
+            
+    # Score vertical
+    for c in range(7):
+        col_array = board[:, c]
+        for r in range(3):
+            window = col_array[r:r+4]
+            score += evaluate_window(window, player)
+            
+    # Score positive diagonal
+    for r in range(3):
+        for c in range(4):
+            window = [board[r+i][c+i] for i in range(4)]
+            score += evaluate_window(np.array(window), player)
+            
+    # Score negative diagonal
+    for r in range(3, 6):
+        for c in range(4):
+            window = [board[r-i][c+i] for i in range(4)]
+            score += evaluate_window(np.array(window), player)
+            
+    return score
+
+def is_terminal_node(board: np.ndarray) -> bool:
+    """
+    Check if the game has ended (win, lose, or draw).
+    """
+    return (winning_move(board, 1) or 
+            winning_move(board, -1) or 
+            len(get_valid_locations(board)) == 0)
+
+def get_valid_locations(board: np.ndarray) -> List[int]:
+    """
+    Get list of valid column moves.
+    """
+    valid_locations = []
+    for col in range(7):
+        if is_valid_move(board, col):
+            valid_locations.append(col)
+    return valid_locations
+
+def minimax(board: np.ndarray, depth: int, alpha: float, beta: float, maximizing: bool) -> Tuple[int, int]:
+    """
+    Minimax algorithm with alpha-beta pruning.
+    """
+    valid_locations = get_valid_locations(board)
+    is_terminal = is_terminal_node(board)
+    
+    if depth == 0 or is_terminal:
+        if is_terminal:
+            if winning_move(board, 1):  # AI wins
+                return (10000000000000, None)
+            elif winning_move(board, -1):  # Opponent wins
+                return (-10000000000000, None)
+            else:  # Game over, no more valid moves
+                return (0, None)
+        else:  # Depth is zero
+            return (score_position(board, 1), None)
+    
+    if maximizing:
+        value = -np.inf
+        column = random.choice(valid_locations)
+        for col in valid_locations:
+            row = get_next_open_row(board, col)
+            b_copy = board.copy()
+            b_copy[row][col] = 1
+            new_score = minimax(b_copy, depth-1, alpha, beta, False)[0]
+            if new_score > value:
+                value = new_score
+                column = col
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+        return value, column
+    else:  # Minimizing player
+        value = np.inf
+        column = random.choice(valid_locations)
+        for col in valid_locations:
+            row = get_next_open_row(board, col)
+            b_copy = board.copy()
+            b_copy[row][col] = -1
+            new_score = minimax(b_copy, depth-1, alpha, beta, True)[0]
+            if new_score < value:
+                value = new_score
+                column = col
+            beta = min(beta, value)
+            if alpha >= beta:
+                break
+        return value, column
+
+def fallback_move(board: np.ndarray) -> int:
+    """
+    Fallback move when minimax can't find a good move.
+    Prioritize center columns and avoid filling the board too quickly.
+    """
+    valid_locations = get_valid_locations(board)
+    if not valid_locations:
+        return 0  # Should never happen if called properly
+    
+    # Prefer center columns
+    preferred = [3, 2, 4, 1, 5, 0, 6]
+    for col in preferred:
+        if col in valid_locations:
+            return col
+            
+    # If all else fails, random valid move
+    return random.choice(valid_locations)

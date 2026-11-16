@@ -1,0 +1,230 @@
+The strategy for this policy is a classic “long‑chain” heuristic that works well on a 4 × 4 Dots & Boxes board:
+
+* **Count short boxes** – boxes that already have two edges drawn (four sides of a box).  
+* **Phase 2 (short boxes exist)**  
+  1. If we can turn an empty edge into a *trap* (the box has exactly two opponent sides), we give the opponent that box – this makes the opponent finish a chain and leaves us with a long chain.  
+  2. If no trap is possible, we look for an edge that touches two short boxes. Drawing it gives us the third side on both boxes, extending the chain for our future turn.  
+  3. If neither is available we play any move that does **not** create a three‑sided box (i.e. the move stays “safe”).  
+* **Phase 1 (no short boxes)** – we are still building the first chains.  
+  1. Capture a box whenever we can (draw the missing side of a three‑sided box).  
+  2. If no capture move exists, we choose the move that creates the most *new* short boxes (a side added to a box that already has one side).  
+  3. If that is also impossible we fall back to a safe move that does not create a three‑sided box.  
+
+All calculations are done on the given 5 × 5 `horizontal`, `vertical` and `capture` arrays, and the move returned is always a legal edge (“row,col,dir”). The code runs well within the 1‑second limit.
+
+<code>
+import numpy as np
+from typing import Tuple, List
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    # ------------------------------------------------------------------
+    # 1.  Prepare copies – we never modify the incoming arrays.
+    # ------------------------------------------------------------------
+    h = horizontal.copy()
+    v = vertical.copy()
+    c = capture.copy()
+
+    # ------------------------------------------------------------------
+    # 2.  Collect all legal edges.
+    #    Horizontal edges exist only for rows 0‑3 (top‑bottom pairs).
+    #    Vertical   edges exist only for cols 0‑3 (left‑right pairs).
+    # ------------------------------------------------------------------
+    legal_h: List[Tuple[int, int]] = [(r, col) for r in range(4) for col in range(5) if h[r, col] == 0]
+    legal_v: List[Tuple[int, int]] = [(r, col) for col in range(4) for r in range(5) if v[r, col] == 0]
+
+    all_moves: List[Tuple[str, int, int]] = []
+    for r, col in legal_h:
+        all_moves.append(('H', r, col))
+    for r, col in legal_v:
+        all_moves.append(('V', r, col))
+
+    if not all_moves:                     # safety fallback
+        return ""
+
+    # ------------------------------------------------------------------
+    # 3.  Helper – gather statistics of a single box.
+    #    We need: how many edges are already drawn, how many belong to us,
+    #    how many belong to the opponent, and whether the box is already
+    #    claimed.
+    # ------------------------------------------------------------------
+    def box_stats(row: int, col: int) -> Tuple[int, int, int, int, List[int]]:
+        owners = []
+        if h[row, col] != 0:
+            owners.append(h[row, col])
+        if v[row, col] != 0:
+            owners.append(v[row, col])
+        if row + 1 < 4 and h[row + 1, col] != 0:
+            owners.append(h[row + 1, col])
+        if col + 1 < 4 and v[row, col + 1] != 0:
+            owners.append(v[row, col + 1])
+
+        drawn = len(owners)                     # 0‑4
+        opp   = sum(o == -1 for o in owners)    # opponent’s sides
+        us    = sum(o == 1 for o in owners)     # our own sides
+        claimed = c[row, col] if row < 4 and col < 4 else 0
+        return drawn, opp, us, claimed, owners
+
+    # ------------------------------------------------------------------
+    # 4.  Evaluate a single move.
+    #    For every affected box we compute:
+    #       - capt : boxes we will claim after the move,
+    #       - opp_trap : boxes we give the opponent (they already own two sides),
+    #       - short_gain : boxes that become short (2‑sided) after the move,
+    #       - risk : boxes that become three‑sided (neither player finished).
+    # ------------------------------------------------------------------
+    def evaluate(move: Tuple[str, int, int]) -> dict:
+        typ, r, col = move
+        affected_boxes = []
+        if typ == 'H':
+            affected_boxes.append((r, col))          # top box
+            affected_boxes.append((r + 1, col))       # bottom box
+        else:  # 'V'
+            affected_boxes.append((r, col))          # left box
+            affected_boxes.append((r, col + 1))       # right box
+
+        capt = 0
+        opp_trap = 0
+        short_gain = 0
+        risk = 0
+        safe = True
+
+        for (br, bc) in affected_boxes:
+            # ignore boxes that lie outside the 4×4 area
+            if br >= 4 or bc >= 4:
+                continue
+
+            # Boxes already claimed cannot be captured or turned into traps.
+            if c[br, bc] != 0:
+                continue
+
+            # Gather current edge owners for this box.
+            owners = []
+            if h[br, bc] != 0:
+                owners.append(h[br, bc])
+            if v[br, bc] != 0:
+                owners.append(v[br, bc])
+            if br + 1 < 4 and h[br + 1, bc] != 0:
+                owners.append(h[br + 1, bc])
+            if bc + 1 < 4 and v[br, bc + 1] != 0:
+                owners.append(v[br, bc + 1])
+            drawn_pre = len(owners)
+            opp_pre   = sum(o == -1 for o in owners)
+            us_pre    = sum(o == 1 for o in owners)
+
+            # Which box receives our new side?
+            if typ == 'H':
+                if br == r:          # top box gets the top side
+                    box = (r, col)
+                else:                # bottom box gets the bottom side
+                    box = (r + 1, col)
+            else:  # 'V'
+                if bc == col:         # left box gets the left side
+                    box = (r, col)
+                else:                # right box gets the right side
+                    box = (r, col + 1)
+
+            # Apply our side.
+            drawn_post = drawn_pre + 1
+            us_post    = us_pre + 1
+            opp_post   = opp_pre
+            # Capturing?
+            if drawn_pre == 3:
+                capt += 1
+            elif drawn_pre == 2:
+                risk += 1
+                # Give opponent a trap only when the box already belongs to them.
+                if opp_pre == 2 and us_pre == 0:
+                    opp_trap += 1
+            elif drawn_pre == 1:
+                short_gain += 1
+            # (drawn_pre == 0 gives a single side, no special metric.)
+
+        if risk > 0:
+            safe = False
+
+        return {
+            'capt': capt,
+            'opp_trap': opp_trap,
+            'short_gain': short_gain,
+            'risk': risk,
+            'safe': safe
+        }
+
+    # ------------------------------------------------------------------
+    # 5.  Gather short‑box information (chains) for the whole board.
+    # ------------------------------------------------------------------
+    short_boxes: List[Tuple[int, int]] = []
+    for br in range(4):
+        for bc in range(4):
+            owners = []
+            if h[br, bc] != 0:
+                owners.append(h[br, bc])
+            if v[br, bc] != 0:
+                owners.append(v[br, bc])
+            if br + 1 < 4 and h[br + 1, bc] != 0:
+                owners.append(h[br + 1, bc])
+            if bc + 1 < 4 and v[br, bc + 1] != 0:
+                owners.append(v[br, bc + 1])
+            if len(owners) == 2:
+                short_boxes.append((br, bc))
+    short_cnt = len(short_boxes)
+
+    # ------------------------------------------------------------------
+    # 6.  Evaluate every legal move once (store stats).
+    # ------------------------------------------------------------------
+    evaluations: List[Tuple[Tuple[str, int, int], dict]] = [
+        (move, evaluate(move)) for move in all_moves
+    ]
+
+    # ------------------------------------------------------------------
+    # 7.  Choose a move according to the current phase.
+    # ------------------------------------------------------------------
+    def choose_phase(short_phase: bool):
+        if short_phase:
+            # 7a.  Try to give the opponent a trap.
+            traps = [(m, s) for m, s in evaluations if s['opp_trap'] > 0]
+            if traps:
+                traps.sort(key=lambda x: (-x[1]['opp_trap'], x[1]['risk']))
+                return traps[0][0]
+
+            # 7b.  Extend a chain (any edge that makes a box three‑sided).
+            chains = [(m, s) for m, s in evaluations if s['risk'] > 0]
+            if chains:
+                chains.sort(key=lambda x: (-x[1]['risk'], x[1]['opp_trap']))
+                return chains[0][0]
+
+            # 7c.  Safe move (no three‑sided boxes created).
+            safe_moves = [(m, s) for m, s in evaluations if s['safe']]
+            if safe_moves:
+                # prefer the move that creates the most new short boxes
+                safe_moves.sort(key=lambda x: (-x[1]['short_gain'], x[1]['risk']))
+                return safe_moves[0][0][0], safe_moves[0][0][1], safe_moves[0][0][2]
+
+            # Fallback – any move is safe, pick the first.
+            return all_moves[0]
+
+        else:
+            # Phase 1 – try to capture.
+            captures = [(m, s) for m, s in evaluations if s['capt'] > 0]
+            if captures:
+                captures.sort(key=lambda x: (-x[1]['capt'], x[1]['risk']))
+                return captures[0][0]
+
+            # Build a short box.
+            short_gainers = [(m, s) for m, s in evaluations if s['short_gain'] > 0]
+            if short_gainers:
+                short_gainers.sort(key=lambda x: (-x[1]['short_gain'], x[1]['risk']))
+                return short_gainers[0][0]
+
+            # Any safe move will do.
+            safe_moves = [(m, s) for m, s in evaluations if s['safe']]
+            if safe_moves:
+                safe_moves.sort(key=lambda x: (x[1]['risk']))
+                return safe_moves[0][0]
+
+            return all_moves[0]
+
+    best_move = choose_phase(short_cnt > 0)
+    typ, row, col = best_move
+    return f"{row},{col},{typ}"
+</code>

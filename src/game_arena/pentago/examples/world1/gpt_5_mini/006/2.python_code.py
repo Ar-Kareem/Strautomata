@@ -1,0 +1,260 @@
+
+#!/usr/bin/env python3
+import numpy as np
+
+# Pentago policy: returns "row,col,quad,dir"
+def policy(you, opponent) -> str:
+    you = np.array(you, dtype=np.int8)
+    opponent = np.array(opponent, dtype=np.int8)
+
+    # Precompute all 5-length windows for evaluation
+    windows = _compute_5_windows()
+
+    # List all legal moves: (r,c,quad,dir)
+    moves = []
+    empty_positions = np.where((you == 0) & (opponent == 0))
+    for r, c in zip(empty_positions[0], empty_positions[1]):
+        for q in range(4):
+            moves.append((r, c, q, 'L'))
+            moves.append((r, c, q, 'R'))
+
+    # Safety: there is at least one legal move (per problem statement)
+    if not moves:
+        # fallback: place first empty with arbitrary rotation
+        r = empty_positions[0][0]
+        c = empty_positions[1][0]
+        return f"{r+1},{c+1},0,L"
+
+    # 1) Immediate winning move for us (and not opponent simultaneously)
+    for mv in moves:
+        you2, opp2 = _apply_move(you, opponent, mv)
+        if _has_five(you2):
+            if not _has_five(opp2):
+                return _format_move(mv)
+
+    # 2) If opponent has immediate winning moves on current board, try to block them
+    opp_wins_now = _enumerate_winning_moves(opponent, you)  # opponent to move wins (pass arrays swapped)
+    if opp_wins_now:
+        # Try to find a move that leaves opponent with no immediate wins
+        best_block = None
+        best_score = None
+        for mv in moves:
+            you2, opp2 = _apply_move(you, opponent, mv)
+            # enumerate opponent wins after this move
+            opp_wins_after = _enumerate_winning_moves(opp2, you2)
+            if not opp_wins_after:
+                # good blocking move; evaluate with lookahead heuristic
+                score = _lookahead_score(you2, opp2, windows, limit_reply=False)
+                if (best_score is None) or (score > best_score):
+                    best_score = score
+                    best_block = mv
+        if best_block is not None:
+            return _format_move(best_block)
+        # If can't fully block, pick move minimizing opponent winning replies
+        best_mv = None
+        best_metric = None
+        for mv in moves:
+            you2, opp2 = _apply_move(you, opponent, mv)
+            opp_wins_after = _enumerate_winning_moves(opp2, you2)
+            metric = len(opp_wins_after)
+            # prefer fewer opponent wins, then higher heuristic score
+            score = _evaluate_board(you2, opp2, windows)
+            key = (metric, -score)
+            if (best_metric is None) or (key < best_metric):
+                best_metric = key
+                best_mv = mv
+        if best_mv is not None:
+            return _format_move(best_mv)
+
+    # 3) One-ply lookahead: choose move maximizing (our_eval - opponent_best_reply_eval)
+    best_move = None
+    best_value = None
+    for mv in moves:
+        you2, opp2 = _apply_move(you, opponent, mv)
+
+        # If this results in us winning (and opponent also doesn't), pick it already
+        if _has_five(you2) and not _has_five(opp2):
+            return _format_move(mv)
+
+        # Compute our eval after move
+        our_eval = _evaluate_board(you2, opp2, windows)
+
+        # Compute opponent best reply eval (opponent will maximize its eval)
+        opp_best = _opponent_best_response_score(you2, opp2, windows)
+
+        value = our_eval - opp_best
+        if (best_value is None) or (value > best_value):
+            best_value = value
+            best_move = mv
+
+    if best_move is not None:
+        return _format_move(best_move)
+
+    # Fallback (shouldn't happen): return first legal move
+    mv = moves[0]
+    return _format_move(mv)
+
+
+# Helpers
+
+def _format_move(mv):
+    r, c, q, d = mv
+    return f"{r+1},{c+1},{q},{d}"
+
+def _apply_move(you, opponent, mv):
+    # Return new arrays after placing our marble and rotating quadrant
+    r, c, q, d = mv
+    you2 = you.copy()
+    opp2 = opponent.copy()
+    # place our marble
+    you2[r, c] = 1
+
+    # rotate quadrant q
+    r0 = 0 if q in (0, 1) else 3
+    c0 = 0 if q in (0, 2) else 3
+    # slice
+    yblock = you2[r0:r0+3, c0:c0+3]
+    oblock = opp2[r0:r0+3, c0:c0+3]
+    k = 1 if d == 'L' else 3  # np.rot90: k times 90deg ccw. L=1, R=3
+    you2[r0:r0+3, c0:c0+3] = np.rot90(yblock, k=k)
+    opponent_rot = np.rot90(oblock, k=k)
+    opp2[r0:r0+3, c0:c0+3] = opponent_rot
+    return you2, opp2
+
+def _has_five(board):
+    # board: 6x6 binary array for a single player; return True if any 5-in-row exists
+    # directions: right, down, diag down-right, diag down-left
+    h, w = board.shape
+    dirs = [(0,1),(1,0),(1,1),(1,-1)]
+    for r in range(h):
+        for c in range(w):
+            if board[r, c] == 0:
+                continue
+            for dr, dc in dirs:
+                # check if previous in direction exists and is 1; only start at segment start to avoid repetition
+                pr = r - dr
+                pc = c - dc
+                if 0 <= pr < h and 0 <= pc < w and board[pr, pc] == 1:
+                    continue
+                # count length
+                cnt = 0
+                rr, cc = r, c
+                while 0 <= rr < h and 0 <= cc < w and board[rr, cc] == 1:
+                    cnt += 1
+                    if cnt >= 5:
+                        return True
+                    rr += dr
+                    cc += dc
+    return False
+
+def _compute_5_windows():
+    # Returns list of lists of indices (r,c) for every contiguous 5-cell line in the 6x6 board
+    windows = []
+    h = w = 6
+    lengths = 5
+    directions = [(0,1),(1,0),(1,1),(1,-1)]
+    for dr, dc in directions:
+        for r in range(h):
+            for c in range(w):
+                # check if the window of length 5 fits starting at (r,c)
+                end_r = r + (lengths - 1) * dr
+                end_c = c + (lengths - 1) * dc
+                if 0 <= end_r < h and 0 <= end_c < w:
+                    coords = [(r + i*dr, c + i*dc) for i in range(lengths)]
+                    windows.append(coords)
+    return windows
+
+def _evaluate_board(you, opponent, windows):
+    # Heuristic evaluation of board from our perspective.
+    # For each 5-cell window:
+    #  - if window has no opponent stones: add 10^k where k = number of our stones
+    #  - if window has no our stones: subtract 10^k where k = number of opponent stones
+    # Also center control bonus.
+    score = 0
+    for win in windows:
+        you_cnt = 0
+        opp_cnt = 0
+        for (r,c) in win:
+            if you[r,c]:
+                you_cnt += 1
+            elif opponent[r,c]:
+                opp_cnt += 1
+        if opp_cnt == 0 and you_cnt > 0:
+            # our potential
+            score += (10 ** you_cnt)
+        elif you_cnt == 0 and opp_cnt > 0:
+            score -= (10 ** opp_cnt)
+    # center control: 2x2 center (rows 2,3 cols 2,3 zero-index)
+    center_cells = [(2,2),(2,3),(3,2),(3,3)]
+    for r,c in center_cells:
+        if you[r,c]:
+            score += 3
+        elif opponent[r,c]:
+            score -= 3
+    return score
+
+def _enumerate_winning_moves(player, other):
+    # Enumerate moves (for "player" to move) that yield a win for player.
+    # Return list of moves (r,c,q,dir) that after applying produce player win.
+    wins = []
+    empty_positions = np.where((player == 0) & (other == 0))
+    for r, c in zip(empty_positions[0], empty_positions[1]):
+        for q in range(4):
+            for d in ('L','R'):
+                mv = (r, c, q, d)
+                # Simulate: place for 'player' and rotate both
+                pl2 = player.copy()
+                ot2 = other.copy()
+                pl2[r,c] = 1
+                r0 = 0 if q in (0,1) else 3
+                c0 = 0 if q in (0,2) else 3
+                k = 1 if d == 'L' else 3
+                pl2[r0:r0+3, c0:c0+3] = np.rot90(pl2[r0:r0+3, c0:c0+3], k=k)
+                ot2[r0:r0+3, c0:c0+3] = np.rot90(ot2[r0:r0+3, c0:c0+3], k=k)
+                if _has_five(pl2):
+                    wins.append(mv)
+    return wins
+
+def _opponent_best_response_score(you_after, opp_after, windows):
+    # Enumerate opponent replies and return the maximum opponent eval (from their perspective).
+    # We compute opponent's eval as _evaluate_board(opponent, you), i.e., their score.
+    best = None
+    player = opp_after
+    other = you_after
+    empty_positions = np.where((player == 0) & (other == 0))
+    for r, c in zip(empty_positions[0], empty_positions[1]):
+        for q in range(4):
+            for d in ('L','R'):
+                mv = (r,c,q,d)
+                pl2 = player.copy()
+                ot2 = other.copy()
+                pl2[r,c] = 1
+                r0 = 0 if q in (0,1) else 3
+                c0 = 0 if q in (0,2) else 3
+                k = 1 if d == 'L' else 3
+                pl2[r0:r0+3, c0:c0+3] = np.rot90(pl2[r0:r0+3, c0:c0+3], k=k)
+                ot2[r0:r0+3, c0:c0+3] = np.rot90(ot2[r0:r0+3, c0:c0+3], k=k)
+                # If opponent wins immediately, give very high score
+                if _has_five(pl2):
+                    val = 10**6
+                else:
+                    val = _evaluate_board(pl2, ot2, windows)
+                if (best is None) or (val > best):
+                    best = val
+    if best is None:
+        return 0
+    return best
+
+def _lookahead_score(you2, opp2, windows, limit_reply=False):
+    # Quick evaluation used when selecting among blocking moves.
+    # Estimate our strength minus opponent best reply.
+    our_eval = _evaluate_board(you2, opp2, windows)
+    opp_best = _opponent_best_response_score(you2, opp2, windows)
+    return our_eval - opp_best
+
+# If this module is run directly, provide a trivial test move (not used by arena)
+if __name__ == "__main__":
+    # empty board test
+    you = [[0]*6 for _ in range(6)]
+    opp = [[0]*6 for _ in range(6)]
+    print(policy(you, opp))

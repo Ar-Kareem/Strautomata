@@ -1,0 +1,148 @@
+The strategy for this policy is to implement an alpha-beta minimax search with heuristic evaluation, prioritized move ordering, and immediate win/block detection. The algorithm follows these steps:
+
+1. **Immediate Win Detection**: First, check if there's any move that wins the game immediately. If found, play it.
+2. **Immediate Block Detection**: Next, check if the opponent can win in their next move and block that winning line.
+3. **Strategic Search**: If no immediate win or block exists, use a depth-limited alpha-beta minimax search to evaluate potential moves. Moves are ordered strategically (center squares first, then corners, then edges) to maximize pruning efficiency.
+4. **Heuristic Evaluation**: The evaluation function scores board states by examining all lines (rows, columns, diagonals). Lines containing pieces from both players are dead (score 0). Unblocked lines are scored exponentially based on piece count (1 piece=1, 2 pieces=10, 3 pieces=100), making nearly-complete lines much more valuable.
+
+This combination of tactical immediacy and strategic lookahead should consistently outperform reactive or purely heuristic-based policies while remaining computationally efficient within the 1-second constraint.
+
+<code>
+import numpy as np
+
+def policy(board):
+    """
+    Smart policy for 4x4 Tic Tac Toe using alpha-beta minimax.
+    Strategy:
+    1. Win immediately if possible
+    2. Block opponent's immediate win
+    3. Use minimax with alpha-beta pruning to find best move
+    """
+    board = np.array(board, dtype=np.int8)
+    
+    # 1. Check for immediate win
+    move = find_winning_move(board, 1)
+    if move is not None:
+        return move
+    
+    # 2. Check for immediate block
+    move = find_winning_move(board, -1)
+    if move is not None:
+        return move
+    
+    # 3. Find best move using minimax
+    return find_best_move(board)
+
+def find_winning_move(board, player):
+    """Find a move that gives player an immediate win."""
+    positions = [
+        (1,1), (1,2), (2,1), (2,2),  # Center
+        (0,0), (0,3), (3,0), (3,3),  # Corners
+        (0,1), (0,2), (1,0), (1,3), (2,0), (2,3), (3,1), (3,2)  # Edges
+    ]
+    
+    for r, c in positions:
+        if board[r, c] == 0:
+            temp = board.copy()
+            temp[r, c] = player
+            if check_winner(temp) == player:
+                return (r, c)
+    return None
+
+def find_best_move(board):
+    """Find best move using alpha-beta minimax."""
+    moves = [(r, c) for r in range(4) for c in range(4) if board[r, c] == 0]
+    ordered_moves = order_moves(moves)
+    
+    best_move = ordered_moves[0]
+    best_score = -np.inf
+    
+    for move in ordered_moves:
+        temp = board.copy()
+        temp[move] = 1
+        score = minimax(temp, 4, -np.inf, np.inf, False)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move
+
+def minimax(board, depth, alpha, beta, maximizing):
+    """Alpha-beta minimax recursion."""
+    winner = check_winner(board)
+    if winner == 1: return 1000
+    if winner == -1: return -1000
+    
+    if depth == 0:
+        return evaluate_board(board)
+    
+    moves = [(r, c) for r in range(4) for c in range(4) if board[r, c] == 0]
+    if not moves: return 0
+
+    if maximizing:
+        max_eval = -np.inf
+        for move in moves:
+            temp = board.copy()
+            temp[move] = 1
+            eval_ = minimax(temp, depth-1, alpha, beta, False)
+            max_eval = max(max_eval, eval_)
+            alpha = max(alpha, eval_)
+            if beta <= alpha: break
+        return max_eval
+    else:
+        min_eval = np.inf
+        for move in moves:
+            temp = board.copy()
+            temp[move] = -1
+            eval_ = minimax(temp, depth-1, alpha, beta, True)
+            min_eval = min(min_eval, eval_)
+            beta = min(beta, eval_)
+            if beta <= alpha: break
+        return min_eval
+
+def check_winner(board):
+    """Check if there's a winner (4 in a row)."""
+    for i in range(4):
+        if np.all(board[i,:] == 1): return 1
+        if np.all(board[i,:] == -1): return -1
+        if np.all(board[:,i] == 1): return 1
+        if np.all(board[:,i] == -1): return -1
+    
+    if np.all(np.diag(board) == 1): return 1
+    if np.all(np.diag(board) == -1): return -1
+    if np.all(np.diag(np.fliplr(board)) == 1): return 1
+    if np.all(np.diag(np.fliplr(board)) == -1): return -1
+    
+    return 0
+
+def evaluate_board(board):
+    """Heuristic evaluation of board state."""
+    score = 0
+    for i in range(4):
+        score += evaluate_line(board[i,:])
+        score += evaluate_line(board[:,i])
+    
+    score += evaluate_line(np.diag(board))
+    score += evaluate_line(np.diag(np.fliplr(board)))
+    return score
+
+def evaluate_line(line):
+    """Evaluate a line of 4 cells."""
+    my_count = np.sum(line == 1)
+    opp_count = np.sum(line == -1)
+    
+    if my_count > 0 and opp_count > 0: return 0
+    if my_count > 0: return 10 ** (my_count - 1)
+    if opp_count > 0: return -(10 ** (opp_count - 1))
+    return 0
+
+def order_moves(moves):
+    """Order moves by strategic importance."""
+    weights = {
+        (1,1): 3, (1,2): 3, (2,1): 3, (2,2): 3,
+        (0,0): 2, (0,3): 2, (3,0): 2, (3,3): 2
+    }
+    moves_with_weights = [(move, weights.get(move, 1)) for move in moves]
+    moves_with_weights.sort(key=lambda x: (x[1], x[0]), reverse=True)
+    return [move for move, weight in moves_with_weights]
+</code>

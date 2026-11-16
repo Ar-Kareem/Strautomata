@@ -1,0 +1,224 @@
+<thinking>
+The game is Connect 4 on a 6x7 grid. I'm always the current player when the policy function is called. My goal is to return a column index (0-6) where I can drop my disc (the column must not be full).
+
+I need to implement a policy that selects a good move. A common approach is to use a minimax algorithm with alpha-beta pruning to look ahead several moves and evaluate board positions. For Connect 4, looking ahead 5-7 plies is often sufficient to play very strongly.
+
+Let me outline my approach:
+1. Implement a helper function to check if a move is valid (column not full).
+2. Implement a utility function to evaluate a board position from the current player's perspective (my player's discs are 1, opponent's are -1).
+3. Implement a minimax with alpha-beta pruning to search the game tree to a certain depth.
+4. Handle terminal states (win/loss/draw).
+5. Use a simple heuristic evaluation for non-terminal states (counting threats, potential lines of 4).
+6. Return the best move found.
+
+For the evaluation function, I can count the number of potential 2-in-a-row, 3-in-a-row patterns for both players, giving higher weight to 3-in-a-row as it's closer to winning. Also, I'll consider center column preference (column 3) as it offers more opportunities.
+
+I need to be mindful of the time limit (1 second). I'll limit the depth to 6 or 7 plies and use efficient data structures.
+
+Let me write the code.
+</thinking>
+
+<code>
+import numpy as np
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> int:
+    # Convert to numpy array for easier manipulation
+    board_np = np.array(board)
+    # Find valid moves (columns not full)
+    valid_moves = [col for col in range(7) if board_np[0, col] == 0]
+    
+    # If only one move is available, take it
+    if len(valid_moves) == 1:
+        return valid_moves[0]
+    
+    # Determine current player (1 or -1) based on count of discs
+    # Since I'm always the current player, I need to infer my player value
+    # Count the number of 1s and -1s on the board
+    count_1 = np.sum(board_np == 1)
+    count_neg1 = np.sum(board_np == -1)
+    current_player = 1 if count_1 <= count_neg1 else -1
+    
+    # Opponent is the other player
+    opponent = -current_player
+    
+    # Define depth limit for minimax
+    # Adjust based on number of moves played to stay within time
+    total_discs = count_1 + count_neg1
+    if total_discs < 20:
+        depth_limit = 7
+    elif total_discs < 30:
+        depth_limit = 6
+    else:
+        depth_limit = 5
+    
+    # Initialize best move and alpha-beta bounds
+    best_move = valid_moves[0]
+    alpha = float('-inf')
+    beta = float('inf')
+    
+    # Try each valid move
+    for move in valid_moves:
+        # Make the move
+        new_board = board_np.copy()
+        # Find the row to place the disc
+        row = np.where(new_board[:, move] == 0)[0][-1]
+        new_board[row, move] = current_player
+        
+        # Check if this move wins immediately
+        if is_win(new_board, current_player):
+            return move
+        
+        # Minimax search for opponent's response
+        score = -negamax(new_board, depth_limit - 1, -beta, -alpha, opponent)
+        
+        # Update best move
+        if score > alpha:
+            alpha = score
+            best_move = move
+        
+        # Alpha-beta pruning
+        if alpha >= beta:
+            break
+    
+    return best_move
+
+def negamax(board: np.ndarray, depth: int, alpha: float, beta: float, player: int) -> float:
+    # Check for terminal states
+    if is_win(board, player):
+        return 1000 + depth  # Win score adjusted by depth (quicker wins are better)
+    if is_win(board, -player):
+        return -1000 - depth  # Loss score adjusted by depth
+    if depth == 0 or is_full(board):
+        return evaluate(board, player)
+    
+    # Generate valid moves
+    valid_moves = [col for col in range(7) if board[0, col] == 0]
+    
+    # Sort moves to improve alpha-beta pruning (center columns first)
+    valid_moves.sort(key=lambda x: abs(x - 3))
+    
+    best_value = float('-inf')
+    
+    for move in valid_moves:
+        # Make the move
+        new_board = board.copy()
+        row = np.where(new_board[:, move] == 0)[0][-1]
+        new_board[row, move] = player
+        
+        # Recursive search
+        value = -negamax(new_board, depth - 1, -beta, -alpha, -player)
+        
+        best_value = max(best_value, value)
+        alpha = max(alpha, value)
+        
+        # Pruning
+        if alpha >= beta:
+            break
+    
+    return best_value
+
+def is_win(board: np.ndarray, player: int) -> bool:
+    # Check horizontal
+    for r in range(6):
+        for c in range(4):
+            if all(board[r, c+i] == player for i in range(4)):
+                return True
+    
+    # Check vertical
+    for r in range(3):
+        for c in range(7):
+            if all(board[r+i, c] == player for i in range(4)):
+                return True
+    
+    # Check diagonal (positive slope)
+    for r in range(3):
+        for c in range(4):
+            if all(board[r+i, c+i] == player for i in range(4)):
+                return True
+    
+    # Check diagonal (negative slope)
+    for r in range(3, 6):
+        for c in range(4):
+            if all(board[r-i, c+i] == player for i in range(4)):
+                return True
+    
+    return False
+
+def is_full(board: np.ndarray) -> bool:
+    return np.all(board[0, :] != 0)
+
+def evaluate(board: np.ndarray, player: int) -> float:
+    # Simple heuristic evaluation
+    # Count potential lines for current player and opponent
+    score = 0
+    opponent = -player
+    
+    # Center column preference
+    center_col = 3
+    center_count = np.sum(board[:, center_col] == player)
+    score += center_count * 3
+    
+    # Check for 2-in-a-row and 3-in-a-row patterns
+    # This is a simplified version; a full implementation would be more detailed
+    # but for speed, I'll use a basic pattern check
+    
+    # Horizontal patterns
+    for r in range(6):
+        for c in range(4):
+            line = board[r, c:c+4]
+            if 0 in line:
+                # Check if this line can be completed by player
+                if np.sum(line == player) == 3 and np.sum(line == 0) == 1:
+                    score += 100
+                elif np.sum(line == player) == 2 and np.sum(line == 0) == 2:
+                    score += 10
+                elif np.sum(line == opponent) == 3 and np.sum(line == 0) == 1:
+                    score -= 100
+                elif np.sum(line == opponent) == 2 and np.sum(line == 0) == 2:
+                    score -= 10
+    
+    # Vertical patterns
+    for c in range(7):
+        for r in range(3):
+            line = board[r:r+4, c]
+            if 0 in line:
+                if np.sum(line == player) == 3 and np.sum(line == 0) == 1:
+                    score += 100
+                elif np.sum(line == player) == 2 and np.sum(line == 0) == 2:
+                    score += 10
+                elif np.sum(line == opponent) == 3 and np.sum(line == 0) == 1:
+                    score -= 100
+                elif np.sum(line == opponent) == 2 and np.sum(line == 0) == 2:
+                    score -= 10
+    
+    # Diagonal patterns (positive slope)
+    for r in range(3):
+        for c in range(4):
+            line = np.array([board[r+i, c+i] for i in range(4)])
+            if 0 in line:
+                if np.sum(line == player) == 3 and np.sum(line == 0) == 1:
+                    score += 100
+                elif np.sum(line == player) == 2 and np.sum(line == 0) == 2:
+                    score += 10
+                elif np.sum(line == opponent) == 3 and np.sum(line == 0) == 1:
+                    score -= 100
+                elif np.sum(line == opponent) == 2 and np.sum(line == 0) == 2:
+                    score -= 10
+    
+    # Diagonal patterns (negative slope)
+    for r in range(3, 6):
+        for c in range(4):
+            line = np.array([board[r-i, c+i] for i in range(4)])
+            if 0 in line:
+                if np.sum(line == player) == 3 and np.sum(line == 0) == 1:
+                    score += 100
+                elif np.sum(line == player) == 2 and np.sum(line == 0) == 2:
+                    score += 10
+                elif np.sum(line == opponent) == 3 and np.sum(line == 0) == 1:
+                    score -= 100
+                elif np.sum(line == opponent) == 2 and np.sum(line == 0) == 2:
+                    score -= 10
+    
+    return score
+</code>

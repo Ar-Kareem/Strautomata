@@ -1,0 +1,101 @@
+
+from collections import defaultdict
+
+def generate_all_lines():
+    lines = []
+    # Lines along the i-axis (fixed j, k)
+    for j in range(3):
+        for k in range(3):
+            lines.append([(i, j, k) for i in range(3)])
+    # Lines along the j-axis (fixed i, k)
+    for i in range(3):
+        for k in range(3):
+            lines.append([(i, j, k) for j in range(3)])
+    # Lines along the k-axis (fixed i, j)
+    for i in range(3):
+        for j in range(3):
+            lines.append([(i, j, k) for k in range(3)])
+    # Face diagonals (fixed i)
+    for i in range(3):
+        lines.append([(i, j, j) for j in range(3)])
+        lines.append([(i, j, 2 - j) for j in range(3)])
+    # Face diagonals (fixed j)
+    for j in range(3):
+        lines.append([(x, j, x) for x in range(3)])
+        lines.append([(x, j, 2 - x) for x in range(3)])
+    # Face diagonals (fixed k)
+    for k in range(3):
+        lines.append([(x, x, k) for x in range(3)])
+        lines.append([(x, 2 - x, k) for x in range(3)])
+    # Space diagonals
+    lines.append([(x, x, x) for x in range(3)])
+    lines.append([(x, x, 2 - x) for x in range(3)])
+    lines.append([(x, 2 - x, x) for x in range(3)])
+    lines.append([(x, 2 - x, 2 - x) for x in range(3)])
+    return lines
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    lines = generate_all_lines()
+    cell_lines = defaultdict(list)
+    for line in lines:
+        for cell in line:
+            cell_lines[cell].append(line)
+    
+    empty_cells = [(i, j, k) for i in range(3) for j in range(3) for k in range(3) if board[i][j][k] == 0]
+    
+    # Check for immediate win
+    for cell in empty_cells:
+        i, j, k = cell
+        board[i][j][k] = 1
+        for line in cell_lines[cell]:
+            if all(board[x][y][z] == 1 for (x, y, z) in line):
+                board[i][j][k] = 0
+                return cell
+        board[i][j][k] = 0
+    
+    # Check for opponent's immediate win
+    for cell in empty_cells:
+        i, j, k = cell
+        board[i][j][k] = -1
+        for line in cell_lines[cell]:
+            if all(board[x][y][z] == -1 for (x, y, z) in line):
+                board[i][j][k] = 0
+                return cell
+        board[i][j][k] = 0
+    
+    # Take center if available
+    if board[1][1][1] == 0:
+        return (1, 1, 1)
+    
+    # Evaluate other cells
+    best_score = -float('inf')
+    best_cell = empty_cells[0]
+    for cell in empty_cells:
+        i, j, k = cell
+        score = 0
+        if (i, j, k) == (1, 1, 1):
+            score += 1000  # Extra priority for center
+        for line in cell_lines[cell]:
+            my = 0
+            opp = 0
+            empty = 0
+            for (x, y, z) in line:
+                val = board[x][y][z]
+                if val == 1:
+                    my += 1
+                elif val == -1:
+                    opp += 1
+                else:
+                    empty += 1
+            if opp > 0:
+                score -= 5
+            elif my == 1:
+                score += 10
+            elif my == 0 and empty == 3:
+                score += 1
+        if score > best_score:
+            best_score = score
+            best_cell = cell
+        elif score == best_score and cell == (1, 1, 1):
+            best_cell = cell  # Prefer center in case of tie
+    return best_cell

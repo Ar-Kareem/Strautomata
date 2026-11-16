@@ -1,0 +1,461 @@
+The strategy for this policy is a fast tactical Go bot with solid legality enforcement (captures, no-suicide, and simple-ko). It prioritizes (1) urgent atari defenses, (2) immediate captures (especially multi-stone), (3) moves that create atari or improve local liberties and connections, while avoiding obvious blunders like filling true eyes or self-atari without compensation. In the opening it prefers strong, standard framework points (4-4 corners, side star points, center only later). Candidates are limited to tactically relevant points near existing stones plus all forced capture/defense liberties, and it falls back to a full-board legality scan only if needed—ensuring it always returns a legal move (or pass).
+
+<code>
+from __future__ import annotations
+
+from collections import deque
+from typing import List, Tuple, Dict, Set, Optional
+
+
+N = 19  # board size
+
+
+def policy(
+    me: list[tuple[int, int]],
+    opponent: list[tuple[int, int]],
+    memory: dict
+) -> tuple[tuple[int, int], dict]:
+    """
+    Returns ((row, col), memory). Row/col are 1..19. Pass is (0,0).
+    Enforces:
+      - Occupancy
+      - Captures
+      - No-suicide
+      - Simple ko (immediate repetition): disallow moves that recreate our previous
+        position after our last move (stored in memory["prev_after"]).
+    """
+
+    # --- Helpers (local for speed / single-file requirement) ---
+    def inb(r0: int, c0: int) -> bool:
+        return 0 <= r0 < N and 0 <= c0 < N
+
+    def n4(r0: int, c0: int):
+        if r0 > 0:
+            yield (r0 - 1, c0)
+        if r0 + 1 < N:
+            yield (r0 + 1, c0)
+        if c0 > 0:
+            yield (r0, c0 - 1)
+        if c0 + 1 < N:
+            yield (r0, c0 + 1)
+
+    def n8(r0: int, c0: int):
+        for dr in (-1, 0, 1):
+            for dc in (-1, 0, 1):
+                if dr == 0 and dc == 0:
+                    continue
+                rr, cc = r0 + dr, c0 + dc
+                if inb(rr, cc):
+                    yield rr, cc
+
+    def group_and_libs(board, sr: int, sc: int):
+        """Return (stones_list, liberties_set) for group at (sr,sc)."""
+        color = board[sr][sc]
+        q = deque([(sr, sc)])
+        stones = []
+        libs: Set[Tuple[int, int]] = set()
+        seen = {(sr, sc)}
+        while q:
+            r0, c0 = q.popleft()
+            stones.append((r0, c0))
+            for rr, cc in n4(r0, c0):
+                v = board[rr][cc]
+                if v == 0:
+                    libs.add((rr, cc))
+                elif v == color and (rr, cc) not in seen:
+                    seen.add((rr, cc))
+                    q.append((rr, cc))
+        return stones, libs
+
+    def is_true_eye(board, r0: int, c0: int, my_color: int = 1) -> bool:
+        """Basic true-eye test to avoid filling own eyes."""
+        if board[r0][c0] != 0:
+            return False
+        # orthogonals must be my stones or border
+        for rr, cc in ((r0 - 1, c0), (r0 + 1, c0), (r0, c0 - 1), (r0, c0 + 1)):
+            if not inb(rr, cc):
+                continue
+            if board[rr][cc] != my_color:
+                return False
+
+        # diagonal rule-of-thumb
+        diag_my_or_border = 0
+        diag_total = 0
+        for rr, cc in ((r0 - 1, c0 - 1), (r0 - 1, c0 + 1), (r0 + 1, c0 - 1), (r0 + 1, c0 + 1)):
+            if not inb(rr, cc):
+                # border counts as friendly for eye shape
+                diag_my_or_border += 1
+            else:
+                diag_total += 1
+                if board[rr][cc] == my_color:
+                    diag_my_or_border += 1
+
+        # thresholds: interior needs 3, edge needs 2, corner needs 1 (approx.)
+        # Determine how many diagonals are "real" (in bounds). If fewer, it's near border.
+        if diag_total == 4:
+            return diag_my_or_border >= 3
+        if diag_total == 2:
+            return diag_my_or_border >= 2
+        if diag_total == 1:
+            return diag_my_or_border >= 1
+        # rare case: diag_total==3 (near border but not corner); require 2+
+        return diag_my_or_border >= 2
+
+    def opening_bonus(r: int, c: int, total_stones: int) -> float:
+        """Prefer standard opening points early."""
+        # 1-based input, convert to 0-based for internal comparisons
+        if total_stones > 30:
+            return 0.0
+        # Star points and near-star points
+        good = {
+            (4, 4): 80, (4, 16): 80, (16, 4): 80, (16, 16): 80,
+            (4, 10): 45, (10, 4): 45, (10, 16): 45, (16, 10): 45,
+            (10, 10): 20,
+            # 3-4 / 4-3
+            (3, 4): 35, (4, 3): 35, (3, 16): 35, (4, 17): 35,
+            (16, 3): 35, (17, 4): 35, (16, 17): 35, (17, 16): 35,
+        }
+        return float(good.get((r, c), 0))
+
+    # --- Build board ---
+    board = [[0] * N for _ in range(N)]
+    my_set: Set[Tuple[int, int]] = set()
+    opp_set: Set[Tuple[int, int]] = set()
+
+    for (r, c) in me:
+        r0, c0 = r - 1, c - 1
+        if 0 <= r0 < N and 0 <= c0 < N:
+            board[r0][c0] = 1
+            my_set.add((r0, c0))
+    for (r, c) in opponent:
+        r0, c0 = r - 1, c - 1
+        if 0 <= r0 < N and 0 <= c0 < N:
+            board[r0][c0] = 2
+            opp_set.add((r0, c0))
+
+    total_stones = len(my_set) + len(opp_set)
+
+    # Previous position after our last move (for simple-ko avoidance)
+    prev_after = memory.get("prev_after", None)
+    if prev_after is not None:
+        # stored as (frozenset(my_positions), frozenset(opp_positions)) in 0-based
+        try:
+            prev_my_after, prev_opp_after = prev_after
+        except Exception:
+            prev_my_after, prev_opp_after = None, None
+    else:
+        prev_my_after, prev_opp_after = None, None
+
+    # --- Precompute groups for atari/candidates/connectivity ---
+    my_gid = {}
+    opp_gid = {}
+    my_groups = []  # list of (stones, liberties)
+    opp_groups = []
+
+    visited = set()
+    gid = 0
+    for (r0, c0) in my_set:
+        if (r0, c0) in visited:
+            continue
+        stones, libs = group_and_libs(board, r0, c0)
+        for s in stones:
+            my_gid[s] = gid
+            visited.add(s)
+        my_groups.append((stones, libs))
+        gid += 1
+
+    visited = set()
+    gid = 0
+    for (r0, c0) in opp_set:
+        if (r0, c0) in visited:
+            continue
+        stones, libs = group_and_libs(board, r0, c0)
+        for s in stones:
+            opp_gid[s] = gid
+            visited.add(s)
+        opp_groups.append((stones, libs))
+        gid += 1
+
+    # Forced tactical points: capture liberties and defense liberties
+    capture_points: Set[Tuple[int, int]] = set()
+    for stones, libs in opp_groups:
+        if len(libs) == 1:
+            capture_points |= libs
+
+    defense_points: Set[Tuple[int, int]] = set()
+    for stones, libs in my_groups:
+        if len(libs) == 1:
+            defense_points |= libs
+
+    # --- Candidate generation ---
+    candidates: Set[Tuple[int, int]] = set()
+
+    # Always include urgent tactics
+    candidates |= capture_points
+    candidates |= defense_points
+
+    # Opening points
+    star_points_1b = [(4, 4), (4, 16), (16, 4), (16, 16), (4, 10), (10, 4), (10, 16), (16, 10), (10, 10)]
+    for r, c in star_points_1b:
+        candidates.add((r - 1, c - 1))
+
+    # Local neighborhood around stones (reduce branching)
+    stones_all = list(my_set | opp_set)
+    if stones_all:
+        # include empties within manhattan distance 2 of any stone
+        for (r0, c0) in stones_all:
+            for dr in range(-2, 3):
+                rr = r0 + dr
+                if rr < 0 or rr >= N:
+                    continue
+                rem = 2 - abs(dr)
+                for dc in range(-rem, rem + 1):
+                    cc = c0 + dc
+                    if 0 <= cc < N and board[rr][cc] == 0:
+                        candidates.add((rr, cc))
+    else:
+        # empty board: play a 4-4 corner
+        # Choose deterministically but vary if a seed exists
+        seed = int(memory.get("seed", 0))
+        corners = [(4, 4), (4, 16), (16, 4), (16, 16)]
+        r, c = corners[seed % 4]
+        move = (r, c)
+        new_memory = dict(memory)
+        new_memory["seed"] = seed + 1
+        # After move, our prev_after should be updated
+        # No captures on empty board
+        my_after = frozenset({(r - 1, c - 1)})
+        opp_after = frozenset()
+        new_memory["prev_after"] = (my_after, opp_after)
+        return move, new_memory
+
+    # --- Move trial / scoring ---
+    def try_move(r0: int, c0: int):
+        """
+        Try move at (r0,c0) 0-based.
+        Returns None if illegal; else dict with features.
+        """
+        if not inb(r0, c0) or board[r0][c0] != 0:
+            return None
+
+        # Avoid filling a true eye unless it's a capture/forced defense (handled via scoring too)
+        eye_like = is_true_eye(board, r0, c0, my_color=1)
+
+        changes: List[Tuple[int, int, int]] = []
+
+        def set_cell(rr: int, cc: int, val: int):
+            old = board[rr][cc]
+            if old == val:
+                return
+            changes.append((rr, cc, old))
+            board[rr][cc] = val
+
+        # Place stone
+        set_cell(r0, c0, 1)
+
+        # Captures: check adjacent opponent groups that now have 0 liberties
+        captured: List[Tuple[int, int]] = []
+        checked_opp_groups: Set[Tuple[int, int]] = set()  # representative to avoid double BFS
+
+        for rr, cc in n4(r0, c0):
+            if board[rr][cc] != 2:
+                continue
+            if (rr, cc) in checked_opp_groups:
+                continue
+            stones, libs = group_and_libs(board, rr, cc)
+            for s in stones:
+                checked_opp_groups.add(s)
+            if len(libs) == 0:
+                for sr, sc in stones:
+                    set_cell(sr, sc, 0)
+                    captured.append((sr, sc))
+
+        # Check suicide: our new group must have at least one liberty
+        _, my_libs = group_and_libs(board, r0, c0)
+        if len(my_libs) == 0:
+            # revert
+            for rr, cc, old in reversed(changes):
+                board[rr][cc] = old
+            return None
+
+        # Simple ko: disallow recreating our previous after-position
+        # Compute resulting sets quickly without copying full board
+        new_my = None
+        new_opp = None
+        if prev_my_after is not None and prev_opp_after is not None:
+            new_my = my_set | {(r0, c0)}
+            if captured:
+                new_opp = opp_set.difference(captured)
+            else:
+                new_opp = opp_set
+            if frozenset(new_my) == prev_my_after and frozenset(new_opp) == prev_opp_after:
+                for rr, cc, old in reversed(changes):
+                    board[rr][cc] = old
+                return None
+
+        # Tactical aftermath: count opponent groups adjacent that are put into atari
+        opp_atari = 0
+        seen_rep: Set[Tuple[int, int]] = set()
+        for rr, cc in n4(r0, c0):
+            if board[rr][cc] != 2:
+                continue
+            if (rr, cc) in seen_rep:
+                continue
+            stones, libs = group_and_libs(board, rr, cc)
+            for s in stones:
+                seen_rep.add(s)
+            if len(libs) == 1:
+                opp_atari += 1
+
+        my_lib_ct = len(my_libs)
+        self_atari = (my_lib_ct == 1)
+
+        # Connection bonus: adjacent distinct friendly groups in current position
+        adj_my_groups = set()
+        for rr, cc in n4(r0, c0):
+            if (rr, cc) in my_set:
+                adj_my_groups.add(my_gid.get((rr, cc), -1))
+        connect_bonus = 0
+        if len(adj_my_groups) >= 2:
+            connect_bonus = 2
+        elif len(adj_my_groups) == 1:
+            connect_bonus = 1
+
+        # revert
+        for rr, cc, old in reversed(changes):
+            board[rr][cc] = old
+
+        return {
+            "captured": len(captured),
+            "opp_atari": opp_atari,
+            "my_lib": my_lib_ct,
+            "self_atari": self_atari,
+            "eye_like": eye_like,
+            "connect": connect_bonus,
+            "captured_list": captured,
+        }
+
+    def score_move(r0: int, c0: int, info: dict) -> float:
+        # Big priorities:
+        captured = info["captured"]
+        opp_atari = info["opp_atari"]
+        my_lib = info["my_lib"]
+        self_atari = info["self_atari"]
+        eye_like = info["eye_like"]
+        connect = info["connect"]
+
+        # Defense urgency: if we are in atari, strongly prioritize defense points
+        defense_urgency = 1.0 if defense_points else 0.0
+        is_defense = 1.0 if (r0, c0) in defense_points else 0.0
+        is_capture = 1.0 if (r0, c0) in capture_points else 0.0
+
+        # Positional / opening bonus
+        pos_bonus = opening_bonus(r0 + 1, c0 + 1, total_stones)
+
+        # Centrality (very mild; avoids extreme weirdness later)
+        dr = (r0 + 1) - 10
+        dc = (c0 + 1) - 10
+        center = -0.03 * (dr * dr + dc * dc)
+
+        # Neighbor to opponent encourages fighting when relevant
+        adj_opp = 0
+        for rr, cc in n4(r0, c0):
+            if (rr, cc) in opp_set:
+                adj_opp += 1
+
+        # Avoid filling true eyes unless it's tactical
+        eye_penalty = 0.0
+        if eye_like and captured == 0 and not is_defense:
+            eye_penalty = 200.0
+
+        # Self-atari penalty unless capturing (snapback-like)
+        self_atari_pen = 0.0
+        if self_atari and captured == 0:
+            self_atari_pen = 120.0
+
+        # If in atari, weight defense dramatically
+        defense_bonus = 0.0
+        if defense_urgency and is_defense:
+            defense_bonus = 900.0
+
+        # Otherwise, mild preference for saving moves if they also connect/increase libs
+        defense_soft = 0.0
+        if is_defense and not defense_urgency:
+            defense_soft = 120.0
+
+        # Core tactical score
+        score = 0.0
+        score += 1200.0 * captured
+        score += 250.0 * opp_atari
+        score += defense_bonus + defense_soft
+        score += 60.0 * connect
+        score += 8.0 * min(my_lib, 6)  # cap liberty bonus
+        score += 10.0 * adj_opp
+        score += pos_bonus
+        score += center
+        score -= eye_penalty
+        score -= self_atari_pen
+
+        # Prefer actual capture points and urgent tactical moves slightly
+        score += 40.0 * is_capture
+
+        return score
+
+    # Evaluate candidates
+    best = None
+    best_score = float("-inf")
+    best_info = None
+
+    # Ensure candidates are in-bounds and unique; iterate in deterministic order for stability
+    for (r0, c0) in sorted(candidates):
+        info = try_move(r0, c0)
+        if info is None:
+            continue
+        sc = score_move(r0, c0, info)
+        if sc > best_score:
+            best_score = sc
+            best = (r0, c0)
+            best_info = info
+
+    # Fallback: if no candidate legal, scan whole board for any legal move
+    if best is None:
+        for r0 in range(N):
+            for c0 in range(N):
+                if board[r0][c0] != 0:
+                    continue
+                info = try_move(r0, c0)
+                if info is None:
+                    continue
+                sc = score_move(r0, c0, info) - 5.0  # slight penalty for being off-candidate
+                if sc > best_score:
+                    best_score = sc
+                    best = (r0, c0)
+                    best_info = info
+
+    # If still none, pass (always legal)
+    if best is None:
+        new_memory = dict(memory)
+        # Passing doesn't create a new "after" position by our move; but for ko tracking,
+        # we store the unchanged position after pass.
+        new_memory["prev_after"] = (frozenset(my_set), frozenset(opp_set))
+        return (0, 0), new_memory
+
+    # Update memory with the position after our chosen move (for simple-ko avoidance next turn)
+    r0, c0 = best
+    captured_list = best_info["captured_list"] if best_info else []
+    my_after_set = set(my_set)
+    opp_after_set = set(opp_set)
+    my_after_set.add((r0, c0))
+    if captured_list:
+        for s in captured_list:
+            if s in opp_after_set:
+                opp_after_set.remove(s)
+
+    new_memory = dict(memory)
+    new_memory["prev_after"] = (frozenset(my_after_set), frozenset(opp_after_set))
+    # keep/update a deterministic seed
+    new_memory["seed"] = int(new_memory.get("seed", 0)) + 1
+
+    # Return 1-based coordinates
+    return (r0 + 1, c0 + 1), new_memory
+</code>

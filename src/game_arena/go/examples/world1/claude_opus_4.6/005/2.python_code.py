@@ -1,0 +1,132 @@
+
+import numpy as np
+from collections import deque
+
+BOARD_SIZE = 19
+
+def policy(me, opponent):
+    me_set = set(me)
+    opp_set = set(opponent)
+    occupied = me_set | opp_set
+
+    def neighbors(r, c):
+        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+            nr, nc = r+dr, c+dc
+            if 1 <= nr <= BOARD_SIZE and 1 <= nc <= BOARD_SIZE:
+                yield nr, nc
+
+    def get_group(r, c, stone_set):
+        group = set()
+        queue = deque([(r, c)])
+        group.add((r, c))
+        while queue:
+            cr, cc = queue.popleft()
+            for nr, nc in neighbors(cr, cc):
+                if (nr, nc) in stone_set and (nr, nc) not in group:
+                    group.add((nr, nc))
+                    queue.append((nr, nc))
+        return group
+
+    def get_liberties(group, me_s, opp_s):
+        libs = set()
+        for r, c in group:
+            for nr, nc in neighbors(r, c):
+                if (nr, nc) not in me_s and (nr, nc) not in opp_s:
+                    libs.add((nr, nc))
+        return libs
+
+    def would_capture(r, c, my_set, their_set):
+        captured = set()
+        for nr, nc in neighbors(r, c):
+            if (nr, nc) in their_set:
+                grp = get_group(nr, nc, their_set)
+                libs = get_liberties(grp, their_set, my_set | {(r,c)})
+                if len(libs) == 0:
+                    captured |= grp
+        return captured
+
+    def is_legal(r, c, my_set, their_set):
+        if (r, c) in my_set or (r, c) in their_set:
+            return False
+        caps = would_capture(r, c, my_set, their_set)
+        if caps:
+            return True
+        new_my = my_set | {(r, c)}
+        grp = get_group(r, c, new_my)
+        libs = get_liberties(grp, new_my, their_set)
+        return len(libs) > 0
+
+    def score_move(r, c):
+        s = 0.0
+        caps = would_capture(r, c, me_set, opp_set)
+        s += len(caps) * 50
+
+        # Check opponent groups with few liberties
+        for nr, nc in neighbors(r, c):
+            if (nr, nc) in opp_set:
+                grp = get_group(nr, nc, opp_set)
+                libs = get_liberties(grp, opp_set, me_set | {(r,c)})
+                if len(libs) == 1:
+                    s += len(grp) * 20
+                elif len(libs) == 2:
+                    s += len(grp) * 5
+
+        # Defend own groups in atari
+        for nr, nc in neighbors(r, c):
+            if (nr, nc) in me_set:
+                grp = get_group(nr, nc, me_set)
+                libs = get_liberties(grp, me_set, opp_set)
+                if len(libs) == 1:
+                    new_libs = get_liberties(grp | {(r,c)}, me_set | {(r,c)}, opp_set - caps)
+                    if len(new_libs) > 1:
+                        s += len(grp) * 30
+
+        # Positional value
+        dr = min(r, BOARD_SIZE+1-r)
+        dc = min(c, BOARD_SIZE+1-c)
+        edge = min(dr, dc)
+        s += [0, 0.5, 1.5, 3, 4, 3.5, 3, 2.5, 2, 2][min(edge, 9)]
+
+        # Adjacency to own stones
+        for nr, nc in neighbors(r, c):
+            if (nr, nc) in me_set:
+                s += 1.5
+            elif (nr, nc) in opp_set:
+                s += 1.0
+
+        return s
+
+    best_move = None
+    best_score = -1e9
+
+    candidates = set()
+    for r, c in me | opp_set:
+        for dr in range(-3, 4):
+            for dc in range(-3, 4):
+                nr, nc = r+dr, c+dc
+                if 1 <= nr <= BOARD_SIZE and 1 <= nc <= BOARD_SIZE:
+                    candidates.add((nr, nc))
+
+    if not candidates:
+        for r, c in [(4,4),(4,16),(16,4),(16,16),(4,10),(16,10),(10,4),(10,16),(10,10)]:
+            candidates.add((r, c))
+
+    if not me and not opponent:
+        return (4, 4)
+
+    for r, c in candidates:
+        if not is_legal(r, c, me_set, opp_set):
+            continue
+        sc = score_move(r, c)
+        if sc > best_score:
+            best_score = sc
+            best_move = (r, c)
+
+    if best_move is None:
+        for r in range(1, BOARD_SIZE+1):
+            for c in range(1, BOARD_SIZE+1):
+                if is_legal(r, c, me_set, opp_set):
+                    return (r, c)
+        return (0, 0)
+
+    return best_move

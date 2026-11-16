@@ -1,0 +1,88 @@
+
+from typing import List
+
+RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+RANK_VALUE = {
+    "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10": 10,
+    "J": 10, "Q": 10, "K": 10
+}
+
+
+def hand_value(hand: List[str], target: int) -> int:
+    """
+    Compute the hand value according to the rules:
+    - Number cards and face cards use their values from RANK_VALUE.
+    - A counts as 11 if that makes the hand value <= target, otherwise 1.
+    Note: There is at most one "A" in the deck, but implemented to handle any count.
+    """
+    non_ace_sum = 0
+    ace_count = 0
+    for c in hand:
+        if c == "A":
+            ace_count += 1
+        else:
+            non_ace_sum += RANK_VALUE.get(c, 0)
+
+    if ace_count == 0:
+        return non_ace_sum
+
+    # Try to assign one ace as 11 and the rest as 1, if that stays <= target.
+    # Otherwise all aces count as 1.
+    # (With this game's single-suit deck there's at most one Ace, but handle general case.)
+    sum_with_one_ace_11 = non_ace_sum + 11 + (ace_count - 1) * 1
+    if sum_with_one_ace_11 <= target:
+        return sum_with_one_ace_11
+    else:
+        return non_ace_sum + ace_count * 1
+
+
+def policy(hand: List[str], target: int) -> str:
+    """
+    Decide between "HIT" and "STAY" given current hand and target.
+
+    Strategy (greedy expected-score improvement):
+    - Compute current hand value s.
+    - Evaluate all possible next-card outcomes from the remaining cards in our personal deck
+      (we have one of each rank; remove those already in hand).
+    - For each possible draw, compute the resulting hand value v (or consider it a bust if v > target).
+    - Define expected_score_after_draw as the average of v for non-bust outcomes and 0 for busts.
+      (Using 0 as a conservative penalty for busting.)
+    - If expected_score_after_draw > current s, choose "HIT", otherwise "STAY".
+    - Always "STAY" if s >= target (reached or exceeded target).
+    """
+    # Defensive: if hand already sums to >= target, stay.
+    s = hand_value(hand, target)
+    if s >= target:
+        return "STAY"
+
+    # Build remaining ranks in our deck (one of each rank; remove those already in hand)
+    remaining = []
+    used = {}
+    for c in hand:
+        used[c] = used.get(c, 0) + 1
+
+    # Since there's only one of each rank in our deck, include a rank if not already used.
+    for r in RANKS:
+        if used.get(r, 0) == 0:
+            remaining.append(r)
+
+    if not remaining:
+        return "STAY"
+
+    total_score_after = 0.0
+    for r in remaining:
+        new_hand = hand + [r]
+        v = hand_value(new_hand, target)
+        # If v > target it's a bust; penalize with 0 (conservative).
+        if v > target:
+            total_score_after += 0.0
+        else:
+            total_score_after += float(v)
+
+    expected_score_after = total_score_after / len(remaining)
+
+    # If expected score after drawing (and then staying) is greater than current score, hit.
+    if expected_score_after > s:
+        return "HIT"
+    else:
+        return "STAY"

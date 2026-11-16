@@ -1,0 +1,171 @@
+The strategy for this policy is based on a three-tiered heuristic decision-making process tailored for the 4x4 Dots and Boxes game, designed to be robust and efficient within the 1-second time limit.
+
+1.  **Greedy Capture (Priority 1)**: The policy first checks if any move can complete a box (i.e., add the 4th edge). If such a move exists, it plays it immediately. This ensures the agent scores points whenever possible and retains the turn to fully exploit chains of capturable boxes.
+2.  **Safe Moves (Priority 2)**: If no capturing moves are available, the policy filters the remaining legal moves to find "safe" ones. A move is considered safe if it does not place the 3rd edge on any adjacent box, thereby denying the opponent an opportunity to score on their next turn. If multiple safe moves exist, it selects one at random to avoid deterministic patterns that opponents might exploit.
+3.  **Minimizing Sacrifice (Priority 3)**: When no capturing or safe moves exist, the agent is forced to open a chain for the opponent (make a move that results in a box with 3 edges). In this scenario, the policy uses a simulation ("lookahead") to calculate the potential damage of each candidate move. It simulates a greedy opponent that captures all reachable boxes in the resulting chain. The agent then selects the move that results in the *minimum* number of immediate captures for the opponent, effectively limiting the damage of the forced sacrifice.
+
+<code>
+import numpy as np
+import random
+
+def get_valid_moves(h, v):
+    """
+    Returns a list of valid moves (r, c, type) for a 4x4 box grid.
+    Horizontal edges: 5 rows (0-4) x 4 cols (0-3).
+    Vertical edges: 4 rows (0-3) x 5 cols (0-4).
+    """
+    moves = []
+    # Horizontal edges
+    for r in range(5):
+        for c in range(4):
+            if h[r, c] == 0:
+                moves.append((r, c, 'H'))
+                
+    # Vertical edges
+    for r in range(4):
+        for c in range(5):
+            if v[r, c] == 0:
+                moves.append((r, c, 'V'))
+    return moves
+
+def get_box_counts(h, v):
+    """
+    Calculate the number of drawn edges for each of the 4x4 boxes.
+    """
+    counts = np.zeros((4, 4), dtype=int)
+    # Horizontal contribution
+    for r in range(5):
+        for c in range(4):
+            if h[r, c] != 0:
+                if r < 4: counts[r, c] += 1     # Top edge of box (r, c)
+                if r > 0: counts[r-1, c] += 1   # Bottom edge of box (r-1, c)
+                
+    # Vertical contribution
+    for r in range(4):
+        for c in range(5):
+            if v[r, c] != 0:
+                if c < 4: counts[r, c] += 1     # Left edge of box (r, c)
+                if c > 0: counts[r, c-1] += 1   # Right edge of box (r, c-1)
+    return counts
+
+def simulate_chain_loss(h, v, initial_counts, move):
+    """
+    Simulates the move and the subsequent greedy captures by the opponent.
+    Returns the number of boxes the opponent captures immediately.
+    """
+    # Create copies to simulate specific branch
+    sim_h = h.copy()
+    sim_v = v.copy()
+    sim_counts = initial_counts.copy()
+    
+    # 1. Apply the forced sacrifice move
+    r, c, d = move
+    if d == 'H':
+        sim_h[r, c] = 1
+        if r < 4: sim_counts[r, c] += 1
+        if r > 0: sim_counts[r-1, c] += 1
+    else:
+        sim_v[r, c] = 1
+        if c < 4: sim_counts[r, c] += 1
+        if c > 0: sim_counts[r, c-1] += 1
+        
+    opponent_score = 0
+    
+    # 2. Opponent greedily captures everything possible
+    while True:
+        # Find any box with 3 edges
+        capturable = np.argwhere(sim_counts == 3)
+        if len(capturable) == 0:
+            break
+            
+        # Pick the first one
+        br, bc = capturable[0]
+        opponent_score += 1
+        sim_counts[br, bc] = 4 # Mark as taken
+        
+        # Determine the missing edge so the opponent can "play" it to claim the box
+        mr, mc, md = -1, -1, ''
+        
+        if sim_h[br, bc] == 0:
+            mr, mc, md = br, bc, 'H' # Top
+        elif sim_h[br+1, bc] == 0:
+            mr, mc, md = br+1, bc, 'H' # Bottom
+        elif sim_v[br, bc] == 0:
+            mr, mc, md = br, bc, 'V' # Left
+        elif sim_v[br, bc+1] == 0:
+            mr, mc, md = br, bc+1, 'V' # Right
+            
+        if md != '':
+            # Update state with this new edge
+            if md == 'H':
+                sim_h[mr, mc] = 1
+                if mr < 4: sim_counts[mr, mc] += 1
+                if mr > 0: sim_counts[mr-1, mc] += 1
+            else:
+                sim_v[mr, mc] = 1
+                if mc < 4: sim_counts[mr, mc] += 1
+                if mc > 0: sim_counts[mr, mc-1] += 1
+        else:
+            # Should not happen in a valid game logic
+            break
+            
+    return opponent_score
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    # Get game state info
+    valid_moves = get_valid_moves(horizontal, vertical)
+    box_counts = get_box_counts(horizontal, vertical)
+    
+    # Priority 1: Take any box available (Scoring Move)
+    for m in valid_moves:
+        r, c, d = m
+        # Check if this move completes a box
+        completes_box = False
+        if d == 'H':
+            if r < 4 and box_counts[r, c] == 3: completes_box = True
+            if r > 0 and box_counts[r-1, c] == 3: completes_box = True
+        else: # 'V'
+            if c < 4 and box_counts[r, c] == 3: completes_box = True
+            if c > 0 and box_counts[r, c-1] == 3: completes_box = True
+            
+        if completes_box:
+            return f"{r},{c},{d}"
+            
+    # Priority 2: Safe Moves (Don't create a box with 3 edges)
+    # A move is unsafe if it increases a neighbor's count from 2 to 3.
+    safe_moves = []
+    for m in valid_moves:
+        r, c, d = m
+        is_safe = True
+        if d == 'H':
+            if r < 4 and box_counts[r, c] == 2: is_safe = False
+            if r > 0 and box_counts[r-1, c] == 2: is_safe = False
+        else: # 'V'
+            if c < 4 and box_counts[r, c] == 2: is_safe = False
+            if c > 0 and box_counts[r, c-1] == 2: is_safe = False
+            
+        if is_safe:
+            safe_moves.append(m)
+            
+    if len(safe_moves) > 0:
+        # Pick a random safe move to avoid deterministic patterns
+        m = random.choice(safe_moves)
+        return f"{m[0]},{m[1]},{m[2]}"
+        
+    # Priority 3: Forced Sacrifice
+    # If we must open a chain, pick the one that gives the opponent the fewest points.
+    best_move = valid_moves[0]
+    min_loss = float('inf')
+    
+    # Check all candidates to see which results in minimum loss
+    for m in valid_moves:
+        loss = simulate_chain_loss(horizontal, vertical, box_counts, m)
+        if loss < min_loss:
+            min_loss = loss
+            best_move = m
+            # Small optimization: 0 loss is ideal, though unlikely in this phase
+            if min_loss == 0:
+                break
+            
+    return f"{best_move[0]},{best_move[1]},{best_move[2]}"
+</code>

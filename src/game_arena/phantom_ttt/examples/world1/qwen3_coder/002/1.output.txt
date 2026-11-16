@@ -1,0 +1,96 @@
+The strategy for this policy is to implement a smart Phantom Tic Tac Toe player that balances between winning opportunities and information gathering. The approach involves:
+
+1. Prioritizing moves that could complete a winning line if the cell is already ours (optimistic win-first approach)
+2. Favoring center and corners for better strategic positioning
+3. Avoiding moves on cells we already confirmed as ours
+4. Using a weighted scoring system that considers both immediate threats and potential future gains
+
+<code>
+import numpy as np
+from collections import defaultdict
+
+def policy(board: list[list[int]], legal_moves: list[int]) -> int:
+    # Convert board to numpy array for easier manipulation
+    board_array = np.array(board)
+    
+    # Convert legal moves from list of integers (0-8) to (row, col) tuples
+    legal_positions = [(move // 3, move % 3) for move in legal_moves]
+    
+    # If we have no legal moves, return the first one (should not happen)
+    if not legal_positions:
+        return legal_moves[0]
+    
+    # Check for winning moves (where placing a mark would complete a line)
+    for r, c in legal_positions:
+        # Temporarily mark this position as ours
+        board_array[r, c] = 1
+        
+        # Check if this creates a winning line
+        if _check_win(board_array, 1):
+            board_array[r, c] = 0  # Reset the temporary mark
+            return r * 3 + c
+        
+        # Reset the temporary mark
+        board_array[r, c] = 0
+    
+    # Check for blocking moves that might prevent opponent from winning
+    # Since we don't see opponent marks directly, we consider cells we haven't marked yet
+    # as potentially dangerous if they could complete a line with hidden opponent marks
+    
+    # Prefer center, then corners, then edges (strategic positioning)
+    strategic_preference = []
+    for r, c in legal_positions:
+        if r == 1 and c == 1:  # Center
+            strategic_preference.append((r, c, 3))
+        elif (r, c) in [(0, 0), (0, 2), (2, 0), (2, 2)]:  # Corners
+            strategic_preference.append((r, c, 2))
+        else:  # Edges
+            strategic_preference.append((r, c, 1))
+    
+    # Calculate a score for each legal position based on potential
+    scores = {}
+    for r, c, pref in strategic_preference:
+        score = pref  # Start with strategic preference
+        
+        # Add points for how many potential winning lines this position participates in
+        line_count = 0
+        # Rows
+        if sum(1 for i in range(3) if board_array[r, i] == 1) >= 1:
+            line_count += 1
+        # Columns
+        if sum(1 for i in range(3) if board_array[i, c] == 1) >= 1:
+            line_count += 1
+        # Diagonals
+        if r == c:  # Main diagonal
+            if sum(1 for i in range(3) if board_array[i, i] == 1) >= 1:
+                line_count += 1
+        if r + c == 2:  # Anti-diagonal
+            if sum(1 for i in range(3) if board_array[i, 2-i] == 1) >= 1:
+                line_count += 1
+                
+        score += line_count
+        scores[(r, c)] = score
+    
+    # Find the position with the highest score
+    best_pos = max(scores.keys(), key=lambda x: scores[x])
+    return best_pos[0] * 3 + best_pos[1]
+
+def _check_win(board, player):
+    # Check rows
+    for row in range(3):
+        if all(board[row, col] == player for col in range(3)):
+            return True
+    
+    # Check columns
+    for col in range(3):
+        if all(board[row, col] == player for row in range(3)):
+            return True
+    
+    # Check diagonals
+    if all(board[i, i] == player for i in range(3)):
+        return True
+    if all(board[i, 2-i] == player for i in range(3)):
+        return True
+    
+    return False
+</code>

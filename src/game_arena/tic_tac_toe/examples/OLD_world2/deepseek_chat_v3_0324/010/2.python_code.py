@@ -1,0 +1,166 @@
+
+import numpy as np
+import time
+from functools import lru_cache
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Determine the best move for the AI player (1) on a 4x4 Tic Tac Toe board.
+    Uses minimax with alpha-beta pruning and iterative deepening to stay within time constraints.
+    """
+    # Convert to numpy array for easier manipulation
+    board_array = np.array(board, dtype=int)
+    
+    # Check if we can win in one move
+    for i in range(4):
+        for j in range(4):
+            if board_array[i][j] == 0:
+                board_array[i][j] = 1
+                if check_win(board_array, 1):
+                    board_array[i][j] = 0  # reset
+                    return (i, j)
+                board_array[i][j] = 0  # reset
+    
+    # Check if opponent can win in next move (block them)
+    for i in range(4):
+        for j in range(4):
+            if board_array[i][j] == 0:
+                board_array[i][j] = -1
+                if check_win(board_array, -1):
+                    board_array[i][j] = 0  # reset
+                    return (i, j)
+                board_array[i][j] = 0  # reset
+    
+    # Use iterative deepening with minimax with increasing depth
+    start_time = time.time()
+    best_move = (1, 1)  # default center move
+    max_depth = 4  # start with this depth
+    
+    # Clear the cache between iterations
+    minimax.cache_clear()
+    
+    while True:
+        try:
+            current_depth = max_depth
+            if time.time() - start_time > 0.8:  # leave some buffer time
+                break
+                
+            best_score = -float('inf')
+            best_move_candidate = None
+            empty_spots = [(i, j) for i in range(4) for j in range(4) if board_array[i][j] == 0]
+            
+            for move in empty_spots:
+                i, j = move
+                board_array[i][j] = 1
+                score = minimax(board_array, current_depth-1, False, -float('inf'), float('inf'))
+                board_array[i][j] = 0  # undo move
+                
+                if score > best_score:
+                    best_score = score
+                    best_move_candidate = move
+            
+            if best_move_candidate is not None:
+                best_move = best_move_candidate
+            max_depth += 1
+        except:
+            break
+    
+    return best_move
+
+@lru_cache(maxsize=None)  # Cache board states for performance
+def minimax(board_tuple, depth, maximizing_player, alpha, beta):
+    # Convert back to numpy array
+    board = np.array(board_tuple)
+    
+    if check_win(board, 1):
+        return 1000
+    elif check_win(board, -1):
+        return -1000
+    elif depth == 0 or np.all(board != 0):
+        return evaluate(board)
+    
+    if maximizing_player:
+        value = -float('inf')
+        empty_spots = [(i, j) for i in range(4) for j in range(4) if board[i][j] == 0]
+        
+        for i, j in empty_spots:
+            board[i][j] = 1
+            new_value = minimax(tuple(map(tuple, board)), depth-1, False, alpha, beta)
+            board[i][j] = 0  # undo move
+            value = max(value, new_value)
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+        return value
+    else:
+        value = float('inf')
+        empty_spots = [(i, j) for i in range(4) for j in range(4) if board[i][j] == 0]
+        
+        for i, j in empty_spots:
+            board[i][j] = -1
+            new_value = minimax(tuple(map(tuple, board)), depth-1, True, alpha, beta)
+            board[i][j] = 0  # undo move
+            value = min(value, new_value)
+            beta = min(beta, value)
+            if alpha >= beta:
+                break
+        return value
+
+def evaluate(board):
+    """Evaluate the board state with a heuristic function."""
+    score = 0
+    
+    # Evaluate all possible lines (rows, columns, diagonals)
+    lines = []
+    
+    # Rows and columns
+    for i in range(4):
+        lines.append(board[i, :])  # rows
+        lines.append(board[:, i])  # columns
+    
+    # Diagonals
+    lines.append(np.diag(board))
+    lines.append(np.diag(np.fliplr(board)))
+    
+    for line in lines:
+        score += evaluate_line(line)
+    
+    # Prefer center positions
+    if board[1, 1] == 1 or board[1, 2] == 1 or board[2, 1] == 1 or board[2, 2] == 1:
+        score += 2
+    if board[0, 0] == 1 or board[0, 3] == 1 or board[3, 0] == 1 or board[3, 3] == 1:
+        score += 1
+    
+    return score
+
+def evaluate_line(line):
+    """Evaluate a single line (row/column/diagonal)."""
+    count_p1 = np.count_nonzero(line == 1)
+    count_n1 = np.count_nonzero(line == -1)
+    
+    if count_p1 == 3 and count_n1 == 0:
+        return 50
+    elif count_p1 == 2 and count_n1 == 0:
+        return 10
+    elif count_p1 == 1 and count_n1 == 0:
+        return 1
+    elif count_n1 == 3 and count_p1 == 0:
+        return -60  # urgent block needed
+    elif count_n1 == 2 and count_p1 == 0:
+        return -20
+    elif count_n1 == 1 and count_p1 == 0:
+        return -1
+    return 0  # mixed line
+
+def check_win(board, player):
+    """Check if the given player has won."""
+    # Check rows and columns
+    for i in range(4):
+        if np.all(board[i, :] == player) or np.all(board[:, i] == player):
+            return True
+    
+    # Check diagonals
+    if np.all(np.diag(board) == player) or np.all(np.diag(np.fliplr(board)) == player):
+        return True
+    
+    return False

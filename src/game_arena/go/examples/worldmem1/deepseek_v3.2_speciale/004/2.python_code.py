@@ -1,0 +1,262 @@
+
+import random
+from collections import deque
+
+N = 19
+SIZE = N * N
+
+# Precomputed neighbours for each board index
+neighbors = []
+for i in range(SIZE):
+    r, c = divmod(i, N)
+    nb = []
+    if r > 0: nb.append(i - N)
+    if r < N-1: nb.append(i + N)
+    if c > 0: nb.append(i - 1)
+    if c < N-1: nb.append(i + 1)
+    neighbors.append(nb)
+
+# Location bonus for quick scoring – high for star points / 3‑4 lines
+location_bonus = [0] * SIZE
+for i in range(SIZE):
+    r, c = divmod(i, N)
+    d1 = min(r, N-1 - r)   # distance to nearest vertical edge
+    d2 = min(c, N-1 - c)   # distance to nearest horizontal edge
+    location_bonus[i] = (d1 * (9 - d1) + d2 * (9 - d2)) * 5
+
+def get_group(board, start_idx):
+    """Return (stones_list, liberties_set) of the group containing start_idx."""
+    color = board[start_idx]
+    if color == 0:
+        return [], set()
+    stack = [start_idx]
+    visited = {start_idx}
+    stones = []
+    liberties = set()
+    while stack:
+        idx = stack.pop()
+        stones.append(idx)
+        for nb in neighbors[idx]:
+            if board[nb] == 0:
+                liberties.add(nb)
+            elif board[nb] == color and nb not in visited:
+                visited.add(nb)
+                stack.append(nb)
+    return stones, liberties
+
+def apply_move(board, color, move_idx):
+    """Try to play at move_idx. Return (new_board, captures, own_liberty_count, legal)."""
+    if board[move_idx] != 0:
+        return None, 0, 0, False
+    new_board = board[:]
+    new_board[move_idx] = color
+    opp_color = 3 - color
+    captured_stones = set()
+    processed = set()
+    # Check opponent groups that might be captured
+    for nb in neighbors[move_idx]:
+        if new_board[nb] == opp_color and nb not in processed:
+            stones, libs = get_group(new_board, nb)
+            if not libs:
+                captured_stones.update(stones)
+            processed.update(stones)
+    # Remove captured stones
+    for idx in captured_stones:
+        new_board[idx] = 0
+    # Check own group liberties after captures
+    own_stones, own_libs = get_group(new_board, move_idx)
+    if not own_libs:
+        return None, 0, 0, False
+    return new_board, len(captured_stones), len(own_libs), True
+
+def find_groups(board):
+    """Return list of (color, stones_list, liberties_set) for all groups."""
+    visited = [False] * SIZE
+    groups = []
+    for i in range(SIZE):
+        if board[i] != 0 and not visited[i]:
+            color = board[i]
+            stack = [i]
+            visited[i] = True
+            stones = []
+            liberties = set()
+            while stack:
+                idx = stack.pop()
+                stones.append(idx)
+                for nb in neighbors[idx]:
+                    if board[nb] == 0:
+                        liberties.add(nb)
+                    elif board[nb] == color and not visited[nb]:
+                        visited[nb] = True
+                        stack.append(nb)
+            groups.append((color, stones, liberties))
+    return groups
+
+def bfs_distance(board, color):
+    """Manhattan distance to the nearest stone of given color (BFS, all cells)."""
+    dist = [-1] * SIZE
+    q = deque()
+    for i in range(SIZE):
+        if board[i] == color:
+            dist[i] = 0
+            q.append(i)
+    while q:
+        i = q.popleft()
+        for nb in neighbors[i]:
+            if dist[nb] == -1:
+                dist[nb] = dist[i] + 1
+                q.append(nb)
+    return dist
+
+def evaluate(board):
+    """Static evaluation from our perspective (higher is better)."""
+    # Stone count
+    num_our = 0
+    num_opp = 0
+    for v in board:
+        if v == 1:
+            num_our += 1
+        elif v == 2:
+            num_opp += 1
+    stone_diff = num_our - num_opp
+
+    # Groups and liberties
+    groups = find_groups(board)
+    liberty_score = 0
+    for color, stones, libs in groups:
+        if color == 1:
+            liberty_score += len(libs)
+        else:
+            liberty_score -= len(libs)
+
+    # Territory via Manhattan distance
+    dist_our = bfs_distance(board, 1)
+    dist_opp = bfs_distance(board, 2)
+    territory = 0
+    LARGE = 1000
+    for i in range(SIZE):
+        if board[i] == 0:
+            d1 = dist_our[i]
+            d2 = dist_opp[i]
+            if d1 == -1:
+                d1 = LARGE
+            if d2 == -1:
+                d2 = LARGE
+            if d1 < d2:
+                territory += 1
+            elif d1 > d2:
+                territory -= 1
+
+    # Combined score (area scoring + liberty term)
+    return stone_diff + territory + 0.5 * liberty_score
+
+def get_legal_moves(board, color, prev_board_tuple=None):
+    """Return list of (move_idx, new_board) legal moves (including pass).
+       prev_board_tuple is used for ko checking."""
+    moves = [(None, board)]  # pass
+    for idx in range(SIZE):
+        if board[idx] == 0:
+            new_board, captures, own_libs, legal = apply_move(board, color, idx)
+            if legal:
+                if prev_board_tuple is not None:
+                    if tuple(new_board) == prev_board_tuple:
+                        continue
+                moves.append((idx, new_board))
+    return moves
+
+def evaluate_min_opponent(board, prev_board_tuple):
+    """Minimum evaluation after opponent's best reply (with ko enforcement)."""
+    opp_moves = get_legal_moves(board, 2, prev_board_tuple)
+    min_eval = float('inf')
+    for _, opp_board in opp_moves:
+        e = evaluate(opp_board)
+        if e < min_eval:
+            min_eval = e
+    return min_eval
+
+def policy(me, opponent, memory):
+    # Build board (1 = our stones, 2 = opponent)
+    board = [0] * SIZE
+    for r, c in me:
+        idx = (r-1) * N + (c-1)
+        board[idx] = 1
+    for r, c in opponent:
+        idx = (r-1) * N + (c-1)
+        board[idx] = 2
+
+    # Board from previous turn (for ko)
+    prev_board_tuple = memory.get('prev_board')
+    original_board_tuple = tuple(board)   # for opponent ko enforcement
+
+    # Generate all legal moves for us (including pass)
+    legal_moves = []
+    legal_moves.append((None, board, 0, 0))  # pass
+    for idx in range(SIZE):
+        if board[idx] == 0:
+            new_board, captures, own_libs, legal = apply_move(board, 1, idx)
+            if legal:
+                if prev_board_tuple is not None:
+                    if tuple(new_board) == prev_board_tuple:
+                        continue
+                legal_moves.append((idx, new_board, captures, own_libs))
+
+    # Urgent moves: captures
+    capture_moves = [m for m in legal_moves if m[2] > 0]
+
+    if capture_moves:
+        candidates = capture_moves
+    else:
+        # No captures – use quick scoring to pick top moves
+        scored = []
+        for m in legal_moves:
+            move_idx, new_board, captures, own_libs = m
+            if move_idx is None:   # pass
+                score = -1e9
+            else:
+                if captures == 0 and own_libs == 1:
+                    score = -1e9   # bad self‑atari
+                else:
+                    score = (captures * 10000 +
+                             own_libs * 10 +
+                             location_bonus[move_idx] +
+                             random.random())
+            scored.append((score, m))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        K = 5
+        candidates = [m for _, m in scored[:K]]
+
+    # Always consider pass
+    pass_candidate = (None, board, 0, 0)
+    if pass_candidate not in candidates:
+        candidates.append(pass_candidate)
+
+    # Deep evaluation for each candidate
+    best_move = None
+    best_score = -float('inf')
+    best_new_board = None
+    for cand in candidates:
+        move_idx, board_after, captures, own_libs = cand
+        deep_score = evaluate_min_opponent(board_after, original_board_tuple)
+        if deep_score > best_score:
+            best_score = deep_score
+            best_move = move_idx
+            best_new_board = board_after
+        elif deep_score == best_score and random.random() < 0.5:
+            best_move = move_idx
+            best_new_board = board_after
+
+    if best_move is None:   # fallback (should not happen)
+        best_move = None
+        best_new_board = board
+
+    # Format action
+    if best_move is None:
+        action = (0, 0)
+    else:
+        r = best_move // N + 1
+        c = best_move % N + 1
+        action = (r, c)
+
+    # Store board after our move for next turn's ko check
+    memory['prev_board'] = tuple(best_new_board)
+    return action, memory

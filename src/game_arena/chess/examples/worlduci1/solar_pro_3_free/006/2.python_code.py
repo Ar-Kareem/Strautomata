@@ -1,0 +1,256 @@
+
+import random
+import numpy as np
+
+# Piece values (static, approximate)
+PIECE_VALUES = {
+    'K': 10,
+    'Q': 9,
+    'R': 5,
+    'B': 3,
+    'N': 3,
+    'P': 1,
+}
+
+# Promotion character mapping
+PROMOTION_MAP = {
+    'r': 'R',
+    'b': 'B',
+    'n': 'N',
+    'q': 'Q',
+}
+
+# File‑rank → (x,y) coordinates
+FILE_TO_INDEX = {chr(ord('a')+i): i for i in range(8)}
+RANK_TO_INDEX = {str(i+1): i for i in range(8)}
+
+def algebraic(x, y):
+    """Return the algebraic square string from (x,y) coordinates."""
+    return f"{chr(97+x)}{str(y+1)}"
+
+def inside(board):
+    return lambda sq: 0 <= sq[0] < 8 and 0 <= sq[1] < 8
+
+def attacked_by(color, board):
+    """Return set of squares attacked by all pieces of the given color."""
+    attacks = set()
+    for sq, pcode in board.items():
+        if not pcode:
+            continue
+        if pcode[0] != color:
+            continue
+        ptype = pcode[1]
+        x, y = FILE_TO_INDEX[pcode[0]], RANK_TO_INDEX[pcode[1]]
+        # King moves
+        if ptype == 'K':
+            moves = [(dx, dy) for dx in (-1,0,1) for dy in (-1,0,1)
+                     if abs(dx) + abs(dy) == 1]
+            for dx, dy in moves:
+                nx, ny = x+dx, y+dy
+                if inside([nx, ny]):
+                    target = algebraic(nx, ny)
+                    # we can attack own squares (they are empty) and opponent squares
+                    if board.get(target) != pcode:
+                        attacks.add(target)
+        # Rook moves
+        if ptype == 'R':
+            directions = [(0,1),(0,-1),(1,0),(-1,0)]
+            for dx, dy in directions:
+                step = 1
+                while True:
+                    nx, ny = x+dx*step, y+dy*step
+                    if not inside([nx, ny]):
+                        break
+                    target = algebraic(nx, ny)
+                    piece = board.get(target)
+                    if piece and piece[0] == color:
+                        break  # blocked by own piece
+                    if piece:
+                        attacks.add(target)
+                        break
+                    attacks.add(target)
+                    step += 1
+        # Bishop moves
+        if ptype == 'B':
+            directions = [(1,1),(1,-1),(-1,1),(-1,-1)]
+            for dx, dy in directions:
+                step = 1
+                while True:
+                    nx, ny = x+dx*step, y+dy*step
+                    if not inside([nx, ny]):
+                        break
+                    target = algebraic(nx, ny)
+                    piece = board.get(target)
+                    if piece and piece[0] == color:
+                        break
+                    if piece:
+                        attacks.add(target)
+                        break
+                    attacks.add(target)
+                    step += 1
+        # Queen moves
+        if ptype == 'Q':
+            for dx, dy in directions + [(1,0),(0,1),(1,-1),(0,-1)]:
+                step = 1
+                while True:
+                    nx, ny = x+dx*step, y+dy*step
+                    if not inside([nx, ny]):
+                        break
+                    target = algebraic(nx, ny)
+                    piece = board.get(target)
+                    if piece and piece[0] == color:
+                        break
+                    if piece:
+                        attacks.add(target)
+                        break
+                    attacks.add(target)
+                    step += 1
+        # Knight moves
+        if ptype == 'N':
+            offsets = [(2,1),(2,-1),(-2,1),(-2,-1),
+                       (1,2),(1,-2),(-1,2),(-1,-2)]
+            for dx, dy in offsets:
+                nx, ny = x+dx, y+dy
+                if inside([nx, ny]):
+                    target = algebraic(nx, ny)
+                    piece = board.get(target)
+                    if piece and piece[0] != color:
+                        attacks.add(target)
+        # Pawn attacks
+        if ptype == 'P':
+            dir = 1 if pcode[0] == 'w' else -1
+            # forward‑left & forward‑right squares
+            for dc in (-1,1):
+                nx, ny = x + dc, y + dir
+                if inside([nx, ny]):
+                    target = algebraic(nx, ny)
+                    piece = board.get(target)
+                    if piece and piece[0] == color:
+                        continue
+                    # attack regardless of whether there’s an opponent piece or not (empty squares count as attacks)
+                    attacks.add(target)
+    return attacks
+
+def find_king(color, board):
+    """Return the square where the king of the given color sits."""
+    for sq, pcode in board.items():
+        if pcode and pcode[1] == 'K' and pcode[0] == color:
+            return sq
+    return None
+
+def compute_material(board, color):
+    """Sum the static material values of the player’s pieces."""
+    total = 0
+    for pcode in board.values():
+        if pcode and pcode[0] == color:
+            total += PIECE_VALUES[pcode[1]]
+    return total
+
+def simulate_move(pieces, move):
+    """Apply the given UCI move to the board and return a new pieces dict."""
+    src = move[:2]
+    dest = move[2:4]
+    promo_char = None
+    promo_piece = None
+
+    # Copy the board
+    new_pieces = dict(pieces)
+    src_piece = new_pieces[src]
+
+    # Move the piece from src
+    new_pieces[src] = ''
+    # Destination piece becomes the moved piece (later replace for promotion)
+    new_pieces[dest] = src_piece[0] + src_piece[1]
+
+    # Handle promotion (length 5)
+    if len(move) == 5:
+        promo_char = move[-1].lower()
+        promo_piece = PROMOTION_MAP[promo_char]
+        new_pieces[dest] = src_piece[0] + promo_piece
+
+    # Castling: move the rook as well if a king move is a castling
+    if src_piece[1] == 'K':
+        king_color = src_piece[0]
+        dest_file = dest[0]
+        # White castling: king on e1, moving to c1 or g1
+        if king_color == 'w':
+            if dest[1] == '1' and dest_file in ('c', 'g'):
+                if dest_file == 'c':   # short side
+                    rook_src, rook_dest = 'a1', 'd1'
+                else:                  # long side
+                    rook_src, rook_dest = 'h1', 'f1'
+        # Black castling: king on e8, moving to c8 or g8
+        elif king_color == 'b':
+            if dest[1] == '8' and dest_file in ('c', 'g'):
+                if dest_file == 'c':
+                    rook_src, rook_dest = 'a8', 'd8'
+                else:
+                    rook_src, rook_dest = 'f8', 'd8'
+        else:
+            pass  # should never happen
+
+        if rook_src in new_pieces:
+            new_pieces[rook_src] = ''
+        # Move the rook
+        if rook_src in pieces and rook_src != src:
+            rook_piece = pieces[rook_src]
+            new_pieces[rook_dest] = rook_piece[0] + rook_piece[1]   # rook
+
+    return new_pieces
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    """Return the best UCI move from the given legal_moves."""
+    best_score = -float('inf')
+    best_moves = []
+
+    for move in pieces.get('legal_moves', []):  # assume API supplies this dict key
+        new_board = simulate_move(pieces, move)
+
+        # Material after move
+        material_after = compute_material(new_board, to_play)
+        material_before = compute_material(pieces, to_play)
+        delta_mat = material_after - material_before
+
+        # Queen capture bonus
+        queen_capture_bonus = 0
+        if len(move) == 5:  # promotion, cannot capture queen in the same move
+            pass
+        else:
+            dest_piece_before = pieces[move[2:4]]
+            if dest_piece_before and dest_piece_before[0] != to_play and dest_piece_before[1] == 'Q':
+                queen_capture_bonus = 100
+
+        # Check on opponent king
+        opponent_color = 'b' if to_play == 'w' else 'w'
+        opp_king_sq = find_king(opponent_color, new_board)
+        if opp_king_sq:
+            opponent_attacks = attacked_by(opponent_color, new_board)
+            is_check = opp_king_sq in attacked_by(to_play, new_board)
+        else:
+            is_check = False
+
+        check_bonus = 0
+        if is_check:
+            check_bonus = 50
+
+        # Evaluate
+        score = delta_mat * 10 + queen_capture_bonus + check_bonus
+        if score > best_score:
+            best_score = score
+            best_moves = [move]
+        elif score == best_score:
+            best_moves.append(move)
+
+    # If no moves were found (should never happen), fallback to the first entry
+    if not best_moves:
+        # try to extract moves from pieces dict assuming format {'moves': [...]} 
+        # or return first legal entry manually (fallback)
+        return pieces.get('legal_moves', [None])[0] if pieces.get('legal_moves') else list(pieces.keys())[0]
+
+    # Random tie‑break to avoid deterministic patterns
+    return random.choice(best_moves)
+
+
+# NOTE: The function above expects `pieces` to contain a key `'legal_moves'` listing the
+# UCI strings that are legal for the player whose turn it is. If your environment
+# uses a different name, adjust the dictionary access accordingly.

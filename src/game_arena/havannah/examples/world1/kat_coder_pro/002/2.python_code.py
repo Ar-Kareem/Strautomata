@@ -1,0 +1,391 @@
+
+import numpy as np
+from typing import List, Tuple, Set, Optional
+import random
+import math
+from collections import defaultdict
+
+class HexBoard:
+    def __init__(self, size=15):
+        self.size = size
+        self.board = np.zeros((size, size), dtype=int)
+        self.valid_mask = self._create_valid_mask()
+        
+    def _create_valid_mask(self) -> np.ndarray:
+        """Create mask for valid board positions in hexagonal grid"""
+        mask = np.zeros((self.size, self.size), dtype=bool)
+        for r in range(self.size):
+            for c in range(self.size):
+                if r + c >= 7 and r + c <= 22:  # Hexagonal shape
+                    mask[r, c] = True
+        return mask
+    
+    def get_neighbors(self, r: int, c: int) -> List[Tuple[int, int]]:
+        """Get all valid neighboring positions"""
+        neighbors = []
+        offsets = [
+            (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0)
+        ]
+        
+        for dr, dc in offsets:
+            nr, nc = r + dr, c + dc
+            if (0 <= nr < self.size and 0 <= nc < self.size and 
+                self.valid_mask[nr, nc]):
+                neighbors.append((nr, nc))
+        
+        return neighbors
+    
+    def is_corner(self, r: int, c: int) -> bool:
+        """Check if position is a corner"""
+        corners = [(7,0), (0,7), (7,14), (14,7), (12,0), (0,12)]
+        return (r, c) in corners
+    
+    def get_edge_type(self, r: int, c: int) -> Optional[str]:
+        """Get edge type ('top', 'bottom', 'left', 'right')"""
+        # Top edge: r + c = 7
+        if r + c == 7: return 'top'
+        # Bottom edge: r + c = 22  
+        if r + c == 22: return 'bottom'
+        # Left edge: c = 0
+        if c == 0 and 7 <= r <= 12: return 'left'
+        # Right edge: c = 14
+        if c == 14 and 7 <= r <= 12: return 'right'
+        return None
+
+class MCTSNode:
+    def __init__(self, board: HexBoard, me: List[Tuple[int, int]], 
+                 opp: List[Tuple[int, int]], move: Tuple[int, int] = None):
+        self.board = board
+        self.me = me.copy()
+        self.opp = opp.copy()
+        self.move = move
+        self.children = {}
+        self.visits = 0
+        self.value = 0
+        self.untried_moves = self._get_legal_moves()
+        
+    def _get_legal_moves(self) -> List[Tuple[int, int]]:
+        """Get all legal moves from current position"""
+        all_positions = [(r, c) for r in range(self.board.size) 
+                        for c in range(self.board.size) 
+                        if self.board.valid_mask[r, c]]
+        
+        occupied = set(self.me + self.opp)
+        return [pos for pos in all_positions if pos not in occupied]
+    
+    def is_fully_expanded(self) -> bool:
+        return len(self.untried_moves) == 0
+    
+    def is_terminal(self) -> bool:
+        return self.is_fully_expanded() or self.is_win() or self.is_loss()
+    
+    def is_win(self) -> bool:
+        """Check if current player (me) has won"""
+        return self._check_win(self.me)
+    
+    def is_loss(self) -> bool: 
+        """Check if opponent has won"""
+        return self._check_win(self.opp)
+    
+    def _check_win(self, stones: List[Tuple[int, int]]) -> bool:
+        """Check if stones form a winning structure"""
+        if len(stones) < 3:
+            return False
+            
+        # Check for ring
+        if self._check_ring(stones):
+            return True
+            
+        # Check for bridge (connects two corners)
+        if self._check_bridge(stones):
+            return True
+            
+        # Check for fork (connects three edges)
+        if self._check_fork(stones):
+            return True
+            
+        return False
+    
+    def _check_ring(self, stones: List[Tuple[int, int]]) -> bool:
+        """Check if stones form a ring"""
+        # Implementation would require flood fill to detect enclosed regions
+        # This is a simplified check
+        stone_set = set(stones)
+        
+        # Look for potential ring centers
+        for r in range(self.board.size):
+            for c in range(self.board.size):
+                if not self.board.valid_mask[r, c] or (r, c) in stone_set:
+                    continue
+                    
+                # Check if this empty cell is surrounded
+                neighbors = self.board.get_neighbors(r, c)
+                surrounded = all(n in stone_set for n in neighbors)
+                
+                if surrounded and len(neighbors) == 6:
+                    return True
+                    
+        return False
+    
+    def _check_bridge(self, stones: List[Tuple[int, int]]) -> bool:
+        """Check if stones connect two corners"""
+        corners = [(7,0), (0,7), (7,14), (14,7), (12,0), (0,12)]
+        stone_set = set(stones)
+        
+        # Find which corners are connected
+        connected_corners = []
+        for corner in corners:
+            if self._is_connected_to_corner(corner, stone_set):
+                connected_corners.append(corner)
+                
+        # Check for bridge (connection between two corners)
+        return len(connected_corners) >= 2
+    
+    def _check_fork(self, stones: List[Tuple[int, int]]) -> bool:
+        """Check if stones connect three different edges"""
+        stone_set = set(stones)
+        
+        edges_connected = set()
+        for stone in stones:
+            edge = self.board.get_edge_type(stone[0], stone[1])
+            if edge:
+                edges_connected.add(edge)
+                
+        # Check if we connect 3 or more different edges
+        return len(edges_connected) >= 3
+    
+    def _is_connected_to_corner(self, corner: Tuple[int, int], 
+                               stone_set: Set[Tuple[int, int]]) -> bool:
+        """Check if any stone is connected to given corner"""
+        if corner not in stone_set:
+            return False
+            
+        # Use BFS to check connectivity
+        visited = set([corner])
+        queue = [corner]
+        
+        while queue:
+            r, c = queue.pop(0)
+            for nr, nc in self.board.get_neighbors(r, c):
+                if (nr, nc) in stone_set and (nr, nc) not in visited:
+                    if self.board.is_corner(nr, nc):
+                        visited.add((nr, nc))
+                        queue.append((nr, nc))
+                        
+        return len(visited) > 1
+
+class HeuristicEvaluator:
+    def __init__(self, board: HexBoard):
+        self.board = board
+    
+    def evaluate(self, me: List[Tuple[int, int]], opp: List[Tuple[int, int]]) -> float:
+        """Evaluate board position"""
+        score = 0.0
+        
+        # Win/Loss detection
+        if self._is_win(me):
+            return 1000.0
+        if self._is_win(opp):
+            return -1000.0
+            
+        # Corner control
+        corners = [(7,0), (0,7), (7,14), (14,7), (12,0), (0,12)]
+        for corner in corners:
+            if corner in me:
+                score += 10.0
+            elif corner in opp:
+                score -= 10.0
+                
+        # Edge connectivity
+        score += self._edge_connectivity(me) * 2.0
+        score -= self._edge_connectivity(opp) * 2.0
+        
+        # Ring formation potential
+        score += self._ring_potential(me) * 3.0
+        score -= self._ring_potential(opp) * 3.0
+        
+        # Mobility (number of liberties)
+        score += len(self._get_liberties(me)) * 0.5
+        score -= len(self._get_liberties(opp)) * 0.5
+        
+        return score
+    
+    def _is_win(self, stones: List[Tuple[int, int]]) -> bool:
+        # Simplified win detection
+        if len(stones) < 3:
+            return False
+        return False  # Placeholder
+    
+    def _edge_connectivity(self, stones: List[Tuple[int, int]]) -> float:
+        """Evaluate connectivity to edges"""
+        stone_set = set(stones)
+        edges = {'top': 0, 'bottom': 0, 'left': 0, 'right': 0}
+        
+        for stone in stones:
+            edge = self.board.get_edge_type(stone[0], stone[1])
+            if edge:
+                edges[edge] = 1
+                
+        return sum(edges.values())
+    
+    def _ring_potential(self, stones: List[Tuple[int, int]]) -> float:
+        """Evaluate potential to form rings"""
+        if len(stones) < 4:
+            return 0.0
+            
+        stone_set = set(stones)
+        potential = 0.0
+        
+        # Look for clusters that could form rings
+        for r in range(self.board.size):
+            for c in range(self.board.size):
+                if not self.board.valid_mask[r, c] or (r, c) in stone_set:
+                    continue
+                    
+                neighbors = self.board.get_neighbors(r, c)
+                occupied_neighbors = sum(1 for n in neighbors if n in stone_set)
+                
+                if occupied_neighbors >= 4:
+                    potential += 0.5
+                    
+        return potential
+    
+    def _get_liberties(self, stones: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
+        """Get all empty adjacent positions"""
+        stone_set = set(stones)
+        liberties = set()
+        
+        for r, c in stones:
+            for nr, nc in self.board.get_neighbors(r, c):
+                if (nr, nc) not in stone_set:
+                    liberties.add((nr, nc))
+                    
+        return list(liberties)
+
+class MCTS:
+    def __init__(self, board: HexBoard, time_limit: int = 1):
+        self.board = board
+        self.time_limit = time_limit
+        self.evaluator = HeuristicEvaluator(board)
+        
+    def select_move(self, me: List[Tuple[int, int]], opp: List[Tuple[int, int]]) -> Tuple[int, int]:
+        """Select best move using MCTS"""
+        root = MCTSNode(self.board, me, opp)
+        
+        start_time = time.time()
+        
+        while time.time() - start_time < self.time_limit:
+            # Selection
+            node = self._select(root)
+            
+            # Expansion
+            if not node.is_fully_expanded():
+                node = self._expand(node)
+            
+            # Simulation
+            result = self._simulate(node)
+            
+            # Backpropagation
+            self._backpropagate(node, result)
+        
+        # Return best move
+        return self._best_child(root).move
+    
+    def _select(self, node: MCTSNode) -> MCTSNode:
+        """Select node using UCT"""
+        while not node.is_terminal():
+            if not node.is_fully_expanded():
+                return node
+            else:
+                node = self._best_child(node)
+        return node
+    
+    def _expand(self, node: MCTSNode) -> MCTSNode:
+        """Expand node by adding a child"""
+        # Use heuristics to prioritize moves
+        legal_moves = node.untried_moves
+        if not legal_moves:
+            return node
+            
+        # Sort moves by heuristic value
+        move_scores = []
+        for move in legal_moves:
+            # Create temporary board state
+            temp_me = node.me + [move]
+            score = self.evaluator.evaluate(temp_me, node.opp)
+            move_scores.append((score, move))
+            
+        move_scores.sort(reverse=True)
+        
+        # Select best move
+        _, move = move_scores[0]
+        node.untried_moves.remove(move)
+        
+        child = MCTSNode(self.board, node.me + [move], node.opp, move)
+        node.children[move] = child
+        
+        return child
+    
+    def _simulate(self, node: MCTSNode) -> float:
+        """Simulate game from node"""
+        # If terminal state, return result
+        if node.is_win():
+            return 1.0
+        if node.is_loss():
+            return -1.0
+            
+        # Use heuristic evaluation
+        return self.evaluator.evaluate(node.me, node.opp) / 1000.0
+    
+    def _backpropagate(self, node: MCTSNode, result: float):
+        """Backpropagate simulation result"""
+        while node is not None:
+            node.visits += 1
+            node.value += result
+            node = node.parent if hasattr(node, 'parent') else None
+    
+    def _best_child(self, node: MCTSNode) -> MCTSNode:
+        """Select best child using UCT"""
+        best_score = float('-inf')
+        best_child = None
+        
+        for child in node.children.values():
+            if child.visits == 0:
+                uct_score = float('inf')
+            else:
+                exploitation = child.value / child.visits
+                exploration = math.sqrt(2 * math.log(node.visits) / child.visits)
+                uct_score = exploitation + exploration
+                
+            if uct_score > best_score:
+                best_score = uct_score
+                best_child = child
+                
+        return best_child if best_child else node
+
+# Global MCTS instance
+_mcts = None
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], valid_mask) -> Tuple[int, int]:
+    """Main policy function"""
+    global _mcts
+    
+    if _mcts is None:
+        board = HexBoard(15)
+        board.valid_mask = valid_mask
+        _mcts = MCTS(board, time_limit=0.9)
+    
+    # Update board validity mask
+    _mcts.board.valid_mask = valid_mask
+    
+    # Get best move
+    move = _mcts.select_move(me, opp)
+    
+    # Validate move
+    if not (0 <= move[0] < 15 or 0 <= move[1] < 15):
+        # Fallback to random valid move
+        valid_moves = [(r, c) for r in range(15) for c in range(15) 
+                      if valid_mask[r][c] and (r, c) not in me and (r, c) not in opp]
+        return random.choice(valid_moves)
+        
+    return move

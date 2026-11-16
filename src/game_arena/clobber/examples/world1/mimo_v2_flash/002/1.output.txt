@@ -1,0 +1,176 @@
+My policy uses a heuristic search with a depth-limited minimax approach (depth=3) and an evaluation function that considers material advantage, mobility, and board control. It prioritizes captures that force the opponent into a disadvantageous position and protects its own pieces.
+
+<code>
+def policy(you: list[int], opponent: list[int]) -> str:
+    """
+    Clobber AI using a depth-limited Minimax search (depth=3) 
+    with a heuristic evaluation function.
+    """
+    # Constants
+    ROWS, COLS = 5, 6
+    INF = 10**9
+    
+    # Convert input to a usable format
+    # You: 1, Opponent: -1, Empty: 0
+    board = [[0]*COLS for _ in range(ROWS)]
+    for r in range(ROWS):
+        for c in range(COLS):
+            if you[r][c]: board[r][c] = 1
+            elif opponent[r][c]: board[r][c] = -1
+
+    # Directions: U, R, D, L
+    dirs = [(-1, 0), (0, 1), (1, 0), (0, -1)]
+    dir_chars = ['U', 'R', 'D', 'L']
+
+    def get_moves(b, player):
+        """Generates all moves for a player on board b."""
+        moves = []
+        for r in range(ROWS):
+            for c in range(COLS):
+                if b[r][c] == player:
+                    for i, (dr, dc) in enumerate(dirs):
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < ROWS and 0 <= nc < COLS:
+                            if b[nr][nc] == -player:
+                                moves.append(((r, c), (nr, nc), dir_chars[i]))
+        return moves
+
+    def evaluate(b):
+        """
+        Heuristic Evaluation:
+        1. Material Difference (Count pieces).
+        2. Mobility: Number of legal moves available.
+        3. Central Control: Encourage holding the center.
+        """
+        my_count = 0
+        opp_count = 0
+        my_moves = 0
+        opp_moves = 0
+        center_score = 0
+        
+        # Mobility weights
+        w_mob = 0.1
+        w_cen = 0.05
+        
+        for r in range(ROWS):
+            for c in range(COLS):
+                val = b[r][c]
+                if val == 1:
+                    my_count += 1
+                    # Check mobility
+                    for dr, dc in dirs:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < ROWS and 0 <= nc < COLS and b[nr][nc] == -1:
+                            my_moves += 1
+                    # Central control (simple mask)
+                    if 1 <= r <= 3 and 1 <= c <= 4:
+                        center_score += 1
+                        
+                elif val == -1:
+                    opp_count += 1
+                    # Check mobility
+                    for dr, dc in dirs:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < ROWS and 0 <= nc < COLS and b[nr][nc] == 1:
+                            opp_moves += 1
+
+        if my_count == 0: return -INF
+        if opp_count == 0: return INF
+        
+        # Win/Loss conditions embedded in score
+        if my_count == 1 and opp_count > 1: return -INF
+        if opp_count == 1 and my_count > 1: return INF
+
+        score = (my_count - opp_count) + w_mob * (my_moves - opp_moves) + w_cen * center_score
+        return score
+
+    def minimax(b, depth, alpha, beta, maximizing):
+        if depth == 0:
+            return evaluate(b)
+        
+        moves = get_moves(b, 1 if maximizing else -1)
+        
+        if not moves:
+            # If no moves, player loses
+            return -INF if maximizing else INF
+
+        if maximizing:
+            max_eval = -INF
+            for (fr, fc), (tr, tc), _ in moves:
+                # Make move
+                b[tr][tc] = 1
+                b[fr][fc] = 0
+                eval = minimax(b, depth - 1, alpha, beta, False)
+                # Undo move
+                b[fr][fc] = 1
+                b[tr][tc] = -1
+                
+                max_eval = max(max_eval, eval)
+                alpha = max(alpha, eval)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = INF
+            for (fr, fc), (tr, tc), _ in moves:
+                # Make move
+                b[tr][tc] = -1
+                b[fr][fc] = 0
+                eval = minimax(b, depth - 1, alpha, beta, True)
+                # Undo move
+                b[fr][fc] = -1
+                b[tr][tc] = 1
+                
+                min_eval = min(min_eval, eval)
+                beta = min(beta, eval)
+                if beta <= alpha:
+                    break
+            return min_eval
+
+    # Main logic
+    best_score = -INF
+    best_move = None
+    
+    # Time management check wrapper (simulated)
+    # Standard depth 3 is safe for 1s on 3GHz
+    
+    # Get immediate moves
+    possible_moves = get_moves(board, 1)
+    
+    if not possible_moves:
+        # Should not happen if logic is correct, but return a dummy
+        return "0,0,U" # Crash aversion
+
+    # Iterate moves and run Minimax
+    for (fr, fc), (tr, tc), d in possible_moves:
+        # Make move on board
+        board[tr][tc] = 1
+        board[fr][fc] = 0
+        
+        # If capture wins the game immediately (opponent has 0 pieces left), take it
+        # (Technically covered by minimax, but faster shortcut)
+        has_opp = False
+        for r in range(ROWS):
+            for c in range(COLS):
+                if board[r][c] == -1: has_opp = True
+        if not has_opp:
+            board[fr][fc] = 1
+            board[tr][tc] = -1
+            return f"{fr},{fc},{d}"
+        
+        score = minimax(board, 2, -INF, INF, False) # Depth 2 for response
+        
+        # Undo move
+        board[fr][fc] = 1
+        board[tr][tc] = -1
+        
+        if score > best_score:
+            best_score = score
+            best_move = (fr, fc, d)
+            
+    # Fallback if something goes wrong with logic
+    if best_move is None:
+        return f"{possible_moves[0][0][0]},{possible_moves[0][0][1]},{possible_moves[0][2]}"
+        
+    return f"{best_move[0]},{best_move[1]},{best_move[2]}"
+</code>

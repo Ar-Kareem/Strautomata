@@ -1,0 +1,169 @@
+# Strategy
+
+My strategy for Pentago combines tactical and strategic elements:
+
+1. **Phase Detection**: Determine if we're in "place" or "rotate" phase by checking the state.
+
+2. **For Placement Phase**:
+   - **Win Detection**: If placing a piece creates 5+ in a row, place it immediately.
+   - **Block Opponent**: If opponent can win next turn, block their winning move.
+   - **Build Threats**: Prioritize moves that create multiple winning opportunities or extend existing lines.
+   - **Center Control**: Favor center positions which provide more winning line opportunities.
+   - **Score Placement**: Use a heuristic scoring system that values:
+     - Positions with 4+ pieces of our color in a line (winning potential)
+     - Positions adjacent to our pieces (building threats)
+     - Center positions over edges
+
+3. **For Rotation Phase**:
+   - **Win Rotation**: If rotating a quadrant completes 5 in a row for us, do it.
+   - **Block Rotation**: If rotating prevents opponent from winning, do it.
+   - **Strategic Rotation**: Rotate quadrants that can create or disrupt winning lines.
+   - **Default**: Rotate quadrant 1 clockwise if no strategic benefit found.
+
+4. **Fallback**: Always ensure we return a legal move - if no strategic move exists, return the first available legal placement or any valid rotation.
+
+<code>
+def policy(state: list[list[object]], role: str) -> str:
+    # Parse state
+    phase = None
+    board = {}  # (quadrant, row, col) -> color
+    
+    for fact in state:
+        if fact[0] == "phase":
+            phase = fact[1]
+        elif fact[0] == "cellholds":
+            quad, row, col, color = int(fact[1]), int(fact[2]), int(fact[3]), fact[4]
+            board[(quad, row, col)] = color
+    
+    if phase == "place":
+        return handle_place(board, role)
+    else:  # phase == "rotate"
+        return handle_rotate(board, role)
+
+def handle_place(board, role):
+    opponent = "black" if role == "red" else "red"
+    
+    # Find all empty cells
+    empty_cells = []
+    for quad in range(1, 5):
+        for row in range(1, 4):
+            for col in range(1, 4):
+                if (quad, row, col) not in board:
+                    empty_cells.append((quad, row, col))
+    
+    # Check for winning move
+    for cell in empty_cells:
+        if creates_win(board, cell, role):
+            return f"place({cell[0]},{cell[1]},{cell[2]})"
+    
+    # Check for blocking opponent win
+    for cell in empty_cells:
+        if creates_win(board, cell, opponent):
+            return f"place({cell[0]},{cell[1]},{cell[2]})"
+    
+    # Score and select best move
+    best_cell = None
+    best_score = -1
+    
+    for cell in empty_cells:
+        score = score_placement(board, cell, role, opponent)
+        if score > best_score:
+            best_score = score
+            best_cell = cell
+    
+    if best_cell:
+        return f"place({best_cell[0]},{best_cell[1]},{best_cell[2]})"
+    
+    # Fallback
+    return f"place({empty_cells[0][0]},{empty_cells[0][1]},{empty_cells[0][2]})"
+
+def handle_rotate(board, role):
+    opponent = "black" if role == "red" else "red"
+    
+    # Try each rotation
+    for quad in range(1, 5):
+        for direction in ["clockwise", "counterclockwise"]:
+            test_board = rotate_board(board, quad, direction)
+            
+            # Check if this rotation wins
+            if check_win_exists(test_board, role):
+                return f"rotate({quad},{direction})"
+    
+    # Block opponent
+    for quad in range(1, 5):
+        for direction in ["clockwise", "counterclockwise"]:
+            test_board = rotate_board(board, quad, direction)
+            
+            if check_win_exists(test_board, opponent):
+                return f"rotate({quad},{direction})"
+    
+    # Default rotation
+    return "rotate(1,clockwise)"
+
+def creates_win(board, cell, color):
+    test_board = board.copy()
+    test_board[cell] = color
+    return check_win_exists(test_board, color)
+
+def check_win_exists(board, color):
+    # Check all possible lines of 5
+    for start_quad in range(1, 5):
+        for start_row in range(1, 4):
+            for start_col in range(1, 4):
+                if (start_quad, start_row, start_col) in board and board[(start_quad, start_row, start_col)] == color:
+                    # Check horizontal, vertical, diagonal
+                    if check_line(board, start_quad, start_row, start_col, 0, 1, color) or \
+                       check_line(board, start_quad, start_row, start_col, 1, 0, color) or \
+                       check_line(board, start_quad, start_row, start_col, 1, 1, color) or \
+                       check_line(board, start_quad, start_row, start_col, 1, -1, color):
+                        return True
+    return False
+
+def check_line(board, quad, row, col, drow, dcol, color):
+    count = 0
+    r, c = row, col
+    while 1 <= r <= 3 and 1 <= c <= 3:
+        if (quad, r, c) in board and board[(quad, r, c)] == color:
+            count += 1
+            if count >= 5:
+                return True
+        else:
+            break
+        r += drow
+        c += dcol
+    return count >= 5
+
+def score_placement(board, cell, role, opponent):
+    test_board = board.copy()
+    test_board[cell] = role
+    
+    score = 0
+    
+    # Center bonus
+    if cell[1] == 2 and cell[2] == 2:
+        score += 10
+    
+    # Count adjacent pieces
+    for dr, dc in [(0, 1), (1, 0), (0, -1), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1)]:
+        nr, nc = cell[1] + dr, cell[2] + dc
+        if 1 <= nr <= 3 and 1 <= nc <= 3:
+            if (cell[0], nr, nc) in board and board[(cell[0], nr, nc)] == role:
+                score += 5
+    
+    return score
+
+def rotate_board(board, quad, direction):
+    new_board = board.copy()
+    cells = [(q, r, c) for q, r, c in board if q == quad]
+    
+    for q, r, c in cells:
+        if direction == "clockwise":
+            new_r, new_c = c, 4 - r
+        else:
+            new_r, new_c = 4 - c, r
+        
+        del new_board[(q, r, c)]
+        new_board[(q, new_r, new_c)] = board[(q, r, c)]
+    
+    return new_board
+</code>

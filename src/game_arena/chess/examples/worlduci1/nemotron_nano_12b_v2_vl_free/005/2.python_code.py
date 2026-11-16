@@ -1,0 +1,67 @@
+
+import sys
+import copy
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    def get_position(s):
+        return ord(s[0]) - ord('a'), int(s[1]) - 1
+
+    # Initialize the board
+    board = [[None for _ in range(8)] for _ in range(8)]
+    for pos, piece in pieces.items():
+        x, y = get_position(pos)
+        board[x][y] = piece.upper()
+
+    current_color = to_play[0]
+    legal_moves = generate_moves(board, current_color)
+    filtered_moves = []
+
+    # Evaluate each move for legality (king safety)
+    for move in legal_moves:
+        x1, y1, x2, y2 = move[:4]
+        to_piece = board[x2][y2]
+        new_board = copy.deepcopy(board)
+        # Simulate the move
+        if to_piece:
+            new_board[x2][y2] = piece  # capture
+        new_board[x1][y1] = None  # source becomes empty
+
+        # Check if the king is in check after the move
+        king_x, king_y = None, None
+        for i in range(8):
+            for j in range(8):
+                if new_board[i][j] and new_board[i][j][1] == 'K' and new_board[i][j][0] == current_color:
+                    king_pos = (i, j)
+                    break
+        in_check = any(
+            square_attacks(i, j, new_board, 'w' if current_color == 'b' else 'b')
+            for i in range(8) for j in range(8)
+        )
+        if not in_check:
+            filtered_moves.append(move)
+
+    # Select the move that captures the highest-value piece
+    best_move = None
+    best_value = -1
+    value_map = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': float('inf')}
+    for move in filtered_moves:
+        # Assume move captures a piece and capture it
+        captured_piece = board[move[2]][move[3]] if board[move[2]][move[3]] else None
+        move_val = value_map.get(captured_piece[1], 0) if captured_piece else 0
+        if move_val > best_value:
+            best_value = move_val
+            best_move = move
+
+    if best_move:
+        # Format the move
+        return f"{chr(best_move[0] + ord('a'))}{best_move[1] + 1}{chr(best_move[2] + ord('a'))}{best_move[3] + 1}"
+
+    # If no moves available (unlikely), return a dummy move (illegal, but example)
+    return "e2e3"  # Fails in real scenario
+
+# Placeholder functions for move generation and attack checks
+def generate_moves(board, color):
+    return []  # Placeholder
+
+def is_square_attacked(board, x, y, attacker_color):
+    return False  # Placeholder

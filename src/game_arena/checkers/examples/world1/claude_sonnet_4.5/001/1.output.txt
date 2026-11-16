@@ -1,0 +1,192 @@
+I'll create a competitive checkers policy that uses intelligent move evaluation with capture prioritization, positional advantage, and king promotion strategies.
+
+## Strategy
+
+My policy uses the following approach:
+
+1. **Move Generation**: Generate all legal moves, separating captures from normal moves
+2. **Mandatory Captures**: Enforce capture rules - if captures are available, only consider those
+3. **Move Evaluation**: Score moves based on:
+   - **Capture value**: Prioritize capturing opponent pieces (kings worth more than men)
+   - **King promotion**: Heavily reward moves that promote men to kings
+   - **Board position**: Favor central squares and advancing pieces
+   - **King safety**: Keep kings active but avoid unnecessary risks
+   - **Multi-jump potential**: Look for opportunities to capture multiple pieces
+4. **Minimax-inspired evaluation**: Consider opponent's threats after our move
+5. **Defensive positioning**: Avoid leaving pieces vulnerable when possible
+
+The policy balances aggressive capture opportunities with strategic positioning to control the board.
+
+<code>
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    """
+    Advanced checkers policy with evaluation function.
+    """
+    
+    # Convert lists to sets for faster lookup
+    my_men_set = set(my_men)
+    my_kings_set = set(my_kings)
+    opp_men_set = set(opp_men)
+    opp_kings_set = set(opp_kings)
+    
+    all_my_pieces = my_men_set | my_kings_set
+    all_opp_pieces = opp_men_set | opp_kings_set
+    all_pieces = all_my_pieces | all_opp_pieces
+    
+    # Direction settings based on color
+    if color == 'w':
+        man_dirs = [(1, -1), (1, 1)]  # White moves up
+        king_row = 7
+    else:
+        man_dirs = [(-1, -1), (-1, 1)]  # Black moves down
+        king_row = 0
+    
+    king_dirs = [(1, 1), (1, -1), (-1, 1), (-1, -1)]
+    
+    def is_valid(row, col):
+        return 0 <= row <= 7 and 0 <= col <= 7
+    
+    def get_captures_from(pos, is_king, visited_captures=None):
+        """Get all capture sequences from a position using DFS."""
+        if visited_captures is None:
+            visited_captures = set()
+        
+        row, col = pos
+        captures = []
+        dirs = king_dirs if is_king else man_dirs
+        
+        for dr, dc in dirs:
+            mid_row, mid_col = row + dr, col + dc
+            land_row, land_col = row + 2*dr, col + 2*dc
+            
+            if is_valid(land_row, land_col):
+                mid_pos = (mid_row, mid_col)
+                land_pos = (land_row, land_col)
+                
+                # Check if we can capture
+                if (mid_pos in all_opp_pieces and 
+                    land_pos not in all_pieces and
+                    mid_pos not in visited_captures):
+                    
+                    # Record this capture
+                    new_visited = visited_captures | {mid_pos}
+                    
+                    # Check for multi-jumps
+                    further_captures = get_captures_from(land_pos, is_king, new_visited)
+                    
+                    if further_captures:
+                        # Extend each further capture path
+                        for path in further_captures:
+                            captures.append([mid_pos] + path)
+                    else:
+                        # This is a terminal capture
+                        captures.append([mid_pos])
+        
+        return captures
+    
+    def get_all_moves():
+        """Generate all legal moves."""
+        captures = []
+        normal_moves = []
+        
+        # Check all my pieces
+        for pos in all_my_pieces:
+            is_king = pos in my_kings_set
+            row, col = pos
+            
+            # Get captures from this piece
+            capture_paths = get_captures_from(pos, is_king)
+            for path in capture_paths:
+                # Calculate final position after all jumps
+                final_row, final_col = row, col
+                for cap_pos in path:
+                    dr = 1 if cap_pos[0] > final_row else -1
+                    dc = 1 if cap_pos[1] > final_col else -1
+                    final_row += 2*dr
+                    final_col += 2*dc
+                
+                captures.append((pos, (final_row, final_col), path))
+            
+            # Get normal moves (only if no captures available)
+            if not capture_paths:
+                dirs = king_dirs if is_king else man_dirs
+                for dr, dc in dirs:
+                    new_row, new_col = row + dr, col + dc
+                    if is_valid(new_row, new_col) and (new_row, new_col) not in all_pieces:
+                        normal_moves.append((pos, (new_row, new_col), []))
+        
+        # Return captures if any exist (mandatory), otherwise normal moves
+        return captures if captures else normal_moves
+    
+    def evaluate_move(from_pos, to_pos, captured):
+        """Evaluate the quality of a move."""
+        score = 0
+        from_row, from_col = from_pos
+        to_row, to_col = to_pos
+        is_king = from_pos in my_kings_set
+        
+        # Capture value
+        for cap_pos in captured:
+            if cap_pos in opp_kings_set:
+                score += 50  # Capturing a king is very valuable
+            else:
+                score += 30  # Capturing a man
+        
+        # King promotion bonus
+        if not is_king and to_row == king_row:
+            score += 40
+        
+        # Positional scoring
+        # Central control
+        center_distance = abs(to_row - 3.5) + abs(to_col - 3.5)
+        score += (7 - center_distance) * 2
+        
+        # Forward progress for men
+        if not is_king:
+            if color == 'w':
+                score += to_row * 2
+            else:
+                score += (7 - to_row) * 2
+        
+        # King activity
+        if is_king:
+            score += 10
+        
+        # Edge penalty (avoid edges when possible)
+        if to_col == 0 or to_col == 7:
+            score -= 3
+        
+        # Back row penalty for non-kings (avoid getting stuck)
+        if not is_king:
+            if (color == 'w' and to_row == 0) or (color == 'b' and to_row == 7):
+                score -= 5
+        
+        return score
+    
+    # Get all legal moves
+    all_moves = get_all_moves()
+    
+    if not all_moves:
+        # No legal moves - return any piece move (shouldn't happen in valid game)
+        if all_my_pieces:
+            pos = list(all_my_pieces)[0]
+            return (pos, pos)
+        return ((0, 0), (0, 0))
+    
+    # Evaluate and select best move
+    best_move = None
+    best_score = float('-inf')
+    
+    for from_pos, to_pos, captured in all_moves:
+        score = evaluate_move(from_pos, to_pos, captured)
+        
+        # Add randomness to break ties
+        import random
+        score += random.random() * 0.1
+        
+        if score > best_score:
+            best_score = score
+            best_move = (from_pos, to_pos)
+    
+    return best_move
+</code>

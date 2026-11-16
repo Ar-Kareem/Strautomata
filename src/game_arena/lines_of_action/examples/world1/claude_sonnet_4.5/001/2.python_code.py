@@ -1,0 +1,214 @@
+
+def policy(board) -> str:
+    import numpy as np
+    from collections import deque
+    
+    def get_pieces(board, player):
+        """Get all piece positions for a player."""
+        pieces = []
+        for r in range(8):
+            for c in range(8):
+                if board[r][c] == player:
+                    pieces.append((r, c))
+        return pieces
+    
+    def count_line(board, row, col, dr, dc):
+        """Count pieces in a line direction."""
+        count = 0
+        r, c = row, col
+        while 0 <= r < 8 and 0 <= c < 8:
+            if board[r][c] != 0:
+                count += 1
+            r -= dr
+            c -= dc
+        r, c = row + dr, col + dc
+        while 0 <= r < 8 and 0 <= c < 8:
+            if board[r][c] != 0:
+                count += 1
+            r += dr
+            c += dc
+        return count
+    
+    def is_valid_move(board, from_r, from_c, to_r, to_c, player):
+        """Check if a move is valid."""
+        if board[from_r][from_c] != player:
+            return False
+        if not (0 <= to_r < 8 and 0 <= to_c < 8):
+            return False
+        if from_r == to_r and from_c == to_c:
+            return False
+        
+        dr = 0 if to_r == from_r else (1 if to_r > from_r else -1)
+        dc = 0 if to_c == from_c else (1 if to_c > from_c else -1)
+        
+        if dr == 0 and dc == 0:
+            return False
+        
+        distance = max(abs(to_r - from_r), abs(to_c - from_c))
+        line_count = count_line(board, from_r, from_c, dr, dc)
+        
+        if distance != line_count:
+            return False
+        
+        # Check path for enemy pieces
+        r, c = from_r + dr, from_c + dc
+        for _ in range(distance - 1):
+            if board[r][c] == -player:
+                return False
+            r += dr
+            c += dc
+        
+        # Can't capture own piece
+        if board[to_r][to_c] == player:
+            return False
+        
+        return True
+    
+    def get_legal_moves(board, player):
+        """Get all legal moves for a player."""
+        moves = []
+        pieces = get_pieces(board, player)
+        
+        for from_r, from_c in pieces:
+            for dr in [-1, 0, 1]:
+                for dc in [-1, 0, 1]:
+                    if dr == 0 and dc == 0:
+                        continue
+                    
+                    line_count = count_line(board, from_r, from_c, dr, dc)
+                    to_r = from_r + dr * line_count
+                    to_c = from_c + dc * line_count
+                    
+                    if is_valid_move(board, from_r, from_c, to_r, to_c, player):
+                        moves.append((from_r, from_c, to_r, to_c))
+        
+        return moves
+    
+    def is_connected(board, player):
+        """Check if all pieces are connected."""
+        pieces = get_pieces(board, player)
+        if len(pieces) <= 1:
+            return True
+        
+        visited = set()
+        queue = deque([pieces[0]])
+        visited.add(pieces[0])
+        
+        while queue:
+            r, c = queue.popleft()
+            for dr in [-1, 0, 1]:
+                for dc in [-1, 0, 1]:
+                    if dr == 0 and dc == 0:
+                        continue
+                    nr, nc = r + dr, c + dc
+                    if (nr, nc) in pieces and (nr, nc) not in visited:
+                        visited.add((nr, nc))
+                        queue.append((nr, nc))
+        
+        return len(visited) == len(pieces)
+    
+    def count_components(board, player):
+        """Count connected components."""
+        pieces = get_pieces(board, player)
+        if not pieces:
+            return 0
+        
+        visited = set()
+        components = 0
+        
+        for piece in pieces:
+            if piece in visited:
+                continue
+            components += 1
+            queue = deque([piece])
+            visited.add(piece)
+            
+            while queue:
+                r, c = queue.popleft()
+                for dr in [-1, 0, 1]:
+                    for dc in [-1, 0, 1]:
+                        if dr == 0 and dc == 0:
+                            continue
+                        nr, nc = r + dr, c + dc
+                        if (nr, nc) in pieces and (nr, nc) not in visited:
+                            visited.add((nr, nc))
+                            queue.append((nr, nc))
+        
+        return components
+    
+    def evaluate_board(board, player):
+        """Evaluate board state."""
+        if is_connected(board, player):
+            return 10000
+        if is_connected(board, -player):
+            return -10000
+        
+        my_pieces = get_pieces(board, player)
+        opp_pieces = get_pieces(board, -player)
+        
+        if not my_pieces:
+            return -10000
+        if not opp_pieces:
+            return 10000
+        
+        my_components = count_components(board, player)
+        opp_components = count_components(board, -player)
+        
+        # Compactness
+        my_r = [p[0] for p in my_pieces]
+        my_c = [p[1] for p in my_pieces]
+        my_spread = (max(my_r) - min(my_r)) + (max(my_c) - min(my_c))
+        
+        opp_r = [p[0] for p in opp_pieces]
+        opp_c = [p[1] for p in opp_pieces]
+        opp_spread = (max(opp_r) - min(opp_r)) + (max(opp_c) - min(opp_c))
+        
+        score = -my_components * 500 + opp_components * 300
+        score += -my_spread * 10 + opp_spread * 5
+        score += (len(opp_pieces) - len(my_pieces)) * -100
+        
+        return score
+    
+    def apply_move(board, move, player):
+        """Apply a move and return new board."""
+        new_board = board.copy()
+        from_r, from_c, to_r, to_c = move
+        new_board[from_r][from_c] = 0
+        new_board[to_r][to_c] = player
+        return new_board
+    
+    # Get legal moves
+    moves = get_legal_moves(board, 1)
+    
+    if not moves:
+        return "0,0:0,0"  # Should never happen
+    
+    # Check for immediate wins
+    for move in moves:
+        new_board = apply_move(board, move, 1)
+        if is_connected(new_board, 1):
+            return f"{move[0]},{move[1]}:{move[2]},{move[3]}"
+    
+    # Evaluate moves
+    best_score = -float('inf')
+    best_move = moves[0]
+    
+    for move in moves:
+        new_board = apply_move(board, move, 1)
+        score = evaluate_board(new_board, 1)
+        
+        # Simple 1-ply lookahead
+        opp_moves = get_legal_moves(new_board, -1)
+        if opp_moves:
+            worst_opp_score = float('inf')
+            for opp_move in opp_moves[:10]:  # Limit for speed
+                opp_board = apply_move(new_board, opp_move, -1)
+                opp_score = evaluate_board(opp_board, 1)
+                worst_opp_score = min(worst_opp_score, opp_score)
+            score = worst_opp_score
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return f"{best_move[0]},{best_move[1]}:{best_move[2]},{best_move[3]}"

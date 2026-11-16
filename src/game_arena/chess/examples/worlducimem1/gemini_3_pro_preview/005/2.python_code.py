@@ -1,0 +1,371 @@
+
+import time
+
+def policy(pieces: dict[str, str], to_play: str, memory: dict) -> tuple[str, dict]:
+    """
+    Chess policy playing 'to_play' side.
+    """
+    
+    # --- Constants & Lookups ---
+    
+    # Board Layout
+    SQUARES = [
+        'a1', 'b1', 'c1', 'd1', 'e1', 'f1', 'g1', 'h1',
+        'a2', 'b2', 'c2', 'd2', 'e2', 'f2', 'g2', 'h2',
+        'a3', 'b3', 'c3', 'd3', 'e3', 'f3', 'g3', 'h3',
+        'a4', 'b4', 'c4', 'd4', 'e4', 'f4', 'g4', 'h4',
+        'a5', 'b5', 'c5', 'd5', 'e5', 'f5', 'g5', 'h5',
+        'a6', 'b6', 'c6', 'd6', 'e6', 'f6', 'g6', 'h6',
+        'a7', 'b7', 'c7', 'd7', 'e7', 'f7', 'g7', 'h7',
+        'a8', 'b8', 'c8', 'd8', 'e8', 'f8', 'g8', 'h8'
+    ]
+    SQ_TO_IDX = {s: i for i, s in enumerate(SQUARES)}
+    
+    # Piece Values (centipawns)
+    VALUES = {'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000}
+    
+    # Piece-Square Tables (Simplified for Center Control)
+    # Defined for White; Black mirrors them.
+    PST = [
+        0,  0,  0,  0,  0,  0,  0,  0, # Rank 1
+        5, 10, 10, -20, -20, 10, 10, 5, # Rank 2
+        5, -5, -10,  0,  0, -10, -5, 5, # Rank 3
+        0,  0,  0, 20, 20,  0,  0,  0, # Rank 4
+        5,  5, 10, 25, 25, 10,  5,  5, # Rank 5
+        10, 10, 20, 30, 30, 20, 10, 10, # Rank 6
+        50, 50, 50, 50, 50, 50, 50, 50, # Rank 7
+        0,  0,  0,  0,  0,  0,  0,  0  # Rank 8
+    ]
+
+    # --- Helper Functions ---
+
+    def parse_board(pieces_dict):
+        """Converts pieces dict to list[64]."""
+        b = [None] * 64
+        for sq, p in pieces_dict.items():
+            if sq in SQ_TO_IDX:
+                b[SQ_TO_IDX[sq]] = p
+        return b
+
+    def is_sq_attacked(board, sq, attacker_color):
+        """Returns True if 'sq' is attacked by any piece of 'attacker_color'."""
+        r, c = divmod(sq, 8)
+        
+        # 1. Pawn Attacks
+        # If attacker is White, they attack from (row-1). If Black, from (row+1).
+        if attacker_color == 'w':
+            # Check squares sq-7 and sq-9 (white pawns below attacking up)
+            # Actually, we are at SQ. To be attacked by W pawn, W pawn must be at r-1.
+            # W pawn at (r-1, c-1) attacks (r, c). Index: sq - 8 - 1 = sq - 9.
+            # W pawn at (r-1, c+1) attacks (r, c). Index: sq - 8 + 1 = sq - 7.
+            if r > 0:
+                if c > 0:
+                    p = board[sq - 9]
+                    if p == 'wP': return True
+                if c < 7:
+                    p = board[sq - 7]
+                    if p == 'wP': return True
+        else:
+            # Black pawns at r+1.
+            # B pawn at (r+1, c-1) attacks (r, c). Index: sq + 8 - 1 = sq + 7.
+            # B pawn at (r+1, c+1) attacks (r, c). Index: sq + 8 + 1 = sq + 9.
+            if r < 7:
+                if c > 0:
+                    p = board[sq + 7]
+                    if p == 'bP': return True
+                if c < 7:
+                    p = board[sq + 9]
+                    if p == 'bP': return True
+
+        # 2. Knight Attacks
+        for d in [-17, -15, -10, -6, 6, 10, 15, 17]:
+            t = sq + d
+            if 0 <= t < 64:
+                tr, tc = divmod(t, 8)
+                if abs(tr - r) + abs(tc - c) == 3:
+                    p = board[t]
+                    if p and p[0] == attacker_color and p[1] == 'N': return True
+
+        # 3. King Attacks (adjacent)
+        for d in [-9, -8, -7, -1, 1, 7, 8, 9]:
+            t = sq + d
+            if 0 <= t < 64:
+                tr, tc = divmod(t, 8)
+                if abs(tr - r) <= 1 and abs(tc - c) <= 1:
+                    p = board[t]
+                    if p and p[0] == attacker_color and p[1] == 'K': return True
+
+        # 4. Sliding Attacks (Rook/Queen/Bishop)
+        # Diagonals (B/Q)
+        for d in [-9, -7, 7, 9]:
+            t = sq + d
+            while 0 <= t < 64:
+                tr, tc = divmod(t, 8)
+                pr, pc = divmod(t - d, 8)
+                if abs(tr - pr) > 1 or abs(tc - pc) > 1: break # Wrap-around check
+                p = board[t]
+                if p:
+                    if p[0] == attacker_color and p[1] in ('B', 'Q'): return True
+                    break # Blocked by any piece
+                t += d
+        
+        # Orthogonals (R/Q)
+        for d in [-8, -1, 1, 8]:
+            t = sq + d
+            while 0 <= t < 64:
+                tr, tc = divmod(t, 8)
+                pr, pc = divmod(t - d, 8)
+                if d == 1 and tc == 0: break # Wrapped to a-file
+                if d == -1 and tc == 7: break # Wrapped to h-file
+                p = board[t]
+                if p:
+                    if p[0] == attacker_color and p[1] in ('R', 'Q'): return True
+                    break # Blocked
+                t += d
+
+        return False
+
+    def get_legal_moves(board, color):
+        """Generates all pseudo-legal moves and filters strictly for King safety."""
+        moves = [] # format: (score_heuristic, uci_string, result_board)
+        opp_color = 'b' if color == 'w' else 'w'
+        
+        # Find King to ensure legality later
+        king_sq = -1
+        for i in range(64):
+            if board[i] == color + 'K':
+                king_sq = i
+                break
+        
+        # Directions
+        dirs_n = [-17, -15, -10, -6, 6, 10, 15, 17]
+        dirs_k = [-9, -8, -7, -1, 1, 7, 8, 9]
+        
+        for idx in range(64):
+            p = board[idx]
+            if not p or p[0] != color: continue
+            
+            ptype = p[1]
+            r, c = divmod(idx, 8)
+            pseudo_destinations = [] # (target_uic, is_promotion)
+
+            if ptype == 'P':
+                direction = 8 if color == 'w' else -8
+                start_row = 1 if color == 'w' else 6
+                prom_row = 7 if color == 'w' else 0
+                
+                # Push 1
+                nxt = idx + direction
+                if 0 <= nxt < 64 and board[nxt] is None:
+                    nr, nc = divmod(nxt, 8)
+                    if nr == prom_row:
+                        for prom in ['q', 'r', 'b', 'n']:
+                            pseudo_destinations.append((nxt, prom))
+                    else:
+                        pseudo_destinations.append((nxt, None))
+                    # Push 2
+                    if r == start_row:
+                        nxt2 = idx + direction * 2
+                        if 0 <= nxt2 < 64 and board[nxt2] is None:
+                            pseudo_destinations.append((nxt2, None))
+                
+                # Captures
+                cap_dirs = [direction - 1, direction + 1] # -1/+1 index is sensitive effectively
+                # Safe logic:
+                for dc in [-1, 1]:
+                    # Target col must be c + dc
+                    if 0 <= c + dc <= 7:
+                        nxt = idx + direction + dc # e.g. white +8-1=+7, +8+1=+9
+                        if 0 <= nxt < 64:
+                            # Actually +8-1 could be row+1, col-1.
+                            # Just strictly check row/col logic:
+                            nr, nc = divmod(nxt, 8)
+                            if nr == r + (1 if color == 'w' else -1) and nc == c + dc:
+                                target = board[nxt]
+                                if target and target[0] == opp_color:
+                                    if nr == prom_row:
+                                        for prom in ['q', 'r', 'b', 'n']:
+                                            pseudo_destinations.append((nxt, prom))
+                                    else:
+                                        pseudo_destinations.append((nxt, None))
+
+            elif ptype == 'N':
+                for d in dirs_n:
+                    t = idx + d
+                    if 0 <= t < 64:
+                        tr, tc = divmod(t, 8)
+                        if abs(tr - r) + abs(tc - c) == 3:
+                            target = board[t]
+                            if target is None or target[0] == opp_color:
+                                pseudo_destinations.append((t, None))
+            
+            elif ptype == 'K':
+                for d in dirs_k:
+                    t = idx + d
+                    if 0 <= t < 64:
+                        tr, tc = divmod(t, 8)
+                        if abs(tr - r) <= 1 and abs(tc - c) <= 1:
+                            target = board[t]
+                            if target is None or target[0] == opp_color:
+                                pseudo_destinations.append((t, None))
+            
+            elif ptype in ('B', 'R', 'Q'):
+                offsets = []
+                if ptype in ('B', 'Q'): offsets.extend([-9, -7, 7, 9])
+                if ptype in ('R', 'Q'): offsets.extend([-8, -1, 1, 8])
+                
+                for d in offsets:
+                    t = idx + d
+                    while 0 <= t < 64:
+                        tr, tc = divmod(t, 8)
+                        pr, pc = divmod(t-d, 8)
+                        # Boundary check
+                        if abs(tr - pr) > 1 or abs(tc - pc) > 1: break
+                        
+                        target = board[t]
+                        if target is None:
+                            pseudo_destinations.append((t, None))
+                        elif target[0] == opp_color:
+                            pseudo_destinations.append((t, None))
+                            break
+                        else:
+                            break # Blocked by own
+                        t += d
+
+            # Process Pseudo Moves -> Legal
+            for dest, prom in pseudo_destinations:
+                # Create next board
+                # Optimization: Do local update check then revert
+                captured = board[dest]
+                board[dest] = board[idx]
+                board[idx] = None
+                
+                is_prom = False
+                if prom:
+                    is_prom = True
+                    board[dest] = color + prom.upper()
+                
+                # Check King Safety
+                # If King moved, update loc
+                check_k = king_sq
+                if ptype == 'K':
+                    check_k = dest
+                
+                valid = True
+                if check_k != -1:
+                    if is_sq_attacked(board, check_k, opp_color):
+                        valid = False
+                
+                if valid:
+                    # Construct UCI
+                    uci = SQUARES[idx] + SQUARES[dest]
+                    if is_prom: uci += prom
+                    
+                    # Heuristic score for sorting: Capture > Prom > Quiet
+                    score = 0
+                    if captured: score += VALUES.get(captured[1], 0) * 10
+                    if is_prom: score += 800
+                    
+                    # We store the board state if we were doing deep search, 
+                    # but for now we just regenerate to save memory, or copy?
+                    # Copying is faster than play/undo for small depth in Python? 
+                    # Actually standard list copy is fast.
+                    next_board = list(board)
+                    moves.append((score, uci, next_board))
+                
+                # Undo
+                board[idx] = board[dest] # Restore piece (if prom, restoring sets back to P/orig)
+                if is_prom: board[idx] = color + 'P' # Fix type if it was prom
+                board[dest] = captured
+
+        # Return moves sorted by heuristic (descending)
+        moves.sort(key=lambda x: x[0], reverse=True)
+        return moves
+
+    def evaluate(board):
+        """Static board evaluation."""
+        score = 0
+        for i in range(64):
+            p = board[i]
+            if not p: continue
+            
+            c_sign = 1 if p[0] == 'w' else -1
+            ptype = p[1]
+            val = VALUES.get(ptype, 0)
+            
+            # Positional
+            pst_val = PST[i]
+            # Flip PST for black (mirror rank/file logic or simple reverse for symmetric?)
+            # Simple reverse array for Black is easiest approximation
+            if p[0] == 'b':
+                # Map i (0..63) to black view
+                # Black Rank 8 is Index 56-63 (Logic row 7). It corresponds to White Rank 1 (Logic row 0).
+                # Mirror index: 63 - i
+                pst_val = PST[63 - i]
+                
+            score += c_sign * (val + pst_val)
+        return score
+
+    def negamax(board, depth, alpha, beta, color_sign):
+        """Recursive alpha-beta search."""
+        if depth == 0:
+            return color_sign * evaluate(board)
+        
+        # Current player color
+        cur_color = 'w' if color_sign == 1 else 'b'
+        moves = get_legal_moves(board, cur_color)
+        
+        if not moves:
+            # Checkmate or Stalemate
+            # If in check: -Inf, else 0.
+            # Find King
+            k_sq = -1
+            for i in range(64):
+                if board[i] == cur_color + 'K':
+                    k_sq = i
+                    break
+            opp = 'b' if cur_color == 'w' else 'w'
+            if k_sq != -1 and is_sq_attacked(board, k_sq, opp):
+                return -99999 # Mate
+            return 0 # Stalemate
+        
+        value = -999999
+        for _, _, next_board in moves:
+            val = -negamax(next_board, depth - 1, -beta, -alpha, -color_sign)
+            value = max(value, val)
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+        return value
+
+    # --- Main Logic ---
+    
+    # 1. Setup
+    my_color_str = to_play # 'white' or 'black'
+    my_color = 'w' if my_color_str == 'white' else 'b'
+    color_sign = 1 if my_color == 'w' else -1
+    
+    board = parse_board(pieces)
+    
+    # 2. Get Moves
+    legal_moves_data = get_legal_moves(board, my_color)
+    
+    if not legal_moves_data:
+        return "0000", memory # Should not happen unless mate/stalemate
+    
+    # 3. Search (Depth 2 fixed)
+    best_move = legal_moves_data[0][1]
+    best_value = -999999
+    
+    alpha = -999999
+    beta = 999999
+    
+    # Start timer check if needed, but depth 2 is fast enough (<0.5s)
+    for _, uci, next_board in legal_moves_data:
+        val = -negamax(next_board, 1, -beta, -alpha, -color_sign)
+        if val > best_value:
+            best_value = val
+            best_move = uci
+        alpha = max(alpha, val)
+    
+    return best_move, memory

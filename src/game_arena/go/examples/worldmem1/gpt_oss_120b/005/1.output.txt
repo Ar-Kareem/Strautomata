@@ -1,0 +1,173 @@
+**Strategy Overview**
+
+The policy follows a two‑stage approach:
+
+1. **Legality filter** –  
+   For every empty point on the 19 × 19 board we test whether playing there is legal under normal Go rules (no suicide unless it captures).  
+   * A move is legal if it has at least one adjacent empty liberty **or** it captures at least one opponent group.  
+   * Capture detection is performed with a small breadth‑first search that computes the liberties of each adjacent opponent group after the candidate stone would be placed.
+
+2. **Heuristic selection** –  
+   Among all legal moves we pick the one that minimises a simple distance‑based score:  
+
+   \[
+   \text{score}(p)= d_{\text{center}}(p)+d_{\text{own}}(p)+d_{\text{opp}}(p)
+   \]
+
+   where each *d* is the Manhattan distance from the point *p* to the centre of the board (10, 10), to the nearest own stone and to the nearest opponent stone respectively.  
+   This encourages the agent to stay near the centre, stay connected with its own stones and stay engaged with the opponent, while still guaranteeing a legal move.
+
+If, for any reason, no legal move exists (which can only happen in a completely filled board), the policy passes with `(0, 0)`.
+
+The `memory` dictionary is currently unused but kept in the signature for compatibility and future extensions.
+
+```python
+<code>
+import collections
+from typing import List, Tuple, Dict
+
+BoardPos = Tuple[int, int]
+
+def _neighbors(pos: BoardPos) -> List[BoardPos]:
+    """Return orthogonal neighbours inside the 19x19 board."""
+    r, c = pos
+    neigh = []
+    if r > 1:
+        neigh.append((r - 1, c))
+    if r < 19:
+        neigh.append((r + 1, c))
+    if c > 1:
+        neigh.append((r, c - 1))
+    if c < 19:
+        neigh.append((r, c + 1))
+    return neigh
+
+
+def _group_and_liberties(start: BoardPos,
+                         stones: set,
+                         occupied: set,
+                         pretend_occupied: set) -> Tuple[set, set]:
+    """
+    BFS to collect all stones in the same colour group as `start`
+    and compute its liberties, ignoring the positions in `pretend_occupied`
+    (used to simulate the candidate move).
+    Returns (group, liberties) where both are sets of positions.
+    """
+    group = set()
+    liberties = set()
+    q = collections.deque([start])
+    while q:
+        p = q.popleft()
+        if p in group:
+            continue
+        group.add(p)
+        for nb in _neighbors(p):
+            if nb in pretend_occupied:
+                # this neighbour is now occupied by the candidate stone,
+                # it cannot be a liberty
+                continue
+            if nb in stones:
+                q.append(nb)
+            else:
+                liberties.add(nb)
+    return group, liberties
+
+
+def _is_legal_move(move: BoardPos,
+                   me_set: set,
+                   opp_set: set,
+                   occupied: set) -> bool:
+    """Return True iff `move` is legal (no suicide unless it captures)."""
+    # neighbours classification
+    opp_neighbours = [nb for nb in _neighbors(move) if nb in opp_set]
+    empty_neighbours = [nb for nb in _neighbors(move) if nb not in occupied]
+
+    # Simulate the board after placing our stone
+    pretend_occupied = occupied | {move}
+
+    # 1) Capture detection
+    captures = False
+    for opp in opp_neighbours:
+        # compute the opponent group liberties after we occupy `move`
+        _, libs = _group_and_liberties(
+            opp, opp_set, occupied, pretend_occupied
+        )
+        if not libs:        # no liberties → captured
+            captures = True
+            break
+
+    if captures:
+        return True
+
+    # 2) Simple liberty check – at least one empty neighbour left
+    if empty_neighbours:
+        return True
+
+    # 3) No liberty and no capture → illegal (suicide)
+    return False
+
+
+def policy(me: List[Tuple[int, int]],
+           opponent: List[Tuple[int, int]],
+           memory: Dict) -> Tuple[Tuple[int, int], Dict]:
+    """
+    Return a legal move for the current player.
+    The heuristic prefers positions that are close to the centre,
+    to our own stones and to opponent stones.
+    """
+    # Convert lists to sets for O(1) membership checks
+    me_set = set(me)
+    opp_set = set(opponent)
+    occupied = me_set | opp_set
+
+    # All empty points on the board
+    all_points = [(r, c) for r in range(1, 20) for c in range(1, 20)]
+    empty_points = [p for p in all_points if p not in occupied]
+
+    best_move = None
+    best_score = float('inf')   # we minimise the score
+
+    # Pre‑compute centre position
+    centre = (10, 10)
+
+    # Helper to compute Manhattan distance
+    def manhattan(a: BoardPos, b: BoardPos) -> int:
+        return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+    # Pre‑compute distance to nearest own / opponent stone for speed
+    # If a side has no stones we treat the distance as 0 (no attraction)
+    if me:
+        def dist_to_own(p: BoardPos) -> int:
+            return min(manhattan(p, s) for s in me)
+    else:
+        def dist_to_own(p: BoardPos) -> int:
+            return 0
+
+    if opponent:
+        def dist_to_opp(p: BoardPos) -> int:
+            return min(manhattan(p, s) for s in opponent)
+    else:
+        def dist_to_opp(p: BoardPos) -> int:
+            return 0
+
+    for p in empty_points:
+        if not _is_legal_move(p, me_set, opp_set, occupied):
+            continue
+
+        # heuristic score = sum of distances (the smaller the better)
+        score = (manhattan(p, centre) +
+                 dist_to_own(p) +
+                 dist_to_opp(p))
+
+        if score < best_score:
+            best_score = score
+            best_move = p
+
+    # If we somehow found no legal move (should only happen on a full board)
+    if best_move is None:
+        best_move = (0, 0)   # pass
+
+    # Memory is not used in this simple policy, but we keep the same object
+    return best_move, memory
+</code>
+```

@@ -1,0 +1,165 @@
+
+ROWS = 6
+COLS = 7
+WIDTH = 6
+ALL_CELLS = 1 << (ROWS * COLS)
+
+wins = []
+
+# Horizontal wins
+for h in range(ROWS):
+    for sc in range(COLS - 3):
+        m = 0
+        for i in range(4):
+            m |= 1 << ((sc + i) * WIDTH + h)
+        wins.append(m)
+
+# Vertical wins
+for c in range(COLS):
+    for sh in range(ROWS - 3):
+        m = 0
+        for i in range(4):
+            m |= 1 << (c * WIDTH + sh + i)
+        wins.append(m)
+
+# Diagonal / wins
+for sh in range(ROWS - 3):
+    for sc in range(COLS - 3):
+        m = 0
+        for i in range(4):
+            m |= 1 << ((sc + i) * WIDTH + (sh + i))
+        wins.append(m)
+
+# Diagonal \ wins
+for sh in range(ROWS - 3):
+    for sc in range(3, COLS):
+        m = 0
+        for i in range(4):
+            m |= 1 << ((sc - i) * WIDTH + (sh + i))
+        wins.append(m)
+
+col_order = [3, 2, 4, 1, 5, 0, 6]
+
+def popcnt(n: int) -> int:
+    count = 0
+    while n:
+        n &= n - 1
+        count += 1
+    return count
+
+def is_win(player: int) -> bool:
+    for m in wins:
+        if (player & m) == m:
+            return True
+    return False
+
+def evaluate(myb: int, oppb: int) -> int:
+    score = (popcnt(myb) - popcnt(oppb)) * 12
+    for m in wins:
+        mypc = popcnt(myb & m)
+        oppc = popcnt(oppb & m)
+        if mypc == 3:
+            score += 10000
+        elif mypc == 2:
+            score += 50
+        if oppc == 3:
+            score -= 10000
+        elif oppc == 2:
+            score -= 50
+    return score
+
+def minimax(myb: int, oppb: int, alpha: int, beta: int, depth: int, is_max: bool) -> int:
+    if is_win(myb):
+        return 10000000 - depth * 10
+    if is_win(oppb):
+        return -10000000 + depth * 10
+    tot_pieces = popcnt(myb | oppb)
+    if tot_pieces == ROWS * COLS:
+        return 0
+    if depth == 0:
+        return evaluate(myb, oppb)
+
+    if is_max:
+        max_eval = -999999999
+        for col in col_order:
+            cmask = ((myb | oppb) >> (col * WIDTH)) & 63
+            h = popcnt(cmask)
+            if h == WIDTH:
+                continue
+            new_myb = myb | (1 << (col * WIDTH + h))
+            eval_score = minimax(new_myb, oppb, alpha, beta, depth - 1, False)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = 999999999
+        for col in col_order:
+            cmask = ((myb | oppb) >> (col * WIDTH)) & 63
+            h = popcnt(cmask)
+            if h == WIDTH:
+                continue
+            new_oppb = oppb | (1 << (col * WIDTH + h))
+            eval_score = minimax(myb, new_oppb, alpha, beta, depth - 1, True)
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def board_to_bits(board: list[list[int]]) -> tuple[int, int]:
+    myb = 0
+    oppb = 0
+    for r in range(ROWS):
+        for c in range(COLS):
+            val = board[r][c]
+            if val == 0:
+                continue
+            h = ROWS - 1 - r
+            pos = c * WIDTH + h
+            if val == 1:
+                myb |= (1 << pos)
+            elif val == -1:
+                oppb |= (1 << pos)
+    return myb, oppb
+
+def policy(board: list[list[int]]) -> int:
+    myb, oppb = board_to_bits(board)
+    DEPTH = 10
+
+    # Check for immediate wins
+    for col in col_order:
+        cmask = ((myb | oppb) >> (col * WIDTH)) & 63
+        h = popcnt(cmask)
+        if h >= WIDTH:
+            continue
+        new_myb = myb | (1 << (col * WIDTH + h))
+        if is_win(new_myb):
+            return col
+
+    # Check for blocks (immediate opponent wins)
+    for col in col_order:
+        cmask = ((myb | oppb) >> (col * WIDTH)) & 63
+        h = popcnt(cmask)
+        if h >= WIDTH:
+            continue
+        new_oppb = oppb | (1 << (col * WIDTH + h))
+        if is_win(new_oppb):
+            return col
+
+    # Minimax search
+    best_score = -999999999
+    best_col = 3  # default center
+    for col in col_order:
+        cmask = ((myb | oppb) >> (col * WIDTH)) & 63
+        h = popcnt(cmask)
+        if h >= WIDTH:
+            continue
+        new_myb = myb | (1 << (col * WIDTH + h))
+        score = minimax(new_myb, oppb, -999999999, 999999999, DEPTH - 1, False)
+        if score > best_score:
+            best_score = score
+            best_col = col
+
+    return best_col

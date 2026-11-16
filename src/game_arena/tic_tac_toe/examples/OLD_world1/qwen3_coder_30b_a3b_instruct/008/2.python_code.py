@@ -1,0 +1,111 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Determine the next move for Tic Tac Toe using minimax algorithm with alpha-beta pruning.
+    
+    Args:
+        board: 3x3 list of lists where 0=empty, 1=AI, -1=opponent
+        
+    Returns:
+        tuple of (row, col) for the next move (0-2, 0-2)
+    """
+    import numpy as np
+    
+    def is_terminal(board_state):
+        """Check if the game is over"""
+        # Check rows, columns, and diagonals
+        for i in range(3):
+            if abs(sum(board_state[i])) == 3:  # Row win
+                return True, 1 if sum(board_state[i]) == 3 else -1
+            if abs(sum(board_state[j][i] for j in range(3))) == 3:  # Column win
+                return True, 1 if sum(board_state[j][i] for j in range(3)) == 3 else -1
+        
+        # Check diagonals
+        diag1 = sum(board_state[i][i] for i in range(3))
+        diag2 = sum(board_state[i][2-i] for i in range(3))
+        if abs(diag1) == 3:
+            return True, 1 if diag1 == 3 else -1
+        if abs(diag2) == 3:
+            return True, 1 if diag2 == 3 else -1
+            
+        # Check for draw (board full)
+        if all(all(cell != 0 for cell in row) for row in board_state):
+            return True, 0
+            
+        return False, 0
+
+    def minimax(board_state, depth, is_maximizing, alpha, beta):
+        """Minimax algorithm with alpha-beta pruning"""
+        game_over, winner = is_terminal(board_state)
+        
+        if game_over:
+            if winner == 1:  # AI wins
+                return 10 - depth
+            elif winner == -1:  # Opponent wins
+                return depth - 10
+            else:  # Draw
+                return 0
+        
+        if is_maximizing:
+            max_eval = float('-inf')
+            for i in range(3):
+                for j in range(3):
+                    if board_state[i][j] == 0:
+                        board_state[i][j] = 1
+                        eval_score = minimax(board_state, depth + 1, False, alpha, beta)
+                        board_state[i][j] = 0
+                        max_eval = max(max_eval, eval_score)
+                        alpha = max(alpha, eval_score)
+                        if beta <= alpha:
+                            break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for i in range(3):
+                for j in range(3):
+                    if board_state[i][j] == 0:
+                        board_state[i][j] = -1
+                        eval_score = minimax(board_state, depth + 1, True, alpha, beta)
+                        board_state[i][j] = 0
+                        min_eval = min(min_eval, eval_score)
+                        beta = min(beta, eval_score)
+                        if beta <= alpha:
+                            break
+            return min_eval
+
+    # Try to win or block opponent first
+    # Check for winning moves
+    for i in range(3):
+        for j in range(3):
+            if board[i][j] == 0:
+                board[i][j] = 1
+                game_over, winner = is_terminal(board)
+                board[i][j] = 0
+                if game_over and winner == 1:
+                    return (i, j)
+    
+    # Check for blocking moves
+    for i in range(3):
+        for j in range(3):
+            if board[i][j] == 0:
+                board[i][j] = -1
+                game_over, winner = is_terminal(board)
+                board[i][j] = 0
+                if game_over and winner == -1:
+                    return (i, j)
+    
+    # If no immediate win/block, use minimax
+    best_score = float('-inf')
+    best_move = (1, 1)  # Default to center if no good move found
+    
+    for i in range(3):
+        for j in range(3):
+            if board[i][j] == 0:
+                board[i][j] = 1
+                score = minimax(board, 0, False, float('-inf'), float('inf'))
+                board[i][j] = 0
+                if score > best_score:
+                    best_score = score
+                    best_move = (i, j)
+    
+    return best_move

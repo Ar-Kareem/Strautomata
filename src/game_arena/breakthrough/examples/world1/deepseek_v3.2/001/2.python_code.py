@@ -1,0 +1,168 @@
+
+import random
+from typing import List, Tuple
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    """
+    Breakthrough policy function.
+    Returns a legal move as ((from_row, from_col), (to_row, to_col)).
+    """
+    
+    # Define direction based on color
+    # White moves up (row increases), Black moves down (row decreases)
+    forward = 1 if color == 'w' else -1
+    home_row = 7 if color == 'w' else 0  # Our home row
+    opponent_home_row = 0 if color == 'w' else 7  # Opponent's home row
+    
+    def is_inside_board(pos: Tuple[int, int]) -> bool:
+        """Check if position is within 8x8 board."""
+        r, c = pos
+        return 0 <= r < 8 and 0 <= c < 8
+    
+    def is_empty(pos: Tuple[int, int]) -> bool:
+        """Check if a position is empty."""
+        return pos not in me and pos not in opp
+    
+    def generate_moves() -> List[Tuple[Tuple[int, int], Tuple[int, int]]]:
+        """Generate all legal moves for current player."""
+        moves = []
+        
+        for piece in me:
+            r, c = piece
+            
+            # Forward move (straight ahead)
+            forward_pos = (r + forward, c)
+            if is_inside_board(forward_pos) and is_empty(forward_pos):
+                moves.append((piece, forward_pos))
+            
+            # Diagonal right (from perspective of forward direction)
+            diag_right = (r + forward, c + 1)
+            if is_inside_board(diag_right):
+                if diag_right in opp:  # Capture
+                    moves.append((piece, diag_right))
+                elif is_empty(diag_right):  # Regular diagonal move
+                    moves.append((piece, diag_right))
+            
+            # Diagonal left (from perspective of forward direction)
+            diag_left = (r + forward, c - 1)
+            if is_inside_board(diag_left):
+                if diag_left in opp:  # Capture
+                    moves.append((piece, diag_left))
+                elif is_empty(diag_left):  # Regular diagonal move
+                    moves.append((piece, diag_left))
+        
+        return moves
+    
+    def evaluate_move(move: Tuple[Tuple[int, int], Tuple[int, int]]) -> float:
+        """
+        Evaluate a move and return a score.
+        Higher scores are better.
+        """
+        from_pos, to_pos = move
+        from_r, from_c = from_pos
+        to_r, to_c = to_pos
+        
+        # Base score
+        score = 0.0
+        
+        # IMMEDIATE WIN: If this move reaches opponent's home row
+        if to_r == opponent_home_row:
+            return 1000.0  # Maximum priority
+        
+        # Capture bonus
+        if to_pos in opp:
+            score += 30
+        
+        # Advancement: moving forward is good
+        # More bonus for being closer to opponent's home row after move
+        if color == 'w':
+            advancement = to_r  # For white, higher row is better
+        else:
+            advancement = 7 - to_r  # For black, lower row is better
+        score += advancement * 5
+        
+        # Center control: being in center columns is better
+        center_score = 3 - abs(to_c - 3.5)  # Distance from center (3.5)
+        score += center_score * 2
+        
+        # Positional safety: check if piece is protected after move
+        # Look for supporting pieces behind and beside the new position
+        support_positions = [
+            (to_r - forward, to_c),  # Behind
+            (to_r - forward, to_c - 1),  # Behind left
+            (to_r - forward, to_c + 1),  # Behind right
+            (to_r, to_c - 1),  # Left
+            (to_r, to_c + 1),  # Right
+        ]
+        
+        protection = 0
+        for pos in support_positions:
+            if pos in me and is_inside_board(pos):
+                protection += 1
+        
+        score += protection * 5
+        
+        # Penalty for moving into danger (opponent can capture next turn)
+        # Check if opponent can capture this piece in their next move
+        danger_positions = [
+            (to_r + forward, to_c - 1),  # Opponent's diagonal left
+            (to_r + forward, to_c + 1),  # Opponent's diagonal right
+        ]
+        
+        for pos in danger_positions:
+            if pos in opp and is_inside_board(pos):
+                score -= 10
+        
+        # Bonus for creating threats: after this move, can we capture opponent next turn?
+        threat_positions = [
+            (to_r + forward, to_c - 1),
+            (to_r + forward, to_c + 1),
+        ]
+        
+        for pos in threat_positions:
+            if pos in opp and is_inside_board(pos):
+                score += 8
+        
+        # Encourage piece mobility: from pieces that have fewer options
+        # Penalize moving isolated pieces
+        original_mobility = 0
+        original_r, original_c = from_pos
+        
+        # Count how many legal moves the original piece had
+        original_possible_moves = [
+            (original_r + forward, original_c),  # Forward
+            (original_r + forward, original_c - 1),  # Diagonal left
+            (original_r + forward, original_c + 1),  # Diagonal right
+        ]
+        
+        for pos in original_possible_moves:
+            if is_inside_board(pos) and (is_empty(pos) or pos in opp):
+                original_mobility += 1
+        
+        # If the piece had many moves, it's probably better to move it
+        score += original_mobility * 3
+        
+        # Small randomness to avoid repetitive behavior
+        score += random.random() * 0.1
+        
+        return score
+    
+    # Generate all legal moves
+    legal_moves = generate_moves()
+    
+    # If no legal moves (shouldn't happen), return a dummy move
+    if not legal_moves:
+        # This shouldn't happen in valid game states
+        return ((0, 0), (1, 0))
+    
+    # Evaluate all moves and pick the best one
+    best_move = legal_moves[0]
+    best_score = evaluate_move(best_move)
+    
+    for move in legal_moves[1:]:
+        score = evaluate_move(move)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move

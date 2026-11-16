@@ -1,0 +1,179 @@
+
+import numpy as np
+from collections import defaultdict
+from itertools import product
+from typing import List, Tuple, Dict
+
+def _flood_fill(board: np.ndarray, color: int, start: Tuple[int, int]) -> List[Tuple[int, int]]:
+    """BFS to collect all stones of a given color from a start coordinate."""
+    size = board.shape[0]
+    visited = set()
+    stack = [start]
+    while stack:
+        r, c = stack.pop()
+        if (r, c) in visited:
+            continue
+        visited.add((r, c))
+        board_r, board_c = board[r, c]
+        if board_r != color:
+            continue
+        for dr, dc in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < size and 0 <= nc < size:
+                stack.append((nr, nc))
+    return list(visited)
+
+def _liberties(board: np.ndarray, stones: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
+    """Find all empty neighbours of a set of stones."""
+    size = board.shape[0]
+    liberties = []
+    for r, c in stones:
+        for dr, dc in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < size and 0 <= nc < size:
+                if board[nr, nc] == 0:
+                    liberties.append((nr, nc))
+    return liberties
+
+def _legal_to_place(board: np.ndarray, move: Tuple[int, int]) -> bool:
+    """Return True iff placing the move (1) does not cause suicide."""
+    r, c = move
+    new_board = board.copy()
+    new_board[r, c] = 1
+    our_group = _flood_fill(new_board, color=1, start=(r, c))
+    libs = _liberties(new_board, our_group)
+    return len(libs) > 0
+
+def _calc_influence(board: np.ndarray, color: int) -> np.ndarray:
+    """Compute a Manhattan‑distance weighted influence map for a given color."""
+    size = board.shape[0]
+    influence = np.zeros_like(board, dtype=np.float64)
+    decay_own = 0.25  # weight drops 0.25 per Manhattan step
+    decay_opp = 0.10  # subtractive weight per Manhattan step
+    max_weight = 1.0
+
+    for stone_r, stone_c in np.argwhere(board == color):
+        dr_offset = [-3, -2, -1, 0, 1, 2, 3]   # limited radius to keep runtime low
+        dc_offset = [-3, -2, -1, 0, 1, 2, 3]
+        for dr in dr_offset:
+            for dc in dc_offset:
+                rr, cc = stone_r + dr, stone_c + dc
+                if not (0 <= rr < size and 0 <= cc < size):
+                    continue
+                # distance is Manhattan
+                d = abs(dr) + abs(dc)
+                if d == 0:
+                    continue  # ignore self
+                weight = max(0, max_weight - decay_own * d)
+                influence[rr, cc] += weight
+
+        # opponent subtraction (we are in “own” color only)
+    for stone_r, stone_c in np.argwhere(board == -color):
+        dr_offset = [-3, -2, -1, 0, 1, 2, 3]
+        dc_offset = [-3, -2, -1, 0, 1, 2, 3]
+        for dr in dr_offset:
+            for dc in dc_offset:
+                rr, cc = stone_r + dr, stone_c + dc
+                if not (0 <= rr < size and 0 <= cc < size):
+                    continue
+                d = abs(dr) + abs(dc)
+                if d == 0:
+                    continue
+                weight = max(0, max_weight - decay_opp * d)
+                influence[rr, cc] -= weight
+    return influence
+
+def policy(me: List[Tuple[int, int]],
+           opponent: List[Tuple[int, int]],
+           memory: Dict) -> Tuple[Tuple[int, int], Dict]:
+    """
+    Go policy that respects the official API.
+    Returns a legal move (row, col) or (0, 0) for pass.
+    """
+    # ---- Initialise board -------------------------------------------------
+    size = 19
+    board = np.zeros((size, size), dtype=np.int8)
+
+    for r, c in me:
+        board[r - 1, c - 1] = 1
+    for r, c in opponent:
+        board[r - 1, c - 1] = -1
+
+    # ---- 1. Capture priority -----------------------------------------------
+    # Build opponent groups
+    opp_groups: Dict[frozenset, List[Tuple[int, int]]] = defaultdict(list)
+    visited = set()
+    for r in range(size):
+        for c in range(size):
+            if board[r, c] != -1 or (r, c) in visited:
+                continue
+            cur = (r, c)
+            stack = [cur]
+            visited.add(cur)
+            group = []
+            while stack:
+                cur = stack.pop()
+                group.append(cur)
+                for dr, dc in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                    nr, nc = cur[0] + dr, cur[1] + dc
+                    if 0 <= nr < size and 0 <= nc < size:
+                        nxt = (nr, nc)
+                        if board[nr, nc] == -1 and nxt not in visited:
+                            visited.add(nxt)
+                            stack.append(nxt)
+            opp_groups[frozenset(group)] = group
+
+    capturable: Dict[Tuple[int, int], Tuple[int, int]] = {}  # move -> opponent group size
+
+    for group_stones in opp_groups.values():
+        liberties = _liberties(board, group_stones)
+        if len(liberties) == 1:
+            move = liberties[0]
+            capturable[move] = len(group_stones)
+
+    if capturable:
+        # pick the largest capturable group
+        best_move = max(capturable.items(),
+                       key=lambda item: item[1])[0]
+        if _legal_to_place(board, best_move):
+            return ((best_move[0] + 1, best_move[1] + 1), memory)
+
+    # ---- 2. Corner priority ------------------------------------------------
+    corners = [(1, 1), (1, 19), (19, 1), (19, 19)]
+    for corner in corners:
+        r_idx, c_idx = corner[0] - 1, corner[1] - 1
+        if board[r_idx, c_idx] == 0 and _legal_to_place(board, (r_idx, c_idx)):
+            return (corner, memory)
+
+    # ---- 3. Influence‑based move -------------------------------------------
+    empty = [(r, c) for r in range(size) for c in range(size)
+            if board[r, c] == 0]
+
+    # compute influence map for our colour
+    influence = _calc_influence(board, 1)
+    # assign each empty cell its score
+    candidate = []
+    for r, c in empty:
+        move_score = influence[r, c]
+        # tie‑breaker: prioritize moves close to opponent groups (reducing their liberties)
+        # but we keep it simple – just use the influence score
+        candidate.append((move_score, (r, c)))
+    candidate.sort(reverse=True)
+
+    for _, move in candidate:
+        if _legal_to_place(board, move):
+            # After capture phase we already avoided suicide, but double‑check.
+            return ((move[0] + 1, move[1] + 1), memory)
+
+    # ---- 4. Pass if board is full -----------------------------------------
+    if not empty:
+        return ((0, 0), memory)
+
+    # Fallback – choose any safe move arbitrarily (should not happen)
+    # We simply loop again but guarantee a safe move.
+    for _, move in candidate:
+        if _legal_to_place(board, move):
+            return ((move[0] + 1, move[1] + 1), memory)
+
+    # If for any reason no legal move is found, pass.
+    return ((0, 0), memory)

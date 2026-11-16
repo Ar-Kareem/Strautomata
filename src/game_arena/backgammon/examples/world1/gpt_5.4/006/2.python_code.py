@@ -1,0 +1,408 @@
+
+from typing import List, Tuple, Optional
+
+# Backgammon policy:
+# - We are always the player moving from point 23 down to 0.
+# - Action format: "<ORDER>:<FROM1>,<FROM2>"
+# - ORDER is H or L indicating whether the first move uses higher or lower die.
+# - FROM tokens are A0..A23, B, or P.
+#
+# This implementation fully generates legal move sequences for the given dice,
+# respecting:
+#   * bar priority
+#   * blocked points
+#   * bearing off rules
+#   * use-both-dice when possible
+#   * higher-die-if-only-one-can-be-played
+# Then it scores legal resulting states with a heuristic policy.
+
+
+def policy(state: dict) -> str:
+    my_pts = list(state["my_pts"])
+    opp_pts = list(state["opp_pts"])
+    my_bar = int(state["my_bar"])
+    opp_bar = int(state["opp_bar"])
+    my_off = int(state["my_off"])
+    opp_off = int(state["opp_off"])
+    dice = list(state["dice"])
+
+    # No dice / no move
+    if len(dice) == 0:
+        return "H:P,P"
+
+    # Normalize one-die case by adding a virtual missing move.
+    # Engine examples imply we still return two tokens; second can be P.
+    if len(dice) == 1:
+        d = dice[0]
+        legal = generate_all_legal_sequences(
+            my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off, [d]
+        )
+        if not legal:
+            return "H:P,P"
+        best = max(legal, key=lambda item: evaluate_position(*item[0]))
+        seq = best[1]  # list of (die, from_token)
+        frm = seq[0][1] if seq else "P"
+        return f"H:{frm},P"
+
+    d1, d2 = dice[0], dice[1]
+    hi = max(d1, d2)
+    lo = min(d1, d2)
+
+    legal = generate_all_legal_sequences(
+        my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off, [d1, d2]
+    )
+
+    if not legal:
+        return "H:P,P"
+
+    best_state, best_seq = max(legal, key=lambda item: evaluate_position(*item[0]))
+
+    # best_seq is a list of (die, from_token), length 1 or 2
+    if len(best_seq) == 1:
+        used_die, frm = best_seq[0]
+        order = "H" if used_die == hi else "L"
+        other = "P"
+        if order == "H":
+            return f"H:{frm},{other}"
+        else:
+            return f"L:{frm},{other}"
+
+    # len == 2
+    first_die, first_from = best_seq[0]
+    second_die, second_from = best_seq[1]
+
+    # Determine whether first move used high or low die.
+    # For equal dice, either order is fine; use H.
+    if hi == lo:
+        order = "H"
+    else:
+        order = "H" if first_die == hi else "L"
+
+    return f"{order}:{first_from},{second_from}"
+
+
+# ----------------------------
+# Move generation
+# ----------------------------
+
+def generate_all_legal_sequences(
+    my_pts: List[int],
+    opp_pts: List[int],
+    my_bar: int,
+    opp_bar: int,
+    my_off: int,
+    opp_off: int,
+    dice: List[int],
+):
+    """
+    Returns list of:
+      [ ((my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off), seq), ... ]
+    where seq is list of (die, from_token) actually played.
+
+    Enforces:
+      - use maximum number of dice
+      - if only one die can be played with two dice available, must use higher die
+    """
+    if len(dice) == 1:
+        die = dice[0]
+        moves = legal_single_moves(my_pts, opp_pts, my_bar, my_off, die)
+        out = []
+        for mv in moves:
+            st = apply_move(my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off, mv, die)
+            out.append((st, [(die, move_from_token(mv))]))
+        return out
+
+    d1, d2 = dice[0], dice[1]
+    orders = [(d1, d2)]
+    if d1 != d2:
+        orders.append((d2, d1))
+
+    allseq = []
+
+    for a, b in orders:
+        first_moves = legal_single_moves(my_pts, opp_pts, my_bar, my_off, a)
+        for mv1 in first_moves:
+            st1 = apply_move(my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off, mv1, a)
+            my1, opp1, bar1, oppbar1, off1, oppoff1 = st1
+            second_moves = legal_single_moves(my1, opp1, bar1, off1, b)
+            if second_moves:
+                for mv2 in second_moves:
+                    st2 = apply_move(my1, opp1, bar1, oppbar1, off1, oppoff1, mv2, b)
+                    allseq.append((st2, [(a, move_from_token(mv1)), (b, move_from_token(mv2))]))
+            else:
+                allseq.append((st1, [(a, move_from_token(mv1))]))
+
+    # If no sequences found at all, full pass
+    if not allseq:
+        return []
+
+    # Use maximum number of dice
+    max_len = max(len(seq) for _, seq in allseq)
+    allseq = [(st, seq) for st, seq in allseq if len(seq) == max_len]
+
+    # If only one die can be played, must use higher die when possible
+    if max_len == 1 and len(dice) == 2 and d1 != d2:
+        hi = max(d1, d2)
+        hi_exists = any(seq[0][0] == hi for _, seq in allseq)
+        if hi_exists:
+            allseq = [(st, seq) for st, seq in allseq if seq[0][0] == hi]
+
+    # Deduplicate identical action strings / states lightly by sequence signature
+    dedup = {}
+    for st, seq in allseq:
+        key = tuple(seq)
+        val = dedup.get(key)
+        score = evaluate_position(*st)
+        if val is None or score > val[0]:
+            dedup[key] = (score, st, seq)
+    return [(v[1], v[2]) for v in dedup.values()]
+
+
+def legal_single_moves(
+    my_pts: List[int],
+    opp_pts: List[int],
+    my_bar: int,
+    my_off: int,
+    die: int,
+):
+    """
+    Returns legal atomic moves for a single die.
+    Move representation:
+      ("B", None) for bar
+      ("P", idx) for board point idx
+    """
+    moves = []
+
+    # Must enter from bar first if any on bar
+    if my_bar > 0:
+        dest = 24 - die
+        if 0 <= dest <= 23 and opp_pts[dest] < 2:
+            moves.append(("B", None))
+        return moves
+
+    # Normal board moves
+    can_bear = all_in_home(my_pts, my_bar)
+
+    for src in range(24):
+        if my_pts[src] <= 0:
+            continue
+        dest = src - die
+        if dest >= 0:
+            if opp_pts[dest] < 2:
+                moves.append(("P", src))
+        else:
+            # Bearing off
+            if can_bear and can_bear_off_from(src, die, my_pts):
+                moves.append(("P", src))
+
+    return moves
+
+
+def apply_move(
+    my_pts: List[int],
+    opp_pts: List[int],
+    my_bar: int,
+    opp_bar: int,
+    my_off: int,
+    opp_off: int,
+    move,
+    die: int,
+):
+    my2 = my_pts[:]
+    opp2 = opp_pts[:]
+    bar2 = my_bar
+    oppbar2 = opp_bar
+    off2 = my_off
+    oppoff2 = opp_off
+
+    kind, src = move
+
+    if kind == "B":
+        bar2 -= 1
+        dest = 24 - die
+        if opp2[dest] == 1:
+            opp2[dest] = 0
+            oppbar2 += 1
+        my2[dest] += 1
+        return (my2, opp2, bar2, oppbar2, off2, oppoff2)
+
+    # Board move
+    my2[src] -= 1
+    dest = src - die
+    if dest >= 0:
+        if opp2[dest] == 1:
+            opp2[dest] = 0
+            oppbar2 += 1
+        my2[dest] += 1
+    else:
+        off2 += 1
+
+    return (my2, opp2, bar2, oppbar2, off2, oppoff2)
+
+
+# ----------------------------
+# Rules helpers
+# ----------------------------
+
+def all_in_home(my_pts: List[int], my_bar: int) -> bool:
+    if my_bar > 0:
+        return False
+    # Home board is points 0..5
+    for i in range(6, 24):
+        if my_pts[i] > 0:
+            return False
+    return True
+
+
+def can_bear_off_from(src: int, die: int, my_pts: List[int]) -> bool:
+    """
+    Bearing off legal if:
+      - exact die from src to off, or
+      - die is larger than needed and there are no checkers on higher points
+    Since we move from high index down to 0, "higher points" in home board
+    relative to src are indices > src.
+    """
+    needed = src + 1
+    if die == needed:
+        return True
+    if die < needed:
+        return False
+    # die > needed: only allowed if no checker on any higher point in home board
+    for i in range(src + 1, 6):
+        if my_pts[i] > 0:
+            return False
+    return True
+
+
+def move_from_token(move) -> str:
+    kind, src = move
+    if kind == "B":
+        return "B"
+    return f"A{src}"
+
+
+# ----------------------------
+# Heuristic evaluation
+# ----------------------------
+
+def evaluate_position(
+    my_pts: List[int],
+    opp_pts: List[int],
+    my_bar: int,
+    opp_bar: int,
+    my_off: int,
+    opp_off: int,
+) -> float:
+    score = 0.0
+
+    # Strong priorities
+    score += 120.0 * my_off
+    score -= 110.0 * opp_off
+    score -= 95.0 * my_bar
+    score += 70.0 * opp_bar
+
+    # Pip/race estimate
+    my_pip = my_bar * 25 + sum((i + 1) * n for i, n in enumerate(my_pts))
+    opp_pip = opp_bar * 25 + sum((24 - i) * n for i, n in enumerate(opp_pts))
+    score += 1.2 * (opp_pip - my_pip)
+
+    # Board structure
+    made_points = 0
+    blots = 0
+    home_points = 0
+    anchors = 0
+
+    for i in range(24):
+        n = my_pts[i]
+        if n >= 2:
+            made_points += 1
+            if i <= 5:
+                home_points += 1
+            if i >= 18:
+                anchors += 1
+        elif n == 1:
+            blots += 1
+
+    score += 11.0 * made_points
+    score += 10.0 * home_points
+    score += 6.0 * anchors
+    score -= 14.0 * blots
+
+    # Penalize exposed blots by direct shots from opponent
+    score -= 7.0 * count_direct_shots_on_blots(my_pts, opp_pts, opp_bar)
+
+    # Reward hitting opportunities denied to opponent / prime structure
+    score += 4.0 * longest_prime(my_pts)
+    score -= 3.0 * longest_prime_opp(opp_pts)
+
+    # Distribution / wastage reduction in home when bearing off race
+    if all_in_home(my_pts, my_bar):
+        score += 3.0 * smooth_home_distribution(my_pts[:6])
+
+    return score
+
+
+def count_direct_shots_on_blots(my_pts: List[int], opp_pts: List[int], opp_bar: int) -> int:
+    """
+    Approximate number of direct-shot dice values (1..6) by which opponent can hit our blots.
+    Opponent moves from low to high indices.
+    """
+    shots = 0
+    blots = [i for i in range(24) if my_pts[i] == 1]
+
+    for b in blots:
+        threatened = False
+
+        # Opponent from bar enters on points 0..5
+        # They hit our blot at b if b in 0..5 and entry point is open for them.
+        if b <= 5 and opp_bar > 0:
+            threatened = True
+
+        if not threatened:
+            for d in range(1, 7):
+                src = b - d
+                if 0 <= src <= 23 and opp_pts[src] > 0:
+                    threatened = True
+                    break
+
+        if threatened:
+            shots += 1
+    return shots
+
+
+def longest_prime(my_pts: List[int]) -> int:
+    best = cur = 0
+    for i in range(24):
+        if my_pts[i] >= 2:
+            cur += 1
+            if cur > best:
+                best = cur
+        else:
+            cur = 0
+    return best
+
+
+def longest_prime_opp(opp_pts: List[int]) -> int:
+    best = cur = 0
+    for i in range(24):
+        if opp_pts[i] >= 2:
+            cur += 1
+            if cur > best:
+                best = cur
+        else:
+            cur = 0
+    return best
+
+
+def smooth_home_distribution(home_pts: List[int]) -> float:
+    """
+    Prefer having checkers on lower points for efficient bearoff and fewer stacks.
+    """
+    score = 0.0
+    total = sum(home_pts)
+    if total == 0:
+        return 0.0
+    for i, n in enumerate(home_pts):
+        score -= 0.8 * max(0, n - 2)      # stack penalty
+        score -= 0.2 * i * n              # slight preference for lower indices
+    return score

@@ -1,0 +1,176 @@
+
+import math
+import time
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Determines the next move for a 4x4 Tic Tac Toe game.
+    AI is 1, Opponent is -1, Empty is 0.
+    """
+    SIDE = 4
+    PLAYER = 1
+    OPPONENT = -1
+    EMPTY = 0
+    TIME_LIMIT = 0.85  # Slightly less than 1s to be safe
+    MAX_DEPTH = 4      # Balance between lookahead and time
+    
+    # Precompute winning lines indices for 4x4
+    # Rows, Cols, Diagonals
+    LINES = []
+    # Rows
+    for r in range(SIDE):
+        LINES.append([(r, c) for c in range(SIDE)])
+    # Cols
+    for c in range(SIDE):
+        LINES.append([(r, c) for r in range(SIDE)])
+    # Diagonals
+    LINES.append([(i, i) for i in range(SIDE)])
+    LINES.append([(i, SIDE - 1 - i) for i in range(SIDE)])
+
+    def get_valid_moves(state):
+        moves = []
+        for r in range(SIDE):
+            for c in range(SIDE):
+                if state[r][c] == EMPTY:
+                    moves.append((r, c))
+        return moves
+
+    def check_winner(state):
+        for line in LINES:
+            values = [state[r][c] for r, c in line]
+            s = sum(values)
+            if s == SIDE:
+                return PLAYER
+            if s == -SIDE:
+                return OPPONENT
+        
+        # Check draw
+        is_full = True
+        for r in range(SIDE):
+            for c in range(SIDE):
+                if state[r][c] == EMPTY:
+                    is_full = False
+                    break
+        if is_full:
+            return 0  # Draw
+            
+        return None  # Not terminal
+
+    def evaluate(state):
+        """
+        Heuristic evaluation for non-terminal nodes.
+        Higher score is better for PLAYER (1).
+        """
+        score = 0
+        for line in LINES:
+            values = [state[r][c] for r, c in line]
+            p_count = values.count(PLAYER)
+            o_count = values.count(OPPONENT)
+            
+            # Line potentially winning for Player
+            if o_count == 0:
+                if p_count == 1: score += 1
+                elif p_count == 2: score += 10
+                elif p_count == 3: score += 100
+                elif p_count == 4: score += 1000
+            
+            # Line potentially winning for Opponent
+            if p_count == 0:
+                if o_count == 1: score -= 1
+                elif o_count == 2: score -= 10
+                elif o_count == 3: score -= 100
+                elif o_count == 4: score -= 1000
+                
+        return score
+
+    def minimax(state, depth, alpha, beta, is_maximizing, start_time):
+        winner = check_winner(state)
+        if winner is not None:
+            if winner == PLAYER: return 100000 - (MAX_DEPTH - depth) # Prefer faster wins
+            if winner == OPPONENT: return -100000 + (MAX_DEPTH - depth) # Prefer slower losses
+            return 0
+
+        if depth == 0 or (time.time() - start_time > TIME_LIMIT):
+            return evaluate(state)
+
+        moves = get_valid_moves(state)
+        
+        # Move ordering: center blocks often better
+        moves.sort(key=lambda m: abs(m[0]-1.5) + abs(m[1]-1.5)) 
+
+        if is_maximizing:
+            max_eval = -math.inf
+            for r, c in moves:
+                state[r][c] = PLAYER
+                eval_val = minimax(state, depth - 1, alpha, beta, False, start_time)
+                state[r][c] = EMPTY
+                max_eval = max(max_eval, eval_val)
+                alpha = max(alpha, eval_val)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = math.inf
+            for r, c in moves:
+                state[r][c] = OPPONENT
+                eval_val = minimax(state, depth - 1, alpha, beta, True, start_time)
+                state[r][c] = EMPTY
+                min_eval = min(min_eval, eval_val)
+                beta = min(beta, eval_val)
+                if beta <= alpha:
+                    break
+            return min_eval
+
+    # --- Main Policy Logic ---
+    start_time = time.time()
+    
+    # 1. Check for immediate win or immediate block requirement separate from Minimax 
+    # to save time or ensure safety.
+    legal_moves = get_valid_moves(board)
+    if not legal_moves:
+        return (0, 0) # Should not happen if game not over
+
+    # Quick check: Can I win now?
+    for r, c in legal_moves:
+        board[r][c] = PLAYER
+        if check_winner(board) == PLAYER:
+            return (r, c)
+        board[r][c] = EMPTY
+        
+    # Quick check: Must I block now?
+    for r, c in legal_moves:
+        board[r][c] = OPPONENT
+        if check_winner(board) == OPPONENT:
+            return (r, c) # Block!
+        board[r][c] = EMPTY
+        
+    # 2. Run Minimax
+    best_score = -math.inf
+    best_move = legal_moves[0] # Default
+    
+    alpha = -math.inf
+    beta = math.inf
+    
+    # Dynamic depth adjustment based on remaining moves could be added,
+    # but fixed depth 4 is safe for 4x4 in 1 sec.
+    
+    # Sort moves center-out for better pruning
+    legal_moves.sort(key=lambda m: abs(m[0]-1.5) + abs(m[1]-1.5))
+
+    for r, c in legal_moves:
+        board[r][c] = PLAYER
+        score = minimax(board, MAX_DEPTH - 1, alpha, beta, False, start_time)
+        board[r][c] = EMPTY
+        
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+            
+        # Update alpha for root
+        alpha = max(alpha, best_score)
+        
+        # Time safety break
+        if time.time() - start_time > TIME_LIMIT:
+            break
+
+    return best_move

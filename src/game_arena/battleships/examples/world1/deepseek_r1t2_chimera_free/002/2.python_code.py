@@ -1,0 +1,112 @@
+
+import numpy as np
+
+def find_contiguous_groups(board):
+    """Identifies contiguous hit clusters using BFS flood fill."""
+    rows, cols = board.shape
+    visited = set()
+    groups = []
+    for i in range(rows):
+        for j in range(cols):
+            if board[i][j] == 1 and (i, j) not in visited:
+                queue = [(i, j)]
+                visited.add((i, j))
+                group = []
+                while queue:
+                    x, y = queue.pop(0)
+                    group.append((x, y))
+                    for dx, dy in [(1,0), (-1,0), (0,1), (0,-1)]:
+                        nx, ny = x + dx, y + dy
+                        if 0 <= nx < rows and 0 <= ny < cols:
+                            if board[nx][ny] == 1 and (nx, ny) not in visited:
+                                visited.add((nx, ny))
+                                queue.append((nx, ny))
+                groups.append(group)
+    return groups
+
+def get_targets(board, groups):
+    """Generates target candidates around hit clusters."""
+    rows, cols = board.shape
+    targets = []
+    for group in groups:
+        # Single-cell targeting
+        if len(group) == 1:
+            x, y = group[0]
+            for dx, dy in [(1,0), (-1,0), (0,1), (0,-1)]:
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < rows and 0 <= ny < cols and board[nx][ny] == 0:
+                    targets.append((nx, ny))
+        # Multi-cell targeting
+        else:
+            same_row = all(g[0] == group[0][0] for g in group)
+            same_col = all(g[1] == group[0][1] for g in group)
+            # Horizontal ship
+            if same_row:
+                row = group[0][0]
+                cols_sorted = sorted([g[1] for g in group])
+                left = cols_sorted[0]
+                right = cols_sorted[-1]
+                if left > 0 and board[row][left-1] == 0:
+                    targets.append((row, left-1))
+                if right < cols-1 and board[row][right+1] == 0:
+                    targets.append((row, right+1))
+            # Vertical ship
+            elif same_col:
+                col = group[0][1]
+                rows_sorted = sorted([g[0] for g in group])
+                top = rows_sorted[0]
+                bottom = rows_sorted[-1]
+                if top > 0 and board[top-1][col] == 0:
+                    targets.append((top-1, col))
+                if bottom < rows-1 and board[bottom+1][col] == 0:
+                    targets.append((bottom+1, col))
+    return list(set(targets))
+
+def compute_weight_matrix(board):
+    """Calculates probability heatmap for potential ship locations."""
+    rows, cols = board.shape
+    ship_lengths = [2, 3, 3, 4, 5]
+    weights = np.zeros((rows, cols), dtype=int)
+
+    for i in range(rows):
+        for j in range(cols):
+            if board[i][j] != 0:
+                continue
+            # Horizontal possibilities
+            for length in ship_lengths:
+                for offset in range(length):
+                    left = j - offset
+                    right = left + length - 1
+                    if left >= 0 and right < cols:
+                        if -1 not in board[i, left:right+1]:
+                            weights[i][j] += 1
+            # Vertical possibilities
+            for length in ship_lengths:
+                for offset in range(length):
+                    top = i - offset
+                    bottom = top + length - 1
+                    if top >= 0 and bottom < rows:
+                        if -1 not in board[top:bottom+1, j]:
+                            weights[i][j] += 1
+    return weights
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    board_np = np.array(board)
+    
+    # Target Mode: Prioritize completing ships
+    hit_groups = find_contiguous_groups(board_np)
+    targets = get_targets(board_np, hit_groups)
+    
+    if targets:
+        weight_matrix = compute_weight_matrix(board_np)
+        # Select highest probability target
+        max_weight = max(weight_matrix[t] for t in targets)
+        best_targets = [t for t in targets if weight_matrix[t] == max_weight]
+        return tuple(best_targets[np.random.randint(len(best_targets))])
+    
+    # Hunt Mode: Use probability heatmap
+    weight_matrix = compute_weight_matrix(board_np)
+    unknown_cells = np.argwhere(board_np == 0)
+    max_weight = np.max(weight_matrix[board_np == 0])
+    candidates = [(i, j) for i, j in unknown_cells if weight_matrix[i][j] == max_weight]
+    return tuple(candidates[np.random.randint(len(candidates))])

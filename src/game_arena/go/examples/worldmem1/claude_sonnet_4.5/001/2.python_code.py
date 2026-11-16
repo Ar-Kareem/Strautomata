@@ -1,0 +1,170 @@
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    import random
+    
+    BOARD_SIZE = 19
+    me_set = set(me)
+    opp_set = set(opponent)
+    all_stones = me_set | opp_set
+    
+    def is_valid(r, c):
+        return 1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE
+    
+    def get_neighbors(r, c):
+        return [(r+dr, c+dc) for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)] if is_valid(r+dr, c+dc)]
+    
+    def count_liberties(r, c, stones):
+        """Count liberties of a group containing stone at (r,c)"""
+        group = set()
+        liberties = set()
+        stack = [(r, c)]
+        
+        while stack:
+            curr = stack.pop()
+            if curr in group:
+                continue
+            group.add(curr)
+            
+            for nr, nc in get_neighbors(curr[0], curr[1]):
+                if (nr, nc) not in all_stones:
+                    liberties.add((nr, nc))
+                elif (nr, nc) in stones and (nr, nc) not in group:
+                    stack.append((nr, nc))
+        
+        return len(liberties), liberties, group
+    
+    def is_legal_move(r, c):
+        """Check if move is legal (simplified - doesn't check ko)"""
+        if (r, c) in all_stones:
+            return False
+        
+        # Check if move has liberties or captures opponent
+        test_stones = me_set | {(r, c)}
+        test_all = all_stones | {(r, c)}
+        
+        # Check if any adjacent opponent groups would be captured
+        for nr, nc in get_neighbors(r, c):
+            if (nr, nc) in opp_set:
+                lib_count, _, _ = count_liberties(nr, nc, opp_set)
+                if lib_count == 1:  # Would capture
+                    return True
+        
+        # Check if our group would have liberties
+        libs, _, _ = count_liberties(r, c, test_stones)
+        return libs > 0
+    
+    def find_captures():
+        """Find moves that capture opponent stones"""
+        captures = []
+        for stone in opp_set:
+            lib_count, liberties, group = count_liberties(stone[0], stone[1], opp_set)
+            if lib_count == 1:
+                lib = list(liberties)[0]
+                if is_legal_move(lib[0], lib[1]):
+                    captures.append((lib, len(group)))
+        return captures
+    
+    def find_saves():
+        """Find moves that save our stones in atari"""
+        saves = []
+        for stone in me_set:
+            lib_count, liberties, group = count_liberties(stone[0], stone[1], me_set)
+            if lib_count == 1:
+                lib = list(liberties)[0]
+                if is_legal_move(lib[0], lib[1]):
+                    saves.append((lib, len(group)))
+        return saves
+    
+    def find_atari_moves():
+        """Find moves that put opponent in atari"""
+        atari_moves = []
+        for stone in opp_set:
+            lib_count, liberties, group = count_liberties(stone[0], stone[1], opp_set)
+            if lib_count == 2:
+                for lib in liberties:
+                    if is_legal_move(lib[0], lib[1]):
+                        atari_moves.append((lib, len(group)))
+        return atari_moves
+    
+    def evaluate_position(r, c):
+        """Evaluate position based on influence and strategic value"""
+        if not is_legal_move(r, c):
+            return -1000
+        
+        score = 0
+        
+        # Distance from edges (prefer not too close to edge)
+        edge_dist = min(r, c, BOARD_SIZE+1-r, BOARD_SIZE+1-c)
+        if edge_dist >= 3:
+            score += 5
+        
+        # Count adjacent friendly and enemy stones
+        friends = 0
+        enemies = 0
+        empty = 0
+        for nr, nc in get_neighbors(r, c):
+            if (nr, nc) in me_set:
+                friends += 1
+            elif (nr, nc) in opp_set:
+                enemies += 1
+            else:
+                empty += 1
+        
+        score += friends * 3
+        score += enemies * 2
+        score += empty * 1
+        
+        # Strategic points (star points, etc)
+        star_points = [(4,4), (4,10), (4,16), (10,4), (10,10), (10,16), (16,4), (16,10), (16,16)]
+        if (r, c) in star_points:
+            score += 15
+        
+        return score
+    
+    # Priority 1: Capture opponent stones
+    captures = find_captures()
+    if captures:
+        captures.sort(key=lambda x: x[1], reverse=True)
+        return (captures[0][0], memory)
+    
+    # Priority 2: Save our stones
+    saves = find_saves()
+    if saves:
+        saves.sort(key=lambda x: x[1], reverse=True)
+        return (saves[0][0], memory)
+    
+    # Priority 3: Put opponent in atari (threatening capture)
+    atari_moves = find_atari_moves()
+    if atari_moves and len(all_stones) > 10:
+        atari_moves.sort(key=lambda x: x[1], reverse=True)
+        return (atari_moves[0][0], memory)
+    
+    # Priority 4: Strategic opening moves
+    if len(me) < 3:
+        star_points = [(4,4), (16,16), (4,16), (16,4), (10,10), (10,4), (10,16), (4,10), (16,10)]
+        for point in star_points:
+            if is_legal_move(point[0], point[1]):
+                return (point, memory)
+    
+    # Priority 5: Find best move by evaluation
+    candidates = []
+    step = 2 if len(all_stones) < 30 else 3
+    for r in range(1, BOARD_SIZE+1, step):
+        for c in range(1, BOARD_SIZE+1, step):
+            if (r, c) not in all_stones:
+                score = evaluate_position(r, c)
+                if score > -1000:
+                    candidates.append(((r, c), score))
+    
+    if candidates:
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        return (candidates[0][0], memory)
+    
+    # Fallback: find any legal move
+    for r in range(1, BOARD_SIZE+1):
+        for c in range(1, BOARD_SIZE+1):
+            if is_legal_move(r, c):
+                return ((r, c), memory)
+    
+    # Pass if no legal moves
+    return ((0, 0), memory)

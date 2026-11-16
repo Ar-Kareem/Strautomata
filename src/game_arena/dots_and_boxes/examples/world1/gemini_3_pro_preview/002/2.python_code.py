@@ -1,0 +1,185 @@
+
+import numpy as np
+import random
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    # Grid dimensions for a 4x4 game
+    R_BOX, C_BOX = 4, 4
+    
+    # 1. State Analysis
+    # Count how many edges are currently drawn for each box
+    # box_sides[r, c] will store the number of drawn edges for box at (r,c)
+    box_sides = np.zeros((R_BOX, C_BOX), dtype=int)
+    
+    # Analyze Horizontal edges
+    # Valid ranges for 4x4 grid: rows 0..4, cols 0..3
+    for r in range(R_BOX + 1):
+        for c in range(C_BOX):
+            if horizontal[r, c] != 0:
+                if r < R_BOX:
+                    box_sides[r, c] += 1 # Top edge of box (r,c)
+                if r > 0:
+                    box_sides[r-1, c] += 1 # Bottom edge of box (r-1,c)
+                    
+    # Analyze Vertical edges
+    # Valid ranges for 4x4 grid: rows 0..3, cols 0..4
+    for r in range(R_BOX):
+        for c in range(C_BOX + 1):
+            if vertical[r, c] != 0:
+                if c < C_BOX:
+                    box_sides[r, c] += 1 # Left edge of box (r,c)
+                if c > 0:
+                    box_sides[r, c-1] += 1 # Right edge of box (r, c-1)
+
+    # Collect all legal moves
+    legal_moves = []
+    
+    # Horizontal moves
+    for r in range(R_BOX + 1):
+        for c in range(C_BOX):
+            if horizontal[r, c] == 0:
+                legal_moves.append((r, c, 'H'))
+                
+    # Vertical moves
+    for r in range(R_BOX):
+        for c in range(C_BOX + 1):
+            if vertical[r, c] == 0:
+                legal_moves.append((r, c, 'V'))
+
+    if not legal_moves:
+        return "0,0,H" # Standard fallback (game usually ends before this)
+
+    # 2. Strategy Tier 1: Immediate Capture
+    # If any move completes a box (makes sides=4), it is a capture.
+    for m in legal_moves:
+        r, c, orientation = m
+        is_capture = False
+        if orientation == 'H':
+            # Checks box below (r, c) and above (r-1, c)
+            if r < R_BOX and box_sides[r, c] == 3: is_capture = True
+            elif r > 0 and box_sides[r-1, c] == 3: is_capture = True
+        else:
+            # Checks box right (r, c) and left (r, c-1)
+            if c < C_BOX and box_sides[r, c] == 3: is_capture = True
+            elif c > 0 and box_sides[r, c-1] == 3: is_capture = True
+            
+        if is_capture:
+            return f"{r},{c},{orientation}"
+
+    # 3. Strategy Tier 2: Safe Moves
+    # A safe move is one that does not increase any neighbor box's side count to 3.
+    safe_moves = []
+    for m in legal_moves:
+        r, c, orientation = m
+        is_safe = True
+        
+        if orientation == 'H':
+            # Check below
+            if r < R_BOX and box_sides[r, c] == 2: is_safe = False
+            # Check above
+            if r > 0 and box_sides[r-1, c] == 2: is_safe = False
+        else:
+            # Check right
+            if c < C_BOX and box_sides[r, c] == 2: is_safe = False
+            # Check left
+            if c > 0 and box_sides[r, c-1] == 2: is_safe = False
+            
+        if is_safe:
+            safe_moves.append(m)
+            
+    if safe_moves:
+        # Pick a random safe move to avoid deterministic patterns
+        choice = random.choice(safe_moves)
+        return f"{choice[0]},{choice[1]},{choice[2]}"
+
+    # 4. Strategy Tier 3: Minimum Damage (Sacrifice)
+    # We must enable a chain. Find the smallest component of connected "2-sided" boxes.
+    # The size of a component estimates how many boxes the opponent will take.
+    
+    visited = np.zeros((R_BOX, C_BOX), dtype=bool)
+    # Map (r,c) -> component_size
+    box_chain_size = {} 
+    
+    for r in range(R_BOX):
+        for c in range(C_BOX):
+            if box_sides[r, c] == 2 and not visited[r, c]:
+                # BFS to find connected component of 2-side boxes via open edges
+                queue = [(r, c)]
+                visited[r, c] = True
+                component_boxes = []
+                
+                idx = 0
+                while idx < len(queue):
+                    curr_r, curr_c = queue[idx]
+                    idx += 1
+                    component_boxes.append((curr_r, curr_c))
+                    
+                    # Neighbor UP: (curr_r-1, curr_c) via horizontal edges
+                    if curr_r > 0 and horizontal[curr_r, curr_c] == 0:
+                        nr, nc = curr_r - 1, curr_c
+                        if box_sides[nr, nc] == 2 and not visited[nr, nc]:
+                            visited[nr, nc] = True
+                            queue.append((nr, nc))
+                                
+                    # Neighbor DOWN
+                    if curr_r < R_BOX - 1 and horizontal[curr_r+1, curr_c] == 0:
+                        nr, nc = curr_r + 1, curr_c
+                        if box_sides[nr, nc] == 2 and not visited[nr, nc]:
+                            visited[nr, nc] = True
+                            queue.append((nr, nc))
+                                
+                    # Neighbor LEFT
+                    if curr_c > 0 and vertical[curr_r, curr_c] == 0:
+                        nr, nc = curr_r, curr_c - 1
+                        if box_sides[nr, nc] == 2 and not visited[nr, nc]:
+                            visited[nr, nc] = True
+                            queue.append((nr, nc))
+
+                    # Neighbor RIGHT
+                    if curr_c < C_BOX - 1 and vertical[curr_r, curr_c+1] == 0:
+                        nr, nc = curr_r, curr_c + 1
+                        if box_sides[nr, nc] == 2 and not visited[nr, nc]:
+                            visited[nr, nc] = True
+                            queue.append((nr, nc))
+                                
+                # Register size for all boxes in this chain
+                size = len(component_boxes)
+                for b_pos in component_boxes:
+                    box_chain_size[b_pos] = size
+
+    # Evaluate all legal moves (all are unsafe at this point)
+    best_move = None
+    min_chain_size = 1000
+    
+    for m in legal_moves:
+        r, c, orientation = m
+        
+        # Identify which box(es) this move affects (neighboring boxes with 2 sides)
+        affected_size = 0
+        if orientation == 'H':
+            if r < R_BOX and box_sides[r, c] == 2:
+                affected_size = box_chain_size.get((r, c), 0)
+            elif r > 0 and box_sides[r-1, c] == 2:
+                affected_size = box_chain_size.get((r-1, c), 0)
+        else: # V
+            if c < C_BOX and box_sides[r, c] == 2:
+                affected_size = box_chain_size.get((r, c), 0)
+            elif c > 0 and box_sides[r, c-1] == 2:
+                affected_size = box_chain_size.get((r, c-1), 0)
+        
+        # If valid potential chain identified
+        if affected_size > 0:
+            if affected_size < min_chain_size:
+                min_chain_size = affected_size
+                best_move = m
+            # Simple randomized tie-breaking
+            elif affected_size == min_chain_size:
+                if random.random() < 0.5:
+                    best_move = m
+                    
+    if best_move:
+        return f"{best_move[0]},{best_move[1]},{best_move[2]}"
+        
+    # Final fallback if something unexpected occurs
+    choice = random.choice(legal_moves)
+    return f"{choice[0]},{choice[1]},{choice[2]}"

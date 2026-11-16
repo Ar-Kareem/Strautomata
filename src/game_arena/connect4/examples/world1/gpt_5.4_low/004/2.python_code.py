@@ -1,0 +1,284 @@
+
+from time import perf_counter
+
+ROWS = 6
+COLS = 7
+ORDER = [3, 2, 4, 1, 5, 0, 6]
+WIN_SCORE = 10**9
+TIME_LIMIT = 0.92  # leave a little safety margin
+
+
+class Timeout(Exception):
+    pass
+
+
+def policy(board: list[list[int]]) -> int:
+    start = perf_counter()
+
+    def time_check():
+        if perf_counter() - start > TIME_LIMIT:
+            raise Timeout
+
+    def valid_moves(b):
+        return [c for c in ORDER if b[0][c] == 0]
+
+    def first_legal(b):
+        for c in ORDER:
+            if b[0][c] == 0:
+                return c
+        return 0
+
+    def next_row(b, col):
+        for r in range(ROWS - 1, -1, -1):
+            if b[r][col] == 0:
+                return r
+        return -1
+
+    def make_move(b, col, player):
+        r = next_row(b, col)
+        if r != -1:
+            b[r][col] = player
+        return r
+
+    def undo_move(b, col, row):
+        b[row][col] = 0
+
+    def is_full(b):
+        for c in range(COLS):
+            if b[0][c] == 0:
+                return False
+        return True
+
+    def has_won(b, player):
+        # Horizontal
+        for r in range(ROWS):
+            for c in range(COLS - 3):
+                if (
+                    b[r][c] == player
+                    and b[r][c + 1] == player
+                    and b[r][c + 2] == player
+                    and b[r][c + 3] == player
+                ):
+                    return True
+        # Vertical
+        for r in range(ROWS - 3):
+            for c in range(COLS):
+                if (
+                    b[r][c] == player
+                    and b[r + 1][c] == player
+                    and b[r + 2][c] == player
+                    and b[r + 3][c] == player
+                ):
+                    return True
+        # Diagonal down-right
+        for r in range(ROWS - 3):
+            for c in range(COLS - 3):
+                if (
+                    b[r][c] == player
+                    and b[r + 1][c + 1] == player
+                    and b[r + 2][c + 2] == player
+                    and b[r + 3][c + 3] == player
+                ):
+                    return True
+        # Diagonal up-right
+        for r in range(3, ROWS):
+            for c in range(COLS - 3):
+                if (
+                    b[r][c] == player
+                    and b[r - 1][c + 1] == player
+                    and b[r - 2][c + 2] == player
+                    and b[r - 3][c + 3] == player
+                ):
+                    return True
+        return False
+
+    def evaluate_window(window):
+        own = window.count(1)
+        opp = window.count(-1)
+        empty = window.count(0)
+
+        if own == 4:
+            return 100000
+        if opp == 4:
+            return -100000
+        if own == 3 and empty == 1:
+            return 120
+        if own == 2 and empty == 2:
+            return 12
+        if opp == 3 and empty == 1:
+            return -140
+        if opp == 2 and empty == 2:
+            return -14
+        return 0
+
+    def static_eval(b):
+        score = 0
+
+        # Center control
+        center_col = [b[r][COLS // 2] for r in range(ROWS)]
+        score += center_col.count(1) * 7
+        score -= center_col.count(-1) * 7
+
+        # Horizontal
+        for r in range(ROWS):
+            row = b[r]
+            for c in range(COLS - 3):
+                score += evaluate_window(row[c:c + 4])
+
+        # Vertical
+        for c in range(COLS):
+            for r in range(ROWS - 3):
+                window = [b[r + i][c] for i in range(4)]
+                score += evaluate_window(window)
+
+        # Diagonal down-right
+        for r in range(ROWS - 3):
+            for c in range(COLS - 3):
+                window = [b[r + i][c + i] for i in range(4)]
+                score += evaluate_window(window)
+
+        # Diagonal up-right
+        for r in range(3, ROWS):
+            for c in range(COLS - 3):
+                window = [b[r - i][c + i] for i in range(4)]
+                score += evaluate_window(window)
+
+        return score
+
+    def count_empty(b):
+        e = 0
+        for r in range(ROWS):
+            for c in range(COLS):
+                if b[r][c] == 0:
+                    e += 1
+        return e
+
+    def winning_moves_for(b, player):
+        wins = []
+        for c in ORDER:
+            if b[0][c] != 0:
+                continue
+            r = make_move(b, c, player)
+            if has_won(b, player):
+                wins.append(c)
+            undo_move(b, c, r)
+        return wins
+
+    def ordered_moves(b, player):
+        moves = []
+        for c in ORDER:
+            if b[0][c] != 0:
+                continue
+            r = make_move(b, c, player)
+
+            if has_won(b, player):
+                priority = 10_000_000
+            else:
+                # Prefer moves that create threats and center control,
+                # and avoid giving opponent immediate wins.
+                opp_wins = len(winning_moves_for(b, -player))
+                priority = -opp_wins * 1000
+                priority += (3 - abs(3 - c)) * 10
+                priority += static_eval(b) * player // 50
+
+            undo_move(b, c, r)
+            moves.append((priority, c))
+
+        moves.sort(reverse=True)
+        return [c for _, c in moves]
+
+    def negamax(b, depth, alpha, beta, color):
+        time_check()
+
+        if has_won(b, 1):
+            return color * WIN_SCORE
+        if has_won(b, -1):
+            return color * (-WIN_SCORE)
+        if depth == 0 or is_full(b):
+            return color * static_eval(b)
+
+        best = -10**18
+        player = 1 if color == 1 else -1
+
+        for c in ordered_moves(b, player):
+            r = make_move(b, c, player)
+            val = -negamax(b, depth - 1, -beta, -alpha, -color)
+            undo_move(b, c, r)
+
+            if val > best:
+                best = val
+            if best > alpha:
+                alpha = best
+            if alpha >= beta:
+                break
+
+        return best
+
+    legal = valid_moves(board)
+    if not legal:
+        return 0
+
+    # 1) Immediate win
+    for c in ORDER:
+        if board[0][c] != 0:
+            continue
+        r = make_move(board, c, 1)
+        win = has_won(board, 1)
+        undo_move(board, c, r)
+        if win:
+            return c
+
+    # 2) Immediate block
+    opponent_wins = []
+    for c in ORDER:
+        if board[0][c] != 0:
+            continue
+        r = make_move(board, c, -1)
+        win = has_won(board, -1)
+        undo_move(board, c, r)
+        if win:
+            opponent_wins.append(c)
+    if opponent_wins:
+        # If multiple blocks are possible, prefer center-most among them.
+        for c in ORDER:
+            if c in opponent_wins and board[0][c] == 0:
+                return c
+
+    # 3) Search
+    empties = count_empty(board)
+    if empties >= 30:
+        max_depth = 5
+    elif empties >= 18:
+        max_depth = 6
+    elif empties >= 10:
+        max_depth = 7
+    else:
+        max_depth = 9
+
+    best_move = first_legal(board)
+
+    try:
+        for depth in range(1, max_depth + 1):
+            best_score = -10**18
+            current_best = best_move
+
+            for c in ordered_moves(board, 1):
+                time_check()
+                r = make_move(board, c, 1)
+                score = -negamax(board, depth - 1, -10**18, 10**18, -1)
+                undo_move(board, c, r)
+
+                if score > best_score:
+                    best_score = score
+                    current_best = c
+
+            if current_best in legal:
+                best_move = current_best
+
+    except Timeout:
+        pass
+
+    if best_move not in legal:
+        best_move = first_legal(board)
+
+    return best_move

@@ -1,0 +1,224 @@
+
+import random
+
+def policy(state):
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    dice = state['dice']
+
+    # If no dice rolled, must pass
+    if not dice:
+        return "H:P,P"
+
+    # If only one die, must use it (with H order)
+    if len(dice) == 1:
+        return f"H:{get_single_move(state, dice[0])},P"
+
+    # Sort dice to determine order
+    dice_sorted = sorted(dice, reverse=True)
+    high_die = dice_sorted[0]
+    low_die = dice_sorted[1]
+
+    # Check if we have checkers on bar
+    if my_bar > 0:
+        return handle_bar_moves(state, high_die, low_die)
+
+    # Check for hitting opportunities
+    hit_move = find_hit_move(state, high_die, low_die)
+    if hit_move:
+        return hit_move
+
+    # Check for safe moves
+    safe_move = find_safe_move(state, high_die, low_die)
+    if safe_move:
+        return safe_move
+
+    # Check for bearing off
+    if can_bear_off(state):
+        bear_off_move = find_bear_off_move(state, high_die, low_die)
+        if bear_off_move:
+            return bear_off_move
+
+    # Default: try to move checkers forward
+    return find_any_move(state, high_die, low_die)
+
+def handle_bar_moves(state, high_die, low_die):
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+
+    # For bar moves, we need to enter at opponent's home board
+    # Point 0 is opponent's home board start
+    # We can enter at point (die-1) in opponent's home board
+
+    # Check if we can enter with high die
+    high_entry = high_die - 1
+    if opp_pts[high_entry] < 2:
+        # Check if we can enter with low die
+        low_entry = low_die - 1
+        if opp_pts[low_entry] < 2:
+            return f"H:B,B"
+        else:
+            return f"H:B,P"
+    else:
+        # Can't enter with high die, try low die
+        low_entry = low_die - 1
+        if opp_pts[low_entry] < 2:
+            return f"L:B,P"
+        else:
+            return "H:P,P"
+
+def find_hit_move(state, high_die, low_die):
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+
+    # Look for moves that hit opponent's blots
+    for i in range(24):
+        if my_pts[i] > 0:
+            # Check high die move
+            dest_high = i + high_die
+            if dest_high < 24 and opp_pts[dest_high] == 1:
+                # Check if we can make the low die move
+                for j in range(24):
+                    if j != i and my_pts[j] > 0:
+                        dest_low = j + low_die
+                        if dest_low < 24 and opp_pts[dest_low] < 2:
+                            return f"H:A{i},A{j}"
+                # If no second move, just make the hit
+                return f"H:A{i},P"
+
+            # Check low die move
+            dest_low = i + low_die
+            if dest_low < 24 and opp_pts[dest_low] == 1:
+                # Check if we can make the high die move
+                for j in range(24):
+                    if j != i and my_pts[j] > 0:
+                        dest_high = j + high_die
+                        if dest_high < 24 and opp_pts[dest_high] < 2:
+                            return f"L:A{i},A{j}"
+                # If no second move, just make the hit
+                return f"L:A{i},P"
+
+    return None
+
+def find_safe_move(state, high_die, low_die):
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+
+    # Look for moves that don't leave blots
+    for i in range(24):
+        if my_pts[i] > 0:
+            # Check high die move
+            dest_high = i + high_die
+            if dest_high < 24 and opp_pts[dest_high] < 2:
+                # Check if we can make the low die move
+                for j in range(24):
+                    if j != i and my_pts[j] > 0:
+                        dest_low = j + low_die
+                        if dest_low < 24 and opp_pts[dest_low] < 2:
+                            return f"H:A{i},A{j}"
+                # If no second move, just make the safe move
+                return f"H:A{i},P"
+
+            # Check low die move
+            dest_low = i + low_die
+            if dest_low < 24 and opp_pts[dest_low] < 2:
+                # Check if we can make the high die move
+                for j in range(24):
+                    if j != i and my_pts[j] > 0:
+                        dest_high = j + high_die
+                        if dest_high < 24 and opp_pts[dest_high] < 2:
+                            return f"L:A{i},A{j}"
+                # If no second move, just make the safe move
+                return f"L:A{i},P"
+
+    return None
+
+def can_bear_off(state):
+    my_pts = state['my_pts']
+    # Check if all checkers are in home board (points 18-23)
+    return all(p == 0 for p in my_pts[:18])
+
+def find_bear_off_move(state, high_die, low_die):
+    my_pts = state['my_pts']
+
+    # Find the highest point with checkers
+    for i in range(23, 17, -1):
+        if my_pts[i] > 0:
+            # Check if we can bear off with high die
+            if i + high_die >= 24:
+                # Check if we can bear off with low die
+                for j in range(23, 17, -1):
+                    if j != i and my_pts[j] > 0 and j + low_die >= 24:
+                        return f"H:A{i},A{j}"
+                # If no second bear off, just bear off one
+                return f"H:A{i},P"
+
+            # Check if we can bear off with low die
+            if i + low_die >= 24:
+                # Check if we can bear off with high die
+                for j in range(23, 17, -1):
+                    if j != i and my_pts[j] > 0 and j + high_die >= 24:
+                        return f"L:A{i},A{j}"
+                # If no second bear off, just bear off one
+                return f"L:A{i},P"
+
+    return None
+
+def find_any_move(state, high_die, low_die):
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+
+    # Try to make any legal move
+    for i in range(24):
+        if my_pts[i] > 0:
+            # Check high die move
+            dest_high = i + high_die
+            if dest_high < 24 and opp_pts[dest_high] < 2:
+                # Check if we can make the low die move
+                for j in range(24):
+                    if j != i and my_pts[j] > 0:
+                        dest_low = j + low_die
+                        if dest_low < 24 and opp_pts[dest_low] < 2:
+                            return f"H:A{i},A{j}"
+                # If no second move, just make the first move
+                return f"H:A{i},P"
+
+            # Check low die move
+            dest_low = i + low_die
+            if dest_low < 24 and opp_pts[dest_low] < 2:
+                # Check if we can make the high die move
+                for j in range(24):
+                    if j != i and my_pts[j] > 0:
+                        dest_high = j + high_die
+                        if dest_high < 24 and opp_pts[dest_high] < 2:
+                            return f"L:A{i},A{j}"
+                # If no second move, just make the first move
+                return f"L:A{i},P"
+
+    # If no moves possible, pass
+    return "H:P,P"
+
+def get_single_move(state, die):
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+
+    # If on bar, try to enter
+    if my_bar > 0:
+        entry_point = die - 1
+        if opp_pts[entry_point] < 2:
+            return "B"
+        else:
+            return "P"
+
+    # Try to make any legal move
+    for i in range(24):
+        if my_pts[i] > 0:
+            dest = i + die
+            if dest < 24 and opp_pts[dest] < 2:
+                return f"A{i}"
+
+    # If no moves possible, pass
+    return "P"

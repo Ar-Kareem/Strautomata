@@ -1,0 +1,159 @@
+
+MOVE_ORDER = [3, 2, 4, 1, 5, 0, 6]
+WIN_SCORE_BASE = 10000
+LOSS_SCORE_BASE = -10000
+DEPTH_MULTIPLIER = 100
+
+def make_move(board, col, player):
+    for r in range(5, -1, -1):
+        if board[r][col] == 0:
+            board[r][col] = player
+            return r
+    raise ValueError("Invalid move: column full")
+
+def undo_move(board, col, row):
+    board[row][col] = 0
+
+def is_winner(board, player, row, col):
+    directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
+    for dr, dc in directions:
+        count = 1
+        # forward
+        r, c = row + dr, col + dc
+        while 0 <= r < 6 and 0 <= c < 7 and board[r][c] == player:
+            count += 1
+            r += dr
+            c += dc
+        # backward
+        r, c = row - dr, col - dc
+        while 0 <= r < 6 and 0 <= c < 7 and board[r][c] == player:
+            count += 1
+            r -= dr
+            c -= dc
+        if count >= 4:
+            return True
+    return False
+
+def window_score(window, p, o):
+    cp = sum(1 for x in window if x == p)
+    co = sum(1 for x in window if x == o)
+    ce = 4 - cp - co
+    if cp == 4:
+        return 100000
+    if co == 4:
+        return -100000
+    if cp == 3 and ce >= 1:
+        return 5000
+    if co == 3 and ce >= 1:
+        return -5000
+    if cp == 2 and ce == 2:
+        return 100
+    if co == 2 and ce == 2:
+        return -80
+    if cp == 3:
+        return 100
+    if co == 3:
+        return -100
+    if cp == 2 and ce == 1:
+        return 20
+    if co == 2 and ce == 1:
+        return -20
+    return 0
+
+def evaluate_board(board, player):
+    opp = -player
+    score = 0
+    # horizontal
+    for r in range(6):
+        for c in range(4):
+            window = [board[r][c + i] for i in range(4)]
+            score += window_score(window, player, opp)
+    # vertical
+    for c in range(7):
+        for r in range(3):
+            window = [board[r + i][c] for i in range(4)]
+            score += window_score(window, player, opp)
+    # diag \
+    for r in range(3):
+        for c in range(4):
+            window = [board[r + i][c + i] for i in range(4)]
+            score += window_score(window, player, opp)
+    # diag /
+    for r in range(3):
+        for c in range(3, 7):
+            window = [board[r + i][c - i] for i in range(4)]
+            score += window_score(window, player, opp)
+    return score
+
+def alphabeta(board, depth, alpha, beta, maximizing):
+    if depth == 0:
+        return evaluate_board(board, 1)
+
+    has_moves = False
+    for col in MOVE_ORDER:
+        if board[0][col] == 0:
+            has_moves = True
+            break
+    if not has_moves:
+        return 0
+
+    player = 1 if maximizing else -1
+
+    if maximizing:
+        max_eval = float('-inf')
+        for col in MOVE_ORDER:
+            if board[0][col] != 0:
+                continue
+            row = make_move(board, col, player)
+            if is_winner(board, player, row, col):
+                undo_move(board, col, row)
+                return WIN_SCORE_BASE + depth * DEPTH_MULTIPLIER
+            eval_score = alphabeta(board, depth - 1, alpha, beta, False)
+            undo_move(board, col, row)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if alpha >= beta:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for col in MOVE_ORDER:
+            if board[0][col] != 0:
+                continue
+            row = make_move(board, col, player)
+            if is_winner(board, player, row, col):
+                undo_move(board, col, row)
+                return LOSS_SCORE_BASE - depth * DEPTH_MULTIPLIER
+            eval_score = alphabeta(board, depth - 1, alpha, beta, True)
+            undo_move(board, col, row)
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if alpha >= beta:
+                break
+        return min_eval
+
+def policy(board):
+    myboard = [row[:] for row in board]
+    # Check for immediate win
+    for col in MOVE_ORDER:
+        if myboard[0][col] == 0:
+            row = make_move(myboard, col, 1)
+            if is_winner(myboard, 1, row, col):
+                undo_move(myboard, col, row)
+                return col
+            undo_move(myboard, col, row)
+    # No immediate win, search
+    best_score = float('-inf')
+    best_col = 3  # default center
+    SEARCH_DEPTH = 8
+    for col in MOVE_ORDER:
+        if myboard[0][col] != 0:
+            continue
+        row = make_move(myboard, col, 1)
+        # No need to check win again, already did
+        score = alphabeta(myboard, SEARCH_DEPTH - 1, float('-inf'), float('inf'), False)
+        undo_move(myboard, col, row)
+        if score > best_score:
+            best_score = score
+            best_col = col
+    return best_col

@@ -1,0 +1,121 @@
+
+import random
+import copy
+
+N = 19
+
+def find_group(board, r, c, player):
+    stones = set()
+    liberties = set()
+    visited = set()
+    queue = [(r, c)]
+    while queue:
+        cr, cc = queue.pop(0)
+        if (cr, cc) in visited:
+            continue
+        visited.add((cr, cc))
+        stones.add((cr, cc))
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = cr + dr, cc + dc
+            if 0 <= nr < N and 0 <= nc < N:
+                if board[nr][nc] == player and (nr, nc) not in visited:
+                    queue.append((nr, nc))
+                elif board[nr][nc] == 0:
+                    liberties.add((nr, nc))
+    return stones, liberties
+
+def find_groups(board, player):
+    visited = [[False] * N for _ in range(N)]
+    groups = []
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == player and not visited[r][c]:
+                stones, lib = find_group(board, r, c, player)
+                groups.append((stones, len(lib)))
+                for sr, sc in stones:
+                    visited[sr][sc] = True
+    return groups
+
+def is_legal(board, row, col, player, opp):
+    temp_board = copy.deepcopy(board)
+    temp_board[row][col] = player
+    captured_stones = 0
+    for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+        nr, nc = row + dr, col + dc
+        if 0 <= nr < N and 0 <= nc < N and temp_board[nr][nc] == opp:
+            _, op_lib = find_group(temp_board, nr, nc, opp)
+            if len(op_lib) == 0:
+                stones_count, _ = find_group(temp_board, nr, nc, opp)
+                captured_stones += len(stones_count)
+    own_lib_count = len(find_group(temp_board, row, col, player)[1])
+    return own_lib_count > 0 or captured_stones > 0
+
+def policy(me, opponent, memory):
+    board = [[0] * N for _ in range(N)]
+    for r, c in me:
+        board[r-1][c-1] = 1
+    for r, c in opponent:
+        board[r-1][c-1] = 2
+    
+    our_groups = find_groups(board, 1)
+    opp_groups = find_groups(board, 2)
+    our_atari = [g for g in our_groups if g[1] == 1]
+    opp_atari = [g for g in opp_groups if g[1] == 1]
+    
+    our_atari_libs = set()
+    for stones, _ in our_atari:
+        for sr, sc in stones:
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nr, nc = sr + dr, sc + dc
+                if 0 <= nr < N and 0 <= nc < N and board[nr][nc] == 0:
+                    our_atari_libs.add((nr, nc))
+    
+    opp_atari_libs = set()
+    for stones, _ in opp_atari:
+        for sr, sc in stones:
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nr, nc = sr + dr, sc + dc
+                if 0 <= nr < N and 0 <= nc < N and board[nr][nc] == 0:
+                    opp_atari_libs.add((nr, nc))
+    
+    legal_moves = [(0, 0)]  # pass
+    for r in range(1, N+1):
+        for c in range(1, N+1):
+            rr, cc = r-1, c-1
+            if board[rr][cc] == 0 and is_legal(board, rr, cc, 1, 2):
+                legal_moves.append((r, c))
+    
+    if not legal_moves:
+        legal_moves = [(0, 0)]
+    
+    best_score = -float('inf')
+    best_moves = []
+    for move in legal_moves:
+        score = 0
+        if move == (0, 0):
+            score = 0
+        else:
+            rr, cc = move[0]-1, move[1]-1
+            lib_pos = (rr, cc)
+            if lib_pos in opp_atari_libs:
+                score += 100
+            if lib_pos in our_atari_libs:
+                score += 50
+            our_n = 0
+            opp_n = 0
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nr, nc = rr + dr, cc + dc
+                if 0 <= nr < N and 0 <= nc < N:
+                    if board[nr][nc] == 1:
+                        our_n += 1
+                    elif board[nr][nc] == 2:
+                        opp_n += 1
+            score += (our_n - opp_n) * 0.1
+        if score > best_score:
+            best_score = score
+            best_moves = [move]
+        elif score == best_score:
+            best_moves.append(move)
+    
+    chosen_move = random.choice(best_moves)
+    return (chosen_move, memory)

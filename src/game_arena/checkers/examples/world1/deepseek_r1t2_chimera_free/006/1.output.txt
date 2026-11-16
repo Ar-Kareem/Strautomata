@@ -1,0 +1,155 @@
+The strategy for this policy is to prioritize capturing opponent pieces when available, selecting the move that maximizes material gain and positional advantage. For non-capturing moves, a 1-ply lookahead evaluates the opponent's potential responses to minimize their advantage. The evaluation function considers material count (regular pieces and kings), positional scores (promotion potential for regular pieces, center control for kings), and opponent weaknesses. This approach ensures legal moves while balancing immediate gains and opponent counterplay.
+
+<code>
+import copy
+
+def is_playable(pos):
+    r, c = pos
+    return (r + c) % 2 == 0
+
+def opposite_color(color):
+    return 'w' if color == 'b' else 'b'
+
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    my_men = list(map(tuple, my_men))
+    my_kings = list(map(tuple, my_kings))
+    opp_men = list(map(tuple, opp_men))
+    opp_kings = list(map(tuple, opp_kings))
+
+    captures = generate_captures(my_men, my_kings, opp_men, opp_kings, color)
+    if captures:
+        best_move = None
+        best_eval = -float('inf')
+        for move in captures:
+            new_my, new_kings, new_opp, new_opp_k = simulate_move(
+                my_men, my_kings, opp_men, opp_kings, move, color
+            )
+            eval = evaluate(new_my, new_kings, new_opp, new_opp_k, color)
+            if eval > best_eval:
+                best_eval = eval
+                best_move = move
+        return best_move
+    else:
+        moves = generate_simple_moves(my_men, my_kings, opp_men, opp_kings, color)
+        if not moves:
+            return None  # No legal moves (shouldn't happen)
+        best_move = None
+        best_eval = -float('inf')
+        for move in moves:
+            new_my, new_kings, new_opp, new_opp_k = simulate_move(
+                my_men, my_kings, opp_men, opp_kings, move, color
+            )
+            opp_cap = generate_captures(new_opp, new_opp_k, new_my, new_kings, opposite_color(color))
+            if opp_cap:
+                opp_best = float('inf')
+                for opp_move in opp_cap:
+                    o_my, o_ks, o_op, o_oks = simulate_move(
+                        new_opp, new_opp_k, new_my, new_kings, opp_move, opposite_color(color)
+                    )
+                    opp_eval = evaluate(o_my, o_ks, o_op, o_oks, color)
+                    if opp_eval < opp_best:
+                        opp_best = opp_eval
+                current_eval = opp_best
+            else:
+                current_eval = evaluate(new_my, new_kings, new_opp, new_opp_k, color)
+            if current_eval > best_eval:
+                best_eval = current_eval
+                best_move = move
+        return best_move
+
+def generate_captures(my_men, my_kings, opp_men, opp_kings, color):
+    captures = []
+    all_my = my_men + my_kings
+    opp_all = opp_men + opp_kings
+    opp_set = set(opp_all)
+    my_set = set(all_my)
+    for pos in all_my:
+        r, c = pos
+        is_king = pos in my_kings
+        dirs = []
+        if color == 'b' or is_king:
+            dirs.extend([(-2, -2), (-2, 2)])
+        if color == 'w' or is_king:
+            dirs.extend([(2, -2), (2, 2)])
+        for dr, dc in dirs:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 8 and 0 <= nc < 8 and is_playable((nr, nc)):
+                mr, mc = r + dr//2, c + dc//2
+                if (mr, mc) in opp_set and (nr, nc) not in my_set and (nr, nc) not in opp_set:
+                    captures.append((pos, (nr, nc)))
+    return captures
+
+def generate_simple_moves(my_men, my_kings, opp_men, opp_kings, color):
+    moves = []
+    all_my = my_men + my_kings
+    opp_all = opp_men + opp_kings
+    occupied = set(all_my + opp_all)
+    for pos in all_my:
+        r, c = pos
+        is_king = pos in my_kings
+        dirs = []
+        if color == 'b' or is_king:
+            dirs.extend([(-1, -1), (-1, 1)])
+        if color == 'w' or is_king:
+            dirs.extend([(1, -1), (1, 1)])
+        for dr, dc in dirs:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 8 and 0 <= nc < 8 and is_playable((nr, nc)):
+                if (nr, nc) not in occupied:
+                    moves.append((pos, (nr, nc)))
+    return moves
+
+def simulate_move(my_men, my_kings, opp_men, opp_kings, move, color):
+    from_pos, to_pos = move
+    new_my = [p for p in my_men if p != from_pos]
+    new_kings = [p for p in my_kings if p != from_pos]
+    new_opp = copy.copy(opp_men)
+    new_opp_k = copy.copy(opp_kings)
+    
+    r1, c1 = from_pos
+    r2, c2 = to_pos
+    is_king = from_pos in my_kings
+    if abs(r1 - r2) == 2:
+        cap_r, cap_c = (r1 + r2)//2, (c1 + c2)//2
+        cap_pos = (cap_r, cap_c)
+        if cap_pos in new_opp:
+            new_opp.remove(cap_pos)
+        elif cap_pos in new_opp_k:
+            new_opp_k.remove(cap_pos)
+    
+    promoted = False
+    if not is_king:
+        if (color == 'b' and r2 == 0) or (color == 'w' and r2 == 7):
+            promoted = True
+    if promoted:
+        new_kings.append(to_pos)
+    else:
+        new_my.append(to_pos)
+
+    return new_my, new_kings, new_opp, new_opp_k
+
+def evaluate(my_men, my_kings, opp_men, opp_kings, color):
+    material = (len(my_men) + 3 * len(my_kings)) - (len(opp_men) + 3 * len(opp_kings))
+    positional = 0
+    
+    # Promotion potential
+    for r, c in my_men:
+        if color == 'w':
+            positional += r / 7.0 * 0.5
+        else:
+            positional += (7 - r) / 7.0 * 0.5
+    
+    # King centralization
+    for r, c in my_kings:
+        positional += (3.5 - abs(r - 3.5)) / 3.5 * 0.2
+        positional += (3.5 - abs(c - 3.5)) / 3.5 * 0.2
+    
+    # Opponent threats
+    for r, c in opp_men:
+        if color == 'w':
+            positional -= (7 - r) / 7.0 * 0.4
+        else:
+            positional -= r / 7.0 * 0.4
+    
+    return material + positional
+</code>

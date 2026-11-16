@@ -1,0 +1,73 @@
+The strategy for this policy is to avoid the middle board (2,2) entirely until forced to play there, as the middle board is the only one that determines the win/loss condition (misère tic-tac-toe). When playing on outer boards, any move is safe. When forced to play on the middle board, the policy avoids completing any line of three (which would cause immediate loss) and prefers edge cells over corners over the center, as edges participate in fewer potential lines and are thus safer for future moves.
+
+<code>
+def policy(state, role):
+    # Parse the state into a dictionary for easy lookup
+    board = {}  # (big_r, big_c, r, c) -> content ("x", "o", or "b")
+    for fact in state:
+        if fact[0] == "cell":
+            _, br, bc, r, c, content = fact
+            board[(int(br), int(bc), int(r), int(c))] = content
+    
+    my_role = role
+    opp_role = "o" if role == "x" else "x"
+    
+    # Find all blank cells
+    blanks = [pos for pos, content in board.items() if content == "b"]
+    
+    # Separate middle board (2,2) from outer boards
+    middle_blanks = [pos for pos in blanks if pos[0] == 2 and pos[1] == 2]
+    outer_blanks = [pos for pos in blanks if not (pos[0] == 2 and pos[1] == 2)]
+    
+    # Helper to check if placing at (br,bc,r,c) completes a line for player
+    def completes_line(br, bc, r, c, player):
+        # Check row r
+        if all(board.get((br, bc, r, cc)) == player for cc in [1, 2, 3] if cc != c):
+            return True
+        # Check column c
+        if all(board.get((br, bc, rr, c)) == player for rr in [1, 2, 3] if rr != r):
+            return True
+        # Check diagonal (r==c): (1,1)-(2,2)-(3,3)
+        if r == c:
+            if all(board.get((br, bc, i, i)) == player for i in [1, 2, 3] if i != r):
+                return True
+        # Check anti-diagonal (r+c==4): (1,3)-(2,2)-(3,1)
+        if r + c == 4:
+            if all(board.get((br, bc, i, 4-i)) == player for i in [1, 2, 3] if i != r):
+                return True
+        return False
+    
+    # Helper to get risk level of a cell on middle board (lower is safer)
+    def risk_level(pos):
+        r, c = pos[2], pos[3]
+        if (r, c) == (2, 2):
+            return 3  # Center: 4 lines
+        elif r in [1, 3] and c in [1, 3]:
+            return 2  # Corner: 3 lines
+        else:
+            return 1  # Edge: 2 lines
+    
+    # Strategy: Play on outer boards if possible to avoid the middle board
+    if outer_blanks:
+        # Pick the lexicographically smallest outer move for determinism
+        br, bc, r, c = min(outer_blanks)
+        return f"mark({br},{bc},{r},{c})"
+    
+    # Only middle board moves available
+    if middle_blanks:
+        # Filter out moves that would complete a line for us (suicide)
+        safe_moves = [pos for pos in middle_blanks if not completes_line(pos[0], pos[1], pos[2], pos[3], my_role)]
+        
+        if safe_moves:
+            # Among safe moves, prefer lower risk (edges over corners over center)
+            best = min(safe_moves, key=risk_level)
+            br, bc, r, c = best
+            return f"mark({br},{bc},{r},{c})"
+        else:
+            # No safe moves - we must complete a line and lose. Pick any.
+            br, bc, r, c = middle_blanks[0]
+            return f"mark({br},{bc},{r},{c})"
+    
+    # Should not reach here in a legal game state
+    return "noop"
+</code>

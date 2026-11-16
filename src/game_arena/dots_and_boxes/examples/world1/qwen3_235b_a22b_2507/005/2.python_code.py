@@ -1,0 +1,95 @@
+
+import numpy as np
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    # Helper: check if a box at (r, c) is completed (all 4 edges present)
+    def is_box_complete(r, c):
+        top = horizontal[r, c] != 0
+        bottom = horizontal[r+1, c] != 0
+        left = vertical[r, c] != 0
+        right = vertical[r, c+1] != 0
+        return top and bottom and left and right
+
+    # Helper: simulate a move and return number of new boxes captured
+    def simulate_move(r, c, d):
+        h = horizontal.copy()
+        v = vertical.copy()
+        if d == 'H':
+            h[r, c] = 1
+        else:  # d == 'V'
+            v[r, c] = 1
+
+        # Count newly completed boxes
+        count = 0
+        for i in range(4):
+            for j in range(4):
+                # Only count if box is not already captured
+                if capture[i, j] == 0 and is_box_complete(i, j):
+                    count += 1
+        return count
+
+    # Get all legal moves
+    legal_moves = []
+    for r in range(5):
+        for c in range(5):
+            if r < 4 and horizontal[r, c] == 0:
+                legal_moves.append((r, c, 'H'))
+            if c < 4 and vertical[r, c] == 0:
+                legal_moves.append((r, c, 'V'))
+
+    if not legal_moves:
+        # Should not happen, but fallback
+        return "0,0,H"
+
+    # Evaluate each move: score = +10 per box captured, -100 if it creates a third side on any opponent-free box
+    best_score = -float('inf')
+    best_move = legal_moves[0]
+
+    for (r, c, d) in legal_moves:
+        score = 0
+        # Simulate move to see how many boxes we capture
+        new_boxes = simulate_move(r, c, d)
+        score += new_boxes * 10
+
+        # Penalize moves that create a third side (except if we are about to complete it in same move)
+        # Temporarily apply move to edge arrays
+        h_temp = horizontal.copy()
+        v_temp = vertical.copy()
+        if d == 'H':
+            h_temp[r, c] = 1
+        else:
+            v_temp[r, c] = 1
+
+        # Check all 4 neighboring boxes that this edge affects
+        boxes_to_check = []
+        if d == 'H':
+            if r > 0:
+                boxes_to_check.append((r-1, c))  # box above
+            if r < 4:
+                boxes_to_check.append((r, c))   # box below
+        else:  # d == 'V'
+            if c > 0:
+                boxes_to_check.append((r, c-1))  # box left
+            if c < 4:
+                boxes_to_check.append((r, c))   # box right
+
+        for (br, bc) in boxes_to_check:
+            if capture[br, bc] != 0:
+                continue  # already captured
+            top = h_temp[br, bc] != 0
+            bottom = h_temp[br+1, bc] != 0
+            left = v_temp[br, bc] != 0
+            right = v_temp[br, bc+1] != 0
+            edges = sum([top, bottom, left, right])
+            if edges == 3:
+                score -= 100  # High penalty for creating a third side
+
+        # Prefer moves that give us another turn (we complete at least one box)
+        if new_boxes > 0:
+            score += 5  # Slight bonus for continuation
+
+        if score > best_score:
+            best_score = score
+            best_move = (r, c, d)
+
+    return f"{best_move[0]},{best_move[1]},{best_move[2]}"

@@ -1,0 +1,71 @@
+
+import numpy as np
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    # Convert to numpy array for easier manipulation
+    grid = np.array(board)
+    
+    # Check for winning move (our symbol)
+    for i in range(4):
+        for j in range(4):
+            if grid[i, j] == 0:  # empty spot
+                # Temporarily place our mark
+                grid[i, j] = 1
+                if check_winner(grid) == 1:
+                    grid[i, j] = 0  # revert
+                    return (i, j)
+                grid[i, j] = 0  # revert
+    
+    # Check for blocking move (opponent's symbol)
+    for i in range(4):
+        for j in range(4):
+            if grid[i, j] == 0:  # empty spot
+                # Temporarily place opponent's mark
+                grid[i, j] = -1
+                if check_winner(grid) == -1:
+                    grid[i, j] = 0  # revert
+                    return (i, j)
+                grid[i, j] = 0  # revert
+    
+    # Prefer center positions if available
+    center_positions = [(1,1), (1,2), (2,1), (2,2)]
+    available_centers = [(i,j) for i,j in center_positions if grid[i,j] == 0]
+    if available_centers:
+        return available_centers[0]
+    
+    # Prefer corners
+    corner_positions = [(0,0), (0,3), (3,0), (3,3)]
+    available_corners = [(i,j) for i,j in corner_positions if grid[i,j] == 0]
+    if available_corners:
+        return available_corners[0]
+    
+    # Otherwise, pick first available spot
+    for i in range(4):
+        for j in range(4):
+            if grid[i, j] == 0:
+                return (i, j)
+
+def check_winner(grid):
+    # Check rows
+    for i in range(4):
+        if np.all(grid[i, :] == 1):
+            return 1
+        if np.all(grid[i, :] == -1):
+            return -1
+    
+    # Check columns
+    for j in range(4):
+        if np.all(grid[:, j] == 1):
+            return 1
+        if np.all(grid[:, j] == -1):
+            return -1
+    
+    # Check diagonals
+    if np.all(np.diag(grid) == 1) or np.all(np.diag(np.fliplr(grid)) == 1):
+        return 1
+    if np.all(np.diag(grid) == -1) or np.all(np.diag(np.fliplr(grid)) == -1):
+        return -1
+    
+    # No winner
+    return 0

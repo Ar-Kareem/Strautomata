@@ -1,0 +1,262 @@
+The strategy for this policy is to implement a minimax algorithm with alpha-beta pruning and heuristic evaluation to choose the best move. The heuristic prioritizes:
+1. Corner positions (high value, stable)
+2. Edge positions (medium value)
+3. Moves that maximize disc count gain
+4. Avoiding moves that give opponent access to corners
+5. Mobility (number of available moves for opponent)
+
+The algorithm searches to a depth of 5-6 levels (adjusted based on remaining empty cells) to balance depth and computation time. In endgame situations (fewer than 15 empty cells), it switches to a more exhaustive search. For time efficiency, it uses move ordering via heuristic scoring to improve alpha-beta pruning.
+
+The evaluation function weights corner control at 5x, edge control at 2x, and disc count at 1x, with a penalty for giving opponent corner access. This approach is known to be effective in Othello as corner control is critical for long-term dominance.
+
+<code>
+import numpy as np
+import time
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    # Convert to board representation (0: empty, 1: you, 2: opponent)
+    board = np.zeros((8, 8), dtype=int)
+    board[you == 1] = 1
+    board[opponent == 1] = 2
+    
+    # Check if any legal moves exist
+    legal_moves = get_legal_moves(board, 1)
+    if len(legal_moves) == 0:
+        return "pass"
+    
+    # Start time for timeout protection
+    start_time = time.time()
+    
+    # Calculate remaining empty cells
+    empty_cells = np.sum(board == 0)
+    
+    # Adjust depth based on game stage
+    if empty_cells <= 15:
+        max_depth = 8
+    elif empty_cells <= 30:
+        max_depth = 6
+    else:
+        max_depth = 5
+    
+    # Get best move using minimax with alpha-beta pruning
+    best_move = None
+    best_score = float('-inf')
+    
+    # Order moves by heuristic to improve alpha-beta pruning efficiency
+    ordered_moves = sorted(legal_moves, key=lambda move: heuristic_score(move, board, 1), reverse=True)
+    
+    for move in ordered_moves:
+        if time.time() - start_time > 0.9:  # Leave 100ms buffer
+            break
+            
+        # Make move
+        new_board = make_move(board, move, 1)
+        
+        # Evaluate this move using minimax
+        score = alphabeta(new_board, 2, max_depth - 1, float('-inf'), float('inf'), start_time, empty_cells - 1)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+            
+    # If no move selected (shouldn't happen with legal_moves non-empty), pick first legal move
+    if best_move is None:
+        best_move = legal_moves[0]
+    
+    # Convert to algebraic notation
+    row, col = best_move
+    col_letter = chr(ord('a') + col)
+    row_number = str(row + 1)
+    return col_letter + row_number
+
+
+def get_legal_moves(board, player):
+    """Return list of legal moves (row, col) for player."""
+    moves = []
+    opponent = 3 - player  # 1->2, 2->1
+    
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] != 0:
+                continue  # Not empty
+            
+            # Check all 8 directions
+            for dr in [-1, 0, 1]:
+                for dc in [-1, 0, 1]:
+                    if dr == 0 and dc == 0:
+                        continue
+                    
+                    # Look in this direction
+                    nr, nc = r + dr, c + dc
+                    found_opponent = False
+                    while 0 <= nr < 8 and 0 <= nc < 8:
+                        if board[nr][nc] == 0:
+                            break
+                        if board[nr][nc] == opponent:
+                            found_opponent = True
+                        elif board[nr][nc] == player and found_opponent:
+                            moves.append((r, c))
+                            break
+                        nr += dr
+                        nc += dc
+                    if (r, c) in moves:
+                        break
+    return moves
+
+
+def make_move(board, move, player):
+    """Return new board after making move by player."""
+    r, c = move
+    new_board = board.copy()
+    new_board[r][c] = player
+    opponent = 3 - player
+    
+    for dr in [-1, 0, 1]:
+        for dc in [-1, 0, 1]:
+            if dr == 0 and dc == 0:
+                continue
+                
+            nr, nc = r + dr, c + dc
+            to_flip = []
+            while 0 <= nr < 8 and 0 <= nc < 8:
+                if board[nr][nc] == 0:
+                    break
+                if board[nr][nc] == opponent:
+                    to_flip.append((nr, nc))
+                elif board[nr][nc] == player and len(to_flip) > 0:
+                    for fr, fc in to_flip:
+                        new_board[fr][fc] = player
+                    break
+                else:
+                    break
+                nr += dr
+                nc += dc
+    return new_board
+
+
+def count_discs(board, player):
+    """Count number of discs for player."""
+    return np.sum(board == player)
+
+
+def heuristic_score(move, board, player):
+    """Heuristic score for move ordering."""
+    r, c = move
+    
+    score = 0
+    opponent = 3 - player
+    
+    # Corner positions are highly valuable
+    if (r, c) in [(0, 0), (0, 7), (7, 0), (7, 7)]:
+        score += 100
+    # Edge positions (but not corners) are also good
+    elif r == 0 or r == 7 or c == 0 or c == 7:
+        score += 10
+    # Avoid giving opponent access to corners
+    elif (r, c) in [(1, 1), (1, 6), (6, 1), (6, 6)]:
+        # These positions allow opponent to take corners
+        score -= 30
+    # Avoid adjacent to corners
+    elif (r, c) in [(0, 1), (1, 0), (0, 6), (1, 7), (7, 1), (6, 0), (7, 6), (6, 7)]:
+        score -= 15
+    
+    # Simulate this move and count gained discs
+    temp_board = make_move(board, move, player)
+    disc_gain = count_discs(temp_board, player) - count_discs(board, player)
+    score += disc_gain * 2  # 2x weight for disc gain
+    
+    # Consider mobility (opponent's possible moves after our move)
+    opponent_moves = len(get_legal_moves(temp_board, opponent))
+    score -= opponent_moves * 0.5  # Penalize giving opponent mobility
+    
+    return score
+
+
+def alphabeta(board, player, depth, alpha, beta, start_time, empty_left):
+    """Alpha-beta pruning minimax with timeout protection."""
+    if time.time() - start_time > 0.95:  # 50ms buffer for cleanup
+        return evaluate_board(board, player)
+    
+    if depth == 0:
+        return evaluate_board(board, player)
+    
+    # Check terminal state - no moves for both players
+    legal_moves = get_legal_moves(board, player)
+    if not legal_moves:
+        # Check if opponent can move
+        opponent_moves = get_legal_moves(board, 3 - player)
+        if not opponent_moves:
+            # Game over
+            return evaluate_board(board, player)
+        # Skip to opponent
+        return alphabeta(board, 3 - player, depth, alpha, beta, start_time, empty_left)
+    
+    # Order moves for better pruning
+    ordered_moves = sorted(legal_moves, key=lambda move: heuristic_score(move, board, player), reverse=True)
+    
+    if player == 1:  # Maximizer (our player)
+        max_eval = float('-inf')
+        for move in ordered_moves:
+            new_board = make_move(board, move, player)
+            eval_score = alphabeta(new_board, 3 - player, depth - 1, alpha, beta, start_time, empty_left - 1)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break  # Beta cutoff
+        return max_eval
+    else:  # Minimizer (opponent)
+        min_eval = float('inf')
+        for move in ordered_moves:
+            new_board = make_move(board, move, player)
+            eval_score = alphabeta(new_board, 3 - player, depth - 1, alpha, beta, start_time, empty_left - 1)
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break  # Alpha cutoff
+        return min_eval
+
+
+def evaluate_board(board, player):
+    """Evaluate board state with a heuristic function."""
+    opponent = 3 - player
+    
+    # Weights for different factors
+    CORNER_WEIGHT = 50
+    EDGE_WEIGHT = 10
+    DISC_WEIGHT = 1
+    MOBILITY_WEIGHT = 10
+    
+    # Corner control: each corner worth 50 points
+    corners = [(0, 0), (0, 7), (7, 0), (7, 7)]
+    corner_score = 0
+    for r, c in corners:
+        if board[r][c] == player:
+            corner_score += CORNER_WEIGHT
+        elif board[r][c] == opponent:
+            corner_score -= CORNER_WEIGHT
+    
+    # Edge control (not corners): worth 10 points
+    edge_score = 0
+    for r in [0, 7]:
+        for c in range(1, 7):
+            if board[r][c] == player:
+                edge_score += EDGE_WEIGHT
+            elif board[r][c] == opponent:
+                edge_score -= EDGE_WEIGHT
+    for c in [0, 7]:
+        for r in range(1, 7):
+            if board[r][c] == player:
+                edge_score += EDGE_WEIGHT
+            elif board[r][c] == opponent:
+                edge_score -= EDGE_WEIGHT
+    
+    # Disc count (stability):
+    disc_score = (count_discs(board, player) - count_discs(board, opponent)) * DISC_WEIGHT
+    
+    # Mobility: number of moves available
+    my_moves = len(get_legal_moves(board, player))
+    opp_moves = len(get_legal_moves(board, opponent))
+    mobility_score = (my_moves - opp_moves) * MOBILITY_WEIGHT
+    
+    return corner_score + edge_score + disc_score + mobility_score
+</code>

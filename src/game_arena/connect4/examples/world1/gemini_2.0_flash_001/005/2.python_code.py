@@ -1,0 +1,179 @@
+
+import numpy as np
+
+def policy(board: list[list[int]]) -> int:
+    """
+    A Connect 4 policy based on minimax search with alpha-beta pruning.
+    """
+
+    def is_terminal(board):
+        # Check horizontal
+        for row in board:
+            for i in range(4):
+                if row[i] != 0 and abs(sum(row[i:i+4])) == 4:
+                    return True
+        # Check vertical
+        for col in range(7):
+            for i in range(3):
+                if board[i][col] != 0 and abs(sum([board[i+j][col] for j in range(4)])) == 4:
+                    return True
+        # Check diagonals
+        for row in range(3):
+            for col in range(4):
+                if board[row][col] != 0 and abs(sum([board[row+i][col+i] for i in range(4)])) == 4:
+                    return True
+        for row in range(3):
+            for col in range(3, 7):
+                if board[row][col] != 0 and abs(sum([board[row+i][col-i] for i in range(4)])) == 4:
+                    return True
+        # Check for full board
+        for col in range(7):
+            if board[0][col] == 0:
+                return False
+        return True
+
+    def get_legal_moves(board):
+        legal_moves = []
+        for col in range(7):
+            if board[0][col] == 0:
+                legal_moves.append(col)
+        return legal_moves
+
+    def drop_piece(board, col, player):
+        for row in range(5, -1, -1):
+            if board[row][col] == 0:
+                board[row][col] = player
+                return row
+        return None  # Should not happen if move is legal
+
+    def undo_move(board, col, row):
+        board[row][col] = 0
+
+    def evaluate(board):
+        score = 0
+
+        # Heuristic: prioritize center columns
+        for row in board:
+            if row[3] == 1:
+                score += 3
+            elif row[3] == -1:
+                score -= 3
+
+        # Heuristic: look for potential lines of 4, 3, 2
+        # Check horizontal
+        for row in board:
+            for i in range(4):
+                window = row[i:i + 4]
+                score += evaluate_window(window)
+
+        # Check vertical
+        for col in range(7):
+            for i in range(3):
+                window = [board[i+j][col] for j in range(4)]
+                score += evaluate_window(window)
+
+        # Check diagonals
+        for row in range(3):
+            for col in range(4):
+                window = [board[row+i][col+i] for i in range(4)]
+                score += evaluate_window(window)
+
+        for row in range(3):
+            for col in range(3, 7):
+                window = [board[row+i][col-i] for i in range(4)]
+                score += evaluate_window(window)
+
+        return score
+    
+    def evaluate_window(window):
+        score = 0
+        ai_pieces = window.count(1)
+        opponent_pieces = window.count(-1)
+
+        if ai_pieces == 4:
+            score += 100
+        elif ai_pieces == 3 and opponent_pieces == 0:
+            score += 5
+        elif ai_pieces == 2 and opponent_pieces == 0:
+            score += 2
+   
+        if opponent_pieces == 4:
+            score -= 100
+        elif opponent_pieces == 3 and ai_pieces == 0:
+            score -= 5
+        elif opponent_pieces == 2 and ai_pieces == 0:
+            score -= 2
+
+        return score
+        
+
+    def minimax(board, depth, alpha, beta, maximizing_player):
+        if depth == 0 or is_terminal(board):
+            return evaluate(board), None
+
+        legal_moves = get_legal_moves(board)
+
+        if maximizing_player:
+            value = -float('inf')
+            best_move = None
+            
+            # Move ordering (heuristic): Try promising moves first
+            move_scores = []
+            for move in legal_moves:
+              temp_board = [row[:] for row in board] # Create a copy
+              drop_piece(temp_board, move, 1)
+              move_scores.append((evaluate(temp_board), move))
+            
+            move_scores.sort(reverse=True) # Sort based on evaluation
+            ordered_moves = [move for score, move in move_scores]
+            
+            for move in ordered_moves:
+                temp_board = [row[:] for row in board] # Create a copy
+                row = drop_piece(temp_board, move, 1)
+                score, _ = minimax(temp_board, depth - 1, alpha, beta, False)
+                undo_move(temp_board, move, row)
+
+                if score > value:
+                    value = score
+                    best_move = move
+                alpha = max(alpha, value)
+                if value >= beta:
+                    break
+            return value, best_move
+        else:
+            value = float('inf')
+            best_move = None
+
+            # Move ordering heuristic here too
+            move_scores = []
+            for move in legal_moves:
+              temp_board = [row[:] for row in board] # Create a copy
+              drop_piece(temp_board, move, -1)
+              move_scores.append((evaluate(temp_board), move))
+              
+            move_scores.sort() # Sort based on evaluation - reverse for maximizing
+            ordered_moves = [move for score, move in move_scores]
+
+            for move in ordered_moves:
+                temp_board = [row[:] for row in board]  # Create a copy
+                row = drop_piece(temp_board, move, -1)
+                score, _ = minimax(temp_board, depth - 1, alpha, beta, True)
+                undo_move(temp_board, move, row)
+
+                if score < value:
+                    value = score
+                    best_move = move
+                beta = min(beta, value)
+                if value <= alpha:
+                    break
+            return value, best_move
+
+    depth = 5  # Increased search depth for stronger play
+    _, best_move = minimax(board, depth, -float('inf'), float('inf'), True)
+    
+    if best_move is None:
+        # Fallback strategy: Choose the first available column
+        legal_moves = get_legal_moves(board)
+        return legal_moves[0]
+        
+    return best_move

@@ -1,0 +1,341 @@
+The strategy for this policy is:
+
+1. Precompute all 49 winning lines in 3D Tic Tac Toe.
+2. Always return a legal move.
+3. Use strong tactical rules first:
+   - Play a winning move immediately if available.
+   - Otherwise block the opponent’s immediate win if possible.
+   - Prefer the center early when it is available.
+4. For general play, run an alpha-beta minimax search with:
+   - adaptive depth based on how full the board is,
+   - transposition caching,
+   - strong move ordering,
+   - a heuristic evaluation based on open lines, 2-in-a-row threats, and positional value.
+5. In late-game positions, search deeper or to the end when feasible.
+
+This gives a policy that is tactically safe, reasonably fast, and much stronger than a purely greedy or random policy.
+
+<code>
+from functools import lru_cache
+
+# 3x3x3 Tic Tac Toe policy
+# board[i][j][k] in {0, 1, -1}
+# returns (i, j, k)
+
+# ---------- Precomputation ----------
+
+def _idx(i, j, k):
+    return i * 9 + j * 3 + k
+
+def _coord(idx):
+    return (idx // 9, (idx % 9) // 3, idx % 3)
+
+def _generate_lines():
+    lines = []
+
+    # Axis-aligned lines
+    for j in range(3):
+        for k in range(3):
+            lines.append(tuple(_idx(i, j, k) for i in range(3)))  # along i
+    for i in range(3):
+        for k in range(3):
+            lines.append(tuple(_idx(i, j, k) for j in range(3)))  # along j
+    for i in range(3):
+        for j in range(3):
+            lines.append(tuple(_idx(i, j, k) for k in range(3)))  # along k
+
+    # Plane diagonals
+    # i fixed planes
+    for i in range(3):
+        lines.append(tuple(_idx(i, d, d) for d in range(3)))
+        lines.append(tuple(_idx(i, d, 2 - d) for d in range(3)))
+
+    # j fixed planes
+    for j in range(3):
+        lines.append(tuple(_idx(d, j, d) for d in range(3)))
+        lines.append(tuple(_idx(d, j, 2 - d) for d in range(3)))
+
+    # k fixed planes
+    for k in range(3):
+        lines.append(tuple(_idx(d, d, k) for d in range(3)))
+        lines.append(tuple(_idx(d, 2 - d, k) for d in range(3)))
+
+    # Space diagonals
+    lines.append(tuple(_idx(d, d, d) for d in range(3)))
+    lines.append(tuple(_idx(d, d, 2 - d) for d in range(3)))
+    lines.append(tuple(_idx(d, 2 - d, d) for d in range(3)))
+    lines.append(tuple(_idx(d, 2 - d, 2 - d) for d in range(3)))
+
+    return tuple(lines)
+
+LINES = _generate_lines()
+
+CELL_TO_LINES = [[] for _ in range(27)]
+for li, line in enumerate(LINES):
+    for c in line:
+        CELL_TO_LINES[c].append(li)
+CELL_TO_LINES = tuple(tuple(v) for v in CELL_TO_LINES)
+
+# Positional value = how many winning lines pass through the cell
+POSITION_WEIGHT = tuple(len(CELL_TO_LINES[c]) for c in range(27))
+
+WIN_SCORE = 1000000
+
+# ---------- Helpers ----------
+
+def _flatten(board):
+    return tuple(board[i][j][k] for i in range(3) for j in range(3) for k in range(3))
+
+@lru_cache(maxsize=None)
+def _winner(state):
+    for a, b, c in LINES:
+        s = state[a]
+        if s != 0 and s == state[b] == state[c]:
+            return s
+    return 0
+
+def _legal_moves(state):
+    return [i for i, v in enumerate(state) if v == 0]
+
+def _play(state, move, player):
+    lst = list(state)
+    lst[move] = player
+    return tuple(lst)
+
+@lru_cache(maxsize=None)
+def _immediate_wins(state, player):
+    wins = []
+    for line in LINES:
+        vals = [state[x] for x in line]
+        if vals.count(player) == 2 and vals.count(0) == 1:
+            wins.append(line[vals.index(0)])
+    # deduplicate while preserving order
+    seen = set()
+    out = []
+    for w in wins:
+        if w not in seen:
+            seen.add(w)
+            out.append(w)
+    return tuple(out)
+
+@lru_cache(maxsize=None)
+def _evaluate(state):
+    w = _winner(state)
+    if w == 1:
+        return WIN_SCORE
+    if w == -1:
+        return -WIN_SCORE
+
+    score = 0
+
+    # Positional contribution
+    for i, v in enumerate(state):
+        if v != 0:
+            score += v * POSITION_WEIGHT[i] * 2
+
+    # Line-based contribution
+    # Positive = good for us (1), negative = good for opponent (-1)
+    for a, b, c in LINES:
+        vals = (state[a], state[b], state[c])
+        c1 = vals.count(1)
+        c2 = vals.count(-1)
+
+        if c1 and c2:
+            continue  # blocked line
+
+        if c1:
+            if c1 == 1:
+                score += 8
+            elif c1 == 2:
+                score += 80
+        elif c2:
+            if c2 == 1:
+                score -= 9
+            elif c2 == 2:
+                score -= 95
+
+    # Threat count bonus/penalty
+    my_wins = len(_immediate_wins(state, 1))
+    opp_wins = len(_immediate_wins(state, -1))
+    score += my_wins * 150
+    score -= opp_wins * 170
+
+    return score
+
+def _move_heuristic(state, move, player, opp_threats):
+    # Fast ordering heuristic
+    score = 0
+
+    # Blocking immediate threat
+    if move in opp_threats:
+        score += 5000
+
+    new_state = _play(state, move, player)
+
+    # Immediate win
+    if _winner(new_state) == player:
+        score += 100000
+
+    # Create threats
+    my_threats = len(_immediate_wins(new_state, player))
+    opp_next_threats = len(_immediate_wins(new_state, -player))
+    score += my_threats * 400
+    score -= opp_next_threats * 250
+
+    # Positional weight
+    score += POSITION_WEIGHT[move] * 10
+
+    # Local line potential
+    for li in CELL_TO_LINES[move]:
+        line = LINES[li]
+        vals = [state[x] for x in line]
+        c_me = vals.count(player)
+        c_opp = vals.count(-player)
+        if c_opp == 0:
+            if c_me == 0:
+                score += 3
+            elif c_me == 1:
+                score += 20
+            elif c_me == 2:
+                score += 200
+        if c_me == 0:
+            if c_opp == 1:
+                score += 10
+            elif c_opp == 2:
+                score += 120
+
+    return score
+
+# ---------- Alpha-beta search ----------
+
+@lru_cache(maxsize=None)
+def _max_value(state, depth, alpha, beta):
+    w = _winner(state)
+    if w == 1:
+        return WIN_SCORE + depth
+    if w == -1:
+        return -WIN_SCORE - depth
+
+    moves = _legal_moves(state)
+    if depth == 0 or not moves:
+        return _evaluate(state)
+
+    opp_threats = set(_immediate_wins(state, -1))
+    ordered = sorted(
+        moves,
+        key=lambda m: _move_heuristic(state, m, 1, opp_threats),
+        reverse=True
+    )
+
+    value = -10**18
+    for m in ordered:
+        child = _play(state, m, 1)
+        value = max(value, _min_value(child, depth - 1, alpha, beta))
+        alpha = max(alpha, value)
+        if alpha >= beta:
+            break
+    return value
+
+@lru_cache(maxsize=None)
+def _min_value(state, depth, alpha, beta):
+    w = _winner(state)
+    if w == 1:
+        return WIN_SCORE + depth
+    if w == -1:
+        return -WIN_SCORE - depth
+
+    moves = _legal_moves(state)
+    if depth == 0 or not moves:
+        return _evaluate(state)
+
+    my_threats = set(_immediate_wins(state, 1))
+    ordered = sorted(
+        moves,
+        key=lambda m: _move_heuristic(state, m, -1, my_threats),
+        reverse=True
+    )
+
+    value = 10**18
+    for m in ordered:
+        child = _play(state, m, -1)
+        value = min(value, _max_value(child, depth - 1, alpha, beta))
+        beta = min(beta, value)
+        if alpha >= beta:
+            break
+    return value
+
+def _choose_depth(empty_count):
+    # Adaptive depth to stay within time limits
+    if empty_count <= 8:
+        return empty_count  # solve to end
+    if empty_count <= 12:
+        return 6
+    if empty_count <= 16:
+        return 4
+    return 3
+
+# ---------- Main policy ----------
+
+def policy(board):
+    state = _flatten(board)
+    moves = _legal_moves(state)
+
+    # Safety fallback: should never happen in a valid non-terminal game
+    if not moves:
+        return (0, 0, 0)
+
+    # 1) Immediate winning move
+    my_wins = _immediate_wins(state, 1)
+    if my_wins:
+        return _coord(my_wins[0])
+
+    # 2) Block opponent immediate win if possible
+    opp_wins = _immediate_wins(state, -1)
+    if opp_wins:
+        # If multiple threats exist, we may not be able to stop all,
+        # so choose the best blocking move by heuristic/search.
+        blocking_moves = [m for m in moves if m in set(opp_wins)]
+        if blocking_moves:
+            best_block = max(
+                blocking_moves,
+                key=lambda m: _move_heuristic(state, m, 1, set(opp_wins))
+            )
+            return _coord(best_block)
+
+    # 3) Strong opening preference: center
+    center = _idx(1, 1, 1)
+    if state[center] == 0:
+        return (1, 1, 1)
+
+    # 4) Alpha-beta search
+    depth = _choose_depth(len(moves))
+    opp_threats = set(opp_wins)
+
+    ordered_moves = sorted(
+        moves,
+        key=lambda m: _move_heuristic(state, m, 1, opp_threats),
+        reverse=True
+    )
+
+    best_move = ordered_moves[0]
+    best_value = -10**18
+    alpha = -10**18
+    beta = 10**18
+
+    for m in ordered_moves:
+        child = _play(state, m, 1)
+        val = _min_value(child, depth - 1, alpha, beta)
+        if val > best_value:
+            best_value = val
+            best_move = m
+        alpha = max(alpha, best_value)
+
+    # Final legality guard
+    if state[best_move] != 0:
+        for m in moves:
+            if state[m] == 0:
+                best_move = m
+                break
+
+    return _coord(best_move)
+</code>

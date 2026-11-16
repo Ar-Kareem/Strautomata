@@ -1,0 +1,93 @@
+
+import random
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    BOARD_SIZE = 19
+    occupied = set(me) | set(opponent)
+    
+    def get_liberties(stones):
+        stone_set = set(stones)
+        liberties = set()
+        for r, c in stones:
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = r + dr, c + dc
+                if 1 <= nr <= BOARD_SIZE and 1 <= nc <= BOARD_SIZE:
+                    if (nr, nc) not in occupied:
+                        liberties.add((nr, nc))
+        return liberties
+
+    def find_groups(stones):
+        stones_set = set(stones)
+        visited = set()
+        groups = []
+        for s in stones:
+            if s not in visited:
+                group = []
+                stack = [s]
+                visited.add(s)
+                while stack:
+                    curr = stack.pop()
+                    group.append(curr)
+                    for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                        neighbor = (curr[0] + dr, curr[1] + dc)
+                        if neighbor in stones_set and neighbor not in visited:
+                            visited.add(neighbor)
+                            stack.append(neighbor)
+                groups.append(group)
+        return groups
+
+    # 1. Capture opponent groups in Atari
+    opp_groups = find_groups(opponent)
+    for group in opp_groups:
+        libs = get_liberties(group)
+        if len(libs) == 1:
+            move = list(libs)[0]
+            return move
+
+    # 2. Save own groups in Atari
+    my_groups = find_groups(me)
+    for group in my_groups:
+        libs = get_liberties(group)
+        if len(libs) == 1:
+            move = list(libs)[0]
+            # Simple check: if I place here, does it gain liberties?
+            test_occupied = occupied | {move}
+            future_libs = 0
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = move[0] + dr, move[1] + dc
+                if 1 <= nr <= BOARD_SIZE and 1 <= nc <= BOARD_SIZE and (nr, nc) not in test_occupied:
+                    future_libs += 1
+            if future_libs > 0:
+                return move
+
+    # 3. Opening / Territorial moves
+    priority_moves = [(4, 4), (4, 16), (16, 4), (16, 16), (4, 10), (10, 4), (10, 16), (16, 10)]
+    for move in priority_moves:
+        if move not in occupied:
+            return move
+
+    # 4. Greedy search for move with most liberties
+    best_move = (0, 0)
+    max_libs = -1
+    
+    # Slice search space to fit time constraints if board is empty
+    candidates = []
+    for r in range(1, BOARD_SIZE + 1):
+        for c in range(1, BOARD_SIZE + 1):
+            if (r, c) not in occupied:
+                candidates.append((r, c))
+    
+    random.shuffle(candidates)
+    # Check max 200 candidates to stay within 1s
+    for r, c in candidates[:200]:
+        # Basic suicide check (doesn't account for multi-stone capture, but safe)
+        libs = 0
+        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nr, nc = r + dr, c + dc
+            if 1 <= nr <= BOARD_SIZE and 1 <= nc <= BOARD_SIZE and (nr, nc) not in occupied:
+                libs += 1
+        if libs > max_libs:
+            max_libs = libs
+            best_move = (r, c)
+
+    return best_move if best_move != (0, 0) else (0, 0)

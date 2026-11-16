@@ -1,0 +1,341 @@
+The strategy for this policy is a tactical alpha-beta search with Pentago-specific heuristics:
+
+- It always returns a legal move, with a safe fallback.
+- It searches game states a few plies ahead:
+  - deeper in the endgame,
+  - shallower in the opening/midgame for speed.
+- It immediately takes a true win if available.
+- It avoids moves that let the rotation hand the win to the opponent.
+- Its evaluation favors:
+  - strong 5-cell line potential,
+  - creating 4-in-a-row threats,
+  - central and stable positions.
+
+This makes it much stronger than a greedy or random policy while staying fast enough for the time limit.
+
+<code>
+from functools import lru_cache
+
+# =========================
+# Precomputed board data
+# =========================
+
+BOARD_N = 6
+FULL_MASK = (1 << 36) - 1
+DIR_CHARS = ("L", "R")
+WIN_VALUE = 1_000_000
+INF = 10 ** 9
+
+# Positional weights: favor center-ish cells and quadrant centers.
+_POS_MATRIX = [
+    [3, 4, 4, 4, 4, 3],
+    [4, 7, 5, 5, 7, 4],
+    [4, 5, 8, 8, 5, 4],
+    [4, 5, 8, 8, 5, 4],
+    [4, 7, 5, 5, 7, 4],
+    [3, 4, 4, 4, 4, 3],
+]
+POS_WEIGHTS = tuple(_POS_MATRIX[r][c] for r in range(6) for c in range(6))
+
+# Order cells by weight descending, then nearer the middle for tie-breaks.
+CELL_ORDER = tuple(sorted(
+    range(36),
+    key=lambda p: (
+        POS_WEIGHTS[p],
+        -abs((p // 6) - 2.5) - abs((p % 6) - 2.5)
+    ),
+    reverse=True
+))
+
+POS_TO_QUAD = tuple((r // 3) * 2 + (c // 3) for r in range(6) for c in range(6))
+QUAD_ORDER = tuple(tuple([q] + [x for x in range(4) if x != q]) for q in range(4))
+
+# 5-cell winning segment masks.
+WIN_MASKS = []
+
+# Rows
+for r in range(6):
+    for c0 in range(2):
+        m = 0
+        for k in range(5):
+            m |= 1 << (r * 6 + (c0 + k))
+        WIN_MASKS.append(m)
+
+# Cols
+for c in range(6):
+    for r0 in range(2):
+        m = 0
+        for k in range(5):
+            m |= 1 << ((r0 + k) * 6 + c)
+        WIN_MASKS.append(m)
+
+# Diag down-right
+for r0 in range(2):
+    for c0 in range(2):
+        m = 0
+        for k in range(5):
+            m |= 1 << ((r0 + k) * 6 + (c0 + k))
+        WIN_MASKS.append(m)
+
+# Diag down-left
+for r0 in range(2):
+    for c0 in range(4, 6):
+        m = 0
+        for k in range(5):
+            m |= 1 << ((r0 + k) * 6 + (c0 - k))
+        WIN_MASKS.append(m)
+
+WIN_MASKS = tuple(WIN_MASKS)
+
+# Line scoring for nonterminal positions.
+LINE_SCORES = (0, 1, 8, 50, 400, 0)
+
+# Quadrant definitions
+QUAD_CELLS = []
+QUAD_MASKS = []
+for q in range(4):
+    r0 = 0 if q < 2 else 3
+    c0 = 0 if (q % 2) == 0 else 3
+    cells = tuple((r0 + rr) * 6 + (c0 + cc) for rr in range(3) for cc in range(3))
+    QUAD_CELLS.append(cells)
+    qm = 0
+    for g in cells:
+        qm |= 1 << g
+    QUAD_MASKS.append(qm)
+QUAD_CELLS = tuple(QUAD_CELLS)
+QUAD_MASKS = tuple(QUAD_MASKS)
+
+# Rotation maps: local old index -> local new index
+ROT_L = (6, 3, 0, 7, 4, 1, 8, 5, 2)  # CCW
+ROT_R = (2, 5, 8, 1, 4, 7, 0, 3, 6)  # CW
+ROT_MAPS = (ROT_L, ROT_R)
+
+# Precompute rotated quadrant patterns: [quad][dir][9-bit pattern] -> global mask
+ROTATED_PATTERNS = []
+for q in range(4):
+    cells = QUAD_CELLS[q]
+    by_dir = []
+    for rot in ROT_MAPS:
+        arr = [0] * 512
+        for pat in range(512):
+            gm = 0
+            for old_local in range(9):
+                if (pat >> old_local) & 1:
+                    gm |= 1 << cells[rot[old_local]]
+            arr[pat] = gm
+        by_dir.append(tuple(arr))
+    ROTATED_PATTERNS.append(tuple(by_dir))
+ROTATED_PATTERNS = tuple(ROTATED_PATTERNS)
+
+
+# =========================
+# Bitboard helpers
+# =========================
+
+def board_to_bits(board) -> int:
+    bits = 0
+    for r in range(6):
+        row = board[r]
+        for c in range(6):
+            if row[c]:
+                bits |= 1 << (r * 6 + c)
+    return bits
+
+
+def move_to_str(pos: int, quad: int, dir_idx: int) -> str:
+    return f"{pos // 6 + 1},{pos % 6 + 1},{quad},{DIR_CHARS[dir_idx]}"
+
+
+def first_legal_move_str(occ: int) -> str:
+    for pos in CELL_ORDER:
+        if ((occ >> pos) & 1) == 0:
+            return move_to_str(pos, 0, 0)
+    # Should never happen per problem statement.
+    return "1,1,0,L"
+
+
+def rotate_bits(bits: int, quad: int, dir_idx: int) -> int:
+    cells = QUAD_CELLS[quad]
+    pat = 0
+    pat |= ((bits >> cells[0]) & 1) << 0
+    pat |= ((bits >> cells[1]) & 1) << 1
+    pat |= ((bits >> cells[2]) & 1) << 2
+    pat |= ((bits >> cells[3]) & 1) << 3
+    pat |= ((bits >> cells[4]) & 1) << 4
+    pat |= ((bits >> cells[5]) & 1) << 5
+    pat |= ((bits >> cells[6]) & 1) << 6
+    pat |= ((bits >> cells[7]) & 1) << 7
+    pat |= ((bits >> cells[8]) & 1) << 8
+    return (bits & ~QUAD_MASKS[quad]) | ROTATED_PATTERNS[quad][dir_idx][pat]
+
+
+def apply_root_move(y: int, o: int, pos: int, quad: int, dir_idx: int):
+    y |= 1 << pos
+    y = rotate_bits(y, quad, dir_idx)
+    o = rotate_bits(o, quad, dir_idx)
+    return y, o
+
+
+def apply_opp_move(y: int, o: int, pos: int, quad: int, dir_idx: int):
+    o |= 1 << pos
+    y = rotate_bits(y, quad, dir_idx)
+    o = rotate_bits(o, quad, dir_idx)
+    return y, o
+
+
+def iter_moves(occ: int):
+    for pos in CELL_ORDER:
+        if ((occ >> pos) & 1) == 0:
+            pq = POS_TO_QUAD[pos]
+            for quad in QUAD_ORDER[pq]:
+                yield pos, quad, 0
+                yield pos, quad, 1
+
+
+@lru_cache(maxsize=None)
+def has_five(bits: int) -> bool:
+    for mask in WIN_MASKS:
+        if (bits & mask) == mask:
+            return True
+    return False
+
+
+@lru_cache(maxsize=None)
+def terminal_status(y: int, o: int):
+    yw = has_five(y)
+    ow = has_five(o)
+    if yw and ow:
+        return 0
+    if yw:
+        return 1
+    if ow:
+        return -1
+    if (y | o) == FULL_MASK:
+        return 0
+    return None
+
+
+def terminal_value(status: int, depth_left: int) -> int:
+    if status > 0:
+        return WIN_VALUE + depth_left
+    if status < 0:
+        return -WIN_VALUE - depth_left
+    return 0
+
+
+@lru_cache(maxsize=None)
+def heuristic(y: int, o: int) -> int:
+    score = 0
+
+    # Line potential
+    for mask in WIN_MASKS:
+        ym = y & mask
+        om = o & mask
+        if ym and om:
+            continue
+        if ym:
+            score += LINE_SCORES[ym.bit_count()]
+        elif om:
+            score -= LINE_SCORES[om.bit_count()]
+
+    # Positional value
+    b = y
+    while b:
+        lsb = b & -b
+        score += POS_WEIGHTS[lsb.bit_length() - 1]
+        b ^= lsb
+
+    b = o
+    while b:
+        lsb = b & -b
+        score -= POS_WEIGHTS[lsb.bit_length() - 1]
+        b ^= lsb
+
+    return score
+
+
+def search(y: int, o: int, depth: int, alpha: int, beta: int, root_turn: bool) -> int:
+    t = terminal_status(y, o)
+    if t is not None:
+        return terminal_value(t, depth)
+    if depth == 0:
+        return heuristic(y, o)
+
+    occ = y | o
+
+    if root_turn:
+        best = -INF
+        for pos, quad, dir_idx in iter_moves(occ):
+            y2, o2 = apply_root_move(y, o, pos, quad, dir_idx)
+            val = search(y2, o2, depth - 1, alpha, beta, False)
+            if val > best:
+                best = val
+            if best > alpha:
+                alpha = best
+            if alpha >= beta:
+                break
+        return best
+    else:
+        best = INF
+        for pos, quad, dir_idx in iter_moves(occ):
+            y2, o2 = apply_opp_move(y, o, pos, quad, dir_idx)
+            val = search(y2, o2, depth - 1, alpha, beta, True)
+            if val < best:
+                best = val
+            if best < beta:
+                beta = best
+            if alpha >= beta:
+                break
+        return best
+
+
+def policy(you, opponent) -> str:
+    y = board_to_bits(you)
+    o = board_to_bits(opponent)
+    occ = y | o
+    fallback = first_legal_move_str(occ)
+
+    try:
+        empties = 36 - occ.bit_count()
+
+        # Adaptive depth:
+        # opening/midgame: 2 plies
+        # late midgame:     3 plies
+        # endgame:          4 plies
+        if empties <= 5:
+            total_depth = 4
+        elif empties <= 8:
+            total_depth = 3
+        else:
+            total_depth = 2
+
+        best_move = None
+        best_val = -INF
+        alpha = -INF
+
+        for pos, quad, dir_idx in iter_moves(occ):
+            y2, o2 = apply_root_move(y, o, pos, quad, dir_idx)
+            t = terminal_status(y2, o2)
+
+            if t == 1:
+                return move_to_str(pos, quad, dir_idx)
+
+            if t is not None:
+                val = terminal_value(t, total_depth - 1)
+            else:
+                val = search(y2, o2, total_depth - 1, alpha, INF, False)
+
+            if (best_move is None) or (val > best_val):
+                best_val = val
+                best_move = (pos, quad, dir_idx)
+                if val > alpha:
+                    alpha = val
+
+        if best_move is None:
+            return fallback
+        return move_to_str(*best_move)
+
+    except Exception:
+        # Guaranteed legal fallback.
+        return fallback
+</code>

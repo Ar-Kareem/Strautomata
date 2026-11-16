@@ -1,0 +1,189 @@
+
+import random
+import copy
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    color_map = {'white': 'w', 'black': 'b'}
+    opp_color_map = {'white': 'b', 'black': 'w'}
+    color = color_map[to_play]
+    opp_color = opp_color_map[to_play]
+    
+    # Piece values
+    piece_values = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 1000}
+    
+    # Create board: 8x8 list, row 0 = rank 1, col 0 = a
+    board = [['' for _ in range(8)] for _ in range(8)]
+    for sq, piece in pieces.items():
+        f = ord(sq[0]) - ord('a')
+        r = int(sq[1]) - 1
+        board[r][f] = piece
+    
+    def is_empty(nr, nc):
+        return 0 <= nr < 8 and 0 <= nc < 8 and board[nr][nc] == ''
+    
+    def is_opponent(nr, nc):
+        return 0 <= nr < 8 and 0 <= nc < 8 and board[nr][nc] != '' and board[nr][nc][0] != color
+    
+    # Generate legal_moves (pseudolegal)
+    legal_moves = []
+    
+    for from_sq in pieces:
+        if pieces[from_sq][0] != color:
+            continue
+        piece = pieces[from_sq][1]
+        f = ord(from_sq[0]) - ord('a')
+        r = int(from_sq[1]) - 1
+        
+        if piece == 'K':
+            for dr, dc in [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]:
+                nr, nc = r + dr, f + dc
+                if is_empty(nr, nc) or is_opponent(nr, nc):
+                    to_sq = chr(nc + ord('a')) + str(nr + 1)
+                    legal_moves.append(from_sq + to_sq)
+            # Castling
+            if to_play == 'white' and from_sq == 'e1':
+                if 'h1' in pieces and pieces['h1'] == 'wR' and all(is_empty(0, nc) for nc in [5,6]):
+                    legal_moves.append('e1g1')
+                if 'a1' in pieces and pieces['a1'] == 'wR' and all(is_empty(0, nc) for nc in [1,2,3]):
+                    legal_moves.append('e1c1')
+            elif to_play == 'black' and from_sq == 'e8':
+                if 'h8' in pieces and pieces['h8'] == 'bR' and all(is_empty(7, nc) for nc in [5,6]):
+                    legal_moves.append('e8g8')
+                if 'a8' in pieces and pieces['a8'] == 'bR' and all(is_empty(7, nc) for nc in [1,2,3]):
+                    legal_moves.append('e8c8')
+        
+        elif piece == 'R':
+            directions = [(-1,0),(1,0),(0,-1),(0,1)]
+            for dr, dc in directions:
+                nr, nc = r + dr, f + dc
+                while 0 <= nr < 8 and 0 <= nc < 8:
+                    if board[nr][nc] == '':
+                        to_sq = chr(nc + ord('a')) + str(nr + 1)
+                        legal_moves.append(from_sq + to_sq)
+                    elif board[nr][nc][0] != color:
+                        to_sq = chr(nc + ord('a')) + str(nr + 1)
+                        legal_moves.append(from_sq + to_sq)
+                        break
+                    else:
+                        break
+                    nr += dr
+                    nc += dc
+        
+        elif piece == 'B':
+            directions = [(-1,-1),(-1,1),(1,-1),(1,1)]
+            for dr, dc in directions:
+                nr, nc = r + dr, f + dc
+                while 0 <= nr < 8 and 0 <= nc < 8:
+                    if board[nr][nc] == '':
+                        to_sq = chr(nc + ord('a')) + str(nr + 1)
+                        legal_moves.append(from_sq + to_sq)
+                    elif board[nr][nc][0] != color:
+                        to_sq = chr(nc + ord('a')) + str(nr + 1)
+                        legal_moves.append(from_sq + to_sq)
+                        break
+                    else:
+                        break
+                    nr += dr
+                    nc += dc
+        
+        elif piece == 'Q':
+            directions = [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)]
+            for dr, dc in directions:
+                nr, nc = r + dr, f + dc
+                while 0 <= nr < 8 and 0 <= nc < 8:
+                    if board[nr][nc] == '':
+                        to_sq = chr(nc + ord('a')) + str(nr + 1)
+                        legal_moves.append(from_sq + to_sq)
+                    elif board[nr][nc][0] != color:
+                        to_sq = chr(nc + ord('a')) + str(nr + 1)
+                        legal_moves.append(from_sq + to_sq)
+                        break
+                    else:
+                        break
+                    nr += dr
+                    nc += dc
+        
+        elif piece == 'N':
+            deltas = [(-2,-1),(-2,1),(-1,-2),(-1,2),(1,-2),(1,2),(2,-1),(2,1)]
+            for dr, dc in deltas:
+                nr, nc = r + dr, f + dc
+                if is_empty(nr, nc) or is_opponent(nr, nc):
+                    to_sq = chr(nc + ord('a')) + str(nr + 1)
+                    legal_moves.append(from_sq + to_sq)
+        
+        elif piece == 'P':
+            dr = 1 if to_play == 'white' else -1
+            prom_rank = 7 if to_play == 'white' else 0
+            # Forward
+            nr = r + dr
+            if is_empty(nr, f):
+                to_sq = chr(f + ord('a')) + str(nr + 1)
+                if nr == prom_rank:
+                    for prom in ['q','r','b','n']:
+                        legal_moves.append(from_sq + to_sq + prom)
+                else:
+                    legal_moves.append(from_sq + to_sq)
+                    # Double
+                    if (r == 1 and dr == 1) or (r == 6 and dr == -1):
+                        nr2 = r + 2 * dr
+                        if is_empty(nr2, f):
+                            to_sq2 = chr(f + ord('a')) + str(nr2 + 1)
+                            legal_moves.append(from_sq + to_sq2)
+            # Captures
+            for dc in [-1, 1]:
+                nr = r + dr
+                nc = f + dc
+                if is_opponent(nr, nc):
+                    to_sq = chr(nc + ord('a')) + str(nr + 1)
+                    if nr == prom_rank:
+                        for prom in ['q','r','b','n']:
+                            legal_moves.append(from_sq + to_sq + prom)
+                    else:
+                        legal_moves.append(from_sq + to_sq)
+    
+    # Evaluate function
+    def evaluate(b):
+        my_mat = 0
+        opp_mat = 0
+        for row in b:
+            for cell in row:
+                if cell:
+                    val = piece_values[cell[1]]
+                    if cell[0] == color:
+                        my_mat += val
+                    else:
+                        opp_mat += val
+        return my_mat - opp_mat
+    
+    # Simulate each move
+    best_moves = []
+    best_eval = float('-inf')
+    for move in legal_moves:
+        from_sq = move[:2]
+        to_sq = move[2:4]
+        prom = move[4:] if len(move) > 4 else ''
+        
+        # Apply move on copy
+        b_copy = copy.deepcopy(board)
+        fr = int(from_sq[1]) - 1
+        ff = ord(from_sq[0]) - ord('a')
+        tr = int(to_sq[1]) - 1
+        tf = ord(to_sq[0]) - ord('a')
+        
+        piece_moving = b_copy[fr][ff]
+        b_copy[fr][ff] = ''
+        if prom:
+            new_piece = color + prom.upper()
+        else:
+            new_piece = piece_moving
+        b_copy[tr][tf] = new_piece
+        
+        ev = evaluate(b_copy)
+        if ev > best_eval:
+            best_eval = ev
+            best_moves = [move]
+        elif ev == best_eval:
+            best_moves.append(move)
+    
+    # Return random best move
+    return random.choice(best_moves)

@@ -1,0 +1,84 @@
+<thinking>
+To create an effective targeting policy for a Battleship game, we need a strategy that balances between hunting for ships and targeting known hits to sink them efficiently. Here's the approach I'll implement:
+
+1. **Initial Hunting Phase**: Start with a probabilistic approach to find ships efficiently. Use a probability density that favors positions where ships are more likely to be placed (considering all possible ship configurations).
+
+2. **Targeting Phase**: Once a hit is found, switch to a targeting strategy to sink the entire ship:
+   - Check neighboring cells to determine the ship's orientation (horizontal or vertical)
+   - Continue firing along the determined direction until the ship is sunk
+
+3. **Edge Handling**: Account for board edges where ships can't extend beyond the grid boundaries.
+
+4. **Efficiency**: The algorithm should be fast enough to run within 1 second, even on large boards.
+
+5. **Avoid Repeating Shots**: Ensure we never target the same cell twice by only considering cells with value 0.
+
+Key optimizations:
+- Use numpy for efficient matrix operations
+- Precompute ship probabilities only for unknown cells
+- Prioritize cells adjacent to hits when in targeting mode
+
+The implementation will combine probability-based hunting with deterministic targeting logic once a hit is found.
+</thinking>
+
+<code>
+import numpy as np
+from collections import deque
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Convert board to numpy array for easier manipulation
+    board = np.array(board)
+    rows, cols = board.shape
+    
+    # First, check if we have any hits to target
+    hit_positions = np.argwhere(board == 1)
+    
+    if len(hit_positions) > 0:
+        # We have hits - try to sink the ship
+        for (r, c) in hit_positions:
+            # Check neighboring cells for potential ship continuation
+            neighbors = [
+                (r-1, c), (r+1, c), (r, c-1), (r, c+1)
+            ]
+            
+            # Filter valid neighbors that are unknown and inside the board
+            valid_neighbors = [
+                (nr, nc) for (nr, nc) in neighbors
+                if 0 <= nr < rows and 0 <= nc < cols and board[nr, nc] == 0
+            ]
+            
+            if valid_neighbors:
+                return valid_neighbors[0]
+    
+    # No current hits to target - use probability-based hunting
+    # Create probability density considering all possible ship positions
+    prob = np.zeros((rows, cols))
+    
+    # Ships to consider: lengths 2, 3, 3, 4, 5
+    ship_lengths = [2, 3, 3, 4, 5]
+    
+    for length in ship_lengths:
+        # Horizontal ships
+        for r in range(rows):
+            for c in range(cols - length + 1):
+                if np.all(board[r, c:c+length] <= 0):
+                    prob[r, c:c+length] += 1
+        
+        # Vertical ships
+        for c in range(cols):
+            for r in range(rows - length + 1):
+                if np.all(board[r:r+length, c] <= 0):
+                    prob[r:r+length, c] += 1
+    
+    # Zero out already attempted positions
+    prob[board != 0] = 0
+    
+    # If no probability left (shouldn't happen in valid game), pick first available
+    if np.max(prob) == 0:
+        available = np.argwhere(board == 0)
+        return tuple(available[0])
+    
+    # Return position with highest probability
+    max_prob_pos = np.unravel_index(np.argmax(prob), prob.shape)
+    return (max_prob_pos[0], max_prob_pos[1])
+</code>

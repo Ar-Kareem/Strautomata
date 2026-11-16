@@ -1,0 +1,62 @@
+
+import numpy as np
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Initialize a 10x10 probability grid
+    probabilities = [[0]*10 for _ in range(10)]
+    ship_lengths = [5, 4, 3, 3, 2]  # All opponent ship lengths
+
+    for length in ship_lengths:
+        # Check all horizontal lines for this ship length
+        for row in range(10):
+            max_start_col = 10 - length
+            for start_col in range(max_start_col + 1):
+                valid = True
+                has_zero = False
+                # Check if this horizontal line is valid (no misses and at least one unknown)
+                for delta in range(length):
+                    c = start_col + delta
+                    cell_val = board[row][c]
+                    if cell_val == -1:
+                        valid = False
+                        break
+                    if cell_val == 0:
+                        has_zero = True
+                if valid and has_zero:
+                    # Increment probabilities for all cells in this valid line
+                    for delta in range(length):
+                        c = start_col + delta
+                        probabilities[row][c] += 1
+
+        # Check all vertical lines for this ship length
+        for col in range(10):
+            max_start_row = 10 - length
+            for start_row in range(max_start_row + 1):
+                valid = True
+                has_zero = False
+                # Check if this vertical line is valid
+                for delta in range(length):
+                    r = start_row + delta
+                    cell_val = board[r][col]
+                    if cell_val == -1:
+                        valid = False
+                        break
+                    if cell_val == 0:
+                        has_zero = True
+                if valid and has_zero:
+                    # Increment probabilities for all cells in this valid line
+                    for delta in range(length):
+                        r = start_row + delta
+                        probabilities[r][col] += 1
+
+    # Find the cell with the highest probability that hasn't been fired at yet
+    max_prob = -1
+    best_r, best_c = 0, 0
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0:  # Only consider unattacked cells
+                if probabilities[r][c] > max_prob:
+                    max_prob = probabilities[r][c]
+                    best_r, best_c = r, c
+
+    return (best_r, best_c)

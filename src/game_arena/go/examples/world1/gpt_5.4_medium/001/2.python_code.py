@@ -1,0 +1,342 @@
+
+from typing import List, Tuple
+
+N = 19
+DIRS = ((1, 0), (-1, 0), (0, 1), (0, -1))
+DIAGS = ((1, 1), (1, -1), (-1, 1), (-1, -1))
+
+OPENING_WEIGHTS = {
+    (3, 3): 48, (3, 15): 48, (15, 3): 48, (15, 15): 48,   # 4-4 corners
+    (3, 9): 38, (9, 3): 38, (9, 15): 38, (15, 9): 38,     # side star points
+    (9, 9): 26,                                            # tengen
+    (2, 2): 14, (2, 16): 14, (16, 2): 14, (16, 16): 14,   # 3-3 corners
+}
+
+
+def build_board(me: List[Tuple[int, int]], opponent: List[Tuple[int, int]]) -> List[List[int]]:
+    board = [[0] * N for _ in range(N)]
+    for stones, color in ((opponent, 2), (me, 1)):
+        for r, c in stones:
+            rr = r - 1
+            cc = c - 1
+            if 0 <= rr < N and 0 <= cc < N and board[rr][cc] == 0:
+                board[rr][cc] = color
+    return board
+
+
+def analyze_groups(board: List[List[int]]):
+    group_map = [[-1] * N for _ in range(N)]
+    groups = []
+
+    gid = 0
+    for r in range(N):
+        for c in range(N):
+            color = board[r][c]
+            if color == 0 or group_map[r][c] != -1:
+                continue
+
+            group_map[r][c] = gid
+            stack = [(r, c)]
+            stones = []
+            libs = set()
+
+            while stack:
+                sr, sc = stack.pop()
+                stones.append((sr, sc))
+
+                for dr, dc in DIRS:
+                    nr = sr + dr
+                    nc = sc + dc
+                    if 0 <= nr < N and 0 <= nc < N:
+                        v = board[nr][nc]
+                        if v == 0:
+                            libs.add(nr * N + nc)
+                        elif v == color and group_map[nr][nc] == -1:
+                            group_map[nr][nc] = gid
+                            stack.append((nr, nc))
+
+            groups.append({
+                "color": color,
+                "stones": stones,
+                "libs": libs,
+                "size": len(stones),
+            })
+            gid += 1
+
+    return groups, group_map
+
+
+def group_and_liberties(board: List[List[int]], r: int, c: int):
+    color = board[r][c]
+    stack = [(r, c)]
+    seen = {(r, c)}
+    stones = []
+    libs = set()
+
+    while stack:
+        sr, sc = stack.pop()
+        stones.append((sr, sc))
+
+        for dr, dc in DIRS:
+            nr = sr + dr
+            nc = sc + dc
+            if 0 <= nr < N and 0 <= nc < N:
+                v = board[nr][nc]
+                if v == 0:
+                    libs.add(nr * N + nc)
+                elif v == color and (nr, nc) not in seen:
+                    seen.add((nr, nc))
+                    stack.append((nr, nc))
+
+    return stones, libs
+
+
+def is_eye_like(board: List[List[int]], r: int, c: int) -> bool:
+    if board[r][c] != 0:
+        return False
+
+    for dr, dc in DIRS:
+        nr = r + dr
+        nc = c + dc
+        if 0 <= nr < N and 0 <= nc < N:
+            if board[nr][nc] != 1:
+                return False
+
+    bad_diag = 0
+    diag_count = 0
+    for dr, dc in DIAGS:
+        nr = r + dr
+        nc = c + dc
+        if 0 <= nr < N and 0 <= nc < N:
+            diag_count += 1
+            if board[nr][nc] == 2:
+                bad_diag += 1
+
+    if diag_count == 4:
+        return bad_diag <= 1
+    return bad_diag == 0
+
+
+def simulate_move(board, groups, group_map, r: int, c: int):
+    if board[r][c] != 0:
+        return None
+
+    move_idx = r * N + c
+    temp = [row[:] for row in board]
+    temp[r][c] = 1
+
+    adj_opp_ids = set()
+    for dr, dc in DIRS:
+        nr = r + dr
+        nc = c + dc
+        if 0 <= nr < N and 0 <= nc < N and board[nr][nc] == 2:
+            adj_opp_ids.add(group_map[nr][nc])
+
+    captured = 0
+    for gid in adj_opp_ids:
+        g = groups[gid]
+        if len(g["libs"]) == 1 and move_idx in g["libs"]:
+            captured += g["size"]
+            for sr, sc in g["stones"]:
+                temp[sr][sc] = 0
+
+    own_stones, own_libs = group_and_liberties(temp, r, c)
+    if not own_libs:
+        return None
+
+    return captured, len(own_stones), len(own_libs)
+
+
+def evaluate_move(board, groups, group_map, occupied, total_stones: int, r: int, c: int):
+    if board[r][c] != 0:
+        return None
+
+    move_idx = r * N + c
+    adj_my_ids = set()
+    adj_opp_ids = set()
+    adj_my = 0
+    adj_opp = 0
+    adj_empty = 0
+
+    for dr, dc in DIRS:
+        nr = r + dr
+        nc = c + dc
+        if 0 <= nr < N and 0 <= nc < N:
+            v = board[nr][nc]
+            if v == 1:
+                adj_my += 1
+                adj_my_ids.add(group_map[nr][nc])
+            elif v == 2:
+                adj_opp += 1
+                adj_opp_ids.add(group_map[nr][nc])
+            else:
+                adj_empty += 1
+
+    sim = simulate_move(board, groups, group_map, r, c)
+    if sim is None:
+        return None
+
+    captured, own_size, own_libs = sim
+
+    rescued_groups = 0
+    rescued_size = 0
+    pressure_score = 0
+    support_score = 0
+
+    for gid in adj_my_ids:
+        g = groups[gid]
+        libs = len(g["libs"])
+        size = g["size"]
+        if move_idx in g["libs"]:
+            if libs == 1:
+                rescued_groups += 1
+                rescued_size += size
+            elif libs == 2:
+                support_score += 18 + 2 * min(size, 8)
+            elif libs == 3:
+                support_score += 8 + min(size, 5)
+
+    for gid in adj_opp_ids:
+        g = groups[gid]
+        libs = len(g["libs"])
+        size = g["size"]
+        if move_idx in g["libs"]:
+            if libs == 2:
+                pressure_score += 40 + 6 * min(size, 10)
+            elif libs == 3:
+                pressure_score += 12 + 2 * min(size, 10)
+
+    score = 0.0
+
+    # Tactical urgency
+    score += captured * 220 + captured * captured * 3
+    score += rescued_groups * 130 + rescued_size * 10
+    score += pressure_score
+    score += support_score
+
+    # Connection / cutting
+    if len(adj_my_ids) >= 2:
+        score += 50 * (len(adj_my_ids) - 1)
+        score += 4 * sum(groups[gid]["size"] for gid in adj_my_ids)
+    if len(adj_opp_ids) >= 2:
+        score += 20 * (len(adj_opp_ids) - 1)
+
+    # Resulting shape / liberties
+    score += 11 * min(own_libs, 4) + 2 * own_libs
+    score += min(own_size, 12)
+
+    if own_libs == 1 and captured == 0:
+        score -= 240
+    elif own_libs == 1:
+        score -= 60
+    elif own_libs == 2 and captured == 0:
+        score -= 25
+
+    # Own-eye filling
+    if is_eye_like(board, r, c) and captured == 0 and rescued_groups == 0:
+        score -= 140
+
+    # Ko-like recapture risk
+    if captured == 1 and own_libs == 1:
+        score -= 80
+
+    # Locality
+    score += 4 * adj_my + 3 * adj_opp + 1.5 * adj_empty
+
+    diag_my = 0
+    diag_opp = 0
+    diag_empty = 0
+    for dr, dc in DIAGS:
+        nr = r + dr
+        nc = c + dc
+        if 0 <= nr < N and 0 <= nc < N:
+            v = board[nr][nc]
+            if v == 1:
+                diag_my += 1
+            elif v == 2:
+                diag_opp += 1
+            else:
+                diag_empty += 1
+    score += 1.2 * diag_my + 0.8 * diag_opp + 0.3 * diag_empty
+
+    # Opening preference
+    if total_stones < 12:
+        score += OPENING_WEIGHTS.get((r, c), 0)
+
+        if occupied:
+            nearest = min(abs(r - rr) + abs(c - cc) for rr, cc in occupied)
+        else:
+            nearest = 8
+        score += 4 * min(nearest, 7)
+
+        if r in (0, 18) or c in (0, 18):
+            score -= 10
+        elif r in (1, 17) or c in (1, 17):
+            score -= 2
+
+        local_occ = 0
+        r0 = max(0, r - 2)
+        r1 = min(N, r + 3)
+        c0 = max(0, c - 2)
+        c1 = min(N, c + 3)
+        for rr in range(r0, r1):
+            row = board[rr]
+            for cc in range(c0, c1):
+                if row[cc] != 0:
+                    local_occ += 1
+        score -= 2.5 * local_occ
+    else:
+        r0 = max(0, r - 2)
+        r1 = min(N, r + 3)
+        c0 = max(0, c - 2)
+        c1 = min(N, c + 3)
+        open_area = 0
+        for rr in range(r0, r1):
+            row = board[rr]
+            for cc in range(c0, c1):
+                if row[cc] == 0:
+                    open_area += 1
+        score += 0.7 * open_area
+
+        dist_edge = min(r, c, 18 - r, 18 - c)
+        score += 1.5 * min(dist_edge, 4)
+
+        if adj_my + adj_opp == 0:
+            score -= 15
+
+    # Deterministic tie-breakers
+    center_pref = -abs(r - 9) - abs(c - 9)
+    edge_pref = min(r, c, 18 - r, 18 - c)
+
+    return (score, captured, rescued_groups, own_libs, edge_pref, center_pref)
+
+
+def policy(me: List[Tuple[int, int]], opponent: List[Tuple[int, int]]) -> Tuple[int, int]:
+    board = build_board(me, opponent)
+
+    occupied = []
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] != 0:
+                occupied.append((r, c))
+
+    total_stones = len(occupied)
+    if total_stones >= N * N:
+        return (0, 0)
+
+    groups, group_map = analyze_groups(board)
+
+    best_move = (0, 0)
+    best_value = None
+
+    for r in range(N):
+        row = board[r]
+        for c in range(N):
+            if row[c] != 0:
+                continue
+            value = evaluate_move(board, groups, group_map, occupied, total_stones, r, c)
+            if value is not None and (best_value is None or value > best_value):
+                best_value = value
+                best_move = (r + 1, c + 1)
+
+    return best_move if best_value is not None else (0, 0)

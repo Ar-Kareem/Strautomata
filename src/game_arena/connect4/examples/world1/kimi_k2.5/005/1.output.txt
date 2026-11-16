@@ -1,0 +1,202 @@
+ The strategy for this policy is to use **iterative deepening minimax with alpha-beta pruning**, enhanced with:
+
+1. **Immediate win detection**: Check if we can win in one move and play it.
+2. **Threat blocking**: Block opponent's immediate winning moves.
+3. **Heuristic evaluation**: Score board positions by counting windows of 2, 3, and 4 discs, with heavy weighting for the center column (strategic control).
+4. **Move ordering**: Prioritize center columns (3, 2, 4, 1, 5, 0, 6) to maximize alpha-beta pruning efficiency.
+5. **Time management**: Iterative deepening from depth 1 up to 7 (or until ~0.9s elapsed) ensures we always have a valid move ready.
+
+The search uses in-place board modifications with undo operations to avoid costly copying during recursion.
+
+<code>
+def policy(board: list[list[int]]) -> int:
+    import time
+    
+    start_time = time.time()
+    TIME_LIMIT = 0.9
+    
+    # Mutable board copy for simulation
+    b = [row[:] for row in board]
+    
+    def is_valid(col: int) -> bool:
+        return b[0][col] == 0
+    
+    def place(col: int, player: int):
+        """Place disc and return position (row, col). Assumes valid."""
+        for r in range(5, -1, -1):
+            if b[r][col] == 0:
+                b[r][col] = player
+                return r, col
+        return None
+    
+    def undo(row: int, col: int):
+        b[row][col] = 0
+    
+    def check_win(row: int, col: int, player: int) -> bool:
+        """Check if player has 4 in a row through (row, col)."""
+        directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
+        for dr, dc in directions:
+            count = 1
+            # Forward
+            for i in range(1, 4):
+                nr, nc = row + dr * i, col + dc * i
+                if 0 <= nr < 6 and 0 <= nc < 7 and b[nr][nc] == player:
+                    count += 1
+                else:
+                    break
+            # Backward
+            for i in range(1, 4):
+                nr, nc = row - dr * i, col - dc * i
+                if 0 <= nr < 6 and 0 <= nc < 7 and b[nr][nc] == player:
+                    count += 1
+                else:
+                    break
+            if count >= 4:
+                return True
+        return False
+    
+    # 1. Immediate win
+    for c in range(7):
+        if is_valid(c):
+            r, col = place(c, 1)
+            is_winner = check_win(r, col, 1)
+            undo(r, col)
+            if is_winner:
+                return c
+    
+    # 2. Block opponent win
+    block_cols = []
+    for c in range(7):
+        if is_valid(c):
+            r, col = place(c, -1)
+            is_opp_winner = check_win(r, col, -1)
+            undo(r, col)
+            if is_opp_winner:
+                block_cols.append(c)
+    if block_cols:
+        return block_cols[0]  # Must block, even if opponent has multiple threats
+    
+    # 3. Heuristic evaluation
+    def score_window(window: list) -> int:
+        me = window.count(1)
+        opp = window.count(-1)
+        empty = window.count(0)
+        
+        if me == 4:
+            return 100
+        if opp == 4:
+            return -100
+        if me == 3 and empty == 1:
+            return 10
+        if opp == 3 and empty == 1:
+            return -10
+        if me == 2 and empty == 2:
+            return 3
+        if opp == 2 and empty == 2:
+            return -3
+        return 0
+    
+    def evaluate() -> int:
+        score = 0
+        # Center column preference (column 3)
+        center_count = sum(1 for r in range(6) if b[r][3] == 1)
+        score += center_count * 6
+        
+        # Horizontal
+        for r in range(6):
+            for c in range(4):
+                window = [b[r][c+i] for i in range(4)]
+                score += score_window(window)
+        
+        # Vertical
+        for c in range(7):
+            for r in range(3):
+                window = [b[r+i][c] for i in range(4)]
+                score += score_window(window)
+        
+        # Diagonal /
+        for r in range(3):
+            for c in range(4):
+                window = [b[r+i][c+i] for i in range(4)]
+                score += score_window(window)
+        
+        # Diagonal \
+        for r in range(3, 6):
+            for c in range(4):
+                window = [b[r-i][c+i] for i in range(4)]
+                score += score_window(window)
+        
+        return score
+    
+    # 4. Minimax with Alpha-Beta
+    def minimax(depth: int, alpha: float, beta: float, maximizing: bool) -> float:
+        # Time check
+        if time.time() - start_time > TIME_LIMIT:
+            return 0
+        
+        # Terminal check
+        valid_moves = [c for c in range(7) if is_valid(c)]
+        if not valid_moves:
+            return 0
+        
+        if depth == 0:
+            return evaluate()
+        
+        # Move ordering: center first
+        ordered_moves = sorted(valid_moves, key=lambda x: -abs(3-x))
+        
+        if maximizing:
+            max_eval = float('-inf')
+            for c in ordered_moves:
+                r, col = place(c, 1)
+                if check_win(r, col, 1):
+                    undo(r, col)
+                    return 1000
+                eval_score = minimax(depth - 1, alpha, beta, False)
+                undo(r, col)
+                max_eval = max(max_eval, eval_score)
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for c in ordered_moves:
+                r, col = place(c, -1)
+                if check_win(r, col, -1):
+                    undo(r, col)
+                    return -1000
+                eval_score = minimax(depth - 1, alpha, beta, True)
+                undo(r, col)
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval
+    
+    # 5. Iterative Deepening
+    best_col = 3
+    for current_depth in range(1, 8):
+        if time.time() - start_time > TIME_LIMIT:
+            break
+        
+        best_val = float('-inf')
+        current_best = best_col
+        
+        ordered = sorted(range(7), key=lambda x: -abs(3-x))
+        for c in ordered:
+            if not is_valid(c):
+                continue
+            r, col = place(c, 1)
+            if check_win(r, col, 1):
+                return c
+            val = minimax(current_depth, float('-inf'), float('inf'), False)
+            undo(r, col)
+            if val > best_val:
+                best_val = val
+                current_best = c
+        
+        best_col = current_best
+    
+    return best_col
+</code>

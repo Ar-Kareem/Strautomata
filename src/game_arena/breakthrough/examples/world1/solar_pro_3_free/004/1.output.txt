@@ -1,0 +1,149 @@
+The strategy for this policy is a simple yet robust one‑move lookahead.  
+1. **Immediate‑win detection** – any legal move that puts a piece on the opponent’s home row (row 7 for white, row 0 for black) ends the game instantly, so those moves are chosen first.  
+2. **Safety check** – after the move we simulate the board and see whether the opponent can capture one of our pieces on its next turn. Moves that keep the opponent from being able to capture are preferred.  
+3. **Promotion‑capture priority** – when several safe moves exist we favour captures because they reduce the opponent’s piece count and often keep the king‑status for our piece.  
+4. **Forward‑move fallback** – if no safe capture is available we pick a forward move (only straight forward, never diagonal) that still gives a piece the most progress toward the opponent’s home row.  
+5. **Depth‑1 minimax** – the above safety check is a depth‑1 evaluation of the opponent’s capture options; we treat any capture as a losing threat, which forces us to either avoid it or eliminate an opponent piece.  
+6. **King handling** – pieces that have already reached the far side become kings and can move any diagonal square (forward or backward) when it is legal.  
+
+The code below implements this strategy in a clear, readable way while staying well under the 1 second time limit.
+
+<code>
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    """
+    Returns the next legal move for a Breakthrough game.
+    The move is a tuple ((from_row, from_col), (to_row, to_col)).
+    """
+    ROWS = 8
+    COLS = 8
+
+    # Determine the direction of movement.
+    delta = 1 if color == 'w' else -1
+
+    # Home rows: the line from which the player starts.
+    my_home_row = 0 if color == 'w' else 7   # where I start
+    opp_home_row = 7 if color == 'w' else 0 # where the opponent starts
+
+    # Build a dictionary of the current board (my pieces are 'me', opponent pieces are 'opp')
+    board = {}
+    for r, c in me:
+        board[(r, c)] = color
+    for r, c in opp:
+        board[(r, c)] = 'opp'
+
+    # Piece type (king = 1, regular = 0) for my pieces.
+    # A piece becomes a king when it reaches the opponent’s home row.
+    my_piece_type = { (r, c): (r == opp_home_row) for r, c in me }
+
+    # -----------------------------------------------------------------
+    # Helper: after we make a move, can the opponent capture any of my pieces?
+    # -----------------------------------------------------------------
+    def opponent_can_capture(after_board: dict):
+        opp_color = 'w' if color == 'b' else 'b'
+        opp_delta = 1 if opp_color == 'w' else -1
+
+        for (r, c) in opp:
+            opp_piece_type = 1 if r == my_home_row else 0   # own home row = farthest for opponent
+            if opp_piece_type == 0:  # regular piece
+                # only diagonal forward captures are possible
+                for dc in (-1, 1):
+                    target = (r + opp_delta, c + dc)
+                    if target in after_board and after_board[target] == color:
+                        return True
+            else:  # king: can move any diagonal
+                for dr in (-1, 1):
+                    for dc in (-1, 1):
+                        if dr == 0:   # straight move not allowed for kings
+                            continue
+                        target = (r + dr, c + dc)
+                        if target in after_board and after_board[target] == color:
+                            return True
+        return False
+
+    # -----------------------------------------------------------------
+    # Generate all legal moves for my pieces.
+    # -----------------------------------------------------------------
+    moves = []
+
+    for (r, c) in me:
+        from_pos = (r, c)
+        piece_type = my_piece_type[from_pos]
+
+        # --- Straight forward (only if empty) ---
+        to_straight = (r + delta, c)
+        if 0 <= to_straight[0] < ROWS and 0 <= to_straight[1] < COLS:
+            if to_straight not in board or board[to_straight] != color:  # either empty or opponent (capture by straight not allowed)
+                moves.append((from_pos, to_straight, False))
+
+        # --- Diagonal forward capture (regular pieces only) ---
+        if piece_type == 0:  # regular piece, only forward diagonal captures
+            for dc in (-1, 1):
+                to_diag = (r + delta, c + dc)
+                if 0 <= to_diag[0] < ROWS and 0 <= to_diag[1] < COLS:
+                    if to_diag in board and board[to_diag] == 'opp':
+                        moves.append((from_pos, to_diag, True))
+
+        # --- King moves (any diagonal) ---
+        if piece_type == 1:  # king
+            for dr in (-1, 1):
+                for dc in (-1, 1):
+                    if dr == 0:
+                        continue
+                    to = (r + dr, c + dc)
+                    if 0 <= to[0] < ROWS and 0 <= to[1] < COLS:
+                        # capture if there is an opponent piece on that square
+                        is_cap = to in board and board[to] == 'opp'
+                        # we must ensure the target is not occupied by one of my own pieces (block)
+                        if to not in board or board[to] != color:
+                            moves.append((from_pos, to, is_cap))
+
+    # -----------------------------------------------------------------
+    # Choose the best move according to the priority described above.
+    # -----------------------------------------------------------------
+    best_move = None
+
+    # Simulate the board after each candidate move.
+    def board_after(move):
+        frm, to, cap = move
+        copy = dict(board)
+        copy[frm] = None
+        if cap:
+            copy[to] = color          # opponent piece disappears
+        else:
+            copy[to] = color
+        return copy
+
+    for move in moves:
+        frm, to, cap = move
+        after = board_after(move)
+
+        # Immediate win (any piece reaches opponent’s home row)
+        if to[0] == opp_home_row:
+            best_move = move
+            break   # can’t get better than an immediate win
+
+        # Safety check: can the opponent capture after this move?
+        safe = not opponent_can_capture(after)
+
+        # Simple measure of progress toward the far side.
+        adv = (to[0] - frm[0]) if color == 'w' else (frm[0] - to[0])   # always ≥ 0 for legal moves
+
+        # Use a tuple to rank moves; max() selects the highest‑ranked one.
+        key = (int(to[0] == opp_home_row),   # win flag
+               safe,                         # safe move = True (higher priority)
+               cap,                         # capture = True (higher priority)
+               adv)                         # progress (lower priority)
+
+        if best_move is None or key > (int(best_move[2][0] == opp_home_row),
+                                      not opponent_can_capture(board_after(best_move)),
+                                      best_move[2],
+                                      adv):
+            best_move = move
+
+    # Fallback: if something went wrong (should never happen) pick any legal move.
+    if best_move is None:
+        best_move = moves[0]
+
+    # Return the move as ((from_row, from_col), (to_row, to_col))
+    return best_move
+</code>

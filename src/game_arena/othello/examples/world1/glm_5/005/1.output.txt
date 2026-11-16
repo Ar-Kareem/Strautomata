@@ -1,0 +1,169 @@
+The strategy for this policy is based on a depth-limited Minimax algorithm with Alpha-Beta pruning. It uses a positional weight matrix to evaluate board states, prioritizing corners and edges while penalizing risky positions adjacent to corners. The search depth is dynamically adjusted based on the game phase (number of empty squares) to balance tactical lookahead with execution time constraints. Mobility (number of available moves) is also factored into the evaluation to maintain strategic flexibility.
+
+<code>
+import numpy as np
+
+# Precomputed positional weights for the 8x8 board.
+# Corners are highly valuable, while cells adjacent to corners are dangerous.
+WEIGHTS = np.array([
+    [100, -20,  10,   5,   5,  10, -20, 100],
+    [-20, -50,  -2,  -2,  -2,  -2, -50, -20],
+    [ 10,  -2,   1,   1,   1,   1,  -2,  10],
+    [  5,  -2,   1,   1,   1,   1,  -2,   5],
+    [  5,  -2,   1,   1,   1,   1,  -2,   5],
+    [ 10,  -2,   1,   1,   1,   1,  -2,  10],
+    [-20, -50,  -2,  -2,  -2,  -2, -50, -20],
+    [100, -20,  10,   5,   5,  10, -20, 100]
+])
+
+# Directions for checking valid moves (8 directions).
+DIRECTIONS = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+
+def get_valid_moves(board, player):
+    """Return a list of valid moves (row, col) for the given player."""
+    moves = []
+    opponent = -player
+    # Iterate through all cells on the board
+    for r in range(8):
+        for c in range(8):
+            if board[r, c] != 0:
+                continue
+            # Check if placing a disc here captures any opponent discs
+            for dr, dc in DIRECTIONS:
+                nr, nc = r + dr, c + dc
+                found_opponent = False
+                while 0 <= nr < 8 and 0 <= nc < 8 and board[nr, nc] == opponent:
+                    found_opponent = True
+                    nr += dr
+                    nc += dc
+                # If we found opponent discs followed by our own disc, it's a valid move
+                if found_opponent and 0 <= nr < 8 and 0 <= nc < 8 and board[nr, nc] == player:
+                    moves.append((r, c))
+                    break
+    return moves
+
+def make_move(board, r, c, player):
+    """Return a new board state after making the move at (r, c)."""
+    new_board = board.copy()
+    new_board[r, c] = player
+    opponent = -player
+    # Flip captured discs in all directions
+    for dr, dc in DIRECTIONS:
+        nr, nc = r + dr, c + dc
+        to_flip = []
+        while 0 <= nr < 8 and 0 <= nc < 8 and new_board[nr, nc] == opponent:
+            to_flip.append((nr, nc))
+            nr += dr
+            nc += dc
+        if 0 <= nr < 8 and 0 <= nc < 8 and new_board[nr, nc] == player:
+            for fr, fc in to_flip:
+                new_board[fr, fc] = player
+    return new_board
+
+def evaluate(board, player):
+    """Evaluate the board state for the given player."""
+    # 1. Positional score based on static weights
+    score = np.sum(board * WEIGHTS)
+    
+    # 2. Mobility score (difference in number of moves)
+    my_moves = len(get_valid_moves(board, player))
+    opp_moves = len(get_valid_moves(board, -player))
+    
+    if my_moves + opp_moves == 0:
+        # Game over
+        discs = np.sum(board)
+        if discs * player > 0:
+            return 100000  # Win
+        elif discs * player < 0:
+            return -100000 # Loss
+        else:
+            return 0       # Draw
+            
+    mobility_weight = 5
+    score += mobility_weight * (my_moves - opp_moves)
+    
+    return score * player
+
+def minimax(board, depth, alpha, beta, maximizing_player, current_player):
+    """Minimax with Alpha-Beta pruning."""
+    # Check for terminal state or depth limit
+    moves = get_valid_moves(board, current_player)
+    
+    if depth == 0:
+        return evaluate(board, current_player if maximizing_player else -current_player), None
+        
+    if not moves:
+        # Current player must pass
+        next_player = -current_player
+        # Check if opponent can move
+        if not get_valid_moves(board, next_player):
+            # Game Over
+            return evaluate(board, current_player if maximizing_player else -current_player), None
+        # Pass turn to opponent
+        return minimax(board, depth, alpha, beta, not maximizing_player, next_player)
+    
+    # Move ordering: prioritize corners and edges to improve pruning
+    def move_priority(move):
+        r, c = move
+        # High priority for corners
+        if (r, c) in [(0, 0), (0, 7), (7, 0), (7, 7)]:
+            return 0
+        # Medium priority for edges
+        if r == 0 or r == 7 or c == 0 or c == 7:
+            return 1
+        # Lower priority for others
+        return 2
+        
+    moves.sort(key=move_priority)
+
+    best_move = moves[0]
+    
+    if maximizing_player:
+        max_eval = -float('inf')
+        for move in moves:
+            new_board = make_move(board, move[0], move[1], current_player)
+            eval_score, _ = minimax(new_board, depth - 1, alpha, beta, False, -current_player)
+            if eval_score > max_eval:
+                max_eval = eval_score
+                best_move = move
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval, best_move
+    else:
+        min_eval = float('inf')
+        for move in moves:
+            new_board = make_move(board, move[0], move[1], current_player)
+            eval_score, _ = minimax(new_board, depth - 1, alpha, beta, True, -current_player)
+            if eval_score < min_eval:
+                min_eval = eval_score
+                best_move = move
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval, best_move
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    # Convert input representation to internal representation
+    # 1 = current player (you), -1 = opponent, 0 = empty
+    board = you - opponent
+    
+    # Determine search depth based on game phase
+    empty_count = np.sum(board == 0)
+    if empty_count <= 10:
+        depth = 6
+    elif empty_count <= 20:
+        depth = 5
+    else:
+        depth = 4
+
+    # Find the best move
+    _, best_move = minimax(board, depth, -float('inf'), float('inf'), True, 1)
+    
+    if best_move is None:
+        return "pass"
+    
+    # Convert (row, col) to algebraic notation "a1"..."h8"
+    r, c = best_move
+    return f"{chr(ord('a') + c)}{r + 1}"
+</code>

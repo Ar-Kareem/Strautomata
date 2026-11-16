@@ -1,0 +1,205 @@
+**Strategy**
+
+The policy uses a depth‑limited minimax search with alpha‑beta pruning (3 plies).  
+For each board position the following heuristic is evaluated:
+
+* **Material** – a large bonus for having more pieces than the opponent.  
+* **Progress** – the sum of how far each of our pieces has advanced toward the opponent’s home row (white counts row index, black counts `7‑row`).  
+* **Central control** – a small bonus for occupying the central columns (2‑5).
+
+All legal moves are generated, and the following move‑ordering is applied:
+
+1. Immediate winning moves (reaching the opposite home row or capturing the last opponent piece) are taken first.  
+2. Capturing moves are tried before non‑captures.  
+3. The remaining moves are evaluated by the minimax routine.
+
+The algorithm therefore combines strong tactical awareness (captures, immediate wins) with a simple positional evaluation, allowing it to outplay naive policies while staying within the 1‑second time limit.
+
+<code>
+import sys
+
+BOARD_SIZE = 8
+SEARCH_DEPTH = 3  # 3‑ply search (our move, opponent, our move)
+
+# ----------------------------------------------------------------------
+# Helper functions
+# ----------------------------------------------------------------------
+def progress(pos, color):
+    """How many steps forward a piece has already moved."""
+    r, c = pos
+    if color == 'w':
+        return r                     # white moves upward (higher rows)
+    else:
+        return BOARD_SIZE - 1 - r    # black moves downward (lower rows)
+
+
+def evaluate(me_set, opp_set, color):
+    """
+    Heuristic score from the perspective of the player to move.
+    Positive values favour the player to move.
+    """
+    # Material
+    piece_diff = len(me_set) - len(opp_set)
+    score = piece_diff * 1000
+
+    # Advancement
+    my_adv = sum(progress(p, color) for p in me_set)
+    opp_color = 'b' if color == 'w' else 'w'
+    opp_adv = sum(progress(p, opp_color) for p in opp_set)
+    score += (my_adv - opp_adv) * 10
+
+    # Central control (columns 2‑5)
+    my_ctrl = sum(1 for (r, c) in me_set if 2 <= c <= 5)
+    opp_ctrl = sum(1 for (r, c) in opp_set if 2 <= c <= 5)
+    score += (my_ctrl - opp_ctrl) * 5
+
+    return score
+
+
+def generate_moves(me_set, opp_set, color):
+    """
+    Generate all legal moves for the given colour.
+    Returns a list of tuples:
+        ((from_r, from_c), (to_r, to_c), new_me_set, new_opp_set, is_win, is_capture)
+    """
+    moves = []
+    direction = 1 if color == 'w' else -1
+    target_row = BOARD_SIZE - 1 if color == 'w' else 0
+
+    for (r, c) in me_set:
+        # ----- forward (straight) -----
+        fr = r + direction
+        if 0 <= fr < BOARD_SIZE:
+            if (fr, c) not in me_set and (fr, c) not in opp_set:
+                new_me = set(me_set)
+                new_me.remove((r, c))
+                new_me.add((fr, c))
+                new_opp = set(opp_set)
+                is_win = (fr == target_row) or (len(new_opp) == 0)
+                moves.append(((r, c), (fr, c), new_me, new_opp, is_win, False))
+
+        # ----- diagonal (capture or move) -----
+        for dc in (-1, 1):
+            cr = r + direction
+            cc = c + dc
+            if 0 <= cr < BOARD_SIZE and 0 <= cc < BOARD_SIZE:
+                if (cr, cc) in opp_set:               # capture
+                    new_me = set(me_set)
+                    new_me.remove((r, c))
+                    new_me.add((cr, cc))
+                    new_opp = set(opp_set)
+                    new_opp.remove((cr, cc))
+                    is_win = (cr == target_row) or (len(new_opp) == 0)
+                    moves.append(((r, c), (cr, cc), new_me, new_opp, is_win, True))
+                elif (cr, cc) not in me_set and (cr, cc) not in opp_set:  # move to empty
+                    new_me = set(me_set)
+                    new_me.remove((r, c))
+                    new_me.add((cr, cc))
+                    new_opp = set(opp_set)
+                    is_win = (cr == target_row) or (len(new_opp) == 0)
+                    moves.append(((r, c), (cr, cc), new_me, new_opp, is_win, False))
+
+    return moves
+
+
+# ----------------------------------------------------------------------
+# Minimax with alpha‑beta pruning (negamax variant)
+# ----------------------------------------------------------------------
+def negamax(me_set, opp_set, color, depth, alpha, beta):
+    """Returns the best score achievable from this node for the player to move."""
+    if depth == 0:
+        return evaluate(me_set, opp_set, color)
+
+    moves = generate_moves(me_set, opp_set, color)
+    if not moves:
+        # No legal moves -> loss
+        return -1_000_000
+
+    # Order: winning moves first, then captures
+    moves.sort(key=lambda m: (0 if m[4] else 1, 0 if m[5] else 1))
+
+    best_value = -float('inf')
+    for move in moves:
+        _, _, new_me, new_opp, is_win, _ = move
+        if is_win:
+            # Immediate win for the player to move
+            return 1_000_000 + depth
+        value = -negamax(new_me, new_opp,
+                         'b' if color == 'w' else 'w',
+                         depth - 1, -beta, -alpha)
+        if value > best_value:
+            best_value = value
+        if best_value > alpha:
+            alpha = best_value
+        if alpha >= beta:
+            break
+    return best_value
+
+
+def best_move(me_set, opp_set, color):
+    """Choose the optimal move for the current player."""
+    moves = generate_moves(me_set, opp_set, color)
+    if not moves:
+        # Should not happen in a real game, but avoid a crash
+        return None
+
+    # Prioritise immediate winning moves
+    moves.sort(key=lambda m: (0 if m[4] else 1, 0 if m[5] else 1))
+
+    alpha = -float('inf')
+    beta = float('inf')
+    best_value = -float('inf')
+    chosen = None
+
+    for move in moves:
+        from_pos, to_pos, new_me, new_opp, is_win, _ = move
+        if is_win:
+            # Direct win – no need to search further
+            return (from_pos, to_pos)
+
+        value = -negamax(new_me, new_opp,
+                         'b' if color == 'w' else 'w',
+                         SEARCH_DEPTH - 1, -beta, -alpha)
+
+        if value > best_value:
+            best_value = value
+            chosen = (from_pos, to_pos)
+
+        if best_value > alpha:
+            alpha = best_value
+        if alpha >= beta:
+            break
+
+    return chosen
+
+
+# ----------------------------------------------------------------------
+# Public API
+# ----------------------------------------------------------------------
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    """
+    Called by the arena.  Returns a single legal move.
+    me   – list of (row, col) of our pieces
+    opp  – list of (row, col) of opponent pieces
+    color – 'w' (white, moves up) or 'b' (black, moves down)
+    """
+    me_set = set(me)
+    opp_set = set(opp)
+
+    # Defensive fallback – should never be needed in a legal position
+    if not me_set:
+        return ((0, 0), (0, 0))
+
+    move = best_move(me_set, opp_set, color)
+
+    # If something went wrong (e.g., no legal moves), pick any legal move
+    if move is None:
+        fallback = generate_moves(me_set, opp_set, color)
+        if fallback:
+            move = fallback[0][:2]
+        else:
+            # Absolutely no moves – return a dummy to avoid a crash
+            move = ((0, 0), (0, 0))
+
+    return move
+</code>

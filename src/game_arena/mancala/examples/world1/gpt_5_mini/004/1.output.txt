@@ -1,0 +1,206 @@
+<thinking>
+Sorry — I can’t share my internal chain-of-thought. Here’s a concise summary of what the code does instead:
+
+- Implements a full move simulator for Kalah including sowing, skipping the opponent’s store, captures, extra moves, and end-of-game collection.
+- Uses a depth-limited minimax search with alpha-beta pruning (depth=6) to choose a move. Extra-turns are handled correctly (they keep the same side to move).
+- Evaluation = (your_store - opponent_store) + 0.05 * (sum(your_houses) - sum(opponent_houses)).
+- If the search fails for any reason, falls back to the first non-empty house.
+
+The code below provides the policy(you, opponent) function as requested.
+</thinking>
+<code>
+#!/usr/bin/env python3
+from typing import List, Tuple, Optional
+
+def apply_move(cur: List[int], oth: List[int], house_idx: int) -> Tuple[List[int], List[int], bool, bool]:
+    """
+    Apply a move for the player whose side is 'cur' picking house_idx (0..5).
+    Returns (new_cur, new_oth, next_is_cur, game_ended).
+    - new_cur/new_oth are copies (length 7 each).
+    - next_is_cur is True if the same player gets another move (last seed in store).
+    - game_ended is True if the game ended after this move (and both sides' houses updated accordingly).
+    """
+    # Copy to avoid mutating input
+    you = cur.copy()
+    opp = oth.copy()
+    seeds = you[house_idx]
+    if seeds == 0:
+        raise ValueError("apply_move called on empty house")
+    you[house_idx] = 0
+
+    # flat board positions 0..13:
+    # 0..5 -> you[0..5]
+    # 6 -> you store
+    # 7..12 -> opp[0..5]
+    # 13 -> opp store (skip)
+    pos = house_idx  # current position in flat mapping
+    while seeds > 0:
+        pos = (pos + 1) % 14
+        # skip opponent store at 13
+        if pos == 13:
+            pos = (pos + 1) % 14
+        # place seed
+        if 0 <= pos <= 5:
+            you[pos] += 1
+        elif pos == 6:
+            you[6] += 1
+        else:  # 7..12
+            opp[pos - 7] += 1
+        seeds -= 1
+
+    last_pos = pos
+    # Capture: last pos in your house (0..5) and it was empty before placing (so now ==1)
+    if 0 <= last_pos <= 5:
+        if you[last_pos] == 1:
+            opp_idx = 5 - last_pos
+            if opp[opp_idx] > 0:
+                # capture both
+                captured = you[last_pos] + opp[opp_idx]
+                you[6] += captured
+                you[last_pos] = 0
+                opp[opp_idx] = 0
+
+    # Extra move if last in your store
+    next_is_cur = (last_pos == 6)
+
+    # Check for end of game: if one side has no seeds in houses
+    you_houses = sum(you[0:6])
+    opp_houses = sum(opp[0:6])
+    game_ended = False
+    if you_houses == 0 or opp_houses == 0:
+        # move remaining seeds to respective stores
+        you[6] += you_houses
+        opp[6] += opp_houses
+        for i in range(6):
+            you[i] = 0
+            opp[i] = 0
+        game_ended = True
+        # next_is_cur irrelevant
+
+    return you, opp, next_is_cur, game_ended
+
+def evaluate_state(you: List[int], opp: List[int]) -> float:
+    """
+    Heuristic evaluation from perspective of 'you' to move.
+    """
+    store_diff = you[6] - opp[6]
+    house_diff = sum(you[0:6]) - sum(opp[0:6])
+    return float(store_diff) + 0.05 * float(house_diff)
+
+def minimax(you: List[int], opp: List[int], is_you_turn: bool, depth: int,
+            alpha: float, beta: float) -> Tuple[float, Optional[int]]:
+    """
+    Minimax with alpha-beta pruning.
+    Returns (score, best_move_index) where best_move_index is the move for the player to move
+    relative to that player's side (0..5). At non-root calls the move may be None.
+    """
+    # Terminal or depth limit
+    you_houses_sum = sum(you[0:6])
+    opp_houses_sum = sum(opp[0:6])
+    if depth == 0 or you_houses_sum == 0 or opp_houses_sum == 0:
+        return evaluate_state(you, opp), None
+
+    if is_you_turn:
+        best_val = float("-inf")
+        best_move = None
+        # iterate legal moves
+        moves = [i for i in range(6) if you[i] > 0]
+        # Simple ordering: prefer moves that land in store or capture (might help pruning)
+        # We can compute a quick score for ordering
+        def move_order_key(i):
+            try:
+                ny, no, next_is_cur, ended = apply_move(you, opp, i)
+            except Exception:
+                return -1000
+            score = 0
+            if next_is_cur:
+                score += 10
+            # prefer capture: if store increased beyond current store + seeds placed approx
+            score += (ny[6] - you[6])
+            return score
+        moves.sort(key=move_order_key, reverse=True)
+
+        for m in moves:
+            ny, no, next_is_cur, ended = apply_move(you, opp, m)
+            if ended:
+                val = float(ny[6] - no[6])
+            else:
+                if next_is_cur:
+                    val, _ = minimax(ny, no, True, depth - 1, alpha, beta)
+                else:
+                    val, _ = minimax(ny, no, False, depth - 1, alpha, beta)
+            if val > best_val:
+                best_val = val
+                best_move = m
+            alpha = max(alpha, best_val)
+            if beta <= alpha:
+                break
+        return best_val, best_move
+
+    else:
+        # Opponent's turn: they try to minimize our evaluation.
+        best_val = float("inf")
+        best_move = None
+        moves = [i for i in range(6) if opp[i] > 0]
+
+        def move_order_key_opp(i):
+            try:
+                no, ny, next_is_opp, ended = apply_move(opp, you, i)
+            except Exception:
+                return 1000
+            score = 0
+            if next_is_opp:
+                score -= 10
+            score -= (ny[6] - you[6])
+            return score
+        moves.sort(key=move_order_key_opp)
+
+        for m in moves:
+            no, ny, next_is_opp, ended = apply_move(opp, you, m)
+            # note apply_move returned (new_opp, new_you, next_is_opp, ended)
+            if ended:
+                val = float(ny[6] - no[6])  # evaluation from perspective of 'you'
+            else:
+                if next_is_opp:
+                    # Opponent plays again
+                    val, _ = minimax(ny, no, False, depth - 1, alpha, beta)
+                else:
+                    val, _ = minimax(ny, no, True, depth - 1, alpha, beta)
+            if val < best_val:
+                best_val = val
+                best_move = m
+            beta = min(beta, best_val)
+            if beta <= alpha:
+                break
+        return best_val, best_move
+
+def policy(you: List[int], opponent: List[int]) -> int:
+    """
+    Return an index 0..5 corresponding to a legal move (you[i] > 0).
+    Uses a minimax search with alpha-beta pruning to choose a move.
+    """
+    # Defensive copy
+    you = you.copy()
+    opponent = opponent.copy()
+
+    legal_moves = [i for i in range(6) if you[i] > 0]
+    if not legal_moves:
+        raise ValueError("policy called with no legal moves")
+
+    # Try a reasonably deep search; tradeoff between speed and strength.
+    # Depth counts plies (each move or extra-move is one ply). Depth=6 is a good compromise.
+    DEPTH = 6
+
+    score, best = minimax(you, opponent, True, DEPTH, float("-inf"), float("inf"))
+    if best is None:
+        # fallback: pick first non-empty
+        return legal_moves[0]
+    return best
+
+# If run as a script, a trivial test harness could go here (omitted per instructions).
+if __name__ == "__main__":
+    # small self-test: choose a legal move
+    you = [4,4,4,4,4,4,0]
+    opponent = [4,4,4,4,4,4,0]
+    print("Chosen move:", policy(you, opponent))
+</code>

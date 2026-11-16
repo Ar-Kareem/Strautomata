@@ -1,0 +1,130 @@
+
+from __future__ import annotations
+
+from functools import lru_cache
+from typing import List, Tuple, Optional
+
+# Preferred move order for deterministic tie-breaking among equally-good moves:
+# center, corners, edges
+PREFERRED_MOVES = [
+    (1, 1),
+    (0, 0), (0, 2), (2, 0), (2, 2),
+    (0, 1), (1, 0), (1, 2), (2, 1),
+]
+
+WIN_LINES = [
+    (0, 1, 2), (3, 4, 5), (6, 7, 8),  # rows
+    (0, 3, 6), (1, 4, 7), (2, 5, 8),  # cols
+    (0, 4, 8), (2, 4, 6),             # diagonals
+]
+
+
+def _to_state(board: List[List[int]]) -> Tuple[int, ...]:
+    return (
+        board[0][0], board[0][1], board[0][2],
+        board[1][0], board[1][1], board[1][2],
+        board[2][0], board[2][1], board[2][2],
+    )
+
+
+def _winner(state: Tuple[int, ...]) -> Optional[int]:
+    """Return 1 if X(=us) has won, -1 if O has won, 0 for draw, None otherwise."""
+    for a, b, c in WIN_LINES:
+        s = state[a] + state[b] + state[c]
+        if s == 3:
+            return 1
+        if s == -3:
+            return -1
+    if 0 not in state:
+        return 0
+    return None
+
+
+def _empties(state: Tuple[int, ...]):
+    for i, v in enumerate(state):
+        if v == 0:
+            yield i
+
+
+def _apply(state: Tuple[int, ...], idx: int, player: int) -> Tuple[int, ...]:
+    lst = list(state)
+    lst[idx] = player
+    return tuple(lst)
+
+
+def _find_immediate_win(state: Tuple[int, ...], player: int) -> Optional[int]:
+    for idx in _empties(state):
+        nxt = _apply(state, idx, player)
+        if _winner(nxt) == player:
+            return idx
+    return None
+
+
+@lru_cache(maxsize=None)
+def _negamax(state: Tuple[int, ...], player_to_move: int, alpha: int, beta: int) -> int:
+    """
+    Return value in {-1,0,1} from the perspective of player_to_move:
+    +1 means player_to_move can force a win, 0 draw, -1 loss.
+    """
+    w = _winner(state)
+    if w is not None:
+        if w == 0:
+            return 0
+        return 1 if w == player_to_move else -1
+
+    best = -2
+    # Iterate in preferred order to make play deterministic.
+    for (r, c) in PREFERRED_MOVES:
+        idx = r * 3 + c
+        if state[idx] != 0:
+            continue
+        nxt = _apply(state, idx, player_to_move)
+        val = -_negamax(nxt, -player_to_move, -beta, -alpha)
+        if val > best:
+            best = val
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+    return best
+
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    state = _to_state(board)
+
+    # Gather legal moves (must always return one of these).
+    legal = [(r, c) for (r, c) in PREFERRED_MOVES if board[r][c] == 0]
+    if not legal:
+        # No legal move exists (should not happen in a valid game call).
+        return (0, 0)
+
+    # 1) Take an immediate win if available.
+    idx = _find_immediate_win(state, 1)
+    if idx is not None:
+        return (idx // 3, idx % 3)
+
+    # 2) Block an opponent immediate win if available.
+    idx = _find_immediate_win(state, -1)
+    if idx is not None:
+        return (idx // 3, idx % 3)
+
+    # 3) Otherwise, do optimal search (negamax with alpha-beta + memo).
+    best_val = -2
+    best_move = legal[0]
+
+    # Ensure cache sees different alpha/beta as different keys; keep them small.
+    # Since values are in {-1,0,1}, alpha/beta can live in [-2,2].
+    for (r, c) in legal:
+        idx = r * 3 + c
+        nxt = _apply(state, idx, 1)
+        val = -_negamax(nxt, -1, -2, 2)
+        if val > best_val:
+            best_val = val
+            best_move = (r, c)
+            if best_val == 1:
+                break  # can't do better than a forced win
+
+    # Safety: ensure chosen move is legal.
+    if board[best_move[0]][best_move[1]] != 0:
+        return legal[0]
+    return best_move

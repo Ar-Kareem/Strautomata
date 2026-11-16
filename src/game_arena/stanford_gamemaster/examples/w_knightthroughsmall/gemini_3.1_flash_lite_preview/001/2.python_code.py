@@ -1,0 +1,58 @@
+
+import random
+
+def policy(state: list[list[object]], role: str) -> str:
+    # Map letters to numbers for calculation
+    col_map = {'a': 1, 'b': 2, 'c': 3, 'd': 4, 'e': 5, 'f': 6}
+    rev_col_map = {1: 'a', 2: 'b', 3: 'c', 4: 'd', 5: 'e', 6: 'f'}
+    
+    # Parse board
+    board = {}
+    my_pieces = []
+    occupied = set()
+    
+    for fact in state:
+        if fact[0] == "cell":
+            col, row, owner = fact[1], int(fact[2]), fact[3]
+            board[(col, row)] = owner
+            occupied.add((col, row))
+            if owner == role:
+                my_pieces.append((col, row))
+    
+    legal_moves = []
+    direction = 1 if role == "white" else -1
+    
+    # Knight jumps: (delta_col, delta_row)
+    moves = [(1, 2), (-1, 2), (2, 1), (-2, 1), (1, -2), (-1, -2), (2, -1), (-2, -1)]
+    
+    for (col, row) in my_pieces:
+        c_idx = col_map[col]
+        for dc, dr in moves:
+            # Enforce forward movement constraint
+            if (role == "white" and dr > 0) or (role == "black" and dr < 0):
+                nc, nr = c_idx + dc, row + dr
+                if 1 <= nc <= 6 and 1 <= nr <= 6:
+                    target = (rev_col_map[nc], nr)
+                    # Cannot land on own piece, can land on empty (capturing logic implied by game)
+                    if board.get(target) != role:
+                        legal_moves.append((col, row, target[0], target[1]))
+    
+    if not legal_moves:
+        return ""
+        
+    # Prefer moves that maximize/minimize row to reach the opposite end (row 6 for white, row 1 for black)
+    def target_rank(move):
+        return move[3] if role == "white" else (7 - move[3])
+    
+    best_rank = -1
+    candidates = []
+    for move in legal_moves:
+        rank = target_rank(move)
+        if rank > best_rank:
+            best_rank = rank
+            candidates = [move]
+        elif rank == best_rank:
+            candidates.append(move)
+            
+    chosen = random.choice(candidates)
+    return f"move({chosen[0]},{chosen[1]},{chosen[2]},{chosen[3]})"

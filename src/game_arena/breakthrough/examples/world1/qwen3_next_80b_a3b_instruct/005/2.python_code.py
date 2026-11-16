@@ -1,0 +1,224 @@
+
+import numpy as np
+from typing import List, Tuple
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    """
+    Implements a policy for Breakthrough game using heuristic evaluation and minimax with depth 2.
+    """
+    # Convert to sets for faster lookup
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    # Determine direction based on color
+    if color == 'b':  # black moves downward (row decreases)
+        direction = -1
+        home_row = 0  # opponent's home row is row 0 (bottom)
+        my_home_row = 7
+    else:  # white moves upward (row increases)
+        direction = 1
+        home_row = 7  # opponent's home row is row 7 (top)
+        my_home_row = 0
+
+    # Generate all legal moves for current player
+    legal_moves = []
+    
+    for r, c in me:
+        # Forward straight move (1 step)
+        new_r = r + direction
+        new_c = c
+        if 0 <= new_r <= 7 and (new_r, new_c) not in me_set and (new_r, new_c) not in opp_set:
+            legal_moves.append(((r, c), (new_r, new_c)))
+        
+        # Diagonal forward left
+        new_r = r + direction
+        new_c = c - 1
+        if 0 <= new_r <= 7 and 0 <= new_c <= 7:
+            if (new_r, new_c) in opp_set:  # capture
+                legal_moves.append(((r, c), (new_r, new_c)))
+            elif (new_r, new_c) not in me_set:  # empty square
+                legal_moves.append(((r, c), (new_r, new_c)))
+        
+        # Diagonal forward right
+        new_r = r + direction
+        new_c = c + 1
+        if 0 <= new_r <= 7 and 0 <= new_c <= 7:
+            if (new_r, new_c) in opp_set:  # capture
+                legal_moves.append(((r, c), (new_r, new_c)))
+            elif (new_r, new_c) not in me_set:  # empty square
+                legal_moves.append(((r, c), (new_r, new_c)))
+    
+    # If no legal moves (should not happen per rules but safety)
+    if not legal_moves:
+        # Fallback: return a random move — but per rules we must return legal, so this is a last resort
+        # We should have at least one move, but just in case
+        return ((0, 0), (0, 0))
+    
+    # Check for immediate win (reaching opponent's home row)
+    for move in legal_moves:
+        from_pos, to_pos = move
+        if to_pos[0] == home_row:
+            return move  # Win immediately
+    
+    # Check for immediate captures
+    capture_moves = [move for move in legal_moves if move[1] in opp_set]
+    if capture_moves:
+        # Prefer capture moves that also advance toward home row
+        best_capture = None
+        best_score = -float('inf')
+        for move in capture_moves:
+            from_pos, to_pos = move
+            # Score: capture gives +50, plus bonus for row progress
+            score = 50
+            # Bonus for getting closer to opponent's home row
+            progress = abs(to_pos[0] - my_home_row)
+            score += progress
+            if score > best_score:
+                best_score = score
+                best_capture = move
+        if best_capture:
+            return best_capture
+    
+    # For non-capture, non-win moves, we use a heuristic evaluation with minmax depth 2
+    best_move = legal_moves[0]
+    best_score = -float('inf')
+    
+    for move in legal_moves:
+        # Simulate this move
+        from_pos, to_pos = move
+        new_me = [p for p in me if p != from_pos]
+        if to_pos in opp_set:  # capture
+            new_opp = [p for p in opp if p != to_pos]
+        else:
+            new_opp = opp.copy()
+        new_me.append(to_pos)
+        
+        # Calculate heuristic for this move
+        score = evaluate_position(new_me, new_opp, color, me_set, opp_set, direction, home_row, my_home_row)
+        
+        # Look ahead one more level (depth 2) if time allows
+        # But limit to avoid timeout: simulate opponent's best response
+        if len(new_opp) > 0:  # opponent still has pieces
+            opp_direction = -direction  # opposite direction
+            opp_home_row = my_home_row  # opponent's home row is our home row
+            opp_me_set = set(new_opp)
+            opp_opp_set = set(new_me)
+            
+            opp_legal_moves = []
+            for r, c in new_opp:
+                new_r = r + opp_direction
+                new_c = c
+                if 0 <= new_r <= 7 and (new_r, new_c) not in opp_me_set and (new_r, new_c) not in opp_opp_set:
+                    opp_legal_moves.append(((r, c), (new_r, new_c)))
+                
+                # Diagonal forward left
+                new_r = r + opp_direction
+                new_c = c - 1
+                if 0 <= new_r <= 7 and 0 <= new_c <= 7:
+                    if (new_r, new_c) in opp_opp_set:  # capture
+                        opp_legal_moves.append(((r, c), (new_r, new_c)))
+                    elif (new_r, new_c) not in opp_me_set:  # empty square
+                        opp_legal_moves.append(((r, c), (new_r, new_c)))
+                
+                # Diagonal forward right
+                new_r = r + opp_direction
+                new_c = c + 1
+                if 0 <= new_r <= 7 and 0 <= new_c <= 7:
+                    if (new_r, new_c) in opp_opp_set:  # capture
+                        opp_legal_moves.append(((r, c), (new_r, new_c)))
+                    elif (new_r, new_c) not in opp_me_set:  # empty square
+                        opp_legal_moves.append(((r, c), (new_r, new_c)))
+            
+            # Opponent's best response (minimize our score)
+            if opp_legal_moves:
+                opponent_best_score = float('inf')
+                for opp_move in opp_legal_moves:
+                    opp_from, opp_to = opp_move
+                    temp_me_after_opp = [p for p in new_me if p != opp_to] if opp_to in new_me else new_me.copy()
+                    temp_opp_after_opp = [p for p in new_opp if p != opp_from]
+                    temp_opp_after_opp.append(opp_to)
+                    
+                    # Evaluate after opponent's move
+                    opp_score = evaluate_position(temp_me_after_opp, temp_opp_after_opp, color, opp_opp_set, opp_me_set, direction, home_row, my_home_row)
+                    opponent_best_score = min(opponent_best_score, opp_score)
+                
+                # Our score after opponent's best response
+                score -= (1.0 - abs(score) * 0.1)  # penalize positions leading to strong opponent responses
+                # Actually, we can use: score = score - (opponent_best_score - base_score) as a rough estimate
+                # But simpler: use the score as is and assume opponent will minimize it
+                # Adjust score by subtracting potential opponent gain
+                score = score - (opponent_best_score * 0.5)  # conservative adjustment
+                
+        # Select best move
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move
+
+
+def evaluate_position(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str, me_set: set, opp_set: set, direction: int, home_row: int, my_home_row: int) -> float:
+    """
+    Heuristic evaluation function for the current position.
+    """
+    score = 0.0
+    
+    # Win condition: if any piece reached opponent's home row
+    for r, c in me:
+        if r == home_row:
+            return 1000  # Winning position
+    
+    # Loss condition: if opponent has any piece at our home row
+    for r, c in opp:
+        if r == my_home_row:
+            return -1000  # Losing position
+    
+    # Piece advancement bonus: each piece gets bonus proportional to distance from home
+    for r, c in me:
+        progress = abs(r - my_home_row)  # how many rows from home
+        score += progress * 0.5  # 0.5 per row advanced
+    
+    # Block opponent advancement: penalize opponent pieces that are close to our home
+    for r, c in opp:
+        opp_progress = abs(r - home_row)
+        # If opponent is 1 step away from winning, huge penalty
+        if r == my_home_row + direction:  # one step from home
+            score -= 200
+        elif r == my_home_row + 2 * direction:  # two steps from home
+            score -= 60
+        elif r == my_home_row + 3 * direction:  # three steps from home
+            score -= 20
+    
+    # Capture potential: evaluate if our pieces threaten to capture
+    for r, c in me:
+        for dr, dc in [(direction, -1), (direction, 1)]:  # diagonal forward
+            nr, nc = r + dr, c + dc
+            if 0 <= nr <= 7 and 0 <= nc <= 7 and (nr, nc) in opp_set:
+                # We can capture this piece — bonus
+                score += 30
+                # Also, if we capture and it breaks opponent's structure, extra bonus
+                # Check if that piece is connected to home
+                if nr == my_home_row + direction:
+                    score += 50  # critical capture!
+    
+    # Check for blocked pieces: if a piece is surrounded forward
+    for r, c in me:
+        # Check forward
+        if (r + direction, c) in me_set or (r + direction, c) in opp_set:
+            # Check diagonal forward left and right
+            blocked = 0
+            if (r + direction, c) in me_set or (r + direction, c) in opp_set:
+                blocked += 1
+            if (r + direction, c - 1) in me_set or (r + direction, c - 1) in opp_set:
+                blocked += 1
+            if (r + direction, c + 1) in me_set or (r + direction, c + 1) in opp_set:
+                blocked += 1
+            if blocked == 3:  # completely blocked
+                score -= 10
+            elif blocked >= 2:  # partially blocked
+                score -= 3
+    
+    # Number of pieces: slight bonus for more pieces
+    score += (len(me) - len(opp)) * 5
+    
+    return score

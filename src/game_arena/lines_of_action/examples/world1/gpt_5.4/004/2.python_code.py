@@ -1,0 +1,359 @@
+
+import time
+import math
+
+DIRS8 = [(-1, -1), (-1, 0), (-1, 1),
+         (0, -1),           (0, 1),
+         (1, -1),  (1, 0),  (1, 1)]
+
+def in_bounds(r, c):
+    return 0 <= r < 8 and 0 <= c < 8
+
+def move_to_str(m):
+    return f"{m[0]},{m[1]}:{m[2]},{m[3]}"
+
+def clone_board(board):
+    return [row[:] for row in board]
+
+def count_line_pieces(board, r, c, dr, dc):
+    cnt = 1
+    rr, cc = r + dr, c + dc
+    while in_bounds(rr, cc):
+        if board[rr][cc] != 0:
+            cnt += 1
+        rr += dr
+        cc += dc
+    rr, cc = r - dr, c - dc
+    while in_bounds(rr, cc):
+        if board[rr][cc] != 0:
+            cnt += 1
+        rr -= dr
+        cc -= dc
+    return cnt
+
+def is_legal_move(board, fr, fc, tr, tc, player=1):
+    if not (in_bounds(fr, fc) and in_bounds(tr, tc)):
+        return False
+    if board[fr][fc] != player:
+        return False
+    if fr == tr and fc == tc:
+        return False
+    if board[tr][tc] == player:
+        return False
+
+    dr = tr - fr
+    dc = tc - fc
+
+    sdr = 0 if dr == 0 else (1 if dr > 0 else -1)
+    sdc = 0 if dc == 0 else (1 if dc > 0 else -1)
+
+    if not ((dr == 0 and dc != 0) or (dc == 0 and dr != 0) or (abs(dr) == abs(dc))):
+        return False
+
+    if dr != 0 and dc != 0 and abs(dr) != abs(dc):
+        return False
+
+    dist = max(abs(dr), abs(dc))
+    need = count_line_pieces(board, fr, fc, sdr, sdc)
+    if dist != need:
+        return False
+
+    rr, cc = fr + sdr, fc + sdc
+    while (rr, cc) != (tr, tc):
+        if board[rr][cc] == -player:
+            return False
+        rr += sdr
+        cc += sdc
+
+    return True
+
+def generate_moves(board, player=1):
+    moves = []
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] != player:
+                continue
+            for dr, dc in [(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(-1,1),(1,-1),(1,1)]:
+                dist = count_line_pieces(board, r, c, dr, dc)
+                tr, tc = r + dr * dist, c + dc * dist
+                if not in_bounds(tr, tc):
+                    continue
+                if board[tr][tc] == player:
+                    continue
+                rr, cc = r + dr, c + dc
+                blocked = False
+                while (rr, cc) != (tr, tc):
+                    if board[rr][cc] == -player:
+                        blocked = True
+                        break
+                    rr += dr
+                    cc += dc
+                if blocked:
+                    continue
+                moves.append((r, c, tr, tc))
+    return moves
+
+def apply_move(board, move, player=1):
+    fr, fc, tr, tc = move
+    nb = [row[:] for row in board]
+    nb[tr][tc] = player
+    nb[fr][fc] = 0
+    return nb
+
+def flip_board(board):
+    return [[-x for x in row] for row in board]
+
+def get_pieces(board, player):
+    pcs = []
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == player:
+                pcs.append((r, c))
+    return pcs
+
+def components_and_largest(board, player):
+    pcs = get_pieces(board, player)
+    if not pcs:
+        return 0, 0
+    piece_set = set(pcs)
+    seen = set()
+    comps = 0
+    largest = 0
+    for p in pcs:
+        if p in seen:
+            continue
+        comps += 1
+        stack = [p]
+        seen.add(p)
+        size = 0
+        while stack:
+            r, c = stack.pop()
+            size += 1
+            for dr, dc in DIRS8:
+                nr, nc = r + dr, c + dc
+                if (nr, nc) in piece_set and (nr, nc) not in seen:
+                    seen.add((nr, nc))
+                    stack.append((nr, nc))
+        if size > largest:
+            largest = size
+    return comps, largest
+
+def is_connected(board, player):
+    pcs = get_pieces(board, player)
+    if len(pcs) <= 1:
+        return True
+    comps, _ = components_and_largest(board, player)
+    return comps == 1
+
+def centralization_score(board, player):
+    score = 0.0
+    for r, c in get_pieces(board, player):
+        score += 7 - (abs(r - 3.5) + abs(c - 3.5))
+    return score
+
+def spread_score(board, player):
+    pcs = get_pieces(board, player)
+    n = len(pcs)
+    if n <= 1:
+        return 0.0
+    sr = sum(r for r, _ in pcs) / n
+    sc = sum(c for _, c in pcs) / n
+    s = 0.0
+    for r, c in pcs:
+        s += abs(r - sr) + abs(c - sc)
+    return -s
+
+def pairwise_proximity(board, player):
+    pcs = get_pieces(board, player)
+    n = len(pcs)
+    if n <= 1:
+        return 0.0
+    total = 0
+    for i in range(n):
+        r1, c1 = pcs[i]
+        for j in range(i + 1, n):
+            r2, c2 = pcs[j]
+            total += max(abs(r1 - r2), abs(c1 - c2))
+    return -total / n
+
+def mobility(board, player):
+    if player == 1:
+        return len(generate_moves(board, 1))
+    else:
+        fb = flip_board(board)
+        return len(generate_moves(fb, 1))
+
+def winner(board):
+    my_conn = is_connected(board, 1)
+    op_conn = is_connected(board, -1)
+    if my_conn and op_conn:
+        return 1
+    if my_conn:
+        return 1
+    if op_conn:
+        return -1
+    return 0
+
+def evaluate(board):
+    w = winner(board)
+    if w == 1:
+        return 1000000
+    if w == -1:
+        return -1000000
+
+    my_pieces = len(get_pieces(board, 1))
+    op_pieces = len(get_pieces(board, -1))
+
+    my_comp, my_largest = components_and_largest(board, 1)
+    op_comp, op_largest = components_and_largest(board, -1)
+
+    score = 0.0
+    score += (op_comp - my_comp) * 220.0
+    score += (my_largest - op_largest) * 70.0
+    score += centralization_score(board, 1) * 10.0
+    score -= centralization_score(board, -1) * 10.0
+    score += spread_score(board, 1) * 3.0
+    score -= spread_score(board, -1) * 3.0
+    score += pairwise_proximity(board, 1) * 1.5
+    score -= pairwise_proximity(board, -1) * 1.5
+    score += (my_pieces - op_pieces) * 25.0
+
+    try:
+        my_mob = len(generate_moves(board, 1))
+        op_mob = len(generate_moves(flip_board(board), 1))
+        score += (my_mob - op_mob) * 2.0
+    except Exception:
+        pass
+
+    return score
+
+def move_heuristic(board, move):
+    fr, fc, tr, tc = move
+    val = 0.0
+    if board[tr][tc] == -1:
+        val += 80.0
+    before_comp, before_largest = components_and_largest(board, 1)
+    nb = apply_move(board, move, 1)
+    if is_connected(nb, 1):
+        val += 100000.0
+    after_comp, after_largest = components_and_largest(nb, 1)
+    val += (before_comp - after_comp) * 500.0
+    val += (after_largest - before_largest) * 120.0
+    val += (7 - (abs(tr - 3.5) + abs(tc - 3.5))) * 8.0
+    val -= (7 - (abs(fr - 3.5) + abs(fc - 3.5))) * 2.0
+    if nb[tr][tc] == 1:
+        pass
+    return val
+
+def ordered_moves(board, player):
+    if player == 1:
+        moves = generate_moves(board, 1)
+        moves.sort(key=lambda m: move_heuristic(board, m), reverse=True)
+        return moves
+    else:
+        fb = flip_board(board)
+        ms = generate_moves(fb, 1)
+        real = ms
+        real.sort(key=lambda m: move_heuristic(fb, m), reverse=True)
+        return real
+
+def alphabeta(board, depth, alpha, beta, maximizing, end_time):
+    if time.time() >= end_time:
+        raise TimeoutError
+
+    w = winner(board)
+    if depth == 0 or w != 0:
+        return evaluate(board), None
+
+    if maximizing:
+        best_val = -math.inf
+        best_move = None
+        moves = ordered_moves(board, 1)
+        if not moves:
+            return evaluate(board), None
+        for m in moves:
+            nb = apply_move(board, m, 1)
+            val, _ = alphabeta(flip_board(nb), depth - 1, alpha, beta, False, end_time)
+            val = -val
+            if val > best_val:
+                best_val = val
+                best_move = m
+            alpha = max(alpha, best_val)
+            if alpha >= beta:
+                break
+        return best_val, best_move
+    else:
+        best_val = -math.inf
+        best_move = None
+        moves = ordered_moves(board, 1)
+        if not moves:
+            return evaluate(board), None
+        for m in moves:
+            nb = apply_move(board, m, 1)
+            val, _ = alphabeta(flip_board(nb), depth - 1, alpha, beta, False, end_time)
+            val = -val
+            if val > best_val:
+                best_val = val
+                best_move = m
+            alpha = max(alpha, best_val)
+            if alpha >= beta:
+                break
+        return best_val, best_move
+
+def safe_best_move(board, moves):
+    best = None
+    bestv = -10**18
+    for m in moves:
+        nb = apply_move(board, m, 1)
+        if is_connected(nb, 1):
+            return m
+        v = move_heuristic(board, m) + evaluate(nb) * 0.05
+        if v > bestv:
+            bestv = v
+            best = m
+    return best if best is not None else moves[0]
+
+def policy(board) -> str:
+    moves = generate_moves(board, 1)
+    if not moves:
+        # Should not normally happen, but must return a legal move string if possible.
+        # Fallback scan for legality.
+        for fr in range(8):
+            for fc in range(8):
+                if board[fr][fc] != 1:
+                    continue
+                for tr in range(8):
+                    for tc in range(8):
+                        if is_legal_move(board, fr, fc, tr, tc, 1):
+                            return f"{fr},{fc}:{tr},{tc}"
+        return "0,0:0,0"
+
+    for m in moves:
+        nb = apply_move(board, m, 1)
+        if is_connected(nb, 1):
+            return move_to_str(m)
+
+    moves.sort(key=lambda m: move_heuristic(board, m), reverse=True)
+    best_move = moves[0]
+
+    start = time.time()
+    end_time = start + 0.92
+
+    try:
+        depth = 1
+        while depth <= 4:
+            if time.time() >= end_time:
+                break
+            val, mv = alphabeta(board, depth, -math.inf, math.inf, True, end_time)
+            if mv is not None:
+                best_move = mv
+            depth += 1
+    except TimeoutError:
+        pass
+    except Exception:
+        best_move = safe_best_move(board, moves)
+
+    if not is_legal_move(board, *best_move, 1):
+        best_move = safe_best_move(board, moves)
+
+    return move_to_str(best_move)

@@ -1,0 +1,214 @@
+
+def policy(board: list[list[int]]) -> int:
+    """
+    Competitive Connect 4 AI policy using alpha-beta pruning minimax.
+    Prioritizes: 1) Immediate wins, 2) Forced blocks, 3) Safe center control,
+    4) Strategic evaluation via minimax search.
+    """
+    
+    def is_valid_location(board, col):
+        """Check if column has space."""
+        return board[0][col] == 0
+    
+    def get_next_open_row(board, col):
+        """Find the row where a disc would land in column."""
+        for r in range(5, -1, -1):
+            if board[r][col] == 0:
+                return r
+    
+    def winning_move(board, piece):
+        """Check if piece has a winning position."""
+        # Check horizontal
+        for c in range(4):
+            for r in range(6):
+                if board[r][c] == piece and board[r][c+1] == piece and \
+                   board[r][c+2] == piece and board[r][c+3] == piece:
+                    return True
+        
+        # Check vertical
+        for c in range(7):
+            for r in range(3):
+                if board[r][c] == piece and board[r+1][c] == piece and \
+                   board[r+2][c] == piece and board[r+3][c] == piece:
+                    return True
+        
+        # Check positive diagonal
+        for c in range(4):
+            for r in range(3):
+                if board[r][c] == piece and board[r+1][c+1] == piece and \
+                   board[r+2][c+2] == piece and board[r+3][c+3] == piece:
+                    return True
+        
+        # Check negative diagonal
+        for c in range(4):
+            for r in range(3, 6):
+                if board[r][c] == piece and board[r-1][c+1] == piece and \
+                   board[r-2][c+2] == piece and board[r-3][c+3] == piece:
+                    return True
+        
+        return False
+    
+    def score_window(window, piece):
+        """Score a 4-cell window for heuristic evaluation."""
+        score = 0
+        opp_piece = -piece
+        
+        if window.count(piece) == 4:
+            score += 100
+        elif window.count(piece) == 3 and window.count(0) == 1:
+            score += 5
+        elif window.count(piece) == 2 and window.count(0) == 2:
+            score += 2
+        
+        if window.count(opp_piece) == 3 and window.count(0) == 1:
+            score -= 4
+        
+        return score
+    
+    def score_position(board, piece):
+        """Heuristic scoring of board position."""
+        score = 0
+        
+        # Prioritize center column control
+        center_array = [board[r][3] for r in range(6)]
+        center_count = center_array.count(piece)
+        score += center_count * 3
+        
+        # Score horizontal positions
+        for r in range(6):
+            row_array = board[r]
+            for c in range(4):
+                window = row_array[c:c+4]
+                score += score_window(window, piece)
+        
+        # Score vertical positions
+        for c in range(7):
+            col_array = [board[r][c] for r in range(6)]
+            for r in range(3):
+                window = col_array[r:r+4]
+                score += score_window(window, piece)
+        
+        # Score positive diagonals
+        for r in range(3):
+            for c in range(4):
+                window = [board[r+i][c+i] for i in range(4)]
+                score += score_window(window, piece)
+        
+        # Score negative diagonals
+        for r in range(3):
+            for c in range(4):
+                window = [board[r+3-i][c+i] for i in range(4)]
+                score += score_window(window, piece)
+        
+        return score
+    
+    def get_valid_locations(board):
+        """Get list of columns with available space."""
+        return [col for col in range(7) if is_valid_location(board, col)]
+    
+    def is_terminal_node(board):
+        """Check if game is over (win or draw)."""
+        return winning_move(board, 1) or winning_move(board, -1) or len(get_valid_locations(board)) == 0
+    
+    def minimax(board, depth, alpha, beta, maximizing_player):
+        """Alpha-beta pruning minimax search."""
+        valid_locations = get_valid_locations(board)
+        is_terminal = is_terminal_node(board)
+        
+        if depth == 0 or is_terminal:
+            if is_terminal:
+                if winning_move(board, 1):
+                    return 1000000
+                elif winning_move(board, -1):
+                    return -1000000
+                else:
+                    return 0
+            else:
+                return score_position(board, 1)
+        
+        if maximizing_player:
+            value = -1000000
+            for col in valid_locations:
+                temp_board = [row[:] for row in board]
+                row = get_next_open_row(temp_board, col)
+                temp_board[row][col] = 1
+                new_score = minimax(temp_board, depth-1, alpha, beta, False)
+                value = max(value, new_score)
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break
+            return value
+        else:
+            value = 1000000
+            for col in valid_locations:
+                temp_board = [row[:] for row in board]
+                row = get_next_open_row(temp_board, col)
+                temp_board[row][col] = -1
+                new_score = minimax(temp_board, depth-1, alpha, beta, True)
+                value = min(value, new_score)
+                beta = min(beta, value)
+                if alpha >= beta:
+                    break
+            return value
+    
+    # MAIN DECISION LOGIC
+    
+    valid_locations = get_valid_locations(board)
+    if not valid_locations:
+        return 0  # Should never happen but required for safety
+    
+    # 1. Play winning move immediately
+    for col in valid_locations:
+        temp_board = [row[:] for row in board]
+        row = get_next_open_row(temp_board, col)
+        temp_board[row][col] = 1
+        if winning_move(temp_board, 1):
+            return col
+    
+    # 2. Block opponent's winning move
+    for col in valid_locations:
+        temp_board = [row[:] for row in board]
+        row = get_next_open_row(temp_board, col)
+        temp_board[row][col] = -1
+        if winning_move(temp_board, -1):
+            return col
+    
+    # 3. Play center if it doesn't give opponent immediate win
+    if 3 in valid_locations:
+        temp_board = [row[:] for row in board]
+        row = get_next_open_row(temp_board, 3)
+        temp_board[row][3] = 1
+        
+        opponent_can_win = False
+        for opp_col in valid_locations:
+            test_board = [row[:] for row in temp_board]
+            opp_row = get_next_open_row(test_board, opp_col)
+            test_board[opp_row][opp_col] = -1
+            if winning_move(test_board, -1):
+                opponent_can_win = True
+                break
+        
+        if not opponent_can_win:
+            return 3
+    
+    # 4. Use minimax search with alpha-beta pruning
+    best_score = -1000000
+    best_col = valid_locations[0]
+    
+    # Order columns: center first for better pruning
+    column_order = [3, 2, 4, 1, 5, 0, 6]
+    for col in column_order:
+        if col not in valid_locations:
+            continue
+        
+        temp_board = [row[:] for row in board]
+        row = get_next_open_row(temp_board, col)
+        temp_board[row][col] = 1
+        
+        score = minimax(temp_board, 5, -1000000, 1000000, False)
+        
+        if score > best_score:
+            best_score = score
+            best_col = col
+    
+    return best_col

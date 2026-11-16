@@ -1,0 +1,153 @@
+## Strategy
+
+My strategy uses **iterative deepening minimax with alpha-beta pruning** to search the game tree as deeply as possible within the time limit. Key features:
+
+1. **Full game simulation**: I simulate moves accurately including extra turns (last seed in store), captures (last seed in empty own house with opposite seeds), and game-ending conditions.
+
+2. **Iterative deepening**: Start from depth 1 and increase until time runs out (~0.9 seconds), always keeping the best move from the deepest completed search.
+
+3. **Alpha-beta pruning**: Standard alpha-beta to cut branches and search deeper.
+
+4. **Evaluation function**: A weighted heuristic considering:
+   - Store difference (most important)
+   - Seeds on own side vs opponent's side (slight advantage to having more seeds in play on your side)
+   - Capture opportunities
+   - Proximity to ending the game favorably
+
+5. **Move ordering**: Prioritize moves that give extra turns, then captures, then by seeds count — this improves alpha-beta pruning efficiency.
+
+<code>
+import time
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    deadline = time.time() + 0.85
+    
+    def simulate(you, opp, move):
+        y = list(you)
+        o = list(opp)
+        seeds = y[move]
+        y[move] = 0
+        pos = move  # current position index in the circular track
+        # Track: y[0..5], y[6], o[0..5], skip o[6] => 13 slots
+        idx = move
+        for _ in range(seeds):
+            idx += 1
+            if idx == 13:
+                idx = 0
+            if idx <= 5:
+                y[idx] += 1
+            elif idx == 6:
+                y[6] += 1
+            else:  # 7..12 -> opponent houses 0..5
+                o[idx - 7] += 1
+        
+        extra_turn = (idx == 6)
+        # Capture
+        if 0 <= idx <= 5 and y[idx] == 1 and o[5 - idx] > 0:
+            y[6] += 1 + o[5 - idx]
+            y[idx] = 0
+            o[5 - idx] = 0
+        
+        # Check game end
+        if sum(y[:6]) == 0:
+            o[6] += sum(o[:6])
+            for i in range(6): o[i] = 0
+            extra_turn = False
+        elif sum(o[:6]) == 0:
+            y[6] += sum(y[:6])
+            for i in range(6): y[i] = 0
+            extra_turn = False
+        
+        return y, o, extra_turn
+    
+    def evaluate(y, o):
+        return (y[6] - o[6]) * 10 + (sum(y[:6]) - sum(o[:6]))
+    
+    def get_moves(y):
+        return [i for i in range(6) if y[i] > 0]
+    
+    def order_moves(y, o):
+        moves = get_moves(y)
+        scored = []
+        for m in moves:
+            score = 0
+            seeds = y[m]
+            landing = m + seeds
+            if landing == 6:
+                score += 100  # extra turn
+            if landing <= 5 and y[landing] == 0 and o[5 - landing] > 0:
+                score += 50 + o[5 - landing]
+            score += seeds
+            scored.append((-score, m))
+        scored.sort()
+        return [m for _, m in scored]
+    
+    def alphabeta(y, o, depth, alpha, beta, maximizing):
+        if time.time() > deadline:
+            raise TimeoutError
+        
+        my_moves = get_moves(y) if maximizing else get_moves(o)
+        
+        if depth == 0 or (not my_moves if maximizing else not get_moves(o)):
+            return evaluate(y, o) if maximizing else -evaluate(o, y)
+        
+        if maximizing:
+            moves = order_moves(y, o)
+            if not moves:
+                return evaluate(y, o)
+            val = -999999
+            for m in moves:
+                ny, no, extra = simulate(y, o, m)
+                if extra:
+                    val = max(val, alphabeta(ny, no, depth - 1, alpha, beta, True))
+                else:
+                    val = max(val, -alphabeta(no, ny, depth - 1, -beta, -alpha, False))
+                alpha = max(alpha, val)
+                if alpha >= beta:
+                    break
+            return val
+        else:
+            moves = order_moves(y, o)
+            if not moves:
+                return evaluate(y, o)
+            val = -999999
+            for m in moves:
+                ny, no, extra = simulate(y, o, m)
+                if extra:
+                    val = max(val, alphabeta(ny, no, depth - 1, alpha, beta, True))
+                else:
+                    val = max(val, -alphabeta(no, ny, depth - 1, -beta, -alpha, False))
+                alpha = max(alpha, val)
+                if alpha >= beta:
+                    break
+            return val
+    
+    best_move = None
+    moves = order_moves(you, opponent)
+    if not moves:
+        for i in range(6):
+            if you[i] > 0:
+                return i
+    best_move = moves[0]
+    
+    for depth in range(1, 40):
+        try:
+            best_val = -999999
+            bm = moves[0]
+            for m in moves:
+                ny, no, extra = simulate(you, opponent, m)
+                if extra:
+                    val = alphabeta(ny, no, depth - 1, -999999, 999999, True)
+                else:
+                    val = -alphabeta(no, ny, depth - 1, -999999, -best_val, False)
+                if val > best_val:
+                    best_val = val
+                    bm = m
+            best_move = bm
+        except TimeoutError:
+            break
+        if time.time() > deadline:
+            break
+    
+    return best_move
+</code>

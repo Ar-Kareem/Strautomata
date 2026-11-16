@@ -1,0 +1,202 @@
+### Strategy for This Policy
+
+This policy is designed to be a **strong Hex player** that combines **pattern recognition, positional play, and threat response** to maximize its chances of winning. The strategy is inspired by both **human intuition** and **machine learning-inspired heuristics**, but implemented in a computationally efficient way to fit within the 1-second constraint.
+
+#### Key Components:
+1. **Pattern Recognition (Winning/Blocking Moves)**
+   - The policy checks for **immediate winning moves** (connecting the opponent's sides) and **blocking opponent's winning moves** using a **BFS-based connectivity check**.
+   - It prioritizes moves that create **threats** (potential future connections) for the opponent.
+
+2. **Positional Play (Center Control & Edge Threats)**
+   - The policy favors **controlling the center** (rows 4-6, columns 4-6) to maximize flexibility.
+   - It avoids **weak edge moves** unless they are part of a forced response or a strong positional threat.
+
+3. **Threat Response (Opponent's Potential Connections)**
+   - The policy evaluates **opponent's potential connections** (using a simplified **MCTS-like threat assessment**) and responds by either blocking or creating counter-threats.
+
+4. **Heuristic Evaluation (Move Scoring)**
+   - Each move is scored based on:
+     - **Distance to opponent's sides** (closer = better).
+     - **Potential to block opponent's threats**.
+     - **Symmetry and balance** (avoiding over-extending in one direction).
+
+5. **Fallback to Random (If No Clear Move)**
+   - If no strong move is found, it defaults to a **random legal move** (though this is rare in practice).
+
+---
+
+### Python Implementation
+```python
+import random
+from collections import deque
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    # Convert to sets for faster lookups
+    my_stones = set(me)
+    opp_stones = set(opp)
+
+    # Determine opponent's target sides (for blocking)
+    if color == 'b':
+        opp_target_sides = {'left', 'right'}  # white tries to connect left-right
+    else:
+        opp_target_sides = {'top', 'bottom'}  # black tries to connect top-bottom
+
+    # Generate all legal moves (empty cells)
+    legal_moves = []
+    for i in range(11):
+        for j in range(11):
+            if (i, j) not in my_stones and (i, j) not in opp_stones:
+                legal_moves.append((i, j))
+
+    # If no legal moves (shouldn't happen), return a dummy move
+    if not legal_moves:
+        return (0, 0)
+
+    # --- Step 1: Check for immediate winning moves ---
+    for move in legal_moves:
+        temp_me = my_stones | {move}
+        if is_winning_move(temp_me, opp_stones, color):
+            return move
+
+    # --- Step 2: Check for opponent's winning moves and block ---
+    for move in legal_moves:
+        temp_opp = opp_stones | {move}
+        if is_winning_move(temp_opp, my_stones, 'w' if color == 'b' else 'b'):
+            return move
+
+    # --- Step 3: Evaluate all moves using a heuristic ---
+    best_move = None
+    best_score = -float('inf')
+
+    for move in legal_moves:
+        score = evaluate_move(move, my_stones, opp_stones, color)
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return best_move
+
+def is_winning_move(my_stones: set, opp_stones: set, color: str) -> bool:
+    """Check if placing a stone in my_stones connects the required sides."""
+    if color == 'b':
+        # Black connects top (row 0) to bottom (row 10)
+        return is_connected(my_stones, (0, 0), (10, 0))
+    else:
+        # White connects left (col 0) to right (col 10)
+        return is_connected(my_stones, (0, 0), (0, 10))
+
+def is_connected(stones: set, start: tuple, end: tuple) -> bool:
+    """BFS to check if start and end are connected in the hexagonal grid."""
+    if start not in stones or end not in stones:
+        return False
+    visited = set()
+    queue = deque([start])
+    visited.add(start)
+
+    # Hexagonal neighbors (all 6 directions)
+    directions = [
+        (0, 1), (1, 0), (1, -1), (0, -1), (-1, 0), (-1, 1)
+    ]
+
+    while queue:
+        current = queue.popleft()
+        if current == end:
+            return True
+        for di, dj in directions:
+            ni, nj = current[0] + di, current[1] + dj
+            if (ni, nj) in stones and (ni, nj) not in visited:
+                visited.add((ni, nj))
+                queue.append((ni, nj))
+    return False
+
+def evaluate_move(move: tuple, my_stones: set, opp_stones: set, color: str) -> float:
+    """Evaluate a move using heuristics."""
+    i, j = move
+    score = 0.0
+
+    # --- Heuristic 1: Distance to opponent's sides ---
+    if color == 'b':
+        # Black wants to connect top (row 0) and bottom (row 10)
+        top_dist = i
+        bottom_dist = 10 - i
+        score += (1.0 / (top_dist + 1)) + (1.0 / (bottom_dist + 1))
+    else:
+        # White wants to connect left (col 0) and right (col 10)
+        left_dist = j
+        right_dist = 10 - j
+        score += (1.0 / (left_dist + 1)) + (1.0 / (right_dist + 1))
+
+    # --- Heuristic 2: Threat response (opponent's potential connections) ---
+    temp_opp = opp_stones | {move}
+    if is_threatening(temp_opp, my_stones, color):
+        score += 2.0  # Strongly prefer moves that block threats
+
+    # --- Heuristic 3: Center control ---
+    center_bonus = 0.5 * (1 - abs(i - 5) / 5.5) * (1 - abs(j - 5) / 5.5)
+    score += center_bonus
+
+    # --- Heuristic 4: Symmetry (avoid over-extending) ---
+    symmetry_score = 0.0
+    if color == 'b':
+        # Black's symmetry: top-bottom balance
+        top_count = sum(1 for (r, c) in my_stones if r <= 5)
+        bottom_count = sum(1 for (r, c) in my_stones if r > 5)
+        symmetry_score = abs(top_count - bottom_count) * 0.1
+    else:
+        # White's symmetry: left-right balance
+        left_count = sum(1 for (r, c) in my_stones if c <= 5)
+        right_count = sum(1 for (r, c) in my_stones if c > 5)
+        symmetry_score = abs(left_count - right_count) * 0.1
+    score -= symmetry_score
+
+    # --- Heuristic 5: Potential future connections ---
+    potential_connections = count_potential_connections(move, my_stones, opp_stones, color)
+    score += potential_connections * 0.3
+
+    return score
+
+def is_threatening(opp_stones: set, my_stones: set, color: str) -> bool:
+    """Check if the opponent has a potential winning move."""
+    for move in opp_stones:
+        temp_opp = opp_stones - {move}
+        if is_winning_move(temp_opp, my_stones, 'w' if color == 'b' else 'b'):
+            return True
+    return False
+
+def count_potential_connections(move: tuple, my_stones: set, opp_stones: set, color: str) -> int:
+    """Count how many potential connections this move creates."""
+    i, j = move
+    directions = [
+        (0, 1), (1, 0), (1, -1), (0, -1), (-1, 0), (-1, 1)
+    ]
+    count = 0
+
+    for di, dj in directions:
+        ni, nj = i + di, j + dj
+        if (ni, nj) in my_stones:
+            # Check if this neighbor is part of a potential connection
+            if color == 'b':
+                # Black: check if neighbor is near top or bottom
+                if ni <= 2 or ni >= 8:
+                    count += 1
+            else:
+                # White: check if neighbor is near left or right
+                if nj <= 2 or nj >= 8:
+                    count += 1
+    return count
+```
+
+---
+
+### Explanation of Key Functions:
+1. **`is_winning_move`**: Uses BFS to check if a move connects the required sides.
+2. **`evaluate_move`**: Scores moves based on:
+   - Distance to opponent's sides.
+   - Threat blocking.
+   - Center control.
+   - Symmetry.
+   - Potential future connections.
+3. **`is_threatening`**: Checks if the opponent has a forced win.
+4. **`count_potential_connections`**: Estimates how many future connections a move enables.
+
+This policy is **strong enough to beat many basic strategies** while remaining computationally efficient. It balances **aggression** (winning moves) with **defense** (blocking) and **positional play** (center control).

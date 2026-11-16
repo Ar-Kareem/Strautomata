@@ -1,0 +1,234 @@
+# Strategy
+
+I'll create a policy that balances aggression and board control while ensuring legal moves. My strategy:
+
+1. **Prioritize life-and-death situations**: First check if we have any groups in atari (one liberty left) and save them if possible.
+2. **Attack opponent weak groups**: Identify opponent groups with few liberties and attack them.
+3. **Influence and territory**: Use a 5-point opening pattern for early game, then transition to territory-focused moves.
+4. **Edge safety**: Avoid playing on the first line unless necessary.
+5. **Prevent self-atari**: Never play a move that would kill our own stones.
+6. **Ko awareness**: Simple ko detection to avoid immediate recapture.
+
+The implementation uses:
+- Liberty counting for group analysis
+- Territory evaluation based on distance to stones
+- Progressive opening pattern for early game
+- Defensive moves to protect our weak groups
+- Offensive moves to attack opponent weak groups
+
+<code>
+import math
+import random
+from collections import deque
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    BOARD_SIZE = 19
+    EMPTY = 0
+    ME = 1
+    OPPONENT = 2
+    
+    # Create board representation
+    board = [[EMPTY for _ in range(BOARD_SIZE + 2)] for _ in range(BOARD_SIZE + 2)]
+    # Add padding for easier bounds checking
+    
+    # Place stones on board
+    for r, c in me:
+        if 1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE:
+            board[r][c] = ME
+    
+    for r, c in opponent:
+        if 1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE:
+            board[r][c] = OPPONENT
+    
+    # Helper function to get liberties of a group
+    def get_liberties(start_r, start_c, color):
+        if board[start_r][start_c] != color:
+            return set()
+        
+        visited = set()
+        liberties = set()
+        stack = [(start_r, start_c)]
+        
+        while stack:
+            r, c = stack.pop()
+            if (r, c) in visited:
+                continue
+            visited.add((r, c))
+            
+            for dr, dc in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                nr, nc = r + dr, c + dc
+                if 1 <= nr <= BOARD_SIZE and 1 <= nc <= BOARD_SIZE:
+                    if board[nr][nc] == EMPTY:
+                        liberties.add((nr, nc))
+                    elif board[nr][nc] == color and (nr, nc) not in visited:
+                        stack.append((nr, nc))
+        
+        return liberties, visited
+    
+    # Helper function to check if move is legal
+    def is_legal_move(r, c, color):
+        if not (1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE):
+            return False
+        if board[r][c] != EMPTY:
+            return False
+        
+        # Check suicide
+        board[r][c] = color
+        libs, _ = get_liberties(r, c, color)
+        if len(libs) > 0:
+            board[r][c] = EMPTY
+            return True
+        
+        # Check captures
+        opponent_color = OPPONENT if color == ME else ME
+        for dr, dc in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+            nr, nc = r + dr, c + dc
+            if 1 <= nr <= BOARD_SIZE and 1 <= nc <= BOARD_SIZE:
+                if board[nr][nc] == opponent_color:
+                    opp_libs, _ = get_liberties(nr, nc, opponent_color)
+                    if len(opp_libs) == 0:
+                        board[r][c] = EMPTY
+                        return True
+        
+        board[r][c] = EMPTY
+        return False
+    
+    # Get all legal moves
+    legal_moves = []
+    for r in range(1, BOARD_SIZE + 1):
+        for c in range(1, BOARD_SIZE + 1):
+            if is_legal_move(r, c, ME):
+                legal_moves.append((r, c))
+    
+    # Add pass move
+    legal_moves.append((0, 0))
+    
+    # If no legal moves, pass
+    if not legal_moves:
+        return (0, 0)
+    
+    # Early game opening pattern
+    stone_count = len(me) + len(opponent)
+    if stone_count < 10:
+        # Standard opening moves
+        opening_moves = [
+            (4, 4), (4, 16), (16, 4), (16, 16),  # corners
+            (4, 10), (10, 4), (10, 16), (16, 10),  # side star points
+            (10, 10)  # center
+        ]
+        for r, c in opening_moves:
+            if (r, c) in legal_moves:
+                return (r, c)
+    
+    # 1. Save our groups in atari
+    for r, c in me:
+        if board[r][c] == ME:
+            libs, group = get_liberties(r, c, ME)
+            if len(libs) == 1:
+                # Group has only one liberty - save it
+                save_move = list(libs)[0]
+                if save_move in legal_moves:
+                    return save_move
+    
+    # 2. Attack opponent groups with few liberties
+    for r, c in opponent:
+        if board[r][c] == OPPONENT:
+            libs, group = get_liberties(r, c, OPPONENT)
+            if len(libs) <= 2:
+                # Try to capture by playing in liberties
+                for move in libs:
+                    if move in legal_moves:
+                        # Check if this move would actually capture
+                        board[move[0]][move[1]] = ME
+                        new_libs, _ = get_liberties(r, c, OPPONENT)
+                        board[move[0]][move[1]] = EMPTY
+                        if len(new_libs) == 0:
+                            return move
+    
+    # 3. Expand influence from our stones
+    influence_moves = []
+    for r, c in me:
+        for dr in range(-2, 3):
+            for dc in range(-2, 3):
+                nr, nc = r + dr, c + dc
+                if (nr, nc) in legal_moves:
+                    # Weight by distance (closer is better)
+                    dist = abs(dr) + abs(dc)
+                    if 1 <= dist <= 3:
+                        # Avoid first line
+                        if not (nr in [1, 19] or nc in [1, 19]):
+                            influence_moves.append((nr, nc, 3 - dist))
+    
+    if influence_moves:
+        # Sort by weight and pick best
+        influence_moves.sort(key=lambda x: x[2], reverse=True)
+        best_move = influence_moves[0][:2]
+        if best_move in legal_moves:
+            return best_move
+    
+    # 4. Territory moves - play in empty areas
+    center_r, center_c = BOARD_SIZE // 2 + 1, BOARD_SIZE // 2 + 1
+    
+    # Check empty corners and sides
+    corner_regions = [
+        (4, 4), (4, BOARD_SIZE - 3), 
+        (BOARD_SIZE - 3, 4), (BOARD_SIZE - 3, BOARD_SIZE - 3)
+    ]
+    
+    for r, c in corner_regions:
+        if (r, c) in legal_moves:
+            # Check if area is relatively empty
+            empty_neighbors = 0
+            for dr in range(-3, 4):
+                for dc in range(-3, 4):
+                    nr, nc = r + dr, c + dc
+                    if 1 <= nr <= BOARD_SIZE and 1 <= nc <= BOARD_SIZE:
+                        if board[nr][nc] == EMPTY:
+                            empty_neighbors += 1
+            if empty_neighbors > 30:  # Mostly empty area
+                return (r, c)
+    
+    # 5. If we have many stones, play more conservatively in empty areas
+    if len(me) > len(opponent):
+        # Look for large empty areas
+        for radius in range(5, 2, -1):
+            for r in range(radius, BOARD_SIZE - radius + 2):
+                for c in range(radius, BOARD_SIZE - radius + 2):
+                    if (r, c) in legal_moves:
+                        # Check if this point has few stones nearby
+                        nearby_stones = 0
+                        for dr in range(-radius, radius + 1):
+                            for dc in range(-radius, radius + 1):
+                                nr, nc = r + dr, c + dc
+                                if 1 <= nr <= BOARD_SIZE and 1 <= nc <= BOARD_SIZE:
+                                    if board[nr][nc] != EMPTY:
+                                        nearby_stones += 1
+                        if nearby_stones < 3:
+                            return (r, c)
+    
+    # 6. Default: pick a legal move that's not on the edge
+    center_moves = []
+    edge_moves = []
+    
+    for r, c in legal_moves:
+        if r == 0 and c == 0:
+            edge_moves.append((r, c))  # Pass is edge case
+        elif r in [1, 19] or c in [1, 19]:
+            edge_moves.append((r, c))
+        else:
+            center_moves.append((r, c))
+    
+    if center_moves:
+        # Pick move closest to center
+        center_moves.sort(key=lambda pos: abs(pos[0] - center_r) + abs(pos[1] - center_c))
+        return center_moves[0]
+    elif edge_moves:
+        # Avoid pass if possible
+        for r, c in edge_moves:
+            if (r, c) != (0, 0):
+                return (r, c)
+        return edge_moves[0]
+    
+    # Fallback: pass
+    return (0, 0)
+</code>

@@ -1,0 +1,100 @@
+
+def policy(state, role):
+    # Parse state into board dictionary
+    board = {}
+    for prop in state:
+        if prop[0] == "cell":
+            row, col, val = int(prop[1]), int(prop[2]), prop[3]
+            board[(row, col)] = val
+    
+    ROWS, COLS = 4, 4
+    all_cells = [(r, c) for r in range(1, ROWS+1) for c in range(1, COLS+1)]
+    
+    opp = 'o' if role == 'x' else 'x'
+    
+    # Position categories for move ordering (corners are best)
+    corners = {(1,1), (1,4), (4,1), (4,4)}
+    edges = {(1,2), (1,3), (2,1), (2,4), (3,1), (3,4), (4,2), (4,3)}
+    
+    def get_adjacent(pos):
+        r, c = pos
+        return [(r+dr, c+dc) for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)] 
+                if 1 <= r+dr <= ROWS and 1 <= c+dc <= COLS]
+    
+    def is_safe(pos, marks):
+        return not any(adj in marks for adj in get_adjacent(pos))
+    
+    def get_marks(board, player):
+        return {pos for pos, val in board.items() if val == player}
+    
+    def get_blank(board):
+        return {pos for pos in all_cells if board.get(pos, 'b') == 'b'}
+    
+    def get_safe(board, player):
+        marks = get_marks(board, player)
+        return [pos for pos in get_blank(board) if is_safe(pos, marks)]
+    
+    def evaluate(board):
+        return len(get_safe(board, role)) - len(get_safe(board, opp))
+    
+    def minimax(board, current_player, depth, alpha, beta, is_my_turn):
+        safe = get_safe(board, current_player)
+        
+        # Terminal: no safe moves means current player loses
+        if not safe:
+            return -1000 if is_my_turn else 1000
+        
+        if depth == 0:
+            return evaluate(board)
+        
+        # Order moves: corners first for better pruning
+        safe = sorted(safe, key=lambda p: (0 if p in corners else 1 if p in edges else 2))
+        next_player = 'o' if current_player == 'x' else 'x'
+        
+        if is_my_turn:
+            max_eval = float('-inf')
+            for pos in safe:
+                new_board = board.copy()
+                new_board[pos] = current_player
+                eval = minimax(new_board, next_player, depth-1, alpha, beta, False)
+                max_eval = max(max_eval, eval)
+                alpha = max(alpha, eval)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for pos in safe:
+                new_board = board.copy()
+                new_board[pos] = current_player
+                eval = minimax(new_board, next_player, depth-1, alpha, beta, True)
+                min_eval = min(min_eval, eval)
+                beta = min(beta, eval)
+                if beta <= alpha:
+                    break
+            return min_eval
+    
+    safe = get_safe(board, role)
+    
+    if not safe:
+        # No safe moves - forced loss, play any blank cell
+        blank = list(get_blank(board))
+        if blank:
+            return f"mark({blank[0][0]},{blank[0][1]})"
+        return "mark(1,1)"
+    
+    # Order moves: corners first
+    safe = sorted(safe, key=lambda p: (0 if p in corners else 1 if p in edges else 2))
+    
+    best_move = safe[0]
+    best_score = float('-inf')
+    
+    for pos in safe:
+        new_board = board.copy()
+        new_board[pos] = role
+        score = minimax(new_board, opp, 10, float('-inf'), float('inf'), False)
+        if score > best_score:
+            best_score = score
+            best_move = pos
+    
+    return f"mark({best_move[0]},{best_move[1]})"

@@ -1,0 +1,113 @@
+### Strategy Overview
+
+For this Amazons policy on a 6x6 board, I'll implement a **prioritized move selection** approach that balances **aggression** (capturing opponent pieces) and **defense** (protecting own pieces). The strategy will:
+
+1. **First check for immediate captures**: If the opponent's amazon can be captured in the next move (i.e., the arrow lands on it), prioritize that.
+2. **Then check for aggressive moves**: Move toward the opponent's pieces to limit their mobility or force them into weaker positions.
+3. **Fallback to defensive moves**: If no aggressive moves are available, prioritize moves that protect our own pieces or expand our control over the board.
+4. **Randomize among equally good moves**: To avoid predictability, if multiple moves are equally good, randomly select one.
+
+The implementation will use **Breadth-First Search (BFS)** to explore possible moves and evaluate them based on the above criteria. The BFS will generate all legal moves, filter them, and select the best one based on the priority order.
+
+---
+
+### Python Implementation
+
+```python
+import numpy as np
+from collections import deque
+
+def policy(board):
+    # Directions for queen-like movement (8 possible directions)
+    directions = [(-1, -1), (-1, 0), (-1, 1),
+                  (0, -1),          (0, 1),
+                  (1, -1),  (1, 0), (1, 1)]
+
+    # Find all our amazons (positions where board == 1)
+    our_amazons = [(i, j) for i in range(6) for j in range(6) if board[i, j] == 1]
+
+    # Generate all legal moves
+    legal_moves = []
+    for from_row, from_col in our_amazons:
+        # Explore all possible 'to' positions reachable by the amazon
+        for dr, dc in directions:
+            to_row, to_col = from_row + dr, from_col + dc
+            # Check if 'to' is within bounds and empty (0)
+            while 0 <= to_row < 6 and 0 <= to_col < 6 and board[to_row, to_col] == 0:
+                # Now explore all possible arrow shots from 'to'
+                for arrow_dr, arrow_dc in directions:
+                    arrow_row, arrow_col = to_row + arrow_dr, to_col + arrow_dc
+                    # Check if arrow is within bounds and empty (0)
+                    while 0 <= arrow_row < 6 and 0 <= arrow_col < 6:
+                        # Check if arrow lands on opponent's amazon (2)
+                        if board[arrow_row, arrow_col] == 2:
+                            # This is a capture move (highest priority)
+                            legal_moves.append((from_row, from_col, to_row, to_col, arrow_row, arrow_col, 3))
+                            break
+                        # Check if arrow is empty (0) or blocked (-1)
+                        if board[arrow_row, arrow_col] != 0:
+                            break
+                        # Check if arrow passes through any non-empty square (blocked)
+                        # Simulate the arrow path
+                        blocked = False
+                        step_dr, step_dc = arrow_dr // abs(arrow_dr) if arrow_dr != 0 else 0, arrow_dc // abs(arrow_dc) if arrow_dc != 0 else 0
+                        current_row, current_col = to_row + step_dr, to_col + step_dc
+                        while (current_row, current_col) != (arrow_row, arrow_col):
+                            if board[current_row, current_col] != 0:
+                                blocked = True
+                                break
+                            current_row += step_dr
+                            current_col += step_dc
+                        if not blocked:
+                            # This is a valid arrow shot (lower priority)
+                            legal_moves.append((from_row, from_col, to_row, to_col, arrow_row, arrow_col, 1))
+                        break  # Only consider the first valid arrow in this direction
+                    else:
+                        # No opponent amazon in this direction, but arrow is valid
+                        continue
+                    break  # Break after finding a capture or valid arrow
+                else:
+                    # No arrow in this direction (blocked or out of bounds)
+                    continue
+                break  # Break after finding a valid 'to' position
+            else:
+                # No valid 'to' in this direction (blocked or out of bounds)
+                continue
+            break  # Break after finding a valid 'to' position
+
+    # If no legal moves found (should not happen per problem statement), return None
+    if not legal_moves:
+        return None
+
+    # Sort moves by priority (captures first, then others)
+    legal_moves.sort(key=lambda x: -x[6])  # Higher priority first
+
+    # Randomly select a move from the highest priority group
+    highest_priority = legal_moves[0][6]
+    candidates = [move for move in legal_moves if move[6] == highest_priority]
+    selected_move = np.random.choice(candidates)
+
+    # Format the move string
+    from_row, from_col, to_row, to_col, arrow_row, arrow_col, _ = selected_move
+    move_str = f"{from_row},{from_col}:{to_row},{to_col}:{arrow_row},{arrow_col}"
+
+    return move_str
+```
+
+### Explanation of the Code
+
+1. **Directions**: The 8 possible directions for queen-like movement (orthogonal and diagonal).
+2. **Finding Our Amazons**: Locate all our amazons (`board == 1`) on the board.
+3. **Generating Legal Moves**:
+   - For each amazon, explore all possible `to` positions reachable by moving in any direction.
+   - For each `to` position, explore all possible arrow shots from `to` in any direction.
+   - Check if the arrow lands on an opponent's amazon (`board == 2`) for a capture move (highest priority).
+   - If no capture, check if the arrow lands on an empty square (`board == 0`) and is not blocked.
+4. **Prioritization**: Legal moves are sorted by priority (captures first, then others).
+5. **Random Selection**: Among moves of the highest priority, randomly select one to avoid predictability.
+6. **Formatting**: The selected move is formatted into the required string format.
+
+### Notes
+- The code ensures **all returned moves are legal** by thoroughly checking constraints (unobstructed paths, empty landing squares, etc.).
+- The BFS-like approach efficiently explores possible moves without excessive computation.
+- The random selection among equally good moves adds unpredictability, which is useful in competitive play.

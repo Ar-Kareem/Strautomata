@@ -1,0 +1,125 @@
+<thinking>
+I need to create a policy for a simplified Blackjack-like game. Let me break down the key elements:
+
+1. **Card Values**: Cards 2-10 have face value, J/Q/K = 10, A = 11 or 1 (11 if hand ≤ target, else 1)
+2. **Goal**: Get as close to target T (10-30) without going over
+3. **Actions**: HIT (draw next card) or STAY (stop drawing)
+4. **Decision Making**: Need to balance risk of busting vs. getting closer to target
+
+My approach:
+1. Calculate current hand value (handling Aces properly)
+2. Estimate the probability of busting on the next hit
+3. Consider how close I am to the target
+4. Make decision based on risk-benefit analysis
+
+For calculating hand value with Aces:
+- Count total without Aces first
+- Add Aces as 11 if it doesn't exceed target, otherwise as 1
+
+For decision making:
+- If I'm already over target, I've busted (shouldn't happen in policy call)
+- If I'm very close to target, STAY to avoid risk
+- If I'm far from target, HIT to improve my position
+- Consider the remaining cards in my deck and their risk
+
+Let me think about specific thresholds:
+- If current value + minimum possible card (1) > target, definitely STAY
+- If current value + maximum possible card (11) ≤ target, definitely HIT
+- In between, I need to estimate risk
+
+I'll also consider that I have a fixed deck order (A,2,3,...,K), so I can track which cards I've used.
+
+Actually, let me re-read... I don't know the order of my deck, I just know I have one copy of each card and draw "the next card". This means I don't know what the next card will be, but I know what cards I have left.
+
+Wait - I'm overcomplicating. The problem says "draw the next card from your deck" but doesn't specify the order. I think the key insight is that I should treat this as a standard blackjack strategy problem but with variable target.
+
+Let me think of a practical approach:
+1. Calculate current hand value optimally (Aces as 11 if possible)
+2. If current value >= target, STAY (to avoid busting)
+3. If current value is well below target, HIT
+4. If I'm in a middle range, assess the risk
+
+For the risk assessment, since I don't know the exact deck order, I should consider the average case or worst case.
+
+Actually, let me re-read carefully... it says "draw the next card from your deck". This is ambiguous. If it's a fixed deck in fixed order, I could theoretically know what's coming. But without knowing the order, I should assume unknown.
+
+Let me go with a conservative but effective approach:
+- If I'm at or above a threshold close to target, STAY
+- Otherwise, HIT
+- The threshold should be a function of how close I am to target and how much room I have
+
+Looking at blackjack basic strategy, a key insight is the dealer's threshold. In standard blackjack, dealer hits on 16, stays on 17. 
+
+For this variable target game, I should stay when I'm reasonably close to avoid busting.
+
+Let me implement a strategy where:
+- I calculate my current optimal hand value
+- If it's ≥ (target - some margin), I STAY to avoid risk
+- Otherwise I HIT
+
+The margin should be smaller when target is higher, because the risk profile changes.
+
+Actually, let me think in terms of distance to target and risk:
+- Distance to target = target - current_value
+- Risk of next card = probability that next card causes bust
+- But without knowing deck composition, I'll use a simplified approach
+
+Simpler approach:
+- If current_value >= target - 3, STAY (conservative)
+- Else HIT
+- But adjust based on target size
+
+Let me implement and see:
+</thinking>
+
+<code>
+def policy(hand: list[str], target: int) -> str:
+    def calculate_hand_value(cards):
+        # Calculate hand value with optimal ace handling
+        total = 0
+        aces = 0
+        
+        # Count non-aces and aces
+        for card in cards:
+            if card == "A":
+                aces += 1
+            elif card in ["J", "Q", "K"]:
+                total += 10
+            else:
+                total += int(card)
+        
+        # Add aces optimally (11 if doesn't bust, otherwise 1)
+        for _ in range(aces):
+            if total + 11 <= target:
+                total += 11
+            else:
+                total += 1
+                
+        return total
+    
+    current_value = calculate_hand_value(hand)
+    
+    # If we've already reached or exceeded target, we should stay to avoid busting
+    if current_value >= target:
+        return "STAY"
+    
+    # Calculate how much room we have
+    remaining_to_target = target - current_value
+    
+    # If we have very little room, be conservative
+    if remaining_to_target <= 3:
+        return "STAY"
+    
+    # If we're far from target, always hit
+    if remaining_to_target >= 11:
+        return "HIT"
+    
+    # In middle ground, hit if we have reasonable chance of improving without busting
+    # This is a refined threshold based on distance to target
+    if remaining_to_target <= 6:
+        # We're relatively close, risk of busting is higher
+        return "STAY"
+    else:
+        # We're far enough that hitting is worth the risk
+        return "HIT"
+</code>

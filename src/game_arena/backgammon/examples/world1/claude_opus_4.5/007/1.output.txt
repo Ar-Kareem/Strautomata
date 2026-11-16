@@ -1,0 +1,232 @@
+## Strategy
+
+My Backgammon policy will use a weighted evaluation function to score possible board positions and select the best move. The key factors I'll consider are:
+
+1. **Pip count**: Prefer positions that advance checkers toward bearing off (lower pip count is better)
+2. **Blots (single checkers)**: Penalize having single checkers that can be hit, especially in dangerous positions
+3. **Blocking points (anchors)**: Reward having 2+ checkers on points, creating blocks
+4. **Prime building**: Reward consecutive blocked points which trap opponent checkers
+5. **Home board strength**: Reward having points made in the home board (points 0-5)
+6. **Hitting opponent blots**: Reward moves that send opponent checkers to the bar
+7. **Bar re-entry**: Heavily penalize having our own checkers stuck on the bar
+8. **Bearing off progress**: Reward having checkers borne off
+
+The policy will:
+1. Generate all legal moves by simulating dice applications
+2. Evaluate each resulting position using the weighted heuristic
+3. Select the move leading to the best evaluated position
+
+For move generation, I need to handle:
+- Bar entry first (mandatory)
+- Both dice orderings (H first vs L first)
+- Bearing off when all checkers are in home board
+- Pass when no legal moves exist
+
+<code>
+import copy
+
+def policy(state: dict) -> str:
+    dice = state['dice']
+    
+    if not dice:
+        return "H:P,P"
+    
+    # Generate all legal moves and pick the best one
+    moves = generate_all_moves(state)
+    
+    if not moves:
+        return "H:P,P"
+    
+    best_move = None
+    best_score = float('-inf')
+    
+    for move_str, resulting_state in moves:
+        score = evaluate_position(resulting_state, state)
+        if score > best_score:
+            best_score = score
+            best_move = move_str
+    
+    return best_move if best_move else "H:P,P"
+
+def generate_all_moves(state):
+    dice = state['dice']
+    moves = []
+    
+    if len(dice) == 0:
+        return [("H:P,P", state)]
+    
+    if len(dice) == 1:
+        # Single die - try all from positions
+        d = dice[0]
+        first_moves = get_single_die_moves(state, d)
+        if not first_moves:
+            return [("H:P,P", state)]
+        for (frm, new_state) in first_moves:
+            frm_str = format_from(frm)
+            moves.append((f"H:{frm_str},P", new_state))
+        return moves
+    
+    d1, d2 = dice[0], dice[1]
+    high_die = max(d1, d2)
+    low_die = min(d1, d2)
+    
+    # Try H order: high die first, then low die
+    for (frm1, state1) in get_single_die_moves(state, high_die):
+        for (frm2, state2) in get_single_die_moves(state1, low_die):
+            moves.append((f"H:{format_from(frm1)},{format_from(frm2)}", state2))
+    
+    # Try L order: low die first, then high die
+    for (frm1, state1) in get_single_die_moves(state, low_die):
+        for (frm2, state2) in get_single_die_moves(state1, high_die):
+            moves.append((f"L:{format_from(frm1)},{format_from(frm2)}", state2))
+    
+    # If no two-move sequences, try single moves
+    if not moves:
+        # Must play higher die if possible
+        high_moves = get_single_die_moves(state, high_die)
+        if high_moves:
+            for (frm, new_state) in high_moves:
+                moves.append((f"H:{format_from(frm)},P", new_state))
+        else:
+            low_moves = get_single_die_moves(state, low_die)
+            for (frm, new_state) in low_moves:
+                moves.append((f"L:{format_from(frm)},P", new_state))
+    
+    if not moves:
+        moves.append(("H:P,P", state))
+    
+    return moves
+
+def get_single_die_moves(state, die):
+    results = []
+    my_pts = list(state['my_pts'])
+    opp_pts = list(state['opp_pts'])
+    my_bar = state['my_bar']
+    my_off = state['my_off']
+    opp_bar = state['opp_bar']
+    
+    # Must enter from bar first
+    if my_bar > 0:
+        entry_pt = 24 - die
+        if opp_pts[entry_pt] < 2:
+            new_state = apply_move(state, 'B', die)
+            if new_state:
+                results.append(('B', new_state))
+        return results
+    
+    # Check if can bear off
+    can_bear_off = all(my_pts[i] == 0 for i in range(6, 24)) and my_bar == 0
+    
+    for pt in range(24):
+        if my_pts[pt] > 0:
+            dest = pt - die
+            if dest >= 0:
+                if opp_pts[dest] < 2:
+                    new_state = apply_move(state, pt, die)
+                    if new_state:
+                        results.append((pt, new_state))
+            elif can_bear_off:
+                # Bearing off
+                if dest == -1 or (dest < 0 and pt == max(i for i in range(6) if my_pts[i] > 0)):
+                    new_state = apply_move(state, pt, die)
+                    if new_state:
+                        results.append((pt, new_state))
+    
+    return results
+
+def apply_move(state, frm, die):
+    my_pts = list(state['my_pts'])
+    opp_pts = list(state['opp_pts'])
+    my_bar = state['my_bar']
+    my_off = state['my_off']
+    opp_bar = state['opp_bar']
+    
+    if frm == 'B':
+        if my_bar <= 0:
+            return None
+        dest = 24 - die
+        if dest < 0 or dest > 23 or opp_pts[dest] >= 2:
+            return None
+        my_bar -= 1
+        if opp_pts[dest] == 1:
+            opp_pts[dest] = 0
+            opp_bar += 1
+        my_pts[dest] += 1
+    else:
+        pt = frm
+        if my_pts[pt] <= 0:
+            return None
+        dest = pt - die
+        my_pts[pt] -= 1
+        if dest >= 0:
+            if opp_pts[dest] >= 2:
+                return None
+            if opp_pts[dest] == 1:
+                opp_pts[dest] = 0
+                opp_bar += 1
+            my_pts[dest] += 1
+        else:
+            my_off += 1
+    
+    return {
+        'my_pts': my_pts,
+        'opp_pts': opp_pts,
+        'my_bar': my_bar,
+        'opp_bar': opp_bar,
+        'my_off': my_off,
+        'opp_off': state['opp_off'],
+        'dice': []
+    }
+
+def format_from(frm):
+    if frm == 'B':
+        return 'B'
+    return f"A{frm}"
+
+def evaluate_position(state, orig_state):
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    my_off = state['my_off']
+    opp_bar = state['opp_bar']
+    
+    score = 0.0
+    
+    # Pip count (lower is better)
+    my_pip = sum((i + 1) * my_pts[i] for i in range(24)) + 25 * my_bar
+    score -= my_pip * 0.5
+    
+    # Bearing off progress
+    score += my_off * 50
+    
+    # Opponent on bar (good for us)
+    score += opp_bar * 30
+    
+    # Our bar (bad)
+    score -= my_bar * 40
+    
+    # Blots penalty (single checkers)
+    for i in range(24):
+        if my_pts[i] == 1:
+            danger = (24 - i)  # Higher danger for checkers further from home
+            score -= danger * 2
+    
+    # Points made (2+ checkers)
+    for i in range(24):
+        if my_pts[i] >= 2:
+            score += 5
+            if i < 6:  # Home board points are more valuable
+                score += 8
+    
+    # Prime detection (consecutive points)
+    consecutive = 0
+    for i in range(24):
+        if my_pts[i] >= 2:
+            consecutive += 1
+            if consecutive >= 3:
+                score += consecutive * 5
+        else:
+            consecutive = 0
+    
+    return score
+</code>

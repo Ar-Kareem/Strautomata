@@ -1,0 +1,147 @@
+
+import numpy as np
+import random
+
+def get_group_stats(board, r, c, color):
+    """
+    Performs a flood fill starting from (r, c) to find the connected group.
+    Returns the size of the group and the number of liberties it has.
+    """
+    rows, cols = board.shape
+    stack = [(r, c)]
+    visited = set([(r, c)])
+    liberties = set()
+    group_size = 0
+    
+    while stack:
+        cr, cc = stack.pop()
+        group_size += 1
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = cr + dr, cc + dc
+            if 0 <= nr < rows and 0 <= nc < cols:
+                if board[nr, nc] == 0:
+                    liberties.add((nr, nc))
+                elif board[nr, nc] == color and (nr, nc) not in visited:
+                    visited.add((nr, nc))
+                    stack.append((nr, nc))
+                    
+    return group_size, len(liberties)
+
+def policy(me, opponent, memory):
+    # Board representation: 0 = Empty, 1 = Me, 2 = Opponent
+    board = np.zeros((19, 19), dtype=int)
+    
+    for r, c in me:
+        board[r-1, c-1] = 1
+    for r, c in opponent:
+        board[r-1, c-1] = 2
+        
+    my_color = 1
+    opp_color = 2
+    
+    # 1. Opening Strategy
+    # If the board is empty, play in the top-left corner (star point 4,4)
+    if len(me) == 0 and len(opponent) == 0:
+        return ((4, 4), memory)
+    
+    # 2. Generate Candidate Moves
+    # We only consider empty spots adjacent to existing stones to limit search space.
+    candidates = set()
+    directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    
+    # If board is very sparse, include some random interior points to encourage expansion
+    if len(me) + len(opponent) < 10:
+        for _ in range(10):
+            rr, rc = random.randint(3, 16), random.randint(3, 16)
+            if board[rr-1, rc-1] == 0:
+                candidates.add((rr, rc))
+                
+    for r in range(19):
+        for c in range(19):
+            if board[r, c] != 0:
+                for dr, dc in directions:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == 0:
+                        candidates.add((nr+1, nc+1)) # +1 for 1-indexed output
+                        
+    if not candidates:
+        # No candidates found (should only happen if board is full), pass
+        return ((0, 0), memory)
+        
+    best_move = (0, 0)
+    best_score = -float('inf')
+    
+    # 3. Evaluate Candidates
+    for r, c in candidates:
+        r_idx, c_idx = r - 1, c - 1 # Convert to 0-indexed
+        
+        # --- Temporary Move Simulation ---
+        board[r_idx, c_idx] = my_color
+        
+        captured_total = 0
+        my_neighbors_count = 0
+        opp_neighbors_count = 0
+        
+        # Check neighbors for captures and self-connection
+        for dr, dc in directions:
+            nr, nc = r_idx + dr, c_idx + dc
+            if 0 <= nr < 19 and 0 <= nc < 19:
+                if board[nr, nc] == opp_color:
+                    opp_neighbors_count += 1
+                    # Check if this opponent group is captured
+                    _, libs = get_group_stats(board, nr, nc, opp_color)
+                    if libs == 0:
+                        size, _ = get_group_stats(board, nr, nc, opp_color)
+                        captured_total += size
+                elif board[nr, nc] == my_color:
+                    my_neighbors_count += 1
+        
+        # Check if the move is suicide (illegal unless it captures)
+        is_suicide = False
+        if captured_total == 0:
+            _, my_libs = get_group_stats(board, r_idx, c_idx, my_color)
+            if my_libs == 0:
+                is_suicide = True
+                
+        # --- Restore Board ---
+        board[r_idx, c_idx] = 0
+        
+        if is_suicide:
+            continue
+            
+        # --- Scoring Heuristics ---
+        score = 0
+        
+        # Priority 1: Capture
+        score += captured_total * 1000
+        
+        # Priority 2: Rescue (Atari detection)
+        # Check neighbors on the clean board to see if we are saving a stone in atari
+        for dr, dc in directions:
+            nr, nc = r_idx + dr, c_idx + dc
+            if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == my_color:
+                _, libs = get_group_stats(board, nr, nc, my_color)
+                if libs == 1:
+                    # This neighbor is in atari, connecting to it or saving it is high priority
+                    score += 100
+        
+        # Priority 3: Positional Shape
+        # Prefer connecting to own stones
+        score += my_neighbors_count * 15
+        # Prefer fighting near opponent stones
+        score += opp_neighbors_count * 5
+        # Distance from edge (avoid 1st line unless necessary)
+        dist_to_edge = min(r_idx, 18 - r_idx, c_idx, 18 - c_idx)
+        score += dist_to_edge * 2
+        
+        # Random jitter for variety
+        score += random.random() * 5
+        
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+            
+    if best_move != (0, 0):
+        return (best_move, memory)
+    else:
+        return ((0, 0), memory)

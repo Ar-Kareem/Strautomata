@@ -1,0 +1,268 @@
+
+from typing import List, Tuple
+import time
+
+INF = 10**18
+
+# Global timing
+_START_TIME = 0.0
+_TIME_LIMIT = 0.92
+
+
+def policy(you: List[int], opponent: List[int]) -> int:
+    global _START_TIME
+    _START_TIME = time.perf_counter()
+
+    legal = [i for i in range(6) if you[i] > 0]
+    if len(legal) == 1:
+        return legal[0]
+
+    # Strong tactical shortcut: immediate extra move or big capture if clearly best
+    ordered = order_moves(you, opponent, legal)
+    best_move = ordered[0]
+
+    # Iterative deepening alpha-beta
+    stones = sum(you[:6]) + sum(opponent[:6])
+    empties = sum(1 for x in you[:6] if x == 0) + sum(1 for x in opponent[:6] if x == 0)
+
+    if stones <= 12:
+        max_depth = 14
+    elif stones <= 24:
+        max_depth = 11
+    elif empties >= 6:
+        max_depth = 10
+    else:
+        max_depth = 8
+
+    best_score = -INF
+
+    for depth in range(1, max_depth + 1):
+        if out_of_time():
+            break
+        try:
+            score, move = search_root(you, opponent, depth)
+            if move is not None:
+                best_score = score
+                best_move = move
+        except TimeoutError:
+            break
+
+    # Always legal
+    if best_move is None or you[best_move] <= 0:
+        for i in range(6):
+            if you[i] > 0:
+                return i
+    return best_move
+
+
+def out_of_time() -> bool:
+    return (time.perf_counter() - _START_TIME) >= _TIME_LIMIT
+
+
+def finish_game_if_needed(you: List[int], opp: List[int]) -> Tuple[List[int], List[int], bool]:
+    if sum(you[:6]) == 0:
+        opp = opp[:]
+        opp[6] += sum(opp[:6])
+        for i in range(6):
+            opp[i] = 0
+        return you, opp, True
+    if sum(opp[:6]) == 0:
+        you = you[:]
+        you[6] += sum(you[:6])
+        for i in range(6):
+            you[i] = 0
+        return you, opp, True
+    return you, opp, False
+
+
+def simulate_move(you: List[int], opp: List[int], move: int) -> Tuple[List[int], List[int], bool]:
+    y = you[:]
+    o = opp[:]
+
+    stones = y[move]
+    y[move] = 0
+
+    side = 0  # 0 = your side, 1 = opp side
+    idx = move + 1
+    last_side = None
+    last_idx = None
+
+    while stones > 0:
+        while side == 0 and idx <= 6 and stones > 0:
+            y[idx] += 1
+            stones -= 1
+            last_side = 0
+            last_idx = idx
+            if stones == 0:
+                break
+            idx += 1
+        if stones == 0:
+            break
+
+        if side == 0:
+            side = 1
+            idx = 0
+
+        while side == 1 and idx <= 5 and stones > 0:
+            o[idx] += 1
+            stones -= 1
+            last_side = 1
+            last_idx = idx
+            if stones == 0:
+                break
+            idx += 1
+        if stones == 0:
+            break
+
+        side = 0
+        idx = 0
+
+    extra_turn = (last_side == 0 and last_idx == 6)
+
+    # Capture
+    if not extra_turn and last_side == 0 and 0 <= last_idx <= 5 and y[last_idx] == 1:
+        opp_idx = 5 - last_idx
+        if o[opp_idx] > 0:
+            y[6] += y[last_idx] + o[opp_idx]
+            y[last_idx] = 0
+            o[opp_idx] = 0
+
+    y, o, _ = finish_game_if_needed(y, o)
+    return y, o, extra_turn
+
+
+def evaluate(you: List[int], opp: List[int]) -> int:
+    # Terminal-aware
+    y2, o2, ended = finish_game_if_needed(you, opp)
+    if ended:
+        diff = y2[6] - o2[6]
+        if diff > 0:
+            return 10_000_000 + diff
+        if diff < 0:
+            return -10_000_000 + diff
+        return 0
+
+    store_diff = you[6] - opp[6]
+    seeds_diff = sum(you[:6]) - sum(opp[:6])
+
+    # Mobility / tactical features
+    extra_moves = 0
+    captures = 0
+    vulnerability = 0
+
+    for m in range(6):
+        if you[m] <= 0:
+            continue
+        y, o, ex = simulate_move(you, opp, m)
+        if ex:
+            extra_moves += 1
+        gain = y[6] - you[6]
+        if gain >= 2:
+            captures += gain
+
+    # Vulnerability estimate: empty houses opposite loaded enemy houses
+    for i in range(6):
+        if you[i] == 0 and opp[5 - i] > 0:
+            vulnerability += opp[5 - i]
+
+    # Endgame pressure: stores matter more when fewer seeds remain
+    remaining = sum(you[:6]) + sum(opp[:6])
+    endgame_weight = 2 if remaining <= 24 else 1
+
+    score = (
+        32 * endgame_weight * store_diff
+        + 4 * seeds_diff
+        + 18 * extra_moves
+        + 3 * captures
+        - 2 * vulnerability
+    )
+
+    # Prefer having rightmost stones for easier extra turns
+    score += 2 * you[5] + you[4] - (2 * opp[5] + opp[4])
+    return score
+
+
+def order_moves(you: List[int], opp: List[int], moves: List[int]) -> List[int]:
+    scored = []
+    for m in moves:
+        y, o, ex = simulate_move(you, opp, m)
+        immediate = (y[6] - you[6]) - (o[6] - opp[6])
+        bonus = 0
+        if ex:
+            bonus += 1000
+        # Prefer captures / store gains / tactical quality
+        bonus += 50 * immediate
+        # Prefer moves closer to store slightly
+        bonus += m
+        scored.append((bonus, m))
+    scored.sort(reverse=True)
+    return [m for _, m in scored]
+
+
+def search_root(you: List[int], opp: List[int], depth: int) -> Tuple[int, int]:
+    alpha = -INF
+    beta = INF
+    best_score = -INF
+    best_move = None
+
+    legal = [i for i in range(6) if you[i] > 0]
+    legal = order_moves(you, opp, legal)
+
+    for m in legal:
+        if out_of_time():
+            raise TimeoutError
+        y, o, extra = simulate_move(you, opp, m)
+        if extra:
+            score = negamax(y, o, depth - 1, alpha, beta)
+        else:
+            score = -negamax(o, y, depth - 1, -beta, -alpha)
+
+        if score > best_score:
+            best_score = score
+            best_move = m
+        if score > alpha:
+            alpha = score
+
+    return best_score, best_move
+
+
+def negamax(you: List[int], opp: List[int], depth: int, alpha: int, beta: int) -> int:
+    if out_of_time():
+        raise TimeoutError
+
+    you2, opp2, ended = finish_game_if_needed(you, opp)
+    if ended:
+        return evaluate(you2, opp2)
+
+    legal = [i for i in range(6) if you[i] > 0]
+    if depth <= 0:
+        # Small quiescence extension for extra-turn/capture-rich positions
+        tactical = False
+        for m in legal:
+            y, o, ex = simulate_move(you, opp, m)
+            if ex or (y[6] - you[6] >= 2):
+                tactical = True
+                break
+        if tactical and depth > -2:
+            depth -= 1
+        else:
+            return evaluate(you, opp)
+
+    best = -INF
+    ordered = order_moves(you, opp, legal)
+
+    for m in ordered:
+        y, o, extra = simulate_move(you, opp, m)
+        if extra:
+            score = negamax(y, o, depth - 1, alpha, beta)
+        else:
+            score = -negamax(o, y, depth - 1, -beta, -alpha)
+
+        if score > best:
+            best = score
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+
+    return best

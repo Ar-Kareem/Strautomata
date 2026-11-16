@@ -1,0 +1,53 @@
+
+import numpy as np
+from collections import deque
+import math
+
+directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+
+def calculate_liberties(board, player):
+    visited = set()
+    all_liberties = set()
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if board[r][c] == player and (r, c) not in visited:
+                group = set()
+                libs = set()
+                queue = deque([(r, c)])
+                while queue:
+                    cr, cc = queue.popleft()
+                    group.add((cr, cc))
+                    visited.add((cr, cc))
+                    for dr, dc in directions:
+                        nr, nc = cr + dr, cc + dc
+                        if 1 <= nr <= 19 and 1 <= nc <= 19:
+                            if board[nr][nc] == 0:
+                                libs.add((nr, nc))
+                            elif board[nr][nc] == player and (nr, nc) not in group:
+                                group.add((nr, nc))
+                                queue.append((nr, nc))
+                all_liberties.update(libs)
+    return len(all_liberties)
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    board = np.zeros((21, 21), dtype=int)
+    for r, c in me:
+        board[r][c] = 1
+    for r, c in opponent:
+        board[r][c] = 2
+    best_move = None
+    best_score = -math.inf
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if board[r][c] == 0:
+                board[r][c] = 1
+                my_libs = calculate_liberties(board, 1)
+                opp_libs = calculate_liberties(board, 2)
+                score = my_libs - opp_libs
+                board[r][c] = 0
+                if score > best_score:
+                    best_score = score
+                    best_move = (r, c)
+    if best_move is None:
+        return (0, 0)
+    return best_move

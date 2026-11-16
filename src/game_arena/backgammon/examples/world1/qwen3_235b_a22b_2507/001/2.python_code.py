@@ -1,0 +1,270 @@
+
+import numpy as np
+
+def policy(state: dict) -> str:
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+    dice = sorted(state['dice'], reverse=True)
+    if len(dice) == 0:
+        return "H:P,P"
+    if len(dice) == 1:
+        high_die, low_die = dice[0], dice[0]
+    else:
+        high_die, low_die = dice[0], dice[1]
+
+    # Check if all checkers are in home board (points 0-5)
+    home_board = my_pts[0:6]
+    all_in_home = sum(my_pts[6:]) == 0
+
+    # Determine legal moves
+    def is_enter_valid(die: int) -> bool:
+        idx = 24 - die  # entering from bar to point 24-die (0-based)
+        if idx < 0 or idx >= 24:
+            return False
+        return opp_pts[idx] <= 1
+
+    def is_move_valid(src: int, die: int) -> bool:
+        dst = src - die
+        if dst < 0:
+            # Borne off
+            return all_in_home and src < 6
+        if dst >= 24:
+            return False
+        return opp_pts[dst] <= 1
+
+    def can_bear_off_with_die(die: int) -> bool:
+        if not all_in_home:
+            return False
+        # Check if highest piece is within die range
+        for i in range(5, -1, -1):
+            if my_pts[i] > 0:
+                if i < die:
+                    return True  # Can bear off from point i
+                elif i == die - 1:
+                    return True
+                else:
+                    # Check if no checkers on points higher than die-1
+                    if all(my_pts[j] == 0 for j in range(die - 1, 6)):
+                        return True
+                    return False
+        return False
+
+    def get_valid_actions():
+        # Returns list of (order, from1, from2) that are legal
+        actions = []
+        if my_bar > 0:
+            # Must use bar moves first
+            enter_with_high = is_enter_valid(high_die)
+            enter_with_low = is_enter_valid(low_die) if len(dice) > 1 else False
+
+            if not enter_with_high and not enter_with_low:
+                return [("H", "P", "P")]  # Pass
+
+            if len(dice) == 1:
+                if enter_with_high:
+                    actions.append(("H", "B", "P"))
+            else:
+                # Two dice
+                if enter_with_high and enter_with_low:
+                    # Try both orders
+                    # H: high first from B, then low from somewhere (or B again?)
+                    # But after first entry, still might be on bar
+                    # We allow second from B again if still on bar
+                    actions.append(("H", "B", "B"))  # both from bar
+                    actions.append(("L", "B", "B"))
+                elif enter_with_high:
+                    actions.append(("H", "B", "P"))
+                elif enter_with_low:
+                    actions.append(("L", "B", "P"))
+        else:
+            # Normal moves
+            candidates = []
+            for i in range(24):
+                if my_pts[i] == 0:
+                    continue
+                if is_move_valid(i, high_die):
+                    candidates.append(("H", i))
+                if is_move_valid(i, low_die):
+                    candidates.append(("L", i))
+
+            # Bearing off
+            if all_in_home:
+                if can_bear_off_with_die(high_die):
+                    candidates.append(("H", -1))  # -1 means bear off
+                if can_bear_off_with_die(low_die):
+                    candidates.append(("L", -1))
+
+            # No moves?
+            if not candidates:
+                return [("H", "P", "P")]
+
+            # Add moves based on one or two dice
+            if len(dice) == 1:
+                for order, src in candidates:
+                    src_str = "P" if src == -1 else f"A{src}"
+                    actions.append((order, src_str, "P"))
+            else:
+                # Two dice: try all combinations
+                for ord1, src1 in candidates:
+                    # After first move, simulate new state
+                    # Temporarily apply move
+                    new_my_pts = my_pts[:]
+                    new_my_off = my_off
+                    if src1 == -1:
+                        # Bearing off
+                        new_my_off += 1
+                    else:
+                        new_my_pts[src1] -= 1
+                        dst1 = src1 - (high_die if ord1 == 'H' else low_die)
+                        # Check if this move creates a blot that gets hit? Not needed—validity already assumed
+                    # Adjust other die
+                    other_die = low_die if ord1 == 'H' else high_die
+                    used = high_die if ord1 == 'H' else low_die  # which die was used
+
+                    # Now find moves with remaining die
+                    for j in range(24):
+                        if new_my_pts[j] == 0:
+                            continue
+                        if j >= used:  # avoid negative index
+                            dst = j - other_die
+                            if dst < 0:
+                                # Bear off: check if allowed
+                                if all(my_pts[k] == 0 for k in range(other_die - 1, 6)) or j == other_die - 1:
+                                    actions.append((ord1[0], f"A{src1}" if src1 != -1 else "P", f"A{j}"))
+                            else:
+                                if dst < 24 and opp_pts[dst] <= 1:
+                                    actions.append((ord1[0], f"A{src1}" if src1 != -1 else "P", f"A{j}"))
+                    # Also bearing off after first move?
+                    if all_in_home:
+                        # After first move, still in home?
+                        still_in_home = (sum(new_my_pts[6:]) == 0)
+                        if still_in_home and can_bear_off_with_die(other_die):
+                            # Find if any checker can bear off with other_die
+                            for j in range(6):
+                                if new_my_pts[j] > 0:
+                                    if j < other_die or all(new_my_pts[k] == 0 for k in range(other_die - 1, 6)):
+                                        actions.append((ord1[0], f"A{src1}" if src1 != -1 else "P", "P"))
+
+                # Also include single moves if only one die can be played — but rule says must play higher if possible
+                # So only allow single move if higher die cannot be played
+                can_play_high = any(ord == 'H' for ord, src in candidates)
+                if not can_play_high:
+                    for ord, src in candidates:
+                        if ord == 'L':
+                            actions.append((ord, f"A{src}" if src != -1 else "P", "P"))
+
+        # Remove duplicates
+        actions = list(set(actions))
+        return actions
+
+    def score_action(order, from1, from2):
+        score = 0.0
+        # Priority 1: Bear off when possible (high value)
+        if from1 == "P" and from2 == "P":
+            return -1000  # Pass is worst
+
+        # Simulate move for scoring
+        # We won't simulate fully, but use heuristics
+
+        # Decode sources
+        src1 = -1 if from1 == "P" else int(from1[1:]) if from1 != "B" else "B"
+        src2 = -1 if from2 == "P" else int(from2[1:]) if from2 != "B" else "B"
+
+        # Priority: entering from bar
+        if src1 == "B" or src2 == "B":
+            score += 100
+
+        # Hitting opponent blots is very valuable
+        def would_hit(src, die_val):
+            if src == "B":
+                dst = 24 - die_val
+                return dst < 24 and opp_pts[dst] == 1
+            elif src >= 0:
+                dst = src - die_val
+                if dst < 0:  # bear off
+                    return False
+                return dst < 24 and opp_pts[dst] == 1
+            return False
+
+        die1 = high_die if order == 'H' else low_die
+        die2 = low_die if order == 'H' else high_die
+
+        if src1 != -1 and src1 != "P" and src1 != "B":
+            if would_hit(src1, die1):
+                score += 50
+        if src2 != -1 and src2 != "P" and src2 != "B":
+            if would_hit(src2, die2):
+                score += 50
+
+        # Advancing back checkers (high index) is good
+        # Encourage moving checkers from high points
+        if src1 != "B" and src1 != "P" and src1 != -1:
+            score += src1 * 0.1  # more for higher src
+        if src2 != "B" and src2 != "P" and src2 != -1:
+            score += src2 * 0.1
+
+        # Bearing off: prefer to bear off when possible
+        if src1 == -1:
+            score += 20
+        if src2 == -1:
+            score += 20
+
+        # Avoid leaving blots
+        # Crude: if moving from a point with exactly 2 checkers, we leave a blot
+        if src1 != "B" and src1 != "P" and src1 != -1:
+            if my_pts[src1] == 2:
+                # Leaving a blot unless it's safe
+                vulnerable = False
+                for die in range(1, 7):
+                    if src1 - die >= 0 and opp_pts[src1 - die] >= 1:
+                        vulnerable = True
+                if vulnerable:
+                    score -= 10
+        if src2 != "B" and src2 != "P" and src2 != -1:
+            if my_pts[src2] == 2:
+                vulnerable = False
+                for die in range(1, 7):
+                    if src2 - die >= 0 and opp_pts[src2 - die] >= 1:
+                        vulnerable = True
+                if vulnerable:
+                    score -= 10
+
+        # Building points in home board
+        if src1 != "B" and src1 != "P" and src1 != -1:
+            dst1 = src1 - die1
+            if 0 <= dst1 <= 5:
+                # Building home board
+                if my_pts[dst1] == 1:  # would make it 2
+                    score += 5
+        if src2 != "B" and src2 != "P" and src2 != -1:
+            dst2 = src2 - die2
+            if 0 <= dst2 <= 5:
+                if my_pts[dst2] == 1:
+                    score += 5
+
+        return score
+
+    # Get all valid actions
+    actions = get_valid_actions()
+
+    # Filter legal ones (they should all be, but ensure)
+    legal_actions = []
+    for act in actions:
+        ord_chr, f1, f2 = act
+        # Just trust the generation
+        legal_actions.append(act)
+
+    if not legal_actions:
+        return "H:P,P"
+
+    # Score all actions
+    scored = [(score_action(ord, f1, f2), ord, f1, f2) for ord, f1, f2 in legal_actions]
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    # Pick best
+    _, best_ord, best_f1, best_f2 = scored[0]
+    return f"{best_ord}:{best_f1},{best_f2}"

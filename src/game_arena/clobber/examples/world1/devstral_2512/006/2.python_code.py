@@ -1,0 +1,108 @@
+
+import random
+from typing import List, Tuple
+
+def policy(you: List[List[int]], opponent: List[List[int]]) -> str:
+    rows = 5
+    cols = 6
+    directions = ['U', 'D', 'L', 'R']
+    dir_offsets = {'U': (-1, 0), 'D': (1, 0), 'L': (0, -1), 'R': (0, 1)}
+
+    # Convert to more workable format
+    board = [[0]*cols for _ in range(rows)]
+    for r in range(rows):
+        for c in range(cols):
+            if you[r][c]:
+                board[r][c] = 1
+            elif opponent[r][c]:
+                board[r][c] = -1
+
+    def is_legal_move(r, c, d):
+        dr, dc = dir_offsets[d]
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < rows and 0 <= nc < cols:
+            return board[r][c] == 1 and board[nr][nc] == -1
+        return False
+
+    def get_legal_moves():
+        moves = []
+        for r in range(rows):
+            for c in range(cols):
+                for d in directions:
+                    if is_legal_move(r, c, d):
+                        moves.append((r, c, d))
+        return moves
+
+    def simulate_move(r, c, d):
+        new_board = [row[:] for row in board]
+        dr, dc = dir_offsets[d]
+        nr, nc = r + dr, c + dc
+        new_board[r][c] = 0
+        new_board[nr][nc] = 1
+        return new_board
+
+    def count_legal_moves(board, player):
+        count = 0
+        for r in range(rows):
+            for c in range(cols):
+                if board[r][c] == player:
+                    for d in directions:
+                        dr, dc = dir_offsets[d]
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < rows and 0 <= nc < cols:
+                            if board[nr][nc] == -player:
+                                count += 1
+        return count
+
+    def evaluate_move(r, c, d):
+        # Simulate the move
+        new_board = simulate_move(r, c, d)
+
+        # Check if this move leaves opponent with no moves (immediate win)
+        opponent_moves = count_legal_moves(new_board, -1)
+        if opponent_moves == 0:
+            return float('inf')
+
+        # Calculate our new moves after this move
+        our_moves = count_legal_moves(new_board, 1)
+
+        # Center control bonus
+        center_bonus = 0
+        nr, nc = r + dir_offsets[d][0], c + dir_offsets[d][1]
+        if 1 <= nr <= 3 and 1 <= nc <= 4:
+            center_bonus = 2
+
+        # Edge penalty for moving to edges
+        edge_penalty = 0
+        if nr in [0, rows-1] or nc in [0, cols-1]:
+            edge_penalty = -1
+
+        # Mobility difference
+        current_our_moves = count_legal_moves(board, 1)
+        mobility_score = (our_moves - current_our_moves) * 1.5
+
+        # Opponent's potential moves after our move
+        opponent_potential = count_legal_moves(new_board, -1)
+
+        # Combine scores
+        score = (our_moves * 2) + center_bonus + mobility_score - opponent_potential + edge_penalty
+        return score
+
+    legal_moves = get_legal_moves()
+    if not legal_moves:
+        # Shouldn't happen as per problem statement, but handle gracefully
+        return "0,0,U"
+
+    # Evaluate all moves
+    scored_moves = []
+    for move in legal_moves:
+        r, c, d = move
+        score = evaluate_move(r, c, d)
+        scored_moves.append((score, move))
+
+    # Sort by score (descending)
+    scored_moves.sort(reverse=True, key=lambda x: x[0])
+
+    # Return the best move
+    best_move = scored_moves[0][1]
+    return f"{best_move[0]},{best_move[1]},{best_move[2]}"

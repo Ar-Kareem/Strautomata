@@ -1,0 +1,166 @@
+
+import numpy as np
+import copy
+
+def policy(you, opponent) -> str:
+    # Convert to numpy arrays for easier manipulation
+    you_board = np.array(you)
+    opponent_board = np.array(opponent)
+    
+    # Find all empty positions
+    empty_positions = []
+    for r in range(6):
+        for c in range(6):
+            if you_board[r][c] == 0 and opponent_board[r][c] == 0:
+                empty_positions.append((r, c))
+    
+    # Define a function to check for win
+    def check_win(board):
+        # Check rows
+        for r in range(6):
+            for c in range(2):
+                if all(board[r][c+i] == 1 for i in range(5)):
+                    return True
+        # Check columns
+        for c in range(6):
+            for r in range(2):
+                if all(board[r+i][c] == 1 for i in range(5)):
+                    return True
+        # Check diagonals (top-left to bottom-right)
+        for r in range(2):
+            for c in range(2):
+                if all(board[r+i][c+i] == 1 for i in range(5)):
+                    return True
+        # Check diagonals (top-right to bottom-left)
+        for r in range(2):
+            for c in range(4, 6):
+                if all(board[r+i][c-i] == 1 for i in range(5)):
+                    return True
+        return False
+    
+    # Define a function to rotate a quadrant
+    def rotate_quadrant(board, quad, direction):
+        new_board = copy.deepcopy(board)
+        if quad == 0:
+            rows, cols = slice(0, 3), slice(0, 3)
+        elif quad == 1:
+            rows, cols = slice(0, 3), slice(3, 6)
+        elif quad == 2:
+            rows, cols = slice(3, 6), slice(0, 3)
+        else:  # quad == 3
+            rows, cols = slice(3, 6), slice(3, 6)
+        
+        sub_board = new_board[rows, cols]
+        if direction == 'R':
+            new_board[rows, cols] = np.rot90(sub_board, k=-1)
+        else:  # direction == 'L'
+            new_board[rows, cols] = np.rot90(sub_board, k=1)
+        return new_board
+    
+    # Define evaluation function
+    def evaluate(you_board, opponent_board):
+        score = 0
+        # Check for immediate win
+        if check_win(you_board):
+            return 10000
+        if check_win(opponent_board):
+            return -10000
+        
+        # Evaluate potential 4-in-a-row and 3-in-a-row
+        for r in range(6):
+            for c in range(3):
+                you_count = sum(you_board[r][c+i] for i in range(4))
+                opponent_count = sum(opponent_board[r][c+i] for i in range(4))
+                if you_count == 4 and opponent_board[r][c:c+4].sum() == 0:
+                    score += 100
+                if opponent_count == 4 and you_board[r][c:c+4].sum() == 0:
+                    score -= 100
+                    
+        for c in range(6):
+            for r in range(3):
+                you_count = sum(you_board[r+i][c] for i in range(4))
+                opponent_count = sum(opponent_board[r+i][c] for i in range(4))
+                if you_count == 4 and opponent_board[r:r+4,c].sum() == 0:
+                    score += 100
+                if opponent_count == 4 and you_board[r:r+4,c].sum() == 0:
+                    score -= 100
+                    
+        # Center control
+        center_positions = [(2,2), (2,3), (3,2), (3,3)]
+        for r, c in center_positions:
+            if you_board[r][c] == 1:
+                score += 10
+            if opponent_board[r][c] == 1:
+                score -= 10
+                
+        return score
+    
+    # Minimax with alpha-beta pruning
+    def minimax(depth, alpha, beta, maximizing_player, you_board, opponent_board, empty_positions):
+        if depth == 0 or check_win(you_board) or check_win(opponent_board) or len(empty_positions) == 0:
+            return evaluate(you_board, opponent_board)
+        
+        if maximizing_player:
+            max_eval = -float('inf')
+            for r, c in empty_positions:
+                new_you_board = copy.deepcopy(you_board)
+                new_you_board[r][c] = 1
+                
+                for quad in range(4):
+                    for direction in ['L', 'R']:
+                        rotated_you_board = rotate_quadrant(new_you_board, quad, direction)
+                        rotated_opponent_board = rotate_quadrant(opponent_board, quad, direction)
+                        
+                        new_empty_positions = [pos for pos in empty_positions if pos != (r, c)]
+                        eval_score = minimax(depth - 1, alpha, beta, False, rotated_you_board, rotated_opponent_board, new_empty_positions)
+                        max_eval = max(max_eval, eval_score)
+                        alpha = max(alpha, eval_score)
+                        if beta <= alpha:
+                            break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for r, c in empty_positions:
+                new_opponent_board = copy.deepcopy(opponent_board)
+                new_opponent_board[r][c] = 1
+                
+                for quad in range(4):
+                    for direction in ['L', 'R']:
+                        rotated_you_board = rotate_quadrant(you_board, quad, direction)
+                        rotated_opponent_board = rotate_quadrant(new_opponent_board, quad, direction)
+                        
+                        new_empty_positions = [pos for pos in empty_positions if pos != (r, c)]
+                        eval_score = minimax(depth - 1, alpha, beta, True, rotated_you_board, rotated_opponent_board, new_empty_positions)
+                        min_eval = min(min_eval, eval_score)
+                        beta = min(beta, eval_score)
+                        if beta <= alpha:
+                            break
+            return min_eval
+    
+    # Find the best move
+    best_move = None
+    best_score = -float('inf')
+    depth = 2  # Limit depth to ensure timely response
+    
+    for r, c in empty_positions:
+        new_you_board = copy.deepcopy(you_board)
+        new_you_board[r][c] = 1
+        
+        for quad in range(4):
+            for direction in ['L', 'R']:
+                rotated_you_board = rotate_quadrant(new_you_board, quad, direction)
+                rotated_opponent_board = rotate_quadrant(opponent_board, quad, direction)
+                
+                new_empty_positions = [pos for pos in empty_positions if pos != (r, c)]
+                score = minimax(depth - 1, -float('inf'), float('inf'), False, rotated_you_board, rotated_opponent_board, new_empty_positions)
+                
+                if score > best_score:
+                    best_score = score
+                    best_move = (r+1, c+1, quad, direction)  # 1-indexed
+    
+    # Default move if no better move found
+    if best_move is None:
+        r, c = empty_positions[0]
+        best_move = (r+1, c+1, 0, 'L')
+    
+    return f"{best_move[0]},{best_move[1]},{best_move[2]},{best_move[3]}"

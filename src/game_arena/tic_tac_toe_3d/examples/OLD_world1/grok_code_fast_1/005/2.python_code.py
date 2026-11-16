@@ -1,0 +1,117 @@
+
+import numpy as np
+from typing import List
+
+# Define all winning lines for 3x3x3 Tic Tac Toe
+winning_lines = [
+    # Along x-axis (fixed y, z)
+    [(x, y, z) for x in range(3)] for y in range(3) for z in range(3)
+] + [
+    # Along y-axis (fixed x, z)
+    [(x, y, z) for y in range(3)] for x in range(3) for z in range(3)
+] + [
+    # Along z-axis (fixed x, y)
+    [(x, y, z) for z in range(3)] for x in range(3) for y in range(3)
+] + [
+    # Diagonals in xy planes (z fixed)
+    [(x, x, z) for x in range(3)] for z in range(3)
+] + [
+    [(x, 2-x, z) for x in range(3)] for z in range(3)
+] + [
+    # Diagonals in xz planes (y fixed)
+    [(x, y, x) for x in range(3)] for y in range(3)
+] + [
+    [(x, y, 2-x) for x in range(3)] for y in range(3)
+] + [
+    # Diagonals in yz planes (x fixed)
+    [(x, y, y) for y in range(3)] for x in range(3)
+] + [
+    [(x, y, 2-y) for y in range(3)] for x in range(3)
+] + [
+    # Space diagonals
+    [(i, i, i) for i in range(3)],
+    [(i, i, 2-i) for i in range(3)],
+    [(i, 2-i, i) for i in range(3)],
+    [(2-i, i, i) for i in range(3)],
+]
+
+def check_winner(b: np.ndarray) -> int:
+    """
+    Check if there is a winner on the board.
+    Returns 1 if player 1 wins, -1 if opponent wins, 0 otherwise.
+    """
+    for line in winning_lines:
+        vals = [b[x, y, z] for x, y, z in line]
+        total = sum(vals)
+        if total == 3:
+            return 1
+        elif total == -3:
+            return -1
+    return 0
+
+def get_valid_moves(b: np.ndarray) -> List[tuple[int, int, int]]:
+    """
+    Get list of valid (empty) moves.
+    """
+    moves = []
+    for x in range(3):
+        for y in range(3):
+            for z in range(3):
+                if b[x, y, z] == 0:
+                    moves.append((x, y, z))
+    return moves
+
+def minimax(b: np.ndarray, is_maximizing: bool) -> int:
+    """
+    MINIMAX algorithm to evaluate the board.
+    is_maximizing is True when it's the AI's turn (player 1).
+    """
+    winner = check_winner(b)
+    if winner != 0:
+        return winner
+    
+    moves = get_valid_moves(b)
+    if not moves:
+        return 0  # Draw
+    
+    if is_maximizing:  # AI's turn (maximizer)
+        max_eval = -float('inf')
+        for move in moves:
+            new_b = b.copy()
+            new_b[move] = 1
+            eval_ = minimax(new_b, False)
+            max_eval = max(max_eval, eval_)
+        return max_eval
+    else:  # Opponent's turn (minimizer)
+        min_eval = float('inf')
+        for move in moves:
+            new_b = b.copy()
+            new_b[move] = -1
+            eval_ = minimax(new_b, True)
+            min_eval = min(min_eval, eval_)
+        return min_eval
+
+def policy(board: List[List[List[int]]]) -> tuple[int, int, int]:
+    """
+    Determine the next move for the AI (player 1).
+    Finds the best move using the MINIMAX algorithm.
+    """
+    b = np.array(board)
+    moves = get_valid_moves(b)
+    if not moves:
+        # This shouldn't happen since it's the AI's turn, but just in case
+        return (0, 0, 0)  # or raise error, but return something
+    
+    best_score = -float('inf')
+    best_move = None
+    
+    for move in moves:
+        new_b = b.copy()
+        new_b[move] = 1
+        # After placing, it's opponent's turn (minimize)
+        score = minimax(new_b, False)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move

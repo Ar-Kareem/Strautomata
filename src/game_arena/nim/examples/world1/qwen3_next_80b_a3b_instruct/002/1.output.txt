@@ -1,0 +1,204 @@
+The game described is a variant of Nim called "Misère Nim" — where the player who takes the last object loses. This is different from standard Nim, where taking the last object wins.
+
+In standard Nim, the winning strategy is based on the XOR (nim-sum) of all pile sizes: if the nim-sum is zero, the position is losing for the player about to move; otherwise, it's winning.
+
+However, in Misère Nim, the strategy is slightly different. For Misère Nim with more than one pile containing more than one object, the strategy is identical to standard Nim. The critical difference arises when all remaining piles have size 1 — then the parity (odd/even count of piles) determines the outcome: if the number of piles of size 1 is odd, the current player loses with perfect play (because the opponent can force them to take the last one).
+
+But here’s the key insight for 4-pile Misère Nim:
+
+1. **If all piles are size 1**: There are 4 piles (even), so the current player can win by taking one pile entirely, leaving 3 piles of 1 for the opponent — who will be forced to take the last one. So in this case, the winning move is to take any one pile completely (leaving 3 piles of 1).
+
+2. **If exactly one pile has more than 1 object**, and the rest are 0 or 1:
+   - We want to leave an odd number of piles of size 1 for the opponent. So if there are `k` piles of size 1, and one pile `p > 1`, then:
+     - If `k` is even, reduce the big pile to 1 → now we have `k+1` piles of size 1 (odd) → opponent loses.
+     - If `k` is odd, reduce the big pile to 0 → now we have `k` piles of size 1 (odd) → opponent loses.
+     - Actually, correction: since we lose by taking the last object, we want to *force the opponent to take the last object*. So we want to leave an *odd* number of piles of size 1 for the opponent.
+
+   Actually, standard Misère Nim strategy for 4 piles:
+
+   According to combinatorial game theory (as per经典的Misère Nim analysis):
+
+   - If there's **only one pile with >1**, then the correct move is to make the number of piles of size 1 **odd**. 
+     - If current number of size-1 piles is even → reduce the large pile to 1 (now odd number of 1s).
+     - If current number of size-1 piles is odd → reduce the large pile to 0 (still odd number of 1s).
+
+   - If there are **two or more piles with size >1**, then **play as in standard Nim** (use XOR), but avoid leaving exactly one pile with >1 and an odd number of 1s unless forced.
+
+   However, since we are playing perfectly and need a bulletproof strategy, here is the known optimal strategy for Misère Nim with 4 piles (generalized):
+
+   ### Optimal Misère Nim Strategy (for any number of piles):
+
+   > If the position is such that every pile is 0 or 1, then the winner is determined by parity: even number of 1s → current player wins (by taking one 1); odd number of 1s → current player loses.
+
+   > Otherwise (at least two piles > 1): use standard Nim (XOR) strategy, but **do NOT** leave exactly one pile > 1 with the rest 0 or 1 unless you can make the number of 1s even (see below).
+
+   Actually, the known strategy from literature (Conway, etc.):
+
+   - Play as in normal Nim unless the move would leave only piles of size 1.
+   - If in normal play you would reduce a pile to 1, and that would leave an odd number of nonempty piles of size 1, then instead reduce that pile to 0 (if possible without violating nim-sum), OR adjust to leave an even number of 1s.
+
+   But a simpler and proven working method for Misère Nim with multiple piles (>2) and large heaps is:
+
+   **Use normal Nim strategy (XOR) unless the normal move would leave only one pile with more than 1 item.**
+
+   In that exceptional case, adjust the move to leave an *even* number of 1-piles.
+
+   However, since we have exactly 4 piles, and the state is small, we can do this:
+
+   ### Step-by-step policy:
+
+   1. Count how many piles are > 1. 
+   2. If **count > 1**: play normal Nim strategy (hunt for a move that makes nim-sum = 0).
+   3. If **count == 1**: then there is exactly one pile with more than 1, rest are 0 or 1.
+        - Let `ones` = count of piles of size 1.
+        - We want to leave the opponent in a losing position.
+        - The losing positions in this case are when there are an *odd* number of 1-piles.
+        - So:
+            - If `ones` is even → reduce the big pile to 1 → now ones becomes `ones+1` (odd) → opponent loses.
+            - If `ones` is odd → reduce the big pile to 0 → now ones remains `ones` (odd) → opponent loses.
+        - Either move is winning.
+   4. If **count == 0**: all piles are 0 or 1. 
+        - Since we have 4 piles, if all are 1: 4 is even → we can take one pile completely → leave 3 ones (odd) → opponent loses.
+        - So: take any pile of 1.
+
+   But wait — if count == 0, then we are in all 1s. Since we have 4 piles (even), we win by taking one pile → leaving 3 ones (odd) → opponent is in losing position.
+
+   So in all cases, we try:
+
+   - First, if there is at least two piles > 1 → use XOR strategy to make nim-sum=0.
+   - Else: use the above special-case management.
+
+   Why is this correct? Because in normal play, the positions with at least two piles > 1 behave the same in Misère as in normal Nim. The difference only arises in endgame.
+
+   Implementation:
+
+   - Compute nim-sum = piles[0] XOR piles[1] XOR piles[2] XOR piles[3]
+   - If nim-sum == 0: we are in a losing position in normal play, BUT in Misère with more than one pile > 1, it’s still losing (so we must make a random legal move — but actually, we still look for a move to make nim-sum 0 if possible, and if not, then it's forced to lose — but we still must return a legal move).
+
+   Actually, if nim-sum == 0 and we are in "normal play region" (at least two piles >1), then any move we make will give the opponent a winning position. So we must still make a legal move — we pick the first legal move that minimizes risk.
+
+   But the theory says: when at least two piles are >1, the winning strategy is identical to normal Nim. So if nim-sum != 0, we can always find a move to make it 0.
+
+   Algorithm:
+
+   1. Count piles > 1 → `large_count`
+   2. If `large_count >= 2`:
+        - Compute nim_sum = piles[0]^piles[1]^piles[2]^piles[3]
+        - If nim_sum == 0 → we are in losing position. We must make any move, but we try not to leave a position with only one large pile and odd 1s (which might be losing for opponent? no — we're forced).
+          Actually, we just pick the first pile where we can reduce it to make nim_sum=0, but since nim_sum=0, no such move exists. So we make a minimal move — take 1 from the largest pile to delay the end.
+        - Else (nim_sum != 0): find a pile i where piles[i] ^ nim_sum < piles[i]. Reduce pile i to (piles[i] ^ nim_sum). This is the standard move.
+   3. If `large_count == 1`:
+        - Find the index of the pile that is >1, call it `big_idx`
+        - Count ones: number of piles == 1
+        - If ones % 2 == 0: then reduce big pile to 1
+        - If ones % 2 == 1: then reduce big pile to 0
+   4. If `large_count == 0`: all piles are 0 or 1. Since total piles = 4, and we're to move, we take one pile completely (any one with 1).
+
+   But: what if some piles are 0? That's okay. We only care about counting non-zero 1s.
+
+   Important: We must return a legal move. We must ensure the move we make is legal (take at least 1, at most the pile size).
+
+   Let’s code accordingly.
+
+   Edge: if all piles are 0? — but the game ends when all piles are zero, and we are the player to move, so state won't be all zero.
+
+   We'll implement accordingly.
+
+   Let me test with an example:
+   - [1,1,1,1]: large_count=0 → take one pile → return e.g., "0,1"
+   - [2,1,1,1]: large_count=1, ones=3 (odd) → reduce the pile of 2 to 0 → "0,2"
+   - [2,1,1,0]: large_count=1, ones=2 (even) → reduce the pile of 2 to 1 → "0,1" → new state [1,1,1,0] → 3 ones → opponent in losing position.
+   - [3,4,5,7]: normal Nim. Compute XOR:
+        3^4^5^7 = 3 (011) ^ 4 (100) = 7 (111); 7^5=2 (010); 2^7=5 (101). So nim_sum=5.
+        We need to find a pile where pile[i] ^ 5 < pile[i].
+        Check pile[0]=3: 3^5=6 >3 → no
+        pile[1]=4: 4^5=1 <4 → yes. So reduce pile 1 from 4 to 1 → "1,3"
+
+   This should be a winning move.
+
+   So we'll code accordingly.
+
+   One more: [1,1,1,2] — large_count=1, ones=3 (odd) → reduce pile 3 to 0 → move "3,2"
+
+   All good.
+
+   Implementation note: if in "large_count >=2" and nim_sum==0, then any move we make will be a losing move, but we still have to make one. We'll choose the first pile we can extract from (any non-zero pile) and take 1. This is arbitrary but safe — we don't have a winning move, so we minimize damage.
+
+   Let's code it.
+
+   Note: We must NEVER return an illegal move. Always check.
+
+   We'll write accordingly.
+
+   <code>
+import numpy as np
+
+def policy(piles: list[int]) -> str:
+    # Count number of piles greater than 1
+    large_count = sum(1 for p in piles if p > 1)
+    ones_count = sum(1 for p in piles if p == 1)
+    
+    # Case 1: All piles are 0 or 1 (i.e., no large piles)
+    if large_count == 0:
+        # We have 4 piles total, some are 0, some are 1. We need to take one object from a pile of 1.
+        # Find any pile with 1 and take it all.
+        for i in range(4):
+            if piles[i] == 1:
+                return f"{i},1"
+        # If no pile is 1? (shouldn't happen since large_count=0 and not all zero)
+        # Take from first non-zero pile
+        for i in range(4):
+            if piles[i] > 0:
+                return f"{i},1"
+    
+    # Case 2: Exactly one pile > 1
+    elif large_count == 1:
+        # Find the large pile index
+        big_idx = -1
+        for i in range(4):
+            if piles[i] > 1:
+                big_idx = i
+                break
+        # If we have even number of ones, reduce big pile to 1
+        if ones_count % 2 == 0:
+            take = piles[big_idx] - 1
+            return f"{big_idx},{take}"
+        else:
+            # Reduce big pile to 0
+            take = piles[big_idx]
+            return f"{big_idx},{take}"
+    
+    # Case 3: Two or more piles > 1
+    else:
+        # Compute nim-sum
+        nim_sum = 0
+        for p in piles:
+            nim_sum ^= p
+        
+        # If nim-sum is 0, we're in a losing position. We need to make any legal move.
+        if nim_sum == 0:
+            # Find first non-zero pile and take 1 (minimal move)
+            for i in range(4):
+                if piles[i] > 0:
+                    return f"{i},1"
+            # All zero? shouldn't happen
+            return "0,1"
+        
+        # Otherwise, find a move that makes nim_sum = 0
+        for i in range(4):
+            if piles[i] == 0:
+                continue
+            # What should be the new size of pile i to make nim_sum 0?
+            new_size = piles[i] ^ nim_sum
+            if new_size < piles[i]:  # We can reduce this pile to new_size
+                take = piles[i] - new_size
+                return f"{i},{take}"
+        
+        # If we didn't find a move? Shouldn't happen due to Nim theory.
+        # Fallback: take one from first non-zero pile
+        for i in range(4):
+            if piles[i] > 0:
+                return f"{i},1"
+        
+        return "0,1"  # This should never be reached
+   </code>

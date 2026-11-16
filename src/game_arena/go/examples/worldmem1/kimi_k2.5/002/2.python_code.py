@@ -1,0 +1,179 @@
+
+import numpy as np
+from collections import deque
+from typing import Set, Tuple, Dict
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    # Board representation: 0=empty, 1=me, 2=opponent. Using 21x21 for 1-indexed with padding.
+    board = np.zeros((21, 21), dtype=np.int8)
+    for r, c in me:
+        board[r, c] = 1
+    for r, c in opponent:
+        board[r, c] = 2
+    
+    # Directions
+    dirs = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    
+    def get_group_liberties(r: int, c: int, player: int) -> Tuple[Set[Tuple[int, int]], Set[Tuple[int, int]]]:
+        """Return (group_stones, liberties) for a stone at (r,c) belonging to player."""
+        if board[r, c] != player:
+            return set(), set()
+        
+        queue = deque([(r, c)])
+        group = {(r, c)}
+        liberties = set()
+        
+        while queue:
+            cr, cc = queue.popleft()
+            for dr, dc in dirs:
+                nr, nc = cr + dr, cc + dc
+                if 1 <= nr <= 19 and 1 <= nc <= 19:
+                    if board[nr, nc] == 0:
+                        liberties.add((nr, nc))
+                    elif board[nr, nc] == player and (nr, nc) not in group:
+                        group.add((nr, nc))
+                        queue.append((nr, nc))
+        return group, liberties
+    
+    def is_legal(r: int, c: int) -> bool:
+        """Check if move is legal (empty, not suicide, not ko)."""
+        if board[r, c] != 0:
+            return False
+        
+        board[r, c] = 1
+        legal = False
+        
+        # Check for captures
+        for dr, dc in dirs:
+            nr, nc = r + dr, c + dc
+            if 1 <= nr <= 19 and 1 <= nc <= 19 and board[nr, nc] == 2:
+                _, libs = get_group_liberties(nr, nc, 2)
+                if len(libs) == 0:
+                    legal = True
+                    break
+        
+        if not legal:
+            # Check for suicide
+            _, libs = get_group_liberties(r, c, 1)
+            if len(libs) > 0:
+                legal = True
+        
+        board[r, c] = 0
+        return legal
+    
+    # Generate candidate moves: empty points adjacent to any stone, plus star points for opening
+    candidates = set()
+    has_stones = len(me) + len(opponent) > 0
+    
+    if has_stones:
+        for r in range(1, 20):
+            for c in range(1, 20):
+                if board[r, c] != 0:
+                    for dr, dc in dirs:
+                        nr, nc = r + dr, c + dc
+                        if 1 <= nr <= 19 and 1 <= nc <= 19 and board[nr, nc] == 0:
+                            candidates.add((nr, nc))
+    
+    # Add opening moves if few candidates
+    if len(candidates) < 8:
+        opening_moves = [
+            (3, 3), (3, 17), (17, 3), (17, 17),  # 3-3 corners
+            (3, 10), (10, 3), (17, 10), (10, 17),  # 3-10 sides
+            (10, 10), (4, 4), (4, 16), (16, 4), (16, 16)  # center and 4-4
+        ]
+        for r, c in opening_moves:
+            if board[r, c] == 0:
+                candidates.add((r, c))
+    
+    # Filter legal moves
+    legal_moves = []
+    for r, c in candidates:
+        if is_legal(r, c):
+            legal_moves.append((r, c))
+    
+    # Fallback: if no candidates legal, scan whole board (rare)
+    if not legal_moves:
+        for r in range(1, 20):
+            for c in range(1, 20):
+                if board[r, c] == 0 and is_legal(r, c):
+                    legal_moves.append((r, c))
+    
+    if not legal_moves:
+        return (0, 0), memory
+    
+    # Evaluate legal moves
+    total_stones = len(me) + len(opponent)
+    
+    def evaluate_move(r: int, c: int) -> float:
+        score = 0.0
+        board[r, c] = 1
+        
+        # 1. Capture bonus (highest priority)
+        capture_size = 0
+        for dr, dc in dirs:
+            nr, nc = r + dr, c + dc
+            if 1 <= nr <= 19 and 1 <= nc <= 19 and board[nr, nc] == 2:
+                group, libs = get_group_liberties(nr, nc, 2)
+                if len(libs) == 0:
+                    capture_size += len(group)
+        score += capture_size * 1000.0
+        
+        # 2. Save own stones (atari escape)
+        save_value = 0
+        for dr, dc in dirs:
+            nr, nc = r + dr, c + dc
+            if 1 <= nr <= 19 and 1 <= nc <= 19 and board[nr, nc] == 1 and (nr, nc) != (r, c):
+                # Check if this group was in atari before this move
+                board[r, c] = 0
+                group_old, libs_old = get_group_liberties(nr, nc, 1)
+                board[r, c] = 1
+                if len(libs_old) == 1:  # Was in atari
+                    save_value += len(group_old)
+        score += save_value * 500.0
+        
+        # 3. Connection bonus (connect to friendly stones)
+        connection_count = 0
+        for dr, dc in dirs:
+            nr, nc = r + dr, c + dc
+            if 1 <= nr <= 19 and 1 <= nc <= 19 and board[nr, nc] == 1:
+                connection_count += 1
+        score += connection_count * 20.0
+        
+        # 4. Avoid self-atari (unless capturing)
+        if capture_size == 0:
+            group_self, libs_self = get_group_liberties(r, c, 1)
+            if len(libs_self) == 1:
+                score -= 400.0  # Heavy penalty for self-atari
+            elif len(libs_self) == 2:
+                score -= 50.0   # Small penalty for 2 liberties
+        
+        # 5. Positional preferences
+        dist_to_edge = min(r - 1, 19 - r, c - 1, 19 - c)
+        
+        if total_stones < 50:
+            # Opening: prefer 3rd and 4th line, avoid 1st/2nd line
+            if dist_to_edge == 2 or dist_to_edge == 3:
+                score += 40.0
+            elif dist_to_edge == 1:
+                score -= 30.0
+            elif dist_to_edge == 0:
+                score -= 100.0
+        else:
+            # Mid/End game: slight preference for center
+            dist_to_center = abs(r - 10) + abs(c - 10)
+            score -= dist_to_center * 2.0
+        
+        board[r, c] = 0
+        return score
+    
+    # Select best move
+    best_move = legal_moves[0]
+    best_score = evaluate_move(best_move[0], best_move[1])
+    
+    for move in legal_moves[1:]:
+        s = evaluate_move(move[0], move[1])
+        if s > best_score:
+            best_score = s
+            best_move = move
+    
+    return best_move, memory

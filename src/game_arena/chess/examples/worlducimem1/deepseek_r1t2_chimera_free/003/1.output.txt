@@ -1,0 +1,234 @@
+
+
+The strategy for this policy is to prioritize checkmates, material gain, and king safety using a 1-ply evaluation. It generates legal moves, evaluates each move based on immediate material gain, checks, promotions, and potential threats. Moves are scored considering captures, promotions to queens, checks, and center control, while penalizing moves that leave pieces under attack.
+
+<code>
+import time
+
+def square_to_coords(square):
+    file = square[0]
+    rank = square[1]
+    x = ord(file) - ord('a')
+    y = int(rank) - 1
+    return (x, y)
+
+def coords_to_square(x, y):
+    file = chr(x + ord('a'))
+    rank = y + 1
+    return f"{file}{rank}"
+
+PIECE_VALUES = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}
+
+def is_square_attacked(pieces, square, attacker_prefix):
+    x, y = square_to_coords(square)
+    
+    knight_moves = [(-2,-1), (-2,1), (-1,-2), (-1,2), (1,-2), (1,2), (2,-1), (2,1)]
+    for dx, dy in knight_moves:
+        nx, ny = x + dx, y + dy
+        if 0 <= nx < 8 and 0 <= ny < 8:
+            sq = coords_to_square(nx, ny)
+            piece = pieces.get(sq)
+            if piece and piece[0] == attacker_prefix and piece[1] == 'N':
+                return True
+                
+    pawn_dy = 1 if attacker_prefix == 'w' else -1
+    pawn_attacks = [(-1, pawn_dy), (1, pawn_dy)]
+    for dx, dy in pawn_attacks:
+        nx, ny = x + dx, y + dy
+        if 0 <= nx < 8 and 0 <= ny < 8:
+            sq = coords_to_square(nx, ny)
+            piece = pieces.get(sq)
+            if piece and piece[0] == attacker_prefix and piece[1] == 'P':
+                return True
+    
+    king_moves = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+    for dx, dy in king_moves:
+        nx, ny = x + dx, y + dy
+        if 0 <= nx < 8 and 0 <= ny < 8:
+            sq = coords_to_square(nx, ny)
+            piece = pieces.get(sq)
+            if piece and piece[0] == attacker_prefix and piece[1] == 'K':
+                return True
+    
+    rook_dirs = [(-1,0), (1,0), (0,-1), (0,1)]
+    bishop_dirs = [(-1,-1), (-1,1), (1,-1), (1,1)]
+    
+    for dirs, piece_types in [(rook_dirs, ['R', 'Q']), (bishop_dirs, ['B', 'Q'])]:
+        for dx, dy in dirs:
+            nx, ny = x + dx, y + dy
+            while 0 <= nx < 8 and 0 <= ny < 8:
+                sq = coords_to_square(nx, ny)
+                piece = pieces.get(sq)
+                if piece:
+                    if piece[0] == attacker_prefix and piece[1] in piece_types:
+                        return True
+                    break
+                nx += dx
+                ny += dy
+    return False
+
+def simulate_move(pieces, move):
+    new_pieces = pieces.copy()
+    src = move[:2]
+    dst = move[2:4]
+    promo = move[4:] if len(move) > 4 else None
+    
+    piece = new_pieces.pop(src)
+    if dst in new_pieces:
+        del new_pieces[dst]
+    
+    if promo:
+        color = piece[0]
+        new_pieces[dst] = color + promo.upper()
+    else:
+        new_pieces[dst] = piece
+    return new_pieces
+
+def is_king_in_check(pieces, color_prefix):
+    king_square = None
+    for sq, pc in pieces.items():
+        if pc[0] == color_prefix and pc[1] == 'K':
+            king_square = sq
+            break
+    if not king_square:
+        return False
+    attacker_prefix = 'b' if color_prefix == 'w' else 'w'
+    return is_square_attacked(pieces, king_square, attacker_prefix)
+
+def generate_pseudo_legal_moves(pieces, color_prefix):
+    moves = []
+    for src, piece in list(pieces.items()):
+        if piece[0] != color_prefix:
+            continue
+        piece_type = piece[1]
+        x, y = square_to_coords(src)
+        
+        if piece_type == 'P':
+            dy = 1 if color_prefix == 'w' else -1
+            start_y = 1 if color_prefix == 'w' else 6
+            new_y = y + dy
+            if 0 <= new_y < 8:
+                dst = coords_to_square(x, new_y)
+                if dst not in pieces:
+                    if new_y in [0, 7]:
+                        moves.extend([src + dst + p for p in ['q', 'r', 'b', 'n']])
+                    else:
+                        moves.append(src + dst)
+                    if y == start_y:
+                        new_y2 = y + 2*dy
+                        dst2 = coords_to_square(x, new_y2)
+                        if dst2 not in pieces:
+                            moves.append(src + dst2)
+            for dx in [-1, 1]:
+                new_x = x + dx
+                new_y = y + dy
+                if 0 <= new_x < 8 and 0 <= new_y < 8:
+                    dst = coords_to_square(new_x, new_y)
+                    target = pieces.get(dst)
+                    if target and target[0] != color_prefix:
+                        if new_y in [0, 7]:
+                            moves.extend([src + dst + p for p in ['q', 'r', 'b', 'n']])
+                        else:
+                            moves.append(src + dst)
+        elif piece_type == 'N':
+            deltas = [(-2,-1), (-2,1), (-1,-2), (-1,2), (1,-2), (1,2), (2,-1), (2,1)]
+            for dx, dy in deltas:
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < 8 and 0 <= ny < 8:
+                    dst = coords_to_square(nx, ny)
+                    target = pieces.get(dst)
+                    if not target or target[0] != color_prefix:
+                        moves.append(src + dst)
+        elif piece_type == 'K':
+            deltas = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+            for dx, dy in deltas:
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < 8 and 0 <= ny < 8:
+                    dst = coords_to_square(nx, ny)
+                    target = pieces.get(dst)
+                    if not target or target[0] != color_prefix:
+                        moves.append(src + dst)
+        elif piece_type in ['R', 'B', 'Q']:
+            dirs = []
+            if piece_type == 'R':
+                dirs = [(-1,0), (1,0), (0,-1), (0,1)]
+            elif piece_type == 'B':
+                dirs = [(-1,-1), (-1,1), (1,-1), (1,1)]
+            else:
+                dirs = [(-1,0), (1,0), (0,-1), (0,1), (-1,-1), (-1,1), (1,-1), (1,1)]
+            for dx, dy in dirs:
+                step = 1
+                while True:
+                    nx = x + dx * step
+                    ny = y + dy * step
+                    if 0 <= nx < 8 and 0 <= ny < 8:
+                        dst = coords_to_square(nx, ny)
+                        target = pieces.get(dst)
+                        if target:
+                            if target[0] != color_prefix:
+                                moves.append(src + dst)
+                            break
+                        else:
+                            moves.append(src + dst)
+                            step += 1
+                    else:
+                        break
+    return moves
+
+def generate_legal_moves(pieces, color_prefix):
+    pseudo_moves = generate_pseudo_legal_moves(pieces, color_prefix)
+    legal_moves = []
+    for move in pseudo_moves:
+        new_pieces = simulate_move(pieces, move)
+        if not is_king_in_check(new_pieces, color_prefix):
+            legal_moves.append(move)
+    return legal_moves
+
+def evaluate_move(pieces, color_prefix, move):
+    src, dst = move[:2], move[2:4]
+    promo = move[4] if len(move) > 4 else None
+    score = 0
+    piece_from = pieces[src]
+    
+    if dst in pieces:
+        captured_piece = pieces[dst][1]
+        score += PIECE_VALUES[captured_piece]
+    
+    if promo:
+        score += PIECE_VALUES['Q']
+    
+    new_pieces = simulate_move(pieces, move)
+    opp_prefix = 'b' if color_prefix == 'w' else 'w'
+    king_square = None
+    for sq, pc in new_pieces.items():
+        if pc[0] == opp_prefix and pc[1] == 'K':
+            king_square = sq
+            break
+    if king_square and is_square_attacked(new_pieces, king_square, color_prefix):
+        score += 1
+    
+    if is_square_attacked(new_pieces, dst, opp_prefix):
+        score -= PIECE_VALUES[piece_from[1]] * 0.2
+    
+    if piece_from[1] in ['P', 'N']:
+        x, y = square_to_coords(dst)
+        center_bonus = (3.5 - abs(x - 3.5)) + (3.5 - abs(y - 3.5))
+        score += center_bonus * 0.1
+    
+    return score
+
+def policy(pieces: dict[str, str], to_play: str, memory: dict) -> tuple[str, dict]:
+    color_prefix = 'w' if to_play == 'white' else 'b'
+    legal_moves = generate_legal_moves(pieces, color_prefix)
+    if not legal_moves:
+        return ("resign", memory)
+    
+    best_move = None
+    best_score = float('-inf')
+    for move in legal_moves:
+        score = evaluate_move(pieces, color_prefix, move)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    return (best_move, memory)
+</code>

@@ -1,0 +1,156 @@
+
+import itertools
+
+def policy(my_men, my_kings, opp_men, opp_kings, color) -> tuple[tuple[int, int], tuple[int, int]]:
+    my_men = [tuple(piece) for piece in my_men]
+    my_kings = [tuple(piece) for piece in my_kings]
+    opp_men = [tuple(piece) for piece in opp_men]
+    opp_kings = [tuple(piece) for piece in opp_kings]
+
+    def evaluate(my_men, my_kings, opp_men, opp_kings, color):
+        material = (len(my_men) + 2 * len(my_kings)) - (len(opp_men) + 2 * len(opp_kings))
+        positional = 0
+        for (row, col) in my_men:
+            if color == 'w':
+                positional += row
+            else:
+                positional += (7 - row)
+            if 2 <= col <= 5:
+                positional += 1
+        for (row, col) in my_kings:
+            if col == 0 or col == 7:
+                positional += 2
+            elif col == 1 or col == 6:
+                positional += 1
+            if 3 <= row <= 4 and 3 <= col <= 4:
+                positional += 1
+        return material * 10 + positional
+
+    def generate_captures(start_pos, is_king, color, my_pieces_set, opp_men_set, opp_kings_set):
+        opp_pieces = opp_men_set.union(opp_kings_set)
+        if is_king:
+            directions = [(-2, -2), (-2, 2), (2, -2), (2, 2)]
+        else:
+            directions = [(-2, -2), (-2, 2)] if color == 'b' else [(2, -2), (2, 2)]
+        
+        from collections import deque
+        queue = deque()
+        queue.append(([start_pos], set(opp_men_set), set(opp_kings_set), []))
+        best_sequences = []
+        max_captured = 0
+
+        while queue:
+            path, curr_opp_men, curr_opp_kings, captured = queue.popleft()
+            current_pos = path[-1]
+            for dr, dc in directions:
+                inter_r = current_pos[0] + dr//2
+                inter_c = current_pos[1] + dc//2
+                inter_pos = (inter_r, inter_c)
+                to_r = current_pos[0] + dr
+                to_c = current_pos[1] + dc
+                to_pos = (to_r, to_c)
+
+                if 0 <= to_r < 8 and 0 <= to_c < 8:
+                    if inter_pos in curr_opp_men or inter_pos in curr_opp_kings:
+                        if to_pos not in my_pieces_set and to_pos not in curr_opp_men and to_pos not in curr_opp_kings and to_pos not in path:
+                            new_men = set(curr_opp_men)
+                            new_kings = set(curr_opp_kings)
+                            new_captured = captured.copy()
+                            if inter_pos in new_men:
+                                new_men.remove(inter_pos)
+                                new_captured.append((inter_pos, 'man'))
+                            else:
+                                new_kings.remove(inter_pos)
+                                new_captured.append((inter_pos, 'king'))
+                            new_path = path + [to_pos]
+                            queue.append((new_path, new_men, new_kings, new_captured))
+                            if len(new_captured) > max_captured:
+                                max_captured = len(new_captured)
+                                best_sequences = [(new_path, new_captured)]
+                            elif len(new_captured) == max_captured:
+                                best_sequences.append((new_path, new_captured))
+
+        best_sequences = [ (p, c) for p, c in best_sequences if len(c) == max_captured ] if best_sequences else []
+        return best_sequences
+
+    my_pieces_set = set(my_men + my_kings)
+    opp_men_set = set(opp_men)
+    opp_kings_set = set(opp_kings)
+    all_opp_pieces = opp_men_set.union(opp_kings_set)
+
+    all_captures = []
+    for piece in my_men:
+        captures = generate_captures(piece, False, color, my_pieces_set, opp_men_set, opp_kings_set)
+        all_captures.extend(captures)
+    for piece in my_kings:
+        captures = generate_captures(piece, True, color, my_pieces_set, opp_men_set, opp_kings_set)
+        all_captures.extend(captures)
+
+    if all_captures:
+        max_captured = max(len(c) for _, c in all_captures)
+        best_captures = [ (p, c) for p, c in all_captures if len(c) == max_captured ]
+        best_score = -float('inf')
+        best_move = None
+        for path, captured in best_captures:
+            from_pos = path[0]
+            to_pos = path[1]
+            simulated_my_men = set(my_men)
+            simulated_my_kings = set(my_kings)
+            simulated_opp_men = set(opp_men)
+            simulated_opp_kings = set(opp_kings)
+            if from_pos in simulated_my_men:
+                simulated_my_men.remove(from_pos)
+                if ((color == 'b' and to_pos[0] == 0) or (color == 'w' and to_pos[0] == 7)):
+                    simulated_my_kings.add(to_pos)
+                else:
+                    simulated_my_men.add(to_pos)
+            else:
+                simulated_my_kings.remove(from_pos)
+                simulated_my_kings.add(to_pos)
+            for cap_pos, cap_type in captured:
+                if cap_type == 'man':
+                    simulated_opp_men.remove(cap_pos)
+                else:
+                    simulated_opp_kings.remove(cap_pos)
+            score = evaluate(simulated_my_men, simulated_my_kings, simulated_opp_men, simulated_opp_kings, color)
+            if score > best_score:
+                best_score = score
+                best_move = (from_pos, to_pos)
+        return best_move if best_move else (best_captures[0][0][0], best_captures[0][0][1])
+    else:
+        possible_moves = []
+        for piece in my_men:
+            r, c = piece
+            dirs = [(-1, -1), (-1, 1)] if color == 'b' else [(1, -1), (1, 1)]
+            for dr, dc in dirs:
+                to_r, to_c = r + dr, c + dc
+                if 0 <= to_r < 8 and 0 <= to_c < 8 and (to_r, to_c) not in my_pieces_set and (to_r, to_c) not in all_opp_pieces:
+                    possible_moves.append( (piece, (to_r, to_c)) )
+        for piece in my_kings:
+            r, c = piece
+            dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+            for dr, dc in dirs:
+                to_r, to_c = r + dr, c + dc
+                if 0 <= to_r < 8 and 0 <= to_c < 8 and (to_r, to_c) not in my_pieces_set and (to_r, to_c) not in all_opp_pieces:
+                    possible_moves.append( (piece, (to_r, to_c)) )
+        if not possible_moves:
+            return (my_men[0], (my_men[0][0], my_men[0][1])) if my_men else (my_kings[0], (my_kings[0][0], my_kings[0][1]))
+        best_score = -float('inf')
+        best_move = None
+        for from_pos, to_pos in possible_moves:
+            simulated_my_men = set(my_men)
+            simulated_my_kings = set(my_kings)
+            if from_pos in simulated_my_men:
+                simulated_my_men.remove(from_pos)
+                if ((color == 'b' and to_pos[0] == 0) or (color == 'w' and to_pos[0] == 7)):
+                    simulated_my_kings.add(to_pos)
+                else:
+                    simulated_my_men.add(to_pos)
+            else:
+                simulated_my_kings.remove(from_pos)
+                simulated_my_kings.add(to_pos)
+            score = evaluate(simulated_my_men, simulated_my_kings, opp_men, opp_kings, color)
+            if score > best_score:
+                best_score = score
+                best_move = (from_pos, to_pos)
+        return best_move

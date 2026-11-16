@@ -1,0 +1,260 @@
+
+import random
+import math
+import time
+from collections import defaultdict
+
+class GoNode:
+    def __init__(self, parent=None, move=None):
+        self.parent = parent
+        self.move = move
+        self.children = []
+        self.wins = 0
+        self.visits = 0
+        self.untried_moves = None
+
+    def ucb_select_child(self, exploration_weight=1.4):
+        log_parent_visits = math.log(self.visits)
+        def ucb_score(child):
+            exploit = child.wins / child.visits
+            explore = exploration_weight * math.sqrt(log_parent_visits / child.visits)
+            return exploit + explore
+        return max(self.children, key=ucb_score)
+
+    def add_child(self, move, board_state):
+        child = GoNode(parent=self, move=move)
+        self.untried_moves.remove(move)
+        self.children.append(child)
+        return child
+
+    def update(self, result):
+        self.visits += 1
+        self.wins += result
+
+class GoMCTS:
+    def __init__(self, board_size=19):
+        self.board_size = board_size
+        self.root = None
+        self.komaster = None
+        self.ko_position = None
+
+    def get_move(self, me, opponent, time_limit=0.9):
+        start_time = time.time()
+        self.root = GoNode()
+        self.root.untried_moves = self.get_legal_moves(me, opponent)
+
+        while time.time() - start_time < time_limit:
+            node = self.root
+            board_state = (set(me), set(opponent))
+
+            # Selection
+            while node.untried_moves is None and node.children:
+                node = node.ucb_select_child()
+                board_state = self.apply_move(board_state, node.move)
+
+            # Expansion
+            if node.untried_moves:
+                move = self.select_move(node.untried_moves, board_state)
+                board_state = self.apply_move(board_state, move)
+                node = node.add_child(move, board_state)
+
+            # Simulation
+            result = self.simulate(board_state)
+
+            # Backpropagation
+            while node is not None:
+                node.update(result)
+                node = node.parent
+
+        best_child = max(self.root.children, key=lambda c: c.visits)
+        return best_child.move
+
+    def get_legal_moves(self, me, opponent):
+        legal_moves = []
+        me_set = set(me)
+        opponent_set = set(opponent)
+        board = set(me) | set(opponent)
+
+        for row in range(1, 20):
+            for col in range(1, 20):
+                if (row, col) not in board:
+                    # Check if move is legal (not self-atari)
+                    if not self.is_self_atari((row, col), me_set, opponent_set):
+                        legal_moves.append((row, col))
+
+        # Add pass move
+        legal_moves.append((0, 0))
+        return legal_moves
+
+    def is_self_atari(self, move, me, opponent):
+        # Check if placing a stone at move would result in self-atari
+        # (all adjacent groups would have only 1 liberty)
+        board = me | opponent
+        board.add(move)
+
+        # Find all adjacent groups
+        adjacent_groups = []
+        for dr, dc in [(0,1), (1,0), (0,-1), (-1,0)]:
+            neighbor = (move[0] + dr, move[1] + dc)
+            if neighbor in board:
+                group = self.find_group(neighbor, board)
+                if group not in adjacent_groups:
+                    adjacent_groups.append(group)
+
+        # Check if all adjacent groups would have only 1 liberty
+        for group in adjacent_groups:
+            liberties = self.count_liberties(group, board)
+            if liberties > 1:
+                return False
+
+        return True
+
+    def find_group(self, pos, board):
+        group = set()
+        stack = [pos]
+        visited = set()
+
+        while stack:
+            current = stack.pop()
+            if current in visited:
+                continue
+            visited.add(current)
+            group.add(current)
+
+            for dr, dc in [(0,1), (1,0), (0,-1), (-1,0)]:
+                neighbor = (current[0] + dr, current[1] + dc)
+                if neighbor in board and neighbor not in visited:
+                    stack.append(neighbor)
+
+        return group
+
+    def count_liberties(self, group, board):
+        liberties = set()
+        for stone in group:
+            for dr, dc in [(0,1), (1,0), (0,-1), (-1,0)]:
+                neighbor = (stone[0] + dr, stone[1] + dc)
+                if neighbor not in board:
+                    liberties.add(neighbor)
+        return len(liberties)
+
+    def select_move(self, moves, board_state):
+        # Simple heuristic to prioritize moves near existing stones
+        me, opponent = board_state
+        if not moves:
+            return (0, 0)
+
+        # If we have stones, prioritize moves near them
+        if me:
+            # Calculate distance to nearest stone
+            def distance_to_stones(move):
+                min_dist = float('inf')
+                for stone in me:
+                    dist = abs(move[0] - stone[0]) + abs(move[1] - stone[1])
+                    if dist < min_dist:
+                        min_dist = dist
+                return min_dist
+
+            # Add some randomness
+            moves.sort(key=lambda m: distance_to_stones(m) + random.random() * 0.1)
+        else:
+            # Opening move - prefer center
+            moves.sort(key=lambda m: abs(m[0]-10) + abs(m[1]-10) + random.random() * 0.1)
+
+        return moves[0]
+
+    def apply_move(self, board_state, move):
+        me, opponent = board_state
+        if move == (0, 0):
+            return (me, opponent)
+
+        new_me = set(me)
+        new_me.add(move)
+
+        # Check for captures
+        new_opponent = set(opponent)
+        for dr, dc in [(0,1), (1,0), (0,-1), (-1,0)]:
+            neighbor = (move[0] + dr, move[1] + dc)
+            if neighbor in new_opponent:
+                group = self.find_group(neighbor, new_me | new_opponent)
+                if self.count_liberties(group, new_me | new_opponent) == 0:
+                    new_opponent -= group
+
+        return (new_me, new_opponent)
+
+    def simulate(self, board_state):
+        me, opponent = board_state
+        current_player = 0  # 0 for me, 1 for opponent
+        max_moves = 100
+        move_count = 0
+
+        while move_count < max_moves:
+            if current_player == 0:
+                legal_moves = self.get_legal_moves(me, opponent)
+            else:
+                legal_moves = self.get_legal_moves(opponent, me)
+
+            if not legal_moves:
+                break
+
+            # Simple random playout with some heuristics
+            if current_player == 0:
+                move = self.select_move(legal_moves, (me, opponent))
+                me, opponent = self.apply_move((me, opponent), move)
+            else:
+                move = self.select_move(legal_moves, (opponent, me))
+                opponent, me = self.apply_move((opponent, me), move)
+
+            current_player = 1 - current_player
+            move_count += 1
+
+        # Simple territory counting
+        me_score = self.count_territory(me, opponent)
+        opponent_score = self.count_territory(opponent, me)
+
+        if me_score > opponent_score:
+            return 1
+        elif me_score < opponent_score:
+            return 0
+        else:
+            return 0.5
+
+    def count_territory(self, player, opponent):
+        board = player | opponent
+        visited = set()
+        territory = 0
+
+        for row in range(1, 20):
+            for col in range(1, 20):
+                if (row, col) not in board and (row, col) not in visited:
+                    # BFS to find empty area
+                    queue = [(row, col)]
+                    area = set()
+                    is_territory = True
+                    border_colors = set()
+
+                    while queue:
+                        current = queue.pop(0)
+                        if current in visited:
+                            continue
+                        visited.add(current)
+                        area.add(current)
+
+                        for dr, dc in [(0,1), (1,0), (0,-1), (-1,0)]:
+                            neighbor = (current[0] + dr, current[1] + dc)
+                            if neighbor in player:
+                                border_colors.add('me')
+                            elif neighbor in opponent:
+                                border_colors.add('opponent')
+                            elif neighbor not in board and neighbor not in visited:
+                                queue.append(neighbor)
+
+                    # Check if area is surrounded by only one color
+                    if len(border_colors) == 1:
+                        if 'me' in border_colors:
+                            territory += len(area)
+
+        return territory
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    mcts = GoMCTS()
+    return mcts.get_move(me, opponent)

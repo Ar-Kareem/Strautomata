@@ -1,0 +1,154 @@
+The strategy for this policy is based on evaluating hand strength relative to the board and opponent Betting patterns in Texas Hold'em. Since we have only one hole card (unusual for standard Hold'em but consistent with the spec), we must rely heavily on community cards and pot odds.
+
+Key strategic insights:
+1. Hand strength is determined by the rank of our single hole card and its potential to make pairs, sets, or high cards on the board.
+2. We use pot odds to decide whether calling is profitable - if the pot odds are better than our estimated winning probability, we call or raise.
+3. We calculate implied odds and equity based on board texture and opponent behavior.
+4. We raise aggressively with strong hands (pair to board, high card with good kicker potential) and when we have position advantage.
+5. When to call: if to_call is small relative to pot and we have decent equity (e.g., high card, board coordination with our card)
+6. We avoid folding unless our card is very weak (< 7) and the board shows strong opponent likely holding top pair or better.
+7. All-in is used when we have a very strong hand (pair with our card + good board) or as a bluff when opponent is likely to fold and we have high card equity.
+
+We calculate equity roughly:
+- If our card matches board: 70-90% equity (depending on board)
+- If our card is high (>=10) and board is dry: 40-60% equity
+- If our card is low and board is coordinated: <20% equity
+
+We raise when equity > 50% and pot allows profitable raise, otherwise call when pot odds justify it, fold when equity is low and to_call is high.
+
+<code>
+import numpy as np
+
+def policy(state: dict) -> str:
+    # Extract state variables
+    private_cards = state['private_cards']
+    public_cards = state['public_cards']
+    pot = state['pot']
+    my_spent = state['my_spent']
+    opponent_spent = state['opponent_spent']
+    to_call = state['to_call']
+    allowed_actions = state['allowed_actions']
+    
+    # Get our single hole card
+    if len(private_cards) == 0:
+        # Fallback: if no private card provided, treat as very weak hand
+        my_card_rank = 0
+    else:
+        my_card_rank = private_cards[0]['rank']
+    
+    # Calculate current bet level
+    current_bet = opponent_spent
+    my_contribution = my_spent
+    pot_after_call = pot + to_call
+    
+    # Basic hand strength estimation
+    # Range: 2-14 (2=Ace) - standard poker ranking
+    # Stronger hands: pairs with board, high cards (J, Q, K, A)
+    board_ranks = [card['rank'] for card in public_cards]
+    
+    # Calculate how many cards on board match our card
+    matches = sum(1 for r in board_ranks if r == my_card_rank)
+    our_hand_strength = 0.0
+    
+    # Hand strength heuristic:
+    if matches >= 1:
+        # We have a pair or set
+        if len(board_ranks) == 0:
+            our_hand_strength = 0.6  # Just a single card, but we'll pair later
+        else:
+            our_hand_strength = 0.7 + matches * 0.2  # Pair: 0.7, set: 0.9
+    elif my_card_rank >= 12:  # Ace, King, Queen (high card)
+        our_hand_strength = 0.4
+    elif my_card_rank >= 10:  # Jack, 10
+        our_hand_strength = 0.3
+    elif my_card_rank >= 8:   # 8, 9
+        our_hand_strength = 0.2
+    else:  # 2-7
+        our_hand_strength = 0.1
+    
+    # Adjust for board coordination (if board is connected or paired, opponent is more likely to have strong hand)
+    board_uniqueness = len(set(board_ranks)) / len(board_ranks) if board_ranks else 1.0
+    # Lower board_uniqueness means more coordination (higher chance opponent has strong hand)
+    # So reduce our equity estimation
+    our_hand_strength *= (0.7 + 0.3 * board_uniqueness)
+    
+    # Pot odds calculation: how much we need to win to make calling profitable
+    # We need to win at least to_call / pot_after_call fraction of the time to break even
+    required_equity = to_call / pot_after_call if pot_after_call > 0 else 0.0
+    
+    # Assume opponent has average strength hand and adjust based on their commitment
+    # If opponent spent significantly more than us, they're likely strong
+    opponent_strength_factor = 1.0
+    if opponent_spent > 0 and my_spent > 0:
+        ratio = opponent_spent / (my_spent + 1e-5)
+        if ratio > 2.0:
+            opponent_strength_factor = 0.8  # Opponent is aggressive, likely strong
+        elif ratio > 1.5:
+            opponent_strength_factor = 0.9
+        elif ratio < 0.7:
+            opponent_strength_factor = 1.1  # Opponent might be bluffing
+        else:
+            opponent_strength_factor = 1.0
+    
+    adjusted_equity = our_hand_strength * opponent_strength_factor
+    
+    # Decide action
+    if 'all-in' in allowed_actions:
+        # Consider all-in if equity is very high or very low (bluff)
+        if adjusted_equity > 0.8:
+            return 'all-in'
+        elif adjusted_equity < 0.15 and pot_after_call > 50 and len(public_cards) > 1:
+            # Bluff all-in if opponent might fold and pot is large enough
+            return 'all-in'
+    
+    if 'raise' in allowed_actions:
+        # Raise if our equity is strong and pot is worth it
+        if adjusted_equity > 0.6 and pot > 30:
+            return 'raise'
+        # Also raise if we have a high card and board is safe
+        if my_card_rank >= 12 and matches == 0 and not any(b >= 10 for b in board_ranks) and adjusted_equity > 0.5:
+            # High card with dry board: semibluff
+            return 'raise'
+    
+    if to_call == 0:
+        # No bet to call = check opportunity
+        # We check unless we have very strong hand (then we might want to bet, but according to spec
+        # we can only raise, call, fold, all-in - so check is just 'call' when to_call==0)
+        # But 'call' when to_call==0 means check, so we prefer check unless we want to raise
+        # So if we had raise as option and want to act aggressively, we'd raise - otherwise we check
+        if 'raise' in allowed_actions and adjusted_equity > 0.5:
+            return 'raise'
+        else:
+            return 'call'  # check
+    
+    # For calling decisions
+    if adjusted_equity > required_equity + 0.05:
+        # We have sufficient equity to call
+        return 'call'
+    
+    # Fold if equity is low and cost is high
+    if adjusted_equity < required_equity * 0.8:
+        if 'fold' in allowed_actions:
+            # But avoid folding in first round if both players have 100 chips
+            # Assume that if pot=200, both started with 100, no cards dealt = preflop
+            # In this state, player may not be allowed to fold first round?
+            # According to problem: "You are not allowed to fold in the very first round when both players only have 100 chips in the pot"
+            if pot == 200 and len(public_cards) == 0:
+                # Must not fold - must call or raise
+                return 'call'  # we have to do something, so call if fold is not allowed
+            return 'fold'
+    
+    # Default: if in doubt, call (safe)
+    # This covers cases where we have marginal equity but raise isn't good
+    if 'call' in allowed_actions:
+        return 'call'
+    
+    # Last resort: fold if we can, otherwise all-in if allowed
+    if 'fold' in allowed_actions:
+        return 'fold'
+    elif 'all-in' in allowed_actions:
+        return 'all-in'
+    else:
+        # Fallback to call as last option (should never happen if API guarantees at least one legal action)
+        return 'call'
+</code>

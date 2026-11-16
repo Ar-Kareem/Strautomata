@@ -1,0 +1,111 @@
+The strategy for this policy is a heuristic-based approach that prioritizes immediate wins, blocks opponent wins, and scores moves based on connectivity, proximity to corners/edges, and opponent disruption. It first checks if any valid move completes a bridge (connecting two corners) or fork (connecting three edges). If not, it blocks opponent winning threats. Otherwise, it evaluates moves by:
+1. **Connectivity**: Adjacent friendly stones increase score.
+2. **Corner Proximity**: Closer to unoccupied corners enhances bridge potential.
+3. **Edge Proximity**: Nearer to board edges improves fork chances.
+4. **Blocking**: Adjacent opponent stones increase defense score.
+5. **Central Control**: Early game focuses on central positioning for flexibility.
+
+The policy uses BFS for connectivity checks and hex neighbor calculations for accurate adjacency. While ring detection is omitted for efficiency, the strategy balances offense and defense effectively.
+
+<code>
+import numpy as np
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask: np.ndarray) -> tuple[int, int]:
+    valid_moves = [(r, c) for r in range(15) for c in range(15) if valid_mask[r][c] and (r, c) not in me and (r, c) not in opp]
+    if not valid_moves:
+        return (0, 0)  # Fallback
+    
+    me_set, opp_set = set(me), set(opp)
+    corners = [corner for r in range(15) for c in range(15) if valid_mask[r][c] and len(
+        [(nr, nc) for nr, nc in [(r-1,c),(r+1,c),(r,c-1),(r-1,c-1),(r,c+1),(r-1,c+1)]
+         if 0<=nr<15 and 0<=nc<15 and valid_mask[nr][nc]]) == 2]
+    
+    def is_win(stones):
+        stone_set = set(stones)
+        graph = {}
+        for s in stones:
+            graph[s] = [n for n in [(s[0]-1,s[1]),(s[0]+1,s[1]),(s[0],s[1]-1),(s[0]-1,s[1]-1),(s[0],s[1]+1),(s[0]-1,s[1]+1)]
+                         if 0<=n[0]<15 and 0<=n[1]<15 and n in stone_set]
+        
+        my_corners = [c for c in corners if c in stone_set]
+        for i in range(len(my_corners)):
+            for j in range(i+1, len(my_corners)):
+                visited = set()
+                stack = [my_corners[i]]
+                while stack:
+                    node = stack.pop()
+                    if node == my_corners[j]:
+                        return True
+                    visited.add(node)
+                    stack.extend(n for n in graph.get(node, []) if n not in visited)
+        
+        edge_types = set()
+        for s in stones:
+            r, c = s
+            if s in corners:
+                continue
+            if r == 0: edge_types.add('top')
+            elif r == 14: edge_types.add('bottom')
+            if c == 0: edge_types.add('left')
+            elif c == 14: edge_types.add('right')
+            if r == c: edge_types.add('diag1')
+            if r + c == 14: edge_types.add('diag2')
+        
+        if len(edge_types) >= 3:
+            comp_edges = {}
+            visited = set()
+            for s in stones:
+                if s not in visited:
+                    comp, edges = [], set()
+                    stack = [s]
+                    while stack:
+                        node = stack.pop()
+                        if node not in visited:
+                            visited.add(node)
+                            comp.append(node)
+                            r, c = node
+                            if node not in corners:
+                                if r == 0: edges.add('top')
+                                elif r == 14: edges.add('bottom')
+                                if c == 0: edges.add('left')
+                                elif c == 14: edges.add('right')
+                                if r == c: edges.add('diag1')
+                                if r + c == 14: edges.add('diag2')
+                            stack.extend(graph.get(node, []))
+                    if len(edges) >= 3:
+                        return True
+        return False
+    
+    for move in valid_moves:
+        if is_win(me + [move]):
+            return move
+    
+    for move in valid_moves:
+        if is_win(opp + [move]):
+            return move
+    
+    best_score, best_move = -float('inf'), valid_moves[0]
+    center = (7, 7)
+    
+    for r, c in valid_moves:
+        score = 0
+        neighbors = [(r-1,c),(r+1,c),(r,c-1),(r-1,c-1),(r,c+1),(r-1,c+1)]
+        adj_me = sum(1 for n in neighbors if n in me_set)
+        adj_opp = sum(1 for n in neighbors if n in opp_set)
+        score += adj_me * 10 + adj_opp * 8
+        
+        for corner in corners:
+            if corner not in me_set and corner not in opp_set:
+                score += 10 / (abs(r - corner[0]) + abs(c - corner[1]) + 1)
+        
+        edge_dist = min(r, 14 - r, c, 14 - c, abs(r - c), abs(r + c - 14))
+        score += 5 / (edge_dist + 1)
+        
+        if len(me) + len(opp) < 20:
+            score += 5 / (abs(r - 7) + abs(c - 7) + 1)
+        
+        if score > best_score:
+            best_score, best_move = score, (r, c)
+    
+    return best_move
+</code>

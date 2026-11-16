@@ -1,0 +1,244 @@
+
+from collections import deque
+
+SHIP_LENGTHS = [5, 4, 3, 3, 2]
+N = 10
+
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    unknowns = [(r, c) for r in range(N) for c in range(N) if board[r][c] == 0]
+    if not unknowns:
+        return (0, 0)
+
+    hits = [(r, c) for r in range(N) for c in range(N) if board[r][c] == 1]
+
+    if hits:
+        move = _target_mode(board)
+        if move is not None and _is_legal(board, move):
+            return move
+
+    move = _hunt_mode(board)
+    if move is not None and _is_legal(board, move):
+        return move
+
+    return unknowns[0]
+
+
+def _is_legal(board, move):
+    r, c = move
+    return 0 <= r < N and 0 <= c < N and board[r][c] == 0
+
+
+def _neighbors(r, c):
+    if r > 0:
+        yield (r - 1, c)
+    if r < N - 1:
+        yield (r + 1, c)
+    if c > 0:
+        yield (r, c - 1)
+    if c < N - 1:
+        yield (r, c + 1)
+
+
+def _find_hit_clusters(board):
+    seen = [[False] * N for _ in range(N)]
+    clusters = []
+
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 1 and not seen[r][c]:
+                q = deque([(r, c)])
+                seen[r][c] = True
+                cluster = []
+
+                while q:
+                    x, y = q.popleft()
+                    cluster.append((x, y))
+                    for nx, ny in _neighbors(x, y):
+                        if board[nx][ny] == 1 and not seen[nx][ny]:
+                            seen[nx][ny] = True
+                            q.append((nx, ny))
+
+                clusters.append(cluster)
+
+    return clusters
+
+
+def _cluster_orientation(cluster):
+    rows = {r for r, _ in cluster}
+    cols = {c for _, c in cluster}
+    if len(rows) == 1 and len(cluster) >= 2:
+        return "H"
+    if len(cols) == 1 and len(cluster) >= 2:
+        return "V"
+    return "U"
+
+
+def _target_mode(board):
+    clusters = _find_hit_clusters(board)
+    if not clusters:
+        return None
+
+    score = [[0.0] * N for _ in range(N)]
+
+    # Strong local extension heuristics
+    for cluster in clusters:
+        orientation = _cluster_orientation(cluster)
+
+        if orientation == "H":
+            row = cluster[0][0]
+            cols = sorted(c for _, c in cluster)
+            left = cols[0] - 1
+            right = cols[-1] + 1
+            if 0 <= left < N and board[row][left] == 0:
+                score[row][left] += 1000 + 20 * len(cluster)
+            if 0 <= right < N and right < N and board[row][right] == 0:
+                score[row][right] += 1000 + 20 * len(cluster)
+
+        elif orientation == "V":
+            col = cluster[0][1]
+            rows = sorted(r for r, _ in cluster)
+            up = rows[0] - 1
+            down = rows[-1] + 1
+            if 0 <= up < N and board[up][col] == 0:
+                score[up][col] += 1000 + 20 * len(cluster)
+            if 0 <= down < N and down < N and board[down][col] == 0:
+                score[down][col] += 1000 + 20 * len(cluster)
+
+        else:
+            for r, c in cluster:
+                for nr, nc in _neighbors(r, c):
+                    if board[nr][nc] == 0:
+                        score[nr][nc] += 300
+
+    # Placement-based scoring that must include entire cluster
+    for cluster in clusters:
+        cluster_set = set(cluster)
+        rows = [r for r, _ in cluster]
+        cols = [c for _, c in cluster]
+        orientation = _cluster_orientation(cluster)
+
+        for L in SHIP_LENGTHS:
+            if len(cluster) > L:
+                continue
+
+            # Horizontal placements
+            if orientation in ("H", "U"):
+                if len(set(rows)) == 1 or orientation == "U":
+                    target_row_candidates = set(rows) if orientation == "H" else set(range(N))
+                    for r in target_row_candidates:
+                        for start_c in range(N - L + 1):
+                            cells = [(r, start_c + k) for k in range(L)]
+
+                            # Must contain cluster if cluster is compatible with this row
+                            if not cluster_set.issubset(cells):
+                                continue
+
+                            # No misses allowed
+                            ok = True
+                            for x, y in cells:
+                                if board[x][y] == -1:
+                                    ok = False
+                                    break
+                            if not ok:
+                                continue
+
+                            # If there are other hits on same row/segment logic, allow them;
+                            # we only require this placement to explain this cluster.
+                            for x, y in cells:
+                                if board[x][y] == 0:
+                                    score[x][y] += 15 + L
+
+            # Vertical placements
+            if orientation in ("V", "U"):
+                if len(set(cols)) == 1 or orientation == "U":
+                    target_col_candidates = set(cols) if orientation == "V" else set(range(N))
+                    for c in target_col_candidates:
+                        for start_r in range(N - L + 1):
+                            cells = [(start_r + k, c) for k in range(L)]
+
+                            if not cluster_set.issubset(cells):
+                                continue
+
+                            ok = True
+                            for x, y in cells:
+                                if board[x][y] == -1:
+                                    ok = False
+                                    break
+                            if not ok:
+                                continue
+
+                            for x, y in cells:
+                                if board[x][y] == 0:
+                                    score[x][y] += 15 + L
+
+    best = None
+    best_score = -1.0
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 0:
+                # Small central preference as tie-break
+                s = score[r][c] - 0.01 * (abs(r - 4.5) + abs(c - 4.5))
+                if s > best_score:
+                    best_score = s
+                    best = (r, c)
+
+    return best
+
+
+def _hunt_mode(board):
+    score = [[0.0] * N for _ in range(N)]
+
+    for L in SHIP_LENGTHS:
+        # Horizontal placements
+        for r in range(N):
+            for start_c in range(N - L + 1):
+                cells = [(r, start_c + k) for k in range(L)]
+                if any(board[x][y] == -1 for x, y in cells):
+                    continue
+
+                # Placements can include hits; they are still potentially part of some ship.
+                weight = 1.0
+                hit_count = sum(1 for x, y in cells if board[x][y] == 1)
+                weight += 0.5 * hit_count
+
+                for x, y in cells:
+                    if board[x][y] == 0:
+                        score[x][y] += weight
+
+        # Vertical placements
+        for c in range(N):
+            for start_r in range(N - L + 1):
+                cells = [(start_r + k, c) for k in range(L)]
+                if any(board[x][y] == -1 for x, y in cells):
+                    continue
+
+                weight = 1.0
+                hit_count = sum(1 for x, y in cells if board[x][y] == 1)
+                weight += 0.5 * hit_count
+
+                for x, y in cells:
+                    if board[x][y] == 0:
+                        score[x][y] += weight
+
+    # Parity preference for hunt mode
+    unknown_count = sum(1 for r in range(N) for c in range(N) if board[r][c] == 0)
+    parity_bonus = 0.35 if unknown_count > 15 else 0.1
+
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 0:
+                if (r + c) % 2 == 0:
+                    score[r][c] += parity_bonus
+                # mild center preference
+                score[r][c] += 0.02 * (9 - (abs(r - 4.5) + abs(c - 4.5)))
+
+    best = None
+    best_score = -1.0
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 0 and score[r][c] > best_score:
+                best_score = score[r][c]
+                best = (r, c)
+
+    return best

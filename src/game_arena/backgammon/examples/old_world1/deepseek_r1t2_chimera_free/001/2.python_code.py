@@ -1,0 +1,132 @@
+
+import numpy as np
+
+def can_bear_off(state):
+    if state['my_bar'] > 0:
+        return False
+    for i in range(6, 24):
+        if state['my_pts'][i] > 0:
+            return False
+    return True
+
+def policy(state):
+    if state['my_bar'] > 0:
+        dice = state['dice']
+        valid_dice = []
+        for d in dice:
+            target_point = 24 - d
+            if 0 <= target_point < 24 and state['opp_pts'][target_point] <= 1:
+                valid_dice.append(d)
+        if not valid_dice:
+            return "H:P,P"
+        sorted_dice = sorted(dice, reverse=True)
+        valid_sorted = sorted([d for d in sorted_dice if d in valid_dice], reverse=True)
+        usable = valid_sorted[:2]
+        moves = []
+        for d in usable:
+            moves.append("B")
+        while len(moves) < 2:
+            moves.append("P")
+        if valid_sorted and valid_sorted[0] == sorted_dice[0]:
+            order = 'H'
+        else:
+            order = 'L'
+        return f"{order}:{','.join(moves)}"
+    else:
+        dice = state['dice'].copy()
+        if len(dice) == 0:
+            return "H:P,P"
+        best_score = -float('inf')
+        best_order = 'H'
+        best_moves = ["P", "P"]
+        bearing_off = can_bear_off(state)
+        orders = []
+        if len(dice) == 2:
+            orders = [('H', max(dice), min(dice)), ('L', min(dice), max(dice))]
+        else:
+            orders = [('H', dice[0], None)]
+        for order_tuple in orders:
+            order, die1, die2 = order_tuple
+            moves = []
+            score = 0
+            for die in [die1, die2]:
+                if die is None:
+                    moves.append("P")
+                    continue
+                best_move = None
+                best_partial_score = -float('inf')
+                if bearing_off:
+                    for point in range(5, -1, -1):
+                        if state['my_pts'][point] == 0:
+                            continue
+                        if point - die < 0:
+                            if best_move is None or point > int(best_move[1:] if best_move and best_move != "P" else -1):
+                                best_move = f"A{point}"
+                                best_partial_score = 10 - point
+                        else:
+                            dest = point - die
+                            if dest >= 0 and state['opp_pts'][dest] <= 1:
+                                s = 5 - point
+                                if dest >= 0 and state['opp_pts'][dest] == 1:
+                                    s += 4
+                                if state['my_pts'][dest] == 1:
+                                    s += 2
+                                if state['my_pts'][point] == 1:
+                                    s -= 2
+                                if s > best_partial_score:
+                                    best_move = f"A{point}"
+                                    best_partial_score = s
+                    if best_move is None:
+                        for point in range(23, -1, -1):
+                            if state['my_pts'][point] == 0:
+                                continue
+                            dest = point - die
+                            if dest < 0 or dest >= 24:
+                                continue
+                            if state['opp_pts'][dest] >= 2:
+                                continue
+                            s = 3
+                            if state['opp_pts'][dest] == 1:
+                                s += 4
+                            if state['my_pts'][point] == 1:
+                                s -= 3
+                            if s > best_partial_score:
+                                best_move = f"A{point}"
+                                best_partial_score = s
+                else:
+                    for point in range(23, -1, -1):
+                        if state['my_pts'][point] == 0:
+                            continue
+                        dest = point - die
+                        if dest < 0 or dest >= 24:
+                            continue
+                        if state['opp_pts'][dest] >= 2:
+                            continue
+                        s = 0
+                        if dest >= 0:
+                            if state['opp_pts'][dest] == 1:
+                                s += 4
+                            if state['my_pts'][dest] >= 1:
+                                s += 2
+                            s += (24 - dest) // 2
+                        if state['my_pts'][point] == 1:
+                            s -= 3
+                        elif state['my_pts'][point] == 2:
+                            s -= 1
+                        if dest >= 18:
+                            s += 3
+                        elif dest <= 5:
+                            s += 2
+                        if s > best_partial_score:
+                            best_move = f"A{point}"
+                            best_partial_score = s
+                if best_move is None:
+                    best_move = "P"
+                    best_partial_score = -100
+                moves.append(best_move)
+                score += best_partial_score
+            if score > best_score:
+                best_score = score
+                best_order = order
+                best_moves = moves
+        return f"{best_order}:{','.join(best_moves)}"

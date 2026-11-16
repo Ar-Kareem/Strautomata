@@ -1,0 +1,75 @@
+
+import random
+from typing import List, Tuple
+
+# Pre‑compute every possible winning line in a 3×3×3 board.
+def _generate_lines() -> List[List[Tuple[int, int, int]]]:
+    lines: List[List[Tuple[int, int, int]]] = []
+
+    # Axis‑aligned lines (27)
+    for i in range(3):
+        for j in range(3):
+            lines.append([(i, j, k) for k in range(3)])          # varying k
+    for i in range(3):
+        for k in range(3):
+            lines.append([(i, j, k) for j in range(3)])          # varying j
+    for j in range(3):
+        for k in range(3):
+            lines.append([(i, j, k) for i in range(3)])          # varying i
+
+    # Face diagonals (2 per face, 9 faces → 18)
+    for i in range(3):                     # planes with constant i
+        lines.append([(i, 0, 0), (i, 1, 1), (i, 2, 2)])
+        lines.append([(i, 0, 2), (i, 1, 1), (i, 2, 0)])
+    for j in range(3):                     # planes with constant j
+        lines.append([(0, j, 0), (1, j, 1), (2, j, 2)])
+        lines.append([(0, j, 2), (1, j, 1), (2, j, 0)])
+    for k in range(3):                     # planes with constant k
+        lines.append([(0, 0, k), (1, 1, k), (2, 2, k)])
+        lines.append([(0, 2, k), (1, 1, k), (2, 0, k)])
+
+    # Space diagonals (4)
+    lines.append([(0, 0, 0), (1, 1, 1), (2, 2, 2)])
+    lines.append([(0, 0, 2), (1, 1, 1), (2, 2, 0)])
+    lines.append([(0, 2, 0), (1, 1, 1), (2, 0, 2)])
+    lines.append([(0, 2, 2), (1, 1, 1), (2, 0, 0)])
+
+    return lines
+
+
+# Cache the lines so we build them only once.
+_WINNING_LINES = _generate_lines()
+
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    """
+    Return a move (i, j, k) for the current board.
+    0 ≤ i, j, k ≤ 2.
+    """
+    # 1. Look for a winning move for us (value 1)
+    for line in _WINNING_LINES:
+        values = [board[i][j][k] for i, j, k in line]
+        if sum(values) == 2 and 0 in values:               # two of us, one empty
+            empty_idx = values.index(0)
+            return line[empty_idx]
+
+    # 2. Block opponent's winning move (value -1)
+    for line in _WINNING_LINES:
+        values = [board[i][j][k] for i, j, k in line]
+        if sum(values) == -2 and 0 in values:              # two of opponent, one empty
+            empty_idx = values.index(0)
+            return line[empty_idx]
+
+    # 3. Take the centre if possible
+    if board[1][1][1] == 0:
+        return (1, 1, 1)
+
+    # 4. Otherwise pick the first empty cell (deterministic, could be random)
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board[i][j][k] == 0:
+                    return (i, j, k)
+
+    # Should never happen on a non‑full board, but return a dummy coordinate.
+    return (0, 0, 0)

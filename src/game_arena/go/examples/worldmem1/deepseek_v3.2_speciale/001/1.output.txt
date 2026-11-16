@@ -1,0 +1,437 @@
+The strategy for this policy is to use Monte Carlo Tree Search (MCTS) with a heuristic evaluation function. The board is represented as bitboards for efficiency. A Zobrist hash is used to identify states and enforce superko. The tree is stored in memory across moves. At each decision, MCTS runs for up to 0.95 seconds, selecting moves via UCT with an exploration constant of 1.0. Expansion generates only plausible moves (points near existing stones plus a few random far points) to keep branching manageable. For leaf evaluation, a fast distance‑based territory heuristic is used (BFS from stones to assign each point to the closer color). The policy always returns a legal move, filtering superko violations at the root.
+
+<code>
+import random
+import math
+import time
+from collections import deque
+
+# ------------------------------------------------------------
+# Constants & precomputed data for 19x19 board
+# ------------------------------------------------------------
+BOARD_SIZE = 19
+NSQ = BOARD_SIZE * BOARD_SIZE
+PASS = (0, 0)                     # special move for passing
+
+# bitmask with all 361 bits set
+MASK_ALL = (1 << NSQ) - 1
+
+# masks to prevent wrapping in left/right shifts
+MASK_NO_LEFT = 0
+MASK_NO_RIGHT = 0
+for i in range(NSQ):
+    if i % BOARD_SIZE != 0:
+        MASK_NO_LEFT |= 1 << i
+    if i % BOARD_SIZE != BOARD_SIZE - 1:
+        MASK_NO_RIGHT |= 1 << i
+
+# shift operations for adjacency (bitboard)
+def up(mask):
+    return (mask >> BOARD_SIZE) & MASK_ALL
+
+def down(mask):
+    return (mask << BOARD_SIZE) & MASK_ALL
+
+def left(mask):
+    return ((mask & MASK_NO_LEFT) >> 1)
+
+def right(mask):
+    return ((mask & MASK_NO_RIGHT) << 1) & MASK_ALL
+
+def all_adj(mask):
+    return up(mask) | down(mask) | left(mask) | right(mask)
+
+# neighbours list for BFS (index based)
+neighbours = [[] for _ in range(NSQ)]
+idx_to_rc = [None] * NSQ
+rc_to_idx = {}
+for i in range(NSQ):
+    r, c = divmod(i, BOARD_SIZE)
+    idx_to_rc[i] = (r + 1, c + 1)
+    rc_to_idx[(r + 1, c + 1)] = i
+    if r > 0:
+        neighbours[i].append(i - BOARD_SIZE)
+    if r < BOARD_SIZE - 1:
+        neighbours[i].append(i + BOARD_SIZE)
+    if c > 0:
+        neighbours[i].append(i - 1)
+    if c < BOARD_SIZE - 1:
+        neighbours[i].append(i + 1)
+
+# Zobrist hashing (fixed seed for reproducibility)
+random.seed(123456789)
+zobrist_me = [random.getrandbits(64) for _ in range(NSQ)]
+zobrist_opp = [random.getrandbits(64) for _ in range(NSQ)]
+zobrist_turn = random.getrandbits(64)
+
+# ------------------------------------------------------------
+# Helper functions
+# ------------------------------------------------------------
+def stones_to_bb(stones):
+    """Convert list of (r,c) to bitboard."""
+    bb = 0
+    for r, c in stones:
+        bb |= 1 << rc_to_idx[(r, c)]
+    return bb
+
+def get_group(board, seed):
+    """Return bitmask of the connected component containing seed."""
+    if not (board >> seed) & 1:
+        return 0
+    group = 1 << seed
+    while True:
+        adj = all_adj(group) & board
+        new_group = group | adj
+        if new_group == group:
+            break
+        group = new_group
+    return group
+
+def apply_move(state, move, current_hash):
+    """
+    Return (new_state, new_hash) if move is legal, else None.
+    state = (my_bb, opp_bb, turn) with turn: 0 = my turn, 1 = opponent turn.
+    move is either PASS or (r,c).
+    """
+    my, opp, turn = state
+    if move == PASS:
+        new_state = (my, opp, 1 - turn)
+        new_hash = current_hash ^ zobrist_turn
+        return (new_state, new_hash)
+
+    p = rc_to_idx[move]
+
+    # occupied?
+    if ((my >> p) & 1) or ((opp >> p) & 1):
+        return None
+
+    empty = ~(my | opp) & MASK_ALL
+
+    if turn == 0:
+        player, other = my, opp
+    else:
+        player, other = opp, my
+
+    # ---- capture detection ----
+    captured = 0
+    processed = 0
+    for nb in neighbours[p]:
+        if (other >> nb) & 1:
+            group = get_group(other, nb)
+            if group & processed:
+                continue
+            processed |= group
+            libs = all_adj(group) & empty
+            if libs == (1 << p):          # only liberty is the move point
+                captured |= group
+
+    new_other = other & ~captured
+    new_player = player | (1 << p)
+
+    if turn == 0:
+        new_my, new_opp = new_player, new_other
+    else:
+        new_my, new_opp = new_other, new_player
+
+    # ---- suicide check ----
+    moved_group = get_group(new_player, p)
+    new_empty = ~(new_my | new_opp) & MASK_ALL
+    if (all_adj(moved_group) & new_empty) == 0:
+        return None
+
+    # ---- update hash ----
+    new_hash = current_hash
+    # remove captured stones
+    cap = captured
+    if turn == 0:          # captured opponent stones
+        while cap:
+            lsb = cap & -cap
+            idx = lsb.bit_length() - 1
+            new_hash ^= zobrist_opp[idx]
+            cap ^= lsb
+    else:                  # captured my stones
+        while cap:
+            lsb = cap & -cap
+            idx = lsb.bit_length() - 1
+            new_hash ^= zobrist_me[idx]
+            cap ^= lsb
+    # add new stone
+    if turn == 0:
+        new_hash ^= zobrist_me[p]
+    else:
+        new_hash ^= zobrist_opp[p]
+    # toggle turn
+    new_hash ^= zobrist_turn
+
+    new_turn = 1 - turn
+    return ((new_my, new_opp, new_turn), new_hash)
+
+def compute_distance(bitboard):
+    """BFS from all stones in bitboard, return distance list."""
+    dist = [9999] * NSQ
+    dq = deque()
+    bb = bitboard
+    while bb:
+        lsb = bb & -bb
+        idx = lsb.bit_length() - 1
+        dist[idx] = 0
+        dq.append(idx)
+        bb ^= lsb
+    while dq:
+        p = dq.popleft()
+        d = dist[p] + 1
+        for nb in neighbours[p]:
+            if dist[nb] > d:
+                dist[nb] = d
+                dq.append(nb)
+    return dist
+
+def evaluate(state):
+    """
+    Heuristic score from perspective of player to move.
+    Uses distance‑based territory assignment.
+    """
+    my, opp, turn = state
+    dist_my = compute_distance(my)
+    dist_opp = compute_distance(opp)
+    my_total = 0
+    opp_total = 0
+    for i in range(NSQ):
+        if (my >> i) & 1:
+            my_total += 1
+        elif (opp >> i) & 1:
+            opp_total += 1
+        else:
+            if dist_my[i] < dist_opp[i]:
+                my_total += 1
+            elif dist_opp[i] < dist_my[i]:
+                opp_total += 1
+    raw = (my_total - opp_total) / NSQ   # in [-1,1]
+    return raw if turn == 0 else -raw
+
+def candidate_moves(state):
+    """
+    Generate a list of plausible moves (including PASS).
+    For empty board returns all points; otherwise returns points
+    up to distance 2 from any stone, plus a few random far points.
+    """
+    my, opp, turn = state
+    occupied = my | opp
+    empty = ~occupied & MASK_ALL
+    moves = [PASS]
+
+    if occupied == 0:
+        # empty board – consider all points (only once, cheap)
+        for i in range(NSQ):
+            moves.append(idx_to_rc[i])
+        return moves
+
+    # rings around stones
+    ring1 = all_adj(occupied) & empty
+    ring2 = all_adj(ring1) & empty & ~ring1
+    cand = ring1 | ring2
+    if cand.bit_count() < 10:
+        ring3 = all_adj(ring2) & empty & ~ring1 & ~ring2
+        cand |= ring3
+    # add a few random far moves
+    extra = empty & ~cand
+    if extra:
+        extra_indices = []
+        ex = extra
+        while ex:
+            lsb = ex & -ex
+            idx = lsb.bit_length() - 1
+            extra_indices.append(idx)
+            ex ^= lsb
+        if len(extra_indices) > 2:
+            extra_indices = random.sample(extra_indices, 2)
+        for idx in extra_indices:
+            cand |= 1 << idx
+    # convert bitmask to list of (r,c)
+    cc = cand
+    while cc:
+        lsb = cc & -cc
+        idx = lsb.bit_length() - 1
+        moves.append(idx_to_rc[idx])
+        cc ^= lsb
+    return moves
+
+# ------------------------------------------------------------
+# Main policy
+# ------------------------------------------------------------
+def policy(me, opponent, memory):
+    # convert input to bitboards
+    my_bb = stones_to_bb(me)
+    opp_bb = stones_to_bb(opponent)
+    turn = 0               # it's always our turn when policy is called
+
+    # compute hash of current state
+    current_hash = 0
+    for r, c in me:
+        current_hash ^= zobrist_me[rc_to_idx[(r, c)]]
+    for r, c in opponent:
+        current_hash ^= zobrist_opp[rc_to_idx[(r, c)]]
+    # turn token only when turn==1, so not added
+
+    # initialize memory if empty
+    if not memory:
+        memory['nodes'] = {}
+        memory['seen_positions'] = set()
+        # first call? handle initial positions for superko
+        if len(me) == 0 and len(opponent) == 0:
+            # black first move
+            memory['seen_positions'].add(current_hash)
+        elif len(me) == 0 and len(opponent) > 0:
+            # white after first move
+            empty_hash = zobrist_turn          # empty board, opponent to move
+            memory['seen_positions'].add(empty_hash)
+            memory['seen_positions'].add(current_hash)
+        else:
+            memory['seen_positions'].add(current_hash)
+    else:
+        memory['seen_positions'].add(current_hash)
+
+    nodes = memory['nodes']
+    seen_positions = memory['seen_positions']
+
+    # ensure root node exists
+    if current_hash in nodes:
+        root_node = nodes[current_hash]
+    else:
+        root_node = {
+            'state': (my_bb, opp_bb, turn),
+            'hash': current_hash,
+            'N': 0,
+            'children': None
+        }
+        nodes[current_hash] = root_node
+
+    exploration = 1.0
+    max_time = 0.95          # seconds to spend on MCTS
+    start_time = time.perf_counter()
+
+    # ---------- MCTS functions (inner for closure) ----------
+    def expand(node, is_root=False):
+        if node['children'] is not None:
+            return
+        state = node['state']
+        node_hash = node['hash']
+        children = []
+        for move in candidate_moves(state):
+            res = apply_move(state, move, node_hash)
+            if res is not None:
+                child_state, child_hash = res
+                if is_root and move != PASS and child_hash in seen_positions:
+                    continue   # superko violation at root
+                children.append({
+                    'move': move,
+                    'state': child_state,
+                    'hash': child_hash,
+                    'n': 0,
+                    'w': 0.0
+                })
+        node['children'] = children
+
+    def backprop(path, leaf_value, leaf_node=None):
+        v = leaf_value
+        if leaf_node is not None:
+            leaf_node['N'] += 1
+        for node, child in reversed(path):
+            child['n'] += 1
+            child['w'] += -v
+            node['N'] += 1
+            v = -v
+
+    # ---------- MCTS main loop ----------
+    while time.perf_counter() - start_time < max_time:
+        node = root_node
+        path = []               # list of (node, child) from root to leaf
+        # selection & expansion
+        while True:
+            if node['children'] is None:
+                # expand this node (first visit)
+                expand(node, is_root=(node == root_node))
+                # choose an unvisited child randomly
+                unvisited = [c for c in node['children'] if c['n'] == 0]
+                if not unvisited:          # should not happen
+                    unvisited = node['children']
+                chosen_child = random.choice(unvisited)
+                child_hash = chosen_child['hash']
+                if child_hash in nodes:
+                    child_node = nodes[child_hash]
+                else:
+                    child_node = {
+                        'state': chosen_child['state'],
+                        'hash': child_hash,
+                        'N': 0,
+                        'children': None
+                    }
+                    nodes[child_hash] = child_node
+                # evaluate the child state
+                value = evaluate(child_node['state'])
+                path.append((node, chosen_child))
+                backprop(path, value, child_node)
+                break
+
+            else:   # node has children
+                # pick a child
+                unvisited = [c for c in node['children'] if c['n'] == 0]
+                if unvisited:
+                    best_child = random.choice(unvisited)
+                else:
+                    # UCB selection
+                    N = node['N']
+                    best_score = -float('inf')
+                    best_child = None
+                    for child in node['children']:
+                        # child['n'] > 0 here
+                        score = child['w'] / child['n'] + \
+                                exploration * math.sqrt(math.log(N) / child['n'])
+                        if score > best_score:
+                            best_score = score
+                            best_child = child
+                # advance
+                child_hash = best_child['hash']
+                if child_hash in nodes:
+                    path.append((node, best_child))
+                    node = nodes[child_hash]
+                    continue
+                else:
+                    # child not yet in tree – create and evaluate
+                    child_node = {
+                        'state': best_child['state'],
+                        'hash': child_hash,
+                        'N': 0,
+                        'children': None
+                    }
+                    nodes[child_hash] = child_node
+                    value = evaluate(child_node['state'])
+                    path.append((node, best_child))
+                    backprop(path, value, child_node)
+                    break
+
+    # ---------- choose best move from root ----------
+    if root_node['children'] is None:
+        # fallback (should not happen): generate legal moves with superko filter
+        legal_moves = []
+        for move in candidate_moves(root_node['state']):
+            res = apply_move(root_node['state'], move, root_node['hash'])
+            if res is not None:
+                if move == PASS or res[1] not in seen_positions:
+                    legal_moves.append(move)
+        if not legal_moves:
+            best_move = PASS
+        else:
+            best_move = random.choice(legal_moves)
+    else:
+        best_child = max(root_node['children'], key=lambda c: c['n'])
+        best_move = best_child['move']
+
+    # update seen_positions with the state after our move
+    for child in root_node['children']:
+        if child['move'] == best_move:
+            seen_positions.add(child['hash'])
+            break
+
+    return (best_move, memory)
+</code>

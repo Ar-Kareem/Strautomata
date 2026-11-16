@@ -1,0 +1,126 @@
+
+import numpy as np
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    # Create a 19x19 board representation (0: empty, 1: me, 2: opponent)
+    board = np.zeros((19, 19), dtype=int)
+    for r, c in me:
+        board[r-1, c-1] = 1
+    for r, c in opponent:
+        board[r-1, c-1] = 2
+    
+    # Generate all possible moves (including pass)
+    moves = [(r, c) for r in range(1, 20) for c in range(1, 20)]
+    moves.append((0, 0))
+    
+    best_move = None
+    best_score = -float('inf')
+    
+    # Evaluate each move
+    for move in moves:
+        r, c = move
+        if r == 0 and c == 0:  # Pass is always legal
+            score = evaluate_pass(board)
+            if score > best_score:
+                best_score = score
+                best_move = move
+            continue
+        
+        # Check legality: not occupied and not self-capture
+        if board[r-1, c-1] != 0:
+            continue
+        
+        # Check self-capture: placing stone here would make my group have no liberties
+        if not is_legal_move(board, r, c, 1):
+            continue
+        
+        # Evaluate move score
+        score = evaluate_move(board, r, c, 1)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return (best_move, memory)
+
+def evaluate_move(board, r, c, player):
+    # Score based on captured stones, reduced liberties, and territory
+    score = 0
+    
+    # Capture opponent stones
+    for dr, dc in [(1,0), (-1,0), (0,1), (0,-1)]:
+        nr, nc = r + dr, c + dc
+        if 1 <= nr <= 19 and 1 <= nc <= 19 and board[nr-1, nc-1] == 2:
+            # Check if opponent stone is captured (no liberties)
+            if is_captured(board, nr, nc):
+                score += 10
+    
+    # Reduce opponent liberties
+    for dr, dc in [(1,0), (-1,0), (0,1), (0,-1)]:
+        nr, nc = r + dr, c + dc
+        if 1 <= nr <= 19 and 1 <= nc <= 19 and board[nr-1, nc-1] == 2:
+            # Check if opponent group loses liberties
+            if is_liberty_loss(board, nr, nc, 2):
+                score += 5
+    
+    # Expand territory
+    for dr, dc in [(1,0), (-1,0), (0,1), (0,-1)]:
+        nr, nc = r + dr, c + dc
+        if 1 <= nr <= 19 and 1 <= nc <= 19 and board[nr-1, nc-1] == 0:
+            score += 1
+    
+    return score
+
+def evaluate_pass(board):
+    # Pass evaluation: prioritize reducing opponent liberties
+    score = 0
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if board[r-1, c-1] == 2:
+                for dr, dc in [(1,0), (-1,0), (0,1), (0,-1)]:
+                    nr, nc = r + dr, c + dc
+                    if 1 <= nr <= 19 and 1 <= nc <= 19 and board[nr-1, nc-1] == 0:
+                        score += 1
+    return score
+
+def is_captured(board, r, c):
+    # Check if opponent stone has no liberties
+    for dr, dc in [(1,0), (-1,0), (0,1), (0,-1)]:
+        nr, nc = r + dr, c + dc
+        if 1 <= nr <= 19 and 1 <= nc <= 19 and board[nr-1, nc-1] == 0:
+            return False
+    return True
+
+def is_liberty_loss(board, r, c, player):
+    # Check if opponent group loses liberties after move
+    original_liberties = count_liberties(board, r, c, player)
+    board[r-1, c-1] = player
+    new_liberties = count_liberties(board, r, c, player)
+    board[r-1, c-1] = 0
+    return original_liberties > new_liberties
+
+def count_liberties(board, r, c, player):
+    # Count liberties of a group
+    liberties = 0
+    visited = set()
+    stack = [(r-1, c-1)]
+    while stack:
+        i, j = stack.pop()
+        if (i, j) in visited:
+            continue
+        visited.add((i, j))
+        for di, dj in [(1,0), (-1,0), (0,1), (0,-1)]:
+            ni, nj = i + di, j + dj
+            if 0 <= ni < 19 and 0 <= nj < 19:
+                if board[ni, nj] == 0:
+                    liberties += 1
+                elif board[ni, nj] == player:
+                    if (ni, nj) not in visited:
+                        stack.append((ni, nj))
+    return liberties
+
+def is_legal_move(board, r, c, player):
+    # Check if move is legal (not self-capture)
+    board[r-1, c-1] = player
+    liberties = count_liberties(board, r, c, player)
+    board[r-1, c-1] = 0
+    return liberties > 0

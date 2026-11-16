@@ -1,0 +1,137 @@
+
+def policy(pieces: dict[str, str], to_play: str, memory: dict) -> tuple[str, dict]:
+    current_color = 'w' if to_play == 'white' else 'b'
+    enemy_color = 'b' if current_color == 'w' else 'w'
+    enemy_king_square = None
+    for sq, piece in pieces.items():
+        if piece == enemy_color + 'K':
+            enemy_king_square = sq
+            break
+
+    generated_moves = []
+    for sq, piece in pieces.items():
+        if piece[0] != current_color:
+            continue
+        piece_type = piece[1]
+        file = sq[0]
+        rank = int(sq[1])
+
+        if piece_type == 'P':
+            direction = 1 if current_color == 'w' else -1
+            # Forward move
+            new_rank = rank + direction
+            new_sq = file + str(new_rank)
+            if new_sq not in pieces:
+                generated_moves.append(sq + new_sq)
+                if (new_rank == 8 and current_color == 'w') or (new_rank == 1 and current_color == 'b'):
+                    generated_moves.append(sq + new_sq + 'q')
+                # Two-square move
+                if (rank == 2 and current_color == 'w') or (rank == 7 and current_color == 'b'):
+                    new_rank_2 = new_rank + direction
+                    new_sq_2 = file + str(new_rank_2)
+                    if new_sq_2 not in pieces:
+                        generated_moves.append(sq + new_sq_2)
+                        if (new_rank_2 == 8 and current_color == 'w') or (new_rank_2 == 1 and current_color == 'b'):
+                            generated_moves.append(sq + new_sq_2 + 'q')
+            # Captures
+            for df in [-1, 1]:
+                new_file = chr(ord(file) + df)
+                if new_file < 'a' or new_file > 'h':
+                    continue
+                target_sq = new_file + str(rank + direction)
+                if target_sq in pieces and pieces[target_sq][0] != current_color:
+                    generated_moves.append(sq + target_sq)
+                    if (int(target_sq[1]) == 8 and current_color == 'w') or (int(target_sq[1]) == 1 and current_color == 'b'):
+                        generated_moves.append(sq + target_sq + 'q')
+        elif piece_type == 'N':
+            knight_moves = [(-2, -1), (-1, -2), (1, -2), (2, -1), (2, 1), (1, 2), (-1, 2), (-2, 1)]
+            for dr, df in knight_moves:
+                new_rank_num = rank + dr
+                new_file_char = chr(ord(file) + df)
+                if new_file_char < 'a' or new_file_char > 'h' or new_rank_num < 1 or new_rank_num > 8:
+                    continue
+                new_sq = new_file_char + str(new_rank_num)
+                if new_sq in pieces:
+                    if pieces[new_sq][0] != current_color:
+                        generated_moves.append(sq + new_sq)
+                else:
+                    generated_moves.append(sq + new_sq)
+        elif piece_type == 'B':
+            directions = [(-1, -1), (1, -1), (1, 1), (-1, 1)]
+            for dr, df in directions:
+                for step in range(1, 8):
+                    new_rank_num = rank + dr * step
+                    new_file_char = chr(ord(file) + df * step)
+                    if new_file_char < 'a' or new_file_char > 'h' or new_rank_num < 1 or new_rank_num > 8:
+                        break
+                    new_sq = new_file_char + str(new_rank_num)
+                    if new_sq in pieces:
+                        if pieces[new_sq][0] != current_color:
+                            generated_moves.append(sq + new_sq)
+                        break
+                    else:
+                        generated_moves.append(sq + new_sq)
+        elif piece_type == 'R':
+            directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+            for dr, df in directions:
+                for step in range(1, 8):
+                    new_rank_num = rank + dr * step
+                    new_file_char = chr(ord(file) + df * step)
+                    if new_file_char < 'a' or new_file_char > 'h' or new_rank_num < 1 or new_rank_num > 8:
+                        break
+                    new_sq = new_file_char + str(new_rank_num)
+                    if new_sq in pieces:
+                        if pieces[new_sq][0] != current_color:
+                            generated_moves.append(sq + new_sq)
+                        break
+                    else:
+                        generated_moves.append(sq + new_sq)
+        elif piece_type == 'Q':
+            directions = [(-1, -1), (1, -1), (1, 1), (-1, 1), (-1, 0), (1, 0), (0, -1), (0, 1)]
+            for dr, df in directions:
+                for step in range(1, 8):
+                    new_rank_num = rank + dr * step
+                    new_file_char = chr(ord(file) + df * step)
+                    if new_file_char < 'a' or new_file_char > 'h' or new_rank_num < 1 or new_rank_num > 8:
+                        break
+                    new_sq = new_file_char + str(new_rank_num)
+                    if new_sq in pieces:
+                        if pieces[new_sq][0] != current_color:
+                            generated_moves.append(sq + new_sq)
+                        break
+                    else:
+                        generated_moves.append(sq + new_sq)
+        elif piece_type == 'K':
+            directions = [(-1, -1), (1, -1), (1, 1), (-1, 1), (-1, 0), (1, 0), (0, -1), (0, 1)]
+            for dr, df in directions:
+                new_rank_num = rank + dr
+                new_file_char = chr(ord(file) + df)
+                if new_file_char < 'a' or new_file_char > 'h' or new_rank_num < 1 or new_rank_num > 8:
+                    continue
+                new_sq = new_file_char + str(new_rank_num)
+                if new_sq in pieces:
+                    if pieces[new_sq][0] != current_color:
+                        generated_moves.append(sq + new_sq)
+                else:
+                    generated_moves.append(sq + new_sq)
+
+    # Check for checkmate moves
+    checkmate_moves = [move for move in generated_moves if move[2:4] == enemy_king_square]
+    if checkmate_moves:
+        return (checkmate_moves[0], {})
+
+    piece_values = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}
+    move_scores = []
+    for move in generated_moves:
+        start_sq = move[:2]
+        end_sq = move[2:4]
+        start_type = pieces[start_sq][1]
+        start_value = piece_values[start_type]
+        captured_type = pieces.get(end_sq, enemy_color + 'K')[1] if end_sq in pieces else 'K'
+        captured_value = piece_values[captured_type] if pieces.get(end_sq, None) and pieces[end_sq][0] != current_color else 0
+        gain = captured_value - start_value
+        move_scores.append((gain, move))
+
+    move_scores.sort(key=lambda x: (-x[0], x[1]))
+    best_move = move_scores[0][1] if move_scores else generated_moves[0]
+    return (best_move, {})

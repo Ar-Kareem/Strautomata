@@ -1,0 +1,80 @@
+**Strategy Overview**
+
+The policy uses a simple yet effective heuristic that balances two goals:
+
+1. **Stay close to the board centre** – central positions are flexible and often good opening moves.  
+2. **Keep a safe distance from opponent stones** – playing too close to the opponent can lead to easy captures or self‑atari.
+
+For each empty intersection we compute:
+- `curities`: the Manhattan distance to the nearest opponent stone (larger is safer).  
+- `centrality`: the Manhattan distance to the centre of the board (smaller is better).
+
+The final score is `2 * securities - centrality`.  
+The move with the highest score is selected. If the board is full or no legal moves exist, the policy passes with `(0, 0)`.
+
+This heuristic is fast (well under the 1 s limit) and always returns a legal move.
+
+```python
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    """
+    Choose a move for a 19x19 Go board.
+
+    Parameters
+    ----------
+    me : list[tuple[int, int]]
+        Coordinates of our stones (row, col), 1‑based.
+    opponent : list[tuple[int, int]]
+        Coordinates of opponent stones.
+
+    Returns
+    -------
+    tuple[int, int]
+        (row, col) of the chosen move, or (0, 0) to pass.
+    """
+    BOARD_SIZE = 19
+    CENTER = (10, 10)  # 1‑based centre approximation
+
+    occupied = set(me) | set(opponent)
+
+    # If board is completely filled, we must pass
+    if len(occupied) >= BOARD_SIZE * BOARD_SIZE:
+        return (0, 0)
+
+    # Pre‑compute opponent positions for distance calculations
+    opp_positions = opponent
+
+    best_move = None
+    best_score = -float('inf')
+
+    # Helper: Manhattan distance
+    def manhattan(a, b):
+        return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+    # Iterate over all board points
+    for r in range(1, BOARD_SIZE + 1):
+        for c in range(1, BOARD_SIZE + 1):
+            if (r, c) in occupied:
+                continue  # illegal, already occupied
+
+            # Distance to centre (smaller is better)
+            centrality = manhattan((r, c), CENTER)
+
+            # Distance to nearest opponent stone (larger is safer)
+            if opp_positions:
+                min_opp_dist = min(manhattan((r, c), opp) for opp in opp_positions)
+            else:
+                # No opponent stones yet – treat as maximal safety
+                min_opp_dist = BOARD_SIZE * 2
+
+            # Combine scores: prioritize safety, then centrality
+            score = 2 * min_opp_dist - centrality
+
+            if score > best_score:
+                best_score = score
+                best_move = (r, c)
+
+    # Fallback safety: if for some reason we found no move, pass
+    if best_move is None:
+        return (0, 0)
+    return best_move
+```

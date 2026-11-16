@@ -1,0 +1,80 @@
+
+# Strategy: Prioritize capturing opponent's stones by playing in their liberties. If no captures are possible, play in corners or any valid move.
+
+directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]  # Up, Down, Left, Right
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    # Convert lists to sets for faster lookups
+    me_set = set(me)
+    opponent_set = set(opponent)
+    occupied = me_set | opponent_set
+
+    # First move: play in the bottom-right corner (19, 19)
+    if not me_set:
+        return (19, 19)
+    
+    # Check for capture opportunities
+    # Collect all liberties of the opponent's stones
+    opponent_liberties = set()
+    for (r, c) in opponent_set:
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            if 1 <= nr <= 19 and 1 <= nc <= 19:
+                if (nr, nc) not in occupied:
+                    opponent_liberties.add((nr, nc))
+    
+    # Find valid capture moves (must be a legal move)
+    valid_capture_moves = []
+    for move in opponent_liberties:
+        if move in occupied:  # Already occupied, skip
+            continue
+        r, c = move
+        has_liberty = False
+        for dr, dc in directions:
+            nr = r + dr
+            nc = c + dc
+            if 1 <= nr <= 19 and 1 <= nc <= 19:
+                if (nr, nc) not in occupied:
+                    has_liberty = True
+                    break
+        if has_liberty:
+            valid_capture_moves.append(move)
+    
+    # Return a valid capture move if available
+    if valid_capture_moves:
+        return valid_capture_moves[0]
+    
+    # Check corners for legal moves
+    corners = [(19, 19), (19, 1), (1, 19), (1, 1)]
+    for corner in corners:
+        if corner not in occupied:
+            r, c = corner
+            has_liberty = False
+            for dr, dc in directions:
+                nr = r + dr
+                nc = c + dc
+                if (nr, nc) not in occupied:
+                    has_liberty = True
+                    break
+            if has_liberty:
+                return corner
+    
+    # If no captured moves or corners are available, find all valid moves
+    valid_moves = []
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if (r, c) in occupied:
+                continue
+            has_liberty = False
+            for dr, dc in directions:
+                nr = r + dr
+                nc = c + dc
+                if 1 <= nr <= 19 and 1 <= nc <= 19:
+                    if (nr, nc) not in occupied:
+                        has_liberty = True
+                        break
+            if has_liberty:
+                valid_moves.append((r, c))
+    
+    # Return first valid move if available
+    return valid_moves[0] if valid_moves else (0, 0)

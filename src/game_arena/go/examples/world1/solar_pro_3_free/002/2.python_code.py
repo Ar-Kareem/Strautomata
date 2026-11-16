@@ -1,0 +1,125 @@
+
+import random
+from typing import List, Tuple, Set
+
+def adjacent(coord: Tuple[int, int]) -> List[Tuple[int, int]]:
+    """Return the four orthogonal neighbour coordinates of a point."""
+    r, c = coord
+    return [(r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)]
+
+def bfs_group(
+    stones: Set[Tuple[int, int]],
+    start: Tuple[int, int],
+) -> Tuple[Set[Tuple[int, int]], Set[Tuple[int, int]]]:
+    """
+    Breadth‑first search that returns:
+    * the set of stones belonging to the group containing `start`
+    * the set of liberties of that group (adjacent empty points)
+    """
+    visited = {start}
+    group: Set[Tuple[int, int]] = {start}
+    liberties: Set[Tuple[int, int]] = set()
+
+    # Find the group members
+    q = [start]
+    while q:
+        cur = q.pop(0)
+        for nb in adjacent(cur):
+            if nb in stones and nb not in visited:
+                visited.add(nb)
+                group.add(nb)
+                q.append(nb)
+
+    # Compute liberties of the group (empty neighbours)
+    occupied = stones  # we only consider stones when computing liberties
+    for stone in group:
+        for nb in adjacent(stone):
+            if nb not in occupied:
+                liberties.add(nb)
+
+    return group, liberties
+
+
+def policy(me: List[Tuple[int, int]], opponent: List[Tuple[int, int]]) -> Tuple[int, int]:
+    """
+    Choose the next move for the player (the caller) on a 19×19 Go board.
+    Returns a tuple (row, col) where both are 1‑based; (0,0) means pass.
+    """
+    # Convert input lists to sets for fast membership tests
+    me_set: Set[Tuple[int, int]] = set(me)
+    opp_set: Set[Tuple[int, int]] = set(opponent)
+    occupied = me_set | opp_set
+
+    # Discover opponent groups and their liberties once
+    opp_groups: dict[Tuple[int, int], Set[Tuple[int, int]]] = {}
+    opp_liberty_map: dict[Tuple[int, int], Set[Tuple[int, int]]] = {}
+    visited_opp = set()
+    for opp in opp_set:
+        if opp not in visited_opp:
+            group, liberties = bfs_group(opp_set, opp)
+            root = next(iter(group))  # use any stone as group id
+            opp_groups[root] = group
+            opp_liberty_map[root] = liberties
+            visited_opp.update(group)
+
+    # Determine all empty points on the board
+    empty_points: List[Tuple[int, int]] = [
+        (r, c) for r in range(1, 20) for c in range(1, 20)
+        if (r, c) not in occupied
+    ]
+
+    best_score = -1
+    best_move: Tuple[int, int] = (0, 0)  # fallback pass
+
+    for move in empty_points:
+        # Simulate placing a stone here
+        # Compute our group after move
+        our_set = me_set | {move}
+        our_group, our_liberties = bfs_group(our_set, move)
+
+        # Capture evaluation: opponent groups that would lose their last liberty
+        capture_score = 0
+        captured_groups: List[Set[Tuple[int, int]]] = []
+        for opp in opp_set:
+            if any(nb in opp_set and abs(nb[0] - move[0]) + abs(nb[1] - move[1]) == 1):
+                # move is adjacent to an opponent stone
+                root = opp
+                while root not in opp_groups:
+                    # Find a neighbour that belongs to an opponent group
+                    any_found = False
+                    for nb in adjacent(opp):
+                        if nb in opp_set and nb not in visited_opp:
+                            opp += nb
+                            root = nb
+                            any_found = True
+                            break
+                    if not any_found:
+                        break
+
+                if root in opp_groups:
+                    liberties = opp_liberty_map[root]
+                    # Does this group lose its only liberty by playing at `move`?
+                    if liberties and liberties == {move}:
+                        captured_groups.append(opp_groups[root])
+                        capture_score += len(opp_groups[root])
+
+        # Legal move if we have at least one liberty, or if we capture something
+        if not our_liberties and capture_score == 0:
+            continue  # suicide without capture – illegal
+
+        # Score weighting: safe moves get full weight, capture suicides get half weight
+        weight = 1.0
+        if not our_liberties:
+            weight = 0.5
+
+        score = capture_score * weight
+
+        if score > best_score:
+            best_score = score
+            best_move = move
+        elif score == best_score:
+            # Random tie‑break to keep opponent guessing
+            if random.random() < 0.5:
+                best_move = move
+
+    return best_move

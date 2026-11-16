@@ -1,0 +1,246 @@
+The strategy for this policy is to implement a heuristic-based decision-making approach that balances offensive and defensive moves in the game of Havannah. The policy evaluates potential moves by considering proximity to key board structures—rings, bridges, and forks—and prioritizes moves that contribute to forming or blocking these winning configurations.
+
+Key components of the strategy:
+
+1. **Neighbor Detection**: Given the underlying hexagonal grid, we define all six neighbors of a cell using relative offsets. This allows accurate neighbor and connectivity checks.
+
+2. **Threat and Opportunity Assessment**:
+   - Evaluate how close both players are to completing a ring, bridge, or fork.
+   - Prioritize moves that block opponent threats (defensive) or advance our own winning chances (offensive).
+
+3. **Control of Key Zones**:
+   - Corner proximity is important for bridges.
+   - Edge control is crucial for forks.
+   - Central, highly connected regions are valued for ring formation.
+
+4. **Move Scoring Heuristic**:
+   - Each valid move is scored based on:
+     - Contribution to edge connectivity (for forks).
+     - Progress toward connecting corners (for bridges).
+     - Local density and potential ring formation.
+     - Proximity to opponent’s strong structures (to block).
+   - The move with the highest score is selected.
+
+5. **Fallback**: If no strong strategic move is found, choose the move with highest influence (e.g., center control).
+
+The implementation uses only standard libraries and numpy for efficient array operations. The algorithm runs within the time limit by limiting deep search and relying on fast heuristic evaluation.
+
+<code>
+import numpy as np
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    # Board size
+    N = 15
+
+    # Hexagonal grid neighbor offsets in (row, col)
+    # Depending on row parity (odd/even), left and right neighbors shift
+    # These are the six neighbors in axial coordinates mapped to offset coordinates
+    def get_neighbors(r, c):
+        if r % 2 == 0:  # even row
+            neighbors = [(-1, 0), (-1, 1), (0, 1), (1, 0), (0, -1), (-1, -1)]
+        else:  # odd row
+            neighbors = [(-1, 0), (0, -1), (1, -1), (1, 0), (1, 1), (0, 1)]
+        return [(r + dr, c + dc) for dr, dc in neighbors]
+
+    # Convert lists to sets for faster lookup
+    me_set = set(me)
+    opp_set = set(opp)
+    all_stones = me_set | opp_set
+
+    # Board edge classifications
+    corners = [(0,0), (0,7), (0,14), (7,0), (7,14), (14,7), (14,14), (14,0)]  # note: not all are true corners; true corners of hexagon
+    # Actually, the six corners of Havannah board (hexagonal) in 15x15 representation:
+    true_corners = [(0,0), (0,7), (0,14), (7,0), (7,14), (14,0), (14,7), (14,14)]
+    # Trim to actual 6 corners (some representations may duplicate)
+    true_corners = [(0,0), (0,14), (7,14), (14,14), (14,0), (7,0)]
+
+    # Edge types: we define which rows/cols belong to which edge
+    # In Havannah, edges are: NW, NE, E, SE, SW, W (but in our grid we simplify by sides)
+    def classify_edge(r, c):
+        if r == 0 and 0 <= c <= 14:
+            return 'top'
+        elif r == 14 and 0 <= c <= 14:
+            return 'bottom'
+        elif c == 0 and 0 < r < 14:
+            return 'left'
+        elif c == 14 and 0 < r < 14:
+            return 'right'
+        elif r + c == 14 and r > 0 and r < 14 and c > 0 and c < 14:
+            return 'topleft_diag'
+        elif r - c == 0 and r > 0 and r < 14 and c > 0 and c < 14:
+            return 'topright_diag'
+        else:
+            return None
+
+    # Get all edge-connected components for the player
+    def get_edge_connections(stones):
+        # Returns set of edges this player touches
+        edges = set()
+        for r, c in stones:
+            edge = classify_edge(r, c)
+            if edge:
+                edges.add(edge)
+        return edges
+
+    my_edges = get_edge_connections(me)
+    opp_edges = get_edge_connections(opp)
+
+    # Detect if a player has a bridge (connects any two corners)
+    def has_bridge(stones):
+        # Check if any two corners are connected through stones
+        # Simple approximation: check corner connectivity via BFS
+        stone_set = set(stones)
+        corners_with_stone = [cr for cr in true_corners if cr in stone_set]
+        if len(corners_with_stone) < 2:
+            return False
+        # Check connectivity between every pair
+        from collections import deque
+        visited = set()
+        for start in corners_with_stone:
+            queue = deque([start])
+            component = set()
+            visited_local = set()
+            while queue:
+                r, c = queue.popleft()
+                if (r, c) in visited_local:
+                    continue
+                visited_local.add((r, c))
+                component.add((r, c))
+                for nr, nc in get_neighbors(r, c):
+                    if 0 <= nr < N and 0 <= nc < N and (nr, nc) in stone_set and (nr, nc) not in visited_local:
+                        queue.append((nr, nc))
+            # Check if more than one corner in this component
+            connected_corners = [cr for cr in corners_with_stone if cr in component]
+            if len(connected_corners) >= 2:
+                return True
+        return False
+
+    # Check if player has forded (connects three or more edges)
+    def has_fork(stones):
+        edges = get_edge_connections(stones)
+        return len(edges) >= 3
+
+    # Very simple ring detection: check if there's a cycle in the stone group.
+    # We do a crude check: if a group has >= 6 stones and is cyclic in structure.
+    def has_ring(stones):
+        stone_set = set(stones)
+        if len(stone_set) < 6:
+            return False
+        from collections import deque
+        # For each stone, try to find a cycle
+        for start in stone_set:
+            r, c = start
+            neighbors = get_neighbors(r, c)
+            valid_neighbors = [(nr, nc) for nr, nc in neighbors if 0 <= nr < N and 0 <= nc < N and (nr, nc) in stone_set]
+            if len(valid_neighbors) < 2:
+                continue
+            # Try to find a cycle starting from this stone with its neighbors
+            for i in range(len(valid_neighbors)):
+                for j in range(i+1, len(valid_neighbors)):
+                    n1 = valid_neighbors[i]
+                    n2 = valid_neighbors[j]
+                    if n1 == n2:
+                        continue
+                    # BFS from n1 to n2 avoiding start
+                    queue = deque([n1])
+                    visited = {n1}
+                    found = False
+                    while queue and not found:
+                        curr = queue.popleft()
+                        for nb in get_neighbors(curr[0], curr[1]):
+                            if 0 <= nb[0] < N and 0 <= nb[1] < N:
+                                if nb == n2:
+                                    # Path from n1 to n2 without going back to start
+                                    if curr != start:  # we don't want direct triangle
+                                        return True
+                                    else:
+                                        # Only if long path
+                                        pass
+                                if nb in stone_set and nb != start and nb not in visited:
+                                    visited.add(nb)
+                                    queue.append(nb)
+        return False
+
+    # Do not waste time if game is already over, but we are to play
+
+    # Heuristic scoring of a move
+    def score_move(r, c):
+        score = 0.0
+
+        # Proximity to center (central control is good)
+        center = (7, 7)
+        dist_to_center = abs(r - center[0]) + abs(c - center[1])
+        score += (14 - dist_to_center) * 0.1
+
+        # Count friendly and opponent neighbors
+        my_neighbor_count = 0
+        opp_neighbor_count = 0
+        free_neighbor_count = 0
+        neighbors = get_neighbors(r, c)
+        for nr, nc in neighbors:
+            if 0 <= nr < N and 0 <= nc < N:
+                if (nr, nc) in me_set:
+                    my_neighbor_count += 1
+                elif (nr, nc) in opp_set:
+                    opp_neighbor_count += 1
+                else:
+                    free_neighbor_count += 1
+
+        # Build cohesion
+        score += my_neighbor_count * 2.0
+        # Block opponent growth
+        score += opp_neighbor_count * 1.5
+
+        # Encourage edge moves for fork potential
+        edge = classify_edge(r, c)
+        if edge:
+            # If this move connects a new edge for us, bonus
+            if edge not in my_edges:
+                score += 3.0
+            # If this move connects an edge that opponent is targeting for fork
+            if edge in opp_edges:
+                score += 2.0
+
+        # Check if move connects to corner
+        if (r, c) in true_corners:
+            score += 2.5
+            # Especially if we already have another corner
+            if len([cr for cr in true_corners if cr in me_set]) > 0:
+                score += 2.0
+            # Block opponent corner connection
+            if (r, c) in [cr for cr in true_corners if cr in opp_set]:
+                score += 3.0
+
+        # Discourage isolation
+        if my_neighbor_count == 0 and not edge:
+            score -= 1.0
+
+        return score
+
+    # Collect all valid moves
+    valid_moves = []
+    for r in range(N):
+        for c in range(N):
+            if valid_mask[r][c] and (r, c) not in all_stones:
+                valid_moves.append((r, c))
+
+    # If no valid move (shouldn't happen), return center
+    if not valid_moves:
+        return (7, 7)
+
+    # Score all moves
+    scored_moves = [(move, score_move(move[0], move[1])) for move in valid_moves]
+    # Sort by score descending
+    scored_moves.sort(key=lambda x: x[1], reverse=True)
+
+    # Select top move
+    best_move = scored_moves[0][0]
+
+    # Safety: ensure best_move is valid
+    r, c = best_move
+    if 0 <= r < N and 0 <= c < N and valid_mask[r][c] and (r, c) not in all_stones:
+        return (r, c)
+    else:
+        # Fallback: pick first valid move
+        return valid_moves[0]
+</code>

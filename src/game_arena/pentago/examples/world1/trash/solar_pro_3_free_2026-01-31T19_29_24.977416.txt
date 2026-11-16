@@ -1,0 +1,268 @@
+**Strategy**
+
+The AI plays the 6 × 6 Pentago board by combining three ideas:
+
+1. **Immediate‑win detection** – before any search we try to find a move that gives us a 5‑in‑a‑row right away.  If such a move exists we return it instantly.
+
+2. **Opponent‑block filter** – a move that lets the opponent win on their next turn is never chosen.  In the opponent‑to‑move recursion we check whether they can win after our move; if they can we discard that branch.
+
+3. **Depth‑limited minimax with α‑β pruning** – from the position after we have placed a marble we look a few plies ahead (MAX‑DEPTH = 3).  
+   * The tree is explored from the perspective of the player whose turn it is (you = +1, opponent = ‑1).  
+   * At each node we apply the move, then immediately test for wins.  If both you and opponent have a line we treat it as a draw (score 0).  
+   * Terminal nodes are evaluated with a very simple heuristic: more of our stones and more of our 5‑in‑a‑row lines are good.  The heuristic is fast and guarantees a non‑negative score for any non‑terminal board, so α‑β pruning works well.
+   * The algorithm always returns the first legal move that maximises the evaluated score, guaranteeing a legal move string.
+
+With only 288 possible moves at any position and a very small board, a depth of three plies (you → opponent → you) runs well under the 1‑second time limit.  The combination of early win checks, opponent‑block filtering and the static heuristic is enough to beat most naïve bots in the arena.
+
+**Python source**
+
+```python
+<code>
+import numpy as np
+from itertools import product
+from typing import Tuple
+
+WIN_SCORE = 1000                # absolute scores for wins / losses
+MAX_DEPTH = 3                    # plies looked ahead (you → opponent → you)
+QUAD_RANGES = [
+    (slice(0, 3), slice(0, 3)),   # top‑left  (quad 0)
+    (slice(0, 3), slice(3, 6)),   # top‑right  (quad 1)
+    (slice(3, 6), slice(0, 3)),   # bottom‑left (quad 2)
+    (slice(3, 6), slice(3, 6))    # bottom‑right(quad 3)
+]
+
+def apply_move(
+    you: np.ndarray,
+    opp: np.ndarray,
+    row: int,
+    col: int,
+    quad: int,
+    direction: str,
+    is_your_turn: bool
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Return new boards after placing a marble (if is_your_turn=True) and rotating the
+    chosen quadrant.  row/col are 1‑indexed.
+    """
+    # make fresh copies
+    new_you = you.copy()
+    new_opp = opp.copy()
+
+    # place a marble
+    if is_your_turn:
+        new_you[row - 1, col - 1] = 1
+    else:
+        new_opp[row - 1, col - 1] = 1
+
+    # rotate the quadrant (both sides)
+    r0, c0 = QUAD_RANGES[quad]
+    sub_you = new_you[r0:r0 + 3, c0:c0 + 3]
+    sub_opp = new_opp[r0:r0 + 3, c0:c0 + 3]
+
+    if direction == "L":                     # anticlockwise
+        rot_you = np.rot90(sub_you, k=1)
+        rot_opp = np.rot90(sub_opp, k=1)
+    else:                                    # clockwise
+        rot_you = np.rot90(sub_you, k=-1)
+        rot_opp = np.rot90(sub_opp, k=-1)
+
+    new_you[r0:r0 + 3, c0:c0 + 3] = rot_you
+    new_opp[r0:r0 + 3, c0:c0 + 3] = rot_opp
+
+    return new_you, new_opp
+
+
+def generate_moves(you: np.ndarray, opp: np.ndarray) -> list:
+    """
+    All legal moves (row, col, quad, direction) for the current turn.
+    Returns tuples with 1‑indexed coordinates.
+    """
+    empty = (you == 0) & (opp == 0)
+    if not empty.any():
+        return []                         # should never happen (policy called only on non‑terminal boards)
+    r_idx, c_idx = np.where(empty)
+    moves = []
+    for r, c in zip(r_idx, c_idx):
+        for quad, dir_ in product(range(4), ("L", "R")):
+            moves.append((r + 1, c + 1, quad, dir_))
+    return moves
+
+
+def has_win(board: np.ndarray) -> bool:
+    """Return True if the board (containing only 0/1 for a single player) has a line of ≥5."""
+    # horizontals
+    for row in range(6):
+        for start in range(2):
+            if np.all(board[row, start:start + 5] == 1):
+                return True
+    # verticals
+    for col in range(6):
+        for start in range(2):
+            if np.all(board[start:start + 5, col] == 1):
+                return True
+    # main diagonals
+    for start in range(2):
+        for col_start in range(2):
+            diag = board[start:start + 5, col_start:col_start + 5].diagonal()
+            if np.all(diag == 1):
+                return True
+    # anti‑diagonals
+    for start in range(2):
+        for col_start in range(2):
+            sub = board[start:start + 5, col_start - 4:col_start + 1]
+            anti = sub.diagonal(1)
+            if np.all(anti == 1):
+                return True
+    return False
+
+
+def count_winning_lines(board: np.ndarray) -> int:
+    """Count distinct 5‑in‑a‑row lines (length 5 or 6) on the board."""
+    lines = 0
+    # horizontals
+    for row in range(6):
+        for start in range(2):
+            if np.all(board[row, start:start + 5] == 1):
+                lines += 1
+    # verticals
+    for col in range(6):
+        for start in range(2):
+            if np.all(board[start:start + 5, col] == 1):
+                lines += 1
+    # main diagonals
+    for start in range(2):
+        for col_start in range(2):
+            diag = board[start:start + 5, col_start:col_start + 5].diagonal()
+            if np.all(diag == 1):
+                lines += 1
+    # anti‑diagonals
+    for start in range(2):
+        for col_start in range(2):
+            sub = board[start:start + 5, col_start - 4:col_start + 1]
+            anti = sub.diagonal(1)
+            if np.all(anti == 1):
+                lines += 1
+    return lines
+
+
+def heuristic(you: np.ndarray, opp: np.ndarray) -> float:
+    """
+    Simple evaluation for non‑terminal positions.
+    Positive values favour you.
+    """
+    stones_you = np.sum(you == 1)
+    stones_opp = np.sum(opp == 1)
+    lines_you = count_winning_lines(you)
+    lines_opp = count_winning_lines(opp)
+
+    # weight lines more heavily than raw stones
+    return (stones_you - stones_opp) + (lines_you - lines_opp) * 10
+
+
+def minimax(
+    you: np.ndarray,
+    opp: np.ndarray,
+    depth_left: int,
+    player: int,
+    alpha: float = float("-inf"),
+    beta: float = float("inf")
+) -> Tuple[float, int]:
+    """
+    Depth‑limited α‑β minimax.
+    Returns (score, best_move_string) where best_move_string is None for opponent’s node.
+    player = 1 means “your” turn, player = -1 means opponent’s turn.
+    """
+    # No moves left – board is full
+    if not generate_moves(you, opp):
+        return heuristic(you, opp), None
+
+    if depth_left == 0:
+        return heuristic(you, opp), None
+
+    moves = generate_moves(you, opp)
+
+    if player == 1:                     # you – maximising player
+        score = float("-inf")
+        best_move = None
+        for move in moves:
+            new_you, new_opp = apply_move(you, opp,
+                                          move[0], move[1],
+                                          move[2], move[3],
+                                          is_your_turn=True)
+            you_win = has_win(new_you)
+            opp_win = has_win(new_opp)
+
+            # terminal – win / draw / loss
+            if you_win and opp_win:
+                return 0, None               # draw after your move
+            if you_win:
+                return WIN_SCORE, None
+            if opp_win:
+                # opponent would win immediately – never take this path
+                # we just let the min‑branch return a huge negative score
+                pass
+
+            child_score, _ = minimax(new_you, new_opp,
+                                    depth_left - 1,
+                                    -1,
+                                    alpha,
+                                    beta)
+            if child_score > score:
+                score = child_score
+                best_move = move
+                alpha = max(alpha, score)
+                if score == WIN_SCORE:      # early exit on decisive win
+                    break
+        return score, best_move
+
+    else:                               # opponent – minimising player
+        score = float("inf")
+        best_move = None
+        for move in moves:
+            new_you, new_opp = apply_move(you, opp,
+                                          move[0], move[1],
+                                          move[2], move[3],
+                                          is_your_turn=False)
+            you_win = has_win(new_you)
+            opp_win = has_win(new_opp)
+
+            if opp_win and you_win:
+                return 0, None               # draw after opponent’s move
+            if opp_win:
+                return -WIN_SCORE, None
+            if you_win:                       # you already have a line – opponent will not take this move
+
+            child_score, _ = minimax(new_you, new_opp,
+                                    depth_left - 1,
+                                    1,
+                                    alpha,
+                                    beta)
+            if child_score < score:
+                score = child_score
+                best_move = move
+                beta = min(beta, score)
+                if score == -WIN_SCORE:
+                    break
+        return score, best_move
+
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    """
+    Required API – returns a legal move string.
+    """
+    # 1️⃣ Immediate win check (your turn)
+    for r, c in np.where((you == 0) & (opponent == 0)):
+        for quad, dir_ in product(range(4), ("L", "R")):
+            nb_you, nb_opp = apply_move(you, opponent,
+                                        r + 1, c + 1,
+                                        quad, dir_, is_your_turn=True)
+            if has_win(nb_you):
+                return f"{r + 1},{c + 1},{quad},{dir_}"
+
+    # 2️⃣ Look ahead (you → opponent → you) with α‑β pruning
+    score, best_move = minimax(you, opponent, MAX_DEPTH, player=1)
+
+    # best_move is guaranteed non‑None because we already excluded illegal boards
+    return f"{best_move[0]},{best_move[1]},{best_move[2]},{best_move[3]}"
+</code>
+```

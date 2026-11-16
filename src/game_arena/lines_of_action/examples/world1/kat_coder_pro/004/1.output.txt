@@ -1,0 +1,235 @@
+The strategy for this policy is to use a depth-limited minimax search with alpha-beta pruning to find the best move. The evaluation function prioritizes piece connectivity and mobility while penalizing isolated pieces. The search explores promising moves first by ordering them based on capture potential and connectivity improvement. This approach balances tactical awareness with strategic planning to achieve the goal of connecting all pieces into a single contiguous group.
+
+<code>
+import numpy as np
+from collections import deque
+import time
+
+def policy(board):
+    # Convert input to numpy array
+    board = np.array(board)
+    current_player = 1  # Always the current player to move
+    
+    # If only one piece left, just move it
+    if np.sum(board == current_player) == 1:
+        piece_pos = np.where(board == current_player)
+        r, c = piece_pos[0][0], piece_pos[1][0]
+        moves = get_legal_moves(board, r, c, current_player)
+        if moves:
+            return f"{r},{c}:{moves[0][0]},{moves[0][1]}"
+    
+    # Minimax with alpha-beta pruning
+    best_move = None
+    best_score = float('-inf')
+    alpha = float('-inf')
+    beta = float('inf')
+    
+    # Get all legal moves and sort by capture potential
+    all_moves = []
+    for r in range(8):
+        for c in range(8):
+            if board[r, c] == current_player:
+                moves = get_legal_moves(board, r, c, current_player)
+                for move in moves:
+                    # Score moves based on capture potential and connectivity
+                    score = 0
+                    if board[move[0], move[1]] == -current_player:
+                        score += 10  # Capture bonus
+                    all_moves.append(((r, c, move[0], move[1]), score))
+    
+    # Sort moves by score (captures first)
+    all_moves.sort(key=lambda x: x[1], reverse=True)
+    
+    # Depth-limited search
+    depth = 3
+    for move_data, _ in all_moves:
+        r, c, nr, nc = move_data
+        new_board = make_move(board.copy(), r, c, nr, nc, current_player)
+        score = -alphabeta(new_board, depth - 1, -beta, -alpha, -current_player)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move_data
+            
+        alpha = max(alpha, score)
+        if alpha >= beta:
+            break
+    
+    if best_move:
+        r, c, nr, nc = best_move
+        return f"{r},{c}:{nr},{nc}"
+    
+    # Fallback: random legal move
+    for r in range(8):
+        for c in range(8):
+            if board[r, c] == current_player:
+                moves = get_legal_moves(board, r, c, current_player)
+                if moves:
+                    return f"{r},{c}:{moves[0][0]},{moves[0][1]}"
+    
+    return "0,0:0,0"  # Should not happen
+
+def get_legal_moves(board, r, c, player):
+    moves = []
+    directions = [(0,1), (1,0), (0,-1), (-1,0), (1,1), (1,-1), (-1,1), (-1,-1)]
+    
+    # Count pieces in each direction
+    for dr, dc in directions:
+        nr, nc = r + dr, c + dc
+        count = 1  # Count current piece
+        
+        # Count pieces in this direction
+        while 0 <= nr < 8 and 0 <= nc < 8:
+            if board[nr, nc] != 0:
+                count += 1
+            nr += dr
+            nc += dc
+        
+        # Try to move exactly 'count' squares
+        nr, nc = r + dr * count, c + dc * count
+        if 0 <= nr < 8 and 0 <= nc < 8:
+            # Check if path is clear (no enemy pieces blocking)
+            path_clear = True
+            for i in range(1, count):
+                pr, pc = r + dr * i, c + dc * i
+                if board[pr, pc] == -player:
+                    path_clear = False
+                    break
+            
+            if path_clear:
+                moves.append((nr, nc))
+    
+    return moves
+
+def make_move(board, r, c, nr, nc, player):
+    board[nr, nc] = player
+    board[r, c] = 0
+    if board[nr, nc] == -player:
+        board[nr, nc] = player  # Capture
+    return board
+
+def evaluate(board, player):
+    # Check if current player has won
+    if is_connected(board, player):
+        return 1000
+    if is_connected(board, -player):
+        return -1000
+    
+    score = 0
+    
+    # Count pieces
+    my_pieces = np.sum(board == player)
+    opp_pieces = np.sum(board == -player)
+    score += (my_pieces - opp_pieces) * 10
+    
+    # Evaluate connectivity
+    my_groups = count_connected_groups(board, player)
+    opp_groups = count_connected_groups(board, -player)
+    score -= my_groups * 50  # Penalize multiple groups
+    score += opp_groups * 30  # Bonus for opponent having multiple groups
+    
+    # Mobility bonus
+    mobility = 0
+    for r in range(8):
+        for c in range(8):
+            if board[r, c] == player:
+                mobility += len(get_legal_moves(board, r, c, player))
+    score += mobility
+    
+    return score
+
+def is_connected(board, player):
+    pieces = np.where(board == player)
+    if len(pieces[0]) == 0:
+        return False
+    if len(pieces[0]) == 1:
+        return True
+    
+    # BFS to check connectivity
+    visited = np.zeros((8, 8), dtype=bool)
+    start_r, start_c = pieces[0][0], pieces[1][0]
+    
+    queue = deque([(start_r, start_c)])
+    visited[start_r, start_c] = True
+    count = 1
+    
+    while queue:
+        r, c = queue.popleft()
+        for dr in [-1, 0, 1]:
+            for dc in [-1, 0, 1]:
+                if dr == 0 and dc == 0:
+                    continue
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 8 and 0 <= nc < 8 and board[nr, nc] == player and not visited[nr, nc]:
+                    visited[nr, nc] = True
+                    queue.append((nr, nc))
+                    count += 1
+    
+    return count == len(pieces[0])
+
+def count_connected_groups(board, player):
+    visited = np.zeros((8, 8), dtype=bool)
+    groups = 0
+    
+    for r in range(8):
+        for c in range(8):
+            if board[r, c] == player and not visited[r, c]:
+                groups += 1
+                # BFS to mark all connected pieces
+                queue = deque([(r, c)])
+                visited[r, c] = True
+                
+                while queue:
+                    curr_r, curr_c = queue.popleft()
+                    for dr in [-1, 0, 1]:
+                        for dc in [-1, 0, 1]:
+                            if dr == 0 and dc == 0:
+                                continue
+                            nr, nc = curr_r + dr, curr_c + dc
+                            if 0 <= nr < 8 and 0 <= nc < 8 and board[nr, nc] == player and not visited[nr, nc]:
+                                visited[nr, nc] = True
+                                queue.append((nr, nc))
+    
+    return groups
+
+def alphabeta(board, depth, alpha, beta, player):
+    if depth == 0 or is_connected(board, player) or is_connected(board, -player):
+        return evaluate(board, player)
+    
+    if player == 1:
+        max_eval = float('-inf')
+        for r in range(8):
+            for c in range(8):
+                if board[r, c] == player:
+                    moves = get_legal_moves(board, r, c, player)
+                    for move in moves:
+                        new_board = make_move(board.copy(), r, c, move[0], move[1], player)
+                        eval_score = alphabeta(new_board, depth - 1, alpha, beta, -player)
+                        max_eval = max(max_eval, eval_score)
+                        alpha = max(alpha, eval_score)
+                        if beta <= alpha:
+                            break
+                    if beta <= alpha:
+                        break
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for r in range(8):
+            for c in range(8):
+                if board[r, c] == player:
+                    moves = get_legal_moves(board, r, c, player)
+                    for move in moves:
+                        new_board = make_move(board.copy(), r, c, move[0], move[1], player)
+                        eval_score = alphabeta(new_board, depth - 1, alpha, beta, -player)
+                        min_eval = min(min_eval, eval_score)
+                        beta = min(beta, eval_score)
+                        if beta <= alpha:
+                            break
+                    if beta <= alpha:
+                        break
+            if beta <= alpha:
+                break
+        return min_eval
+</code>

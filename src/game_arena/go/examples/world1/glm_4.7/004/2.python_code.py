@@ -1,0 +1,143 @@
+
+import numpy as np
+import random
+
+def get_group_and_liberties(board, r, c):
+    """
+    Finds the group of stones connected to (r, c) and their liberties.
+    Returns: (group_set, liberties_set)
+    """
+    color = board[r, c]
+    if color == 0:
+        return set(), set()
+    
+    group = set()
+    liberties = set()
+    stack = [(r, c)]
+    group.add((r, c))
+    
+    while stack:
+        curr_r, curr_c = stack.pop()
+        # Check 4 neighbors
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = curr_r + dr, curr_c + dc
+            if 0 <= nr < 19 and 0 <= nc < 19:
+                neighbor_color = board[nr, nc]
+                if neighbor_color == 0:
+                    liberties.add((nr, nc))
+                elif neighbor_color == color and (nr, nc) not in group:
+                    group.add((nr, nc))
+                    stack.append((nr, nc))
+                    
+    return group, liberties
+
+def policy(me, opponent):
+    """
+    Determines the next move based on board state.
+    """
+    # Convert 1-based lists to 0-based indices
+    my_stones = [(r-1, c-1) for r, c in me]
+    opp_stones = [(r-1, c-1) for r, c in opponent]
+    
+    # Initialize board
+    # 0: Empty, 1: Me, 2: Opponent
+    board = np.zeros((19, 19), dtype=int)
+    for r, c in my_stones:
+        board[r, c] = 1
+    for r, c in opp_stones:
+        board[r, c] = 2
+        
+    # 1. Generate Candidates
+    # Look for empty spots adjacent to existing stones
+    candidates = set()
+    
+    # If board is empty, play center (tengen)
+    if not my_stones and not opp_stones:
+        return (10, 10)
+        
+    # Check neighbors of all stones
+    all_stones = my_stones + opp_stones
+    for r, c in all_stones:
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == 0:
+                candidates.add((nr, nc))
+                
+    # If no candidates (e.g., completely surrounded), pass
+    if not candidates:
+        return (0, 0)
+
+    # 2. Evaluate Moves
+    best_score = -float('inf')
+    best_moves = []
+    
+    # Weights
+    CAPTURE_WEIGHT = 1000
+    ATARI_WEIGHT = 50
+    LIBERTY_WEIGHT = 2
+    EDGE_PENALTY = 20
+    SECOND_LINE_PENALTY = 5
+    
+    for r, c in candidates:
+        # Create a temporary board to simulate the move
+        temp_board = board.copy()
+        temp_board[r, c] = 1
+        
+        captured_stones = 0
+        opp_in_atari = 0
+        
+        # Check opponent neighbors for captures
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 19 and 0 <= nc < 19 and temp_board[nr, nc] == 2:
+                group, liberties = get_group_and_liberties(temp_board, nr, nc)
+                if not liberties:
+                    # Capture!
+                    captured_stones += len(group)
+                    # Remove group from temp_board to check self-liberties correctly later
+                    for gr, gc in group:
+                        temp_board[gr, gc] = 0
+                elif len(liberties) == 1:
+                    opp_in_atari += len(group)
+
+        # Check self liberties (Suicide check)
+        my_group, my_liberties = get_group_and_liberties(temp_board, r, c)
+        
+        # If no liberties and no captures, move is suicide (illegal)
+        if not my_liberties and captured_stones == 0:
+            continue
+            
+        # Calculate Score
+        score = 0
+        
+        # Primary goal: Capture
+        score += captured_stones * CAPTURE_WEIGHT
+        
+        # Secondary: Put opponent in atari
+        score += opp_in_atari * ATARI_WEIGHT
+        
+        # Tertiary: Maximize own liberties
+        score += len(my_liberties) * LIBERTY_WEIGHT
+        
+        # Positional penalties (avoid edges unless capturing)
+        if captured_stones == 0:
+            if r == 0 or r == 18 or c == 0 or c == 18:
+                score -= EDGE_PENALTY
+            elif r == 1 or r == 17 or c == 1 or c == 17:
+                score -= SECOND_LINE_PENALTY
+        
+        # Add small noise to prevent deterministic loops in equal situations
+        score += random.random() * 0.1
+        
+        if score > best_score:
+            best_score = score
+            best_moves = [(r, c)]
+        elif abs(score - best_score) < 1e-9:
+            best_moves.append((r, c))
+            
+    if best_moves:
+        # Convert back to 1-based indexing
+        move = random.choice(best_moves)
+        return (move[0] + 1, move[1] + 1)
+        
+    return (0, 0)

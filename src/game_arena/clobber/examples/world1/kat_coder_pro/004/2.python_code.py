@@ -1,0 +1,146 @@
+
+import numpy as np
+from typing import List, Tuple
+
+def policy(you: List[List[int]], opponent: List[List[int]]) -> str:
+    """
+    Clobber game policy that implements strategic capture prioritization.
+    
+    Args:
+        you: 5x6 array representing your pieces (1 = piece present, 0 = empty)
+        opponent: 5x6 array representing opponent pieces (1 = piece present, 0 = empty)
+    
+    Returns:
+        String in format 'row,col,dir' representing the next move
+    """
+    # Convert to numpy arrays for easier manipulation
+    you_arr = np.array(you, dtype=int)
+    opp_arr = np.array(opponent, dtype=int)
+    
+    # Define directions: Up, Right, Down, Left
+    directions = [(-1, 0, 'U'), (0, 1, 'R'), (1, 0, 'D'), (0, -1, 'L')]
+    
+    # Find all our pieces
+    our_pieces = np.where(you_arr == 1)
+    our_positions = list(zip(our_pieces[0], our_pieces[1]))
+    
+    if not our_positions:
+        return "0,0,U"  # Fallback if no pieces (shouldn't happen in valid game)
+    
+    # Collect all valid moves
+    valid_moves = []
+    for row, col in our_positions:
+        for dr, dc, dir_str in directions:
+            new_row, new_col = row + dr, col + dc
+            
+            # Check bounds
+            if 0 <= new_row < 5 and 0 <= new_col < 6:
+                # Check if opponent has piece at destination
+                if opp_arr[new_row, new_col] == 1:
+                    valid_moves.append((row, col, dir_str, new_row, new_col))
+    
+    if not valid_moves:
+        # No valid moves - this shouldn't happen in a proper game state
+        # Return any position and direction as fallback
+        return f"{our_positions[0][0]},{our_positions[0][1]},U"
+    
+    # If only one move available, take it
+    if len(valid_moves) == 1:
+        row, col, dir_str, _, _ = valid_moves[0]
+        return f"{row},{col},{dir_str}"
+    
+    # Evaluate each move
+    best_move = None
+    best_score = -float('inf')
+    
+    for row, col, dir_str, new_row, new_col in valid_moves:
+        # Simulate the move
+        new_you = you_arr.copy()
+        new_opp = opp_arr.copy()
+        
+        # Make the capture
+        new_you[row, col] = 0
+        new_you[new_row, new_col] = 1
+        new_opp[new_row, new_col] = 0
+        
+        # Calculate score for this move
+        score = evaluate_move(new_you, new_opp, new_row, new_col)
+        
+        if score > best_score:
+            best_score = score
+            best_move = (row, col, dir_str)
+    
+    if best_move:
+        row, col, dir_str = best_move
+        return f"{row},{col},{dir_str}"
+    else:
+        # Fallback to first valid move
+        row, col, dir_str, _, _ = valid_moves[0]
+        return f"{row},{col},{dir_str}"
+
+def evaluate_move(you_arr: np.ndarray, opp_arr: np.ndarray, 
+                 captured_row: int, captured_col: int) -> float:
+    """
+    Evaluate the quality of a move by considering various strategic factors.
+    """
+    directions = [(-1, 0), (0, 1), (1, 0), (0, -1)]
+    
+    score = 0.0
+    
+    # 1. Count opponent's mobility after our move (lower is better)
+    opp_mobility = 0
+    opp_pieces = np.where(opp_arr == 1)
+    opp_positions = list(zip(opp_pieces[0], opp_pieces[1]))
+    
+    for opp_row, opp_col in opp_positions:
+        for dr, dc in directions:
+            nr, nc = opp_row + dr, opp_col + dc
+            if (0 <= nr < 5 and 0 <= nc < 6 and 
+                you_arr[nr, nc] == 1):  # Can capture one of our pieces
+                opp_mobility += 1
+    
+    # Penalize moves that give opponent high mobility
+    score -= opp_mobility * 0.1
+    
+    # 2. Count our mobility after the move (higher is better)
+    our_mobility = 0
+    our_pieces = np.where(you_arr == 1)
+    our_positions = list(zip(our_pieces[0], our_pieces[1]))
+    
+    for our_row, our_col in our_positions:
+        for dr, dc in directions:
+            nr, nc = our_row + dr, our_col + dc
+            if (0 <= nr < 5 and 0 <= nc < 6 and 
+                opp_arr[nr, nc] == 1):  # Can capture opponent piece
+                our_mobility += 1
+    
+    # Reward moves that maintain our mobility
+    score += our_mobility * 0.1
+    
+    # 3. Bonus for capturing high-mobility opponent pieces
+    # (Pieces that had many escape options before being captured)
+    captured_mobility_bonus = 0
+    for dr, dc in directions:
+        nr, nc = captured_row + dr, captured_col + dc
+        if (0 <= nr < 5 and 0 <= nc < 6 and 
+            you_arr[nr, nc] == 1):
+            captured_mobility_bonus += 1
+    
+    score += captured_mobility_bonus * 0.2
+    
+    # 4. Avoid moves that leave our pieces isolated
+    isolation_penalty = 0
+    for our_row, our_col in our_positions:
+        adjacent_ours = 0
+        for dr, dc in directions:
+            nr, nc = our_row + dr, our_col + dc
+            if (0 <= nr < 5 and 0 <= nc < 6 and 
+                you_arr[nr, nc] == 1):
+                adjacent_ours += 1
+        
+        if adjacent_ours == 0:  # Isolated piece
+            isolation_penalty += 1
+    
+    score -= isolation_penalty * 0.3
+    
+    return score

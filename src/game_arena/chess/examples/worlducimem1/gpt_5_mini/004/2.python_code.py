@@ -1,0 +1,261 @@
+
+import copy
+from typing import Dict, Tuple, List
+
+# Piece values for evaluation
+PIECE_VALUES = {
+    'P': 100,
+    'N': 320,
+    'B': 330,
+    'R': 500,
+    'Q': 900,
+    'K': 20000
+}
+
+FILES = 'abcdefgh'
+RANKS = '12345678'
+
+def sq_to_coord(sq: str):
+    return (FILES.index(sq[0]), RANKS.index(sq[1]))
+
+def coord_to_sq(x: int, y: int):
+    return f"{FILES[x]}{RANKS[y]}"
+
+def on_board(x: int, y: int):
+    return 0 <= x < 8 and 0 <= y < 8
+
+def generate_pseudo_legal_moves(pieces: Dict[str,str], to_play: str) -> List[str]:
+    moves = []
+    us = 'w' if to_play == 'white' else 'b'
+    them = 'b' if us == 'w' else 'w'
+    for sq, code in pieces.items():
+        if not code or code[0] != us:
+            continue
+        ptype = code[1]
+        x, y = sq_to_coord(sq)
+        if ptype == 'P':
+            diry = 1 if us == 'w' else -1
+            # single forward
+            nx, ny = x, y + diry
+            if on_board(nx, ny) and coord_to_sq(nx, ny) not in pieces:
+                # promotion?
+                if ny == 7 and us == 'w' or ny == 0 and us == 'b':
+                    for prom in ['q']:  # promote to queen by default
+                        moves.append(sq + coord_to_sq(nx, ny) + prom)
+                else:
+                    moves.append(sq + coord_to_sq(nx, ny))
+                # double forward
+                start_rank = 1 if us == 'w' else 6
+                nx2, ny2 = x, y + 2*diry
+                if y == start_rank and on_board(nx2, ny2) and coord_to_sq(nx2, ny2) not in pieces:
+                    moves.append(sq + coord_to_sq(nx2, ny2))
+            # captures
+            for dx in (-1, 1):
+                cx, cy = x + dx, y + diry
+                if on_board(cx, cy):
+                    csq = coord_to_sq(cx, cy)
+                    if csq in pieces and pieces[csq][0] == them:
+                        if cy == 7 and us == 'w' or cy == 0 and us == 'b':
+                            for prom in ['q']:
+                                moves.append(sq + csq + prom)
+                        else:
+                            moves.append(sq + csq)
+            # Note: no en-passant (no history)
+        elif ptype == 'N':
+            for dx, dy in [(1,2),(2,1),(2,-1),(1,-2),(-1,-2),(-2,-1),(-2,1),(-1,2)]:
+                nx, ny = x+dx, y+dy
+                if on_board(nx, ny):
+                    nsq = coord_to_sq(nx, ny)
+                    if nsq not in pieces or pieces[nsq][0] == them:
+                        moves.append(sq + nsq)
+        elif ptype == 'B' or ptype == 'R' or ptype == 'Q':
+            directions = []
+            if ptype in ('B', 'Q'):
+                directions += [(1,1),(1,-1),(-1,1),(-1,-1)]
+            if ptype in ('R', 'Q'):
+                directions += [(1,0),(-1,0),(0,1),(0,-1)]
+            for dx, dy in directions:
+                nx, ny = x+dx, y+dy
+                while on_board(nx, ny):
+                    nsq = coord_to_sq(nx, ny)
+                    if nsq in pieces:
+                        if pieces[nsq][0] == them:
+                            moves.append(sq + nsq)
+                        break
+                    else:
+                        moves.append(sq + nsq)
+                    nx += dx; ny += dy
+        elif ptype == 'K':
+            for dx in (-1,0,1):
+                for dy in (-1,0,1):
+                    if dx == 0 and dy == 0:
+                        continue
+                    nx, ny = x+dx, y+dy
+                    if on_board(nx, ny):
+                        nsq = coord_to_sq(nx, ny)
+                        if nsq not in pieces or pieces[nsq][0] == them:
+                            moves.append(sq + nsq)
+            # Note: castling omitted (no history; safer to skip)
+    return moves
+
+def make_move(pieces: Dict[str,str], move: str) -> Dict[str,str]:
+    newp = pieces.copy()
+    from_sq = move[0:2]
+    to_sq = move[2:4]
+    prom = move[4:] if len(move) > 4 else ''
+    if from_sq not in newp:
+        return newp  # illegal; but keep unchanged
+    piece = newp.pop(from_sq)
+    color = piece[0]
+    if prom:
+        # promotion
+        newp[to_sq] = color + prom.upper()
+    else:
+        newp[to_sq] = piece
+    return newp
+
+def find_king(pieces: Dict[str,str], color: str):
+    for sq, pc in pieces.items():
+        if pc == color + 'K':
+            return sq
+    return None
+
+def square_attacked(pieces: Dict[str,str], target_sq: str, by_color: str) -> bool:
+    # Is target_sq attacked by any piece of by_color ('w' or 'b')?
+    tx, ty = sq_to_coord(target_sq)
+    them = by_color
+    # Pawns
+    diry = 1 if them == 'w' else -1
+    for dx in (-1,1):
+        px, py = tx + dx, ty - diry  # note: pawn attacks from its square to the target: target = pawn_y + diry, so pawn_y = target_y - diry
+        # Wait carefully: if pawn of 'w' at (px, py) attacks (tx,ty), then py + 1 == ty => py = ty-1. For them == 'w' diry = 1, so py = ty - 1 == ty - diry. For 'b' diry=-1 py = ty+1 == ty - diry. So formula py = ty - diry works.
+        if on_board(px, py):
+            psq = coord_to_sq(px, py)
+            if psq in pieces and pieces[psq] == them + 'P':
+                return True
+    # Knights
+    for dx, dy in [(1,2),(2,1),(2,-1),(1,-2),(-1,-2),(-2,-1),(-2,1),(-1,2)]:
+        nx, ny = tx + dx, ty + dy
+        if on_board(nx, ny):
+            nsq = coord_to_sq(nx, ny)
+            if nsq in pieces and pieces[nsq] == them + 'N':
+                return True
+    # King
+    for dx in (-1,0,1):
+        for dy in (-1,0,1):
+            if dx == 0 and dy == 0:
+                continue
+            nx, ny = tx + dx, ty + dy
+            if on_board(nx, ny):
+                nsq = coord_to_sq(nx, ny)
+                if nsq in pieces and pieces[nsq] == them + 'K':
+                    return True
+    # Sliding pieces
+    # Rook/Queen orthogonals
+    for dx, dy, targets in [(1,0,('R','Q')),(-1,0,('R','Q')),(0,1,('R','Q')),(0,-1,('R','Q'))]:
+        nx, ny = tx + dx, ty + dy
+        while on_board(nx, ny):
+            nsq = coord_to_sq(nx, ny)
+            if nsq in pieces:
+                pc = pieces[nsq]
+                if pc[0] == them and pc[1] in targets:
+                    return True
+                break
+            nx += dx; ny += dy
+    # Bishop/Queen diagonals
+    for dx, dy in [(1,1),(1,-1),(-1,1),(-1,-1)]:
+        nx, ny = tx + dx, ty + dy
+        while on_board(nx, ny):
+            nsq = coord_to_sq(nx, ny)
+            if nsq in pieces:
+                pc = pieces[nsq]
+                if pc[0] == them and pc[1] in ('B','Q'):
+                    return True
+                break
+            nx += dx; ny += dy
+    return False
+
+def legal_moves(pieces: Dict[str,str], to_play: str) -> List[str]:
+    pseudo = generate_pseudo_legal_moves(pieces, to_play)
+    legal = []
+    us = 'w' if to_play == 'white' else 'b'
+    for mv in pseudo:
+        newp = make_move(pieces, mv)
+        king_sq = find_king(newp, us)
+        if not king_sq:
+            # no king? illegal
+            continue
+        if not square_attacked(newp, king_sq, 'b' if us == 'w' else 'w'):
+            legal.append(mv)
+    return legal
+
+def material_eval(pieces: Dict[str,str], us_color: str) -> int:
+    # returns (us - them) material in centipawns
+    total_us = 0
+    total_them = 0
+    for pc in pieces.values():
+        val = PIECE_VALUES.get(pc[1], 0)
+        if pc[0] == us_color:
+            total_us += val
+        else:
+            total_them += val
+    return total_us - total_them
+
+def is_checkmate(pieces: Dict[str,str], to_play: str) -> bool:
+    # True if to_play has no legal moves and their king is in check
+    leg = legal_moves(pieces, to_play)
+    if len(leg) > 0:
+        return False
+    us = 'w' if to_play == 'white' else 'b'
+    king_sq = find_king(pieces, us)
+    if not king_sq:
+        return True
+    return square_attacked(pieces, king_sq, 'b' if us == 'w' else 'w')
+
+def choose_move(pieces: Dict[str,str], to_play: str) -> str:
+    leg = legal_moves(pieces, to_play)
+    if not leg:
+        # fallback to first pseudo-legal
+        pseudo = generate_pseudo_legal_moves(pieces, to_play)
+        return pseudo[0] if pseudo else 'a1a1'
+    us = 'w' if to_play == 'white' else 'b'
+    best_move = leg[0]
+    best_score = -10**9
+    # depth-2 minimax: maximize worst-case material after opponent reply
+    for mv in leg:
+        newp = make_move(pieces, mv)
+        # immediate checkmate detection
+        opponent = 'black' if to_play == 'white' else 'white'
+        if is_checkmate(newp, opponent):
+            return mv  # immediate mate
+        opp_leg = legal_moves(newp, opponent)
+        if not opp_leg:
+            # stalemate => evaluate material as neutral
+            worst = material_eval(newp, us)
+        else:
+            worst = 10**9
+            for omv in opp_leg:
+                new2 = make_move(newp, omv)
+                val = material_eval(new2, us)
+                # small tie-breaker: prefer moves that keep more mobility for us (not used deeply)
+                if val < worst:
+                    worst = val
+        # prefer captures/promotions by small bonus proportional to captured value
+        from_sq = mv[0:2]; to_sq = mv[2:4]
+        capture_bonus = 0
+        if to_sq in pieces:
+            capture_bonus = PIECE_VALUES.get(pieces[to_sq][1], 0) // 10
+        if len(mv) > 4:
+            capture_bonus += 50
+        score = worst * 1 + capture_bonus
+        if score > best_score:
+            best_score = score
+            best_move = mv
+    return best_move
+
+def policy(pieces: Dict[str,str], to_play: str, memory: Dict) -> Tuple[str, Dict]:
+    # select move and optionally store last move
+    mv = choose_move(pieces, to_play)
+    memory = memory.copy() if memory is not None else {}
+    memory['last_move'] = mv
+    return mv, memory

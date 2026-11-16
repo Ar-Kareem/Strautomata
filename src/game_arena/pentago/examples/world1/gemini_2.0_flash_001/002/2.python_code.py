@@ -1,0 +1,172 @@
+
+import random
+import numpy as np
+
+def check_win(board):
+    """Checks if the board has a 5-in-a-row."""
+    for r in range(6):
+        for c in range(2):
+            if board[r, c] == 1 and board[r, c+1] == 1 and board[r, c+2] == 1 and board[r, c+3] == 1 and board[r, c+4] == 1:
+                return True
+    for c in range(6):
+        for r in range(2):
+            if board[r, c] == 1 and board[r+1, c] == 1 and board[r+2, c] == 1 and board[r+3, c] == 1 and board[r+4, c] == 1:
+                return True
+    for r in range(2):
+        for c in range(2):
+            if board[r, c] == 1 and board[r+1, c+1] == 1 and board[r+2, c+2] == 1 and board[r+3, c+3] == 1 and board[r+4, c+4] == 1:
+                return True
+    for r in range(2):
+        for c in range(4,6):
+            if board[r, c] == 1 and board[r+1, c-1] == 1 and board[r+2, c-2] == 1 and board[r+3, c-3] == 1 and board[r+4, c-4] == 1:
+                return True
+    return False
+
+def rotate_quadrant(board, quad, direction):
+    """Rotates a quadrant of the board."""
+    new_board = board.copy()
+    if quad == 0:
+        sub_board = board[0:3, 0:3]
+        if direction == 'R':
+            rotated_sub_board = np.rot90(sub_board, k=-1)
+        else:
+            rotated_sub_board = np.rot90(sub_board)
+        new_board[0:3, 0:3] = rotated_sub_board
+    elif quad == 1:
+        sub_board = board[0:3, 3:6]
+        if direction == 'R':
+            rotated_sub_board = np.rot90(sub_board, k=-1)
+        else:
+            rotated_sub_board = np.rot90(sub_board)
+        new_board[0:3, 3:6] = rotated_sub_board
+    elif quad == 2:
+        sub_board = board[3:6, 0:3]
+        if direction == 'R':
+            rotated_sub_board = np.rot90(sub_board, k=-1)
+        else:
+            rotated_sub_board = np.rot90(sub_board)
+        new_board[3:6, 0:3] = rotated_sub_board
+    elif quad == 3:
+        sub_board = board[3:6, 3:6]
+        if direction == 'R':
+            rotated_sub_board = np.rot90(sub_board, k=-1)
+        else:
+            rotated_sub_board = np.rot90(sub_board)
+        new_board[3:6, 3:6] = rotated_sub_board
+    return new_board
+
+def find_potential_wins(board, player):
+    """Finds all potential winning lines (4-in-a-row) for a player."""
+    potential_wins = []
+    for r in range(6):
+        for c in range(3):
+            if board[r, c] == player and board[r, c+1] == player and board[r, c+2] == player and board[r, c+3] == player:
+                potential_wins.append(((r, c-1), (r, c+4)))
+    for c in range(6):
+        for r in range(3):
+            if board[r, c] == player and board[r+1, c] == player and board[r+2, c] == player and board[r+3, c] == player:
+                potential_wins.append(((r-1, c), (r+4, c)))
+    for r in range(3):
+        for c in range(3):
+            if board[r, c] == player and board[r+1, c+1] == player and board[r+2, c+2] == player and board[r+3, c+3] == player:
+                potential_wins.append(((r-1, c-1), (r+4, c+4)))
+    for r in range(3):
+        for c in range(3, 6):
+            if board[r, c] == player and board[r+1, c-1] == player and board[r+2, c-2] == player and board[r+3, c-3] == player:
+                potential_wins.append(((r-1, c+1), (r+4, c-4)))
+    return potential_wins
+
+def policy(you, opponent):
+    """Chooses the next move."""
+    you = np.array(you)
+    opponent = np.array(opponent)
+    board = you + opponent * 2  # 0: empty, 1: you, 2: opponent
+
+    empty_cells = []
+    for r in range(6):
+        for c in range(6):
+            if board[r, c] == 0:
+                empty_cells.append((r, c))
+
+    # 1. Immediate Win
+    for r, c in empty_cells:
+        for quad in range(4):
+            for direction in ['L', 'R']:
+                new_board = board.copy()
+                new_board[r, c] = 1  # Place your marble
+                new_board[:3,:3] = np.array(you[:3,:3]) + np.array(opponent[:3,:3]) * 2
+                new_board[:3,3:] = np.array(you[:3,3:]) + np.array(opponent[:3,3:]) * 2
+                new_board[3:,:3] = np.array(you[3:,:3]) + np.array(opponent[3:,:3]) * 2
+                new_board[3:,3:] = np.array(you[3:,3:]) + np.array(opponent[3:,3:]) * 2
+                new_board = rotate_quadrant(new_board, quad, direction)
+                if check_win(new_board == 1):
+                    return f"{r+1},{c+1},{quad},{direction}"
+
+    # 2. Immediate Loss Prevention
+    for r, c in empty_cells:
+        for quad in range(4):
+            for direction in ['L', 'R']:
+                new_board = board.copy()
+                new_board[r, c] = 2  # Assume opponent places their marble
+                new_board[:3,:3] = np.array(you[:3,:3]) + np.array(opponent[:3,:3]) * 2
+                new_board[:3,3:] = np.array(you[:3,3:]) + np.array(opponent[:3,3:]) * 2
+                new_board[3:,:3] = np.array(you[3:,:3]) + np.array(opponent[3:,:3]) * 2
+                new_board[3:,3:] = np.array(you[3:,3:]) + np.array(opponent[3:,3:]) * 2
+                new_board = rotate_quadrant(new_board, quad, direction)
+                if check_win(new_board == 2):
+                    # Block the opponent by placing our marble here
+                    new_board = board.copy()
+                    new_board[r, c] = 1
+                    new_board[:3,:3] = np.array(you[:3,:3]) + np.array(opponent[:3,:3]) * 2
+                    new_board[:3,3:] = np.array(you[:3,3:]) + np.array(opponent[:3,3:]) * 2
+                    new_board[3:,:3] = np.array(you[3:,:3]) + np.array(opponent[3:,:3]) * 2
+                    new_board[3:,3:] = np.array(you[3:,3:]) + np.array(opponent[3:,3:]) * 2
+                    new_board = rotate_quadrant(new_board, quad, direction)
+
+                    return f"{r+1},{c+1},{quad},{direction}"
+
+    #3. Potential offensive move - create/extend 4 in-a-row
+    for r, c in empty_cells:
+        for quad in range(4):
+            for direction in ['L', 'R']:
+                new_board = board.copy()
+                new_board[r, c] = 1  # Place your marble
+                new_board[:3,:3] = np.array(you[:3,:3]) + np.array(opponent[:3,:3]) * 2
+                new_board[:3,3:] = np.array(you[:3,3:]) + np.array(opponent[:3,3:]) * 2
+                new_board[3:,:3] = np.array(you[3:,:3]) + np.array(opponent[3:,:3]) * 2
+                new_board[3:,3:] = np.array(you[3:,3:]) + np.array(opponent[3:,3:]) * 2
+                new_board = rotate_quadrant(new_board, quad, direction)
+                if len(find_potential_wins(new_board == 1, 1)) > 0:
+                   return f"{r+1},{c+1},{quad},{direction}"
+
+    #4. Potential defensive moves - block opponent
+    for r, c in empty_cells:
+        for quad in range(4):
+            for direction in ['L', 'R']:
+                new_board = board.copy()
+                new_board[r, c] = 1  # Place your marble
+                new_board[:3,:3] = np.array(you[:3,:3]) + np.array(opponent[:3,:3]) * 2
+                new_board[:3,3:] = np.array(you[:3,3:]) + np.array(opponent[:3,3:]) * 2
+                new_board[3:,:3] = np.array(you[3:,:3]) + np.array(opponent[3:,:3]) * 2
+                new_board[3:,3:] = np.array(you[3:,3:]) + np.array(opponent[3:,3:]) * 2
+                new_board = rotate_quadrant(new_board, quad, direction)
+
+                if len(find_potential_wins(new_board == 2, 2)) > 0:
+                    return f"{r+1},{c+1},{quad},{direction}"
+
+    # 5. Random Legal Move (Prioritize center)
+    center_cells = [(r, c) for r in range(2, 4) for c in range(2,4) if (r, c) in empty_cells]
+    if center_cells:
+        r, c = random.choice(center_cells)
+    elif empty_cells:
+        r, c = random.choice(empty_cells) # Ensure r and c are defined
+    else:
+        #This case should not happen
+        r, c = 0,0
+
+
+
+    quad = random.randint(0, 3)
+    direction = random.choice(['L', 'R'])
+
+    return f"{r+1},{c+1},{quad},{direction}"

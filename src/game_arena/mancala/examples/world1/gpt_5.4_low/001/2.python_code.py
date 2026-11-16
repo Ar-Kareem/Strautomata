@@ -1,0 +1,304 @@
+
+from __future__ import annotations
+
+from time import perf_counter
+from math import inf
+
+HOUSES = 6
+STORE = 6
+
+# Relative weights for evaluation
+W_STORE = 100
+W_SIDE = 2
+W_EXTRA = 18
+W_CAPTURE = 10
+W_EMPTY = 1
+
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    # Guaranteed legal fallback
+    legal = [i for i in range(HOUSES) if you[i] > 0]
+    if not legal:
+        return 0
+    if len(legal) == 1:
+        return legal[0]
+
+    start = perf_counter()
+    # Keep a little safety margin
+    time_limit = 0.92
+
+    root_you = tuple(int(x) for x in you)
+    root_opp = tuple(int(x) for x in opponent)
+
+    tt = {}
+
+    def game_over(a, b):
+        return sum(a[:HOUSES]) == 0 or sum(b[:HOUSES]) == 0
+
+    def finalize(a, b):
+        # Sweep remaining stones when game ends
+        a = list(a)
+        b = list(b)
+        sa = sum(a[:HOUSES])
+        sb = sum(b[:HOUSES])
+        if sa == 0 and sb == 0:
+            return tuple(a), tuple(b)
+        if sa == 0:
+            b[STORE] += sb
+            for i in range(HOUSES):
+                b[i] = 0
+        elif sb == 0:
+            a[STORE] += sa
+            for i in range(HOUSES):
+                a[i] = 0
+        return tuple(a), tuple(b)
+
+    def make_move(a, b, move):
+        """
+        Returns:
+            na, nb, same_player
+        where state is from current player's perspective if same_player=True,
+        otherwise perspective has switched and returned as next_player_you, next_player_opp.
+        """
+        a = list(a)
+        b = list(b)
+        stones = a[move]
+        a[move] = 0
+
+        side = 0  # 0 = current player's side/store cycle, 1 = opponent houses
+        pos = move
+
+        while stones > 0:
+            if side == 0:
+                pos += 1
+                if pos == STORE:
+                    a[STORE] += 1
+                    stones -= 1
+                    if stones == 0:
+                        # Last seed in own store => extra move
+                        if sum(a[:HOUSES]) == 0 or sum(b[:HOUSES]) == 0:
+                            a, b = finalize(a, b)
+                        return a, b, True
+                    side = 1
+                    pos = -1
+                else:
+                    was_empty = (a[pos] == 0)
+                    a[pos] += 1
+                    stones -= 1
+                    if stones == 0:
+                        # Capture
+                        if was_empty and a[pos] == 1 and b[HOUSES - 1 - pos] > 0:
+                            a[STORE] += a[pos] + b[HOUSES - 1 - pos]
+                            a[pos] = 0
+                            b[HOUSES - 1 - pos] = 0
+            else:
+                pos += 1
+                if pos == HOUSES:
+                    side = 0
+                    pos = -1
+                else:
+                    b[pos] += 1
+                    stones -= 1
+
+        if sum(a[:HOUSES]) == 0 or sum(b[:HOUSES]) == 0:
+            a, b = finalize(a, b)
+
+        # Turn passes: switch perspective
+        return tuple(b), tuple(a), False
+
+    def immediate_features(a, b, move):
+        """
+        Cheap move ordering / tactical estimate.
+        Higher is better.
+        """
+        stones = a[move]
+        score = 0
+
+        # Extra turn if exact distance to store modulo loop
+        dist_to_store = STORE - move
+        loop_len = 13
+        if stones > 0 and stones % loop_len == dist_to_store:
+            score += 30
+
+        na, nb, same = make_move(a, b, move)
+
+        if same:
+            # From same player's perspective
+            score += 8
+            score += 6 * (na[STORE] - a[STORE])
+        else:
+            # Perspective switched; original player's store is nb[STORE]
+            score += 6 * (nb[STORE] - a[STORE])
+
+        # Prefer moves from larger pits slightly in early/mid game
+        score += min(stones, 12)
+
+        return score
+
+    def static_eval(a, b):
+        """
+        Evaluation from side-to-move perspective.
+        Positive means good for current player.
+        """
+        if game_over(a, b):
+            a2, b2 = finalize(a, b)
+            return 100000 * ((a2[STORE] > b2[STORE]) - (a2[STORE] < b2[STORE])) + (a2[STORE] - b2[STORE])
+
+        store_diff = a[STORE] - b[STORE]
+        side_diff = sum(a[:HOUSES]) - sum(b[:HOUSES])
+
+        extra_count = 0
+        capture_potential = 0
+        vulnerable = 0
+        empties = 0
+
+        # Current player's tactical chances
+        for i in range(HOUSES):
+            s = a[i]
+            if s == 0:
+                empties += 1
+                continue
+
+            dist = STORE - i
+            if s % 13 == dist:
+                extra_count += 1
+
+            # Check if this move could end in an empty own pit and capture
+            # We simulate landing position cheaply only when last seed lands on own side (not store)
+            r = s % 13
+            if 1 <= r <= (STORE - i - 1):
+                landing = i + r
+                if a[landing] == 0 and b[HOUSES - 1 - landing] > 0:
+                    capture_potential += b[HOUSES - 1 - landing] + 1
+
+        # Opponent tactical chances (from their perspective, so mirror)
+        opp_extra = 0
+        opp_capture = 0
+        for i in range(HOUSES):
+            s = b[i]
+            if s == 0:
+                continue
+            dist = STORE - i
+            if s % 13 == dist:
+                opp_extra += 1
+            r = s % 13
+            if 1 <= r <= (STORE - i - 1):
+                landing = i + r
+                if b[landing] == 0 and a[HOUSES - 1 - landing] > 0:
+                    opp_capture += a[HOUSES - 1 - landing] + 1
+
+        # Vulnerability of our stones opposite enemy empties isn't exact, but helps shape play
+        for i in range(HOUSES):
+            if b[HOUSES - 1 - i] == 0 and a[i] > 0:
+                vulnerable += a[i]
+
+        return (
+            W_STORE * store_diff
+            + W_SIDE * side_diff
+            + W_EXTRA * (extra_count - opp_extra)
+            + W_CAPTURE * (capture_potential - opp_capture)
+            - W_EMPTY * empties
+            - vulnerable
+        )
+
+    def ordered_moves(a, b):
+        moves = [i for i in range(HOUSES) if a[i] > 0]
+        moves.sort(key=lambda m: immediate_features(a, b, m), reverse=True)
+        return moves
+
+    def negamax(a, b, depth, alpha, beta):
+        if perf_counter() - start > time_limit:
+            raise TimeoutError
+
+        key = (a, b, depth)
+        entry = tt.get(key)
+        if entry is not None:
+            flag, val, best = entry
+            if flag == "EXACT":
+                return val, best
+            elif flag == "LOWER":
+                alpha = max(alpha, val)
+            elif flag == "UPPER":
+                beta = min(beta, val)
+            if alpha >= beta:
+                return val, best
+
+        if depth == 0 or game_over(a, b):
+            val = static_eval(a, b)
+            tt[key] = ("EXACT", val, -1)
+            return val, -1
+
+        alpha0 = alpha
+        best_move = -1
+        best_val = -10**18
+
+        moves = ordered_moves(a, b)
+        # TT preferred move first if present
+        if entry is not None and entry[2] in moves:
+            bm = entry[2]
+            moves.remove(bm)
+            moves.insert(0, bm)
+
+        for m in moves:
+            na, nb, same = make_move(a, b, m)
+            if same:
+                val, _ = negamax(na, nb, depth - 1, alpha, beta)
+            else:
+                child_val, _ = negamax(na, nb, depth - 1, -beta, -alpha)
+                val = -child_val
+
+            if val > best_val:
+                best_val = val
+                best_move = m
+            if val > alpha:
+                alpha = val
+            if alpha >= beta:
+                break
+
+        if best_val <= alpha0:
+            flag = "UPPER"
+        elif best_val >= beta:
+            flag = "LOWER"
+        else:
+            flag = "EXACT"
+        tt[key] = (flag, best_val, best_move)
+        return best_val, best_move
+
+    # Quick tactical precheck: if a move immediately wins, play it.
+    best_legal = legal[0]
+    for m in legal:
+        na, nb, same = make_move(root_you, root_opp, m)
+        if same:
+            if game_over(na, nb):
+                a2, b2 = finalize(na, nb)
+                if a2[STORE] > b2[STORE]:
+                    return m
+        else:
+            if game_over(nb, na):
+                # Original player's final store is na[STORE]? No:
+                # after switching perspective returned (opp, you), original player is nb.
+                y_final, o_final = finalize(nb, na)
+                if y_final[STORE] > o_final[STORE]:
+                    return m
+
+    # Iterative deepening
+    best_move = max(legal, key=lambda m: immediate_features(root_you, root_opp, m))
+    depth = 1
+    try:
+        while True:
+            val, mv = negamax(root_you, root_opp, depth, -10**18, 10**18)
+            if mv in legal:
+                best_move = mv
+            depth += 1
+            # Mild practical cap; deep searches still happen via iterative deepening until timeout
+            if depth > 16:
+                break
+    except TimeoutError:
+        pass
+    except Exception:
+        # Never fail to return a legal move
+        pass
+
+    if best_move not in legal:
+        best_move = legal[0]
+    return best_move

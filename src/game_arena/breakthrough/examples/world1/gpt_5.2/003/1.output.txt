@@ -1,0 +1,400 @@
+The strategy for this policy is a fast alpha–beta negamax search with iterative deepening (time-bounded) on a compact bitboard representation. It always plays a legal move, prioritizes immediate wins (reaching the opponent home row), then good captures, and otherwise chooses moves that maximize a heuristic evaluation combining: material, pawn advancement toward promotion, “passed pawn” potential (no opposing pawns ahead on adjacent files), and tactical pressure (available captures vs. opponent captures). Move ordering is used to make the search strong within the 1-second limit, and a transposition table reduces repeated work.
+
+<code>
+import time
+from typing import List, Tuple, Optional, Dict
+
+# Breakthrough policy using bitboards + alpha-beta negamax with iterative deepening.
+
+WIN = 10**9
+
+FILE_A = 0x0101010101010101
+FILE_H = 0x8080808080808080
+RANK_0 = 0x00000000000000FF
+RANK_7 = 0xFF00000000000000
+
+# Precompute index->(row,col)
+IDX_TO_RC = [(i // 8, i % 8) for i in range(64)]
+
+
+def _opp_color(color: str) -> str:
+    return "b" if color == "w" else "w"
+
+
+def _list_to_bitboard(pieces: List[Tuple[int, int]]) -> int:
+    bb = 0
+    for r, c in pieces:
+        bb |= 1 &lt;&lt; (r * 8 + c)
+    return bb
+
+
+def _popcount(x: int) -> int:
+    return x.bit_count()
+
+
+def _iter_bits(bb: int):
+    # yields indices of set bits
+    while bb:
+        lsb = bb & -bb
+        idx = (lsb.bit_length() - 1)
+        yield idx
+        bb ^= lsb
+
+
+def _progress_of_idx(idx: int, color: str) -> int:
+    r, _ = IDX_TO_RC[idx]
+    return r if color == "w" else 7 - r
+
+
+def _center_bonus(col: int) -> float:
+    # closer to 3.5 is better
+    return -abs(col - 3.5)
+
+
+def _goal_mask(color: str) -> int:
+    # squares that win immediately upon occupancy for this color
+    return RANK_7 if color == "w" else RANK_0
+
+
+def _home_mask(color: str) -> int:
+    # own home row (opponent win condition if they occupy it)
+    return RANK_0 if color == "w" else RANK_7
+
+
+def _gen_moves(me: int, opp: int, color: str):
+    """
+    Generate legal moves for side-to-move 'me' vs 'opp'.
+    Returns list of tuples: (from_idx, to_idx, is_capture, is_goal, order_score)
+    """
+    occ = me | opp
+    empty = (~occ) & ((1 &lt;&lt; 64) - 1)
+    goal = _goal_mask(color)
+
+    moves = []
+
+    if color == "w":
+        # Forward
+        fwd_to = (me &lt;&lt; 8) & empty
+        for to_idx in _iter_bits(fwd_to):
+            from_idx = to_idx - 8
+            is_goal = bool((1 &lt;&lt; to_idx) & goal)
+            tr, tc = IDX_TO_RC[to_idx]
+            order = (100000 if is_goal else 0) + 1000 + 10 * tr + _center_bonus(tc)
+            moves.append((from_idx, to_idx, False, is_goal, order))
+
+        # Diagonal left (up-left): +7, from not on file A
+        dl_to_empty = ((me & ~FILE_A) &lt;&lt; 7) & empty
+        dl_to_cap = ((me & ~FILE_A) &lt;&lt; 7) & opp
+        for to_idx in _iter_bits(dl_to_cap):
+            from_idx = to_idx - 7
+            is_goal = bool((1 &lt;&lt; to_idx) & goal)
+            tr, tc = IDX_TO_RC[to_idx]
+            order = (100000 if is_goal else 0) + 50000 + 20 * tr + _center_bonus(tc)
+            moves.append((from_idx, to_idx, True, is_goal, order))
+        for to_idx in _iter_bits(dl_to_empty):
+            from_idx = to_idx - 7
+            is_goal = bool((1 &lt;&lt; to_idx) & goal)
+            tr, tc = IDX_TO_RC[to_idx]
+            order = (100000 if is_goal else 0) + 900 + 10 * tr + _center_bonus(tc)
+            moves.append((from_idx, to_idx, False, is_goal, order))
+
+        # Diagonal right (up-right): +9, from not on file H
+        dr_to_empty = ((me & ~FILE_H) &lt;&lt; 9) & empty
+        dr_to_cap = ((me & ~FILE_H) &lt;&lt; 9) & opp
+        for to_idx in _iter_bits(dr_to_cap):
+            from_idx = to_idx - 9
+            is_goal = bool((1 &lt;&lt; to_idx) & goal)
+            tr, tc = IDX_TO_RC[to_idx]
+            order = (100000 if is_goal else 0) + 50000 + 20 * tr + _center_bonus(tc)
+            moves.append((from_idx, to_idx, True, is_goal, order))
+        for to_idx in _iter_bits(dr_to_empty):
+            from_idx = to_idx - 9
+            is_goal = bool((1 &lt;&lt; to_idx) & goal)
+            tr, tc = IDX_TO_RC[to_idx]
+            order = (100000 if is_goal else 0) + 900 + 10 * tr + _center_bonus(tc)
+            moves.append((from_idx, to_idx, False, is_goal, order))
+
+    else:
+        # Black moves down (row-1): -8 shifts right
+        fwd_to = (me &gt;&gt; 8) & empty
+        for to_idx in _iter_bits(fwd_to):
+            from_idx = to_idx + 8
+            is_goal = bool((1 &lt;&lt; to_idx) & goal)
+            tr, tc = IDX_TO_RC[to_idx]
+            order = (100000 if is_goal else 0) + 1000 + 10 * (7 - tr) + _center_bonus(tc)
+            moves.append((from_idx, to_idx, False, is_goal, order))
+
+        # Diagonal left (down-left): -9 shift right 9, from not file A
+        dl_to_empty = ((me & ~FILE_A) &gt;&gt; 9) & empty
+        dl_to_cap = ((me & ~FILE_A) &gt;&gt; 9) & opp
+        for to_idx in _iter_bits(dl_to_cap):
+            from_idx = to_idx + 9
+            is_goal = bool((1 &lt;&lt; to_idx) & goal)
+            tr, tc = IDX_TO_RC[to_idx]
+            order = (100000 if is_goal else 0) + 50000 + 20 * (7 - tr) + _center_bonus(tc)
+            moves.append((from_idx, to_idx, True, is_goal, order))
+        for to_idx in _iter_bits(dl_to_empty):
+            from_idx = to_idx + 9
+            is_goal = bool((1 &lt;&lt; to_idx) & goal)
+            tr, tc = IDX_TO_RC[to_idx]
+            order = (100000 if is_goal else 0) + 900 + 10 * (7 - tr) + _center_bonus(tc)
+            moves.append((from_idx, to_idx, False, is_goal, order))
+
+        # Diagonal right (down-right): -7 shift right 7, from not file H
+        dr_to_empty = ((me & ~FILE_H) &gt;&gt; 7) & empty
+        dr_to_cap = ((me & ~FILE_H) &gt;&gt; 7) & opp
+        for to_idx in _iter_bits(dr_to_cap):
+            from_idx = to_idx + 7
+            is_goal = bool((1 &lt;&lt; to_idx) & goal)
+            tr, tc = IDX_TO_RC[to_idx]
+            order = (100000 if is_goal else 0) + 50000 + 20 * (7 - tr) + _center_bonus(tc)
+            moves.append((from_idx, to_idx, True, is_goal, order))
+        for to_idx in _iter_bits(dr_to_empty):
+            from_idx = to_idx + 7
+            is_goal = bool((1 &lt;&lt; to_idx) & goal)
+            tr, tc = IDX_TO_RC[to_idx]
+            order = (100000 if is_goal else 0) + 900 + 10 * (7 - tr) + _center_bonus(tc)
+            moves.append((from_idx, to_idx, False, is_goal, order))
+
+    # Sort by order descending (good move ordering for alpha-beta)
+    moves.sort(key=lambda x: x[4], reverse=True)
+    return moves
+
+
+def _apply_move(me: int, opp: int, move) -> Tuple[int, int]:
+    from_idx, to_idx, is_cap, _, _ = move
+    from_bit = 1 &lt;&lt; from_idx
+    to_bit = 1 &lt;&lt; to_idx
+    me2 = (me ^ from_bit) | to_bit
+    opp2 = opp
+    if is_cap:
+        opp2 = opp & ~to_bit
+    return me2, opp2
+
+
+def _count_captures_available(me: int, opp: int, color: str) -&gt; int:
+    # Fast count of diagonal capture targets.
+    if color == "w":
+        dl = ((me & ~FILE_A) &lt;&lt; 7) & opp
+        dr = ((me & ~FILE_H) &lt;&lt; 9) & opp
+    else:
+        dl = ((me & ~FILE_A) &gt;&gt; 9) & opp
+        dr = ((me & ~FILE_H) &gt;&gt; 7) & opp
+    return _popcount(dl) + _popcount(dr)
+
+
+def _is_passed(idx: int, me: int, opp: int, color: str) -&gt; bool:
+    # Passed pawn heuristic: no opponent pawn ahead on same/adjacent file.
+    r, c = IDX_TO_RC[idx]
+    files = [c]
+    if c &gt; 0:
+        files.append(c - 1)
+    if c &lt; 7:
+        files.append(c + 1)
+
+    for oidx in _iter_bits(opp):
+        orow, ocol = IDX_TO_RC[oidx]
+        if ocol in files:
+            if color == "w":
+                if orow &gt; r:
+                    return False
+            else:
+                if orow &lt; r:
+                    return False
+    return True
+
+
+def _evaluate(me: int, opp: int, color: str) -&gt; int:
+    # Terminal checks (from side-to-move perspective)
+    if me == 0:
+        return -WIN
+    if opp == 0:
+        return WIN
+
+    my_goal = _goal_mask(color)
+    opp_goal = _home_mask(color)  # opponent reaches our home row
+
+    if me & my_goal:
+        return WIN
+    if opp & opp_goal:
+        return -WIN
+
+    # Heuristic evaluation
+    my_n = _popcount(me)
+    opp_n = _popcount(opp)
+    material = (my_n - opp_n) * 220
+
+    # Advancement and "closest to goal"
+    adv = 0
+    my_min_dist = 99
+    for idx in _iter_bits(me):
+        prog = _progress_of_idx(idx, color)
+        adv += prog
+        # distance to goal row is 7-prog
+        dist = 7 - prog
+        if dist &lt; my_min_dist:
+            my_min_dist = dist
+
+    oppc = _opp_color(color)
+    opp_adv = 0
+    opp_min_dist = 99
+    for idx in _iter_bits(opp):
+        prog = _progress_of_idx(idx, oppc)
+        opp_adv += prog
+        dist = 7 - prog
+        if dist &lt; opp_min_dist:
+            opp_min_dist = dist
+
+    advancement = (adv - opp_adv) * 16
+    race = (opp_min_dist - my_min_dist) * 35  # smaller my distance is good
+
+    # Tactical pressure: captures for me vs opponent
+    my_caps = _count_captures_available(me, opp, color)
+    opp_caps = _count_captures_available(opp, me, oppc)
+    tactics = (my_caps - opp_caps) * 35
+
+    # Passed pawns bonus
+    passed_score = 0
+    for idx in _iter_bits(me):
+        if _is_passed(idx, me, opp, color):
+            passed_score += 50 + 8 * _progress_of_idx(idx, color)
+    for idx in _iter_bits(opp):
+        if _is_passed(idx, opp, me, oppc):
+            passed_score -= 50 + 8 * _progress_of_idx(idx, oppc)
+
+    return material + advancement + race + tactics + passed_score
+
+
+def _negamax(
+    me: int,
+    opp: int,
+    color: str,
+    depth: int,
+    alpha: int,
+    beta: int,
+    tt: Dict[Tuple[int, int, str, int], int],
+    t_deadline: float
+) -&gt; int:
+    if time.perf_counter() &gt;= t_deadline:
+        # Return a static eval if out of time (caller uses iterative deepening).
+        return _evaluate(me, opp, color)
+
+    key = (me, opp, color, depth)
+    if key in tt:
+        return tt[key]
+
+    # Terminal / leaf
+    val = _evaluate(me, opp, color)
+    if abs(val) &gt;= WIN // 2 or depth == 0:
+        tt[key] = val
+        return val
+
+    moves = _gen_moves(me, opp, color)
+    if not moves:
+        tt[key] = -WIN
+        return -WIN
+
+    best = -WIN
+    ncolor = _opp_color(color)
+
+    # Alpha-beta negamax
+    for mv in moves:
+        me2, opp2 = _apply_move(me, opp, mv)
+
+        # If we just moved onto goal row, it's immediate win.
+        if mv[3]:
+            tt[key] = WIN
+            return WIN
+
+        score = -_negamax(opp2, me2, ncolor, depth - 1, -beta, -alpha, tt, t_deadline)
+        if score &gt; best:
+            best = score
+        if best &gt; alpha:
+            alpha = best
+        if alpha &gt;= beta:
+            break
+
+    tt[key] = best
+    return best
+
+
+def policy(
+    me: List[Tuple[int, int]],
+    opp: List[Tuple[int, int]],
+    color: str
+) -&gt; Tuple[Tuple[int, int], Tuple[int, int]]:
+    me_bb = _list_to_bitboard(me)
+    opp_bb = _list_to_bitboard(opp)
+
+    moves = _gen_moves(me_bb, opp_bb, color)
+    # Must always return a legal move; if none, return something safe (shouldn't happen often).
+    if not moves:
+        # No legal moves: return a dummy legal-ish format (will likely lose, but avoids crash).
+        if me:
+            fr = me[0]
+            return (fr, fr)
+        return ((0, 0), (0, 0))
+
+    # Immediate winning move if available.
+    for mv in moves:
+        if mv[3]:
+            fr, to = mv[0], mv[1]
+            return (IDX_TO_RC[fr], IDX_TO_RC[to])
+
+    # Time-bounded iterative deepening
+    start = time.perf_counter()
+    # Keep some margin
+    t_deadline = start + 0.93
+
+    total_pieces = _popcount(me_bb) + _popcount(opp_bb)
+    max_depth = 5 if total_pieces &lt;= 8 else 4
+    # If very crowded, 3-ply is usually enough under 1s
+    if total_pieces &gt;= 22:
+        max_depth = 3
+
+    best_move = moves[0]
+    best_score = -WIN
+    tt: Dict[Tuple[int, int, str, int], int] = {}
+
+    # Depth 1..max_depth
+    for depth in range(1, max_depth + 1):
+        if time.perf_counter() &gt;= t_deadline:
+            break
+
+        alpha, beta = -WIN, WIN
+        cur_best_mv = best_move
+        cur_best_sc = -WIN
+
+        # Root search with ordering; use TT naturally inside.
+        for mv in moves:
+            if time.perf_counter() &gt;= t_deadline:
+                break
+            me2, opp2 = _apply_move(me_bb, opp_bb, mv)
+
+            if mv[3]:
+                cur_best_mv = mv
+                cur_best_sc = WIN
+                break
+
+            sc = -_negamax(opp2, me2, _opp_color(color), depth - 1, -beta, -alpha, tt, t_deadline)
+            if sc &gt; cur_best_sc:
+                cur_best_sc = sc
+                cur_best_mv = mv
+            if sc &gt; alpha:
+                alpha = sc
+
+        # Only accept completed depth if we didn't time out mid-loop too early
+        if cur_best_sc &gt; best_score:
+            best_score = cur_best_sc
+            best_move = cur_best_mv
+
+        # Re-order moves next iteration using a shallow preference: keep best first
+        # (helps alpha-beta a lot)
+        moves.sort(key=lambda m: (m == best_move, m[4]), reverse=True)
+
+        if best_score &gt;= WIN // 2:
+            break
+
+    fr, to = best_move[0], best_move[1]
+    return (IDX_TO_RC[fr], IDX_TO_RC[to])
+</code>

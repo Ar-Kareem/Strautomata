@@ -1,0 +1,100 @@
+
+import numpy as np
+
+def get_legal_moves(you, opponent):
+    moves = []
+    rows, cols = 5, 6
+    directions = [(-1, 0, 'U'), (1, 0, 'D'), (0, -1, 'L'), (0, 1, 'R')]
+    
+    for r in range(rows):
+        for c in range(cols):
+            if you[r][c] == 1:
+                for dr, dc, d_str in directions:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < rows and 0 <= nc < cols:
+                        if opponent[nr][nc] == 1:
+                            moves.append((r, c, nr, nc, d_str))
+    return moves
+
+def evaluate(you, opponent):
+    # Count moves for current and opponent
+    my_moves = get_legal_moves(you, opponent)
+    opp_moves = get_legal_moves(opponent, you)
+    
+    # Base score is the difference in available moves
+    score = len(my_moves) - len(opp_moves)
+    
+    # Bonus for keeping own pieces in positions that threaten opponent pieces
+    # and penalizing being "clobbered"
+    return score
+
+def minimax(you, opponent, depth, alpha, beta, maximizing):
+    legal_moves = get_legal_moves(you, opponent) if maximizing else get_legal_moves(opponent, you)
+    
+    if not legal_moves:
+        return -10000 if maximizing else 10000
+    
+    if depth == 0:
+        return evaluate(you, opponent) if maximizing else -evaluate(opponent, you)
+
+    if maximizing:
+        max_eval = -float('inf')
+        for r, c, nr, nc, _ in legal_moves:
+            # Simulate move
+            new_you = [row[:] for row in you]
+            new_opp = [row[:] for row in opponent]
+            new_you[r][c] = 0
+            new_you[nr][nc] = 1
+            new_opp[nr][nc] = 0
+            
+            val = minimax(new_opp, new_you, depth - 1, alpha, beta, False)
+            max_eval = max(max_eval, val)
+            alpha = max(alpha, val)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for r, c, nr, nc, _ in legal_moves:
+            # Simulate move
+            new_you = [row[:] for row in you]
+            new_opp = [row[:] for row in opponent]
+            new_you[r][c] = 0
+            new_you[nr][nc] = 1
+            new_opp[nr][nc] = 0
+            
+            val = minimax(new_opp, new_you, depth - 1, alpha, beta, True)
+            min_eval = min(min_eval, val)
+            beta = min(beta, val)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def policy(you: list[list[int]], opponent: list[list[int]]) -> str:
+    # Convert lists to predictable structures if necessary
+    legal_moves = get_legal_moves(you, opponent)
+    
+    if not legal_moves:
+        return "" # Should not happen based on game rules
+    
+    best_move = None
+    best_val = -float('inf')
+    
+    # Shallow depth for safety within 1s limit
+    depth = 3
+    
+    for r, c, nr, nc, d_str in legal_moves:
+        # Simulate local move
+        new_you = [row[:] for row in you]
+        new_opp = [row[:] for row in opponent]
+        new_you[r][c] = 0
+        new_you[nr][nc] = 1
+        new_opp[nr][nc] = 0
+        
+        move_val = minimax(new_opp, new_you, depth - 1, -float('inf'), float('inf'), False)
+        
+        if move_val > best_val:
+            best_val = move_val
+            best_move = f"{r},{c},{d_str}"
+            
+    return best_move if best_move else f"{legal_moves[0][0]},{legal_moves[0][1]},{legal_moves[0][4]}"

@@ -1,0 +1,105 @@
+<thinking>
+To implement an effective Blackjack-like policy for a variable target $T \in [10, 30]$, we need to calculate the current value of our hand and decide whether the probability of improving our position outweighs the risk of busting.
+
+1.  **Hand Valuation**: We need a helper to calculate the hand sum. "A" is flexible (11 or 1). If the sum with "A" as 11 exceeds `target`, it becomes 1.
+2.  **Deck Tracking**: We know the deck contains one of each of the 13 cards. By knowing our `hand`, we can determine exactly which cards remain in our deck.
+3.  **Risk Analysis**:
+    *   If our current sum is low relative to `target`, the probability of busting is low, and the probability of improving is high.
+    *   If our current sum is high, we must weigh the probability of drawing a card that busts us against the probability of drawing a card that gets us closer to `target`.
+4.  **Threshold Strategy**: In standard Blackjack (target 21), a common "book" strategy is to stay on 17. Since our target $T$ varies, a robust strategy is to "hit" if our current sum is less than $T - K$, where $K$ is a safety margin.
+5.  **Probabilistic Refinement**: Since we know our remaining deck, we can calculate the exact probability of busting if we HIT. If the probability of busting is high (e.g., > 40-50%), it's usually better to STAY, especially since the opponent might bust too.
+
+Given the constraints, a "Safe Hit" strategy based on the remaining cards is optimal. If the expected value of our hand after hitting is better than our current hand and the bust probability is below a certain threshold, we HIT.
+</thinking>
+
+<code>
+import collections
+
+def calculate_hand_value(hand: list[str], target: int) -> int:
+    """Calculates the best possible hand value given the target."""
+    values = []
+    aces = 0
+    for card in hand:
+        if card in ["J", "Q", "K"]:
+            values.append(10)
+        elif card == "A":
+            aces += 1
+        else:
+            values.append(int(card))
+    
+    total = sum(values) + aces  # Start with all Aces as 1
+    # Try to turn Aces into 11s one by one
+    for _ in range(aces):
+        if total + 10 <= target:
+            total += 10
+        else:
+            break
+    return total
+
+def policy(hand: list[str], target: int) -> str:
+    """
+    Decides whether to HIT or STAY.
+    """
+    # 1. Calculate current hand value
+    current_value = calculate_hand_value(hand, target)
+    
+    # 2. Identify remaining cards in our deck
+    full_deck = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    remaining_cards = full_deck.copy()
+    for card in hand:
+        if card in remaining_cards:
+            remaining_cards.remove(card)
+            
+    if not remaining_cards:
+        return "STAY"
+
+    # 3. Analyze outcomes of a HIT
+    bust_count = 0
+    total_remaining = len(remaining_cards)
+    
+    for card in remaining_cards:
+        new_hand = hand + [card]
+        new_value = calculate_hand_value(new_hand, target)
+        # If the value returned by calculation is still > target, it's a bust
+        # Note: calculate_hand_value handles the Ace logic optimally.
+        # If even with all Aces as 1 the sum > target, it's a bust.
+        
+        # Recalculate raw sum with Ace as 1 to check hard bust
+        temp_sum = 0
+        temp_aces = 0
+        for c in new_hand:
+            if c in ["J", "Q", "K"]: temp_sum += 10
+            elif c == "A": temp_aces += 1
+            else: temp_sum += int(c)
+        
+        if temp_sum + temp_aces > target:
+            bust_count += 1
+            
+    bust_prob = bust_count / total_remaining
+    
+    # Strategy: HIT if our current value is significantly below target.
+    # If target is high (e.g. 30), we can afford to be more aggressive.
+    # If target is low (e.g. 10), we must be very careful.
+    
+    # Heuristic: Stay if we are within a certain range of the target
+    # or if the chance of busting is too high.
+    
+    if current_value >= target:
+        return "STAY"
+    
+    # If bust probability is low, always hit.
+    if bust_prob < 0.2:
+        return "HIT"
+    
+    # Aggression threshold: adjust based on target size
+    # For smaller targets, we stay earlier.
+    threshold = target - 4
+    if target > 20:
+        threshold = target - 5
+        
+    if current_value < threshold and bust_prob < 0.5:
+        return "HIT"
+        
+    return "STAY"
+
+</code>

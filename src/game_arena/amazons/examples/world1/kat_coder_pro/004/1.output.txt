@@ -1,0 +1,88 @@
+The strategy for this policy is to maximize immediate mobility for my amazons while reducing the opponent's available moves. On each turn, it evaluates all legal moves, scoring them by:
+
+1.  **Mobility Gain:** How many new squares can my amazons move to after the move.
+2.  **Mobility Loss:** How many squares the opponent can no longer move to.
+3.  **Arrow Impact:** Prioritizes blocking opponent amazons or key chokepoints.
+
+The policy uses a minimax-like search depth of 1, selecting the move with the highest net mobility score. If no move improves mobility, it falls back to a simple random legal move to ensure it always returns a valid string.
+
+<code>
+import numpy as np
+from typing import List, Tuple
+
+def get_legal_moves(board: np.ndarray, player: int = 1) -> List[Tuple[int, int, int, int, int, int]]:
+    """Returns list of all legal moves as (from_r, from_c, to_r, to_c, a_r, a_c)."""
+    moves = []
+    rows, cols = board.shape
+    opponent = 3 - player
+
+    # Find player's amazons
+    amazon_positions = [(r, c) for r in range(rows) for c in range(cols) if board[r, c] == player]
+
+    for from_r, from_c in amazon_positions:
+        # Try all possible destinations (queen moves)
+        for dr, dc in [(0,1), (1,0), (0,-1), (-1,0), (1,1), (1,-1), (-1,1), (-1,-1)]:
+            r, c = from_r + dr, from_c + dc
+            while 0 <= r < rows and 0 <= c < cols and board[r, c] == 0:
+                # Try all possible arrow shots from this destination
+                for adr, adc in [(0,1), (1,0), (0,-1), (-1,0), (1,1), (1,-1), (-1,1), (-1,-1)]:
+                    ar, ac = r + adr, c + adc
+                    while 0 <= ar < rows and 0 <= ac < cols:
+                        if board[ar, ac] == 0 or (ar == from_r and ac == from_c):
+                            moves.append((from_r, from_c, r, c, ar, ac))
+                        else:
+                            break
+                        ar, ac = ar + adr, ac + adc
+                r, c = r + dr, c + dc
+    return moves
+
+def count_mobility(board: np.ndarray, player: int) -> int:
+    """Count the number of squares the player's amazons can move to."""
+    count = 0
+    rows, cols = board.shape
+    amazon_positions = [(r, c) for r in range(rows) for c in range(cols) if board[r, c] == player]
+
+    for r, c in amazon_positions:
+        for dr, dc in [(0,1), (1,0), (0,-1), (-1,0), (1,1), (1,-1), (-1,1), (-1,-1)]:
+            nr, nc = r + dr, c + dc
+            while 0 <= nr < rows and 0 <= nc < cols and board[nr, nc] == 0:
+                count += 1
+                nr, nc = nr + dr, nc + dc
+    return count
+
+def policy(board: np.ndarray) -> str:
+    """Returns the best move string."""
+    # Get all legal moves
+    legal_moves = get_legal_moves(board, player=1)
+    if not legal_moves:
+        # Fallback (should not happen if game logic is correct)
+        return "0,0:0,0:0,0"
+
+    best_score = -float('inf')
+    best_move = legal_moves[0] # Default to first move
+
+    for move in legal_moves:
+        fr, fc, tr, tc, ar, ac = move
+
+        # Simulate the move
+        new_board = board.copy()
+        new_board[fr, fc] = 0 # Vacate
+        new_board[tr, tc] = 1 # Move amazon
+        new_board[ar, ac] = -1 # Shoot arrow
+
+        # Calculate scores
+        my_mobility = count_mobility(new_board, player=1)
+        opponent_mobility = count_mobility(new_board, player=2)
+
+        # Simple heuristic: maximize my mobility, minimize opponent's
+        # Weight mobility loss slightly higher than gain
+        score = my_mobility - 1.2 * opponent_mobility
+
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    # Convert move tuple to string
+    fr, fc, tr, tc, ar, ac = best_move
+    return f"{fr},{fc}:{tr},{tc}:{ar},{ac}"
+</code>

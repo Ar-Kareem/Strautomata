@@ -1,0 +1,288 @@
+
+import numpy as np
+
+DIRS = [(-1, -1), (-1, 0), (-1, 1),
+        (0, -1),           (0, 1),
+        (1, -1),  (1, 0),  (1, 1)]
+
+POS_WEIGHTS = np.array([
+    [120, -20,  20,   5,   5,  20, -20, 120],
+    [-20, -40,  -5,  -5,  -5,  -5, -40, -20],
+    [ 20,  -5,  15,   3,   3,  15,  -5,  20],
+    [  5,  -5,   3,   3,   3,   3,  -5,   5],
+    [  5,  -5,   3,   3,   3,   3,  -5,   5],
+    [ 20,  -5,  15,   3,   3,  15,  -5,  20],
+    [-20, -40,  -5,  -5,  -5,  -5, -40, -20],
+    [120, -20,  20,   5,   5,  20, -20, 120]
+], dtype=np.int32)
+
+CORNERS = [(0, 0), (0, 7), (7, 0), (7, 7)]
+X_SQUARES = {
+    (1, 1): (0, 0),
+    (1, 6): (0, 7),
+    (6, 1): (7, 0),
+    (6, 6): (7, 7),
+}
+C_SQUARES = {
+    (0, 1): (0, 0), (1, 0): (0, 0),
+    (0, 6): (0, 7), (1, 7): (0, 7),
+    (6, 0): (7, 0), (7, 1): (7, 0),
+    (6, 7): (7, 7), (7, 6): (7, 7),
+}
+
+INF = 10**9
+
+
+def inside(r, c):
+    return 0 <= r < 8 and 0 <= c < 8
+
+
+def legal_moves(you, opp):
+    empty = ~(you | opp)
+    moves = []
+    for r in range(8):
+        for c in range(8):
+            if not empty[r, c]:
+                continue
+            if is_legal_move(you, opp, r, c):
+                moves.append((r, c))
+    return moves
+
+
+def is_legal_move(you, opp, r, c):
+    if you[r, c] or opp[r, c]:
+        return False
+    for dr, dc in DIRS:
+        rr, cc = r + dr, c + dc
+        seen_opp = False
+        while inside(rr, cc) and opp[rr, cc]:
+            seen_opp = True
+            rr += dr
+            cc += dc
+        if seen_opp and inside(rr, cc) and you[rr, cc]:
+            return True
+    return False
+
+
+def apply_move(you, opp, move):
+    r, c = move
+    new_you = you.copy()
+    new_opp = opp.copy()
+    new_you[r, c] = 1
+
+    for dr, dc in DIRS:
+        rr, cc = r + dr, c + dc
+        line = []
+        while inside(rr, cc) and new_opp[rr, cc]:
+            line.append((rr, cc))
+            rr += dr
+            cc += dc
+        if line and inside(rr, cc) and new_you[rr, cc]:
+            for fr, fc in line:
+                new_you[fr, fc] = 1
+                new_opp[fr, fc] = 0
+    return new_opp, new_you  # swapped perspective: next player to move first
+
+
+def count_frontier(side, other):
+    frontier = 0
+    occupied = side | other
+    for r in range(8):
+        for c in range(8):
+            if not side[r, c]:
+                continue
+            for dr, dc in DIRS:
+                rr, cc = r + dr, c + dc
+                if inside(rr, cc) and not occupied[rr, cc]:
+                    frontier += 1
+                    break
+    return frontier
+
+
+def stable_corner_bonus(you, opp):
+    bonus = 0
+    for cr, cc in CORNERS:
+        if you[cr, cc]:
+            bonus += 1
+        elif opp[cr, cc]:
+            bonus -= 1
+    return bonus
+
+
+def corner_adjacency_penalty(you, opp):
+    score = 0
+    for (r, c), corner in X_SQUARES.items():
+        cr, cc = corner
+        if not you[cr, cc] and not opp[cr, cc]:
+            if you[r, c]:
+                score -= 1
+            elif opp[r, c]:
+                score += 1
+    for (r, c), corner in C_SQUARES.items():
+        cr, cc = corner
+        if not you[cr, cc] and not opp[cr, cc]:
+            if you[r, c]:
+                score -= 1
+            elif opp[r, c]:
+                score += 1
+    return score
+
+
+def evaluate(you, opp):
+    my_discs = int(np.sum(you))
+    opp_discs = int(np.sum(opp))
+    empties = 64 - my_discs - opp_discs
+
+    my_moves = legal_moves(you, opp)
+    opp_moves = legal_moves(opp, you)
+
+    if not my_moves and not opp_moves:
+        if my_discs > opp_discs:
+            return 100000 + (my_discs - opp_discs)
+        if my_discs < opp_discs:
+            return -100000 - (opp_discs - my_discs)
+        return 0
+
+    mobility = 0
+    if my_moves or opp_moves:
+        mobility = 100 * (len(my_moves) - len(opp_moves)) / (len(my_moves) + len(opp_moves) + 1)
+
+    corners = 25 * stable_corner_bonus(you, opp)
+    adjacency = 12 * corner_adjacency_penalty(you, opp)
+
+    frontier = count_frontier(opp, you) - count_frontier(you, opp)
+
+    pos_score = int(np.sum(POS_WEIGHTS * you) - np.sum(POS_WEIGHTS * opp))
+
+    parity = 0
+    if empties <= 12:
+        parity = 10 * (my_discs - opp_discs)
+    elif empties <= 20:
+        parity = 3 * (my_discs - opp_discs)
+    else:
+        parity = -(my_discs - opp_discs) * 0.5
+
+    if empties > 40:
+        score = 4.0 * mobility + 3.0 * corners + 2.5 * adjacency + 1.5 * frontier + 1.5 * pos_score + parity
+    elif empties > 16:
+        score = 3.5 * mobility + 4.0 * corners + 2.0 * adjacency + 1.5 * frontier + 2.0 * pos_score + parity
+    else:
+        score = 2.0 * mobility + 5.0 * corners + 1.5 * adjacency + 1.0 * frontier + 1.5 * pos_score + 2.5 * parity
+
+    return int(score)
+
+
+def move_order_key(you, opp, move):
+    r, c = move
+    score = 0
+
+    if (r, c) in CORNERS:
+        score += 100000
+
+    if (r, c) in X_SQUARES:
+        cr, cc = X_SQUARES[(r, c)]
+        if not you[cr, cc] and not opp[cr, cc]:
+            score -= 15000
+        else:
+            score += 500
+
+    if (r, c) in C_SQUARES:
+        cr, cc = C_SQUARES[(r, c)]
+        if not you[cr, cc] and not opp[cr, cc]:
+            score -= 8000
+        else:
+            score += 300
+
+    score += int(POS_WEIGHTS[r, c]) * 20
+
+    next_opp, next_you = apply_move(you, opp, move)
+    opp_moves = legal_moves(next_you, next_opp)
+    score -= len(opp_moves) * 120
+
+    my_discs_before = int(np.sum(you))
+    my_discs_after = int(np.sum(next_opp))
+    gained = my_discs_after - my_discs_before
+    score += gained * 8
+
+    return score
+
+
+def ordered_moves(you, opp):
+    moves = legal_moves(you, opp)
+    moves.sort(key=lambda m: move_order_key(you, opp, m), reverse=True)
+    return moves
+
+
+def negamax(you, opp, depth, alpha, beta, passed):
+    moves = ordered_moves(you, opp)
+
+    if depth == 0:
+        return evaluate(you, opp), None
+
+    if not moves:
+        opp_moves = legal_moves(opp, you)
+        if not opp_moves:
+            return evaluate(you, opp), None
+        if passed:
+            return evaluate(you, opp), None
+        score, _ = negamax(opp, you, depth, -beta, -alpha, True)
+        return -score, None
+
+    best_score = -INF
+    best_move = moves[0]
+
+    for mv in moves:
+        nopp, nyou = apply_move(you, opp, mv)
+        score, _ = negamax(nyou, nopp, depth - 1, -beta, -alpha, False)
+        score = -score
+
+        if score > best_score:
+            best_score = score
+            best_move = mv
+
+        if best_score > alpha:
+            alpha = best_score
+        if alpha >= beta:
+            break
+
+    return best_score, best_move
+
+
+def to_str(move):
+    r, c = move
+    return chr(ord('a') + c) + str(r + 1)
+
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    you = np.asarray(you, dtype=np.bool_)
+    opponent = np.asarray(opponent, dtype=np.bool_)
+
+    moves = legal_moves(you, opponent)
+    if not moves:
+        return "pass"
+
+    empties = 64 - int(np.sum(you)) - int(np.sum(opponent))
+
+    for mv in moves:
+        if mv in CORNERS:
+            return to_str(mv)
+
+    if empties <= 10:
+        depth = min(empties, 10)
+    elif empties <= 14:
+        depth = 8
+    elif empties <= 20:
+        depth = 6
+    else:
+        depth = 4
+
+    _, best_move = negamax(you, opponent, depth, -INF, INF, False)
+
+    if best_move is None:
+        ordered = ordered_moves(you, opponent)
+        best_move = ordered[0] if ordered else moves[0]
+
+    if best_move not in moves:
+        best_move = moves[0]
+
+    return to_str(best_move)

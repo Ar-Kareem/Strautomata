@@ -1,0 +1,36 @@
+
+import random
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    # Convert lists to sets for faster operations
+    me_set = set(me)
+    opponent_set = set(opponent)
+    
+    # Define all possible moves
+    all_moves = [(r, c) for r in range(1, 20) for c in range(1, 20)]
+    
+    # Remove occupied points
+    occupied = me_set | opponent_set
+    legal_moves = [move for move in all_moves if move not in occupied]
+    
+    # If no legal moves, pass
+    if not legal_moves:
+        return ((0, 0), memory)
+    
+    # Simple heuristic: prefer moves that are adjacent to existing stones
+    adjacent_moves = []
+    for r, c in me:
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if 1 <= nr <= 19 and 1 <= nc <= 19 and (nr, nc) not in occupied:
+                adjacent_moves.append((nr, nc))
+    
+    # If we have adjacent moves, prefer them
+    if adjacent_moves:
+        # Remove duplicates and ensure they're still legal
+        adjacent_moves = list(set(adjacent_moves) & set(legal_moves))
+        if adjacent_moves:
+            return (random.choice(adjacent_moves), memory)
+    
+    # Otherwise, make a random legal move
+    return (random.choice(legal_moves), memory)

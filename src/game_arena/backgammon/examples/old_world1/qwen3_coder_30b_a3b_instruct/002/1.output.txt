@@ -1,0 +1,268 @@
+I'll implement a smart Backgammon policy that evaluates the current state and selects an optimal move based on strategic principles.
+
+The policy will:
+1. First check if we need to re-enter checkers from the bar
+2. Evaluate all possible moves using heuristics like checker safety, positioning, and bearing off opportunities
+3. Select the best move based on a combination of these factors
+
+Let me think through the key aspects:
+- Prioritize re-entering from bar if possible
+- Prefer moves that don't leave blots (exposed checkers)
+- Look for moves that advance checkers toward bearing off
+- Avoid moving checkers into positions where they can be hit
+- Use both dice when possible to maximize move value
+
+<code>
+import random
+import numpy as np
+
+def policy(state):
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+    dice = sorted(state['dice'], reverse=True)  # Higher die first
+    d1, d2 = dice[0], dice[1] if len(dice) > 1 else 0
+    
+    # If we have checkers on the bar, we must re-enter them first
+    if my_bar > 0:
+        # Try to re-enter from bar using the highest die
+        for point in range(24):
+            # For re-entering, we use the "point" as where we would place the checker
+            # but actually we just need to return "B" for bar
+            if d1 != 0 and (24 - point) == d1:
+                return f"H:B,A{point}" if len(state['dice']) == 2 else f"H:B,A{point}"
+            elif d2 != 0 and (24 - point) == d2:
+                return f"L:B,A{point}" if len(state['dice']) == 2 else f"H:B,A{point}"
+        # If no re-entry possible with first die, use the second die
+        for point in range(24):
+            if d2 != 0 and (24 - point) == d2:
+                return f"L:B,A{point}"
+        # If no legal re-entry, pass
+        return "H:P,P"
+    
+    # Find all legal moves
+    moves = generate_moves(my_pts, opp_pts, dice)
+    
+    if not moves:
+        return "H:P,P"
+    
+    # Score each move based on multiple criteria
+    best_move = None
+    best_score = -float('inf')
+    
+    for move in moves:
+        score = evaluate_move(move, my_pts, opp_pts, dice, my_off)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move
+
+def generate_moves(my_pts, opp_pts, dice):
+    """Generate all possible legal moves for current position and dice."""
+    moves = []
+    d1, d2 = dice[0], dice[1] if len(dice) > 1 else 0
+    
+    # Helper to check if a move is legal
+    def is_legal_move(from_point, to_point):
+        if to_point < 0 or to_point > 23:
+            return False
+        if opp_pts[to_point] >= 2:  # Can't move to occupied point with 2+ opponent checkers
+            return False
+        return True
+    
+    # Find all points with checkers
+    points_with_checkers = []
+    for i in range(24):
+        if my_pts[i] > 0:
+            points_with_checkers.append(i)
+    
+    # Try all possible combinations of checkers to move
+    # We are looking at moves involving either 1 or 2 checkers
+    # Noted: the engine enforces all possible dice combinations
+    
+    if len(dice) == 2:
+        # Move with both dice
+        # First, try using d1 for first move and d2 for second
+        if not point_moves(moves, my_pts, opp_pts, d1, d2, points_with_checkers):
+            # Or switch the order
+            if not point_moves(moves, my_pts, opp_pts, d2, d1, points_with_checkers):
+                pass  # No legal moves
+    else:
+        # Single die
+        single_die_moves = []
+        for point in points_with_checkers:
+            to_point = point + dice[0]
+            if is_legal_move(point, to_point):
+                single_die_moves.append(f"H:A{point},P")
+        
+        # If no single die move, add pass
+        if not single_die_moves:
+            moves.append("H:P,P")
+        else:
+            moves.extend(single_die_moves)
+    
+    return moves
+
+def point_moves(moves, my_pts, opp_pts, d1, d2, points_with_checkers):
+    """Try to make moves with the two dice."""
+    # Try moving with d1 first, then d2
+    first_moves = []
+    second_moves = []
+    
+    # Find all possible first moves (using d1)
+    for point in points_with_checkers:
+        to_point = point + d1
+        if to_point <= 23 and opp_pts[to_point] < 2:
+            first_moves.append((point, to_point))
+    
+    if not first_moves:
+        return False
+        
+    # For each first move, find valid second moves
+    for from1, to1 in first_moves:
+        # After first move, check if there is a valid second move using d2
+        # Need to check if after first move, we still have a checker at to1,
+        # and to1 + d2 is valid
+        second_to = to1 + d2
+        if second_to <= 23 and opp_pts[second_to] < 2:
+            moves.append(f"H:A{from1},A{to1}")
+            return True
+        elif second_to > 23:
+            # This might be a bear-off move
+            moves.append(f"H:A{from1},A{to1}")
+            return True
+    return False
+
+def evaluate_move(move, my_pts, opp_pts, dice, my_off):
+    """Evaluate a move and assign a score."""
+    # Parse the move
+    parts = move.split(':')
+    order = parts[0]
+    from_points = parts[1].split(',')
+    
+    # Simple scoring - favor moves that:
+    # 1. Don't expose blots (check positions that are vulnerable)
+    # 2. Move closer to bearing off
+    # 3. Don't leave isolated checkers
+    # 4. Prefer moves that enable future moves
+    
+    score = 0
+    if from_points[0] == "P":  # Pass move
+        return -1000  # Don't prefer pass
+    
+    # Simple heuristic-based scoring
+    # Favor moves that advance checkers toward board end
+    point0 = int(from_points[0][1:]) if from_points[0][0] == 'A' else -1  # -1 for bar
+    point1 = int(from_points[1][1:]) if len(from_points) > 1 and from_points[1] != 'P' else -1  # -1 for pass
+    
+    # If we can bear off, prioritize that (not the full implementation, but basic idea)
+    if point0 >= 0 and point0 >= 18:  # Already in home board
+        score += 1  # Slight preference to move in home board
+    
+    # If we're doing a full move with both dice, prefer it
+    if len(dice) == 2 and from_points[1] != 'P':
+        score += 5
+    
+    # Bias toward moves that don't leave blots (simplified)
+    # This doesn't fully capture blot mechanics, but as a first pass...
+    
+    # Prefer moves that bring checkers in home board
+    if point0 >= 0 and point0 >= 18:
+        score += 2
+    if point1 >= 0 and point1 >= 18:
+        score += 2
+        
+    return score
+
+# Final more robust version
+def policy(state):
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+    dice = sorted(state['dice'], reverse=True)  # Higher die first
+    
+    if my_bar > 0:
+        # Must re-enter from bar
+        if dice[0] == 1:
+            # If the die value is 1, check if there's a point 23 (where entering from bar would go)
+            # The die value determines the point from bar we can enter to
+            return f"H:B,A{23}" if 23 >= 0 and opp_pts[23] < 2 else "H:P,P"
+        elif dice[0] == 2:
+            return f"H:B,A{22}" if 22 >= 0 and opp_pts[22] < 2 else "H:P,P"
+        elif dice[0] == 3:
+            return f"H:B,A{21}" if 21 >= 0 and opp_pts[21] < 2 else "H:P,P"
+        elif dice[0] == 4:
+            return f"H:B,A{20}" if 20 >= 0 and opp_pts[20] < 2 else "H:P,P"
+        elif dice[0] == 5:
+            return f"H:B,A{19}" if 19 >= 0 and opp_pts[19] < 2 else "H:P,P"
+        elif dice[0] == 6:
+            return f"H:B,A{18}" if 18 >= 0 and opp_pts[18] < 2 else "H:P,P"
+        else:
+            return "H:P,P"
+    # If not on bar, check if we have checkers that can move
+    # Simple safe move: pick the first legal move (simplified)
+    # Return a valid move
+    d1, d2 = dice[0], dice[1] if len(dice) > 1 else 0
+    
+    # First check if dice are equal and try to move doubles.
+    if len(dice) == 2 and d1 == d2:
+        # For doubles we can make up to 4 moves (4 doubles)
+        # But we are doing it for 2. We will play with both dice in same order.
+        # Try to move from a point using both dice sequentially
+        # find first point with checker
+        for point in range(24):
+            if my_pts[point] > 0:
+                to1 = point + d1
+                if to1 <= 23 and opp_pts[to1] < 2:
+                    to2 = to1 + d1
+                    if to2 <= 23 and opp_pts[to2] < 2:
+                        to3 = to2 + d1
+                        if to3 <= 23 and opp_pts[to3] < 2:
+                            to4 = to3 + d1
+                            if to4 <= 23 and opp_pts[to4] < 2:
+                                # Found 4 legal moves
+                                return f"H:A{point},A{to1}"
+        # Try to move single doubles 2 times
+        for point in range(24):
+            if my_pts[point] > 0 and point + d1 <= 23 and opp_pts[point + d1] < 2:
+                to1 = point + d1
+                if to1 + d1 <= 23 and opp_pts[to1 + d1] < 2:
+                    return f"H:A{point},A{to1}"
+
+    # Try a balanced approach: 
+    # Try moving with higher die first if possible
+    my_points = [i for i in range(24) if my_pts[i] > 0]
+    if not my_points:
+        return "H:P,P"
+    
+    # Try moving with higher die first
+    for point in my_points:
+        to_point = point + d1
+        if to_point <= 23 and opp_pts[to_point] < 2:
+            # Check if we can move with the second die as well
+            if len(dice) == 2:
+                # Check if using the second die from the new position is also valid
+                to_point2 = to_point + d2
+                if to_point2 <= 23 and opp_pts[to_point2] < 2:
+                    return f"H:A{point},A{to_point}"
+                else:
+                    # Try using second die from original position
+                    to_point2_orig = point + d2
+                    if to_point2_orig <= 23 and opp_pts[to_point2_orig] < 2:
+                        return f"L:A{point},A{to_point2_orig}"
+            # Without second die, return the only move
+            return f"H:A{point},P" if len(dice) > 1 else f"H:A{point},P"
+    
+    # If no movement is possible with higher die, return pass
+    if len(dice) == 2:
+        return "H:P,P"
+    else:
+        return "H:P,P"
+</code>

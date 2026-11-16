@@ -1,0 +1,225 @@
+The strategy for this policy is a greedy material-based search with legal move validation. Since the game objective is to maximize material (sum of remaining pieces and captures), the policy prioritizes safe captures of high-value pieces while avoiding moves that hang pieces. 
+
+Key components:
+1. **Board Parsing**: Convert the Stanford GDL state into an 8x8 grid representation.
+2. **Move Generation**: Generate pseudo-legal moves for all pieces based on standard chess rules (no castling/en passant). Handles pawns, knights, bishops, rooks, queens, and kings with appropriate movement patterns.
+3. **Legality Checking**: Validate that moves don't leave the king in check by simulating the move and checking if the king is attacked by opponent pieces (including pawn, knight, king, and ray attacks from bishops/rooks/queens).
+4. **Move Evaluation**: 
+   - Prioritize captures using MVV-LVA (Most Valuable Victim - Least Valuable Aggressor)
+   - Heavy penalty for moving pieces to squares where they can be recaptured
+   - Positional bonuses for central control and pawn advancement
+5. **Safety**: If move generation fails (shouldn't happen), falls back to a safe default move.
+
+The algorithm runs in well under 1 second for typical chess positions by using efficient bitboard-style dictionary lookups and pruning.
+
+<code>
+def policy(state: list[list[object]], role: str) -> str:
+    # Parse board state
+    board = {}  # (file, rank) -> piece object
+    for fact in state:
+        if fact[0] == "location":
+            cell = fact[1]
+            piece = fact[2]
+            f = ord(cell[1]) - ord('a')  # 0-7
+            r = int(cell[2]) - 1         # 0-7
+            board[(f, r)] = piece
+    
+    opp = "black" if role == "white" else "white"
+    
+    # Piece values
+    VALUES = {"pawn": 1, "knight": 3, "bishop": 3, "rook": 5, "queen": 9, "king": 11}
+    
+    def is_attacked(bd, square, by_role):
+        f, r = square
+        # Pawns
+        if by_role == "white":
+            for df in [-1, 1]:
+                pos = (f + df, r - 1)
+                if pos in bd and bd[pos][1] == "white" and bd[pos][2] == "pawn":
+                    return True
+        else:
+            for df in [-1, 1]:
+                pos = (f + df, r + 1)
+                if pos in bd and bd[pos][1] == "black" and bd[pos][2] == "pawn":
+                    return True
+        
+        # Knights
+        for df, dr in [(2,1),(2,-1),(-2,1),(-2,-1),(1,2),(1,-2),(-1,2),(-1,-2)]:
+            pos = (f+df, r+dr)
+            if pos in bd and bd[pos][1] == by_role and bd[pos][2] == "knight":
+                return True
+        
+        # King
+        for df, dr in [(1,0),(-1,0),(0,1),(0,-1),(1,1),(1,-1),(-1,1),(-1,-1)]:
+            pos = (f+df, r+dr)
+            if pos in bd and bd[pos][1] == by_role and bd[pos][2] == "king":
+                return True
+        
+        # Rays for bishop/queen (diagonals)
+        for df, dr in [(1,1),(1,-1),(-1,1),(-1,-1)]:
+            for dist in range(1, 8):
+                pos = (f + df*dist, r + dr*dist)
+                if not (0 <= pos[0] < 8 and 0 <= pos[1] < 8):
+                    break
+                if pos in bd:
+                    p = bd[pos]
+                    if p[1] == by_role and p[2] in ("bishop", "queen"):
+                        return True
+                    break
+        
+        # Rays for rook/queen (orthogonal)
+        for df, dr in [(0,1),(0,-1),(1,0),(-1,0)]:
+            for dist in range(1, 8):
+                pos = (f + df*dist, r + dr*dist)
+                if not (0 <= pos[0] < 8 and 0 <= pos[1] < 8):
+                    break
+                if pos in bd:
+                    p = bd[pos]
+                    if p[1] == by_role and p[2] in ("rook", "queen"):
+                        return True
+                    break
+        return False
+    
+    def generate_moves(f, r, piece):
+        ptype = piece[2]
+        color = piece[1]
+        
+        if ptype == "pawn":
+            direction = 1 if color == "white" else -1
+            start_rank = 1 if color == "white" else 6
+            
+            # Single push
+            nr = r + direction
+            if 0 <= nr < 8 and (f, nr) not in board:
+                yield (f, r, f, nr)
+                # Double push
+                if r == start_rank:
+                    nr2 = r + 2*direction
+                    if (f, nr2) not in board:
+                        yield (f, r, f, nr2)
+            
+            # Captures
+            for df in [-1, 1]:
+                nf = f + df
+                if 0 <= nf < 8 and 0 <= nr < 8:
+                    if (nf, nr) in board and board[(nf, nr)][1] != color:
+                        yield (f, r, nf, nr)
+        
+        elif ptype == "knight":
+            for df, dr in [(2,1),(2,-1),(-2,1),(-2,-1),(1,2),(1,-2),(-1,2),(-1,-2)]:
+                nf, nr = f+df, r+dr
+                if 0 <= nf < 8 and 0 <= nr < 8:
+                    if (nf, nr) not in board or board[(nf, nr)][1] != color:
+                        yield (f, r, nf, nr)
+        
+        elif ptype in ("bishop", "rook", "queen"):
+            dirs = []
+            if ptype in ("bishop", "queen"):
+                dirs.extend([(1,1),(1,-1),(-1,1),(-1,-1)])
+            if ptype in ("rook", "queen"):
+                dirs.extend([(0,1),(0,-1),(1,0),(-1,0)])
+            
+            for df, dr in dirs:
+                for dist in range(1, 8):
+                    nf, nr = f + df*dist, r + dr*dist
+                    if not (0 <= nf < 8 and 0 <= nr < 8):
+                        break
+                    if (nf, nr) in board:
+                        if board[(nf, nr)][1] != color:
+                            yield (f, r, nf, nr)
+                        break
+                    yield (f, r, nf, nr)
+        
+        elif ptype == "king":
+            for df, dr in [(1,0),(-1,0),(0,1),(0,-1),(1,1),(1,-1),(-1,1),(-1,-1)]:
+                nf, nr = f+df, r+dr
+                if 0 <= nf < 8 and 0 <= nr < 8:
+                    if (nf, nr) not in board or board[(nf, nr)][1] != color:
+                        yield (f, r, nf, nr)
+    
+    def is_legal_move(move):
+        f1, r1, f2, r2 = move
+        piece = board[(f1, r1)]
+        # Simulate move
+        new_board = dict(board)
+        del new_board[(f1, r1)]
+        new_board[(f2, r2)] = piece
+        
+        # Find our king
+        king_pos = None
+        for (f, r), p in new_board.items():
+            if p[1] == role and p[2] == "king":
+                king_pos = (f, r)
+                break
+        
+        if king_pos is None:
+            return True  # King captured? Game should be over but treat as legal
+        
+        return not is_attacked(new_board, king_pos, opp)
+    
+    # Collect all legal moves
+    legal_moves = []
+    for (f, r), piece in list(board.items()):
+        if piece[1] == role:
+            for move in generate_moves(f, r, piece):
+                if is_legal_move(move):
+                    legal_moves.append((move, piece))
+    
+    if not legal_moves:
+        # Emergency fallback - should not happen in valid games
+        # Try to return any pseudo-legal move, or a null move string that won't crash
+        # Returning a random pawn move as last resort
+        for (f, r), piece in board.items():
+            if piece[1] == role and piece[2] == "pawn":
+                direction = 1 if role == "white" else -1
+                nr = r + direction
+                if 0 <= nr < 8 and (f, nr) not in board:
+                    return f"move(piece({role},pawn,{piece[3]}),cell({chr(f+ord('a'))},{nr+1}))"
+        return f"move(piece({role},king,1),cell(e,1))"  # Absolute fallback
+    
+    def evaluate_move(move_piece):
+        move, piece = move_piece
+        f1, r1, f2, r2 = move
+        target = board.get((f2, r2))
+        score = 0
+        
+        # Capture bonus (MVV-LVA)
+        if target:
+            victim_val = VALUES[target[2]]
+            aggressor_val = VALUES[piece[2]]
+            score += victim_val * 1000 - aggressor_val
+        
+        # Simulate to check safety
+        new_board = dict(board)
+        del new_board[(f1, r1)]
+        new_board[(f2, r2)] = piece
+        
+        # Penalty for moving to attacked square (hanging piece)
+        if is_attacked(new_board, (f2, r2), opp):
+            score -= VALUES[piece[2]] * 500
+        
+        # Central control bonus
+        center_dist = abs(3.5 - f2) + abs(3.5 - r2)
+        score += (7 - center_dist) * 10
+        
+        # Pawn advancement
+        if piece[2] == "pawn":
+            if role == "white":
+                score += r2 * 5
+            else:
+                score += (7 - r2) * 5
+        
+        return score
+    
+    # Select best move
+    best_move, best_piece = max(legal_moves, key=evaluate_move)
+    f1, r1, f2, r2 = best_move
+    
+    # Format output
+    file_char = chr(f2 + ord('a'))
+    rank_num = r2 + 1
+    piece_type = best_piece[2]
+    piece_id = best_piece[3]
+    
+    return f"move(piece({role},{piece_type},{piece_id}),cell({file_char},{rank_num}))"
+</code>

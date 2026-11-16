@@ -1,0 +1,97 @@
+**Strategy Overview**
+
+The policy uses a classic *minimax* algorithm with memoisation to play perfectly in Tic‑Tac‑Toe.  
+- The board is examined for a terminal state (win, loss, or draw).  
+- For each empty cell the algorithm simulates the move, recursively evaluates the resulting position from the opponent’s point of view, and picks the move that maximises the outcome for the player (`1`).  
+- Because the game tree of a 3×3 board is tiny, the complete search finishes well within the time limit, guaranteeing optimal play: the agent never loses and will win whenever a forced win exists.
+
+```python
+<code>
+import functools
+from typing import List, Tuple
+
+# Directions for rows, columns, and diagonals
+WIN_LINES = [
+    [(0, 0), (0, 1), (0, 2)],  # rows
+    [(1, 0), (1, 1), (1, 2)],
+    [(2, 0), (2, 1), (2, 2)],
+    [(0, 0), (1, 0), (2, 0)],  # columns
+    [(0, 1), (1, 1), (2, 1)],
+    [(0, 2), (1, 2), (2, 2)],
+    [(0, 0), (1, 1), (2, 2)],  # diagonals
+    [(0, 2), (1, 1), (2, 0)],
+]
+
+def _winner(board: Tuple[Tuple[int, ...], ...]) -> int:
+    """Return 1 if we have won, -1 if opponent has won, 0 otherwise."""
+    for line in WIN_LINES:
+        vals = [board[r][c] for r, c in line]
+        if sum(vals) == 3:
+            return 1
+        if sum(vals) == -3:
+            return -1
+    return 0
+
+def _is_full(board: Tuple[Tuple[int, ...], ...]) -> bool:
+    return all(cell != 0 for row in board for cell in row)
+
+@functools.lru_cache(maxsize=None)
+def _minimax(board: Tuple[Tuple[int, ...], ...], player: int) -> Tuple[int, Tuple[int, int]]:
+    """
+    Minimax search.
+    Returns a tuple (score, best_move) from the perspective of 'player'.
+    score: 1 (win for player 1), -1 (loss for player 1), 0 (draw).
+    """
+    win = _winner(board)
+    if win != 0:                     # terminal win/loss
+        return (1 if win == 1 else -1, (-1, -1))
+    if _is_full(board):             # terminal draw
+        return (0, (-1, -1))
+
+    best_move = (-1, -1)
+    # For player == 1 we maximise, for player == -1 we minimise.
+    best_score = -float('inf') if player == 1 else float('inf')
+
+    for r in range(3):
+        for c in range(3):
+            if board[r][c] == 0:
+                # make move
+                new_row = list(board[r])
+                new_row[c] = player
+                new_board = list(board)
+                new_board[r] = tuple(new_row)
+                new_board_t = tuple(new_board)
+
+                score, _ = _minimax(new_board_t, -player)
+
+                # Convert score to perspective of player 1
+                # The recursive call returns score from player -player's view.
+                # Since we only care about win/loss for player 1, the sign is fine.
+                if player == 1:
+                    if score > best_score:
+                        best_score = score
+                        best_move = (r, c)
+                else:
+                    if score < best_score:
+                        best_score = score
+                        best_move = (r, c)
+
+    return (best_score, best_move)
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Return the optimal move (row, col) for the current board.
+    The board uses 0 = empty, 1 = our mark, -1 = opponent's mark.
+    """
+    # Convert mutable list-of-lists to an immutable tuple-of-tuples for caching.
+    board_t = tuple(tuple(row) for row in board)
+    _, move = _minimax(board_t, 1)   # we are player 1
+    # Safety fallback (should never happen) – pick first empty cell.
+    if move == (-1, -1):
+        for r in range(3):
+            for c in range(3):
+                if board[r][c] == 0:
+                    return (r, c)
+    return move
+</code>
+```

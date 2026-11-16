@@ -1,0 +1,135 @@
+<thinking>
+Let me think through this step by step.
+
+First, I need to understand the game mechanics:
+1. I have a 13-card deck with one of each rank
+2. My opponent has a separate identical deck
+3. Target T is between 10-30
+4. Ace is 11 if hand value ≤ T, otherwise 1
+5. Goal is to get as close to T as possible without going over
+6. If I bust (go over T), I lose unless opponent also busts
+
+Key strategic considerations:
+1. I need to calculate my current hand value correctly, handling Aces properly
+2. I need to estimate the probability of busting if I hit
+3. I need to consider what cards are left in my deck
+4. I should probably be more aggressive when T is higher
+
+For the Ace handling:
+- If current hand value ≤ T, Aces count as 11
+- If current hand value > T, Aces count as 1
+- This means I need to recalculate whenever I add a card
+
+For probability estimation:
+- I know which cards I've already drawn
+- I can calculate which cards remain
+- I can estimate bust probability for each remaining card
+
+Strategy:
+1. Calculate current hand value
+2. Determine remaining cards
+3. For each possible next card, calculate if it would cause a bust
+4. Use some threshold-based decision making
+
+Let me think about a good threshold. Generally in blackjack, people stand on 17+ when target is 21. So maybe I should stand when I'm within some percentage of the target, but this depends on the target value.
+
+Actually, let me think about this more systematically. I should:
+1. Calculate my current value
+2. Calculate how many remaining cards would bust me
+3. If the probability of busting is too high, STAY
+4. Otherwise, HIT
+
+The probability threshold should probably depend on how close I already am to the target.
+</thinking>
+
+<code>
+def policy(hand: list[str], target: int) -> str:
+    def card_value(card, current_total, target):
+        """Calculate the value of a card given current hand total and target"""
+        if card in ["J", "Q", "K"]:
+            return 10
+        elif card == "A":
+            # Ace is 11 if it keeps us at or below target, otherwise 1
+            if current_total + 11 <= target:
+                return 11
+            else:
+                return 1
+        else:
+            return int(card)
+    
+    def calculate_hand_value(hand, target):
+        """Calculate total hand value with proper Ace handling"""
+        # First pass: count aces as 11, others at face value
+        total = 0
+        aces = 0
+        
+        for card in hand:
+            if card == "A":
+                aces += 1
+                total += 11
+            elif card in ["J", "Q", "K"]:
+                total += 10
+            else:
+                total += int(card)
+        
+        # Convert aces from 11 to 1 as needed to stay under target if possible
+        while total > target and aces > 0:
+            total -= 10  # Convert an ace from 11 to 1
+            aces -= 1
+            
+        return total
+    
+    # Calculate current hand value
+    current_value = calculate_hand_value(hand, target)
+    
+    # If we're already at or over target, we must stay
+    if current_value >= target:
+        return "STAY"
+    
+    # Determine which cards we've already used
+    all_cards = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    remaining_cards = []
+    used_cards = set(hand)
+    
+    for card in all_cards:
+        if card not in used_cards:
+            remaining_cards.append(card)
+    
+    if not remaining_cards:  # No cards left
+        return "STAY"
+    
+    # Calculate how many remaining cards would bust us
+    bust_cards = 0
+    safe_cards = 0
+    
+    for card in remaining_cards:
+        card_val = card_value(card, current_value, target)
+        if current_value + card_val > target:
+            bust_cards += 1
+        else:
+            safe_cards += 1
+    
+    total_remaining = len(remaining_cards)
+    bust_probability = bust_cards / total_remaining if total_remaining > 0 else 1.0
+    
+    # Decision logic based on current value relative to target and bust probability
+    distance_to_target = target - current_value
+    
+    # If we're very close to target, be more conservative
+    if distance_to_target <= 2:
+        if bust_probability > 0.3:  # 30% bust chance is too risky when close
+            return "STAY"
+    elif distance_to_target <= 4:
+        if bust_probability > 0.5:  # 50% bust chance when moderately close
+            return "STAY"
+    else:
+        if bust_probability > 0.7:  # 70% bust chance when far from target
+            return "STAY"
+    
+    # Additional consideration: if we're in a decent position, don't risk it
+    target_percentage = current_value / target
+    if target_percentage >= 0.85 and bust_probability > 0.4:
+        return "STAY"
+    
+    return "HIT"
+</code>

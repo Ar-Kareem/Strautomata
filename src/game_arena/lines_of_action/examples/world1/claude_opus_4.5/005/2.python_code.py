@@ -1,0 +1,167 @@
+
+import numpy as np
+from typing import List, Tuple, Set
+
+def policy(board) -> str:
+    board = np.array(board)
+    
+    def get_pieces(b, player):
+        return list(zip(*np.where(b == player)))
+    
+    def count_in_line(b, r, c, dr, dc):
+        count = 0
+        for i in range(8):
+            nr, nc = r + dr * i, c + dc * i
+            if 0 <= nr < 8 and 0 <= nc < 8:
+                if b[nr, nc] != 0:
+                    count += 1
+        for i in range(1, 8):
+            nr, nc = r - dr * i, c - dc * i
+            if 0 <= nr < 8 and 0 <= nc < 8:
+                if b[nr, nc] != 0:
+                    count += 1
+            else:
+                break
+        return count
+    
+    def get_legal_moves(b, player):
+        moves = []
+        pieces = get_pieces(b, player)
+        directions = [(0, 1), (0, -1), (1, 0), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1)]
+        
+        for r, c in pieces:
+            for dr, dc in directions:
+                dist = count_in_line(b, r, c, dr, dc)
+                nr, nc = r + dr * dist, c + dc * dist
+                if 0 <= nr < 8 and 0 <= nc < 8:
+                    if b[nr, nc] != player:
+                        blocked = False
+                        for step in range(1, dist):
+                            mr, mc = r + dr * step, c + dc * step
+                            if b[mr, mc] == -player:
+                                blocked = True
+                                break
+                        if not blocked:
+                            moves.append((r, c, nr, nc))
+        return moves
+    
+    def connected_components(b, player):
+        pieces = set(get_pieces(b, player))
+        if not pieces:
+            return 0
+        visited = set()
+        components = 0
+        
+        for start in pieces:
+            if start not in visited:
+                components += 1
+                stack = [start]
+                while stack:
+                    r, c = stack.pop()
+                    if (r, c) in visited:
+                        continue
+                    visited.add((r, c))
+                    for dr in [-1, 0, 1]:
+                        for dc in [-1, 0, 1]:
+                            if dr == 0 and dc == 0:
+                                continue
+                            nr, nc = r + dr, c + dc
+                            if (nr, nc) in pieces and (nr, nc) not in visited:
+                                stack.append((nr, nc))
+        return components
+    
+    def evaluate(b, player):
+        my_pieces = get_pieces(b, player)
+        opp_pieces = get_pieces(b, -player)
+        
+        if not my_pieces:
+            return -10000
+        if not opp_pieces:
+            return 10000
+        
+        my_comps = connected_components(b, player)
+        opp_comps = connected_components(b, -player)
+        
+        if my_comps == 1:
+            return 10000
+        if opp_comps == 1:
+            return -10000
+        
+        # Spread measure
+        my_center = np.mean(my_pieces, axis=0) if my_pieces else (3.5, 3.5)
+        my_spread = sum((r - my_center[0])**2 + (c - my_center[1])**2 for r, c in my_pieces)
+        
+        opp_center = np.mean(opp_pieces, axis=0) if opp_pieces else (3.5, 3.5)
+        opp_spread = sum((r - opp_center[0])**2 + (c - opp_center[1])**2 for r, c in opp_pieces)
+        
+        score = (opp_comps - my_comps) * 100 + (opp_spread - my_spread) * 0.5
+        return score
+    
+    def make_move(b, move, player):
+        new_b = b.copy()
+        r, c, nr, nc = move
+        new_b[r, c] = 0
+        new_b[nr, nc] = player
+        return new_b
+    
+    def minimax(b, depth, alpha, beta, maximizing, player):
+        if depth == 0:
+            return evaluate(b, 1), None
+        
+        current = 1 if maximizing else -1
+        moves = get_legal_moves(b, current)
+        
+        if not moves:
+            return evaluate(b, 1), None
+        
+        best_move = moves[0]
+        
+        if maximizing:
+            max_eval = float('-inf')
+            for move in moves:
+                new_b = make_move(b, move, current)
+                eval_score, _ = minimax(new_b, depth - 1, alpha, beta, False, player)
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_move = move
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            for move in moves:
+                new_b = make_move(b, move, current)
+                eval_score, _ = minimax(new_b, depth - 1, alpha, beta, True, player)
+                if eval_score < min_eval:
+                    min_eval = eval_score
+                    best_move = move
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval, best_move
+    
+    legal_moves = get_legal_moves(board, 1)
+    
+    if not legal_moves:
+        # Shouldn't happen, but safety fallback
+        pieces = get_pieces(board, 1)
+        if pieces:
+            r, c = pieces[0]
+            return f"{r},{c}:{r},{c}"
+    
+    # Check for immediate win
+    for move in legal_moves:
+        new_b = make_move(board, move, 1)
+        if connected_components(new_b, 1) == 1:
+            return f"{move[0]},{move[1]}:{move[2]},{move[3]}"
+    
+    # Use minimax
+    _, best_move = minimax(board, 3, float('-inf'), float('inf'), True, 1)
+    
+    if best_move:
+        return f"{best_move[0]},{best_move[1]}:{best_move[2]},{best_move[3]}"
+    
+    # Fallback to first legal move
+    move = legal_moves[0]
+    return f"{move[0]},{move[1]}:{move[2]},{move[3]}"

@@ -1,0 +1,229 @@
+<thinking>
+I need to write a policy function for a 4x4 Tic Tac Toe game. The board is 4x4, with 0 (empty), 1 (my move), and -1 (opponent's move). The goal is to win a 4x4 Tic Tac Toe. I need to return a tuple (row, column) with indices 0-3.
+
+I should implement a strategy. Since it's a 4x4 board, the game will be different from 3x3. I should consider:
+
+1. First, check if I can win immediately (3 in a row with an empty spot to make 4)
+2. Then check if I need to block opponent from winning
+3. Then try to create opportunities or fork situations
+4. Take the center or good positions if available
+
+But in 4x4, there are more possible winning lines: rows, columns, and two diagonals. Actually in 4x4 Tic Tac Toe, there are:
+- 4 rows
+- 4 columns  
+- 2 main diagonals (top-left to bottom-right and top-right to bottom-left)
+
+I should create a heuristic evaluation function and use minimax with alpha-beta pruning to look ahead a few moves. Given the 1-second time constraint and 4x4 board, I can probably search deeper than in 3x3.
+
+Let me think about the search space. The maximum depth is up to 16 moves (empty squares). But with alpha-beta pruning and a good evaluation function, I should be able to search reasonably deep in 1 second.
+
+I'll implement:
+1. A function to check if the game is over (win for either player or draw)
+2. An evaluation function that scores the board from my perspective (player 1)
+3. Minimax with alpha-beta pruning
+4. Since I'm player 1, I'll maximize my score
+
+For evaluation function, I can count potential lines. Each line can be evaluated based on:
+- If it has both my pieces and opponent's pieces, it's dead (value 0)
+- If it has only my pieces, value is 10^(number of my pieces)
+- If it has only opponent's pieces, value is -10^(number of opponent pieces)
+- Empty line has value 0
+
+This is similar to how many Tic Tac Toe AIs work.
+
+Alternatively, I could use a simpler heuristic: just check immediate wins/blocks and use a simple strategy for opening moves.
+
+Given the 1-second constraint and that this is 4x4 (not huge), I think I should implement minimax with alpha-beta pruning and depth-limited search. I'll limit depth to maybe 6-8 moves to ensure I stay within 1 second.
+
+Actually, let me think about this more carefully. With 16 squares initially, the branching factor is high but decreases quickly. At depth 8, the search could still be large. But with alpha-beta pruning and good move ordering, it should be ok.
+
+I'll implement:
+1. check_winner(board): returns 1 if I win, -1 if opponent wins, 0 otherwise
+2. evaluation(board): heuristic evaluation
+3. minimax with alpha-beta
+
+For move ordering, I'll prioritize center squares and squares that complete lines.
+
+Wait, actually in 4x4 Tic Tac Toe, the best opening move is typically center or corners? Let me think: In 3x3, center is best. In 4x4, there are 4 center squares: (1,1), (1,2), (2,1), (2,2). Actually indices 1 and 2 are centers.
+
+I should probably have a simple opening book or prefer center squares initially.
+
+But to keep it simple and robust, I'll just implement minimax with depth limit.
+
+Let me outline the code:
+
+1. Get empty cells
+2. If board is empty or almost empty, prefer center squares
+3. Otherwise run minimax with alpha-beta
+4. Return best move
+
+I need to be careful about time. I'll use iterative deepening with time limit or just fixed depth.
+
+Given it's 4x4, I can probably search to endgame if needed. Let me estimate: worst case 16! but with alpha-beta much less. Actually 4x4 Tic Tac Toe is small enough that I could potentially search entire game tree with perfect pruning. But to be safe, I'll implement iterative deepening with time check.
+
+Actually, for simplicity, I'll just use fixed depth of 8 or until terminal state.
+
+Let me code this.
+</thinking>
+<code>
+import numpy as np
+from typing import Optional, Tuple, List
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """Return the next move (row, col) for player 1 on a 4x4 board."""
+    
+    # Convert to numpy array for easier manipulation
+    board_arr = np.array(board, dtype=int)
+    
+    # Get list of empty cells
+    empty_cells = [(r, c) for r in range(4) for c in range(4) if board_arr[r, c] == 0]
+    
+    # If board is empty or almost empty, prefer center squares
+    if len(empty_cells) >= 14:  # First two moves or similar
+        # Center squares in 4x4: positions (1,1), (1,2), (2,1), (2,2)
+        center_cells = [(1, 1), (1, 2), (2, 1), (2, 2)]
+        available_centers = [cell for cell in center_cells if board_arr[cell] == 0]
+        if available_centers:
+            return available_centers[0]
+    
+    # Check for immediate win
+    for r, c in empty_cells:
+        board_arr[r, c] = 1
+        if check_winner(board_arr) == 1:
+            return (r, c)
+        board_arr[r, c] = 0
+    
+    # Check for immediate block (opponent about to win)
+    for r, c in empty_cells:
+        board_arr[r, c] = -1
+        if check_winner(board_arr) == -1:
+            board_arr[r, c] = 0
+            return (r, c)
+        board_arr[r, c] = 0
+    
+    # Use minimax with alpha-beta pruning
+    best_move = empty_cells[0]
+    best_value = -float('inf')
+    
+    # Sort moves: center first, then corners, then edges
+    def move_priority(cell):
+        r, c = cell
+        # Center region priority
+        if 1 <= r <= 2 and 1 <= c <= 2:
+            return 0
+        # Corners
+        elif (r == 0 or r == 3) and (c == 0 or c == 3):
+            return 1
+        # Edges
+        else:
+            return 2
+    
+    empty_cells.sort(key=move_priority)
+    
+    depth = min(6, len(empty_cells))
+    for r, c in empty_cells:
+        board_arr[r, c] = 1
+        move_val = minimax(board_arr, depth-1, False, -float('inf'), float('inf'))
+        board_arr[r, c] = 0
+        
+        if move_val > best_value:
+            best_value = move_val
+            best_move = (r, c)
+    
+    return best_move
+
+def check_winner(board: np.ndarray) -> int:
+    """Return 1 if player 1 wins, -1 if player -1 wins, 0 otherwise."""
+    # Check rows
+    for r in range(4):
+        if all(board[r, c] == 1 for c in range(4)):
+            return 1
+        if all(board[r, c] == -1 for c in range(4)):
+            return -1
+    
+    # Check columns
+    for c in range(4):
+        if all(board[r, c] == 1 for r in range(4)):
+            return 1
+        if all(board[r, c] == -1 for r in range(4)):
+            return -1
+    
+    # Check main diagonal
+    if all(board[i, i] == 1 for i in range(4)):
+        return 1
+    if all(board[i, i] == -1 for i in range(4)):
+        return -1
+    
+    # Check anti-diagonal
+    if all(board[i, 3-i] == 1 for i in range(4)):
+        return 1
+    if all(board[i, 3-i] == -1 for i in range(4)):
+        return -1
+    
+    return 0
+
+def evaluate(board: np.ndarray) -> int:
+    """Heuristic evaluation of the board from player 1's perspective."""
+    score = 0
+    
+    # Evaluate all possible lines
+    lines = []
+    
+    # Rows
+    for r in range(4):
+        lines.append(board[r, :])
+    
+    # Columns
+    for c in range(4):
+        lines.append(board[:, c])
+    
+    # Diagonals
+    lines.append([board[i, i] for i in range(4)])
+    lines.append([board[i, 3-i] for i in range(4)])
+    
+    for line in lines:
+        line_arr = np.array(line)
+        p1_count = np.sum(line_arr == 1)
+        p2_count = np.sum(line_arr == -1)
+        
+        if p1_count > 0 and p2_count == 0:
+            score += 10 ** p1_count
+        elif p2_count > 0 and p1_count == 0:
+            score -= 10 ** p2_count
+    
+    return score
+
+def minimax(board: np.ndarray, depth: int, is_maximizing: bool, alpha: float, beta: float) -> float:
+    """Minimax with alpha-beta pruning."""
+    winner = check_winner(board)
+    if winner != 0:
+        return winner * 1000  # Large value for win/loss
+    
+    if depth == 0:
+        return evaluate(board)
+    
+    empty_cells = [(r, c) for r in range(4) for c in range(4) if board[r, c] == 0]
+    
+    if is_maximizing:
+        max_eval = -float('inf')
+        for r, c in empty_cells:
+            board[r, c] = 1
+            eval = minimax(board, depth-1, False, alpha, beta)
+            board[r, c] = 0
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for r, c in empty_cells:
+            board[r, c] = -1
+            eval = minimax(board, depth-1, True, alpha, beta)
+            board[r, c] = 0
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break
+        return min_eval
+</code>

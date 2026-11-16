@@ -1,0 +1,399 @@
+
+import time
+from typing import List, Tuple, Dict, Optional
+
+# Pentago policy using bitboards + alpha-beta negamax with iterative deepening.
+# Board: 6x6 => 36 bits. Bit i corresponds to (r=i//6, c=i%6), 0-indexed.
+
+FULL_MASK = (1 << 36) - 1
+INF = 10**9
+
+# Precomputed globals (filled at import)
+WIN_MASKS: List[int] = []
+NEIGH_MASKS: List[int] = []
+CENTER_BONUS: List[int] = []
+ROT_INFO: List[List[Tuple[int, List[Tuple[int, int]]]]] = []  # [quad][dir_idx] -> (quad_mask, pairs)
+CENTER_MASK: int = 0
+
+
+def _idx(r: int, c: int) -> int:
+    return r * 6 + c
+
+
+def _precompute():
+    global WIN_MASKS, NEIGH_MASKS, CENTER_BONUS, ROT_INFO, CENTER_MASK
+
+    # 5-in-a-row masks (checking any 5 consecutive is sufficient even for 6-in-a-row)
+    masks = []
+    # Horizontal
+    for r in range(6):
+        for c in range(6 - 5 + 1):
+            m = 0
+            for k in range(5):
+                m |= 1 << _idx(r, c + k)
+            masks.append(m)
+    # Vertical
+    for c in range(6):
+        for r in range(6 - 5 + 1):
+            m = 0
+            for k in range(5):
+                m |= 1 << _idx(r + k, c)
+            masks.append(m)
+    # Diagonal down-right
+    for r in range(6 - 5 + 1):
+        for c in range(6 - 5 + 1):
+            m = 0
+            for k in range(5):
+                m |= 1 << _idx(r + k, c + k)
+            masks.append(m)
+    # Diagonal down-left
+    for r in range(6 - 5 + 1):
+        for c in range(4, 6):
+            m = 0
+            for k in range(5):
+                m |= 1 << _idx(r + k, c - k)
+            masks.append(m)
+
+    WIN_MASKS = masks
+
+    # Neighbor masks for adjacency scoring
+    neigh = []
+    for r in range(6):
+        for c in range(6):
+            m = 0
+            for dr in (-1, 0, 1):
+                for dc in (-1, 0, 1):
+                    if dr == 0 and dc == 0:
+                        continue
+                    rr, cc = r + dr, c + dc
+                    if 0 <= rr < 6 and 0 <= cc < 6:
+                        m |= 1 << _idx(rr, cc)
+            neigh.append(m)
+    NEIGH_MASKS = neigh
+
+    # Center bonuses (integer)
+    # Use Manhattan-ish distance to (2.5,2.5): closer => higher.
+    cb = []
+    for r in range(6):
+        for c in range(6):
+            # scale and integerize
+            dist = abs(r - 2.5) + abs(c - 2.5)
+            bonus = int(round(10 - 2 * dist))  # roughly from ~0..10
+            if bonus < 0:
+                bonus = 0
+            cb.append(bonus)
+    CENTER_BONUS = cb
+
+    # A small "center mask" (the 4 central cells) for a tiny bias
+    CENTER_MASK = (1 << _idx(2, 2)) | (1 << _idx(2, 3)) | (1 << _idx(3, 2)) | (1 << _idx(3, 3))
+
+    # Rotation precompute: for each quad and dir (0=L,1=R), precompute:
+    # quad_mask and list of (old_global_idx, new_global_idx) pairs.
+    rot = []
+    for q in range(4):
+        base_r = 0 if q < 2 else 3
+        base_c = 0 if (q % 2) == 0 else 3
+
+        # Global indices in this quadrant
+        quad_cells = []
+        for rr in range(3):
+            for cc in range(3):
+                quad_cells.append(_idx(base_r + rr, base_c + cc))
+        quad_mask = 0
+        for gi in quad_cells:
+            quad_mask |= 1 << gi
+
+        qinfo = []
+        for dir_idx in (0, 1):  # 0=L, 1=R
+            pairs = []
+            for rr in range(3):
+                for cc in range(3):
+                    old_rr, old_cc = rr, cc
+                    if dir_idx == 1:  # R
+                        new_rr, new_cc = cc, 2 - rr
+                    else:  # L
+                        new_rr, new_cc = 2 - cc, rr
+                    old_g = _idx(base_r + old_rr, base_c + old_cc)
+                    new_g = _idx(base_r + new_rr, base_c + new_cc)
+                    pairs.append((old_g, new_g))
+            qinfo.append((quad_mask, pairs))
+        rot.append(qinfo)
+
+    ROT_INFO = rot
+
+
+_precompute()
+
+
+def _rotate_bits(bits: int, quad: int, dir_idx: int) -> int:
+    quad_mask, pairs = ROT_INFO[quad][dir_idx]
+    section = bits & quad_mask
+    if section == 0:
+        # Fast path
+        return bits
+    bits_cleared = bits & ~quad_mask
+    new_section = 0
+    for old_g, new_g in pairs:
+        if (section >> old_g) & 1:
+            new_section |= 1 << new_g
+    return bits_cleared | new_section
+
+
+def _apply_move(you: int, opp: int, idx: int, quad: int, dir_idx: int) -> Tuple[int, int]:
+    # Place then rotate quadrant affecting both players
+    you2 = you | (1 << idx)
+    you2 = _rotate_bits(you2, quad, dir_idx)
+    opp2 = _rotate_bits(opp, quad, dir_idx)
+    return you2, opp2
+
+
+def _has_five(bits: int) -> bool:
+    for m in WIN_MASKS:
+        if (bits & m) == m:
+            return True
+    return False
+
+
+def _terminal_score(you: int, opp: int) -> Optional[int]:
+    wy = _has_five(you)
+    wo = _has_five(opp)
+    if wy and wo:
+        return 0  # draw
+    if wy:
+        return INF
+    if wo:
+        return -INF
+    if (you | opp) == FULL_MASK:
+        return 0
+    return None
+
+
+# Heuristic via all 5-cell windows: unblocked window score depends on count.
+# Tuned weights: very high for 4-in-window (threat), moderate for 3, etc.
+WINDOW_W = [0, 2, 10, 50, 400, 0]  # index = pieces in window (0..5)
+
+
+def _heuristic(you: int, opp: int) -> int:
+    score = 0
+    for m in WIN_MASKS:
+        y = (you & m).bit_count()
+        if y:
+            o = (opp & m).bit_count()
+            if o == 0:
+                score += WINDOW_W[y]
+            # else blocked: 0
+        else:
+            o = (opp & m).bit_count()
+            if o:
+                score -= WINDOW_W[o]
+
+    # Tiny positional bias: center preference and overall adjacency naturally handled by windowing.
+    score += 2 * ((you & CENTER_MASK).bit_count() - (opp & CENTER_MASK).bit_count())
+    return score
+
+
+def _empty_indices(occupied: int) -> List[int]:
+    empties = (~occupied) & FULL_MASK
+    out = []
+    while empties:
+        lsb = empties & -empties
+        i = lsb.bit_length() - 1
+        out.append(i)
+        empties ^= lsb
+    return out
+
+
+def _select_cells(you: int, opp: int, max_cells: int) -> List[int]:
+    occupied = you | opp
+    empties = _empty_indices(occupied)
+    if len(empties) <= max_cells:
+        return empties
+
+    if occupied == 0:
+        # Opening: prefer center-ish cells
+        empties.sort(key=lambda i: (CENTER_BONUS[i],), reverse=True)
+        return empties[:max_cells]
+
+    # Prefer adjacency to existing stones + center bonus
+    scored = []
+    for i in empties:
+        adj = (NEIGH_MASKS[i] & occupied).bit_count()
+        scored.append((adj * 20 + CENTER_BONUS[i], i))
+    scored.sort(reverse=True)
+    return [i for _, i in scored[:max_cells]]
+
+
+def _generate_moves(you: int, opp: int, max_cells: int) -> List[Tuple[int, int, int]]:
+    # Move = (idx, quad, dir_idx) where dir_idx: 0=L, 1=R
+    cells = _select_cells(you, opp, max_cells=max_cells)
+    moves = []
+    for idx in cells:
+        for quad in range(4):
+            moves.append((idx, quad, 0))
+            moves.append((idx, quad, 1))
+    return moves
+
+
+def _move_to_str(m: Tuple[int, int, int]) -> str:
+    idx, quad, dir_idx = m
+    r = idx // 6 + 1
+    c = idx % 6 + 1
+    d = "L" if dir_idx == 0 else "R"
+    return f"{r},{c},{quad},{d}"
+
+
+def _order_moves(you: int, opp: int, moves: List[Tuple[int, int, int]]) -> List[Tuple[int, int, int]]:
+    # Order by immediate terminal then heuristic (after making the move)
+    scored = []
+    for m in moves:
+        idx, quad, dir_idx = m
+        y2, o2 = _apply_move(you, opp, idx, quad, dir_idx)
+        ts = _terminal_score(y2, o2)
+        if ts is not None:
+            # Prefer immediate wins, avoid immediate losses
+            s = ts
+        else:
+            s = _heuristic(y2, o2)
+        scored.append((s, m))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [m for _, m in scored]
+
+
+def _negamax(
+    you: int,
+    opp: int,
+    depth: int,
+    alpha: int,
+    beta: int,
+    tt: Dict[Tuple[int, int, int], int],
+    deadline: float,
+    node_max_cells: int,
+) -> int:
+    if time.perf_counter() >= deadline:
+        # Hard cutoff: return heuristic at this node
+        ts = _terminal_score(you, opp)
+        return ts if ts is not None else _heuristic(you, opp)
+
+    ts = _terminal_score(you, opp)
+    if ts is not None:
+        return ts
+    if depth == 0:
+        return _heuristic(you, opp)
+
+    key = (you, opp, depth)
+    if key in tt:
+        return tt[key]
+
+    moves = _generate_moves(you, opp, max_cells=node_max_cells)
+    moves = _order_moves(you, opp, moves)
+
+    best = -INF
+    for idx, quad, dir_idx in moves:
+        y2, o2 = _apply_move(you, opp, idx, quad, dir_idx)
+        # Switch perspective
+        val = -_negamax(o2, y2, depth - 1, -beta, -alpha, tt, deadline, node_max_cells)
+        if val > best:
+            best = val
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+
+    tt[key] = best
+    return best
+
+
+def _fallback_legal_move(you: int, opp: int) -> str:
+    occupied = you | opp
+    empties = _empty_indices(occupied)
+    idx = empties[0]
+    return _move_to_str((idx, 0, 0))  # quad 0, L
+
+
+def policy(you, opponent) -> str:
+    # Convert input arrays to bitboards
+    y = 0
+    o = 0
+    for r in range(6):
+        row_y = you[r]
+        row_o = opponent[r]
+        for c in range(6):
+            if int(row_y[c]) == 1:
+                y |= 1 << _idx(r, c)
+            elif int(row_o[c]) == 1:
+                o |= 1 << _idx(r, c)
+
+    # Always ensure we return a legal move.
+    try:
+        occupied = y | o
+        if occupied == FULL_MASK:
+            return _fallback_legal_move(y, o)
+
+        # Time budget (seconds). Keep conservative margin.
+        start = time.perf_counter()
+        deadline = start + 0.92
+
+        # Root move generation: broader than internal nodes
+        root_max_cells = 16
+        node_max_cells = 12
+
+        root_moves = _generate_moves(y, o, max_cells=root_max_cells)
+        if not root_moves:
+            return _fallback_legal_move(y, o)
+
+        # If any immediate non-draw win exists, play it.
+        for m in root_moves:
+            y2, o2 = _apply_move(y, o, m[0], m[1], m[2])
+            wy = _has_five(y2)
+            wo = _has_five(o2)
+            if wy and not wo:
+                return _move_to_str(m)
+
+        # Iterative deepening
+        best_move = root_moves[0]
+        best_score = -INF
+
+        # Light ordering at root
+        root_moves = _order_moves(y, o, root_moves)
+
+        for depth in (1, 2, 3):
+            if time.perf_counter() >= deadline:
+                break
+            tt: Dict[Tuple[int, int, int], int] = {}
+            local_best_move = best_move
+            local_best_score = -INF
+            alpha = -INF
+            beta = INF
+
+            for m in root_moves:
+                if time.perf_counter() >= deadline:
+                    break
+                y2, o2 = _apply_move(y, o, m[0], m[1], m[2])
+                val = -_negamax(o2, y2, depth - 1, -beta, -alpha, tt, deadline, node_max_cells)
+                if val > local_best_score:
+                    local_best_score = val
+                    local_best_move = m
+                if val > alpha:
+                    alpha = val
+
+            # Only accept fully completed depth iteration
+            if time.perf_counter() < deadline:
+                best_move = local_best_move
+                best_score = local_best_score
+
+            # Re-order root moves based on this depth's TT-ish info by quick re-scoring
+            # (keeps ordering fresh without heavy bookkeeping)
+            if time.perf_counter() < deadline:
+                root_moves = _order_moves(y, o, root_moves)
+
+        # Return the best found move
+        move_str = _move_to_str(best_move)
+
+        # Final legality check: ensure target cell is empty in original position (placement before rotation)
+        idx = best_move[0]
+        if ((occupied >> idx) & 1) == 0:
+            return move_str
+        return _fallback_legal_move(y, o)
+
+    except Exception:
+        return _fallback_legal_move(y, o)

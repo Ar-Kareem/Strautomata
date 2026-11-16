@@ -1,0 +1,208 @@
+The strategy for this policy is a fast heuristic search tailored to 6x6 Amazons:
+
+1. Generate all legal moves exactly.
+2. If any move leaves the opponent with no legal move, play it immediately.
+3. Otherwise score positions using:
+   - mobility difference,
+   - unique reachable squares difference,
+   - center control,
+   - penalty for trapped amazons.
+4. Use shallow adversarial search:
+   - rank our moves by heuristic,
+   - examine only the best few,
+   - for each, examine the opponent’s best few replies,
+   - choose the move with the best worst-case evaluation.
+5. Always keep a legal fallback move so the policy never fails when legal moves exist.
+
+This gives a good balance of strength and speed under the 1-second limit.
+
+<code>
+import numpy as np
+
+DIRS = [(-1, -1), (-1, 0), (-1, 1),
+        (0, -1),           (0, 1),
+        (1, -1),  (1, 0),  (1, 1)]
+
+N = 6
+
+
+def inb(r, c):
+    return 0 <= r < N and 0 <= c < N
+
+
+def ray_moves(board, r, c):
+    out = []
+    for dr, dc in DIRS:
+        nr, nc = r + dr, c + dc
+        while inb(nr, nc) and board[nr, nc] == 0:
+            out.append((nr, nc))
+            nr += dr
+            nc += dc
+    return out
+
+
+def has_any_move(board, player):
+    ps = np.argwhere(board == player)
+    for r, c in ps:
+        for dr, dc in DIRS:
+            nr, nc = r + dr, c + dc
+            if inb(nr, nc) and board[nr, nc] == 0:
+                return True
+            while inb(nr, nc) and board[nr, nc] == 0:
+                return True
+    return False
+
+
+def gen_all_moves(board, player):
+    moves = []
+    ps = np.argwhere(board == player)
+    for r, c in ps:
+        board[r, c] = 0
+        tos = ray_moves(board, r, c)
+        for tr, tc in tos:
+            board[tr, tc] = player
+            arrows = ray_moves(board, tr, tc)
+            for ar, ac in arrows:
+                moves.append((r, c, tr, tc, ar, ac))
+            board[tr, tc] = 0
+        board[r, c] = player
+    return moves
+
+
+def apply_move(board, move, player):
+    r, c, tr, tc, ar, ac = move
+    nb = board.copy()
+    nb[r, c] = 0
+    nb[tr, tc] = player
+    nb[ar, ac] = -1
+    return nb
+
+
+def mobility_stats(board, player):
+    ps = np.argwhere(board == player)
+    total = 0
+    uniq = set()
+    trapped = 0
+    for r, c in ps:
+        cnt = 0
+        for dr, dc in DIRS:
+            nr, nc = r + dr, c + dc
+            while inb(nr, nc) and board[nr, nc] == 0:
+                total += 1
+                cnt += 1
+                uniq.add((nr, nc))
+                nr += dr
+                nc += dc
+        if cnt == 0:
+            trapped += 1
+    return total, len(uniq), trapped
+
+
+def center_score(board):
+    ps1 = np.argwhere(board == 1)
+    ps2 = np.argwhere(board == 2)
+    s1 = 0.0
+    s2 = 0.0
+    for r, c in ps1:
+        s1 -= abs(r - 2.5) + abs(c - 2.5)
+    for r, c in ps2:
+        s2 -= abs(r - 2.5) + abs(c - 2.5)
+    return s1 - s2
+
+
+def evaluate(board):
+    if not has_any_move(board, 2):
+        return 10**9
+    if not has_any_move(board, 1):
+        return -10**9
+
+    m1, u1, t1 = mobility_stats(board, 1)
+    m2, u2, t2 = mobility_stats(board, 2)
+    cs = center_score(board)
+
+    return (
+        4.0 * (m1 - m2) +
+        2.0 * (u1 - u2) +
+        3.0 * (t2 - t1) +
+        0.3 * cs
+    )
+
+
+def move_quick_score(board, move, player):
+    nb = apply_move(board, move, player)
+    if player == 1:
+        return evaluate(nb)
+    return -evaluate(nb)
+
+
+def fmt(move):
+    r, c, tr, tc, ar, ac = move
+    return f"{r},{c}:{tr},{tc}:{ar},{ac}"
+
+
+def policy(board) -> str:
+    board = np.asarray(board).copy()
+
+    my_moves = gen_all_moves(board, 1)
+    if not my_moves:
+        return "0,0:0,0:0,0"
+
+    fallback = my_moves[0]
+
+    winning_now = None
+    scored = []
+    for mv in my_moves:
+        nb = apply_move(board, mv, 1)
+        if not has_any_move(nb, 2):
+            winning_now = mv
+            break
+        scored.append((evaluate(nb), mv, nb))
+
+    if winning_now is not None:
+        return fmt(winning_now)
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    num_my = len(scored)
+    if num_my <= 8:
+        top_my = num_my
+    elif num_my <= 30:
+        top_my = 10
+    else:
+        top_my = 12
+
+    best_move = scored[0][1]
+    best_value = -10**18
+
+    for _, mv, nb in scored[:top_my]:
+        opp_moves = gen_all_moves(nb, 2)
+        if not opp_moves:
+            return fmt(mv)
+
+        opp_scored = []
+        for omv in opp_moves:
+            onb = apply_move(nb, omv, 2)
+            val = evaluate(onb)
+            opp_scored.append((val, omv))
+
+        opp_scored.sort(key=lambda x: x[0])
+
+        num_opp = len(opp_scored)
+        if num_opp <= 8:
+            top_opp = num_opp
+        elif num_opp <= 40:
+            top_opp = 10
+        else:
+            top_opp = 14
+
+        worst_case = 10**18
+        for val, _ in opp_scored[:top_opp]:
+            if val < worst_case:
+                worst_case = val
+
+        if worst_case > best_value:
+            best_value = worst_case
+            best_move = mv
+
+    return fmt(best_move if best_move is not None else fallback)
+</code>

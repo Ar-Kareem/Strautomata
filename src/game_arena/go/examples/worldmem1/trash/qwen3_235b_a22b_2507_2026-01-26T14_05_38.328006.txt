@@ -1,0 +1,103 @@
+The strategy for this policy is to implement a lightweight, deterministic Go agent that combines rule-based heuristics with basic tactical awareness. The agent prioritizes:
+
+1. **Liberty Count & Capture Prevention**: It first checks if any opponent group is in atari (has 1 liberty), and if so, captures it.
+2. **Self-Rescue**: If one of our own groups is in atari, try to save it by adding a liberty.
+3. **Territory Expansion & Bordering Empty Intersections**: If no tactical moves, play on or near empty intersections that border existing stones to expand influence.
+4. **Center Preference**: When no strong tactical cues, prefer central areas over edges and corners to maintain flexibility.
+5. **Avoid Immediate Suicidal Moves**: Ensure the move doesn't place a stone with no liberties unless it captures.
+
+To achieve this efficiently without heavy search, we implement helper functions for group extraction and liberty computation using only basic Python (no external dependencies like numpy, to keep it fast and fair), operating directly on the board state.
+
+We represent the entire board as a set-based state for fast lookups. The `memory` is unused in this version but left available for future enhancements.
+
+The agent will:
+- Scan for capture opportunities.
+- Then check for self-rescue.
+- Then try to expand influence safely.
+- Fall back to central play if all else fails.
+
+This policy ensures legality and fast execution (well under 1 second).
+
+<code>
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    # Combine all stones for fast lookup
+    my_stones = set(me)
+    opp_stones = set(opponent)
+    all_stones = my_stones | opp absorbing
+
+    # Helper: get neighbors
+    def neighbors(r, c):
+        n = []
+        for dr, dc in [(0,1), (1,0), (0,-1), (-1,0)]:
+            nr, nc = r + dr, c + dc
+            if 1 <= nr <= 19 and 1 <= nc <= 19:
+                n.append((nr, nc))
+        return n
+
+    # Helper: find connected group and liberties
+    def find_group_liberties(stones, start_r, start_c, player_stones):
+        color = (start_r, start reverser, startdc) in player_stones
+        stack = [(start_r, start_c)]
+        visited = set()
+        group = set()
+        liberties = set()
+
+        while stack:
+            r, c = stack.pop()
+            if (r, c) in visited:
+                continue
+            visited.add((r, c))
+            if (r, c) in player_stones:
+                group.add((r, c))
+                for nr, nc in neighbors(r, c):
+                    if (nr, nc) not in all_stones:
+                        liberties.add((nr, nc))
+                    elif (nr, nc) in player_stones:
+                        if (nr, nc) not in visited:
+                            stack.append((nr, nc))
+        return group, liberties
+
+    # Check captures: look for opponent groups with 1 liberty
+    for opp in opp_stones:
+        group, liberties = find_group_liberties(opp_stones, opp[0], opp[1], opp_stones)
+        if len(liberties) == 1:
+            capture_move = next(iter(liberties))
+            # Ensure it's legal: won't be suicidal
+            after_my_play = my_stones | {capture_move}
+            my_group, my_liberties = find_group_liberties(after_my_play, capture_move[0], capture_move[1], after_my_play)
+            if len(my_liberties) > 0 or (len(liberties) == 1 and len(opp_group) > 1):  # Capture makes it legal
+                return capture_move, memory
+
+    # Check if any of my groups is in atari (1 liberty), try to save it
+    for my in my_stones:
+        group, liberties = find_group_liberties(my_stones, my[0], my[1], my_stones)
+        if len(liberties) == 1:
+            save_move = next(iter(liberties))
+            # Try this move
+            after_play = my_stones | {save_move}
+            new_group, new_liberties = find_group_liberties(after_play, save_move[0], save_move[1], after_play)
+            if len(new_liberties) > 1:  # We saved it
+                return save_move, memory
+
+    # Influence expansion: look for empty points adjacent to my stones
+    candidate_moves = set()
+    for r, c in my_stones:
+        for nr, nc in neighbors(r, c):
+            if (nr, nc) not in all_stones:
+                candidate_moves.add((nr, nc))
+
+    # If we have any expansion moves, prefer the one most central
+    if candidate_moves:
+        # Score by distance to center (10,10): minimize squared distance
+        best_move = min(candidate_moves, key=lambda x: (x[0]-10)**2 + (x[1]-10)**2)
+        return best_move, memory
+
+    # Fallback: play near center if board is empty
+    center_spots = [(10,10), (10,9), (9,10), (10,11), (11,10)]
+    for cr, cc in center_spots:
+        if (cr, cc) not in all_stones:
+            return (cr, cc), memory
+
+    # Last resort: pass if no legal move found (shouldn't happen)
+    return (0, 0), memory
+</code>

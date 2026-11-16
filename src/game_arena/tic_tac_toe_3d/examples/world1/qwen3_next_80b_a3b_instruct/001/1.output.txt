@@ -1,0 +1,130 @@
+<thinking>
+I need to implement a policy for 3D Tic Tac Toe (3x3x3) that chooses the best next move. The board is represented as a 3D list of size 3x3x3, with 0 for empty, 1 for me, and -1 for opponent.
+
+The goal is to win (get 3 in a row in any straight line) or block the opponent from winning, and otherwise choose a strong position.
+
+In 3D Tic Tac Toe, there are many more possible lines than in 2D: 
+- 27 lines along the three axes (9 in each of x, y, z directions)
+- 18 face diagonals (on each of the 6 faces, 2 diagonals each)
+- 4 space diagonals (going through the center cube in 3D)
+
+Total: 49 possible lines to win.
+
+Strategy:
+1. If I can win immediately, take that move.
+2. If opponent can win next turn, block it.
+3. Otherwise, prioritize center (1,1,1) as it's part of the most lines (13 lines: 3 axes, 6 face diagonals, 4 space diagonals).
+4. Then prioritize corners and edges that are part of many potential lines.
+5. As a fallback, choose any available cell.
+
+I'll write code to:
+- Scan all 49 win lines for potential wins/blocking opportunities.
+- Use a scoring system for positions based on how many lines they can contribute to.
+- Return the best move.
+
+I'll use numpy for easier array manipulation, but will keep logic clear.
+</thinking>
+<code>
+import numpy as np
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    # Convert to numpy array for easier manipulation
+    board = np.array(board)
+    
+    # Find all empty positions
+    empty_positions = np.where(board == 0)
+    empty_positions = list(zip(empty_positions[0], empty_positions[1], empty_positions[2]))
+    
+    # If no moves left, return something (shouldn't happen in valid game)
+    if len(empty_positions) == 0:
+        return (0, 0, 0)
+    
+    # Define all 49 winning lines in 3x3x3 tic-tac-toe
+    # 9 lines along x-axis (fixed y,z)
+    lines = []
+    for y in range(3):
+        for z in range(3):
+            lines.append([(0,y,z), (1,y,z), (2,y,z)])
+    
+    # 9 lines along y-axis (fixed x,z)
+    for x in range(3):
+        for z in range(3):
+            lines.append([(x,0,z), (x,1,z), (x,2,z)])
+    
+    # 9 lines along z-axis (fixed x,y)
+    for x in range(3):
+        for y in range(3):
+            lines.append([(x,y,0), (x,y,1), (x,y,2)])
+    
+    # 6 face diagonals (on each of the 6 faces, 2 diagonals)
+    # Front face (z=0) and back face (z=2)
+    lines.append([(0,0,0), (1,1,0), (2,2,0)])
+    lines.append([(2,0,0), (1,1,0), (0,2,0)])
+    lines.append([(0,0,2), (1,1,2), (2,2,2)])
+    lines.append([(2,0,2), (1,1,2), (0,2,2)])
+    
+    # Left face (x=0) and right face (x=2)
+    lines.append([(0,0,0), (0,1,1), (0,2,2)])
+    lines.append([(0,2,0), (0,1,1), (0,0,2)])
+    lines.append([(2,0,0), (2,1,1), (2,2,2)])
+    lines.append([(2,2,0), (2,1,1), (2,0,2)])
+    
+    # Bottom face (y=0) and top face (y=2)
+    lines.append([(0,0,0), (1,0,1), (2,0,2)])
+    lines.append([(2,0,0), (1,0,1), (0,0,2)])
+    lines.append([(0,2,0), (1,2,1), (2,2,2)])
+    lines.append([(2,2,0), (1,2,1), (0,2,2)])
+    
+    # 4 space diagonals (through the center)
+    lines.append([(0,0,0), (1,1,1), (2,2,2)])
+    lines.append([(0,0,2), (1,1,1), (2,2,0)])
+    lines.append([(0,2,0), (1,1,1), (2,0,2)])
+    lines.append([(0,2,2), (1,1,1), (2,0,0)])
+    
+    # Check for immediate win
+    for pos in empty_positions:
+        x, y, z = pos
+        board[x, y, z] = 1  # Try placing my mark
+        for line in lines:
+            if all(board[p] == 1 for p in line):
+                board[x, y, z] = 0  # Undo
+                return (x, y, z)
+        board[x, y, z] = 0  # Undo
+    
+    # Check for opponent win and block
+    for pos in empty_positions:
+        x, y, z = pos
+        board[x, y, z] = -1  # Try opponent's mark
+        for line in lines:
+            if all(board[p] == -1 for p in line):
+                board[x, y, z] = 0  # Undo
+                return (x, y, z)
+        board[x, y, z] = 0  # Undo
+    
+    # If center is available, take it (most strategic)
+    if board[1,1,1] == 0:
+        return (1, 1, 1)
+    
+    # Score each empty position by number of potential winning lines it participates in
+    position_scores = {}
+    for pos in empty_positions:
+        x, y, z = pos
+        score = 0
+        for line in lines:
+            if (x, y, z) in line:
+                # Count how many of the other two are mine (1) and none are opponent (-1)
+                others = [p for p in line if p != (x,y,z)]
+                mine_count = sum(1 for p in others if board[p] == 1)
+                opp_count = sum(1 for p in others if board[p] == -1)
+                # Only count if opponent not already blocking
+                if opp_count == 0:
+                    score += mine_count + 1  # +1 for this potential move
+                # If opponent has one and I have zero, it's not useful, but we don't penalize here
+        position_scores[pos] = score
+    
+    # Choose position with highest score
+    best_pos = max(empty_positions, key=lambda p: position_scores[p])
+    
+    # As fallback (if all scores are 0 or tie), choose first available
+    return best_pos
+</code>

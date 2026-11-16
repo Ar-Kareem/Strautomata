@@ -1,0 +1,104 @@
+
+import numpy as np
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    # Convert to 10x10 with padding to simplify boundary checks
+    # 0 = empty, 1 = you, 2 = opponent
+    board = np.zeros((10, 10), dtype=np.int8)
+    board[1:9, 1:9] = you + 2 * opponent
+    
+    # Directions: up, down, left, right, and the 4 diagonals
+    dirs = [(-1,0), (1,0), (0,-1), (0,1), (-1,-1), (-1,1), (1,-1), (1,1)]
+    
+    # Move scoring heuristic weights
+    # Corners are very valuable
+    corner_weight = 100
+    # Edge squares are good but can be risky
+    edge_weight = 20
+    # Mobility bonus for having many moves
+    mobility_weight = 10
+    # Disc count is a small factor to prefer captures
+    disc_weight = 1
+    
+    # Helper to count flips for a move
+    def count_flips(board, r, c, player):
+        opp = 3 - player
+        total_flips = 0
+        for dr, dc in dirs:
+            rr, cc = r + dr, c + dc
+            flips = 0
+            while 1 <= rr <= 8 and 1 <= cc <= 8 and board[rr, cc] == opp:
+                flips += 1
+                rr, cc = rr + dr, cc + dc
+            if 1 <= rr <= 8 and 1 <= cc <= 8 and board[rr, cc] == player and flips > 0:
+                total_flips += flips
+        return total_flips
+    
+    # Find legal moves and scores
+    legal_moves = []
+    max_score = -1e9
+    best_move = "pass"
+    
+    for r in range(1, 9):
+        for c in range(1, 9):
+            if board[r, c] == 0:
+                flips = count_flips(board, r, c, 1)  # player 1 is 'you'
+                if flips > 0:
+                    # Heuristic score for this move
+                    score = flips * disc_weight
+                    
+                    # Corner bonus
+                    if (r in (1, 8)) and (c in (1, 8)):
+                        score += corner_weight
+                    # Edge bonus (but avoid being too close to an opponent's corner)
+                    elif (r == 1 or r == 8 or c == 1 or c == 8):
+                        score += edge_weight
+                    
+                    legal_moves.append(((r, c), score))
+    
+    if not legal_moves:
+        return "pass"
+    
+    # Simple minimax lookahead of depth 1 (your move, opponent's best reply)
+    # We simply evaluate our move score minus the opponent's best reply score
+    # This helps avoid moves that give the opponent a great reply
+    best_val = -1e9
+    for (r, c), base_score in legal_moves:
+        # Simulate placing your disc
+        new_board = board.copy()
+        new_board[r, c] = 1
+        
+        # Flip opponent discs
+        for dr, dc in dirs:
+            rr, cc = r + dr, c + dc
+            flips = []
+            while 1 <= rr <= 8 and 1 <= cc <= 8 and new_board[rr, cc] == 2:
+                flips.append((rr, cc))
+                rr, cc = rr + dr, cc + dc
+            if 1 <= rr <= 8 and 1 <= cc <= 8 and new_board[rr, cc] == 1 and flips:
+                for fr, fc in flips:
+                    new_board[fr, fc] = 1
+        
+        # Evaluate opponent's best move from this new state
+        opp_best_score = 0
+        for r2 in range(1, 9):
+            for c2 in range(1, 9):
+                if new_board[r2, c2] == 0:
+                    flips2 = count_flips(new_board, r2, c2, 2)
+                    if flips2 > 0:
+                        # Simple opponent score calculation
+                        score2 = flips2 * disc_weight
+                        if (r2 in (1, 8)) and (c2 in (1, 8)):
+                            score2 += corner_weight
+                        elif (r2 == 1 or r2 == 8 or c2 == 1 or c2 == 8):
+                            score2 += edge_weight
+                        opp_best_score = max(opp_best_score, score2)
+        
+        # Net score: your gain minus opponent's potential gain
+        val = base_score - 0.5 * opp_best_score
+        
+        if val > best_val:
+            best_val = val
+            best_move = chr(ord('a') + c - 1) + str(r)  # Convert 1..8 indices to a..h1..8
+    
+    return best_move

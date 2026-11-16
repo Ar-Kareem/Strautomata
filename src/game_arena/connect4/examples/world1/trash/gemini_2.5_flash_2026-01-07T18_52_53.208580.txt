@@ -1,0 +1,642 @@
+<thinking>
+I need to write a Python function `policy(board)` that takes a 6x7 Connect 4 board and returns an integer representing the column to drop a disc.
+
+Here's my thought process for developing a strategy:
+
+1.  **Understand the Goal:** Win the game by getting four in a row, or prevent the opponent from getting four in a row.
+
+2.  **Basic Principles of Connect 4 AI:**
+    *   **Check for immediate wins:** If I can win on this turn, I should.
+    *   **Block opponent's immediate wins:** If the opponent can win on their next turn, I must block them.
+    *   **Create threats:** Try to create situations where I can win in two moves (e.g., a "3-in-a-row with open ends").
+    *   **Block opponent's threats:** Identify and block opponent's strong threats.
+    *   **Control the center:** The middle columns often offer more opportunities for connecting four.
+    *   **Avoid creating opponent winning opportunities:** Don't play into a column that directly sets up the opponent for a win.
+
+3.  **Representing the Board and Moves:**
+    *   The board is `list[list[int]]`.
+    *   A move is dropping a disc into a column.
+    *   To simulate a move: Find the lowest `0` in the chosen column, set it to `1` (or `-1` for opponent).
+    *   To check if a column is valid: `board[0][col] == 0`.
+
+4.  **Helper Functions:** I'll need some helper functions to evaluate the board state efficiently.
+
+    *   `is_valid_move(board, col)`: Checks if a column is available.
+    *   `get_next_open_row(board, col)`: Returns the row where a disc would land.
+    *   `drop_disc(board, row, col, player)`: Simulates dropping a disc (modifies a copy of the board).
+    *   `check_win(board, player)`: Checks if `player` has won on the given board. This is crucial. It needs to check horizontal, vertical, and both diagonals.
+
+5.  **Minimax/Alpha-Beta Pruning (Ideal but complex for 1-second limit):**
+    *   A full minimax search with alpha-beta pruning would be ideal for Connect 4. However, given the 1-second time limit, and the board size (6x7), a deep search (e.g., more than 5-6 ply) might be too slow without significant optimizations (transposition tables, move ordering).
+    *   For a simpler, faster AI, I'll focus on a shallower search, perhaps 2-3 ply, combined with an evaluation function.
+
+6.  **Evaluation Function (for shallower search):**
+    *   If I can't win immediately or block an opponent's win, I need heuristics.
+    *   Goals for an evaluation function:
+        *   Prioritize forming 3-in-a-row (open-ended).
+        *   Prioritize forming 2-in-a-row (open-ended).
+        *   Control the center column.
+        *   Avoid placing a disc that allows the opponent to win *immediately* on their *next* turn after I place my disc. (This is a look-ahead to avoid setting up the opponent).
+
+7.  **Developing the `policy` function step-by-step:**
+
+    *   **Step 1: Check for immediate win.**
+        *   Iterate through all valid columns.
+        *   For each column, simulate dropping my disc (player `1`).
+        *   Check if `check_win` returns `True` for player `1`. If so, return that column.
+
+    *   **Step 2: Block opponent's immediate win.**
+        *   Iterate through all valid columns.
+        *   For each column, simulate dropping opponent's disc (player `-1`).
+        *   Check if `check_win` returns `True` for player `-1`. If so, return that column.
+
+    *   **Step 3: Look for "forcing" moves or strong threats (my 3-in-a-row).**
+        *   This is harder to evaluate directly. A simplified approach is to analyze potential lines.
+        *   Instead of a full minimax, let's consider a 1-ply lookahead for me, and a 2-ply lookahead for blocking (opponent's win, and opponent's 'forcing' win if I play innocently).
+
+    *   **Step 4: A more strategic look-ahead (2-ply simplified).**
+        *   Identify columns that lead to a win for *me* in two moves (i.e., playing there creates a situation where if the opponent *doesn't* block, I win).
+        *   Avoid columns that lead to a win for the *opponent* in two moves (i.e., playing there creates a situation where the opponent *can* win on their next turn). This is the key "don't set up opponent" rule.
+
+    *   **Step 5: Scoring / Heuristics.**
+        *   If no immediate wins or blocks, I need to evaluate all valid moves and pick the "best".
+        *   How to score a move?
+            *   Prefer moves that create more 2-in-a-rows or 3-in-a-rows for me.
+            *   Prefer central columns.
+            *   Avoid moves that lead to an opponent winning in their *next* turn.
+
+8.  **Refining `check_win` function:**
+    *   This function is critical.
+    *   It should accept `board` and `player`.
+    *   It needs to check all possible 4-in-a-row patterns for `player`.
+    *   Horizontal: `for r in range(ROWS): for c in range(COLS - 3):`
+    *   Vertical: `for r in range(ROWS - 3): for c in range(COLS):`
+    *   Diagonal (positive slope): `for r in range(ROWS - 3): for c in range(COLS - 3):`
+    *   Diagonal (negative slope): `for r in range(3, ROWS): for c in range(COLS - 3):`
+
+9.  **Developing `evaluate_board` and `score_move`:**
+
+    *   `score_position(board, player)`: This will assign a score to a board state for a given player.
+        *   A simple way is to count potential lines of 2, 3, and 4.
+        *   Give higher weight to 3s than 2s.
+        *   Center column preference can be added here too.
+        *   *Crucial:* If it detects 4 for `player`, return a very high score. If it detects 4 for the `other_player`, return a very low (negative) score.
+
+    *   `policy` will then:
+        1.  Check for immediate wins (mine).
+        2.  Check for immediate blocks (opponent's).
+        3.  If neither, evaluate all possible moves:
+            *   For each valid move `col`:
+                *   Simulate my move in `col`.
+                *   If this move creates a situation where the *opponent* can win immediately on *their* next turn, penalize heavily or avoid this column.
+                *   Otherwise, score the resulting board state after my move using `score_position`.
+            *   Choose the column with the highest score.
+
+10. **Handling the "Don't set up the opponent" trap:**
+    *   This is the most common mistake for simple AIs.
+    *   When considering a move `col` for myself:
+        *   `my_board_after_move = drop_disc(board, my_row, col, 1)`
+        *   Now, iterate through all *opponent's* possible moves in `my_board_after_move`.
+        *   For each `opponent_col`:
+            *   `opponent_board_after_move = drop_disc(my_board_after_move, opponent_row, opponent_col, -1)`
+            *   If `check_win(opponent_board_after_move, -1)` is true, then `col` is a *bad* move for me. Do *not* choose `col`. Assign it a very low score or remove it from consideration.
+
+11. **Random Tie-breaking / Fallback:**
+    *   If multiple moves have the same high score, pick one randomly.
+    *   If no good moves (all are bad or lead to opponent wins), pick a random valid column as a last resort. Central columns preferred.
+
+**Detailed Plan for `policy` function:**
+
+Constants: `ROWS = 6`, `COLS = 7`, `PLAYER_ME = 1`, `PLAYER_OPPONENT = -1`
+
+Helper functions:
+*   `is_valid_location(board, col)`: Returns `True` if `board[0][col] == 0`.
+*   `get_next_open_row(board, col)`: Returns the row index of the next available slot in `col`.
+*   `drop_piece(board_clone, row, col, piece)`: Modifies `board_clone` by dropping `piece` at `(row, col)`.
+*   `check_winning_move(board, piece)`: Returns `True` if `piece` has 4 in a row anywhere on `board`.
+
+Main `policy` logic:
+
+1.  **Get all valid columns:** `valid_moves = [c for c in range(COLS) if is_valid_location(board, c)]`
+
+2.  **Check for immediate win (me):**
+    *   For `col` in `valid_moves`:
+        *   `temp_board = [row[:] for row in board]` (deep copy)
+        *   `row = get_next_open_row(temp_board, col)`
+        *   `drop_piece(temp_board, row, col, PLAYER_ME)`
+        *   If `check_winning_move(temp_board, PLAYER_ME)`: return `col`.
+
+3.  **Check for immediate threat (opponent):**
+    *   For `col` in `valid_moves`:
+        *   `temp_board = [row[:] for row in board]`
+        *   `row = get_next_open_row(temp_board, col)`
+        *   `drop_piece(temp_board, row, col, PLAYER_OPPONENT)`
+        *   If `check_winning_move(temp_board, PLAYER_OPPONENT)`: return `col`.
+
+4.  **Evaluate other potential moves (1-ply lookahead with 2-ply opponent check):**
+    *   `best_score = -float('inf')`
+    *   `best_cols = []`
+    *   `min_opponent_win_score = float('inf')` (for opponent two-step win)
+    *   `possible_moves_scores = {}`
+
+    *   For `col` in `valid_moves`:
+        *   `temp_board = [row[:] for row in board]`
+        *   `r = get_next_open_row(temp_board, col)`
+        *   `drop_piece(temp_board, r, col, PLAYER_ME)`
+
+        *   **Check for opponent's immediate win *after* my move:**
+            *   `opponent_can_win = False`
+            *   For `opp_col` in `valid_moves`:
+                *   If `is_valid_location(temp_board, opp_col)`:
+                    *   `temp_board_after_opp_move = [row[:] for row in temp_board]`
+                    *   `opp_r = get_next_open_row(temp_board_after_opp_move, opp_col)`
+                    *   `drop_piece(temp_board_after_opp_move, opp_r, opp_col, PLAYER_OPPONENT)`
+                    *   If `check_winning_move(temp_board_after_opp_move, PLAYER_OPPONENT)`:
+                        *   `opponent_can_win = True`
+                        *   Break from inner loop (no need to check other opponent moves for this `col`)
+            *   If `opponent_can_win`:
+                *   `possible_moves_scores[col] = -1_000_000` (very low score, avoid this move)
+                *   Continue to next `col` in `valid_moves`.
+
+        *   **If no immediate opponent win after my move, score the move:**
+            *   `score = score_position(temp_board, PLAYER_ME)`
+            *   Add bonus for center `col` (e.g., `score += 3` for col 3, `score += 1` for cols 2,4).
+            *   `possible_moves_scores[col] = score`
+
+    *   **Find best move from `possible_moves_scores`:**
+        *   Filter out extremely low scores (those that lead to an opponent's win).
+        *   If all moves lead to an immediate opponent win, just pick a random valid column (this is a fallback for really bad situations or end game).
+        *   `max_score = -float('inf')`
+        *   `best_moves = []`
+        *   For `col, score` in `possible_moves_scores.items()`:
+            *   If `score > max_score`:
+                *   `max_score = score`
+                *   `best_moves = [col]`
+            *   Else if `score == max_score`:
+                *   `best_moves.append(col)`
+
+        *   Prioritize center if equally good. Sort `best_moves` by distance from center, or use a specific order.
+        *   If `best_moves` is empty (shouldn't happen if `valid_moves` isn't empty and all are scored very low because they instantly lead to opponent win), then pick a random valid move.
+
+    *   Finally, return `random.choice(best_moves)`.
+
+12. **`score_position(board, player)` implementation:**
+    *   Initialize `score = 0`.
+    *   Iterate through all possible 4-in-a-row lines (horizontal, vertical, both diagonals).
+    *   For each "window" of 4 cells: `window = [board[r][c], board[r][c+1], ...]`.
+    *   Count `mine = window.count(player)`, `opponent = window.count(-player)`, `empty = window.count(0)`.
+    *   If `mine == 4`: `return 100000` (winning is huge).
+    *   If `mine == 3 and empty == 1`: `score += 100`. (open 3)
+    *   If `mine == 2 and empty == 2`: `score += 10`. (open 2)
+    *   If `opponent == 3 and empty == 1`: `score -= 80` (opponent open 3, slightly less than my open 3 because I'd block it if it turns into a win, but it's a threat).
+    *   If `opponent == 2 and empty == 2`: `score -= 5` (opponent open 2).
+    *   Add center column preference: `score += board[r][3] == player * 3` for a column 3 disc. (Maybe better to do this outside `score_position` as a direct column bonus).
+
+Final Check on Logic:
+*   Win: highest priority.
+*   Block: second highest priority.
+*   Avoid setting opponent up for a direct win: crucial, make these moves have extremely low scores.
+*   Maximize my threats (3-in-a-row): next priority.
+*   Maximize my potential (2-in-a-row): lower priority.
+*   Central advantage: minor boost.
+
+The `score_position` should *not* detect opponent's wins and directly return a negative max score. That's what `check_winning_move` is for. `score_position` is for evaluating a *non-terminal* state. When I check opponent can win after my move, that's effectively a terminal state for *my* move, so it gets a huge penalty.
+
+Let's refine the `score_position` to be more balanced and independent of "opponent wins instantly traps".
+
+```python
+import random
+import copy
+
+ROWS = 6
+COLS = 7
+PLAYER_ME = 1
+PLAYER_OPPONENT = -1
+
+def is_valid_location(board, col):
+    return board[0][col] == 0
+
+def get_next_open_row(board, col):
+    for r in range(ROWS - 1, -1, -1):
+        if board[r][col] == 0:
+            return r
+    return -1 # Should not happen if is_valid_location is true
+
+def drop_piece(board_clone, row, col, piece):
+    board_clone[row][col] = piece
+
+def check_winning_move(board, piece):
+    # Check horizontal locations for win
+    for c in range(COLS - 3):
+        for r in range(ROWS):
+            if board[r][c] == piece and board[r][c+1] == piece and board[r][c+2] == piece and board[r][c+3] == piece:
+                return True
+
+    # Check vertical locations for win
+    for c in range(COLS):
+        for r in range(ROWS - 3):
+            if board[r][c] == piece and board[r+1][c] == piece and board[r+2][c] == piece and board[r+3][c] == piece:
+                return True
+
+    # Check positively sloped diagonals
+    for c in range(COLS - 3):
+        for r in range(ROWS - 3):
+            if board[r][c] == piece and board[r+1][c+1] == piece and board[r+2][c+2] == piece and board[r+3][c+3] == piece:
+                return True
+
+    # Check negatively sloped diagonals
+    for c in range(COLS - 3):
+        for r in range(3, ROWS):
+            if board[r][c] == piece and board[r-1][c+1] == piece and board[r-2][c+2] == piece and board[r-3][c+3] == piece:
+                return True
+    return False
+
+def evaluate_window(window, player):
+    score = 0
+    opponent = PLAYER_OPPONENT if player == PLAYER_ME else PLAYER_ME
+
+    if window.count(player) == 4:
+        score += 1000000  # A winning move
+    elif window.count(player) == 3 and window.count(0) == 1:
+        score += 100
+    elif window.count(player) == 2 and window.count(0) == 2:
+        score += 10
+
+    if window.count(opponent) == 3 and window.count(0) == 1:
+        # Penalize opponent's potential 3-in-a-row,
+        # but less than a direct player 3-in-a-row because it'll be blocked if it's a winning threat.
+        score -= 90 # If we are evaluating for my move, and opponent can get 3 here, it's a threat
+    elif window.count(opponent) == 2 and window.count(0) == 2:
+        score -= 5 # Minor penalty
+
+    return score
+
+
+def score_position_for_player(board, player):
+    score = 0
+
+    # Score center column preference
+    center_array = [board[r][COLS // 2] for r in range(ROWS)]
+    center_count = center_array.count(player)
+    score += center_count * 3
+
+    # Score Horizontal
+    for r in range(ROWS):
+        row_array = board[r]
+        for c in range(COLS - 3):
+            window = row_array[c:c+4]
+            score += evaluate_window(window, player)
+
+    # Score Vertical
+    for c in range(COLS):
+        col_array = [board[r][c] for r in range(ROWS)]
+        for r in range(ROWS - 3):
+            window = col_array[r:r+4]
+            score += evaluate_window(window, player)
+
+    # Score Positive Diagonals
+    for r in range(ROWS - 3):
+        for c in range(COLS - 3):
+            window = [board[r+i][c+i] for i in range(4)]
+            score += evaluate_window(window, player)
+
+    # Score Negative Diagonals
+    for r in range(3, ROWS):
+        for c in range(COLS - 3):
+            window = [board[r-i][c+i] for i in range(4)]
+            score += evaluate_window(window, player)
+
+    return score
+```
+The `evaluate_window` function is key to the heuristic scoring. I've adjusted opponent threat scores to be slightly less impactful than my own threats because blocking 4-in-a-row is a separate priority *before* scoring.
+
+My `policy` function:
+
+```python
+def policy(board: list[list[int]]) -> int:
+    global ROWS, COLS, PLAYER_ME, PLAYER_OPPONENT # Ensure these are accessible
+
+    valid_moves = [c for c in range(COLS) if is_valid_location(board, c)]
+
+    # 1. Check for immediate win (my turn)
+    for col in valid_moves:
+        temp_board = copy.deepcopy(board)
+        r = get_next_open_row(temp_board, col)
+        drop_piece(temp_board, r, col, PLAYER_ME)
+        if check_winning_move(temp_board, PLAYER_ME):
+            return col
+
+    # 2. Check for immediate opponent win (block)
+    for col in valid_moves:
+        temp_board = copy.deepcopy(board)
+        r = get_next_open_row(temp_board, col)
+        drop_piece(temp_board, r, col, PLAYER_OPPONENT) # Simulate opponent's potential move
+        if check_winning_move(temp_board, PLAYER_OPPONENT):
+            return col
+
+    # 3. Evaluate other potential moves (1-ply lookahead with 2-ply opponent trap check)
+    possible_moves_scores = {}
+
+    for col in valid_moves:
+        temp_board_mine_moved = copy.deepcopy(board)
+        r_mine = get_next_open_row(temp_board_mine_moved, col)
+        drop_piece(temp_board_mine_moved, r_mine, col, PLAYER_ME)
+
+        # Check if this move allows the opponent to win on their *next* turn
+        opponent_can_win_next_turn = False
+        valid_moves_after_mine = [c_opp for c_opp in range(COLS) if is_valid_location(temp_board_mine_moved, c_opp)]
+        if not valid_moves_after_mine: # Board is full after my move, but not a win for me
+            # This is a complex tie/draw scenario, probably not worth special handling for now, let heuristic handle.
+            pass
+        else:
+            for opp_col in valid_moves_after_mine:
+                temp_board_after_opp_move = copy.deepcopy(temp_board_mine_moved)
+                r_opp = get_next_open_row(temp_board_after_opp_move, opp_col)
+                drop_piece(temp_board_after_opp_move, r_opp, opp_col, PLAYER_OPPONENT)
+                if check_winning_move(temp_board_after_opp_move, PLAYER_OPPONENT):
+                    opponent_can_win_next_turn = True
+                    break # Opponent found a winning move, so this 'col' is bad for me
+
+        if opponent_can_win_next_turn:
+            possible_moves_scores[col] = -1_000_000_000 # Very heavily penalize moves that lead to opponent win
+        else:
+            # If not a losing move, evaluate the resulting board state for PLAYER_ME
+            score = score_position_for_player(temp_board_mine_moved, PLAYER_ME)
+            possible_moves_scores[col] = score
+
+    # Find the best move(s) based on scores
+    max_score = -float('inf')
+    best_cols = []
+
+    if not possible_moves_scores: # This implies no valid moves were found, should ideally not happen
+        return random.choice([c for c in range(COLS)]) # Fallback to random if all logic fails
+
+    for col, score in possible_moves_scores.items():
+        if score > max_score:
+            max_score = score
+            best_cols = [col]
+        elif score == max_score:
+            best_cols.append(col)
+
+    # Prioritize center columns among equally good moves
+    # Columns are 0-indexed, so 3 is the center (0,1,2,3,4,5,6)
+    # Sort by absolute distance from center (col 3)
+    best_cols.sort(key=lambda c: abs(c - COLS // 2))
+
+    # Return a random choice from the top-scoring, center-biased moves
+    return random.choice(best_cols)
+```
+
+**Double check globals:** It's generally good practice to pass constants into functions or use a class, but for a single script and `global` being allowed, it's fine.
+
+**Edge Cases:**
+*   **Full Board:** `valid_moves` will be empty. The initial `policy` would not handle this well. The arena usually handles full boards by ending the game. My code would then ideally return a random column (which would be invalid). Need to ensure `valid_moves` is checked before `random.choice`. Added a safety check for `possible_moves_scores` being empty.
+*   **First Move:** `board` is all zeros. `score_position_for_player` and `evaluate_window` should still work. The center column will likely be preferred due to the bonus.
+*   **Time Limit:** Deep copying boards (`copy.deepcopy`) can be slow. For Connect 4, it's usually fast enough for 1-2 ply. The current approach is 2-ply (my move, then check all opponent responses). This is likely the limit for 1 second. The `score_position_for_player` iterates over the entire board for each potential move, which adds to the cost.
+
+Let's do a quick calculation:
+A standard Connect 4 board has 42 cells.
+If I simulate 7 possible moves:
+  For each move:
+    1. Deep copy board (relatively fast for 6x7).
+    2. Drop my piece.
+    3. Check `opponent_can_win_next_turn`: Iterate 7 opponent moves.
+      For each opponent move:
+        * Deep copy (again).
+        * Drop opponent piece.
+        * `check_winning_move` (iterates 4 directions, 6x7 board, 4-in-a-row checks).
+    4. If no opponent win, `score_position_for_player` (iterates 4 directions like `check_winning_move`, but also counts instances).
+
+This can be quite a number of operations.
+7 (my moves) * (7 (opponent moves) * check_winning_move + score_position)
+`check_winning_move` and `score_position` both iterate over many small `4`-cell windows. Let's say ~60 windows each. Each window has 4 checks. So, maybe 240 operations per evaluation.
+
+`7 * (7 * 240 + 240)` roughly: `7 * (1680 + 240) = 7 * 1920 = 13440` primitive checks. This doesn't seem like too much and should pass within 1 second. Python overhead will be an issue but it's not a huge board.
+
+I need to make sure the `score_position_for_player` calculates the score for the *current* player only relative to *their* pieces, but *also detects/penalizes* opponent's potential setups. My current `evaluate_window` does this. The win/block pre-checks are essential.
+
+One final check: The problem states "your disc (current player)" as 1 and "opponent's disc" as -1. My code uses `PLAYER_ME = 1` and `PLAYER_OPPONENT = -1`. This is consistent.
+The rows are 0 (top) to 5 (bottom). When dropping a disc, it goes to the lowest available cell (highest row index). `get_next_open_row` correctly scans from `ROWS - 1` down to `0`. Good.
+
+Consider `numpy` usage. The problem description says "You may use any standard Python imports, including numpy". If performance becomes an issue, replacing list comprehensions and manual loops with numpy array operations could speed it up significantly. However, given the small board size, native Python lists and loops are often simpler to reason about and implement correctly first. I'll stick with lists for now.
+
+The logic seems robust enough for a time-constrained AI. It handles immediate wins/blocks, avoids obvious pitfalls (setting up opponent), and uses a heuristic for "good" moves otherwise, prioritizing center columns and creating chains.
+</thinking>
+```python
+import random
+import copy
+
+# Constants for the Connect 4 board
+ROWS = 6
+COLS = 7
+PLAYER_ME = 1
+PLAYER_OPPONENT = -1
+
+def is_valid_location(board: list[list[int]], col: int) -> bool:
+    """
+    Checks if a given column is a valid place to drop a disc.
+    A column is valid if its top cell (row 0) is empty.
+    """
+    return board[0][col] == 0
+
+def get_next_open_row(board: list[list[int]], col: int) -> int:
+    """
+    Finds the lowest available row in a given column where a disc can be dropped.
+    Rows are indexed from 0 (top) to 5 (bottom).
+    """
+    for r in range(ROWS - 1, -1, -1):
+        if board[r][col] == 0:
+            return r
+    return -1 # Should not happen if is_valid_location is true
+
+def drop_piece(board_clone: list[list[int]], row: int, col: int, piece: int) -> None:
+    """
+    Simulates dropping a piece into the board at a specific row and column.
+    Modifies the board_clone in place.
+    """
+    board_clone[row][col] = piece
+
+def check_winning_move(board: list[list[int]], piece: int) -> bool:
+    """
+    Checks if the given player (piece) has achieved a 4-in-a-row on the board.
+    Checks horizontal, vertical, and both diagonal directions.
+    """
+    # Check horizontal locations for win
+    for c in range(COLS - 3):
+        for r in range(ROWS):
+            if board[r][c] == piece and board[r][c+1] == piece and board[r][c+2] == piece and board[r][c+3] == piece:
+                return True
+
+    # Check vertical locations for win
+    for c in range(COLS):
+        for r in range(ROWS - 3):
+            if board[r][c] == piece and board[r+1][c] == piece and board[r+2][c] == piece and board[r+3][c] == piece:
+                return True
+
+    # Check positively sloped diagonals
+    for c in range(COLS - 3):
+        for r in range(ROWS - 3):
+            if board[r][c] == piece and board[r+1][c+1] == piece and board[r+2][c+2] == piece and board[r+3][c+3] == piece:
+                return True
+
+    # Check negatively sloped diagonals
+    for c in range(COLS - 3):
+        for r in range(3, ROWS):
+            if board[r][c] == piece and board[r-1][c+1] == piece and board[r-2][c+2] == piece and board[r-3][c+3] == piece:
+                return True
+    return False
+
+def evaluate_window(window: list[int], player: int) -> int:
+    """
+    Evaluates a 4-cell window for potential scores.
+    Assigns points for player's potential lines and penalizes opponent's potential lines.
+    """
+    score = 0
+    opponent = PLAYER_OPPONENT if player == PLAYER_ME else PLAYER_ME
+
+    # Prioritize forming lines for the current player
+    if window.count(player) == 4:
+        score += 1000000  # A direct winning move
+    elif window.count(player) == 3 and window.count(0) == 1:
+        score += 100     # An open 3-in-a-row threat
+    elif window.count(player) == 2 and window.count(0) == 2:
+        score += 10      # An open 2-in-a-row
+
+    # Penalize opponent's potential lines. These are less severe than our own
+    # because immediate opponent wins are handled separately.
+    if window.count(opponent) == 3 and window.count(0) == 1:
+        score -= 90 # Opponent has an open 3-in-a-row threat if not blocked
+    elif window.count(opponent) == 2 and window.count(0) == 2:
+        score -= 5 # Opponent has an open 2-in-a-row
+
+    return score
+
+def score_position_for_player(board: list[list[int]], player: int) -> int:
+    """
+    Calculates a heuristic score for the entire board for a given player.
+    Higher score indicates a better position for the player.
+    """
+    score = 0
+
+    # Prioritize discs in the center column as they offer more connection opportunities
+    center_column = [board[r][COLS // 2] for r in range(ROWS)]
+    center_count = center_column.count(player)
+    score += center_count * 3
+
+    # Score Horizontal lines
+    for r in range(ROWS):
+        row_array = board[r]
+        for c in range(COLS - 3):
+            window = row_array[c:c+4]
+            score += evaluate_window(window, player)
+
+    # Score Vertical lines
+    for c in range(COLS):
+        col_array = [board[r][c] for r in range(ROWS)]
+        for r in range(ROWS - 3):
+            window = col_array[r:r+4]
+            score += evaluate_window(window, player)
+
+    # Score Positive Diagonals
+    for r in range(ROWS - 3):
+        for c in range(COLS - 3):
+            window = [board[r+i][c+i] for i in range(4)]
+            score += evaluate_window(window, player)
+
+    # Score Negative Diagonals
+    for r in range(3, ROWS):
+        for c in range(COLS - 3):
+            window = [board[r-i][c+i] for i in range(4)]
+            score += evaluate_window(window, player)
+
+    return score
+
+
+def policy(board: list[list[int]]) -> int:
+    """
+    Defines the AI's targeting policy for Connect 4.
+    The AI seeks to win, block opponent wins, avoid setting up opponents,
+    and then optimize its position based on a heuristic score.
+    """
+    valid_moves = [c for c in range(COLS) if is_valid_location(board, c)]
+
+    # If no valid moves, which should not happen in a typical Connect 4 game
+    # (caller handles full board), return a random valid column if any, else 3.
+    if not valid_moves:
+        return 3 if is_valid_location(board, 3) else random.randint(0, COLS - 1)
+
+
+    # 1. Check for immediate win (my turn)
+    for col in valid_moves:
+        temp_board = copy.deepcopy(board)
+        r = get_next_open_row(temp_board, col)
+        drop_piece(temp_board, r, col, PLAYER_ME)
+        if check_winning_move(temp_board, PLAYER_ME):
+            return col
+
+    # 2. Check for immediate opponent win (block opponent)
+    for col in valid_moves:
+        temp_board = copy.deepcopy(board)
+        r = get_next_open_row(temp_board, col)
+        drop_piece(temp_board, r, col, PLAYER_OPPONENT) # Simulate opponent's potential move
+        if check_winning_move(temp_board, PLAYER_OPPONENT):
+            return col
+
+    # 3. Evaluate other potential moves using a 1-ply lookahead with a 2-ply opponent trap check
+    possible_moves_scores = {}
+
+    for col in valid_moves:
+        temp_board_mine_moved = copy.deepcopy(board)
+        r_mine = get_next_open_row(temp_board_mine_moved, col)
+        drop_piece(temp_board_mine_moved, r_mine, col, PLAYER_ME)
+
+        # Check if this move allows the opponent to win on their *next* turn
+        opponent_can_win_next_turn = False
+        valid_moves_after_mine = [c_opp for c_opp in range(COLS) if is_valid_location(temp_board_mine_moved, c_opp)]
+        
+        # If the board becomes full (or nearly full) after my move and I didn't win,
+        # still check for opponent's win on their hypothetical move.
+        if valid_moves_after_mine:
+            for opp_col in valid_moves_after_mine:
+                temp_board_after_opp_move = copy.deepcopy(temp_board_mine_moved)
+                r_opp = get_next_open_row(temp_board_after_opp_move, opp_col)
+                drop_piece(temp_board_after_opp_move, r_opp, opp_col, PLAYER_OPPONENT)
+                if check_winning_move(temp_board_after_opp_move, PLAYER_OPPONENT):
+                    opponent_can_win_next_turn = True
+                    break # Opponent found a winning move, so this 'col' is bad for me
+
+        if opponent_can_win_next_turn:
+            # Heavily penalize moves that lead to an immediate opponent win
+            possible_moves_scores[col] = -1_000_000_000
+        else:
+            # If not a losing move, evaluate the resulting board state for PLAYER_ME
+            score = score_position_for_player(temp_board_mine_moved, PLAYER_ME)
+            possible_moves_scores[col] = score
+
+    # Find the best move(s) based on computed scores
+    max_score = -float('inf')
+    best_cols = []
+
+    # If all valid moves lead to a losing state (score of -1_000_000_000),
+    # then max_score might remain -inf or be a very low number.
+    # In such a scenario, we'll just pick *any* valid move.
+    if not possible_moves_scores:
+        # This case should ideally be caught by previous valid_moves check,
+        # but as a safeguard, pick a center column or random.
+        return 3 if is_valid_location(board, 3) else random.choice(valid_moves)
+
+    for col, score in possible_moves_scores.items():
+        if score > max_score:
+            max_score = score
+            best_cols = [col]
+        elif score == max_score:
+            best_cols.append(col)
+
+    # Prioritize center columns among equally good moves to maximize flexibility
+    # Sort by absolute distance from the center column (column 3)
+    best_cols.sort(key=lambda c: abs(c - COLS // 2))
+
+    # Return a random choice from the best-scoring, center-biased moves
+    return random.choice(best_cols)
+
+```

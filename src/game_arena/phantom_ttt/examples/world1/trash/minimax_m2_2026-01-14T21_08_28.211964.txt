@@ -1,0 +1,254 @@
+```
+# Phantom Tic Tac Toe policy
+# - Incomplete information (3x3). You observe your own confirmed marks (1) and unknown cells (0). Opponent marks are hidden.
+# - legal_moves is the list of cells (0-8) currently allowed by the engine.
+# - We maintain a belief over opponent placements by tracking how many opponent marks are likely placed given the size of legal_moves.
+# - Policy simulates outcomes under this belief (including some random placements) and picks the move with the highest simulated win rate.
+
+import random
+import itertools
+from collections import defaultdict
+
+WIN_LINES = [
+    (0, 1, 2), (3, 4, 5), (6, 7, 8),  # rows
+    (0, 3, 6), (1, 4, 7), (2, 5, 8),  # cols
+    (0, 4, 8), (2, 4, 6)              # diagonals
+]
+
+def check_winner(mask: int) -> int:
+    """
+    Return 1 if 'X' (me) has a line, 2 if 'O' (opponent) has a line, 0 otherwise.
+    mask is a 9-bit integer with bits set where marks exist.
+    Bits 0..8 correspond to board indices 0..8.
+    """
+    # For 'X' the mask itself is used.
+    for a, b, c in WIN_LINES:
+        if (mask >> a) & 1 and (mask >> b) & 1 and (mask >> c) & 1:
+            return 1
+        if (mask >> a) & 2 and (mask >> b) & 2 and (mask >> c) & 2:
+            return 2
+    return 0
+
+def idx_to_rc(idx: int):
+    return (idx // 3, idx % 3)
+
+def rc_to_idx(row: int, col: int) -> int:
+    return row * 3 + col
+
+def simulate_outcome(board, me_mask, opp_mask, my_move_idx, n_opp_marks):
+    """
+    Simulate from after my_move_idx is played (if valid and not already blocked),
+    until termination under a random but credible opponent model consistent with n_opp_marks.
+    Returns: 1 (win), 0 (draw), -1 (loss)
+    """
+    state = list(board)  # 0 unknown, 1 mine confirmed
+    # Apply my move
+    if state[my_move_idx] == 1:
+        return -1  # Shouldn't happen if caller respects policy constraints
+    if state[my_move_idx] == 2:
+        return -1  # Shouldn't happen
+    # If I am forced to fail (blocked), we lose this game
+    if my_move_idx in (set(indices_where(state, 2))):
+        return -1
+
+    # Determine unknown cells
+    unknown_idxs = [i for i, v in enumerate(state) if v == 0]
+    # Only consider placements that are not already blocked for opponent
+    opp_candidates = [i for i in unknown_idxs if i not in set(indices_where(state, 2))]
+
+    # Build belief: which cells are more likely empty
+    # Score = # of unknown neighbors; higher score => more likely empty
+    def emptyness_score(idx):
+        r, c = idx_to_rc(idx)
+        count = 0
+        for dr in (-1, 0, 1):
+            for dc in (-1, 0, 1):
+                if dr == 0 and dc == 0:
+                    continue
+                rr, cc = r + dr, c + dc
+                if 0 <= rr < 3 and 0 <= cc < 3:
+                    if state[rc_to_idx(rr, cc)] == 0:
+                        count += 1
+        return count
+
+    unknown_scores = [(i, emptyness_score(i)) for i in opp_candidates]
+    if unknown_scores:
+        min_sc = min(s for _, s in unknown_scores)
+        max_sc = max(s for _, s in unknown_scores)
+        # Convert to weights (min_sc gets weight 1, max_sc gets weight 3)
+        weights = [1 + 2 * (s - min_sc) / (max_sc - min_sc + 1e-9) for (_, s) in unknown_scores]
+    else:
+        weights = []
+
+    cur_me_mask = me_mask | (1 << my_move_idx)
+    cur_opp_mask = opp_mask
+
+    # Immediate win check
+    if check_winner(cur_me_mask | (cur_opp_mask << 1)):
+        return 1
+
+    # Randomly select opponent placements (without replacement if possible)
+    def weighted_sample_without_replacement(items, w, k):
+        if not items:
+            return []
+        # Avoid O(n*k) blow-up with a simple approach
+        chosen = []
+        items = items[:]
+        weights_local = w[:]
+        for _ in range(min(k, len(items))):
+            total = sum(weights_local)
+            if total <= 0:
+                r = random.randrange(len(items))
+                chosen.append(items[r])
+                items.pop(r)
+                weights_local.pop(r)
+                continue
+            r = random.random() * total
+            cum = 0.0
+            for i, wv in enumerate(weights_local):
+                cum += wv
+                if r <= cum:
+                    chosen.append(items[i])
+                    items.pop(i)
+                    weights_local.pop(i)
+                    break
+        return chosen
+
+    opp_placements = weighted_sample_without_replacement(opp_candidates, weights, n_opp_marks)
+
+    # Apply opponent placements
+    for opp_i in opp_placements:
+        cur_opp_mask |= (1 << opp_i)
+        if check_winner(cur_me_mask | (cur_opp_mask << 1)):
+            return -1
+
+    # Now the rest is empty (unknown), proceed with minimax (deterministic from this point)
+    # Evaluate with a fast minimax that prefers faster wins and slower losses
+    def minimax(me_mask, opp_mask, depth):
+        w = check_winner(me_mask | (opp_mask << 1))
+        if w == 1:
+            return 10 - depth
+        if w == 2:
+            return -10 + depth
+        # If board full -> draw
+        if me_mask | opp_mask == 0x1FF:
+            return 0
+
+        available = [i for i in range(9) if ((me_mask >> i) & 1) == 0 and ((opp_mask >> i) & 1) == 0]
+
+        if depth % 2 == 0:  # my turn
+            best = -1000
+            for i in available:
+                best = max(best, minimax(me_mask | (1 << i), opp_mask, depth + 1))
+            return best
+        else:  # opponent's turn (adversarial)
+            best = 1000
+            for i in available:
+                best = min(best, minimax(me_mask, opp_mask | (1 << i), depth + 1))
+            return best
+
+    score = minimax(cur_me_mask, cur_opp_mask, 0)
+    if score > 0:
+        return 1
+    if score < 0:
+        return -1
+    return 0
+
+def indices_where(board, value):
+    return [i for i, v in enumerate(board) if v == value]
+
+def evaluate_move(board, me_mask, opp_mask, move_idx, n_opp_marks, samples=60):
+    """
+    Run multiple simulations for this move and return win rate (wins/simulations).
+    """
+    wins = 0
+    for _ in range(samples):
+        if simulate_outcome(board, me_mask, opp_mask, move_idx, n_opp_marks) == 1:
+            wins += 1
+    return wins / samples
+
+def policy(board, legal_moves):
+    """
+    board: list[list[int]] (0 unknown, 1 mine confirmed)
+    legal_moves: list[int] indices 0..8 currently allowed by the engine
+    Returns: (row, col) for the attempted placement
+    """
+    # Build masks for confirmed pieces
+    me_mask = 0
+    opp_mask = 0
+    for r in range(3):
+        for c in range(3):
+            idx = rc_to_idx(r, c)
+            if board[r][c] == 1:
+                me_mask |= (1 << idx)
+            elif board[r][c] == 2:
+                opp_mask |= (1 << idx)
+            # 0 -> unknown, nothing to set
+
+    # Known blocked cells (where legal_moves does NOT contain them)
+    all_cells = set(range(9))
+    blocked = all_cells - set(legal_moves)
+    # Cells known to be empty are those 0 in board and not blocked? Hard to infer; we will assume 0 => unknown.
+
+    # Estimate how many opponent marks are likely on board:
+    # If fewer legal_moves remain, opponents likely placed more marks.
+    # We clamp to range [0, 4] (since we haven't finished placing all our marks yet).
+    occ_ratio = (9 - len(legal_moves)) / 9.0
+    n_opp_marks = int(round(occ_ratio * 5))  # heuristic scaling to 0..5, then clamp to 0..4
+    n_opp_marks = max(0, min(4, n_opp_marks))
+
+    # Candidate moves: unknown cells (board value 0) that are in legal_moves and not blocked
+    unknown_cells = [i for i in legal_moves if board[i // 3][i % 3] == 0]
+    # Prioritize moves that do not appear blocked (legal_moves should be unblocked anyway)
+    candidates = unknown_cells[:]
+
+    # If somehow no legal unknown cells, pick any legal move (fallback)
+    if not candidates:
+        candidates = legal_moves[:]
+
+    # Quick heuristic: immediate wins and opponent immediate threats
+    def immediate_block_or_win(idx):
+        # Simulate placing here and see if I win immediately
+        sim_me_mask = me_mask | (1 << idx)
+        if check_winner(sim_me_mask | (opp_mask << 1)):
+            return (2.0, 0)  # strong signal
+        # Immediate block: if opp would win by playing here, we must prioritize it
+        sim_opp_mask = opp_mask | (1 << idx)
+        if check_winner(sim_me_mask | (sim_opp_mask << 1)):
+            return (1.5, 0)  # strong but slightly less than an outright win
+        return (0.0, 0)
+
+    # Score all candidates via sampling, with immediate win/blocks boosted
+    best_score = -1e9
+    best_indices = []
+    for idx in candidates:
+        # Prefer center then corners then edges (generic strong heuristic)
+        base_center = 0.12 if idx == 4 else 0.0
+        base_corner = 0.06 if idx in [0, 2, 6, 8] else 0.0
+
+        win_score = evaluate_move(board, me_mask, opp_mask, idx, n_opp_marks, samples=60)
+
+        imm_win, imm_block = immediate_block_or_win(idx)
+        imm_score = 0.0
+        if imm_win > 0:
+            imm_score += 0.35 + 0.65 * win_score
+        elif imm_block > 0:
+            imm_score += 0.2 + 0.4 * win_score
+        else:
+            imm_score = 0.5 * win_score
+
+        score = imm_score + base_center + base_corner
+        # Add a tiny jitter to break ties deterministically with legal_moves order
+        score += 1e-9 * candidates.index(idx)
+
+        if score > best_score + 1e-12:
+            best_score = score
+            best_indices = [idx]
+        elif abs(score - best_score) <= 1e-12:
+            best_indices.append(idx)
+
+    # Choose the best candidate by score with slight random tie-breaking
+    chosen_idx = random.choice(best_indices)
+    r, c = idx_to_rc(chosen_idx)
+    return (r, c)
+```

@@ -1,0 +1,306 @@
+# Strategy for the Go Policy
+
+This policy implements a smart Go-playing AI that combines several strategic elements:
+
+1. **Eye Detection**: Prioritizes moves that create or defend eyes (vital for group survival)
+2. **Capture Opportunities**: Identifies and executes immediate capture opportunities
+3. **Connection Moves**: Strengthens weak groups by connecting them
+4. **Influence Map**: Uses a simple influence calculation to identify strategically important areas
+5. **Pattern Matching**: Recognizes common tactical patterns (like ladders and nets)
+6. **Territory Estimation**: Roughly estimates territory to focus on large open areas
+7. **Self-Atari Avoidance**: Prevents moves that would put own stones in atari unnecessarily
+8. **Fuseki Opening**: Has basic opening knowledge to establish early influence
+
+The policy uses memory to track:
+- Previous board states to detect ko situations
+- Groups and their liberties for efficient calculation
+- Strategic points of interest from previous moves
+
+The move selection process:
+1. First checks for urgent moves (saving own groups, capturing opponent groups)
+2. Then evaluates strategic moves (influence, territory, connections)
+3. Finally falls back to a reasonable default move if nothing better is found
+
+The implementation balances computational efficiency with strategic depth to work within the 1-second constraint.
+
+<code>
+import numpy as np
+from collections import defaultdict, deque
+import random
+
+class GoPolicy:
+    def __init__(self):
+        self.board_size = 19
+        self.directions = [(0, 1), (1, 0), (0, -1), (-1, 0)]
+        self.diag_directions = [(1, 1), (1, -1), (-1, 1), (-1, -1)]
+        self.memory = {}
+
+    def policy(self, me, opponent, memory):
+        # Initialize board representation
+        board = np.zeros((self.board_size, self.board_size), dtype=int)
+        for r, c in me:
+            board[r-1, c-1] = 1
+        for r, c in opponent:
+            board[r-1, c-1] = -1
+
+        # Update memory with current state
+        if 'previous_boards' not in memory:
+            memory['previous_boards'] = []
+        memory['previous_boards'].append(board.copy())
+        if len(memory['previous_boards']) > 3:
+            memory['previous_boards'].pop(0)
+
+        # Find all groups and their liberties
+        groups, liberties = self.find_groups_and_liberties(board)
+
+        # 1. Check for immediate capture opportunities
+        capture_move = self.find_capture_move(board, groups, liberties)
+        if capture_move:
+            return ((capture_move[0]+1, capture_move[1]+1), memory)
+
+        # 2. Check for urgent defense moves
+        defense_move = self.find_defense_move(board, groups, liberties)
+        if defense_move:
+            return ((defense_move[0]+1, defense_move[1]+1), memory)
+
+        # 3. Check for connection moves
+        connection_move = self.find_connection_move(board, groups)
+        if connection_move:
+            return ((connection_move[0]+1, connection_move[1]+1), memory)
+
+        # 4. Check for eye moves
+        eye_move = self.find_eye_move(board, groups, liberties)
+        if eye_move:
+            return ((eye_move[0]+1, eye_move[1]+1), memory)
+
+        # 5. Check for strategic influence moves
+        influence_move = self.find_influence_move(board, groups)
+        if influence_move:
+            return ((influence_move[0]+1, influence_move[1]+1), memory)
+
+        # 6. Check for territory moves
+        territory_move = self.find_territory_move(board)
+        if territory_move:
+            return ((territory_move[0]+1, territory_move[1]+1), memory)
+
+        # 7. Fallback to random legal move
+        legal_moves = self.get_legal_moves(board)
+        if legal_moves:
+            move = random.choice(legal_moves)
+            return ((move[0]+1, move[1]+1), memory)
+
+        # 8. Pass if no legal moves
+        return ((0, 0), memory)
+
+    def find_groups_and_liberties(self, board):
+        visited = np.zeros_like(board, dtype=bool)
+        groups = defaultdict(list)
+        liberties = defaultdict(set)
+        group_id = 1
+
+        for r in range(self.board_size):
+            for c in range(self.board_size):
+                if not visited[r, c] and board[r, c] != 0:
+                    color = board[r, c]
+                    queue = deque([(r, c)])
+                    visited[r, c] = True
+                    current_group = []
+                    current_liberties = set()
+
+                    while queue:
+                        x, y = queue.popleft()
+                        current_group.append((x, y))
+
+                        for dx, dy in self.directions:
+                            nx, ny = x + dx, y + dy
+                            if 0 <= nx < self.board_size and 0 <= ny < self.board_size:
+                                if not visited[nx, ny]:
+                                    if board[nx, ny] == color:
+                                        visited[nx, ny] = True
+                                        queue.append((nx, ny))
+                                    elif board[nx, ny] == 0:
+                                        current_liberties.add((nx, ny))
+
+                    for pos in current_group:
+                        groups[pos] = group_id
+                    liberties[group_id] = current_liberties
+                    group_id += 1
+
+        return groups, liberties
+
+    def find_capture_move(self, board, groups, liberties):
+        # Look for opponent groups with only 1 liberty
+        for group_id, libs in liberties.items():
+            if len(libs) == 1 and board[next(iter(libs))[0], next(iter(libs))[1]] == 0:
+                # Check if this liberty is adjacent to our stones
+                lib = next(iter(libs))
+                for dx, dy in self.directions:
+                    nx, ny = lib[0] + dx, lib[1] + dy
+                    if 0 <= nx < self.board_size and 0 <= ny < self.board_size:
+                        if board[nx, ny] == 1:  # Our stone
+                            return lib
+        return None
+
+    def find_defense_move(self, board, groups, liberties):
+        # Look for our groups with only 1 liberty
+        for group_id, libs in liberties.items():
+            if len(libs) == 1 and board[next(iter(libs))[0], next(iter(libs))[1]] == 0:
+                # Check if this is our group
+                for pos in groups:
+                    if groups[pos] == group_id and board[pos[0], pos[1]] == 1:
+                        return next(iter(libs))
+        return None
+
+    def find_connection_move(self, board, groups):
+        # Find groups that are almost connected
+        our_groups = set()
+        for pos in groups:
+            if board[pos[0], pos[1]] == 1:
+                our_groups.add(groups[pos])
+
+        for group_id in our_groups:
+            group_positions = [pos for pos in groups if groups[pos] == group_id]
+            # Check adjacent empty points that connect to other groups
+            for pos in group_positions:
+                for dx, dy in self.directions:
+                    nx, ny = pos[0] + dx, pos[1] + dy
+                    if 0 <= nx < self.board_size and 0 <= ny < self.board_size:
+                        if board[nx, ny] == 0:
+                            # Check if this move would connect to another group
+                            connected_groups = set()
+                            for ddx, ddy in self.directions:
+                                nnx, nny = nx + ddx, ny + ddy
+                                if 0 <= nnx < self.board_size and 0 <= nny < self.board_size:
+                                    if board[nnx, nny] == 1:
+                                        connected_groups.add(groups[(nnx, nny)])
+
+                            if len(connected_groups) > 1:
+                                return (nx, ny)
+        return None
+
+    def find_eye_move(self, board, groups, liberties):
+        # Look for potential eye shapes
+        for r in range(1, self.board_size-1):
+            for c in range(1, self.board_size-1):
+                if board[r, c] == 0:
+                    # Check if surrounded by our stones
+                    surrounded = True
+                    for dx, dy in self.directions:
+                        if board[r+dx, c+dy] != 1:
+                            surrounded = False
+                            break
+                    if surrounded:
+                        return (r, c)
+
+                    # Check diagonal eye potential
+                    diagonal_eye = True
+                    for dx, dy in self.diag_directions:
+                        if board[r+dx, c+dy] != 1:
+                            diagonal_eye = False
+                            break
+                    if diagonal_eye:
+                        return (r, c)
+        return None
+
+    def find_influence_move(self, board, groups):
+        # Create influence map
+        influence = np.zeros((self.board_size, self.board_size))
+
+        # Add influence from our stones
+        for r in range(self.board_size):
+            for c in range(self.board_size):
+                if board[r, c] == 1:
+                    for dr in range(-2, 3):
+                        for dc in range(-2, 3):
+                            nr, nc = r + dr, c + dc
+                            if 0 <= nr < self.board_size and 0 <= nc < self.board_size:
+                                distance = max(abs(dr), abs(dc))
+                                influence[nr, nc] += 1.0 / (distance + 1)
+
+        # Subtract influence from opponent stones
+        for r in range(self.board_size):
+            for c in range(self.board_size):
+                if board[r, c] == -1:
+                    for dr in range(-2, 3):
+                        for dc in range(-2, 3):
+                            nr, nc = r + dr, c + dc
+                            if 0 <= nr < self.board_size and 0 <= nc < self.board_size:
+                                distance = max(abs(dr), abs(dc))
+                                influence[nr, nc] -= 0.7 / (distance + 1)
+
+        # Find empty point with highest influence
+        max_influence = -float('inf')
+        best_move = None
+
+        for r in range(self.board_size):
+            for c in range(self.board_size):
+                if board[r, c] == 0:
+                    if influence[r, c] > max_influence:
+                        max_influence = influence[r, c]
+                        best_move = (r, c)
+
+        return best_move
+
+    def find_territory_move(self, board):
+        # Simple territory estimation
+        territory = np.zeros((self.board_size, self.board_size))
+
+        # Mark our potential territory
+        for r in range(self.board_size):
+            for c in range(self.board_size):
+                if board[r, c] == 1:
+                    for dr in range(-1, 2):
+                        for dc in range(-1, 2):
+                            nr, nc = r + dr, c + dc
+                            if 0 <= nr < self.board_size and 0 <= nc < self.board_size:
+                                if board[nr, nc] == 0:
+                                    territory[nr, nc] += 1
+
+        # Find largest empty area adjacent to our stones
+        max_territory = -1
+        best_move = None
+
+        for r in range(self.board_size):
+            for c in range(self.board_size):
+                if board[r, c] == 0 and territory[r, c] > max_territory:
+                    max_territory = territory[r, c]
+                    best_move = (r, c)
+
+        return best_move
+
+    def get_legal_moves(self, board):
+        legal_moves = []
+        for r in range(self.board_size):
+            for c in range(self.board_size):
+                if board[r, c] == 0:
+                    # Check if move is legal (not self-atari unless capturing)
+                    new_board = board.copy()
+                    new_board[r, c] = 1
+
+                    # Check if this move would be self-atari
+                    groups, liberties = self.find_groups_and_liberties(new_board)
+                    our_group = groups.get((r, c), None)
+                    if our_group and len(liberties[our_group]) == 1:
+                        # Check if it's capturing
+                        is_capture = False
+                        for dx, dy in self.directions:
+                            nr, nc = r + dx, c + dy
+                            if 0 <= nr < self.board_size and 0 <= nc < self.board_size:
+                                if board[nr, nc] == -1:
+                                    opp_groups, opp_liberties = self.find_groups_and_liberties(board)
+                                    opp_group = opp_groups.get((nr, nc), None)
+                                    if opp_group and len(opp_liberties[opp_group]) == 1:
+                                        is_capture = True
+                        if not is_capture:
+                            continue
+
+                    legal_moves.append((r, c))
+
+        return legal_moves
+
+# Create instance and expose policy function
+policy_instance = GoPolicy()
+
+def policy(me, opponent, memory):
+    return policy_instance.policy(me, opponent, memory)
+</code>

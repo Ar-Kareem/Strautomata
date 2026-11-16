@@ -1,0 +1,162 @@
+
+import numpy as np
+import random
+
+def policy(board) -> str:
+    def is_valid_position(r, c):
+        return 0 <= r < 6 and 0 <= c < 6
+
+    def is_empty(r, c):
+        return board[r, c] == 0
+
+    def is_our_amazon(r, c):
+        return board[r, c] == 1
+
+    def is_opponent_amazon(r, c):
+        return board[r, c] == 2
+
+    def is_arrow(r, c):
+        return board[r, c] == -1
+
+    def is_blocked(r, c):
+        return board[r, c] != 0
+
+    def get_line_of_sight(from_r, from_c, to_r, to_c):
+        # Generate positions between from and to (excluding endpoints)
+        line = []
+        dr = to_r - from_r
+        dc = to_c - from_c
+        
+        if dr == 0 and dc == 0:
+            return []
+
+        # Normalize direction
+        dr_sign = 0 if dr == 0 else dr // abs(dr)
+        dc_sign = 0 if dc == 0 else dc // abs(dc)
+        
+        r, c = from_r + dr_sign, from_c + dc_sign
+        while r != to_r or c != to_c:
+            line.append((r, c))
+            r += dr_sign
+            c += dc_sign
+        return line
+
+    def is_path_clear(from_r, from_c, to_r, to_c):
+        # Check if the path from (from_r, from_c) to (to_r, to_c) is unobstructed
+        line = get_line_of_sight(from_r, from_c, to_r, to_c)
+        for r, c in line:
+            if is_blocked(r, c):
+                return False
+        return True
+
+    def get_valid_moves_and_arrows(from_r, from_c, board_state):
+        # Returns list of (to_r, to_c, arrow_r, arrow_c) tuples
+        moves = []
+        
+        # First, find all possible moves for the amazon at (from_r, from_c) 
+        # (queen-like movement)
+        possible_moves = []
+        directions = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+        for dr, dc in directions:
+            r, c = from_r + dr, from_c + dc
+            while is_valid_position(r, c):
+                if is_empty(r, c):
+                    possible_moves.append((r, c))
+                elif is_opponent_amazon(r, c) or is_arrow(r, c):
+                    break
+                else:
+                    # Our amazon - can't go through or land on it
+                    break
+                r += dr
+                c += dc
+
+        for to_r, to_c in possible_moves:
+            # Now find all possible arrow shots from (to_r, to_c)
+            arrows = []
+            for dr, dc in directions:
+                r, c = to_r + dr, to_c + dc
+                while is_valid_position(r, c):
+                    if is_empty(r, c):
+                        arrows.append((r, c))
+                    elif is_opponent_amazon(r, c) or is_arrow(r, c):
+                        break
+                    else:
+                        # Our amazon
+                        break
+                    r += dr
+                    c += dc
+
+            for arrow_r, arrow_c in arrows:
+                # Validate that the arrow can be shot (not blocked)
+                if is_path_clear(to_r, to_c, arrow_r, arrow_c):
+                    moves.append((from_r, from_c, to_r, to_c, arrow_r, arrow_c))
+        
+        return moves
+
+    def score_move(from_r, from_c, to_r, to_c, arrow_r, arrow_c):
+        # Basic scoring:
+        # - Prefer to move to a center location
+        # - Prefer moves that give more arrow options in the next turn
+        # - Prefer moves that restrict opponent movement
+        score = 0
+        
+        # Center bias: move toward center if possible
+        center_r, center_c = 2.5, 2.5  # center of 6x6 board  
+        dist_to_center = ((to_r - center_r)**2 + (to_c - center_c)**2)**0.5
+        score -= dist_to_center * 0.1
+
+        # Prefer more arrow directions from landing spot
+        directions = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+        arrow_count = 0
+        for dr, dc in directions:
+            r, c = to_r + dr, to_c + dc
+            while is_valid_position(r, c):
+                if is_empty(r, c):
+                    arrow_count += 1
+                elif is_opponent_amazon(r, c) or is_arrow(r, c):
+                    break
+                else:
+                    # Our amazon
+                    break
+                r += dr
+                c += dc
+        
+        # Bonus for having many arrow options (limiting opponent)
+        score += arrow_count * 0.5
+        
+        # Try to block opponent movement
+        if is_opponent_amazon(from_r, from_c):
+            # If we're moving an opponent's amazon, we don't want to do this
+            # In our case, this shouldn't happen
+            pass
+        
+        return score
+
+    # Main logic of the policy
+    start_amazons = []
+    for r in range(6):
+        for c in range(6):
+            if is_our_amazon(r, c):
+                start_amazons.append((r, c))
+    
+    if not start_amazons:
+        raise Exception("No amazons found!")
+    
+    # Get all valid moves (from each of our amazons)
+    valid_moves = []
+    for from_r, from_c in start_amazons:
+        moves = get_valid_moves_and_arrows(from_r, from_c, board)
+        for (r1, c1, r2, c2, r3, c3) in moves:
+            valid_moves.append((r1, c1, r2, c2, r3, c3))
+    
+    if not valid_moves:
+        raise Exception("No valid moves!")
+    
+    # Let's sort by heuristic score (higher is better)
+    scored_moves = [(score_move(r1, c1, r2, c2, r3, c3), (r1, c1, r2, c2, r3, c3)) for (r1, c1, r2, c2, r3, c3) in valid_moves]
+    scored_moves.sort(reverse=True)
+    
+    # Return the best move
+    best_score, (from_r, from_c, to_r, to_c, arrow_r, arrow_c) = scored_moves[0]
+    
+    return f"{from_r},{from_c}:{to_r},{to_c}:{arrow_r},{arrow_c}"

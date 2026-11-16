@@ -1,0 +1,89 @@
+To solve this problem, we need to implement a policy function for a Hex game that can decide the next move for a player in a 11x11 hexagonal grid. The goal is to connect two opposite sides of the board, depending on the player's color. The solution involves a combination of checking for immediate winning moves and prioritizing moves based on their strategic importance.
+
+### Approach
+1. **Identify Legal Moves**: First, generate all possible empty cells where the player can place a stone.
+2. **Immediate Winning Move Check**: For each empty cell, check if placing a stone there creates a winning path from the player's starting side to the opposite side using a BFS algorithm.
+3. **Greedy Strategy**: If no immediate winning move is found, prioritize moves based on adjacency to existing stones and their strategic position relative to the target edge. Black aims to connect the top and bottom rows, while White aims to connect the left and right columns.
+4. **Positional Scoring**: Cells adjacent to existing stones are more valuable. Additionally, cells closer to the target edge (bottom for Black, right for White) are prioritized.
+
+### Solution Code
+```python
+from collections import deque
+
+def policy(me, opp, color):
+    def get_neighbors(cell):
+        i, j = cell
+        neighbors = [
+            (i, j + 1),  # right
+            (i, j - 1),  # left
+            (i - 1, j),  # top
+            (i - 1, j + 1),  # top-right
+            (i + 1, j),  # bottom
+            (i + 1, j - 1),  # bottom-left
+        ]
+        return [(r, c) for r, c in neighbors if 0 <= r < 11 and 0 <= c < 11]
+
+    def can_win(me_set, move):
+        new_me = me_set | {move}
+        start = []
+        targets = set()
+
+        if color == 'b':
+            starts = [cell for cell in new_me if cell[0] == 0]
+            targets = {(10, c) for c in range(11)}
+        else:
+            starts = [cell for cell in new_me if cell[1] == 0]
+            targets = {(r, 9) for r in range(11)}
+
+        if not starts:
+            return False
+
+        visited = set(starts)
+        queue = deque(starts)
+        while queue:
+            current = queue.popleft()
+            if current in targets:
+                return True
+            for neighbor in get_neighbors(*current):
+                if neighbor in new_me and neighbor not in visited:
+                    visited.add(neighbor)
+                    queue.append(neighbor)
+        return False
+
+    me_set = set(me)
+    opp_set = set(opp)
+    empty_cells = [(i, j) for i in range(11) for j in range(11) 
+                   if (i, j) not in me_set and (i, j) not in opp_set]
+
+    for cell in empty_cells:
+        if can_win(me_set, cell):
+            return cell
+
+    scored_moves = []
+    for cell in empty_cells:
+        i, j = cell
+        adj_count = sum(1 for neighbor in get_neighbors(cell) if neighbor in me_set)
+        score = adj_count
+
+        if color == 'b':
+            score += 10 * i + j  # Prioritize bottom rows
+        elif color == 'w':
+            score += 10 * j + i  # Prioritize right columns
+
+        scored_moves.append((-score, i, j, adj_count, cell))
+
+    scored_moves.sort()
+
+    if scored_moves:
+        best = scored_moves[0]
+        return best[3]
+    return empty_cells[0] if empty_cells else (0, 0)
+```
+
+### Explanation
+1. **Neighbor Identification**: The function `get_neighbors` calculates all valid adjacent cells for a given cell, considering the hexagonal grid's unique adjacency rules.
+2. **Winning Move Check**: The `can_win` function uses BFS to determine if placing a stone at a given position allows the player to connect their respective edges immediately.
+3. **Priority Calculation**: If no immediate win is found, each empty cell is scored based on the number of adjacent stones and its strategic position. Black cells closer to the bottom row are prioritized, while White cells closer to the right column are prioritized.
+4. **Move Selection**: The cell with the highest score is chosen, balancing between expanding territory (adjacent moves) and strategic positioning close to the target edge. If no advantageous moves are found, the first available empty cell is chosen.
+
+This approach ensures that the policy maximizes the player's chances of winning by both pursuing immediate wins and making strategically advantageous moves.

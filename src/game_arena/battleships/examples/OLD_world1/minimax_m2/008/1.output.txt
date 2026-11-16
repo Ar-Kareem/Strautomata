@@ -1,0 +1,125 @@
+
+
+To solve this problem, we need to implement a targeting policy for a Battleship-like game on a 10x10 grid. The goal is to efficiently locate and sink all opponent ships before they sink ours. The policy must choose the next cell to target based on previous shots, using a combination of hunt and target strategies.
+
+### Approach
+1. **Hunt Mode**: When there are no known hits, we use a checkerboard pattern to efficiently cover the grid. This pattern ensures that we can locate any ship (of lengths 5, 4, 3, 3, or 2) with minimal shots.
+2. **Target Mode**: When we have hits, we aim to sink the identified ships by targeting adjacent cells. This involves:
+   - **Connected Components**: Group contiguous hit cells (using 4-connectivity: up, down, left, right).
+   - **Orientation Handling**: For components with two or more hits:
+     - **Horizontal Ships**: Extend left and right from the hit segment.
+     - **Vertical Ships**: Extend up and down from the hit segment.
+   - **Single Hits**: Target adjacent cells in the order: up, down, left, right.
+3. **Fallback**: If the hunt mode or target mode fails to find a viable target, we default to scanning the grid for any unfired cell.
+
+### Solution Code
+```python
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Precompute pattern for hunt mode: checkerboard pattern
+    pattern = []
+    for r in range(10):
+        for c in range(10):
+            if (r + c) % 2 == 0:
+                pattern.append((r, c))
+    
+    # Build connected components of hits (using 4-connectivity)
+    visited = set()
+    components = []
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1 and (r, c) not in visited:
+                stack = [(r, c)]
+                comp = []
+                while stack:
+                    cr, cc = stack.pop()
+                    if (cr, cc) in visited:
+                        continue
+                    visited.add((cr, cc))
+                    comp.append((cr, cc))
+                    for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                        nr, nc = cr + dr, cc + dc
+                        if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 1 and (nr, nc) not in visited:
+                            stack.append((nr, nc))
+                components.append(comp)
+    
+    # Sort components by size (descending)
+    components.sort(key=len, reverse=True)
+    
+    # Target mode: process each component
+    for comp in components:
+        if len(comp) >= 2:
+            rows = [r for r, c in comp]
+            cols = [c for r, c in comp]
+            if all(r == rows[0] for r in rows):
+                row = rows[0]
+                min_col = min(cols)
+                max_col = max(cols)
+                for delta in range(1, 10):
+                    new_col = min_col - delta
+                    if new_col < 0:
+                        break
+                    if board[row][new_col] == 0:
+                        return (row, new_col)
+                    else:
+                        break
+                for delta in range(1, 10):
+                    new_col = max_col + delta
+                    if new_col >= 10:
+                        break
+                    if board[row][new_col] == 0:
+                        return (row, new_col)
+                    else:
+                        break
+            elif all(c == cols[0] for c in cols):
+                col = cols[0]
+                min_row = min(rows)
+                max_row = max(rows)
+                for delta in range(1, 10):
+                    new_row = min_row - delta
+                    if new_row < 0:
+                        break
+                    if board[new_row][col] == 0:
+                        return (new_row, col)
+                    else:
+                        break
+                for delta in range(1, 10):
+                    new_row = max_row + delta
+                    if new_row >= 10:
+                        break
+                    if board[new_row][col] == 0:
+                        return (new_row, col)
+                    else:
+                        break
+            else:
+                continue
+        else:
+            r, c = comp[0]
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                    return (nr, nc)
+    
+    # Hunt mode: use pattern
+    for (r, c) in pattern:
+        if board[r][c] == 0:
+            return (r, c)
+    
+    # Fallback: scan grid for first 0
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0:
+                return (r, c)
+    
+    return (0, 0)
+```
+
+### Explanation
+1. **Hunt Mode**: The checkerboard pattern ensures that any ship (regardless of orientation) can be hit with minimal shots by targeting every other cell in a row-wise manner.
+2. **Target Mode**:
+   - **Connected Components**: Hits are grouped into contiguous segments (4-connectivity).
+   - **Horizontal Ships**: For contiguous hits in the same row, extend left and right to locate adjacent ship cells.
+   - **Vertical Ships**: For contiguous hits in the same column, extend up and down.
+   - **Single Hits**: Target adjacent cells in a predefined order (up, down, left, right).
+3. **Fallback**: If no targets are found via hunt or target modes, scan the grid for the first unfired cell.
+
+This approach efficiently balances exploration (hunt) and exploitation (target) to minimize the number of shots needed to sink all opponent ships.

@@ -1,0 +1,186 @@
+### Strategy for Hex Policy (11x11 Board)
+My approach combines **pattern recognition, positional threats, and strategic blocking** to create a policy that is both aggressive and defensive. Here’s the high-level strategy:
+
+1. **Winning Condition Check**:
+   - First, check if the current move can immediately win the game by completing a path from the top to bottom (for black) or left to right (for white).
+   - This is done using **depth-first search (DFS)** or **BFS** to explore all possible connected paths from the starting side to the opposing side.
+
+2. **Blocking Opponent’s Threats**:
+   - If no immediate win is possible, check if the opponent has a potential winning move (i.e., a path that would connect their sides if they played optimally).
+   - If such a threat exists, block it by placing a stone in the critical cell that disrupts their path.
+   - This is also implemented using **DFS/BFS** to detect opponent paths.
+
+3. **Strategic Center Control**:
+   - The center of the board (around `(5, 5)`) is highly valuable. Prioritize placing stones near the center to maintain flexibility and control.
+   - For black, the center is key for top-bottom connections; for white, it’s critical for left-right paths.
+
+4. **Path Extension**:
+   - If no immediate win or block is found, extend your own potential paths toward the opponent’s side.
+   - Use **heuristics** like:
+     - Placing stones adjacent to existing stones to create longer chains.
+     - Preferring moves that connect multiple parts of your path (e.g., bridging gaps in your existing stones).
+     - Avoiding moves that leave the opponent with multiple disjoint threats.
+
+5. **Symmetry and Corner Control**:
+   - Maintain symmetry when possible to force the opponent into reactive play.
+   - Early-game corner moves (e.g., `(0, 0)`, `(10, 10)`) can be strong for creating long paths, but avoid them if the opponent is close to winning.
+
+6. **Randomness for Uncertainty**:
+   - If no clear strategic move is found (e.g., in early or mid-game with no immediate threats), use a **random but legal move** to avoid predictable patterns.
+   - This prevents opponents from exploiting weaknesses in your deterministic strategy.
+
+7. **Fallback to Simple Rules**:
+   - If all else fails, use simple rules like:
+     - Placing stones in the center first (e.g., `(5, 5)`).
+     - Filling rows or columns where you have the most stones to create density.
+     - Avoiding moves that give the opponent too many adjacent empty cells.
+
+---
+
+### Python Implementation
+Here’s the policy code that implements the above strategy. It uses **DFS for path detection**, **heuristics for path extension**, and **randomness as a fallback**.
+
+```python
+import random
+from typing import List, Tuple
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[int, int]:
+    """
+    Hex policy for 11x11 board. Returns the next move as (row, col).
+    Strategy:
+    1. Check if current move can win (top-bottom for black, left-right for white).
+    2. Block opponent's winning threats if no immediate win.
+    3. Extend own paths or control center.
+    4. Fallback to random legal move if no clear strategy.
+    """
+    board_size = 11
+    my_color = color
+    opp_color = 'w' if color == 'b' else 'b'
+
+    # Generate all possible legal moves (empty cells)
+    all_cells = set((i, j) for i in range(board_size) for j in range(board_size))
+    occupied_cells = set(me).union(set(opp))
+    legal_moves = list(all_cells - occupied_cells)
+
+    # Check if current move can win
+    for move in legal_moves:
+        if can_win(me + [move], opp, my_color):
+            return move
+
+    # Check if opponent has a winning threat and block it
+    for move in legal_moves:
+        if can_win(opp + [move], me, opp_color):
+            return move
+
+    # If no immediate win/block, prioritize strategic moves
+    # Heuristic 1: Center control (highest value cells)
+    center_priority = []
+    for i in range(board_size):
+        for j in range(board_size):
+            # Distance to center (5,5)
+            dist = abs(i - 5) + abs(j - 5)
+            if dist <= 2:  # Cells near center
+                center_priority.append((i, j))
+
+    # Heuristic 2: Adjacent to own stones (path extension)
+    adjacent_to_me = []
+    for (i, j) in me:
+        for di, dj in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, 1), (1, -1)]:
+            ni, nj = i + di, j + dj
+            if 0 <= ni < board_size and 0 <= nj < board_size and (ni, nj) not in occupied_cells:
+                adjacent_to_me.append((ni, nj))
+
+    # Heuristic 3: Avoid giving opponent too many adjacent empty cells
+    avoid_moves = []
+    for (i, j) in legal_moves:
+        # Count opponent's adjacent empty cells
+        opp_adjacent = 0
+        for di, dj in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, 1), (1, -1)]:
+            ni, nj = i + di, j + dj
+            if 0 <= ni < board_size and 0 <= nj < board_size and (ni, nj) not in occupied_cells:
+                if any((ni, nj) in neighbors for (x, y) in opp for (ni, nj) in neighbors((x, y))):
+                    opp_adjacent += 1
+        if opp_adjacent >= 3:  # High risk, avoid
+            avoid_moves.append((i, j))
+
+    # Combine heuristics: prioritize center, then adjacent, then avoid risky moves
+    prioritized_moves = []
+    for move in center_priority:
+        if move not in occupied_cells and move not in avoid_moves:
+            prioritized_moves.append(move)
+    for move in adjacent_to_me:
+        if move not in occupied_cells and move not in avoid_moves and move not in prioritized_moves:
+            prioritized_moves.append(move)
+
+    # Fallback to random legal move if no prioritized move found
+    if not prioritized_moves:
+        return random.choice(legal_moves)
+    else:
+        return prioritized_moves[0]
+
+def neighbors(cell: Tuple[int, int]) -> List[Tuple[int, int]]:
+    """Returns all 6 neighbors of a cell in Hex grid."""
+    i, j = cell
+    board_size = 11
+    return [
+        (i - 1, j), (i + 1, j),  # Top and bottom row
+        (i, j - 1), (i, j + 1),  # Left and right column
+        (i - 1, j + 1), (i + 1, j - 1)  # Diagonal neighbors
+    ]
+
+def can_win(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> bool:
+    """
+    Checks if `me` has a winning path (top-bottom for black, left-right for white).
+    Uses DFS to explore all possible connected paths.
+    """
+    board_size = 11
+    occupied = set(me).union(set(opp))
+    my_stones = set(me)
+    opp_stones = set(opp)
+
+    # Determine start and end rows/cols based on color
+    if color == 'b':  # Black: top (0) to bottom (10)
+        start_side = {(0, j) for j in range(board_size)}
+        end_side = {(10, j) for j in range(board_size)}
+    else:  # White: left (0) to right (10)
+        start_side = {(i, 0) for i in range(board_size)}
+        end_side = {(i, 10) for i in range(board_size)}
+
+    # Check if any stone in start_side is connected to end_side via my stones
+    for start in start_side:
+        if start in my_stones:
+            visited = set()
+            stack = [start]
+            while stack:
+                current = stack.pop()
+                if current in visited:
+                    continue
+                visited.add(current)
+                for neighbor in neighbors(current):
+                    if neighbor in my_stones and neighbor not in visited:
+                        stack.append(neighbor)
+                    if neighbor in end_side and neighbor in my_stones:
+                        return True
+    return False
+```
+
+---
+
+### Key Features of the Policy:
+1. **Winning/Blocking Detection**:
+   - `can_win` uses DFS to check if a path exists from one side to the other for either player.
+   - If a move can win, it’s played immediately. If the opponent can win next turn, it’s blocked.
+
+2. **Center Control**:
+   - Cells near `(5, 5)` are prioritized early to maintain strategic dominance.
+
+3. **Path Extension**:
+   - Moves adjacent to your own stones are preferred to extend existing paths.
+
+4. **Risk Avoidance**:
+   - Moves that leave the opponent with 3+ adjacent empty cells (potential threats) are avoided.
+
+5. **Randomness**:
+   - If no clear move is found, a random legal move is played to break predictability.
+
+This policy balances **aggression** (winning/blocking) and **defense** (center control, path extension) while avoiding obvious traps. It should perform well in competitive Hex environments.

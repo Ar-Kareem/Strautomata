@@ -1,0 +1,159 @@
+
+import numpy as np
+from collections import deque
+
+# Constants
+SIZE = 11
+# Directions based on Hex grid connectivity (r, c) -> neighbors
+# (0, -1) left, (0, 1) right
+# (1, 0) down-left, (1, -1) down-right
+# (-1, 0) up-left, (-1, 1) up-right
+DIRECTIONS = [(0, -1), (0, 1), (1, 0), (1, -1), (-1, 0), (-1, 1)]
+
+# Precompute neighbors for all cells to avoid repeated boundary checks
+NEIGHBORS = [[[] for _ in range(SIZE)] for _ in range(SIZE)]
+for r in range(SIZE):
+    for c in range(SIZE):
+        for dr, dc in DIRECTIONS:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < SIZE and 0 <= nc < SIZE:
+                NEIGHBORS[r][c].append((nr, nc))
+
+def shortest_path(me_mask, opp_mask, color):
+    """
+    Computes the shortest path length (number of empty cells needed)
+    for 'color' to connect its two sides using a 0-1 BFS (Dijkstra).
+    
+    Args:
+        me_mask: Boolean 2D array, True where stones exist for the player being evaluated.
+        opp_mask: Boolean 2D array, True where stones exist for the opponent.
+        color: 'b' for Black (Top-Bottom), 'w' for White (Left-Right).
+        
+    Returns:
+        Integer representing the minimum number of empty cells required to connect sides.
+        Returns SIZE*SIZE if no path exists.
+    """
+    INF = SIZE * SIZE
+    # dist stores the minimum cost to reach each cell from the start side
+    dist = np.full((SIZE, SIZE), INF, dtype=int)
+    dq = deque()
+    
+    # Initialize search frontier based on color
+    if color == 'b':
+        # Black connects Row 0 (Top) to Row 10 (Bottom)
+        # Start from any cell in Row 0 not blocked by opponent
+        for c in range(SIZE):
+            if not opp_mask[0, c]:
+                # Cost is 0 if we own the cell, 1 if it is empty
+                cost = 0 if me_mask[0, c] else 1
+                dist[0, c] = cost
+                if cost == 0:
+                    dq.appendleft((0, c))
+                else:
+                    dq.append((0, c))
+    else:
+        # White connects Col 0 (Left) to Col 10 (Right)
+        # Start from any cell in Col 0 not blocked by opponent
+        for r in range(SIZE):
+            if not opp_mask[r, 0]:
+                cost = 0 if me_mask[r, 0] else 1
+                dist[r, 0] = cost
+                if cost == 0:
+                    dq.appendleft((r, 0))
+                else:
+                    dq.append((r, 0))
+                    
+    # 0-1 BFS
+    while dq:
+        r, c = dq.popleft()
+        
+        # Check if we reached the target side
+        if color == 'b' and r == SIZE - 1:
+            return dist[r, c]
+        if color == 'w' and c == SIZE - 1:
+            return dist[r, c]
+            
+        current_dist = dist[r, c]
+        
+        # Explore neighbors
+        for nr, nc in NEIGHBORS[r][c]:
+            if opp_mask[nr, nc]:
+                # Cannot pass through opponent stones
+                continue
+                
+            # Cost to move to neighbor: 0 if mine, 1 if empty
+            weight = 0 if me_mask[nr, nc] else 1
+            new_dist = current_dist + weight
+            
+            if new_dist < dist[nr, nc]:
+                dist[nr, nc] = new_dist
+                if weight == 0:
+                    dq.appendleft((nr, nc))
+                else:
+                    dq.append((nr, nc))
+                    
+    return INF
+
+def policy(me, opp, color):
+    """
+    Selects the next move based on a 1-ply search evaluating connectivity.
+    """
+    # Initialize boolean masks for board state
+    board_me = np.zeros((SIZE, SIZE), dtype=bool)
+    board_opp = np.zeros((SIZE, SIZE), dtype=bool)
+    
+    for r, c in me:
+        board_me[r, c] = True
+    for r, c in opp:
+        board_opp[r, c] = True
+        
+    # Identify empty cells
+    empty_cells = []
+    for r in range(SIZE):
+        for c in range(SIZE):
+            if not board_me[r, c] and not board_opp[r, c]:
+                empty_cells.append((r, c))
+    
+    # Opening move: Center is optimal
+    if not me:
+        return (5, 5)
+        
+    best_move = None
+    best_score = -float('inf')
+    
+    opp_color = 'w' if color == 'b' else 'b'
+    
+    # Iterate through all legal moves
+    for r, c in empty_cells:
+        # Tentatively place stone
+        board_me[r, c] = True
+        
+        # Calculate my shortest path length
+        dist_me = shortest_path(board_me, board_opp, color)
+        
+        # Winning move check (immediate connection)
+        if dist_me == 0:
+            board_me[r, c] = False
+            return (r, c)
+            
+        # Calculate opponent's shortest path length with this move on board
+        dist_opp = shortest_path(board_opp, board_me, opp_color)
+        
+        # Heuristic evaluation
+        # Score = (Opponent Cost) - (My Cost)
+        # We want to maximize opponent's resistance and minimize our own.
+        # Note: dist_opp is high if opponent is blocked. dist_me is low if we are connected.
+        score = dist_opp - dist_me
+        
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+            
+        # Reset board for next iteration
+        board_me[r, c] = False
+        
+    # Fallback if no move found (should not occur in normal play)
+    if best_move is None:
+        return empty_cells[0]
+        
+    return best_move

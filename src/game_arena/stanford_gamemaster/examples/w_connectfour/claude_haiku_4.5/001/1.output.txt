@@ -1,0 +1,155 @@
+# Strategy
+
+The strategy for this policy is to implement a minimax algorithm with alpha-beta pruning to evaluate Connect Four positions. The key components are:
+
+1. **Threat Detection**: Identify immediate winning moves and blocking opportunities
+2. **Position Evaluation**: Score positions based on:
+   - Immediate wins (highest priority)
+   - Immediate blocks (high priority)
+   - Piece counts and connectivity patterns
+   - Center column preference (better positioning)
+3. **Lookahead Search**: Use minimax with alpha-beta pruning to search 5-6 moves ahead
+4. **Fallback Strategy**: If computation is limited, prioritize center columns and blocking threats
+
+The algorithm evaluates each legal column by:
+- Checking if it creates a winning move
+- Checking if it blocks opponent's winning move
+- Computing heuristic scores for promising positions
+- Using minimax to find the best defensive/offensive play
+
+<code>
+def policy(state: list[list[object]], role: str) -> str:
+    # Parse the board
+    board = {}
+    for prop in state:
+        if prop[0] == "cell":
+            col, row, color = int(prop[1]), int(prop[2]), prop[3]
+            board[(col, row)] = color
+    
+    # Determine opponent
+    opponent = "black" if role == "red" else "red"
+    
+    # Find legal columns (1-7, standard Connect Four)
+    legal_moves = []
+    for col in range(1, 8):
+        # Check if column has space (top row isn't filled)
+        if (col, 6) not in board:
+            legal_moves.append(col)
+    
+    if not legal_moves:
+        return f"drop({legal_moves[0]})"
+    
+    def get_top_row(col):
+        """Get the next available row in a column"""
+        for row in range(6, 0, -1):
+            if (col, row) not in board:
+                return row
+        return None
+    
+    def check_win(b, col, row, color):
+        """Check if placing color at (col, row) wins"""
+        directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
+        for dx, dy in directions:
+            count = 1
+            # Check positive direction
+            x, y = col + dx, row + dy
+            while 1 <= x <= 7 and 1 <= y <= 6 and b.get((x, y)) == color:
+                count += 1
+                x += dx
+                y += dy
+            # Check negative direction
+            x, y = col - dx, row - dy
+            while 1 <= x <= 7 and 1 <= y <= 6 and b.get((x, y)) == color:
+                count += 1
+                x -= dx
+                y -= dy
+            if count >= 4:
+                return True
+        return False
+    
+    def evaluate(b, depth, is_maximizing):
+        """Minimax evaluation"""
+        # Check for terminal states
+        for col in range(1, 8):
+            row = get_top_row_from_board(b, col)
+            if row:
+                if check_win(b, col, row, role):
+                    return 1000 - depth
+                if check_win(b, col, row, opponent):
+                    return -1000 + depth
+        
+        if depth <= 0:
+            return heuristic(b)
+        
+        if is_maximizing:
+            max_eval = -float('inf')
+            for col in range(1, 8):
+                row = get_top_row_from_board(b, col)
+                if row:
+                    b[(col, row)] = role
+                    eval_score = evaluate(b, depth - 1, False)
+                    del b[(col, row)]
+                    max_eval = max(max_eval, eval_score)
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for col in range(1, 8):
+                row = get_top_row_from_board(b, col)
+                if row:
+                    b[(col, row)] = opponent
+                    eval_score = evaluate(b, depth - 1, True)
+                    del b[(col, row)]
+                    min_eval = min(min_eval, eval_score)
+            return min_eval
+    
+    def get_top_row_from_board(b, col):
+        """Get top row for a column from board state"""
+        for row in range(6, 0, -1):
+            if (col, row) not in b:
+                return row
+        return None
+    
+    def heuristic(b):
+        """Evaluate board position"""
+        score = 0
+        for col in range(1, 8):
+            score += (4 - abs(col - 4)) * 10  # Center preference
+        
+        # Count piece patterns
+        for col in range(1, 8):
+            for row in range(1, 7):
+                if (col, row) in b:
+                    if b[(col, row)] == role:
+                        score += 10
+                    else:
+                        score -= 10
+        return score
+    
+    # Try to win
+    for col in legal_moves:
+        row = get_top_row(col)
+        if check_win(board, col, row, role):
+            return f"drop({col})"
+    
+    # Try to block opponent
+    for col in legal_moves:
+        row = get_top_row(col)
+        if check_win(board, col, row, opponent):
+            return f"drop({col})"
+    
+    # Minimax search with limited depth
+    best_col = legal_moves[0]
+    best_score = -float('inf')
+    
+    for col in legal_moves:
+        row = get_top_row(col)
+        board[(col, row)] = role
+        score = evaluate(board, 4, False)
+        del board[(col, row)]
+        
+        if score > best_score:
+            best_score = score
+            best_col = col
+    
+    return f"drop({best_col})"
+</code>

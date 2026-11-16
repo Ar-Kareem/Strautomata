@@ -1,0 +1,272 @@
+The strategy for this policy is a strong tactical-search Connect 4 agent:
+
+- Always return a legal move.
+- First check for an immediate winning move.
+- Then block any immediate opponent winning move.
+- Prefer central columns, since they participate in more 4-in-a-row patterns.
+- Use a depth-limited minimax with alpha-beta pruning for stronger play.
+- Evaluate positions using:
+  - center control,
+  - counts of promising 2-in-a-row / 3-in-a-row windows,
+  - penalties for allowing opponent threats.
+- Avoid obviously losing moves by detecting whether a move gives the opponent an immediate win.
+- Use move ordering favoring the center to improve pruning and playing strength.
+
+<code>
+from math import inf
+
+ROWS = 6
+COLS = 7
+MOVE_ORDER = [3, 2, 4, 1, 5, 0, 6]
+
+
+def policy(board: list[list[int]]) -> int:
+    legal = get_legal_moves(board)
+    if not legal:
+        return 0
+
+    # 1) Immediate win
+    for c in ordered_moves(legal):
+        nb = apply_move(board, c, 1)
+        if is_winning_board(nb, 1):
+            return c
+
+    # 2) Immediate block
+    opp_wins = []
+    for c in ordered_moves(legal):
+        nb = apply_move(board, c, -1)
+        if is_winning_board(nb, -1):
+            opp_wins.append(c)
+    if opp_wins:
+        for c in ordered_moves(opp_wins):
+            if c in legal:
+                return c
+
+    # 3) Avoid moves that allow opponent immediate win
+    safe_moves = []
+    for c in ordered_moves(legal):
+        nb = apply_move(board, c, 1)
+        opp_legal = get_legal_moves(nb)
+        gives_win = False
+        for oc in opp_legal:
+            nnb = apply_move(nb, oc, -1)
+            if is_winning_board(nnb, -1):
+                gives_win = True
+                break
+        if not gives_win:
+            safe_moves.append(c)
+
+    candidates = safe_moves if safe_moves else ordered_moves(legal)
+
+    # 4) Minimax search
+    depth = choose_depth(board)
+    best_score = -inf
+    best_move = candidates[0]
+
+    alpha = -inf
+    beta = inf
+    for c in ordered_moves(candidates):
+        nb = apply_move(board, c, 1)
+        score = minimax(nb, depth - 1, alpha, beta, False)
+        if score > best_score:
+            best_score = score
+            best_move = c
+        alpha = max(alpha, best_score)
+
+    return best_move
+
+
+def choose_depth(board):
+    empties = sum(1 for r in range(ROWS) for c in range(COLS) if board[r][c] == 0)
+    if empties >= 30:
+        return 5
+    if empties >= 18:
+        return 6
+    if empties >= 10:
+        return 7
+    return 8
+
+
+def ordered_moves(moves):
+    move_set = set(moves)
+    return [c for c in MOVE_ORDER if c in move_set]
+
+
+def get_legal_moves(board):
+    return [c for c in range(COLS) if board[0][c] == 0]
+
+
+def apply_move(board, col, player):
+    nb = [row[:] for row in board]
+    for r in range(ROWS - 1, -1, -1):
+        if nb[r][col] == 0:
+            nb[r][col] = player
+            return nb
+    return nb
+
+
+def is_winning_board(board, player):
+    # Horizontal
+    for r in range(ROWS):
+        for c in range(COLS - 3):
+            if (
+                board[r][c] == player and
+                board[r][c + 1] == player and
+                board[r][c + 2] == player and
+                board[r][c + 3] == player
+            ):
+                return True
+
+    # Vertical
+    for r in range(ROWS - 3):
+        for c in range(COLS):
+            if (
+                board[r][c] == player and
+                board[r + 1][c] == player and
+                board[r + 2][c] == player and
+                board[r + 3][c] == player
+            ):
+                return True
+
+    # Diagonal down-right
+    for r in range(ROWS - 3):
+        for c in range(COLS - 3):
+            if (
+                board[r][c] == player and
+                board[r + 1][c + 1] == player and
+                board[r + 2][c + 2] == player and
+                board[r + 3][c + 3] == player
+            ):
+                return True
+
+    # Diagonal up-right
+    for r in range(3, ROWS):
+        for c in range(COLS - 3):
+            if (
+                board[r][c] == player and
+                board[r - 1][c + 1] == player and
+                board[r - 2][c + 2] == player and
+                board[r - 3][c + 3] == player
+            ):
+                return True
+
+    return False
+
+
+def minimax(board, depth, alpha, beta, maximizing):
+    legal = get_legal_moves(board)
+
+    if is_winning_board(board, 1):
+        return 10_000_000 + depth
+    if is_winning_board(board, -1):
+        return -10_000_000 - depth
+    if depth == 0 or not legal:
+        return evaluate(board)
+
+    if maximizing:
+        value = -inf
+        for c in ordered_moves(legal):
+            nb = apply_move(board, c, 1)
+            value = max(value, minimax(nb, depth - 1, alpha, beta, False))
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+        return value
+    else:
+        value = inf
+        for c in ordered_moves(legal):
+            nb = apply_move(board, c, -1)
+            value = min(value, minimax(nb, depth - 1, alpha, beta, True))
+            beta = min(beta, value)
+            if alpha >= beta:
+                break
+        return value
+
+
+def evaluate(board):
+    score = 0
+
+    # Center preference
+    center_col = COLS // 2
+    center_count = sum(1 for r in range(ROWS) if board[r][center_col] == 1)
+    opp_center_count = sum(1 for r in range(ROWS) if board[r][center_col] == -1)
+    score += center_count * 6
+    score -= opp_center_count * 6
+
+    # Slight preference for near-center columns
+    for c in range(COLS):
+        weight = 3 - abs(center_col - c)
+        for r in range(ROWS):
+            if board[r][c] == 1:
+                score += weight
+            elif board[r][c] == -1:
+                score -= weight
+
+    # Evaluate all windows of 4
+    # Horizontal
+    for r in range(ROWS):
+        for c in range(COLS - 3):
+            score += evaluate_window([board[r][c + i] for i in range(4)])
+
+    # Vertical
+    for r in range(ROWS - 3):
+        for c in range(COLS):
+            score += evaluate_window([board[r + i][c] for i in range(4)])
+
+    # Diagonal down-right
+    for r in range(ROWS - 3):
+        for c in range(COLS - 3):
+            score += evaluate_window([board[r + i][c + i] for i in range(4)])
+
+    # Diagonal up-right
+    for r in range(3, ROWS):
+        for c in range(COLS - 3):
+            score += evaluate_window([board[r - i][c + i] for i in range(4)])
+
+    # Immediate threat counting
+    my_threats = count_immediate_wins(board, 1)
+    opp_threats = count_immediate_wins(board, -1)
+    score += my_threats * 500
+    score -= opp_threats * 700
+
+    return score
+
+
+def evaluate_window(window):
+    my_count = window.count(1)
+    opp_count = window.count(-1)
+    empty = window.count(0)
+
+    if my_count and opp_count:
+        return 0
+
+    if my_count == 4:
+        return 100000
+    if opp_count == 4:
+        return -100000
+
+    if my_count == 3 and empty == 1:
+        return 120
+    if my_count == 2 and empty == 2:
+        return 12
+    if my_count == 1 and empty == 3:
+        return 2
+
+    if opp_count == 3 and empty == 1:
+        return -140
+    if opp_count == 2 and empty == 2:
+        return -15
+    if opp_count == 1 and empty == 3:
+        return -2
+
+    return 0
+
+
+def count_immediate_wins(board, player):
+    count = 0
+    for c in get_legal_moves(board):
+        nb = apply_move(board, c, player)
+        if is_winning_board(nb, player):
+            count += 1
+    return count
+</code>

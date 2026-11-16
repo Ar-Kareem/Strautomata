@@ -1,0 +1,176 @@
+To compete in the Dots and Boxes arena on a 4x4 grid, I need a policy that balances immediate scoring with strategic positioning to avoid giving the opponent free points.
+
+### Strategy Analysis
+1.  **Capture Opportunity**: The highest priority is completing boxes. If a move completes one or more boxes, I score points and get an extra turn. This is a massive advantage.
+2.  **Avoidance of "Dangers"**: The worst scenario is drawing an edge that leaves a box with exactly 3 sides filled (a "double-cross" or "trap" scenario). This hands the opponent a guaranteed capture and another turn.
+3.  **The "Long Chain" Trap**: In a 4x4 grid, the center often forms a long chain. The standard winning strategy is to leave the long chain for last. If I can force a situation where I take the boxes *before* the chain is opened, I win.
+4.  **Current State Analysis**:
+    *   I will scan the board for valid moves.
+    *   I will categorize moves based on the number of sides they complete.
+    *   I will specifically look for moves that create a "double-cross" (giving the opponent 2+ boxes or a free turn).
+    *   If no immediate capture is available, I will prioritize moves that keep the number of sides per box strictly under 3.
+
+### Implementation Plan
+1.  **Count Neighbors**: For every potential move, count how many neighbors (adjacent edges) are already drawn.
+2.  **Simulate Completion**: Calculate how many boxes would be closed by a move.
+    *   If `neighbor_count == 3` for a box, playing there completes it (score +1).
+    *   If `neighbor_count == 2` for a box, playing there creates a dangerous 3-sided box (should be avoided unless no other moves exist).
+3.  **Select Move**:
+    *   **Priority 1**: Moves that close boxes (especially multiple boxes).
+    *   **Priority 2**: Moves that leave neighbors < 2 (safe moves).
+    *   **Priority 3**: Moves that leave neighbors == 2 (risky, but necessary to progress).
+    *   **Priority 4**: Moves that leave neighbors == 3 (desperate, only if the board is full).
+
+Here is the complete Python code implementing this logic.
+
+```python
+import numpy as np
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    """
+    Strategic policy for Dots and Boxes (4x4).
+    1. Prioritize completing boxes (gaining extra turns).
+    2. Avoid creating boxes with 3 sides (giving opponent extra turns).
+    3. Prefer safe moves (low neighbor count).
+    """
+    
+    def get_box_neighbors(r, c):
+        """Returns list of (box_r, box_c) adjacent to the edge at (r, c)"""
+        neighbors = []
+        # Check if coordinates are within the 4x4 box grid (0-3 rows/cols)
+        if horizontal[r, c] == 0: # Horizontal edge check
+            # Edge (r, c) is the top edge of box (r, c) and bottom edge of box (r-1, c)
+            if r < 4: neighbors.append((r, c))   # Box below
+            if r > 0: neighbors.append((r-1, c)) # Box above
+            
+        if vertical[r, c] == 0: # Vertical edge check
+            # Edge (r, c) is the left edge of box (r, c) and right edge of box (r, c-1)
+            if c < 4: neighbors.append((r, c))   # Box right
+            if c > 0: neighbors.append((r, c-1)) # Box left
+            
+        return [n for n in neighbors if 0 <= n[0] < 4 and 0 <= n[1] < 4]
+
+    def count_sides(box_r, box_c, h, v):
+        """Counts drawn edges for a specific box"""
+        sides = 0
+        if h[box_r, box_c] != 0: sides += 1 # Top
+        if h[box_r + 1, box_c] != 0: sides += 1 # Bottom
+        if v[box_r, box_c] != 0: sides += 1 # Left
+        if v[box_r, box_c + 1] != 0: sides += 1 # Right
+        return sides
+
+    # Collect all legal moves
+    candidates = []
+    
+    # Check Horizontal edges
+    for r in range(5):
+        for c in range(4): # 5 cols, but horizontal edges valid 0-3 in cols for 4 boxes
+            if horizontal[r, c] == 0:
+                neighbors = get_box_neighbors(r, c) # Reuse logic, but since get_box_neighbors checks logic, let's simplify
+                # Actually, get_box_neighbors is for finding boxes. Let's manually scan for valid (r,c) pairs
+                # Horizontal edges: (0,0) to (4,3) roughly. 
+                # Let's just iterate all r 0-4, c 0-3
+                pass 
+    
+    # Re-iterating cleanly
+    moves = []
+    
+    # Horizontal moves: Row 0-4, Col 0-3
+    for r in range(5):
+        for c in range(4):
+            if horizontal[r, c] == 0:
+                # Identify affected boxes
+                boxes = []
+                if r > 0: boxes.append((r-1, c)) # Box above
+                if r < 4: boxes.append((r, c))   # Box below
+                
+                current_sides = 0
+                future_sides = 0
+                captures = 0
+                danger = 0
+                
+                for br, bc in boxes:
+                    s = count_sides(br, bc, horizontal, vertical)
+                    if s == 3: captures += 1
+                    elif s == 2: danger += 1 # Playing here creates a 3-side box (bad if not capturing)
+                    # If s < 2, it's safe
+                
+                moves.append(('H', r, c, captures, danger))
+
+    # Vertical moves: Row 0-4, Col 0-4
+    for r in range(5):
+        for c in range(5):
+            if vertical[r, c] == 0:
+                # Identify affected boxes
+                boxes = []
+                if c > 0: boxes.append((r, c-1)) # Box left
+                if c < 4: boxes.append((r, c))   # Box right
+                
+                captures = 0
+                danger = 0
+                
+                for br, bc in boxes:
+                    s = count_sides(br, bc, horizontal, vertical)
+                    if s == 3: captures += 1
+                    elif s == 2: danger += 1
+                        
+                moves.append(('V', r, c, captures, danger))
+
+    if not moves:
+        return "" # Should not happen in valid game
+
+    # Strategy Logic
+    # 1. Priority 1: Maximize Captures. 
+    #    If we capture, we get another turn. We should play the move that captures the most boxes.
+    #    Note: If multiple moves capture the same max number of boxes, we prefer the one that creates NO new dangers.
+    max_captures = max(m[3] for m in moves)
+    capture_moves = [m for m in moves if m[3] == max_captures]
+    
+    if max_captures > 0:
+        # Among capture moves, avoid creating 3-sided boxes for opponent on the *other* boxes (if any)
+        # Actually, if we capture, those boxes are gone. We need to check if the move creates a 3-side box 
+        # on a *different* box not captured? Impossible because we only draw one edge.
+        # Wait, if I draw one edge, it touches max 2 boxes.
+        # If I capture 1 box (3 sides -> 4 sides), the other touched box (if it exists) goes from 2 -> 3 sides.
+        # This hands the opponent a capture if they play there immediately after my extra turn?
+        # But I get an extra turn! I can play there myself immediately if it's safe.
+        # Exception: If I capture 1 box, and the other box goes to 3 sides, I MUST play that box next (it's a forced capture).
+        # If I capture 2 boxes, I win the chain.
+        # So, if I can capture 2, take it.
+        # If I capture 1, it's good. If I capture 1 and leave a 3-side box, I have to play that 3-side box next.
+        # That is generally fine.
+        
+        # Filter capture moves to avoid moves that create a "bad" state if possible.
+        # A move is "bad" if it's a capture but leaves the opponent in a winning position? 
+        # Actually, if I capture, I move again. I don't leave the opponent.
+        
+        # Pick the first max capture move (or the one with least danger)
+        best_capture = sorted(capture_moves, key=lambda x: x[4])[0]
+        return f"{best_capture[1]},{best_capture[2]},{best_capture[0]}"
+
+    # 2. Priority 2: Avoid Danger. 
+    #    If no captures, find moves that do NOT create a box with 2 sides (becoming 3).
+    safe_moves = [m for m in moves if m[4] == 0]
+    
+    if safe_moves:
+        # Pick a safe move. To play optimally, we prefer moves that might open up future opportunities?
+        # In 4x4, usually we want to avoid opening the center too early.
+        # But simple safe moves are good. Let's randomize safe moves to be unpredictable, 
+        # or pick based on position (prefer edges/corners?).
+        # Corners are safer generally.
+        # Let's just pick the first safe move or random safe.
+        # To be deterministic and simple:
+        selected = safe_moves[0]
+        return f"{selected[1]},{selected[2]},{selected[0]}"
+
+    # 3. Priority 3: Forced Moves (All moves create danger).
+    #    We must play a move that gives the opponent a 3-sided box.
+    #    We want to minimize the damage.
+    #    If we give them 1 box, they take it and get another turn. 
+    #    If we give them multiple boxes, they take all and get another turn.
+    #    We want to give them the LEAST number of boxes.
+    min_danger = min(m[4] for m in moves)
+    best_danger_move = [m for m in moves if m[4] == min_danger][0]
+    
+    return f"{best_danger_move[1]},{best_danger_move[2]},{best_danger_move[0]}"
+```

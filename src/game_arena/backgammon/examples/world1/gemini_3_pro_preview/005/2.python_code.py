@@ -1,0 +1,233 @@
+
+import random
+
+def policy(state: dict) -> str:
+    """
+    Backgammon policy that computes the optimal move by exploring all valid
+    move sequences for the current dice, enforcing standard rules (must play both,
+    must play higher), and evaluating the resulting board states.
+    """
+    
+    # --- Constants for Evaluation ---
+    W_PIP = 0.5         # Value of pip count differential
+    W_OFF = 1000.0      # Value of bearing a checker off
+    W_HIT = 50.0        # Value of hitting an opponent
+    W_BLOT = -20.0      # Penalty for leaving a blot
+    W_POINT = 15.0      # Value of owning a point
+    W_HOME = 20.0       # Extra value for home board strength
+    W_BAR = -200.0      # Penalty for being on the bar
+
+    # --- Board Logic Class ---
+    class Board:
+        def __init__(self, my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off):
+            self.me = list(my_pts)
+            self.opp = list(opp_pts)
+            self.me_bar = my_bar
+            self.opp_bar = opp_bar
+            self.me_off = my_off
+            self.opp_off = opp_off
+        
+        def clone(self):
+            return Board(self.me, self.opp, self.me_bar, self.opp_bar, self.me_off, self.opp_off)
+
+        def can_bear_off(self):
+            # Allowed if bar empty and all checkers are in home board (0-5)
+            if self.me_bar > 0:
+                return False
+            for i in range(6, 24):
+                if self.me[i] > 0:
+                    return False
+            return True
+
+        def get_valid_moves(self, die):
+            moves = []
+            
+            # 1. Bar Logic: Must move from bar if checkers exist there
+            if self.me_bar > 0:
+                # Enters into opponent home board (high indices relative to entry?)
+                # Movement convention: I move 23 -> 0. Bar is effectively 24.
+                # Destination = 24 - die.
+                target = 24 - die
+                # Check legality
+                if 0 <= target <= 23:
+                    # Legal if destination not blocked (opp has < 2 checkers)
+                    if self.opp[target] < 2:
+                        moves.append('B')
+                return moves # If on bar, essentially forced to look only at bar moves
+
+            # 2. Board Logic
+            bearing_off = self.can_bear_off()
+            
+            for i in range(24):
+                if self.me[i] > 0:
+                    target = i - die
+                    
+                    if target >= 0:
+                        # Standard move
+                        if self.opp[target] < 2:
+                            moves.append(i)
+                    else:
+                        # Bearing off logic
+                        if bearing_off:
+                            if target == -1:
+                                # Exact bear off
+                                moves.append(i)
+                            else:
+                                # Overbear: allowed if no checkers on higher points
+                                # Higher points are indices > i (closer to 23/start)
+                                # Check range i+1 up to 5
+                                is_highest = True
+                                for higher in range(i + 1, 6):
+                                    if self.me[higher] > 0:
+                                        is_highest = False
+                                        break
+                                if is_highest:
+                                    moves.append(i)
+            return moves
+
+        def apply_move(self, src, die):
+            # Updates state in-place (assumes move is valid)
+            if src == 'B':
+                self.me_bar -= 1
+                target = 24 - die
+            else:
+                self.me[src] -= 1
+                target = src - die
+            
+            if target < 0:
+                self.me_off += 1
+            else:
+                # Handle hit
+                if self.opp[target] == 1:
+                    self.opp[target] = 0
+                    self.opp_bar += 1
+                self.me[target] += 1
+
+        def evaluate(self):
+            score = 0.0
+            
+            # Race metric
+            my_pip = sum((i + 1) * self.me[i] for i in range(24)) + self.me_bar * 25
+            opp_pip = sum((24 - i) * self.opp[i] for i in range(24)) + self.opp_bar * 25
+            # Positive score if I have fewer pips (am ahead)
+            score += (opp_pip - my_pip) * W_PIP
+            
+            # Checkers off
+            score += (self.me_off - self.opp_off) * W_OFF
+            
+            # Bar penalties/rewards
+            score += self.me_bar * W_BAR
+            score += self.opp_bar * (-W_BAR * 0.5) # Opp on bar is good
+            
+            # Board structure
+            for i in range(24):
+                if self.me[i] == 1:
+                    score += W_BLOT
+                elif self.me[i] > 1:
+                    score += W_POINT
+                    if i <= 5: # Home board
+                        score += W_HOME
+            
+            return score
+
+    # --- Main Policy Execution ---
+    dice = state['dice']
+    if not dice:
+        return "H:P,P"
+
+    # Setup initial board
+    initial_board = Board(
+        state['my_pts'], state['opp_pts'], 
+        state['my_bar'], state['opp_bar'], 
+        state['my_off'], state['opp_off']
+    )
+
+    # Determine execution sequences
+    sorted_dice = sorted(dice)
+    candidates = []
+    
+    # We define sequences of (die_value, format_prefix_char)
+    if len(dice) == 1:
+        # Single die
+        seqs = [[(dice[0], 'H')]]
+    else:
+        d1, d2 = sorted_dice[0], sorted_dice[1]
+        if d1 == d2:
+            # Double (Rules limit to 2 moves in this API context typically, 
+            # but standard is 4. Given constraints, we return 2 moves maximum)
+            seqs = [[(d1, 'H'), (d2, 'H')]]
+        else:
+            # Distinct dice: Try Low-High (L) and High-Low (H)
+            seqs = [
+                [(d1, 'L'), (d2, 'H')],
+                [(d2, 'H'), (d1, 'L')]
+            ]
+
+    # Generate all outcomes
+    for seq in seqs:
+        # DFS stack: (Brd, index_in_seq, path_of_srcs)
+        stack = [(initial_board.clone(), 0, [])]
+        
+        while stack:
+            curr_b, idx, path = stack.pop()
+            
+            if idx >= len(seq):
+                # Completed sequence, formulate output
+                prefix = seq[0][1] # 'H' or 'L' governing the string
+                
+                # Construct FROM string tokens
+                str_tokens = []
+                for p in path:
+                    if p is None: str_tokens.append("P")
+                    elif p == 'B': str_tokens.append("B")
+                    else: str_tokens.append(f"A{p}")
+                
+                # Pad to ensures format <ORDER>:<FROM1>,<FROM2>
+                if len(str_tokens) == 1:
+                    move_str = f"H:{str_tokens[0]},P"
+                else:
+                    move_str = f"{prefix}:{str_tokens[0]},{str_tokens[1]}"
+                
+                # Metrics for filtering rules
+                used_count = sum(1 for p in path if p is not None)
+                val_sum = sum(seq[k][0] for k, p in enumerate(path) if p is not None)
+                
+                candidates.append({
+                    'move': move_str,
+                    'score': curr_b.evaluate(),
+                    'used': used_count,
+                    'val': val_sum
+                })
+                continue
+
+            # Try to move with current die
+            die_val = seq[idx][0]
+            valid_srcs = curr_b.get_valid_moves(die_val)
+            
+            if not valid_srcs:
+                # Pass
+                stack.append((curr_b, idx + 1, path + [None]))
+            else:
+                for src in valid_srcs:
+                    next_b = curr_b.clone()
+                    next_b.apply_move(src, die_val)
+                    stack.append((next_b, idx + 1, path + [src]))
+
+    # Final Selection
+    if not candidates:
+        return "H:P,P"
+
+    # Rule: Must play both dice if possible
+    max_used = max(c['used'] for c in candidates)
+    candidates = [c for c in candidates if c['used'] == max_used]
+
+    # Rule: Must play higher die if only one can be played
+    # (Only discriminates if we used fewer dice than available)
+    max_val = max(c['val'] for c in candidates)
+    candidates = [c for c in candidates if c['val'] == max_val]
+
+    # Rule: Best strategy
+    random.shuffle(candidates) # randomize ties
+    best = max(candidates, key=lambda c: c['score'])
+    
+    return best['move']

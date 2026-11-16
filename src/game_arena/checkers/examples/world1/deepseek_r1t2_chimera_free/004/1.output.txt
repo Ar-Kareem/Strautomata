@@ -1,0 +1,144 @@
+
+
+Strategy: This policy prioritizes capturing the maximum number of opponent pieces while promoting its own men to kings. If no captures are available, it focuses on moving pieces closer to promotion and controlling the center of the board. The evaluation heuristic considers material advantage, promotion potential, and positional safety.
+
+<code>
+import collections
+import copy
+
+def in_bounds(r, c):
+    return 0 <= r < 8 and 0 <= c < 8
+
+def create_board(my_men, my_kings, opp_men, opp_kings):
+    board = [[None for _ in range(8)] for _ in range(8)]
+    for (r, c) in my_men:
+        board[r][c] = ('me', 'man')
+    for (r, c) in my_kings:
+        board[r][c] = ('me', 'king')
+    for (r, c) in opp_men:
+        board[r][c] = ('opp', 'man')
+    for (r, c) in opp_kings:
+        board[r][c] = ('opp', 'king')
+    return board
+
+def copy_board(board):
+    return [row[:] for row in board]
+
+def get_piece_directions(piece_type, color):
+    if piece_type == 'king':
+        return [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+    return [(-1, -1), (-1, 1)] if color == 'b' else [(1, -1), (1, 1)]
+
+def find_captures(board, color, my_pieces):
+    captures = []
+    color_dir = -1 if color == 'b' else 1
+    
+    for (r, c) in my_pieces:
+        piece_type = 'king' if (r, c) in my_pieces['k'] else 'man'
+        start_pos = (r, c)
+        queue = collections.deque()
+        queue.append((start_pos, [], set(), 0, board))
+        
+        while queue:
+            current_pos, path, captured_set, cap_count, board_state = queue.popleft()
+            cr, cc = current_pos
+            directions = get_piece_directions(piece_type, color)
+            
+            for dr, dc in directions:
+                mid_r, mid_c = cr + dr, cc + dc
+                end_r, end_c = cr + 2*dr, cc + 2*dc
+                
+                if (in_bounds(end_r, end_c) and in_bounds(mid_r, mid_c) and
+                    board_state[mid_r][mid_c] and board_state[mid_r][mid_c][0] == 'opp' and
+                    (mid_r, mid_c) not in captured_set and not board_state[end_r][end_c]):
+                    
+                    new_board = copy_board(board_state)
+                    new_cap_set = set(captured_set)
+                    new_cap_set.add((mid_r, mid_c))
+                    new_cap_count = cap_count + 1
+                    
+                    new_board[cr][cc] = None
+                    new_board[mid_r][mid_c] = None
+                    new_board[end_r][end_c] = ('me', piece_type)
+                    
+                    # Promotion check
+                    promoted = False
+                    if piece_type == 'man' and ((color == 'w' and end_r == 0) or (color == 'b' and end_r == 7)):
+                        promoted = True
+                        new_board[end_r][end_c] = ('me', 'king')
+                    
+                    # Add new state to queue for further jumps
+                    queue.append(((end_r, end_c), path + [(mid_r, mid_c)], new_cap_set, new_cap_count, new_board))
+            
+            if not queue:  # End of capture chain
+                if cap_count > 0:
+                    captures.append((start_pos, current_pos, cap_count, promoted))
+    
+    return captures
+
+def evaluate_capture(move):
+    _, _, cap_count, promoted = move
+    score = cap_count * 10
+    if promoted:
+        score += 5
+    # Prefer kings or central positions for better defense
+    end_r, end_c = move[1]
+    center_score = (3.5 - abs(3.5 - end_r)) + (3.5 - abs(3.5 - end_c))
+    return score + center_score/2
+
+def get_regular_moves(board, color, my_pieces):
+    moves = []
+    color_dir = -1 if color == 'b' else 1
+    
+    for (r, c) in my_pieces:
+        piece_type = 'king' if (r, c) in my_pieces['k'] else 'man'
+        directions = get_piece_directions(piece_type, color)
+        
+        for dr, dc in directions:
+            new_r, new_c = r + dr, c + dc
+            if in_bounds(new_r, new_c) and not board[new_r][new_c]:
+                promoted = False
+                if piece_type == 'man' and ((color == 'w' and new_r == 0) or (color == 'b' and new_r == 7)):
+                    promoted = True
+                moves.append(((r, c), (new_r, new_c), promoted))
+    return moves
+
+def evaluate_regular(move, color):
+    end_pos = move[1]
+    promoted = move[2]
+    score = 0
+    if promoted:
+        score += 10
+    
+    # Promotion potential
+    r, c = end_pos
+    if color == 'w':
+        dist = r  # Closer to 0 (promotion)
+    else:
+        dist = 7 - r
+    score += (7 - dist)
+    
+    # Center control
+    center_score = (3.5 - abs(3.5 - r)) + (3.5 - abs(3.5 - c))
+    return score + center_score/2
+
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    board = create_board(my_men, my_kings, opp_men, opp_kings)
+    my_pieces = {'m': set(my_men), 'k': set(my_kings)}
+    all_pieces = set(my_men + my_kings)
+    
+    # Check captures
+    captures = find_captures(board, color, {'m': my_men, 'k': my_kings})
+    if captures:
+        best_capture = max(captures, key=evaluate_capture)
+        return (best_capture[0], best_capture[1])
+    
+    # Regular moves
+    regular_moves = get_regular_moves(board, color, {'m': my_men, 'k': my_kings})
+    if regular_moves:
+        best_move = max(regular_moves, key=lambda m: evaluate_regular(m, color))
+        return (best_move[0], best_move[1])
+    
+    # Fallback (shouldn't happen)
+    return ((my_men[0][0], my_men[0][1]), (my_men[0][0] + (-1 if color=='b' else 1), my_men[0][1]+1))
+</code>

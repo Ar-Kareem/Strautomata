@@ -1,0 +1,251 @@
+<thinking>
+I need to implement a targeting policy for Battleship on a 10x10 grid. The board is represented as:
+- 0: unknown cell (not fired at)
+- -1: miss (hit water)
+- 1: hit (hit a ship)
+
+I need to choose cells strategically to sink ships efficiently. Common strategies include:
+1. Hunt mode: When no hits are present, use a pattern (like parity or checkerboard) to efficiently search for ships.
+2. Target mode: When we have a hit, try to determine the ship's orientation and sink it.
+
+Approach:
+- First, identify all hits that haven't been fully processed (sunk ships). For each hit, check if all adjacent cells are misses or already hits.
+- If there are active hits, I need to target around them. Check adjacent cells (up, down, left, right) that are unknown (0).
+- If a hit has multiple unknown adjacent cells, I need to determine orientation. If I have two hits in a line, target along that line.
+- If no active hits, switch to hunt mode. Could use a checkerboard pattern since ships are at least length 2, so hitting every other cell covers all possibilities efficiently.
+- Actually, better to use probability density approach or parity targeting. Since ships can't be placed diagonally, the optimal search pattern is hitting every other cell (like a checkerboard) to guarantee hitting ships.
+
+But wait: ships have lengths 5, 4, 3, 3, 2. The smallest is 2, so checkerboard pattern (hitting half the cells) will guarantee hitting any ship.
+
+Implementation plan:
+1. Find all cells with value 1 (hit) that have at least one unknown adjacent cell. These are "active hits".
+2. For each active hit, collect unknown adjacent cells (up, down, left, right).
+3. If there are multiple active hits that are aligned (same row or col), prioritize cells that continue the line.
+4. If no active hits, use hunt mode: generate list of all unknown cells with specific parity (even sum of coordinates) to implement checkerboard pattern. But wait, if I always use same parity, I might miss ships placed entirely on the other parity. Better to alternate or use probability.
+
+Actually, a common algorithm is:
+- Hunt mode: target cells with a pattern (like checkerboard) but also consider probability density. Could compute for each unknown cell the number of ways a ship could cover it given remaining ships.
+- But simpler: use parity targeting initially, then when hits are found, switch to target mode.
+
+Let me design:
+1. Find all hits (1) that are not completely surrounded by misses or hits (i.e., have at least one unknown neighbor).
+2. For these hits, collect potential targets (unknown neighbors).
+3. If multiple hits are connected (in a line), determine orientation and target endpoints of the line.
+4. If no active hits, use probability targeting or parity.
+
+Given time constraint (1 second), I can implement a simple probability density calculation. For each unknown cell, compute how many possible ship placements (of remaining ships) would cover that cell. But I don't know which ships are sunk. I only know hits and misses.
+
+Simpler: use hunt/target with parity:
+- Initially target cells where (row+col) % 2 == 0 (half the board).
+- Once hit is found, target around it.
+
+But this might be inefficient for large ships. Let me implement a basic probability density approach.
+
+Steps for probability:
+1. Generate all possible placements for each ship length (5,4,3,3,2) that don't overlap with misses (-1).
+2. Count how many placements cover each cell.
+3. Choose the cell with highest count.
+
+But I need to account for hits: if a cell is hit (1), it must be part of a ship. So I should consider only placements that are consistent with hits.
+
+Actually, given time, I'll implement a simpler but effective strategy:
+- Target mode: if there are hits with unknown neighbors, target those.
+- Hunt mode: use parity (checkerboard) but also consider cells that have highest chance based on remaining ships.
+
+Let me code:
+1. Find all hits that have at least one unknown neighbor. For each, get unknown neighbors.
+2. If there are such hits, prioritize:
+   - If two hits are adjacent horizontally, target left/right.
+   - If two hits are adjacent vertically, target up/down.
+   - Otherwise, target any unknown neighbor of a hit.
+3. If no such hits, use probability targeting.
+
+For probability targeting: compute for each unknown cell the number of ways a ship of each remaining length could be placed covering that cell, given current board (hits and misses). But I don't know which ships are sunk.
+
+Alternative: always assume all ships are alive. That's simpler.
+
+I'll implement probability density assuming all ships (5,4,3,3,2) are still alive. For each unknown cell, for each ship length, count how many placements (horizontal/vertical) of that length cover the cell and don't conflict with misses. Sum over all ships.
+
+Then choose cell with highest density. This is computationally feasible for 10x10 grid.
+
+Let me outline the code:
+- Function to get all possible placements for a ship length given board (avoiding misses).
+- For each unknown cell, sum over placements covering it.
+- Choose max.
+
+But this might be heavy to compute every turn. 10x10 grid, ships lengths up to 5. Number of placements per ship: for length L, horizontal: 10*(11-L) = up to 60, vertical same. So total placements for all ships: ~ (60+60)*5 = 600. For each cell (100), check each placement (600) = 60,000 operations, which is fine in 1 second.
+
+I'll implement this.
+
+Edge cases:
+- When a ship is sunk, hits are still 1, but no unknown neighbors. My algorithm will ignore hits with no unknown neighbors.
+- I should mark cells around sunk ships as misses? No, the board already has misses where I shot. But when a ship is sunk, all its cells are hits (1), and surrounding water might be unknown. I don't automatically know which hits form a sunk ship. So I need to detect sunk ships: if all cells of a ship are hit, then it's sunk. But I don't know ship positions.
+
+Simpler: ignore sunk ship detection; just target based on hits with unknown neighbors. If a hit has no unknown neighbors, it's either isolated or part of a sunk ship; skip it.
+
+Implementation details:
+- Use list of ship lengths: [5,4,3,3,2]
+- For probability, weight by ship length? Maybe not needed.
+
+Let me write the code.
+</thinking>
+
+<code>
+import random
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """Return (row, col) for next shot."""
+    size = 10
+    # Ship lengths (we assume all are still alive for probability calculation)
+    ship_lengths = [5, 4, 3, 3, 2]
+    
+    # Helper to get cell value safely
+    def get_cell(r, c):
+        if 0 <= r < size and 0 <= c < size:
+            return board[r][c]
+        return None
+    
+    # 1. Target mode: find hits that have unknown neighbors
+    hits_with_unknown = []
+    for r in range(size):
+        for c in range(size):
+            if board[r][c] == 1:  # hit
+                # Check if any adjacent cell is unknown (0)
+                neighbors = [(r-1, c), (r+1, c), (r, c-1), (r, c+1)]
+                for nr, nc in neighbors:
+                    if 0 <= nr < size and 0 <= nc < size and board[nr][nc] == 0:
+                        hits_with_unknown.append((r, c))
+                        break
+    
+    if hits_with_unknown:
+        # Try to find connected hits to determine orientation
+        # Group hits that are adjacent in a line
+        # For simplicity, for each hit, check if it has a neighbor hit in horizontal or vertical direction
+        # Then target the ends of the line
+        processed = set()
+        for r, c in hits_with_unknown:
+            if (r, c) in processed:
+                continue
+            # Check horizontal line
+            line = [(r, c)]
+            # left
+            cr, cc = r, c
+            while cc > 0 and board[cr][cc-1] == 1:
+                cc -= 1
+                line.append((cr, cc))
+            # right
+            cr, cc = r, c
+            while cc < size-1 and board[cr][cc+1] == 1:
+                cc += 1
+                line.append((cr, cc))
+            line = list(set(line))
+            if len(line) > 1:
+                # We have a horizontal line, target leftmost or rightmost unknown neighbor
+                line.sort(key=lambda x: x[1])
+                leftmost = line[0]
+                rightmost = line[-1]
+                # Check left of leftmost
+                if leftmost[1] > 0 and board[leftmost[0]][leftmost[1]-1] == 0:
+                    return (leftmost[0], leftmost[1]-1)
+                # Check right of rightmost
+                if rightmost[1] < size-1 and board[rightmost[0]][rightmost[1]+1] == 0:
+                    return (rightmost[0], rightmost[1]+1)
+                processed.update(line)
+                continue
+            
+            # Check vertical line
+            line = [(r, c)]
+            # up
+            cr, cc = r, c
+            while cr > 0 and board[cr-1][cc] == 1:
+                cr -= 1
+                line.append((cr, cc))
+            # down
+            cr, cc = r, c
+            while cr < size-1 and board[cr+1][cc] == 1:
+                cr += 1
+                line.append((cr, cc))
+            line = list(set(line))
+            if len(line) > 1:
+                # Vertical line
+                line.sort(key=lambda x: x[0])
+                topmost = line[0]
+                bottommost = line[-1]
+                # Check above topmost
+                if topmost[0] > 0 and board[topmost[0]-1][topmost[1]] == 0:
+                    return (topmost[0]-1, topmost[1])
+                # Check below bottommost
+                if bottommost[0] < size-1 and board[bottommost[0]+1][bottommost[1]] == 0:
+                    return (bottommost[0]+1, bottommost[1])
+                processed.update(line)
+                continue
+            
+            # Single hit, target any unknown neighbor
+            neighbors = [(r-1, c), (r+1, c), (r, c-1), (r, c+1)]
+            random.shuffle(neighbors)  # Shuffle to avoid bias
+            for nr, nc in neighbors:
+                if 0 <= nr < size and 0 <= nc < size and board[nr][nc] == 0:
+                    return (nr, nc)
+    
+    # 2. Hunt mode: probability density targeting
+    # For each unknown cell, compute how many possible ship placements cover it
+    density = [[0 for _ in range(size)] for _ in range(size)]
+    
+    # Precompute all possible placements for each ship length
+    # A placement is a list of (r,c) cells
+    for length in ship_lengths:
+        # Horizontal placements
+        for r in range(size):
+            for c in range(size - length + 1):
+                # Check if all cells in this placement are not misses (-1)
+                valid = True
+                for i in range(length):
+                    if board[r][c+i] == -1:
+                        valid = False
+                        break
+                if valid:
+                    for i in range(length):
+                        density[r][c+i] += 1
+        # Vertical placements
+        for r in range(size - length + 1):
+            for c in range(size):
+                valid = True
+                for i in range(length):
+                    if board[r+i][c] == -1:
+                        valid = False
+                        break
+                if valid:
+                    for i in range(length):
+                        density[r+i][c] += 1
+    
+    # Find unknown cells with maximum density
+    max_density = -1
+    candidates = []
+    for r in range(size):
+        for c in range(size):
+            if board[r][c] == 0:  # unknown
+                if density[r][c] > max_density:
+                    max_density = density[r][c]
+                    candidates = [(r, c)]
+                elif density[r][c] == max_density:
+                    candidates.append((r, c))
+    
+    if candidates:
+        # Tie-break: prefer cells with parity (even sum) for checkerboard pattern in early game
+        # Count how many unknown cells remain to decide if early game
+        unknown_count = sum(1 for row in board for cell in row if cell == 0)
+        if unknown_count > 50:  # early game
+            # Filter to cells with even parity (row+col even)
+            even_candidates = [(r, c) for (r, c) in candidates if (r + c) % 2 == 0]
+            if even_candidates:
+                candidates = even_candidates
+        return random.choice(candidates)
+    
+    # Fallback: should not happen, but return any unknown cell
+    for r in range(size):
+        for c in range(size):
+            if board[r][c] == 0:
+                return (r, c)
+    return (0, 0)  # should never reach here
+</code>

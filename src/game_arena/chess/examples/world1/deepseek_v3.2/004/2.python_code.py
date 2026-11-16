@@ -1,0 +1,112 @@
+
+import random
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    # Determine my color code
+    my_color = 'w' if to_play == 'white' else 'b'
+    opp_color = 'b' if my_color == 'w' else 'w'
+
+    # Piece values
+    piece_value = {'Q': 9, 'R': 5, 'B': 3, 'N': 3, 'P': 1, 'K': 0}
+
+    # Helper: get piece at square
+    def piece_at(sq):
+        return pieces.get(sq, None)
+
+    # Helper: if move is capture, return captured piece value
+    def capture_value(move):
+        if 'x' not in move:
+            return 0
+        # Find the target square after 'x'
+        parts = move.split('x')
+        target = parts[-1][:2]  # e.g., 'xf5' -> 'f5'
+        captured = piece_at(target)
+        if captured and captured[0] == opp_color:
+            return piece_value.get(captured[1], 0)
+        return 0
+
+    # 1. Checkmate
+    for move in legal_moves:
+        if '#' in move:
+            return move
+
+    # 2. Capture queen
+    queen_captures = []
+    for move in legal_moves:
+        if capture_value(move) == 9:
+            queen_captures.append(move)
+    if queen_captures:
+        # Prioritize queen capture with check
+        for move in queen_captures:
+            if '+' in move:
+                return move
+        return queen_captures[0]
+
+    # 3. Capture rook/bishop/knight (value 5,3,3)
+    best_capture_val = 0
+    best_capture_moves = []
+    for move in legal_moves:
+        val = capture_value(move)
+        if val > best_capture_val:
+            best_capture_val = val
+            best_capture_moves = [move]
+        elif val == best_capture_val and val > 0:
+            best_capture_moves.append(move)
+    if best_capture_val > 0:
+        # Choose one with check if possible
+        for move in best_capture_moves:
+            if '+' in move:
+                return move
+        return best_capture_moves[0]
+
+    # 4. Promote pawn to queen
+    for move in legal_moves:
+        if '=Q' in move:
+            return move
+
+    # 5. Capture pawn
+    for move in legal_moves:
+        if capture_value(move) == 1:
+            # Prefer capture with check
+            if '+' in move:
+                return move
+    for move in legal_moves:
+        if capture_value(move) == 1:
+            return move
+
+    # 6. Castle kingside
+    if 'O-O' in legal_moves:
+        return 'O-O'
+
+    # 7. Castle queenside
+    if 'O-O-O' in legal_moves:
+        return 'O-O-O'
+
+    # 8. Develop knights/bishops
+    # Knights: move to center squares
+    center_squares = ['e4', 'd4', 'e5', 'd5', 'c3', 'f3', 'c6', 'f6']
+    for move in legal_moves:
+        # move is e.g., 'Nc3', 'Nge2', 'Bd3'
+        if move[0] in ('N', 'B'):
+            # target square last two chars
+            target = move[-2:]
+            if target in center_squares:
+                return move
+
+    # 9. Move central pawns
+    central_pawn_moves = ['e4', 'd4', 'e5', 'd5']
+    for move in legal_moves:
+        if move in central_pawn_moves:
+            return move
+
+    # 10. Avoid moving king if possible
+    non_king_moves = [m for m in legal_moves if not m.startswith('K')]
+    if non_king_moves:
+        # pick one with check if any
+        for move in non_king_moves:
+            if '+' in move:
+                return move
+        return non_king_moves[0]
+
+    # 11. Default: random legal move
+    return legal_moves[0]

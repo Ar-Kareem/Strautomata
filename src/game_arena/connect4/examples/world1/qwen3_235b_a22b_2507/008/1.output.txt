@@ -1,0 +1,276 @@
+<thinking>
+To create a strong Connect 4 AI, I'll implement a minimax algorithm with alpha-beta pruning and a heuristic evaluation function. This is a classic and effective approach for Connect 4, which is a solved game (first player can force a win with perfect play).
+
+Key design decisions:
+- Use minimax with alpha-beta pruning to search several moves ahead
+- Implement a powerful evaluation function that scores positions based on potential winning threats
+- Prioritize center columns (they offer more winning opportunities)
+- Use bitboard-style evaluation without actual bitboards for readability
+- Add move ordering to improve alpha-beta pruning efficiency
+- Limit search depth to ensure we stay under the 1-second time limit
+
+The evaluation function will look for:
+- Completed 4-in-a-row (win)
+- 3-in-a-row with open ends (threats)
+- 2-in-a-row with open ends
+- Control of the center column
+- Potential forks (multiple winning threats)
+
+I'll use iterative deepening to make the best use of available time, but for simplicity and to guarantee we return within time, I'll cap at depth 6-7 which should be sufficient for strong play.
+</thinking>
+<code>
+import numpy as np
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> int:
+    """
+    Connect 4 AI policy using minimax with alpha-beta pruning.
+    Returns the best column to play in.
+    """
+    # Convert to numpy array for easier manipulation
+    grid = np.array(board)
+    
+    # Get valid moves (non-full columns)
+    def get_valid_moves(board):
+        return [col for col in range(7) if board[0][col] == 0]
+    
+    # Check if a move is valid
+    def is_valid_move(board, col):
+        return board[0][col] == 0
+    
+    # Make a move on the board
+    def make_move(board, col, player):
+        new_board = board.copy()
+        for row in range(5, -1, -1):
+            if new_board[row][col] == 0:
+                new_board[row][col] = player
+                return new_board, (row, col)
+        return new_board, None
+    
+    # Check if the board is full
+    def is_board_full(board):
+        return all(board[0][col] != 0 for col in range(7))
+    
+    # Evaluate position with a heuristic function
+    def evaluate(board, last_move=None):
+        if last_move is None:
+            return 0
+            
+        row, col = last_move
+        player = board[row][col]
+        opponent = -player
+        
+        # Check for win
+        if check_winner(board, player, last_move):
+            return 10000 if player == 1 else -10000
+            
+        # Check for opponent win (block threats)
+        if check_winner(board, opponent, None):
+            return -9000 if player == 1 else 9000
+        
+        score = 0
+        
+        # Center control bonus
+        center_col = 3
+        if col == center_col:
+            score += 3
+            
+        # Evaluate potential connecting moves
+        # Look for 3-in-a-row, 2-in-a-row, etc.
+        for dr, dc in [(0,1), (1,0), (1,1), (1,-1)]:
+            count = 1
+            empty = 0
+            
+            # Forward direction
+            r, c = row + dr, col + dc
+            while 0 <= r < 6 and 0 <= c < 7:
+                if board[r][c] == player:
+                    count += 1
+                elif board[r][c] == 0:
+                    empty += 1
+                    break
+                else:
+                    break
+                r, c = r + dr, c + dc
+            
+            # Backward direction
+            r, c = row - dr, col - dc
+            while 0 <= r < 6 and 0 <= c < 7:
+                if board[r][c] == player:
+                    count += 1
+                elif board[r][c] == 0:
+                    empty += 1
+                    break
+                else:
+                    break
+                r, c = r - dr, c - dc
+            
+            # Score based on potential
+            if count >= 3 and empty == 2:
+                score += 50  # Open 3 - very strong
+            elif count == 3 and empty == 1:
+                score += 20  # Half-open 3
+            elif count == 2 and empty == 2:
+                score += 10  # Open 2
+            elif count == 2 and empty == 1:
+                score += 5   # Half-open 2
+        
+        # Bonus for creating multiple threats (potential forks)
+        # This is approximated by having multiple high-potential lines
+        
+        return score if player == 1 else -score
+    
+    # Check if a player has won
+    def check_winner(board, player, last_move=None):
+        if last_move is not None:
+            row, col = last_move
+            # Only check lines that include the last move
+            directions = [(0,1), (1,0), (1,1), (1,-1)]
+            for dr, dc in directions:
+                count = 1
+                
+                # Forward
+                r, c = row + dr, col + dc
+                while 0 <= r < 6 and 0 <= c < 7 and board[r][c] == player:
+                    count += 1
+                    r, c = r + dr, c + dc
+                
+                # Backward
+                r, c = row - dr, col - dc
+                while 0 <= r < 6 and 0 <= c < 7 and board[r][c] == player:
+                    count += 1
+                    r, c = r - dr, c - dc
+                
+                if count >= 4:
+                    return True
+            return False
+        else:
+            # Full board check (used for opponent win detection)
+            # Check horizontal
+            for row in range(6):
+                for col in range(4):
+                    if (board[row][col] == player and 
+                        board[row][col+1] == player and 
+                        board[row][col+2] == player and 
+                        board[row][col+3] == player):
+                        return True
+            # Check vertical
+            for row in range(3):
+                for col in range(7):
+                    if (board[row][col] == player and 
+                        board[row+1][col] == player and 
+                        board[row+2][col] == player and 
+                        board[row+3][col] == player):
+                        return True
+            # Check diagonal /
+            for row in range(3):
+                for col in range(4):
+                    if (board[row][col] == player and 
+                        board[row+1][col+1] == player and 
+                        board[row+2][col+2] == player and 
+                        board[row+3][col+3] == player):
+                        return True
+            # Check diagonal \
+            for row in range(3, 6):
+                for col in range(4):
+                    if (board[row][col] == player and 
+                        board[row-1][col+1] == player and 
+                        board[row-2][col+2] == player and 
+                        board[row-3][col+3] == player):
+                        return True
+            return False
+    
+    # Minimax with alpha-beta pruning
+    def minimax(board, depth, alpha, beta, maximizing_player, last_move=None):
+        valid_moves = get_valid_moves(board)
+        
+        # Terminal conditions
+        if depth == 0 or not valid_moves or is_board_full(board):
+            return evaluate(board, last_move)
+        
+        if maximizing_player:
+            max_eval = float('-inf')
+            for col in valid_moves:
+                if is_valid_move(board, col):
+                    new_board, move_pos = make_move(board, col, 1)
+                    eval_score = minimax(new_board, depth - 1, alpha, beta, False, move_pos)
+                    max_eval = max(max_eval, eval_score)
+                    alpha = max(alpha, eval_score)
+                    if beta <= alpha:
+                        break  # Alpha-beta pruning
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for col in valid_moves:
+                if is_valid_move(board, col):
+                    new_board, move_pos = make_move(board, col, -1)
+                    eval_score = minimax(new_board, depth - 1, alpha, beta, True, move_pos)
+                    min_eval = min(min_eval, eval_score)
+                    beta = min(beta, eval_score)
+                    if beta <= alpha:
+                        break  # Alpha-beta pruning
+            return min_eval
+    
+    # Order moves to improve alpha-beta pruning efficiency
+    def order_moves(moves, board, player):
+        move_scores = []
+        for col in moves:
+            score = 0
+            # Prefer center columns
+            if col == 3:
+                score += 10
+            elif col == 2 or col == 4:
+                score += 5
+            # Simulate move and check for immediate wins/blocking
+            new_board, move_pos = make_move(board, col, player)
+            if check_winner(new_board, player, move_pos):
+                score += 1000  # Immediate win
+            # Check if opponent would win next if we don't block
+            if player == 1:
+                opp_board, opp_move = make_move(board, col, -1)
+                if check_winner(opp_board, -1, opp_move):
+                    score += 500  # Important block
+            move_scores.append((col, score))
+        # Sort by score in descending order
+        move_scores.sort(key=lambda x: x[1], reverse=True)
+        return [col for col, score in move_scores]
+    
+    # Main decision logic
+    valid_moves = get_valid_moves(grid)
+    
+    # If only one move available, take it
+    if len(valid_moves) == 1:
+        return valid_moves[0]
+    
+    # If we can win immediately, do it
+    for col in valid_moves:
+        new_board, move_pos = make_move(grid, col, 1)
+        if check_winner(new_board, 1, move_pos):
+            return col
+    
+    # If we need to block opponent's win, do it
+    for col in valid_moves:
+        new_board, move_pos = make_move(grid, col, -1)
+        if check_winner(new_board, -1, move_pos):
+            return col
+    
+    # Use minimax to look ahead
+    best_move = valid_moves[0]
+    best_value = float('-inf')
+    
+    # Try different depths based on available moves
+    depth = 6  # Good balance of strength and speed
+    
+    # Order moves for better pruning
+    ordered_moves = order_moves(valid_moves, grid, 1)
+    
+    for col in ordered_moves:
+        new_board, move_pos = make_move(grid, col, 1)
+        value = minimax(new_board, depth - 1, float('-inf'), float('inf'), False, move_pos)
+        
+        if value > best_value:
+            best_value = value
+            best_move = col
+    
+    return best_move
+</code>

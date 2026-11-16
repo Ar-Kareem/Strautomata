@@ -1,0 +1,257 @@
+
+import numpy as np
+from collections import deque
+from typing import List, Tuple
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], valid_mask) -> Tuple[int, int]:
+    # Convert to numpy arrays for faster processing
+    board_size = len(valid_mask)
+    
+    # Precompute all valid positions
+    valid_positions = [(r, c) for r in range(board_size) for c in range(board_size) 
+                      if valid_mask[r][c] and (r, c) not in me and (r, c) not in opp]
+    
+    if not valid_positions:
+        return (0, 0)  # Should never happen, but safe fallback
+    
+    # If very early game (first few moves), play centrally
+    if len(me) < 3 and len(opp) < 3:
+        # Prefer central positions
+        center = board_size // 2
+        central_cells = [(center, center), (center, center-1), (center-1, center), 
+                        (center, center+1), (center+1, center)]
+        for cell in central_cells:
+            if cell in valid_positions:
+                return cell
+        # Fallback to any valid move
+        return valid_positions[0]
+    
+    # Check for immediate winning move for us
+    for move in valid_positions:
+        if is_winning_move(move, me, opp, board_size, True):
+            return move
+    
+    # Check for opponent's winning threats to block
+    for move in valid_positions:
+        if is_winning_move(move, opp, me, board_size, False):
+            return move
+    
+    # Score all valid moves and choose best
+    best_score = -float('inf')
+    best_move = valid_positions[0]
+    
+    # Precompute edge sets for faster scoring
+    edges = get_edge_sets(board_size)
+    
+    for move in valid_positions:
+        score = evaluate_move(move, me, opp, board_size, edges)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move
+
+def get_neighbors(pos: Tuple[int, int], board_size: int) -> List[Tuple[int, int]]:
+    """Get hexagonal neighbors for a position"""
+    r, c = pos
+    neighbors = []
+    
+    # Standard orthogonal neighbors
+    if r > 0:
+        neighbors.append((r-1, c))  # Up
+    if r < board_size - 1:
+        neighbors.append((r+1, c))  # Down
+    if c > 0:
+        neighbors.append((r, c-1))  # Left
+    if c < board_size - 1:
+        neighbors.append((r, c+1))  # Right
+    
+    # Diagonal neighbors in hexagonal grid
+    # Left-up and left-down
+    if c > 0:
+        if r > 0:
+            neighbors.append((r-1, c-1))
+        if r < board_size - 1:
+            neighbors.append((r+1, c-1))
+    
+    # Right-up and right-down
+    if c < board_size - 1:
+        if r > 0:
+            neighbors.append((r-1, c+1))
+        if r < board_size - 1:
+            neighbors.append((r+1, c+1))
+    
+    # Filter to valid board positions
+    return [(nr, nc) for nr, nc in neighbors if 0 <= nr < board_size and 0 <= nc < board_size]
+
+def get_edge_sets(board_size: int):
+    """Get sets of positions belonging to each edge"""
+    edges = []
+    
+    # Top edge (row 0)
+    edges.append(set((0, c) for c in range(board_size)))
+    
+    # Bottom edge (row board_size-1)
+    edges.append(set((board_size-1, c) for c in range(board_size)))
+    
+    # Left edge (col 0)
+    edges.append(set((r, 0) for r in range(board_size)))
+    
+    # Right edge (col board_size-1)
+    edges.append(set((r, board_size-1) for r in range(board_size)))
+    
+    # Top-left to bottom-right diagonal edges
+    edges.append(set((r, r) for r in range(board_size)))
+    edges.append(set((r, board_size-1-r) for r in range(board_size)))
+    
+    return edges
+
+def evaluate_move(move: Tuple[int, int], me: List[Tuple[int, int]], opp: List[Tuple[int, int]], 
+                 board_size: int, edges) -> float:
+    """Score a potential move"""
+    r, c = move
+    score = 0.0
+    
+    # Base score for central positions
+    center = board_size / 2
+    distance_from_center = abs(r - center) + abs(c - center)
+    score += (board_size - distance_from_center) * 0.5
+    
+    # Bonus for connecting to existing stones
+    my_stones = set(me)
+    for neighbor in get_neighbors(move, board_size):
+        if neighbor in my_stones:
+            score += 3.0
+        elif neighbor in set(opp):
+            score -= 1.0  # Penalty for being next to opponent
+    
+    # Bonus for approaching edges (helps with bridges/forks)
+    for edge_set in edges:
+        if (r, c) in edge_set:
+            score += 2.0
+        else:
+            # Distance to this edge
+            min_dist = min(abs(r - er) + abs(c - ec) for er, ec in edge_set)
+            score += max(0, 5 - min_dist) * 0.3
+    
+    # Bonus for creating multiple connections
+    connections = 0
+    for neighbor in get_neighbors(move, board_size):
+        if neighbor in my_stones:
+            connections += 1
+    if connections >= 2:
+        score += connections * 1.5
+    
+    # Penalty for being isolated
+    if connections == 0:
+        score -= 2.0
+    
+    # Bonus for potential ring formation
+    if has_potential_ring(move, me, board_size):
+        score += 8.0
+    
+    # Bonus for potential bridge/ fork progress
+    if extends_to_multiple_edges(move, me, edges):
+        score += 6.0
+    
+    return score
+
+def has_potential_ring(move: Tuple[int, int], stones: List[Tuple[int, int]], board_size: int) -> bool:
+    """Check if adding this stone creates potential for a ring"""
+    # Simplified check: look for cycles of length >= 6
+    stone_set = set(stones) | {move}
+    
+    # BFS from each stone to find cycles
+    for start in stone_set:
+        visited = set()
+        stack = [(start, None)]  # (node, parent)
+        
+        while stack:
+            current, parent = stack.pop()
+            if current in visited:
+                if current != parent:
+                    # Found a cycle, check size
+                    return True
+                continue
+            visited.add(current)
+            
+            for neighbor in get_neighbors(current, board_size):
+                if neighbor in stone_set:
+                    if neighbor != parent:
+                        stack.append((neighbor, current))
+    
+    return False
+
+def extends_to_multiple_edges(move: Tuple[int, int], stones: List[Tuple[int, int]], edges) -> bool:
+    """Check if this stone extends connections to multiple edges"""
+    stone_set = set(stones) | {move}
+    connected_edges = set()
+    
+    # DFS to find which edges are connected
+    visited = set()
+    stack = [move]
+    
+    while stack:
+        current = stack.pop()
+        if current in visited:
+            continue
+        visited.add(current)
+        
+        # Check if current position is on any edge
+        for i, edge_set in enumerate(edges):
+            if current in edge_set:
+                connected_edges.add(i)
+        
+        # Continue DFS through connected stones
+        for neighbor in get_neighbors(current, len(edges[0])):
+            if neighbor in stone_set and neighbor not in visited:
+                stack.append(neighbor)
+    
+    return len(connected_edges) >= 2
+
+def is_winning_move(move: Tuple[int, int], player_stones: List[Tuple[int, int]], 
+                   opponent_stones: List[Tuple[int, int]], board_size: int, 
+                   check_immediate: bool) -> bool:
+    """
+    Check if placing a stone at 'move' creates a winning structure.
+    Simplified version for speed - focuses on obvious immediate wins.
+    """
+    if check_immediate:
+        # For immediate wins, check if we complete a bridge between two corners
+        stone_set = set(player_stones) | {move}
+        
+        # Check corners
+        corners = [(0, 0), (0, board_size-1), (board_size-1, 0), (board_size-1, board_size-1)]
+        occupied_corners = [c for c in corners if c in stone_set]
+        
+        # If we have at least 2 corners occupied, check connection
+        if len(occupied_corners) >= 2:
+            # Simple BFS between corners
+            for i in range(len(occupied_corners)):
+                for j in range(i+1, len(occupied_corners)):
+                    if are_connected(occupied_corners[i], occupied_corners[j], stone_set, board_size):
+                        return True
+    
+    return False
+
+def are_connected(pos1: Tuple[int, int], pos2: Tuple[int, int], stone_set: set, 
+                 board_size: int) -> bool:
+    """BFS check if two positions are connected through stones"""
+    if pos1 not in stone_set or pos2 not in stone_set:
+        return False
+    
+    visited = set()
+    queue = deque([pos1])
+    
+    while queue:
+        current = queue.popleft()
+        if current == pos2:
+            return True
+        
+        visited.add(current)
+        
+        for neighbor in get_neighbors(current, board_size):
+            if neighbor in stone_set and neighbor not in visited:
+                queue.append(neighbor)
+    
+    return False

@@ -1,0 +1,110 @@
+
+import numpy as np
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    # Convert to numpy for easier manipulation
+    board = np.array(board)
+    
+    # Find all empty cells
+    empty_cells = []
+    for i in range(4):
+        for j in range(4):
+            if board[i][j] == 0:
+                empty_cells.append((i, j))
+    
+    # If board is empty, take center for good positioning
+    if len(empty_cells) == 16:
+        return (1, 1)
+    
+    # Check if we can win in one move
+    for i, j in empty_cells:
+        board[i][j] = 1
+        if check_win(board, 1):
+            board[i][j] = 0
+            return (i, j)
+        board[i][j] = 0
+    
+    # Check if opponent can win in one move, block them
+    for i, j in empty_cells:
+        board[i][j] = -1
+        if check_win(board, -1):
+            board[i][j] = 0
+            return (i, j)
+        board[i][j] = 0
+    
+    # If no immediate win or block, use score-based evaluation
+    best_move = empty_cells[0]
+    best_score = float('-inf')
+    
+    for i, j in empty_cells:
+        # Place our mark
+        board[i][j] = 1
+        score = evaluate_board(board, 1)
+        board[i][j] = 0
+        
+        if score > best_score:
+            best_score = score
+            best_move = (i, j)
+    
+    return best_move
+
+def check_win(board: np.ndarray, player: int) -> bool:
+    # Check rows
+    for i in range(4):
+        if np.all(board[i, :] == player):
+            return True
+    
+    # Check columns
+    for j in range(4):
+        if np.all(board[:, j] == player):
+            return True
+    
+    # Check diagonals
+    if np.all(np.diag(board) == player):
+        return True
+    if np.all(np.diag(np.fliplr(board)) == player):
+        return True
+    
+    return False
+
+def evaluate_board(board: np.ndarray, player: int) -> int:
+    opponent = -player
+    score = 0
+    
+    # Check all rows
+    for i in range(4):
+        line = board[i, :]
+        score += evaluate_line(line, player, opponent)
+    
+    # Check all columns
+    for j in range(4):
+        line = board[:, j]
+        score += evaluate_line(line, player, opponent)
+    
+    # Check diagonals
+    diag1 = np.diag(board)
+    diag2 = np.diag(np.fliplr(board))
+    score += evaluate_line(diag1, player, opponent)
+    score += evaluate_line(diag2, player, opponent)
+    
+    return score
+
+def evaluate_line(line: np.ndarray, player: int, opponent: int) -> int:
+    player_count = np.sum(line == player)
+    opponent_count = np.sum(line == opponent)
+    empty_count = np.sum(line == 0)
+    
+    # If line is blocked (has both player and opponent), it's worthless
+    if player_count > 0 and opponent_count > 0:
+        return 0
+    
+    # Score based on how close to completion
+    if player_count > 0:
+        # Our line - more pieces = exponentially better
+        return 10 ** player_count
+    elif opponent_count > 0:
+        # Opponent's line - more pieces = bad
+        return -(10 ** opponent_count)
+    
+    return 0

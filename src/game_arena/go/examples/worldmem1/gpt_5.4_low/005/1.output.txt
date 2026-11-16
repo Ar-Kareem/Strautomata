@@ -1,0 +1,298 @@
+The strategy for this policy is:
+
+- Always return a legal move, with pass `(0, 0)` as a fallback.
+- Use full legality checking for:
+  - occupied points
+  - suicide
+  - simple ko prevention using memory of the board after our previous move
+- Prefer strong tactical moves:
+  - immediate captures
+  - saving our groups in atari
+  - putting opponent groups into atari
+- Avoid bad moves:
+  - self-atari
+  - filling our own obvious eyes
+- Use light positional heuristics:
+  - prefer moves near existing stones
+  - prefer central / star-point development in the opening
+  - prefer moves that create liberties and local influence
+
+This is not a full Go engine, but it is a practical tactical policy that is fast, legal, and much stronger than random or purely greedy play.
+
+<code>
+from typing import List, Tuple, Dict
+
+BOARD_SIZE = 19
+DIRS = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+STAR_POINTS = [(4, 4), (4, 10), (4, 16),
+               (10, 4), (10, 10), (10, 16),
+               (16, 4), (16, 10), (16, 16)]
+
+
+def in_bounds(r: int, c: int) -> bool:
+    return 1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE
+
+
+def build_board(me: List[Tuple[int, int]], opponent: List[Tuple[int, int]]):
+    board = [[0] * (BOARD_SIZE + 1) for _ in range(BOARD_SIZE + 1)]
+    for r, c in me:
+        if in_bounds(r, c):
+            board[r][c] = 1
+    for r, c in opponent:
+        if in_bounds(r, c):
+            board[r][c] = -1
+    return board
+
+
+def board_signature(board):
+    me = []
+    opp = []
+    for r in range(1, BOARD_SIZE + 1):
+        row = board[r]
+        for c in range(1, BOARD_SIZE + 1):
+            v = row[c]
+            if v == 1:
+                me.append((r, c))
+            elif v == -1:
+                opp.append((r, c))
+    return (tuple(me), tuple(opp))
+
+
+def group_and_liberties(board, start):
+    color = board[start[0]][start[1]]
+    stack = [start]
+    seen = {start}
+    group = []
+    libs = set()
+    while stack:
+        r, c = stack.pop()
+        group.append((r, c))
+        for dr, dc in DIRS:
+            nr, nc = r + dr, c + dc
+            if not in_bounds(nr, nc):
+                continue
+            v = board[nr][nc]
+            if v == 0:
+                libs.add((nr, nc))
+            elif v == color and (nr, nc) not in seen:
+                seen.add((nr, nc))
+                stack.append((nr, nc))
+    return group, libs
+
+
+def is_eye_like(board, r, c, color=1):
+    own = 0
+    empty = 0
+    enemy = 0
+    count = 0
+    for dr, dc in DIRS:
+        nr, nc = r + dr, c + dc
+        if not in_bounds(nr, nc):
+            continue
+        count += 1
+        v = board[nr][nc]
+        if v == color:
+            own += 1
+        elif v == 0:
+            empty += 1
+        else:
+            enemy += 1
+    return enemy == 0 and empty == 0 and own == count and count >= 3
+
+
+def simulate_move(board, r, c, ko_forbid=None):
+    if not in_bounds(r, c):
+        return False, 0, 0, None
+    if board[r][c] != 0:
+        return False, 0, 0, None
+
+    b2 = [row[:] for row in board]
+    b2[r][c] = 1
+    captured = 0
+    checked = set()
+
+    for dr, dc in DIRS:
+        nr, nc = r + dr, c + dc
+        if in_bounds(nr, nc) and b2[nr][nc] == -1 and (nr, nc) not in checked:
+            grp, libs = group_and_liberties(b2, (nr, nc))
+            checked.update(grp)
+            if not libs:
+                captured += len(grp)
+                for gr, gc in grp:
+                    b2[gr][gc] = 0
+
+    my_grp, my_libs = group_and_liberties(b2, (r, c))
+    if not my_libs:
+        return False, 0, 0, None
+
+    if ko_forbid is not None:
+        sig = board_signature(b2)
+        if sig == ko_forbid:
+            return False, 0, 0, None
+
+    return True, captured, len(my_libs), b2
+
+
+def candidate_moves(board, total_stones):
+    empties = []
+    near = set()
+    stones = []
+
+    for r in range(1, BOARD_SIZE + 1):
+        for c in range(1, BOARD_SIZE + 1):
+            if board[r][c] == 0:
+                empties.append((r, c))
+            else:
+                stones.append((r, c))
+
+    if total_stones == 0:
+        return [(10, 10)] + STAR_POINTS
+
+    if total_stones < 6:
+        opening = [(10, 10)] + STAR_POINTS + [(4, 10), (10, 4), (10, 16), (16, 10)]
+        for mv in opening:
+            if board[mv[0]][mv[1]] == 0:
+                near.add(mv)
+
+    for r, c in stones:
+        for dr in range(-2, 3):
+            for dc in range(-2, 3):
+                nr, nc = r + dr, c + dc
+                if in_bounds(nr, nc) and board[nr][nc] == 0:
+                    near.add((nr, nc))
+
+    if near:
+        return list(near)
+    return empties
+
+
+def score_move(board, r, c, total_stones, ko_forbid):
+    legal, captured, self_libs, _ = simulate_move(board, r, c, ko_forbid)
+    if not legal:
+        return None
+
+    score = 0.0
+    score += captured * 100.0
+    score += self_libs * 2.5
+
+    adj_own = 0
+    adj_enemy = 0
+    adj_empty = 0
+
+    seen_enemy = set()
+    seen_own = set()
+
+    for dr, dc in DIRS:
+        nr, nc = r + dr, c + dc
+        if not in_bounds(nr, nc):
+            continue
+        v = board[nr][nc]
+        if v == 1:
+            adj_own += 1
+            if (nr, nc) not in seen_own:
+                grp, libs = group_and_liberties(board, (nr, nc))
+                seen_own.update(grp)
+                if len(libs) == 1 and (r, c) in libs:
+                    score += 35 + 4 * len(grp)
+        elif v == -1:
+            adj_enemy += 1
+            if (nr, nc) not in seen_enemy:
+                grp, libs = group_and_liberties(board, (nr, nc))
+                seen_enemy.update(grp)
+                if (r, c) in libs:
+                    if len(libs) == 1:
+                        score += 40 + 6 * len(grp)
+                    elif len(libs) == 2:
+                        score += 18 + 3 * len(grp)
+                    elif len(libs) == 3:
+                        score += 6 + 1.5 * len(grp)
+        else:
+            adj_empty += 1
+
+    score += adj_own * 3.0
+    score += adj_enemy * 2.0
+    score += adj_empty * 1.0
+
+    if self_libs == 1 and captured == 0:
+        score -= 80.0
+    elif self_libs == 2 and captured == 0:
+        score -= 12.0
+
+    if is_eye_like(board, r, c, 1) and captured == 0:
+        score -= 60.0
+
+    # Opening / positional bonus
+    center_dist = abs(r - 10) + abs(c - 10)
+    if total_stones < 20:
+        score += max(0.0, 10.0 - 0.7 * center_dist)
+    elif total_stones < 80:
+        score += max(0.0, 5.0 - 0.3 * center_dist)
+
+    # Gentle preference for star points early
+    if total_stones < 12 and (r, c) in STAR_POINTS:
+        score += 6.0
+    if total_stones < 8 and (r, c) == (10, 10):
+        score += 8.0
+
+    # Small edge penalty very early
+    if total_stones < 10:
+        if r in (1, 19) or c in (1, 19):
+            score -= 6.0
+        elif r in (2, 18) or c in (2, 18):
+            score -= 2.5
+
+    return score
+
+
+def choose_legal_fallback(board, ko_forbid):
+    # Prefer any legal move; if none, pass.
+    for r in range(1, BOARD_SIZE + 1):
+        for c in range(1, BOARD_SIZE + 1):
+            legal, _, _, _ = simulate_move(board, r, c, ko_forbid)
+            if legal:
+                return (r, c)
+    return (0, 0)
+
+
+def policy(me: List[Tuple[int, int]], opponent: List[Tuple[int, int]], memory: Dict) -> Tuple[Tuple[int, int], Dict]:
+    if memory is None:
+        memory = {}
+
+    board = build_board(me, opponent)
+    total_stones = len(me) + len(opponent)
+    ko_forbid = memory.get("ko_forbid")
+
+    moves = candidate_moves(board, total_stones)
+
+    best_move = None
+    best_score = None
+
+    for r, c in moves:
+        s = score_move(board, r, c, total_stones, ko_forbid)
+        if s is None:
+            continue
+        if best_score is None or s > best_score:
+            best_score = s
+            best_move = (r, c)
+
+    if best_move is None:
+        # Scan whole board to guarantee legality
+        best_move = choose_legal_fallback(board, ko_forbid)
+        if best_move == (0, 0):
+            return (0, 0), {}
+
+    # Store resulting board after our move for simple ko checking next turn
+    legal, _, _, b2 = simulate_move(board, best_move[0], best_move[1], ko_forbid)
+    if not legal:
+        # Extremely defensive fallback
+        fallback = choose_legal_fallback(board, ko_forbid)
+        if fallback == (0, 0):
+            return (0, 0), {}
+        legal, _, _, b2 = simulate_move(board, fallback[0], fallback[1], ko_forbid)
+        if not legal:
+            return (0, 0), {}
+        best_move = fallback
+
+    new_memory = {"ko_forbid": board_signature(b2)}
+    return best_move, new_memory
+</code>

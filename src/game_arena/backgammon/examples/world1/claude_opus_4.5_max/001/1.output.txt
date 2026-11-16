@@ -1,0 +1,166 @@
+Looking at this Backgammon challenge, I need to create a policy that:
+1. Generates all legal moves given the current state and dice
+2. Evaluates each move based on positional heuristics
+3. Returns the best move in the required format
+
+**My Strategy:**
+- **Move Generation**: Handle bar entry, normal moves, and bearing off with proper legal move checking
+- **Evaluation considers**:
+  - Borne off checkers (highest priority)
+  - Hitting opponent blots (valuable)
+  - Pip count / race progress
+  - Blot danger (penalize exposed checkers based on opponent shot possibilities)
+  - Made points (especially in home board and opponent's home for anchors)
+  - Prime detection (consecutive blocking points)
+  - Avoiding stacked checkers (>3 on one point is wasteful)
+  - Back checkers penalty (checkers deep in opponent territory)
+
+<code>
+def policy(state: dict) -> str:
+    dice = state.get('dice', [])
+    if len(dice) == 0:
+        return "H:P,P"
+    
+    legal_moves = find_all_legal_moves(state)
+    if not legal_moves:
+        return "H:P,P"
+    
+    return max(legal_moves, key=lambda m: evaluate(state, m))
+
+def find_all_legal_moves(state):
+    dice, my_pts, opp_pts, my_bar = state['dice'], list(state['my_pts']), list(state['opp_pts']), state['my_bar']
+    
+    if len(dice) == 1:
+        moves = [f"H:{src},P" for src in get_legal_sources(my_pts, opp_pts, my_bar, dice[0])]
+        return moves if moves else ["H:P,P"]
+    
+    high_die, low_die = max(dice), min(dice)
+    two_die_moves = set()
+    
+    for src1 in get_legal_sources(my_pts, opp_pts, my_bar, high_die):
+        new_state = apply_move_to_state(my_pts, opp_pts, my_bar, src1, high_die)
+        for src2 in get_legal_sources(*new_state, low_die):
+            two_die_moves.add(f"H:{src1},{src2}")
+    
+    if high_die != low_die:
+        for src1 in get_legal_sources(my_pts, opp_pts, my_bar, low_die):
+            new_state = apply_move_to_state(my_pts, opp_pts, my_bar, src1, low_die)
+            for src2 in get_legal_sources(*new_state, high_die):
+                two_die_moves.add(f"L:{src1},{src2}")
+    
+    if two_die_moves:
+        return list(two_die_moves)
+    
+    moves = [f"H:{src},P" for src in get_legal_sources(my_pts, opp_pts, my_bar, high_die)]
+    if moves:
+        return moves
+    moves = [f"L:{src},P" for src in get_legal_sources(my_pts, opp_pts, my_bar, low_die)]
+    return moves if moves else ["H:P,P"]
+
+def get_legal_sources(my_pts, opp_pts, my_bar, die):
+    sources = []
+    if my_bar > 0:
+        entry_point = 24 - die
+        if opp_pts[entry_point] < 2:
+            sources.append('B')
+        return sources
+    
+    can_bear_off = sum(my_pts[6:]) == 0
+    for pt in range(24):
+        if my_pts[pt] > 0:
+            dest = pt - die
+            if dest >= 0:
+                if opp_pts[dest] < 2:
+                    sources.append(f'A{pt}')
+            elif can_bear_off:
+                if dest == -1 or (dest < -1 and not any(my_pts[i] > 0 for i in range(pt + 1, 6))):
+                    sources.append(f'A{pt}')
+    return sources
+
+def apply_move_to_state(my_pts, opp_pts, my_bar, src, die):
+    my_pts, opp_pts, new_bar = list(my_pts), list(opp_pts), my_bar
+    if src == 'B':
+        dest = 24 - die
+        new_bar -= 1
+        my_pts[dest] += 1
+        if opp_pts[dest] == 1:
+            opp_pts[dest] = 0
+    elif src.startswith('A'):
+        pt = int(src[1:])
+        dest = pt - die
+        my_pts[pt] -= 1
+        if dest >= 0:
+            my_pts[dest] += 1
+            if opp_pts[dest] == 1:
+                opp_pts[dest] = 0
+    return my_pts, opp_pts, new_bar
+
+def evaluate(state, move):
+    order, parts = move[0], move[2:].split(',')
+    src1, src2 = parts[0], parts[1]
+    dice = state['dice']
+    
+    if len(dice) == 2:
+        high_die, low_die = max(dice), min(dice)
+        die1, die2 = (high_die, low_die) if order == 'H' else (low_die, high_die)
+    else:
+        die1, die2 = (dice[0] if dice else 0), 0
+    
+    my_pts, opp_pts = list(state['my_pts']), list(state['opp_pts'])
+    my_bar, my_off, hits = state['my_bar'], state['my_off'], 0
+    
+    if src1 != 'P' and die1 > 0:
+        my_pts, opp_pts, my_bar, my_off, hit = apply_move(my_pts, opp_pts, my_bar, my_off, src1, die1)
+        hits += hit
+    if src2 != 'P' and die2 > 0:
+        my_pts, opp_pts, my_bar, my_off, hit = apply_move(my_pts, opp_pts, my_bar, my_off, src2, die2)
+        hits += hit
+    
+    score = my_off * 30 + hits * 18
+    pip_count = sum((pt + 1) * my_pts[pt] for pt in range(24)) + my_bar * 25
+    score -= pip_count * 0.1
+    
+    for pt in range(24):
+        if my_pts[pt] == 1:
+            score -= blot_danger(opp_pts, state['opp_bar'], pt)
+        if my_pts[pt] >= 2:
+            score += 8 if pt <= 5 else (5 if pt <= 11 else (6 if pt >= 18 else 4))
+        if my_pts[pt] > 3:
+            score -= (my_pts[pt] - 3) * 2
+    
+    consec, max_consec = 0, 0
+    for pt in range(24):
+        consec = consec + 1 if my_pts[pt] >= 2 else 0
+        max_consec = max(max_consec, consec)
+    score += max_consec * 7
+    
+    score -= sum(my_pts[pt] for pt in range(12, 24)) * 2.5
+    return score
+
+def apply_move(my_pts, opp_pts, my_bar, my_off, src, die):
+    my_pts, opp_pts, hit = list(my_pts), list(opp_pts), 0
+    if src == 'B':
+        dest = 24 - die
+        my_bar -= 1
+        my_pts[dest] += 1
+        if opp_pts[dest] == 1:
+            opp_pts[dest], hit = 0, 1
+    elif src.startswith('A'):
+        pt = int(src[1:])
+        dest = pt - die
+        my_pts[pt] -= 1
+        if dest >= 0:
+            my_pts[dest] += 1
+            if opp_pts[dest] == 1:
+                opp_pts[dest], hit = 0, 1
+        else:
+            my_off += 1
+    return my_pts, opp_pts, my_bar, my_off, hit
+
+def blot_danger(opp_pts, opp_bar, pt):
+    danger = sum(opp_pts[pt + d] * (7 - d) for d in range(1, 7) if 0 <= pt + d < 24)
+    if opp_bar > 0 and pt <= 5:
+        danger += opp_bar * 4
+    danger += 8 if pt >= 18 else (5 if pt >= 12 else (3 if pt >= 6 else 1))
+    return danger
+</code>

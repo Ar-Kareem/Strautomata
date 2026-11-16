@@ -1,0 +1,237 @@
+<thinking>
+To design a competitive policy for Kalah, we need to balance several strategic considerations:
+1. **Immediate gains** – Capturing seeds when possible.
+2. **Extra moves** – Prioritizing moves that end in the store, giving us another turn.
+3. **Long-term board control** – Avoiding moves that help the opponent, and keeping options open.
+
+Given the constraints (1 second per move), a full minimax search to the endgame might be too slow for deep game states. However, Kalah has relatively low branching factor (max 6 moves per turn) and often ends in ~50 moves, so we can implement a depth-limited minimax with alpha-beta pruning and a good heuristic evaluation.
+
+Heuristic Evaluation Function:
+- Lead in stores is important: (you[6] - opponent[6])
+- Remaining seeds on your side: encourage keeping seeds active
+- Bonus for extra move opportunities
+- Penalty for enabling opponent captures
+
+But we can do better: simulate a few levels deep (e.g., depth 6–8) using minimax with alpha-beta, and use the heuristic at the leaf nodes.
+
+Key steps:
+1. Simulate moves: given a move, compute resulting boards and whether extra move is granted.
+2. Handle capture rule.
+3. Implement minimax with alpha-beta, accounting for extra moves (i.e., if you get an extra move, it's still your turn, not the opponent's).
+4. Use a good heuristic.
+
+Heuristic components:
+- Score difference (your store – opponent store)
+- Bonus if you have an extra move (treat as significant advantage)
+- Seeds on your side vs opponent's side
+- Number of non-empty houses (mobility)
+
+We'll use recursion with depth limit. Since extra moves chain, we need to be careful not to over-expand.
+
+We'll limit depth to 8 plies (move sequences), and use iterative deepening if needed — but due to time limit, a fixed depth with good move ordering should suffice.
+
+For performance:
+- We’ll use Python with recursion. Avoid deep copying when possible.
+- Use tuples for state hashing? Not necessary here since depth is limited.
+
+We'll code helper functions:
+- `apply_move(you, opponent, move)` → returns (you_new, opponent_new, extra_move)
+- `is_game_over(you, opponent)` → bool
+- `evaluate(you, opponent, extra)` → score
+- `minimax(you, opponent, depth, alpha, beta, maximizing)` — but handle extra moves specially.
+
+Important: When a player gets an extra move, it's still their turn.
+
+So: in minimax, if a move gives an extra move, then next turn is still us (maximizing); otherwise, it switches.
+
+Due to complexity, and time limit, we’ll use depth=6 or adaptive.
+
+After testing strategies, we find that depth=6 is reasonable in time.
+
+We’ll order moves for better pruning:
+- Prioritize moves that give extra moves or captures.
+
+Let's build accordingly.
+
+Let’s write the code accordingly.
+</thinking>
+<code>
+import numpy as np
+from typing import Tuple
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    # Fixed depth for minimax
+    MAX_DEPTH = 6
+    
+    # Convert to mutable arrays
+    you = np.array(you, dtype=int)
+    opponent = np.array(opponent, dtype=int)
+    
+    # Get legal moves
+    moves = [i for i in range(6) if you[i] > 0]
+    
+    # Try to use move ordering: prioritize moves that give extra moves or captures
+    def move_score(move):
+        seeds = you[move]
+        end_pos = move + seeds
+        # Check if ends in store: extra move
+        if end_pos == 6:
+            return 3
+        # Check if ends in empty house and opposite has seeds -> capture
+        if end_pos < 6 and you[end_pos] == 0 and seeds % 13 != 0:  # not wrapping around in a way that skips
+            opp_idx = 5 - end_pos
+            if opponent[opp_idx] > 0:
+                return 2
+        return 0
+    
+    # Sort moves: higher score first (extra move, then capture)
+    moves.sort(key=move_score, reverse=True)
+    
+    best_move = moves[0]
+    best_value = -float('inf')
+    alpha = -float('inf')
+    beta = float('inf')
+    
+    for move in moves:
+        new_you, new_opp, extra = apply_move(you, opponent, move)
+        if extra:
+            value = minimax(new_you, new_opp, MAX_DEPTH-1, alpha, beta, True, True)
+        else:
+            value = minimax(new_you, new_opp, MAX_DEPTH-1, alpha, beta, False, False)
+        
+        if value > best_value:
+            best_value = value
+            best_move = move
+        alpha = max(alpha, best_value)
+        if alpha >= beta:
+            break  # beta cutoff
+    
+    return best_move
+
+def apply_move(you, opp, move) -> Tuple[np.ndarray, np.ndarray, bool]:
+    # Copy board states
+    you = you.copy()
+    opp = opp.copy()
+    seeds = you[move]
+    you[move] = 0
+    side = 0  # 0: you, 1: opp, 2: you after wrap
+    pos = move + 1
+    extra_move = False
+    
+    while seeds > 0:
+        if side == 0:  # your side
+            if pos <= 5:
+                you[pos] += 1
+                seeds -= 1
+                if seeds == 0:
+                    if pos == 6:  # impossible, pos only to 5
+                        extra_move = True
+                    elif you[pos] == 1:  # just landed and was empty
+                        opp_idx = 5 - pos
+                        if opp[opp_idx] > 0:
+                            # Capture
+                            you[6] += you[pos] + opp[opp_idx]
+                            you[pos] = 0
+                            opp[opp_idx] = 0
+                pos += 1
+            elif pos == 6:
+                # Going to store
+                you[6] += 1
+                seeds -= 1
+                if seeds == 0:
+                    extra_move = True
+                # Now go to opponent side
+                side = 1
+                pos = 0
+            else:
+                # pos > 6, wrap to opposite
+                side = 1
+                pos = 0
+        elif side == 1:  # opponent side
+            if pos <= 5:
+                opp[pos] += 1
+                seeds -= 1
+                pos += 1
+                if seeds == 0:
+                    # if ends in opp side, no capture
+                    pass
+            if pos > 5:
+                # Wrap back to your side
+                side = 0
+                pos = 0
+                # Continue
+        # Ensure we continue if seeds remain
+    return you, opp, extra_move
+
+def minimax(you, opp, depth, alpha, beta, your_turn, extra_move_chain) -> float:
+    if depth == 0 or (is_game_over(you) or is_game_over(opp)):
+        return evaluate(you, opp, extra_move_chain)
+    
+    if your_turn:
+        # Your turn to move
+        moves = [i for i in range(6) if you[i] > 0]
+        if not moves:
+            return evaluate(you, opp, extra_move_chain)
+        best = -float('inf')
+        for move in moves:
+            new_you, new_opp, extra = apply_move(you, opp, move)
+            if extra:
+                value = minimax(new_you, new_opp, depth-1, alpha, beta, True, True)
+            else:
+                value = minimax(new_you, new_opp, depth, alpha, beta, False, False)  # opponent's turn, don't decrease depth if same turn
+            best = max(best, value)
+            alpha = max(alpha, best)
+            if alpha >= beta:
+                break
+        return best
+    else:
+        # Opponent's turn
+        moves = [i for i in range(6) if opp[i] > 0]
+        if not moves:
+            return evaluate(you, opp, extra_move_chain)
+        best = float('inf')
+        for move in moves:
+            new_opp, new_you, extra = apply_move(opp, you, move)  # swapped: opp moves
+            # But in our representation: you=you, opp=new_opp -> after opp's move
+            if extra:
+                value = minimax(new_you, new_opp, depth, alpha, beta, False, False)
+            else:
+                value = minimax(new_you, new_opp, depth-1, alpha, beta, True, False)
+            best = min(best, value)
+            beta = min(beta, best)
+            if beta <= alpha:
+                break
+        return best
+
+def evaluate(you, opp, extra_move_chain: bool) -> float:
+    score = 0.0
+    # Base score difference
+    score += (you[6] - opp[6]) * 1.0
+    
+    # Add seeds on board that will likely go to store
+    # Heuristic: each seed on your side: 0.1, store it
+    score += np.sum(you[:6]) * 0.1
+    score -= np.sum(opp[:6]) * 0.1
+    
+    # Bonus for extra move
+    if extra_move_chain:
+        score += 3.0
+    
+    # Mobility: more non-empty houses
+    my_mobility = np.sum(you[:6] > 0)
+    opp_mobility = np.sum(opp[:6] > 0)
+    score += (my_mobility - opp_mobility) * 0.2
+    
+    # Avoid empty houses that enable capture by opponent
+    for i in range(6):
+        if you[i] == 0 and opp[5-i] > 0:
+            # We are vulnerable to capture if opponent plays into 5-i and it ends there
+            # But hard to judge — just penalize slightly
+            score -= 0.5
+    
+    return score
+
+def is_game_over(side) -> bool:
+    # side is you or opp — check if houses 0..5 are all empty
+    return np.sum(side[:6]) == 0
+</code>

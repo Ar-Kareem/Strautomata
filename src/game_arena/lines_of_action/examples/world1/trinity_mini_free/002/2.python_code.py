@@ -1,0 +1,98 @@
+
+import numpy as np
+
+def policy(board):
+    # Generate all legal moves
+    moves = []
+    for i in range(8):
+        for j in range(8):
+            if board[i][j] == 1:  # Current player's piece
+                for dx, dy in [(0,1), (1,0), (0,-1), (-1,0), (1,1), (1,-1), (-1,1), (-1,-1)]:
+                    count = 1  # Current piece
+                    step = 1
+                    while True:
+                        ni, nj = i + dx * step, j + dy * step
+                        if not (0 <= ni < 8 and 0 <= nj < 8):
+                            break
+                        if board[ni][nj] == -1:  # Enemy piece blocks
+                            break
+                        if board[ni][nj] == 1:  # Friendly piece
+                            count += 1
+                        step += 1
+                    target_i, target_j = i + dx * count, j + dy * count
+                    if 0 <= target_i < 8 and 0 <= target_j < 8:
+                        if board[target_i][target_j] == 0 or board[target_i][target_j] == -1:
+                            moves.append((i, j, target_i, target_j))
+    
+    # Evaluate board connectivity
+    def evaluate(board):
+        def count_components(board, player):
+            visited = np.zeros((8,8), dtype=bool)
+            components = 0
+            for i in range(8):
+                for j in range(8):
+                    if board[i][j] == player and not visited[i][j]:
+                        components += 1
+                        stack = [(i, j)]
+                        visited[i][j] = True
+                        while stack:
+                            x, y = stack.pop()
+                            for dx, dy in [(0,1), (1,0), (0,-1), (-1,0), (1,1), (1,-1), (-1,1), (-1,-1)]:
+                                nx, ny = x + dx, y + dy
+                                if 0 <= nx < 8 and 0 <= ny < 8 and board[nx][ny] == player and not visited[nx][ny]:
+                                    visited[nx][ny] = True
+                                    stack.append((nx, ny))
+            return components
+        
+        my_components = count_components(board, 1)
+        opp_components = count_components(board, -1)
+        my_pieces = np.sum(board == 1)
+        opp_pieces = np.sum(board == -1)
+        return (my_components - opp_components) + (my_pieces - opp_pieces)
+    
+    # Minimax with alpha-beta pruning
+    def minimax(board, depth, alpha, beta, maximizing):
+        if depth == 0 or np.sum(board == 1) == 0 or np.sum(board == -1) == 0:
+            return evaluate(board)
+        
+        if maximizing:
+            max_eval = -float('inf')
+            for move in moves:
+                i, j, ni, nj = move
+                new_board = np.copy(board)
+                new_board[i][j] = 0
+                new_board[ni][nj] = 1
+                eval = minimax(new_board, depth-1, alpha, beta, False)
+                max_eval = max(max_eval, eval)
+                alpha = max(alpha, eval)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for move in moves:
+                i, j, ni, nj = move
+                new_board = np.copy(board)
+                new_board[i][j] = 0
+                new_board[ni][nj] = -1
+                eval = minimax(new_board, depth-1, alpha, beta, True)
+                min_eval = min(min_eval, eval)
+                beta = min(beta, eval)
+                if beta <= alpha:
+                    break
+            return min_eval
+    
+    # Find best move using minimax
+    best_move = None
+    best_score = -float('inf')
+    for move in moves:
+        i, j, ni, nj = move
+        new_board = np.copy(board)
+        new_board[i][j] = 0
+        new_board[ni][nj] = 1
+        score = minimax(new_board, 2, -float('inf'), float('inf'), False)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return f"{best_move[0]},{best_move[1]}:{best_move[2]},{best_move[3]}"

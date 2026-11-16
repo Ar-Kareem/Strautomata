@@ -1,0 +1,97 @@
+
+def policy(state: list[list[object]], role: str) -> str:
+    """
+    Smart Tic Tac Toe policy implementing optimal heuristic strategy.
+    Priority: Win > Block > Fork > Block Fork > Center > Opposite Corner > Corner > Edge
+    """
+    # Parse state into board representation
+    board = {}
+    empty_cells = []
+    
+    for prop in state:
+        if prop[0] == "cell":
+            row, col, val = prop[1], prop[2], prop[3]
+            board[(row, col)] = val
+            if val == "b":
+                empty_cells.append((row, col))
+    
+    opponent = "o" if role == "x" else "x"
+    
+    # All winning lines (rows, columns, diagonals)
+    lines = [
+        [("1", "1"), ("1", "2"), ("1", "3")],
+        [("2", "1"), ("2", "2"), ("2", "3")],
+        [("3", "1"), ("3", "2"), ("3", "3")],
+        [("1", "1"), ("2", "1"), ("3", "1")],
+        [("1", "2"), ("2", "2"), ("3", "2")],
+        [("1", "3"), ("2", "3"), ("3", "3")],
+        [("1", "1"), ("2", "2"), ("3", "3")],
+        [("1", "3"), ("2", "2"), ("3", "1")],
+    ]
+    
+    def count_in_line(line, player):
+        return sum(1 for cell in line if board.get(cell) == player)
+    
+    def get_empty_in_line(line):
+        return [cell for cell in line if board.get(cell) == "b"]
+    
+    def count_threats_after(cell, player):
+        """Count winning threats after placing a mark at the given cell."""
+        opp = "o" if player == "x" else "x"
+        threat_count = 0
+        for line in lines:
+            if cell in line:
+                our_marks = count_in_line(line, player) + 1
+                opp_marks = count_in_line(line, opp)
+                empty_cnt = len(get_empty_in_line(line)) - 1
+                # Winning threat: 2 of our marks, 1 empty, no opponent marks
+                if our_marks == 2 and opp_marks == 0 and empty_cnt == 1:
+                    threat_count += 1
+        return threat_count
+    
+    # 1. Win immediately if possible
+    for line in lines:
+        empties = get_empty_in_line(line)
+        if count_in_line(line, role) == 2 and count_in_line(line, opponent) == 0 and len(empties) == 1:
+            return f"mark({empties[0][0]},{empties[0][1]})"
+    
+    # 2. Block opponent's winning move
+    for line in lines:
+        empties = get_empty_in_line(line)
+        if count_in_line(line, opponent) == 2 and count_in_line(line, role) == 0 and len(empties) == 1:
+            return f"mark({empties[0][0]},{empties[0][1]})"
+    
+    # 3. Create a fork (two simultaneous winning threats)
+    for cell in empty_cells:
+        if count_threats_after(cell, role) >= 2:
+            return f"mark({cell[0]},{cell[1]})"
+    
+    # 4. Block opponent's fork
+    for cell in empty_cells:
+        if count_threats_after(cell, opponent) >= 2:
+            return f"mark({cell[0]},{cell[1]})"
+    
+    # 5. Take center if available
+    if ("2", "2") in empty_cells:
+        return "mark(2,2)"
+    
+    # 6. Take opposite corner if opponent is in a corner
+    corner_pairs = [(("1", "1"), ("3", "3")), (("1", "3"), ("3", "1"))]
+    for c1, c2 in corner_pairs:
+        if board.get(c1) == opponent and c2 in empty_cells:
+            return f"mark({c2[0]},{c2[1]})"
+        if board.get(c2) == opponent and c1 in empty_cells:
+            return f"mark({c1[0]},{c1[1]})"
+    
+    # 7. Take any empty corner
+    corners = [("1", "1"), ("1", "3"), ("3", "1"), ("3", "3")]
+    for corner in corners:
+        if corner in empty_cells:
+            return f"mark({corner[0]},{corner[1]})"
+    
+    # 8. Take any available cell (edges)
+    if empty_cells:
+        return f"mark({empty_cells[0][0]},{empty_cells[0][1]})"
+    
+    # Fallback (should never reach in valid game)
+    return "mark(1,1)"

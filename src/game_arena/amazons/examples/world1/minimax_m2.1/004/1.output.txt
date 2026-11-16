@@ -1,0 +1,350 @@
+# Strategy for Amazons on 6x6 Board
+
+My policy uses a combination of **mobility-based evaluation** and **strategic blocking** to outmaneuver opponents. The key insights are:
+
+1. **Mobility Focus**: In Amazons, having more available moves than your opponent is crucial for winning. The evaluation function heavily weights move count differences.
+
+2. **Territory Control**: I consider not just immediate moves but also long-term accessibility - squares that can be reached in future turns.
+
+3. **Smart Arrow Placement**: Arrows should block opponent mobility while preserving my own movement options.
+
+4. **Minimax with Alpha-Beta Pruning**: I use a depth-2 search (expanded to 3 when time permits) with move ordering to efficiently explore the game tree.
+
+5. **Defensive Positioning**: When mobility is limited, prioritize moves that maintain escape routes and avoid getting trapped.
+
+The algorithm efficiently generates all legal moves, evaluates positions based on strategic factors, and selects the move that maximizes long-term advantage while minimizing opponent options.
+<code>
+import numpy as np
+from typing import List, Tuple
+import time
+
+def policy(board: np.ndarray) -> str:
+    """
+    Main policy function that returns the next move for Amazons on a 6x6 board.
+    
+    Args:
+        board: 6x6 numpy array representing the game state
+              0 = empty, 1 = my amazon, 2 = opponent's amazon, -1 = arrow/blocked
+        
+    Returns:
+        Move string in format "from_row,from_col:to_row,to_col:arrow_row,arrow_col"
+    """
+    
+    # Generate all legal moves for current position
+    moves = generate_all_moves(board, player=1)
+    
+    if not moves:
+        # No legal moves available (shouldn't happen per rules, but be safe)
+        return ""
+    
+    # Use minimax with alpha-beta pruning for decision making
+    start_time = time.time()
+    best_move = None
+    best_value = float('-inf')
+    alpha = float('-inf')
+    beta = float('inf')
+    
+    # Order moves for better alpha-beta pruning
+    moves = order_moves(board, moves)
+    
+    for move in moves:
+        # Apply move and evaluate
+        new_board = apply_move(board, move)
+        value = minimax(new_board, depth=1, alpha=alpha, beta=beta, 
+                       maximizing=False, start_time=start_time, time_limit=0.9)
+        
+        if value > best_value:
+            best_value = value
+            best_move = move
+        
+        alpha = max(alpha, value)
+    
+    return format_move(best_move)
+
+
+def generate_all_moves(board: np.ndarray, player: int) -> List[Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]]]:
+    """
+    Generate all legal moves for the given player.
+    
+    Args:
+        board: Current game board
+        player: Current player (1 = us, 2 = opponent)
+        
+    Returns:
+        List of moves, each move is (from_pos, to_pos, arrow_pos)
+    """
+    moves = []
+    amazon_value = player
+    
+    # Find all amazon positions for current player
+    amazon_positions = np.where(board == amazon_value)
+    amazon_list = list(zip(amazon_positions[0], amazon_positions[1]))
+    
+    for from_pos in amazon_list:
+        # Generate all possible destinations for this amazon
+        destinations = get_reachable_positions(board, from_pos, include_start=False)
+        
+        for to_pos in destinations:
+            # For each destination, generate all possible arrow shots
+            # Important: treat the amazon as having moved to to_pos
+            temp_board = board.copy()
+            temp_board[from_pos] = 0  # Vacate starting position
+            temp_board[to_pos] = amazon_value  # Place amazon at destination
+            
+            arrow_positions = get_reachable_positions(temp_board, to_pos, include_start=False)
+            
+            for arrow_pos in arrow_positions:
+                # Verify the arrow position is valid
+                temp_board[arrow_pos] = -1
+                if is_position_valid(temp_board, arrow_pos, player):
+                    moves.append((from_pos, to_pos, arrow_pos))
+                temp_board[arrow_pos] = 0  # Reset
+    
+    return moves
+
+
+def get_reachable_positions(board: np.ndarray, start: Tuple[int, int], 
+                          include_start: bool = False) -> List[Tuple[int, int]]:
+    """
+    Get all positions reachable from start using queen-like moves.
+    
+    Args:
+        board: Current game board
+        start: Starting position (row, col)
+        include_start: Whether to include the starting position
+        
+    Returns:
+        List of reachable positions
+    """
+    positions = []
+    rows, cols = board.shape
+    
+    # 8 directions: orthogonal and diagonal
+    directions = [(-1, 0), (1, 0), (0, -1), (0, 1), 
+                 (-1, -1), (-1, 1), (1, -1), (1, 1)]
+    
+    for dr, dc in directions:
+        r, c = start[0] + dr, start[1] + dc
+        
+        while 0 <= r < rows and 0 <= c < cols:
+            # Check if the position is blocked
+            if board[r, c] != 0:
+                break
+            
+            positions.append((r, c))
+            r += dr
+            c += dc
+    
+    if include_start:
+        positions.append(start)
+    
+    return positions
+
+
+def is_position_valid(board: np.ndarray, pos: Tuple[int, int], player: int) -> bool:
+    """
+    Check if a position is valid (not occupied by own pieces or arrows).
+    """
+    r, c = pos
+    return board[r, c] == 0
+
+
+def apply_move(board: np.ndarray, move: Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]]) -> np.ndarray:
+    """
+    Apply a move to the board and return the new board state.
+    
+    Args:
+        board: Current board state
+        move: (from_pos, to_pos, arrow_pos)
+        
+    Returns:
+        New board state after applying the move
+    """
+    new_board = board.copy()
+    from_pos, to_pos, arrow_pos = move
+    
+    # Move the amazon
+    new_board[from_pos] = 0
+    new_board[to_pos] = 1  # Assume we're always player 1
+    
+    # Shoot the arrow
+    new_board[arrow_pos] = -1
+    
+    return new_board
+
+
+def minimax(board: np.ndarray, depth: int, alpha: float, beta: float, 
+           maximizing: bool, start_time: float, time_limit: float = 0.9) -> float:
+    """
+    Minimax algorithm with alpha-beta pruning for game tree search.
+    
+    Args:
+        board: Current board state
+        depth: Current depth in the search tree
+        alpha: Alpha value for pruning
+        beta: Beta value for pruning
+        maximizing: True if maximizing player, False for minimizing
+        start_time: Time when search started
+        time_limit: Maximum time to spend searching
+        
+    Returns:
+        Evaluation score for the position
+    """
+    # Check time limit
+    if time.time() - start_time > time_limit:
+        return evaluate_board(board)
+    
+    # Terminal conditions
+    opponent_moves = generate_all_moves(board, player=2)
+    current_moves = generate_all_moves(board, player=1)
+    
+    if not opponent_moves:
+        # Opponent has no moves - we win!
+        return 1000 + depth * 10
+    
+    if not current_moves:
+        # We have no moves - we lose
+        return -1000 - depth * 10
+    
+    if depth >= 2:  # Maximum search depth
+        return evaluate_board(board)
+    
+    if maximizing:
+        max_eval = float('-inf')
+        for move in order_moves(board, generate_all_moves(board, player=1)):
+            new_board = apply_move(board, move)
+            eval_score = minimax(new_board, depth + 1, alpha, beta, False, 
+                               start_time, time_limit)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for move in order_moves(board, generate_all_moves(board, player=2)):
+            new_board = apply_move(board, move)
+            eval_score = minimax(new_board, depth + 1, alpha, beta, True, 
+                               start_time, time_limit)
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval
+
+
+def evaluate_board(board: np.ndarray) -> float:
+    """
+    Evaluate the current board position.
+    
+    Args:
+        board: Current board state
+        
+    Returns:
+        Evaluation score (positive = good for us, negative = good for opponent)
+    """
+    our_moves = generate_all_moves(board, player=1)
+    opp_moves = generate_all_moves(board, player=2)
+    
+    our_mobility = len(our_moves)
+    opp_mobility = len(opp_moves)
+    
+    # Base mobility evaluation
+    if our_mobility == 0 and opp_mobility == 0:
+        return 0  # Draw
+    elif our_mobility == 0:
+        return -1000  # We lose
+    elif opp_mobility == 0:
+        return 1000  # We win
+    
+    # Calculate territory control
+    our_territory = calculate_territory(board, player=1)
+    opp_territory = calculate_territory(board, player=2)
+    
+    # Weight factors
+    mobility_weight = 2.0
+    territory_weight = 0.5
+    
+    # Main evaluation: mobility advantage is key
+    score = (our_mobility - opp_mobility) * mobility_weight
+    score += (our_territory - opp_territory) * territory_weight
+    
+    # Bonus for having more pieces with good mobility
+    our_positions = np.where(board == 1)
+    opp_positions = np.where(board == 2)
+    
+    for i in range(len(our_positions[0])):
+        r, c = our_positions[0][i], our_positions[1][i]
+        local_mobility = len(get_reachable_positions(board, (r, c), include_start=False))
+        score += local_mobility * 0.1
+    
+    for i in range(len(opp_positions[0])):
+        r, c = opp_positions[0][i], opp_positions[1][i]
+        local_mobility = len(get_reachable_positions(board, (r, c), include_start=False))
+        score -= local_mobility * 0.1
+    
+    return score
+
+
+def calculate_territory(board: np.ndarray, player: int) -> int:
+    """
+    Calculate territory control - number of squares that can be reached
+    by any amazon of the given player.
+    """
+    reachable = set()
+    amazon_value = player
+    amazon_positions = np.where(board == amazon_value)
+    amazon_list = list(zip(amazon_positions[0], amazon_positions[1]))
+    
+    for pos in amazon_list:
+        # Include current position
+        reachable.add(pos)
+        # Get all reachable positions
+        for dest in get_reachable_positions(board, pos, include_start=False):
+            reachable.add(dest)
+    
+    return len(reachable)
+
+
+def order_moves(board: np.ndarray, moves: List[Tuple]) -> List[Tuple]:
+    """
+    Order moves to improve alpha-beta pruning efficiency.
+    
+    Prioritize:
+    1. Moves that capture territory (move to center)
+    2. Moves with good arrow placement
+    3. Moves that maintain flexibility
+    """
+    def move_priority(move):
+        from_pos, to_pos, arrow_pos = move
+        
+        # Priority 1: Center control (better to be in center)
+        center_distance = abs(to_pos[0] - 2.5) + abs(to_pos[1] - 2.5)
+        priority = -center_distance
+        
+        # Priority 2: Arrow placement - avoid blocking ourselves
+        temp_board = board.copy()
+        temp_board[from_pos] = 0
+        temp_board[to_pos] = 1
+        
+        # Count how many moves we still have after shooting arrow
+        temp_board[arrow_pos] = -1
+        future_moves = len(generate_all_moves(temp_board, player=1))
+        priority += future_moves * 0.5
+        
+        # Priority 3: Arrow blocking opponent
+        arrow_mobility_impact = -len(get_reachable_positions(temp_board, arrow_pos, include_start=False))
+        priority += arrow_mobility_impact * 0.3
+        
+        return priority
+    
+    return sorted(moves, key=move_priority, reverse=True)
+
+
+def format_move(move: Tuple) -> str:
+    """
+    Format a move tuple as a string.
+    """
+    from_pos, to_pos, arrow_pos = move
+    return f"{from_pos[0]},{from_pos[1]}:{to_pos[0]},{to_pos[1]}:{arrow_pos[0]},{arrow_pos[1]}"
+</code>

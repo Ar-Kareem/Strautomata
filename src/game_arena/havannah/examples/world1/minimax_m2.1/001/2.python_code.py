@@ -1,0 +1,224 @@
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    """
+    Havannah AI Policy for 15x15 board.
+    
+    Strategy:
+    1. Check for immediate winning moves
+    2. Block opponent's winning moves
+    3. Prioritize strategic positions (connections, center control, edges)
+    """
+    import numpy as np
+    from collections import deque
+    import copy
+    
+    # Convert to numpy arrays for easier manipulation
+    me_set = set(me)
+    opp_set = set(opp)
+    occupied = me_set | opp_set
+    
+    # Get all valid moves
+    valid_moves = []
+    for row in range(15):
+        for col in range(15):
+            if valid_mask[row][col] and (row, col) not in occupied:
+                valid_moves.append((row, col))
+    
+    if not valid_moves:
+        return (0, 0)  # Fallback, shouldn't happen
+    
+    # Get neighbors on hex grid
+    def get_neighbors(pos):
+        row, col = pos
+        neighbors = []
+        
+        # Base neighbors (same column)
+        neighbors.append((row - 1, col))
+        neighbors.append((row + 1, col))
+        
+        # Column-specific neighbors based on row parity
+        if row % 2 == 0:  # Even row
+            neighbors.append((row, col - 1))
+            neighbors.append((row, col + 1))
+            neighbors.append((row - 1, col - 1))
+            neighbors.append((row + 1, col - 1))
+        else:  # Odd row
+            neighbors.append((row, col - 1))
+            neighbors.append((row, col + 1))
+            neighbors.append((row - 1, col + 1))
+            neighbors.append((row + 1, col + 1))
+        
+        # Filter valid neighbors
+        valid_neighbors = []
+        for r, c in neighbors:
+            if 0 <= r < 15 and 0 <= c < 15 and valid_mask[r][c]:
+                valid_neighbors.append((r, c))
+        
+        return valid_neighbors
+    
+    # Check connectivity using BFS
+    def get_connected_component(start, stones):
+        if start not in stones:
+            return set()
+        
+        visited = set()
+        queue = deque([start])
+        
+        while queue:
+            current = queue.popleft()
+            if current in visited:
+                continue
+            visited.add(current)
+            
+            for neighbor in get_neighbors(current):
+                if neighbor in stones and neighbor not in visited:
+                    queue.append(neighbor)
+        
+        return visited
+    
+    # Check if a set of stones connects to a target edge/corner
+    def touches_edge(component, target_type="edge"):
+        corners = [(0, 0), (0, 14), (14, 0), (14, 14), (7, 0), (7, 14)]
+        edge_cells = set()
+        
+        # Define edge cells
+        for i in range(15):
+            edge_cells.add((0, i))  # Top row
+            edge_cells.add((14, i))  # Bottom row
+        
+        for i in range(15):
+            if valid_mask[i, 0]:
+                edge_cells.add((i, 0))
+            if valid_mask[i, 14]:
+                edge_cells.add((i, 14))
+        
+        if target_type == "corner":
+            return any(corner in component for corner in corners)
+        else:  # edge
+            return len(component & edge_cells) > 0
+    
+    # Check if move creates a winning structure
+    def check_win(move, stones):
+        new_stones = stones | {move}
+        
+        # Check each connected component
+        for stone in new_stones:
+            component = get_connected_component(stone, new_stones)
+            if len(component) < 3:
+                continue
+            
+            # Check for bridge (connects two corners)
+            corners = [(0, 0), (0, 14), (14, 0), (14, 14), (7, 0), (7, 14)]
+            corner_count = sum(1 for corner in corners if corner in component)
+            if corner_count >= 2:
+                return True
+            
+            # Check for fork (connects three edges)
+            touched_edges = set()
+            for r in range(15):
+                if (0, r) in component:
+                    touched_edges.add("top")
+                if (14, r) in component:
+                    touched_edges.add("bottom")
+            
+            for c in range(15):
+                if valid_mask[c, 0] and (c, 0) in component:
+                    touched_edges.add("left")
+                if valid_mask[c, 14] and (c, 14) in component:
+                    touched_edges.add("right")
+            
+            if len(touched_edges) >= 3:
+                return True
+            
+            # Check for ring (closed loop)
+            # A ring exists if there's a cycle in the graph
+            if len(component) >= 4:
+                # Check if the component forms a closed loop
+                # Simplified: if component has enough stones and they're well connected
+                edges = 0
+                for stone in component:
+                    for neighbor in get_neighbors(stone):
+                        if neighbor in component:
+                            edges += 1
+                edges //= 2  # Count each edge once
+                
+                if edges >= len(component):  # At least one cycle
+                    return True
+        
+        return False
+    
+    # Calculate strategic score for a move
+    def calculate_score(move, is_me=True):
+        row, col = move
+        score = 0
+        
+        # Base score for being on board
+        score += 1
+        
+        # Center control
+        center_dist = abs(row - 7) + abs(col - 7)
+        score += max(0, 10 - center_dist)
+        
+        # Connect to existing stones
+        neighbors = get_neighbors(move)
+        my_neighbors = sum(1 for n in neighbors if n in (me if is_me else opp))
+        score += my_neighbors * 2
+        
+        # Edge proximity (good for forks/bridges)
+        edge_count = 0
+        if row == 0 or row == 14:
+            edge_count += 1
+        if col == 0 or col == 14:
+            edge_count += 1
+        score += edge_count * 3
+        
+        # Corner proximity (good for bridges)
+        corners = [(0, 0), (0, 14), (14, 0), (14, 14), (7, 0), (7, 14)]
+        corner_dist = min(abs(row - c[0]) + abs(col - c[1]) for c in corners)
+        score += max(0, 5 - corner_dist)
+        
+        # Potential for creating connections
+        score += len([n for n in neighbors if n not in occupied]) * 0.5
+        
+        return score
+    
+    # Check for immediate winning moves
+    for move in valid_moves:
+        if check_win(move, me_set):
+            return move
+    
+    # Check if opponent can win and block
+    for move in valid_moves:
+        if check_win(move, opp_set):
+            return move
+    
+    # Evaluate all moves
+    scored_moves = []
+    for move in valid_moves:
+        score = calculate_score(move, is_me=True)
+        
+        # Bonus for moves that create multiple connection paths
+        new_stones = me_set | {move}
+        components = set()
+        for stone in new_stones:
+            if stone not in components:
+                component = get_connected_component(stone, new_stones)
+                components.update(component)
+        
+        # Count unique edge connections
+        edge_connections = 0
+        for stone in components:
+            if touches_edge({stone}, "edge"):
+                edge_connections += 1
+        
+        score += edge_connections * 2
+        
+        scored_moves.append((score, move))
+    
+    # Sort by score and return best move
+    scored_moves.sort(reverse=True, key=lambda x: x[0])
+    
+    if scored_moves:
+        return scored_moves[0][1]
+    
+    return valid_moves[0]

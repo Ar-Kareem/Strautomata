@@ -1,0 +1,186 @@
+
+import numpy as np
+from typing import List, Tuple
+
+def policy(me: List[Tuple[int, int]], opponent: List[Tuple[int, int]]) -> Tuple[int, int]:
+    # Convert to numpy arrays for easier manipulation (1-based to 0-based)
+    my_stones = np.array(me)
+    opp_stones = np.array(opponent)
+
+    # Initialize board (19x19)
+    board = np.zeros((19, 19), dtype=int)
+    board[my_stones[:, 0] - 1, my_stones[:, 1] - 1] = 1
+    board[opp_stones[:, 0] - 1, opp_stones[:, 1] - 1] = 2
+
+    # Check if the game is in the opening phase (first 10 moves)
+    total_moves = len(me) + len(opponent)
+    if total_moves < 10:
+        return opening_book(total_moves)
+
+    # Check for defensive moves (opponent's atari or ko threats)
+    defensive_move = check_defensive(board, my_stones, opp_stones)
+    if defensive_move is not None:
+        return defensive_move
+
+    # Evaluate potential moves using territory, influence, and pattern recognition
+    best_move = evaluate_moves(board, my_stones, opp_stones)
+
+    # If no good move found, pass
+    if best_move is None:
+        return (0, 0)
+    else:
+        return best_move
+
+def opening_book(total_moves: int) -> Tuple[int, int]:
+    # Predefined opening moves (simplified for demonstration)
+    opening_moves = [
+        (3, 4), (4, 4), (12, 12), (13, 13), (3, 3), (4, 3),
+        (12, 13), (13, 12), (4, 14), (14, 4), (13, 3),
+        (3, 13), (14, 14), (15, 15), (16, 16), (17, 17)
+    ]
+    if total_moves < len(opening_moves):
+        return opening_moves[total_moves]
+    else:
+        return None
+
+def check_defensive(board: np.ndarray, my_stones: np.ndarray, opp_stones: np.ndarray) -> Tuple[int, int]:
+    # Check for opponent's atari (single liberty)
+    for stone in opp_stones:
+        row, col = stone
+        liberties = count_liberties(board, row, col)
+        if liberties == 1:
+            # Fill the liberty to defend
+            for dr in [-1, 0, 1]:
+                for dc in [-1, 0, 1]:
+                    if dr == 0 and dc == 0:
+                        continue
+                    nr, nc = row + dr, col + dc
+                    if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == 0:
+                        return (nr + 1, nc + 1)  # Convert back to 1-based
+
+    # Check for ko threats (simplified: avoid placing near opponent's single stone)
+    for stone in opp_stones:
+        row, col = stone
+        if count_liberties(board, row, col) == 1:
+            # Avoid placing near ko threats unless necessary
+            for dr in [-1, 0, 1]:
+                for dc in [-1, 0, 1]:
+                    if dr == 0 and dc == 0:
+                        continue
+                    nr, nc = row + dr, col + dc
+                    if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == 0:
+                        # Only place if it's safe (not ko)
+                        if not is_ko(board, (nr + 1, nc + 1)):
+                            return (nr + 1, nc + 1)
+
+    return None
+
+def count_liberties(board: np.ndarray, row: int, col: int) -> int:
+    # Count liberties for a stone at (row, col)
+    liberties = 0
+    for dr in [-1, 0, 1]:
+        for dc in [-1, 0, 1]:
+            if dr == 0 and dc == 0:
+                continue
+            nr, nc = row + dr, col + dc
+            if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == 0:
+                liberties += 1
+    return liberties
+
+def is_ko(board: np.ndarray, move: Tuple[int, int]) -> bool:
+    # Simplified ko check: avoid placing near opponent's single stone if it's a ko
+    row, col = move
+    row, col = row - 1, col - 1  # Convert to 0-based
+    if board[row, col] != 0:
+        return True  # Illegal move (not empty)
+
+    # Check if the opponent has a single stone with one liberty (ko)
+    for dr in [-1, 0, 1]:
+        for dc in [-1, 0, 1]:
+            if dr == 0 and dc == 0:
+                continue
+            nr, nc = row + dr, col + dc
+            if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == 2:
+                if count_liberties(board, nr, nc) == 1:
+                    return True  # Ko threat
+    return False
+
+def evaluate_moves(board: np.ndarray, my_stones: np.ndarray, opp_stones: np.ndarray) -> Tuple[int, int]:
+    # Evaluate all empty points and return the best one
+    empty_points = np.argwhere(board == 0)
+    best_score = -float('inf')
+    best_move = None
+
+    for point in empty_points:
+        row, col = point
+        move = (row + 1, col + 1)  # Convert back to 1-based
+        if is_ko(board, move):
+            continue
+
+        # Score based on territory, influence, and patterns
+        score = evaluate_territory(board, row, col) + evaluate_influence(board, row, col, opp_stones)
+
+        # Check for basic patterns (e.g., open 3-4 points)
+        if len(my_stones) < 50:  # Only in mid-game
+            score += evaluate_pattern(board, row, col)
+
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return best_move
+
+def evaluate_territory(board: np.ndarray, row: int, col: int) -> float:
+    # Simplified territory evaluation: count empty adjacent points
+    count = 0
+    for dr in [-1, 0, 1]:
+        for dc in [-1, 0, 1]:
+            if dr == 0 and dc == 0:
+                continue
+            nr, nc = row + dr, col + dc
+            if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == 0:
+                count += 1
+    return count * 0.5  # Weighted score
+
+def evaluate_influence(board: np.ndarray, row: int, col: int, opp_stones: np.ndarray) -> float:
+    # Influence score: distance to opponent stones (higher if far)
+    influence = 0
+    for stone in opp_stones:
+        opp_row, opp_col = stone
+        dist = np.sqrt((row - opp_row)**2 + (col - opp_col)**2)
+        influence += 1.0 / (1.0 + dist)  # Diminishing influence with distance
+
+    # Bonus for center moves (simplified)
+    center_bonus = 0.0
+    if 8 <= row < 11 and 8 <= col < 11:
+        center_bonus = 2.0
+
+    return influence * -0.3 + center_bonus  # Negative influence (avoid opponent)
+
+def evaluate_pattern(board: np.ndarray, row: int, col: int) -> float:
+    # Basic pattern recognition (e.g., open 3-4 points)
+    pattern_score = 0.0
+    directions = [(0, 1), (1, 0), (0, -1), (-1, 0)]  # Horizontal/vertical neighbors
+
+    for dr, dc in directions:
+        nr, nc = row + dr, col + dc
+        if 0 <= nr < 19 and 0 <= nc < 19:
+            if board[nr, nc] == 0:
+                pattern_score += 0.5  # Open side
+
+    # Bonus for large empty areas (potential territory)
+    empty_area = count_empty_area(board, row, col)
+    if empty_area > 10:
+        pattern_score += 1.0  # Large empty space
+
+    return pattern_score
+
+def count_empty_area(board: np.ndarray, row: int, col: int) -> int:
+    # Count empty points in a 5x5 neighborhood (simplified)
+    count = 0
+    for dr in [-2, -1, 0, 1, 2]:
+        for dc in [-2, -1, 0, 1, 2]:
+            nr, nc = row + dr, col + dc
+            if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == 0:
+                count += 1
+    return count

@@ -1,0 +1,271 @@
+
+def policy(state: dict) -> str:
+    # Extract card information
+    hole = state['private_cards'][0]
+    board = state['public_cards']
+    n_board = len(board)
+    
+    def card_val(c):
+        return (c['rank'], c['suit'])
+    
+    def is_suited(cards):
+        if len(cards) < 2:
+            return False
+        s0 = cards[0]['suit']
+        for c in cards[1:]:
+            if c['suit'] != s0:
+                return False
+        return True
+    
+    def count_rank_occurrences(cards, rank):
+        return sum(1 for c in cards if c['rank'] == rank)
+    
+    def is_flush_possible():
+        if not board:
+            return False
+        suits = [c['suit'] for c in board]
+        from collections import Counter
+        ctr = Counter(suits)
+        max_count = max(ctr.values())
+        return max_count >= 2
+    
+    def has_flush_draw():
+        if not board:
+            return False
+        hole_suit = hole['suit']
+        count = sum(1 for c in board if c['suit'] == hole_suit)
+        return count >= 2
+    
+    def is_straight_possible():
+        if not board:
+            return False
+        ranks = sorted(set([c['rank'] for c in board]))
+        if len(ranks) < 2:
+            return False
+        for i in range(len(ranks)-1):
+            if ranks[i+1] - ranks[i] <= 2:
+                return True
+        # Check with hole card as potential connector
+        hole_rank = hole['rank']
+        for r in ranks:
+            diff = abs(hole_rank - r)
+            if diff == 1 or diff == 2:
+                return True
+        return False
+    
+    def has_straight_draw():
+        if not board:
+            return False
+        hole_rank = hole['rank']
+        ranks = sorted([c['rank'] for c in board])
+        # Simple check: hole card connects with board gaps <=2
+        for r in ranks:
+            diff = abs(hole_rank - r)
+            if diff == 1 or diff == 2:
+                # Additional check: ensure we don't have exactly a pair in board
+                if count_rank_occurrences(board, hole_rank) == 0:
+                    return True
+        return False
+    
+    def has_pair():
+        hole_rank = hole['rank']
+        return count_rank_occurrences(board, hole_rank) > 0
+    
+    def board_has_pair():
+        from collections import Counter
+        ranks = [c['rank'] for c in board]
+        ctr = Counter(ranks)
+        return max(ctr.values()) >= 2
+    
+    def board_triplet():
+        from collections import Counter
+        ranks = [c['rank'] for c in board]
+        ctr = Counter(ranks)
+        for r, cnt in ctr.items():
+            if cnt >= 3:
+                return True
+        return False
+    
+    def board_two_pair():
+        from collections import Counter
+        ranks = [c['rank'] for c in board]
+        ctr = Counter(ranks)
+        pair_count = sum(1 for cnt in ctr.values() if cnt >= 2)
+        return pair_count >= 2
+    
+    def is_top_pair():
+        hole_rank = hole['rank']
+        max_board_rank = max(c['rank'] for c in board) if board else 0
+        return count_rank_occurrences(board, hole_rank) > 0 and hole_rank >= max_board_rank
+    
+    def is_overpair():
+        hole_rank = hole['rank']
+        max_board_rank = max(c['rank'] for c in board) if board else 0
+        return count_rank_occurrences(board, hole_rank) == 0 and hole_rank > max_board_rank
+    
+    def pair_strength():
+        # Returns a score for top pair, etc.
+        if not has_pair():
+            return 0
+        hole_rank = hole['rank']
+        board_ranks = sorted([c['rank'] for c in board], reverse=True)
+        if board_ranks[0] == hole_rank:
+            return 3  # top pair
+        elif board_ranks[0] < hole_rank:
+            return 2  # overpair (though unlikely with pair check)
+        else:
+            return 1  # low pair
+    
+    def hand_category():
+        if n_board == 0:
+            return "pre"
+        if n_board == 3:
+            return "flop"
+        if n_board == 4:
+            return "turn"
+        if n_board == 5:
+            return "river"
+        return "unknown"
+    
+    # Calculate effective pot and stack
+    my_spent = state['my_spent']
+    opp_spent = state['opponent_spent']
+    pot = state['pot']
+    to_call = state['to_call']
+    # Remaining stack for me
+    # Assume starting stack 1000, but we don't have it explicitly. Use pot info.
+    # Instead, we estimate: total chips I can put = my_spent + remaining
+    # But we don't know remaining. We'll use pot and to_call to make decisions.
+    
+    # Simple heuristic based on hand strength and pot odds
+    
+    category = hand_category()
+    
+    # Pre-flop logic
+    if category == "pre":
+        r = hole['rank']
+        s = hole['suit']
+        # Strong hands: A, K, Q, J
+        if r >= 12:
+            if 'raise' in state['allowed_actions']:
+                return 'raise'
+            return 'call'
+        # Medium: 10, 9
+        if r >= 9:
+            if to_call <= pot * 0.3:
+                if 'raise' in state['allowed_actions']:
+                    return 'raise'
+                return 'call'
+            return 'call' if 'call' in state['allowed_actions'] else 'fold'
+        # Low: 8 down to 2
+        if to_call == 0:
+            if 'raise' in state['allowed_actions']:
+                return 'raise'
+            return 'call'
+        if to_call <= pot * 0.2:
+            return 'call'
+        return 'fold'
+    
+    # Flop logic
+    if category == "flop":
+        # Aggressive with strong draws and pairs
+        if is_overpair():
+            if 'raise' in state['allowed_actions']:
+                return 'raise'
+            return 'call'
+        if is_top_pair():
+            if pair_strength() >= 3:
+                if 'raise' in state['allowed_actions']:
+                    return 'raise'
+                return 'call'
+            # Lower top pair
+            if to_call <= pot * 0.5:
+                return 'call'
+            return 'fold'
+        if has_flush_draw() and is_straight_possible():
+            # Strong draw
+            if 'raise' in state['allowed_actions']:
+                return 'raise'
+            return 'call'
+        if has_flush_draw():
+            if to_call <= pot * 0.5:
+                return 'call'
+            return 'fold'
+        if has_straight_draw():
+            if to_call <= pot * 0.4:
+                return 'call'
+            return 'fold'
+        if has_pair():
+            # Weak pair
+            if to_call <= pot * 0.3:
+                return 'call'
+            return 'fold'
+        # Bluff occasionally if no draw
+        if to_call == 0:
+            if 'raise' in state['allowed_actions']:
+                return 'raise'
+            return 'call'
+        if to_call < pot * 0.2:
+            return 'call'
+        return 'fold'
+    
+    # Turn logic
+    if category == "turn":
+        if is_top_pair() and pair_strength() >= 3:
+            if 'raise' in state['allowed_actions']:
+                return 'raise'
+            return 'call'
+        if is_overpair():
+            if 'raise' in state['allowed_actions']:
+                return 'raise'
+            return 'call'
+        if has_flush_draw():
+            if 'raise' in state['allowed_actions']:
+                return 'raise'
+            return 'call'
+        if has_straight_draw():
+            if to_call <= pot * 0.4:
+                return 'call'
+            return 'fold'
+        if has_pair() and not board_has_pair() and not board_triplet():
+            if to_call <= pot * 0.3:
+                return 'call'
+            return 'fold'
+        # Bluff with nothing if board looks scary
+        if to_call == 0:
+            if 'raise' in state['allowed_actions']:
+                return 'raise'
+            return 'call'
+        if to_call < pot * 0.2:
+            return 'call'
+        return 'fold'
+    
+    # River logic
+    if category == "river":
+        if is_top_pair() and pair_strength() >= 3:
+            if 'raise' in state['allowed_actions']:
+                return 'raise'
+            return 'call'
+        if is_overpair():
+            if 'raise' in state['allowed_actions']:
+                return 'raise'
+            return 'call'
+        if has_flush_draw() and is_flush_possible():  # Actually has flush
+            if 'raise' in state['allowed_actions']:
+                return 'raise'
+            return 'call'
+        if has_pair():
+            if to_call <= pot * 0.3:
+                return 'call'
+            return 'fold'
+        # With nothing, fold unless pot odds are very good
+        if to_call == 0:
+            if 'raise' in state['allowed_actions']:
+                return 'raise'
+            return 'call'
+        if to_call < pot * 0.1:
+            return 'call'
+        return 'fold'
+    
+    # Fallback
+    return 'call'

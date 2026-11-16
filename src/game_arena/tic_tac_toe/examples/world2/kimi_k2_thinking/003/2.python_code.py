@@ -1,0 +1,105 @@
+
+# 4x4 Tic Tac Toe policy
+# Heuristic priority: win > block > fork > block fork > strategic placement
+
+# Precomputed masks for all winning lines (4 rows, 4 columns, 2 diagonals)
+_LINE_MASKS = [
+    # Rows
+    0b1111 << (0 * 4),  # row 0
+    0b1111 << (1 * 4),  # row 1
+    0b1111 << (2 * 4),  # row 2
+    0b1111 << (3 * 4),  # row 3
+    # Columns
+    (1 << 0) | (1 << 4) | (1 << 8)  | (1 << 12),  # col 0
+    (1 << 1) | (1 << 5) | (1 << 9)  | (1 << 13),  # col 1
+    (1 << 2) | (1 << 6) | (1 << 10) | (1 << 14),  # col 2
+    (1 << 3) | (1 << 7) | (1 << 11) | (1 << 15),  # col 3
+    # Diagonals
+    (1 << 0) | (1 << 5) | (1 << 10) | (1 << 15),  # main diagonal
+    (1 << 3) | (1 << 6) | (1 << 9)  | (1 << 12),  # anti-diagonal
+]
+
+def policy(board):
+    # Convert board to bit masks for player (1) and opponent (-1)
+    player_mask = 0
+    opponent_mask = 0
+    for r in range(4):
+        row = board[r]
+        for c in range(4):
+            idx = r * 4 + c
+            val = row[c]
+            if val == 1:
+                player_mask |= 1 << idx
+            elif val == -1:
+                opponent_mask |= 1 << idx
+
+    # Helper: return list of indices where player can win immediately
+    def winning_moves(p_mask, o_mask):
+        wins = []
+        for m in _LINE_MASKS:
+            p_bits = p_mask & m
+            o_bits = o_mask & m
+            if p_bits.bit_count() == 3 and o_bits == 0:
+                empty_bit = m & ~p_bits & ~o_bits
+                wins.append(empty_bit.bit_length() - 1)
+        return wins
+
+    # Helper: return list of indices that create a fork for player
+    def fork_moves(p_mask, o_mask):
+        forks = []
+        empty_mask = ~(p_mask | o_mask) & 0xFFFF
+        for idx in range(16):
+            bit = 1 << idx
+            if not (empty_mask & bit):
+                continue
+            new_p_mask = p_mask | bit
+            threats = 0
+            for m in _LINE_MASKS:
+                p_bits = new_p_mask & m
+                o_bits = o_mask & m
+                if p_bits.bit_count() == 3 and o_bits == 0:
+                    threats += 1
+            if threats >= 2:
+                forks.append(idx)
+        return forks
+
+    # 1. Immediate win
+    w = winning_moves(player_mask, opponent_mask)
+    if w:
+        idx = w[0]
+        return (idx // 4, idx % 4)
+
+    # 2. Block opponent win
+    ow = winning_moves(opponent_mask, player_mask)
+    if ow:
+        idx = ow[0]
+        return (idx // 4, idx % 4)
+
+    # 3. Create a fork
+    f = fork_moves(player_mask, opponent_mask)
+    if f:
+        idx = f[0]
+        return (idx // 4, idx % 4)
+
+    # 4. Block opponent fork
+    of = fork_moves(opponent_mask, player_mask)
+    if of:
+        idx = of[0]
+        return (idx // 4, idx % 4)
+
+    # 5. Strategic fallback: center > corners > any
+    centers = [(1, 1), (1, 2), (2, 1), (2, 2)]
+    corners = [(0, 0), (0, 3), (3, 0), (3, 3)]
+    for r, c in centers:
+        if board[r][c] == 0:
+            return (r, c)
+    for r, c in corners:
+        if board[r][c] == 0:
+            return (r, c)
+    for r in range(4):
+        for c in range(4):
+            if board[r][c] == 0:
+                return (r, c)
+
+    # Should never happen (board full), but satisfy return requirement
+    return (0, 0)

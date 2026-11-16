@@ -1,0 +1,107 @@
+```python
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Choose a move for 4x4 tic-tac-toe.
+    board: 4x4 list of lists with 0 (empty), 1 (us), -1 (opponent).
+    Returns (row, col) in 0..3.
+    Strategy:
+      1. If we have an immediate winning move, play it.
+      2. If opponent has an immediate winning move, block it.
+      3. Heuristic: score empty cells by potential to create lines for us and to block opponent lines,
+         prefer central squares when tied.
+    This is a deterministic, fast heuristic suitable for the 4x4 arena.
+    """
+    SIZE = 4
+    ME = 1
+    OPP = -1
+
+    # collect all 10 winning lines (4 rows, 4 cols, 2 diagonals)
+    lines = []
+    for i in range(SIZE):
+        lines.append([(i, j) for j in range(SIZE)])  # row i
+    for j in range(SIZE):
+        lines.append([(i, j) for i in range(SIZE)])  # col j
+    lines.append([(i, i) for i in range(SIZE)])      # main diag
+    lines.append([(i, SIZE - 1 - i) for i in range(SIZE)])  # anti diag
+
+    empties = [(i, j) for i in range(SIZE) for j in range(SIZE) if board[i][j] == 0]
+    if not empties:
+        # No empty squares: return a valid pair (fallback)
+        return (0, 0)
+
+    # Helper to find immediate winning move for player p (1 or -1).
+    def immediate_win_for(p):
+        for line in lines:
+            s = sum(board[r][c] for (r, c) in line)
+            # For a 4-in-a-row win, a line with 3 of p and one empty has sum == 3*p
+            if s == 3 * p:
+                for (r, c) in line:
+                    if board[r][c] == 0:
+                        return (r, c)
+        return None
+
+    # 1. Immediate win
+    my_win = immediate_win_for(ME)
+    if my_win is not None:
+        return my_win
+
+    # 2. Block opponent immediate win
+    opp_win = immediate_win_for(OPP)
+    if opp_win is not None:
+        return opp_win
+
+    # 3. Heuristic scoring
+    # For each empty cell, sum contributions from lines that include it.
+    # If a line contains both players, it is worthless (contribution 0).
+    # Otherwise contribution = 10^(count_of_player_in_line). We combine our and opponent contributions,
+    # weighting opponent lines slightly to prioritize blocking threats.
+    center_cells = {(1,1), (1,2), (2,1), (2,2)}
+    best_move = None
+    best_score = None
+
+    for (r0, c0) in empties:
+        score = 0.0
+        for line in lines:
+            if (r0, c0) not in line:
+                continue
+            # count marks in that line (excluding the empty we're considering)
+            my_count = 0
+            opp_count = 0
+            for (r, c) in line:
+                if r == r0 and c == c0:
+                    continue
+                v = board[r][c]
+                if v == ME:
+                    my_count += 1
+                elif v == OPP:
+                    opp_count += 1
+            # if both players present in the line -> no potential
+            if my_count > 0 and opp_count > 0:
+                continue
+            # small safety: cap powers to avoid huge numbers
+            if my_count > 3: my_count = 3
+            if opp_count > 3: opp_count = 3
+            # my potential: bigger when I already have more in that line
+            score += (10 ** my_count)
+            # opponent potential: treat as a threat (give it weight)
+            score += 0.9 * (10 ** opp_count)
+        # center bias
+        if (r0, c0) in center_cells:
+            score += 5.0
+        # tie-breaker deterministic: prefer lower row then col -> incorporate small epsilon
+        # Use negative tiny lexicographic fallback to keep deterministic selection
+        tie_eps = - (r0 * 0.001 + c0 * 0.000001)
+        score += tie_eps
+
+        if best_score is None or score > best_score:
+            best_score = score
+            best_move = (r0, c0)
+
+    if best_move is not None:
+        return best_move
+
+    # Fallback: pick any empty (shouldn't reach here)
+    return empties[0]
+```

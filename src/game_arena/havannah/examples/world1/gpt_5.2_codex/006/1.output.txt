@@ -1,0 +1,242 @@
+The strategy for this policy is to always look for a forced win in one move (bridge, fork, or ring), then block any immediate opponent win. If neither is available, it uses a heuristic that favors strong connectivity: joining multiple own components, touching more edges/corners, staying central for ring potential, and placing adjacent to both own and opponent stones for influence and defense.
+
+<code>
+import math
+from collections import deque
+
+# Global cached board information
+_initialized = False
+valid_cells = []
+valid_set = set()
+neighbors = {}
+edge_dirs = {}
+corner_index = {}
+boundary_cells = []
+center_r = 0.0
+center_c = 0.0
+max_dist = 1.0
+
+# Hex neighbor directions based on given coordinate system
+DIRS = [(-1, 0), (1, 0), (0, -1), (-1, -1), (0, 1), (-1, 1)]
+
+def init_board(valid_mask):
+    global _initialized, valid_cells, valid_set, neighbors, edge_dirs, corner_index, boundary_cells
+    global center_r, center_c, max_dist
+
+    if _initialized:
+        return
+    _initialized = True
+
+    N = len(valid_mask)
+    valid_cells = [(r, c) for r in range(N) for c in range(N) if valid_mask[r][c]]
+    valid_set = set(valid_cells)
+
+    neighbors = {}
+    edge_dirs = {}
+    boundary_cells = []
+
+    for cell in valid_cells:
+        r, c = cell
+        nbs = []
+        missing_dirs = []
+        for d, (dr, dc) in enumerate(DIRS):
+            nr, nc = r + dr, c + dc
+            if (nr, nc) in valid_set:
+                nbs.append((nr, nc))
+            else:
+                missing_dirs.append(d)
+        neighbors[cell] = nbs
+        edge_dirs[cell] = missing_dirs
+        if missing_dirs:
+            boundary_cells.append(cell)
+
+    # Corners are cells with exactly 3 neighbors
+    corner_index = {}
+    corners = []
+    for cell in valid_cells:
+        if len(neighbors[cell]) == 3:
+            corner_index[cell] = len(corners)
+            corners.append(cell)
+
+    # Center for heuristic
+    if valid_cells:
+        center_r = sum(r for r, _ in valid_cells) / len(valid_cells)
+        center_c = sum(c for _, c in valid_cells) / len(valid_cells)
+        max_dist = 0.0
+        for r, c in valid_cells:
+            d = (r - center_r) ** 2 + (c - center_c) ** 2
+            if d > max_dist:
+                max_dist = d
+        if max_dist == 0:
+            max_dist = 1.0
+
+def has_ring(stones_set):
+    total_nonplayer = len(valid_cells) - len(stones_set)
+    if total_nonplayer <= 0:
+        return False
+
+    visited = set()
+    q = deque()
+
+    for cell in boundary_cells:
+        if cell not in stones_set:
+            visited.add(cell)
+            q.append(cell)
+
+    while q:
+        v = q.popleft()
+        for nb in neighbors[v]:
+            if nb not in stones_set and nb not in visited:
+                visited.add(nb)
+                q.append(nb)
+
+    return len(visited) < total_nonplayer
+
+def check_win(stones_set):
+    visited = set()
+
+    for cell in stones_set:
+        if cell in visited:
+            continue
+        q = [cell]
+        visited.add(cell)
+        edges_touched = set()
+        corners_touched = set()
+
+        while q:
+            v = q.pop()
+            if v in corner_index:
+                corners_touched.add(corner_index[v])
+            else:
+                for d in edge_dirs[v]:
+                    edges_touched.add(d)
+            for nb in neighbors[v]:
+                if nb in stones_set and nb not in visited:
+                    visited.add(nb)
+                    q.append(nb)
+
+        if len(corners_touched) >= 2:
+            return True
+        if len(edges_touched) >= 3:
+            return True
+
+    if has_ring(stones_set):
+        return True
+    return False
+
+def analyze_components(stones_set):
+    visited = set()
+    comp_id = {}
+    comp_edges = []
+    comp_corners = []
+
+    for cell in stones_set:
+        if cell in visited:
+            continue
+        q = [cell]
+        visited.add(cell)
+        idx = len(comp_edges)
+        edges_touched = set()
+        corners_touched = set()
+
+        while q:
+            v = q.pop()
+            comp_id[v] = idx
+            if v in corner_index:
+                corners_touched.add(corner_index[v])
+            else:
+                for d in edge_dirs[v]:
+                    edges_touched.add(d)
+            for nb in neighbors[v]:
+                if nb in stones_set and nb not in visited:
+                    visited.add(nb)
+                    q.append(nb)
+
+        comp_edges.append(edges_touched)
+        comp_corners.append(corners_touched)
+
+    return comp_id, comp_edges, comp_corners
+
+def evaluate_move(move, me_set, opp_set, comp_id, comp_edges, comp_corners):
+    r, c = move
+    own_n = 0
+    opp_n = 0
+    adj_comps = set()
+
+    for nb in neighbors[move]:
+        if nb in me_set:
+            own_n += 1
+            adj_comps.add(comp_id.get(nb, -1))
+        elif nb in opp_set:
+            opp_n += 1
+
+    adj_comps.discard(-1)
+    edges_union = set()
+    corners_union = set()
+
+    for cid in adj_comps:
+        edges_union |= comp_edges[cid]
+        corners_union |= comp_corners[cid]
+
+    # Add move's own edge/corner contributions
+    if move in corner_index:
+        corners_union.add(corner_index[move])
+    else:
+        for d in edge_dirs[move]:
+            edges_union.add(d)
+
+    # Heuristic score
+    score = 0.0
+    score += 2.0 * own_n + 0.5 * opp_n
+    score += 1.5 * len(edges_union) + 2.5 * len(corners_union)
+    if len(adj_comps) > 1:
+        score += 3.0  # connect components
+
+    # centrality
+    dist = (r - center_r) ** 2 + (c - center_c) ** 2
+    score += 0.1 * (max_dist - dist)
+
+    # slight bonus for edge/corner occupancy
+    if move in corner_index:
+        score += 0.5
+    elif edge_dirs[move]:
+        score += 0.3
+
+    return score
+
+def policy(me, opp, valid_mask):
+    init_board(valid_mask)
+
+    me_set = set(tuple(x) for x in me)
+    opp_set = set(tuple(x) for x in opp)
+    occupied = me_set | opp_set
+
+    legal_moves = [cell for cell in valid_cells if cell not in occupied]
+    if not legal_moves:
+        # Should never happen, but return a fallback
+        return valid_cells[0]
+
+    # 1. Immediate win
+    for mv in legal_moves:
+        if check_win(me_set | {mv}):
+            return mv
+
+    # 2. Immediate block
+    for mv in legal_moves:
+        if check_win(opp_set | {mv}):
+            return mv
+
+    # 3. Heuristic evaluation
+    comp_id, comp_edges, comp_corners = analyze_components(me_set)
+
+    best_move = legal_moves[0]
+    best_score = -1e9
+
+    for mv in legal_moves:
+        sc = evaluate_move(mv, me_set, opp_set, comp_id, comp_edges, comp_corners)
+        if sc > best_score:
+            best_score = sc
+            best_move = mv
+
+    return best_move
+</code>

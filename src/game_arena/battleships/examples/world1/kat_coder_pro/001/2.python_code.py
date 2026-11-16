@@ -1,0 +1,130 @@
+
+import numpy as np
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Battleship targeting policy.
+    
+    Uses probability-based targeting combined with hit-following strategy.
+    """
+    # Convert to numpy array for easier manipulation
+    board_array = np.array(board)
+    
+    # Find all hits (value = 1)
+    hits = np.argwhere(board_array == 1)
+    
+    # If we have hits, prioritize targeting adjacent cells
+    if len(hits) > 0:
+        # Get all adjacent cells to hits that haven't been fired at
+        candidates = set()
+        
+        for hit in hits:
+            r, c = hit
+            # Check all 4 adjacent cells
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = r + dr, c + dc
+                # Check bounds and if not fired at
+                if 0 <= nr < 10 and 0 <= nc < 10 and board_array[nr, nc] == 0:
+                    candidates.add((nr, nc))
+        
+        # If we have adjacent candidates, use probability targeting among them
+        if candidates:
+            # Calculate probabilities only for candidate cells
+            probs = calculate_probabilities(board_array, candidates)
+            if probs:
+                return max(probs, key=probs.get)
+    
+    # If no hits or no adjacent candidates, use full probability targeting
+    unexplored = [(r, c) for r in range(10) for c in range(10) if board_array[r, c] == 0]
+    
+    if not unexplored:
+        # Fallback - shouldn't happen in normal play
+        return (0, 0)
+    
+    # Calculate probabilities for all unexplored cells
+    probs = calculate_probabilities(board_array, unexplored)
+    
+    if probs:
+        return max(probs, key=probs.get)
+    else:
+        # Fallback to checkerboard pattern if no probabilities calculated
+        return select_checkerboard_target(board_array)
+
+def calculate_probabilities(board: np.ndarray, candidates: List[Tuple[int, int]]) -> dict:
+    """
+    Calculate probability of ship being at each candidate cell.
+    Returns dict mapping (r, c) -> probability score.
+    """
+    # Ship lengths
+    ships = [5, 4, 3, 3, 2]
+    
+    # Initialize probability grid
+    probs = {cell: 0 for cell in candidates}
+    
+    # For each ship length
+    for ship_len in ships:
+        # Try horizontal placements
+        for r in range(10):
+            for c in range(11 - ship_len):
+                # Check if this horizontal placement is valid
+                valid = True
+                cells_in_placement = []
+                
+                for i in range(ship_len):
+                    cell_val = board[r, c + i]
+                    if cell_val == -1:  # Miss
+                        valid = False
+                        break
+                    elif cell_val == 1:  # Hit
+                        cells_in_placement.append((r, c + i))
+                    # Unknown cells (0) are fine
+                
+                if valid:
+                    # This placement is possible, increment probability for all cells
+                    for i in range(ship_len):
+                        cell = (r, c + i)
+                        if cell in probs:
+                            probs[cell] += 1
+        
+        # Try vertical placements
+        for r in range(11 - ship_len):
+            for c in range(10):
+                # Check if this vertical placement is valid
+                valid = True
+                cells_in_placement = []
+                
+                for i in range(ship_len):
+                    cell_val = board[r + i, c]
+                    if cell_val == -1:  # Miss
+                        valid = False
+                        break
+                    elif cell_val == 1:  # Hit
+                        cells_in_placement.append((r + i, c))
+                    # Unknown cells (0) are fine
+                
+                if valid:
+                    # This placement is possible, increment probability for all cells
+                    for i in range(ship_len):
+                        cell = (r + i, c)
+                        if cell in probs:
+                            probs[cell] += 1
+    
+    return probs
+
+def select_checkerboard_target(board: np.ndarray) -> Tuple[int, int]:
+    """
+    Fallback targeting using checkerboard pattern.
+    """
+    # Prefer cells where (r + c) is even, then odd
+    unexplored = [(r, c) for r in range(10) for c in range(10) if board[r, c] == 0]
+    
+    # Try checkerboard pattern first
+    checkerboard = [cell for cell in unexplored if (cell[0] + cell[1]) % 2 == 0]
+    if checkerboard:
+        # Sort by distance from center to avoid clustering
+        center_dist = lambda cell: abs(cell[0] - 4.5) + abs(cell[1] - 4.5)
+        return sorted(checkerboard, key=center_dist)[0]
+    
+    # If no checkerboard cells available, just pick any
+    return unexplored[0] if unexplored else (0, 0)

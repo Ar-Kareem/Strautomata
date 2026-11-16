@@ -1,0 +1,184 @@
+
+import numpy as np
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    """
+    Smart policy for Dots and Boxes on a 4x4 grid.
+    Prioritizes box completion while avoiding creating 3-sided boxes.
+    """
+    # Find all legal moves
+    legal_moves = []
+    
+    # Check all horizontal edges
+    for row in range(5):
+        for col in range(4):
+            if horizontal[row, col] == 0:
+                legal_moves.append((row, col, 'H'))
+    
+    # Check all vertical edges
+    for row in range(4):
+        for col in range(5):
+            if vertical[row, col] == 0:
+                legal_moves.append((row, col, 'V'))
+    
+    if not legal_moves:
+        return "0,0,H"  # Fallback (shouldn't happen)
+    
+    # Evaluate each move
+    best_move = None
+    best_score = float('-inf')
+    
+    for row, col, direction in legal_moves:
+        score = evaluate_move(row, col, direction, horizontal, vertical, capture)
+        
+        if score > best_score:
+            best_score = score
+            best_move = (row, col, direction)
+    
+    return f"{best_move[0]},{best_move[1]},{best_move[2]}"
+
+def evaluate_move(row: int, col: int, direction: str, 
+                 horizontal: np.ndarray, vertical: np.ndarray, 
+                 capture: np.ndarray) -> float:
+    """
+    Evaluate a move and return a score.
+    Higher scores are better.
+    """
+    # Simulate the move
+    h_temp = horizontal.copy()
+    v_temp = vertical.copy()
+    cap_temp = capture.copy()
+    
+    # Place the edge
+    if direction == 'H':
+        h_temp[row, col] = 1
+    else:
+        v_temp[row, col] = 1
+    
+    # Count boxes completed by this move
+    completed_boxes = 0
+    three_sided_boxes = 0
+    
+    # Check boxes that this edge affects
+    if direction == 'H':
+        # Horizontal edge affects boxes above and below
+        # Check box above (row-1, col)
+        if row > 0:
+            boxes_above = count_box_completion(row-1, col, h_temp, v_temp, cap_temp)
+            completed_boxes += boxes_above['completed']
+            if boxes_above['sides_filled'] == 3:
+                three_sided_boxes += 1
+        
+        # Check box below (row, col)
+        if row < 4:
+            boxes_below = count_box_completion(row, col, h_temp, v_temp, cap_temp)
+            completed_boxes += boxes_below['completed']
+            if boxes_below['sides_filled'] == 3:
+                three_sided_boxes += 1
+    else:  # vertical
+        # Vertical edge affects boxes to the left and right
+        # Check box to the left (row, col-1)
+        if col > 0:
+            boxes_left = count_box_completion(row, col-1, h_temp, v_temp, cap_temp)
+            completed_boxes += boxes_left['completed']
+            if boxes_left['sides_filled'] == 3:
+                three_sided_boxes += 1
+        
+        # Check box to the right (row, col)
+        if col < 4:
+            boxes_right = count_box_completion(row, col, h_temp, v_temp, cap_temp)
+            completed_boxes += boxes_right['completed']
+            if boxes_right['sides_filled'] == 3:
+                three_sided_boxes += 1
+    
+    # Scoring system:
+    # - Completing boxes: +10000 per box (highest priority)
+    # - Creating 3-sided boxes: -5000 per box (worst case)
+    # - If forced to create 3-sided box, minimize damage
+    score = completed_boxes * 10000 - three_sided_boxes * 5000
+    
+    # Secondary considerations when no boxes are completed
+    if completed_boxes == 0:
+        # Avoid creating 3-sided boxes at all costs
+        if three_sided_boxes > 0:
+            score -= 10000  # Penalty for creating any 3-sided box
+        
+        # Add small bonus for moves that don't threaten opponent
+        # Prefer moves with fewer adjacent empty edges
+        threat_level = count_adjacent_empty_edges(row, col, direction, h_temp, v_temp)
+        score += (5 - threat_level) * 100  # Prefer moves with lower threat
+    
+    return score
+
+def count_box_completion(row: int, col: int, horizontal: np.ndarray, 
+                        vertical: np.ndarray, capture: np.ndarray) -> dict:
+    """
+    Count how many sides of a box are filled and if it's completed.
+    """
+    # Count filled sides
+    sides_filled = 0
+    
+    # Top edge
+    if horizontal[row, col] != 0:
+        sides_filled += 1
+    # Bottom edge
+    if horizontal[row+1, col] != 0:
+        sides_filled += 1
+    # Left edge
+    if vertical[row, col] != 0:
+        sides_filled += 1
+    # Right edge
+    if vertical[row, col+1] != 0:
+        sides_filled += 1
+    
+    # Check if box is completed (4 sides) and not already captured
+    completed = 1 if sides_filled == 4 and capture[row, col] == 0 else 0
+    
+    return {'completed': completed, 'sides_filled': sides_filled}
+
+def count_adjacent_empty_edges(row: int, col: int, direction: str,
+                               horizontal: np.ndarray, vertical: np.ndarray) -> int:
+    """
+    Count how many adjacent edges are empty.
+    Used to assess strategic value of a move.
+    """
+    empty_count = 0
+    
+    if direction == 'H':
+        # Check adjacent vertical edges (left and right of the horizontal edge)
+        if col > 0 and vertical[row, col] == 0:
+            empty_count += 1
+        if col < 4 and vertical[row, col+1] == 0:
+            empty_count += 1
+        
+        # Check vertical edges above and below
+        if row > 0:
+            if col > 0 and vertical[row-1, col] == 0:
+                empty_count += 1
+            if col < 4 and vertical[row-1, col+1] == 0:
+                empty_count += 1
+        if row < 4:
+            if col > 0 and vertical[row+1, col] == 0:
+                empty_count += 1
+            if col < 4 and vertical[row+1, col+1] == 0:
+                empty_count += 1
+    else:  # vertical
+        # Check adjacent horizontal edges (above and below the vertical edge)
+        if row > 0 and horizontal[row, col] == 0:
+            empty_count += 1
+        if row < 4 and horizontal[row+1, col] == 0:
+            empty_count += 1
+        
+        # Check horizontal edges to the left and right
+        if col > 0:
+            if row > 0 and horizontal[row, col-1] == 0:
+                empty_count += 1
+            if row < 4 and horizontal[row+1, col-1] == 0:
+                empty_count += 1
+        if col < 4:
+            if row > 0 and horizontal[row, col+1] == 0:
+                empty_count += 1
+            if row < 4 and horizontal[row+1, col+1] == 0:
+                empty_count += 1
+    
+    return empty_count

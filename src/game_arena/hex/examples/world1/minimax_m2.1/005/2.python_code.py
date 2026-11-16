@@ -1,0 +1,91 @@
+
+def has_won(stones, color, adj):
+    stones_set = set(stones)
+    if color == 'b':
+        start_set = {cell for cell in stones_set if cell[0] == 0}
+        end_set = {cell for cell in stones_set if cell[0] == 10}
+    else:
+        start_set = {cell for cell in stones_set if cell[1] == 0}
+        end_set = {cell for cell in stones_set if cell[1] == 10}
+    
+    if not start_set or not end_set:
+        return False
+    
+    visited = set()
+    for start in start_set:
+        if start in visited:
+            continue
+        queue = [start]
+        visited.add(start)
+        while queue:
+            cell = queue.pop(0)
+            if cell in end_set:
+                return True
+            for neighbor in adj[cell]:
+                if neighbor in stones_set and neighbor not in visited:
+                    visited.add(neighbor)
+                    queue.append(neighbor)
+    return False
+
+def policy(me, opp, color):
+    occupied = set(me) | set(opp)
+    empty_cells = []
+    for i in range(11):
+        for j in range(11):
+            if (i, j) not in occupied:
+                empty_cells.append((i, j))
+    
+    adj = {}
+    for i in range(11):
+        for j in range(11):
+            neighbors = []
+            if i > 0:
+                neighbors.append((i-1, j))
+            if i > 0 and j < 10:
+                neighbors.append((i-1, j+1))
+            if j > 0:
+                neighbors.append((i, j-1))
+            if j < 10:
+                neighbors.append((i, j+1))
+            if i < 10 and j > 0:
+                neighbors.append((i+1, j-1))
+            if i < 10:
+                neighbors.append((i+1, j))
+            adj[(i, j)] = neighbors
+    
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    for cell in empty_cells:
+        new_me_set = me_set | {cell}
+        if has_won(new_me_set, color, adj):
+            return cell
+    
+    opponent_color = 'b' if color == 'w' else 'w'
+    for cell in empty_cells:
+        new_opp_set = opp_set | {cell}
+        if has_won(new_opp_set, opponent_color, adj):
+            return cell
+    
+    best_score = -1
+    best_cell = None
+    for cell in empty_cells:
+        i, j = cell
+        if color == 'b':
+            base = 1000 if i == 0 or i == 10 else i * (10 - i)
+        else:
+            base = 1000 if j == 0 or j == 10 else j * (10 - j)
+        
+        adj_me = 0
+        adj_opp = 0
+        for neighbor in adj[cell]:
+            if neighbor in me_set:
+                adj_me += 1
+            if neighbor in opp_set:
+                adj_opp += 1
+        score = base + (adj_me + adj_opp) * 10
+        if score > best_score:
+            best_score = score
+            best_cell = cell
+    
+    return best_cell

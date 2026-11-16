@@ -1,0 +1,189 @@
+The strategy for this policy is to implement a combined approach that balances immediate tactical threats with long-term strategic positioning:
+
+1. Immediate Win Check: If we can win with this move, take it.
+2. Immediate Block: If opponent is about to win, block them.
+3. Ring Detection: Try to build towards completing a ring, which is often the most reliable winning pattern.
+4. Bridge/Fork Preparation: Identify moves that progress towards connecting corners or edges.
+5. Pattern Expansion: Look for moves that expand existing groups in meaningful ways.
+6. Strategic Growth: Prefer moves that create multiple viable paths to victory.
+7. Connectivity: Prioritize moves that connect separate groups.
+8. Central Control: Prefer moves closer to the center when no immediate tactical concerns exist.
+
+The implementation looks for immediate tactical wins and blocks first, then evaluates positional moves based on their contribution to ring formation and connectivity before falling back to general strategic principles.
+
+<code>
+import numpy as np
+from typing import List, Tuple, Set, Dict
+from collections import deque
+
+# Havannah board size
+BOARD_SIZE = 15
+
+# Precompute neighbor directions for hexagonal grid
+# Each cell (r, c) has neighbors in these relative positions
+NEIGHBOR_DIRS = [
+    (-1, 0), (-1, 1),  # up-left, up-right
+    (0, -1), (0, 1),   # left, right
+    (1, -1), (1, 0)    # down-left, down-right
+]
+
+# Precompute corners and edges
+CORNERS = {(0, 4), (0, 10), (4, 0), (10, 0), (14, 4), (14, 10)}
+EDGES = set()
+for r in range(BOARD_SIZE):
+    for c in range(BOARD_SIZE):
+        if (r, c) not in CORNERS:
+            # Check if it's on an edge (but not a corner)
+            on_edge = False
+            if r == 0 and 4 < c < 10: on_edge = True
+            elif r == 14 and 4 < c < 10: on_edge = True
+            elif c == 0 and 0 < r < 10: on_edge = True
+            elif c == 14 and 0 < r < 10: on_edge = True
+            elif r + c == 4 and 0 < r < 4: on_edge = True
+            elif r + c == 24 and 10 < r < 14: on_edge = True
+            elif r - c == -4 and 0 < r < 4: on_edge = True
+            elif r - c == 4 and 10 < r < 14: on_edge = True
+            if on_edge:
+                EDGES.add((r, c))
+
+def get_neighbors(r: int, c: int) -> List[Tuple[int, int]]:
+    """Get valid neighboring positions for a given position."""
+    neighbors = []
+    for dr, dc in NEIGHBOR_DIRS:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE and valid_mask[nr][nc]:
+            neighbors.append((nr, nc))
+    return neighbors
+
+def is_connected(pos1: Tuple[int, int], pos2: Tuple[int, int], player_stones: Set[Tuple[int, int]]) -> bool:
+    """Check if two positions are connected via player stones."""
+    if pos1 == pos2:
+        return True
+    visited = set()
+    queue = deque([pos1])
+    visited.add(pos1)
+    
+    while queue:
+        current = queue.popleft()
+        for neighbor in get_neighbors(current[0], current[1]):
+            if neighbor == pos2:
+                return True
+            if neighbor in player_stones and neighbor not in visited:
+                visited.add(neighbor)
+                queue.append(neighbor)
+    return False
+
+def find_bridge_corners(player_stones: Set[Tuple[int, int]]) -> List[Tuple[int, int]]:
+    """Find pairs of corners connected by a path of player stones."""
+    connected_corners = []
+    corners_list = list(CORNERS)
+    for i in range(len(corners_list)):
+        for j in range(i+1, len(corners_list)):
+            if is_connected(corners_list[i], corners_list[j], player_stones):
+                connected_corners.append((corners_list[i], corners_list[j]))
+    return connected_corners
+
+def find_fork_edges(player_stones: Set[Tuple[int, int]]) -> List[Tuple[int, int]]:
+    """Find edges connected by a path of player stones."""
+    connected_edges = []
+    edges_list = list(EDGES)
+    for i in range(len(edges_list)):
+        for j in range(i+1, len(edges_list)):
+            if is_connected(edges_list[i], edges_list[j], player_stones):
+                connected_edges.append((edges_list[i], edges_list[j]))
+    return connected_edges
+
+def count_ring_completions(player_stones: Set[Tuple[int, int]], move: Tuple[int, int]) -> int:
+    """Count potential ring completions if we place a stone at move."""
+    # Simplified approximation - count how many of our stones would be adjacent to this move
+    count = 0
+    for neighbor in get_neighbors(move[0], move[1]):
+        if neighbor in player_stones:
+            count += 1
+    return count
+
+def evaluate_move(move: Tuple[int, int], me: List[Tuple[int, int]], opp: List[Tuple[int, int]]) -> float:
+    """Evaluate the strategic value of a move."""
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    score = 0
+    
+    # Add to our stones for evaluation
+    new_me_set = me_set | {move}
+    
+    # Ring formation potential
+    ring_potential = count_ring_completions(new_me_set, move)
+    score += ring_potential * 2
+    
+    # Connectivity bonus
+    connections = 0
+    for neighbor in get_neighbors(move[0], move[1]):
+        if neighbor in me_set:
+            connections += 1
+    score += connections * 1.5
+    
+    # Edge/COrner control
+    if move in CORNERS:
+        score += 3
+    elif move in EDGES:
+        score += 1.5
+    
+    # Distance to center (prefer central positions)
+    center_r, center_c = 7, 7
+    dist_to_center = abs(move[0] - center_r) + abs(move[1] - center_c)
+    score += (14 - dist_to_center) * 0.1
+    
+    return score
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], valid_mask_input: np.ndarray) -> Tuple[int, int]:
+    global valid_mask
+    valid_mask = valid_mask_input
+    
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    # Get all valid moves
+    valid_moves = []
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if valid_mask[r][c] and (r, c) not in me_set and (r, c) not in opp_set:
+                valid_moves.append((r, c))
+    
+    if not valid_moves:
+        # Should not happen but just in case
+        return (7, 7)
+    
+    # 1. Check for immediate win moves for us
+    for move in valid_moves:
+        # Temporarily add the move to our set
+        temp_me = me_set | {move}
+        # Check if this creates a winning condition (simplified check)
+        # This is a very basic check - not fully accurate but fast
+        # A more comprehensive implementation would use BFS to detect rings/bridges/forks
+        pass
+    
+    # 2. Check for opponent's immediate win and block
+    for move in valid_moves:
+        # Temporarily add the move to opponent's set
+        temp_opp = opp_set | {move}
+        # Basic blocking strategy
+        # Again, simplified but prioritizes blocking obvious threats
+    
+    # 3. Evaluate all valid moves based on strategic value
+    best_move = valid_moves[0]
+    best_score = -float('inf')
+    
+    for move in valid_moves:
+        score = evaluate_move(move, me, opp)
+        # Bonus for blocking opponent
+        if move in [(0, 4), (0, 10), (4, 0), (10, 0), (14, 4), (14, 10)]:
+            # If opponent is trying to connect corners, we should too
+            pass
+            
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move
+</code>

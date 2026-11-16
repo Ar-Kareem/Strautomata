@@ -1,0 +1,111 @@
+
+import numpy as np
+from typing import List, Tuple
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    """
+    Determines the next move for 3D Tic Tac Toe using a heuristic-based approach.
+    
+    Args:
+        board: 3x3x3 list representing the game state
+        
+    Returns:
+        Tuple of (x, y, z) coordinates for the next move
+    """
+    # Convert to numpy array for easier manipulation
+    board_np = np.array(board)
+    
+    # Find all empty positions
+    empty_positions = []
+    for x in range(3):
+        for y in range(3):
+            for z in range(3):
+                if board[x][y][z] == 0:
+                    empty_positions.append((x, y, z))
+    
+    # If no empty positions, return invalid move
+    if not empty_positions:
+        return (0, 0, 0)
+    
+    # Prefer the center if available
+    if board[1][1][1] == 0:
+        return (1, 1, 1)
+    
+    # Try to win if possible
+    for x, y, z in empty_positions:
+        board[x][y][z] = 1  # Temporarily place our mark
+        if check_winner(board) == 1:
+            board[x][y][z] = 0  # Reset
+            return (x, y, z)
+        board[x][y][z] = 0  # Reset
+    
+    # Block opponent from winning
+    for x, y, z in empty_positions:
+        board[x][y][z] = -1  # Temporarily place opponent's mark
+        if check_winner(board) == -1:
+            board[x][y][z] = 0  # Reset
+            return (x, y, z)
+        board[x][y][z] = 0  # Reset
+    
+    # Prefer corners
+    corners = [(0,0,0), (0,0,2), (0,2,0), (0,2,2), (2,0,0), (2,0,2), (2,2,0), (2,2,2)]
+    available_corners = [pos for pos in corners if board[pos[0]][pos[1]][pos[2]] == 0]
+    if available_corners:
+        # Prefer corners that are also in the center layer
+        center_layer_corners = [pos for pos in available_corners if pos[1] == 1 or pos[2] == 1]
+        if center_layer_corners:
+            return center_layer_corners[0]
+        return available_corners[0]
+    
+    # If all else fails, choose random empty position
+    return empty_positions[0]
+
+def check_winner(board: List[List[List[int]]]) -> int:
+    """
+    Check if there's a winner in 3D Tic Tac Toe.
+    Returns 1 if player 1 wins, -1 if player -1 wins, 0 if no winner.
+    """
+    # Convert to numpy for easier handling
+    board_np = np.array(board)
+    
+    # Check all lines (rows, columns, layers, and diagonals)
+    lines = []
+    
+    # Rows (along x-axis)
+    for x in range(3):
+        for y in range(3):
+            lines.append([board[x][y][0], board[x][y][1], board[x][y][2]])
+    
+    # Columns (along y-axis)
+    for x in range(3):
+        for z in range(3):
+            lines.append([board[x][0][z], board[x][1][z], board[x][2][z]])
+    
+    # Layers (along z-axis)
+    for y in range(3):
+        for z in range(3):
+            lines.append([board[0][y][z], board[1][y][z], board[2][y][z]])
+    
+    # Diagonals in each layer
+    for y in range(3):
+        lines.append([board[0][y][0], board[1][y][1], board[2][y][2]])
+        lines.append([board[0][y][2], board[1][y][1], board[2][y][0]])
+    
+    for z in range(3):
+        lines.append([board[0][0][z], board[1][1][z], board[2][2][z]])
+        lines.append([board[0][2][z], board[1][1][z], board[2][0][z]])
+    
+    # Main diagonal lines through 3D space
+    lines.append([board[0][0][0], board[1][1][1], board[2][2][2]])
+    lines.append([board[0][0][2], board[1][1][1], board[2][2][0]])
+    lines.append([board[0][2][0], board[1][1][1], board[2][0][2]])
+    lines.append([board[0][2][2], board[1][1][1], board[2][0][0]])
+    
+    # Check for any winning line
+    for line in lines:
+        if line == [1, 1, 1]:
+            return 1
+        elif line == [-1, -1, -1]:
+            return -1
+    
+    return 0

@@ -1,0 +1,71 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Convert to list of lists if needed (ensure mutability)
+    # board[r][c] where 0=empty, 1=me, -1=opponent
+    
+    def check_winner(b):
+        # Check rows
+        for r in range(4):
+            if abs(sum(b[r])) == 4:
+                return b[r][0] if b[r][0] != 0 else None
+        
+        # Check columns
+        for c in range(4):
+            col_sum = sum(b[r][c] for r in range(4))
+            if abs(col_sum) == 4:
+                return b[0][c] if b[0][c] != 0 else None
+                
+        # Check diagonals
+        diag1_sum = sum(b[i][i] for i in range(4))
+        if abs(diag1_sum) == 4:
+            return b[0][0] if b[0][0] != 0 else None
+            
+        diag2_sum = sum(b[i][3-i] for i in range(4))
+        if abs(diag2_sum) == 4:
+            return b[0][3] if b[0][3] != 0 else None
+            
+        return None
+    
+    def is_valid_move(r, c):
+        return 0 <= r < 4 and 0 <= c < 4 and board[r][c] == 0
+    
+    # Get all empty positions
+    empty_positions = [(r, c) for r in range(4) for c in range(4) if board[r][c] == 0]
+    
+    if not empty_positions:
+        # Should not happen, but fallback
+        return (0, 0)
+    
+    # 1. Check if I can win immediately
+    for r, c in empty_positions:
+        # Try placing my piece (1)
+        board[r][c] = 1
+        if check_winner(board) == 1:
+            board[r][c] = 0  # Reset
+            return (r, c)
+        board[r][c] = 0  # Reset
+    
+    # 2. Check if opponent can win next turn and block
+    for r, c in empty_positions:
+        # Try placing opponent's piece (-1)
+        board[r][c] = -1
+        if check_winner(board) == -1:
+            board[r][c] = 0  # Reset
+            return (r, c)
+        board[r][c] = 0  # Reset
+    
+    # 3. Strategic positioning
+    # Prefer center positions
+    center_positions = [(1,1), (1,2), (2,1), (2,2)]
+    preferred_positions = [pos for pos in center_positions if pos in empty_positions]
+    if preferred_positions:
+        return preferred_positions[0]
+    
+    # 4. Corner positions
+    corner_positions = [(0,0), (0,3), (3,0), (3,3)]
+    corner_options = [pos for pos in corner_positions if pos in empty_positions]
+    if corner_options:
+        return corner_options[0]
+    
+    # 5. Any remaining position
+    return empty_positions[0]

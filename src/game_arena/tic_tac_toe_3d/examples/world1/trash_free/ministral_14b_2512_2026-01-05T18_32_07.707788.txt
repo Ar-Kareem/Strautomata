@@ -1,0 +1,202 @@
+Here's a Python implementation for a 3D Tic Tac Toe (3x3x3) policy function that uses a simple heuristic-based approach to determine the next move. This solution prioritizes winning moves, then blocks opponent winning moves, and finally falls back to a basic center bias strategy.
+
+```python
+import numpy as np
+from typing import List, Tuple
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    """
+    Determines the next move for a 3D Tic Tac Toe game using a heuristic-based approach.
+
+    The strategy prioritizes:
+    1. Winning moves (if available)
+    2. Blocking opponent winning moves (if available)
+    3. Center bias (preferring cells in the center of the board)
+    4. Random empty cell (if no strategic moves available)
+
+    Args:
+        board: A 3x3x3 board where 0=empty, 1=you, -1=opponent
+
+    Returns:
+        A tuple (x, y, z) representing the coordinates of the next move
+    """
+    # Convert to numpy array for easier manipulation
+    np_board = np.array(board)
+
+    # Find all empty cells (0)
+    empty_cells = np.argwhere(np_board == 0)
+
+    # Check for winning moves
+    winning_move = find_winning_move(np_board, 1)
+    if winning_move is not None:
+        return tuple(winning_move)
+
+    # Check for blocking moves against opponent
+    opponent_winning_move = find_winning_move(np_board, -1)
+    if opponent_winning_move is not None:
+        return tuple(opponent_winning_move)
+
+    # If no immediate winning/blocking moves, prefer center cells
+    # The true center of a 3x3x3 cube is (1,1,1)
+    # We'll sort empty cells by distance to center, then pick first
+    center = np.array([1, 1, 1])
+    distances = np.linalg.norm(empty_cells - center, axis=1)
+    sorted_cells = empty_cells[np.argsort(distances)]
+
+    # Return the closest empty cell to center
+    return tuple(sorted_cells[0])
+
+def find_winning_move(board: np.ndarray, player: int) -> np.ndarray:
+    """
+    Finds if the given player has any winning moves available.
+
+    Args:
+        board: The current board state
+        player: The player to check (1 or -1)
+
+    Returns:
+        The coordinates of the winning move if found, None otherwise
+    """
+    # Check all possible lines (rows, columns, pillars, and space diagonals)
+    # There are 3 types of lines in 3D Tic Tac Toe:
+    # 1. Lines along each dimension (27 total)
+    # 2. Planar diagonals (12 total)
+    # 3. Space diagonals (4 total)
+
+    # Check lines along dimensions (rows, columns, pillars)
+    for dim in range(3):
+        for i in range(3):
+            line = board[:, :, i] if dim == 0 else board[:, i, :] if dim == 1 else board[i, :, :]
+            for j in range(3):
+                row = line[j, :] if dim == 0 else line[:, j] if dim == 1 else line[:, :, j]
+                if np.all(row == player):
+                    # Find empty cell in this line
+                    empty = np.argwhere(row == 0)
+                    if len(empty) > 0:
+                        if dim == 0:
+                            return empty[0] + (i,)
+                        elif dim == 1:
+                            return (j,) + empty[0]
+                        else:
+                            return (i,) + tuple(empty[0])
+
+    # Check planar diagonals (within each 2D layer)
+    for layer in range(3):
+        # Front layer (z=0)
+        if layer == 0:
+            for row in range(3):
+                diag = np.array([board[row, row, 0], board[row, 2-row, 0], board[2-row, row, 0], board[2-row, 2-row, 0]])
+                if np.all(diag == player):
+                    empty = np.argwhere(diag == 0)
+                    if len(empty) > 0:
+                        return tuple(empty[0])
+        # Back layer (z=2)
+        elif layer == 2:
+            for row in range(3):
+                diag = np.array([board[row, row, 2], board[row, 2-row, 2], board[2-row, row, 2], board[2-row, 2-row, 2]])
+                if np.all(diag == player):
+                    empty = np.argwhere(diag == 0)
+                    if len(empty) > 0:
+                        return tuple(empty[0])
+        # Middle layer (z=1)
+        else:
+            for row in range(3):
+                diag = np.array([board[row, row, 1], board[row, 2-row, 1], board[2-row, row, 1], board[2-row, 2-row, 1]])
+                if np.all(diag == player):
+                    empty = np.argwhere(diag == 0)
+                    if len(empty) > 0:
+                        return tuple(empty[0])
+
+    # Check space diagonals (4 main diagonals through the cube)
+    space_diagonals = [
+        [board[0, 0, 0], board[1, 1, 1], board[2, 2, 2]],  # Main diagonal
+        [board[0, 2, 2], board[1, 1, 1], board[2, 0, 0]],  # Anti-diagonal
+        [board[2, 0, 0], board[1, 1, 1], board[0, 2, 2]],  # Reverse main diagonal
+        [board[2, 2, 2], board[1, 1, 1], board[0, 0, 0]]   # Reverse anti-diagonal
+    ]
+
+    for diag in space_diagonals:
+        if np.all(diag == player):
+            empty = np.argwhere(np.array(diag) == 0)
+            if len(empty) > 0:
+                return tuple(empty[0])
+
+    # Check all 2D planes (each layer, and each row/column in each dimension)
+    for dim in range(3):
+        for i in range(3):
+            # Extract the 2D plane
+            plane = board[:, :, i] if dim == 0 else board[:, i, :] if dim == 1 else board[i, :, :]
+            # Check rows
+            for j in range(3):
+                if np.all(plane[j, :] == player):
+                    empty = np.argwhere(plane[j, :] == 0)
+                    if len(empty) > 0:
+                        if dim == 0:
+                            return (j, empty[0][0], i)
+                        elif dim == 1:
+                            return (j, i, empty[0][0])
+                        else:
+                            return (i, empty[0][0], j)
+            # Check columns
+            for j in range(3):
+                if np.all(plane[:, j] == player):
+                    empty = np.argwhere(plane[:, j] == 0)
+                    if len(empty) > 0:
+                        if dim == 0:
+                            return (empty[0][0], j, i)
+                        elif dim == 1:
+                            return (empty[0][0], i, j)
+                        else:
+                            return (i, empty[0][0], j)
+            # Check planar diagonals in this plane
+            for j in range(3):
+                diag = np.array([plane[j, j], plane[j, 2-j], plane[2-j, j], plane[2-j, 2-j]])
+                if np.all(diag == player):
+                    empty = np.argwhere(diag == 0)
+                    if len(empty) > 0:
+                        if dim == 0:
+                            return (empty[0][0], empty[0][1], i)
+                        elif dim == 1:
+                            return (empty[0][0], i, empty[0][1])
+                        else:
+                            return (i, empty[0][0], empty[0][1])
+
+    return None
+
+# Example usage (not part of the function)
+if __name__ == "__main__":
+    # Example board where player 1 has a winning move in the front layer's first row
+    example_board = [
+        [[0, 0, 0], [0, 0, 0], [0, 0, 0]],
+        [[0, 0, 0], [0, 0, 0], [0, 0, 0]],
+        [[0, 0, 0], [0, 0, 0], [0, 0, 0]]
+    ]
+    example_board[0][0][0] = 1
+    example_board[0][0][1] = 1
+    example_board[0][0][2] = 1
+
+    print(policy(example_board))  # Should return (0, 0, 2) if the board is fully empty except for this line
+```
+
+### Explanation:
+1. **`policy` function**:
+   - First converts the input board to a NumPy array for easier manipulation.
+   - Checks for winning moves for the current player (`1`), then blocking moves against the opponent (`-1`).
+   - If no winning/blocking moves are found, it sorts empty cells by their distance to the center (`(1,1,1)`) and picks the closest one.
+   - Returns the coordinates as a tuple `(x, y, z)`.
+
+2. **`find_winning_move` function**:
+   - Checks all possible lines in 3D Tic Tac Toe:
+     - **Lines along dimensions**: Rows, columns, and pillars (27 total).
+     - **Planar diagonals**: Diagonals within each 2D layer (12 total).
+     - **Space diagonals**: The 4 main diagonals that pass through the cube.
+   - For each line, if all cells are occupied by the given player, it returns the coordinates of the first empty cell in that line (which would complete the win).
+
+3. **Fallback strategy**:
+   - If no immediate winning/blocking moves are found, the policy defaults to a center bias strategy, which is a reasonable heuristic for symmetric games like Tic Tac Toe.
+
+### Note:
+This is a **heuristic-based** solution and not a perfect minimax implementation (which would be computationally expensive for a 3D Tic Tac Toe game). For a more advanced solution, you could:
+- Implement minimax with alpha-beta pruning (but it would be slow for 3D Tic Tac Toe).
+- Use a neural network or other machine learning approach (if the game is part of a larger project).
+- Add more sophisticated heuristics (e.g., prioritizing corners over edges).

@@ -1,0 +1,74 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    An AI agent for playing Tic Tac Toe.
+    Uses a heuristic strategy:
+    1. Win if possible.
+    2. Block opponent's winning move.
+    3. Take the center if free.
+    4. Take a corner if free.
+    5. Take a side if free.
+    """
+    ME = 1
+    THEM = -1
+    EMPTY = 0
+    
+    # Helper to find all available moves
+    def get_available_moves(b):
+        moves = []
+        for r in range(3):
+            for c in range(3):
+                if b[r][c] == EMPTY:
+                    moves.append((r, c))
+        return moves
+    
+    # Helper to check for a winner
+    # Returns the winner (1, -1) or None
+    def check_winner(b):
+        lines = []
+        # Rows
+        lines.extend([(r, 0), (r, 1), (r, 2)] for r in range(3))
+        # Cols
+        lines.extend([(0, c), (1, c), (2, c)] for c in range(3))
+        # Diagonals
+        lines.append([(0, 0), (1, 1), (2, 2)])
+        lines.append([(0, 2), (1, 1), (2, 0)])
+        
+        for line in lines:
+            vals = [b[r][c] for r, c in line]
+            if all(v == ME for v in vals):
+                return ME
+            if all(v == THEM for v in vals):
+                return THEM
+        return None
+
+    # 1. Check if I can win in the next move
+    available_moves = get_available_moves(board)
+    for r, c in available_moves:
+        board[r][c] = ME
+        if check_winner(board) == ME:
+            board[r][c] = EMPTY # Reset
+            return (r, c)
+        board[r][c] = EMPTY # Reset
+
+    # 2. Check if opponent can win next move (Block)
+    for r, c in available_moves:
+        board[r][c] = THEM
+        if check_winner(board) == THEM:
+            board[r][c] = EMPTY # Reset
+            return (r, c)
+        board[r][c] = EMPTY # Reset
+
+    # 3. Take Center
+    if board[1][1] == EMPTY:
+        return (1, 1)
+
+    # 4. Take a Corner
+    corners = [(0, 0), (0, 2), (2, 0), (2, 2)]
+    for r, c in corners:
+        if board[r][c] == EMPTY:
+            return (r, c)
+
+    # 5. Take any other available spot (Sides)
+    # Since we filtered earlier, any remaining move is valid
+    return available_moves[0]

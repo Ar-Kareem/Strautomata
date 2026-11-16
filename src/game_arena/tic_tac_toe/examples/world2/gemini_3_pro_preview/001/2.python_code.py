@@ -1,0 +1,175 @@
+
+import math
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Determines the next move for a 4x4 Tic Tac Toe game using Minimax with Alpha-Beta pruning.
+    
+    Args:
+        board: A 4x4 list of lists. 0 = empty, 1 = AI, -1 = Opponent.
+        
+    Returns:
+        A tuple (row, col) representing the chosen move.
+    """
+    
+    PLAYER = 1
+    OPPONENT = -1
+    EMPTY = 0
+    SIZE = 4
+    
+    # Precompute line indices for efficiency
+    LINES = []
+    # Rows
+    for r in range(SIZE):
+        LINES.append([(r, c) for c in range(SIZE)])
+    # Columns
+    for c in range(SIZE):
+        LINES.append([(r, c) for r in range(SIZE)])
+    # Diagonals
+    LINES.append([(i, i) for i in range(SIZE)])
+    LINES.append([(i, SIZE - 1 - i) for i in range(SIZE)])
+
+    def get_valid_moves(state):
+        return [(r, c) for r in range(SIZE) for c in range(SIZE) if state[r][c] == EMPTY]
+
+    def evaluate(state):
+        score = 0
+        for line in LINES:
+            p_count = 0
+            o_count = 0
+            for r, c in line:
+                val = state[r][c]
+                if val == PLAYER:
+                    p_count += 1
+                elif val == OPPONENT:
+                    o_count += 1
+            
+            # If line is mixed, it's useless for 4-in-a-row
+            if p_count > 0 and o_count > 0:
+                continue
+                
+            if p_count > 0:
+                if p_count == 1: score += 1
+                elif p_count == 2: score += 10
+                elif p_count == 3: score += 100
+                elif p_count == 4: score += 10000
+            elif o_count > 0:
+                if o_count == 1: score -= 1
+                elif o_count == 2: score -= 10
+                elif o_count == 3: score -= 100
+                elif o_count == 4: score -= 10000
+        return score
+
+    def check_outcome(state):
+        # Returns 1 (Player win), -1 (Opp win), 0 (Draw), or None (Ongoing)
+        for line in LINES:
+            p_count = 0
+            o_count = 0
+            for r, c in line:
+                val = state[r][c]
+                if val == PLAYER:
+                    p_count += 1
+                elif val == OPPONENT:
+                    o_count += 1
+            if p_count == SIZE: return PLAYER
+            if o_count == SIZE: return OPPONENT
+        
+        # Check draw
+        is_full = True
+        for r in range(SIZE):
+            for c in range(SIZE):
+                if state[r][c] == EMPTY:
+                    is_full = False
+                    break
+            if not is_full: break
+        
+        if is_full: return 0
+        return None
+
+    def minimax(state, depth, alpha, beta, maximizing):
+        outcome = check_outcome(state)
+        if outcome is not None:
+            if outcome == PLAYER: return 100000 - (10 - depth) # Prefer faster wins
+            if outcome == OPPONENT: return -100000 + (10 - depth) # Delay losses
+            return 0
+            
+        if depth == 0:
+            return evaluate(state)
+
+        valid_moves = get_valid_moves(state)
+        if not valid_moves:
+            return 0
+            
+        # Move ordering heuristic: center squares first usually helps pruning
+        # Center is (1,1), (1,2), (2,1), (2,2)
+        valid_moves.sort(key=lambda m: abs(m[0] - 1.5) + abs(m[1] - 1.5))
+
+        if maximizing:
+            max_eval = -math.inf
+            for r, c in valid_moves:
+                state[r][c] = PLAYER
+                eval_val = minimax(state, depth - 1, alpha, beta, False)
+                state[r][c] = EMPTY # Undo
+                max_eval = max(max_eval, eval_val)
+                alpha = max(alpha, eval_val)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = math.inf
+            for r, c in valid_moves:
+                state[r][c] = OPPONENT
+                eval_val = minimax(state, depth - 1, alpha, beta, True)
+                state[r][c] = EMPTY # Undo
+                min_eval = min(min_eval, eval_val)
+                beta = min(beta, eval_val)
+                if beta <= alpha:
+                    break
+            return min_eval
+
+    # --- Immediate Check (Optimization) ---
+    # Check for instant win (3 marks + 1 empty) or forced block (opponent has 3)
+    # This prevents horizon effect issues and saves time
+    possible_moves = get_valid_moves(board)
+    
+    # 1. Check for immediate win
+    for r, c in possible_moves:
+        board[r][c] = PLAYER
+        if check_outcome(board) == PLAYER:
+            board[r][c] = EMPTY
+            return (r, c)
+        board[r][c] = EMPTY
+
+    # 2. Check for immediate block
+    for r, c in possible_moves:
+        board[r][c] = OPPONENT
+        if check_outcome(board) == OPPONENT:
+            board[r][c] = EMPTY
+            return (r, c)
+        board[r][c] = EMPTY
+
+    # --- Alpha-Beta Search ---
+    best_score = -math.inf
+    best_move = possible_moves[0] if possible_moves else (0,0)
+    
+    # Depth 4 is usually safe for 4x4 within 1s in Python
+    SEARCH_DEPTH = 3 
+    
+    # Order moves: check center first
+    possible_moves.sort(key=lambda m: abs(m[0] - 1.5) + abs(m[1] - 1.5))
+
+    alpha = -math.inf
+    beta = math.inf
+    
+    for r, c in possible_moves:
+        board[r][c] = PLAYER
+        score = minimax(board, SEARCH_DEPTH, alpha, beta, False)
+        board[r][c] = EMPTY
+        
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+        
+        alpha = max(alpha, score)
+        
+    return best_move

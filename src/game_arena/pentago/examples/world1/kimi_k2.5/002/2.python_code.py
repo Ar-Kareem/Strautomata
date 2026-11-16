@@ -1,0 +1,171 @@
+
+def policy(you, opponent):
+    import sys
+    sys.setrecursionlimit(10000)
+    
+    # Bitboard conversion
+    def to_bits(board):
+        b = 0
+        for r in range(6):
+            row = board[r]
+            for c in range(6):
+                if row[c]:
+                    b |= 1 << (r * 6 + c)
+        return b
+    
+    # Precomputed line masks (5 consecutive cells)
+    LINES = []
+    # Horizontal
+    for r in range(6):
+        for c in range(2):
+            m = 0
+            for i in range(5):
+                m |= 1 << (r * 6 + c + i)
+            LINES.append(m)
+    # Vertical
+    for c in range(6):
+        for r in range(2):
+            m = 0
+            for i in range(5):
+                m |= 1 << ((r + i) * 6 + c)
+            LINES.append(m)
+    # Diagonal \
+    for r in range(2):
+        for c in range(2):
+            m = 0
+            for i in range(5):
+                m |= 1 << ((r + i) * 6 + (c + i))
+            LINES.append(m)
+    # Diagonal /
+    for r in range(2):
+        for c in range(4, 6):
+            m = 0
+            for i in range(5):
+                m |= 1 << ((r + i) * 6 + (c - i))
+            LINES.append(m)
+    
+    # Quadrant indices
+    QIDX = [
+        [0, 1, 2, 6, 7, 8, 12, 13, 14],
+        [3, 4, 5, 9, 10, 11, 15, 16, 17],
+        [18, 19, 20, 24, 25, 26, 30, 31, 32],
+        [21, 22, 23, 27, 28, 29, 33, 34, 35]
+    ]
+    
+    # Rotation permutations (destination i comes from source perm[i])
+    PERM_R = [6, 3, 0, 7, 4, 1, 8, 5, 2]  # Clockwise
+    PERM_L = [2, 5, 8, 1, 4, 7, 0, 3, 6]  # Counter-clockwise
+    
+    def rotate(board, quad, direction):
+        idx = QIDX[quad]
+        perm = PERM_R if direction == 'R' else PERM_L
+        # Extract bits
+        bits = [(board >> idx[i]) & 1 for i in range(9)]
+        # Clear quadrant
+        mask = 0
+        for i in idx:
+            mask |= 1 << i
+        board &= ~mask
+        # Place rotated bits
+        for i in range(9):
+            if bits[perm[i]]:
+                board |= 1 << idx[i]
+        return board
+    
+    def check_win(b):
+        for m in LINES:
+            if (b & m) == m:
+                return True
+        return False
+    
+    def evaluate(us, them):
+        score = 0
+        for m in LINES:
+            uc = (us & m).bit_count()
+            oc = (them & m).bit_count()
+            if uc > 0 and oc > 0:
+                continue
+            if uc == 5:
+                return 100000
+            elif uc == 4:
+                score += 1000
+            elif uc == 3:
+                score += 100
+            elif uc == 2:
+                score += 10
+            if oc == 5:
+                return -100000
+            elif oc == 4:
+                score -= 1000
+            elif oc == 3:
+                score -= 100
+            elif oc == 2:
+                score -= 10
+        # Center control bonus
+        center = (1 << 14) | (1 << 15) | (1 << 20) | (1 << 21)
+        score += (us & center).bit_count() * 5
+        score -= (them & center).bit_count() * 5
+        return score
+    
+    def generate_moves(cur, opp):
+        empty = (~(cur | opp)) & ((1 << 36) - 1)
+        moves = []
+        e = empty
+        while e:
+            lsb = e & -e
+            pos = (lsb.bit_length() - 1)
+            placed = cur | lsb
+            for q in range(4):
+                for d in ['L', 'R']:
+                    new_cur = rotate(placed, q, d)
+                    new_opp = rotate(opp, q, d)
+                    moves.append((pos, q, d, new_cur, new_opp))
+            e ^= lsb
+        return moves
+    
+    # Convert input
+    us = to_bits(you)
+    them = to_bits(opponent)
+    
+    moves = generate_moves(us, them)
+    if not moves:
+        return "1,1,0,R"
+    
+    # Check immediate win
+    for pos, q, d, new_us, new_them in moves:
+        if check_win(new_us):
+            r, c = divmod(pos, 6)
+            return f"{r+1},{c+1},{q},{d}"
+    
+    # Depth-2 search (maximin)
+    best_score = -10**9
+    best_move = moves[0]
+    
+    for pos, q, d, new_us, new_them in moves:
+        # Opponent's turn: find their best response (minimize our score)
+        opp_moves = generate_moves(new_them, new_us)
+        worst_score = 10**9
+        
+        # Check if opponent can win immediately
+        immediate_loss = False
+        for _, _, _, final_them, final_us in opp_moves:
+            if check_win(final_them):
+                worst_score = -10**9
+                immediate_loss = True
+                break
+        
+        if not immediate_loss:
+            for _, _, _, final_them, final_us in opp_moves:
+                sc = evaluate(final_us, final_them)
+                if sc < worst_score:
+                    worst_score = sc
+                    if worst_score < best_score:  # Pruning
+                        break
+        
+        if worst_score > best_score:
+            best_score = worst_score
+            best_move = (pos, q, d)
+    
+    pos, q, d = best_move[:3]
+    r, c = divmod(pos, 6)
+    return f"{r+1},{c+1},{q},{d}"

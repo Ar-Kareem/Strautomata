@@ -1,0 +1,360 @@
+
+from time import perf_counter
+
+DIRS = [
+    (-1, -1), (-1, 0), (-1, 1),
+    (0, -1),           (0, 1),
+    (1, -1),  (1, 0),  (1, 1),
+]
+
+CENTER = [[7 - max(abs(2 * r - 7), abs(2 * c - 7)) for c in range(8)] for r in range(8)]
+
+WIN_SCORE = 10**9
+
+
+class _Timeout(Exception):
+    pass
+
+
+def _to_list_board(board):
+    if hasattr(board, "tolist"):
+        board = board.tolist()
+    return [list(row) for row in board]
+
+
+def _in_bounds(r, c):
+    return 0 <= r < 8 and 0 <= c < 8
+
+
+def _is_connected(board, player):
+    total = 0
+    start = None
+    for r in range(8):
+        row = board[r]
+        for c in range(8):
+            if row[c] == player:
+                total += 1
+                if start is None:
+                    start = (r, c)
+    if total <= 1:
+        return True
+
+    seen = [[False] * 8 for _ in range(8)]
+    stack = [start]
+    seen[start[0]][start[1]] = True
+    reached = 1
+
+    while stack:
+        r, c = stack.pop()
+        for dr, dc in DIRS:
+            nr, nc = r + dr, c + dc
+            if _in_bounds(nr, nc) and not seen[nr][nc] and board[nr][nc] == player:
+                seen[nr][nc] = True
+                reached += 1
+                stack.append((nr, nc))
+
+    return reached == total
+
+
+def _terminal_score(board, player_to_move, ply):
+    my_conn = _is_connected(board, player_to_move)
+    opp_conn = _is_connected(board, -player_to_move)
+
+    # Game would have ended on the previous move.
+    if my_conn and opp_conn:
+        return -WIN_SCORE + ply
+    if my_conn:
+        return WIN_SCORE - ply
+    if opp_conn:
+        return -WIN_SCORE + ply
+    return None
+
+
+def _component_features(board, player):
+    positions = []
+    n = 0
+    sum_r = sum_c = 0
+    sum_r2 = sum_c2 = 0
+    centrality = 0
+
+    for r in range(8):
+        row = board[r]
+        for c in range(8):
+            if row[c] == player:
+                positions.append((r, c))
+                n += 1
+                sum_r += r
+                sum_c += c
+                sum_r2 += r * r
+                sum_c2 += c * c
+                centrality += CENTER[r][c]
+
+    if n == 0:
+        return {
+            "n": 0,
+            "components": 0,
+            "largest": 0,
+            "adj": 0,
+            "centrality": 0,
+            "spread": 0,
+        }
+
+    if n == 1:
+        components = 1
+        largest = 1
+    else:
+        seen = [[False] * 8 for _ in range(8)]
+        components = 0
+        largest = 0
+        for sr, sc in positions:
+            if not seen[sr][sc]:
+                components += 1
+                stack = [(sr, sc)]
+                seen[sr][sc] = True
+                size = 0
+                while stack:
+                    r, c = stack.pop()
+                    size += 1
+                    for dr, dc in DIRS:
+                        nr, nc = r + dr, c + dc
+                        if _in_bounds(nr, nc) and not seen[nr][nc] and board[nr][nc] == player:
+                            seen[nr][nc] = True
+                            stack.append((nr, nc))
+                if size > largest:
+                    largest = size
+
+    adj = 0
+    for r, c in positions:
+        for dr, dc in DIRS:
+            nr, nc = r + dr, c + dc
+            if _in_bounds(nr, nc) and board[nr][nc] == player:
+                adj += 1
+
+    # Negative variance-like spread; less spread is better.
+    spread = -((n * (sum_r2 + sum_c2) - sum_r * sum_r - sum_c * sum_c) // max(1, n))
+
+    return {
+        "n": n,
+        "components": components,
+        "largest": largest,
+        "adj": adj,
+        "centrality": centrality,
+        "spread": spread,
+    }
+
+
+def _evaluate(board, player):
+    myf = _component_features(board, player)
+    opf = _component_features(board, -player)
+
+    my_ratio = (100 * myf["largest"] // myf["n"]) if myf["n"] else 100
+    op_ratio = (100 * opf["largest"] // opf["n"]) if opf["n"] else 100
+
+    score = 0
+    score += 500 * (opf["components"] - myf["components"])
+    score += 120 * (my_ratio - op_ratio)
+    score += 8 * (myf["adj"] - opf["adj"])
+    score += 3 * (myf["centrality"] - opf["centrality"])
+    score += 2 * (myf["spread"] - opf["spread"])
+
+    return score
+
+
+def _generate_moves(board, player):
+    row_counts = [0] * 8
+    col_counts = [0] * 8
+    diag_counts = [0] * 15      # r - c + 7
+    anti_counts = [0] * 15      # r + c
+
+    for r in range(8):
+        row = board[r]
+        rc = 0
+        for c in range(8):
+            if row[c] != 0:
+                rc += 1
+                col_counts[c] += 1
+                diag_counts[r - c + 7] += 1
+                anti_counts[r + c] += 1
+        row_counts[r] = rc
+
+    moves = []
+
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] != player:
+                continue
+
+            for dr, dc in DIRS:
+                if dr == 0:
+                    dist = row_counts[r]
+                elif dc == 0:
+                    dist = col_counts[c]
+                elif dr == dc:
+                    dist = diag_counts[r - c + 7]
+                else:
+                    dist = anti_counts[r + c]
+
+                tr = r + dr * dist
+                tc = c + dc * dist
+
+                if not _in_bounds(tr, tc):
+                    continue
+                if board[tr][tc] == player:
+                    continue
+
+                rr = r + dr
+                cc = c + dc
+                legal = True
+                for _ in range(1, dist):
+                    if board[rr][cc] == -player:
+                        legal = False
+                        break
+                    rr += dr
+                    cc += dc
+
+                if legal:
+                    moves.append((r, c, tr, tc))
+
+    return moves
+
+
+def _local_move_score(board, move, player):
+    fr, fc, tr, tc = move
+    score = 0
+
+    if board[tr][tc] == -player:
+        score += 1000
+
+    # Friendly neighbors around destination after moving there.
+    neigh = 0
+    for dr, dc in DIRS:
+        nr, nc = tr + dr, tc + dc
+        if _in_bounds(nr, nc):
+            if nr == fr and nc == fc:
+                continue
+            if board[nr][nc] == player:
+                neigh += 1
+    score += 30 * neigh
+
+    score += CENTER[tr][tc] - CENTER[fr][fc]
+    return score
+
+
+def _apply_move(board, move, player):
+    fr, fc, tr, tc = move
+    captured = board[tr][tc]
+    board[fr][fc] = 0
+    board[tr][tc] = player
+    return captured
+
+
+def _undo_move(board, move, player, captured):
+    fr, fc, tr, tc = move
+    board[fr][fc] = player
+    board[tr][tc] = captured
+
+
+def _negamax(board, depth, alpha, beta, player, ply, deadline):
+    if perf_counter() >= deadline:
+        raise _Timeout
+
+    term = _terminal_score(board, player, ply)
+    if term is not None:
+        return term
+
+    if depth == 0:
+        return _evaluate(board, player)
+
+    moves = _generate_moves(board, player)
+    if not moves:
+        return -WIN_SCORE + ply
+
+    moves.sort(key=lambda m: _local_move_score(board, m, player), reverse=True)
+
+    best = -10**18
+    for move in moves:
+        captured = _apply_move(board, move, player)
+        score = -_negamax(board, depth - 1, -beta, -alpha, -player, ply + 1, deadline)
+        _undo_move(board, move, player, captured)
+
+        if score > best:
+            best = score
+        if score > alpha:
+            alpha = score
+        if alpha >= beta:
+            break
+
+    return best
+
+
+def _format_move(move):
+    fr, fc, tr, tc = move
+    return f"{fr},{fc}:{tr},{tc}"
+
+
+def policy(board) -> str:
+    board = _to_list_board(board)
+
+    moves = _generate_moves(board, 1)
+    if not moves:
+        # Extremely unlikely in valid nonterminal LOA positions.
+        # Return a syntactically valid string as a last resort.
+        return "0,0:0,0"
+
+    moves.sort(key=lambda m: _local_move_score(board, m, 1), reverse=True)
+    best_move = moves[0]
+
+    # Immediate winning move check.
+    for move in moves:
+        captured = _apply_move(board, move, 1)
+        my_conn = _is_connected(board, 1)
+        opp_conn = _is_connected(board, -1)
+        _undo_move(board, move, 1, captured)
+
+        if my_conn:
+            # If both connected, mover wins in LOA, so this is still winning.
+            return _format_move(move)
+
+    deadline = perf_counter() + 0.94
+
+    # Depth schedule: deeper when branching is smaller.
+    if len(moves) <= 8:
+        max_depth = 5
+    elif len(moves) <= 18:
+        max_depth = 4
+    else:
+        max_depth = 3
+
+    try:
+        for depth in range(1, max_depth + 1):
+            if perf_counter() >= deadline:
+                break
+
+            current_best_move = best_move
+            current_best_score = -10**18
+
+            ordered = [best_move] + [m for m in moves if m != best_move]
+
+            alpha = -10**18
+            beta = 10**18
+
+            for move in ordered:
+                if perf_counter() >= deadline:
+                    raise _Timeout
+
+                captured = _apply_move(board, move, 1)
+                score = -_negamax(board, depth - 1, -beta, -alpha, -1, 1, deadline)
+                _undo_move(board, move, 1, captured)
+
+                if score > current_best_score:
+                    current_best_score = score
+                    current_best_move = move
+                if score > alpha:
+                    alpha = score
+
+            best_move = current_best_move
+
+    except _Timeout:
+        pass
+
+    return _format_move(best_move)

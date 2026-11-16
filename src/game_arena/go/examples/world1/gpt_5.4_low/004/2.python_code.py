@@ -1,0 +1,269 @@
+
+from collections import deque
+
+BOARD_SIZE = 19
+EMPTY = 0
+ME = 1
+OPP = -1
+
+DIRS = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+STAR_POINTS = [(4, 4), (4, 16), (16, 4), (16, 16), (10, 10), (4, 10), (10, 4), (10, 16), (16, 10)]
+
+
+def in_bounds(r, c):
+    return 0 <= r < BOARD_SIZE and 0 <= c < BOARD_SIZE
+
+
+def neighbors(r, c):
+    for dr, dc in DIRS:
+        nr, nc = r + dr, c + dc
+        if in_bounds(nr, nc):
+            yield nr, nc
+
+
+def build_board(me, opponent):
+    board = [[EMPTY] * BOARD_SIZE for _ in range(BOARD_SIZE)]
+    for r, c in me:
+        if 1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE:
+            board[r - 1][c - 1] = ME
+    for r, c in opponent:
+        if 1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE:
+            board[r - 1][c - 1] = OPP
+    return board
+
+
+def group_and_liberties(board, r, c):
+    color = board[r][c]
+    group = []
+    libs = set()
+    q = deque([(r, c)])
+    seen = {(r, c)}
+    while q:
+        cr, cc = q.popleft()
+        group.append((cr, cc))
+        for nr, nc in neighbors(cr, cc):
+            v = board[nr][nc]
+            if v == EMPTY:
+                libs.add((nr, nc))
+            elif v == color and (nr, nc) not in seen:
+                seen.add((nr, nc))
+                q.append((nr, nc))
+    return group, libs
+
+
+def analyze_groups(board, color):
+    seen = set()
+    groups = []
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if board[r][c] == color and (r, c) not in seen:
+                g, libs = group_and_liberties(board, r, c)
+                for p in g:
+                    seen.add(p)
+                groups.append((g, libs))
+    return groups
+
+
+def simulate_move(board, move, color):
+    r, c = move
+    if not in_bounds(r, c):
+        return None
+    if board[r][c] != EMPTY:
+        return None
+
+    b = [row[:] for row in board]
+    b[r][c] = color
+    opp = -color
+    captured = 0
+
+    checked = set()
+    for nr, nc in neighbors(r, c):
+        if b[nr][nc] == opp and (nr, nc) not in checked:
+            g, libs = group_and_liberties(b, nr, nc)
+            for p in g:
+                checked.add(p)
+            if len(libs) == 0:
+                captured += len(g)
+                for gr, gc in g:
+                    b[gr][gc] = EMPTY
+
+    my_group, my_libs = group_and_liberties(b, r, c)
+    if len(my_libs) == 0:
+        return None  # suicide
+
+    return {
+        "board": b,
+        "captured": captured,
+        "group_size": len(my_group),
+        "liberties": len(my_libs),
+        "group": my_group,
+        "move": move,
+    }
+
+
+def count_adjacent(board, r, c, color):
+    cnt = 0
+    for nr, nc in neighbors(r, c):
+        if board[nr][nc] == color:
+            cnt += 1
+    return cnt
+
+
+def connected_group_count_after(board, move, color):
+    r, c = move
+    roots = set()
+    for nr, nc in neighbors(r, c):
+        if board[nr][nc] == color:
+            roots.add((nr, nc))
+    if not roots:
+        return 0
+
+    # Count distinct neighboring groups
+    seen = set()
+    groups = 0
+    for sr, sc in roots:
+        if (sr, sc) in seen:
+            continue
+        g, _ = group_and_liberties(board, sr, sc)
+        for p in g:
+            seen.add(p)
+        groups += 1
+    return groups
+
+
+def move_score(board, move, sim, total_stones):
+    r, c = move
+    score = 0.0
+
+    captured = sim["captured"]
+    libs = sim["liberties"]
+    group_size = sim["group_size"]
+
+    adj_me = count_adjacent(board, r, c, ME)
+    adj_opp = count_adjacent(board, r, c, OPP)
+    conn = connected_group_count_after(board, move, ME)
+
+    # Tactical value
+    score += captured * 100.0
+    score += conn * 12.0
+    score += adj_me * 3.0
+    score += adj_opp * 2.0
+    score += libs * 1.5
+    score += min(group_size, 12) * 0.5
+
+    # Avoid self-atari-ish moves unless they capture
+    if libs == 1 and captured == 0:
+        score -= 40.0
+    elif libs == 2 and captured == 0:
+        score -= 5.0
+
+    # Shape / position
+    center_r, center_c = 9, 9
+    dist_center = abs(r - center_r) + abs(c - center_c)
+
+    if total_stones < 8:
+        # Opening: prefer star-point-like influence, not too close to center edge weirdness
+        preferred = {(3, 3), (3, 15), (15, 3), (15, 15), (9, 9), (3, 9), (9, 3), (9, 15), (15, 9)}
+        if (r, c) in preferred:
+            score += 8.0
+        score -= 0.3 * dist_center
+    else:
+        # Midgame: slightly prefer local fighting over pure center
+        score -= 0.05 * dist_center
+
+    # Prefer moves near stones, discourage isolated empty-board wandering
+    if adj_me == 0 and adj_opp == 0:
+        score -= 6.0
+
+    return score
+
+
+def generate_candidates(board, me, opponent):
+    total_stones = len(me) + len(opponent)
+    candidates = set()
+
+    # Opening preferences
+    if total_stones == 0:
+        for r, c in STAR_POINTS:
+            rr, cc = r - 1, c - 1
+            if board[rr][cc] == EMPTY:
+                candidates.add((rr, cc))
+        return candidates
+
+    if total_stones <= 6:
+        for r, c in STAR_POINTS:
+            rr, cc = r - 1, c - 1
+            if board[rr][cc] == EMPTY:
+                candidates.add((rr, cc))
+
+    # Urgent liberties: opponent in atari -> capture
+    for g, libs in analyze_groups(board, OPP):
+        if len(libs) == 1:
+            candidates.update(libs)
+
+    # Urgent liberties: own groups in atari -> save
+    for g, libs in analyze_groups(board, ME):
+        if len(libs) == 1:
+            candidates.update(libs)
+
+    # Local neighborhood around all stones
+    stones = []
+    for r, c in me:
+        stones.append((r - 1, c - 1))
+    for r, c in opponent:
+        stones.append((r - 1, c - 1))
+
+    for sr, sc in stones:
+        for dr in range(-2, 3):
+            for dc in range(-2, 3):
+                if abs(dr) + abs(dc) > 3:
+                    continue
+                nr, nc = sr + dr, sc + dc
+                if in_bounds(nr, nc) and board[nr][nc] == EMPTY:
+                    candidates.add((nr, nc))
+
+    # Add center-ish fallback points
+    for r, c in [(9, 9), (9, 8), (8, 9), (9, 10), (10, 9)]:
+        if in_bounds(r, c) and board[r][c] == EMPTY:
+            candidates.add((r, c))
+
+    return candidates
+
+
+def any_legal_move(board):
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if board[r][c] == EMPTY and simulate_move(board, (r, c), ME) is not None:
+                return (r + 1, c + 1)
+    return (0, 0)
+
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    board = build_board(me, opponent)
+    total_stones = len(me) + len(opponent)
+
+    candidates = generate_candidates(board, me, opponent)
+
+    best_move = None
+    best_score = -10**18
+
+    for move in candidates:
+        sim = simulate_move(board, move, ME)
+        if sim is None:
+            continue
+        score = move_score(board, move, sim, total_stones)
+
+        # Small tie-breakers: prefer higher row/col centrality deterministically
+        r, c = move
+        tiebreak = - (abs(r - 9) + abs(c - 9)) * 1e-3 - (r * 19 + c) * 1e-6
+        score += tiebreak
+
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    if best_move is not None:
+        return (best_move[0] + 1, best_move[1] + 1)
+
+    # Fallback: search whole board for any legal move
+    return any_legal_move(board)

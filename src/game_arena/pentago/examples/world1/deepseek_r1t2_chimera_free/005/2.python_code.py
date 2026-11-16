@@ -1,0 +1,173 @@
+
+import numpy as np
+from copy import deepcopy
+
+def has_five_in_row(board):
+    """Check if the board contains five consecutive 1's in any straight line."""
+    board = np.array(board, dtype=int)
+    # Check horizontal
+    for r in range(6):
+        for c in range(2):
+            if np.all(board[r, c:c+5] == 1):
+                return True
+    # Check vertical
+    for c in range(6):
+        for r in range(2):
+            if np.all(board[r:r+5, c] == 1):
+                return True
+    # Check diagonal (\)
+    for r in range(2):
+        for c in range(2):
+            if np.all([board[r+i][c+i] for i in range(5)]):
+                return True
+    # Check diagonal (/)
+    for r in range(2):
+        for c in range(4, 6):
+            if np.all([board[r+i][c-i] for i in range(5)]):
+                return True
+    return False
+
+def apply_rotation(you, opp, quad, direction):
+    """Rotate the specified quadrant clockwise (R) or counterclockwise (L)."""
+    you = deepcopy(you)
+    opp = deepcopy(opp)
+    # Get quadrant bounds
+    if quad == 0:
+        slice_r, slice_c = slice(0,3), slice(0,3)
+    elif quad == 1:
+        slice_r, slice_c = slice(0,3), slice(3,6)
+    elif quad == 2:
+        slice_r, slice_c = slice(3,6), slice(0,3)
+    else:
+        slice_r, slice_c = slice(3,6), slice(3,6)
+    
+    # Extract sub-matrices
+    you_sub = [row[slice_c] for row in you[slice_r]]
+    opp_sub = [row[slice_c] for row in opp[slice_r]]
+    
+    # Rotate
+    def rotate_90_clock(matrix):
+        return list(zip(*matrix[::-1]))
+    
+    def rotate_90_counter(matrix):
+        return list(zip(*matrix))[::-1]
+    
+    if direction == 'R':
+        you_rot = rotate_90_clock(you_sub)
+        opp_rot = rotate_90_clock(opp_sub)
+    else:
+        you_rot = rotate_90_counter(you_sub)
+        opp_rot = rotate_90_counter(opp_sub)
+    
+    # Apply rotation back to boards
+    for i, r in enumerate(range(slice_r.start, slice_r.stop)):
+        for j, c in enumerate(range(slice_c.start, slice_c.stop)):
+            you[r][c] = you_rot[i][j]
+            opp[r][c] = opp_rot[i][j]
+    
+    return you, opp
+
+def evaluate_position(you, opp):
+    """Score the board position based on potential lines and control."""
+    lines = []
+    # Horizontal lines
+    for r in range(6):
+        for c in range(2):
+            lines.append([(r, c+i) for i in range(5)])
+    # Vertical lines
+    for c in range(6):
+        for r in range(2):
+            lines.append([(r+i, c) for i in range(5)])
+    # Diagonal \
+    for r in range(2):
+        for c in range(2):
+            lines.append([(r+i, c+i) for i in range(5)])
+    # Diagonal /
+    for r in range(2):
+        for c in range(4, 6):
+            lines.append([(r+i, c-i) for i in range(5)])
+    
+    score = 0
+    for line in lines:
+        me = sum(you[r][c] for (r, c) in line)
+        opp_count = sum(opp[r][c] for (r, c) in line)
+        if opp_count == 0:
+            score += me ** 2  # Open line bonus
+        elif me == 0:
+            score -= opp_count ** 2  # Opponent threat penalty
+        else:
+            score -= opp_count  # Contested line penalty
+    
+    # Add centrality bonus (center 4x4 area)
+    center_positions = [(r, c) for r in range(1,5) for c in range(1,5)]
+    score += sum(you[r][c] for (r, c) in center_positions) * 2
+    score -= sum(opp[r][c] for (r, c) in center_positions) * 2
+    return score
+
+def policy(you, opponent):
+    """Generate the optimal move for Pentago."""
+    # Convert input to lists if necessary
+    if not isinstance(you, list):
+        you = [list(row) for row in you]
+    if not isinstance(opponent, list):
+        opponent = [list(row) for row in opponent]
+    
+    empty_cells = [(r, c) for r in range(6) for c in range(6) if you[r][c] == 0 and opponent[r][c] == 0]
+    
+    # 1. Check for immediate wins
+    for r, c in empty_cells:
+        new_you = deepcopy(you)
+        new_you[r][c] = 1
+        for quad in range(4):
+            for dir in ['L', 'R']:
+                rotated_you, rotated_opp = apply_rotation(deepcopy(new_you), deepcopy(opponent), quad, dir)
+                if has_five_in_row(rotated_you):
+                    return f"{r+1},{c+1},{quad},{dir}"
+    
+    # 2. Block opponent's immediate threats
+    threats = []
+    for r, c in empty_cells:
+        opp_test = deepcopy(opponent)
+        opp_test[r][c] = 1
+        if has_five_in_row(opp_test):
+            threats.append((r, c))
+    
+    if threats:
+        best_move_score = -float('inf')
+        best_quad_dir = (0, 'L')
+        r, c = threats[0]  # Block first threat but choose best rotation
+        new_you = deepcopy(you)
+        new_you[r][c] = 1
+        for quad in range(4):
+            for dir in ['L', 'R']:
+                temp_you, temp_opp = apply_rotation(deepcopy(new_you), deepcopy(opponent), quad, dir)
+                if has_five_in_row(temp_opp):
+                    continue  # Avoid moves that cause opponent to win
+                score = evaluate_position(temp_you, temp_opp)
+                if score > best_move_score:
+                    best_move_score = score
+                    best_quad_dir = (quad, dir)
+        return f"{r+1},{c+1},{best_quad_dir[0]},{best_quad_dir[1]}"
+    
+    # 3. Choose optimal move using heuristic
+    best_score = -float('inf')
+    best_move = None
+    for r, c in empty_cells:
+        new_you = deepcopy(you)
+        new_you[r][c] = 1
+        for quad in range(4):
+            for dir in ['L', 'R']:
+                temp_you, temp_opp = apply_rotation(deepcopy(new_you), deepcopy(opponent), quad, dir)
+                if has_five_in_row(temp_opp):
+                    continue  # Skip losing moves
+                score = evaluate_position(temp_you, temp_opp)
+                if score > best_score:
+                    best_score = score
+                    best_move = (r+1, c+1, quad, dir)
+    
+    if best_move:
+        return f"{best_move[0]},{best_move[1]},{best_move[2]},{best_move[3]}"
+    
+    # Fallback to first valid move (should not happen according to problem statement)
+    r, c = empty_cells[0]
+    return f"{r+1},{c+1},0,L"

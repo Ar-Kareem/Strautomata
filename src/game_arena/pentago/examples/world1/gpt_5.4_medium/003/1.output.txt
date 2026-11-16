@@ -1,0 +1,263 @@
+The strategy for this policy is:
+
+- Represent the 6x6 board as two 36-bit bitboards for speed.
+- Precompute:
+  - every 5-cell winning segment,
+  - every quadrant rotation mapping,
+  - a center-first cell ordering for move generation.
+- Search with a depth-limited negamax + alpha-beta policy.
+  - Always check terminal results after each candidate move:
+    - your win,
+    - opponent win caused by your rotation,
+    - simultaneous win = draw,
+    - full-board draw.
+  - Use adaptive depth:
+    - depth 2 normally,
+    - deeper in the late game.
+- Evaluate nonterminal positions by scoring uncontested 5-cell segments:
+  - reward your 1/2/3/4-in-a-row potentials,
+  - penalize the opponent’s,
+  - slightly prefer center control.
+- Deduplicate child states created by equivalent rotations to reduce wasted search.
+- Always keep a fallback legal move, so the policy always returns a valid move string.
+
+<code>
+# Pentago policy: bitboard + alpha-beta negamax
+# Required API:
+#   def policy(you, opponent) -> str
+
+INF = 10**12
+WIN_SCORE = 10**9
+
+def _build_win_masks():
+    masks = set()
+    dirs = ((0, 1), (1, 0), (1, 1), (1, -1))
+    for r in range(6):
+        for c in range(6):
+            for dr, dc in dirs:
+                rr = r + 4 * dr
+                cc = c + 4 * dc
+                if 0 <= rr < 6 and 0 <= cc < 6:
+                    m = 0
+                    for k in range(5):
+                        idx = (r + k * dr) * 6 + (c + k * dc)
+                        m |= 1 << idx
+                    masks.add(m)
+    return tuple(masks)
+
+def _build_rotations():
+    infos = []
+    meta = []
+    for q in range(4):
+        r0 = 0 if q < 2 else 3
+        c0 = 0 if (q % 2) == 0 else 3
+
+        src_bits = []
+        for i in range(3):
+            for j in range(3):
+                src = (r0 + i) * 6 + (c0 + j)
+                src_bits.append(1 << src)
+        mask = 0
+        for b in src_bits:
+            mask |= b
+
+        for d in ("L", "R"):
+            pairs = []
+            for i in range(3):
+                for j in range(3):
+                    src = (r0 + i) * 6 + (c0 + j)
+                    if d == "R":
+                        ni, nj = j, 2 - i
+                    else:
+                        ni, nj = 2 - j, i
+                    dst = (r0 + ni) * 6 + (c0 + nj)
+                    pairs.append((1 << src, 1 << dst))
+            infos.append((mask, tuple(pairs)))
+            meta.append((q, d))
+    return tuple(infos), tuple(meta)
+
+def _build_cell_order():
+    # Center-first ordering
+    cells = list(range(36))
+    cells.sort(key=lambda idx: (
+        abs(idx // 6 - 2.5) + abs(idx % 6 - 2.5),
+        abs(idx // 6 - 2.5),
+        abs(idx % 6 - 2.5),
+        idx
+    ))
+    return tuple(cells)
+
+WIN_MASKS = _build_win_masks()
+ROT_INFOS, ROT_META = _build_rotations()
+CELL_ORDER = _build_cell_order()
+
+CENTER_MASK = 0
+for rc in ((2, 2), (2, 3), (3, 2), (3, 3)):
+    CENTER_MASK |= 1 << (rc[0] * 6 + rc[1])
+
+LINE_W = (0, 2, 12, 90, 1200, 200000)
+
+def _has_five(bb):
+    for m in WIN_MASKS:
+        if (bb & m) == m:
+            return True
+    return False
+
+def _apply_move(me, opp, idx, rot):
+    mask, pairs = ROT_INFOS[rot]
+    placed = me | (1 << idx)
+
+    new_me = placed & ~mask
+    new_opp = opp & ~mask
+
+    for sb, db in pairs:
+        if placed & sb:
+            new_me |= db
+        if opp & sb:
+            new_opp |= db
+
+    return new_me, new_opp
+
+def _evaluate(me, opp):
+    score = 0
+    for m in WIN_MASKS:
+        a = me & m
+        b = opp & m
+        if a and b:
+            continue
+        if a:
+            score += LINE_W[a.bit_count()]
+        elif b:
+            score -= LINE_W[b.bit_count()]
+    score += 8 * ((me & CENTER_MASK).bit_count() - (opp & CENTER_MASK).bit_count())
+    return score
+
+def _move_to_str(idx, rot):
+    r = idx // 6 + 1
+    c = idx % 6 + 1
+    q, d = ROT_META[rot]
+    return f"{r},{c},{q},{d}"
+
+def _fallback_move(occ):
+    for idx in range(36):
+        if not (occ & (1 << idx)):
+            return _move_to_str(idx, 0)
+    return "1,1,0,L"
+
+def _negamax(me, opp, depth, alpha, beta, empties):
+    if depth == 0:
+        return _evaluate(me, opp)
+
+    occ = me | opp
+    best = -INF
+    seen = set()
+
+    for idx in CELL_ORDER:
+        bit = 1 << idx
+        if occ & bit:
+            continue
+
+        for rot in range(8):
+            me2, opp2 = _apply_move(me, opp, idx, rot)
+            state = (me2, opp2)
+            if state in seen:
+                continue
+            seen.add(state)
+
+            me_win = _has_five(me2)
+            opp_win = _has_five(opp2)
+
+            if me_win and opp_win:
+                score = 0
+            elif me_win:
+                score = WIN_SCORE + depth
+            elif opp_win:
+                score = -WIN_SCORE - depth
+            elif empties == 1:
+                score = 0
+            else:
+                score = -_negamax(opp2, me2, depth - 1, -beta, -alpha, empties - 1)
+
+            if score > best:
+                best = score
+            if best > alpha:
+                alpha = best
+            if alpha >= beta:
+                return best
+
+    if best == -INF:
+        return 0
+    return best
+
+def policy(you, opponent) -> str:
+    me = 0
+    opp = 0
+
+    for r in range(6):
+        yr = you[r]
+        orow = opponent[r]
+        base = r * 6
+        for c in range(6):
+            if yr[c]:
+                me |= 1 << (base + c)
+            elif orow[c]:
+                opp |= 1 << (base + c)
+
+    occ = me | opp
+    empties = 36 - occ.bit_count()
+
+    # Always keep a legal fallback.
+    best_move = _fallback_move(occ)
+
+    # Simple strong opening.
+    if occ == 0:
+        return "3,3,1,R"
+
+    if empties <= 5:
+        depth = 4
+    elif empties <= 8:
+        depth = 3
+    else:
+        depth = 2
+
+    best_score = -INF
+    alpha = -INF
+    beta = INF
+    seen = set()
+
+    for idx in CELL_ORDER:
+        bit = 1 << idx
+        if occ & bit:
+            continue
+
+        for rot in range(8):
+            me2, opp2 = _apply_move(me, opp, idx, rot)
+            state = (me2, opp2)
+            if state in seen:
+                continue
+            seen.add(state)
+
+            me_win = _has_five(me2)
+            opp_win = _has_five(opp2)
+
+            if me_win and not opp_win:
+                return _move_to_str(idx, rot)
+
+            if me_win and opp_win:
+                score = 0
+            elif opp_win:
+                score = -WIN_SCORE - depth
+            elif empties == 1:
+                score = 0
+            else:
+                score = -_negamax(opp2, me2, depth - 1, -beta, -alpha, empties - 1)
+
+            if score > best_score:
+                best_score = score
+                best_move = _move_to_str(idx, rot)
+
+            if score > alpha:
+                alpha = score
+
+    return best_move
+</code>

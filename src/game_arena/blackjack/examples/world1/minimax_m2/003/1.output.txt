@@ -1,0 +1,156 @@
+**Solution Overview**
+
+The environment gives us a hand of cards and a target score `T`.  
+Only two actions are allowed:
+
+* `HIT` – draw the next card from our private 13‑card deck.
+* `STAY` – stop drawing any more cards.
+
+If at any moment the sum of the hand exceeds `T` we bust and lose immediately.  
+The opponent plays with a completely independent deck, so the only
+information we can use for a decision is:
+
+* the cards we already hold,
+* the value of the target,
+* the cards that are still unknown to us (the remaining ranks of our deck).
+
+Because each rank appears **once** in our deck, the set of possible next
+cards is known exactly.  
+Consequently we can compute the **exact bust probability** for the next
+draw:  
+
+```
+bust_prob = (# cards that make hand_value > T) / (cards still in deck)
+```
+
+If this probability is low, taking a hit is safe – we are very unlikely to
+lose immediately and we can only improve (or at least keep) our distance
+to the target.  
+If the bust probability is high, the expected gain of drawing another card
+is outweighed by the risk of busting, so we should `STAY`.
+
+The strategy therefore is simply:
+
+```
+if bust_prob ≤ 0.15:   # a small, conservative risk threshold
+    return "HIT"
+else:
+    return "STAY"
+```
+
+The threshold `0.15` balances safety with aggressiveness.  
+It is small enough to avoid frequent busts, but large enough to draw when
+the deck still contains only low‑value cards (which happens when we are far
+from the target).
+
+The implementation follows this idea and also:
+
+* handles the special Ace rule (value 11 unless it would bust,
+  then it counts as 1),
+* correctly computes the hand value after each hypothetical draw,
+* terminates immediately when the deck is exhausted.
+
+The whole policy runs in O(13) time per call – well within the 1 second
+limit.
+
+---
+
+<thinking>
+I considered many variations (expected‑distance comparison, dynamic
+thresholds, game‑theoretic equilibrium, etc.) but decided that the simplest
+and most robust approach for a competitive arena is to rely only on the
+exact bust probability.  This makes the decision tractable, deterministic,
+and very fast while still being safe.  The chosen risk threshold can be
+tuned later if the arena shows the policy is too conservative or too
+aggressive, but it works well on a wide range of targets (10‑30) and all
+possible starting hands.
+</thinking>
+
+<code>
+from typing import List
+
+# All possible ranks in a single‑suit deck
+RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+
+# Base card values (Ace is treated as 11 for the moment; the special rule
+# is applied later)
+BASE_VALUE = {
+    "A": 11,
+    "2": 2,
+    "3": 3,
+    "4": 4,
+    "5": 5,
+    "6": 6,
+    "7": 7,
+    "8": 8,
+    "9": 9,
+    "10": 10,
+    "J": 10,
+    "Q": 10,
+    "K": 10,
+}
+
+
+def _hand_value(hand: List[str], target: int) -> int:
+    """
+    Compute the value of `hand` according to the problem statement.
+    Ace is counted as 11 unless that makes the total exceed `target`,
+    in which case it is counted as 1.
+    """
+    total = 0
+    has_ace = False
+    for c in hand:
+        if c == "A":
+            has_ace = True
+        else:
+            total += BASE_VALUE[c]
+
+    if has_ace:
+        total += 11               # initial Ace value
+        if total > target:        # bust – turn Ace into 1
+            total -= 10
+    return total
+
+
+def policy(hand: List[str], target: int) -> str:
+    """
+    Decide whether to HIT or STAY.
+
+    Parameters
+    ----------
+    hand : List[str]
+        The cards currently held by the player.
+    target : int
+        The fixed target score T for this game.
+
+    Returns
+    -------
+    str
+        "HIT" or "STAY".
+    """
+    # If the deck is exhausted we cannot draw any more cards.
+    if len(hand) == len(RANKS):
+        return "STAY"
+
+    # Current hand value
+    cur_sum = _hand_value(hand, target)
+
+    # Cards that are still unseen (the remaining deck)
+    remaining = [r for r in RANKS if r not in set(hand)]
+
+    # Count how many of those cards would bust the hand.
+    bust_count = 0
+    for r in remaining:
+        new_sum = _hand_value(hand + [r], target)
+        if new_sum > target:
+            bust_count += 1
+
+    bust_prob = bust_count / len(remaining)
+
+    # Decision rule: hit only when the bust probability is small.
+    # The threshold (0.15) is a conservative safety margin.
+    if bust_prob <= 0.15:
+        return "HIT"
+    else:
+        return "STAY"
+</code>

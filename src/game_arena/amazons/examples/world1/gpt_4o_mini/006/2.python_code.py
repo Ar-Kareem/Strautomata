@@ -1,0 +1,44 @@
+
+import numpy as np
+
+def get_amazon_positions(board):
+    return [(r, c) for r in range(6) for c in range(6) if board[r, c] == 1]
+
+def is_path_clear(board, start, end):
+    sr, sc = start
+    er, ec = end
+    dr = (er - sr) // max(1, abs(er - sr)) if sr != er else 0
+    dc = (ec - sc) // max(1, abs(ec - sc)) if sc != ec else 0
+    
+    r, c = sr + dr, sc + dc
+    while (r, c) != (er, ec):
+        if board[r, c] != 0:
+            return False
+        r += dr
+        c += dc
+    return True
+
+def get_possible_moves(board):
+    moves = []
+    for r, c in get_amazon_positions(board):
+        for dr in range(-5, 6):
+            for dc in range(-5, 6):
+                if abs(dr) == abs(dc) or dr * dc == 0:  # queen-like movement
+                    if (dr != 0 or dc != 0) and (0 <= r + dr < 6) and (0 <= c + dc < 6):
+                        new_pos = (r + dr, c + dc)
+                        if board[new_pos] == 0 and is_path_clear(board, (r, c), new_pos):
+                            # Find valid arrow shots from the new position
+                            for ard in range(-5, 6):
+                                for adc in range(-5, 6):
+                                    if (ard != 0 or adc != 0) and (0 <= new_pos[0] + ard < 6) and (0 <= new_pos[1] + adc < 6):
+                                        arrow_target = (new_pos[0] + ard, new_pos[1] + adc)
+                                        if board[arrow_target] == 0 and is_path_clear(board, new_pos, arrow_target):
+                                            moves.append(f"{r},{c}:{new_pos[0]},{new_pos[1]}:{arrow_target[0]},{arrow_target[1]}")
+    return moves
+
+def policy(board) -> str:
+    possible_moves = get_possible_moves(board)
+    
+    # If we have any moves, we choose the first one available for simplicity
+    # You can modify the logic to select the best move here if needed
+    return possible_moves[0] if possible_moves else "0,0:0,0:0,0"  # Default legal move if no other moves are found

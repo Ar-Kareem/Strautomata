@@ -1,0 +1,118 @@
+This policy implements a smart strategy for 3D Tic Tac Toe by prioritizing immediate wins, then blocking opponent wins, and otherwise selecting the move that minimizes the opponent's best response in a shallow minimax with alpha-beta pruning (depth 2). This rule-based approach augmented with minimax makes it a strong, deterministic competitor: it exploits short-term opportunities while considering near-future boards, adapting to counter other agents that might play aggressively or randomly. The strategy avoids illegal moves and ensures fast execution within the 1-second limit by limiting computational depth and using efficient state checks.
+
+<code>
+import copy
+
+# Predefined winning lines (all possible 3-in-a-row)
+lines = [
+    # Rows along dimensions (fixed j, k)
+    [(i, 0, 0) for i in range(3)], [(i, 0, 1) for i in range(3)], [(i, 0, 2) for i in range(3)],
+    [(i, 1, 0) for i in range(3)], [(i, 1, 1) for i in range(3)], [(i, 1, 2) for i in range(3)],
+    [(i, 2, 0) for i in range(3)], [(i, 2, 1) for i in range(3)], [(i, 2, 2) for i in range(3)],
+    # Columns along dimensions (fixed i, k)
+    [(0, j, 0) for j in range(3)], [(0, j, 1) for j in range(3)], [(0, j, 2) for j in range(3)],
+    [(1, j, 0) for j in range(3)], [(1, j, 1) for j in range(3)], [(1, j, 2) for j in range(3)],
+    [(2, j, 0) for j in range(3)], [(2, j, 1) for j in range(3)], [(2, j, 2) for j in range(3)],
+    # Depth along dimensions (fixed i, j)
+    [(0, 0, k) for k in range(3)], [(0, 1, k) for k in range(3)], [(0, 2, k) for k in range(3)],
+    [(1, 0, k) for k in range(3)], [(1, 1, k) for k in range(3)], [(1, 2, k) for k in range(3)],
+    [(2, 0, k) for k in range(3)], [(2, 1, k) for k in range(3)], [(2, 2, k) for k in range(3)],
+    # Diagonals in i-j planes (fixed k)
+    [(i, i, 0) for i in range(3)], [(i, 2-i, 0) for i in range(3)],
+    [(i, i, 1) for i in range(3)], [(i, 2-i, 1) for i in range(3)],
+    [(i, i, 2) for i in range(3)], [(i, 2-i, 2) for i in range(3)],
+    # Diagonals in i-k planes (fixed j)
+    [(i, 0, i) for i in range(3)], [(i, 0, 2-i) for i in range(3)],
+    [(i, 1, i) for i in range(3)], [(i, 1, 2-i) for i in range(3)],
+    [(i, 2, i) for i in range(3)], [(i, 2, 2-i) for i in range(3)],
+    # Diagonals in j-k planes (fixed i)
+    [(0, j, j) for j in range(3)], [(0, j, 2-j) for j in range(3)],
+    [(1, j, j) for j in range(3)], [(1, j, 2-j) for j in range(3)],
+    [(2, j, j) for j in range(3)], [(2, j, 2-j) for j in range(3)],
+    # Space diagonals
+    [(i, i, i) for i in range(3)],
+    [(i, i, 2-i) for i in range(3)],
+    [(i, 2-i, i) for i in range(3)],
+    [(i, 2-i, 2-i) for i in range(3)]
+]
+
+def check_win(board, player):
+    for line in lines:
+        if all(board[a][b][c] == player for a, b, c in line):
+            return True
+    return False
+
+def get_legal(board):
+    return [(i, j, k) for i in range(3) for j in range(3) for k in range(3) if board[i][j][k] == 0]
+
+def evaluate(board):
+    if check_win(board, 1):
+        return 10
+    if check_win(board, -1):
+        return -10
+    return 0
+
+def minimax(board, depth, maximizing, alpha=-float('inf'), beta=float('inf')):
+    if depth == 0 or len(get_legal(board)) == 0:
+        return evaluate(board)
+    legal = get_legal(board)
+    if maximizing:
+        max_eval = -float('inf')
+        for move in legal:
+            new_board = copy.deepcopy(board)
+            new_board[move[0]][move[1]][move[2]] = 1
+            eval_val = minimax(new_board, depth - 1, False, alpha, beta)
+            max_eval = max(max_eval, eval_val)
+            alpha = max(alpha, eval_val)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for move in legal:
+            new_board = copy.deepcopy(board)
+            new_board[move[0]][move[1]][move[2]] = -1
+            eval_val = minimax(new_board, depth - 1, True, alpha, beta)
+            min_eval = min(min_eval, eval_val)
+            beta = min(beta, eval_val)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def policy(board):
+    legal = get_legal(board)
+    # Try to win immediately
+    for move in legal:
+        new_board = copy.deepcopy(board)
+        new_board[move[0]][move[1]][move[2]] = 1
+        if check_win(new_board, 1):
+            return move
+    # Block opponent win
+    for move in legal:
+        new_board = copy.deepcopy(board)
+        new_board[move[0]][move[1]][move[2]] = -1
+        if check_win(new_board, -1):
+            return move
+    # Otherwise, use minimax (depth 2) to choose move that minimizes opponent's best response
+    if not legal:
+        return (0, 0, 0)  # Failsafe, should not occur
+    min_eval = float('inf')
+    best_moves = []
+    for move in legal:
+        new_board = copy.deepcopy(board)
+        new_board[move[0]][move[1]][move[2]] = 1
+        eval_val = minimax(new_board, 2, False)
+        if eval_val < min_eval:
+            min_eval = eval_val
+            best_moves = [move]
+        elif eval_val == min_eval:
+            best_moves.append(move)
+    # Prefer (1,1,1) or face centers if tied, else first best
+    if (1, 1, 1) in best_moves:
+        return (1, 1, 1)
+    face_centers = [(0, 1, 1), (1, 0, 1), (1, 1, 0), (2, 1, 1), (1, 2, 1), (1, 1, 2)]
+    for fc in face_centers:
+        if fc in best_moves:
+            return fc
+    return best_moves[0]
+</code>

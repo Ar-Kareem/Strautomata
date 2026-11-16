@@ -1,0 +1,122 @@
+
+import time
+
+def policy(you, opponent):
+    start_time = time.time()
+    time_limit = 0.9  # seconds, leaving a small margin
+
+    rows, cols = 5, 6
+
+    # Helper to get legal moves for the player with board `my_board` against `opp_board`
+    def get_legal_moves(my_board, opp_board):
+        moves = []
+        for r in range(rows):
+            for c in range(cols):
+                if my_board[r][c] == 1:
+                    if r-1 >= 0 and opp_board[r-1][c] == 1:
+                        moves.append((r, c, 'U'))
+                    if r+1 < rows and opp_board[r+1][c] == 1:
+                        moves.append((r, c, 'D'))
+                    if c-1 >= 0 and opp_board[r][c-1] == 1:
+                        moves.append((r, c, 'L'))
+                    if c+1 < cols and opp_board[r][c+1] == 1:
+                        moves.append((r, c, 'R'))
+        return moves
+
+    # Helper to apply a move and swap perspectives
+    def make_move(my_board, opp_board, move):
+        r, c, d = move
+        new_my = [row[:] for row in my_board]
+        new_opp = [row[:] for row in opp_board]
+        new_my[r][c] = 0
+        if d == 'U':
+            nr, nc = r-1, c
+        elif d == 'D':
+            nr, nc = r+1, c
+        elif d == 'L':
+            nr, nc = r, c-1
+        else:  # 'R'
+            nr, nc = r, c+1
+        new_opp[nr][nc] = 0
+        new_my[nr][nc] = 1
+        return new_opp, new_my  # swap roles
+
+    # Heuristic evaluation from the perspective of the root player.
+    # `maximizing` indicates whether the current player is the root player.
+    def evaluate_root_perspective(my_board, opp_board, maximizing):
+        if maximizing:
+            root_board, root_opp_board = my_board, opp_board
+        else:
+            root_board, root_opp_board = opp_board, my_board
+        root_moves = len(get_legal_moves(root_board, root_opp_board))
+        opp_moves = len(get_legal_moves(root_opp_board, root_board))
+        root_pieces = sum(sum(row) for row in root_board)
+        opp_pieces = sum(sum(row) for row in root_opp_board)
+        return (root_moves - opp_moves) + 0.1 * (root_pieces - opp_pieces)
+
+    # Alpha-beta search
+    def alphabeta(my_board, opp_board, depth, alpha, beta, maximizing):
+        # Terminal check: current player has no legal moves
+        moves = get_legal_moves(my_board, opp_board)
+        if len(moves) == 0:
+            if maximizing:
+                return -10000  # root player loses
+            else:
+                return 10000   # root player wins
+
+        if depth == 0:
+            return evaluate_root_perspective(my_board, opp_board, maximizing)
+
+        if maximizing:
+            value = -float('inf')
+            for move in moves:
+                new_my, new_opp = make_move(my_board, opp_board, move)
+                score = alphabeta(new_my, new_opp, depth-1, alpha, beta, False)
+                if score > value:
+                    value = score
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break
+            return value
+        else:
+            value = float('inf')
+            for move in moves:
+                new_my, new_opp = make_move(my_board, opp_board, move)
+                score = alphabeta(new_my, new_opp, depth-1, alpha, beta, True)
+                if score < value:
+                    value = score
+                beta = min(beta, value)
+                if alpha >= beta:
+                    break
+            return value
+
+    # Get all legal moves at the root
+    legal_moves = get_legal_moves(you, opponent)
+    # Fallback in case something goes wrong (should not happen)
+    best_move = legal_moves[0]
+    best_score = -float('inf')
+
+    # Iterative deepening
+    depth = 1
+    while time.time() - start_time < time_limit:
+        current_best_move = None
+        current_best_score = -float('inf')
+        for move in legal_moves:
+            new_my, new_opp = make_move(you, opponent, move)
+            score = alphabeta(new_my, new_opp, depth-1, -float('inf'), float('inf'), False)
+            if score > current_best_score:
+                current_best_score = score
+                current_best_move = move
+            # Check time occasionally
+            if time.time() - start_time > time_limit:
+                break
+        if current_best_move is not None:
+            best_move = current_best_move
+            best_score = current_best_score
+        depth += 1
+        if time.time() - start_time > time_limit:
+            break
+
+    # Format the move
+    r, c, d = best_move
+    return f"{r},{c},{d}"

@@ -1,0 +1,148 @@
+**Strategy Overview**
+
+The policy uses a classic *negamax* search with a depth‑3 look‑ahead and a positional‑weight evaluation function.  
+
+1. **Move Generation** – For every empty square the routine checks the eight directions and collects all opponent discs that would be flipped. A move is legal if at least one disc is flipped.  
+
+2. **Evaluation** – A static board‑score is computed with a hand‑crafted weight matrix that rewards corners, penalises the fragile “X‑squares”, and gives moderate value to edges. The score is simply  
+
+```
+Σ weight * (my_disc – opponent_disc)
+```  
+
+so a positive value means the player to move is ahead in the current position.  
+
+3. **Negamax Search** – The algorithm searches the game tree up to a fixed depth (here 3 plies).  
+   * If the player has no legal move but the opponent does, a forced “pass” is simulated.  
+   * At leaf nodes or when the game is over, the static evaluation is returned.  
+   * The recursive value is the negative of the child’s value (`-score`) – this symmetric formulation automatically handles the change of perspective after each ply.  
+
+4. **Move Selection** – The root call returns the move that yields the highest negamax score. If no legal move exists, `"pass"` is returned (as required by the rules).
+
+The search depth of three plies is a good compromise between playing strength and the 1‑second time limit; it frequently finds high‑value corner moves and avoids dangerous positions while still being fast enough for every possible board state.
+
+```python
+<code>
+import numpy as np
+from typing import List, Tuple, Optional
+
+# ------------------------------------------------------------
+# Helper functions for move generation, execution and scoring
+# ------------------------------------------------------------
+
+DIRS = [(-1, -1), (-1, 0), (-1, 1),
+        (0, -1),          (0, 1),
+        (1, -1),  (1, 0), (1, 1)]
+
+# Positional weights – corners are very valuable, X‑squares are bad
+W = np.array([
+    [120, -20,  20,   5,   5,  20, -20, 120],
+    [-20, -40,  -5,  -5,  -5,  -5, -40, -20],
+    [ 20,  -5,  15,   3,   3,  15,  -5,  20],
+    [  5,  -5,   3,   3,   3,   3,  -5,   5],
+    [  5,  -5,   3,   3,   3,   3,  -5,   5],
+    [ 20,  -5,  15,   3,   3,  15,  -5,  20],
+    [-20, -40,  -5,  -5,  -5,  -5, -40, -20],
+    [120, -20,  20,   5,   5,  20, -20, 120]
+], dtype=int)
+
+
+def inside(r: int, c: int) -> bool:
+    """Check board boundaries."""
+    return 0 <= r < 8 and 0 <= c < 8
+
+
+def flips_for_square(you: np.ndarray, opp: np.ndarray,
+                     r: int, c: int) -> List[Tuple[int, int]]:
+    """Return list of opponent squares that would be flipped by playing at (r,c)."""
+    if you[r, c] or opp[r, c]:
+        return []                     # not empty
+    total_flips = []
+    for dr, dc in DIRS:
+        cur_r, cur_c = r + dr, c + dc
+        line = []
+        while inside(cur_r, cur_c) and opp[cur_r, cur_c]:
+            line.append((cur_r, cur_c))
+            cur_r += dr
+            cur_c += dc
+        if line and inside(cur_r, cur_c) and you[cur_r, cur_c]:
+            total_flips.extend(line)
+    return total_flips
+
+
+def legal_moves(you: np.ndarray, opp: np.ndarray) -> List[str]:
+    """Return all legal moves (in algebraic notation) for the player."""
+    moves = []
+    for r in range(8):
+        for c in range(8):
+            if you[r, c] or opp[r, c]:
+                continue
+            if flips_for_square(you, opp, r, c):
+                move = chr(ord('a') + c) + str(r + 1)
+                moves.append(move)
+    return moves
+
+
+def apply_move(you: np.ndarray, opp: np.ndarray, move: str) -> Tuple[np.ndarray, np.ndarray]:
+    """Execute the move and return the new (you, opp) boards."""
+    if move == "pass":
+        return you.copy(), opp.copy()
+    c = ord(move[0]) - ord('a')
+    r = int(move[1]) - 1
+    flips = flips_for_square(you, opp, r, c)
+    new_you = you.copy()
+    new_opp = opp.copy()
+    new_you[r, c] = 1
+    for fr, fc in flips:
+        new_you[fr, fc] = 1
+        new_opp[fr, fc] = 0
+    return new_you, new_opp
+
+
+def evaluate(you: np.ndarray, opp: np.ndarray) -> int:
+    """Static evaluation from the perspective of the player who is 'you'."""
+    return int(np.sum(W * you) - np.sum(W * opp))
+
+
+# ------------------------------------------------------------
+# Negamax search (depth‑limited)
+# ------------------------------------------------------------
+
+def negamax(you: np.ndarray, opp: np.ndarray, depth: int) -> Tuple   # No legal move for either side → game over
+        return evaluate(you, opp), "pass"
+
+    best_score = -float('inf')
+    best_move: Optional[str] = None
+
+    for mv in moves:
+        new_you, new_opp = apply_move(you, opp, mv)
+        # Switch perspective for the opponent
+        score, _ = negamax(new_opp, new_you, depth - 1)
+        score = -score
+        if score > best_score:
+            best_score = score
+            best_move = mv
+
+    return best_score, best_move
+
+
+# ------------------------------------------------------------
+# Public API required by the arena
+# ------------------------------------------------------------
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    """
+    Return a legal move string for the given board.
+    The player to move is represented by `you`, the opponent by `opponent`.
+    """
+    # Depth 3 gives a quick look‑ahead while staying well under the time limit.
+    _, best_move = negamax(you, opponent, depth=3)
+
+    # Fallback – should never happen because negamax always produces a legal move or "pass"
+    if best_move is None:
+        legal = legal_moves(you, opponent)
+        return legal[0] if legal else "pass"
+
+    return best_move
+</code>
+```

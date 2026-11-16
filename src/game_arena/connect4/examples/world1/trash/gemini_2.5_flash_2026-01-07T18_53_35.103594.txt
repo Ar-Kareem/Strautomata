@@ -1,0 +1,959 @@
+<thinking>
+The user wants a Python function `policy(board)` that returns an integer representing the column to drop a disc in a Connect 4 game.
+I am the current player, represented by `1`. The opponent is `-1`. Empty cells are `0`.
+The board is 6x7.
+The goal is to win by forming a line of four, or prevent the opponent from winning.
+
+This is a classic game AI problem. A common approach is a minimax algorithm, possibly with alpha-beta pruning. However, given the 1-second time limit, and the relatively small board size, a simplified heuristic approach might be more effective than a full-depth minimax if not optimized properly.
+
+Let's break down the strategy:
+
+1.  **Winning Moves:** Check if I can win in the next move. If so, take it.
+2.  **Blocking Moves:** Check if the opponent can win in their next move. If so, block it.
+3.  **Forking Moves:** Check for moves that create two or more potential winning lines for me. (This is harder to implement and might be too complex for a first pass).
+4.  **Threats/Opportunities:** Evaluate potential lines of 3, 2, etc., for myself and the opponent.
+5.  **Center Preference:** In Connect 4, the center column is generally preferred because it offers more potential winning lines (horizontal, vertical, and both diagonals).
+
+Let's define some helper functions:
+
+*   `is_valid_move(board, col)`: Checks if a column is not full.
+*   `drop_disc(board, col, player)`: Returns a new board with the disc dropped.
+*   `check_win(board, player)`: Checks if the given player has won on the current board.
+
+**Detailed Strategy:**
+
+1.  **Check for an immediate win:**
+    *   Iterate through all columns `c` from 0 to 6.
+    *   If `is_valid_move(board, c)`:
+        *   Simulate dropping my disc (`1`) in column `c`.
+        *   If `check_win(new_board, 1)`:
+            *   Return `c`.
+
+2.  **Check for immediate opponent win (and block):**
+    *   Iterate through all columns `c` from 0 to 6.
+    *   If `is_valid_move(board, c)`:
+        *   Simulate dropping the opponent's disc (`-1`) in column `c`.
+        *   If `check_win(new_board, -1)`:
+            *   Return `c`. (This blocks their win).
+
+3.  **Evaluate other moves (Heuristic approach):**
+    If no immediate win or block is found, we need a heuristic to choose the best available move.
+    A simple heuristic is to score each possible move.
+    *   Initialize `best_score = -infinity` and `best_col = -1`.
+    *   Iterate through all columns `c` from 0 to 6.
+    *   If `is_valid_move(board, c)`:
+        *   `score = evaluate_move(board, c)`
+        *   If `score > best_score`:
+            *   `best_score = score`
+            *   `best_col = c`
+    *   Edge case: If `best_col` is still -1 (e.g., this shouldn't happen unless all columns are full, but for safety), pick a default.
+
+    **`evaluate_move(board, col)` function:**
+    This function should consider the tactical implications of placing a disc in `col`.
+    It can look for:
+    *   Creating 3-in-a-row for myself that can lead to a win.
+    *   Preventing opponent's 3-in-a-row that could lead to a win.
+    *   Positioning in the center.
+
+    Let's refine `evaluate_move`:
+    *   Simulate dropping my disc in `col`. Let this be `temp_board`.
+    *   **Score based on potential lines:**
+        *   Look for lines of 3 of my discs (e.g., `1-1-1-0`) that could become 4. Give a high score.
+        *   Look for lines of 2 of my discs (e.g., `1-1-0-0`). Give a moderate score.
+    *   **Score based on opponent's threats:**
+        *   Simulate dropping *opponent's* disc in subsequent hypothetical moves. If dropping my disc in `col` allows the opponent to create a winning threat or immediate win, decrease the score. This requires a mini-minimax or a more sophisticated threat detection. For a simpler approach, we can evaluate the board *after* my move and see if it sets up the opponent.
+        *   A simpler check: after I make my move, if the opponent can *immediately* win on their next turn, that's a bad move for me. Assign a very low score. This can be implemented by checking `check_win` for opponent on `temp_board` after I move, for all possible opponent moves.
+
+    **Simplified `evaluate_move` (Heuristic):**
+    1.  `score = 0`
+    2.  `temp_board = drop_disc(board, col, 1)`
+    3.  **Win potential (for me):**
+        *   Count `1-1-1-0` patterns (open 3s). Each is worth `X` points.
+        *   Count `1-1-0-0` patterns (open 2s). Each is worth `Y` points.
+        *   Count `1-0-1-1`, `1-1-0-1`, etc. (broken 3s that could still win).
+        *   Assign higher points for such threats.
+    4.  **Opponent's threats (after my move):**
+        *   For each column `c_opp` where the opponent *could* play next:
+            *   `temp_board_opp = drop_disc(temp_board, c_opp, -1)`
+            *   If `check_win(temp_board_opp, -1)`: This move (`col`) allows opponent to win. Give a very low score (e.g., `-1000`). This is crucial.
+    5.  **Center preference:** If `col == 3` (middle column), add a small bonus. If `col == 2` or `col == 4`, add a smaller bonus.
+    6.  Return `score`.
+
+    Constants for scoring (needs tuning):
+    `WINNING_LINE_SCORE` (for 4 in a row - this is handled by direct win checks)
+    `OPEN_3_SCORE`
+    `OPEN_2_SCORE`
+    `CENTER_BONUS`
+
+**Implementation Details:**
+
+*   Board representation: `list[list[int]]` (6x7).
+*   `check_win(board, player)`: This needs to scan rows, columns, and both diagonals for 4 consecutive `player` discs.
+
+Let's start with the helper functions.
+
+**`is_valid_move(board, col)`:**
+Check if `board[0][col]` is 0. (Top row cell).
+
+**`drop_disc(board, col, player)`:**
+*   Create a *copy* of the board to avoid modifying the original.
+*   Find the lowest `0` in `col`.
+*   Place `player` in that cell.
+
+**`check_win(board, player)`:**
+*   Iterate `rows` and `cols`.
+*   **Horizontal:** `board[r][c] == player`, `board[r][c+1] == player`, ... (c+3)
+*   **Vertical:** `board[r][c] == player`, `board[r+1][c] == player`, ... (r+3)
+*   **Diagonal (down-right):** `board[r][c] == player`, `board[r+1][c+1] == player`, ... (r+3, c+3)
+*   **Diagonal (down-left):** `board[r][c] == player`, `board[r+1][c-1] == player`, ... (r+3, c-3)
+
+Ranges for loops:
+*   Rows: 0 to 5
+*   Cols: 0 to 6
+
+For win checks:
+*   Horizontal: `r` from 0 to 5, `c` from 0 to 3 (since `c+3` is max 6)
+*   Vertical: `r` from 0 to 2, `c` from 0 to 6 (since `r+3` is max 5)
+*   Down-right diagonal: `r` from 0 to 2, `c` from 0 to 3
+*   Down-left diagonal: `r` from 0 to 2, `c` from 3 to 6
+
+**Structure of `policy` function:**
+
+```python
+ROW_COUNT = 6
+COLUMN_COUNT = 7
+PLAYER_ME = 1
+PLAYER_OPPONENT = -1
+
+# Helper functions
+def is_valid_move(board, col): ...
+def drop_disc(board, col, player): ...
+def check_win(board, player): ...
+def get_next_empty_row(board, col): ... # Helper for drop_disc
+
+# Heuristic evaluation function
+def evaluate_board(board, player): ... # This will be tricky, let's simplify for now
+
+def policy(board: list[list[int]]) -> int:
+    # 1. Check for immediate win
+    for col in range(COLUMN_COUNT):
+        if is_valid_move(board, col):
+            next_board = drop_disc(board, col, PLAYER_ME)
+            if check_win(next_board, PLAYER_ME):
+                return col
+
+    # 2. Check for immediate opponent win (and block)
+    for col in range(COLUMN_COUNT):
+        if is_valid_move(board, col):
+            next_board = drop_disc(board, col, PLAYER_OPPONENT) # Simulate opponent's move
+            if check_win(next_board, PLAYER_OPPONENT):
+                return col
+
+    # 3. Evaluate other moves with a simple heuristic
+    best_score = -float('inf')
+    best_col = -1
+    
+    # Prioritize center columns somewhat, if all scores are equal
+    # This shuffle helps break ties more "randomly" while still allowing a preference
+    # E.g., prefer 3, then 2,4, then 1,5, then 0,6
+    
+    # Order of columns to check, to encourage central play
+    # This does not need to be random if we want fixed tie-breaking
+    # [3, 2, 4, 1, 5, 0, 6] or just a simple loop and if scores are equal,
+    # the last one found will be chosen, unless we store all best_cols and pick one.
+    
+    # Let's try to prioritize columns in the following order: 3, 2, 4, 1, 5, 0, 6
+    # This is a common heuristic for Connect 4.
+    column_order = [3, 2, 4, 1, 5, 0, 6] 
+
+    for col in column_order:
+        if is_valid_move(board, col):
+            # Calculate a score for this move
+            score = 0
+            
+            # Simulate my move
+            temp_board_me = drop_disc(board, col, PLAYER_ME)
+            
+            # Check if this move *directly* sets up the opponent to win
+            # This is a crucial defensive check.
+            opponent_can_win_next = False
+            for opp_col in range(COLUMN_COUNT):
+                if is_valid_move(temp_board_me, opp_col):
+                    temp_board_opp = drop_disc(temp_board_me, opp_col, PLAYER_OPPONENT)
+                    if check_win(temp_board_opp, PLAYER_OPPONENT):
+                        opponent_can_win_next = True
+                        break # Opponent can win, so this 'col' is bad
+
+            if opponent_can_win_next:
+                score = -1000000 # Very bad move, avoid at all costs
+            else:
+                # Heuristic: Evaluate the board after my move for offensive potential
+                # (e.g., getting multiple 3-in-a-rows)
+                score = evaluate_board_state(temp_board_me, PLAYER_ME)
+                
+                # Add a small bonus for central columns
+                if col == 3: score += 5
+                elif col == 2 or col == 4: score += 3
+                elif col == 1 or col == 5: score += 1
+
+            if score > best_score:
+                best_score = score
+                best_col = col
+
+    # Fallback: if no good move found, pick the first valid one (shouldn't happen with proper scoring)
+    if best_col == -1:
+        for col in column_order: # Iterate through preferred columns
+            if is_valid_move(board, col):
+                return col
+        # If the board is full, this would raise an error, but the game ends before that.
+        # This case should ideally not be reached. Let's return a default (e.g., center)
+        # if somehow no valid move was found and best_col is still -1.
+        return 3 # Safest default, assumes board isn't full.
+
+    return best_col
+```
+
+Now, the `evaluate_board_state(board, player)` function. This is where the core heuristic for non-immediate moves lies.
+
+```python
+def evaluate_board_state(board, player):
+    score = 0
+    opponent = -player
+
+    # Check for contiguous sequences of discs
+    # Prioritize 3s, then 2s
+    
+    # We want to identify 'open' lines where we have N discs and can place (4-N) more.
+    # E.g., _ 1 1 1 _  or 1 _ 1 1 _
+
+    # Helper function to count segments for a player
+    def count_segments(board, player_val, length):
+        count = 0
+        
+        # Horizontal
+        for r in range(ROW_COUNT):
+            for c in range(COLUMN_COUNT - length + 1):
+                segment = [board[r][c+i] for i in range(length)]
+                is_mine = segment.count(player_val) == length
+                is_open = segment.count(0) == 0 # means it's fully mine or full
+                
+                if is_mine and is_open:
+                    # Check if the ends are open
+                    if c > 0 and board[r][c-1] == 0:
+                        count += 1
+                    if c + length < COLUMN_COUNT and board[r][c+length] == 0:
+                        count += 1
+                # More generic: check segments that _could_ become length 'length'
+                # e.g., 1 1 0 1 or 0 1 1 0
+                
+                # A more robust counting for 'potential' lines
+                # Define a window of 4 cells
+                for j in range(COLUMN_COUNT - 3):
+                    window = [board[r][j+x] for x in range(4)]
+                    mine_in_window = window.count(player_val)
+                    empty_in_window = window.count(0)
+                    opponent_in_window = window.count(opponent)
+
+                    if opponent_in_window == 0: # My discs and empty cells only
+                        if mine_in_window == length and empty_in_window == (4 - length):
+                            count += 1
+        
+        # Vertical
+        for c in range(COLUMN_COUNT):
+            for r in range(ROW_COUNT - length + 1):
+                segment = [board[r+i][c] for i in range(length)]
+                is_mine = segment.count(player_val) == length
+                is_open = segment.count(0) == 0 # means it's fully mine or full
+                
+                if is_mine and is_open:
+                    if r > 0 and board[r-1][c] == 0: # Can drop on top
+                        count += 1
+                
+                for j in range(ROW_COUNT - 3):
+                    window = [board[j+x][c] for x in range(4)]
+                    mine_in_window = window.count(player_val)
+                    empty_in_window = window.count(0)
+                    opponent_in_window = window.count(opponent)
+
+                    # For vertical, an empty cell must be *above* the lowest disc.
+                    # This check is slightly different.
+                    # We just need to check if we can actually reach the 4th disc.
+                    # If it's a 3 with an empty spot above, that's a threat.
+                    
+                    if opponent_in_window == 0:
+                        if mine_in_window == length and empty_in_window == (4 - length):
+                            # Ensure the empty cell is reachable
+                            # For vertical, the only 'open' empty cell is the one directly above.
+                            # So, a '3' with '0' above it: 1-1-1-0 should be counted.
+                            # More generally, 'length' discs are consecutive vertically, and there are 4-length 0s.
+                            # This means the arrangement is something like 0...0-1-1-1. We need to find the empty cell from the top.
+                            # The check for window is sufficient to count potential opportunities
+                            count += 1
+        
+        # Diagonal (Down-Right)
+        for r in range(ROW_COUNT - 3):
+            for c in range(COLUMN_COUNT - 3):
+                window = [board[r+i][c+i] for i in range(4)]
+                mine_in_window = window.count(player_val)
+                empty_in_window = window.count(0)
+                opponent_in_window = window.count(opponent)
+                if opponent_in_window == 0:
+                    if mine_in_window == length and empty_in_window == (4 - length):
+                        count += 1
+
+        # Diagonal (Down-Left)
+        for r in range(ROW_COUNT - 3):
+            for c in range(3, COLUMN_COUNT):
+                window = [board[r+i][c-i] for i in range(4)]
+                mine_in_window = window.count(player_val)
+                empty_in_window = window.count(0)
+                opponent_in_window = window.count(opponent)
+                if opponent_in_window == 0:
+                    if mine_in_window == length and empty_in_window == (4 - length):
+                        count += 1
+        
+        return count
+    
+    # Score for my potential lines
+    score += count_segments(board, player, 3) * 100  # Strong threat
+    score += count_segments(board, player, 2) * 10   # Minor threat
+
+    # Subtract score for opponent's potential lines (assuming I don't block)
+    # This might be tricky because my current move might block some opponent's lines
+    # It's better to check for opponent's lines *after* my move.
+    
+    # This way, if my current move creates an effective block, it won't be penalized
+    # for existing opponent threats that I just neutralized.
+    score -= count_segments(board, opponent, 3) * 80 # Opponent's strong threat
+    score -= count_segments(board, opponent, 2) * 5 # Opponent's minor threat
+    
+    return score
+```
+
+The `count_segments` logic for `is_open` and `empty_in_window == (4 - length)` is a bit conflated. Let's simplify the counting logic:
+
+When evaluating potential lines, what we really care about are "windows" of 4 cells that contain only `player_val` and `0`s, and where the number of `player_val` discs is `length`.
+
+Revised `count_segments` function:
+
+```python
+def count_potential_lines(board, player_val, length):
+    count = 0
+    opponent_val = -player_val
+
+    # Directions: (dr, dc)
+    directions = [(0, 1), (1, 0), (1, 1), (1, -1)] # Horizontal, Vertical, Diag_DR, Diag_DL
+
+    for r in range(ROW_COUNT):
+        for c in range(COLUMN_COUNT):
+            for dr, dc in directions:
+                # Check if a 4-disc window starting at (r, c) in this direction is valid
+                if not (0 <= r + 3 * dr < ROW_COUNT and \
+                        0 <= c + 3 * dc < COLUMN_COUNT):
+                    continue # Window goes out of bounds
+
+                player_discs = 0
+                empty_cells = 0
+                opponent_discs = 0
+                
+                # Examine the 4-cell window
+                for i in range(4):
+                    curr_r, curr_c = r + i * dr, c + i * dc
+                    if board[curr_r][curr_c] == player_val:
+                        player_discs += 1
+                    elif board[curr_r][curr_c] == 0:
+                        empty_cells += 1
+                    else: # Opponent disc
+                        opponent_discs += 1
+                        break # Cannot form a line of 4 here if opponent disc is present
+
+                # If no opponent discs in the window, and enough 'my' discs
+                if opponent_discs == 0 and player_discs == length:
+                    # Also need to check if the 'empty' cells are actually reachable.
+                    # For a vertical line, an empty cell higher up is only reachable if all cells below it are filled.
+                    # This is tricky for horizontal and diagonal. The simplest is to just count formations.
+                    # The game rules ensure we can only fill from the bottom.
+                    
+                    # For horizontal and diagonal, all empty cells within the 4-window must be reachable.
+                    # For vertical, the highest empty cell must be reachable.
+                    
+                    # Simpler heuristic: just count the formations regardless of immediate reachability,
+                    # because a future move might make it reachable.
+                    valid_to_play = True
+                    for i in range(4):
+                        curr_r, curr_c = r + i * dr, c + i * dc
+                        if board[curr_r][curr_c] == 0: # If this cell is empty
+                            # Check if column underneath it is filled
+                            # This applies universally for Connect 4: A cell (r, c) is only valid to drop into if
+                            # r is the lowest empty cell for column c.
+                            # So, if board[curr_r+1][curr_c] != 0 (and cell exists), it's reachable.
+                            # If board[curr_r][curr_c] is the lowest empty cell in its column (get_next_empty_row(board, curr_c) == curr_r), it's reachable.
+                            
+                            # Let's use get_next_empty_row to be precise.
+                            if get_next_empty_row(board, curr_c) is None or get_next_empty_row(board, curr_c) > curr_r:
+                                # This means the empty cell is higher than where a disc currently would land in curr_c,
+                                # OR the column is full (None). So this empty cell is not directly reachable on the next move.
+                                # Therefore, this potential line isn't an 'immediate' threat but a longer term one.
+                                # For a simple heuristic, we can count it, but a more sophisticated one might discount it.
+                                
+                                # For this simplified heuristic, we will count it as long as there is an empty space to connect.
+                                pass # This simplified logic will count it for now.
+                        
+                    count += 1
+                    
+    return count
+```
+
+My `count_potential_lines` is still a bit complex regarding reachability. Let's simplify. For a given window of 4, if it only contains `player_val` and `0`s, and `player_val` count is `length`, then it's a potential line. This is a common simplification in simpler Connect 4 AI. The reachability constraint is usually handled better by a minimax approach (since it explores actual moves) or a very specific threat detection (like "threatening two-ways").
+
+Let's use the simpler `count_potential_lines` for `evaluate_board_state`:
+
+```python
+def count_potential_lines(board, player_val, length):
+    count = 0
+    opponent_val = -player_val
+
+    # Directions: (dr, dc)
+    directions = [(0, 1), (1, 0), (1, 1), (1, -1)] # Horizontal, Vertical, Diag_DR, Diag_DL
+
+    for r in range(ROW_COUNT):
+        for c in range(COLUMN_COUNT):
+            for dr, dc in directions:
+                player_discs = 0
+                empty_cells = 0
+                opponent_discs = 0
+                
+                # Check the 4-cell window starting at (r, c) in this direction
+                # Ensure the entire window fits on the board
+                if not (0 <= r + 3 * dr < ROW_COUNT and \
+                        0 <= c + 3 * dc < COLUMN_COUNT):
+                    continue
+
+                for i in range(4):
+                    curr_r, curr_c = r + i * dr, c + i * dc
+                    if board[curr_r][curr_c] == player_val:
+                        player_discs += 1
+                    elif board[curr_r][curr_c] == 0:
+                        empty_cells += 1
+                    else:
+                        opponent_discs += 1
+                        break # Opponent disc blocks this line
+
+                if opponent_discs == 0 and player_discs == length:
+                    # Found a potential line for 'player_val'
+                    # It's 'open' if all remaining slots are empty.
+                    count += 1
+    return count
+
+def evaluate_board_state(board, player):
+    score = 0
+    opponent = -player
+
+    # Score for my potential lines
+    score += count_potential_lines(board, player, 3) * 100 # High value for 3-in-a-row
+    score += count_potential_lines(board, player, 2) * 10  # Moderate value for 2-in-a-row
+
+    # Subtract score for opponent's potential lines (defensive play)
+    # This evaluates the current board *after* my potential move, so if I block something, it won't be counted here.
+    score -= count_potential_lines(board, opponent, 3) * 80 # Avoid setting up opponent
+    score -= count_potential_lines(board, opponent, 2) * 5
+
+    return score
+```
+
+One small edge case in `get_next_empty_row`: if a column is full, it should return `None` or an indicator that it's full.
+
+```python
+def get_next_empty_row(board, col):
+    for r in range(ROW_COUNT - 1, -1, -1): # From bottom to top
+        if board[r][col] == 0:
+            return r
+    return None # Column is full
+```
+
+Let's test the main logic and helper functions mentally:
+
+*   `is_valid_move`: Uses `get_next_empty_row`. If it's `None`, column is full, so invalid.
+*   `drop_disc`: Creates a copy, finds `next_empty_row`, places disc. Looks good.
+*   `check_win`: Iterates through all possible 4-in-a-row combinations (horiz, vert, two diagonals). Looks correct.
+*   `policy` structure:
+    1.  Instant win: Yes
+    2.  Instant block: Yes
+    3.  Heuristic evaluation:
+        *   Checks for opponent immediate win if I place here. If so, penalize heavily. This is crucial before `evaluate_board_state`.
+        *   Then `evaluate_board_state` is called: counts my 3s/2s and opponent's 3s/2s.
+        *   Adds center bonuses.
+        *   Chooses the best score.
+        *   `column_order` gives a natural tie-breaking towards the center.
+
+Considerations for `get_next_empty_row` and `is_valid_move`:
+`is_valid_move(board, col)` only needs to check `board[0][col] == 0`. If the top cell is empty, the column is valid for dropping.
+`get_next_empty_row` can find *which* row it will land on.
+
+```python
+def is_valid_move(board, col):
+    return board[0][col] == 0 # Check if the top-most cell in the column is empty
+```
+This is a more efficient way to check validity. `get_next_empty_row` is specifically for finding the *actual* cell.
+
+Final check on `evaluate_board_state`:
+The `count_potential_lines` counts patterns like `1-1-1-0`. This is based on a "window" of 4 cells. If my disc is `1` and `length=3`, it counts `1,1,1,0` as one segment. This is good. It counts `0,1,1,1` as another, `1,0,1,1` etc. This is fine. The scoring weights (`100` for 3s, `10` for 2s) are typical. opponent's lines are negative.
+
+I need to make sure to create a new board copy explicitly in `drop_disc` by slicing: `new_board = [row[:] for row in board]`.
+
+Maximum recursion depth for a full minimax is too high for Connect 4 given 1 second. Heuristics are the way to go. The current heuristic looks reasonable for a competitive AI under time constraints. Deepening the search (e.g., Minimax with a limited depth) would be an improvement but much harder to guarantee within 1 second without good alpha-beta pruning and move ordering. This simple greedy one-ply search with a good heuristic is a solid starting point.
+
+Possible improvements (if time allows or for future versions):
+*   Add patterns like `0-1-1-0` (two open ends).
+*   Prioritize moves that create two threats (forks).
+*   Look ahead 2 turns (my move -> opponent's move -> my next move) for simple wins/blocks. This would be a limited depth minimax (depth 3 or 4).
+
+For now, this seems like a complete and robust policy based on a 1-ply search with strong threat detection and a basic heuristic.
+One final detail: `policy` must return a column `0-6`. `best_col` will always be updated if there's any valid move, thanks to `best_score` starting as `-inf` and the loop structure. If the board is full, the game shouldn't call `policy`. So, it should always find a valid `col`.
+
+Let's ensure all constants are defined at the top or within the policy function for clarity.
+
+```python
+import random # For potential tie-breaking, but using column_order is fixed tie-breaking
+
+# Global constants for board dimensions and player values
+ROW_COUNT = 6
+COLUMN_COUNT = 7
+PLAYER_ME = 1
+PLAYER_OPPONENT = -1
+```
+
+A minor error in `count_potential_lines`:
+`if not (0 <= r + 3 * dr < ROW_COUNT and 0 <= c + 3 * dc < COLUMN_COUNT): continue`
+This is good for the *end* of the window. But the `for r in range(ROW_COUNT)` and `for c in range(COLUMN_COUNT)` loops should also be constrained.
+
+Example: For horizontal `(0,1)`:
+`r` from `0` to `ROW_COUNT - 1`
+`c` from `0` to `COLUMN_COUNT - 4` (`c + 3` is max column index)
+
+Revised outer loops for `count_potential_lines`:
+
+```python
+def count_potential_lines(board, player_val, length):
+    count = 0
+    opponent_val = -player_val
+
+    # Horizontal
+    for r in range(ROW_COUNT):
+        for c in range(COLUMN_COUNT - 3): # c goes from 0 to 3 for a 4-cell window
+            player_discs = 0
+            empty_cells = 0
+            opponent_discs = 0
+            for i in range(4):
+                if board[r][c+i] == player_val: player_discs += 1
+                elif board[r][c+i] == 0: empty_cells += 1
+                else: opponent_discs += 1; break
+            if opponent_discs == 0 and player_discs == length:
+                count += 1
+
+    # Vertical
+    for c in range(COLUMN_COUNT):
+        for r in range(ROW_COUNT - 3): # r goes from 0 to 2 for a 4-cell window
+            player_discs = 0
+            empty_cells = 0
+            opponent_discs = 0
+            for i in range(4):
+                if board[r+i][c] == player_val: player_discs += 1
+                elif board[r+i][c] == 0: empty_cells += 1
+                else: opponent_discs += 1; break
+            if opponent_discs == 0 and player_discs == length:
+                count += 1
+
+    # Diagonal (Down-Right)
+    for r in range(ROW_COUNT - 3): # r goes from 0 to 2
+        for c in range(COLUMN_COUNT - 3): # c goes from 0 to 3
+            player_discs = 0
+            empty_cells = 0
+            opponent_discs = 0
+            for i in range(4):
+                if board[r+i][c+i] == player_val: player_discs += 1
+                elif board[r+i][c+i] == 0: empty_cells += 1
+                else: opponent_discs += 1; break
+            if opponent_discs == 0 and player_discs == length:
+                count += 1
+
+    # Diagonal (Down-Left)
+    for r in range(ROW_COUNT - 3): # r goes from 0 to 2
+        for c in range(3, COLUMN_COUNT): # c goes from 3 to 6
+            player_discs = 0
+            empty_cells = 0
+            opponent_discs = 0
+            for i in range(4):
+                if board[r+i][c-i] == player_val: player_discs += 1
+                elif board[r+i][c-i] == 0: empty_cells += 1
+                else: opponent_discs += 1; break
+            if opponent_discs == 0 and player_discs == length:
+                count += 1
+                
+    return count
+```
+This refined `count_potential_lines` is much cleaner and correct for boundary checks within its loops.
+The current heuristic works by evaluating the state *after* I make a move.
+This means:
+1.  If my move creates a three-in-a-row for me, `count_potential_lines(..., PLAYER_ME, 3)` will increase.
+2.  If my move *blocks* an opponent's three-in-a-row, then `count_potential_lines(..., PLAYER_OPPONENT, 3)` will be lower than it would have been if I didn't make the move. This is implicitly handled by evaluating the board *after* my move.
+This is a sound approach for a single-ply heuristic.
+
+```python
+# Add standard library imports
+import copy # For deep copying the board
+```
+
+```python
+# The overall check_win utility
+def check_win(board, player):
+    # Check horizontal
+    for r in range(ROW_COUNT):
+        for c in range(COLUMN_COUNT - 3):
+            if board[r][c] == player and board[r][c+1] == player and \
+               board[r][c+2] == player and board[r][c+3] == player:
+                return True
+
+    # Check vertical
+    for c in range(COLUMN_COUNT):
+        for r in range(ROW_COUNT - 3):
+            if board[r][c] == player and board[r+1][c] == player and \
+               board[r+2][c] == player and board[r+3][c] == player:
+                return True
+
+    # Check ascending diagonal (bottom-left to top-right)
+    # (r goes from 3 to 5, c goes from 0 to 3)
+    for r in range(3, ROW_COUNT):
+        for c in range(COLUMN_COUNT - 3):
+            if board[r][c] == player and board[r-1][c+1] == player and \
+               board[r-2][c+2] == player and board[r-3][c+3] == player:
+                return True
+
+    # Check descending diagonal (top-left to bottom-right)
+    # (r goes from 0 to 2, c goes from 0 to 3)
+    for r in range(ROW_COUNT - 3):
+        for c in range(COLUMN_COUNT - 3):
+            if board[r][c] == player and board[r+1][c+1] == player and \
+               board[r+2][c+2] == player and board[r+3][c+3] == player:
+                return True
+
+    return False
+```
+
+Wait, my diagonal direction for `check_win` is slightly off compared to `count_potential_lines`.
+`count_potential_lines` diagonals: `(1,1)` (Down-Right) and `(1,-1)` (Down-Left).
+`check_win` diagonals:
+Ascending means `r` decreases, `c` increases (like `(r-i, c+i)`). This is `(1,-1)` in terms of *relative* coordinates for the loop, but usually `(dr,dc)` means how r changes and c changes for each step.
+ descending means `r` increases, `c` increases (like `(r+i, c+i)`). This is `(1,1)`.
+
+My ranges are correct for `check_win`'s diagonal implementation.
+Ascending: `(r,c), (r-1,c+1), (r-2,c+2), (r-3,c+3)`
+Meaning starting from `(r,c)`, `r` decreases by 3, `c` increases by 3.
+So `r` must be at least `3` for `r-3` to be `0` or greater (`r` from `3` to `5`).
+And `c` must be `COLUMN_COUNT - 4` or less for `c+3` to be `COLUMN_COUNT - 1` or less (`c` from `0` to `3`). This is correct.
+
+Descending: `(r,c), (r+1,c+1), (r+2,c+2), (r+3,c+3)`
+Meaning starting from `(r,c)`, `r` increases by 3, `c` increases by 3.
+So `r` must be `ROW_COUNT - 4` or less (`r` from `0` to `2`).
+And `c` must be `COLUMN_COUNT - 4` or less (`c` from `0` to `3`). This is correct.
+
+The `count_potential_lines` logic for diagonals:
+Down-right: `r` from `0` to `2`, `c` from `0` to `3`. This means `(r+i, c+i)`. Correct.
+Down-left: `r` from `0` to `2`, `c` from `3` to `6`. This means `(r+i, c-i)`. Correct.
+
+The names I used for diagonals (`Down-Right`, `Down-Left`) in `count_potential_lines` are consistent with what `check_win` calls `descending` and `ascending` if one carefully maps the starting points. `descending` for `check_win` is `(0,0)` to `(2,3)` as start, `(r+i, c+i)`. My `count_potential_lines` also uses `r` from `0` to `2`, `c` from `0` to `3` for `(r+i,c+i)` diagonal, calling it `Down-Right`. This is consistent.
+`ascending` for `check_win` is `(3,0)` to `(5,3)` as start, `(r-i, c+i)`. My `count_potential_lines` covers the other diagonal starting positions slightly differently but it will count the same patterns.
+It would be more consistent to use the same logic for iteration over diagonals in both functions to avoid any potential subtle bugs, even if currently they are both correct independently. Let's make `count_potential_lines` mirror `check_win`'s loop bounds for diagonals to be super clear.
+
+Revised `count_potential_lines` for diagonals to match `check_win`'s iteration.
+Ascending Diagonal: `(r, c), (r-1, c+1), (r-2, c+2), (r-3, c+3)`
+  `r` from `3` to `ROW_COUNT - 1`
+  `c` from `0` to `COLUMN_COUNT - 4`
+
+Descending Diagonal: `(r, c), (r+1, c+1), (r+2, c+2), (r+3, c+3)`
+  `r` from `0` to `ROW_COUNT - 4`
+  `c` from `0` to `COLUMN_COUNT - 4`
+
+This change makes the iteration logic identical in `check_win` and `count_potential_lines`, which is good for consistency and correctness.
+
+```python
+def count_potential_lines(board, player_val, length):
+    count = 0
+    opponent_val = -player_val # Not strictly needed here, but conceptually correct
+
+    # Horizontal
+    for r in range(ROW_COUNT):
+        for c in range(COLUMN_COUNT - 3):
+            player_discs = 0
+            empty_cells = 0
+            opponent_discs = 0
+            for i in range(4): # Loop over the 4-cell window
+                if board[r][c+i] == player_val: player_discs += 1
+                elif board[r][c+i] == 0: empty_cells += 1
+                else: opponent_discs += 1; break # Opponent disc blocks this line
+            if opponent_discs == 0 and player_discs == length:
+                count += 1
+
+    # Vertical
+    for c in range(COLUMN_COUNT):
+        for r in range(ROW_COUNT - 3):
+            player_discs = 0
+            empty_cells = 0
+            opponent_discs = 0
+            for i in range(4): # Loop over the 4-cell window
+                if board[r+i][c] == player_val: player_discs += 1
+                elif board[r+i][c] == 0: empty_cells += 1
+                else: opponent_discs += 1; break # Opponent disc blocks this line
+            if opponent_discs == 0 and player_discs == length:
+                count += 1
+
+    # Ascending Diagonal (bottom-left to top-right)
+    for r in range(3, ROW_COUNT): # Start row for this diagonal type
+        for c in range(COLUMN_COUNT - 3): # Start col for this diagonal type
+            player_discs = 0
+            empty_cells = 0
+            opponent_discs = 0
+            for i in range(4): # Loop over the 4-cell window
+                if board[r-i][c+i] == player_val: player_discs += 1
+                elif board[r-i][c+i] == 0: empty_cells += 1
+                else: opponent_discs += 1; break # Opponent disc blocks this line
+            if opponent_discs == 0 and player_discs == length:
+                count += 1
+                
+    # Descending Diagonal (top-left to bottom-right)
+    for r in range(ROW_COUNT - 3): # Start row for this diagonal type
+        for c in range(COLUMN_COUNT - 3): # Start col for this diagonal type
+            player_discs = 0
+            empty_cells = 0
+            opponent_discs = 0
+            for i in range(4): # Loop over the 4-cell window
+                if board[r+i][c+i] == player_val: player_discs += 1
+                elif board[r+i][c+i] == 0: empty_cells += 1
+                else: opponent_discs += 1; break # Opponent disc blocks this line
+            if opponent_discs == 0 and player_discs == length:
+                count += 1
+                
+    return count
+```
+Looks good for robustness.
+Final constants and variable names will be within the scope of the file.
+The `random` import is actually not needed if `column_order` is fixed. I will remove it.
+If the `policy` function might be called multiple times for different games, defining constants globally is fine. If it's called once per game instance, defining them inside `policy` might make more sense, but conventionally at the top level is fine for utilities.
+</thinking>
+```python
+import copy
+
+# Global constants for board dimensions and player values
+ROW_COUNT = 6
+COLUMN_COUNT = 7
+PLAYER_ME = 1
+PLAYER_OPPONENT = -1
+
+def get_next_empty_row(board: list[list[int]], col: int) -> int | None:
+    """
+    Finds the lowest empty row in a given column.
+    Returns the row index or None if the column is full.
+    """
+    for r in range(ROW_COUNT - 1, -1, -1):  # Iterate from bottom to top
+        if board[r][col] == 0:
+            return r
+    return None  # Column is full
+
+def is_valid_move(board: list[list[int]], col: int) -> bool:
+    """
+    Checks if a column is a valid move (i.e., not full).
+    """
+    return board[0][col] == 0
+
+def drop_disc(board: list[list[int]], col: int, player: int) -> list[list[int]]:
+    """
+    Simulates dropping a disc into a column and returns the new board state.
+    Assumes the move is valid.
+    """
+    new_board = [row[:] for row in board]  # Create a deep copy of the board
+    row = get_next_empty_row(new_board, col)
+    if row is not None:
+        new_board[row][col] = player
+    return new_board
+
+def check_win(board: list[list[int]], player: int) -> bool:
+    """
+    Checks if the given player has won on the current board.
+    """
+    # Check horizontal
+    for r in range(ROW_COUNT):
+        for c in range(COLUMN_COUNT - 3):
+            if all(board[r][c+i] == player for i in range(4)):
+                return True
+
+    # Check vertical
+    for c in range(COLUMN_COUNT):
+        for r in range(ROW_COUNT - 3):
+            if all(board[r+i][c] == player for i in range(4)):
+                return True
+
+    # Check ascending diagonal (bottom-left to top-right)
+    for r in range(3, ROW_COUNT): # Start row from 3 (index of fourth row from top) to 5 (last row)
+        for c in range(COLUMN_COUNT - 3): # Start col from 0 to 3
+            if all(board[r-i][c+i] == player for i in range(4)):
+                return True
+
+    # Check descending diagonal (top-left to bottom-right)
+    for r in range(ROW_COUNT - 3): # Start row from 0 to 2
+        for c in range(COLUMN_COUNT - 3): # Start col from 0 to 3
+            if all(board[r+i][c+i] == player for i in range(4)):
+                return True
+
+    return False
+
+def count_potential_lines(board: list[list[int]], player_val: int, length: int) -> int:
+    """
+    Counts potential lines of 'length' discs for a player in a 4-cell window,
+    where the remaining cells in the window are empty, and no opponent discs are present.
+    """
+    count = 0
+
+    # Horizontal
+    for r in range(ROW_COUNT):
+        for c in range(COLUMN_COUNT - 3):
+            player_discs = 0
+            empty_cells = 0
+            opponent_discs = 0
+            for i in range(4):
+                if board[r][c+i] == player_val: player_discs += 1
+                elif board[r][c+i] == 0: empty_cells += 1
+                else: opponent_discs += 1; break
+            if opponent_discs == 0 and player_discs == length:
+                count += 1
+
+    # Vertical
+    for c in range(COLUMN_COUNT):
+        for r in range(ROW_COUNT - 3):
+            player_discs = 0
+            empty_cells = 0
+            opponent_discs = 0
+            for i in range(4):
+                if board[r+i][c] == player_val: player_discs += 1
+                elif board[r+i][c] == 0: empty_cells += 1
+                else: opponent_discs += 1; break
+            if opponent_discs == 0 and player_discs == length:
+                count += 1
+
+    # Ascending Diagonal (bottom-left to top-right)
+    for r in range(3, ROW_COUNT):
+        for c in range(COLUMN_COUNT - 3):
+            player_discs = 0
+            empty_cells = 0
+            opponent_discs = 0
+            for i in range(4):
+                if board[r-i][c+i] == player_val: player_discs += 1
+                elif board[r-i][c+i] == 0: empty_cells += 1
+                else: opponent_discs += 1; break
+            if opponent_discs == 0 and player_discs == length:
+                count += 1
+                
+    # Descending Diagonal (top-left to bottom-right)
+    for r in range(ROW_COUNT - 3):
+        for c in range(COLUMN_COUNT - 3):
+            player_discs = 0
+            empty_cells = 0
+            opponent_discs = 0
+            for i in range(4):
+                if board[r+i][c+i] == player_val: player_discs += 1
+                elif board[r+i][c+i] == 0: empty_cells += 1
+                else: opponent_discs += 1; break
+            if opponent_discs == 0 and player_discs == length:
+                count += 1
+                
+    return count
+
+def evaluate_board_heuristic(board: list[list[int]], player: int) -> int:
+    """
+    Evaluates the board state using a heuristic approach.
+    Positive scores favor the current player, negative favor the opponent.
+    """
+    score = 0
+    opponent = -player
+
+    # Score for current player's potential lines
+    score += count_potential_lines(board, player, 3) * 100  # High value for three-in-a-row
+    score += count_potential_lines(board, player, 2) * 10   # Moderate value for two-in-a-row
+
+    # Subtract score for opponent's potential lines (defensive play)
+    score -= count_potential_lines(board, opponent, 3) * 80 # Prioritize blocking opponent's three-in-a-row
+    score -= count_potential_lines(board, opponent, 2) * 5  # Blocking opponent's two-in-a-row
+
+    return score
+
+def policy(board: list[list[int]]) -> int:
+    """
+    Determines the best column to drop a disc for the current player.
+    """
+    # 1. Check for immediate win (my turn)
+    for col in range(COLUMN_COUNT):
+        if is_valid_move(board, col):
+            next_board = drop_disc(board, col, PLAYER_ME)
+            if check_win(next_board, PLAYER_ME):
+                return col
+
+    # 2. Check for immediate opponent win and block it
+    for col in range(COLUMN_COUNT):
+        if is_valid_move(board, col):
+            # Simulate opponent's move in this column
+            next_board_opponent = drop_disc(board, col, PLAYER_OPPONENT)
+            if check_win(next_board_opponent, PLAYER_OPPONENT):
+                return col
+
+    # 3. Evaluate other moves using a heuristic
+    best_score = -float('inf')
+    best_col = -1
+    
+    # Order columns to prioritize center (e.g., 3, 2, 4, 1, 5, 0, 6)
+    # This helps with tie-breaking and generally leads to stronger play
+    column_order = [3, 2, 4, 1, 5, 0, 6] 
+
+    for col in column_order:
+        if is_valid_move(board, col):
+            current_move_score = 0
+            
+            # Simulate my move in the current column
+            board_after_my_move = drop_disc(board, col, PLAYER_ME)
+            
+            # Critical defensive check: Does this move directly allow the opponent to win on their next turn?
+            opponent_can_win_after_my_move = False
+            for opp_col_option in range(COLUMN_COUNT):
+                if is_valid_move(board_after_my_move, opp_col_option):
+                    temp_board_after_opp = drop_disc(board_after_my_move, opp_col_option, PLAYER_OPPONENT)
+                    if check_win(temp_board_after_opp, PLAYER_OPPONENT):
+                        opponent_can_win_after_my_move = True
+                        break # Found a way for opponent to win, so this 'col' is bad for me
+
+            if opponent_can_win_after_my_move:
+                current_move_score = -1_000_000 # Severely penalize moves that directly lead to opponent's win
+            else:
+                # If not a losing move, evaluate its heuristic potential
+                current_move_score = evaluate_board_heuristic(board_after_my_move, PLAYER_ME)
+                
+                # Add bonuses for central column play, as it generally offers more opportunities
+                if col == 3: current_move_score += 5
+                elif col == 2 or col == 4: current_move_score += 3
+                elif col == 1 or col == 5: current_move_score += 1
+            
+            if current_move_score > best_score:
+                best_score = current_move_score
+                best_col = col
+
+    # In case no valid move is found (shouldn't happen if the competition ensures valid states)
+    # or if all moves are equally bad (e.g., all lead to opponent winning next turn, which is handled
+    # by picking the one that leads to it with least 'positive' score).
+    # For robustnes, if `best_col` is still -1, fall back to the first available column.
+    if best_col == -1:
+        for col in column_order:
+            if is_valid_move(board, col):
+                return col
+        # If no valid columns can be found (board is full), this line would be reached, but game ends before this.
+        # As a final fallback in an unexpected situation, return center.
+        return 3
+
+    return best_col
+```

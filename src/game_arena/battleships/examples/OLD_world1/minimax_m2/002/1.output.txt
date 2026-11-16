@@ -1,0 +1,137 @@
+To solve this problem, we need to develop a targeting policy for a Battleship-like game on a 10x10 grid. The objective is to efficiently identify and sink the opponent's ships by strategically choosing the next cell to fire at based on the current state of the board.
+
+### Approach
+1. **Initial Check for Hits**: First, check if there are any hits (1s) on the board. If hits are present, transition to target mode; otherwise, proceed to hunting mode.
+2. **Target Mode**:
+   - **Connected Components Identification**: Use BFS (Breadth-First Search) to identify clusters of adjacent hits. Each cluster represents a part of a ship.
+   - **Orientation Determination**: For each cluster, determine if it's horizontal or vertical. Clusters with a single hit are treated as having 4 potential directions.
+   - **Candidate Cells Generation**: For each cluster, generate candidate cells adjacent to the cluster's ends (for horizontal/vertical clusters) or the four neighbors (for single-hit clusters) that are within the board bounds and currently unknown (0).
+   - **Cluster Selection**: Choose the cluster with the most hits. If multiple clusters have the same hit count, select any one.
+   - **Cell Selection**: From the candidate cells of the selected cluster, choose the one closest to the board's center (4.5, 4.5) using Euclidean distance. If no candidates are available, proceed to hunting mode.
+3. **Hunting Mode**:
+   - **Checkerboard Pattern**: Use a checkerboard pattern (cells where (row + column) is even) to efficiently scan for unknown cells.
+   - **Fallback**: If no cells are found in the checkerboard pattern, select any remaining unknown cell.
+
+### Solution Code
+```python
+from collections import deque
+
+def policy(board):
+    center_r, center_c = 4.5, 4.5
+    has_hit = False
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1:
+                has_hit = True
+                break
+        if has_hit:
+            break
+            
+    if has_hit:
+        visited = [[False] * 10 for _ in range(10)]
+        components = []
+        for r in range(10):
+            for c in range(10):
+                if board[r][c] == 1 and not visited[r][c]:
+                    component = []
+                    queue = deque([(r, c)])
+                    visited[r][c] = True
+                    while queue:
+                        x, y = queue.popleft()
+                        component.append((x, y))
+                        for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                            nx, ny = x + dx, y + dy
+                            if 0 <= nx < 10 and 0 <= ny < 10 and not visited[nx][ny] and board[nx][ny] == 1:
+                                visited[nx][ny] = True
+                                queue.append((nx, ny))
+                    components.append(component)
+                    
+        best_component = None
+        best_candidates = []
+        best_score = -1
+        
+        for comp in components:
+            if len(comp) == 1:
+                r, c = comp[0]
+                candidate_cells = []
+                for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                        candidate_cells.append((nr, nc))
+                if candidate_cells:
+                    score = len(comp)
+                    if score > best_score:
+                        best_score = score
+                        best_component = comp
+                        best_candidates = candidate_cells
+            else:
+                rows = [r for r, c in comp]
+                cols = [c for r, c in comp]
+                if len(set(rows)) == 1:
+                    r_val = rows[0]
+                    c1 = min(cols)
+                    c2 = max(cols)
+                    candidate_cells = []
+                    if c1 > 0 and board[r_val][c1 - 1] == 0:
+                        candidate_cells.append((r_val, c1 - 1))
+                    if c2 < 9 and board[r_val][c2 + 1] == 0:
+                        candidate_cells.append((r_val, c2 + 1))
+                    if candidate_cells:
+                        score = len(comp)
+                        if score > best_score:
+                            best_score = score
+                            best_component = comp
+                            best_candidates = candidate_cells
+                elif len(set(cols)) == 1:
+                    c_val = cols[0]
+                    r1 = min(rows)
+                    r2 = max(rows)
+                    candidate_cells = []
+                    if r1 > 0 and board[r1 - 1][c_val] == 0:
+                        candidate_cells.append((r1 - 1, c_val))
+                    if r2 < 9 and board[r2 + 1][c_val] == 0:
+                        candidate_cells.append((r2 + 1, c_val))
+                    if candidate_cells:
+                        score = len(comp)
+                        if score > best_score:
+                            best_score = score
+                            best_component = comp
+                            best_candidates = candidate_cells
+                            
+        if best_component is not None:
+            best_target = None
+            best_dist = float('inf')
+            for (r, c) in best_candidates:
+                dist = (r - center_r)**2 + (c - center_c)**2
+                if dist < best_dist:
+                    best_dist = dist
+                    best_target = (r, c)
+            if best_target is not None:
+                return best_target
+                
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0 and (r + c) % 2 == 0:
+                return (r, c)
+                
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0:
+                return (r, c)
+                
+    return (0, 0)
+```
+
+### Explanation
+1. **Initial Check**: The function first checks if there are any hits (1s) on the board to decide between target mode and hunting mode.
+2. **Target Mode**:
+   - **BFS for Clusters**: Uses BFS to identify all clusters of adjacent hits. Each cluster represents a part of a ship.
+   - **Cluster Processing**: For each cluster, checks its orientation (horizontal, vertical, or single-hit) and generates adjacent candidate cells within board bounds and unknown (0).
+   - **Cluster Selection**: Selects the cluster with the most hits. If multiple clusters have the same hit count, any one is chosen.
+   - **Cell Selection**: From candidate cells of the selected cluster, the cell closest to the board's center is chosen using Euclidean distance.
+3. **Hunting Mode**:
+   - **Checkerboard Scanning**: Scans the board for cells where (row + column) is even (checkerboard pattern) to find unknown cells efficiently.
+   - **Fallback**: If no cells are found in the checkerboard pattern, any remaining unknown cell is chosen.
+4. **Return**: The chosen cell is returned as a tuple (row, column). If no cells are available, returns (0, 0) as a default.
+
+This approach efficiently combines target acquisition with a systematic scanning strategy to minimize the number of shots required to sink all opponent ships.

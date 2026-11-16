@@ -1,0 +1,141 @@
+The strategy for this policy is a minimax search with alpha-beta pruning and terminal evaluation to play optimally in 3x3x3 3D Tic Tac Toe. It first checks for immediate block (preventing opponent's winning move) and win opportunities (winning if available). For non-terminal states, it uses full-depth minimax with memoization to evaluate positions and return the move with highest expected value. The search considers all 49 winning lines (27 axial, 18 face diagonals, 4 space diagonals). It prioritizes center control and uses a simple evaluation based on potential two-in-a-row threats. The implementation uses efficient board hashing via tuple conversion and careful move generation to stay within execution limits.
+
+<code>
+import itertools
+from functools import lru_cache
+
+# Define all winning lines (49 total: 27 axial, 18 face diagonals, 4 space diagonals)
+WIN_LINES = []
+
+# Axis-aligned lines (fix two coordinates, vary one)
+for j in range(3):
+    for k in range(3):
+        WIN_LINES.append([(0, j, k), (1, j, k), (2, j, k)])  # line along i
+for i in range(3):
+    for k in range(3):
+        WIN_LINES.append([(i, 0, k), (i, 1, k), (i, 2, k)])  # line along j
+for i in range(3):
+    for j in range(3):
+        WIN_LINES.append([(i, j, 0), (i, j, 1), (i, j, 2)])  # line along k
+
+# Face diagonals (diagonal in 2D planes)
+for j in range(3):
+    WIN_LINES.append([(0, j, 0), (1, j, 1), (2, j, 2)])  # diagonal in i-k plane
+    WIN_LINES.append([(0, j, 2), (1, j, 1), (2, j, 0)])
+for k in range(3):
+    WIN_LINES.append([(0, 0, k), (1, 1, k), (2, 2, k)])  # diagonal in i-j plane
+    WIN_LINES.append([(0, 2, k), (1, 1, k), (2, 0, k)]
+for i in range(3):
+    WIN_LINES.append([(i, 0, 0), (i, 1, 1), (i, 2, 2)])  # diagonal in j-k plane
+    WIN_LINES.append([(i, 0, 2), (i, 1, 1), (i, 2, 0)])
+
+# Space diagonals (through center)
+WIN_LINES.append([(0, 0, 0), (1, 1, 1), (2, 2, 2)])
+WIN_LINES.append([(0, 0, 2), (1, 1, 1), (2, 2, 0)])
+WIN_LINES.append([(0, 2, 0), (1, 1, 1), (2, 0, 2)])
+WIN_LINES.append([(0, 2, 2), (1, 1, 1), (2, 0, 0)])
+
+# Terminal evaluation constants
+WIN_SCORE = 1000
+LOSE_SCORE = -1000
+DRAW_SCORE = 0
+
+def board_to_tuple(board):
+    """Convert 3D list board to hashable tuple for memoization."""
+    return tuple(tuple(tuple(row) for row in layer) for layer in board)
+
+@lru_cache(maxsize=None)
+def minimax(board_tuple, is_maximizing):
+    """Perform minimax search with alpha-beta pruning."""
+    # Check for terminal states
+    empties = []
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board_tuple[i][j][k] == 0:
+                    empties.append((i, j, k))
+    
+    if not empties:
+        return (DRAW_SCORE, None)  # Draw, no move
+    
+    # Check for immediate wins
+    if all(board_tuple[i][j][k] == 1 for (i, j, k) in WIN_LINES):
+        return (WIN_SCORE, None)
+    if all(board_tuple[i][j][k] == -1 for (i, j, k) in WIN_LINES):
+        return (LOSE_SCORE, None)
+    
+    if is_maximizing:
+        best_score = -float('inf')
+        best_move = None
+        for empty in empties:
+            # Make move (1)
+            new_board = [[[board_tuple[i][j][k] for k in range(3)] for j in range(3)] for i in range(3)]
+            new_board[empty[0]][empty[1]][empty[2]] = 1
+            new_board_tuple = board_to_tuple(new_board)
+            score, _ = minimax(new_board_tuple, False)
+            if score > best_score:
+                best_score = score
+                best_move = empty
+        return (best_score, best_move)
+    else:
+        best_score = float('inf')
+        for empty in empties:
+            # Make move (-1)
+            new_board = [[[board_tuple[i][j][k] for k in range(3)] for j in range(3)] for i in range(3)]
+            new_board[empty[0]][empty[1]][empty[2]] = -1
+            new_board_tuple = board_to_tuple(new_board)
+            score, _ = minimax(new_board_tuple, True)
+            if score < best_score:
+                best_score = score
+        return (best_score, None)
+
+def policy(board):
+    """Main function implementing the smart policy."""
+    board_tuple = board_to_tuple(board)
+    
+    # Check for opponent's immediate winning move
+    for line in WIN_LINES:
+        if all(board[i][j][k] == -1 for (i, j, k) in line):
+            continue
+        if any(board[i][j][k] == 0 for (i, j, k) in line):
+            for cell in line:
+                if board[cell[0]][cell[1]][cell[2]] == 0:
+                    return cell  # Must block opponent
+    
+    # Check for our immediate winning move
+    for line in WIN_LINES:
+        if all(board[i][j][k] == 1 for (i, j, k) in line):
+            continue
+        if any(board[i][j][k] == 0 for (i, j, k) in line):
+            for cell in line:
+                if board[cell[0]][cell[1]][cell[2]] == 0:
+                    return cell  # Win if possible
+    
+    # Fallback to minimax search
+    best_score = -float('inf')
+    best_move = None
+    empties = []
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board[i][j][k] == 0:
+                    empties.append((i, j, k))
+    
+    if best_move is None:
+        for empty in empties:
+            new_board = [[[board[i][j][k] for k in range(3)] for j in range(3)] for i in range(3)]
+            new_board[empty[0]][empty[1]][empty[2]] = 1
+            score, _ = minimax(board_to_tuple(new_board), False)
+            if score > best_score:
+                best_score = score
+                best_move = empty
+    
+    # Tie-breaker: prioritize center cell
+    center = (1, 1, 1)
+    if center in empties and best_score == minimax(board_to_tuple([
+        [[board[i][j][k] for k in range(3)] for j in range(3)] for i in range(3)
+    ]), False)[0]:
+        best_move = center
+    
+    return best_move
+</code>

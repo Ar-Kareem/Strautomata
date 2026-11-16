@@ -1,0 +1,191 @@
+
+import numpy as np
+from collections import deque
+import time
+import random
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    N = 15
+    valid_mask = np.array(valid_mask)
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    # Get all valid empty cells
+    valid_moves = [(r, c) for r in range(N) for c in range(N) 
+                   if valid_mask[r][c] and (r, c) not in me_set and (r, c) not in opp_set]
+    
+    if not valid_moves:
+        for r in range(N):
+            for c in range(N):
+                if valid_mask[r][c]:
+                    return (r, c)
+    
+    if len(valid_moves) == 1:
+        return valid_moves[0]
+    
+    def get_neighbors(r, c):
+        # Hex grid neighbors
+        candidates = [(r-1, c), (r+1, c), (r, c-1), (r, c+1), (r-1, c+1), (r+1, c-1)]
+        return [(nr, nc) for nr, nc in candidates if 0 <= nr < N and 0 <= nc < N and valid_mask[nr][nc]]
+    
+    def get_corners():
+        corners = []
+        for r in range(N):
+            for c in range(N):
+                if valid_mask[r][c]:
+                    neighbors = get_neighbors(r, c)
+                    valid_neighbors = [n for n in neighbors if valid_mask[n[0]][n[1]]]
+                    if len(valid_neighbors) == 3:
+                        corners.append((r, c))
+        return corners
+    
+    def get_edge_cells():
+        edges = {i: [] for i in range(6)}
+        corners = set(get_corners())
+        for r in range(N):
+            for c in range(N):
+                if valid_mask[r][c] and (r, c) not in corners:
+                    neighbors = get_neighbors(r, c)
+                    valid_neighbors = [n for n in neighbors if valid_mask[n[0]][n[1]]]
+                    if len(valid_neighbors) == 4:
+                        if r == 0:
+                            edges[0].append((r, c))
+                        elif c == 0 and r < N//2:
+                            edges[1].append((r, c))
+                        elif c == 0 or (r >= N//2 and c <= r - N//2):
+                            edges[2].append((r, c))
+                        elif r == N-1 or (r >= N//2 and r + c >= N + N//2 - 1):
+                            edges[3].append((r, c))
+                        elif c == N-1 or (r < N//2 and c >= N//2 + r):
+                            edges[4].append((r, c))
+                        else:
+                            edges[5].append((r, c))
+        return edges
+    
+    corners = get_corners()
+    
+    def check_win(stones_set):
+        if len(stones_set) < 3:
+            return False
+        
+        # Check bridge (connect 2 corners)
+        corner_stones = [s for s in stones_set if s in corners]
+        if len(corner_stones) >= 2:
+            for i, c1 in enumerate(corner_stones):
+                for c2 in corner_stones[i+1:]:
+                    if connected(c1, c2, stones_set):
+                        return True
+        
+        # Check ring (cycle detection)
+        if has_ring(stones_set):
+            return True
+        
+        return False
+    
+    def connected(s1, s2, stones_set):
+        if s1 not in stones_set or s2 not in stones_set:
+            return False
+        visited = set()
+        queue = deque([s1])
+        visited.add(s1)
+        while queue:
+            curr = queue.popleft()
+            if curr == s2:
+                return True
+            for n in get_neighbors(*curr):
+                if n in stones_set and n not in visited:
+                    visited.add(n)
+                    queue.append(n)
+        return False
+    
+    def has_ring(stones_set):
+        if len(stones_set) < 6:
+            return False
+        for start in stones_set:
+            neighbors_in_set = [n for n in get_neighbors(*start) if n in stones_set]
+            if len(neighbors_in_set) >= 2:
+                for i, n1 in enumerate(neighbors_in_set):
+                    for n2 in neighbors_in_set[i+1:]:
+                        visited = {start}
+                        if dfs_path(n1, n2, stones_set, visited):
+                            return True
+        return False
+    
+    def dfs_path(start, target, stones_set, visited):
+        if start == target:
+            return True
+        visited.add(start)
+        for n in get_neighbors(*start):
+            if n in stones_set and n not in visited:
+                if dfs_path(n, target, stones_set, visited):
+                    return True
+        return False
+    
+    # Check immediate wins
+    for move in valid_moves:
+        new_me = me_set | {move}
+        if check_win(new_me):
+            return move
+    
+    # Block opponent wins
+    for move in valid_moves:
+        new_opp = opp_set | {move}
+        if check_win(new_opp):
+            return move
+    
+    # Prioritize moves near existing stones
+    def move_priority(move):
+        score = 0
+        for s in me_set:
+            d = abs(move[0]-s[0]) + abs(move[1]-s[1])
+            if d <= 2:
+                score += 3
+        for s in opp_set:
+            d = abs(move[0]-s[0]) + abs(move[1]-s[1])
+            if d <= 2:
+                score += 2
+        if move in corners:
+            score += 1
+        return score
+    
+    priority_moves = sorted(valid_moves, key=move_priority, reverse=True)[:min(30, len(valid_moves))]
+    
+    # Simple MCTS
+    move_wins = {m: 0 for m in priority_moves}
+    move_visits = {m: 1 for m in priority_moves}
+    
+    start_time = time.time()
+    iterations = 0
+    
+    while time.time() - start_time < 0.7:
+        # UCB1 selection
+        total_visits = sum(move_visits.values())
+        best_move = max(priority_moves, key=lambda m: move_wins[m]/move_visits[m] + 1.4 * np.sqrt(np.log(total_visits)/move_visits[m]))
+        
+        # Simulate
+        sim_me = me_set | {best_move}
+        sim_opp = opp_set.copy()
+        sim_valid = [m for m in valid_moves if m != best_move]
+        my_turn = False
+        
+        for _ in range(30):
+            if not sim_valid:
+                break
+            move = random.choice(sim_valid)
+            if my_turn:
+                sim_me.add(move)
+                if check_win(sim_me):
+                    move_wins[best_move] += 1
+                    break
+            else:
+                sim_opp.add(move)
+                if check_win(sim_opp):
+                    break
+            sim_valid.remove(move)
+            my_turn = not my_turn
+        
+        move_visits[best_move] += 1
+        iterations += 1
+    
+    best = max(priority_moves, key=lambda m: move_visits[m])
+    return best

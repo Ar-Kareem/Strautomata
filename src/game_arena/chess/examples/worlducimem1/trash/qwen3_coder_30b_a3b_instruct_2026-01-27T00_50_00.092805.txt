@@ -1,0 +1,342 @@
+The strategy for this policy is to implement a minimax-based chess engine with alpha-beta pruning. The key components are:
+
+1. **Move Generation**: Generate all legal moves for the current position
+2. **Position Evaluation**: 
+   - Material evaluation (piece values)
+   - Piece-square tables for positional bonuses
+   - King safety considerations
+   - Pawn structure evaluation
+3. **Search Algorithm**: 
+   - Depth-limited minimax with alpha-beta pruning
+   - Transposition table for move ordering
+4. **Move Selection**: 
+   - Prioritize captures and checks
+   - Use killer moves and history heuristics
+   - Return the best move found
+
+The policy will evaluate positions to a fixed depth (typically 3-4 ply) and return the best move. It will store search information in the memory dictionary to maintain state between calls.
+
+<code>
+import numpy as np
+from typing import Dict, List, Tuple, Optional
+import copy
+
+# Piece values
+PIECE_VALUES = {
+    'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000,
+    'p': -100, 'n': -320, 'b': -330, 'r': -500, 'q': -900, 'k': -20000
+}
+
+# Piece-square tables (simplified)
+PAWN_TABLE = [
+    0,  0,  0,  0,  0,  0,  0,  0,
+    50, 50, 50, 50, 50, 50, 50, 50,
+    10, 10, 20, 30, 30, 20, 10, 10,
+    5,  5, 10, 25, 25, 10,  5,  5,
+    0,  0,  0, 20, 20,  0,  0,  0,
+    5, -5,-10,  0,  0,-10, -5,  5,
+    5, 10, 10,-20,-20, 10, 10,  5,
+    0,  0,  0,  0,  0,  0,  0,  0
+]
+
+KNIGHT_TABLE = [
+    -50,-40,-30,-30,-30,-30,-40,-50,
+    -40,-20,  0,  0,  0,  0,-20,-40,
+    -30,  0, 10, 15, 15, 10,  0,-30,
+    -30,  5, 15, 20, 20, 15,  5,-30,
+    -30,  0, 15, 20, 20, 15,  0,-30,
+    -30,  5, 10, 15, 15, 10,  5,-30,
+    -40,-20,  0,  5,  5,  0,-20,-40,
+    -50,-40,-30,-30,-30,-30,-40,-50
+]
+
+BISHOP_TABLE = [
+    -20,-10,-10,-10,-10,-10,-10,-20,
+    -10,  0,  0,  0,  0,  0,  0,-10,
+    -10,  0,  5, 10, 10,  5,  0,-10,
+    -10,  5,  5, 10, 10,  5,  5,-10,
+    -10,  0, 10, 10, 10, 10,  0,-10,
+    -10, 10, 10, 10, 10, 10, 10,-10,
+    -10,  5,  0,  0,  0,  0,  5,-10,
+    -20,-10,-10,-10,-10,-10,-10,-20
+]
+
+ROOK_TABLE = [
+    0,  0,  0,  0,  0,  0,  0,  0,
+    5, 10, 10, 10, 10, 10, 10,  5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    0,  0,  0,  5,  5,  0,  0,  0
+]
+
+QUEEN_TABLE = [
+    -20,-10,-10, -5, -5,-10,-10,-20,
+    -10,  0,  0,  0,  0,  0,  0,-10,
+    -10,  0,  5,  5,  5,  5,  0,-10,
+    -5,  0,  5,  5,  5,  5,  0, -5,
+    0,  0,  5,  5,  5,  5,  0, -5,
+    -10,  5,  5,  5,  5,  5,  0,-10,
+    -10,  0,  5,  0,  0,  0,  0,-10,
+    -20,-10,-10, -5, -5,-10,-10,-20
+]
+
+KING_TABLE = [
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -20,-30,-30,-40,-40,-30,-30,-20,
+    -10,-20,-20,-20,-20,-20,-20,-10,
+     20, 20,  0,  0,  0,  0, 20, 20,
+     20, 30, 10,  0,  0, 10, 30, 20
+]
+
+# Reverse lookup for piece-square tables
+PIECE_TABLES = {
+    'P': PAWN_TABLE,
+    'N': KNIGHT_TABLE,
+    'B': BISHOP_TABLE,
+    'R': ROOK_TABLE,
+    'Q': QUEEN_TABLE,
+    'K': KING_TABLE
+}
+
+class ChessEngine:
+    def __init__(self):
+        self.transposition_table = {}
+        self.tt_size = 100000
+        
+    def algebraic_to_index(self, square: str) -> int:
+        """Convert algebraic notation to 0-63 index"""
+        file = ord(square[0]) - ord('a')
+        rank = int(square[1]) - 1
+        return rank * 8 + file
+    
+    def index_to_algebraic(self, index: int) -> str:
+        """Convert 0-63 index to algebraic notation"""
+        file = chr(ord('a') + (index % 8))
+        rank = str((index // 8) + 1)
+        return file + rank
+    
+    def get_piece_at(self, pieces: Dict[str, str], square: str) -> Optional[str]:
+        """Get piece at given square"""
+        return pieces.get(square)
+    
+    def is_white_piece(self, piece: str) -> bool:
+        """Check if piece is white"""
+        return piece and piece[0] == 'w'
+    
+    def is_black_piece(self, piece: str) -> bool:
+        """Check if piece is black"""
+        return piece and piece[0] == 'b'
+    
+    def is_same_color(self, piece1: str, piece2: str) -> bool:
+        """Check if two pieces have the same color"""
+        if not piece1 or not piece2:
+            return False
+        return piece1[0] == piece2[0]
+    
+    def get_all_pieces(self, pieces: Dict[str, str], color: str) -> List[str]:
+        """Get all pieces of a given color"""
+        return [s for s, p in pieces.items() if p[0] == color]
+    
+    def get_piece_type(self, piece: str) -> str:
+        """Get piece type without color"""
+        return piece[1] if piece else ''
+    
+    def evaluate_position(self, pieces: Dict[str, str], to_play: str) -> int:
+        """Evaluate position using material and positional factors"""
+        score = 0
+        
+        for square, piece in pieces.items():
+            piece_type = piece[1]
+            color = piece[0]
+            
+            # Material evaluation
+            if color == 'w':
+                score += PIECE_VALUES[piece_type]
+            else:
+                score -= PIECE_VALUES[piece_type]
+            
+            # Positional evaluation
+            if piece_type in PIECE_TABLES:
+                index = self.algebraic_to_index(square)
+                if piece_type == 'K' and color == 'b':
+                    # Black king table is reversed
+                    index = 63 - index
+                table = PIECE_TABLES[piece_type]
+                if color == 'w':
+                    score += table[index]
+                else:
+                    score -= table[index]
+        
+        return score
+    
+    def get_all_legal_moves(self, pieces: Dict[str, str], to_play: str) -> List[str]:
+        """Generate all legal moves"""
+        moves = []
+        color = 'w' if to_play == 'white' else 'b'
+        
+        for square, piece in pieces.items():
+            if piece[0] != color:
+                continue
+            
+            piece_type = piece[1]
+            if piece_type == 'P':
+                moves.extend(self.get_pawn_moves(pieces, square, to_play))
+            elif piece_type == 'N':
+                moves.extend(self.get_knight_moves(pieces, square))
+            elif piece_type == 'B':
+                moves.extend(self.get_bishop_moves(pieces, square))
+            elif piece_type == 'R':
+                moves.extend(self.get_rook_moves(pieces, square))
+            elif piece_type == 'Q':
+                moves.extend(self.get_queen_moves(pieces, square))
+            elif piece_type == 'K':
+                moves.extend(self.get_king_moves(pieces, square))
+        
+        # Filter for castling moves and other special cases
+        return self.filter_legal_moves(pieces, moves, to_play)
+    
+    def get_pawn_moves(self, pieces: Dict[str, str], square: str, to_play: str) -> List[str]:
+        """Get all pawn moves"""
+        moves = []
+        color = 'w' if to_play == 'white' else 'b'
+        piece_type = 'P' if color == 'w' else 'p'
+        
+        file = ord(square[0]) - ord('a')
+        rank = int(square[1])
+        
+        # Forward moves
+        if color == 'w':
+            # Move one square forward
+            new_rank = rank + 1
+            if new_rank <= 8:
+                new_square = chr(ord('a') + file) + str(new_rank)
+                if new_square not in pieces:
+                    # Check for promotion
+                    if new_rank == 8:
+                        moves.extend([new_square + 'q', new_square + 'r', new_square + 'b', new_square + 'n'])
+                    else:
+                        moves.append(square + new_square)
+            
+            # Move two squares forward (from starting position)
+            if rank == 2:
+                new_rank = rank + 2
+                new_square = chr(ord('a') + file) + str(new_rank)
+                if new_square not in pieces and chr(ord('a') + file) + str(rank + 1) not in pieces:
+                    moves.append(square + new_square)
+            
+            # Captures
+            for offset in [-1, 1]:
+                new_file = file + offset
+                if 0 <= new_file <= 7:
+                    new_rank = rank + 1
+                    if new_rank <= 8:
+                        new_square = chr(ord('a') + new_file) + str(new_rank)
+                        if new_square in pieces and pieces[new_square][0] != color:
+                            if new_rank == 8:
+                                moves.extend([new_square + 'q', new_square + 'r', new_square + 'b', new_square + 'n'])
+                            else:
+                                moves.append(square + new_square)
+        else:  # Black pawn
+            # Move one square forward
+            new_rank = rank - 1
+            if new_rank >= 1:
+                new_square = chr(ord('a') + file) + str(new_rank)
+                if new_square not in pieces:
+                    # Check for promotion
+                    if new_rank == 1:
+                        moves.extend([new_square + 'q', new_square + 'r', new_square + 'b', new_square + 'n'])
+                    else:
+                        moves.append(square + new_square)
+            
+            # Move two squares forward (from starting position)
+            if rank == 7:
+                new_rank = rank - 2
+                new_square = chr(ord('a') + file) + str(new_rank)
+                if new_square not in pieces and chr(ord('a') + file) + str(rank - 1) not in pieces:
+                    moves.append(square + new_square)
+            
+            # Captures
+            for offset in [-1, 1]:
+                new_file = file + offset
+                if 0 <= new_file <= 7:
+                    new_rank = rank - 1
+                    if new_rank >= 1:
+                        new_square = chr(ord('a') + new_file) + str(new_rank)
+                        if new_square in pieces and pieces[new_square][0] != color:
+                            if new_rank == 1:
+                                moves.extend([new_square + 'q', new_square + 'r', new_square + 'b', new_square + 'n'])
+                            else:
+                                moves.append(square + new_square)
+        
+        return moves
+    
+    def get_knight_moves(self, pieces: Dict[str, str], square: str) -> List[str]:
+        """Get all knight moves"""
+        moves = []
+        file = ord(square[0]) - ord('a')
+        rank = int(square[1])
+        
+        # Knight moves: 2 squares perpendicular, 1 square perpendicular
+        for dx, dy in [(-2, -1), (-2, 1), (-1, -2), (-1, 2), (1, -2), (1, 2), (2, -1), (2, 1)]:
+            new_file = file + dx
+            new_rank = rank + dy
+            
+            if 0 <= new_file <= 7 and 1 <= new_rank <= 8:
+                new_square = chr(ord('a') + new_file) + str(new_rank)
+                
+                # Capture or move to empty square
+                if new_square not in pieces or pieces[new_square][0] != pieces[square][0]:
+                    moves.append(square + new_square)
+        
+        return moves
+    
+    def get_bishop_moves(self, pieces: Dict[str, str], square: str) -> List[str]:
+        """Get all bishop moves"""
+        moves = []
+        file = ord(square[0]) - ord('a')
+        rank = int(square[1])
+        
+        # Diagonal directions
+        for dx, dy in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+            for i in range(1, 8):
+                new_file = file + dx * i
+                new_rank = rank + dy * i
+                
+                if not (0 <= new_file <= 7 and 1 <= new_rank <= 8):
+                    break
+                new_square = chr(ord('a') + new_file) + str(new_rank)
+                
+                if new_square not in pieces:
+                    moves.append(square + new_square)
+                elif pieces[new_square][0] != pieces[square][0]:
+                    moves.append(square + new_square)
+                    break
+                else:
+                    break
+        
+        return moves
+    
+    def get_rook_moves(self, pieces: Dict[str, str], square: str) -> List[str]:
+        """Get all rook moves"""
+        moves = []
+        file = ord(square[0]) - ord('a')
+        rank = int(square[1])
+        
+        # Horizontal and vertical directions
+        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            for i in range(1, 8):
+                new_file = file + dx * i
+                new_rank = rank + dy * i
+                
+                if not (0 <= new_file <= 7 and 1 <= new_rank <= 8):
+                    break
+                new_square = chr(ord('a') + new_file) + str(new_rank)
+                
+                if new_square not in pieces:
+                    moves.append(square + new_square)

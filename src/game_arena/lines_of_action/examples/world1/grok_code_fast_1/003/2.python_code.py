@@ -1,0 +1,100 @@
+
+import random
+import copy
+
+def get_D(board, r, c, dr, dc):
+    if dr == 0:  # horizontal
+        return sum(1 for j in range(8) if abs(board[r][j]) != 0)
+    elif dc == 0:  # vertical
+        return sum(1 for i in range(8) if abs(board[i][c]) != 0)
+    elif dr != 0 and dc != 0:  # diagonal
+        count = 0
+        for di in range(-7, 8):
+            nr, nc = r + di * dr, c + di * dc
+            if 0 <= nr < 8 and 0 <= nc < 8 and abs(board[nr][nc]) != 0:
+                count += 1
+        return count
+    return 0  # shouldn't happen
+
+def count_components(board, player):
+    directions = [(0,1),(0,-1),(1,0),(-1,0),(1,1),(1,-1),(-1,1),(-1,-1)]
+    visited = [[False] * 8 for _ in range(8)]
+    count = 0
+    for i in range(8):
+        for j in range(8):
+            if board[i][j] == player and not visited[i][j]:
+                count += 1
+                stack = [(i, j)]
+                visited[i][j] = True
+                while stack:
+                    ci, cj = stack.pop()
+                    for dr, dc in directions:
+                        ni, nj = ci + dr, cj + dc
+                        if 0 <= ni < 8 and 0 <= nj < 8 and board[ni][nj] == player and not visited[ni][nj]:
+                            visited[ni][nj] = True
+                            stack.append((ni, nj))
+    return count
+
+def policy(board):
+    my_pieces = []
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == 1:
+                my_pieces.append((r, c))
+    
+    legal_moves = []
+    directions = [(0,1),(0,-1),(1,0),(-1,0),(1,1),(1,-1),(-1,1),(-1,-1)]
+    
+    for r, c in my_pieces:
+        for dr, dc in directions:
+            D = get_D(board, r, c, dr, dc)
+            tr = r + dr * D
+            tc = c + dc * D
+            if not (0 <= tr < 8 and 0 <= tc < 8):
+                continue
+            legal = True
+            for k in range(1, D):
+                nr, nc = r + dr * k, c + dc * k
+                if board[nr][nc] == -1:
+                    legal = False
+                    break
+            if not legal:
+                continue
+            if board[tr][tc] == 1:
+                legal = False
+            if legal:
+                legal_moves.append((r, c, tr, tc))
+    
+    if not legal_moves:
+        # Fallback, though unlikely
+        return "0,0:0,1"  # Should not happen, but return a dummy legal if possible
+    
+    # Current counts
+    current_my_groups = count_components(board, 1)
+    current_opp_groups = count_components(board, -1)
+    # Since we're minimizing, start with a high my_groups
+    best_my_groups = 100  # more than possible
+    best_opp_groups = -1  # less than possible
+    best_moves = []
+    
+    for fr, fc, tr, tc in legal_moves:
+        new_board = [row[:] for row in board]
+        new_board[fr][fc] = 0
+        new_board[tr][tc] = 1
+        my_groups = count_components(new_board, 1)
+        opp_groups = count_components(new_board, -1)
+        # Prioritize lower my_groups
+        if my_groups < best_my_groups:
+            best_my_groups = my_groups
+            best_opp_groups = opp_groups
+            best_moves = [(fr, fc, tr, tc)]
+        elif my_groups == best_my_groups:
+            # Then higher opp_groups
+            if opp_groups > best_opp_groups:
+                best_opp_groups = opp_groups
+                best_moves = [(fr, fc, tr, tc)]
+            elif opp_groups == best_opp_groups:
+                best_moves.append((fr, fc, tr, tc))
+    
+    chosen = random.choice(best_moves)
+    return f"{chosen[0]},{chosen[1]}:{chosen[2]},{chosen[3]}"

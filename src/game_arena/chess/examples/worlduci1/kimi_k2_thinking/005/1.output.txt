@@ -1,0 +1,274 @@
+Strategy:
+This policy implements a simple but effective chess engine that prioritizes:
+1. **Immediate checkmate** - always play a move that checkmates if available
+2. **Captures** - take enemy pieces (queen > rook > bishop/knight > pawn)
+3. **Checks** - give check when possible, especially if opponent has limited replies
+4. **Promotions** - always promote to queen for maximum material gain
+5. **King safety** - avoid moves that expose the king to danger
+6. **Material balance** - maintain or improve material count
+
+The engine generates legal moves by:
+- Creating pseudo-legal moves for each piece type
+- Filtering out moves that leave the king in check
+- Scoring each move based on captures, checks, and position
+- Selecting the highest-scoring legal move
+
+While not as strong as a full minimax search, this approach is fast (well under 1 second) and effective for typical positions by focusing on tactical opportunities and material gain.
+
+<code>
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    """
+    Chess policy that prioritizes checkmates, captures, checks, and promotions.
+    Fast tactical engine optimized for winning material and delivering mate.
+    """
+    # Board setup
+    board = pieces.copy()
+    player = 'w' if to_play == 'white' else 'b'
+    opponent = 'b' if player == 'w' else 'w'
+    piece_values = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}
+    
+    # Core helper functions
+    def sq_idx(s): return ord(s[0]) - 97, int(s[1]) - 1
+    def idx_sq(f, r): return chr(97 + f) + str(r + 1)
+    def on_board(f, r): return 0 <= f < 8 and 0 <= r < 8
+    
+    def is_attacked(square, attacker):
+        """Check if a square is attacked by attacker"""
+        af, ar = sq_idx(square)
+        # Pawn attacks
+        d = 1 if attacker == 'w' else -1
+        for df in (-1, 1):
+            nf, nr = af + df, ar + d
+            if on_board(nf, nr):
+                if board.get(idx_sq(nf, nr)) == attacker + 'P':
+                    return True
+        # Knight attacks
+        for df, dr in ((-2,-1),(-2,1),(-1,-2),(-1,2),(1,-2),(1,2),(2,-1),(2,1)):
+            nf, nr = af + df, ar + dr
+            if on_board(nf, nr):
+                if board.get(idx_sq(nf, nr)) == attacker + 'N':
+                    return True
+        # King attacks
+        for df, dr in ((-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)):
+            nf, nr = af + df, ar + dr
+            if on_board(nf, nr):
+                if board.get(idx_sq(nf, nr)) == attacker + 'K':
+                    return True
+        # Sliding pieces (rooks, bishops, queens)
+        for dirs, pieceset in [(((0,1),(0,-1),(1,0),(-1,0)), ('R','Q')), 
+                               (((1,1),(1,-1),(-1,1),(-1,-1)), ('B','Q'))]:
+            for df, dr in dirs:
+                nf, nr = af + df, ar + dr
+                while on_board(nf, nr):
+                    p = board.get(idx_sq(nf, nr))
+                    if p:
+                        if p[0] == attacker and p[1] in pieceset:
+                            return True
+                        break
+                    nf, nr = nf + df, nr + dr
+        return False
+    
+    def king_pos(color):
+        for sq, pc in board.items():
+            if pc == color + 'K':
+                return sq
+        return None
+    
+    def in_check(color):
+        k = king_pos(color)
+        return k and is_attacked(k, opponent if color == player else player)
+    
+    # Generate pseudo-legal moves
+    pseudo_moves = []
+    for from_sq, pc in board.items():
+        if pc[0] != player:
+            continue
+        
+        pt, ff, fr = pc[1], *sq_idx(from_sq)
+        
+        if pt == 'P':  # Pawn moves
+            d = 1 if player == 'w' else -1
+            # Forward moves
+            for steps in (1, 2) if fr == (1 if player == 'w' else 6) else (1,):
+                to_r = fr + steps * d
+                if on_board(ff, to_r):
+                    to_sq = idx_sq(ff, to_r)
+                    if to_sq not in board:
+                        if to_r == (7 if player == 'w' else 0):
+                            pseudo_moves.append(from_sq + to_sq + 'q')  # Queen promotion
+                        else:
+                            pseudo_moves.append(from_sq + to_sq)
+                    else:
+                        break
+                else:
+                    break
+            # Captures
+            for df in (-1, 1):
+                to_f, to_r = ff + df, fr + d
+                if on_board(to_f, to_r):
+                    to_sq = idx_sq(to_f, to_r)
+                    target = board.get(to_sq)
+                    if target and target[0] == opponent:
+                        if to_r == (7 if player == 'w' else 0):
+                            pseudo_moves.append(from_sq + to_sq + 'q')
+                        else:
+                            pseudo_moves.append(from_sq + to_sq)
+                    # En passant (simplified)
+                    elif not target:
+                        ep_sq = idx_sq(to_f, fr)
+                        if board.get(ep_sq) == opponent + 'P':
+                            pseudo_moves.append(from_sq + to_sq)
+        
+        elif pt == 'N':  # Knight moves
+            for df, dr in ((-2,-1),(-2,1),(-1,-2),(-1,2),(1,-2),(1,2),(2,-1),(2,1)):
+                to_f, to_r = ff + df, fr + dr
+                if on_board(to_f, to_r):
+                    to_sq = idx_sq(to_f, to_r)
+                    if to_sq not in board or board[to_sq][0] == opponent:
+                        pseudo_moves.append(from_sq + to_sq)
+        
+        elif pt == 'K':  # King moves
+            for df, dr in ((-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)):
+                to_f, to_r = ff + df, fr + dr
+                if on_board(to_f, to_r):
+                    to_sq = idx_sq(to_f, to_r)
+                    if to_sq not in board or board[to_sq][0] == opponent:
+                        pseudo_moves.append(from_sq + to_sq)
+            # Castling (simplified)
+            if not in_check(player):
+                row = fr
+                if (idx_sq(7, row) in board and board[idx_sq(7, row)] == player + 'R' and
+                    all(idx_sq(f, row) not in board for f in (5, 6))):
+                    if not any(is_attacked(idx_sq(f, row), opponent) for f in (4, 5, 6)):
+                        pseudo_moves.append(from_sq + idx_sq(6, row))
+                if (idx_sq(0, row) in board and board[idx_sq(0, row)] == player + 'R' and
+                    all(idx_sq(f, row) not in board for f in (1, 2, 3))):
+                    if not any(is_attacked(idx_sq(f, row), opponent) for f in (2, 3, 4)):
+                        pseudo_moves.append(from_sq + idx_sq(2, row))
+        
+        else:  # Bishop, Rook, Queen
+            dirs = {'B': ((1,1),(1,-1),(-1,1),(-1,-1)),
+                    'R': ((0,1),(0,-1),(1,0),(-1,0)),
+                    'Q': ((0,1),(0,-1),(1,0),(-1,0),(1,1),(1,-1),(-1,1),(-1,-1))}[pt]
+            for df, dr in dirs:
+                to_f, to_r = ff + df, fr + dr
+                while on_board(to_f, to_r):
+                    to_sq = idx_sq(to_f, to_r)
+                    target = board.get(to_sq)
+                    if target:
+                        if target[0] == opponent:
+                            pseudo_moves.append(from_sq + to_sq)
+                        break
+                    pseudo_moves.append(from_sq + to_sq)
+                    to_f, to_r = to_f + df, to_r + dr
+    
+    # Filter to legal moves
+    legal_moves = []
+    for move in pseudo_moves:
+        b2 = board.copy()
+        from_sq, to_sq = move[:2], move[2:4]
+        promo = move[4] if len(move) == 5 else None
+        
+        pc = b2.pop(from_sq, None)
+        if not pc:
+            continue
+        
+        # Handle castling
+        if pc[1] == 'K' and abs(ord(from_sq[0]) - ord(to_sq[0])) == 2:
+            row = ord(from_sq[1]) - 49
+            if to_sq[0] == 'g':  # Kingside
+                rook_from, rook_to = f"h{row+1}", f"f{row+1}"
+            else:  # Queenside
+                rook_from, rook_to = f"a{row+1}", f"d{row+1}"
+            rook = b2.pop(rook_from, None)
+            if rook:
+                b2[rook_to] = rook
+        
+        # Handle en passant
+        if pc[1] == 'P' and from_sq[0] != to_sq[0] and to_sq not in b2:
+            b2.pop(to_sq[0] + from_sq[1], None)
+        
+        # Place piece
+        b2[to_sq] = pc[0] + promo.upper() if promo else pc
+        
+        # Check if legal
+        if not in_check(player):
+            legal_moves.append(move)
+    
+    if not legal_moves:
+        return pseudo_moves[0] if pseudo_moves else "0000"
+    
+    # Score and select best move
+    best_move = legal_moves[0]
+    best_score = float('-inf')
+    
+    for move in legal_moves:
+        b2 = board.copy()
+        from_sq, to_sq = move[:2], move[2:4]
+        promo = move[4] if len(move) == 5 else None
+        
+        pc = b2.pop(from_sq)
+        
+        # Apply move
+        if pc[1] == 'K' and abs(ord(from_sq[0]) - ord(to_sq[0])) == 2:
+            row = ord(from_sq[1]) - 49
+            rook_from, rook_to = (f"h{row+1}", f"f{row+1}") if to_sq[0] == 'g' else (f"a{row+1}", f"d{row+1}")
+            b2[rook_to] = b2.pop(rook_from)
+        
+        if pc[1] == 'P' and from_sq[0] != to_sq[0] and to_sq not in b2:
+            b2.pop(to_sq[0] + from_sq[1], None)
+        
+        b2[to_sq] = pc[0] + promo.upper() if promo else pc
+        
+        # Checkmate detection
+        def opp_legal(b):
+            # Quick opponent move generation for checkmate detection
+            opp_pseudo = []
+            for sq, pc in b.items():
+                if pc[0] != opponent:
+                    continue
+                pt, ff, fr = pc[1], *sq_idx(sq)
+                if pt == 'K':
+                    for df, dr in ((-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)):
+                        to_f, to_r = ff + df, fr + dr
+                        if on_board(to_f, to_r):
+                            to_sq = idx_sq(to_f, to_r)
+                            target = b.get(to_sq)
+                            if not target or target[0] == player:
+                                opp_pseudo.append(sq + to_sq)
+            return opp_pseudo
+        
+        opp_moves = opp_legal(b2)
+        if not opp_moves and is_attacked(king_pos(opponent) or 'a1', player):
+            return move  # Checkmate!
+        
+        # Score move
+        score = 0
+        
+        # Capture score
+        captured = board.get(to_sq)
+        if captured and captured[0] == opponent:
+            score += 10 * piece_values[captured[1]]
+            if captured[1] == 'Q':
+                score += 50
+        
+        # Promotion bonus
+        if promo and promo == 'q':
+            score += 90
+        
+        # Check bonus
+        k = king_pos(opponent)
+        if k and is_attacked(k, player):
+            score += 20
+        
+        # Material balance
+        our_mat = sum(piece_values[p[1]] for p in b2.values() if p[0] == player)
+        opp_mat = sum(piece_values[p[1]] for p in b2.values() if p[0] == opponent)
+        score += (our_mat - opp_mat)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move
+</code>

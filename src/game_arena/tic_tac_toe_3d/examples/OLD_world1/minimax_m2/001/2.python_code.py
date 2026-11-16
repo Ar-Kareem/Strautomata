@@ -1,0 +1,90 @@
+
+# Define winning lines for a 3x3x3 3D Tic Tac Toe board
+winning_lines = []
+
+# Lines parallel to the x-axis (fixed y, fixed z, varying x)
+for y in range(3):
+    for z in range(3):
+        winning_lines.append([(0, y, z), (1, y, z), (2, y, z)])
+
+# Lines parallel to the y-axis (fixed x, fixed z, varying y)
+for x in range(3):
+    for z in range(3):
+        winning_lines.append([(x, 0, z), (x, 1, z), (x, 2, z)])
+
+# Lines parallel to the z-axis (fixed x, fixed y, varying z)
+for x in range(3):
+    for y in range(3):
+        winning_lines.append([(x, y, 0), (x, y, 1), (x, y, 2)])
+
+# Diagonals within layers parallel to the xy-plane (fixed z)
+for z in range(3):
+    winning_lines.append([(0, 0, z), (1, 1, z), (2, 2, z)])  # Main diagonal
+    winning_lines.append([(0, 2, z), (1, 1, z), (2, 0, z)])  # Anti-diagonal
+
+# Diagonals within layers parallel to the xz-plane (fixed y)
+for y in range(3):
+    winning_lines.append([(0, y, 0), (1, y, 1), (2, y, 2)])  # Main diagonal
+    winning_lines.append([(0, y, 2), (1, y, 1), (2, y, 0)])  # Anti-diagonal
+
+# Diagonals within layers parallel to the yz-plane (fixed x)
+for x in range(3):
+    winning_lines.append([(x, 0, 0), (x, 1, 1), (x, 2, 2)])  # Main diagonal
+    winning_lines.append([(x, 0, 2), (x, 1, 1), (x, 2, 0)])  # Anti-diagonal
+
+# Space diagonals
+winning_lines.append([(0, 0, 0), (1, 1, 1), (2, 2, 2)])
+winning_lines.append([(0, 0, 2), (1, 1, 1), (2, 2, 0)])
+winning_lines.append([(0, 2, 0), (1, 1, 1), (2, 0, 2)])
+winning_lines.append([(0, 2, 2), (1, 1, 1), (2, 0, 0)])
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    winning_moves = []
+    blocking_moves = []
+
+    # Check for immediate winning moves and blocking moves
+    for line in winning_lines:
+        values = [board[z][y][x] for (x, y, z) in line]
+        count_one = values.count(1)
+        count_minus = values.count(-1)
+        count_zero = values.count(0)
+        
+        # If two of my markers and one empty, it's a winning move
+        if count_one == 2 and count_zero == 1:
+            idx = values.index(0)
+            move = line[idx]
+            winning_moves.append(move)
+        
+        # If two opponent markers and one empty, it's a blocking move
+        if count_minus == 2 and count_zero == 1:
+            idx = values.index(0)
+            move = line[idx]
+            blocking_moves.append(move)
+
+    # Return a winning move if available
+    if winning_moves:
+        return winning_moves[0]
+    
+    # Return a blocking move if no winning move
+    if blocking_moves:
+        return blocking_moves[0]
+    
+    # Choose a strategic move: prefer center, then corners, then any empty cell
+    if board[1][1][1] == 0:
+        return (1, 1, 1)
+    
+    corners = [(0,0,0), (0,0,2), (0,2,0), (0,2,2), (2,0,0), (2,0,2), (2,2,0), (2,2,2)]
+    for corner in corners:
+        x, y, z = corner
+        if board[z][y][x] == 0:
+            return corner
+    
+    # Fallback: return the first empty cell found
+    for z in range(3):
+        for y in range(3):
+            for x in range(3):
+                if board[z][y][x] == 0:
+                    return (x, y, z)
+    
+    # Should not happen if the board has empty cells, but return a default
+    return (0, 0, 0)

@@ -1,0 +1,202 @@
+I'll create a smart Dots and Boxes policy that considers both immediate gains and long-term strategy.
+
+My approach will be:
+1. First priority: Complete boxes when possible (free points)
+2. Second priority: Avoid creating boxes with 3 sides (giving opponent free points)  
+3. Third priority: Control the center and create flexible positions
+4. Fallback: Make any legal move
+
+Let me think through the strategy:
+- If I can complete a box, I should always do it
+- If an opponent is about to complete a box, I should block it if possible
+- Avoid moves that create 3-sided boxes for the opponent
+- Prefer moves that keep options open rather than boxing myself in
+
+<code>
+import numpy as np
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    # Check for boxes I can complete (4x4 grid, so indices 0-3)
+    for row in range(4):
+        for col in range(4):
+            if capture[row, col] == 0:  # Box is not yet captured
+                sides_completed = 0
+                sides_available = []
+                
+                # Check all four sides of this box
+                # Top side (horizontal[row, col] to horizontal[row, col+1])
+                if horizontal[row, col] != 0:
+                    sides_completed += 1
+                else:
+                    sides_available.append((row, col, 'H'))
+                
+                # Bottom side (horizontal[row+1, col] to horizontal[row+1, col+1])
+                if horizontal[row+1, col] != 0:
+                    sides_completed += 1
+                else:
+                    sides_available.append((row+1, col, 'H'))
+                
+                # Left side (vertical[row, col] to vertical[row+1, col])
+                if vertical[row, col] != 0:
+                    sides_completed += 1
+                else:
+                    sides_available.append((row, col, 'V'))
+                
+                # Right side (vertical[row, col+1] to vertical[row+1, col+1])
+                if vertical[row, col+1] != 0:
+                    sides_completed += 1
+                else:
+                    sides_available.append((row, col+1, 'V'))
+                
+                # If 3 sides are completed, completing the 4th gives me a point
+                if sides_completed == 3 and len(sides_available) == 1:
+                    r, c, d = sides_available[0]
+                    return f"{r},{c},{d}"
+    
+    # Look for moves that would create 3-sided boxes for opponent and avoid them
+    # unless it's also completing one of my boxes
+    dangerous_moves = []
+    
+    # Check all possible horizontal moves
+    for row in range(5):
+        for col in range(4):  # Only 4 horizontal edges per row
+            if horizontal[row, col] == 0:  # Legal move
+                would_create_danger = False
+                
+                # Check if this move would create a 3-sided box
+                if row > 0 and row <= 4:  # Check the box above and below
+                    # Box above (if exists)
+                    if row > 0:
+                        sides_count = 0
+                        # Top side
+                        sides_count += 1 if horizontal[row-1, col] != 0 else 0
+                        # Left side
+                        sides_count += 1 if vertical[row-1, col] != 0 else 0
+                        # Right side  
+                        sides_count += 1 if vertical[row-1, col+1] != 0 else 0
+                        # Bottom side (our potential move)
+                        sides_count += 1
+                        if sides_count == 3:
+                            would_create_danger = True
+                    
+                    # Box below (if exists)  
+                    if row < 4:
+                        sides_count = 0
+                        # Bottom side
+                        sides_count += 1 if horizontal[row+1, col] != 0 else 0
+                        # Left side
+                        sides_count += 1 if vertical[row, col] != 0 else 0
+                        # Right side
+                        sides_count += 1 if vertical[row, col+1] != 0 else 0
+                        # Top side (our potential move)
+                        sides_count += 1
+                        if sides_count == 3:
+                            would_create_danger = True
+                
+                if would_create_danger:
+                    dangerous_moves.append((row, col, 'H'))
+                elif not would_create_danger:  # Safe move available
+                    return f"{row},{col},H"
+    
+    # Check all possible vertical moves
+    for row in range(4):  # Only 4 vertical edges per column
+        for col in range(5):
+            if vertical[row, col] == 0:  # Legal move
+                would_create_danger = False
+                
+                # Check if this move would create a 3-sided box
+                if col > 0 and col <= 4:  # Check the box to the left and right
+                    # Box to the left (if exists)
+                    if col > 0:
+                        sides_count = 0
+                        # Left side
+                        sides_count += 1 if vertical[row, col-1] != 0 else 0
+                        # Top side
+                        sides_count += 1 if horizontal[row, col-1] != 0 else 0
+                        # Bottom side
+                        sides_count += 1 if horizontal[row+1, col-1] != 0 else 0
+                        # Right side (our potential move)
+                        sides_count += 1
+                        if sides_count == 3:
+                            would_create_danger = True
+                    
+                    # Box to the right (if exists)
+                    if col < 4:
+                        sides_count = 0
+                        # Right side
+                        sides_count += 1 if vertical[row, col+1] != 0 else 0
+                        # Top side
+                        sides_count += 1 if horizontal[row, col] != 0 else 0
+                        # Bottom side
+                        sides_count += 1 if horizontal[row+1, col] != 0 else 0
+                        # Left side (our potential move)
+                        sides_count += 1
+                        if sides_count == 3:
+                            would_create_danger = True
+                
+                if would_create_danger:
+                    dangerous_moves.append((row, col, 'V'))
+                elif not would_create_danger:  # Safe move available
+                    return f"{row},{col},V"
+    
+    # If we get here, all safe moves might lead to dangerous situations
+    # Try to make a move that completes my own potential boxes
+    for row in range(4):
+        for col in range(4):
+            if capture[row, col] == 0:  # Box is not yet captured
+                sides_completed = 0
+                sides_available = []
+                
+                # Check all four sides
+                if horizontal[row, col] != 0:
+                    sides_completed += 1
+                else:
+                    sides_available.append((row, col, 'H'))
+                
+                if horizontal[row+1, col] != 0:
+                    sides_completed += 1
+                else:
+                    sides_available.append((row+1, col, 'H'))
+                
+                if vertical[row, col] != 0:
+                    sides_completed += 1
+                else:
+                    sides_available.append((row, col, 'V'))
+                
+                if vertical[row, col+1] != 0:
+                    sides_completed += 1
+                else:
+                    sides_available.append((row, col+1, 'V'))
+                
+                # If I have 2 sides completed, try to take a third
+                if sides_completed == 2 and len(sides_available) == 2:
+                    # Prefer center-positioned moves
+                    best_move = sides_available[0]
+                    r, c, d = best_move
+                    return f"{r},{c},{d}"
+    
+    # If still no move found, take any legal move that's not dangerous
+    # Check horizontal moves first
+    for row in range(5):
+        for col in range(4):
+            if horizontal[row, col] == 0:
+                return f"{row},{col},H"
+    
+    # Then check vertical moves
+    for row in range(4):
+        for col in range(5):
+            if vertical[row, col] == 0:
+                return f"{row},{col},V"
+    
+    # Fallback - should never reach here with a valid state
+    # But just in case, try the first available move
+    for row in range(5):
+        for col in range(4):
+            if horizontal[row, col] == 0:
+                return f"{row},{col},H"
+                
+    for row in range(4):
+        for col in range(5):
+            if vertical[row, col] == 0:
+                return f"{row},{col},V"
+</code>

@@ -1,0 +1,230 @@
+
+import numpy as np
+
+# Directions for checking lines: horizontal, vertical, and two diagonals
+DIRECTIONS = [
+    (0, 1),   # horizontal
+    (1, 0),   # vertical
+    (1, 1),   # main diagonal
+    (1, -1)   # anti-diagonal
+]
+
+def get_quadrant(r, c):
+    """Return which quadrant (0-3) the cell (r, c) belongs to (0-indexed)."""
+    qr = 0 if r < 3 else 1
+    qc = 0 if c < 3 else 1
+    return qr * 2 + qc
+
+def in_quadrant(q, r, c):
+    """Check if (r,c) is in quadrant q."""
+    qr, qc = divmod(q, 2)
+    return qr * 3 <= r < (qr + 1) * 3 and qc * 3 <= c < (qc + 1) * 3
+
+def rotate_subgrid(grid, quad, direction):
+    """Rotate a 3x3 subgrid (quadrant) within a full 6x6 grid."""
+    new_grid = grid.copy()
+    qr, qc = divmod(quad, 2)
+    sub = grid[qr*3:(qr+1)*3, qc*3:(qc+1)*3]
+    if direction == 'R':
+        sub = np.rot90(sub, k=3)  # 90 degrees clockwise
+    else:  # 'L'
+        sub = np.rot90(sub, k=1)  # 90 degrees counterclockwise
+    new_grid[qr*3:(qr+1)*3, qc*3:(qc+1)*3] = sub
+    return new_grid
+
+def count_in_a_row(board, target=5):
+    """Count how many target-length lines the player has."""
+    count = 0
+    for dr, dc in DIRECTIONS:
+        for r in range(6):
+            for c in range(6):
+                if all(0 <= r + i*dr < 6 and 0 <= c + i*dc < 6 and board[r + i*dr, c + i*dc] == 1
+                       for i in range(target)):
+                    count += 1
+    return count
+
+def has_5_in_a_row(board):
+    """Check if the player has at least one 5-in-a-row."""
+    return count_in_a_row(board) > 0
+
+def is_win_state(you, opp):
+    """Check if you win (you have 5-in-a-row and opp doesn't), lose, or draw."""
+    you_win = has_5_in_a_row(you)
+    opp_win = has_5_in_a_row(opp)
+    if you_win and not opp_win:
+        return 1  # win
+    elif opp_win and not you_win:
+        return -1  # loss
+    else:
+        return 0  # draw
+
+def evaluate(you, opp):
+    """Heuristic evaluation of the board state."""
+    score = 0
+
+    # Reward for your 5-in-a-row
+    if has_5_in_a_row(you):
+        score += 10000
+    if has_5_in_a_row(opp):
+        score -= 10000
+
+    # Center control bonus
+    center = [(2,2), (2,3), (3,2), (3,3)]
+    for r, c in center:
+        if you[r, c] == 1:
+            score += 3
+        elif opp[r, c] == 1:
+            score -= 3
+
+    # Potential lines (unfinished 4s, 3s)
+    for dr, dc in DIRECTIONS:
+        for r in range(6):
+            for c in range(6):
+                you_length = 0
+                opp_length = 0
+                for i in range(5):
+                    nr, nc = r + i*dr, c + i*dc
+                    if not (0 <= nr < 6 and 0 <= nc < 6):
+                        break
+                    you_here = you[nr, nc] == 1
+                    opp_here = opp[nr, nc] == 1
+                    if you_here and not opp_here:
+                        you_length += 1
+                    elif opp_here and not you_here:
+                        opp_length += 1
+                    else:
+                        break
+                else:
+                    # Valid 5-length segment
+                    score += you_length * 2
+                    score -= opp_length * 2
+
+    return score
+
+def minimax_move(you_np, opp_np, depth, alpha, beta, is_maximizing):
+    """Minimax with alpha-beta pruning to evaluate best move."""
+    if depth == 0:
+        return evaluate(you_np, opp_np)
+
+    legal_moves = []
+    for r in range(6):
+        for c in range(6):
+            if you_np[r, c] == 0 and opp_np[r, c] == 0:
+                for quad in range(4):
+                    for rot in ['L', 'R']:
+                        legal_moves.append((r, c, quad, rot))
+
+    if is_maximizing:
+        max_eval = -np.inf
+        for (r, c, quad, rot) in legal_moves:
+            # Simulate move
+            new_you = you_np.copy()
+            new_opp = opp_np.copy()
+            new_you[r, c] = 1
+            new_you = rotate_subgrid(new_you, quad, rot)
+            new_opp = rotate_subgrid(new_opp, quad, rot)
+
+            # Check if this wins
+            if has_5_in_a_row(new_you) and not has_5_in_a_row(new_opp):
+                return 10000  # Winning move gives high score
+
+            eval_score = minimax_move(new_you, new_opp, depth - 1, alpha, beta, False)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = np.inf
+        for (r, c, quad, rot) in legal_moves:
+            new_opp = opp_np.copy()
+            new_you = you_np.copy()
+            new_opp[r, c] = 1
+            new_opp = rotate_subgrid(new_opp, quad, rot)
+            new_you = rotate_subgrid(new_you, quad, rot)
+
+            if has_5_in_a_row(new_opp) and not has_5_in_a_row(new_you):
+                return -10000
+
+            eval_score = minimax_move(new_you, new_opp, depth - 1, alpha, beta, True)
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def find_best_move(you, opponent):
+    """Find the best legal move using minimax search (depth=2)."""
+    you_np = np.array(you)
+    opp_np = np.array(opponent)
+    best_move = None
+    best_score = -np.inf
+
+    moves = []
+    for r in range(6):
+        for c in range(6):
+            if you_np[r, c] == 0 and opp_np[r, c] == 0:
+                for quad in range(4):
+                    for rot in ['L', 'R']:
+                        moves.append((r, c, quad, rot))
+
+    # First, check if we can win immediately
+    for (r, c, quad, rot) in moves:
+        sim_you = you_np.copy()
+        sim_opp = opp_np.copy()
+        sim_you[r, c] = 1
+        sim_you = rotate_subgrid(sim_you, quad, rot)
+        sim_opp = rotate_subgrid(sim_opp, quad, rot)
+        if has_5_in_a_row(sim_you) and not has_5_in_a_row(sim_opp):
+            return (r, c, quad, rot)
+
+    # Then check if opponent can win next if we don't block — but we block by placing
+    for (r, c, quad, rot) in moves:
+        sim_you = you_np.copy()
+        sim_opp = opp_np.copy()
+        sim_opp[r, c] = 1
+        sim_opp = rotate_subgrid(sim_opp, quad, rot)
+        sim_you = rotate_subgrid(sim_you, quad, rot)
+        if has_5_in_a_row(sim_opp) and not has_5_in_a_row(sim_you):
+            # This means if we don't act, opponent wins here — so we should act to block.
+            # But placing our piece here may prevent that
+            return (r, c, quad, rot)
+
+    # Otherwise do minimax search for best move
+    for (r, c, quad, rot) in moves:
+        sim_you = you_np.copy()
+        sim_opp = opp_np.copy()
+        sim_you[r, c] = 1
+        sim_you = rotate_subgrid(sim_you, quad, rot)
+        sim_opp = rotate_subgrid(sim_opp, quad, rot)
+
+        score = minimax_move(sim_you, sim_opp, depth=1, alpha=-np.inf, beta=np.inf, is_maximizing=False)
+        if score > best_score:
+            best_score = score
+            best_move = (r, c, quad, rot)
+
+    return best_move
+
+def policy(you, opponent) -> str:
+    # Convert input to numpy arrays if not already
+    you_np = np.array(you)
+    opp_np = np.array(opponent)
+
+    # Find best move
+    try:
+        move = find_best_move(you_np, opp_np)
+        if move is None:
+            # Fallback: pick first legal move
+            for r in range(6):
+                for c in range(6):
+                    if you_np[r, c] == 0 and opp_np[r, c] == 0:
+                        return f"{r+1},{c+1},0,L"  # fallback
+    except:
+        # In case of any error, return a legal move
+        for r in range(6):
+            for c in range(6):
+                if you_np[r, c] == 0 and opp_np[r, c] == 0:
+                    return f"{r+1},{c+1},0,L"
+
+    r, c, quad, rot = move
+    return f"{r+1},{c+1},{quad},{rot}"

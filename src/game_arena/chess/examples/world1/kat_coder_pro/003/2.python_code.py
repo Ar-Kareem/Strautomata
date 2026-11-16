@@ -1,0 +1,290 @@
+
+import time
+import random
+import numpy as np
+from typing import Dict, List, Tuple, Optional
+
+# Constants
+PIECE_VALUES = {
+    'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000
+}
+INF = 10000000
+
+# Piece square tables (small values for positional scoring)
+# Positive values in the center and forward for white, negative for black
+PST = {
+    'P': [0, 0, 0, 0, 0, 0, 0, 0,
+          5, 10, 10, -20, -20, 10, 10, 5,
+          5, -5, -10, 0, 0, -10, -5, 5,
+          0, 0, 0, 20, 20, 0, 0, 0,
+          5, 5, 10, 25, 25, 10, 5, 5,
+          10, 10, 20, 30, 30, 20, 10, 10,
+          50, 50, 50, 50, 50, 50, 50, 50,
+          0, 0, 0, 0, 0, 0, 0, 0],
+    'N': [-50, -40, -30, -30, -30, -30, -40, -50,
+          -40, -20, 0, 5, 5, 0, -20, -40,
+          -30, 5, 10, 15, 15, 10, 5, -30,
+          -30, 0, 15, 20, 20, 15, 0, -30,
+          -30, 5, 15, 20, 20, 15, 5, -30,
+          -30, 0, 10, 15, 15, 10, 0, -30,
+          -40, -20, 0, 0, 0, 0, -20, -40,
+          -50, -40, -30, -30, -30, -30, -40, -50],
+    'B': [-20, -10, -10, -10, -10, -10, -10, -20,
+          -10, 5, 0, 0, 0, 0, 5, -10,
+          -10, 10, 10, 10, 10, 10, 10, -10,
+          -10, 0, 10, 10, 10, 10, 0, -10,
+          -10, 5, 5, 10, 10, 5, 5, -10,
+          -10, 0, 5, 10, 10, 5, 0, -10,
+          -10, 0, 0, 0, 0, 0, 0, -10,
+          -20, -10, -10, -10, -10, -10, -10, -20],
+    'R': [0, 0, 0, 5, 5, 0, 0, 0,
+          -5, 0, 0, 0, 0, 0, 0, -5,
+          -5, 0, 0, 0, 0, 0, 0, -5,
+          -5, 0, 0, 0, 0, 0, 0, -5,
+          -5, 0, 0, 0, 0, 0, 0, -5,
+          -5, 0, 0, 0, 0, 0, 0, -5,
+          5, 10, 10, 10, 10, 10, 10, 5,
+          0, 0, 0, 0, 0, 0, 0, 0],
+    'Q': [-20, -10, -10, -5, -5, -10, -10, -20,
+          -10, 0, 0, 0, 0, 0, 0, -10,
+          -10, 5, 5, 5, 5, 5, 0, -10,
+          0, 0, 5, 5, 5, 5, 0, -5,
+          -5, 0, 5, 5, 5, 5, 0, -5,
+          -10, 0, 5, 5, 5, 5, 0, -10,
+          -10, 0, 0, 0, 0, 0, 0, -10,
+          -20, -10, -10, -5, -5, -10, -10, -20],
+    'K': [-30, -40, -40, -50, -50, -40, -40, -30,
+          -30, -40, -40, -50, -50, -40, -40, -30,
+          -30, -40, -40, -50, -50, -40, -40, -30,
+          -30, -40, -40, -50, -50, -40, -40, -30,
+          -20, -30, -30, -40, -40, -30, -30, -20,
+          -10, -20, -20, -20, -20, -20, -20, -10,
+          20, 20, 0, 0, 0, 0, 20, 20,
+          20, 30, 10, 0, 0, 10, 30, 20]
+}
+
+# Flip PST for black (mirror vertically)
+PST['bP'] = PST['P'][::-1]
+PST['bN'] = PST['N'][::-1]
+PST['bB'] = PST['B'][::-1]
+PST['bR'] = PST['R'][::-1]
+PST['bQ'] = PST['Q'][::-1]
+PST['bK'] = PST['K'][::-1]
+
+def is_checkmate(pieces: Dict[str, str], to_play: str, legal_moves: List[str]) -> bool:
+    # If the king is attacked and no legal moves, it's checkmate
+    # We can't detect checkmate without knowing if the king is in check,
+    # but if there are no legal moves, it's either stalemate or checkmate.
+    # Since we are told to prioritize checkmate, we assume it's checkmate
+    # if the player has no moves (simplified for this task).
+    return len(legal_moves) == 0
+
+def convert_board(pieces: Dict[str, str], to_play: str) -> Tuple[Dict[str, str], str, List[str]]:
+    # Convert to our internal representation
+    # We keep the original pieces dict but also create a board array for faster access
+    board = {}
+    for sq, pc in pieces.items():
+        board[sq] = pc
+    return board, to_play, []
+
+def get_square_index(sq: str) -> int:
+    """Convert 'e4' to 0-63 index"""
+    file = ord(sq[0]) - ord('a')
+    rank = int(sq[1]) - 1
+    return rank * 8 + file
+
+def evaluate_position(board: Dict[str, str], to_play: str) -> int:
+    score = 0
+    white_to_move = (to_play == 'white')
+    for sq, pc in board.items():
+        if pc == '': continue
+        color = 'w' if pc[0] == 'w' else 'b'
+        piece = pc[1]
+        idx = get_square_index(sq)
+        val = PIECE_VALUES[piece]
+        # Adjust for color: black values are negative for white's perspective
+        if color == 'b':
+            val = -val
+            # Flip index for black PST
+            idx = 63 - idx
+        score += val
+        # Add PST bonus
+        score += PST[piece][idx] if color == 'w' else -PST[piece][63-idx]
+    return score
+
+def order_moves(moves: List[str], board: Dict[str, str]) -> List[str]:
+    # Order moves: captures first, then others
+    # Simple ordering for this implementation
+    captures = []
+    others = []
+    for m in moves:
+        if 'x' in m:
+            captures.append(m)
+        else:
+            others.append(m)
+    # Sort captures by piece value (simplified)
+    captures.sort(key=lambda m: get_capture_value(m, board), reverse=True)
+    return captures + others
+
+def get_capture_value(move: str, board: Dict[str, str]) -> int:
+    # Extract captured piece value
+    # Move format: 'Bxf5' captures the piece on f5
+    if 'x' not in move: return 0
+    # Find the square after 'x'
+    # This is a simplified parser; real chess notation is more complex
+    # For example: 'Bxf5' -> 'f5'
+    # For example: 'Nec3' -> not a capture
+    # We look for 'x' followed by a square
+    i = move.find('x')
+    if i == -1 or i+2 >= len(move): return 0
+    sq = move[i+1:i+3]
+    if len(sq) == 2 and 'a' <= sq[0] <= 'h' and '1' <= sq[1] <= '8':
+        pc = board.get(sq, '')
+        if pc:
+            return PIECE_VALUES[pc[1]]
+    return 0
+
+def make_move(board: Dict[str, str], move: str, to_play: str) -> Dict[str, str]:
+    # Simple move simulation for evaluation
+    # This is a simplified version; real chess has more rules
+    new_board = board.copy()
+    # Parse move to determine source and target
+    # For simplicity, we just update the target square
+    # This is not a full move generator but sufficient for TT hashing
+    if 'x' in move:
+        # Capture move
+        i = move.find('x')
+        target_sq = move[i+1:i+3]
+        source_sq = move[:2]  # Simplified assumption
+        if source_sq in new_board:
+            new_board[target_sq] = new_board[source_sq]
+            new_board[source_sq] = ''
+    elif move.startswith('O-O'):
+        # Castling
+        # Simplified: just mark as moved
+        pass
+    else:
+        # Regular move
+        target_sq = move[-2:]
+        # Find a piece that can move to target_sq
+        # Simplified: assume the move is valid and update
+        for sq, pc in board.items():
+            if pc and pc[0] == ('w' if to_play == 'white' else 'b'):
+                # Assume the first piece of our color can move
+                new_board[target_sq] = pc
+                new_board[sq] = ''
+                break
+    return new_board
+
+def board_hash(board: Dict[str, str], to_play: str) -> int:
+    # Simple hash of the board state
+    h = 0
+    for sq in sorted(board.keys()):
+        h = h * 31 + hash(board[sq])
+    h = h * 31 + hash(to_play)
+    return h % (2**31)
+
+def policy(pieces: Dict[str, str], to_play: str, legal_moves: List[str]) -> str:
+    # Convert board
+    board, to_play, _ = convert_board(pieces, to_play)
+    
+    if not legal_moves:
+        # Fallback
+        return random.choice(list(pieces.keys())) if pieces else 'e1'
+    
+    # Transposition table
+    tt = {}
+    
+    # Killer moves (moves that caused beta cutoffs)
+    killers = {}
+    
+    # History heuristic
+    history = {}
+    
+    # Iterative deepening
+    best_move = legal_moves[0]
+    start_time = time.time()
+    max_time = 0.95  # Stop before 1 second
+    
+    # Simple move ordering
+    ordered_moves = order_moves(legal_moves, board)
+    
+    for depth in range(1, 100):
+        if time.time() - start_time > max_time:
+            break
+        
+        # Alpha-beta search
+        move, value = search(board, to_play, depth, -INF, INF, tt, killers, history, ordered_moves, start_time, max_time)
+        if move:
+            best_move = move
+        else:
+            break
+    
+    return best_move if best_move else ordered_moves[0]
+
+def search(board: Dict[str, str], to_play: str, depth: int, alpha: int, beta: int, 
+           tt: Dict, killers: Dict, history: Dict, ordered_moves: List[str],
+           start_time: float, max_time: float) -> Tuple[Optional[str], int]:
+    if time.time() - start_time > max_time:
+        return None, 0
+    
+    # Check TT
+    h = board_hash(board, to_play)
+    if h in tt:
+        entry = tt[h]
+        if entry['depth'] >= depth:
+            return entry['move'], entry['value']
+    
+    # Terminal conditions
+    # We don't have a full move generator, so we can't check for checkmate
+    # We assume the evaluation function handles it
+    if depth == 0:
+        return None, evaluate_position(board, to_play)
+    
+    # Move ordering: use TT move first, then killers, then history
+    moves = ordered_moves[:]  # Copy
+    tt_move = None
+    if h in tt:
+        tt_move = tt[h]['move']
+        if tt_move in moves:
+            moves.remove(tt_move)
+            moves.insert(0, tt_move)
+    
+    best_move = None
+    best_value = -INF if to_play == 'white' else INF
+    
+    for move in moves:
+        if time.time() - start_time > max_time:
+            return None, 0
+        
+        # Make move
+        new_board = make_move(board, move, to_play)
+        new_to_play = 'black' if to_play == 'white' else 'white'
+        
+        # Recurse
+        _, value = search(new_board, new_to_play, depth-1, alpha, beta, tt, killers, history, ordered_moves, start_time, max_time)
+        
+        # Update best
+        if to_play == 'white':
+            if value > best_value:
+                best_value = value
+                best_move = move
+            alpha = max(alpha, value)
+        else:
+            if value < best_value:
+                best_value = value
+                best_move = move
+            beta = min(beta, value)
+        
+        if alpha >= beta:
+            # Beta cutoff
+            # Store killer move
+            killers[depth] = killers.get(depth, []) + [move]
+            if len(killers[depth]) > 2:
+                killers[depth] = killers[depth][:2]
+            break
+    
+    # Store in TT
+    tt[h] = {'move': best_move, 'value': best_value, 'depth': depth}
+    
+    return best_move, best_value

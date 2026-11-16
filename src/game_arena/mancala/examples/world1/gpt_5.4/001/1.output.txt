@@ -1,0 +1,413 @@
+The strategy for this policy is a fast adversarial search tailored to Kalah. It combines:
+
+- Full rule simulation, including extra turns, captures, and terminal sweeping.
+- Alpha-beta minimax with iterative deepening.
+- Move ordering that strongly prefers:
+  - immediate extra turns,
+  - captures,
+  - strong tactical/heuristic scores.
+- A Kalah-specific evaluation that values:
+  - current store lead,
+  - seeds on your side,
+  - available extra-turn moves,
+  - capture opportunities,
+  - limiting opponent resources.
+- Guaranteed legality fallback: if anything unexpected happens, it returns the first legal move.
+
+This gives a strong tactical player while staying within the time budget.
+
+<code>
+from __future__ import annotations
+
+import time
+from typing import List, Tuple, Optional
+
+HOUSES = 6
+STORE = 6
+INF = 10**18
+
+# Time budget per move. Kept conservative for arena reliability.
+TIME_LIMIT = 0.92
+
+
+def opposite_idx(i: int) -> int:
+    return 5 - i
+
+
+def legal_moves(you: List[int]) -> List[int]:
+    return [i for i in range(HOUSES) if you[i] > 0]
+
+
+def game_over_side(side: List[int]) -> bool:
+    return all(side[i] == 0 for i in range(HOUSES))
+
+
+def finalize_if_terminal(you: List[int], opp: List[int]) -> bool:
+    """
+    If game ended, sweep remaining seeds into the appropriate store.
+    Returns True iff terminal.
+    """
+    you_empty = game_over_side(you)
+    opp_empty = game_over_side(opp)
+    if not (you_empty or opp_empty):
+        return False
+
+    if you_empty:
+        rem = sum(opp[:HOUSES])
+        if rem:
+            opp[STORE] += rem
+            for i in range(HOUSES):
+                opp[i] = 0
+    if opp_empty:
+        rem = sum(you[:HOUSES])
+        if rem:
+            you[STORE] += rem
+            for i in range(HOUSES):
+                you[i] = 0
+    return True
+
+
+def simulate_move(you: List[int], opp: List[int], move: int) -> Tuple[List[int], List[int], bool]:
+    """
+    Simulate move from current player's perspective.
+    Returns (new_you, new_opp, extra_turn).
+    """
+    y = you[:]
+    o = opp[:]
+
+    seeds = y[move]
+    y[move] = 0
+    side = 0  # 0 = your side, 1 = opponent side
+    idx = move + 1
+    last_side = None
+    last_idx = None
+
+    while seeds > 0:
+        if side == 0:
+            while idx < HOUSES and seeds > 0:
+                was_empty = (y[idx] == 0)
+                y[idx] += 1
+                seeds -= 1
+                last_side = 0
+                last_idx = idx
+                idx += 1
+            if seeds == 0:
+                break
+            if idx == HOUSES:
+                y[STORE] += 1
+                seeds -= 1
+                last_side = 0
+                last_idx = STORE
+                idx = 0
+                side = 1
+                if seeds == 0:
+                    break
+        else:
+            while idx < HOUSES and seeds > 0:
+                o[idx] += 1
+                seeds -= 1
+                last_side = 1
+                last_idx = idx
+                idx += 1
+            if seeds == 0:
+                break
+            # skip opponent store
+            idx = 0
+            side = 0
+
+    extra_turn = (last_side == 0 and last_idx == STORE)
+
+    # Capture
+    if not extra_turn and last_side == 0 and 0 <= last_idx < HOUSES:
+        if y[last_idx] == 1 and o[opposite_idx(last_idx)] > 0:
+            y[STORE] += y[last_idx] + o[opposite_idx(last_idx)]
+            y[last_idx] = 0
+            o[opposite_idx(last_idx)] = 0
+
+    finalize_if_terminal(y, o)
+    return y, o, extra_turn
+
+
+def immediate_tactical_features(you: List[int], opp: List[int], move: int) -> Tuple[int, int, bool]:
+    """
+    Cheap move features for ordering:
+    returns (store_gain, capture_gain, extra_turn)
+    """
+    y = you[:]
+    o = opp[:]
+    start_store = y[STORE]
+
+    seeds = y[move]
+    y[move] = 0
+    side = 0
+    idx = move + 1
+    last_side = None
+    last_idx = None
+
+    while seeds > 0:
+        if side == 0:
+            while idx < HOUSES and seeds > 0:
+                y[idx] += 1
+                seeds -= 1
+                last_side = 0
+                last_idx = idx
+                idx += 1
+            if seeds == 0:
+                break
+            if idx == HOUSES:
+                y[STORE] += 1
+                seeds -= 1
+                last_side = 0
+                last_idx = STORE
+                idx = 0
+                side = 1
+                if seeds == 0:
+                    break
+        else:
+            while idx < HOUSES and seeds > 0:
+                o[idx] += 1
+                seeds -= 1
+                last_side = 1
+                last_idx = idx
+                idx += 1
+            if seeds == 0:
+                break
+            idx = 0
+            side = 0
+
+    extra = (last_side == 0 and last_idx == STORE)
+    capture_gain = 0
+    if not extra and last_side == 0 and 0 <= last_idx < HOUSES:
+        if y[last_idx] == 1 and o[opposite_idx(last_idx)] > 0:
+            capture_gain = 1 + o[opposite_idx(last_idx)]
+            y[STORE] += capture_gain
+
+    store_gain = y[STORE] - start_store
+    return store_gain, capture_gain, extra
+
+
+def count_extra_turn_moves(you: List[int]) -> int:
+    cnt = 0
+    for i in range(HOUSES):
+        seeds = you[i]
+        if seeds <= 0:
+            continue
+        pos = i
+        side = 0
+        s = seeds
+        while s > 0:
+            pos += 1
+            if side == 0:
+                if pos == STORE:
+                    s -= 1
+                    if s == 0:
+                        cnt += 1
+                        break
+                    side = 1
+                    pos = -1
+                elif pos < HOUSES:
+                    s -= 1
+                else:
+                    side = 1
+                    pos = -1
+            else:
+                if pos < HOUSES:
+                    s -= 1
+                else:
+                    side = 0
+                    pos = -1
+    return cnt
+
+
+def count_capture_threats(you: List[int], opp: List[int]) -> int:
+    threats = 0
+    for m in legal_moves(you):
+        y2, o2, extra = simulate_move(you, opp, m)
+        if extra:
+            continue
+        # Approximate: compare store gain beyond pure own-store sowing
+        sg, cg, _ = immediate_tactical_features(you, opp, m)
+        if cg > 0:
+            threats += cg
+    return threats
+
+
+def evaluate(you: List[int], opp: List[int]) -> float:
+    if game_over_side(you) or game_over_side(opp):
+        y = you[:]
+        o = opp[:]
+        finalize_if_terminal(y, o)
+        diff = y[STORE] - o[STORE]
+        if diff > 0:
+            return 1_000_000 + diff
+        if diff < 0:
+            return -1_000_000 + diff
+        return 0.0
+
+    store_diff = you[STORE] - opp[STORE]
+    side_seeds_diff = sum(you[:HOUSES]) - sum(opp[:HOUSES])
+
+    your_extras = count_extra_turn_moves(you)
+    opp_extras = count_extra_turn_moves(opp)
+
+    your_caps = count_capture_threats(you, opp)
+    opp_caps = count_capture_threats(opp, you)
+
+    # Endgame-aware weighting
+    total_board = sum(you[:HOUSES]) + sum(opp[:HOUSES])
+    endgame_factor = 1.0 + (48 - min(48, total_board)) / 24.0
+
+    score = 0.0
+    score += 14.0 * endgame_factor * store_diff
+    score += 1.2 * side_seeds_diff
+    score += 5.5 * (your_extras - opp_extras)
+    score += 1.8 * (your_caps - opp_caps)
+
+    # Prefer seeds closer to store on our side, farther from store on theirs
+    for i in range(HOUSES):
+        score += 0.18 * i * you[i]
+        score -= 0.18 * (HOUSES - 1 - i) * opp[i]
+
+    return score
+
+
+def order_moves(you: List[int], opp: List[int], moves: List[int]) -> List[int]:
+    scored = []
+    for m in moves:
+        sg, cg, ex = immediate_tactical_features(you, opp, m)
+        y2, o2, extra = simulate_move(you, opp, m)
+        # Small shallow heuristic after move for better ordering
+        h = evaluate(y2, o2)
+        score = 0.0
+        if ex:
+            score += 10000
+        score += 120 * cg
+        score += 25 * sg
+        score += h
+        scored.append((score, m))
+    scored.sort(reverse=True)
+    return [m for _, m in scored]
+
+
+class SearchTimeout(Exception):
+    pass
+
+
+def negamax(
+    you: List[int],
+    opp: List[int],
+    depth: int,
+    alpha: float,
+    beta: float,
+    start_time: float,
+    tt: dict,
+) -> float:
+    if time.perf_counter() - start_time > TIME_LIMIT:
+        raise SearchTimeout
+
+    key = (tuple(you), tuple(opp), depth)
+    if key in tt:
+        return tt[key]
+
+    if depth <= 0 or game_over_side(you) or game_over_side(opp):
+        val = evaluate(you, opp)
+        tt[key] = val
+        return val
+
+    moves = legal_moves(you)
+    if not moves:
+        val = evaluate(you, opp)
+        tt[key] = val
+        return val
+
+    moves = order_moves(you, opp, moves)
+
+    best = -INF
+    for m in moves:
+        y2, o2, extra = simulate_move(you, opp, m)
+        if extra:
+            val = negamax(y2, o2, depth - 1, alpha, beta, start_time, tt)
+        else:
+            val = -negamax(o2, y2, depth - 1, -beta, -alpha, start_time, tt)
+
+        if val > best:
+            best = val
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+
+    tt[key] = best
+    return best
+
+
+def policy(you: List[int], opponent: List[int]) -> int:
+    moves = legal_moves(you)
+    if not moves:
+        return 0  # should never happen by problem statement
+
+    # Fast tactical checks first: winning terminal move, extra move, big capture
+    ordered = order_moves(you, opponent, moves)
+    best_move = ordered[0]
+
+    # If only one legal move, return immediately.
+    if len(moves) == 1:
+        return moves[0]
+
+    start_time = time.perf_counter()
+    tt = {}
+
+    # Iterative deepening
+    try:
+        depth = 1
+        last_completed_best = best_move
+
+        while True:
+            if time.perf_counter() - start_time > TIME_LIMIT:
+                break
+
+            current_best = None
+            current_best_val = -INF
+            alpha = -INF
+            beta = INF
+
+            root_moves = order_moves(you, opponent, legal_moves(you))
+
+            for m in root_moves:
+                if time.perf_counter() - start_time > TIME_LIMIT:
+                    raise SearchTimeout
+
+                y2, o2, extra = simulate_move(you, opponent, m)
+                if extra:
+                    val = negamax(y2, o2, depth - 1, alpha, beta, start_time, tt)
+                else:
+                    val = -negamax(o2, y2, depth - 1, -beta, -alpha, start_time, tt)
+
+                if val > current_best_val:
+                    current_best_val = val
+                    current_best = m
+                if val > alpha:
+                    alpha = val
+
+            if current_best is not None:
+                last_completed_best = current_best
+                best_move = current_best
+
+            depth += 1
+
+    except SearchTimeout:
+        pass
+    except Exception:
+        # Reliability first: always return a legal move
+        for m in range(HOUSES):
+            if you[m] > 0:
+                return m
+
+    # Final legality guarantee
+    if 0 <= best_move < HOUSES and you[best_move] > 0:
+        return best_move
+    for m in range(HOUSES):
+        if you[m] > 0:
+            return m
+    return 0
+</code>

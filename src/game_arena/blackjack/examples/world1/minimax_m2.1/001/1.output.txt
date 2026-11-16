@@ -1,0 +1,115 @@
+# Smart Blackjack Policy Strategy
+
+The strategy for this policy is based on maximizing expected value while minimizing bust risk. Since I have perfect information about my deck composition (I know exactly which cards I've already drawn), I can calculate precise probabilities for the remaining cards.
+
+**Key strategic elements:**
+
+1. **Dynamic hand valuation**: Correctly handles Ace as 11 when beneficial, 1 otherwise
+2. **Bust probability calculation**: Computes exact probability of exceeding target with next card
+3. **Expected value optimization**: Weighs potential gain vs bust risk using the remaining deck
+4. **Adaptive thresholds**: Uses different risk tolerance based on current hand strength
+5. **Strategic early stopping**: Considers staying when close to target with low bust cards remaining
+
+The policy implements a risk-aware approach where:
+- Near target: More conservative (stay if close)
+- Far from target: More aggressive (hit more often)
+- High bust risk: Conservative with remaining cards
+- Low bust risk: Can afford more hits
+
+<code>
+def policy(hand: list[str], target: int) -> str:
+    """
+    Smart policy for simplified Blackjack that maximizes expected winning probability.
+    Uses precise probability calculations based on remaining deck composition.
+    """
+    import random
+    
+    # Card values mapping
+    card_values = {
+        "A": 1,  # Will be adjusted dynamically
+        "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10": 10,
+        "J": 10, "Q": 10, "K": 10
+    }
+    
+    def calculate_hand_value(hand_list):
+        """Calculate hand value with Ace as 11 if beneficial."""
+        total = sum(card_values.get(card, 0) for card in hand_list)
+        ace_count = hand_list.count("A")
+        
+        # Try to use Aces as 11 when possible
+        while ace_count > 0 and total + 10 <= target + 10:  # +10 buffer for flexibility
+            total += 10
+            ace_count -= 1
+        
+        return total
+    
+    current_value = calculate_hand_value(hand)
+    
+    # If already bust, must stay (though game should end)
+    if current_value > target:
+        return "STAY"
+    
+    # Count remaining cards in deck
+    all_cards = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    remaining = {}
+    for card in all_cards:
+        remaining[card] = hand.count(card)
+    
+    # Calculate bust probability and expected value if we hit
+    bust_cards = []
+    safe_cards = []
+    
+    for card in all_cards:
+        for _ in range(remaining[card]):
+            new_value = current_value + card_values[card]
+            # Handle Ace adjustment
+            if card == "A":
+                if current_value <= target - 11:
+                    new_value = current_value + 11
+                else:
+                    new_value = current_value + 1
+            
+            if new_value > target:
+                bust_cards.append(card)
+            else:
+                safe_cards.append(card)
+    
+    total_remaining = sum(remaining.values())
+    if total_remaining == 0:
+        return "STAY"
+    
+    bust_prob = len(bust_cards) / total_remaining
+    safe_prob = 1 - bust_prob
+    
+    # Strategic decision making
+    distance = target - current_value
+    
+    # If very close to target and low bust risk, stay
+    if distance <= 3 and bust_prob < 0.5:
+        return "STAY"
+    
+    # If close to target and bust probability is moderate, be conservative
+    if distance <= 5 and bust_prob < 0.4:
+        return "STAY"
+    
+    # If far from target, be more aggressive
+    if distance >= 10:
+        # Only stay if bust probability is very high
+        if bust_prob > 0.8:
+            return "STAY"
+        else:
+            return "HIT"
+    
+    # Mid-range: balance risk and reward
+    if distance >= 6:
+        if bust_prob < 0.6:
+            return "HIT"
+        else:
+            return "STAY"
+    
+    # Default: hit if expected value improvement is significant
+    if safe_prob > 0.3:  # At least 30% chance of not busting
+        return "HIT"
+    else:
+        return "STAY"
+</code>

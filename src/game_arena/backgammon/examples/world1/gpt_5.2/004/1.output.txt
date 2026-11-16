@@ -1,0 +1,385 @@
+The strategy for this policy is a legality-first, 1-ply “best resulting position” evaluator:
+
+- It **enumerates all legal move strings** consistent with the dice-order rules (must use both dice if possible; otherwise must use the higher die if it can be played).
+- It **simulates** each candidate move (including bar entry, hitting, and bearing off).
+- It picks the move that maximizes a heuristic score emphasizing: **bearing off**, **hitting / sending opponent to the bar**, **avoiding leaving blots (with a simple shot-risk estimate)**, **making points/primes**, **anchors in the opponent home board**, and **pip-race advantage**.
+- If no move exists, it returns a legal full pass.
+
+<code>
+import math
+from typing import Dict, List, Tuple, Optional
+
+
+def policy(state: dict) -> str:
+    """
+    Returns a legal move string in format: <ORDER>:<FROM1>,<FROM2>
+    ORDER in {'H','L'} denotes whether the first move uses the higher or lower die.
+    FROM tokens are 'A0'..'A23', 'B' (bar), or 'P' (pass).
+    """
+    dice = list(state.get("dice", []))
+    if not dice:
+        return "H:P,P"
+
+    # Defensive normalization
+    my_pts = state.get("my_pts", [0] * 24)
+    opp_pts = state.get("opp_pts", [0] * 24)
+    if len(my_pts) != 24 or len(opp_pts) != 24:
+        # If malformed, safest is to pass (engine may still accept if no moves),
+        # but try to avoid crash.
+        return "H:P,P"
+
+    # One-die turn (engine variant)
+    if len(dice) == 1:
+        die = int(dice[0])
+        st0 = _clone_state(state)
+        starts = _legal_starts_for_die(st0, die)
+        if not starts:
+            return "H:P,P"
+        best = None
+        best_score = -1e18
+        for s in starts:
+            st1, hits = _apply_move(st0, s, die)
+            sc = _evaluate(st0, st1, hits=hits)
+            if sc > best_score:
+                best_score = sc
+                best = ("H", s, "P")
+        return f"{best[0]}:{best[1]},{best[2]}"
+
+    # Two dice
+    d1, d2 = int(dice[0]), int(dice[1])
+    high, low = (d1, d2) if d1 >= d2 else (d2, d1)
+
+    st0 = _clone_state(state)
+    candidates = _generate_candidates_two_dice(st0, high, low)
+
+    # Absolute fallback (should never happen): if we can't generate, attempt pass.
+    if not candidates:
+        return "H:P,P"
+
+    # Enforce "must play both dice if possible" by keeping max number of moves
+    max_moves = max(c[0] for c in candidates)  # c[0] = moves_played
+    candidates = [c for c in candidates if c[0] == max_moves]
+
+    # If only one die can be played, must play the higher die if possible
+    if max_moves == 1:
+        high_playable_initial = len(_legal_starts_for_die(st0, high)) > 0
+        if high_playable_initial:
+            # Keep only those sequences where the single played die is the high die
+            candidates = [c for c in candidates if c[1] == high]  # c[1] = die_used_if_single
+
+    # Score and pick best
+    best_move = None
+    best_score = -1e18
+    for moves_played, die_used_if_single, order, f1, f2, st_final, hits in candidates:
+        sc = _evaluate(st0, st_final, hits=hits)
+        # Small deterministic tie-break: prefer hitting, then playing both, then order H
+        sc += 0.01 * hits
+        sc += 0.001 * moves_played
+        sc += 0.0001 * (1 if order == "H" else 0)
+
+        if sc > best_score:
+            best_score = sc
+            best_move = (order, f1, f2)
+
+    # Guaranteed from generated legal candidates
+    return f"{best_move[0]}:{best_move[1]},{best_move[2]}"
+
+
+# ----------------------------
+# Move generation / simulation
+# ----------------------------
+
+def _tok(i: int) -> str:
+    return f"A{i}"
+
+
+def _parse_tok(tok: str) -> Optional[int]:
+    if tok and tok[0] == "A":
+        try:
+            v = int(tok[1:])
+            if 0 <= v <= 23:
+                return v
+        except Exception:
+            return None
+    return None
+
+
+def _clone_state(st: Dict) -> Dict:
+    return {
+        "my_pts": list(st["my_pts"]),
+        "opp_pts": list(st["opp_pts"]),
+        "my_bar": int(st.get("my_bar", 0)),
+        "opp_bar": int(st.get("opp_bar", 0)),
+        "my_off": int(st.get("my_off", 0)),
+        "opp_off": int(st.get("opp_off", 0)),
+    }
+
+
+def _all_in_home(st: Dict) -> bool:
+    # Home board for us is A0..A5 (indices 0..5). We move 23 -> 0.
+    if st["my_bar"] > 0:
+        return False
+    return sum(st["my_pts"][6:]) == 0
+
+
+def _legal_starts_for_die(st: Dict, die: int) -> List[str]:
+    """Return list of legal FROM tokens for playing a single die from current state."""
+    die = int(die)
+    if die < 1 or die > 6:
+        return []
+
+    my_pts = st["my_pts"]
+    opp_pts = st["opp_pts"]
+
+    # Must enter from bar first if any on bar
+    if st["my_bar"] > 0:
+        dest = 24 - die  # enter at 23 for 1, 18 for 6
+        if opp_pts[dest] >= 2:
+            return []
+        return ["B"]
+
+    starts: List[str] = []
+    in_home = _all_in_home(st)
+
+    for i in range(24):
+        if my_pts[i] <= 0:
+            continue
+        dest = i - die
+        if dest >= 0:
+            # Normal move
+            if opp_pts[dest] < 2:
+                starts.append(_tok(i))
+        else:
+            # Bearing off attempt
+            if in_home and i <= 5:
+                exact = (die == i + 1)
+                overshoot = (die > i + 1)
+                if exact:
+                    starts.append(_tok(i))
+                elif overshoot:
+                    # Allowed only if no checkers on higher points in home (i+1..5)
+                    if sum(my_pts[i + 1:6]) == 0:
+                        starts.append(_tok(i))
+    return starts
+
+
+def _apply_move(st: Dict, from_tok: str, die: int) -> Tuple[Dict, int]:
+    """
+    Apply a single die move from from_tok ('A#' or 'B'), return (new_state, hits_count).
+    Assumes move is legal per our generator.
+    """
+    die = int(die)
+    if from_tok == "P":
+        return st, 0
+
+    new_st = _clone_state(st)
+    my_pts = new_st["my_pts"]
+    opp_pts = new_st["opp_pts"]
+    hits = 0
+
+    if from_tok == "B":
+        # Enter from bar
+        new_st["my_bar"] -= 1
+        dest = 24 - die
+        if opp_pts[dest] == 1:
+            opp_pts[dest] = 0
+            new_st["opp_bar"] += 1
+            hits = 1
+        my_pts[dest] += 1
+        return new_st, hits
+
+    i = _parse_tok(from_tok)
+    if i is None or my_pts[i] <= 0:
+        # Shouldn't happen; return unchanged to avoid crash
+        return st, 0
+
+    my_pts[i] -= 1
+    dest = i - die
+    if dest >= 0:
+        if opp_pts[dest] == 1:
+            opp_pts[dest] = 0
+            new_st["opp_bar"] += 1
+            hits = 1
+        my_pts[dest] += 1
+    else:
+        # Bearing off
+        new_st["my_off"] += 1
+
+    return new_st, hits
+
+
+def _generate_candidates_two_dice(st0: Dict, high: int, low: int):
+    """
+    Generate candidates for two dice with both possible orders.
+    Returns list of tuples:
+      (moves_played, die_used_if_single, order, from1, from2, st_final, hits_total)
+    Where die_used_if_single is the die value used if moves_played==1 else None.
+    """
+    candidates = []
+
+    for order in ("H", "L"):
+        die1, die2 = (high, low) if order == "H" else (low, high)
+
+        starts1 = _legal_starts_for_die(st0, die1)
+        if not starts1:
+            starts1 = ["P"]
+
+        for f1 in starts1:
+            if f1 == "P":
+                st1 = st0
+                hits1 = 0
+            else:
+                st1, hits1 = _apply_move(st0, f1, die1)
+
+            starts2 = _legal_starts_for_die(st1, die2)
+            if not starts2:
+                starts2 = ["P"]
+
+            for f2 in starts2:
+                if f2 == "P":
+                    st2 = st1
+                    hits2 = 0
+                else:
+                    st2, hits2 = _apply_move(st1, f2, die2)
+
+                moves_played = (0 if f1 == "P" else 1) + (0 if f2 == "P" else 1)
+                hits_total = hits1 + hits2
+
+                die_used_if_single = None
+                if moves_played == 1:
+                    if f1 != "P":
+                        die_used_if_single = die1
+                    else:
+                        die_used_if_single = die2
+
+                candidates.append((moves_played, die_used_if_single, order, f1, f2, st2, hits_total))
+
+    # Filter out sequences where we passed despite having a legal move for that die at that step.
+    # (Our construction already prevents this, but keep as guardrail.)
+    filtered = []
+    for moves_played, die_used_if_single, order, f1, f2, st2, hits_total in candidates:
+        die1, die2 = (high, low) if order == "H" else (low, high)
+
+        # Check first pass legality
+        if f1 == "P" and _legal_starts_for_die(st0, die1):
+            continue
+
+        # Reconstruct st1 for second-step pass legality
+        if f1 == "P":
+            st1 = st0
+        else:
+            st1, _ = _apply_move(st0, f1, die1)
+
+        if f2 == "P" and _legal_starts_for_die(st1, die2):
+            continue
+
+        filtered.append((moves_played, die_used_if_single, order, f1, f2, st2, hits_total))
+
+    return filtered
+
+
+# ----------------------------
+# Evaluation heuristic
+# ----------------------------
+
+def _pip_count_my(st: Dict) -> int:
+    # Distance to bear off for our direction (23->0): point i needs i+1 pips
+    return sum(st["my_pts"][i] * (i + 1) for i in range(24)) + st["my_bar"] * 25
+
+
+def _pip_count_opp(st: Dict) -> int:
+    # Opponent moves 0->23: point i needs (24-i) pips
+    return sum(st["opp_pts"][i] * (24 - i) for i in range(24)) + st["opp_bar"] * 25
+
+
+def _shot_risk_against_blot(st: Dict, blot_idx: int) -> float:
+    """
+    Very simple immediate shot-risk proxy:
+    - +1 if opponent has checkers on bar and blot is in our home (0..5), since entry can hit.
+    - +0.5 for each die distance 1..6 where opponent has any checker at (blot_idx - d).
+    """
+    risk = 0.0
+    if st["opp_bar"] > 0 and 0 <= blot_idx <= 5:
+        risk += 1.0
+    for d in range(1, 7):
+        q = blot_idx - d
+        if q >= 0 and st["opp_pts"][q] > 0:
+            risk += 0.5
+    return risk
+
+
+def _prime_bonus(st: Dict) -> float:
+    # Reward consecutive made points (>=2 checkers)
+    made = [1 if st["my_pts"][i] >= 2 else 0 for i in range(24)]
+    best = 0
+    cur = 0
+    bonus = 0.0
+    for i in range(24):
+        if made[i]:
+            cur += 1
+            best = max(best, cur)
+        else:
+            if cur >= 3:
+                bonus += (cur - 2) * 1.5
+            cur = 0
+    if cur >= 3:
+        bonus += (cur - 2) * 1.5
+    # Small extra for longest prime
+    if best >= 4:
+        bonus += (best - 3) * 0.5
+    return bonus
+
+
+def _evaluate(st_before: Dict, st_after: Dict, hits: int = 0) -> float:
+    """
+    Heuristic evaluation of resulting position from our perspective.
+    Higher is better.
+    """
+    sc = 0.0
+
+    # Winning progress
+    sc += 60.0 * (st_after["my_off"] - st_after["opp_off"])
+
+    # Bar advantage is huge
+    sc += 25.0 * (st_after["opp_bar"] - st_after["my_bar"])
+
+    # Immediate tactical gain
+    sc += 18.0 * hits
+
+    # Race / pip advantage
+    my_pip = _pip_count_my(st_after)
+    opp_pip = _pip_count_opp(st_after)
+    sc += 0.6 * (opp_pip - my_pip)
+
+    # Made points / structure
+    for i in range(24):
+        n = st_after["my_pts"][i]
+        if n >= 2:
+            w = 1.8
+            if i <= 5:      # home-board points are very valuable for bearing off & defense
+                w += 1.8
+            if i >= 18:     # anchors in opponent home board
+                w += 1.6
+            sc += w
+
+    # Blots (with simple shot risk)
+    for i in range(24):
+        if st_after["my_pts"][i] == 1:
+            base = 1.2
+            if i <= 5:
+                base += 0.4  # home blots can be especially painful during bear-off
+            if i >= 18:
+                base -= 0.2  # deep blots are sometimes acceptable; still risky
+            risk = _shot_risk_against_blot(st_after, i)
+            sc -= base
+            sc -= 0.9 * risk
+
+    # Prime bonus
+    sc += _prime_bonus(st_after)
+
+    # Slight preference for being ready to bear off
+    if _all_in_home(st_after):
+        sc += 2.5
+
+    return sc
+</code>

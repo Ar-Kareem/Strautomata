@@ -1,0 +1,412 @@
+My strategy combines exact tactical rules with a threat-aware alpha-beta search:
+
+1. **Opening book** – the center cell lies on 13 of the 49 winning lines, so I always grab it early; if the opponent already owns the center (I move second), I take a corner (6 still-live lines, the best defensive cell).
+2. **Exact hard rules** – play an immediate win if one exists; block a lone opponent threat (forced); if the opponent already has two winning cells, block the most valuable one; and play any *fork* (a move creating ≥2 simultaneous winning threats), which is a proven forced win since one move can never block two distinct winning cells.
+3. **Search** – otherwise run iterative-deepening negamax with alpha-beta pruning. The key trick: the set of immediate winning cells for both players is maintained incrementally, so at every node I can detect instantly (a) mover can win → terminal win, (b) opponent has ≥2 winning cells → terminal loss, (c) opponent has exactly 1 → the block is *forced* and forced moves do **not** consume search depth. This makes entire threat/counter-threat ladders resolved exactly, giving deep effective tactical horizons. Quiet nodes are move-ordered by "threats created" then cell importance, with an incremental line-based evaluation.
+4. **Safety** – ~0.65 s wall-clock budget with hard abort (only fully completed iterations are used), and the final answer is validated as an empty cell, with an independent heuristic fallback so a legal move is always returned.
+
+<code>
+import time
+
+try:
+    import gc
+    gc.disable()
+except Exception:
+    pass
+
+WINV = 1000000
+INF = float('inf')
+W = (0, 1, 12, 100000)
+
+# ---------------- lines of the 3x3x3 cube (49 total) ----------------
+_L = []
+
+def _add_line(cells):
+    _L.append(tuple(cells))
+
+# axis-parallel lines (27)
+for _j in range(3):
+    for _k in range(3):
+        _add_line([_d * 9 + _j * 3 + _k for _d in range(3)])
+for _i in range(3):
+    for _k in range(3):
+        _add_line([_i * 9 + _d * 3 + _k for _d in range(3)])
+for _i in range(3):
+    for _j in range(3):
+        _add_line([_i * 9 + _j * 3 + _d for _d in range(3)])
+# face diagonals (18)
+for _i in range(3):
+    _add_line([_i * 9 + _d * 3 + _d for _d in range(3)])
+    _add_line([_i * 9 + _d * 3 + (2 - _d) for _d in range(3)])
+for _j in range(3):
+    _add_line([_d * 9 + _j * 3 + _d for _d in range(3)])
+    _add_line([_d * 9 + _j * 3 + (2 - _d) for _d in range(3)])
+for _k in range(3):
+    _add_line([_d * 9 + _d * 3 + _k for _d in range(3)])
+    _add_line([_d * 9 + (2 - _d) * 3 + _k for _d in range(3)])
+# space diagonals (4)
+_add_line([_d * 9 + _d * 3 + _d for _d in range(3)])
+_add_line([_d * 9 + _d * 3 + (2 - _d) for _d in range(3)])
+_add_line([_d * 9 + (2 - _d) * 3 + _d for _d in range(3)])
+_add_line([(2 - _d) * 9 + _d * 3 + _d for _d in range(3)])
+
+NL = len(_L)  # 49
+
+CELL_LINES = [[] for _ in range(27)]
+for _lid in range(NL):
+    for _c in _L[_lid]:
+        CELL_LINES[_c].append(_lid)
+CELL_LINES = [tuple(x) for x in CELL_LINES]
+IMP = [len(x) for x in CELL_LINES]            # number of lines through cell
+ORDER = sorted(range(27), key=lambda c: -IMP[c])
+CENTER = 13                                   # (1,1,1)
+
+# ---------------- mutable search state ----------------
+BOARD = [0] * 27
+CNT1 = [0] * NL      # our marks per line
+CNT2 = [0] * NL      # opponent marks per line
+TCNT1 = [0] * 27     # our threat-lines whose missing cell is c
+TCNT2 = [0] * 27
+TSET1 = set()        # our immediate winning cells
+TSET2 = set()        # opponent's immediate winning cells
+SCORE = 0            # incremental eval (our perspective)
+ABORT = False
+NODES = 0
+HARD_DL = 0.0
+
+
+def apply_move(c, color, CELL_LINES=CELL_LINES, LINES=_L, W=W,
+               BOARD=BOARD, CNT1=CNT1, CNT2=CNT2,
+               TCNT1=TCNT1, TCNT2=TCNT2, TSET1=TSET1, TSET2=TSET2):
+    global SCORE
+    BOARD[c] = color
+    if color == 1:
+        A = CNT1; B = CNT2; tAc = TCNT1; tBc = TCNT2; tA = TSET1; tB = TSET2; s = 1
+    else:
+        A = CNT2; B = CNT1; tAc = TCNT2; tBc = TCNT1; tA = TSET2; tB = TSET1; s = -1
+    d = 0
+    for lid in CELL_LINES[c]:
+        a = A[lid]; b = B[lid]
+        if b == 0:
+            d += s * (W[a + 1] - W[a])
+            if a == 1:
+                # this line becomes a threat for the mover
+                for e in LINES[lid]:
+                    if BOARD[e] == 0:
+                        tAc[e] += 1
+                        if tAc[e] == 1:
+                            tA.add(e)
+                        break
+            elif a == 2:
+                # mover completes the line (wins)
+                tAc[c] -= 1
+                if tAc[c] == 0:
+                    tA.discard(c)
+        elif a == 0:
+            d += s * W[b]
+            if b == 2:
+                # mover blocks opponent's threat at c
+                tBc[c] -= 1
+                if tBc[c] == 0:
+                    tB.discard(c)
+        A[lid] = a + 1
+    SCORE += d
+
+
+def undo_move(c, color, CELL_LINES=CELL_LINES, LINES=_L, W=W,
+              BOARD=BOARD, CNT1=CNT1, CNT2=CNT2,
+              TCNT1=TCNT1, TCNT2=TCNT2, TSET1=TSET1, TSET2=TSET2):
+    global SCORE
+    if color == 1:
+        A = CNT1; B = CNT2; tAc = TCNT1; tBc = TCNT2; tA = TSET1; tB = TSET2; s = 1
+    else:
+        A = CNT2; B = CNT1; tAc = TCNT2; tBc = TCNT1; tA = TSET2; tB = TSET1; s = -1
+    d = 0
+    for lid in CELL_LINES[c]:
+        a = A[lid]; b = B[lid]
+        if b == 0:
+            d += s * (W[a - 1] - W[a])
+            if a == 2:
+                for e in LINES[lid]:
+                    if BOARD[e] == 0:
+                        tAc[e] -= 1
+                        if tAc[e] == 0:
+                            tA.discard(e)
+                        break
+            elif a == 3:
+                tAc[c] += 1
+                if tAc[c] == 1:
+                    tA.add(c)
+        elif a == 1:
+            d -= s * W[b]
+            if b == 2:
+                tBc[c] += 1
+                if tBc[c] == 1:
+                    tB.add(c)
+        A[lid] = a - 1
+    SCORE += d
+    BOARD[c] = 0
+
+
+def _negamax(depth, ply, alpha, beta, color,
+             BOARD=BOARD, CNT1=CNT1, CNT2=CNT2,
+             TSET1=TSET1, TSET2=TSET2,
+             CELL_LINES=CELL_LINES, IMP=IMP, ORDER=ORDER):
+    global NODES, ABORT
+    NODES += 1
+    if not (NODES & 255):
+        if time.perf_counter() > HARD_DL:
+            ABORT = True
+    if ABORT:
+        return 0
+    if color == 1:
+        tA = TSET1; tB = TSET2; A = CNT1; B = CNT2
+    else:
+        tA = TSET2; tB = TSET1; A = CNT2; B = CNT1
+    if tA:
+        # mover wins right now
+        return WINV - 1000 * (ply + 1)
+    nb = len(tB)
+    if nb >= 2:
+        # opponent has two winning cells: mover loses no matter what
+        return -(WINV - 1000 * (ply + 2))
+    if nb == 1:
+        # forced block; does not consume depth (threat extension)
+        mv = next(iter(tB))
+        apply_move(mv, color)
+        v = -_negamax(depth, ply + 1, -beta, -alpha, -color)
+        undo_move(mv, color)
+        return v
+    if depth <= 0:
+        return SCORE if color == 1 else -SCORE
+    moves = [c for c in ORDER if BOARD[c] == 0]
+    if not moves:
+        return 0
+    if depth >= 2:
+        keyed = []
+        kap = keyed.append
+        for c in moves:
+            n2 = 0
+            for lid in CELL_LINES[c]:
+                if A[lid] == 1 and B[lid] == 0:
+                    n2 += 1
+            kap((-(n2 * 16 + IMP[c]), c))
+        keyed.sort()
+        moves = [t[1] for t in keyed]
+    best = -INF
+    for mv in moves:
+        apply_move(mv, color)
+        v = -_negamax(depth - 1, ply + 1, -beta, -alpha, -color)
+        undo_move(mv, color)
+        if ABORT:
+            return 0
+        if v > best:
+            best = v
+            if v > alpha:
+                alpha = v
+                if alpha >= beta:
+                    break
+    return best
+
+
+def _init_state(flat):
+    global SCORE
+    for c in range(27):
+        BOARD[c] = flat[c]
+        TCNT1[c] = 0
+        TCNT2[c] = 0
+    TSET1.clear()
+    TSET2.clear()
+    s = 0
+    for lid in range(NL):
+        o = 0
+        t = 0
+        for c in _L[lid]:
+            v = flat[c]
+            if v == 1:
+                o += 1
+            elif v == -1:
+                t += 1
+        CNT1[lid] = o
+        CNT2[lid] = t
+        if t == 0:
+            if o:
+                s += W[o]
+                if o == 2:
+                    for c in _L[lid]:
+                        if flat[c] == 0:
+                            TCNT1[c] += 1
+                            TSET1.add(c)
+                            break
+        elif o == 0:
+            s -= W[t]
+            if t == 2:
+                for c in _L[lid]:
+                    if flat[c] == 0:
+                        TCNT2[c] += 1
+                        TSET2.add(c)
+                        break
+    SCORE = s
+
+
+def _unf(c):
+    return (c // 9, (c % 9) // 3, c % 3)
+
+
+def _policy(board):
+    global ABORT, NODES, HARD_DL
+    t0 = time.perf_counter()
+    flat = []
+    ap = flat.append
+    for i in range(3):
+        bi = board[i]
+        for j in range(3):
+            bj = bi[j]
+            ap(bj[0]); ap(bj[1]); ap(bj[2])
+    n1 = 0
+    nm1 = 0
+    for v in flat:
+        if v == 1:
+            n1 += 1
+        elif v == -1:
+            nm1 += 1
+    # ---------- opening book ----------
+    if n1 == 0 and nm1 == 0:
+        return (1, 1, 1)
+    if n1 == 0 and nm1 == 1:
+        if flat[CENTER] == 0:
+            return (1, 1, 1)
+        if flat[0] == 0:
+            return (0, 0, 0)
+    _init_state(flat)
+    # ---------- exact fast paths ----------
+    if TSET1:
+        for c in TSET1:
+            if BOARD[c] == 0:
+                return _unf(c)          # immediate win
+    if TSET2:
+        if len(TSET2) == 1:
+            c = next(iter(TSET2))
+            if BOARD[c] == 0:
+                return _unf(c)          # forced block
+        else:
+            bestc = -1
+            bestv = -INF
+            for c in TSET2:
+                if BOARD[c] != 0:
+                    continue
+                apply_move(c, 1)
+                v = SCORE + 200 * len(TSET1) + IMP[c]
+                undo_move(c, 1)
+                if v > bestv:
+                    bestv = v
+                    bestc = c
+            if bestc >= 0:
+                return _unf(bestc)      # double threat: block the best cell
+    # ---------- quiet position: order candidates ----------
+    keyed = []
+    for c in ORDER:
+        if BOARD[c] == 0:
+            n2 = 0
+            for lid in CELL_LINES[c]:
+                if CNT1[lid] == 1 and CNT2[lid] == 0:
+                    n2 += 1
+            keyed.append((-(n2 * 16 + IMP[c]), c))
+    keyed.sort()
+    cands = [t[1] for t in keyed]
+    if not cands:
+        return (0, 0, 0)
+    # ---------- fork check (forced win) ----------
+    for c in cands:
+        apply_move(c, 1)
+        f = len(TSET1)
+        undo_move(c, 1)
+        if f >= 2:
+            return _unf(c)
+    # ---------- iterative deepening search ----------
+    ABORT = False
+    NODES = 0
+    HARD_DL = t0 + 0.66
+    completed = None
+    prev_best = None
+    depth = 1
+    while depth <= 26:
+        root_moves = list(cands)
+        if prev_best is not None:
+            try:
+                root_moves.remove(prev_best)
+                root_moves.insert(0, prev_best)
+            except ValueError:
+                pass
+        alpha = -INF
+        cur = None
+        for mv in root_moves:
+            apply_move(mv, 1)
+            v = -_negamax(depth - 1, 1, -INF, -alpha, -1)
+            undo_move(mv, 1)
+            if ABORT:
+                break
+            if v > alpha:
+                alpha = v
+                cur = mv
+        if ABORT:
+            break
+        if cur is not None:
+            completed = cur
+            prev_best = cur
+        if alpha >= WINV - 30000:
+            break                      # proven win found
+        depth += 1
+        if time.perf_counter() - t0 > 0.60:
+            break
+    if completed is not None:
+        return _unf(completed)
+    return _unf(cands[0])
+
+
+def _fallback(board):
+    try:
+        for who in (1, -1):
+            for lid in range(NL):
+                c1 = 0
+                cm = 0
+                e = -1
+                for c in _L[lid]:
+                    v = board[c // 9][(c % 9) // 3][c % 3]
+                    if v == 1:
+                        c1 += 1
+                    elif v == -1:
+                        cm += 1
+                    else:
+                        e = c
+                if who == 1:
+                    if c1 == 2 and e >= 0:
+                        return _unf(e)
+                else:
+                    if cm == 2 and e >= 0:
+                        return _unf(e)
+        if board[1][1][1] == 0:
+            return (1, 1, 1)
+        for c in ORDER:
+            if board[c // 9][(c % 9) // 3][c % 3] == 0:
+                return _unf(c)
+    except Exception:
+        pass
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board[i][j][k] == 0:
+                    return (i, j, k)
+    return (0, 0, 0)
+
+
+def policy(board):
+    try:
+        mv = _policy(board)
+        i, j, k = mv
+        if board[i][j][k] == 0:
+            return (int(i), int(j), int(k))
+    except Exception:
+        pass
+    return _fallback(board)
+</code>

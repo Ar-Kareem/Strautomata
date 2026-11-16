@@ -1,0 +1,346 @@
+My strategy:
+- Generate all legal (no-castling, no-en-passant) moves by simulating piece moves and filtering out those that leave my king in check.
+- Evaluate each resulting position by material balance, capture value, giving check, mobility (opponent move count), and king safety.
+- Prefer immediate checkmate/captures and promotions; break ties deterministically.
+- Return the highest-scoring legal move in UCI format.
+
+<code>
+# Chess move selection policy
+# Implements policy(pieces: dict[str,str], to_play: str) -> str
+# Generates pseudo-legal moves (no castling, no en passant), filters out moves leaving own king in check,
+# evaluates moves by material + tactical bonuses, and returns best move in UCI format.
+
+from typing import Dict, List, Tuple
+
+PIECE_VALUES = {'P': 1.0, 'N': 3.0, 'B': 3.0, 'R': 5.0, 'Q': 9.0, 'K': 1000.0}
+
+FILES = 'abcdefgh'
+RANKS = '12345678'
+FILE_IDX = {f: i for i, f in enumerate(FILES)}
+IDX_FILE = {i: f for i, f in enumerate(FILES)}
+RANK_IDX = {r: i for i, r in enumerate(RANKS)}
+IDX_RANK = {i: r for i, r in enumerate(RANKS)}
+
+# Direction vectors for sliding pieces
+ORTH_DIRS = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+DIAG_DIRS = [(1, 1), (1, -1), (-1, 1), (-1, -1)]
+KNIGHT_DIRS = [(1, 2), (2, 1), (-1, 2), (-2, 1), (1, -2), (2, -1), (-1, -2), (-2, -1)]
+KING_DIRS = ORTH_DIRS + DIAG_DIRS
+
+def sq_to_coord(sq: str) -> Tuple[int, int]:
+    return FILE_IDX[sq[0]], RANK_IDX[sq[1]]
+
+def coord_to_sq(x: int, y: int) -> str:
+    return IDX_FILE[x] + IDX_RANK[y]
+
+def inside(x: int, y: int) -> bool:
+    return 0 <= x < 8 and 0 <= y < 8
+
+def copy_board(board: Dict[str, str]) -> Dict[str, str]:
+    return dict(board)
+
+def find_king_square(board: Dict[str, str], color: str) -> str:
+    target = ('w' if color == 'white' else 'b') + 'K'
+    for sq, p in board.items():
+        if p == target:
+            return sq
+    return ''  # Should not happen in legal boards
+
+def is_square_attacked(board: Dict[str, str], square: str, by_color: str) -> bool:
+    # by_color: 'white' or 'black' attacks square?
+    x, y = sq_to_coord(square)
+    attacker_prefix = 'w' if by_color == 'white' else 'b'
+    # Pawn attacks
+    if by_color == 'white':
+        for dx in (-1, 1):
+            nx, ny = x + dx, y - 1  # white pawns attack from below (they move up)
+            if inside(nx, ny):
+                s = coord_to_sq(nx, ny)
+                if board.get(s) == attacker_prefix + 'P':
+                    return True
+    else:
+        for dx in (-1, 1):
+            nx, ny = x + dx, y + 1  # black pawns attack from above (they move down)
+            if inside(nx, ny):
+                s = coord_to_sq(nx, ny)
+                if board.get(s) == attacker_prefix + 'P':
+                    return True
+    # Knight attacks
+    for dx, dy in KNIGHT_DIRS:
+        nx, ny = x + dx, y + dy
+        if inside(nx, ny):
+            s = coord_to_sq(nx, ny)
+            if board.get(s) == attacker_prefix + 'N':
+                return True
+    # Sliding pieces
+    # Rook/Queen orthogonals
+    for dx, dy in ORTH_DIRS:
+        nx, ny = x + dx, y + dy
+        while inside(nx, ny):
+            s = coord_to_sq(nx, ny)
+            p = board.get(s)
+            if p:
+                if p[0] == attacker_prefix:
+                    if p[1] == 'R' or p[1] == 'Q':
+                        return True
+                    # adjacent king check
+                    if (nx, ny) == (x + dx, y + dy) and p[1] == 'K':
+                        return True
+                break
+            nx += dx; ny += dy
+    # Bishop/Queen diagonals
+    for dx, dy in DIAG_DIRS:
+        nx, ny = x + dx, y + dy
+        while inside(nx, ny):
+            s = coord_to_sq(nx, ny)
+            p = board.get(s)
+            if p:
+                if p[0] == attacker_prefix:
+                    if p[1] == 'B' or p[1] == 'Q':
+                        return True
+                    if (nx, ny) == (x + dx, y + dy) and p[1] == 'K':
+                        return True
+                break
+            nx += dx; ny += dy
+    # King adjacent
+    for dx, dy in KING_DIRS:
+        nx, ny = x + dx, y + dy
+        if inside(nx, ny):
+            s = coord_to_sq(nx, ny)
+            if board.get(s) == attacker_prefix + 'K':
+                return True
+    return False
+
+def generate_moves(board: Dict[str, str], color: str) -> List[str]:
+    moves: List[str] = []
+    my_prefix = 'w' if color == 'white' else 'b'
+    opp_prefix = 'b' if color == 'white' else 'w'
+    pawn_dir = 1 if color == 'white' else -1  # rank index increase for white
+    for sq, piece in list(board.items()):
+        if not piece.startswith(my_prefix):
+            continue
+        piece_type = piece[1]
+        x, y = sq_to_coord(sq)
+        if piece_type == 'P':
+            # One forward
+            ny = y + pawn_dir
+            if inside(x, ny):
+                to_sq = coord_to_sq(x, ny)
+                if to_sq not in board:
+                    # Promotion?
+                    if ny == 7 or ny == 0:
+                        for promo in ('q', 'r', 'b', 'n'):
+                            moves.append(sq + to_sq + promo)
+                    else:
+                        moves.append(sq + to_sq)
+                    # Double move from starting rank
+                    start_rank = 1 if color == 'white' else 6
+                    ny2 = y + 2 * pawn_dir
+                    if y == start_rank and inside(x, ny2):
+                        mid_sq = coord_to_sq(x, y + pawn_dir)
+                        to_sq2 = coord_to_sq(x, ny2)
+                        if mid_sq not in board and to_sq2 not in board:
+                            moves.append(sq + to_sq2)
+            # Captures
+            for dx in (-1, 1):
+                nx = x + dx
+                ny = y + pawn_dir
+                if inside(nx, ny):
+                    to_sq = coord_to_sq(nx, ny)
+                    if to_sq in board and board[to_sq].startswith(opp_prefix):
+                        if ny == 7 or ny == 0:
+                            for promo in ('q', 'r', 'b', 'n'):
+                                moves.append(sq + to_sq + promo)
+                        else:
+                            moves.append(sq + to_sq)
+            # Note: en-passant not implemented
+        elif piece_type == 'N':
+            for dx, dy in KNIGHT_DIRS:
+                nx, ny = x + dx, y + dy
+                if not inside(nx, ny):
+                    continue
+                to_sq = coord_to_sq(nx, ny)
+                if to_sq not in board or board[to_sq].startswith(opp_prefix):
+                    moves.append(sq + to_sq)
+        elif piece_type == 'B' or piece_type == 'R' or piece_type == 'Q':
+            dirs = []
+            if piece_type == 'B':
+                dirs = DIAG_DIRS
+            elif piece_type == 'R':
+                dirs = ORTH_DIRS
+            else:
+                dirs = ORTH_DIRS + DIAG_DIRS
+            for dx, dy in dirs:
+                nx, ny = x + dx, y + dy
+                while inside(nx, ny):
+                    to_sq = coord_to_sq(nx, ny)
+                    if to_sq in board:
+                        if board[to_sq].startswith(opp_prefix):
+                            moves.append(sq + to_sq)
+                        break
+                    else:
+                        moves.append(sq + to_sq)
+                    nx += dx; ny += dy
+        elif piece_type == 'K':
+            for dx, dy in KING_DIRS:
+                nx, ny = x + dx, y + dy
+                if not inside(nx, ny):
+                    continue
+                to_sq = coord_to_sq(nx, ny)
+                if to_sq not in board or board[to_sq].startswith(opp_prefix):
+                    moves.append(sq + to_sq)
+            # Castling not implemented
+        else:
+            pass
+    # Filter out moves that leave own king in check (legal move check)
+    legal: List[str] = []
+    for mv in moves:
+        new_board = apply_move(board, mv)
+        king_sq = find_king_square(new_board, color)
+        # If king missing (captured), it's fine if the move captured opponent king; but that implies opponent king removed.
+        # We treat missing own king as illegal.
+        if king_sq == '':
+            # If our own king disappeared, illegal
+            continue
+        if not is_square_attacked(new_board, king_sq, 'white' if color == 'black' else 'black'):
+            legal.append(mv)
+    return legal
+
+def apply_move(board: Dict[str, str], move: str) -> Dict[str, str]:
+    # move: from+to or from+to+promo (promo letter lowercase)
+    newb = copy_board(board)
+    frm = move[0:2]
+    to = move[2:4]
+    promo = move[4] if len(move) == 5 else None
+    piece = newb.get(frm)
+    if not piece:
+        # invalid but return same board
+        return newb
+    # remove captured piece at destination if any
+    if to in newb:
+        del newb[to]
+    # move piece
+    del newb[frm]
+    if promo:
+        # set promoted piece with same color
+        color = piece[0]
+        promo_piece = promo.upper()
+        # map 'n' to 'N', etc.
+        newb[to] = color + promo_piece
+    else:
+        newb[to] = piece
+    return newb
+
+def material_score(board: Dict[str, str], color: str) -> float:
+    my_prefix = 'w' if color == 'white' else 'b'
+    opp_prefix = 'b' if color == 'white' else 'w'
+    my_mat = 0.0
+    opp_mat = 0.0
+    for p in board.values():
+        val = PIECE_VALUES.get(p[1], 0.0)
+        if p.startswith(my_prefix):
+            my_mat += val
+        else:
+            opp_mat += val
+    return my_mat - opp_mat
+
+def count_legal_moves(board: Dict[str, str], color: str, limit: int = 200) -> int:
+    mv = generate_moves(board, color)
+    return min(len(mv), limit)
+
+def evaluate_move(board: Dict[str, str], move: str, color: str) -> float:
+    newb = apply_move(board, move)
+    score = 0.0
+    # Material difference after move
+    mat = material_score(newb, color)
+    score += 100.0 * mat  # scale up material importance
+    # Capture bonus: if move captured piece, approximate by difference in material between boards
+    # (Already included in material_score). Add small bonus for captures for tie-breaker
+    frm = move[0:2]; to = move[2:4]
+    if to in board and board[to][0] != board[frm][0]:
+        captured = board[to][1]
+        score += PIECE_VALUES.get(captured, 0.0) * 10.0
+    # Promotion bonus
+    if len(move) == 5:
+        # prefer queen promotions highest
+        if move[4] == 'q':
+            score += 900.0
+        else:
+            score += 500.0
+    # Check bonus: if opponent king attacked after move
+    opp_color = 'white' if color == 'black' else 'black'
+    opp_king_sq = find_king_square(newb, opp_color)
+    if opp_king_sq:
+        if is_square_attacked(newb, opp_king_sq, color):
+            # Give big bonus for giving check; even bigger if gives checkmate (opponent has zero legal moves)
+            score += 50.0
+            opp_moves = count_legal_moves(newb, opp_color, limit=1000)
+            if opp_moves == 0:
+                # checkmate (or stalemate). We treat as decisive win.
+                score += 100000.0
+    # King safety: if our king is attacked after move, penalize
+    my_king_sq = find_king_square(newb, color)
+    if my_king_sq and is_square_attacked(newb, my_king_sq, opp_color):
+        score -= 200.0
+    # Mobility: more opponent moves is slightly worse (we prefer reducing opponent mobility)
+    opp_mob = count_legal_moves(newb, opp_color, limit=200)
+    score -= 0.5 * opp_mob
+    # Small bonus for moving piece toward center (for non-pawns)
+    to_x, to_y = sq_to_coord(to)
+    center_dist = abs(3.5 - to_x) + abs(3.5 - to_y)
+    score -= 0.1 * center_dist
+    return score
+
+def policy(pieces: Dict[str, str], to_play: str) -> str:
+    # pieces: mapping from square to piece code like 'e1': 'wK'
+    # to_play: 'white' or 'black'
+    board = dict(pieces)  # copy
+    legal = generate_moves(board, to_play)
+    if not legal:
+        # No legal moves found: return a fallback move if possible (shouldn't happen in normal inputs)
+        # Try any pseudo-legal move (even if leaves king in check)
+        # Generate pseudo-legal moves quickly
+        # We'll attempt to create one by scanning pieces and making any single-step move
+        for sq, p in board.items():
+            if (to_play == 'white' and p.startswith('w')) or (to_play == 'black' and p.startswith('b')):
+                # try moves generated by generate_moves but bypassing legality: reuse generator and accept first
+                pseudo = generate_moves(board, to_play)
+                if pseudo:
+                    return pseudo[0]
+        # As ultimate fallback, return an arbitrary string (shouldn't occur)
+        # Choose first piece move by naive one-square in-file if possible
+        for sq in board.keys():
+            x, y = sq_to_coord(sq)
+            for dy in (-1, 1, 0):
+                ny = y + dy
+                for dx in (-1, 0, 1):
+                    nx = x + dx
+                    if inside(nx, ny):
+                        to = coord_to_sq(nx, ny)
+                        if sq != to:
+                            return sq + to
+        # give up
+        return next(iter(board.keys())) + next(iter(board.keys()))
+    best_move = None
+    best_score = -1e18
+    best_moves = []
+    for mv in legal:
+        sc = evaluate_move(board, mv, to_play)
+        if sc > best_score:
+            best_score = sc
+            best_moves = [mv]
+        elif sc == best_score:
+            best_moves.append(mv)
+    # deterministic tie-breaker: choose lexicographically smallest among best_moves
+    best_moves.sort()
+    return best_moves[0]
+
+# Expose the policy function for import
+if __name__ == "__main__":
+    # Simple self-test: starting position sample
+    start = {
+        # minimal test: white king on e1, black king on e8, white pawn on e2
+        'e1': 'wK', 'e8': 'bK', 'e2': 'wP', 'd7': 'bP'
+    }
+    print(policy(start, 'white'))
+</code>

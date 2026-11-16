@@ -1,0 +1,194 @@
+
+import numpy as np
+
+def policy(you, opponent) -> str:
+    you = np.array(you)
+    opponent = np.array(opponent)
+    
+    legal_moves = get_legal_moves(you, opponent)
+    
+    # Priority 1: Check for immediate wins
+    for move in legal_moves:
+        new_you, new_opp = apply_move(you, opponent, move)
+        if has_five_in_row(new_you) and not has_five_in_row(new_opp):
+            return move
+    
+    # Priority 2: Evaluate all moves based on heuristic
+    best_move = legal_moves[0]
+    best_score = -float('inf')
+    
+    for move in legal_moves:
+        new_you, new_opp = apply_move(you, opponent, move)
+        score = evaluate_position(new_you, new_opp)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move
+
+def get_legal_moves(you, opponent):
+    moves = []
+    for r in range(6):
+        for c in range(6):
+            if you[r][c] == 0 and opponent[r][c] == 0:
+                for quad in range(4):
+                    quad_empty = is_quadrant_empty(you, opponent, quad)
+                    if quad_empty:
+                        moves.append(f"{r+1},{c+1},{quad},L")
+                    else:
+                        for direction in ['L', 'R']:
+                            moves.append(f"{r+1},{c+1},{quad},{direction}")
+    return moves
+
+def is_quadrant_empty(you, opponent, quad):
+    if quad == 0:
+        rows, cols = slice(0, 3), slice(0, 3)
+    elif quad == 1:
+        rows, cols = slice(0, 3), slice(3, 6)
+    elif quad == 2:
+        rows, cols = slice(3, 6), slice(0, 3)
+    else:
+        rows, cols = slice(3, 6), slice(3, 6)
+    
+    return np.sum(you[rows, cols]) == 0 and np.sum(opponent[rows, cols]) == 0
+
+def apply_move(you, opponent, move_str):
+    parts = move_str.split(',')
+    r, c, quad, direction = int(parts[0])-1, int(parts[1])-1, int(parts[2]), parts[3]
+    
+    new_you = you.copy()
+    new_opp = opponent.copy()
+    new_you[r][c] = 1
+    
+    new_you = rotate_quadrant(new_you, quad, direction)
+    new_opp = rotate_quadrant(new_opp, quad, direction)
+    
+    return new_you, new_opp
+
+def rotate_quadrant(board, quad, direction):
+    if quad == 0:
+        rows, cols = slice(0, 3), slice(0, 3)
+    elif quad == 1:
+        rows, cols = slice(0, 3), slice(3, 6)
+    elif quad == 2:
+        rows, cols = slice(3, 6), slice(0, 3)
+    else:
+        rows, cols = slice(3, 6), slice(3, 6)
+    
+    new_board = board.copy()
+    quad_section = board[rows, cols].copy()
+    
+    if direction == 'L':
+        quad_section = np.rot90(quad_section, k=1)
+    else:
+        quad_section = np.rot90(quad_section, k=-1)
+    
+    new_board[rows, cols] = quad_section
+    return new_board
+
+def has_five_in_row(board):
+    # Horizontal
+    for r in range(6):
+        count = 0
+        for c in range(6):
+            if board[r][c] == 1:
+                count += 1
+                if count >= 5:
+                    return True
+            else:
+                count = 0
+    
+    # Vertical
+    for c in range(6):
+        count = 0
+        for r in range(6):
+            if board[r][c] == 1:
+                count += 1
+                if count >= 5:
+                    return True
+            else:
+                count = 0
+    
+    # Diagonal (down-right): r - c = constant
+    for diff in [-1, 0, 1]:
+        count = 0
+        for r in range(6):
+            c = r - diff
+            if 0 <= c < 6:
+                if board[r][c] == 1:
+                    count += 1
+                    if count >= 5:
+                        return True
+                else:
+                    count = 0
+    
+    # Diagonal (down-left): r + c = constant
+    for total in [4, 5, 6]:
+        count = 0
+        for r in range(6):
+            c = total - r
+            if 0 <= c < 6:
+                if board[r][c] == 1:
+                    count += 1
+                    if count >= 5:
+                        return True
+                else:
+                    count = 0
+    
+    return False
+
+def evaluate_position(you, opponent):
+    # Count threats
+    you_4 = count_lines(you, 4)
+    opp_4 = count_lines(opponent, 4)
+    you_3 = count_lines(you, 3)
+    opp_3 = count_lines(opponent, 3)
+    you_2 = count_lines(you, 2)
+    opp_2 = count_lines(opponent, 2)
+    
+    score = 0
+    score += you_4 * 10000
+    score += you_3 * 100
+    score += you_2 * 1
+    score -= opp_4 * 50000
+    score -= opp_3 * 500
+    score -= opp_2 * 5
+    
+    # Small bonus for center control
+    center_positions = [(2, 2), (2, 3), (3, 2), (3, 3)]
+    for r, c in center_positions:
+        if you[r][c] == 1:
+            score += 2
+        if opponent[r][c] == 1:
+            score -= 2
+    
+    return score
+
+def count_lines(board, length):
+    count = 0
+    
+    # Horizontal
+    for r in range(6):
+        for c in range(6 - length + 1):
+            if all(board[r][c+i] == 1 for i in range(length)):
+                count += 1
+    
+    # Vertical
+    for c in range(6):
+        for r in range(6 - length + 1):
+            if all(board[r+i][c] == 1 for i in range(length)):
+                count += 1
+    
+    # Diagonal down-right
+    for r in range(6 - length + 1):
+        for c in range(6 - length + 1):
+            if all(board[r+i][c+i] == 1 for i in range(length)):
+                count += 1
+    
+    # Diagonal down-left
+    for r in range(6 - length + 1):
+        for c in range(length - 1, 6):
+            if all(board[r+i][c-i] == 1 for i in range(length)):
+                count += 1
+    
+    return count

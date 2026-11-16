@@ -1,0 +1,449 @@
+The strategy for this policy is an iterative-deepening alpha-beta search with strong move ordering and a Breakthrough-specific evaluation. It prioritizes immediate wins, blocks promotion threats, prefers captures and advanced/protected pieces, and uses a transposition table plus lightweight history/killer heuristics for speed. The policy always generates legal moves first and keeps a legal fallback move, so it reliably returns a legal action.
+
+<code>
+import time
+
+WIN_SCORE = 10**9
+CENTER_BONUS = [0, 2, 4, 6, 6, 4, 2, 0]
+ADV_BONUS = [0, 4, 10, 18, 30, 46, 70, 0]
+ROW_MASKS = [sum(1 << (r * 8 + c) for c in range(8)) for r in range(8)]
+TOP_MASK = ROW_MASKS[7]
+BOTTOM_MASK = ROW_MASKS[0]
+
+
+class _Timeout(Exception):
+    pass
+
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    deadline = time.perf_counter() + 0.90
+
+    def to_bb(pieces):
+        bb = 0
+        for r, c in pieces:
+            bb |= 1 << (r * 8 + c)
+        return bb
+
+    def idx_to_sq(i):
+        return (i >> 3, i & 7)
+
+    turn_white = (color == "w")
+    white = to_bb(me if turn_white else opp)
+    black = to_bb(opp if turn_white else me)
+
+    tt = {}
+    history = {}
+    killers = [[None, None] for _ in range(64)]
+
+    def terminal_relative(wb, bb, side_white, ply):
+        if (wb & TOP_MASK) or bb == 0:
+            return (WIN_SCORE - ply) if side_white else (-WIN_SCORE + ply)
+        if (bb & BOTTOM_MASK) or wb == 0:
+            return (-WIN_SCORE + ply) if side_white else (WIN_SCORE - ply)
+        return None
+
+    def has_promo_in_one(wb, bb, side_white):
+        own = wb if side_white else bb
+        occ = wb | bb
+
+        if side_white:
+            pawns = own & ROW_MASKS[6]
+            while pawns:
+                lsb = pawns & -pawns
+                fr = lsb.bit_length() - 1
+                pawns ^= lsb
+                c = fr & 7
+
+                to = fr + 8
+                if ((occ >> to) & 1) == 0:
+                    return True
+                if c > 0:
+                    to = fr + 7
+                    if ((own >> to) & 1) == 0:
+                        return True
+                if c < 7:
+                    to = fr + 9
+                    if ((own >> to) & 1) == 0:
+                        return True
+        else:
+            pawns = own & ROW_MASKS[1]
+            while pawns:
+                lsb = pawns & -pawns
+                fr = lsb.bit_length() - 1
+                pawns ^= lsb
+                c = fr & 7
+
+                to = fr - 8
+                if ((occ >> to) & 1) == 0:
+                    return True
+                if c > 0:
+                    to = fr - 9
+                    if ((own >> to) & 1) == 0:
+                        return True
+                if c < 7:
+                    to = fr - 7
+                    if ((own >> to) & 1) == 0:
+                        return True
+        return False
+
+    def side_eval(own, oppb, side_white, occ):
+        score = 0
+        best_progress = -1
+        bb2 = own
+
+        while bb2:
+            lsb = bb2 & -bb2
+            idx = lsb.bit_length() - 1
+            bb2 ^= lsb
+
+            r = idx >> 3
+            c = idx & 7
+            progress = r if side_white else (7 - r)
+            if progress > best_progress:
+                best_progress = progress
+
+            score += 100
+            score += ADV_BONUS[progress]
+            score += CENTER_BONUS[c] * 4
+
+            if c > 0 and ((own >> (idx - 1)) & 1):
+                score += 4
+            if c < 7 and ((own >> (idx + 1)) & 1):
+                score += 4
+
+            support = False
+            attacked = False
+            options = 0
+
+            if side_white:
+                if r > 0:
+                    if c > 0 and ((own >> (idx - 9)) & 1):
+                        support = True
+                    if c < 7 and ((own >> (idx - 7)) & 1):
+                        support = True
+                if r < 7:
+                    if c > 0 and ((oppb >> (idx + 7)) & 1):
+                        attacked = True
+                    if c < 7 and ((oppb >> (idx + 9)) & 1):
+                        attacked = True
+
+                    if ((occ >> (idx + 8)) & 1) == 0:
+                        options += 1
+                    if c > 0 and ((own >> (idx + 7)) & 1) == 0:
+                        options += 1
+                    if c < 7 and ((own >> (idx + 9)) & 1) == 0:
+                        options += 1
+
+                    score += options * 3
+                    if progress == 6 and options > 0:
+                        score += 160
+            else:
+                if r < 7:
+                    if c > 0 and ((own >> (idx + 7)) & 1):
+                        support = True
+                    if c < 7 and ((own >> (idx + 9)) & 1):
+                        support = True
+                if r > 0:
+                    if c > 0 and ((oppb >> (idx - 9)) & 1):
+                        attacked = True
+                    if c < 7 and ((oppb >> (idx - 7)) & 1):
+                        attacked = True
+
+                    if ((occ >> (idx - 8)) & 1) == 0:
+                        options += 1
+                    if c > 0 and ((own >> (idx - 9)) & 1) == 0:
+                        options += 1
+                    if c < 7 and ((own >> (idx - 7)) & 1) == 0:
+                        options += 1
+
+                    score += options * 3
+                    if progress == 6 and options > 0:
+                        score += 160
+
+            if support:
+                score += 10
+            if attacked:
+                score -= 10
+                if not support:
+                    score -= 12
+            if progress >= 5 and not attacked:
+                score += 12 * progress
+
+        if best_progress >= 0:
+            score += best_progress * 35
+        return score
+
+    def evaluate(wb, bb):
+        occ = wb | bb
+        score = side_eval(wb, bb, True, occ) - side_eval(bb, wb, False, occ)
+        if has_promo_in_one(wb, bb, True):
+            score += 400
+        if has_promo_in_one(wb, bb, False):
+            score -= 400
+        return score
+
+    def move_order_score(wb, bb, side_white, fr, to, capture, ply, pv_move):
+        if pv_move is not None and pv_move == (fr, to):
+            return 10**8
+
+        own = wb if side_white else bb
+        oppb = bb if side_white else wb
+
+        tr = to >> 3
+        tc = to & 7
+        progress = tr if side_white else (7 - tr)
+        promo = (tr == 7) if side_white else (tr == 0)
+
+        score = 0
+        if promo:
+            score += 1_000_000
+        if capture:
+            score += 50_000
+
+        own_wo_from = own ^ (1 << fr)
+        support = False
+        attacked = False
+
+        if side_white:
+            if tr > 0:
+                if tc > 0 and ((own_wo_from >> (to - 9)) & 1):
+                    support = True
+                if tc < 7 and ((own_wo_from >> (to - 7)) & 1):
+                    support = True
+            if tr < 7:
+                if tc > 0 and ((oppb >> (to + 7)) & 1):
+                    attacked = True
+                if tc < 7 and ((oppb >> (to + 9)) & 1):
+                    attacked = True
+        else:
+            if tr < 7:
+                if tc > 0 and ((own_wo_from >> (to + 7)) & 1):
+                    support = True
+                if tc < 7 and ((own_wo_from >> (to + 9)) & 1):
+                    support = True
+            if tr > 0:
+                if tc > 0 and ((oppb >> (to - 9)) & 1):
+                    attacked = True
+                if tc < 7 and ((oppb >> (to - 7)) & 1):
+                    attacked = True
+
+        if support:
+            score += 150
+        if attacked:
+            score -= 90
+
+        score += progress * 400
+        score += CENTER_BONUS[tc] * 20
+        score += history.get((fr, to), 0)
+
+        k1, k2 = killers[ply]
+        if (fr, to) == k1:
+            score += 3000
+        elif (fr, to) == k2:
+            score += 1500
+
+        return score
+
+    def gen_moves(wb, bb, side_white, ply, pv_move=None):
+        own = wb if side_white else bb
+        oppb = bb if side_white else wb
+        occ = wb | bb
+        moves = []
+
+        pieces = own
+        while pieces:
+            lsb = pieces & -pieces
+            fr = lsb.bit_length() - 1
+            pieces ^= lsb
+
+            r = fr >> 3
+            c = fr & 7
+
+            if side_white:
+                if r == 7:
+                    continue
+
+                to = fr + 8
+                if ((occ >> to) & 1) == 0:
+                    sc = move_order_score(wb, bb, side_white, fr, to, False, ply, pv_move)
+                    moves.append((sc, fr, to, False))
+
+                if c > 0:
+                    to = fr + 7
+                    if ((own >> to) & 1) == 0:
+                        cap = ((oppb >> to) & 1) == 1
+                        sc = move_order_score(wb, bb, side_white, fr, to, cap, ply, pv_move)
+                        moves.append((sc, fr, to, cap))
+
+                if c < 7:
+                    to = fr + 9
+                    if ((own >> to) & 1) == 0:
+                        cap = ((oppb >> to) & 1) == 1
+                        sc = move_order_score(wb, bb, side_white, fr, to, cap, ply, pv_move)
+                        moves.append((sc, fr, to, cap))
+            else:
+                if r == 0:
+                    continue
+
+                to = fr - 8
+                if ((occ >> to) & 1) == 0:
+                    sc = move_order_score(wb, bb, side_white, fr, to, False, ply, pv_move)
+                    moves.append((sc, fr, to, False))
+
+                if c > 0:
+                    to = fr - 9
+                    if ((own >> to) & 1) == 0:
+                        cap = ((oppb >> to) & 1) == 1
+                        sc = move_order_score(wb, bb, side_white, fr, to, cap, ply, pv_move)
+                        moves.append((sc, fr, to, cap))
+
+                if c < 7:
+                    to = fr - 7
+                    if ((own >> to) & 1) == 0:
+                        cap = ((oppb >> to) & 1) == 1
+                        sc = move_order_score(wb, bb, side_white, fr, to, cap, ply, pv_move)
+                        moves.append((sc, fr, to, cap))
+
+        moves.sort(key=lambda x: x[0], reverse=True)
+        return moves
+
+    def apply_move(wb, bb, side_white, fr, to):
+        frb = 1 << fr
+        tob = 1 << to
+        if side_white:
+            wb = (wb ^ frb) | tob
+            if bb & tob:
+                bb ^= tob
+        else:
+            bb = (bb ^ frb) | tob
+            if wb & tob:
+                wb ^= tob
+        return wb, bb
+
+    def search(wb, bb, side_white, depth, alpha, beta, ply):
+        if time.perf_counter() >= deadline:
+            raise _Timeout
+
+        term = terminal_relative(wb, bb, side_white, ply)
+        if term is not None:
+            return term
+
+        if depth <= 0:
+            if ply < 6 and (has_promo_in_one(wb, bb, side_white) or has_promo_in_one(wb, bb, not side_white)):
+                depth = 1
+            else:
+                val = evaluate(wb, bb)
+                return val if side_white else -val
+
+        key = (wb, bb, side_white)
+        orig_alpha, orig_beta = alpha, beta
+
+        entry = tt.get(key)
+        pv_move = None
+        if entry is not None:
+            e_depth, e_flag, e_val, e_best = entry
+            pv_move = e_best
+            if e_depth >= depth:
+                if e_flag == 0:
+                    return e_val
+                if e_flag == 1:
+                    alpha = max(alpha, e_val)
+                else:
+                    beta = min(beta, e_val)
+                if alpha >= beta:
+                    return e_val
+
+        moves = gen_moves(wb, bb, side_white, ply, pv_move)
+        if not moves:
+            return -WIN_SCORE + ply
+
+        best_val = -10**18
+        best_move = (moves[0][1], moves[0][2])
+
+        for _, fr, to, capture in moves:
+            nwb, nbb = apply_move(wb, bb, side_white, fr, to)
+            score = -search(nwb, nbb, not side_white, depth - 1, -beta, -alpha, ply + 1)
+
+            if score > best_val:
+                best_val = score
+                best_move = (fr, to)
+
+            if score > alpha:
+                alpha = score
+
+            if alpha >= beta:
+                if not capture:
+                    if killers[ply][0] != (fr, to):
+                        killers[ply][1] = killers[ply][0]
+                        killers[ply][0] = (fr, to)
+                history[(fr, to)] = history.get((fr, to), 0) + depth * depth
+                break
+
+        flag = 0
+        if best_val <= orig_alpha:
+            flag = 2
+        elif best_val >= orig_beta:
+            flag = 1
+
+        tt[key] = (depth, flag, best_val, best_move)
+        return best_val
+
+    root_moves = gen_moves(white, black, turn_white, 0, None)
+
+    if not root_moves:
+        # Terminal positions should normally not be passed in.
+        # Fallback is only here to keep the function total.
+        p = me[0] if me else (0, 0)
+        return (p, p)
+
+    fallback = (root_moves[0][1], root_moves[0][2])
+    best_move = fallback
+    best_score = -10**18
+
+    # Quick tactical pass: if any immediate winning move exists, play it.
+    for _, fr, to, _ in root_moves:
+        nwb, nbb = apply_move(white, black, turn_white, fr, to)
+        term = terminal_relative(nwb, nbb, not turn_white, 1)
+        if term is not None and term <= -WIN_SCORE + 1:
+            return (idx_to_sq(fr), idx_to_sq(to))
+
+    pv_move = best_move
+    max_depth = 1
+
+    try:
+        for depth in range(1, 64):
+            if time.perf_counter() >= deadline:
+                break
+
+            moves = gen_moves(white, black, turn_white, 0, pv_move)
+            alpha = -WIN_SCORE
+            beta = WIN_SCORE
+            local_best = (moves[0][1], moves[0][2])
+            local_score = -10**18
+
+            for _, fr, to, _ in moves:
+                nwb, nbb = apply_move(white, black, turn_white, fr, to)
+                score = -search(nwb, nbb, not turn_white, depth - 1, -beta, -alpha, 1)
+
+                if score > local_score:
+                    local_score = score
+                    local_best = (fr, to)
+
+                if score > alpha:
+                    alpha = score
+
+            best_move = local_best
+            best_score = local_score
+            pv_move = best_move
+            max_depth = depth
+
+            tt[(white, black, turn_white)] = (depth, 0, best_score, best_move)
+
+            if best_score >= WIN_SCORE - 1000:
+                break
+    except _Timeout:
+        pass
+
+    fr, to = best_move
+    return (idx_to_sq(fr), idx_to_sq(to))
+</code>

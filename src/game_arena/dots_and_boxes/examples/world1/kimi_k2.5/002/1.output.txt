@@ -1,0 +1,229 @@
+The strategy for this policy is based on the standard Dots and Boxes tactics:
+
+1. **Capture immediately**: Always take any move that completes a box (or two). If multiple capturing moves exist, prefer those that capture more boxes. If there is a tie, choose the move that leaves the most future safe moves.
+2. **Safe moves**: When no capture is available, play a move that does not give the opponent a box (i.e., does not create a box with exactly three sides). Among safe moves, prefer those that create the fewest boxes with two sides (potential future threats) and slightly favor border edges.
+3. **Sacrifice smartly**: If forced to play a move that gives the opponent a box (a "dangerous" move), choose the one that opens the shortest chain (i.e., minimizes the number of boxes the opponent can capture in the ensuing sequence). The chain length is computed by simulating the opponent’s greedy capture process.
+
+This combination of greedy capture, safe‑play heuristics, and minimal‑chain sacrifice provides a strong positional play without requiring expensive full‑game search.
+
+<code>
+import numpy as np
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    """Return a legal move string 'row,col,dir' for Dots and Boxes on a 4x4 grid."""
+
+    # ----- Helper geometry functions -----
+    def adjacent_boxes(r, c, d):
+        """Return list of box coordinates (br,bc) adjacent to edge (r,c,d)."""
+        boxes = []
+        if d == 'H':
+            if r < 4:
+                boxes.append((r, c))
+            if r > 0:
+                boxes.append((r-1, c))
+        else:  # 'V'
+            if c < 4:
+                boxes.append((r, c))
+            if c > 0:
+                boxes.append((r, c-1))
+        return boxes
+
+    def count_edges(br, bc, h, v):
+        """Count filled edges around box (br,bc) using provided h,v arrays."""
+        cnt = 0
+        if h[br, bc] != 0:
+            cnt += 1
+        if h[br+1, bc] != 0:
+            cnt += 1
+        if v[br, bc] != 0:
+            cnt += 1
+        if v[br, bc+1] != 0:
+            cnt += 1
+        return cnt
+
+    def count_captures(r, c, d, h, v):
+        """Number of boxes completed by playing edge (r,c,d)."""
+        caps = 0
+        for br, bc in adjacent_boxes(r, c, d):
+            if count_edges(br, bc, h, v) == 3:
+                caps += 1
+        return caps
+
+    def is_safe_move(r, c, d, h, v):
+        """True if playing (r,c,d) does not create a box with 3 sides (i.e., give opponent a gift)."""
+        for br, bc in adjacent_boxes(r, c, d):
+            if count_edges(br, bc, h, v) == 2:
+                return False
+        return True
+
+    def count_safe_moves(h, v):
+        """Count how many legal moves are safe in the given state."""
+        safe = 0
+        # Horizontal edges: rows 0-4, cols 0-3
+        for r in range(5):
+            for c in range(4):
+                if h[r, c] == 0 and is_safe_move(r, c, 'H', h, v):
+                    safe += 1
+        # Vertical edges: rows 0-3, cols 0-4
+        for r in range(4):
+            for c in range(5):
+                if v[r, c] == 0 and is_safe_move(r, c, 'V', h, v):
+                    safe += 1
+        return safe
+
+    def chain_length(r, c, d, h_orig, v_orig, cap_orig):
+        """
+        Simulate the opponent's greedy capture sequence after we play a dangerous move (r,c,d).
+        Returns the total number of boxes the opponent can capture.
+        """
+        h = h_orig.copy()
+        v = v_orig.copy()
+        cap = cap_orig.copy()
+
+        # Play our move (not capturing, by definition of dangerous)
+        if d == 'H':
+            h[r, c] = 1
+        else:
+            v[r, c] = 1
+
+        total = 0
+        while True:
+            found = False
+            # Find any uncaptured box with exactly 3 sides
+            for br in range(4):
+                for bc in range(4):
+                    if cap[br, bc] != 0:
+                        continue
+                    # Determine missing edge for this box
+                    missing = None
+                    cnt = 0
+                    if h[br, bc] != 0:
+                        cnt += 1
+                    else:
+                        missing = (br, bc, 'H')
+                    if h[br+1, bc] != 0:
+                        cnt += 1
+                    else:
+                        missing = (br+1, bc, 'H')
+                    if v[br, bc] != 0:
+                        cnt += 1
+                    else:
+                        missing = (br, bc, 'V')
+                    if v[br, bc+1] != 0:
+                        cnt += 1
+                    else:
+                        missing = (br, bc+1, 'V')
+
+                    if cnt == 3 and missing is not None:
+                        # Opponent fills the missing edge
+                        mr, mc, md = missing
+                        if md == 'H':
+                            h[mr, mc] = -1
+                        else:
+                            v[mr, mc] = -1
+
+                        # Check adjacent box(es) for completion
+                        for abr, abc in adjacent_boxes(mr, mc, md):
+                            if cap[abr, abc] == 0:
+                                if count_edges(abr, abc, h, v) == 4:
+                                    cap[abr, abc] = -1
+                                    total += 1
+                        found = True
+                        break
+                if found:
+                    break
+            if not found:
+                break
+        return total
+
+    # ----- Generate all legal moves -----
+    moves = []
+    for r in range(5):
+        for c in range(4):
+            if horizontal[r, c] == 0:
+                moves.append((r, c, 'H'))
+    for r in range(4):
+        for c in range(5):
+            if vertical[r, c] == 0:
+                moves.append((r, c, 'V'))
+
+    if not moves:
+        # Fallback (should never happen in a valid game)
+        return "0,0,H"
+
+    # ----- Classify moves -----
+    capturing = []
+    safe_moves = []
+    dangerous_moves = []
+
+    for m in moves:
+        r, c, d = m
+        caps = count_captures(r, c, d, horizontal, vertical)
+        if caps > 0:
+            capturing.append((caps, r, c, d))
+        elif is_safe_move(r, c, d, horizontal, vertical):
+            safe_moves.append((r, c, d))
+        else:
+            dangerous_moves.append((r, c, d))
+
+    # ----- Priority 1: Capturing moves -----
+    if capturing:
+        capturing.sort(reverse=True)  # higher capture count first
+        max_caps = capturing[0][0]
+        candidates = [(r, c, d) for caps, r, c, d in capturing if caps == max_caps]
+        if len(candidates) == 1:
+            r, c, d = candidates[0]
+            return f"{r},{c},{d}"
+        # Tie-break: choose the capture that leaves the most safe moves for our next turn
+        best = candidates[0]
+        best_safe = -1
+        for r, c, d in candidates:
+            h2 = horizontal.copy()
+            v2 = vertical.copy()
+            if d == 'H':
+                h2[r, c] = 1
+            else:
+                v2[r, c] = 1
+            s = count_safe_moves(h2, v2)
+            if s > best_safe:
+                best_safe = s
+                best = (r, c, d)
+        r, c, d = best
+        return f"{r},{c},{d}"
+
+    # ----- Priority 2: Safe moves -----
+    if safe_moves:
+        # Heuristic: minimize creation of boxes with 2 edges (threats)
+        # Slight preference for border edges (only 1 adjacent box)
+        best = None
+        best_score = None
+        for r, c, d in safe_moves:
+            score = 0
+            for br, bc in adjacent_boxes(r, c, d):
+                ec = count_edges(br, bc, horizontal, vertical)
+                # After move, ec becomes ec+1
+                if ec == 1:
+                    score -= 1  # becomes 2 (potential threat)
+                # ec == 0 becomes 1 (no threat)
+            if len(adjacent_boxes(r, c, d)) == 1:
+                score += 0.1
+            if best_score is None or score > best_score:
+                best_score = score
+                best = (r, c, d)
+        r, c, d = best
+        return f"{r},{c},{d}"
+
+    # ----- Priority 3: Dangerous moves (sacrifice) -----
+    # Choose the move that gives away the fewest boxes (shortest chain)
+    best = None
+    min_chain = 1000
+    for r, c, d in dangerous_moves:
+        cl = chain_length(r, c, d, horizontal, vertical, capture)
+        if cl < min_chain:
+            min_chain = cl
+            best = (r, c, d)
+    if best is None:
+        best = dangerous_moves[0]
+    r, c, d = best
+    return f"{r},{c},{d}"
+</code>

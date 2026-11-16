@@ -1,0 +1,441 @@
+The strategy for this policy is a time-bounded alpha–beta search (iterative deepening) on a fast bitboard representation. It prioritizes stable advantages (corners and “corner-connected” edges), avoids risky X/C-squares when corners are open, and uses mobility plus a positional weight table in the midgame. In late endgames it searches deeper (often to completion) within the 1-second budget, using a transposition table and move ordering (corners first, then high-scoring heuristic moves). It always returns a legal move, or `"pass"` only when no legal move exists.
+
+<code>
+import numpy as np
+import time
+from typing import Dict, Tuple, Optional
+
+# --- Bitboard constants (a1 is LSB, h8 is MSB) ---
+FULL = (1 << 64) - 1
+A_FILE = 0x0101010101010101
+H_FILE = 0x8080808080808080
+NOT_A = FULL ^ A_FILE
+NOT_H = FULL ^ H_FILE
+
+CORNERS = (1 << 0) | (1 << 7) | (1 << 56) | (1 << 63)
+
+# X-squares (diagonal adjacent to corners): b2, g2, b7, g7
+X_SQUARES = (1 << 9) | (1 << 14) | (1 << 49) | (1 << 54)
+# C-squares (orthogonally adjacent to corners): a2,h2,b1,g1,a7,h7,b8,g8
+C_SQUARES = (1 << 8) | (1 << 15) | (1 << 1) | (1 << 6) | (1 << 48) | (1 << 55) | (1 << 57) | (1 << 62)
+
+# Corner-adjacent sets per corner for penalty logic
+CORNER_ADJ = {
+    0: ((1 << 1) | (1 << 8) | (1 << 9)),           # a1 adj: b1,a2,b2
+    7: ((1 << 6) | (1 << 15) | (1 << 14)),         # h1 adj: g1,h2,g2
+    56: ((1 << 57) | (1 << 48) | (1 << 49)),       # a8 adj: b8,a7,b7
+    63: ((1 << 62) | (1 << 55) | (1 << 54)),       # h8 adj: g8,h7,g7
+}
+
+# Classic positional weights (from a1..h8 by rows rank1->rank8)
+_POS_WEIGHTS = np.array([
+    [120, -20,  20,   5,   5,  20, -20, 120],
+    [-20, -40,  -5,  -5,  -5,  -5, -40, -20],
+    [ 20,  -5,  15,   3,   3,  15,  -5,  20],
+    [  5,  -5,   3,   3,   3,   3,  -5,   5],
+    [  5,  -5,   3,   3,   3,   3,  -5,   5],
+    [ 20,  -5,  15,   3,   3,  15,  -5,  20],
+    [-20, -40,  -5,  -5,  -5,  -5, -40, -20],
+    [120, -20,  20,   5,   5,  20, -20, 120],
+], dtype=np.int32)
+
+# Flatten to bit index (r*8+c)
+POS_W = [int(_POS_WEIGHTS[r, c]) for r in range(8) for c in range(8)]
+
+# Precompute a fast ordering score per square for move ordering
+ORDER_W = POS_W[:]  # base ordering: positional weights help
+for idx in (0, 7, 56, 63):
+    ORDER_W[idx] += 500  # corners overwhelmingly first
+for idx in (9, 14, 49, 54):
+    ORDER_W[idx] -= 200  # X-squares generally dangerous
+for idx in (1, 6, 8, 15, 48, 55, 57, 62):
+    ORDER_W[idx] -= 80   # C-squares also dangerous (less than X)
+
+# --- Transposition table ---
+# key: (player, opp) -> (depth, value, flag)
+# flag: 0 exact, -1 upperbound, +1 lowerbound
+TT: Dict[Tuple[int, int], Tuple[int, int, int]] = {}
+
+# --- Direction shifts ---
+def shE(bb: int) -> int:
+    return ((bb & NOT_H) << 1) & FULL
+
+def shW(bb: int) -> int:
+    return (bb & NOT_A) >> 1
+
+def shN(bb: int) -> int:
+    return ((bb << 8) & FULL)
+
+def shS(bb: int) -> int:
+    return bb >> 8
+
+def shNE(bb: int) -> int:
+    return ((bb & NOT_H) << 9) & FULL
+
+def shNW(bb: int) -> int:
+    return ((bb & NOT_A) << 7) & FULL
+
+def shSE(bb: int) -> int:
+    return (bb & NOT_H) >> 7
+
+def shSW(bb: int) -> int:
+    return (bb & NOT_A) >> 9
+
+DIRS = (shE, shW, shN, shS, shNE, shNW, shSE, shSW)
+
+# --- Bitboard move generation ---
+def legal_moves(player: int, opp: int) -> int:
+    empty = (~(player | opp)) & FULL
+    moves = 0
+    for sh in DIRS:
+        t = opp & sh(player)
+        # Expand up to 6 steps (board width max 8)
+        t |= opp & sh(t)
+        t |= opp & sh(t)
+        t |= opp & sh(t)
+        t |= opp & sh(t)
+        t |= opp & sh(t)
+        moves |= empty & sh(t)
+    return moves
+
+def flips_for_move(player: int, opp: int, mv: int) -> int:
+    flips = 0
+    for sh in DIRS:
+        line = 0
+        t = sh(mv)
+        while t & opp:
+            line |= t
+            t = sh(t)
+        if t & player:
+            flips |= line
+    return flips
+
+def apply_move(player: int, opp: int, mv: int) -> Tuple[int, int]:
+    flips = flips_for_move(player, opp, mv)
+    player2 = player | mv | flips
+    opp2 = opp & (~flips)
+    return player2, opp2
+
+def bits_to_list(bb: int):
+    out = []
+    while bb:
+        lsb = bb & -bb
+        out.append(lsb)
+        bb ^= lsb
+    return out
+
+def bit_to_index(b: int) -> int:
+    return (b.bit_length() - 1)
+
+def bit_to_coord(b: int) -> str:
+    idx = bit_to_index(b)
+    r = idx // 8
+    c = idx % 8
+    return chr(ord('a') + c) + str(r + 1)
+
+# --- Evaluation ---
+def corner_edge_stability(player: int, opp: int) -> int:
+    # Approximate: count continuous same-color discs from corners along edges.
+    # Only for the side being evaluated (player).
+    score = 0
+
+    # a1 corner
+    if player & (1 << 0):
+        # along rank1: a1->h1
+        for c in range(8):
+            if player & (1 << c):
+                score += 1
+            else:
+                break
+        # along file a: a1->a8
+        for r in range(8):
+            if player & (1 << (r * 8)):
+                score += 1
+            else:
+                break
+
+    # h1 corner
+    if player & (1 << 7):
+        for c in range(7, -1, -1):
+            if player & (1 << c):
+                score += 1
+            else:
+                break
+        for r in range(8):
+            if player & (1 << (r * 8 + 7)):
+                score += 1
+            else:
+                break
+
+    # a8 corner
+    if player & (1 << 56):
+        for c in range(8):
+            if player & (1 << (56 + c)):
+                score += 1
+            else:
+                break
+        for r in range(7, -1, -1):
+            if player & (1 << (r * 8)):
+                score += 1
+            else:
+                break
+
+    # h8 corner
+    if player & (1 << 63):
+        for c in range(7, -1, -1):
+            if player & (1 << (56 + c)):
+                score += 1
+            else:
+                break
+        for r in range(7, -1, -1):
+            if player & (1 << (r * 8 + 7)):
+                score += 1
+            else:
+                break
+
+    return score
+
+def positional_score(player: int, opp: int) -> int:
+    # Sum square weights for player minus opponent.
+    s = 0
+    bb = player
+    while bb:
+        lsb = bb & -bb
+        s += POS_W[bit_to_index(lsb)]
+        bb ^= lsb
+    bb = opp
+    while bb:
+        lsb = bb & -bb
+        s -= POS_W[bit_to_index(lsb)]
+        bb ^= lsb
+    return s
+
+def corner_adj_penalty(player: int, opp: int) -> int:
+    # Penalize owning squares adjacent to an EMPTY corner (risky).
+    # Reward if corner is owned (adjacent becomes safe).
+    score = 0
+    for corner_idx in (0, 7, 56, 63):
+        cbit = 1 << corner_idx
+        adj = CORNER_ADJ[corner_idx]
+        if (player | opp) & cbit:
+            # corner occupied: slight bonus for having corner (handled elsewhere),
+            # but no adjacency penalty here.
+            continue
+        # corner empty: penalize taking adjacent squares
+        if player & adj:
+            score -= 60 * ((player & adj).bit_count())
+        if opp & adj:
+            score += 60 * ((opp & adj).bit_count())
+    return score
+
+def evaluate(player: int, opp: int) -> int:
+    # Terminal?
+    empty_cnt = (FULL ^ (player | opp)).bit_count()
+    pm = legal_moves(player, opp)
+    om = legal_moves(opp, player)
+    if empty_cnt == 0 or (pm == 0 and om == 0):
+        return (player.bit_count() - opp.bit_count()) * 10000
+
+    # Phase (0 early -> 1 late)
+    # 60 empties at start, 0 at end.
+    phase = (60 - empty_cnt) / 60.0
+
+    # Corners dominate
+    corner_term = ((player & CORNERS).bit_count() - (opp & CORNERS).bit_count()) * 900
+
+    # Mobility: important midgame
+    mob_term = (pm.bit_count() - om.bit_count()) * int(120 - 40 * phase)
+
+    # Positional
+    pos_term = positional_score(player, opp) * int(6 - 2 * phase)
+
+    # Disc difference: mostly late game
+    disc_term = (player.bit_count() - opp.bit_count()) * int(2 + 18 * phase)
+
+    # Stability (approx)
+    stab_term = (corner_edge_stability(player, opp) - corner_edge_stability(opp, player)) * int(20 + 30 * phase)
+
+    # Corner-adjacent penalties (dynamic)
+    adj_term = corner_adj_penalty(player, opp) * int(1 + 1 * (1.0 - phase))
+
+    # Frontier-ish: prefer fewer frontier discs (approx by counting discs adjacent to empties)
+    # Lightweight approximate: count potential frontier by shifting empties.
+    empty = (~(player | opp)) & FULL
+    neigh_empty = (shN(empty) | shS(empty) | shE(empty) | shW(empty) | shNE(empty) | shNW(empty) | shSE(empty) | shSW(empty))
+    pf = (player & neigh_empty).bit_count()
+    of = (opp & neigh_empty).bit_count()
+    frontier_term = (of - pf) * int(8 - 4 * phase)
+
+    return corner_term + mob_term + pos_term + disc_term + stab_term + adj_term + frontier_term
+
+# --- Search (negamax with alpha-beta, TT, iterative deepening) ---
+class TimeUp(Exception):
+    pass
+
+def ordered_moves(player: int, opp: int, moves_bb: int):
+    moves = bits_to_list(moves_bb)
+    # Order by corner first, then heuristic ordering weight, then immediate flip count.
+    def key(mv: int):
+        idx = bit_to_index(mv)
+        w = ORDER_W[idx]
+        if mv & CORNERS:
+            w += 100000
+        # immediate flips can help ordering in tactical positions
+        w += 2 * flips_for_move(player, opp, mv).bit_count()
+        return w
+    moves.sort(key=key, reverse=True)
+    return moves
+
+def negamax(player: int, opp: int, depth: int, alpha: int, beta: int,
+            t_end: float) -> int:
+    if time.perf_counter() >= t_end:
+        raise TimeUp
+
+    key = (player, opp)
+    tt_entry = TT.get(key)
+    if tt_entry is not None:
+        tt_depth, tt_val, tt_flag = tt_entry
+        if tt_depth >= depth:
+            if tt_flag == 0:
+                return tt_val
+            elif tt_flag < 0:  # upperbound
+                beta = min(beta, tt_val)
+            else:  # lowerbound
+                alpha = max(alpha, tt_val)
+            if alpha >= beta:
+                return tt_val
+
+    pm = legal_moves(player, opp)
+    om = None  # compute lazily if needed
+
+    empty_cnt = (FULL ^ (player | opp)).bit_count()
+    if depth == 0 or empty_cnt == 0:
+        val = evaluate(player, opp)
+        TT[key] = (depth, val, 0)
+        return val
+
+    if pm == 0:
+        # pass move
+        if om is None:
+            om = legal_moves(opp, player)
+        if om == 0:
+            val = (player.bit_count() - opp.bit_count()) * 10000
+            TT[key] = (depth, val, 0)
+            return val
+        val = -negamax(opp, player, depth - 1, -beta, -alpha, t_end)
+        TT[key] = (depth, val, 0)
+        return val
+
+    best = -10**18
+    a0 = alpha
+    for mv in ordered_moves(player, opp, pm):
+        p2, o2 = apply_move(player, opp, mv)
+        val = -negamax(o2, p2, depth - 1, -beta, -alpha, t_end)
+        if val > best:
+            best = val
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+
+    # Store TT bound
+    flag = 0
+    if best <= a0:
+        flag = -1
+    elif best >= beta:
+        flag = +1
+    TT[key] = (depth, best, flag)
+    return best
+
+def choose_move(player: int, opp: int, time_limit: float = 0.95) -> Optional[int]:
+    t_end = time.perf_counter() + time_limit
+    moves_bb = legal_moves(player, opp)
+    if moves_bb == 0:
+        return None
+
+    moves = ordered_moves(player, opp, moves_bb)
+
+    # Quick corner grab if available (usually optimal)
+    for mv in moves:
+        if mv & CORNERS:
+            return mv
+
+    empty_cnt = (FULL ^ (player | opp)).bit_count()
+
+    # Depth planning: deeper in endgame
+    if empty_cnt <= 10:
+        max_depth = 64  # try to solve
+    elif empty_cnt <= 16:
+        max_depth = 12
+    elif empty_cnt <= 26:
+        max_depth = 9
+    else:
+        max_depth = 7
+
+    best_move = moves[0]
+    best_val = -10**18
+
+    # Iterative deepening
+    for depth in range(1, max_depth + 1):
+        if time.perf_counter() >= t_end:
+            break
+        cur_best_move = best_move
+        cur_best_val = -10**18
+        alpha, beta = -10**18, 10**18
+
+        # Search each root move; aspiration windows could be used, but keep stable.
+        try:
+            for mv in moves:
+                if time.perf_counter() >= t_end:
+                    raise TimeUp
+                p2, o2 = apply_move(player, opp, mv)
+                val = -negamax(o2, p2, depth - 1, -beta, -alpha, t_end)
+
+                if val > cur_best_val:
+                    cur_best_val = val
+                    cur_best_move = mv
+                if val > alpha:
+                    alpha = val
+        except TimeUp:
+            # keep last completed depth result
+            break
+
+        best_move, best_val = cur_best_move, cur_best_val
+
+        # Re-order root moves with PV first for next iteration
+        moves.sort(key=lambda m: (m == best_move, ORDER_W[bit_to_index(m)]), reverse=True)
+
+    return best_move
+
+# --- API function ---
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    # Convert numpy board to bitboards
+    # you[r][c] corresponds to rank r+1, file a+c, bit index r*8+c.
+    y_flat = you.reshape(-1)
+    o_flat = opponent.reshape(-1)
+
+    y_bits = 0
+    o_bits = 0
+    for idx in np.flatnonzero(y_flat):
+        y_bits |= (1 << int(idx))
+    for idx in np.flatnonzero(o_flat):
+        o_bits |= (1 << int(idx))
+
+    mv = choose_move(y_bits, o_bits, time_limit=0.95)
+    if mv is None:
+        # Must pass only if no legal moves exist
+        if legal_moves(y_bits, o_bits) != 0:
+            # Fallback safety: pick first legal move (shouldn't happen)
+            mlist = bits_to_list(legal_moves(y_bits, o_bits))
+            return bit_to_coord(mlist[0])
+        return "pass"
+
+    # Final legality check (safety)
+    if not (mv & legal_moves(y_bits, o_bits)):
+        mlist = bits_to_list(legal_moves(y_bits, o_bits))
+        if not mlist:
+            return "pass"
+        mv = mlist[0]
+
+    return bit_to_coord(mv)
+</code>

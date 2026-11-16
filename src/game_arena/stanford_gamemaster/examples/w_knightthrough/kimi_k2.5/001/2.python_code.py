@@ -1,0 +1,98 @@
+
+def policy(state: list[list[object]], role: str) -> str:
+    # Mapping between column letters and indices (a=1, b=2, ..., h=8)
+    col_to_idx = {c: i for i, c in enumerate('abcdefgh', 1)}
+    idx_to_col = {i: c for i, c in enumerate('abcdefgh', 1)}
+    
+    # Parse board: map (col_idx, row) -> color
+    pieces = {}
+    for prop in state:
+        if len(prop) > 0 and prop[0] == "cell":
+            col_char = prop[1]
+            row_num = int(prop[2])
+            color = prop[3]
+            c_idx = col_to_idx[col_char]
+            pieces[(c_idx, row_num)] = color
+    
+    # Determine movement parameters based on role
+    if role == "white":
+        # White moves toward row 8 (increasing rows): (±1, +2), (±2, +1)
+        knight_moves = [(1, 2), (2, 1), (-1, 2), (-2, 1)]
+        goal_row = 8
+        opponent = "black"
+    else:  # black
+        # Black moves toward row 1 (decreasing rows): (±1, -2), (±2, -1)
+        knight_moves = [(1, -2), (2, -1), (-1, -2), (-2, -1)]
+        goal_row = 1
+        opponent = "white"
+    
+    # Identify piece positions
+    my_pieces = [(c, r) for (c, r), color in pieces.items() if color == role]
+    opponent_pieces = [(c, r) for (c, r), color in pieces.items() if color == opponent]
+    
+    # Determine squares where opponent could win on their next turn
+    opponent_win_squares = set()
+    if role == "white":
+        # Opponent (black) wins by reaching row 1
+        for (c, r) in opponent_pieces:
+            for dc, dr in [(1, -2), (2, -1), (-1, -2), (-2, -1)]:
+                nc, nr = c + dc, r + dr
+                if nr == 1 and 1 <= nc <= 8:
+                    opponent_win_squares.add((nc, nr))
+    else:
+        # Opponent (white) wins by reaching row 8
+        for (c, r) in opponent_pieces:
+            for dc, dr in [(1, 2), (2, 1), (-1, 2), (-2, 1)]:
+                nc, nr = c + dc, r + dr
+                if nr == 8 and 1 <= nc <= 8:
+                    opponent_win_squares.add((nc, nr))
+    
+    # Generate all legal moves for current player
+    legal_moves = []
+    for (c, r) in my_pieces:
+        for dc, dr in knight_moves:
+            nc, nr = c + dc, r + dr
+            if 1 <= nc <= 8 and 1 <= nr <= 8:
+                dest_piece = pieces.get((nc, nr))
+                if dest_piece != role:  # Destination is empty or opponent
+                    legal_moves.append((c, r, nc, nr))
+    
+    if not legal_moves:
+        return "move(a,1,a,1)"  # Should not occur in valid states
+    
+    best_move = None
+    best_score = -1000
+    
+    for c1, r1, c2, r2 in legal_moves:
+        # Check for immediate win
+        if r2 == goal_row:
+            return f"move({idx_to_col[c1]},{r1},{idx_to_col[c2]},{r2})"
+        
+        score = 0
+        dest_piece = pieces.get((c2, r2))
+        
+        # Capture bonus
+        if dest_piece == opponent:
+            score += 100
+        
+        # Blocking bonus: move to a square opponent needs to win
+        if (c2, r2) in opponent_win_squares:
+            score += 50
+        
+        # Progress bonus (higher row for white, lower row for black)
+        if role == "white":
+            score += r2 * 10
+        else:
+            score += (9 - r2) * 10
+        
+        if score > best_score:
+            best_score = score
+            best_move = (c1, r1, c2, r2)
+    
+    if best_move:
+        c1, r1, c2, r2 = best_move
+        return f"move({idx_to_col[c1]},{r1},{idx_to_col[c2]},{r2})"
+    
+    # Fallback: return first legal move (should never reach here)
+    c1, r1, c2, r2 = legal_moves[0]
+    return f"move({idx_to_col[c1]},{r1},{idx_to_col[c2]},{r2})"

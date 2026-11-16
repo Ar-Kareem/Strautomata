@@ -1,0 +1,304 @@
+The strategy for this policy is based on an **Iterative Deepening Alpha-Beta Search**. The core of the decision-making process is a heuristic evaluation that calculates a **Concentration Score** based on the sum of squared distances of the player's pieces from their Center of Mass (COM). This "Center-of-Mass" heuristic effectively guides pieces to cluster together, which is the winning condition for Lines of Action.
+
+The agent follows these steps:
+1.  **Move Generation**: It generates all legal moves according to LOA rules, specifically calculating the exact steps based on line counts and checking path blocking constraints.
+2.  **Move Ordering**: Moves that result in captures are prioritized in the search tree to improve Alpha-Beta pruning efficiency.
+3.  **Evaluation**:
+    *   **Connectivity**: A huge score bonus is given if a move results in a connected state (Winning).
+    *   **Concentration**: The agent seeks to minimize its own pieces' scatter (sum of squared Euclidean distances to COM) and maximize the opponent's scatter.
+    *   **Simultaneous Wins**: The logic strictly adheres to the rule that the moving player wins in the event of simultaneous connectivity.
+4.  **Time Management**: The search iteratively deepens, checking the elapsed time at every node. If the time limit (with a safety buffer) is exceeded, it aborts the current depth and returns the best move found in the previous completed depth.
+
+<code>
+import time
+import collections
+
+# Constants for board representation
+EMPTY = 0
+ME = 1
+OPP = -1
+
+def policy(board_state) -> str:
+    """
+    Determines the next move for the Lines of Action game.
+    
+    Args:
+        board_state: A list of lists (8x8) representing the board.
+                     0 = Empty, 1 = Me, -1 = Opponent.
+    
+    Returns:
+        A string representing the move in format "r1,c1:r2,c2".
+    """
+    
+    # Configuration
+    time_limit = 0.96  # Limit execution to slightly under 1s
+    start_time = time.time()
+    H, W = 8, 8
+    
+    # Define 8 directions: (dr, dc)
+    DIRS = [(-1, -1), (-1, 0), (-1, 1), 
+            (0, -1),           (0, 1), 
+            (1, -1),  (1, 0),  (1, 1)]
+
+    # 1. Parse Board & Initialize Mutable State
+    # We use a mutable board and piece sets for performance in recursion
+    board = [row[:] for row in board_state]
+    pieces = {ME: set(), OPP: set()}
+    
+    for r in range(H):
+        for c in range(W):
+            v = board[r][c]
+            if v == ME:
+                pieces[ME].add((r, c))
+            elif v == OPP:
+                pieces[OPP].add((r, c))
+
+    # Helper: Custom Timeout Exception
+    class TimeOutException(Exception):
+        pass
+
+    # 2. Game Logic Helpers
+    def get_line_count(r, c, dr, dc):
+        """Counts total pieces (both players) on the line of action."""
+        count = 0
+        # Scan positive direction (includes current piece)
+        cr, cc = r, c
+        while 0 <= cr < H and 0 <= cc < W:
+            if board[cr][cc] != 0: count += 1
+            cr += dr
+            cc += dc
+        # Scan negative direction
+        cr, cc = r - dr, c - dc
+        while 0 <= cr < H and 0 <= cc < W:
+            if board[cr][cc] != 0: count += 1
+            cr -= dr
+            cc -= dc
+        return count
+
+    def get_moves(player):
+        """Generates all legal moves for a player."""
+        moves = [] # List of tuples: ((from_r, from_c), (to_r, to_c))
+        my_pieces = pieces[player]
+        opp_val = -1 if player == 1 else 1 # Assuming player is 1 or -1
+        
+        for r, c in my_pieces:
+            for dr, dc in DIRS:
+                dist = get_line_count(r, c, dr, dc)
+                if dist == 0: continue 
+                
+                tr, tc = r + dist * dr, c + dist * dc
+                
+                # Boundary check
+                if 0 <= tr < H and 0 <= tc < W:
+                    dest_val = board[tr][tc]
+                    
+                    # Cannot land on friendly piece
+                    if dest_val == player:
+                        continue
+                    
+                    # Check for blocking enemy pieces along the path
+                    blocked = False
+                    for k in range(1, dist):
+                        ir, ic = r + k * dr, c + k * dc
+                        if board[ir][ic] == opp_val:
+                            blocked = True
+                            break
+                    
+                    if not blocked:
+                        moves.append(((r, c), (tr, tc)))
+        return moves
+
+    def is_connected(player):
+        """Checks if all pieces of the player are connected."""
+        pset = pieces[player]
+        n = len(pset)
+        if n <= 1: return True # 0 or 1 piece is technically connected
+        
+        start_node = next(iter(pset))
+        q = collections.deque([start_node])
+        seen = {start_node}
+        count = 0
+        
+        while q:
+            curr_r, curr_c = q.popleft()
+            count += 1
+            # 8-connected neighbors
+            for dr in [-1, 0, 1]:
+                for dc in [-1, 0, 1]:
+                    if dr == 0 and dc == 0: continue
+                    nr, nc = curr_r + dr, curr_c + dc
+                    if (nr, nc) in pset and (nr, nc) not in seen:
+                        seen.add((nr, nc))
+                        q.append((nr, nc))
+        
+        return count == n
+
+    def heuristic():
+        """
+        Evaluates the board state.
+        Metric: Minimize sum of squared distances to Center of Mass.
+        Score = (Opponent Concentration Cost) - (My Concentration Cost)
+        """
+        def get_concentration_cost(pset):
+            if not pset: return 0
+            # Calculate Center of Mass
+            sum_r = sum(p[0] for p in pset)
+            sum_c = sum(p[1] for p in pset)
+            n = len(pset)
+            com_r = sum_r / n
+            com_c = sum_c / n
+            
+            cost = 0
+            for r, c in pset:
+                # Squared Euclidean distance makes the heuristic favor tighter clusters
+                cost += (r - com_r)**2 + (c - com_c)**2
+            return cost
+
+        cost_me = get_concentration_cost(pieces[ME])
+        cost_opp = get_concentration_cost(pieces[OPP])
+        
+        # We want low cost for ME, high cost for OPP
+        return cost_opp - cost_me
+
+    # 3. Alpha-Beta Search
+    def bfs_search(depth, alpha, beta, maximizing):
+        if time.time() - start_time > time_limit:
+            raise TimeOutException()
+
+        # Terminal state checks
+        # Rules: If a move creates simultaneous wins, the moving player wins.
+        # Check current board state.
+        # If maximizing (It is currently ME's turn to move inside search):
+        #   -> Previous move was made by OPP.
+        #   -> Did OPP win? Check OPP connectivity.
+        #   -> Did OPP accidentally connect ME? Check ME connectivity.
+        if maximizing:
+            if is_connected(OPP): return -10000000 # Opponent won
+            if is_connected(ME):  return  10000000 # I won (Opponent blunder)
+        else:
+            # If minimizing (It is currently OPP's turn to move):
+            #   -> Previous move was made by ME.
+            if is_connected(ME):  return  10000000 # I won
+            if is_connected(OPP): return -10000000 # Opponent won (My blunder)
+
+        if depth == 0:
+            return heuristic()
+
+        player = ME if maximizing else OPP
+        legal_moves = get_moves(player)
+        
+        if not legal_moves:
+            # Stalemated player loses
+            return -10000000 if maximizing else 10000000
+
+        # Move Ordering: Prioritize Captures
+        # Gives a score of 10 if capture, 0 otherwise
+        legal_moves.sort(key=lambda m: 10 if board[m[1][0]][m[1][1]] != 0 else 0, reverse=True)
+
+        best_val = -float('inf') if maximizing else float('inf')
+
+        for (fr, fc), (tr, tc) in legal_moves:
+            captured_val = board[tr][tc]
+            
+            # --- Make Move ---
+            board[tr][tc] = board[fr][fc]
+            board[fr][fc] = 0
+            pieces[player].remove((fr, fc))
+            pieces[player].add((tr, tc))
+            if captured_val != 0:
+                pieces[-player].remove((tr, tc))
+            
+            try:
+                val = bfs_search(depth - 1, alpha, beta, not maximizing)
+            except TimeOutException:
+                # Must undo move before raising
+                if captured_val != 0: pieces[-player].add((tr, tc))
+                pieces[player].remove((tr, tc))
+                pieces[player].add((fr, fc))
+                board[fr][fc] = board[tr][tc]
+                board[tr][tc] = captured_val
+                raise
+
+            # --- Undo Move ---
+            if captured_val != 0:
+                pieces[-player].add((tr, tc))
+            pieces[player].remove((tr, tc))
+            pieces[player].add((fr, fc))
+            board[fr][fc] = board[tr][tc]
+            board[tr][tc] = captured_val
+
+            # Alpha-Beta Pruning
+            if maximizing:
+                if val > best_val: best_val = val
+                alpha = max(alpha, best_val)
+            else:
+                if val < best_val: best_val = val
+                beta = min(beta, best_val)
+            
+            if beta <= alpha:
+                break
+        
+        return best_val
+
+    # 4. Iterative Deepening Loop
+    root_moves = get_moves(ME)
+    if not root_moves:
+        return "0,0:0,0" # Should effectively resign/lost
+    
+    # Sort root moves by capture heuristic initially
+    root_moves.sort(key=lambda m: 10 if board[m[1][0]][m[1][1]] != 0 else 0, reverse=True)
+    
+    best_move_global = root_moves[0]
+    
+    try:
+        # Start at depth 1, increase until timeout
+        for depth in range(1, 50):
+            alpha = -float('inf')
+            beta = float('inf')
+            best_val_iter = -float('inf')
+            best_move_iter = None
+            
+            for (fr, fc), (tr, tc) in root_moves:
+                captured_val = board[tr][tc]
+                
+                # Make Move
+                board[tr][tc] = board[fr][fc]
+                board[fr][fc] = 0
+                pieces[ME].remove((fr, fc))
+                pieces[ME].add((tr, tc))
+                if captured_val != 0: pieces[OPP].remove((tr, tc))
+                
+                try:
+                    # Recursive search
+                    val = bfs_search(depth - 1, alpha, beta, False)
+                except TimeOutException:
+                    # Undo
+                    if captured_val != 0: pieces[OPP].add((tr, tc))
+                    pieces[ME].remove((tr, tc))
+                    pieces[ME].add((fr, fc))
+                    board[fr][fc] = board[tr][tc]
+                    board[tr][tc] = captured_val
+                    raise
+                
+                # Undo Move
+                if captured_val != 0: pieces[OPP].add((tr, tc))
+                pieces[ME].remove((tr, tc))
+                pieces[ME].add((fr, fc))
+                board[fr][fc] = board[tr][tc]
+                board[tr][tc] = captured_val
+                
+                if val > best_val_iter:
+                    best_val_iter = val
+                    best_move_iter = ((fr, fc), (tr, tc))
+                
+                alpha = max(alpha, best_val_iter)
+            
+            if best_move_iter:
+                best_move_global = best_move_iter
+                
+    except TimeOutException:
+        pass # Time is up, return the best move from the last fully completed depth
+        
+    (r1, c1), (r2, c2) = best_move_global
+    return f"{r1},{c1}:{r2},{c2}"
+</code>

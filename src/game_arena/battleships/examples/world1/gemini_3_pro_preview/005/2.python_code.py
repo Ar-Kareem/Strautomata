@@ -1,0 +1,113 @@
+
+import numpy as np
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Determines the next target (row, col) for a Battleship game.
+    
+    Uses a Probability Density Function (heatmap) approach:
+    1. Calculates the likelihood of a ship occupying each unknown cell by simulating 
+       all valid placements of the theoretical remaining fleet.
+    2. Weighs placements that overlap existing hits significantly higher (Target Mode).
+    3. Applies a checkerboard parity mask when hunting to optimize efficiency.
+    """
+    
+    # Constants
+    ROWS, COLS = 10, 10
+    SHIPS = [5, 4, 3, 3, 2]
+    
+    # Convert board to numpy array for fast manipulation
+    # 0: Unknown, 1: Hit, -1: Miss
+    board_np = np.array(board)
+    
+    # Initialize the probability heatmap
+    heatmap = np.zeros((ROWS, COLS), dtype=float)
+    
+    # Helper to calculate weights
+    # We use a loop structure which is fast enough for 10x10 grid (approx 1000 iterations max)
+    for ship_len in SHIPS:
+        
+        # --- Horizontal placements ---
+        for r in range(ROWS):
+            for c in range(COLS - ship_len + 1):
+                # Extract the segment where the ship would sit
+                segment = board_np[r, c : c + ship_len]
+                
+                # Invalid placement if it hits a known miss (-1)
+                if np.any(segment == -1):
+                    continue
+                
+                # Analyze segment content
+                hits = np.sum(segment == 1)
+                unknowns = np.sum(segment == 0)
+                
+                # If the placement covers 0 unknowns, it's useless for targeting.
+                # (This effectively ignores fully sunk ships).
+                if unknowns == 0:
+                    continue
+                
+                # Scoring Logic:
+                # Base weight = 1 (Hunt probability)
+                # Hit bonus = large boost per hit (Target logic)
+                # We square hits to strongly prefer extending larger hit chains
+                weight = 1.0
+                if hits > 0:
+                    weight = 100.0 + (1000.0 * (hits ** 2))
+                
+                # Add weight to all UNKNOWN cells in this placement
+                # We can't fire at already known cells
+                heatmap[r, c : c + ship_len][segment == 0] += weight
+
+        # --- Vertical placements ---
+        for r in range(ROWS - ship_len + 1):
+            for c in range(COLS):
+                segment = board_np[r : r + ship_len, c]
+                
+                if np.any(segment == -1):
+                    continue
+                
+                hits = np.sum(segment == 1)
+                unknowns = np.sum(segment == 0)
+                
+                if unknowns == 0:
+                    continue
+                    
+                weight = 1.0
+                if hits > 0:
+                    weight = 100.0 + (1000.0 * (hits ** 2))
+                
+                heatmap[r : r + ship_len, c][segment == 0] += weight
+
+    # Mask known cells: Ensure we never target non-zero cells
+    heatmap[board_np != 0] = 0.0
+    
+    # --- Decision Phase ---
+    
+    # Check if we are in 'Hunt Mode' or 'Target Mode' based on max score
+    max_score = np.max(heatmap)
+    
+    # Threshold < 100 implies no active hits were part of valid placements
+    if max_score < 100.0:
+        # HUNT MODE: Apply Checkerboard Parity
+        # Since the smallest ship is 2, a checkerboard pattern ensures we find every ship
+        # while shooting at only half the cells.
+        parity_mask = np.fromfunction(lambda r, c: (r + c) % 2 == 0, (ROWS, COLS), dtype=int)
+        
+        masked_heatmap = heatmap * parity_mask
+        
+        # Only apply mask if valid targets remain on the checkerboard
+        # (This handles late-game edge cases where only 'odd' slots might be left)
+        if np.max(masked_heatmap) > 0:
+            heatmap = masked_heatmap
+
+    # Find coordinates of the maximum value in the heatmap
+    flat_idx = np.argmax(heatmap)
+    best_row, best_col = np.unravel_index(flat_idx, (ROWS, COLS))
+    
+    # Fallback: If map is 0 (should not happen in valid unfinished game), pick first unknown
+    if heatmap[best_row, best_col] == 0.0:
+        candidates = np.argwhere(board_np == 0)
+        if len(candidates) > 0:
+            return int(candidates[0][0]), int(candidates[0][1])
+            
+    return int(best_row), int(best_col)

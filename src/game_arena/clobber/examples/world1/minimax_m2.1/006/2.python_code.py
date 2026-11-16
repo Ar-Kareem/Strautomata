@@ -1,0 +1,208 @@
+
+import numpy as np
+from typing import List, Tuple
+
+# Direction vectors for U, R, D, L
+DIR_VECTORS = {
+    'U': (-1, 0),
+    'R': (0, 1),
+    'D': (1, 0),
+    'L': (0, -1)
+}
+
+DIR_ORDER = ['U', 'R', 'D', 'L']
+
+def generate_moves(board: np.ndarray, player: int) -> List[Tuple[int, int, str]]:
+    """Generate all valid moves for a player."""
+    moves = []
+    rows, cols = board.shape
+    
+    for r in range(rows):
+        for c in range(cols):
+            if board[r, c] == player:
+                # Check all 4 directions for capture opportunities
+                for direction, (dr, dc) in DIR_VECTORS.items():
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < rows and 0 <= nc < cols:
+                        opponent = 1 - player
+                        if board[nr, nc] == opponent:
+                            moves.append((r, c, direction))
+    return moves
+
+def apply_move(board: np.ndarray, move: Tuple[int, int, str], player: int) -> np.ndarray:
+    """Apply a move to the board and return the new board."""
+    new_board = board.copy()
+    r, c, direction = move
+    dr, dc = DIR_VECTORS[direction]
+    nr, nc = r + dr, c + dc
+    
+    # Move piece
+    new_board[r, c] = 0
+    new_board[nr, nc] = player
+    return new_board
+
+def count_pieces(board: np.ndarray, player: int) -> int:
+    """Count pieces for a player."""
+    return np.sum(board == player)
+
+def count_moves(board: np.ndarray, player: int) -> int:
+    """Count available moves for a player."""
+    return len(generate_moves(board, player))
+
+def positional_value(r: int, c: int, rows: int, cols: int) -> float:
+    """Calculate positional value based on distance from center."""
+    center_r, center_c = rows / 2 - 0.5, cols / 2 - 0.5
+    dist_from_center = ((r - center_r) ** 2 + (c - center_c) ** 2) ** 0.5
+    max_dist = ((center_r) ** 2 + (center_c) ** 2) ** 0.5
+    # Central squares are more valuable
+    return 1.0 - (dist_from_center / max_dist) if max_dist > 0 else 0.5
+
+def evaluate_position(board: np.ndarray, player: int) -> float:
+    """Evaluate board position from player's perspective."""
+    opponent = 1 - player
+    rows, cols = board.shape
+    
+    # Count pieces
+    my_pieces = count_pieces(board, player)
+    opp_pieces = count_pieces(board, opponent)
+    
+    # Count moves
+    my_moves = count_moves(board, player)
+    opp_moves = count_moves(board, opponent)
+    
+    # Calculate positional advantages
+    my_pos_value = 0
+    opp_pos_value = 0
+    for r in range(rows):
+        for c in range(cols):
+            if board[r, c] == player:
+                my_pos_value += positional_value(r, c, rows, cols)
+            elif board[r, c] == opponent:
+                opp_pos_value += positional_value(r, c, rows, cols)
+    
+    # Evaluation components with weights
+    piece_score = 100 * (my_pieces - opp_pieces)
+    mobility_score = 50 * (my_moves - opp_moves)
+    position_score = 5 * (my_pos_value - opp_pos_value)
+    
+    # Check for immediate win/loss conditions
+    if opp_moves == 0 and my_moves > 0:
+        return 10000  # Opponent has no moves, I win
+    if my_moves == 0:
+        return -10000  # I have no moves, I lose
+    
+    return piece_score + mobility_score + position_score
+
+def get_next_board_state(board: np.ndarray, move: Tuple[int, int, str]) -> np.ndarray:
+    """Apply move to board assuming player is the one to move."""
+    r, c, direction = move
+    dr, dc = DIR_VECTORS[direction]
+    nr, nc = r + dr, c + dc
+    
+    new_board = board.copy()
+    # Find who owns the piece at (r, c)
+    player = board[r, c]
+    new_board[r, c] = 0
+    new_board[nr, nc] = player
+    return new_board
+
+def minimax(board: np.ndarray, depth: int, alpha: float, beta: float, maximizing: bool, player: int) -> float:
+    """Minimax with alpha-beta pruning."""
+    if depth == 0:
+        return evaluate_position(board, player)
+    
+    moves = generate_moves(board, player)
+    
+    if not moves:
+        # No moves available - current player loses
+        return -10000 if maximizing else 10000
+    
+    if maximizing:
+        max_eval = -float('inf')
+        for move in moves:
+            new_board = get_next_board_state(board, move)
+            eval_score = minimax(new_board, depth - 1, alpha, beta, False, player)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        opponent = 1 - player
+        for move in moves:
+            new_board = get_next_board_state(board, move)
+            eval_score = minimax(new_board, depth - 1, alpha, beta, True, player)
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def find_best_move(board: np.ndarray, player: int, depth: int = 3) -> Tuple[int, int, str]:
+    """Find the best move using minimax search."""
+    moves = generate_moves(board, player)
+    
+    if not moves:
+        return None  # No moves available
+    
+    # Check for opponent having no moves - any move wins
+    opponent = 1 - player
+    if count_moves(board, opponent) == 0:
+        return moves[0]  # Return first available move
+    
+    # Order moves: prioritize captures and center moves
+    def move_priority(move: Tuple[int, int, str]) -> int:
+        r, c, direction = move
+        # Moves to center are better
+        priority = -int(positional_value(r, c, board.shape[0], board.shape[1]) * 100)
+        return priority
+    
+    moves.sort(key=move_priority)
+    
+    best_move = None
+    best_value = -float('inf')
+    
+    for move in moves:
+        new_board = get_next_board_state(board, move)
+        # After I move, it's opponent's turn (maximizing=False in minimax)
+        eval_score = minimax(new_board, depth - 1, -float('inf'), float('inf'), False, player)
+        
+        if eval_score > best_value:
+            best_value = eval_score
+            best_move = move
+    
+    return best_move
+
+def policy(you: List[int], opponent: List[int]) -> str:
+    """Main policy function - returns the next move."""
+    # Convert to numpy arrays
+    you_arr = np.array(you).reshape(5, 6)
+    opp_arr = np.array(opponent).reshape(5, 6)
+    
+    # Create combined board (1 = me, 2 = opponent, 0 = empty)
+    board = np.zeros((5, 6), dtype=int)
+    board[you_arr == 1] = 1
+    board[opp_arr == 1] = 2
+    
+    # Convert opponent pieces to 0/1 for my player
+    opponent_board = np.zeros((5, 6), dtype=int)
+    opponent_board[opp_arr == 1] = 1
+    opponent_board[you_arr == 1] = 0
+    
+    # Create my board
+    my_board = np.zeros((5, 6), dtype=int)
+    my_board[you_arr == 1] = 1
+    my_board[opp_arr == 1] = 0
+    
+    # Player 1 (me)
+    player = 1
+    
+    # Find best move
+    best_move = find_best_move(board, player, depth=3)
+    
+    if best_move is None:
+        # No moves available - shouldn't happen if called correctly
+        return ""
+    
+    return f"{best_move[0]},{best_move[1]},{best_move[2]}"

@@ -1,0 +1,350 @@
+The strategy for this policy is to utilize a Union-Find (Disjoint Set) data structure to efficiently detect winning conditions (Ring, Bridge, Fork) for both the player and the opponent.
+
+1.  **Board Analysis**: The `valid_mask` is analyzed once to identify the 6 corners (cells with exactly 2 valid neighbors) and the 6 edge regions (connected components of the boundary excluding corners).
+2.  **Connectivity Tracking**: For any board configuration, we build a connectivity graph using the neighbor offsets defined in the prompt. Each connected component tracks which edges and corners it touches, and whether it contains a cycle (Ring).
+3.  **Move Selection**:
+    *   **Immediate Win Check**: Iterate through all valid moves. If placing a stone completes a Ring, Bridge, or Fork, make that move immediately.
+    *   **Threat Defense**: If no immediate win exists, check if the opponent can win on their next turn. Identify all moves that would allow the opponent to win. If there is only one such threat, block it. If there are multiple, evaluate the blocking moves based on secondary heuristics (centrality, connectivity).
+    *   **Heuristic Evaluation**: If no immediate wins or critical threats, evaluate all valid moves based on a scoring function:
+        *   **Bridge/Fork Potential**: Moves that connect to edges or corners are scored higher.
+        *   **Group Growth**: Moves that merge large groups or extend existing groups are preferred.
+        *   **Centrality**: Moves closer to the center of the board are generally more valuable in Havannah for flexibility.
+
+This approach ensures the agent plays legally, reacts defensively to immediate threats, and proactively builds winning structures.
+
+<code>
+import numpy as np
+from typing import List, Tuple, Set, Optional
+
+# --- Constants and Globals ---
+BOARD_SIZE = 15
+# Neighbor offsets based on prompt description:
+# (4, 1) connects to (3,0), (4,0), (3,1), (5,1), (3,2), (4,2)
+# Rule:
+# Even row r: neighbors are (r-1, c), (r+1, c), (r-1, c-1), (r, c-1), (r-1, c+1), (r, c+1)
+# Odd row r:  neighbors are (r-1, c), (r+1, c), (r, c-1), (r+1, c-1), (r, c+1), (r+1, c+1)
+OFFSETS_EVEN = [(-1, 0), (1, 0), (-1, -1), (0, -1), (-1, 1), (0, 1)]
+OFFSETS_ODD = [(-1, 0), (1, 0), (0, -1), (1, -1), (0, 1), (1, 1)]
+
+# Cache for board geometry (edges, corners) based on valid_mask
+_GEO_CACHE = {}
+
+def get_neighbors(r: int, c: int) -> List[Tuple[int, int]]:
+    offsets = OFFSETS_EVEN if r % 2 == 0 else OFFSETS_ODD
+    return [(r + dr, c + dc) for dr, dc in offsets]
+
+def get_board_geometry(valid_mask: np.ndarray) -> Tuple[Set[Tuple[int, int]], List[Set[Tuple[int, int]]]]:
+    """
+    Identifies corners and edges on the board.
+    Returns: (set_of_corners, list_of_edge_sets)
+    """
+    # Convert mask to tuple of indices for hashing (if mask was hashable, but numpy array isn't directly)
+    # We will rely on the fact that valid_mask is usually constant per game instance.
+    # However, to be strictly safe, we compute it or use a deterministic hash.
+    
+    # Simple hash of the boolean mask
+    mask_bytes = valid_mask.tobytes()
+    if mask_bytes in _GEO_CACHE:
+        return _GEO_CACHE[mask_bytes]
+
+    rows, cols = valid_mask.shape
+    corners = set()
+    boundary_cells = []
+    
+    # 1. Identify valid cells and their valid neighbor counts
+    neighbor_counts = {}
+    for r in range(rows):
+        for c in range(cols):
+            if valid_mask[r, c]:
+                nbs = get_neighbors(r, c)
+                valid_nbs = [nr, nc for nr, nc in nbs if 0 <= nr < rows and 0 <= nc < cols and valid_mask[nr, nc]]
+                count = len(valid_nbs)
+                neighbor_counts[(r, c)] = count
+                if count < 6: # It's on the boundary
+                    boundary_cells.append((r, c))
+                    if count == 2: # Corners in a hex grid typically have 2 neighbors
+                        corners.add((r, c))
+
+    # 2. Identify Edges
+    # Edges are connected components of boundary cells, excluding corners.
+    # We treat corners as separators or just ignore them for the edge grouping logic
+    # and group the rest.
+    
+    # Remove corners from boundary list for grouping
+    edge_candidates = [cell for cell in boundary_cells if cell not in corners]
+    
+    visited = set()
+    edges = []
+    
+    for cell in edge_candidates:
+        if cell in visited:
+            continue
+        
+        # Flood fill to find the connected edge component
+        stack = [cell]
+        component = set()
+        while stack:
+            curr = stack.pop()
+            if curr in visited:
+                continue
+            visited.add(curr)
+            component.add(curr)
+            
+            # Check neighbors that are also boundary candidates
+            r, c = curr
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) in edge_candidates and (nr, nc) not in visited:
+                    stack.append((nr, nc))
+        
+        edges.append(component)
+
+    _GEO_CACHE[mask_bytes] = (corners, edges)
+    return corners, edges
+
+class UnionFind:
+    def __init__(self, size):
+        self.parent = list(range(size))
+        self.rank = [0] * size
+        self.touched_edges = [set() for _ in range(size)]
+        self.touched_corners = [set() for _ in range(size)]
+        self.has_ring = [False] * size
+        self.size = [1] * size
+
+    def find(self, x):
+        if self.parent[x] != x:
+            self.parent[x] = self.find(self.parent[x])
+        return self.parent[x]
+
+    def union(self, x, y):
+        x_root = self.find(x)
+        y_root = self.find(y)
+        
+        if x_root == y_root:
+            # If connected, adding this edge creates a cycle
+            self.has_ring[x_root] = True
+            return False # No merge happened, but cycle detected
+
+        if self.rank[x_root] < self.rank[y_root]:
+            x_root, y_root = y_root, x_root
+        
+        self.parent[y_root] = x_root
+        self.size[x_root] += self.size[y_root]
+        self.touched_edges[x_root].update(self.touched_edges[y_root])
+        self.touched_corners[x_root].update(self.touched_corners[y_root])
+        self.has_ring[x_root] = self.has_ring[x_root] or self.has_ring[y_root]
+        
+        if self.rank[x_root] == self.rank[y_root]:
+            self.rank[x_root] += 1
+        return True
+
+def check_win_state(stones: List[Tuple[int, int]], valid_mask: np.ndarray, corners: Set[Tuple[int, int]], edges: List[Set[Tuple[int, int]]]) -> Tuple[bool, str]:
+    """
+    Returns (is_win, reason)
+    reason can be 'ring', 'bridge', 'fork' or ''
+    """
+    if not stones:
+        return False, ''
+    
+    # Map cell to index
+    cell_to_idx = {cell: i for i, cell in enumerate(stones)}
+    uf = UnionFind(len(stones))
+    
+    # Pre-calculate edge/corner indices for fast lookup
+    # Map (r,c) -> edge_id (0-5) or -1
+    # Map (r,c) -> corner_id (0-5) or -1
+    # Note: A cell can be on an edge and be a corner? 
+    # Rules say "corner points are not considered parts of an edge".
+    # So if a stone is on a corner, it touches corners, but NOT edges?
+    # Or geometrically it touches edges but logically doesn't count for fork?
+    # "corner points are not considered parts of an edge" -> for Fork definition.
+    
+    # Setup initial properties for each stone
+    for i, (r, c) in enumerate(stones):
+        if (r, c) in corners:
+            # Find which corner (assuming unique set elements)
+            # We just store the tuple or an ID. Using tuple is fine.
+            uf.touched_corners[i].add((r,c))
+        else:
+            # Check edges
+            for e_id, edge_set in enumerate(edges):
+                if (r, c) in edge_set:
+                    uf.touched_edges[i].add(e_id)
+                    break # Cell belongs to exactly one edge (since corners excluded)
+    
+    # Union neighbors
+    # To detect Ring correctly, we need to construct the graph.
+    # If we connect two nodes already in the same component, we have a cycle.
+    
+    stone_set = set(stones)
+    
+    for i, (r, c) in enumerate(stones):
+        for nr, nc in get_neighbors(r, c):
+            if (nr, nc) in stone_set:
+                j = cell_to_idx[(nr, nc)]
+                # To avoid double processing, we can only connect if i < j or similar
+                # But union handles order. We just need to check cycle.
+                # However, we must ensure we don't double count the cycle detection incorrectly.
+                # The standard way: iterate edges. If root(u) == root(v), cycle.
+                if i < j: # Process each undirected edge once
+                    merged = uf.union(i, j)
+                    if not merged:
+                        # Cycle detected
+                        root = uf.find(i)
+                        uf.has_ring[root] = True
+
+    # Check winning conditions on components
+    roots = set()
+    for i in range(len(stones)):
+        roots.add(uf.find(i))
+        
+    for r in roots:
+        if uf.has_ring[r]:
+            # Verify it's a real ring (not just 2 stones connecting?)
+            # With hex grid, min cycle size is 6.
+            # If size is small (e.g. 2 stones forming a loop? impossible on grid),
+            # our logic holds.
+            # NOTE: Ring must enclose at least one cell.
+            # This check is hard to do perfectly without geometry flood fill.
+            # We assume any cycle in the graph of stones is a valid ring candidate.
+            # If it's a "false ring" (e.g. hugging board edge), it might not win,
+            # but usually playing a cycle is the winning condition.
+            return True, 'ring'
+        
+        if len(uf.touched_corners[r]) >= 2:
+            return True, 'bridge'
+        
+        if len(uf.touched_edges[r]) >= 3:
+            return True, 'fork'
+            
+    return False, ''
+
+def evaluate_move(r: int, c: int, my_stones: List[Tuple[int, int]], opp_stones: List[Tuple[int, int]], valid_mask: np.ndarray, corners, edges) -> float:
+    """
+    Heuristic evaluation for a move.
+    """
+    # Base score for position
+    center_r, center_c = 7, 7
+    dist = np.sqrt((r - center_r)**2 + (c - center_c)**2)
+    score = (15.0 - dist) * 2.0  # Centrality
+    
+    # Connection potential
+    new_stones = my_stones + [(r, c)]
+    is_win, reason = check_win_state(new_stones, valid_mask, corners, edges)
+    if is_win:
+        return 10000.0
+        
+    # Check connectivity gains
+    # We want to know if this stone connects multiple groups or extends to edges
+    # Simplified: count how many edges/corners this specific stone touches
+    # and how many neighbors it has.
+    
+    # Neighbors
+    nbs = get_neighbors(r, c)
+    valid_nbs = [(nr, nc) for nr, nc in nbs if valid_mask[nr, nc]]
+    
+    my_neighbors = 0
+    empty_neighbors = 0
+    opp_neighbors = 0
+    
+    for nr, nc in valid_nbs:
+        if (nr, nc) in my_stones:
+            my_neighbors += 1
+        elif (nr, nc) in opp_stones:
+            opp_neighbors += 1
+        else:
+            empty_neighbors += 1
+            
+    score += my_neighbors * 5.0
+    score += empty_neighbors * 1.0 # Mobility
+    score -= opp_neighbors * 2.0   # Defense/Blockiness
+    
+    # Strategic value (Edges/Corners)
+    touched_edges_count = 0
+    if (r, c) not in corners:
+        for e_id, edge_set in enumerate(edges):
+            if (r, c) in edge_set:
+                touched_edges_count += 1
+    else:
+        # Placing on a corner is usually good for Bridge
+        pass 
+        
+    # If the move touches an edge, it's valuable
+    if touched_edges_count > 0:
+        score += 10.0
+        
+    if (r, c) in corners:
+        score += 15.0
+
+    return score
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], valid_mask) -> Tuple[int, int]:
+    """
+    Main policy function.
+    """
+    # 1. Analyze Board
+    corners, edges = get_board_geometry(valid_mask)
+    
+    # Current occupied
+    occupied = set(me) | set(opp)
+    
+    # Generate valid moves
+    # valid_mask is 2D boolean
+    rows, cols = valid_mask.shape
+    valid_moves = []
+    for r in range(rows):
+        for c in range(cols):
+            if valid_mask[r, c] and (r, c) not in occupied:
+                valid_moves.append((r, c))
+                
+    if not valid_moves:
+        # Should not happen in a running game, but safety
+        return (-1, -1)
+
+    # 2. Check for immediate win
+    for r, c in valid_moves:
+        new_me = me + [(r, c)]
+        is_win, _ = check_win_state(new_me, valid_mask, corners, edges)
+        if is_win:
+            return (r, c)
+            
+    # 3. Check for opponent threat (Opponent wins next)
+    threats = []
+    for r, c in valid_moves:
+        new_opp = opp + [(r, c)]
+        is_win, _ = check_win_state(new_opp, valid_mask, corners, edges)
+        if is_win:
+            threats.append((r, c))
+            
+    if threats:
+        # Block the first threat found, or evaluate?
+        # Simple strategy: block the threat that is also best for us?
+        # Or just block one. If multiple, pick one with best heuristic.
+        if len(threats) == 1:
+            return threats[0]
+        else:
+            # Evaluate threats based on our heuristic
+            best_threat = None
+            best_score = -float('inf')
+            for r, c in threats:
+                # Check if playing there gives us value too
+                score = evaluate_move(r, c, me, opp, valid_mask, corners, edges)
+                if score > best_score:
+                    best_score = score
+                    best_threat = (r, c)
+            return best_threat
+
+    # 4. Heuristic Selection
+    best_move = None
+    best_score = -float('inf')
+    
+    # Add a little randomness to break ties and avoid loops
+    np.random.shuffle(valid_moves)
+    
+    for r, c in valid_moves:
+        score = evaluate_move(r, c, me, opp, valid_mask, corners, edges)
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+            
+    return best_move
+</code>

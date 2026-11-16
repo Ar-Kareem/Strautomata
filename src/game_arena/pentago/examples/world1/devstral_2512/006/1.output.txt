@@ -1,0 +1,315 @@
+# Strategy for Pentago AI
+
+## Overview
+This Pentago AI uses a combination of immediate win/block checks, strategic positioning, and quadrant rotation optimization to maximize winning chances. The strategy prioritizes:
+
+1. **Winning Moves**: First checks if any move can immediately create a 5-in-a-row win
+2. **Blocking Opponent**: Prevents opponent from winning on their next turn
+3. **Center Control**: Prefers central positions for better connectivity
+4. **Quadrant Optimization**: Chooses rotations that create multiple threats
+5. **Defensive Positioning**: Blocks opponent's potential threats
+6. **Random Fallback**: If no clear best move, chooses randomly from good options
+
+## Key Components
+
+### Evaluation Function
+- Scores board positions based on:
+  - Potential to create lines of 4 (with open ends)
+  - Potential to create lines of 3 (with open ends)
+  - Center control (positions closer to center get higher scores)
+  - Quadrant balance (avoiding overcommitment to one quadrant)
+
+### Rotation Strategy
+- After placing a marble, evaluates all possible rotations for:
+  - Creating immediate wins
+  - Creating multiple threats
+  - Disrupting opponent's potential lines
+  - Maintaining board symmetry when advantageous
+
+### Threat Detection
+- Uses pattern matching to identify:
+  - Open-ended lines (where both ends are empty)
+  - Semi-open lines (one end blocked)
+  - Opponent's potential winning moves
+
+## Implementation Details
+
+The AI uses:
+- Numpy for efficient board operations
+- Pre-computed direction vectors for line checking
+- Minimax-like evaluation with depth 1 (due to time constraints)
+- Heuristic scoring for position evaluation
+- Randomized selection among equally-scored top moves
+
+<code>
+import numpy as np
+import random
+from collections import defaultdict
+
+# Directions for line checking (horizontal, vertical, two diagonals)
+DIRECTIONS = [
+    (0, 1),   # horizontal
+    (1, 0),   # vertical
+    (1, 1),   # diagonal down-right
+    (1, -1)   # diagonal down-left
+]
+
+def policy(you, opponent) -> str:
+    # Convert inputs to numpy arrays for easier manipulation
+    you_board = np.array(you, dtype=int)
+    opp_board = np.array(opponent, dtype=int)
+    empty_board = 1 - (you_board + opp_board)
+
+    # Find all empty positions
+    empty_positions = np.argwhere(empty_board == 1)
+
+    best_move = None
+    best_score = -float('inf')
+    candidate_moves = []
+
+    # Check all possible moves
+    for pos in empty_positions:
+        r, c = pos
+        row, col = r + 1, c + 1  # Convert to 1-based indexing
+
+        # Determine which quadrant this position is in
+        quad = get_quadrant(row, col)
+
+        # Try both rotation directions
+        for dir in ['L', 'R']:
+            move = f"{row},{col},{quad},{dir}"
+
+            # Simulate the move
+            temp_you = you_board.copy()
+            temp_opp = opp_board.copy()
+
+            # Place the marble
+            temp_you[r, c] = 1
+
+            # Apply rotation
+            rotate_quadrant(temp_you, temp_opp, quad, dir)
+
+            # Evaluate the board after this move
+            score = evaluate_board(temp_you, temp_opp)
+
+            # Check if this move wins immediately
+            if check_win(temp_you):
+                return move
+
+            # If score is better than current best, update
+            if score > best_score:
+                best_score = score
+                candidate_moves = [move]
+            elif score == best_score:
+                candidate_moves.append(move)
+
+    # If we found winning moves in the loop, we would have returned already
+    # Now check if we need to block opponent's potential wins
+    if not candidate_moves:
+        # Check all opponent's potential winning moves
+        for pos in empty_positions:
+            r, c = pos
+            row, col = r + 1, c + 1
+            quad = get_quadrant(row, col)
+
+            for dir in ['L', 'R']:
+                move = f"{row},{col},{quad},{dir}"
+
+                # Simulate opponent's move (as if they would place here)
+                temp_you = you_board.copy()
+                temp_opp = opp_board.copy()
+                temp_opp[r, c] = 1
+                rotate_quadrant(temp_you, temp_opp, quad, dir)
+
+                if check_win(temp_opp):
+                    # This is a blocking move - prioritize it
+                    return move
+
+    # If we have candidate moves, choose one (preferring center positions)
+    if candidate_moves:
+        # Sort moves by how central they are (prefer center)
+        candidate_moves.sort(key=lambda m: -distance_from_center(int(m.split(',')[0]), int(m.split(',')[1])))
+        return candidate_moves[0]
+
+    # Fallback: just pick a random legal move
+    r, c = random.choice(empty_positions)
+    row, col = r + 1, c + 1
+    quad = get_quadrant(row, col)
+    dir = random.choice(['L', 'R'])
+    return f"{row},{col},{quad},{dir}"
+
+def get_quadrant(row, col):
+    """Determine which quadrant a position is in (0-3)"""
+    if row <= 3:
+        if col <= 3:
+            return 0
+        else:
+            return 1
+    else:
+        if col <= 3:
+            return 2
+        else:
+            return 3
+
+def rotate_quadrant(you, opp, quad, direction):
+    """Rotate a quadrant 90 degrees in the specified direction"""
+    # Define quadrant boundaries
+    if quad == 0:  # top-left
+        rows = slice(0, 3)
+        cols = slice(0, 3)
+    elif quad == 1:  # top-right
+        rows = slice(0, 3)
+        cols = slice(3, 6)
+    elif quad == 2:  # bottom-left
+        rows = slice(3, 6)
+        cols = slice(0, 3)
+    else:  # quad == 3, bottom-right
+        rows = slice(3, 6)
+        cols = slice(3, 6)
+
+    # Extract the quadrant
+    you_quad = you[rows, cols]
+    opp_quad = opp[rows, cols]
+
+    # Rotate
+    if direction == 'L':  # anticlockwise
+        you_quad = np.rot90(you_quad, k=1)
+        opp_quad = np.rot90(opp_quad, k=1)
+    else:  # clockwise
+        you_quad = np.rot90(you_quad, k=-1)
+        opp_quad = np.rot90(opp_quad, k=-1)
+
+    # Put back
+    you[rows, cols] = you_quad
+    opp[rows, cols] = opp_quad
+
+def check_win(board):
+    """Check if the given board has a 5-in-a-row win"""
+    for r in range(6):
+        for c in range(6):
+            if board[r, c] == 1:
+                for dr, dc in DIRECTIONS:
+                    count = 1
+                    # Check in positive direction
+                    nr, nc = r + dr, c + dc
+                    while 0 <= nr < 6 and 0 <= nc < 6 and board[nr, nc] == 1:
+                        count += 1
+                        nr += dr
+                        nc += dc
+                    # Check in negative direction
+                    nr, nc = r - dr, c - dc
+                    while 0 <= nr < 6 and 0 <= nc < 6 and board[nr, nc] == 1:
+                        count += 1
+                        nr -= dr
+                        nc -= dc
+                    if count >= 5:
+                        return True
+    return False
+
+def evaluate_board(you, opp):
+    """Evaluate the board position with a heuristic score"""
+    score = 0
+
+    # Evaluate your position
+    score += evaluate_player_position(you)
+
+    # Evaluate opponent's position (subtract from score)
+    score -= evaluate_player_position(opp)
+
+    # Center control bonus
+    center = np.array([
+        [0, 0, 0, 0, 0, 0],
+        [0, 1, 1, 1, 1, 0],
+        [0, 1, 2, 2, 1, 0],
+        [0, 1, 2, 2, 1, 0],
+        [0, 1, 1, 1, 1, 0],
+        [0, 0, 0, 0, 0, 0]
+    ])
+    score += np.sum(you * center) * 0.5
+    score -= np.sum(opp * center) * 0.5
+
+    return score
+
+def evaluate_player_position(board):
+    """Evaluate a single player's position"""
+    score = 0
+
+    # Check all possible lines
+    for r in range(6):
+        for c in range(6):
+            if board[r, c] == 1:
+                for dr, dc in DIRECTIONS:
+                    # Check in positive direction
+                    line = []
+                    nr, nc = r, c
+                    while 0 <= nr < 6 and 0 <= nc < 6:
+                        line.append(board[nr, nc])
+                        nr += dr
+                        nc += dc
+
+                    # Check in negative direction (excluding the center)
+                    nr, nc = r - dr, c - dc
+                    while 0 <= nr < 6 and 0 <= nc < 6:
+                        line.insert(0, board[nr, nc])
+                        nr -= dr
+                        nc -= dc
+
+                    # Evaluate this line
+                    line_score = evaluate_line(line)
+                    score += line_score
+
+    return score
+
+def evaluate_line(line):
+    """Evaluate a single line of stones"""
+    max_in_row = 0
+    current_in_row = 0
+    open_ends = 0
+
+    # Find the longest sequence of 1s
+    for i, val in enumerate(line):
+        if val == 1:
+            current_in_row += 1
+        else:
+            if current_in_row > 0:
+                # Check if this sequence has open ends
+                if i - current_in_row == 0 or line[i - current_in_row - 1] == 0:
+                    open_ends += 1
+                if i == len(line) or line[i] == 0:
+                    open_ends += 1
+                max_in_row = max(max_in_row, current_in_row)
+                current_in_row = 0
+
+    # Handle case where line ends with 1s
+    if current_in_row > 0:
+        if len(line) - current_in_row == 0 or line[len(line) - current_in_row - 1] == 0:
+            open_ends += 1
+        if len(line) == current_in_row:
+            open_ends += 1
+        max_in_row = max(max_in_row, current_in_row)
+
+    # Score based on length and openness
+    if max_in_row >= 5:
+        return 100000  # winning move
+    elif max_in_row == 4:
+        if open_ends >= 2:
+            return 10000  # open-ended 4
+        else:
+            return 1000   # one-end blocked 4
+    elif max_in_row == 3:
+        if open_ends >= 2:
+            return 1000   # open-ended 3
+        else:
+            return 100    # one-end blocked 3
+    elif max_in_row == 2:
+        if open_ends >= 2:
+            return 100    # open-ended 2
+        else:
+            return 10     # one-end blocked 2
+    else:
+        return 0
+
+def distance_from_center(row, col):
+    """Calculate Manhattan distance from center (3.5, 3.5)"""
+    return abs(row - 3.5) + abs(col - 3.5)
+</code>

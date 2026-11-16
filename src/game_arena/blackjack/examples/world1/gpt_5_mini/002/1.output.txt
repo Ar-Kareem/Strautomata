@@ -1,0 +1,111 @@
+<thinking>
+I'll implement a self-contained, deterministic policy that decides HIT vs STAY by comparing the expected distance to the target after one immediate hit (assuming the player would stop after that draw) to the current distance if staying now. The policy uses the exact remaining-card distribution from the single 13-card deck (one copy per rank minus the ranks already in hand). Aces are valued as 11 when possible without exceeding the target, otherwise as 1 (standard flexible ace accounting).
+
+- Compute current hand total relative to the given target.
+- If already busted, return "STAY" (game is already lost).
+- Compute expected distance to target if we draw one card (averaging over remaining ranks).
+- If the expected distance after a hit is strictly smaller than the current distance, return "HIT", otherwise "STAY".
+
+Busts are treated as a large penalty (distance = 100) so they are avoided unless hitting helps reduce expected distance despite bust risk.
+
+This is a simple myopic expected-distance-minimizing policy that uses the precise deck composition (no sampling). It is fast and deterministic.
+</thinking>
+<code>
+#!/usr/bin/env python3
+from typing import List
+
+# Single-file policy for the simplified Blackjack-like game.
+# Exports: policy(hand: list[str], target: int) -> str
+
+RANK_VALUES = {
+    "2": 2, "3": 3, "4": 4, "5": 5, "6": 6,
+    "7": 7, "8": 8, "9": 9, "10": 10,
+    "J": 10, "Q": 10, "K": 10
+}
+ALL_RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+
+def _hand_total(hand: List[str], target: int) -> int:
+    """
+    Compute the best total for the hand relative to the target using flexible Aces:
+    count each Ace as 11 when possible (without exceeding target), otherwise as 1.
+    If even with all Aces as 1 the total exceeds target, the sum is returned (>target).
+    """
+    non_ace_sum = 0
+    ace_count = 0
+    for c in hand:
+        if c == "A":
+            ace_count += 1
+        else:
+            non_ace_sum += RANK_VALUES.get(c, 0)
+    # Start by treating all aces as 11
+    total = non_ace_sum + ace_count * 11
+    # Downgrade aces from 11 to 1 (subtract 10) while total > target and we have aces counted as 11
+    aces_as_eleven = ace_count
+    while total > target and aces_as_eleven > 0:
+        total -= 10  # convert one Ace from 11 to 1
+        aces_as_eleven -= 1
+    return total
+
+def policy(hand: List[str], target: int) -> str:
+    """
+    Decide whether to HIT (draw one more card) or STAY (stop) given current hand and target.
+    Strategy:
+      - Compute current total. If busted (total > target), return "STAY".
+      - Compute current distance = |total - target|.
+      - For each possible remaining rank in our deck (one of each rank, minus cards already in hand),
+        compute the new total if that rank is drawn and the resulting distance (or a large penalty if bust).
+      - If the expected distance after one draw is strictly less than current distance, return "HIT".
+        Otherwise return "STAY".
+    This is a myopic one-step expected-distance minimizing policy using exact remaining-card probabilities.
+    """
+    # Defensive: if hand contains all 13 ranks or no remaining cards, we cannot hit
+    if len(hand) >= len(ALL_RANKS):
+        return "STAY"
+
+    current_total = _hand_total(hand, target)
+    # If already busted, nothing to do
+    if current_total > target:
+        return "STAY"
+
+    current_distance = abs(current_total - target)
+
+    # Build remaining ranks in our deck (one of each rank total)
+    remaining = [r for r in ALL_RANKS if r not in hand]
+    if not remaining:
+        return "STAY"
+
+    # Large penalty for bust outcome to discourage busting
+    BUST_PENALTY = 100.0
+
+    expected_distance = 0.0
+    prob = 1.0 / len(remaining)
+    for r in remaining:
+        new_hand = hand + [r]
+        new_total = _hand_total(new_hand, target)
+        if new_total > target:
+            dist = BUST_PENALTY
+        else:
+            dist = abs(new_total - target)
+        expected_distance += prob * dist
+
+    # If expected distance after hitting is smaller than staying, choose HIT
+    if expected_distance < current_distance - 1e-12:
+        return "HIT"
+    else:
+        return "STAY"
+
+
+# If this file is run directly, simple quick self-checks:
+if __name__ == "__main__":
+    # Some example quick tests (not exhaustive)
+    examples = [
+        (["10"], 21),
+        (["A"], 21),
+        (["9"], 15),
+        (["K", "5"], 20),
+        (["A", "9"], 21),
+        (["A", "K"], 18)
+    ]
+    for h, t in examples:
+        print(f"hand={h}, target={t} -> {policy(h, t)}")
+</code>

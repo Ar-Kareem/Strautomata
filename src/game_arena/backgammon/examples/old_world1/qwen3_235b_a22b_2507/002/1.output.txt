@@ -1,0 +1,368 @@
+The logic for this policy is to create a smart, rule-based agent that evaluates the current state of the Backgammon board and makes high-quality decisions based on heuristic principles widely accepted in expert play. The policy will:
+
+1. **Handle checkers on the bar first**, as required by the rules — we must re-enter from the bar before moving other pieces.
+
+2. **Maximize movement efficiency** by trying to use both dice whenever possible, following the mandatory rule to use the higher die if only one can be played.
+
+3. **Prioritize safety** by avoiding moves that leave blots (single checkers vulnerable to being hit), unless necessary or advantageous.
+
+4. **Prioritize making points** (occupying a point with two or more checkers) to build prime structures and block opponents.
+
+5. **Prioritize hitting opponent blots** when safe and beneficial, especially if it disrupts their structure.
+
+6. **Prioritize bearing off efficiently** when in the endgame (all checkers in home board), using optimal bear-off tactics (use larger die first from further back if possible).
+
+7. **Use a greedy action selection** with a heuristic scoring function over all legal moves, ranking them based on:
+   - Bonus for hitting an opponent blot.
+   - Penalty for leaving or creating blots.
+   - Bonus for making a new point.
+   - Bonus for bearing off efficiently.
+   - Bonus for moving back checkers forward (progress).
+
+We will generate all legal moves via a simulated legal move generator (simplified), score each full move (sequence of one or two moves), and select the best-scoring one. The returned move string will respect the `<ORDER>:<FROM1>,<FROM2>` format.
+
+We do not use machine learning due to time and complexity, but use domain-driven heuristics that mimic strong human play.
+
+<code>
+import numpy as np
+from typing import List, Tuple, Optional
+
+def policy(state: dict) -> str:
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+    dice = sorted(state['dice'], reverse=True)  # [high, low]
+    if len(dice) == 0:
+        return "H:P,P"
+
+    # Determine if all my checkers are in home board (points 0-5 in absolute index, assuming engine gives 0-23 with 0-5 as home)
+    # NOTE: This assumes that the player's home board is points 0-5. In real backgammon, one player uses 0-5, the other 18-23.
+    # However, the engine handles directionality, so we must assume that home board for *me* is the last 6 points in my direction.
+    # But the state uses a fixed absolute index. We assume:
+    # - My home board is points 0-5 (i.e., I am moving from high to low)
+    # This is a fixed assumption of the engine. We follow it.
+    in_home_board = all(my_pts[i] == 0 for i in range(6, 24))
+
+    # Check if bearing off is allowed
+    can_bear_off = in_home_board
+
+    # Helper: can I move a checker from `from_pos` with `roll`?
+    def can_move(from_pos: str, roll: int) -> bool:
+        if from_pos == 'B':
+            if my_bar == 0:
+                return False
+            to_idx = 24 - roll  # entering from bar: roll 1 moves to 23, roll 6 to 18
+            if to_idx < 0 or to_idx > 23:
+                return False
+            return opp_pts[to_idx] <= 1
+        elif from_pos == 'P':
+            return True  # Pass is always legal as no-op
+        else:
+            pt = int(from_pos[1:])
+            if my_pts[pt] == 0:
+                return False
+            to_idx = pt - roll  # moving toward 0
+            if to_idx < 0:
+                if can_bear_off:
+                    return True
+                return False
+            if to_idx >= 0 and opp_pts[to_idx] >= 2:
+                return False
+            return True
+
+    # Helper: apply a move from `from_pos` with `roll`, returning new state (simplified for simulation)
+    def apply_move(from_pos: str, roll: int, my_pts_c, opp_pts_c, my_bar_c, my_off_c):
+        my_pts_c = my_pts_c.copy()
+        opp_pts_c = opp_pts_c.copy()
+        my_bar_c = my_bar_c
+        my_off_c = my_off_c
+
+        if from_pos == 'B':
+            to_idx = 24 - roll
+            # Remove from bar
+            my_bar_c -= 1
+        else:
+            pt = int(from_pos[1:])
+            my_pts_c[pt] -= 1
+            to_idx = pt - roll
+
+        # Resolve destination
+        if to_idx < 0:
+            # Bear off
+            my_off_c += 1
+        else:
+            if opp_pts_c[to_idx] == 1:
+                # Hit opponent
+                opp_pts_c[to_idx] = 0
+                # Opponent goes to bar (but we don't track opp_bar in state mod, but it matters for scoring)
+            opp_pts_c[to_idx] += 1
+
+        return my_pts_c, opp_pts_c, my_bar_c, my_off_c
+
+    # Generate legal single move from a state with a single die
+    def generate_moves_for_die(roll: int, my_bar: int, my_pts: List[int], opp_pts: List[int], can_bear_off: bool) -> List[str]:
+        moves = []
+        if my_bar > 0:
+            to_idx = 24 - roll
+            if 0 <= to_idx <= 23 and opp_pts[to_idx] <= 1:
+                moves.append('B')
+            else:
+                moves.append('P')  # Pass if cannot enter
+            return moves
+
+        # Otherwise, try all points
+        for pt in range(24):
+            if my_pts[pt] == 0:
+                continue
+            to_idx = pt - roll
+            if to_idx < 0:
+                if can_bear_off:
+                    moves.append(f'A{pt}')
+                continue
+            if 0 <= to_idx <= 23 and opp_pts[to_idx] <= 1:
+                moves.append(f'A{pt}')
+        if not moves:
+            moves.append('P')
+        return moves
+
+    # Generate all legal full moves (two parts) given two dice
+    def generate_legal_moves(dice_high: int, dice_low: int, my_bar: int, my_pts: List[int], opp_pts: List[int], can_bear_off: bool) -> List[Tuple[str, str, str]]:
+        moves = []
+
+        # Case 1: only one die to play
+        if my_bar > 0:
+            # Must use higher die if possible; if not, lower die
+            high_moves = generate_moves_for_die(dice_high, my_bar, my_pts, opp_pts, can_bear_off)
+            if high_moves and high_moves[0] != 'P':
+                for m1 in high_moves:
+                    # After playing high die, check if we can play low die
+                    m1_bar = my_bar - (1 if m1 == 'B' else 0)
+                    m1_pts = my_pts.copy()
+                    if m1 != 'P' and m1 != 'B':
+                        pt = int(m1[1:])
+                        m1_pts[pt] -= 1
+                    low_moves = generate_moves_for_die(dice_low, m1_bar, m1_pts, opp_pts, can_bear_off)
+                    if low_moves and low_moves[0] != 'P':
+                        for m2 in low_moves:
+                            moves.append(('H', m1, m2))
+                    else:
+                        moves.append(('H', m1, 'P'))
+            else:
+                low_moves = generate_moves_for_die(dice_low, my_bar, my_pts, opp_pts, can_bear_off)
+                if low_moves and low_moves[0] != 'P':
+                    for m1 in low_moves:
+                        moves.append(('L', m1, 'P'))  # lower die first, then nothing
+                else:
+                    moves.append(('H', 'P', 'P'))
+            return moves
+
+        # Case 2: no bar, so try to play both dice
+        high_moves = generate_moves_for_die(dice_high, 0, my_pts, opp_pts, can_bear_off)
+        low_moves = generate_moves_for_die(dice_low, 0, my_pts, opp_pts, can_bear_off)
+
+        # But we need to simulate sequences
+        # First: try high die first
+        for m1_str in high_moves:
+            if m1_str == 'P':
+                continue
+            # Apply m1
+            m1_pts = my_pts.copy()
+            if m1_str == 'B':  # not possible here since my_bar = 0
+                continue
+            pt1 = int(m1_str[1:])
+            m1_pts[pt1] -= 1
+            to1 = pt1 - dice_high
+            m1_opp_pts = opp_pts.copy()
+            m1_off = 0
+            if to1 < 0:
+                m1_off = 1  # bear off
+            else:
+                if m1_opp_pts[to1] == 1:
+                    m1_opp_pts[to1] = 0  # hit
+                m1_opp_pts[to1] += 1
+
+            # Now try low die from this state
+            low_bar = 0
+            low_moves_after = generate_moves_for_die(dice_low, low_bar, m1_pts, m1_opp_pts, can_bear_off)
+            for m2_str in low_moves_after:
+                if m2_str != 'P':
+                    moves.append(('H', m1_str, m2_str))
+                else:
+                    # But maybe m2 can't be played — that's okay if we can't play both
+                    pass
+
+        # Then try low die first
+        for m1_str in low_moves:
+            if m1_str == 'P':
+                continue
+            m1_pts = my_pts.copy()
+            if m1_str == 'B':
+                continue
+            pt1 = int(m1_str[1:])
+            m1_pts[pt1] -= 1
+            to1 = pt1 - dice_low
+            m1_opp_pts = opp_pts.copy()
+            m1_off = 0
+            if to1 < 0:
+                m1_off = 1
+            else:
+                if m1_opp_pts[to1] == 1:
+                    m1_opp_pts[to1] = 0
+                m1_opp_pts[to1] += 1
+
+            high_bar = 0
+            high_moves_after = generate_moves_for_die(dice_high, high_bar, m1_pts, m1_opp_pts, can_bear_off)
+            for m2_str in high_moves_after:
+                if m2_str != 'P':
+                    moves.append(('L', m1_str, m2_str))
+
+        # If no move uses both dice, then we must use only one — the higher if possible
+        if not moves:
+            if high_moves and high_moves[0] != 'P':
+                for m in high_moves:
+                    moves.append(('H', m, 'P'))
+            elif low_moves and low_moves[0] != 'P':
+                for m in low_moves:
+                    moves.append(('L', m, 'P'))
+            else:
+                moves.append(('H', 'P', 'P'))
+
+        return moves
+
+    # Score a move
+    def score_move(move: Tuple[str, str, str]) -> float:
+        order, from1, from2 = move
+        score = 0.0
+
+        # We will simulate the entire move and evaluate the resulting board
+        my_pts_c = my_pts.copy()
+        opp_pts_c = opp_pts.copy()
+        my_bar_c = my_bar
+        my_off_c = my_off
+
+        dice_used = []
+        if len(dice) >= 1:
+            dice_used.append(dice[0])
+        if len(dice) == 2:
+            dice_used.append(dice[1])
+
+        # Resolve order
+        if order == 'H':
+            first_die = dice[0]  # high
+            second_die = dice[1] if len(dice) == 2 else None
+        else:  # 'L'
+            first_die = dice[1] if len(dice) == 2 else dice[0]
+            second_die = dice[0] if len(dice) == 2 else None
+
+        moves_to_do = []
+        if from1 != 'P':
+            moves_to_do.append((from1, first_die))
+        if from2 != 'P':
+            moves_to_do.append((from2, second_die))
+
+        # Execute moves
+        for from_pos, roll in moves_to_do:
+            if from_pos == 'B':
+                my_bar_c -= 1
+                to_idx = 24 - roll
+                if to_idx < 0 or to_idx >= 24:
+                    continue
+                if opp_pts_c[to_idx] == 1:
+                    # Hit opponent
+                    score += 2.0  # Reward for hitting
+                    opp_pts_c[to_idx] = 1  # we replace, but opponent loses one
+                else:
+                    opp_pts_c[to_idx] += 1
+            elif from_pos.startswith('A'):
+                pt = int(from_pos[1:])
+                my_pts_c[pt] -= 1
+                to_idx = pt - roll
+                if to_idx < 0:
+                    my_off_c += 1
+                    score += 3.0  # Strong reward for bearing off
+                else:
+                    if opp_pts_c[to_idx] == 1:
+                        score += 2.0  # Reward for hitting
+                        opp_pts_c[to_idx] = 0
+                    opp_pts_c[to_idx] += 1
+            # Update: put checker down at to_idx
+            if from_pos != 'B' and to_idx >= 0:
+                # Place my checker
+                my_pts_c[to_idx] = my_pts_c[to_idx] + 1
+
+        # After simulation, evaluate board
+        # 1. Penalize blots (my checkers alone on a point)
+        for i in range(24):
+            if my_pts_c[i] == 1:
+                # Count how many opponent rolls can hit this
+                hits = 0
+                for die in range(1, 7):
+                    src = i + die
+                    if src >= 24:
+                        continue
+                    # Can opp reach i from src?
+                    if src < 24 and opp_pts[src] > 0:
+                        # Also consider bearing off logic for opp?
+                        # Simplified: if src - die == i → yes
+                        # But opp moves in opposite direction
+                        # We assume opp moves from 0->23, so src = i + die
+                        if opp_pts[src] > 0:
+                            # But need to check if they can land: my checkers must be < 2
+                            if my_pts_c[i] <= 1:
+                                hits += 1
+                score -= 0.3 * hits  # penalty proportional to exposure
+
+        # 2. Reward for making points (2 or more of my checkers)
+        points_made = 0
+        for i in range(24):
+            if my_pts_c[i] >= 2:
+                points_made += 1
+        score += 0.2 * points_made
+
+        # 3. Progress: sum of pip count improvement
+        # Original pip count
+        original_pip = sum(i * my_pts[i] for i in range(24)) + 25 * my_bar
+        new_pip = sum(i * my_pts_c[i] for i in range(24)) + 25 * my_bar_c
+        pip_gain = original_pip - new_pip
+        score += 0.01 * pip_gain
+
+        # 4. Additional reward for bearing off
+        score += 3.0 * (my_off_c - my_off)
+
+        return score
+
+    # Generate all legal moves
+    if len(dice) == 1:
+        dice = [dice[0], 0]  # dummy
+        moves = []
+        high_moves = generate_moves_for_die(dice[0], my_bar, my_pts, opp_pts, can_bear_off)
+        for m in high_moves:
+            if m != 'P':
+                moves.append(('H', m, 'P'))
+            else:
+                moves.append(('H', 'P', 'P'))
+    else:
+        moves = generate_legal_moves(dice[0], dice[1], my_bar, my_pts, opp_pts, can_bear_off)
+
+    if not moves:
+        return "H:P,P"
+
+    # Score all moves and pick the best
+    scored_moves = []
+    for move in moves:
+        if move[1] == 'P' and move[2] == 'P':
+            scored_moves.append((move, -1000))
+        else:
+            score = score_move(move)
+            scored_moves.append((move, score))
+
+    # Sort by score descending
+    scored_moves.sort(key=lambda x: x[1], reverse=True)
+    best_move = scored_moves[0][0]
+
+    order, from1, from2 = best_move
+    return f"{order}:{from1},{from2}"
+</code>

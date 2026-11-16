@@ -1,0 +1,100 @@
+
+
+The strategy for this policy is to use a Dijkstra-like algorithm to find the shortest path connecting the player's two opposing sides, considering existing stones as free nodes and empty cells as potential steps. The first empty cell in this minimal path is chosen as the move to optimally advance towards connecting the sides. If no path is found, a heuristic selects the most strategic empty cell based on adjacency to own stones and centrality.
+
+<code>
+import heapq
+
+def get_neighbors(i, j):
+    neighbors = [
+        (i-1, j),
+        (i-1, j+1),
+        (i, j-1),
+        (i, j+1),
+        (i+1, j-1),
+        (i+1, j),
+    ]
+    return [(ni, nj) for ni, nj in neighbors if 0 <= ni < 11 and 0 <= nj < 11]
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    me_set = set(me)
+    opp_set = set(opp)
+    all_me_or_opp = me_set.union(opp_set)
+    
+    # Determine source and target based on color
+    if color == 'b':
+        def is_source(i, j):
+            return i == 0
+        def is_target(i, j):
+            return i == 10
+    else:
+        def is_source(i, j):
+            return j == 0
+        def is_target(i, j):
+            return j == 10
+    
+    # Dijkstra's algorithm to find minimal path
+    heap = []
+    visited = {}
+    # Initialize sources
+    for i in range(11):
+        for j in range(11):
+            if is_source(i, j):
+                if (i, j) in opp_set:
+                    continue
+                initial_cost = 0 if (i, j) in me_set else 1
+                heapq.heappush(heap, (initial_cost, i, j))
+                visited[(i, j)] = (initial_cost, None)
+    
+    found = None
+    while heap:
+        cost, i, j = heapq.heappop(heap)
+        if (i, j) in visited and visited[(i, j)][0] < cost:
+            continue
+        if is_target(i, j):
+            found = (i, j)
+            break
+        for ni, nj in get_neighbors(i, j):
+            if (ni, nj) in opp_set:
+                continue
+            new_cost = cost
+            if (ni, nj) not in me_set:
+                new_cost += 1
+            if (ni, nj) not in visited or new_cost < visited.get((ni, nj), (float('inf'),))[0]:
+                visited[(ni, nj)] = (new_cost, (i, j))
+                heapq.heappush(heap, (new_cost, ni, nj))
+    
+    if found:
+        # Backtrack to find the first empty cell in the path
+        path = []
+        current = found
+        while current is not None:
+            path.append(current)
+            current = visited[current][1]
+        path.reverse()
+        for cell in path:
+            if cell not in all_me_or_opp:
+                return cell
+    
+    # Fallback to heuristic if no path found
+    empty_cells = [(i, j) for i in range(11) for j in range(11) if (i, j) not in all_me_or_opp]
+    if not empty_cells:
+        return (0, 0)  # Shouldn't happen
+    
+    best_cell = empty_cells[0]
+    best_score = -1
+    for i, j in empty_cells:
+        neighbors = get_neighbors(i, j)
+        my_adj = sum(1 for ni, nj in neighbors if (ni, nj) in me_set)
+        opp_adj = sum(1 for ni, nj in neighbors if (ni, nj) in opp_set)
+        if color == 'b':
+            center = 5 - abs(j - 5)
+        else:
+            center = 5 - abs(i - 5)
+        score = my_adj * 3 + center * 2 - opp_adj
+        if score > best_score:
+            best_score = score
+            best_cell = (i, j)
+    
+    return best_cell
+</code>

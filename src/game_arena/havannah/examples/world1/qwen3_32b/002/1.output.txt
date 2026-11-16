@@ -1,0 +1,132 @@
+The strategy for this policy is to prioritize immediate wins by checking for bridge or fork completions, then block immediate opponent wins. If neither is possible, the policy selects moves based on heuristics: favoring connectivity, proximity to corners/edges, centrality, and expansion of existing groups.
+
+<code>
+import numpy as np
+from typing import List, Tuple
+from collections import deque
+
+def policy(me: list[Tuple[int, int]], opp: list[Tuple[int, int]], valid_mask) -> Tuple[int, int]:
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    def get_neighbors(r, c):
+        deltas = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, -1)]
+        result = []
+        for dr, dc in deltas:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 15 and 0 <= nc < 15:
+                result.append((nr, nc))
+        return result
+    
+    corners = [(0,7), (7,0), (14,7), (7,14), (0,0), (14,14)]
+    
+    edges = [
+        lambda r, c: r == 0,           # Top
+        lambda r, c: c == 14,          # Right
+        lambda r, c: r == 14,          # Bottom
+        lambda r, c: c == 0,           # Left
+        lambda r, c: r == c and r < 7, # Upper diagonal
+        lambda r, c: r + c == 14 and r >= 7, # Lower diagonal
+    ]
+    
+    def has_bridge(me_check):
+        me_check_set = set(me_check)
+        for i in range(len(corners)):
+            for j in range(i+1, len(corners)):
+                c1 = corners[i]
+                c2 = corners[j]
+                if c1 not in me_check_set or c2 not in me_check_set:
+                    continue
+                visited = set()
+                queue = deque([c1])
+                visited.add(c1)
+                while queue:
+                    current = queue.popleft()
+                    if current == c2:
+                        return True
+                    for neighbor in get_neighbors(*current):
+                        if neighbor in me_check_set and neighbor not in visited:
+                            visited.add(neighbor)
+                            queue.append(neighbor)
+        return False
+    
+    def has_fork(me_check):
+        me_check_set = set(me_check)
+        visited = set()
+        for cell in me_check_set:
+            if cell in visited:
+                continue
+            component = set()
+            queue = deque([cell])
+            visited.add(cell)
+            component.add(cell)
+            while queue:
+                current = queue.popleft()
+                for neighbor in get_neighbors(*current):
+                    if neighbor in me_check_set and neighbor not in visited:
+                        visited.add(neighbor)
+                        component.add(neighbor)
+                        queue.append(neighbor)
+            touched_edges = set()
+            for c in component:
+                for e in range(len(edges)):
+                    if edges[e](*c):
+                        touched_edges.add(e)
+            if len(touched_edges) >= 3:
+                return True
+        return False
+    
+    valid_moves = []
+    for r in range(15):
+        for c in range(15):
+            if valid_mask[r][c] and (r,c) not in me_set and (r,c) not in opp_set:
+                valid_moves.append( (r,c) )
+    
+    # Check if any move wins
+    for move in valid_moves:
+        new_me = list(me_set | {move})
+        if has_bridge(new_me) or has_fork(new_me):
+            return move
+    
+    # Block opponent's win if possible
+    for move in valid_moves:
+        new_opp = list(opp_set | {move})
+        if has_bridge(new_opp) or has_fork(new_opp):
+            return move
+    
+    # Choose best move by heuristic
+    best_score = -float('inf')
+    best_move = valid_moves[0]
+    for move in valid_moves:
+        score = 0
+        
+        # Adjacency bonus
+        adj_count = sum(1 for n in get_neighbors(*move) if n in me_set)
+        score += adj_count * 5
+        
+        # Proximity to corners
+        for corner in corners:
+            dist = abs(move[0] - corner[0]) + abs(move[1] - corner[1])
+            if dist <= 3:
+                score += 2 ** (3 - dist)
+        
+        # Edge bonus
+        for edge in edges:
+            if edge(*move):
+                score += 2
+        
+        # Center preference
+        center = (7,7)
+        dist_center = abs(move[0] - center[0]) + abs(move[1] - center[1])
+        score += (15 - dist_center)
+        
+        # Corner preference
+        if move in corners:
+            score += 5
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move
+</code>

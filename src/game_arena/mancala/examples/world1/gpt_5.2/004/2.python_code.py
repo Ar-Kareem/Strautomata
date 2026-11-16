@@ -1,0 +1,288 @@
+
+from __future__ import annotations
+
+from typing import List, Tuple, Dict, Optional
+import time
+import math
+
+
+HOUSES = 6
+STORE = 6
+PITS_NO_OPP_STORE = 13  # 6 houses + store + 6 opponent houses
+
+
+def _is_game_over(you: List[int], opp: List[int]) -> bool:
+    return (sum(you[:HOUSES]) == 0) or (sum(opp[:HOUSES]) == 0)
+
+
+def _sweep_if_over(you: List[int], opp: List[int]) -> Tuple[List[int], List[int], bool]:
+    """If game over, sweep remaining seeds into the non-empty side's store."""
+    you_h = sum(you[:HOUSES])
+    opp_h = sum(opp[:HOUSES])
+    if you_h == 0 or opp_h == 0:
+        you2 = you[:]
+        opp2 = opp[:]
+        if you_h > 0:
+            you2[STORE] += you_h
+            for i in range(HOUSES):
+                you2[i] = 0
+        if opp_h > 0:
+            opp2[STORE] += opp_h
+            for i in range(HOUSES):
+                opp2[i] = 0
+        return you2, opp2, True
+    return you, opp, False
+
+
+def _apply_move(you: List[int], opp: List[int], move: int) -> Tuple[List[int], List[int], bool, bool, int]:
+    """
+    Apply move for current player (you).
+    Returns: (new_you, new_opp, extra_turn, game_over, captured_amount)
+    """
+    # Build 13-pit representation excluding opponent store:
+    # pits[0..5] your houses, pits[6] your store, pits[7..12] opponent houses
+    pits = you[:HOUSES] + [you[STORE]] + opp[:HOUSES]
+
+    seeds = pits[move]
+    pits[move] = 0
+
+    # Distribution using divmod across 13 pits
+    q, r = divmod(seeds, PITS_NO_OPP_STORE)
+    if q:
+        # Add q to all pits
+        for j in range(PITS_NO_OPP_STORE):
+            pits[j] += q
+
+    start = (move + 1) % PITS_NO_OPP_STORE
+    for t in range(r):
+        pits[(start + t) % PITS_NO_OPP_STORE] += 1
+
+    last = (start + seeds - 1) % PITS_NO_OPP_STORE if seeds > 0 else move
+
+    # Capture logic
+    captured = 0
+    if 0 <= last < HOUSES:
+        # capture only if last pit now has exactly 1 seed and was empty before the drop
+        # If q>0, the pit couldn't have been empty before last drop; also pits[last]==1 implies q==0 anyway.
+        if pits[last] == 1 and you[last] == 0:
+            opp_idx = 12 - last  # opposite mapping in pits space
+            if pits[opp_idx] > 0:
+                captured = pits[opp_idx] + pits[last]
+                pits[STORE] += captured
+                pits[opp_idx] = 0
+                pits[last] = 0
+
+    extra_turn = (last == STORE)
+
+    new_you = pits[:HOUSES] + [pits[STORE]]
+    new_opp = pits[STORE + 1:] + [opp[STORE]]
+
+    new_you, new_opp, over = _sweep_if_over(new_you, new_opp)
+    return new_you, new_opp, (extra_turn and not over), over, captured
+
+
+def _legal_moves(you: List[int]) -> List[int]:
+    return [i for i in range(HOUSES) if you[i] > 0]
+
+
+def _static_eval(you: List[int], opp: List[int]) -> float:
+    """
+    Heuristic evaluation from the perspective of 'you' (side to move in this node).
+    Larger is better for 'you'.
+    """
+    # Terminal
+    if _is_game_over(you, opp):
+        # Stores already swept in caller; still handle safely.
+        return 10000.0 * (you[STORE] - opp[STORE])
+
+    you_store = you[STORE]
+    opp_store = opp[STORE]
+    you_side = sum(you[:HOUSES])
+    opp_side = sum(opp[:HOUSES])
+
+    # Core: store advantage dominates; remaining seeds matter slightly.
+    score = 12.0 * (you_store - opp_store) + 1.0 * (you_side - opp_side)
+
+    # Mobility (having moves) and shaping (prefer having seeds on the right to aim for store)
+    moves = _legal_moves(you)
+    score += 0.2 * len(moves)
+
+    # Tactical: immediate capture/extra turn chances for current player
+    # (Small lookahead features, cheaper than deeper search in tight time)
+    cap_potential = 0
+    extra_potential = 0
+    for m in moves:
+        ny, no, extra, over, cap = _apply_move(you, opp, m)
+        if over:
+            # if it ends game, incorporate strong preference via stores
+            cap_potential += 0.1 * (ny[STORE] - no[STORE])
+        else:
+            if extra:
+                extra_potential += 1
+            cap_potential += 0.15 * cap
+    score += 0.8 * extra_potential + cap_potential
+
+    # Vulnerability: positions where opponent can capture after you pass turn
+    # Approximate by estimating opponent immediate capture potential if roles swapped.
+    # (Discounted to avoid overfitting.)
+    opp_cap = 0
+    for om in _legal_moves(opp):
+        ny, no, extra, over, cap = _apply_move(opp, you, om)
+        opp_cap += cap
+    score -= 0.12 * opp_cap
+
+    return score
+
+
+def _order_moves(you: List[int], opp: List[int], moves: List[int]) -> List[int]:
+    """
+    Order moves: extra turns first, then captures, then preference for moves that
+    land nearer store / have larger immediate gains.
+    """
+    scored = []
+    for m in moves:
+        ny, no, extra, over, cap = _apply_move(you, opp, m)
+        # quick ordering value (doesn't need to be exact)
+        ord_score = 0.0
+        ord_score += 50.0 if extra else 0.0
+        ord_score += 5.0 * cap
+        ord_score += 0.5 * (ny[STORE] - you[STORE])
+        # slight bias toward rightmost pits (often better tempo)
+        ord_score += 0.05 * m
+        scored.append((ord_score, m))
+    scored.sort(reverse=True)
+    return [m for _, m in scored]
+
+
+class _Searcher:
+    __slots__ = (
+        "t_end",
+        "tt",
+        "nodes",
+        "max_nodes_soft",
+    )
+
+    def __init__(self, t_end: float):
+        self.t_end = t_end
+        self.tt: Dict[Tuple[Tuple[int, ...], Tuple[int, ...], int], float] = {}
+        self.nodes = 0
+        self.max_nodes_soft = 250000  # soft cap; time cap is primary
+
+    def _time_up(self) -> bool:
+        return time.perf_counter() >= self.t_end or self.nodes >= self.max_nodes_soft
+
+    def negamax(self, you: List[int], opp: List[int], depth: int, alpha: float, beta: float) -> float:
+        if depth <= 0 or _is_game_over(you, opp):
+            return _static_eval(you, opp)
+
+        if self._time_up():
+            # Return heuristic immediately when out of time.
+            return _static_eval(you, opp)
+
+        self.nodes += 1
+
+        key = (tuple(you), tuple(opp), depth)
+        tt_val = self.tt.get(key)
+        if tt_val is not None:
+            return tt_val
+
+        moves = _legal_moves(you)
+        if not moves:
+            # Shouldn't happen per problem statement, but be safe:
+            return _static_eval(you, opp)
+
+        moves = _order_moves(you, opp, moves)
+
+        best = -math.inf
+        a = alpha
+
+        for m in moves:
+            ny, no, extra, over, _cap = _apply_move(you, opp, m)
+
+            if over:
+                val = _static_eval(ny, no)
+            elif extra:
+                val = self.negamax(ny, no, depth - 1, a, beta)
+            else:
+                val = -self.negamax(no, ny, depth - 1, -beta, -a)
+
+            if val > best:
+                best = val
+            if best > a:
+                a = best
+            if a >= beta:
+                break
+            if self._time_up():
+                break
+
+        self.tt[key] = best
+        return best
+
+
+def policy(you: List[int], opponent: List[int]) -> int:
+    """
+    Return a legal move index 0..5 with you[i] > 0.
+    """
+    moves = _legal_moves(you)
+    if not moves:
+        # Per spec this won't happen, but must always return something legal-like.
+        return 0
+
+    if len(moves) == 1:
+        return moves[0]
+
+    # Time management: keep a small buffer
+    t0 = time.perf_counter()
+    time_budget = 0.95  # seconds
+    t_end = t0 + time_budget
+
+    searcher = _Searcher(t_end=t_end)
+
+    # Iterative deepening
+    best_move = moves[0]
+    best_val = -math.inf
+
+    # Baseline: strong tactical ordering at root
+    ordered_root = _order_moves(you, opponent, moves)
+
+    # Depth schedule: increase until time runs out
+    # Typical sweet spot for 1s is ~7-11 plies depending on branching/extra turns.
+    for depth in range(1, 20):
+        if time.perf_counter() >= t_end:
+            break
+
+        local_best_move = best_move
+        local_best_val = -math.inf
+
+        alpha = -math.inf
+        beta = math.inf
+
+        for m in ordered_root:
+            if time.perf_counter() >= t_end:
+                break
+
+            ny, no, extra, over, _cap = _apply_move(you, opponent, m)
+
+            if over:
+                val = _static_eval(ny, no)
+            elif extra:
+                val = searcher.negamax(ny, no, depth - 1, alpha, beta)
+            else:
+                val = -searcher.negamax(no, ny, depth - 1, -beta, -alpha)
+
+            if val > local_best_val:
+                local_best_val = val
+                local_best_move = m
+            if val > alpha:
+                alpha = val
+
+        # Only accept completed iterations that didn't obviously time out mid-iteration
+        if time.perf_counter() < t_end:
+            best_move, best_val = local_best_move, local_best_val
+        else:
+            break
+
+    # Safety: ensure legality
+    if best_move not in moves:
+        best_move = moves[0]
+    return best_move

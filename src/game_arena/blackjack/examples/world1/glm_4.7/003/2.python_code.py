@@ -1,0 +1,113 @@
+
+import functools
+
+# Define the full 13-card deck
+FULL_DECK = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+
+# Map card ranks to their primary values
+CARD_VALUES = {
+    "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10": 10,
+    "J": 10, "Q": 10, "K": 10, "A": 11
+}
+
+# A large penalty for busting. Since max score is ~30, 30^2=900. 
+# -10000 ensures busts are always worse than any safe score.
+BUST_PENALTY = -10000
+
+@functools.lru_cache(maxsize=None)
+def calculate_hand_value(hand_tuple, target):
+    """
+    Calculates the value of a hand. 
+    Aces count as 11 if the total is <= target, otherwise 1.
+    """
+    val = 0
+    aces = 0
+    
+    for card in hand_tuple:
+        if card == 'A':
+            aces += 1
+        else:
+            val += CARD_VALUES[card]
+            
+    # Add aces initially as 11
+    val += 11 * aces
+    
+    # Convert aces from 11 to 1 if we are over the target
+    while val > target and aces > 0:
+        val -= 10
+        aces -= 1
+        
+    return val
+
+@functools.lru_cache(maxsize=None)
+def get_optimal_state_value(hand_tuple, remaining_tuple, target):
+    """
+    Computes the optimal expected utility from a given state using recursion.
+    """
+    current_score = calculate_hand_value(hand_tuple, target)
+    
+    # If bust, return penalty (Terminal state for this branch)
+    if current_score > target:
+        return BUST_PENALTY
+        
+    # Utility of STAYing
+    # We use squared score to reward getting closer to target more aggressively
+    utility_stay = current_score ** 2
+    
+    # If no cards remaining to hit, must stay
+    if not remaining_tuple:
+        return utility_stay
+        
+    # Utility of HITting
+    # Average the optimal value of all possible next cards
+    utility_hit_sum = 0
+    num_remaining = len(remaining_tuple)
+    
+    for i in range(num_remaining):
+        card = remaining_tuple[i]
+        
+        # Create new state
+        new_hand_list = list(hand_tuple)
+        new_hand_list.append(card)
+        new_hand = tuple(sorted(new_hand_list))
+        
+        # Remove card from remaining
+        new_remaining = remaining_tuple[:i] + remaining_tuple[i+1:]
+        
+        utility_hit_sum += get_optimal_state_value(new_hand, new_remaining, target)
+        
+    utility_hit = utility_hit_sum / num_remaining
+    
+    return max(utility_stay, utility_hit)
+
+def policy(hand: list[str], target: int) -> str:
+    """
+    Returns the best move ("HIT" or "STAY") for the given hand and target.
+    """
+    # Determine remaining cards in the deck
+    # Note: The prompt implies a fresh deck per game/player interaction logic 
+    # or strictly the set of cards not in hand.
+    # "You have your own 13-card deck... draw the next card from your deck"
+    remaining = list(set(FULL_DECK) - set(hand))
+    
+    # Sort for consistent caching keys
+    hand_sorted = tuple(sorted(hand))
+    remaining_sorted = tuple(sorted(remaining))
+    
+    current_score = calculate_hand_value(hand_sorted, target)
+    
+    # If bust (shouldn't occur as input, but safe check), Stay
+    if current_score > target:
+        return "STAY"
+    
+    # Calculate utility of staying immediately
+    utility_stay = current_score ** 2
+    
+    # Get the overall optimal utility for this state
+    optimal_utility = get_optimal_state_value(hand_sorted, remaining_sorted, target)
+    
+    # If the optimal utility is strictly greater than staying, we should HIT
+    if optimal_utility > utility_stay:
+        return "HIT"
+    else:
+        return "STAY"

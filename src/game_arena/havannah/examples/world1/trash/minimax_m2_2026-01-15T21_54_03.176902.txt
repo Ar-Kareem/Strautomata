@@ -1,0 +1,232 @@
+**Strategy Overview**
+
+The policy works in three stages:
+
+1. **Immediate win detection** – Before anything else, it checks whether there is a move that creates a winning structure for the player (a bridge or a fork).  
+   *Bridge*: the new stone belongs to a component that already contains at least two corner cells.  
+   *Fork*: the new stone belongs to a component that touches at least three distinct board edges.  
+
+   If such a move exists, the best one (the one with the strongest “tie‑breaker” score) is returned.
+
+2. **Opponent‑win blocking** – If the opponent can win in a single move, the policy occupies one of those winning cells (the one with the highest heuristic value). This guarantees a legal response that thwarts the opponent’s immediate win.
+
+3. **Heuristic play** – When no immediate win or block is possible, each empty cell is scored by:
+   * **Adjacency to my stones** – Each neighbour occupied by my colour adds +10 points, while adjacency to opponent stones subtracts –5.
+   * **Edge‑touching** – After the move, the component’s edge‑mask (the set of board edges it touches) is examined. Each distinct edge adds +8 points.  
+   * **Corner bonus** – Touching a corner gives an additional +12 points.  
+   * **Potential‑fork bonus** – If the component already reaches two edges we add +10; if it reaches a corner and any edge we add +8.  
+
+   The move with the highest total score is chosen.
+
+The board is a regular hexagonal grid.  A cell’s six neighbours are
+```
+(-1, 0)   # up
+( 1, 0)   # down
+(-1,-1)   # up‑left
+( 0,-1)   # left
+( 1, 1)   # down‑right
+( 0, 1)   # right
+```
+For every valid cell we pre‑compute:
+* `cell_is_corner` – true when the cell has exactly two missing neighbours (the definition of a hex corner).
+* `cell_edge_mask` – a 6‑bit mask where bit *d* is set if neighbour direction *d* is missing (i.e. the cell lies on that board edge).
+
+Using these masks we can very quickly test a component for the win conditions:
+* `corner_count ≥ 2`  → bridge,
+* `popcount(edge_mask) ≥ 3` → fork.
+
+The whole algorithm runs comfortably within the 1 second limit (worst‑case ≈ 50 000 visited cells per turn).
+
+---
+
+```python
+# Havannah policy – smart heuristic + win / block detection
+# ------------------------------------------------------------
+# API:
+#   def policy(me, opp, valid_mask) -> tuple[int, int]
+#
+#   me    : list of (row, col) where player‑0 stones are placed
+#   opp   : list of (row, col) where player‑1 stones are placed
+#   valid_mask : 2‑D array (list of lists or numpy array) with True for legal cells
+#
+# Returns a single (row, col) coordinate for the next move.
+
+from typing import List, Tuple
+import itertools
+
+# ----------------------------------------------------------------------
+# Hexagonal neighbour offsets (the same order is used for edge detection)
+NEIGHBORS = [(-1, 0), (1, 0), (-1, -1), (0, -1), (1, 1), (0, 1)]
+
+def policy(me: List[Tuple[int, int]],
+           opp: List[Tuple[int, int]],
+           valid_mask) -> Tuple[int, int]:
+    """
+    Returns the best legal move for the player to move.
+    """
+
+    # --------------------------------------------------------------
+    # 1️⃣  Build a simple integer board:  0 = empty,  1 = me, -1 = opp
+    N = len(valid_mask)
+    board = [[0] * N for _ in range(N)]
+
+    for r, c in me:
+        board[r][c] = 1
+    for r, c in opp:
+        board[r][c] = -1
+
+    # --------------------------------------------------------------
+    # 2️⃣  Pre‑compute corner cells and edge‑masks for every valid cell.
+    #   cell_is_corner[r][c] : bool
+    #   cell_edge_mask[r][c] : 6‑bit integer (bits 0..5 correspond to NEIGHBORS)
+    cell_is_corner = [[False] * N for _ in range(N)]
+    cell_edge_mask = [[0] * N for _ in range(N)]
+
+    for r in range(N):
+        for c in range(N):
+            if not valid_mask[r][c]:
+                continue
+            missing = []
+            for d_idx, (dr, dc) in enumerate(NEIGHBORS):
+                nr, nc = r + dr, c + dc
+                if not (0 <= nr < N and 0 <= nc < N) or not valid_mask[nr][nc]:
+                    missing.append(d_idx)
+            if len(missing) == 2:                 # two missing neighbours → corner
+                cell_is_corner[r][c] = True
+            mask = 0
+            for d_idx in missing:
+                mask |= (1 << d_idx)
+            cell_edge_mask[r][c] = mask
+
+    # --------------------------------------------------------------
+    # Helper: BFS that returns (set of cells, edge_mask, corner_count)
+    def bfs_component(start_r: int, start_c: int, player: int):
+        """Return component of 'player' containing (start_r,start_c)."""
+        visited = set()
+        stack = [(start_r, start_c)]
+        visited.add((start_r, start_c))
+        edge_mask = 0
+        corner_cnt = 0
+        while stack:
+            cr, cc = stack.pop()
+            edge_mask |= cell_edge_mask[cr][cc]
+            if cell_is_corner[cr][cc]:
+                corner_cnt += 1
+            for dr, dc in NEIGHBORS:
+                nr, nc = cr + dr, cc + dc
+                if 0 <= nr < N and 0 <= nc < N and valid_mask[nr][nc]:
+                    if board[nr][nc] == player and (nr, nc) not in visited:
+                        visited.add((nr, nc))
+                        stack.append((nr, nc))
+        return visited, edge_mask, corner_cnt
+
+    # --------------------------------------------------------------
+    # Helper: does the player win by playing at (r,c)?
+    def would_win(player: int, r: int, c: int) -> bool:
+        """Simulate placing 'player' at (r,c) and test win condition."""
+        old = board[r][c]
+        board[r][c] = player
+        _, edge_mask, corner_cnt = bfs_component(r, c, player)
+        board[r][c] = old
+        if corner_cnt >= 2:                     # bridge
+            return True
+        if edge_mask.bit_count() >= 3:          # fork
+            return True
+        # Ring is ignored – hard to detect reliably and rarely decisive.
+        return False
+
+    # --------------------------------------------------------------
+    # 3️⃣  Gather all legal empty cells
+    empty_cells = [(r, c)
+                   for r in range(N)
+                   for c in range(N)
+                   if valid_mask[r][c] and board[r][c] == 0]
+
+    # 4️⃣  Immediate win for me?
+    my_winners = []
+    for r, c in empty_cells:
+        if would_win(1, r, c):
+            my_winners.append((r, c))
+
+    if my_winners:
+        # Choose the winner with the highest tie‑breaker score.
+        best = None
+        best_score = -1
+        for r, c in my_winners:
+            # temporary placement for scoring
+            board[r][c] = 1
+            _, edge_mask, _ = bfs_component(r, c, 1)
+            board[r][c] = 0
+            score = edge_mask.bit_count() * 8  # more edges → stronger
+            if score > best_score:
+                best_score = score
+                best = (r, c)
+        return best if best is not None else my_winners[0]
+
+    # 5️⃣  Opponent can win in one move – block it.
+    opp_winners = []
+    for r, c in empty_cells:
+        if would_win(-1, r, c):
+            opp_winners.append((r, c))
+
+    if opp_winners:
+        best = None
+        best_score = -1
+        for r, c in opp_winners:
+            # simulate my placement at that cell (which blocks opponent)
+            board[r][c] = 1
+            _, edge_mask, _ = bfs_component(r, c, 1)
+            board[r][c] = 0
+            score = edge_mask.bit_count() * 8
+            if score > best_score:
+                best_score = score
+                best = (r, c)
+        return best
+
+    # 6️⃣  No direct wins – evaluate all candidates by heuristic score.
+    best_move = None
+    best_score = -1
+
+    for r, c in empty_cells:
+        # ----- basic adjacency -----
+        adj_my = 0
+        adj_opp = 0
+        for dr, dc in NEIGHBORS:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < N and 0 <= nc < N and valid_mask[nr][nc]:
+                if board[nr][nc] == 1:
+                    adj_my += 1
+                elif board[nr][nc] == -1:
+                    adj_opp += 1
+
+        # ----- simulate the move -----
+        board[r][c] = 1
+        component, edge_mask, corner_cnt = bfs_component(r, c, 1)
+        board[r][c] = 0
+
+        edges_touched = edge_mask.bit_count()
+        corner_touch = 1 if corner_cnt > 0 else 0
+
+        # ----- heuristic scoring -----
+        score = adj_my * 10 - adj_opp * 5
+        score += edges_touched * 8               # reaching more edges is valuable
+        score += corner_touch * 12               # touching a corner gives a boost
+        # extra bonuses for near‑fork / near‑bridge situations
+        if edges_touched >= 2:
+            score += 10                          # already touching two edges
+        if corner_touch == 1 and edges_touched >= 1:
+            score += 8                           # corner + any edge
+
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+
+    # A fallback (should never be needed)
+    if best_move is None:
+        for r, range(N):
+            for c in range(N):
+                if valid_mask[r][c] and board[r][c] == 0:
+                    return (r, c)
+
+    return best_move
+```

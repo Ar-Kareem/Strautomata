@@ -1,0 +1,184 @@
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    import random
+    
+    # Build board representation
+    board = [[0 for _ in range(20)] for _ in range(20)]  # 1-indexed
+    
+    for r, c in me:
+        board[r][c] = 1  # Our stones
+    for r, c in opponent:
+        board[r][c] = -1  # Opponent stones
+    
+    # Helper: count liberties of a stone/group
+    def count_liberties(r, c, player):
+        if board[r][c] != player:
+            return 0
+        
+        visited = set()
+        stack = [(r, c)]
+        liberties = 0
+        
+        while stack:
+            cr, cc = stack.pop()
+            if (cr, cc) in visited:
+                continue
+            visited.add((cr, cc))
+            
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = cr + dr, cc + dc
+                if 1 <= nr <= 19 and 1 <= nc <= 19:
+                    if board[nr][nc] == 0:
+                        liberties += 1
+                    elif board[nr][nc] == player and (nr, nc) not in visited:
+                        stack.append((nr, nc))
+        
+        return liberties
+    
+    # Helper: check if a move captures anything
+    def check_capture(r, c):
+        if board[r][c] != 0:
+            return []
+        
+        captures = []
+        board[r][c] = 1  # Temporarily place our stone
+        
+        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nr, nc = r + dr, c + dc
+            if 1 <= nr <= 19 and 1 <= nc <= 19 and board[nr][nc] == -1:
+                if count_liberties(nr, nc, -1) == 0:
+                    captures.append((nr, nc))
+        
+        board[r][c] = 0  # Restore
+        return captures
+    
+    # Helper: check if move self-atari
+    def check_self_atari(r, c):
+        if board[r][c] != 0:
+            return True
+        
+        board[r][c] = 1
+        self_atari = count_liberties(r, c, 1) == 1
+        board[r][c] = 0
+        return self_atari
+    
+    # Helper: get all opponent groups with given liberties
+    def get_groups_with_liberties(target_liberties, player):
+        visited = set()
+        groups = []
+        
+        for r in range(1, 20):
+            for c in range(1, 20):
+                if board[r][c] == player and (r, c) not in visited:
+                    group = []
+                    stack = [(r, c)]
+                    while stack:
+                        cr, cc = stack.pop()
+                        if (cr, cc) in visited:
+                            continue
+                        visited.add((cr, cc))
+                        group.append((cr, cc))
+                        
+                        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                            nr, nc = cr + dr, cc + dc
+                            if 1 <= nr <= 19 and 1 <= nc <= 19:
+                                if board[nr][nc] == player and (nr, nc) not in visited:
+                                    stack.append((nr, nc))
+                    
+                    lib_count = 0
+                    for gr, gc in group:
+                        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                            nr, nc = gr + dr, gc + dc
+                            if 1 <= nr <= 19 and 1 <= nc <= 19 and board[nr][nc] == 0:
+                                lib_count += 1
+                    
+                    if lib_count == target_liberties:
+                        groups.append(group)
+        
+        return groups
+    
+    # Priority 1: Capture opponent groups with 1 liberty (atari)
+    opponent_atari = get_groups_with_liberties(1, -1)
+    for group in opponent_atari:
+        for r, c in group:
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = r + dr, c + dc
+                if 1 <= nr <= 19 and 1 <= nc <= 19 and board[nr][nc] == 0:
+                    if not check_self_atari(nr, nc):
+                        return (nr, nc)
+    
+    # Priority 2: Save our groups with 1 liberty (self-atari defense)
+    our_atari = get_groups_with_liberties(1, 1)
+    for group in our_atari:
+        for r, c in group:
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = r + dr, c + dc
+                if 1 <= nr <= 19 and 1 <= nc <= 19 and board[nr][nc] == 0:
+                    return (nr, nc)  # Any escape move
+    
+    # Priority 3: Generate candidate moves
+    candidates = []
+    empty_count = sum(1 for r in range(1, 20) for c in range(1, 20) if board[r][c] == 0)
+    total_stones = len(me) + len(opponent)
+    
+    # Opening: prioritize star points and corners
+    if total_stones < 30:
+        star_points = [(4, 4), (4, 10), (4, 16), (10, 4), (10, 10), (10, 16), (16, 4), (16, 10), (16, 16)]
+        corners = [(1, 1), (1, 19), (19, 1), (19, 19)]
+        near_corners = [(2, 2), (2, 18), (18, 2), (18, 18), (2, 1), (1, 2), (18, 1), (1, 18), (2, 19), (19, 2)]
+        
+        for r, c in star_points + near_corners:
+            if board[r][c] == 0:
+                score = 100 if (r, c) in star_points else 50
+                candidates.append((r, c, score))
+    
+    # Generate moves near existing stones
+    for r, c in me + opponent:
+        for dr in range(-3, 4):
+            for dc in range(-3, 4):
+                nr, nc = r + dr, c + dc
+                if 1 <= nr <= 19 and 1 <= nc <= 19 and board[nr][nc] == 0:
+                    # Avoid self-atari unless it's a capture
+                    if check_self_atari(nr, nc):
+                        captures = check_capture(nr, nc)
+                        if len(captures) == 0:
+                            continue
+                    
+                    # Score based on position
+                    score = 10
+                    
+                    # Prefer center influence
+                    center_dist = abs(nr - 10) + abs(nc - 10)
+                    score += max(0, 20 - center_dist)
+                    
+                    # Bonus for playing near our stones
+                    if (r, c) in me:
+                        score += 5
+                    
+                    # Penalty for too close to opponent (unless capturing)
+                    if (r, c) in opponent:
+                        score += 20  # Great capture move!
+                    
+                    candidates.append((nr, nc, score))
+    
+    # Add some random empty area moves for influence
+    if len(candidates) < 20:
+        for r in range(1, 20, 4):
+            for c in range(1, 20, 4):
+                if board[r][c] == 0:
+                    center_dist = abs(r - 10) + abs(c - 10)
+                    score = 15 - center_dist
+                    candidates.append((r, c, score))
+    
+    if not candidates:
+        return (0, 0)  # Pass
+    
+    # Sort by score and pick one of the best
+    candidates.sort(key=lambda x: -x[2])
+    best_score = candidates[0][2]
+    best_moves = [m for m in candidates if m[2] == best_score]
+    
+    # Add small random noise to break ties and avoid predictability
+    r, c, _ = random.choice(best_moves)
+    
+    return (r, c)

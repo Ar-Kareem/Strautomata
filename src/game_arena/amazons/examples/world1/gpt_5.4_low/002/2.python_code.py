@@ -1,0 +1,219 @@
+
+import numpy as np
+
+# 8 queen directions
+_DIRS = [
+    (-1, -1), (-1, 0), (-1, 1),
+    (0, -1),           (0, 1),
+    (1, -1),  (1, 0),  (1, 1),
+]
+
+N = 6
+
+
+def _inside(r, c):
+    return 0 <= r < N and 0 <= c < N
+
+
+def _format_move(move):
+    (fr, fc), (tr, tc), (ar, ac) = move
+    return f"{fr},{fc}:{tr},{tc}:{ar},{ac}"
+
+
+def _ray_squares(board, r, c):
+    """Yield reachable empty squares from (r,c) by queen move."""
+    for dr, dc in _DIRS:
+        nr, nc = r + dr, c + dc
+        while _inside(nr, nc) and board[nr, nc] == 0:
+            yield (nr, nc)
+            nr += dr
+            nc += dc
+
+
+def _amazon_positions(board, player):
+    pos = np.argwhere(board == player)
+    return [(int(r), int(c)) for r, c in pos]
+
+
+def _reachable_count_and_trapped(board, player):
+    """Cheap mobility estimate: total reachable destination squares, and trapped amazons."""
+    total = 0
+    trapped = 0
+    for r, c in _amazon_positions(board, player):
+        cnt = 0
+        for dr, dc in _DIRS:
+            nr, nc = r + dr, c + dc
+            while _inside(nr, nc) and board[nr, nc] == 0:
+                cnt += 1
+                nr += dr
+                nc += dc
+        total += cnt
+        if cnt == 0:
+            trapped += 1
+    return total, trapped
+
+
+def _centrality_score(board):
+    """
+    Tiny positional bonus:
+    reward our amazons being nearer the center, penalize opponent similarly.
+    """
+    centers = [(2, 2), (2, 3), (3, 2), (3, 3)]
+    score = 0
+    for r, c in _amazon_positions(board, 1):
+        d = min(abs(r - cr) + abs(c - cc) for cr, cc in centers)
+        score -= d
+    for r, c in _amazon_positions(board, 2):
+        d = min(abs(r - cr) + abs(c - cc) for cr, cc in centers)
+        score += d
+    return score
+
+
+def _evaluate(board):
+    """
+    Static evaluation from our perspective (player 1).
+    Strongly mobility-based, with trap awareness.
+    """
+    my_reach, my_trapped = _reachable_count_and_trapped(board, 1)
+    op_reach, op_trapped = _reachable_count_and_trapped(board, 2)
+
+    # Terminal-ish checks based on ability to move at all.
+    if op_reach == 0:
+        return 10_000
+    if my_reach == 0:
+        return -10_000
+
+    score = 0
+    score += 6 * (my_reach - op_reach)
+    score += 18 * (op_trapped - my_trapped)
+    score += _centrality_score(board)
+    return score
+
+
+def _apply_move(board, move, player):
+    """Return a new board after applying move for player."""
+    newb = board.copy()
+    (fr, fc), (tr, tc), (ar, ac) = move
+    newb[fr, fc] = 0
+    newb[tr, tc] = player
+    newb[ar, ac] = -1
+    return newb
+
+
+def _gen_legal_moves(board, player):
+    """
+    Generate all legal moves for player.
+    Returns a list of ((fr,fc),(tr,tc),(ar,ac)).
+    """
+    moves = []
+    positions = _amazon_positions(board, player)
+
+    for fr, fc in positions:
+        # Vacate source to allow passing/shooting through it later.
+        board[fr, fc] = 0
+
+        for tr, tc in _ray_squares(board, fr, fc):
+            board[tr, tc] = player
+
+            for ar, ac in _ray_squares(board, tr, tc):
+                moves.append(((fr, fc), (tr, tc), (ar, ac)))
+
+            board[tr, tc] = 0
+
+        board[fr, fc] = player
+
+    return moves
+
+
+def _quick_move_score(board, move, player):
+    """
+    Fast move ordering heuristic.
+    Evaluates board after move, and adds local arrow pressure.
+    """
+    newb = _apply_move(board, move, player)
+
+    if player == 1:
+        base = _evaluate(newb)
+    else:
+        # Evaluate still from our perspective, so opponent prefers lower values.
+        base = -_evaluate(newb)
+
+    # Small local tactical shaping:
+    # reward arrow shots near enemy pieces / into central lanes.
+    (_, _), (tr, tc), (ar, ac) = move
+    local = 0
+
+    # Amazon landing flexibility
+    for dr, dc in _DIRS:
+        nr, nc = tr + dr, tc + dc
+        while _inside(nr, nc) and newb[nr, nc] == 0:
+            local += 1
+            nr += dr
+            nc += dc
+
+    # Arrow pressure around enemy / around us depending on mover
+    target_enemy = 2 if player == 1 else 1
+    for rr in range(max(0, ar - 1), min(N, ar + 2)):
+        for cc in range(max(0, ac - 1), min(N, ac + 2)):
+            if newb[rr, cc] == target_enemy:
+                local += 3
+
+    return base + 0.2 * local
+
+
+def _select_top_moves(board, player, moves, limit):
+    if not moves:
+        return []
+    scored = [(_quick_move_score(board, mv, player), mv) for mv in moves]
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [mv for _, mv in scored[:limit]]
+
+
+def policy(board) -> str:
+    board = np.array(board, copy=True)
+
+    # Generate all legal moves. If none, return a syntactically valid fallback.
+    my_moves = _gen_legal_moves(board, 1)
+    if not my_moves:
+        return "0,0:0,0:0,0"
+
+    # Immediate tactical wins / strong moves.
+    best_move = my_moves[0]
+    best_value = -10**18
+
+    # Beam widths tuned for 6x6 speed/strength tradeoff.
+    top_my = _select_top_moves(board, 1, my_moves, limit=12)
+
+    for mv in top_my:
+        b1 = _apply_move(board, mv, 1)
+
+        # If opponent has no move, take it immediately.
+        op_reach, _ = _reachable_count_and_trapped(b1, 2)
+        if op_reach == 0:
+            return _format_move(mv)
+
+        op_moves = _gen_legal_moves(b1, 2)
+
+        # Robustness: if generator somehow empty, it's winning.
+        if not op_moves:
+            return _format_move(mv)
+
+        top_op = _select_top_moves(b1, 2, op_moves, limit=8)
+
+        # Opponent chooses move minimizing our evaluation.
+        worst_for_us = 10**18
+        for omv in top_op:
+            b2 = _apply_move(b1, omv, 2)
+            val = _evaluate(b2)
+            if val < worst_for_us:
+                worst_for_us = val
+
+        # Slight bias toward our immediate position too.
+        final_val = worst_for_us + 0.15 * _evaluate(b1)
+
+        if final_val > best_value:
+            best_value = final_val
+            best_move = mv
+
+    # Safety: ensure returned move is legal by construction.
+    return _format_move(best_move)

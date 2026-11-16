@@ -1,0 +1,61 @@
+
+import numpy as np
+
+def get_legal_moves(you, opponent):
+    moves = []
+    rows, cols = 5, 6
+    for r in range(rows):
+        for c in range(cols):
+            if you[r][c] == 1:
+                # Up, Down, Left, Right
+                for dr, dc, dstr in [(-1, 0, 'U'), (1, 0, 'D'), (0, -1, 'L'), (0, 1, 'R')]:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < rows and 0 <= nc < cols:
+                        if opponent[nr][nc] == 1:
+                            moves.append((r, c, dstr))
+    return moves
+
+def evaluate(you, opponent):
+    # Mobility-based heuristic: count possible moves for both sides
+    # In Clobber, having more move options than the opponent is generally better.
+    my_moves = len(get_legal_moves(you, opponent))
+    # Note: for opponent moves, the perspective is swapped
+    opp_moves = len(get_legal_moves(opponent, you))
+    return my_moves - opp_moves
+
+def policy(you: list[list[int]], opponent: list[list[int]]) -> str:
+    # Convert lists to numpy for easier handling if necessary, 
+    # though standard lists are fine for 5x6.
+    moves = get_legal_moves(you, opponent)
+    
+    if not moves:
+        return "" # Should not happen if game is active
+
+    best_move = moves[0]
+    best_score = -float('inf')
+    
+    # Check each move for its immediate impact on mobility
+    for r, c, d in moves:
+        # Simulate move
+        new_you = [row[:] for row in you]
+        new_opp = [row[:] for row in opponent]
+        
+        dr, dc = 0, 0
+        if d == 'U': dr = -1
+        elif d == 'D': dr = 1
+        elif d == 'L': dc = -1
+        elif d == 'R': dc = 1
+        
+        new_you[r][c] = 0
+        new_you[r+dr][c+dc] = 1
+        new_opp[r+dr][c+dc] = 0
+        
+        # Calculate heuristic score
+        score = evaluate(new_you, new_opp)
+        
+        # Tie-breaking: prefer moves that isolate opponent pieces or centralize
+        if score > best_score:
+            best_score = score
+            best_move = (r, c, d)
+            
+    return f"{best_move[0]},{best_move[1]},{best_move[2]}"

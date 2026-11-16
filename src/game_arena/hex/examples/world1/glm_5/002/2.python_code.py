@@ -1,0 +1,210 @@
+
+import heapq
+import random
+
+BOARD_SIZE = 11
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    """
+    Calculates the best move for the Hex game using a 2-ply Minimax search 
+    with a Dijkstra-based shortest-path heuristic.
+    """
+    my_stones = set(me)
+    opp_stones = set(opp)
+    
+    # Determine boundaries based on color
+    # Black connects Top (row 0) to Bottom (row 10)
+    # White connects Left (col 0) to Right (col 10)
+    if color == 'b':
+        my_start_row = 0
+        my_end_row = BOARD_SIZE - 1
+        my_axis = 0 # Row axis
+        opp_axis = 1 # Col axis
+    else:
+        my_start_row = 0 # Actually col 0
+        my_end_row = BOARD_SIZE - 1 # Actually col 10
+        my_axis = 1 # Col axis
+        opp_axis = 0 # Row axis
+
+    # Helper to get neighbors
+    def get_neighbors(r, c):
+        for dr, dc in [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE:
+                yield nr, nc
+
+    # Dijkstra to find shortest path cost (number of empty stones needed)
+    def calculate_distance(stones, blocked, start_idx, end_idx, axis):
+        # stones: set of (r,c) belonging to the player
+        # blocked: set of (r,c) belonging to the opponent
+        # start_idx, end_idx: 0 or 10
+        # axis: 0 for Row (Black), 1 for Col (White)
+        
+        dist = [[float('inf')] * BOARD_SIZE for _ in range(BOARD_SIZE)]
+        pq = []
+        
+        # Initialize priority queue with all cells on the starting edge
+        for i in range(BOARD_SIZE):
+            r, c = (i, start_idx) if axis == 1 else (start_idx, i)
+            if (r, c) in blocked:
+                continue
+            
+            cost = 0 if (r, c) in stones else 1
+            if dist[r][c] > cost:
+                dist[r][c] = cost
+                heapq.heappush(pq, (cost, r, c))
+        
+        while pq:
+            d, r, c = heapq.heappop(pq)
+            
+            if d > dist[r][c]:
+                continue
+            
+            # Check if reached end edge
+            current_idx = c if axis == 1 else r
+            if current_idx == end_idx:
+                return d
+            
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) in blocked:
+                    continue
+                
+                cost = 0 if (nr, nc) in stones else 1
+                new_dist = d + cost
+                
+                if new_dist < dist[nr][nc]:
+                    dist[nr][nc] = new_dist
+                    heapq.heappush(pq, (new_dist, nr, nc))
+                    
+        return float('inf')
+
+    def evaluate(my_s, opp_s):
+        # Calculate distance for me
+        my_dist = calculate_distance(my_s, opp_s, 0, BOARD_SIZE - 1, my_axis)
+        # Calculate distance for opponent
+        opp_dist = calculate_distance(opp_s, my_s, 0, BOARD_SIZE - 1, opp_axis)
+        
+        # If I have won
+        if my_dist == 0: return 10000
+        # If opponent has won
+        if opp_dist == 0: return -10000
+        # If I am cut off
+        if my_dist == float('inf'): return -5000
+        # If opponent is cut off
+        if opp_dist == float('inf'): return 5000
+        
+        # Heuristic: minimize my distance, maximize opponent distance
+        return opp_dist - my_dist
+
+    # Identify empty cells
+    all_cells = {(r, c) for r in range(BOARD_SIZE) for c in range(BOARD_SIZE)}
+    empty_cells = list(all_cells - my_stones - opp_stones)
+    
+    # 1. Opening Strategy
+    if not my_stones:
+        # If we are first, take center
+        return (5, 5)
+    
+    if len(my_stones) == 0 and len(opp_stones) == 1:
+        # If we are second and opponent took center, play adjacent
+        # But standard swap rule logic suggests playing (5,6) or similar
+        # Let's just take center if available
+        if (5,5) not in opp_stones:
+            return (5,5)
+        else:
+            return (5, 6) # Adjacent to center
+
+    # 2. Immediate Win Check
+    for move in empty_cells:
+        new_my_stones = my_stones | {move}
+        if evaluate(new_my_stones, opp_stones) >= 10000:
+            return move
+
+    # 3. Immediate Loss Prevention (Block opponent win)
+    # We must check if opponent can win in one move
+    blocking_moves = []
+    for move in empty_cells:
+        new_opp_stones = opp_stones | {move}
+        if evaluate(my_stones, new_opp_stones) <= -10000:
+            # This move is a winning move for opponent, we must block it.
+            # Note: In Hex, if opponent has a winning move, we block it.
+            # However, if there are TWO winning moves, we lose.
+            blocking_moves.append(move)
+    
+    if blocking_moves:
+        # If we found spots opponent would win on, we must play one to block? 
+        # Actually, if opponent wins by playing at X, playing at X prevents it.
+        # But we should check if WE can win by playing there too?
+        # Just return the first block, or maybe evaluate which block is better.
+        # For safety, if we have to block, we block.
+        # Let's incorporate this into Minimax logic naturally?
+        # If we are depth 2, minimax will see the loss and try to avoid it.
+        # But explicit check is faster and safer for 'must return legal move'.
+        pass
+
+    # 4. Minimax Depth 2
+    best_move = empty_cells[0]
+    best_score = -float('inf')
+    
+    # To optimize, sort moves by proximity to existing stones or center
+    # Simple heuristic: try center-ish moves first or adjacent to my stones
+    def move_priority(move):
+        # Prefer moves closer to center
+        r, c = move
+        dist_center = abs(r - 5) + abs(c - 5)
+        # Prefer adjacent to my stones
+        adj_bonus = 0
+        for n in get_neighbors(r, c):
+            if n in my_stones:
+                adj_bonus -= 5 # Lower is better priority
+        return dist_center + adj_bonus
+
+    empty_cells.sort(key=move_priority)
+    
+    # Limit search if too many empty cells (though 121 is small for 2-ply)
+    # 121 * 120 = 14500 iterations. Safe.
+    
+    for m1 in empty_cells:
+        s1_my = my_stones | {m1}
+        
+        # Check if this blocks an opponent win (handled by evaluate)
+        # Check if this wins (handled by evaluate)
+        
+        current_min_score = float('inf')
+        
+        # Opponent's turn
+        # We only need to check opponent responses if the game isn't already won
+        # But evaluate handles 0 distance.
+        
+        remaining_empty = [m for m in empty_cells if m != m1]
+        
+        # If no remaining empty, board is full (draw - impossible in Hex) or last move
+        if not remaining_empty:
+            score = evaluate(s1_my, opp_stones)
+            if score > best_score:
+                best_score = score
+                best_move = m1
+            continue
+            
+        # Optimization: Opponent will pick the best move for them (worst for us)
+        # We can prune opponent moves.
+        for m2 in remaining_empty:
+            s2_opp = opp_stones | {m2}
+            
+            score = evaluate(s1_my, s2_opp)
+            
+            if score < current_min_score:
+                current_min_score = score
+            
+            # Alpha-beta pruning for opponent
+            # If opponent finds a move that is worse for us than our current best_move's worst case,
+            # they will take it. If they find a move that is TERRIBLE for us (very low score),
+            # then m1 is a bad move for us.
+            if current_min_score <= best_score:
+                break # Opponent has a refutation, no need to check other responses
+        
+        if current_min_score > best_score:
+            best_score = current_min_score
+            best_move = m1
+
+    return best_move

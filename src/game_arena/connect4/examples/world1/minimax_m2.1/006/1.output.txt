@@ -1,0 +1,222 @@
+The strategy for this policy is to play a strong Connect 4 move by combining shallow horizon search with a solid positional heuristic.  
+1. **Immediate treats** – If any move wins right away, play it; if any move blocks the opponent’s immediate win, play it.  
+2. **Minimax with α‑β pruning** – From the current position we look ahead 4 plies (our move + four opponent moves). The search tree is pruned by ordering columns by closeness to the centre and by cutting off branches when the bound is exceeded.  
+3. **Static evaluation** – A non‑terminal leaf is scored by scanning all 4‑cell windows (horizontal, vertical, two diagonals). Each window contributes:  
+   * +INF for our four‑in‑a‑row, –INF for opponent’s four‑in‑a‑row,  
+   * +100 / +10 / +1 for three / two / one of ours with the rest empty,  
+   * –1000 / –100 / –1 for three / two / one of the opponent’s pieces (blocking is heavily penalised).  
+   A small centre‑column bonus (±3 per piece) encourages control of the critical middle column.  
+
+The implementation uses plain Python lists for the board and NumPy for fast window extraction. The whole search finishes comfortably within the 1‑second limit while being strong enough to beat many naive opponents.
+<code>
+import sys
+import numpy as np
+
+sys.setrecursionlimit(10000)
+
+INF = 10 ** 9
+
+# ----------------------------------------------------------------------
+# Helper functions
+# ----------------------------------------------------------------------
+def drop(board, col, player):
+    """Return a new board after dropping a disc of `player` into column `col`."""
+    new_board = [row[:] for row in board]
+    for r in range(5, -1, -1):
+        if new_board[r][col] == 0:
+            new_board[r][col] = player
+            break
+    return new_board
+
+
+def check_win(board, player):
+    """Return True iff `player` has a four‑in‑a‑row on the board."""
+    # horizontal
+    for r in range(6):
+        for c in range(4):
+            if board[r][c] == board[r][c + 1] == board[r][c + 2] == board[r][c + 3] == player:
+                return True
+    # vertical
+    for r in range(3):
+        for c in range(7):
+            if board[r][c] == board[r + 1][c] == board[r + 2][c] == board[r + 3][c] == player:
+                return True
+    # diagonal down‑right
+    for r in range(3):
+        for c in range(4):
+            if board[r][c] == board[r + 1][c + 1] == board[r + 2][c + 2] == board[r + 3][c + 3] == player:
+                return True
+    # diagonal up‑right
+    for r in range(3, 6):
+        for c in range(4):
+            if board[r][c] == board[r - 1][c + 1] == board[r - 2][c + 2] == board[r - 3][c + 3] == player:
+                return True
+    return False
+
+
+def evaluate_window(window):
+    """Score a single 4‑cell window from the perspective of player 1."""
+    w = list(window)
+    ours = w.count(1)
+    theirs = w.count(-1)
+    empty = 4 - ours - theirs
+
+    if theirs == 0:
+        if ours == 4:
+            return INF
+        if ours == 3:
+            return 100
+        if ours == 2:
+            return 10
+        if ours == 1:
+            return 1
+        return 0
+    if ours == 0:
+        if theirs == 4:
+            return -INF
+        if theirs == 3:
+            return -1000
+        if theirs == 2:
+            return -100
+        if theirs == 1:
+            return -1
+    return 0
+
+
+def static_eval(board_np):
+    """Heuristic evaluation of a board (numpy array)."""
+    if check_win(board_np, 1):
+        return INF
+    if check_win(board_np, -1):
+        return -INF
+
+    score = 0
+    # horizontal
+    for r in range(6):
+        for c in range(4):
+            score += evaluate_window(board_np[r, c:c + 4])
+    # vertical
+    for r in range(3):
+        for c in range(7):
+            score += evaluate_window(board_np[r:r + 4, c])
+    # diagonal down‑right
+    for r in range(3):
+        for c in range(4):
+            score += evaluate_window(board_np[r:r + 4, c:c + 4].diagonal())
+    # diagonal up‑right
+    for r in range(3, 6):
+        diag = np.array([board_np[r - i, c + i] for i in range(4)])
+        score += evaluate_window(diag)
+
+    # centre‑column bias
+    centre = 3
+    for r in range(6):
+        if board_np[r, centre] == 1:
+            score += 3
+        elif board_np[r, centre] == -1:
+            score -= 3
+
+    return score
+
+
+def order_moves(moves):
+    """Order columns by closeness to the centre (centre first)."""
+    pref = {3: 0, 2: 1, 4: 1, 1: 2, 5: 2, 0: 3, 6: 3}
+    return sorted(moves, key=lambda c: pref[c])
+
+
+# ----------------------------------------------------------------------
+# Minimax with alpha‑beta pruning
+# ----------------------------------------------------------------------
+def minimax(board, depth, alpha, beta, maximizing):
+    """Recursive minimax. `maximizing` refers to the player to move in this call."""
+    # terminal checks
+    if check_win(board, 1):
+        return INF
+    if check_win(board, -1):
+        return -INF
+
+    moves = [c for c in range(7) if board[0][c] == 0]
+    if not moves or depth == 0:
+        board_np = np.array(board, dtype=np.int8)
+        return static_eval(board_np)
+
+    moves = order_moves(moves)
+
+    if maximizing:          # player 1 (our turn) – we already placed the piece before calling
+        max_eval = -INF
+        for col in moves:
+            new_board = drop(board, col, 1)
+            if check_win(new_board, 1):
+                return INF
+            eval_score = minimax(new_board, depth - 1, alpha, beta, False)
+            if eval_score > max_eval:
+                max_eval = eval_score
+            if max_eval > alpha:
+                alpha = max_eval
+            if beta <= alpha:
+                break
+        return max_eval
+    else:                   # opponent's turn (player -1)
+        min_eval = INF
+        for col in moves:
+            new_board = drop(board, col, -1)
+            if check_win(new_board, -1):
+                return -INF
+            eval_score = minimax(new_board, depth - 1, alpha, beta, True)
+            if eval_score < min_eval:
+                min_eval = eval_score
+            if min_eval < beta:
+                beta = min_eval
+            if beta <= alpha:
+                break
+        return min_eval
+
+
+# ----------------------------------------------------------------------
+# Main policy
+# ----------------------------------------------------------------------
+def policy(board):
+    """
+    Decide the next column to play.
+    `board` is a 6x7 list of lists:
+        0 – empty,
+        1 – our disc,
+       -1 – opponent's disc.
+    """
+    # legal moves
+    moves = [c for c in range(7) if board[0][c] == 0]
+    if not moves:                     # should never happen
+        return 0
+
+    # 1) immediate winning move
+    for col in moves:
+        if check_win(drop(board, col, 1), 1):
+            return col
+
+    # 2) block an immediate opponent win
+    for col in moves:
+        after_us = drop(board, col, 1)
+        opp_moves = [c for c in range(7) if after_us[0][c] == 0]
+        for oc in opp_moves:
+            if check_win(drop(after_us, oc, -1), -1):
+                return col
+
+    # 3) search with minimax (depth 4 → 5 plies total)
+    best_score = -INF
+    best_col = moves[0]
+    alpha = -INF
+    beta = INF
+
+    moves = order_moves(moves)
+    for col in moves:
+        new_board = drop(board, col, 1)
+        score = minimax(new_board, depth=4, alpha=alpha, beta=beta, maximizing=False)
+        if score > best_score:
+            best_score = score
+            best_col = col
+        if best_score > alpha:
+            alpha = best_score
+
+    return best_col
+</code>

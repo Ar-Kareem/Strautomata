@@ -1,0 +1,206 @@
+
+import numpy as np
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> int:
+    # Convert to numpy array for easier manipulation
+    grid = np.array(board)
+    
+    def is_valid_move(col):
+        return grid[0, col] == 0
+    
+    def get_next_row(col):
+        # Find the lowest empty row in the column
+        for row in range(5, -1, -1):
+            if grid[row, col] == 0:
+                return row
+        return -1
+    
+    def make_move(col, player):
+        row = get_next_row(col)
+        if row == -1:
+            return False
+        grid[row, col] = player
+        return (row, col)
+    
+    def undo_move(row, col):
+        grid[row, col] = 0
+    
+    def check_win(player) -> bool:
+        # Check horizontal
+        for row in range(6):
+            for col in range(4):
+                if all(grid[row, col + i] == player for i in range(4)):
+                    return True
+        
+        # Check vertical
+        for row in range(3):
+            for col in range(7):
+                if all(grid[row + i, col] == player for i in range(4)):
+                    return True
+        
+        # Check diagonal (top-left to bottom-right)
+        for row in range(3):
+            for col in range(4):
+                if all(grid[row + i, col + i] == player for i in range(4)):
+                    return True
+        
+        # Check diagonal (top-right to bottom-left)
+        for row in range(3):
+            for col in range(3, 7):
+                if all(grid[row + i, col - i] == player for i in range(4)):
+                    return True
+        
+        return False
+    
+    def evaluate() -> int:
+        score = 0
+        
+        # Center column control
+        center_col = grid[:, 3]
+        center_count = np.sum(center_col == 1)
+        score += center_count * 3
+        
+        # Check for immediate win
+        if check_win(1):
+            return 10000
+        
+        # Check if opponent has won
+        if check_win(-1):
+            return -10000
+        
+        # Evaluate potential sequences
+        def score_window(window, player):
+            opp_player = -player
+            if np.sum(window == player) == 4:
+                return 1000
+            elif np.sum(window == player) == 3 and np.sum(window == 0) == 1:
+                return 100
+            elif np.sum(window == player) == 2 and np.sum(window == 0) == 2:
+                return 10
+            elif np.sum(window == opp_player) == 3 and np.sum(window == 0) == 1:
+                return -80
+            elif np.sum(window == opp_player) == 2 and np.sum(window == 0) == 2:
+                return -10
+            return 0
+        
+        # Score horizontal
+        for row in range(6):
+            for col in range(4):
+                window = grid[row, col:col+4]
+                score += score_window(window, 1)
+        
+        # Score vertical
+        for row in range(3):
+            for col in range(7):
+                window = grid[row:row+4, col]
+                score += score_window(window, 1)
+        
+        # Score diagonal (top-left to bottom-right)
+        for row in range(3):
+            for col in range(4):
+                window = np.array([grid[row+i, col+i] for i in range(4)])
+                score += score_window(window, 1)
+        
+        # Score diagonal (top-right to bottom-left)
+        for row in range(3):
+            for col in range(3, 7):
+                window = np.array([grid[row+i, col-i] for i in range(4)])
+                score += score_window(window, 1)
+        
+        return score
+    
+    def get_valid_moves():
+        return [col for col in range(7) if is_valid_move(col)]
+    
+    def minimax(depth, alpha, beta, maximizing):
+        if depth == 0:
+            return None, evaluate()
+        
+        valid_moves = get_valid_moves()
+        
+        # Check for game over
+        if check_win(1):
+            return None, 10000 + depth  # Prefer earlier wins
+        if check_win(-1):
+            return None, -10000 - depth  # Prefer later losses
+        
+        if not valid_moves:
+            return None, 0  # Draw
+        
+        # Sort moves by center proximity for better pruning
+        valid_moves.sort(key=lambda x: abs(x - 3))
+        
+        if maximizing:
+            max_eval = float('-inf')
+            best_col = valid_moves[0]
+            
+            for col in valid_moves:
+                pos = make_move(col, 1)
+                if pos is False:
+                    continue
+                _, eval_score = minimax(depth - 1, alpha, beta, False)
+                undo_move(pos[0], pos[1])
+                
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_col = col
+                
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            
+            return best_col, max_eval
+        else:
+            min_eval = float('inf')
+            best_col = valid_moves[0]
+            
+            for col in valid_moves:
+                pos = make_move(col, -1)
+                if pos is False:
+                    continue
+                _, eval_score = minimax(depth - 1, alpha, beta, True)
+                undo_move(pos[0], pos[1])
+                
+                if eval_score < min_eval:
+                    min_eval = eval_score
+                    best_col = col
+                
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            
+            return best_col, min_eval
+    
+    # Get valid moves and try quick win
+    valid_moves = get_valid_moves()
+    
+    # First, check if we can win immediately
+    for col in valid_moves:
+        pos = make_move(col, 1)
+        if pos and check_win(1):
+            undo_move(pos[0], pos[1])
+            return col
+        if pos:
+            undo_move(pos[0], pos[1])
+    
+    # Check if we need to block opponent's win
+    for col in valid_moves:
+        pos = make_move(col, -1)
+        if pos and check_win(-1):
+            undo_move(pos[0], pos[1])
+            return col
+        if pos:
+            undo_move(pos[0], pos[1])
+    
+    # Use minimax with depth based on game stage
+    if len(valid_moves) < 15:  # Later game - look deeper
+        depth = 7
+    elif len(valid_moves) < 25:
+        depth = 6
+    else:  # Early game
+        depth = 5
+    
+    best_col, _ = minimax(depth, float('-inf'), float('inf'), True)
+    
+    return best_col

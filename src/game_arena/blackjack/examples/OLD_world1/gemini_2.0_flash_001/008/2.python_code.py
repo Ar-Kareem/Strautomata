@@ -1,0 +1,53 @@
+
+def policy(hand: list[str], target: int) -> str:
+    """
+    A policy for a simplified Blackjack-like game.
+
+    Args:
+        hand: The list of strings representing the cards you currently hold.
+        target: The integer T you are trying to approach.
+
+    Returns:
+        "HIT" — you draw the next card from your deck.
+        "STAY" — you stop drawing cards for the rest of the game.
+    """
+
+    def hand_value(hand):
+        ace_count = hand.count("A")
+        total = 0
+        for card in hand:
+            if card.isdigit():
+                total += int(card)
+            elif card in ("J", "Q", "K"):
+                total += 10
+            elif card == "A":
+                total += 11
+        while total > target and ace_count > 0:
+            total -= 10
+            ace_count -= 1
+        return total
+
+    current_value = hand_value(hand)
+
+    if current_value > target:
+        return "STAY"  # Already busted, no point in hitting. We want to minimize losses and could win if opponent busts later.
+
+    if current_value >= target - 2:  # Stay if we are close to the target.
+        return "STAY"
+
+    if current_value < target - 8 and target >= 20 :
+        return "HIT"
+
+    if current_value < target - 10:
+        return "HIT"
+    
+    if current_value < target / 2 and target < 20:
+        return "HIT"
+
+    if current_value <= 11:  # Safe to hit
+        return "HIT"
+
+    if current_value <= 14 and target >= 20:
+        return "HIT"
+
+    return "STAY" # Default to stay.

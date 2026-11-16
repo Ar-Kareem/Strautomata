@@ -1,0 +1,522 @@
+The strategy for this policy is a fast alpha-beta search with mandatory-capture move generation, iterative deepening, and a practical evaluation function. It always generates legal moves first, so it won’t miss forced captures. The search uses move ordering, a small transposition table, and capture-only quiescence to look deeper in tactical positions.
+
+The evaluation favors material, promotion progress for men, king activity, center control, back-rank structure, mobility, and immediate capture threats. The code is written to be robust and fast enough for the 1-second arena setting, while always returning a legal move.
+
+<code>
+import time
+
+# =========================
+# Precomputed board tables
+# =========================
+
+OPP = {"b": "w", "w": "b"}
+WIN_SCORE = 100000
+
+ROW = [sq >> 3 for sq in range(64)]
+COL = [sq & 7 for sq in range(64)]
+
+CENTER = [False] * 64
+EDGE = [False] * 64
+for sq in range(64):
+    r, c = ROW[sq], COL[sq]
+    CENTER[sq] = (2 <= r <= 5 and 1 <= c <= 6)
+    EDGE[sq] = (c == 0 or c == 7)
+
+MAN_STEPS = {"b": [[] for _ in range(64)], "w": [[] for _ in range(64)]}
+MAN_CAPS = {"b": [[] for _ in range(64)], "w": [[] for _ in range(64)]}
+KING_STEPS = [[] for _ in range(64)]
+KING_CAPS = [[] for _ in range(64)]
+
+for sq in range(64):
+    r, c = ROW[sq], COL[sq]
+
+    # Black men move downward: row - 1
+    for dc in (-1, 1):
+        r1, c1 = r - 1, c + dc
+        if 0 <= r1 < 8 and 0 <= c1 < 8:
+            MAN_STEPS["b"][sq].append(r1 * 8 + c1)
+        r2, c2 = r - 2, c + 2 * dc
+        if 0 <= r2 < 8 and 0 <= c2 < 8 and 0 <= r1 < 8 and 0 <= c1 < 8:
+            MAN_CAPS["b"][sq].append((r1 * 8 + c1, r2 * 8 + c2))
+
+    # White men move upward: row + 1
+    for dc in (-1, 1):
+        r1, c1 = r + 1, c + dc
+        if 0 <= r1 < 8 and 0 <= c1 < 8:
+            MAN_STEPS["w"][sq].append(r1 * 8 + c1)
+        r2, c2 = r + 2, c + 2 * dc
+        if 0 <= r2 < 8 and 0 <= c2 < 8 and 0 <= r1 < 8 and 0 <= c1 < 8:
+            MAN_CAPS["w"][sq].append((r1 * 8 + c1, r2 * 8 + c2))
+
+    # Kings
+    for dr in (-1, 1):
+        for dc in (-1, 1):
+            r1, c1 = r + dr, c + dc
+            if 0 <= r1 < 8 and 0 <= c1 < 8:
+                KING_STEPS[sq].append(r1 * 8 + c1)
+            r2, c2 = r + 2 * dr, c + 2 * dc
+            if 0 <= r2 < 8 and 0 <= c2 < 8 and 0 <= r1 < 8 and 0 <= c1 < 8:
+                KING_CAPS[sq].append((r1 * 8 + c1, r2 * 8 + c2))
+
+# Piece-square tables
+PST_MAN = {"b": [0] * 64, "w": [0] * 64}
+PST_KING = [0] * 64
+
+for sq in range(64):
+    r, c = ROW[sq], COL[sq]
+
+    # Men: promotion progress + center + mild edge safety + near-promotion bonus + back-rank guard
+    PST_MAN["w"][sq] = (
+        5 * r
+        + (7 if CENTER[sq] else 0)
+        + (2 if EDGE[sq] else 0)
+        + (12 if r == 6 else 0)
+        + (6 if r == 0 else 0)
+    )
+    PST_MAN["b"][sq] = (
+        5 * (7 - r)
+        + (7 if CENTER[sq] else 0)
+        + (2 if EDGE[sq] else 0)
+        + (12 if r == 1 else 0)
+        + (6 if r == 7 else 0)
+    )
+
+    # Kings like center and dislike edges a bit
+    PST_KING[sq] = (12 if CENTER[sq] else 4) + (-3 if EDGE[sq] else 2)
+
+HOME_ROW_MASK = {"b": 0, "w": 0}
+for sq in range(64):
+    if ROW[sq] == 7:
+        HOME_ROW_MASK["b"] |= (1 << sq)
+    if ROW[sq] == 0:
+        HOME_ROW_MASK["w"] |= (1 << sq)
+
+# =========================
+# Search globals
+# =========================
+
+DEADLINE = 0.0
+NODE_COUNT = 0
+TT = {}
+
+class SearchTimeout(Exception):
+    pass
+
+
+# =========================
+# Bitboard helpers
+# =========================
+
+def bits_of(bb):
+    while bb:
+        lsb = bb & -bb
+        yield lsb.bit_length() - 1
+        bb ^= lsb
+
+def list_to_bb(coords):
+    bb = 0
+    for r, c in coords:
+        bb |= 1 << (r * 8 + c)
+    return bb
+
+def sq_to_coord(sq):
+    return (sq >> 3, sq & 7)
+
+def promote_row(color):
+    return 0 if color == "b" else 7
+
+
+# =========================
+# Move generation
+# Move tuple:
+# (from_sq, to_sq, cap_sq, is_king, promote, captured_is_king)
+# cap_sq == -1 means non-capture
+# =========================
+
+def generate_moves(my_men, my_kings, opp_men, opp_kings, color):
+    occ = my_men | my_kings | opp_men | opp_kings
+    opp_all = opp_men | opp_kings
+    caps = []
+
+    # Men captures
+    bb = my_men
+    target_row = promote_row(color)
+    man_caps = MAN_CAPS[color]
+    while bb:
+        lsb = bb & -bb
+        sq = lsb.bit_length() - 1
+        for over, to in man_caps[sq]:
+            if ((opp_all >> over) & 1) and not ((occ >> to) & 1):
+                caps.append((
+                    sq,
+                    to,
+                    over,
+                    0,
+                    1 if ROW[to] == target_row else 0,
+                    1 if ((opp_kings >> over) & 1) else 0
+                ))
+        bb ^= lsb
+
+    # King captures
+    bb = my_kings
+    while bb:
+        lsb = bb & -bb
+        sq = lsb.bit_length() - 1
+        for over, to in KING_CAPS[sq]:
+            if ((opp_all >> over) & 1) and not ((occ >> to) & 1):
+                caps.append((sq, to, over, 1, 0, 1 if ((opp_kings >> over) & 1) else 0))
+        bb ^= lsb
+
+    if caps:
+        return caps, True
+
+    moves = []
+
+    # Men quiet moves
+    bb = my_men
+    man_steps = MAN_STEPS[color]
+    while bb:
+        lsb = bb & -bb
+        sq = lsb.bit_length() - 1
+        for to in man_steps[sq]:
+            if not ((occ >> to) & 1):
+                moves.append((
+                    sq,
+                    to,
+                    -1,
+                    0,
+                    1 if ROW[to] == target_row else 0,
+                    0
+                ))
+        bb ^= lsb
+
+    # Kings quiet moves
+    bb = my_kings
+    while bb:
+        lsb = bb & -bb
+        sq = lsb.bit_length() - 1
+        for to in KING_STEPS[sq]:
+            if not ((occ >> to) & 1):
+                moves.append((sq, to, -1, 1, 0, 0))
+        bb ^= lsb
+
+    return moves, False
+
+
+def make_move(my_men, my_kings, opp_men, opp_kings, move):
+    frm, to, cap, is_king, promote, _captured_is_king = move
+    fmask = 1 << frm
+    tmask = 1 << to
+
+    if is_king:
+        my_kings = (my_kings ^ fmask) | tmask
+    else:
+        my_men ^= fmask
+        if promote:
+            my_kings |= tmask
+        else:
+            my_men |= tmask
+
+    if cap != -1:
+        cmask = 1 << cap
+        if opp_men & cmask:
+            opp_men ^= cmask
+        else:
+            opp_kings ^= cmask
+
+    return my_men, my_kings, opp_men, opp_kings
+
+
+# =========================
+# Evaluation helpers
+# =========================
+
+def sum_pst(bb, table):
+    s = 0
+    while bb:
+        lsb = bb & -bb
+        sq = lsb.bit_length() - 1
+        s += table[sq]
+        bb ^= lsb
+    return s
+
+def count_captures(my_men, my_kings, opp_men, opp_kings, color):
+    occ = my_men | my_kings | opp_men | opp_kings
+    opp_all = opp_men | opp_kings
+    cnt = 0
+
+    bb = my_men
+    man_caps = MAN_CAPS[color]
+    while bb:
+        lsb = bb & -bb
+        sq = lsb.bit_length() - 1
+        for over, to in man_caps[sq]:
+            if ((opp_all >> over) & 1) and not ((occ >> to) & 1):
+                cnt += 1
+        bb ^= lsb
+
+    bb = my_kings
+    while bb:
+        lsb = bb & -bb
+        sq = lsb.bit_length() - 1
+        for over, to in KING_CAPS[sq]:
+            if ((opp_all >> over) & 1) and not ((occ >> to) & 1):
+                cnt += 1
+        bb ^= lsb
+
+    return cnt
+
+def count_simple_moves(my_men, my_kings, opp_men, opp_kings, color):
+    occ = my_men | my_kings | opp_men | opp_kings
+    cnt = 0
+
+    bb = my_men
+    man_steps = MAN_STEPS[color]
+    while bb:
+        lsb = bb & -bb
+        sq = lsb.bit_length() - 1
+        for to in man_steps[sq]:
+            if not ((occ >> to) & 1):
+                cnt += 1
+        bb ^= lsb
+
+    bb = my_kings
+    while bb:
+        lsb = bb & -bb
+        sq = lsb.bit_length() - 1
+        for to in KING_STEPS[sq]:
+            if not ((occ >> to) & 1):
+                cnt += 1
+        bb ^= lsb
+
+    return cnt
+
+def evaluate(my_men, my_kings, opp_men, opp_kings, color):
+    my_men_n = my_men.bit_count()
+    my_kings_n = my_kings.bit_count()
+    opp_men_n = opp_men.bit_count()
+    opp_kings_n = opp_kings.bit_count()
+
+    # Material
+    score = 100 * (my_men_n - opp_men_n) + 185 * (my_kings_n - opp_kings_n)
+
+    # Piece-square values
+    score += sum_pst(my_men, PST_MAN[color])
+    score -= sum_pst(opp_men, PST_MAN[OPP[color]])
+    score += sum_pst(my_kings, PST_KING)
+    score -= sum_pst(opp_kings, PST_KING)
+
+    # Back-rank guard
+    score += 6 * (my_men & HOME_ROW_MASK[color]).bit_count()
+    score -= 6 * (opp_men & HOME_ROW_MASK[OPP[color]]).bit_count()
+
+    # Tactical pressure
+    my_caps = count_captures(my_men, my_kings, opp_men, opp_kings, color)
+    opp_caps = count_captures(opp_men, opp_kings, my_men, my_kings, OPP[color])
+    score += 14 * (my_caps - opp_caps)
+
+    # Mobility matters most when neither side already has captures
+    if my_caps == 0 and opp_caps == 0:
+        my_steps = count_simple_moves(my_men, my_kings, opp_men, opp_kings, color)
+        opp_steps = count_simple_moves(opp_men, opp_kings, my_men, my_kings, OPP[color])
+        score += 2 * (my_steps - opp_steps)
+
+    # Slightly prefer trading when ahead, avoid it when behind
+    total_pieces = my_men_n + my_kings_n + opp_men_n + opp_kings_n
+    phase = 24 - total_pieces
+    if score > 0:
+        score += phase
+    elif score < 0:
+        score -= phase
+
+    return score
+
+
+# =========================
+# Move ordering
+# =========================
+
+def move_order(move, color):
+    frm, to, cap, is_king, promote, captured_is_king = move
+    val = 0
+
+    if cap != -1:
+        val += 1000
+        val += 70 if captured_is_king else 35
+        if promote:
+            val += 90
+    else:
+        if promote:
+            val += 120
+
+    if is_king:
+        val += 12
+
+    if CENTER[to]:
+        val += 10
+    if EDGE[to]:
+        val += 2
+
+    if not is_king:
+        val += ROW[to] if color == "w" else (7 - ROW[to])
+
+    # Mild preference for longer displacement in captures (same for all jumps here, but harmless)
+    val += abs(to - frm)
+
+    return val
+
+
+# =========================
+# Search
+# =========================
+
+def negamax(my_men, my_kings, opp_men, opp_kings, color, depth, qdepth, alpha, beta):
+    global NODE_COUNT, DEADLINE, TT
+
+    NODE_COUNT += 1
+    if (NODE_COUNT & 1023) == 0 and time.perf_counter() >= DEADLINE:
+        raise SearchTimeout
+
+    key = (my_men, my_kings, opp_men, opp_kings, color, depth, qdepth)
+    cached = TT.get(key)
+    if cached is not None:
+        return cached
+
+    moves, is_capture = generate_moves(my_men, my_kings, opp_men, opp_kings, color)
+
+    if not moves:
+        return -WIN_SCORE
+
+    if depth <= 0 and (not is_capture or qdepth <= 0):
+        val = evaluate(my_men, my_kings, opp_men, opp_kings, color)
+        TT[key] = val
+        return val
+
+    ordered = sorted(moves, key=lambda m: move_order(m, color), reverse=True)
+
+    next_depth = depth - 1 if depth > 0 else 0
+    next_qdepth = qdepth - 1 if (depth <= 0 and is_capture) else qdepth
+
+    best = -10**9
+    full_searched = True
+
+    for mv in ordered:
+        n_my_men, n_my_kings, n_opp_men, n_opp_kings = make_move(
+            my_men, my_kings, opp_men, opp_kings, mv
+        )
+        score = -negamax(
+            n_opp_men, n_opp_kings, n_my_men, n_my_kings,
+            OPP[color], next_depth, next_qdepth, -beta, -alpha
+        )
+        if score > best:
+            best = score
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            full_searched = False
+            break
+
+    if full_searched:
+        TT[key] = best
+
+    return best
+
+
+# =========================
+# Public policy API
+# =========================
+
+def policy(my_men, my_kings, opp_men, opp_kings, color) -> tuple[tuple[int, int], tuple[int, int]]:
+    global DEADLINE, NODE_COUNT, TT
+
+    my_men_bb = list_to_bb(my_men)
+    my_kings_bb = list_to_bb(my_kings)
+    opp_men_bb = list_to_bb(opp_men)
+    opp_kings_bb = list_to_bb(opp_kings)
+
+    moves, _ = generate_moves(my_men_bb, my_kings_bb, opp_men_bb, opp_kings_bb, color)
+
+    # If no legal moves, the position should be terminal and normally not queried.
+    # Return a deterministic placeholder from an existing piece if possible.
+    if not moves:
+        if my_men_bb:
+            sq = (my_men_bb & -my_men_bb).bit_length() - 1
+            rc = sq_to_coord(sq)
+            return (rc, rc)
+        if my_kings_bb:
+            sq = (my_kings_bb & -my_kings_bb).bit_length() - 1
+            rc = sq_to_coord(sq)
+            return (rc, rc)
+        return ((0, 0), (0, 0))
+
+    if len(moves) == 1:
+        frm, to = moves[0][0], moves[0][1]
+        return (sq_to_coord(frm), sq_to_coord(to))
+
+    total_pieces = (
+        my_men_bb.bit_count() + my_kings_bb.bit_count() +
+        opp_men_bb.bit_count() + opp_kings_bb.bit_count()
+    )
+
+    # Time management
+    DEADLINE = time.perf_counter() + 0.95
+    NODE_COUNT = 0
+    TT = {}
+
+    # Depth settings by game phase
+    if total_pieces <= 6:
+        max_depth = 10
+        qdepth = 10
+    elif total_pieces <= 10:
+        max_depth = 8
+        qdepth = 8
+    elif total_pieces <= 16:
+        max_depth = 7
+        qdepth = 7
+    else:
+        max_depth = 6
+        qdepth = 6
+
+    root_moves = sorted(moves, key=lambda m: move_order(m, color), reverse=True)
+    best_move = root_moves[0]
+    best_score = -10**9
+
+    for depth in range(1, max_depth + 1):
+        try:
+            current_best_move = root_moves[0]
+            current_best_score = -10**9
+            alpha = -10**9
+            beta = 10**9
+            scored = []
+
+            for mv in root_moves:
+                n_my_men, n_my_kings, n_opp_men, n_opp_kings = make_move(
+                    my_men_bb, my_kings_bb, opp_men_bb, opp_kings_bb, mv
+                )
+                score = -negamax(
+                    n_opp_men, n_opp_kings, n_my_men, n_my_kings,
+                    OPP[color], depth - 1, qdepth, -beta, -alpha
+                )
+                scored.append((score, mv))
+                if score > current_best_score:
+                    current_best_score = score
+                    current_best_move = mv
+                if score > alpha:
+                    alpha = score
+
+            best_move = current_best_move
+            best_score = current_best_score
+
+            # Reorder root moves for next iteration
+            root_moves = [mv for _, mv in sorted(
+                scored,
+                key=lambda x: (x[0], move_order(x[1], color)),
+                reverse=True
+            )]
+
+        except SearchTimeout:
+            break
+
+    frm, to = best_move[0], best_move[1]
+    return (sq_to_coord(frm), sq_to_coord(to))
+</code>

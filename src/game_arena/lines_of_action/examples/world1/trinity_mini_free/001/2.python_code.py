@@ -1,0 +1,152 @@
+
+import numpy as np
+
+def policy(board) -> str:
+    # Generate all legal moves for the current player
+    moves = generate_moves(board, 1)
+    if not moves:
+        return ""  # No legal moves (should not happen per rules)
+    
+    # Use minimax with alpha-beta pruning to select the best move
+    best_move = None
+    best_score = -float('inf')
+    alpha = -float('inf')
+    beta = float('inf')
+    
+    for move in moves:
+        new_board = simulate_move(board, move, 1)
+        score = minimax(new_board, 3, alpha, beta, False)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move
+
+def generate_moves(board, player):
+    moves = []
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == player:
+                for dr, dc in [(0,1), (1,0), (0,-1), (-1,0), (1,1), (1,-1), (-1,1), (-1,-1)]:
+                    count = 1  # Starting piece
+                    steps = 0
+                    nr, nc = r + dr, c + dc
+                    while 0 <= nr < 8 and 0 <= nc < 8:
+                        if board[nr][nc] == -player:  # Enemy piece blocks
+                            break
+                        elif board[nr][nc] == 0:  # Empty
+                            count += 1
+                            steps += 1
+                            nr += dr
+                            nc += dc
+                        elif board[nr][nc] == player:  # Friendly piece
+                            count += 1
+                            steps += 1
+                            nr += dr
+                            nc += dc
+                    if steps == count and steps > 0:
+                        moves.append(f"{r},{c}:{nr},{nc}")
+    return moves
+
+def simulate_move(board, move, player):
+    r1, c1, r2, c2 = parse_move(move)
+    new_board = np.copy(board)
+    new_board[r1][c1] = 0
+    new_board[r2][c2] = player
+    if board[r2][c2] == -player:
+        new_board[r2][c2] = player  # Capture enemy
+    return new_board
+
+def parse_move(move):
+    r1, c1, r2, c2 = move.split(':')
+    r1, c1, r2, c2 = int(r1), int(c1), int(r2), int(c2)
+    return r1, c1, r2, c2
+
+def minimax(board, depth, alpha, beta, maximizing_player):
+    if depth == 0 or game_over(board):
+        return evaluate(board)
+    
+    if maximizing_player:
+        max_eval = -float('inf')
+        for move in generate_moves(board, 1):
+            new_board = simulate_move(board, move, 1)
+            eval = minimax(new_board, depth-1, alpha, beta, False)
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for move in generate_moves(board, -1):
+            new_board = simulate_move(board, move, -1)
+            eval = minimax(new_board, depth-1, alpha, beta, True)
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def game_over(board):
+    # Check if current player has all pieces connected
+    if not connected(board, 1):
+        # Check if current player has any legal moves
+        return not generate_moves(board, 1)
+    return True
+
+def connected(board, player):
+    visited = np.zeros((8,8), dtype=bool)
+    components = 0
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == player and not visited[r][c]:
+                components += 1
+                if components > 1:
+                    return False
+                # BFS/DFS to mark connected component
+                stack = [(r, c)]
+                visited[r][c] = True
+                while stack:
+                    cr, cc = stack.pop()
+                    for dr, dc in [(0,1), (1,0), (0,-1), (-1,0), (1,1), (1,-1), (-1,1), (-1,-1)]:
+                        nr, nc = cr + dr, cc + dc
+                        if 0 <= nr < 8 and 0 <= nc < 8 and board[nr][nc] == player and not visited[nr][nc]:
+                            visited[nr][nc] = True
+                            stack.append((nr, nc))
+    return components == 1
+
+def evaluate(board):
+    # Count connected components for both players
+    comp1 = count_components(board, 1)
+    comp2 = count_components(board, -1)
+    pieces1 = count_pieces(board, 1)
+    pieces2 = count_pieces(board, -1)
+    moves1 = count_legal_moves(board, 1)
+    moves2 = count_legal_moves(board, -1)
+    
+    # Heuristic: prioritize connectivity, piece count, and mobility
+    return (pieces1 - pieces2) * 10 + (comp1 - comp2) * 100 + (moves1 - moves2) * 1
+
+def count_pieces(board, player):
+    return np.sum(board == player)
+
+def count_components(board, player):
+    visited = np.zeros((8,8), dtype=bool)
+    components = 0
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == player and not visited[r][c]:
+                components += 1
+                stack = [(r, c)]
+                visited[r][c] = True
+                while stack:
+                    cr, cc = stack.pop()
+                    for dr, dc in [(0,1), (1,0), (0,-1), (-1,0), (1,1), (1,-1), (-1,1), (-1,-1)]:
+                        nr, nc = cr + dr, cc + dc
+                        if 0 <= nr < 8 and 0 <= nc < 8 and board[nr][nc] == player and not visited[nr][nc]:
+                            visited[nr][nc] = True
+                            stack.append((nr, nc))
+    return components
+
+def count_legal_moves(board, player):
+    return len(generate_moves(board, player))

@@ -1,0 +1,176 @@
+**Strategy Overview**
+
+The policy implements a fast *shortest‑path* heuristic that works well for Hex on an 11×11 board.
+
+1. **Graph model** – Every cell is a node.  
+   The six neighbours of a cell *(r, c)* are  
+
+   ```
+   (r‑1, c)   (r‑1, c+1)
+   (r,   c‑1) (r,   c+1)
+   (r+1, c)   (r+1, c‑1)
+   ```
+
+2. **Edge costs** –  
+   * our own stone → 0 (already part of the connection)  
+   * empty cell      → 1 (we would have to occupy it)  
+   * opponent stone → ∞ (cannot be used)
+
+   The total cost of a path equals the number of empty cells we must fill to connect the two opposite sides.  
+   The current “distance” of the position is the cheapest such cost.
+
+3. **0‑1 BFS** – Because edge costs are only 0 or 1, a deque‑based 0‑1 BFS yields the distance from each side of the board to every cell in **O(N²)** time.
+
+4. **Move selection** –  
+   After computing the distances from the *start side* (`d_start`) and from the *target side* (`d_target`), each empty cell *e* is evaluated as  
+
+   ```
+   total_cost_if_we_play(e) = d_start[e] + d_target[e] - 1
+   ```
+
+   (the `‑1` removes the double‑counted cost of the empty cell that would become our stone).  
+   The move with the smallest resulting total cost is chosen; ties are broken randomly.
+
+5. **Fallback** – If for any reason no empty cell improves the distance (e.g., all distances are ∞ because the board is full), a random empty cell is returned – guaranteeing a legal move.
+
+The algorithm runs in well under a second, uses only the Python standard library, and always returns a legal move.  
+
+```python
+<code>
+import random
+from collections import deque
+from typing import List, Tuple
+
+N = 11  # board size
+
+# neighbour offsets for a hex grid (all 8 neighbours except (‑1,‑1) and (+1,+1))
+NEIGH = [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, 0), (1, -1)]
+
+INF = 10 ** 9
+
+
+def _inside(r: int, c: int) -> bool:
+    return 0 <= r < N and 0 <= c < N
+
+
+def _build_board(me: List[Tuple[int, int]], opp: List[Tuple[int, int]]) -> List[List[int]]:
+    """
+    Returns a board where
+        1  -> our stone
+        -1 -> opponent stone
+        0  -> empty
+    """
+    board = [[0] * N for _ in range(N)]
+    for r, c in me:
+        board[r][c] = 1
+    for r, c in opp:
+        board[r][c] = -1
+    return board
+
+
+def _zero_one_bfs(board: List[List[int]], side_cells: List[Tuple[int, int]]) -> List[List[int]]:
+    """
+    0‑1 BFS from a set of starting cells.
+    Cost to step onto a cell = 0 if our stone, 1 if empty, INF if opponent.
+    Returns a distance matrix.
+    """
+    dist = [[INF] * N for _ in range(N)]
+    dq = deque()
+
+    for r, c in side_cells:
+        if board[r][c] == -1:          # opponent blocks this side cell
+            continue
+        w = 0 if board[r][c] == 1 else 1   # our stone -> 0, empty -> 1
+        dist[r][c] = w
+        if w == 0:
+            dq.appendleft((r, c))
+        else:
+            dq.append((r, c))
+
+    while dq:
+        r, c = dq.popleft()
+        d_cur = dist[r][c]
+        for dr, dc in NEIGH:
+            nr, nc = r + dr, c + dc
+            if not _inside(nr, nc):
+                continue
+            cell_val = board[nr][nc]
+            if cell_val == -1:          # opponent stone – cannot pass
+                continue
+            w = 0 if cell_val == 1 else 1
+            nd = d_cur + w
+            if nd < dist[nr][nc]:
+                dist[nr][nc] = nd
+                if w == 0:
+                    dq.appendleft((nr, nc))
+                else:
+                    dq.append((nr, nc))
+    return dist
+
+
+def _side_cells(color: str, start: bool) -> List[Tuple[int, int]]:
+    """Return the list of coordinates belonging to the chosen side."""
+    cells = []
+    if color == 'b':               # black connects top ↔ bottom
+        if start:                  # top side
+            rows = [0]
+            cols = range(N)
+        else:                      # bottom side
+            rows = [N - 1]
+            cols = range(N)
+        for r in rows:
+            for c in cols:
+                cells.append((r, c))
+    else:                         # white connects left ↔ right
+        if start:                  # left side
+            cols = [0]
+            rows = range(N)
+        else:                      # right side
+            cols = [N - 1]
+            rows = range(N)
+        for r in rows:
+            for c in cols:
+                cells.append((r, c))
+    return cells
+
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[int, int]:
+    """
+    Return a legal move (row, col) for the current player.
+    The move is chosen to minimise the number of empty cells that still
+    have to be occupied to connect the two opposite sides.
+    """
+    board = _build_board(me, opp)
+
+    # distance from our start side and from our target side
+    start_side = _side_cells(color, start=True)
+    target_side = _side_cells(color, start=False)
+
+    dist_start = _zero_one_bfs(board, start_side)
+    dist_target = _zero_one_bfs(board, target_side)
+
+    best_move = None
+    best_score = INF
+
+    # examine every empty cell
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] != 0:        # not empty
+                continue
+            d1 = dist_start[r][c]
+            d2 = dist_target[r][c]
+            if d1 == INF or d2 == INF:
+                continue                # cell cannot belong to any path currently
+            score = d1 + d2 - 1          # after playing here its cost becomes 0
+            if score < best_score:
+                best_score = score
+                best_move = (r, c)
+
+    # If for any reason we did not find a candidate (should not happen), pick random empty
+    if best_move is None:
+        empties = [(r, c) for r in range(N) for c in range(N) if board[r][c] == 0]
+        best_move = random.choice(empties)
+
+    return best_move
+</code>
+```

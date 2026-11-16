@@ -1,0 +1,359 @@
+
+import numpy as np
+from collections import deque
+
+# Direction offsets for the hex grid based on the problem description
+# Odd columns shift up for left/right, Even columns shift down (or vice versa)
+# The example: (4, 1) [odd col] touches (3, 0), (4, 0) [left] and (3, 2), (4, 2) [right]
+# This implies for column c:
+# If c is odd: left neighbors are (r, c-1), (r-1, c-1); right neighbors are (r, c+1), (r-1, c+1)
+# If c is even: left neighbors are (r, c-1), (r+1, c-1); right neighbors are (r, c+1), (r+1, c+1)
+# Vertical neighbors are always (r-1, c), (r+1, c)
+
+def get_neighbors(r, c, rows, cols):
+    neighs = []
+    # Vertical
+    if r > 0: neighs.append((r - 1, c))
+    if r < rows - 1: neighs.append((r + 1, c))
+    
+    # Horizontal offsets
+    if c % 2 == 1: # Odd columns
+        # Left
+        if c > 0:
+            neighs.append((r, c - 1))
+            if r > 0: neighs.append((r - 1, c - 1))
+        # Right
+        if c < cols - 1:
+            neighs.append((r, c + 1))
+            if r > 0: neighs.append((r - 1, c + 1))
+    else: # Even columns
+        # Left
+        if c > 0:
+            neighs.append((r, c - 1))
+            if r < rows - 1: neighs.append((r + 1, c - 1))
+        # Right
+        if c < cols - 1:
+            neighs.append((r, c + 1))
+            if r < rows - 1: neighs.append((r + 1, c + 1))
+            
+    return neighs
+
+class DSU:
+    def __init__(self, elements):
+        self.parent = {e: e for e in elements}
+        self.rank = {e: 0 for e in elements}
+        # Attributes to track connectivity to corners and edges
+        # We track sets of corner indices (0-5) and edge indices (0-5)
+        self.corner_sets = {e: set() for e in elements}
+        self.edge_sets = {e: set() for e in elements}
+
+    def find(self, item):
+        if self.parent[item] != item:
+            self.parent[item] = self.find(self.parent[item])
+        return self.parent[item]
+
+    def union(self, item1, item2):
+        root1 = self.find(item1)
+        root2 = self.find(item2)
+        if root1 == root2:
+            return root1
+        
+        if self.rank[root1] < self.rank[root2]:
+            root1, root2 = root2, root1
+        
+        self.parent[root2] = root1
+        self.corner_sets[root1].update(self.corner_sets[root2])
+        self.edge_sets[root1].update(self.edge_sets[root2])
+        
+        if self.rank[root1] == self.rank[root2]:
+            self.rank[root1] += 1
+        return root1
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    rows, cols = valid_mask.shape
+    board = np.zeros((rows, cols), dtype=int) # 0: empty, 1: me, -1: opp
+    
+    # Populate board
+    for r, c in me:
+        board[r, c] = 1
+    for r, c in opp:
+        board[r, c] = -1
+        
+    # Precompute topology
+    valid_cells = []
+    neighbors_map = {}
+    cell_type = {} # 'corner', 'edge', 'inner', or index
+    corner_list = []
+    edge_id_map = {} # maps cell to edge index 0-5
+    
+    # First pass: identify valid cells and neighbors
+    for r in range(rows):
+        for c in range(cols):
+            if valid_mask[r, c]:
+                valid_cells.append((r, c))
+                neighs = get_neighbors(r, c, rows, cols)
+                # Filter valid neighbors
+                valid_neighs = [(nr, nc) for nr, nc in neighs if valid_mask[nr, nc]]
+                neighbors_map[(r, c)] = valid_neighs
+                
+    # Identify Corners (2 neighbors) and Edges (4 neighbors)
+    # We need to assign IDs to Edges.
+    # Let's traverse the perimeter to assign ordered Edge IDs.
+    perimeter = []
+    
+    # Find a start corner
+    start_node = None
+    for cell in valid_cells:
+        if len(neighbors_map[cell]) == 2:
+            start_node = cell
+            break
+    
+    if start_node:
+        # Walk perimeter
+        curr = start_node
+        prev = None
+        while True:
+            perimeter.append(curr)
+            # Find next perimeter node
+            # Neighbors are on perimeter if they have < 6 neighbors
+            perim_neighs = [n for n in neighbors_map[curr] if len(neighbors_map[n]) < 6]
+            next_node = None
+            for pn in perim_neighs:
+                if pn != prev:
+                    next_node = pn
+                    break
+            
+            if next_node is None: break # Should not happen in connected board
+            if next_node == start_node: break
+            prev = curr
+            curr = next_node
+            
+        # Assign IDs
+        current_edge_id = -1
+        for cell in perimeter:
+            n_count = len(neighbors_map[cell])
+            if n_count == 2:
+                cell_type[cell] = 'corner'
+                if cell not in corner_list: corner_list.append(cell)
+                current_edge_id += 1 # Increment edge ID for the next segment
+            elif n_count == 4:
+                cell_type[cell] = 'edge'
+                edge_id_map[cell] = current_edge_id
+    
+    # Corner indexing for DSU
+    corner_indices = {cell: i for i, cell in enumerate(corner_list)}
+    
+    # Helper to check win for a player given a board state
+    def check_win(player_board):
+        # player_board is a set of occupied cells for the player
+        # Check Bridge
+        # Check Fork
+        # Check Ring
+        
+        # Bridge/Fork Connectivity check
+        dsu = DSU(player_board)
+        
+        # Initialize attributes for roots
+        # We can attach attributes to the DSU nodes
+        root_attrs = {}
+        
+        for cell in player_board:
+            # Initialize properties
+            root = dsu.find(cell) # initially itself
+            # Reset attributes for roots to ensure clean accumulation if we ran multiple times
+            # But here we build from scratch.
+            pass
+            
+        # We need to re-initialize DSU attributes storage since we can't easily pass it in
+        # Let's use local dicts
+        root_corners = {} # root -> set of corner indices
+        root_edges = {}   # root -> set of edge indices
+        
+        for cell in player_board:
+            root_corners[cell] = set()
+            root_edges[cell] = set()
+            if cell in corner_indices:
+                root_corners[cell].add(corner_indices[cell])
+            if cell in edge_id_map:
+                root_edges[cell].add(edge_id_map[cell])
+        
+        # Union neighbors
+        for cell in player_board:
+            for n in neighbors_map[cell]:
+                if n in player_board:
+                    r1 = dsu.find(cell)
+                    r2 = dsu.find(n)
+                    if r1 != r2:
+                        dsu.union(r1, r2)
+                        # Update tracking (parent might change, but union returns new root? No, we need to find again)
+                        # Actually standard DSU optimization: only track on root, when merging, add to new root.
+                        # Since we can't easily hook into DSU class methods defined above without modification,
+                        # let's assume we do a pass after unions.
+        
+        # Post-union aggregation
+        final_roots = {}
+        for cell in player_board:
+            r = dsu.find(cell)
+            if r not in final_roots:
+                final_roots[r] = {'corners': set(), 'edges': set()}
+            if cell in corner_indices:
+                final_roots[r]['corners'].add(corner_indices[cell])
+            if cell in edge_id_map:
+                final_roots[r]['edges'].add(edge_id_map[cell])
+                
+        for r in final_roots:
+            if len(final_roots[r]['corners']) >= 2:
+                return True # Bridge
+            if len(final_roots[r]['edges']) >= 3:
+                return True # Fork
+        
+        # Ring check
+        # Flood fill from outside the board (invalid cells) to see if we trapped anything.
+        # But simpler: Flood fill empty cells. If an empty cell cannot reach the board perimeter (border of valid mask),
+        # then it is enclosed.
+        # "Perimeter" in this context means any cell on the boundary of the valid mask (corners/edges).
+        
+        # We flood fill from all border empty cells.
+        # Cells occupied by 'player' are walls.
+        
+        # 1. Find all empty cells (not in player_board, but valid)
+        empty_cells = set(valid_cells) - player_board
+        
+        # 2. Find boundary empty cells to start BFS
+        border_empty = []
+        for cell in empty_cells:
+            if cell in cell_type: # corners or edges
+                border_empty.append(cell)
+        
+        visited = set(border_empty)
+        q = deque(border_empty)
+        
+        while q:
+            curr = q.popleft()
+            for n in neighbors_map[curr]:
+                if n in empty_cells and n not in visited:
+                    visited.add(n)
+                    q.append(n)
+        
+        # 3. If any empty cell not visited, it's enclosed.
+        # Is it a ring? Yes, if the enclosing wall is continuous.
+        # If there is any enclosed empty cell, the player has formed a ring around it.
+        if len(empty_cells - visited) > 0:
+            return True
+            
+        return False
+
+    # Determine legal moves
+    legal_moves = [cell for cell in valid_cells if board[cell] == 0]
+
+    if not legal_moves:
+        # Should not happen if game not over
+        return valid_cells[0]
+
+    # 1. Check for immediate win
+    for move in legal_moves:
+        # Simulate move
+        me_sim = set(me)
+        me_sim.add(move)
+        if check_win(me_sim):
+            return move
+
+    # 2. Check for immediate block (opponent wins next)
+    # Since we are checking opponent win, we look from their perspective
+    for move in legal_moves:
+        opp_sim = set(opp)
+        opp_sim.add(move)
+        if check_win(opp_sim):
+            return move
+
+    # 3. Heuristic Evaluation
+    # We need to pick a move that improves our position.
+    # We'll use a simplified scoring based on connectivity.
+    
+    best_score = -float('inf')
+    best_move = legal_moves[0]
+    
+    # Base connectivity analysis for current state
+    # This could be expensive to recompute fully for every move, but necessary for accuracy
+    
+    def evaluate_state(my_cells, opp_cells):
+        # Score based on:
+        # - Number of corners connected
+        # - Number of edges connected
+        # - Component size
+        
+        # My DSU
+        if not my_cells: return 0
+        dsu_me = DSU(my_cells)
+        for cell in my_cells:
+            for n in neighbors_map[cell]:
+                if n in my_cells:
+                    dsu_me.union(cell, n)
+        
+        score = 0
+        roots_me = {}
+        for cell in my_cells:
+            r = dsu_me.find(cell)
+            if r not in roots_me:
+                roots_me[r] = {'c': set(), 'e': set(), 's': 0}
+            roots_me[r]['s'] += 1
+            if cell in corner_indices:
+                roots_me[r]['c'].add(corner_indices[cell])
+            if cell in edge_id_map:
+                roots_me[r]['e'].add(edge_id_map[cell])
+        
+        for r in roots_me:
+            # Bridge almost win
+            if len(roots_me[r]['c']) >= 2: score += 10000
+            else: score += len(roots_me[r]['c']) * 100
+            
+            # Fork almost win
+            if len(roots_me[r]['e']) >= 3: score += 10000
+            elif len(roots_me[r]['e']) == 2: score += 500
+            else: score += len(roots_me[r]['e']) * 20
+            
+            score += roots_me[r]['s'] * 2
+        
+        return score
+
+    # To save time, we evaluate the *delta* or just the resulting state simply
+    # Since we have < 225 moves, simple re-evaluation is fine.
+    
+    current_score = evaluate_state(set(me), set(opp))
+    
+    for move in legal_moves:
+        # Simulate
+        me_sim = set(me)
+        me_sim.add(move)
+        
+        # Basic score
+        new_score = evaluate_state(me_sim, set(opp))
+        
+        # Add bonus for center control?
+        # In hex, center is powerful for connectivity.
+        # Distance to center (7, 7)
+        dist_center = abs(move[0] - 7) + abs(move[1] - 7)
+        center_bonus = (14 - dist_center) * 0.5
+        
+        # Block opponent connectivity?
+        # We check if this move breaks an opponent connection?
+        # Actually placing a stone blocks connectivity implicitly.
+        # We can check if move is adjacent to opponent.
+        
+        adj_opp = 0
+        for n in neighbors_map[move]:
+            if board[n] == -1:
+                adj_opp += 1
+        
+        # Heuristic adjustment: 
+        # If we connect two of our groups, huge bonus.
+        # We can approximate this by checking neighbors that belong to different DSU components.
+        # But since we don't have persistent DSU, we rely on evaluate_state score jump.
+        
+        total_score = new_score + center_bonus + adj_opp * 5
+        
+        if total_score > best_score:
+            best_score = total_score
+            best_move = move
+            
+    return best_move

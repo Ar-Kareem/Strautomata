@@ -1,0 +1,50 @@
+
+import random
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str], memory: dict) -> tuple[str, dict]:
+    # Piece value dictionary
+    piece_values = {
+        'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0
+    }
+    
+    # Determine the color of the current player
+    current_color = 'w' if to_play == 'white' else 'b'
+    opponent_color = 'b' if to_play == 'white' else 'w'
+    
+    best_move = None
+    highest_value = -1
+    
+    # Iterate through all legal moves to find captures
+    for move in legal_moves:
+        # Skip moves that don't capture
+        if 'x' not in move and '=' not in move:
+            continue
+            
+        # Handle promotion captures (e.g., bxc8=Q+)
+        if '=' in move:
+            # Extract the piece being promoted to
+            promotion_char = move.split('=')[1][0]
+            promotion_value = piece_values[promotion_char]
+            if promotion_value > highest_value:
+                highest_value = promotion_value
+                best_move = move
+            continue
+            
+        # Handle regular captures (e.g., Bxf5)
+        target_square = move.split('x')[1]
+        if target_square in pieces:
+            target_piece = pieces[target_square]
+            # Only consider capturing opponent pieces
+            if target_piece.startswith(opponent_color):
+                target_type = target_piece[1]
+                target_value = piece_values[target_type]
+                if target_value > highest_value:
+                    highest_value = target_value
+                    best_move = move
+                    
+    # If a capture was found, return it
+    if best_move is not None:
+        return best_move, memory
+        
+    # Otherwise, return a random legal move
+    return random.choice(legal_moves), memory

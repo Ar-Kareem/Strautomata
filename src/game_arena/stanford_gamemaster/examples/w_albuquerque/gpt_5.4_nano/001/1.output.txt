@@ -1,0 +1,201 @@
+The strategy for this policy is to:
+1) Parse the 5x5 board from the given `state`.
+2) Generate all legal actions for the given `role` (both `move` and `jump`) using Alquerque’s line-adjacency rules.
+3) Prefer immediate captures (`jump`) with highest value:
+   - If a jump is available, take the capture that removes the most danger and advances toward the opponent.
+4) Otherwise, take a safe forward (or neutral) `move` that improves advancement while avoiding moves that allow the opponent to capture immediately on their next turn.
+5) If still tied, use a small positional heuristic (center control and forward progress).
+
+```python
+<code>
+from __future__ import annotations
+
+def policy(state: list[list[object]], role: str) -> str:
+    # -------- Parse board --------
+    N = 5
+
+    board = [[None for _ in range(N)] for _ in range(N)]
+    for fact in state:
+        if len(fact) >= 4 and fact[0] == "cell":
+            r = int(fact[1]) - 1
+            c = int(fact[2]) - 1
+            board[r][c] = fact[3]  # "red"/"black"/"blank"
+    def inside(r,c): return 0 <= r < N and 0 <= c < N
+
+    my = role
+    opp = "red" if my == "black" else "black"
+
+    # -------- Alquerque adjacency --------
+    # Alquerque 5x5 has connections along rows, columns, and the two main diagonals (as drawn).
+    # On a 5x5 board with coordinates (r,c), valid neighbor steps are:
+    # orthogonal and diagonal: (dr,dc) in {(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(-1,1),(1,-1),(1,1)}
+    # Additionally, there are "diagonal" edges only on certain intersections in the real game.
+    # However, the Stanford encoding for Alquerque typically uses the full grid diagonal connectivity
+    # between immediate diagonal neighbors. This matches the sampled actions in the prompt.
+    neighbor_steps = [
+        (-1, 0), (1, 0), (0, -1), (0, 1),
+        (-1, -1), (-1, 1), (1, -1), (1, 1)
+    ]
+
+    # -------- Generate legal actions --------
+    # forward direction:
+    # Red moves "up" (toward decreasing row), Black moves "down" (increasing row).
+    forward = -1 if my == "red" else 1
+
+    # Jump landing is two steps in the same direction; intermediate contains opponent; landing is blank.
+    def gen_actions(curr_board):
+        actions = []
+        for r in range(N):
+            for c in range(N):
+                if curr_board[r][c] != my:
+                    continue
+                # Move (one step)
+                for dr, dc in neighbor_steps:
+                    # forward-only constraint (as in standard Alquerque variants on Stanford often):
+                    # allow moves in forward direction only; jumps can occur in any connected direction or forward only?
+                    # In sampled early game, jumps include changing row toward opponent capture; to be safe,
+                    # we enforce forward-only for both move and jump (most likely in this task encoding).
+                    if dr != forward and dr != 0:
+                        continue
+                    nr, nc = r + dr, c + dc
+                    if inside(nr, nc) and curr_board[nr][nc] == "blank":
+                        # action: move(fr,fc,tr,tc) with 1-based coords
+                        actions.append(("move", r, c, nr, nc))
+                # Jump (two steps)
+                for dr, dc in neighbor_steps:
+                    if dr != forward and dr != 0:
+                        continue
+                    mr, mc = r + dr, c + dc
+                    lr, lc = r + 2*dr, c + 2*dc
+                    if inside(lr, lc) and curr_board[mr][mc] == opp and curr_board[lr][lc] == "blank":
+                        actions.append(("jump", r, c, lr, lc, mr, mc))
+        return actions
+
+    def apply_action(curr_board, act):
+        nb = [row[:] for row in curr_board]
+        if act[0] == "move":
+            _, r1, c1, r2, c2 = act
+            nb[r1][c1] = "blank"
+            nb[r2][c2] = my
+        else:
+            # act = ("jump", r1,c1,lr,lc,mr,mc)
+            _, r1, c1, lr, lc, mr, mc = act
+            nb[r1][c1] = "blank"
+            nb[mr][mc] = "blank"  # capture
+            nb[lr][lc] = my
+        return nb
+
+    def score_position(curr_board):
+        # Heuristic: advancement + center + piece safety
+        s = 0
+        for r in range(N):
+            for c in range(N):
+                if curr_board[r][c] == my:
+                    # advancement toward opponent row
+                    if my == "red":
+                        adv = (N-1 - r)
+                    else:
+                        adv = r
+                    s += 3 * adv
+                    # center proximity
+                    s += -abs(r-2) - abs(c-2)
+                    # vulnerability: if an opponent can capture this piece next turn, penalize
+        # penalize opp pieces slightly
+        for r in range(N):
+            for c in range(N):
+                if curr_board[r][c] == opp:
+                    if my == "red":
+                        adv = (N-1 - r)
+                    else:
+                        adv = r
+                    s -= 2 * adv
+                    s += abs(r-2) + abs(c-2)  # keep them away
+        return s
+
+    def opponent_can_capture_in_one(curr_board):
+        # check if opp has any jump
+        # Temporarily evaluate actions for opp
+        saved_my = my
+        saved_opp = opp
+        # We'll inline using role swap by generating captures directly.
+        # Determine opp forward
+        opp_forward = -1 if saved_opp == "red" else 1
+        for r in range(N):
+            for c in range(N):
+                if curr_board[r][c] != saved_opp:
+                    continue
+                for dr, dc in neighbor_steps:
+                    if dr != opp_forward and dr != 0:
+                        continue
+                    mr, mc = r + dr, c + dc
+                    lr, lc = r + 2*dr, c + 2*dc
+                    if inside(lr, lc) and curr_board[mr][mc] == saved_my and curr_board[lr][lc] == "blank":
+                        return True
+        return False
+
+    # -------- Choose action --------
+    actions = gen_actions(board)
+    if not actions:
+        # No legal moves found; should not happen, but return any plausible legal format fallback
+        # (pick first blank neighbor around any my piece if exists).
+        for r in range(N):
+            for c in range(N):
+                if board[r][c] == my:
+                    for dr, dc in neighbor_steps:
+                        nr, nc = r+dr, c+dc
+                        if inside(nr,nc) and board[nr][nc] == "blank":
+                            return f"move({r+1},{c+1},{nr+1},{nc+1})"
+        return "move(1,1,1,1)"
+
+    # Separate jumps and moves
+    jumps = [a for a in actions if a[0] == "jump"]
+    candidates = []
+    if jumps:
+        # Prefer jumps. Captured piece is always exactly one per action here (no multi-jump mentioned).
+        for a in jumps:
+            nb = apply_action(board, a)
+            # immediate capture value: 10
+            # plus safety/position.
+            danger = opponent_can_capture_in_one(nb)
+            r1, c1, lr, lc, mr, mc = a[1], a[2], a[3], a[4], a[5], a[6]  # not used directly
+            val = 10
+            val += score_position(nb)
+            if danger:
+                val -= 12  # avoid giving immediate recapture
+            # also prefer landing closer to center and advanced
+            land_r, land_c = a[3], a[4]
+            val += -abs(land_r-2) - abs(land_c-2)
+            if my == "red":
+                val += (N-1-land_r)
+            else:
+                val += land_r
+            candidates.append((val, a))
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        best = candidates[0][1]
+    else:
+        for a in actions:
+            nb = apply_action(board, a)
+            danger = opponent_can_capture_in_one(nb)
+            val = score_position(nb)
+            if danger:
+                val -= 15
+            # prefer forward moves
+            if a[0] == "move":
+                _, r1, c1, r2, c2 = a
+                if my == "red":
+                    val += (r1 - r2)
+                else:
+                    val += (r2 - r1)
+            candidates.append((val, a))
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        best = candidates[0][1]
+
+    # -------- Convert to Stanford syntax --------
+    if best[0] == "move":
+        _, r1, c1, r2, c2 = best
+        return f"move({r1+1},{c1+1},{r2+1},{c2+1})"
+    else:
+        _, r1, c1, lr, lc, mr, mc = best
+        return f"jump({r1+1},{c1+1},{lr+1},{lc+1},{mr+1},{mc+1})"
+</code>
+```

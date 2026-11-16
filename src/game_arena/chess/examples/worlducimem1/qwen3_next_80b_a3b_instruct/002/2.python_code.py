@@ -1,0 +1,355 @@
+
+import numpy as np
+from collections import defaultdict
+
+def policy(pieces: dict[str, str], to_play: str, memory: dict) -> tuple[str, dict]:
+    # Define piece values
+    piece_values = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}
+    color = to_play[0]  # 'w' or 'b'
+    opponent_color = 'b' if color == 'w' else 'w'
+    
+    # Convert board to 8x8 grid for easier calculation
+    board = [['' for _ in range(8)] for _ in range(8)]
+    for square, piece in pieces.items():
+        file, rank = ord(square[0]) - ord('a'), int(square[1]) - 1
+        board[rank][file] = piece
+
+    # Get all legal moves
+    legal_moves = get_all_legal_moves(pieces, to_play)
+    
+    # Check for immediate checkmate
+    for move in legal_moves:
+        if is_checkmate_after_move(pieces, move, to_play):
+            return move, memory
+    
+    # Check for captures of high-value pieces
+    capture_moves = []
+    non_capture_moves = []
+    for move in legal_moves:
+        to_square = move[2:4]
+        if to_square in pieces and pieces[to_square][0] == opponent_color:
+            captured_piece = pieces[to_square][1]
+            capture_moves.append((move, piece_values[captured_piece]))
+        else:
+            non_capture_moves.append(move)
+    
+    # Sort capture moves by value (descending)
+    capture_moves.sort(key=lambda x: x[1], reverse=True)
+    candidate_moves = [move for move, val in capture_moves] + non_capture_moves
+    
+    # Use minimax with alpha-beta pruning for deeper search
+    best_move = None
+    best_score = float('-inf')
+    
+    # Use memory for transposition table
+    transposition_table = memory.get('transposition_table', {})
+    
+    # Limit depth to 3 for speed
+    for move in candidate_moves:
+        # Make a simulated move
+        new_pieces = simulate_move(pieces, move)
+        score = -negamax(new_pieces, opponent_color, 3, float('-inf'), float('inf'), transposition_table, piece_values)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    # Fallback: if no move found, pick first legal move
+    if best_move is None:
+        best_move = legal_moves[0] if legal_moves else 'a2a3'  # Should never happen if legal_moves is non-empty
+    
+    # Update transposition table in memory
+    memory['transposition_table'] = transposition_table
+    return best_move, memory
+
+def get_all_legal_moves(pieces: dict[str, str], to_play: str) -> list[str]:
+    """Generate all legal moves for the given player."""
+    color = to_play[0]
+    legal_moves = []
+    
+    for square, piece in pieces.items():
+        if piece[0] != color:
+            continue
+        piece_type = piece[1]
+        file, rank = ord(square[0]) - ord('a'), int(square[1]) - 1
+        
+        if piece_type == 'P':  # Pawn
+            direction = 1 if color == 'w' else -1
+            # Forward move
+            new_rank = rank + direction
+            if 0 <= new_rank <= 7:
+                new_square = chr(file + ord('a')) + str(new_rank + 1)
+                if new_square not in pieces:
+                    # Promotion?
+                    if new_rank == 7 or new_rank == 0:
+                        for promo in ['q', 'r', 'n', 'b']:
+                            legal_moves.append(square + new_square + promo)
+                    else:
+                        legal_moves.append(square + new_square)
+                # Captures
+                for df in [-1, 1]:
+                    new_file = file + df
+                    if 0 <= new_file <= 7:
+                        new_square = chr(new_file + ord('a')) + str(new_rank + 1)
+                        if new_square in pieces and pieces[new_square][0] != color:
+                            if new_rank == 7 or new_rank == 0:
+                                for promo in ['q', 'r', 'n', 'b']:
+                                    legal_moves.append(square + new_square + promo)
+                            else:
+                                legal_moves.append(square + new_square)
+        
+        elif piece_type == 'N':  # Knight
+            knight_moves = [(-2, -1), (-2, 1), (-1, -2), (-1, 2), (1, -2), (1, 2), (2, -1), (2, 1)]
+            for df, dr in knight_moves:
+                new_file, new_rank = file + df, rank + dr
+                if 0 <= new_file <= 7 and 0 <= new_rank <= 7:
+                    new_square = chr(new_file + ord('a')) + str(new_rank + 1)
+                    if new_square not in pieces or pieces[new_square][0] != color:
+                        legal_moves.append(square + new_square)
+        
+        elif piece_type == 'B':  # Bishop
+            for df, dr in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                for step in range(1, 8):
+                    new_file, new_rank = file + df * step, rank + dr * step
+                    if not (0 <= new_file <= 7 and 0 <= new_rank <= 7):
+                        break
+                    new_square = chr(new_file + ord('a')) + str(new_rank + 1)
+                    if new_square in pieces:
+                        if pieces[new_square][0] != color:
+                            legal_moves.append(square + new_square)
+                        break
+                    else:
+                        legal_moves.append(square + new_square)
+        
+        elif piece_type == 'R':  # Rook
+            for df, dr in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                for step in range(1, 8):
+                    new_file, new_rank = file + df * step, rank + dr * step
+                    if not (0 <= new_file <= 7 and 0 <= new_rank <= 7):
+                        break
+                    new_square = chr(new_file + ord('a')) + str(new_rank + 1)
+                    if new_square in pieces:
+                        if pieces[new_square][0] != color:
+                            legal_moves.append(square + new_square)
+                        break
+                    else:
+                        legal_moves.append(square + new_square)
+        
+        elif piece_type == 'Q':  # Queen
+            for df, dr in [(-1, -1), (-1, 1), (1, -1), (1, 1), (-1, 0), (1, 0), (0, -1), (0, 1)]:
+                for step in range(1, 8):
+                    new_file, new_rank = file + df * step, rank + dr * step
+                    if not (0 <= new_file <= 7 and 0 <= new_rank <= 7):
+                        break
+                    new_square = chr(new_file + ord('a')) + str(new_rank + 1)
+                    if new_square in pieces:
+                        if pieces[new_square][0] != color:
+                            legal_moves.append(square + new_square)
+                        break
+                    else:
+                        legal_moves.append(square + new_square)
+        
+        elif piece_type == 'K':  # King
+            for df in [-1, 0, 1]:
+                for dr in [-1, 0, 1]:
+                    if df == 0 and dr == 0:
+                        continue
+                    new_file, new_rank = file + df, rank + dr
+                    if 0 <= new_file <= 7 and 0 <= new_rank <= 7:
+                        new_square = chr(new_file + ord('a')) + str(new_rank + 1)
+                        if new_square not in pieces or pieces[new_square][0] != color:
+                            legal_moves.append(square + new_square)
+    
+    return legal_moves
+
+def simulate_move(pieces: dict[str, str], move: str) -> dict[str, str]:
+    """Return a new pieces dict after applying the move."""
+    new_pieces = pieces.copy()
+    
+    from_sq = move[:2]
+    to_sq = move[2:4]
+    
+    # Handle promotions (length > 4)
+    if len(move) > 4:
+        promo_piece = move[4]
+        piece_type = promo_piece.upper()
+        new_color = new_pieces[from_sq][0]
+        new_pieces[to_sq] = new_color + piece_type
+    else:
+        new_pieces[to_sq] = new_pieces[from_sq]
+    
+    # Remove original piece
+    del new_pieces[from_sq]
+    
+    return new_pieces
+
+def is_checkmate_after_move(pieces: dict[str, str], move: str, to_play: str) -> bool:
+    """Check if the move results in checkmate for the opponent."""
+    new_pieces = simulate_move(pieces, move)
+    opponent_color = 'b' if to_play[0] == 'w' else 'w'
+    
+    # Check if opponent's king is in check
+    if not is_in_check(new_pieces, opponent_color):
+        return False
+    
+    # Check if opponent has any legal moves
+    opponent_moves = get_all_legal_moves(new_pieces, 'black' if opponent_color == 'b' else 'white')
+    for op_move in opponent_moves:
+        after_op_move = simulate_move(new_pieces, op_move)
+        if not is_in_check(after_op_move, opponent_color):
+            return False  # There is a legal move to escape check
+    
+    return True  # No escape → checkmate
+
+def is_in_check(pieces: dict[str, str], color: str) -> bool:
+    """Check if the king of the given color is in check."""
+    # Find king
+    king_square = None
+    for sq, piece in pieces.items():
+        if piece == color + 'K':
+            king_square = sq
+            break
+    if not king_square:
+        return False  # No king? Shouldn't happen
+    
+    king_file, king_rank = ord(king_square[0]) - ord('a'), int(king_square[1]) - 1
+    opponent_color = 'b' if color == 'w' else 'w'
+    
+    # Check for opponent pawns
+    pawn_dirs = [(-1, 1), (1, 1)] if opponent_color == 'w' else [(-1, -1), (1, -1)]
+    for df, dr in pawn_dirs:
+        file, rank = king_file + df, king_rank + dr
+        if 0 <= file <= 7 and 0 <= rank <= 7:
+            sq = chr(file + ord('a')) + str(rank + 1)
+            if sq in pieces and pieces[sq] == opponent_color + 'P':
+                return True
+    
+    # Check for opponent knights
+    knight_moves = [(-2, -1), (-2, 1), (-1, -2), (-1, 2), (1, -2), (1, 2), (2, -1), (2, 1)]
+    for df, dr in knight_moves:
+        file, rank = king_file + df, king_rank + dr
+        if 0 <= file <= 7 and 0 <= rank <= 7:
+            sq = chr(file + ord('a')) + str(rank + 1)
+            if sq in pieces and pieces[sq] == opponent_color + 'N':
+                return True
+    
+    # Check for opponent bishops/queens (diagonals)
+    for df, dr in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+        for step in range(1, 8):
+            file, rank = king_file + df * step, king_rank + dr * step
+            if not (0 <= file <= 7 and 0 <= rank <= 7):
+                break
+            sq = chr(file + ord('a')) + str(rank + 1)
+            if sq in pieces:
+                piece = pieces[sq]
+                if piece[0] == opponent_color:
+                    if piece[1] in ['B', 'Q']:
+                        return True
+                    else:
+                        break  # Blocked by own piece or non-sliding piece
+                else:
+                    break  # Blocked by own piece
+    
+    # Check for opponent rooks/queens (straight lines)
+    for df, dr in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+        for step in range(1, 8):
+            file, rank = king_file + df * step, king_rank + dr * step
+            if not (0 <= file <= 7 and 0 <= rank <= 7):
+                break
+            sq = chr(file + ord('a')) + str(rank + 1)
+            if sq in pieces:
+                piece = pieces[sq]
+                if piece[0] == opponent_color:
+                    if piece[1] in ['R', 'Q']:
+                        return True
+                    else:
+                        break  # Blocked by own piece or non-sliding piece
+                else:
+                    break  # Blocked by own piece
+    
+    # Check for opponent king (one square away)
+    for df in [-1, 0, 1]:
+        for dr in [-1, 0, 1]:
+            if df == 0 and dr == 0:
+                continue
+            file, rank = king_file + df, king_rank + dr
+            if 0 <= file <= 7 and 0 <= rank <= 7:
+                sq = chr(file + ord('a')) + str(rank + 1)
+                if sq in pieces and pieces[sq] == opponent_color + 'K':
+                    return True
+    
+    return False
+
+def evaluate_position(pieces: dict[str, str], color: str, piece_values: dict) -> float:
+    """Evaluate the position: positive for white, negative for black."""
+    white_material = 0
+    black_material = 0
+    mobility = {'w': 0, 'b': 0}
+    center_control = {'w': 0, 'b': 0}
+    
+    # Material count
+    for piece in pieces.values():
+        if piece[0] == 'w':
+            white_material += piece_values[piece[1]]
+        else:
+            black_material += piece_values[piece[1]]
+    
+    # Mobility: count legal moves for each side
+    for c in ['w', 'b']:
+        moves = get_all_legal_moves(pieces, 'white' if c == 'w' else 'black')
+        mobility[c] = len(moves)
+    
+    # Center control: pieces on d4,d5,e4,e5
+    center_squares = {'d4', 'd5', 'e4', 'e5'}
+    for sq, piece in pieces.items():
+        if sq in center_squares:
+            if piece[0] == 'w':
+                center_control['w'] += 1
+            else:
+                center_control['b'] += 1
+    
+    # King safety: penalize king in center or exposed
+    king_square = None
+    for sq, piece in pieces.items():
+        if piece == 'wK':
+            king_square = sq
+            break
+    if king_square:
+        file, rank = ord(king_square[0]) - ord('a'), int(king_square[1]) - 1
+        if file in [2, 3, 4, 5] and rank in [2, 3, 4, 5]:  # Center
+            center_penalty = 10
+        else:
+            center_penalty = 0
+    else:
+        center_penalty = 0
+    
+    white_eval = white_material + mobility['w'] * 0.1 + center_control['w'] * 0.5 - center_penalty
+    black_eval = black_material + mobility['b'] * 0.1 + center_control['b'] * 0.5
+    
+    return white_eval - black_eval
+
+def negamax(pieces: dict[str, str], to_play: str, depth: int, alpha: float, beta: float, transposition_table: dict, piece_values: dict) -> float:
+    """Negamax with alpha-beta pruning and transposition table."""
+    if depth == 0:
+        return evaluate_position(pieces, to_play, piece_values)
+    
+    color = to_play[0]
+    key = str(sorted(pieces.items()))  # Simple position key
+    if key in transposition_table:
+        return transposition_table[key]
+    
+    legal_moves = get_all_legal_moves(pieces, to_play)
+    if not legal_moves:
+        # Stalemate or checkmate
+        return float('-inf') if is_in_check(pieces, color) else 0
+    
+    max_eval = float('-inf')
+    for move in legal_moves:
+        new_pieces = simulate_move(pieces, move)
+        eval_score = -negamax(new_pieces, 'black' if color == 'w' else 'white', depth - 1, -beta, -alpha, transposition_table, piece_values)
+        max_eval = max(max_eval, eval_score)
+        alpha = max(alpha, eval_score)
+        if alpha >= beta:
+            break  # Beta cutoff
+    
+    transposition_table[key] = max_eval
+    return max_eval

@@ -1,0 +1,100 @@
+
+
+To compete effectively in the Amazons game, our policy employs a heuristic-based approach that maximizes mobility while strategically positioning both the amazon and the arrow. The core strategy involves evaluating all possible legal moves and selecting the one that optimizes the difference between our mobility and the opponent's mobility, augmented by centrality bonuses to control the board's center.
+
+**Key Components:**
+1. **Mobility Calculation**: For each candidate move, we calculate the player's and opponent's mobility (the number of legal moves each can make) after executing the move. Mobility is computed for each amazon by summing all reachable empty squares in straight-line paths.
+2. **Centrality Bonus**: Positions closer to the board's center receive higher scores, promoting control over critical areas. The amazon's position is prioritized higher than the arrow's placement.
+3. **Efficient Move Generation**: Legal moves and arrow shots are generated using direction vectors, ensuring all paths are unobstructed except for the vacated starting square.
+
+This approach ensures a balance between immediate gains and long-term board control, enabling strong performance against various opponents.
+
+<code>
+import numpy as np
+
+directions = [ (-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1) ]
+
+def get_mobility(board, row, col):
+    """Calculate the number of moves available from the given position."""
+    count = 0
+    for dr, dc in directions:
+        r, c = row + dr, col + dc
+        while 0 <= r < 6 and 0 <= c < 6:
+            if board[r, c] != 0:
+                break
+            count += 1
+            r += dr
+            c += dc
+    return count
+
+def compute_mobility(board, player):
+    """Calculate total mobility for all amazons of the specified player."""
+    total = 0
+    positions = list(zip(*np.where(board == player)))
+    for r, c in positions:
+        total += get_mobility(board, r, c)
+    return total
+
+def compute_centrality(r, c):
+    """Calculate a centrality score based on proximity to the board's center."""
+    return (min(r, 5 - r) + min(c, 5 - c))
+
+def generate_arrows(board, from_row, from_col, to_row, to_col):
+    """Generate all valid arrow shots after moving an amazon from (from) to (to)."""
+    arrows = []
+    for dr, dc in directions:
+        step = 1
+        while True:
+            arr_row = to_row + dr * step
+            arr_col = to_col + dc * step
+            if not (0 <= arr_row < 6 and 0 <= arr_col < 6):
+                break
+            # Arrow can pass through or land on the vacated 'from' square
+            if (arr_row, arr_col) == (from_row, from_col):
+                arrows.append((arr_row, arr_col))
+            elif board[arr_row, arr_col] != 0:
+                break
+            else:
+                arrows.append((arr_row, arr_col))
+            step += 1
+    return arrows
+
+def policy(board):
+    best_score = -float('inf')
+    best_move = None
+    player = 1
+    opponent = 2
+    my_amazons = list(zip(*np.where(board == player)))
+    
+    for from_row, from_col in my_amazons:
+        for dr, dc in directions:
+            step = 1
+            while True:
+                to_row = from_row + dr * step
+                to_col = from_col + dc * step
+                if not (0 <= to_row < 6 and 0 <= to_col < 6) or board[to_row, to_col] != 0:
+                    break
+                # Generate possible arrow shots for this move
+                arrows = generate_arrows(board, from_row, from_col, to_row, to_col)
+                if not arrows:
+                    step += 1
+                    continue
+                for arrow_row, arrow_col in arrows:
+                    new_board = board.copy()
+                    new_board[from_row, from_col] = 0
+                    new_board[to_row, to_col] = player
+                    new_board[arrow_row, arrow_col] = -1
+                    
+                    my_mob = compute_mobility(new_board, player)
+                    opp_mob = compute_mobility(new_board, opponent)
+                    score = my_mob - opp_mob
+                    # Prioritize central positions for amazon and arrow
+                    score += compute_centrality(to_row, to_col) + 0.5 * compute_centrality(arrow_row, arrow_col)
+                    
+                    if score > best_score:
+                        best_score = score
+                        best_move = f"{from_row},{from_col}:{to_row},{to_col}:{arrow_row},{arrow_col}"
+                step += 1
+    
+    return best_move if best_move else "0,0:0,0:0,0"  # Fallback (should not occur with valid board)
+</code>

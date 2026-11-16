@@ -1,0 +1,119 @@
+
+import numpy as np
+from typing import Tuple, List
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Minimax-based policy for Tic Tac Toe with alpha-beta pruning.
+    Returns the best move (row, col) for player 1 (maximizing).
+    """
+    
+    def is_terminal(board_arr):
+        # Check rows, columns, and diagonals for win
+        for i in range(3):
+            if abs(board_arr[i, :].sum()) == 3 or abs(board_arr[:, i].sum()) == 3:
+                return True, board_arr[i, 0] if board_arr[i, 0] != 0 else board_arr[0, i]
+        
+        if abs(board_arr[[0,1,2], [0,1,2]].sum()) == 3:  # Main diagonal
+            return True, board_arr[0, 0]
+        if abs(board_arr[[0,1,2], [2,1,0]].sum()) == 3:  # Anti diagonal
+            return True, board_arr[0, 2]
+        
+        # Check for draw
+        if 0 not in board_arr:
+            return True, 0
+        
+        return False, 0
+    
+    def evaluate(board_arr):
+        terminal, winner = is_terminal(board_arr)
+        if terminal:
+            if winner == 1:
+                return 10  # Win
+            elif winner == -1:
+                return -10  # Loss
+            else:
+                return 0  # Draw
+        return 0
+    
+    def minimax(board_arr, depth, alpha, beta, is_maximizing):
+        terminal, _ = is_terminal(board_arr)
+        if terminal:
+            return evaluate(board_arr)
+        
+        if is_maximizing:
+            max_eval = -np.inf
+            for i in range(3):
+                for j in range(3):
+                    if board_arr[i, j] == 0:
+                        board_arr[i, j] = 1  # Try our move
+                        eval_score = minimax(board_arr, depth + 1, alpha, beta, False)
+                        board_arr[i, j] = 0  # Undo move
+                        max_eval = max(max_eval, eval_score)
+                        alpha = max(alpha, eval_score)
+                        if beta <= alpha:
+                            break  # Alpha-beta pruning
+            return max_eval
+        else:
+            min_eval = np.inf
+            for i in range(3):
+                for j in range(3):
+                    if board_arr[i, j] == 0:
+                        board_arr[i, j] = -1  # Try opponent's move
+                        eval_score = minimax(board_arr, depth + 1, alpha, beta, True)
+                        board_arr[i, j] = 0  # Undo move
+                        min_eval = min(min_eval, eval_score)
+                        beta = min(beta, eval_score)
+                        if beta <= alpha:
+                            break  # Alpha-beta pruning
+            return min_eval
+    
+    # Convert to numpy array for easier manipulation
+    board_arr = np.array(board)
+    
+    # First, check if there's an immediate win
+    for i in range(3):
+        for j in range(3):
+            if board_arr[i, j] == 0:
+                board_arr[i, j] = 1
+                terminal, winner = is_terminal(board_arr)
+                board_arr[i, j] = 0
+                if terminal and winner == 1:
+                    return (i, j)
+    
+    # Then, check if we need to block opponent's win
+    for i in range(3):
+        for j in range(3):
+            if board_arr[i, j] == 0:
+                board_arr[i, j] = -1
+                terminal, winner = is_terminal(board_arr)
+                board_arr[i, j] = 0
+                if terminal and winner == -1:
+                    return (i, j)
+    
+    # If center is available, take it
+    if board_arr[1, 1] == 0:
+        return (1, 1)
+    
+    # Otherwise, use minimax to find the best move
+    best_move = None
+    best_value = -np.inf
+    
+    for i in range(3):
+        for j in range(3):
+            if board_arr[i, j] == 0:
+                board_arr[i, j] = 1
+                move_value = minimax(board_arr, 0, -np.inf, np.inf, False)
+                board_arr[i, j] = 0
+                if move_value > best_value:
+                    best_value = move_value
+                    best_move = (i, j)
+    
+    # Fallback in case no move was found (shouldn't happen in valid game)
+    if best_move is None:
+        for i in range(3):
+            for j in range(3):
+                if board_arr[i, j] == 0:
+                    return (i, j)
+    
+    return best_move

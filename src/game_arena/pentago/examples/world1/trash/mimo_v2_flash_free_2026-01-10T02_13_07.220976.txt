@@ -1,0 +1,253 @@
+The goal is to write a strong Pentago AI in Python that runs within 1 second.
+
+**Strategy:**
+1.  **Board Representation**: I will use `numpy` for efficient 2D array manipulation.
+2.  **Precomputation**: I will precompute line indices for the 6x6 board to quickly check for wins and threats (sequences of 5). There are 16 vertical, 16 horizontal, and 28 diagonal lines (2 directions).
+3.  **Heuristic Search**: I will perform a limited depth search (Depth 2) to select the best move.
+    *   **Depth 0 (My Turn)**: Iterate through all empty cells and 8 rotation options (4 quads * 2 dirs). Simulate the move.
+    *   **Win Check**: If the move results in me winning (5-in-a-row), return immediately. This is the top priority.
+    *   **Blocking Check**: If the move opens up a winning line for the opponent (i.e., after my move, the opponent can rotate a quadrant to win), I will mark this move as "dangerous" and avoid it if possible.
+    *   **Evaluation**: If no immediate win is found, score the board based on:
+        *   Number of my marbles (higher is better).
+        *   Threat potential (half-open lines of 3 or 4).
+4.  **Depth 1 (Opponent's Response)**: For each of my candidate moves, I will simulate the opponent's best counter-move. I will only pick moves where the opponent cannot immediately win. This implements a greedy blocking strategy.
+5.  **Move Ordering**: I will sort candidate moves by "promisingness" (e.g., center control, open lines) to find winning moves faster.
+
+```python
+import numpy as np
+import itertools
+
+def policy(you, opponent) -> str:
+    # Convert inputs to numpy arrays for vectorized operations
+    me = np.array(you, dtype=np.int8)
+    opp = np.array(opponent, dtype=np.int8)
+    
+    # --- Precompute Lines (Indices for 5-in-a-row checks) ---
+    # Lines are lists of tuples (r, c)
+    lines = []
+    # Horizontal
+    for r in range(6):
+        for c in range(2): # Start pos 0, 1
+            lines.append([(r, c+i) for i in range(5)])
+    # Vertical
+    for c in range(6):
+        for r in range(2):
+            lines.append([(r+i, c) for i in range(5)])
+    # Diagonal (Down-Right)
+    for r in range(2):
+        for c in range(2):
+            lines.append([(r+i, c+i) for i in range(5)])
+    # Diagonal (Up-Right)
+    for r in range(4): # 4, 5, 6 minus 4 -> 0, 1, 2
+        for c in range(2):
+            lines.append([(r-i, c+i) for i in range(5)])
+
+    # --- Helper: Rotation ---
+    # Rotations are performed on the board, then we check lines.
+    # However, rotating the whole board is expensive. 
+    # Optimization: Only rotate the quadrant being acted upon.
+    # But since we check global lines, we need the full board state.
+    # We will create a function to apply a move (place + rotate specific quad) to a board copy.
+
+    def get_rotated_quad(board, q, dir):
+        # Extract quadrant
+        r_start = (q // 2) * 3
+        c_start = (q % 2) * 3
+        quad = board[r_start:r_start+3, c_start:c_start+3]
+        
+        if dir == 'L': # Anticlockwise
+            rot = np.rot90(quad, k=1) # 90 deg CCW is default
+        else: # 'R' Clockwise
+            rot = np.rot90(quad, k=-1)
+        
+        new_board = board.copy()
+        new_board[r_start:r_start+3, c_start:c_start+3] = rot
+        return new_board
+
+    def apply_move(board, r, c, q, d):
+        # Returns a new board with placement and rotation
+        # r, c are 0-indexed
+        if board[r, c] != 0:
+            return None # Invalid placement
+        new_board = board.copy()
+        new_board[r, c] = 1
+        return get_rotated_quad(new_board, q, d)
+
+    # --- Helper: Win Check ---
+    def get_winner(b_me, b_opp):
+        # Returns 1 if me wins, 2 if opp wins, 0 if none, 3 if both (draw)
+        my_score = 0
+        opp_score = 0
+        for line in lines:
+            # Check My marbles
+            if all(b_me[r][c] == 1 for r, c in line):
+                my_score += 1
+            # Check Opp marbles
+            if all(b_opp[r][c] == 1 for r, c in line):
+                opp_score += 1
+            # Optimization: Early exit if we found a win for the current player context
+            # But we need to know if BOTH won for draw logic.
+        if my_score > 0 and opp_score > 0: return 3
+        if my_score > 0: return 1
+        if opp_score > 0: return 2
+        return 0
+
+    # --- Helper: Board Evaluation (Heuristic) ---
+    def evaluate_board(b_me, b_opp):
+        # Score based on potential lines
+        score = 0
+        # Count marbles (possession)
+        score += np.sum(b_me) * 2 
+        score -= np.sum(b_opp) * 2
+        
+        # Threats (half-open sequences of 3 or 4)
+        # We count sequences of 1s and 0s (empty) but not 2s (opp)
+        for line in lines:
+            vals_me = [b_me[r][c] for r, c in line]
+            vals_opp = [b_opp[r][c] for r, c in line]
+            
+            # Check if line is not blocked by opponent
+            if any(v == 1 for v in vals_opp): continue 
+            
+            # My sequence count
+            cnt = sum(vals_me)
+            if cnt == 4: score += 100
+            elif cnt == 3: score += 20
+            elif cnt == 2: score += 2
+            
+            # Opp threat check (if unblocked by me)
+            if not any(v == 1 for v in vals_me):
+                cnt_opp = sum(vals_opp)
+                if cnt_opp == 4: score -= 120 # Heavy penalty if opp has open 4
+                elif cnt_opp == 3: score -= 25
+                
+        return score
+
+    # --- Candidate Generation ---
+    # We only consider moves that look reasonable to save time
+    # Priority: Center -> Inner Ring -> Corners -> Edges
+    # We generate a list of (r, c) coordinates
+    empty_cells = []
+    for r in range(6):
+        for c in range(6):
+            if me[r, c] == 0 and opp[r, c] == 0:
+                empty_cells.append((r, c))
+    
+    # Sort empty cells by heuristic preference (Manhattan distance to center)
+    # Center is (2.5, 2.5). Distance 0 to 2 is best.
+    empty_cells.sort(key=lambda pos: abs(pos[0]-2.5) + abs(pos[1]-2.5))
+
+    # Quads and Dirs
+    rotations = [(q, d) for q in range(4) for d in ['L', 'R']]
+    
+    # --- Search Loop ---
+    
+    # 1. Immediate Win Search
+    # Look for any move that creates a win for me immediately
+    for r, c in empty_cells:
+        for q, d in rotations:
+            new_me = apply_move(me, r, c, q, d)
+            if new_me is None: continue
+            
+            # Check if I win
+            winner = get_winner(new_me, opp)
+            if winner == 1:
+                return f"{r+1},{c+1},{q},{d}"
+            if winner == 3: # Draw is acceptable if we can't win
+                # But usually we prefer non-draw if win exists. 
+                # Since we are searching all, we keep this as a candidate but lower priority? 
+                # Actually, if I can win, I just win. If not, I look for best move.
+                pass
+
+    # 2. Evaluate Moves (Minimax Depth 1)
+    # We want to maximize my score, minimizing opponent's immediate counter-score
+    best_score = -float('inf')
+    best_move = None
+    
+    # Limit number of candidates to ensure speed
+    # If we have many empty cells, we only check top 10-15 sorted ones
+    max_candidates = 15
+    if len(empty_cells) > max_candidates:
+        candidates = empty_cells[:max_candidates]
+    else:
+        candidates = empty_cells
+        
+    # Shuffle slightly to add variety if scores are equal? No, determinism is better for debug.
+    
+    for r, c in candidates:
+        for q, d in rotations:
+            # Apply My Move
+            new_me = apply_move(me, r, c, q, d)
+            if new_me is None: continue
+            
+            # Check if my move creates a win (Double check, though we did it above, maybe we skipped)
+            # Actually, we checked above. But let's verify block logic.
+            winner = get_winner(new_me, opp)
+            if winner == 1:
+                return f"{r+1},{c+1},{q},{d}"
+            if winner == 3:
+                # If I can't win, but draw is possible, treat as neutral/good?
+                # Let's keep looking for a winning move, if not found, this is a fallback.
+                current_score = 0
+            else:
+                # 3. Opponent Response (Greedy Block)
+                # Simulate opponent's best move
+                opp_best_response = -float('inf')
+                
+                # Generate Opponent candidates (limited)
+                # We need to find empty cells in the updated state
+                opp_empty = []
+                for or_ in range(6):
+                    for oc in range(6):
+                        if new_me[or_, oc] == 0 and opp[or_, oc] == 0:
+                            opp_empty.append((or_, oc))
+                
+                # Optimization: If opponent has few moves, check all, else limit
+                opp_candidates = opp_empty if len(opp_empty) <= 10 else opp_empty[:10]
+                
+                for or_, oc in opp_candidates:
+                    for oq, od in rotations:
+                        # Opp place
+                        if new_me[or_, oc] != 0 or opp[or_, oc] != 0: continue # Should be empty
+                        opp_placed = opp.copy()
+                        opp_placed[or_, oc] = 1
+                        # Opp rotate
+                        new_opp_board = get_rotated_quad(opp_placed, oq, od)
+                        
+                        # Check if Opp wins
+                        w = get_winner(new_me, new_opp_board)
+                        if w == 2: # Opp wins
+                            opp_best_response = float('inf') # Huge bad score
+                            break # This move is fatal, don't consider deeper
+                        if w == 3: # Draw
+                            opp_best_response = max(opp_best_response, 50)
+                        else:
+                            # Evaluate board state
+                            # We calculate (My Eval - Opp Eval)
+                            val = evaluate_board(new_me, new_opp_board)
+                            if val > opp_best_response:
+                                opp_best_response = val
+                    if opp_best_response == float('inf'): break
+
+                # Current move score is my evaluation minus opponent's best counter-evaluation
+                my_eval = evaluate_board(new_me, opp) # Eval relative to current opp state (before opp move)
+                # Actually, we used opp_best_response which is (MyEval - OppEval) in future.
+                # So final score = -opp_best_response (if we assume opponent plays optimally)?
+                # Let's use a simpler heuristic:
+                # Score = My_Potential - Opponent_Potential (after my move) - Opponent_Best_Gain
+                # Or simply: Score = -opp_best_response (where opp_best_response is board score for ME after their best move)
+                current_score = -opp_best_response
+
+            if current_score > best_score:
+                best_score = current_score
+                best_move = (r, c, q, d)
+
+    # Fallback: If no move found (shouldn't happen), pick random
+    if best_move is None:
+        # Just take first available
+        r, c = empty_cells[0]
+        return f"{r+1},{c+1},0,L"
+        
+    r, c, q, d = best_move
+    return f"{r+1},{c+1},{q},{d}"
+```

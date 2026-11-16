@@ -1,0 +1,122 @@
+
+import numpy as np
+import random
+
+def is_valid_move(board, from_row, from_col, to_row, to_col):
+    """Check if a move from (from_row, from_col) to (to_row, to_col) is valid."""
+    if not (0 <= from_row < 6 and 0 <= from_col < 6 and 0 <= to_row < 6 and 0 <= to_col < 6):
+        return False
+    if board[from_row, from_col] != 1:
+        return False
+    if board[to_row, to_col] != 0:
+        return False
+
+    # Check path is clear
+    row_diff = to_row - from_row
+    col_diff = to_col - from_col
+    row_step = 0 if row_diff == 0 else 1 if row_diff > 0 else -1
+    col_step = 0 if col_diff == 0 else 1 if col_diff > 0 else -1
+
+    curr_row, curr_col = from_row + row_step, from_col + col_step
+    while curr_row != to_row or curr_col != to_col:
+        if board[curr_row, curr_col] != 0:
+            return False
+        curr_row += row_step
+        curr_col += col_step
+
+    return True
+
+def is_valid_arrow_placement(board, from_row, from_col, arrow_row, arrow_col):
+    """Check if placing an arrow at (arrow_row, arrow_col) from (from_row, from_col) is valid."""
+    if not (0 <= from_row < 6 and 0 <= from_col < 6 and 0 <= arrow_row < 6 and 0 <= arrow_col < 6):
+        return False
+    if board[arrow_row, arrow_col] != 0:
+        return False
+
+    # Check path is clear
+    row_diff = arrow_row - from_row
+    col_diff = arrow_col - from_col
+    row_step = 0 if row_diff == 0 else 1 if row_diff > 0 else -1
+    col_step = 0 if col_diff == 0 else 1 if col_diff > 0 else -1
+
+    curr_row, curr_col = from_row + row_step, from_col + col_step
+    while curr_row != arrow_row or curr_col != arrow_col:
+        if board[curr_row, curr_col] != 0:
+            return False
+        curr_row += row_step
+        curr_col += col_step
+
+    return True
+
+def get_reachable_cells(board, row, col):
+    """Get all reachable cells from (row, col) on the board."""
+    reachable_cells = []
+    for i in range(6):
+        for j in range(6):
+            if is_valid_move(board, row, col, i, j):
+                reachable_cells.append((i, j))
+    return reachable_cells
+
+def evaluate_move(board, from_row, from_col, to_row, to_col, arrow_row, arrow_col):
+    """Evaluate a move based on the number of reachable cells after the move and arrow placement."""
+    temp_board = board.copy()
+    temp_board[from_row, from_col] = 0
+    temp_board[to_row, to_col] = 1
+    temp_board[arrow_row, arrow_col] = -1
+
+    reachable = len(get_reachable_cells(temp_board, to_row, to_col))
+
+    return reachable
+
+def policy(board):
+    """Choose the next move for an Amazons game."""
+    amazon_positions = np.argwhere(board == 1)
+    possible_moves = []
+
+    for from_row, from_col in amazon_positions:
+        for to_row in range(6):
+            for to_col in range(6):
+                if is_valid_move(board, from_row, from_col, to_row, to_col):
+                    # Try all arrow placements
+                    for arrow_row in range(6):
+                        for arrow_col in range(6):
+                            temp_board = board.copy()
+                            temp_board[from_row, from_col] = 0
+                            temp_board[to_row, to_col] = 1
+
+                            if is_valid_arrow_placement(temp_board, to_row, to_col, arrow_row, arrow_col):
+                                possible_moves.append(((from_row, from_col), (to_row, to_col), (arrow_row, arrow_col)))
+
+    if not possible_moves:
+        # If no legal moves are found, return a random but legal move to avoid crashing
+        # Very suboptimal, but handles edge cases.
+
+        for from_row, from_col in amazon_positions:
+            for to_row in range(6):
+                for to_col in range(6):
+                    if is_valid_move(board, from_row, from_col, to_row, to_col):
+                        temp_board = board.copy()
+                        temp_board[from_row, from_col] = 0
+                        temp_board[to_row, to_col] = 1
+
+                        for arrow_row in range(6):
+                            for arrow_col in range(6):
+                                if is_valid_arrow_placement(temp_board, to_row, to_col, arrow_row, arrow_col):
+                                    return f"{from_row},{from_col}:{to_row},{to_col}:{arrow_row},{arrow_col}"
+
+        #If even this fails, we make a random move but it is very unlikely
+        from_row, from_col = amazon_positions[0]
+        return f"{from_row},{from_col}:{0},{0}:{0},{0}"
+
+    best_move = None
+    best_score = -1
+
+    for move in possible_moves:
+        (from_row, from_col), (to_row, to_col), (arrow_row, arrow_col) = move
+        score = evaluate_move(board, from_row, from_col, to_row, to_col, arrow_row, arrow_col)
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    (from_row, from_col), (to_row, to_col), (arrow_row, arrow_col) = best_move
+    return f"{from_row},{from_col}:{to_row},{to_col}:{arrow_row},{arrow_col}"

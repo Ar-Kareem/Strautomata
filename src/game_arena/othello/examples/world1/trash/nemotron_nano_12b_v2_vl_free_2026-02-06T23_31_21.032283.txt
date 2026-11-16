@@ -1,0 +1,164 @@
+To create an AI that competes effectively in the game of Othello (Reversi), we must define a **smart policy** that chooses moves based on both **positional importance** and **strategic advantage**. The goal is to maximize the number of discs flipped and place them in high-value positions on the board.
+
+---
+
+### 🧠 Strategy Overview
+
+The AI prioritizes moves that offer the greatest **combined positional value** of the move itself and the discs it flips. The strategy involves:
+
+1. **Valid Move Detection**: Identify all empty cells on the board where placing a disc would flip at least one opponent's disc.
+2. **Weighted Evaluation**: Each empty cell is assigned a weight based on its strategic importance. Corners are the most valuable, followed by edge squares and the center.
+3. **Score Calculation**: For each valid move, the score is the sum of the weight of the move's position plus the sum of the weights of all opponent discs that would be flipped.
+4. **Move Selection**: Choose the move with the highest score. In case of a tie, the first move is selected (this can be extended with additional tiebreakers if needed).
+
+---
+
+### 🧮 Weight Matrix
+
+The weight matrix is designed to reflect the strategic importance of different positions on the Othello board:
+
+```python
+weights = np.array([
+    [10, 8, 7, 5, 5, 7, 8, 10],
+    [ 8, 5, 3, 3, 3, 3, 5, 8],
+    [ 7, 3, 2, 2, 2, 2, 3, 7],
+    [ 5, 3, 1, 1, 1, 1, 3, 5],
+    [ 5, 3, 1, 1, 1, 1, 3, 5],
+    [ 7, 3, 2, 2, 2, 2, 3, 7],
+    [ 8, 5, 3, 3, 3, 3, 5, 8],
+    [10, 8, 7, 5, 5, 7, 8, 10]
+])
+```
+
+- **Corners**: Highest value (10), as they are never flipped once occupied.
+- **Edge squares**: Second highest (8), as they are also valuable for controlling the board.
+- **Center squares**: Lowest value (1), as they are easier to control later.
+
+---
+
+### 🧮 Move Generation
+
+We generate all valid moves by checking all 8 directions from each empty cell. A move is valid if placing a disc there flips **at least one** opponent's disc in any direction.
+
+For each valid move, we record:
+- The coordinates of the move (`r, c`)
+- The list of all opponent discs that would be flipped in this move
+
+---
+
+### 📌 Final Implementation
+
+Here is the complete implementation of the policy function:
+
+```python
+import numpy as np
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    """
+    Determine the best move based on a weighted positional strategy.
+    """
+    # Define the weight matrix for each position on the board
+    weights = np.array([
+        [ 10, 8, 7, 5, 5, 7, 8, 10 ],
+        [ 8, 5, 3, 3, 3, 3, 5, 8 ],
+        [ 7, 3, 2, 2, 2, 2, 3, 7 ],
+        [ 5, 3, 1, 1, 1, 1, 3, 5 ],
+        [ 5, 3, 1, 1, 1, 1, 3, 5 ],
+        [ 7, 3, 2, 2, 2, 2, 3, 7 ],
+        [ 8, 5, 3, 3, 3, 3, 5, 8 ],
+        [10, 8, 7, 5, 5, 7, 8, 10]
+    ])
+
+    # Helper function to find flipped cells in a given direction
+    def get_flips(r, c):
+        flips = []
+        directions = [(-1, -1), (-1, 0), (-1, 1),
+                      (0, -1), (0, 1),
+                      (1, -1), (1, 0), (1, 1)]
+
+        for dr, dc in directions:
+            flipped_in_dir = []
+            cr, cc = r + dr, c + dc
+
+            # Check if the first adjacent cell in the direction is an opponent's
+            if not (0 <= cr < 8 and 0 <= cc < 8) or opponent[cr][cc] != 1:
+                continue
+
+            # Traverse the direction until we hit a valid end
+            while True:
+                if 0 <= cr < 8 and 0 <= cc < 8:
+                    if you[cr][cc] == 1:
+                        # Found our own piece: valid flip found
+                        flipped.extend(flipped_in_dir)
+                        break
+                    elif opponent[cr][cc] == 1:
+                        flipped_in_dir.append((cr, cc))
+                        cr += dr
+                        cc += dc
+                    else:
+                        # Found an empty cell: invalid
+                        break
+                else:
+                    break
+
+            if flipped_in_dir:
+                flips.extend(flipped_in_dir)
+
+        return flips if flips else None
+
+    # Generate all valid moves
+    valid_moves = []
+    for r in range(8):
+        for c in range(8):
+            if you[r][c] == 0 and opponent[r][c] == 0:
+                flipped = get_flips(r, c)
+                if flipped:
+                    valid_moves.append((r, c, flipped))
+
+    # If no valid moves, return 'pass'
+    if not valid_moves:
+        return "pass"
+
+    # Evaluate each move by summing the weight of the move and flipped discs
+    best_move = None
+    best_score = -float('inf')
+    for r, c, flipped in valid_moves:
+        score = weights[r][c] + sum(weights[x][y] for x, y in flipped)
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+
+    # Convert move to algebraic notation
+    col = chr(ord('a') + best_move[1])
+    row = str(best_move[0] + 1)
+    return f"{col}{row}"
+```
+
+---
+
+### 📈 Why This Works
+
+- **High positional values** ensure the AI prioritizes corners and edge squares.
+- **Weighted scoring** ensures the AI values both **disc count** and **positional control**.
+- **Efficient flipping logic** ensures all valid flips are captured.
+- **Time-efficient** due to the small board size (8x8), allowing for real-time decision making.
+
+---
+
+### 🧪 Example
+
+Given a board state where placing a disc at `a1` flips 3 opponent discs and the weight of `a1` is 10, the score would be:
+
+```python
+10 (a1) + 3 * (flipped cell weights)
+```
+
+This ensures the AI makes moves that both **maximize disc gain** and **secure strategic positions**.
+
+---
+
+### ✅ Final Notes
+
+- This policy balances **positional importance** and **immediate flipping gains**, which are key in Othello.
+- It can be extended with more advanced heuristics like **mobility advantage** or **disc stability**, but this implementation is simple and effective for competitive AI.
+- The scoring system is **adaptable**, and the weight matrix can be tuned to improve performance.

@@ -1,0 +1,158 @@
+<thinking>
+I need to create a strategy for 4x4 Tic Tac Toe. In this variant, the goal is to get 4 in a row, column, or diagonal. 
+
+Since the board is small and time is limited, I'll implement a minimax algorithm with alpha-beta pruning to look several moves ahead. However, because it's 4x4 and we need 4 in a row, the search space is manageable.
+
+My approach:
+1. First check if I can win immediately (play winning move)
+2. Check if opponent can win next move (block)
+3. Use minimax with depth limiting to look ahead
+4. Use evaluation function that scores positions based on potential lines
+
+For evaluation, I'll count the number of potential winning lines for each player, giving higher scores to positions with more incomplete lines that I can complete.
+
+Given the time constraints, I'll limit the depth to around 6-7 moves to ensure it runs within 1 second.
+</thinking>
+<code>
+import numpy as np
+from typing import List, Tuple, Optional
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    # Convert to numpy for easier manipulation
+    board_array = np.array(board, dtype=int)
+    
+    # Get all empty positions
+    empty_positions = []
+    for i in range(4):
+        for j in range(4):
+            if board_array[i, j] == 0:
+                empty_positions.append((i, j))
+    
+    # If board is empty, take center position
+    if len(empty_positions) == 16:
+        return (1, 1)
+    
+    # Check if we can win in one move
+    for i, j in empty_positions:
+        board_array[i, j] = 1
+        if is_winner(board_array, 1):
+            return (i, j)
+        board_array[i, j] = 0
+    
+    # Check if opponent can win in one move - block them
+    for i, j in empty_positions:
+        board_array[i, j] = -1
+        if is_winner(board_array, -1):
+            return (i, j)
+        board_array[i, j] = 0
+    
+    # Use minimax to determine best move
+    best_score = float('-inf')
+    best_move = empty_positions[0]  # fallback to first empty spot
+    
+    for i, j in empty_positions:
+        board_array[i, j] = 1  # Place our mark
+        score = minimax(board_array, 0, False, float('-inf'), float('inf'))
+        board_array[i, j] = 0  # Undo move
+        
+        if score > best_score:
+            best_score = score
+            best_move = (i, j)
+    
+    return best_move
+
+def is_winner(board: np.ndarray, player: int) -> bool:
+    # Check rows
+    for i in range(4):
+        if np.all(board[i, :] == player):
+            return True
+    
+    # Check columns
+    for j in range(4):
+        if np.all(board[:, j] == player):
+            return True
+    
+    # Check diagonals
+    if np.all(np.diag(board) == player):
+        return True
+    if np.all(np.diag(np.fliplr(board)) == player):
+        return True
+    
+    return False
+
+def evaluate(board: np.ndarray) -> int:
+    score = 0
+    # Check all rows
+    for i in range(4):
+        score += evaluate_line(board[i, :])
+    
+    # Check all columns
+    for j in range(4):
+        score += evaluate_line(board[:, j])
+    
+    # Check diagonals
+    score += evaluate_line(np.diag(board))
+    score += evaluate_line(np.diag(np.fliplr(board)))
+    
+    return score
+
+def evaluate_line(line: np.ndarray) -> int:
+    if 1 in line and -1 in line:  # Both players in line, can't win
+        return 0
+    
+    count = np.sum(line == 1)  # Our marks
+    opp_count = np.sum(line == -1)  # Opponent marks
+    
+    if count > 0:
+        # More marks = higher value
+        return 10 ** count
+    elif opp_count > 0:
+        # Opponent's potential line
+        return -(10 ** opp_count)
+    
+    return 0
+
+def minimax(board: np.ndarray, depth: int, is_maximizing: bool, alpha: float, beta: float) -> float:
+    # Check terminal states
+    if is_winner(board, 1):
+        return 1000000 - depth  # Prefer winning faster
+    if is_winner(board, -1):
+        return -1000000 + depth  # Prefer losing slower
+    
+    # Depth limit to avoid timeouts
+    if depth >= 6:
+        return evaluate(board)
+    
+    empty_positions = []
+    for i in range(4):
+        for j in range(4):
+            if board[i, j] == 0:
+                empty_positions.append((i, j))
+    
+    # Draw
+    if len(empty_positions) == 0:
+        return 0
+    
+    if is_maximizing:
+        max_eval = float('-inf')
+        for i, j in empty_positions:
+            board[i, j] = 1
+            eval_score = minimax(board, depth + 1, False, alpha, beta)
+            board[i, j] = 0
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break  # Alpha-beta pruning
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for i, j in empty_positions:
+            board[i, j] = -1
+            eval_score = minimax(board, depth + 1, True, alpha, beta)
+            board[i, j] = 0
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break  # Alpha-beta pruning
+        return min_eval
+</code>

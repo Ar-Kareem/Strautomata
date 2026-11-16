@@ -1,0 +1,115 @@
+
+import numpy as np
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    # Directions for Othello moves
+    DIRECTIONS = [(0, 1), (1, 0), (0, -1), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1)]
+
+    def get_legal_moves(player_board, opponent_board):
+        moves = []
+        for r in range(8):
+            for c in range(8):
+                if player_board[r][c] == 0 and opponent_board[r][c] == 0:
+                    if is_legal(r, c, player_board, opponent_board):
+                        moves.append((r, c))
+        return moves
+
+    def is_legal(r, c, player_board, opponent_board):
+        for dr, dc in DIRECTIONS:
+            nr, nc = r + dr, c + dc
+            found_opponent = False
+            while 0 <= nr < 8 and 0 <= nc < 8 and opponent_board[nr][nc] == 1:
+                nr += dr
+                nc += dc
+                found_opponent = True
+            if found_opponent and 0 <= nr < 8 and 0 <= nc < 8 and player_board[nr][nc] == 1:
+                return True
+        return False
+
+    def make_move(r, c, player_board, opponent_board):
+        new_player = player_board.copy()
+        new_opp = opponent_board.copy()
+        new_player[r][c] = 1
+        for dr, dc in DIRECTIONS:
+            nr, nc = r + dr, c + dc
+            path = []
+            while 0 <= nr < 8 and 0 <= nc < 8 and new_opp[nr][nc] == 1:
+                path.append((nr, nc))
+                nr += dr
+                nc += dc
+            if path and 0 <= nr < 8 and 0 <= nc < 8 and new_player[nr][nc] == 1:
+                for pr, pc in path:
+                    new_player[pr][pc] = 1
+                    new_opp[pr][pc] = 0
+        return new_player, new_opp
+
+    # Positional weights for evaluation
+    WEIGHTS = np.array([
+        [100, -20, 10,  5,  5, 10, -20, 100],
+        [-20, -50, -2, -2, -2, -2, -50, -20],
+        [ 10,  -2,  5,  1,  1,  5,  -2,  10],
+        [  5,  -2,  1,  0,  0,  1,  -2,   5],
+        [  5,  -2,  1,  0,  0,  1,  -2,   5],
+        [ 10,  -2,  5,  1,  1,  5,  -2,  10],
+        [-20, -50, -2, -2, -2, -2, -50, -20],
+        [100, -20, 10,  5,  5, 10, -20, 100]
+    ])
+
+    def evaluate(p_board, o_board):
+        # 1. Positional Score
+        score = np.sum(p_board * WEIGHTS) - np.sum(o_board * WEIGHTS)
+        
+        # 2. Mobility (Number of legal moves)
+        p_moves = len(get_legal_moves(p_board, o_board))
+        o_moves = len(get_legal_moves(o_board, p_board))
+        mobility = 10 * (p_moves - o_moves)
+        
+        # 3. Disc count (minor in early game, major in end game)
+        disc_diff = np.sum(p_board) - np.sum(o_board)
+        
+        return score + mobility + (disc_diff if np.sum(p_board | o_board) > 50 else 0)
+
+    def negamax(p_board, o_board, depth, alpha, beta):
+        moves = get_legal_moves(p_board, o_board)
+        if not moves:
+            opp_moves = get_legal_moves(o_board, p_board)
+            if not opp_moves: # Terminal
+                diff = np.sum(p_board) - np.sum(o_board)
+                return 10000 if diff > 0 else -10000 if diff < 0 else 0
+            return -negamax(o_board, p_board, depth - 1, -beta, -alpha)
+        
+        if depth == 0:
+            return evaluate(p_board, o_board)
+
+        # Sort moves: prioritize corners
+        moves.sort(key=lambda m: WEIGHTS[m[0]][m[1]], reverse=True)
+        
+        value = -float('inf')
+        for r, c in moves:
+            next_p, next_o = make_move(r, c, p_board, o_board)
+            res = -negamax(next_o, next_p, depth - 1, -beta, -alpha)
+            value = max(value, res)
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+        return value
+
+    legal_moves = get_legal_moves(you, opponent)
+    if not legal_moves:
+        return "pass"
+
+    best_move = legal_moves[0]
+    best_val = -float('inf')
+    
+    # Simple move ordering for the root
+    legal_moves.sort(key=lambda m: WEIGHTS[m[0]][m[1]], reverse=True)
+
+    search_depth = 4 # Balanced for 1s limit
+    for r, c in legal_moves:
+        next_p, next_o = make_move(r, c, you, opponent)
+        val = -negamax(next_o, next_p, search_depth - 1, -float('inf'), float('inf'))
+        if val > best_val:
+            best_val = val
+            best_move = (r, c)
+
+    return chr(best_move[1] + ord('a')) + str(best_move[0] + 1)

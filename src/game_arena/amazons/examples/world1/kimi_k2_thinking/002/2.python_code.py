@@ -1,0 +1,152 @@
+
+import numpy as np
+import random
+
+# ----------------------------------------------------------------------
+# Directions a queen (or an arrow) can travel
+DIRECTIONS = [(-1, -1), (-1, 0), (-1, 1),
+              (0, -1),           (0, 1),
+              (1, -1),  (1, 0),  (1, 1)]
+
+# ----------------------------------------------------------------------
+def generate_moves(board, player):
+    """
+    Yield all legal moves for `player` (1=White, 2=Black).
+    Each move is a tuple ((fr,fc), (tr,tc), (ar,ac)).
+    """
+    # squares that belong to the player
+    from_sq = list(zip(*np.where(board == player)))
+    for fr, fc in from_sq:
+        for dr, dc in DIRECTIONS:
+            # walk in the chosen direction
+            for step in range(1, 6):
+                tr = fr + dr * step
+                tc = fc + dc * step
+                if not (0 <= tr < 6 and 0 <= tc < 6):
+                    break
+                if board[tr, tc] != 0:          # blocked
+                    break
+
+                # (tr,tc) is a legal destination – create the board after the move
+                after_move = board.copy()
+                after_move[fr, fc] = 0
+                after_move[tr, tc] = player
+
+                # all possible arrow shots from the landing square
+                for ar, ac in generate_arrow_moves(after_move, tr, tc):
+                    yield ((fr, fc), (tr, tc), (ar, ac))
+
+
+def generate_arrow_moves(board, r, c):
+    """Yield all squares where an arrow can be shot from (r,c) given the board."""
+    for dr, dc in DIRECTIONS:
+        for step in range(1, 6):
+            ar = r + dr * step
+            ac = c + dc * step
+            if not (0 <= ar < 6 and 0 <= ac < 6):
+                break
+            if board[ar, ac] != 0:            # blocked
+                break
+            yield (ar, ac)
+
+
+def apply_move(board, move):
+    """Return a new board after performing `move`."""
+    (fr, fc), (tr, tc), (ar, ac) = move
+    player = board[fr, fc]                   # 1 or 2
+    new_board = board.copy()
+    new_board[fr, fc] = 0
+    new_board[tr, tc] = player
+    new_board[ar, ac] = -1                    # arrow
+    return new_board
+
+
+def has_move(board, player):
+    """True if `player` has at least one legal move on `board`."""
+    for _ in generate_moves(board, player):
+        return True
+    return False
+
+
+def heuristic(board):
+    """
+    Territory heuristic: count the empty squares that are strictly closer
+    (Chebyshev distance) to our amazons (player 1) than to the opponent's.
+    Return the difference (our squares – opponent squares).
+    """
+    our = list(zip(*np.where(board == 1)))
+    opp = list(zip(*np.where(board == 2)))
+
+    our_cnt = 0
+    opp_cnt = 0
+    for r in range(6):
+        for c in range(6):
+            if board[r, c] != 0:
+                continue
+            # distance to nearest amazon of each side
+            d_our = min((max(abs(r - pr), abs(c - pc)) for pr, pc in our), default=100)
+            d_opp = min((max(abs(r - pr), abs(c - pc)) for pr, pc in opp), default=100)
+
+            if d_our < d_opp:
+                our_cnt += 1
+            elif d_our > d_opp:
+                opp_cnt += 1
+    return our_cnt - opp_cnt
+
+
+def move_to_str(move):
+    """Convert a move tuple to the required string format."""
+    (fr, fc), (tr, tc), (ar, ac) = move
+    return f"{fr},{fc}:{tr},{tc}:{ar},{ac}"
+
+
+# ----------------------------------------------------------------------
+def policy(board):
+    """
+    Return a legal Amazons move for player 1 (board[r,c]==1) using a depth‑2
+    minimax search with a territory heuristic and alpha‑beta pruning.
+    """
+    # all our possible moves
+    moves = list(generate_moves(board, 1))
+    if not moves:                       # should never happen, but be safe
+        raise ValueError("No legal move available")
+
+    best_val = -float('inf')
+    best_moves = []
+
+    # Pre‑evaluate each move (board after we move + arrow) – used for ordering.
+    scored = []
+    for mv in moves:
+        b1 = apply_move(board, mv)
+        # Immediate win?
+        if not has_move(b1, 2):
+            return move_to_str(mv)
+        ev = heuristic(b1)
+        scored.append((ev, mv, b1))
+
+    # Process the more promising moves first (better heuristic = larger ev)
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    for _, mv, b1 in scored:
+        # opponent replies – they try to minimise our heuristic.
+        worst = float('inf')
+        for opp_mv in generate_moves(b1, 2):
+            b2 = apply_move(b1, opp_mv)
+            val = heuristic(b2)
+            if val < worst:
+                worst = val
+                # alpha‑beta pruning: if the worst reply already cannot beat
+                # the best result we have seen, stop exploring this move.
+                if worst <= best_val:
+                    break
+
+        # update best move(s)
+        if worst > best_val:
+            best_val = worst
+            best_moves = [mv]
+        elif worst == best_val:
+            best_moves.append(mv)
+
+    # break ties randomly
+    chosen = random.choice(best_moves) if best_moves else moves[0]
+    return move_to_str(chosen)

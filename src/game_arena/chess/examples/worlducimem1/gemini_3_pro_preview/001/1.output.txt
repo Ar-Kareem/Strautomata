@@ -1,0 +1,317 @@
+The strategy implements a robust, lightweight Chess engine designed to operate within the constraints of a purely Python environment without the `chess` library.
+
+1.  **Flexible Input Handling**: The policy is designed to detect and utilize a list of `legal_moves` if provided by the arena (via optional arguments or `kwargs`). If `legal_moves` are not explicit, it utilizes a custom-built pseudo-legal move generator that calculates valid moves for standard pieces, taking into account board boundaries, piece movement rules, and King safety (check validation).
+2.  **Move Selection (Search)**: It employs a Depth-1 search (Greedy/Lookahead 1). It simulates every legal move to determine the resulting board state.
+3.  **Evaluation Function**: The resulting states are evaluated using a hand-tuned heuristic:
+    *   **Material**: Standard values (Pawn=100, Knight=320, Bishop=330, Rook=500, Queen=900).
+    *   **Positional Play**: Simplified Piece-Square Tables (PST) that encourage controlling the center squares and advancing pawns, while penalizing bad positioning.
+4.  **Simulation Engine**: A custom `make_move` function handles internal board updates, including captures, pawn promotions, and basic castling logic, ensuring the evaluation is based on accurate future states.
+5.  **Safety**: The generator explicitly checks for self-checks to ensure only strictly legal moves are returned to avoid disqualification.
+
+<code>
+import sys
+
+def policy(pieces: dict[str, str], to_play: str, memory: dict, *args, **kwargs) -> tuple[str, dict]:
+    """
+    Selects the best move for the current turn.
+    Args:
+        pieces: Dict mapping squares ('e4') to piece codes ('wP').
+        to_play: 'white' or 'black'.
+        memory: Dict for persistent storage.
+        *args: Captures potential legal_moves list passed by environment.
+    """
+    
+    # --- 1. Identify Legal Moves ---
+    legal_moves = None
+    
+    # Check if legal_moves is passed as an extra positional argument
+    for arg in args:
+        if isinstance(arg, list) and (len(arg) == 0 or isinstance(arg[0], str)):
+            legal_moves = arg
+            break
+            
+    # Check keywords
+    if legal_moves is None and 'legal_moves' in kwargs:
+        legal_moves = kwargs['legal_moves']
+        
+    # Fallback: Generate moves if not provided
+    if legal_moves is None:
+        legal_moves = generate_moves_fallback(pieces, to_play)
+        
+    # Safety valve: if no moves found (stalemate/mate or error), return empty to avoid crash (though usually handled by env)
+    if not legal_moves:
+        return "0000", memory
+
+    # --- 2. Search (Depth 1) ---
+    best_move = legal_moves[0]
+    best_score = -float('inf')
+    
+    # Optimize for single move
+    if len(legal_moves) == 1:
+        return legal_moves[0], memory
+
+    # White maximizes +, Black maximizes - (so Black seeks min score).
+    # However, easy way is to verify score from 'to_play' perspective.
+    # My evaluator returns Score (White) - Score (Black).
+    # So if to_play is white, we want max. If black, we want min.
+    # To simplify, we multiply score by color sign to always maximize 'my_score'.
+    color_sign = 1 if to_play == 'white' else -1
+
+    for move in legal_moves:
+        # Simulate the move
+        simulated_pieces = make_move(pieces, move)
+        
+        # Evaluate the resulting board
+        raw_score = evaluate_board(simulated_pieces)
+        
+        # Convert to current player's perspective
+        my_score = raw_score * color_sign
+        
+        if my_score > best_score:
+            best_score = my_score
+            best_move = move
+            
+    return best_move, memory
+
+# --- Core Engine Functions ---
+
+def parse_square(sq):
+    # 'a1' -> (0, 0)
+    return ord(sq[0]) - ord('a'), int(sq[1]) - 1
+
+def to_square(col, row):
+    return chr(col + ord('a')) + str(row + 1)
+
+def on_board(c, r):
+    return 0 <= c < 8 and 0 <= r < 8
+
+def evaluate_board(pieces):
+    # Material weights
+    values = {'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000}
+    
+    score = 0
+    
+    for sq, code in pieces.items():
+        color = code[0]
+        ptype = code[1]
+        
+        material = values.get(ptype, 0)
+        
+        # Positional Bonus
+        c, r = parse_square(sq)
+        bonus = 0
+        
+        # Center Control (encourage N, B, Q, P to be near center)
+        if 2 <= c <= 5 and 2 <= r <= 5:
+            if ptype in ['N', 'P', 'B', 'Q']:
+                bonus += 10
+        
+        # Pawn Advancement
+        if ptype == 'P':
+            # White pawns like higher ranks, Black like lower
+            advancement = r if color == 'w' else (7 - r)
+            bonus += advancement * 10
+            
+        # King Safety (rudimentary): discourage center in early game? (omitted for safety in Depth 1)
+
+        total_val = material + bonus
+        
+        if color == 'w':
+            score += total_val
+        else:
+            score -= total_val
+            
+    return score
+
+def make_move(pieces, move):
+    # Applies a UCI move to the board dict
+    new_board = pieces.copy()
+    src, dst = move[:2], move[2:4]
+    promotion = move[4:].upper() if len(move) > 4 else None
+    
+    if src not in new_board:
+        return new_board # Should not happen for legal moves
+        
+    mover = new_board.pop(src)
+    piece_type = mover[1]
+    color = mover[0]
+    
+    # Handle Promotion
+    if promotion and piece_type == 'P':
+        mover = color + promotion
+        
+    # Handle Castling (Movement of Rook)
+    # White King e1
+    if piece_type == 'K':
+        # White O-O
+        if src == 'e1' and dst == 'g1':
+            if 'h1' in new_board: new_board['f1'] = new_board.pop('h1')
+        # White O-O-O
+        elif src == 'e1' and dst == 'c1':
+            if 'a1' in new_board: new_board['d1'] = new_board.pop('a1')
+        # Black O-O
+        elif src == 'e8' and dst == 'g8':
+            if 'h8' in new_board: new_board['f8'] = new_board.pop('h8')
+        # Black O-O-O
+        elif src == 'e8' and dst == 'c8':
+            if 'a8' in new_board: new_board['d8'] = new_board.pop('a8')
+
+    # Place piece (Captures are implicit overwrites)
+    new_board[dst] = mover
+    
+    return new_board
+
+def generate_moves_fallback(pieces, to_play):
+    """
+    Generates pseudo-legal moves if the environment does not provide them.
+    Filters out moves that leave the King in check.
+    Does NOT generate Castling or En Passant to ensure safety without history.
+    """
+    moves = []
+    my_color = 'w' if to_play == 'white' else 'b'
+    enemy_color = 'b' if to_play == 'white' else 'w'
+    
+    # Move offsets
+    orth = [(1,0), (-1,0), (0,1), (0,-1)]
+    diag = [(1,1), (1,-1), (-1,1), (-1,-1)]
+    knight = [(2,1), (2,-1), (-2,1), (-2,-1), (1,2), (1,-2), (-1,2), (-1,-2)]
+    
+    for sq, code in pieces.items():
+        if code[0] != my_color:
+            continue
+            
+        c, r = parse_square(sq)
+        ptype = code[1]
+        candidates = []
+        
+        if ptype == 'P':
+            dy = 1 if my_color == 'w' else -1
+            start_rank = 1 if my_color == 'w' else 6
+            promo_rank = 7 if my_color == 'w' else 0
+            
+            # Push 1
+            if on_board(c, r+dy):
+                tgt = to_square(c, r+dy)
+                if tgt not in pieces:
+                    # Promo?
+                    if r+dy == promo_rank:
+                        for p in ['q', 'r', 'b', 'n']: candidates.append((tgt, p))
+                    else:
+                        candidates.append((tgt, None))
+                    
+                    # Push 2
+                    if r == start_rank:
+                        tgt2 = to_square(c, r+2*dy)
+                        if tgt2 not in pieces:
+                            candidates.append((tgt2, None))
+                            
+            # Captures
+            for dx in [-1, 1]:
+                if on_board(c+dx, r+dy):
+                    tgt = to_square(c+dx, r+dy)
+                    if tgt in pieces and pieces[tgt][0] == enemy_color:
+                        if r+dy == promo_rank:
+                            for p in ['q', 'r', 'b', 'n']: candidates.append((tgt, p))
+                        else:
+                            candidates.append((tgt, None))
+                            
+        elif ptype == 'N':
+            for dx, dy in knight:
+                nc, nr = c+dx, r+dy
+                if on_board(nc, nr):
+                    tgt = to_square(nc, nr)
+                    if tgt not in pieces or pieces[tgt][0] == enemy_color:
+                        candidates.append((tgt, None))
+                        
+        elif ptype in ['B', 'R', 'Q']:
+            dirs = []
+            if ptype in ['B', 'Q']: dirs += diag
+            if ptype in ['R', 'Q']: dirs += orth
+            
+            for dx, dy in dirs:
+                nc, nr = c, r
+                while True:
+                    nc += dx; nr += dy
+                    if not on_board(nc, nr): break
+                    tgt = to_square(nc, nr)
+                    if tgt in pieces:
+                        if pieces[tgt][0] == enemy_color:
+                            candidates.append((tgt, None))
+                        break # Blocked
+                    candidates.append((tgt, None))
+                    
+        elif ptype == 'K':
+            for dx in [-1, 0, 1]:
+                for dy in [-1, 0, 1]:
+                    if dx==0 and dy==0: continue
+                    nc, nr = c+dx, r+dy
+                    if on_board(nc, nr):
+                        tgt = to_square(nc, nr)
+                        if tgt not in pieces or pieces[tgt][0] == enemy_color:
+                            candidates.append((tgt, None))
+                            
+        # Validate Candidates (Check logic)
+        for dest, promo in candidates:
+            promo_str = promo if promo else ""
+            move_str = sq + dest + promo_str
+            
+            # Simulate
+            trial_board = make_move(pieces, move_str)
+            
+            # Find My King
+            k_sq = None
+            for s, p in trial_board.items():
+                if p == my_color + 'K':
+                    k_sq = s
+                    break
+            
+            # Check if King attacked
+            if k_sq and not is_attacked(k_sq, enemy_color, trial_board):
+                moves.append(move_str)
+                
+    return moves
+
+def is_attacked(sq, by_color, pieces):
+    # Returns True if 'sq' is attacked by any piece of 'by_color'
+    c, r = parse_square(sq)
+    orth = [(1,0), (-1,0), (0,1), (0,-1)]
+    diag = [(1,1), (1,-1), (-1,1), (-1,-1)]
+    knight = [(2,1), (2,-1), (-2,1), (-2,-1), (1,2), (1,-2), (-1,2), (-1,-2)]
+    
+    # 1. Check Knight attacks (incoming)
+    for dx, dy in knight:
+        if on_board(c+dx, r+dy):
+            s = to_square(c+dx, r+dy)
+            if s in pieces and pieces[s] == by_color + 'N': return True
+            
+    # 2. Check Sliding lines
+    for dirs, ptypes in [(orth, ['R', 'Q']), (diag, ['B', 'Q'])]:
+        for dx, dy in dirs:
+            nc, nr = c, r
+            while True:
+                nc += dx; nr += dy
+                if not on_board(nc, nr): break
+                s = to_square(nc, nr)
+                if s in pieces:
+                    if pieces[s][0] == by_color and pieces[s][1] in ptypes:
+                        return True
+                    break # Blocked by any piece
+                    
+    # 3. Check Pawns
+    # If by_color is White, they attack from (r-1). If Black, from (r+1).
+    pawn_row = r - 1 if by_color == 'w' else r + 1
+    for dx in [-1, 1]:
+        if on_board(c+dx, pawn_row):
+            s = to_square(c+dx, pawn_row)
+            if s in pieces and pieces[s] == by_color + 'P': return True
+            
+    # 4. Check King (adjacent)
+    for dx in [-1, 0, 1]:
+        for dy in [-1, 0, 1]:
+            if dx==0 and dy==0: continue
+            if on_board(c+dx, r+dy):
+                s = to_square(c+dx, r+dy)
+                if s in pieces and pieces[s] == by_color + 'K': return True
+                
+    return False
+</code>

@@ -1,0 +1,85 @@
+
+import random
+
+def policy(board: list[list[int]]) -> int:
+    ROWS = len(board)
+    COLS = len(board[0])
+    PLAYER = 1
+    OPPONENT = -1
+
+    def is_valid_location(board, col):
+        return board[0][col] == 0
+
+    def get_next_open_row(board, col):
+        for r in range(ROWS - 1, -1, -1):
+            if board[r][col] == 0:
+                return r
+        return -1 # Should not happen if column is valid
+
+    def drop_piece(temp_board, row, col, piece):
+        temp_board[row][col] = piece
+
+    def check_win(board, piece):
+        # Check horizontal locations for win
+        for c in range(COLS - 3):
+            for r in range(ROWS):
+                if board[r][c] == piece and board[r][c + 1] == piece and board[r][c + 2] == piece and board[r][c + 3] == piece:
+                    return True
+
+        # Check vertical locations for win
+        for c in range(COLS):
+            for r in range(ROWS - 3):
+                if board[r][c] == piece and board[r + 1][c] == piece and board[r + 2][c] == piece and board[r + 3][c] == piece:
+                    return True
+
+        # Check positively sloped diagonals
+        for c in range(COLS - 3):
+            for r in range(ROWS - 3):
+                if board[r][c] == piece and board[r + 1][c + 1] == piece and board[r + 2][c + 2] == piece and board[r + 3][c + 3] == piece:
+                    return True
+
+        # Check negatively sloped diagonals
+        for c in range(COLS - 3):
+            for r in range(3, ROWS):
+                if board[r][c] == piece and board[r - 1][c + 1] == piece and board[r - 2][c + 2] == piece and board[r - 3][c + 3] == piece:
+                    return True
+        return False
+
+    def get_valid_cols(board):
+        valid_cols = []
+        for col in range(COLS):
+            if is_valid_location(board, col):
+                valid_cols.append(col)
+        return valid_cols
+
+    # Winning move
+    for col in get_valid_cols(board):
+        temp_board = [row[:] for row in board]
+        row = get_next_open_row(temp_board, col)
+        drop_piece(temp_board, row, col, PLAYER)
+        if check_win(temp_board, PLAYER):
+            return col
+
+    # Block opponent's winning move
+    for col in get_valid_cols(board):
+        temp_board = [row[:] for row in board]
+        row = get_next_open_row(temp_board, col)
+        drop_piece(temp_board, row, col, OPPONENT)
+        if check_win(temp_board, OPPONENT):
+            return col
+
+    # Prioritize center column
+    center_col = COLS // 2
+    if is_valid_location(board, center_col):
+        return center_col
+
+    # Random valid move
+    valid_cols = get_valid_cols(board)
+    if valid_cols:
+        return random.choice(valid_cols)
+    else:
+        # This case should ideally not be reached in a valid game state
+        # as the game would have ended or the board would be full.
+        # Fallback to a random choice from all columns as a last resort.
+        return random.randint(0, COLS - 1)
+

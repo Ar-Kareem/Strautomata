@@ -1,0 +1,111 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Plays optimal Tic-Tac-Toe using the Minimax algorithm with Alpha-Beta pruning.
+    Returns the best possible move for the AI (Maximizing player: 1).
+    """
+    me = 1
+    opponent = -1
+    
+    # Helper to check for a winner
+    def check_winner(b):
+        lines = [
+            # Rows
+            [b[0][0], b[0][1], b[0][2]],
+            [b[1][0], b[1][1], b[1][2]],
+            [b[2][0], b[2][1], b[2][2]],
+            # Cols
+            [b[0][0], b[1][0], b[2][0]],
+            [b[0][1], b[1][1], b[2][1]],
+            [b[0][2], b[1][2], b[2][2]],
+            # Diagonals
+            [b[0][0], b[1][1], b[2][2]],
+            [b[0][2], b[1][1], b[2][0]]
+        ]
+        for line in lines:
+            if all(x == 1 for x in line): return 1
+            if all(x == -1 for x in line): return -1
+        return 0
+
+    # Minimax function
+    def minimax(b, is_maximizing, alpha, beta):
+        winner = check_winner(b)
+        if winner == 1: return 1   # AI wins
+        if winner == -1: return -1 # Opponent wins
+        
+        # Check for draw (board full)
+        is_full = True
+        for r in range(3):
+            for c in range(3):
+                if b[r][c] == 0:
+                    is_full = False
+                    break
+            if not is_full: break
+        if is_full: return 0
+
+        if is_maximizing:
+            max_eval = -float('inf')
+            for r in range(3):
+                for c in range(3):
+                    if b[r][c] == 0:
+                        b[r][c] = 1 # Try move
+                        eval = minimax(b, False, alpha, beta)
+                        b[r][c] = 0 # Undo move
+                        max_eval = max(max_eval, eval)
+                        alpha = max(alpha, eval)
+                        if beta <= alpha: break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for r in range(3):
+                for c in range(3):
+                    if b[r][c] == 0:
+                        b[r][c] = -1 # Try move
+                        eval = minimax(b, True, alpha, beta)
+                        b[r][c] = 0 # Undo move
+                        min_eval = min(min_eval, eval)
+                        beta = min(beta, eval)
+                        if beta <= alpha: break
+            return min_eval
+
+    best_score = -float('inf')
+    best_move = None
+    
+    # 1. Immediate Win Check
+    # Check if AI can win in the next move
+    for r in range(3):
+        for c in range(3):
+            if board[r][c] == 0:
+                board[r][c] = 1
+                if check_winner(board) == 1:
+                    board[r][c] = 0
+                    return (r, c)
+                board[r][c] = 0
+
+    # 2. Immediate Block Check
+    # Check if opponent can win in the next move and block it
+    for r in range(3):
+        for c in range(3):
+            if board[r][c] == 0:
+                board[r][c] = -1
+                if check_winner(board) == -1:
+                    board[r][c] = 0
+                    return (r, c)
+                board[r][c] = 0
+
+    # 3. Run Minimax for all other moves
+    for r in range(3):
+        for c in range(3):
+            if board[r][c] == 0:
+                board[r][c] = 1
+                score = minimax(board, False, -float('inf'), float('inf'))
+                board[r][c] = 0
+                
+                if score > best_score:
+                    best_score = score
+                    best_move = (r, c)
+                    
+                # If we found a winning move (score 1), we can stop early if we want, 
+                # but strictly continuing is fine for 3x3.
+    
+    return best_move

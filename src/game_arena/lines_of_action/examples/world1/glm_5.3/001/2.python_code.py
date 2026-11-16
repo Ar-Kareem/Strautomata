@@ -1,0 +1,470 @@
+
+import time
+
+MATE = 1000000
+INF = 10 ** 9
+BUDGET = 0.84
+
+FULL = (1 << 64) - 1
+FILEA = 0
+FILEH = 0
+for _i in range(8):
+    FILEA |= 1 << (8 * _i)
+    FILEH |= 1 << (8 * _i + 7)
+NOTA = FULL ^ FILEA
+NOTH = FULL ^ FILEH
+
+ROWM = [0] * 8
+COLM = [0] * 8
+DM1 = [0] * 15  # NW-SE diagonals, index r-c+7
+DM2 = [0] * 15  # NE-SW diagonals, index r+c
+for _r in range(8):
+    for _c in range(8):
+        _b = 1 << (8 * _r + _c)
+        ROWM[_r] |= _b
+        COLM[_c] |= _b
+        DM1[_r - _c + 7] |= _b
+        DM2[_r + _c] |= _b
+
+DIRS = ((0, 1), (0, -1), (1, 0), (-1, 0), (1, 1), (-1, -1), (1, -1), (-1, 1))
+
+SP = [0] * 64
+CENTV = [0] * 64
+D1M = 0
+D2M = 0
+D3M = 0
+for _p in range(64):
+    _r = _p >> 3
+    _c = _p & 7
+    _m = 0
+    for _dr, _dc in DIRS:
+        _rr = _r + _dr
+        _cc = _c + _dc
+        if 0 <= _rr < 8 and 0 <= _cc < 8:
+            _m |= 1 << (8 * _rr + _cc)
+    SP[_p] = _m
+    _d = _r
+    if _c < _d:
+        _d = _c
+    if 7 - _r < _d:
+        _d = 7 - _r
+    if 7 - _c < _d:
+        _d = 7 - _c
+    CENTV[_p] = _d
+    if _d == 1:
+        D1M |= 1 << _p
+    elif _d == 2:
+        D2M |= 1 << _p
+    elif _d == 3:
+        D3M |= 1 << _p
+
+# MD[p][d][n] = (dest_index, dest_bit, path_mask) for move of n squares in dir d, or None
+MD = []
+for _p in range(64):
+    _r = _p >> 3
+    _c = _p & 7
+    _per = []
+    for _dr, _dc in DIRS:
+        _lst = [None] * 9
+        _pm = 0
+        _i = 0
+        _rr = _r + _dr
+        _cc = _c + _dc
+        while 0 <= _rr < 8 and 0 <= _cc < 8:
+            _i += 1
+            _idx = 8 * _rr + _cc
+            _lst[_i] = (_idx, 1 << _idx, _pm)
+            _pm |= 1 << _idx
+            _rr += _dr
+            _cc += _dc
+        _per.append(_lst)
+    MD.append(_per)
+
+if hasattr(int, "bit_count"):
+    pc = int.bit_count
+else:
+    def pc(x):
+        return bin(x).count("1")
+
+
+class TimeUp(Exception):
+    pass
+
+
+TT = {}       # transposition table
+GC = {}       # group-count cache keyed by bitboard
+HIST = set()  # positions handed to opponent (anti-shuffle)
+DEADLINE = 0.0
+CHK = 64
+
+
+def groups(b):
+    cnt = 0
+    while b:
+        seed = b & -b
+        while True:
+            s = seed
+            seed = (s | (s >> 8) | (s << 8) | ((s & NOTA) >> 1) | ((s & NOTH) << 1)
+                    | ((s & NOTA) >> 7) | ((s & NOTH) >> 9) | ((s & NOTH) << 9)
+                    | ((s & NOTA) << 7)) & b
+            if seed == s:
+                break
+        b ^= seed
+        cnt += 1
+    return cnt
+
+
+def gen_moves(me, they):
+    allp = me | they
+    rc = [pc(allp & m) for m in ROWM]
+    cc = [pc(allp & m) for m in COLM]
+    d1 = [pc(allp & m) for m in DM1]
+    d2 = [pc(allp & m) for m in DM2]
+    moves = []
+    ap = moves.append
+    spl = SP
+    cvl = CENTV
+    mdl = MD
+    b = me
+    while b:
+        lsb = b & -b
+        b ^= lsb
+        p = lsb.bit_length() - 1
+        r = p >> 3
+        c = p & 7
+        mfb = me ^ lsb
+        base = pc(spl[p] & mfb)
+        cvp = cvl[p]
+        t0, t1, t2, t3, t4, t5, t6, t7 = mdl[p]
+        n0 = rc[r]
+        n2 = cc[c]
+        n4 = d1[r - c + 7]
+        n6 = d2[r + c]
+        g = t0[n0]
+        if g is not None:
+            di, db, pm = g
+            if not (they & pm) and not (me & db):
+                adj = pc(spl[di] & mfb)
+                ap((6 * (adj - base) + cvl[di] - cvp + (6 if (they & db) else 0), p, di, adj, base))
+        g = t1[n0]
+        if g is not None:
+            di, db, pm = g
+            if not (they & pm) and not (me & db):
+                adj = pc(spl[di] & mfb)
+                ap((6 * (adj - base) + cvl[di] - cvp + (6 if (they & db) else 0), p, di, adj, base))
+        g = t2[n2]
+        if g is not None:
+            di, db, pm = g
+            if not (they & pm) and not (me & db):
+                adj = pc(spl[di] & mfb)
+                ap((6 * (adj - base) + cvl[di] - cvp + (6 if (they & db) else 0), p, di, adj, base))
+        g = t3[n2]
+        if g is not None:
+            di, db, pm = g
+            if not (they & pm) and not (me & db):
+                adj = pc(spl[di] & mfb)
+                ap((6 * (adj - base) + cvl[di] - cvp + (6 if (they & db) else 0), p, di, adj, base))
+        g = t4[n4]
+        if g is not None:
+            di, db, pm = g
+            if not (they & pm) and not (me & db):
+                adj = pc(spl[di] & mfb)
+                ap((6 * (adj - base) + cvl[di] - cvp + (6 if (they & db) else 0), p, di, adj, base))
+        g = t5[n4]
+        if g is not None:
+            di, db, pm = g
+            if not (they & pm) and not (me & db):
+                adj = pc(spl[di] & mfb)
+                ap((6 * (adj - base) + cvl[di] - cvp + (6 if (they & db) else 0), p, di, adj, base))
+        g = t6[n6]
+        if g is not None:
+            di, db, pm = g
+            if not (they & pm) and not (me & db):
+                adj = pc(spl[di] & mfb)
+                ap((6 * (adj - base) + cvl[di] - cvp + (6 if (they & db) else 0), p, di, adj, base))
+        g = t7[n6]
+        if g is not None:
+            di, db, pm = g
+            if not (they & pm) and not (me & db):
+                adj = pc(spl[di] & mfb)
+                ap((6 * (adj - base) + cvl[di] - cvp + (6 if (they & db) else 0), p, di, adj, base))
+    moves.sort(reverse=True)
+    return moves
+
+
+def state_of(b):
+    n = pc(b)
+    rs = 0
+    r2 = 0
+    cs = 0
+    c2 = 0
+    x = b
+    while x:
+        lsb = x & -x
+        x ^= lsb
+        p = lsb.bit_length() - 1
+        r = p >> 3
+        c = p & 7
+        rs += r
+        r2 += r * r
+        cs += c
+        c2 += c * c
+    pairs = (pc(b & ((b & NOTH) << 1)) + pc(b & (b << 8))
+             + pc(b & ((b & NOTH) << 9)) + pc(b & ((b & NOTA) << 7)))
+    cent = pc(b & D1M) + 2 * pc(b & D2M) + 3 * pc(b & D3M)
+    return (n, rs, r2, cs, c2, pairs, cent)
+
+
+def eval_feats(gme, gthey, stme, stthey):
+    nm, rsm, r2m, csm, c2m, pm, xm = stme
+    nt, rst, r2t, cst, c2t, pt, xt = stthey
+    if nm < 1:
+        nm = 1
+    if nt < 1:
+        nt = 1
+    cm = (r2m - rsm * rsm / nm + c2m - csm * csm / nm) / nm
+    ct = (r2t - rst * rst / nt + c2t - cst * cst / nt) / nt
+    return (28.0 * (gthey - gme) + 9.0 * (pm / nm - pt / nt)
+            + 0.7 * (ct - cm) + 1.1 * (xm / nm - xt / nt))
+
+
+def negamax(me, they, depth, alpha, beta, ply, gme, gthey, stme, stthey):
+    global CHK
+    CHK -= 1
+    if CHK < 0:
+        CHK = 64
+        if time.perf_counter() > DEADLINE:
+            raise TimeUp()
+    if depth == 0:
+        return eval_feats(gme, gthey, stme, stthey)
+    key = (me, they)
+    e = TT.get(key)
+    ttm = None
+    if e is not None:
+        if e[0] >= depth:
+            esc = e[2]
+            if esc > MATE - 2000:
+                esc -= ply
+            elif esc < -MATE + 2000:
+                esc += ply
+            ef = e[1]
+            if ef == 0:
+                return esc
+            if ef == 1:
+                if esc >= beta:
+                    return esc
+            elif esc <= alpha:
+                return esc
+        ttm = e[3]
+    moves = gen_moves(me, they)
+    if not moves:
+        return ply - MATE
+    if ttm is not None:
+        tp = ttm[0]
+        td = ttm[1]
+        for idx, m in enumerate(moves):
+            if m[1] == tp and m[2] == td:
+                if idx:
+                    moves.insert(0, moves.pop(idx))
+                break
+    best = -INF
+    bm = None
+    a0 = alpha
+    nm, rs, r2, cs, c2, pairs, cent = stme
+    gcget = GC.get
+    spr = SP
+    cvt = CENTV
+    neg = negamax
+    for m in moves:
+        p = m[1]
+        di = m[2]
+        adj = m[3]
+        base = m[4]
+        fb = 1 << p
+        tb = 1 << di
+        me2 = (me ^ fb) | tb
+        g2 = gcget(me2)
+        if g2 is None:
+            g2 = groups(me2)
+            GC[me2] = g2
+        if g2 == 1:
+            best = MATE - ply - 1
+            bm = (p, di)
+            break
+        r = p >> 3
+        c = p & 7
+        tr = di >> 3
+        tc = di & 7
+        stme2 = (nm, rs - r + tr, r2 - r * r + tr * tr, cs - c + tc,
+                 c2 - c * c + tc * tc, pairs - base + adj, cent - cvt[p] + cvt[di])
+        if they & tb:
+            they2 = they ^ tb
+            g2t = gcget(they2)
+            if g2t is None:
+                g2t = groups(they2)
+                GC[they2] = g2t
+            if g2t == 1:
+                sc = ply + 1 - MATE
+            else:
+                stt2 = (stthey[0] - 1, stthey[1] - tr, stthey[2] - tr * tr,
+                        stthey[3] - tc, stthey[4] - tc * tc,
+                        stthey[5] - pc(spr[di] & they2), stthey[6] - cvt[di])
+                sc = -neg(they2, me2, depth - 1, -beta, -alpha, ply + 1, g2t, g2, stt2, stme2)
+        else:
+            sc = -neg(they, me2, depth - 1, -beta, -alpha, ply + 1, gthey, g2, stthey, stme2)
+        if sc > best:
+            best = sc
+            bm = (p, di)
+            if sc > alpha:
+                alpha = sc
+                if alpha >= beta:
+                    break
+    if best >= beta:
+        flg = 1
+    elif best <= a0:
+        flg = 2
+    else:
+        flg = 0
+    scs = best
+    if scs > MATE - 2000:
+        scs += ply
+    elif scs < -MATE + 2000:
+        scs -= ply
+    TT[key] = (depth, flg, scs, bm)
+    return best
+
+
+def _fmt(p, di):
+    return "%d,%d:%d,%d" % (p >> 3, p & 7, di >> 3, di & 7)
+
+
+def _add_hist(me, they, p, di):
+    if len(HIST) > 4096:
+        return
+    tb = 1 << di
+    me2 = (me ^ (1 << p)) | tb
+    if they & tb:
+        they2 = they ^ tb
+    else:
+        they2 = they
+    HIST.add((they2, me2))
+
+
+def _policy(board):
+    global DEADLINE, CHK
+    DEADLINE = time.perf_counter() + BUDGET
+    CHK = 64
+    TT.clear()
+    GC.clear()
+    me = 0
+    they = 0
+    for r in range(8):
+        row = board[r]
+        for c in range(8):
+            v = row[c]
+            if v == 1:
+                me |= 1 << (8 * r + c)
+            elif v == -1:
+                they |= 1 << (8 * r + c)
+    moves = gen_moves(me, they)
+    if not moves:
+        return "0,0:0,0"
+    # instant wins
+    for m in moves:
+        p = m[1]
+        di = m[2]
+        me2 = (me ^ (1 << p)) | (1 << di)
+        if groups(me2) == 1:
+            _add_hist(me, they, p, di)
+            return _fmt(p, di)
+    if len(moves) == 1:
+        _add_hist(me, they, moves[0][1], moves[0][2])
+        return _fmt(moves[0][1], moves[0][2])
+    gme0 = groups(me)
+    gthey0 = groups(they)
+    stme0 = state_of(me)
+    stthey0 = state_of(they)
+    root_moves = [(m[1], m[2], m[3], m[4]) for m in moves]
+    sc_prev = {}
+    for mv in root_moves:
+        sc_prev[(mv[0], mv[1])] = -INF
+    best_move = (root_moves[0][0], root_moves[0][1])
+    cur_best = None
+    alpha = -INF
+    try:
+        for depth in range(1, 13):
+            root_moves.sort(key=lambda mv: sc_prev[(mv[0], mv[1])], reverse=True)
+            alpha = -INF
+            cur_best = None
+            for mv in root_moves:
+                p = mv[0]
+                di = mv[1]
+                adj = mv[2]
+                base = mv[3]
+                tb = 1 << di
+                me2 = (me ^ (1 << p)) | tb
+                g2 = GC.get(me2)
+                if g2 is None:
+                    g2 = groups(me2)
+                    GC[me2] = g2
+                cap = they & tb
+                r = p >> 3
+                c = p & 7
+                tr = di >> 3
+                tc = di & 7
+                stme2 = (stme0[0], stme0[1] - r + tr, stme0[2] - r * r + tr * tr,
+                         stme0[3] - c + tc, stme0[4] - c * c + tc * tc,
+                         stme0[5] - base + adj, stme0[6] - CENTV[p] + CENTV[di])
+                if cap:
+                    they2 = they ^ tb
+                    g2t = GC.get(they2)
+                    if g2t is None:
+                        g2t = groups(they2)
+                        GC[they2] = g2t
+                    if g2t == 1:
+                        sc = 1 - MATE
+                    else:
+                        stt2 = (stthey0[0] - 1, stthey0[1] - tr, stthey0[2] - tr * tr,
+                                stthey0[3] - tc, stthey0[4] - tc * tc,
+                                stthey0[5] - pc(SP[di] & they2), stthey0[6] - CENTV[di])
+                        sc = -negamax(they2, me2, depth - 1, -INF, -alpha, 1, g2t, g2, stt2, stme2)
+                else:
+                    sc = -negamax(they, me2, depth - 1, -INF, -alpha, 1, gthey0, g2, stthey0, stme2)
+                if (((they ^ tb) if cap else they), me2) in HIST:
+                    sc -= 0.5
+                sc_prev[(p, di)] = sc
+                if sc > alpha:
+                    alpha = sc
+                    cur_best = (p, di)
+            if cur_best is not None:
+                best_move = cur_best
+            if alpha >= MATE - 2000 or alpha <= -MATE + 2000:
+                break
+    except TimeUp:
+        if cur_best is not None:
+            best_move = cur_best
+    _add_hist(me, they, best_move[0], best_move[1])
+    return _fmt(best_move[0], best_move[1])
+
+
+def policy(board):
+    try:
+        return _policy(board)
+    except Exception:
+        try:
+            me = 0
+            they = 0
+            for r in range(8):
+                row = board[r]
+                for c in range(8):
+                    v = row[c]
+                    if v == 1:
+                        me |= 1 << (8 * r + c)
+                    elif v == -1:
+                        they |= 1 << (8 * r + c)
+            mvs = gen_moves(me, they)
+            if mvs:
+                return _fmt(mvs[0][1], mvs[0][2])
+        except Exception:
+            pass
+        return "0,0:0,0"

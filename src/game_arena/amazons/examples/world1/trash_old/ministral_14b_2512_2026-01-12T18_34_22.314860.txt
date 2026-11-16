@@ -1,0 +1,129 @@
+### Strategy Overview
+
+For this Amazons policy on a 6x6 board, I'll implement a **prioritized move selection** approach that balances between:
+1. **Attacking the opponent** (capturing their amazons or blocking their movement).
+2. **Expanding control** (placing arrows to limit opponent options).
+3. **Defending** (protecting own amazons and maintaining mobility).
+4. **Randomness** (to avoid predictable patterns).
+
+The policy will:
+- First check for **immediate captures** (moves that land on opponent amazons).
+- Then look for **high-value arrow placements** (blocking opponent amazons or forcing them into weak positions).
+- Fall back to **random legal moves** if no high-priority options exist.
+
+This ensures the policy is **always legal** and **time-efficient** (using numpy for fast board operations).
+
+---
+
+### Python Implementation
+```python
+import numpy as np
+import random
+
+def policy(board):
+    # Get positions of own amazons (1) and opponent amazons (2)
+    own_amazons = np.argwhere(board == 1)
+    opp_amazons = np.argwhere(board == 2)
+
+    # If no own amazons (shouldn't happen per problem statement), return None (but problem says board is valid)
+    if len(own_amazons) == 0:
+        return None  # Should never happen per problem statement
+
+    # Directions for queen-like movement (8 possible)
+    directions = [(-1,-1), (-1,0), (-1,1),
+                  (0,-1),          (0,1),
+                  (1,-1),  (1,0), (1,1)]
+
+    # Generate all possible moves (from, to, arrow) and score them
+    moves = []
+    for from_pos in own_amazons:
+        from_row, from_col = from_pos
+        for direction in directions:
+            dr, dc = direction
+            # Generate all possible to positions in this direction
+            step = 1
+            while True:
+                to_row = from_row + dr * step
+                to_col = from_col + dc * step
+                if not (0 <= to_row < 6 and 0 <= to_col < 6):
+                    break  # Out of bounds
+                if board[to_row, to_col] != 0:
+                    break  # Blocked
+                # Now check arrow shots from (to_row, to_col)
+                for arrow_dir in directions:
+                    arrow_dr, arrow_dc = arrow_dir
+                    arrow_step = 1
+                    while True:
+                        arrow_row = to_row + arrow_dr * arrow_step
+                        arrow_col = to_col + arrow_dc * arrow_step
+                        if not (0 <= arrow_row < 6 and 0 <= arrow_col < 6):
+                            break  # Out of bounds
+                        # Check if arrow lands on empty square (0) or vacated from_pos
+                        if (arrow_row == from_row and arrow_col == from_col):
+                            # Arrow can pass through vacated from_pos
+                            pass
+                        elif board[arrow_row, arrow_col] != 0:
+                            break  # Blocked
+                        # Check if arrow lands on opponent amazon (capture)
+                        if board[arrow_row, arrow_col] == 2:
+                            # Highest priority: capture opponent amazon
+                            moves.append((from_row, from_col, to_row, to_col, arrow_row, arrow_col, 100))
+                        else:
+                            # Score based on arrow placement (blocking opponent or expanding control)
+                            score = 0
+                            # Bonus if arrow blocks opponent amazon's movement
+                            for opp_pos in opp_amazons:
+                                opp_row, opp_col = opp_pos
+                                if is_blocked(opp_row, opp_col, arrow_row, arrow_col, board):
+                                    score += 5
+                            # Bonus if arrow is far from own amazons (expands control)
+                            for own_pos in own_amazons:
+                                own_r, own_c = own_pos
+                                dist = abs(own_r - arrow_row) + abs(own_c - arrow_col)
+                                score += max(0, 3 - dist / 6)  # Decay with distance
+                            moves.append((from_row, from_col, to_row, to_col, arrow_row, arrow_col, score))
+                        arrow_step += 1
+                step += 1
+
+    # If no moves found (shouldn't happen per problem statement), return None
+    if not moves:
+        return None
+
+    # Sort moves by score (descending) and pick the best
+    moves.sort(key=lambda x: -x[6])
+    best_move = moves[0]
+
+    # Format the move string
+    move_str = f"{best_move[0]},{best_move[1]}:{best_move[2]},{best_move[3]}:{best_move[4]},{best_move[5]}"
+    return move_str
+
+def is_blocked(from_row, from_col, to_row, to_col, board):
+    """Check if the path from (from_row, from_col) to (to_row, to_col) is blocked."""
+    dr = to_row - from_row
+    dc = to_col - from_col
+    if dr == 0 and dc == 0:
+        return False  # Same square
+    step_row = 1 if dr > 0 else (-1 if dr < 0 else 0)
+    step_col = 1 if dc > 0 else (-1 if dc < 0 else 0)
+    if dr != 0:
+        step_row = dr // abs(dr)
+    if dc != 0:
+        step_col = dc // abs(dc)
+    current_row, current_col = from_row + step_row, from_col + step_col
+    while current_row != to_row or current_col != to_col:
+        if board[current_row, current_col] != 0:
+            return True
+        current_row += step_row
+        current_col += step_col
+    return False
+```
+
+---
+
+### Key Features:
+1. **Legal Move Guarantee**: The code only generates moves that are valid (unobstructed paths, empty landing squares, etc.).
+2. **Prioritization**: Captures (`score=100`) are prioritized over blocking (`score=5`) and expansion (`score=3`).
+3. **Efficiency**: Uses numpy for fast board operations and avoids redundant checks.
+4. **Fallback**: If no high-score moves exist, it defaults to the highest-scoring legal move.
+
+This policy is **deterministic** (same input → same output) but can be made stochastic by adding randomness to tie-breaking. The implementation ensures **no illegal moves** are ever returned.

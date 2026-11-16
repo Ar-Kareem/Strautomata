@@ -1,0 +1,126 @@
+
+import math
+from collections import deque
+
+BOARD_SIZE = 19
+
+def policy(me, opponent):
+    """
+    Decide a move for the current player.
+    me and opponent are lists of (row, col) with 1-based indices.
+    Return a tuple (row, col). (0,0) means pass.
+    """
+
+    # Build board: 0 empty, 1 me, 2 opponent
+    N = BOARD_SIZE
+    board = [[0] * N for _ in range(N)]
+    for (r, c) in me:
+        if 1 <= r <= N and 1 <= c <= N:
+            board[r-1][c-1] = 1
+    for (r, c) in opponent:
+        if 1 <= r <= N and 1 <= c <= N:
+            # if both gave same position, opponent overrides? Keep opponent.
+            board[r-1][c-1] = 2
+
+    # Helper to get neighbors within board (0-based)
+    def neighbors(r, c):
+        for dr, dc in ((-1,0),(1,0),(0,-1),(0,1)):
+            nr, nc = r+dr, c+dc
+            if 0 <= nr < N and 0 <= nc < N:
+                yield nr, nc
+
+    # Find group of same color starting at (r,c) and its liberties
+    def find_group_and_liberties(bd, r, c):
+        color = bd[r][c]
+        if color == 0:
+            return set(), set()
+        visited = set()
+        liberties = set()
+        stack = [(r,c)]
+        while stack:
+            x,y = stack.pop()
+            if (x,y) in visited:
+                continue
+            visited.add((x,y))
+            for nx, ny in neighbors(x,y):
+                if bd[nx][ny] == color and (nx,ny) not in visited:
+                    stack.append((nx,ny))
+                elif bd[nx][ny] == 0:
+                    liberties.add((nx,ny))
+        return visited, liberties
+
+    # Remove a group from board (in-place)
+    def remove_group(bd, group):
+        for (x,y) in group:
+            bd[x][y] = 0
+
+    # Simulate placing a stone of 'color' at (r,c) on a copy of the board.
+    # Return: (legal_bool, captures_count, own_group_liberties)
+    def simulate_move(bd, r, c, color):
+        if bd[r][c] != 0:
+            return False, 0, 0  # occupied, illegal
+        # copy board quickly
+        newb = [row[:] for row in bd]
+        newb[r][c] = color
+        opp_color = 1 if color == 2 else 2
+        total_captured = 0
+        # Check neighboring opponent groups for capture
+        seen = set()
+        for nx, ny in neighbors(r, c):
+            if newb[nx][ny] == opp_color and (nx,ny) not in seen:
+                grp, libs = find_group_and_liberties(newb, nx, ny)
+                seen.update(grp)
+                if len(libs) == 0:
+                    # capture
+                    total_captured += len(grp)
+                    remove_group(newb, grp)
+        # Now check our group liberties (the group containing (r,c))
+        our_grp, our_libs = find_group_and_liberties(newb, r, c)
+        if len(our_libs) == 0:
+            # suicide (illegal) unless we captured something (some rules allow capture then occupy; we already applied captures)
+            # But after captures, if still 0 liberties then illegal
+            return False, 0, 0
+        return True, total_captured, len(our_libs)
+
+    # Evaluate all empty intersections
+    best_move = None
+    best_score = None
+    center = ((N-1)/2.0, (N-1)/2.0)
+
+    # Precompute adjacency counts for efficiency: count adjacent stones (own + opp), weight opponent neighbors higher
+    adj_score = [[0]*N for _ in range(N)]
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] != 0:
+                continue
+            score = 0
+            for nr, nc in neighbors(r,c):
+                if board[nr][nc] == 1:
+                    score += 1
+                elif board[nr][nc] == 2:
+                    score += 2  # put more weight on attacking adjacent opponent stones
+            adj_score[r][c] = score
+
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] != 0:
+                continue
+            legal, captures, liberties = simulate_move(board, r, c, 1)
+            if not legal:
+                continue
+            # Score tuple: primary captures, then adjacency, then liberties, then -distance to center
+            dsq = (r - center[0])**2 + (c - center[1])**2
+            score = (captures, adj_score[r][c], liberties, -dsq)
+            if best_score is None or score > best_score:
+                best_score = score
+                best_move = (r+1, c+1)
+
+    # If no legal moves found, try passing
+    if best_move is None:
+        return (0, 0)
+    return best_move
+
+# If run as script, include a trivial test
+if __name__ == "__main__":
+    # example: empty board -> should play near center
+    print(policy([], []))

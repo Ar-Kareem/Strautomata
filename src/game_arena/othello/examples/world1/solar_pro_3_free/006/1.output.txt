@@ -1,0 +1,217 @@
+**Strategy**
+
+I use a bounded minimax search (α‑β pruning) to look ahead a few turns, but only when I have legal moves.  
+The search depth is adjusted dynamically: deeper when the board is almost full (few empty squares left) and shallower when there are many moves left.  
+
+The leaf evaluation is a cheap but effective heuristic:
+
+* **Piece count** – the difference between my discs and the opponent’s discs.  
+* **Corner bonus** – landing on a corner gives +100 points, while letting the opponent occupy a corner costs ‑100 points.  
+* **Corner‑adjacent** – a disc next to a corner gives a small extra bonus (helps to secure corners).  
+
+Move ordering gives priority to moves that:
+
+1. Place a disc on a corner (the biggest advantage).  
+2. Flip many opponent discs (higher‑flip count).  
+3. Otherwise, any legal move.
+
+If several moves have the same score the algorithm picks one randomly to avoid deterministic patterns that other bots could exploit.  
+When I have no legal move I return `"pass"` as required.
+
+The implementation is pure‑NumPy for fast board handling, uses integer‑based pieces (1 = me, 2 = opponent), and works completely within the given API.
+
+```python
+<code>
+import numpy as np
+import random
+
+# 8 possible directions (dr, dc)
+DIRS = [(-1, -1), (-1, 0), (-1, 1),
+        (0, -1), (0, 1),
+        (1, -1), (1, 0), (1, 1)]
+
+# Corner squares in (row, col) coordinates (row 0 = rank 1, col 0 = file a)
+CORNERS = {(0, 0), (0, 7), (7, 0), (7, 7)}
+def _is_corner(pos):
+    return pos in CORNERS
+
+# --------------------------------------------------------------
+def _flip_cells(board, player, r, c):
+    """
+    Return the list of coordinates that would be flipped if (r,c) is played.
+    Empty cells are ignored – we only accept moves that actually bracket
+    at least one opponent disc.
+    """
+    opponent = 2 if player == 1 else 1
+    flips = []
+    for dr, dc in DIRS:
+        nr, nc = r + dr, c + dc
+        while 0 <= nr < 8 and 0 <= nc < 8:
+            if board[nr][nc] == opponent:
+                flips.append((nr, nc))
+                nr += dr
+                nc += dc
+                continue
+            elif board[nr][nc] == player:     # we hit our own disc after opponent discs
+                break
+            else:                            # empty square – can't extend the line
+                break
+        # If we stopped because we found our own disc and at least one opponent disc was captured,
+        # the move is legal.
+        if 0 <= nr < 8 and board[nr][nc] == player and flips:
+            return flips
+    return []  # no capture → illegal move
+
+# --------------------------------------------------------------
+def _generate_moves(board, player):
+    """
+    Return a list of move descriptors:
+    (row, col, list_of_flips, flips_length, is_corner_flag)
+    This function is used both for the initial move set and for ordering.
+    """
+    moves = []
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] != 0:
+                continue
+            flips = _flip_cells(board, player, r, c)
+            if not flips:
+                continue
+            moves.append((r, c, flips, len(flips), _is_corner((r, c))))
+    return moves
+
+# --------------------------------------------------------------
+def _evaluate(board, player):
+    """
+    Simple heuristic:
+    – piece count difference,
+    – corner bonus (large weight),
+    – small bonus for being next to a corner.
+    Returns a numeric score; higher is better for *player*.
+    """
+    your = np.sum(board == player)
+    opponent = np.sum(board == (3 - player))   # opponent is the other number (1↔2)
+    score = your - opponent
+
+    # Corner bonus
+    CORNER_WEIGHT = 100
+    for cr, cc in CORNERS:
+        if board[cr][cc] == player:
+            score += CORNER_WEIGHT
+        elif board[cr][cc] == opponent:
+            score -= CORNER_WEIGHT
+
+    # Bonus for being adjacent to a corner (helps to protect / expand)
+    ADJ_WEIGHT = 5
+    for cr, cc in CORNERS:
+        for dr, dc in DIRS:
+            adj_r, adj_c = cr + dr, cc + dc
+            if 0 <= adj_r < 8 and 0 <= adj_c < 8:
+                if board[adj_r][adj_c] == player:
+                    score += ADJ_WEIGHT
+                elif board[adj_r][adj_c] == opponent:
+                    score -= ADJ_WEIGHT
+    return score
+
+# --------------------------------------------------------------
+def _apply_move(board, player, r, c):
+    """
+    Copy the board, flip the appropriate discs and return the new board.
+    """
+    new_board = board.copy()
+    flips = _flip_cells(new_board, player, r, c)
+    for nr, nc in flips:
+        new_board[nr][nc] = player
+    return new_board
+
+# --------------------------------------------------------------
+def _max_depth(board):
+    """
+    Choose search depth based on remaining empty squares.
+    Depth is at most 6 (the legal bound in many tournaments) and grows
+    as the game approaches the end‑game.
+    """
+    empty = 64 - board.sum()
+    depth = min(6, (empty // 5) + 2)   # roughly 6 when few moves remain
+    return max(1, depth)
+
+# --------------------------------------------------------------
+def _minimax(board, player, depth, alpha, beta):
+    """
+    α‑β bounded minimax that returns (score, best_move) where
+    *score* is the advantage for *player* (my perspective).  
+    The search stops at terminal nodes or when depth reaches 0.
+    """
+    opponent = 1 if player == 2 else 2
+    moves_info = _generate_moves(board, player)
+
+    # Terminal node
+    if not moves_info or depth == 0:
+        return _evaluate(board, player), None
+
+    # Order: many flips first, corner moves before others with same flips
+    moves_info_sorted = sorted(
+        moves_info,
+        key=lambda info: (info[3], -info[4]),   # flips_len, corner flag (True → larger)
+        reverse=True
+    )
+
+    best_score = -float('inf') if player == 1 else float('inf')
+    best_moves = []                     # list of moves that achieve best_score
+    EPS = 1e-6
+
+    for r, c, flips, flips_len, is_corner in moves_info_sorted:
+        new_board = _apply_move(board, player, r, c)
+
+        # If opponent has no legal move after this, we win instantly
+        opp_moves = _generate_moves(new_board, opponent)
+        if not opp_moves:
+            child_score = _evaluate(new_board, player)
+        else:
+            child_score = - _minimax(new_board, opponent,
+                                   depth - 1,
+                                   alpha, beta)[0]   # invert opponent's advantage
+
+        # Update bounds
+        if player == 1:      # I maximise my score
+            if child_score > best_score + EPS:
+                best_score = child_score
+                best_moves = [(r, c)]
+                alpha = max(alpha, best_score)
+            elif abs(child_score - best_score) <= EPS:
+                best_moves.append((r, c))
+        else:                # opponent minimises my score
+            if child_score < best_score + EPS:
+                best_score = child_score
+                best_moves = [(r, c)]
+                beta = min(beta, best_score)
+            elif abs(child_score - best_score) <= EPS:
+                best_moves.append((r, c))
+
+        if alpha >= beta:   # α‑β pruning cuts search tree
+            break
+
+    # Random tie‑breaker among equally good moves
+    chosen_move = random.choice(best_moves) if best_moves else (r, c)
+    return best_score, chosen_move
+
+# --------------------------------------------------------------
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    """
+    Return the best legal move in algebraic notation ("a1"‑"h8")
+    or "pass" if no legal move exists.
+    """
+    board = you + opponent                     # combined board (0,1,2)
+
+    # Generate my legal moves
+    moves = _generate_moves(board, 1)
+    if not moves:
+        return "pass"
+
+    depth = _max_depth(board)
+    _, (r, c) = _minimax(board, 1, depth, -float('inf'), float('inf'))
+
+    # Convert (row, col) → algebraic notation (col 0 = a, row 0 = 1)
+    return f"{chr(ord('a') + c)}{r + 1}"
+</code>
+```

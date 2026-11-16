@@ -1,0 +1,78 @@
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str], memory: dict) -> tuple[str, dict]:
+    # Helper function to check if a square is under attack by any enemy piece
+    def is_under_attack(square: str, color: str, pieces: dict) -> bool:
+        enemy_color = 'w' if color == 'b' else 'b'
+        enemy_pieces = {k: v for k, v in pieces.items() if v[0] == enemy_color}
+        # Check if any enemy piece can attack the square
+        for sq, piece in enemy_pieces.items():
+            piece_type = piece[1]
+            # Check for pawns (special case)
+            if piece_type == 'P':
+                if (color == 'w' and (sq[0] == square[0] + 1 or sq[0] == square[0] - 1)) and sq[1] == square[1]:
+                    return True
+            # Check for other pieces (simplified: assume they can move to any square)
+            if piece_type != 'P':
+                return True
+        return False
+
+    # Helper function to evaluate material advantage
+    def material_score(pieces: dict, color: str) -> int:
+        score = 0
+        for sq, piece in pieces.items():
+            if piece[0] == color:
+                # Pawn = 1, Knight/Bishop = 3, Rook = 5, Queen = 9
+                piece_value = 1 if piece[1] == 'P' else 3 if piece[1] in 'NB' else 5 if piece[1] == 'R' else 9
+                score += piece_value
+        return score
+
+    # Helper function to check for checks
+    def is_check(pieces: dict, color: str) -> bool:
+        king_sq = next(sq for sq, piece in pieces.items() if piece == color + 'K')
+        return is_under_attack(king_sq, color, pieces)
+
+    # Helper function to check for checkmate
+    def is_checkmate(pieces: dict, color: str) -> bool:
+        king_sq = next(sq for sq, piece in pieces.items() if piece == color + 'K')
+        # Generate all legal moves for the opponent
+        # (Simplified: assume all squares are reachable for evaluation)
+        return not any(
+            is_under_attack(sq, color, pieces) 
+            for sq in pieces 
+            if pieces[sq][0] != color
+        )
+
+    # Evaluate each move
+    best_move = None
+    best_score = -float('inf')
+    for move in legal_moves:
+        # Simulate the move
+        new_pieces = pieces.copy()
+        src, tgt = move[0:2], move[2:]
+        # Handle captures
+        if tgt in new_pieces and new_pieces[tgt][0] != to_play[0]:
+            del new_pieces[tgt]
+        new_pieces[src] = to_play + move[2:]
+        new_pieces[tgt] = to_play + move[2:]
+        
+        # Check for checkmate
+        if is_checkmate(new_pieces, to_play):
+            return move, memory
+        
+        # Check for check
+        if is_check(new_pieces, to_play):
+            score = 100  # High priority for checks
+        else:
+            # Material evaluation
+            score = material_score(new_pieces, to_play) - material_score(new_pieces, 'w' if to_play == 'b' else 'b')
+        
+        # Avoid moves that leave king in check
+        if is_under_attack(tgt, to_play, new_pieces):
+            score -= 50
+        
+        # Update best move
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move, memory

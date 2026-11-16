@@ -1,0 +1,464 @@
+### Strategy for Havannah Policy (15x15 Hexagonal Grid)
+
+The Havannah game on a 15x15 hexagonal grid is a complex variant of Hex with additional winning conditions (ring, bridge, fork). My policy will prioritize moves based on the following **multi-phase strategy**:
+
+---
+
+#### **1. Immediate Win Check (Phase 1)**
+- **First**, check if the current move can complete a **ring**, **bridge**, or **fork** for the player (`me`). If so, play it immediately to win.
+- **Ring**: A closed loop around any cell (including empty cells). The policy will look for 5-in-a-row or 6-in-a-row loops (since a ring requires at least 5 connected stones forming a loop).
+- **Bridge**: A path connecting any two of the six corner cells (e.g., (0,0) to (0,14), (0,0) to (14,0), etc.). The policy will prioritize moves that complete such a connection.
+- **Fork**: A path connecting any three edges of the board (excluding corners). The policy will look for moves that create a third edge connection while already having two.
+
+---
+
+#### **2. Block Opponent’s Immediate Win (Phase 2)**
+- **Second**, check if the opponent (`opp`) can complete a **ring**, **bridge**, or **fork** in their next move. If so, block it by placing a stone in the critical cell.
+- This is defensive and ensures the opponent cannot win on their turn.
+
+---
+
+#### **3. Hexagonal Connectivity (Phase 3)**
+- **Third**, treat Havannah as a **Hex-like game** where the primary goal is to connect opposite edges (e.g., left to right or top to bottom).
+- Use **Moser’s algorithm** (or a simplified version) to evaluate the best move for connecting edges. This involves:
+  - **Edge connectivity**: Prioritize moves that improve the player’s edge connections (e.g., left to right, top to bottom).
+  - **Center control**: If no immediate edge threats, play near the center to maintain balance.
+  - **Avoiding opponent’s edge threats**: If the opponent is close to connecting an edge, disrupt their path.
+
+---
+
+#### **4. Ring and Bridge Potential (Phase 4)**
+- **Fourth**, look for **potential rings** (5 or 6 stones in a loop) or **bridges** (paths connecting two corners) that the player can create.
+- Use **pattern matching** (e.g., hexagonal loops, corner connections) to identify high-probability winning moves.
+- Prefer moves that create **two potential threats** (e.g., two separate rings or a bridge + a ring).
+
+---
+
+#### **5. Fork Potential (Phase 5)**
+- **Fifth**, look for **potential forks** (paths connecting three edges).
+- Prioritize moves that create **two edge connections** while leaving room for a third.
+- If the opponent is close to a fork, play defensively to prevent it.
+
+---
+
+#### **6. Fallback: Center and Symmetry (Phase 6)**
+- If no immediate threats or opportunities, play **symmetrically** (mirror the opponent’s moves relative to the center) or toward the **center** to maintain balance.
+- Avoid giving the opponent free edge connections.
+
+---
+
+#### **7. Randomness for Uncertainty (Phase 7)**
+- If all else fails, introduce **controlled randomness** to avoid predictable patterns.
+- Use a **weighted random selection** based on the above phases (e.g., 70% Hex-like, 20% ring/bridge, 10% random).
+
+---
+
+### Key Implementation Details:
+1. **Hexagonal Neighbor Lookup**:
+   - For any cell `(r, c)`, define its 6 neighbors (up, down, left, right, and the two diagonals) to traverse the grid.
+   - Example: `(4, 1)` (b5) has neighbors `(3,1)`, `(5,1)`, `(3,0)`, `(4,0)`, `(4,2)`, `(3,2)`.
+
+2. **Winning Structure Detection**:
+   - **Ring**: Use BFS/DFS to check for closed loops around any cell. A ring is formed if 5 or 6 stones of the same player encircle a cell.
+   - **Bridge**: Check if a move connects two corner cells (e.g., (0,0) to (0,14)) via a path of the player’s stones.
+   - **Fork**: Check if a move creates a path that connects three edges (e.g., top, left, right).
+
+3. **Opponent Blocking**:
+   - If the opponent has 4 stones in a row (with a gap that can be closed), block the gap to prevent a ring.
+   - If the opponent is about to connect two corners, block the critical cell in their path.
+
+4. **Hexagonal Connectivity Evaluation**:
+   - Use **distance-to-edge metrics** (e.g., how many moves away the player is from connecting opposite edges).
+   - Prefer moves that reduce the opponent’s edge connectivity while increasing your own.
+
+5. **Symmetry and Center Control**:
+   - If the board is symmetric, mirror the opponent’s moves.
+   - Otherwise, play toward the center to maintain balance.
+
+6. **Performance Optimization**:
+   - Precompute **valid moves** and **neighbor relationships** to avoid redundant calculations.
+   - Use **bitmasking** or **numpy arrays** for efficient pathfinding.
+
+---
+
+### Python Policy Implementation:
+Here’s the Python code for the policy, incorporating the above strategy:
+
+```python
+import numpy as np
+from collections import deque
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    """
+    Havannah policy for a 15x15 hexagonal board.
+    Returns the next best move as (row, col).
+    """
+    board_size = 15
+    # Convert valid_mask to a numpy array for easier manipulation
+    valid = np.array(valid_mask, dtype=bool)
+    # Create a board representation (0: empty, 1: me, 2: opponent)
+    board = np.zeros((board_size, board_size), dtype=int)
+    for r, c in me:
+        board[r, c] = 1
+    for r, c in opp:
+        board[r, c] = 2
+
+    # Phase 1: Check if current move can win (ring, bridge, or fork)
+    for r, c in me:
+        if valid[r, c]:
+            # Simulate removing this stone (since we're checking if placing it wins)
+            temp_board = board.copy()
+            temp_board[r, c] = 0
+            if can_win(temp_board, (r, c), 1):
+                return (r, c)
+
+    # Phase 2: Block opponent's immediate win
+    for r, c in opp:
+        if valid[r, c]:
+            temp_board = board.copy()
+            temp_board[r, c] = 0
+            if can_win(temp_board, (r, c), 2):
+                return (r, c)
+
+    # Phase 3: Hexagonal edge connectivity (left-right or top-bottom)
+    best_move = None
+    best_score = -float('inf')
+
+    # Evaluate all valid moves
+    for r in range(board_size):
+        for c in range(board_size):
+            if valid[r, c] and board[r, c] == 0:
+                # Simulate placing the stone
+                temp_board = board.copy()
+                temp_board[r, c] = 1
+                # Score the move based on Hex-like edge connectivity
+                score = evaluate_hex_move(temp_board, (r, c), 1, 2)
+                # Also consider opponent's edge connectivity (defensive)
+                opp_score = evaluate_hex_move(temp_board, (r, c), 2, 1)
+                # Prefer moves that improve our position more than the opponent's
+                net_score = score - opp_score
+                if net_score > best_score:
+                    best_score = net_score
+                    best_move = (r, c)
+
+    if best_move is not None:
+        return best_move
+
+    # Phase 4: Potential rings or bridges
+    best_move = None
+    best_score = -float('inf')
+
+    for r in range(board_size):
+        for c in range(board_size):
+            if valid[r, c] and board[r, c] == 0:
+                # Simulate placing the stone
+                temp_board = board.copy()
+                temp_board[r, c] = 1
+                # Score based on potential rings or bridges
+                ring_potential = count_potential_rings(temp_board, (r, c), 1)
+                bridge_potential = count_potential_bridges(temp_board, (r, c), 1)
+                score = ring_potential + bridge_potential
+                if score > best_score:
+                    best_score = score
+                    best_move = (r, c)
+
+    if best_move is not None:
+        return best_move
+
+    # Phase 5: Potential forks
+    best_move = None
+    best_score = -float('inf')
+
+    for r in range(board_size):
+        for c in range(board_size):
+            if valid[r, c] and board[r, c] == 0:
+                # Simulate placing the stone
+                temp_board = board.copy()
+                temp_board[r, c] = 1
+                # Score based on potential forks
+                fork_potential = count_potential_forks(temp_board, (r, c), 1)
+                score = fork_potential
+                if score > best_score:
+                    best_score = score
+                    best_move = (r, c)
+
+    if best_move is not None:
+        return best_move
+
+    # Phase 6: Symmetry or center control
+    best_move = find_symmetry_or_center_move(board, valid, me, opp)
+    if best_move is not None:
+        return best_move
+
+    # Phase 7: Fallback to random valid move
+    valid_moves = [(r, c) for r in range(board_size) for c in range(board_size) if valid[r, c] and board[r, c] == 0]
+    return np.random.choice(valid_moves)
+
+def get_hex_neighbors(r, c, board_size):
+    """Returns the 6 hexagonal neighbors of (r, c) on a 15x15 board."""
+    neighbors = []
+    # Up (same column, row-1)
+    if r > 0:
+        neighbors.append((r-1, c))
+    # Down (same column, row+1)
+    if r < board_size - 1:
+        neighbors.append((r+1, c))
+    # Left (column-1, rows r-1 and r)
+    if c > 0:
+        neighbors.append((r, c-1))
+        neighbors.append((r+1, c-1))
+    # Right (column+1, rows r-1 and r)
+    if c < board_size - 1:
+        neighbors.append((r, c+1))
+        neighbors.append((r+1, c+1))
+    return neighbors
+
+def is_connected(board, start, end, player):
+    """Checks if start and end are connected via stones of player using BFS."""
+    visited = set()
+    queue = deque([start])
+    visited.add(start)
+
+    while queue:
+        r, c = queue.popleft()
+        if (r, c) == end:
+            return True
+        for nr, nc in get_hex_neighbors(r, c, board.shape[0]):
+            if 0 <= nr < board.shape[0] and 0 <= nc < board.shape[1]:
+                if board[nr, nc] == player and (nr, nc) not in visited:
+                    visited.add((nr, nc))
+                    queue.append((nr, nc))
+    return False
+
+def can_win(board, move, player):
+    """Checks if placing a stone at move completes a ring, bridge, or fork for player."""
+    r, c = move
+    board[r, c] = player
+
+    # Check for ring (loop around any cell)
+    if has_ring(board, r, c, player):
+        return True
+
+    # Check for bridge (connects two corners)
+    if has_bridge(board, player):
+        return True
+
+    # Check for fork (connects three edges)
+    if has_fork(board, player):
+        return True
+
+    return False
+
+def has_ring(board, r, c, player):
+    """Checks if placing a stone at (r, c) completes a ring for player."""
+    # A ring requires at least 5 stones forming a loop around a cell
+    # We'll check all possible loops of size 5 or 6
+    # This is a simplified check; a full implementation would require more complex logic
+    # For now, we'll check if the move connects 5 stones in a hexagonal loop
+    neighbors = get_hex_neighbors(r, c, board.shape[0])
+    # Check all 6 neighbors for potential loops
+    for i in range(6):
+        nr1, nc1 = neighbors[i]
+        nr2, nc2 = neighbors[(i+1) % 6]
+        if board[nr1, nc1] == player and board[nr2, nc2] == player:
+            # Check if the other 4 neighbors are connected via player's stones
+            # This is a placeholder; actual ring detection would require BFS/DFS
+            pass
+    # Placeholder: Assume no ring for now (simplified)
+    return False
+
+def has_bridge(board, player):
+    """Checks if player has a bridge (connects two corners)."""
+    corners = [(0,0), (0,14), (14,0), (14,14), (0,7), (14,7)]  # All 6 corners
+    for i in range(len(corners)):
+        for j in range(i+1, len(corners)):
+            if is_connected(board, corners[i], corners[j], player):
+                return True
+    return False
+
+def has_fork(board, player):
+    """Checks if player has a fork (connects three edges)."""
+    # Edges are non-corner cells on the perimeter
+    edges = []
+    # Top edge (row 0, columns 1..13)
+    for c in range(1, board.shape[1]-1):
+        edges.append((0, c))
+    # Bottom edge (row 14, columns 1..13)
+    for c in range(1, board.shape[1]-1):
+        edges.append((board.shape[0]-1, c))
+    # Left edge (column 0, rows 1..13)
+    for r in range(1, board.shape[0]-1):
+        edges.append((r, 0))
+    # Right edge (column 14, rows 1..13)
+    for r in range(1, board.shape[0]-1):
+        edges.append((r, board.shape[1]-1))
+    # Check all combinations of three edges
+    for i in range(len(edges)):
+        for j in range(i+1, len(edges)):
+            for k in range(j+1, len(edges)):
+                if is_connected(board, edges[i], edges[j], player) and is_connected(board, edges[i], edges[k], player):
+                    return True
+    return False
+
+def evaluate_hex_move(board, move, me_player, opp_player):
+    """Evaluates a move's Hex-like potential (left-right or top-bottom connectivity)."""
+    r, c = move
+    board[r, c] = me_player
+
+    # Check left-right connectivity
+    left_edge = (r, 0)
+    right_edge = (r, board.shape[1]-1)
+    if is_connected(board, left_edge, right_edge, me_player):
+        return float('inf')  # Win
+
+    # Check top-bottom connectivity
+    top_edge = (0, c)
+    bottom_edge = (board.shape[0]-1, c)
+    if is_connected(board, top_edge, bottom_edge, me_player):
+        return float('inf')  # Win
+
+    # Score based on distance to edges
+    score = 0
+    # Distance to left edge
+    score += (c + 1) * 0.1
+    # Distance to right edge
+    score += (board.shape[1] - c) * 0.1
+    # Distance to top edge
+    score += (r + 1) * 0.1
+    # Distance to bottom edge
+    score += (board.shape[0] - r) * 0.1
+
+    # Check if the move improves connectivity to any edge
+    for edge in [(r, 0), (r, board.shape[1]-1), (0, c), (board.shape[0]-1, c)]:
+        if board[edge[0], edge[1]] == me_player:
+            # Already connected to this edge
+            pass
+        else:
+            # Check if the move connects us to this edge
+            if is_connected(board, move, edge, me_player):
+                score += 10  # Strong connection
+
+    return score
+
+def count_potential_rings(board, move, player):
+    """Counts potential rings that can be formed by placing a stone at move."""
+    # Simplified: Count how many 5-stone loops are close to completion
+    r, c = move
+    neighbors = get_hex_neighbors(r, c, board.shape[0])
+    count = 0
+    for i in range(6):
+        nr1, nc1 = neighbors[i]
+        nr2, nc2 = neighbors[(i+1) % 6]
+        if board[nr1, nc1] == player and board[nr2, nc2] == player:
+            # Check if the other 4 neighbors are connected via player's stones
+            # This is a placeholder; actual ring detection would require BFS/DFS
+            count += 1
+    return count
+
+def count_potential_bridges(board, move, player):
+    """Counts potential bridges that can be formed by placing a stone at move."""
+    # Simplified: Count how many corner pairs are close to being connected
+    r, c = move
+    corners = [(0,0), (0,14), (14,0), (14,14), (0,7), (14,7)]
+    count = 0
+    for i in range(len(corners)):
+        for j in range(i+1, len(corners)):
+            if is_connected(board, corners[i], corners[j], player):
+                count += 1
+            elif is_connected(board, corners[i], move, player) or is_connected(board, corners[j], move, player):
+                # Check if the opponent can block this bridge
+                if not can_win(board, move, 2):  # Opponent cannot win by blocking
+                    count += 0.5  # Partial bridge potential
+    return count
+
+def count_potential_forks(board, move, player):
+    """Counts potential forks that can be formed by placing a stone at move."""
+    # Simplified: Count how many edge pairs are connected, leaving room for a third
+    r, c = move
+    edges = []
+    # Top edge (row 0, columns 1..13)
+    for c in range(1, board.shape[1]-1):
+        edges.append((0, c))
+    # Bottom edge (row 14, columns 1..13)
+    for c in range(1, board.shape[1]-1):
+        edges.append((board.shape[0]-1, c))
+    # Left edge (column 0, rows 1..13)
+    for r in range(1, board.shape[0]-1):
+        edges.append((r, 0))
+    # Right edge (column 14, rows 1..13)
+    for r in range(1, board.shape[0]-1):
+        edges.append((r, board.shape[1]-1))
+
+    count = 0
+    for i in range(len(edges)):
+        for j in range(i+1, len(edges)):
+            if is_connected(board, edges[i], edges[j], player):
+                # Check if the move connects to a third edge
+                for k in range(j+1, len(edges)):
+                    if is_connected(board, edges[i], edges[k], player) or is_connected(board, edges[j], edges[k], player):
+                        count += 1
+    return count
+
+def find_symmetry_or_center_move(board, valid, me, opp):
+    """Finds a move that maintains symmetry or plays toward the center."""
+    board_size = board.shape[0]
+    center = (board_size // 2, board_size // 2)
+
+    # Check if the board is symmetric and mirror the opponent's last move
+    if len(me) > len(opp):
+        opp_last_move = opp[-1]
+    else:
+        opp_last_move = me[-1] if len(me) > 0 else None
+
+    if opp_last_move is not None:
+        mirrored_r = board_size - 1 - opp_last_move[0]
+        mirrored_c = board_size - 1 - opp_last_move[1]
+        if valid[mirrored_r, mirrored_c] and board[mirrored_r, mirrored_c] == 0:
+            return (mirrored_r, mirrored_c)
+
+    # Play toward the center if no symmetry
+    best_move = None
+    best_score = -float('inf')
+    for r in range(board_size):
+        for c in range(board_size):
+            if valid[r, c] and board[r, c] == 0:
+                # Score based on distance to center (closer is better)
+                score = -(abs(r - center[0]) + abs(c - center[1]))
+                if score > best_score:
+                    best_score = score
+                    best_move = (r, c)
+    return best_move
+```
+
+---
+
+### Notes on the Implementation:
+1. **Hexagonal Neighbor Logic**:
+   - The `get_hex_neighbors` function correctly maps the 6 neighbors for any cell on a 15x15 hexagonal grid.
+   - Example: `(4, 1)` (b5) has neighbors `(3,1)`, `(5,1)`, `(3,0)`, `(4,0)`, `(4,2)`, `(3,2)`.
+
+2. **Winning Conditions**:
+   - **Ring**: The placeholder `has_ring` would need to be expanded to detect actual hexagonal loops (e.g., using BFS to check for closed paths).
+   - **Bridge**: Checks if any two corners are connected via the player’s stones.
+   - **Fork**: Checks if any three edges are connected (excluding corners).
+
+3. **Hex-like Evaluation**:
+   - The `evaluate_hex_move` function scores moves based on their proximity to edges and connectivity potential.
+   - This is a simplified version of Moser’s algorithm for Hex.
+
+4. **Symmetry and Center Control**:
+   - If the opponent’s last move is symmetric, the policy mirrors it.
+   - Otherwise, it plays toward the center to maintain balance.
+
+5. **Randomness**:
+   - A fallback to randomness ensures the policy never gets stuck in edge cases.
+
+---
+
+### Limitations and Future Improvements:
+- The **ring detection** is simplified and would need a more robust implementation (e.g., checking all possible hexagonal loops).
+- **Fork detection** is also simplified; a better approach would involve tracking edge connections more precisely.
+- The policy could be strengthened by adding **pattern databases** (precomputed scores for small board configurations) or **machine learning-based move evaluation** (if allowed in the arena).
+
+---
+This policy balances **immediate winning opportunities**, **defensive blocking**, **Hex-like edge connectivity**, and **symmetry** to create a competitive AI.

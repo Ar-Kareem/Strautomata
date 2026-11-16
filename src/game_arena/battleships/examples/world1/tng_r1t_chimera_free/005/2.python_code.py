@@ -1,0 +1,67 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # 1. Check for ship extensions (horizontal and vertical lines of hits)
+    targets = []
+    # Horizontal scan for sequences
+    for row in range(10):
+        col = 0
+        while col < 10:
+            if board[row][col] == 1:
+                start = col
+                while col < 10 and board[row][col] == 1:
+                    col += 1
+                end = col - 1
+                # Check left extension
+                if start > 0 and board[row][start - 1] == 0:
+                    targets.append((row, start - 1))
+                # Check right extension
+                if end < 9 and board[row][end + 1] == 0:
+                    targets.append((row, end + 1))
+            else:
+                col += 1
+    # Vertical scan for sequences
+    for col in range(10):
+        row = 0
+        while row < 10:
+            if board[row][col] == 1:
+                start = row
+                while row < 10 and board[row][col] == 1:
+                    row += 1
+                end = row - 1
+                # Check top extension
+                if start > 0 and board[start - 1][col] == 0:
+                    targets.append((start - 1, col))
+                # Check bottom extension
+                if end < 9 and board[end + 1][col] == 0:
+                    targets.append((end + 1, col))
+            else:
+                row += 1
+    # Remove duplicates
+    targets = list(dict.fromkeys(targets))
+    if targets:
+        return targets[0]
+    
+    # 2. Check adjacent cells to any hits
+    adjacent = []
+    for row in range(10):
+        for col in range(10):
+            if board[row][col] == 1:
+                for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                    x, y = row + dx, col + dy
+                    if 0 <= x < 10 and 0 <= y < 10 and board[x][y] == 0:
+                        adjacent.append((x, y))
+    if adjacent:
+        return adjacent[0]
+    
+    # 3. Hunting phase: center-biased checkerboard
+    candidates = []
+    for row in range(10):
+        for col in range(10):
+            if board[row][col] == 0:
+                # Priority: even parity, then center proximity
+                parity = (row + col) % 2
+                distance = abs(row - 4.5) + abs(col - 4.5)
+                candidates.append((parity, distance, row, col))
+    # Sort by parity, then distance, then position
+    candidates.sort()
+    return (candidates[0][2], candidates[0][3])

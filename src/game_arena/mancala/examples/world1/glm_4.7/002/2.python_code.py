@@ -1,0 +1,167 @@
+
+import time
+import sys
+
+# Increase recursion limit for deep searches
+sys.setrecursionlimit(10000)
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    # Internal board representation:
+    # Indices 0-5: Your houses
+    # Index 6: Your store
+    # Indices 7-12: Opponent's houses
+    # Index 13: Opponent's store
+    board = you + opponent
+    
+    start_time = time.time()
+    best_move = -1
+
+    def evaluate(b: list[int]) -> int:
+        # Heuristic: Prioritize score difference, then seed control
+        score_diff = b[6] - b[13]
+        seeds_diff = sum(b[0:6]) - sum(b[7:13])
+        # Weight score difference heavily to favor winning/banking points
+        return score_diff * 100 + seeds_diff
+
+    def apply_move(b: list[int], start_idx: int, is_me: bool) -> bool:
+        """
+        Applies a move in-place to board b.
+        Returns True if the move results in an extra turn, False otherwise.
+        """
+        seeds = b[start_idx]
+        b[start_idx] = 0
+        
+        pos = start_idx
+        # Index of the store to skip (opponent's store)
+        skip_idx = 13 if is_me else 6
+        
+        # Distribute seeds
+        while seeds > 0:
+            pos = (pos + 1) % 14
+            if pos == skip_idx:
+                continue
+            b[pos] += 1
+            seeds -= 1
+            
+        # Check for extra turn
+        extra_turn = False
+        if is_me and pos == 6:
+            extra_turn = True
+        elif not is_me and pos == 13:
+            extra_turn = True
+        else:
+            # Check for capture
+            # Capture if last seed lands in own empty house and opposite house has seeds
+            if b[pos] == 1:
+                if is_me and 0 <= pos <= 5:
+                    opp_idx = 12 - pos
+                    if b[opp_idx] > 0:
+                        b[6] += b[pos] + b[opp_idx]
+                        b[pos] = 0
+                        b[opp_idx] = 0
+                elif not is_me and 7 <= pos <= 12:
+                    opp_idx = 12 - pos
+                    if b[opp_idx] > 0:
+                        b[13] += b[pos] + b[opp_idx]
+                        b[pos] = 0
+                        b[opp_idx] = 0
+        return extra_turn
+
+    def search(b: list[int], depth: int, alpha: int, beta: int, is_me: bool) -> int:
+        # Terminal state check (game over)
+        my_seeds = sum(b[0:6])
+        opp_seeds = sum(b[7:13])
+        
+        if my_seeds == 0 or opp_seeds == 0:
+            # Game ends: collect remaining seeds
+            score = b[6] - b[13]
+            if my_seeds == 0:
+                # Opponent collects their remaining seeds
+                score -= opp_seeds
+            else:
+                # I collect my remaining seeds
+                score += my_seeds
+            return score
+
+        if depth == 0:
+            return evaluate(b)
+
+        # Generate legal moves
+        moves = []
+        r_start = 0 if is_me else 7
+        r_end = 6 if is_me else 13
+        
+        for i in range(r_start, r_end):
+            if b[i] > 0:
+                moves.append(i)
+        
+        # Move Ordering: Try moves with more seeds first to improve alpha-beta pruning
+        moves.sort(key=lambda x: b[x], reverse=True)
+
+        if is_me:
+            max_eval = float('-inf')
+            for m in moves:
+                # Create a copy of the board for simulation
+                new_b = b[:]
+                extra = apply_move(new_b, m, True)
+                
+                # If extra turn, it's still my turn; otherwise opponent's turn
+                val = search(new_b, depth - 1, alpha, beta, extra)
+                
+                max_eval = max(max_eval, val)
+                alpha = max(alpha, val)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for m in moves:
+                new_b = b[:]
+                extra = apply_move(new_b, m, False)
+                
+                val = search(new_b, depth - 1, alpha, beta, not extra)
+                
+                min_eval = min(min_eval, val)
+                beta = min(beta, val)
+                if beta <= alpha:
+                    break
+            return min_eval
+
+    # Get legal moves for the current player
+    legal_moves = [i for i in range(6) if board[i] > 0]
+    
+    # If only one move, make it immediately (optimization)
+    if len(legal_moves) == 1:
+        return legal_moves[0]
+
+    # Iterative Deepening Search
+    # Increase depth until time runs out
+    for depth in range(1, 50):
+        alpha = float('-inf')
+        beta = float('inf')
+        # Re-sort moves at root based on seeds (static) or could use previous iter results
+        # Using simple heuristic for root ordering
+        ordered_moves = sorted(legal_moves, key=lambda x: board[x], reverse=True)
+        
+        current_best_in_depth = -1
+        
+        for m in ordered_moves:
+            new_b = board[:]
+            extra = apply_move(new_b, m, True)
+            
+            val = search(new_b, depth - 1, alpha, beta, extra)
+            
+            if val > alpha:
+                alpha = val
+                best_move = m
+                current_best_in_depth = m
+        
+        # Check time limit to ensure we return a move
+        if time.time() - start_time > 0.95:
+            break
+
+    # Fallback (should rarely happen if logic is correct)
+    if best_move == -1:
+        return legal_moves[0]
+        
+    return best_move

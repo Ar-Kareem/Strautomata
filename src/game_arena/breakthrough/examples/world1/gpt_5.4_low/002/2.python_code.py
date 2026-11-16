@@ -1,0 +1,366 @@
+
+from __future__ import annotations
+
+from typing import List, Tuple
+
+Move = Tuple[Tuple[int, int], Tuple[int, int]]
+
+INF = 10**9
+
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    my_pieces = tuple(me)
+    opp_pieces = tuple(opp)
+
+    moves = generate_moves(my_pieces, opp_pieces, color)
+    if not moves:
+        # Should not happen in valid non-terminal states, but keep API total.
+        # Return a syntactically valid move-like tuple if no legal move exists.
+        p = my_pieces[0]
+        return (p, p)
+
+    # 1) Immediate win.
+    for mv in order_moves(moves, my_pieces, opp_pieces, color):
+        nme, nopp = apply_move(my_pieces, opp_pieces, mv)
+        if is_win_state(nme, nopp, color):
+            return mv
+
+    opp_color = other(color)
+
+    # 2) Prefer moves that do not allow an immediate opponent win.
+    safe_moves = []
+    ordered = order_moves(moves, my_pieces, opp_pieces, color)
+    for mv in ordered:
+        nme, nopp = apply_move(my_pieces, opp_pieces, mv)
+        opp_moves = generate_moves(nopp, nme, opp_color)
+        opp_can_win = False
+        for omv in opp_moves:
+            onme, onopp = apply_move(nopp, nme, omv)
+            if is_win_state(onme, onopp, opp_color):
+                opp_can_win = True
+                break
+        if not opp_can_win:
+            safe_moves.append(mv)
+
+    candidate_moves = safe_moves if safe_moves else ordered
+
+    # 3) Search depth adapted to complexity.
+    branching = len(candidate_moves)
+    total_pieces = len(my_pieces) + len(opp_pieces)
+    if total_pieces <= 10 or branching <= 10:
+        depth = 4
+    elif total_pieces <= 16:
+        depth = 3
+    else:
+        depth = 3
+
+    best_move = candidate_moves[0]
+    best_score = -INF
+    alpha = -INF
+    beta = INF
+
+    for mv in candidate_moves:
+        nme, nopp = apply_move(my_pieces, opp_pieces, mv)
+        if is_win_state(nme, nopp, color):
+            return mv
+        score = -negamax(nopp, nme, opp_color, depth - 1, -beta, -alpha)
+        # Small tie-break bias toward earlier ordered moves
+        if score > best_score:
+            best_score = score
+            best_move = mv
+        if score > alpha:
+            alpha = score
+
+    return best_move
+
+
+def other(color: str) -> str:
+    return 'b' if color == 'w' else 'w'
+
+
+def direction(color: str) -> int:
+    return 1 if color == 'w' else -1
+
+
+def goal_row(color: str) -> int:
+    return 7 if color == 'w' else 0
+
+
+def is_win_state(me: tuple[tuple[int, int], ...], opp: tuple[tuple[int, int], ...], color: str) -> bool:
+    if not opp:
+        return True
+    g = goal_row(color)
+    for r, c in me:
+        if r == g:
+            return True
+    return False
+
+
+def generate_moves(me: tuple[tuple[int, int], ...], opp: tuple[tuple[int, int], ...], color: str) -> list[Move]:
+    d = direction(color)
+    occupied_me = set(me)
+    occupied_opp = set(opp)
+    occupied = occupied_me | occupied_opp
+    moves: list[Move] = []
+
+    for r, c in me:
+        nr = r + d
+        if nr < 0 or nr > 7:
+            continue
+
+        # Forward
+        if (nr, c) not in occupied:
+            moves.append(((r, c), (nr, c)))
+
+        # Diagonals: may move if empty, or capture if occupied by opponent.
+        nc = c - 1
+        if nc >= 0:
+            if (nr, nc) not in occupied_me:
+                if (nr, nc) not in occupied or (nr, nc) in occupied_opp:
+                    moves.append(((r, c), (nr, nc)))
+
+        nc = c + 1
+        if nc <= 7:
+            if (nr, nc) not in occupied_me:
+                if (nr, nc) not in occupied or (nr, nc) in occupied_opp:
+                    moves.append(((r, c), (nr, nc)))
+
+    return moves
+
+
+def apply_move(
+    me: tuple[tuple[int, int], ...],
+    opp: tuple[tuple[int, int], ...],
+    move: Move,
+) -> tuple[tuple[tuple[int, int], ...], tuple[tuple[int, int], ...]]:
+    frm, to = move
+    new_me = list(me)
+    idx = new_me.index(frm)
+    new_me[idx] = to
+
+    opp_set = set(opp)
+    if to in opp_set:
+        new_opp = tuple(p for p in opp if p != to)
+    else:
+        new_opp = opp
+
+    return tuple(new_me), new_opp
+
+
+def order_moves(
+    moves: list[Move],
+    me: tuple[tuple[int, int], ...],
+    opp: tuple[tuple[int, int], ...],
+    color: str,
+) -> list[Move]:
+    opp_set = set(opp)
+    g = goal_row(color)
+    d = direction(color)
+
+    def key(mv: Move):
+        (r, c), (nr, nc) = mv
+        capture = 1 if (nr, nc) in opp_set else 0
+        win = 1 if nr == g else 0
+        advance = (nr - r) * d
+        center = -abs(nc - 3.5)
+        # Favor creating threats from the new square.
+        threat = 0
+        tr = nr + d
+        if 0 <= tr <= 7:
+            if nc - 1 >= 0 and (tr, nc - 1) in opp_set:
+                threat += 1
+            if nc + 1 <= 7 and (tr, nc + 1) in opp_set:
+                threat += 1
+        return (win, capture, threat, advance, center)
+
+    return sorted(moves, key=key, reverse=True)
+
+
+def negamax(
+    me: tuple[tuple[int, int], ...],
+    opp: tuple[tuple[int, int], ...],
+    color: str,
+    depth: int,
+    alpha: int,
+    beta: int,
+) -> int:
+    if is_win_state(me, opp, color):
+        return 900000 + depth
+    if is_win_state(opp, me, other(color)):
+        return -900000 - depth
+
+    moves = generate_moves(me, opp, color)
+    if not moves:
+        return -800000 - depth
+
+    if depth <= 0:
+        return evaluate(me, opp, color)
+
+    moves = order_moves(moves, me, opp, color)
+
+    best = -INF
+    opp_color = other(color)
+    for mv in moves:
+        nme, nopp = apply_move(me, opp, mv)
+        if is_win_state(nme, nopp, color):
+            score = 900000 + depth
+        else:
+            score = -negamax(nopp, nme, opp_color, depth - 1, -beta, -alpha)
+
+        if score > best:
+            best = score
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+
+    return best
+
+
+def evaluate(
+    me: tuple[tuple[int, int], ...],
+    opp: tuple[tuple[int, int], ...],
+    color: str,
+) -> int:
+    opp_color = other(color)
+
+    if is_win_state(me, opp, color):
+        return 900000
+    if is_win_state(opp, me, opp_color):
+        return -900000
+
+    me_set = set(me)
+    opp_set = set(opp)
+
+    # Material
+    score = 0
+    score += 220 * (len(me) - len(opp))
+
+    # Advancement / promotion race / center
+    my_adv = 0
+    opp_adv = 0
+    my_best_dist = 8
+    opp_best_dist = 8
+    my_center = 0
+    opp_center = 0
+
+    for r, c in me:
+        adv = r if color == 'w' else (7 - r)
+        my_adv += adv
+        dist = 7 - r if color == 'w' else r
+        if dist < my_best_dist:
+            my_best_dist = dist
+        my_center += 3.5 - abs(c - 3.5)
+
+    for r, c in opp:
+        adv = r if opp_color == 'w' else (7 - r)
+        opp_adv += adv
+        dist = 7 - r if opp_color == 'w' else r
+        if dist < opp_best_dist:
+            opp_best_dist = dist
+        opp_center += 3.5 - abs(c - 3.5)
+
+    score += 18 * (my_adv - opp_adv)
+    score += 30 * (opp_best_dist - my_best_dist)
+    score += int(8 * (my_center - opp_center))
+
+    # Mobility
+    my_moves = generate_moves(me, opp, color)
+    opp_moves = generate_moves(opp, me, opp_color)
+    score += 3 * (len(my_moves) - len(opp_moves))
+
+    # Threats and vulnerabilities
+    score += 35 * (count_attack_targets(me, opp, color) - count_attack_targets(opp, me, opp_color))
+    score -= 28 * (count_hanging(me, opp, color) - count_hanging(opp, me, opp_color))
+
+    # Runner bonus: pieces with relatively clear path to promotion.
+    score += 28 * runner_score(me, opp_set, color)
+    score -= 28 * runner_score(opp, me_set, opp_color)
+
+    # Home-row safety / anti-back-rank collapse
+    my_home = 0
+    opp_home = 0
+    my_home_row = 0 if color == 'w' else 7
+    opp_home_row = 0 if opp_color == 'w' else 7
+    for r, _ in me:
+        if r == my_home_row:
+            my_home += 1
+    for r, _ in opp:
+        if r == opp_home_row:
+            opp_home += 1
+    score += 6 * (my_home - opp_home)
+
+    return int(score)
+
+
+def count_attack_targets(
+    me: tuple[tuple[int, int], ...],
+    opp: tuple[tuple[int, int], ...],
+    color: str,
+) -> int:
+    d = direction(color)
+    opp_set = set(opp)
+    cnt = 0
+    for r, c in me:
+        nr = r + d
+        if 0 <= nr <= 7:
+            if c - 1 >= 0 and (nr, c - 1) in opp_set:
+                cnt += 1
+            if c + 1 <= 7 and (nr, c + 1) in opp_set:
+                cnt += 1
+    return cnt
+
+
+def count_hanging(
+    me: tuple[tuple[int, int], ...],
+    opp: tuple[tuple[int, int], ...],
+    color: str,
+) -> int:
+    # How many of my pieces can be captured by opponent next move.
+    opp_color = other(color)
+    od = direction(opp_color)
+    opp_set = set(opp)
+    cnt = 0
+    for r, c in me:
+        sr = r - od
+        threatened = False
+        if 0 <= sr <= 7:
+            if c - 1 >= 0 and (sr, c - 1) in opp_set:
+                threatened = True
+            if c + 1 <= 7 and (sr, c + 1) in opp_set:
+                threatened = True
+        if threatened:
+            cnt += 1
+    return cnt
+
+
+def runner_score(
+    pieces: tuple[tuple[int, int], ...],
+    blockers: set[tuple[int, int]],
+    color: str,
+) -> int:
+    # Reward advanced pieces with few blockers in a narrow cone ahead.
+    d = direction(color)
+    total = 0
+    for r, c in pieces:
+        dist = (7 - r) if color == 'w' else r
+        if dist <= 0:
+            total += 8
+            continue
+        clear = 0
+        nr = r + d
+        width = 0
+        while 0 <= nr <= 7:
+            cols = [c]
+            if width >= 1:
+                if c - 1 >= 0:
+                    cols.append(c - 1)
+                if c + 1 <= 7:
+                    cols.append(c + 1)
+            blocked_here = any((nr, cc) in blockers for cc in cols)
+            if not blocked_here:
+                clear += 1
+            nr += d
+            width += 1
+        total += max(0, 4 - dist) + clear
+    return total

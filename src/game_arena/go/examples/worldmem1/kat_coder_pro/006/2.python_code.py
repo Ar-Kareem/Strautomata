@@ -1,0 +1,321 @@
+
+import numpy as np
+from collections import defaultdict, deque
+from typing import Tuple, List, Dict, Set
+
+def policy(me: List[Tuple[int, int]], opponent: List[Tuple[int, int]], memory: Dict) -> Tuple[Tuple[int, int], Dict]:
+    """
+    Go policy that balances territory, influence, and efficiency.
+    
+    Args:
+        me: List of (row, col) tuples containing my stones
+        opponent: List of (row, col) tuples containing opponent's stones  
+        memory: Dictionary for storing state between moves
+        
+    Returns:
+        Tuple of ((row, col), memory) where (row, col) is the next move
+    """
+    
+    # Initialize board (1-indexed, 19x19)
+    board = np.zeros((21, 21), dtype=int)  # Add padding for easier boundary checking
+    
+    # Set up board state
+    for r, c in me:
+        board[r, c] = 1  # My stones
+    for r, c in opponent:
+        board[r, c] = 2  # Opponent stones
+    
+    # Initialize memory if first call
+    if not memory:
+        memory = {
+            'last_move': None,
+            'move_history': [],
+            'visited_states': set()
+        }
+    
+    # Get all empty positions
+    empty_positions = []
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if board[r, c] == 0:
+                empty_positions.append((r, c))
+    
+    if not empty_positions:
+        return (0, 0), memory  # Pass if no empty positions
+    
+    # Evaluate moves
+    best_score = -float('inf')
+    best_move = None
+    
+    for move in empty_positions[:100]:  # Limit search to first 100 empty positions for performance
+        score = evaluate_move(board, move, me, opponent, memory)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    if best_move is None:
+        # Fallback: play in corner if available
+        corners = [(1, 1), (1, 19), (19, 1), (19, 19)]
+        for corner in corners:
+            if board[corner[0], corner[1]] == 0:
+                best_move = corner
+                break
+        
+        if best_move is None:
+            # Fallback: play anywhere legal
+            best_move = empty_positions[0]
+    
+    # Update memory
+    memory['last_move'] = best_move
+    memory['move_history'].append(best_move)
+    
+    return best_move, memory
+
+def evaluate_move(board: np.ndarray, move: Tuple[int, int], me: List[Tuple[int, int]], 
+                 opponent: List[Tuple[int, int]], memory: Dict) -> float:
+    """
+    Evaluate the quality of a move based on territory, influence, and strategic value.
+    """
+    r, c = move
+    
+    # Check if move is legal (no self-capture)
+    if not is_legal_move(board, move, 1):  # 1 represents our color
+        return -float('inf')
+    
+    score = 0.0
+    
+    # 1. Strategic positioning score
+    # Corners are most valuable
+    if (r in [1, 19] and c in [1, 19]):
+        score += 10.0
+    # Sides are moderately valuable  
+    elif (r in [1, 19] or c in [1, 19]):
+        score += 5.0
+    # Center is least immediately valuable but flexible
+    else:
+        score += 2.0
+    
+    # 2. Territory potential
+    territory_score = evaluate_territory_potential(board, move, me, opponent)
+    score += territory_score
+    
+    # 3. Influence score
+    influence_score = evaluate_influence(board, move, me, opponent)
+    score += influence_score
+    
+    # 4. Threat assessment
+    threat_score = evaluate_threats(board, move, me, opponent)
+    score += threat_score
+    
+    # 5. Avoid symmetry and repetition
+    if is_symmetric_position(board, move, memory):
+        score -= 2.0
+    
+    # 6. Proximity to existing stones
+    proximity_score = evaluate_proximity(board, move, me, opponent)
+    score += proximity_score
+    
+    return score
+
+def is_legal_move(board: np.ndarray, move: Tuple[int, int], color: int) -> bool:
+    """
+    Check if a move is legal (doesn't result in self-capture).
+    """
+    r, c = move
+    
+    # Simple check: if placing here would immediately capture itself
+    # For a full implementation, we'd need to check liberties of the group
+    # This is a simplified version
+    
+    # Check if surrounded (simplified self-capture check)
+    neighbors = get_neighbors(r, c)
+    surrounded = True
+    for nr, nc in neighbors:
+        if board[nr, nc] == 0:  # Has empty neighbor
+            surrounded = False
+            break
+    
+    # If surrounded by opponent stones, check if we capture them instead
+    if surrounded:
+        # Check if placing here would capture opponent stones
+        # This is a simplified check - in a full implementation we'd check liberties
+        opponent_neighbors = [(nr, nc) for nr, nc in neighbors if board[nr, nc] == 3-color]
+        if not opponent_neighbors:
+            return False  # Self-capture
+    
+    return True
+
+def evaluate_territory_potential(board: np.ndarray, move: Tuple[int, int], 
+                                 me: List[Tuple[int, int]], opponent: List[Tuple[int, int]]) -> float:
+    """
+    Evaluate how much territory this move could help secure.
+    """
+    r, c = move
+    score = 0.0
+    
+    # Check proximity to existing territory markers
+    # This is a simplified territory evaluation
+    
+    # Corner and side bonus for territory
+    if (r in [1, 19] and c in [1, 19]):
+        score += 3.0  # Strong territory potential in corners
+    elif (r in [1, 19] or c in [1, 19]):
+        score += 2.0  # Good territory potential on sides
+    
+    # Check if move helps secure a cluster
+    my_neighbors = [(nr, nc) for nr, nc in get_neighbors(r, c) if board[nr, nc] == 1]
+    if len(my_neighbors) > 0:
+        score += len(my_neighbors) * 0.5  # Connecting to existing stones
+    
+    return score
+
+def evaluate_influence(board: np.ndarray, move: Tuple[int, int], 
+                      me: List[Tuple[int, int]], opponent: List[Tuple[int, int]]) -> float:
+    """
+    Evaluate how much influence this move exerts.
+    """
+    r, c = move
+    score = 0.0
+    
+    # Influence decreases with distance
+    for dist in range(1, 4):  # Check up to 3 spaces away
+        ring_score = 0.0
+        positions = get_ring(r, c, dist)
+        
+        for pr, pc in positions:
+            if 1 <= pr <= 19 and 1 <= pc <= 19:
+                if board[pr, pc] == 0:  # Empty space influenced
+                    ring_score += 1.0 / dist
+                elif board[pr, pc] == 2:  # Opponent stone influenced
+                    ring_score += 0.5 / dist
+        
+        score += ring_score
+    
+    return score * 0.1  # Scale down influence score
+
+def evaluate_threats(board: np.ndarray, move: Tuple[int, int], 
+                    me: List[Tuple[int, int]], opponent: List[Tuple[int, int]]) -> float:
+    """
+    Evaluate threats - both attacking opponent and defending ourselves.
+    """
+    r, c = move
+    score = 0.0
+    
+    # Check if this move attacks weak opponent groups
+    opponent_neighbors = [(nr, nc) for nr, nc in get_neighbors(r, c) if board[nr, nc] == 2]
+    
+    for opp_r, opp_c in opponent_neighbors:
+        # Simplified weak group detection
+        liberties = count_liberties(board, opp_r, opp_c, 2)
+        if liberties <= 2:  # Weak group
+            score += 3.0
+    
+    # Check if this move strengthens our weak groups
+    my_neighbors = [(nr, nc) for nr, nc in get_neighbors(r, c) if board[nr, nc] == 1]
+    
+    for my_r, my_c in my_neighbors:
+        liberties = count_liberties(board, my_r, my_c, 1)
+        if liberties <= 2:  # Our weak group
+            score += 2.0
+    
+    # Check if this move prevents opponent invasion
+    if is_invasion_point(board, move):
+        score += 1.0
+    
+    return score
+
+def evaluate_proximity(board: np.ndarray, move: Tuple[int, int], 
+                      me: List[Tuple[int, int]], opponent: List[Tuple[int, int]]) -> float:
+    """
+    Evaluate optimal proximity to existing stones.
+    """
+    r, c = move
+    score = 0.0
+    
+    # Find distances to nearest friendly and opponent stones
+    min_friend_dist = float('inf')
+    min_opp_dist = float('inf')
+    
+    for fr, fc in me:
+        dist = max(abs(r - fr), abs(c - fc))  # Chebyshev distance
+        min_friend_dist = min(min_friend_dist, dist)
+    
+    for or_, oc in opponent:
+        dist = max(abs(r - or_), abs(c - oc))
+        min_opp_dist = min(min_opp_dist, dist)
+    
+    # Optimal spacing: not too close, not too far from friendly stones
+    if min_friend_dist == 1:
+        score -= 1.0  # Too close to friendly
+    elif min_friend_dist == 2:
+        score += 1.0  # Good spacing
+    elif min_friend_dist > 6:
+        score -= 0.5  # Too far from friendly
+    
+    # Pressure on opponent
+    if min_opp_dist <= 3:
+        score += 0.5
+    
+    return score
+
+def is_symmetric_position(board: np.ndarray, move: Tuple[int, int], memory: Dict) -> bool:
+    """
+    Check if this move creates a symmetric position that might lead to repetition.
+    """
+    # Simplified symmetry check
+    r, c = move
+    center_r, center_c = 10, 10
+    
+    # Check if move is symmetric to previous moves
+    if 'move_history' in memory and len(memory['move_history']) > 0:
+        last_move = memory['move_history'][-1]
+        if last_move:
+            # Check for simple diagonal symmetry
+            sym_r = 20 - last_move[0]
+            sym_c = 20 - last_move[1]
+            if abs(r - sym_r) <= 1 and abs(c - sym_c) <= 1:
+                return True
+    
+    return False
+
+def get_neighbors(r: int, c: int) -> List[Tuple[int, int]]:
+    """Get valid neighboring positions."""
+    neighbors = []
+    for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+        nr, nc = r + dr, c + dc
+        if 1 <= nr <= 19 and 1 <= nc <= 19:
+            neighbors.append((nr, nc))
+    return neighbors
+
+def get_ring(r: int, c: int, distance: int) -> List[Tuple[int, int]]:
+    """Get positions at a specific distance (ring) from center."""
+    positions = []
+    for dr in range(-distance, distance + 1):
+        for dc in range(-distance, distance + 1):
+            if max(abs(dr), abs(dc)) == distance:
+                positions.append((r + dr, c + dc))
+    return positions
+
+def count_liberties(board: np.ndarray, r: int, c: int, color: int) -> int:
+    """
+    Count liberties of a stone (simplified - just checks immediate neighbors).
+    """
+    liberties = 0
+    for nr, nc in get_neighbors(r, c):
+        if board[nr, nc] == 0:
+            liberties += 1
+    return liberties
+
+def is_invasion_point(board: np.ndarray, move: Tuple[int, int]) -> bool:
+    """
+    Check if this move is at a potential invasion point.
+    """
+    r, c = move
+    
+    # Check if near opponent territory (simplified)
+    opponent_neighbors = [(nr, nc) for nr, nc in get_neighbors(r, c) if board[nr, nc] == 2]
+    empty_neighbors = [(nr, nc) for nr, nc in get_neighbors(r, c) if board[nr, nc] == 0]
+    
+    # If surrounded mostly by opponent with some empty spaces, might be invasion
+    return len(opponent_neighbors) >= 2 and len(empty_neighbors) >= 1

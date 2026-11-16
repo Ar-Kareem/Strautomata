@@ -1,0 +1,213 @@
+
+import numpy as np
+from typing import List
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    """
+    Smart Dots and Boxes policy for a 4x4 grid.
+    
+    Strategy:
+    1. If we can capture a box immediately, do it.
+    2. If we can create a double-cross (forcing the opponent to give us another capture), do it.
+    3. Otherwise, avoid moves that create 3-sided boxes for the opponent.
+    4. Prefer moves that create 2-sided boxes (potential captures).
+    5. Prefer moves that are part of multiple potential boxes.
+    
+    Returns a move string in the format 'row,col,dir'.
+    """
+    
+    # Helper function to check if a move would complete a box
+    def completes_box(row: int, col: int, dir: str) -> bool:
+        if dir == 'H':
+            # Check bottom box
+            if row < 4 and horizontal[row, col] == 0:
+                if (vertical[row, col] != 0 and 
+                    vertical[row, col+1] != 0 and 
+                    horizontal[row+1, col] != 0):
+                    return True
+            # Check top box
+            if row > 0 and horizontal[row-1, col] == 0:
+                if (vertical[row-1, col] != 0 and 
+                    vertical[row-1, col+1] != 0 and 
+                    horizontal[row-1, col] != 0):
+                    return True
+        else:  # dir == 'V'
+            # Check right box
+            if col < 4 and vertical[row, col] == 0:
+                if (horizontal[row, col] != 0 and 
+                    horizontal[row+1, col] != 0 and 
+                    vertical[row, col+1] != 0):
+                    return True
+            # Check left box
+            if col > 0 and vertical[row, col-1] == 0:
+                if (horizontal[row, col-1] != 0 and 
+                    horizontal[row+1, col-1] != 0 and 
+                    vertical[row, col-1] != 0):
+                    return True
+        return False
+    
+    # Helper function to check if a move creates a 3-sided box for opponent
+    def creates_three_sides(row: int, col: int, dir: str) -> bool:
+        if dir == 'H':
+            # Check bottom box
+            if row < 4:
+                sides = sum([vertical[row, col] != 0, 
+                           vertical[row, col+1] != 0, 
+                           horizontal[row+1, col] != 0])
+                if sides == 2 and horizontal[row, col] == 0:
+                    return True
+            # Check top box
+            if row > 0:
+                sides = sum([vertical[row-1, col] != 0, 
+                           vertical[row-1, col+1] != 0, 
+                           horizontal[row-1, col] != 0])
+                if sides == 2 and horizontal[row-1, col] == 0:
+                    return True
+        else:  # dir == 'V'
+            # Check right box
+            if col < 4:
+                sides = sum([horizontal[row, col] != 0, 
+                           horizontal[row+1, col] != 0, 
+                           vertical[row, col+1] != 0])
+                if sides == 2 and vertical[row, col] == 0:
+                    return True
+            # Check left box
+            if col > 0:
+                sides = sum([horizontal[row, col-1] != 0, 
+                           horizontal[row+1, col-1] != 0, 
+                           vertical[row, col-1] != 0])
+                if sides == 2 and vertical[row, col-1] == 0:
+                    return True
+        return False
+    
+    # Helper function to count potential boxes for a move
+    def count_potential_boxes(row: int, col: int, dir: str) -> int:
+        count = 0
+        if dir == 'H':
+            # Check bottom box
+            if row < 4 and horizontal[row, col] == 0:
+                sides = sum([vertical[row, col] != 0, 
+                           vertical[row, col+1] != 0, 
+                           horizontal[row+1, col] != 0])
+                if sides >= 1:
+                    count += 1
+            # Check top box
+            if row > 0 and horizontal[row-1, col] == 0:
+                sides = sum([vertical[row-1, col] != 0, 
+                           vertical[row-1, col+1] != 0, 
+                           horizontal[row-1, col] != 0])
+                if sides >= 1:
+                    count += 1
+        else:  # dir == 'V'
+            # Check right box
+            if col < 4 and vertical[row, col] == 0:
+                sides = sum([horizontal[row, col] != 0, 
+                           horizontal[row+1, col] != 0, 
+                           vertical[row, col+1] != 0])
+                if sides >= 1:
+                    count += 1
+            # Check left box
+            if col > 0 and vertical[row, col-1] == 0:
+                sides = sum([horizontal[row, col-1] != 0, 
+                           horizontal[row+1, col-1] != 0, 
+                           vertical[row, col-1] != 0])
+                if sides >= 1:
+                    count += 1
+        return count
+    
+    # Get all legal moves
+    legal_moves = []
+    
+    # Check horizontal edges
+    for row in range(5):
+        for col in range(4):
+            if horizontal[row, col] == 0:
+                legal_moves.append((row, col, 'H'))
+    
+    # Check vertical edges
+    for row in range(4):
+        for col in range(5):
+            if vertical[row, col] == 0:
+                legal_moves.append((row, col, 'V'))
+    
+    if not legal_moves:
+        return "0,0,H"  # Fallback (should not happen)
+    
+    # 1. Try to capture a box immediately
+    capture_moves = [move for move in legal_moves if completes_box(*move)]
+    if capture_moves:
+        # If we can capture, prefer moves that capture multiple boxes
+        best_capture = None
+        max_capture = 0
+        for move in capture_moves:
+            row, col, dir = move
+            capture_count = 0
+            
+            if dir == 'H':
+                if row < 4 and (vertical[row, col] != 0 and 
+                              vertical[row, col+1] != 0 and 
+                              horizontal[row+1, col] != 0):
+                    capture_count += 1
+                if row > 0 and (vertical[row-1, col] != 0 and 
+                              vertical[row-1, col+1] != 0 and 
+                              horizontal[row-1, col] != 0):
+                    capture_count += 1
+            else:
+                if col < 4 and (horizontal[row, col] != 0 and 
+                              horizontal[row+1, col] != 0 and 
+                              vertical[row, col+1] != 0):
+                    capture_count += 1
+                if col > 0 and (horizontal[row, col-1] != 0 and 
+                              horizontal[row+1, col-1] != 0 and 
+                              vertical[row, col-1] != 0):
+                    capture_count += 1
+            
+            if capture_count > max_capture:
+                max_capture = capture_count
+                best_capture = move
+        
+        if best_capture:
+            return f"{best_capture[0]},{best_capture[1]},{best_capture[2]}"
+        else:
+            # If no clear best capture, just take the first one
+            move = capture_moves[0]
+            return f"{move[0]},{move[1]},{move[2]}"
+    
+    # 2. Try to create a double-cross (force opponent to give us a capture)
+    # For a 4x4 grid, this is complex, so we'll focus on avoiding bad moves
+    
+    # 3. Avoid moves that create 3-sided boxes for opponent
+    safe_moves = [move for move in legal_moves if not creates_three_sides(*move)]
+    
+    if not safe_moves:
+        # If all moves are bad, just pick one
+        safe_moves = legal_moves
+    
+    # 4. Prefer moves that create multiple potential boxes
+    best_moves = []
+    max_potential = -1
+    
+    for move in safe_moves:
+        potential = count_potential_boxes(*move)
+        if potential > max_potential:
+            max_potential = potential
+            best_moves = [move]
+        elif potential == max_potential:
+            best_moves.append(move)
+    
+    # If we have multiple best moves, prefer ones in the center
+    # (to maximize future options)
+    center_preference = []
+    for move in best_moves:
+        row, col, dir = move
+        # Calculate distance from center (2.5, 2.5)
+        dist = abs(row - 2.5) + abs(col - 2.5)
+        center_preference.append((dist, move))
+    
+    # Sort by distance (smaller is better)
+    center_preference.sort()
+    
+    # Take the move closest to center
+    best_move = center_preference[0][1]
+    
+    return f"{best_move[0]},{best_move[1]},{best_move[2]}"

@@ -1,0 +1,119 @@
+The strategy for this policy is to play perfect Tic Tac Toe using a memoized minimax search.
+
+Key ideas:
+- Check all legal moves.
+- Simulate the rest of the game assuming both players play optimally.
+- Choose the move with the best guaranteed outcome:
+  - win if possible,
+  - otherwise draw,
+  - otherwise delay loss as long as possible.
+- Use a strong tie-break order to perform well in practice:
+  - center,
+  - corners,
+  - edges.
+
+Because 3x3 Tic Tac Toe is tiny, full search is easily fast enough within the time limit, and this policy is effectively unbeatable.
+
+<code>
+from functools import lru_cache
+
+# Preferred move order for tie-breaking:
+# center, corners, then edges.
+_MOVE_ORDER = [4, 0, 2, 6, 8, 1, 3, 5, 7]
+
+_WIN_LINES = (
+    (0, 1, 2),
+    (3, 4, 5),
+    (6, 7, 8),
+    (0, 3, 6),
+    (1, 4, 7),
+    (2, 5, 8),
+    (0, 4, 8),
+    (2, 4, 6),
+)
+
+
+def _winner(state: tuple[int, ...]) -> int:
+    """Return 1 if we win, -1 if opponent wins, 0 otherwise."""
+    for a, b, c in _WIN_LINES:
+        s = state[a] + state[b] + state[c]
+        if s == 3:
+            return 1
+        if s == -3:
+            return -1
+    return 0
+
+
+@lru_cache(maxsize=None)
+def _solve(state: tuple[int, ...], turn: int) -> int:
+    """
+    Minimax value from our perspective.
+    turn = 1 if it's our turn, -1 if it's opponent's turn.
+
+    Scores:
+    - Positive is good for us.
+    - Negative is good for the opponent.
+    - Larger positive values prefer faster wins.
+    - Less negative values prefer slower losses.
+    """
+    w = _winner(state)
+    if w != 0:
+        empties = state.count(0)
+        if w == 1:
+            return 100 + empties   # faster win is better
+        else:
+            return -100 - empties  # earlier loss is worse
+
+    if 0 not in state:
+        return 0  # draw
+
+    if turn == 1:
+        best = -10**9
+        for idx in _MOVE_ORDER:
+            if state[idx] == 0:
+                nxt = list(state)
+                nxt[idx] = 1
+                val = _solve(tuple(nxt), -1)
+                if val > best:
+                    best = val
+        return best
+    else:
+        best = 10**9
+        for idx in _MOVE_ORDER:
+            if state[idx] == 0:
+                nxt = list(state)
+                nxt[idx] = -1
+                val = _solve(tuple(nxt), 1)
+                if val < best:
+                    best = val
+        return best
+
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Return a legal move (row, col) for the current board.
+    """
+    # Flatten board safely.
+    state = tuple(board[r][c] for r in range(3) for c in range(3))
+
+    # Gather legal moves.
+    legal = [idx for idx in _MOVE_ORDER if state[idx] == 0]
+
+    # Fallback for malformed/terminal calls; arena should not do this,
+    # but we still return a tuple.
+    if not legal:
+        return (0, 0)
+
+    best_move = legal[0]
+    best_value = -10**9
+
+    for idx in legal:
+        nxt = list(state)
+        nxt[idx] = 1  # our move
+        val = _solve(tuple(nxt), -1)
+        if val > best_value:
+            best_value = val
+            best_move = idx
+
+    return (best_move // 3, best_move % 3)
+</code>

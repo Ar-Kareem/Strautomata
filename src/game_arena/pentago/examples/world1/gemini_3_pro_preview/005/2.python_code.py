@@ -1,0 +1,210 @@
+
+import numpy as np
+import time
+
+# --- Precomputed Constants ---
+
+# Generate indices for all 32 winning lines of length 5 on a 6x6 board
+# Rows, Cols, Diagonals
+_LINES_R = []
+_LINES_C = []
+
+# Horizontal lines (6 rows * 2 positions each)
+for r in range(6):
+    _LINES_R.extend([[r]*5, [r]*5])
+    _LINES_C.extend([list(range(0, 5)), list(range(1, 6))])
+
+# Vertical lines (6 cols * 2 positions each)
+for c in range(6):
+    _LINES_R.extend([list(range(0, 5)), list(range(1, 6))])
+    _LINES_C.extend([[c]*5, [c]*5])
+
+# Diagonals
+_diags = [
+    # Main diagonal direction (TL to BR)
+    zip(range(0, 5), range(0, 5)), zip(range(1, 6), range(1, 6)), # Main diag sub-segments
+    zip(range(0, 5), range(1, 6)), # Shifted up-right
+    zip(range(1, 6), range(0, 5)), # Shifted down-left
+    
+    # Anti-diagonal direction (TR to BL)
+    zip(range(0, 5), range(5, 0, -1)), zip(range(1, 6), range(4, -1, -1)), # Main anti-diag sub-segments
+    zip(range(0, 5), range(4, -1, -1)), # Shifted up-left
+    zip(range(1, 6), range(5, 0, -1))   # Shifted down-right
+]
+
+for d in _diags:
+    r, c = zip(*d)
+    _LINES_R.append(list(r))
+    _LINES_C.append(list(c))
+
+# Convert to numpy arrays for fancy indexing
+LINES_R = np.array(_LINES_R, dtype=int)
+LINES_C = np.array(_LINES_C, dtype=int)
+
+# Heuristic Weights: [0 pieces, 1, 2, 3, 4, 5]
+WEIGHTS = np.array([0, 1, 10, 100, 2000, 100000])
+
+def check_win(board):
+    """Returns True if the board has any line of 5."""
+    # board shape: (6, 6)
+    # Extract values for all 32 lines -> shape (32, 5)
+    line_values = board[LINES_R, LINES_C]
+    # Sum along lines
+    line_sums = line_values.sum(axis=1)
+    # Check if any line has sum 5
+    return np.any(line_sums == 5)
+
+def get_heuristic(my_board, opp_board):
+    """Calculates a heuristic score for the board state."""
+    my_vals = my_board[LINES_R, LINES_C]
+    opp_vals = opp_board[LINES_R, LINES_C]
+    
+    my_counts = my_vals.sum(axis=1)
+    opp_counts = opp_vals.sum(axis=1)
+    
+    # A line is only valuable if the opponent has 0 pieces in it (potential to win)
+    # Conversely, an opponent's line is a threat only if I have 0 pieces in it
+    my_potentials = (opp_counts == 0)
+    opp_potentials = (my_counts == 0)
+    
+    # Base score from line configurations
+    score = np.sum(WEIGHTS[my_counts] * my_potentials)
+    # Defense is important: penalize opponent potential highly
+    score -= np.sum(WEIGHTS[opp_counts] * opp_potentials) * 1.5
+    
+    # Bonus for center control (indices 1..4, 1..4 in 0-indexed)
+    center_mask = np.zeros((6, 6), dtype=int)
+    center_mask[1:5, 1:5] = 1
+    score += np.sum(my_board * center_mask) * 2
+    score -= np.sum(opp_board * center_mask) * 2
+    
+    return score
+
+def apply_action(my_board, opp_board, r, c, q, d):
+    """
+    Applies a move: Place at (r,c), Rotate quadrant q in direction d.
+    Returns new copies of (my_board, opp_board).
+    """
+    mb = my_board.copy()
+    ob = opp_board.copy()
+    
+    # Place piece
+    mb[r, c] = 1
+    
+    # Determine slice for quadrant
+    # q0: rows 0-2, cols 0-2 | q1: rows 0-2, cols 3-5
+    # q2: rows 3-5, cols 0-2 | q3: rows 3-5, cols 3-5
+    rs = 0 if q in [0, 1] else 3
+    re = rs + 3
+    cs = 0 if q in [0, 2] else 3
+    ce = cs + 3
+    
+    # k=1 for Counter-Clockwise (L), k=3 for Clockwise (R)
+    k = 1 if d == 'L' else 3
+    
+    mb[rs:re, cs:ce] = np.rot90(mb[rs:re, cs:ce], k)
+    ob[rs:re, cs:ce] = np.rot90(ob[rs:re, cs:ce], k)
+    
+    return mb, ob
+
+def can_opp_win_now(my_board, opp_board):
+    """
+    Checks if opponent can make a move on the current board to win immediately.
+    We (my_board) are the player who just moved. Optimization: we swap roles for the check.
+    So we check if 'opp_board' (acting as mover) has a winning move against 'my_board'.
+    """
+    # Optimization: If opponent has <= 3 pieces, they can't reach 5 in one move (max 4+1)
+    if np.sum(opp_board) < 4:
+        return False
+
+    empty_indices = np.argwhere((my_board == 0) & (opp_board == 0))
+    
+    for r, c in empty_indices:
+        for q in range(4):
+            for d in ['L', 'R']:
+                # Apply opponent move
+                ob_next, mb_next = apply_action(opp_board, my_board, r, c, q, d)
+                
+                # If opponent wins and I don't (if both win, it's a draw, which isn't a loss)
+                if check_win(ob_next) and not check_win(mb_next):
+                    return True
+    return False
+
+def policy(you, opponent) -> str:
+    start_time = time.time()
+    
+    you = np.array(you, dtype=int)
+    opp = np.array(opponent, dtype=int)
+    
+    # Find legal placement positions
+    empty_indices = np.argwhere((you == 0) & (opp == 0))
+    if len(empty_indices) == 0:
+        return "1,1,0,L" # Fallback, though spec implies empty cell exists
+    
+    candidates = []
+    
+    # Phase 1: Generate all moves, check immediate wins, calculate heuristics
+    for r, c in empty_indices:
+        for q in range(4):
+            for d in ['L', 'R']:
+                mb_next, ob_next = apply_action(you, opp, r, c, q, d)
+                
+                win_me = check_win(mb_next)
+                win_opp = check_win(ob_next)
+                
+                move_str = f"{r+1},{c+1},{q},{d}"
+                
+                if win_me and not win_opp:
+                    return move_str # Instant win
+                
+                # If this move causes opponent to win (e.g. via rotation), it's bad.
+                # If both win, it's a draw. 
+                
+                score = 0
+                if win_opp and not win_me:
+                    score = -1e9 # Avoid self-loss
+                elif win_opp and win_me:
+                    score = -5000 # Draw is better than loss but worse than normal play usually
+                else:
+                    score = get_heuristic(mb_next, ob_next)
+                
+                candidates.append({
+                    'move': move_str,
+                    'score': score,
+                    'mb': mb_next,
+                    'ob': ob_next
+                })
+    
+    # Sort by heuristic score descending
+    candidates.sort(key=lambda x: x['score'], reverse=True)
+    
+    # Phase 2: Safety Check (Lookahead)
+    # Check if the opponent can force a win on the NEXT turn.
+    # We check only top K candidates to save time.
+    
+    best_safe_move = None
+    
+    # If we are desperate (all scores negative), we still pick the best of the bad bunch
+    # unless we find a safe one.
+    
+    for i, cand in enumerate(candidates):
+        # Time Management: stop if close to 1 second (leave buffer)
+        if time.time() - start_time > 0.85:
+            break
+            
+        # If the move is already scored as self-destructive, skip checks
+        if cand['score'] < -10000:
+            continue
+            
+        # Check if opponent has a winning response
+        if can_opp_win_now(cand['mb'], cand['ob']):
+            # Opponent can win next turn. Penalize this move heavily.
+            cand['score'] -= 50000 
+        else:
+            # Found a safe move. Since candidates are sorted by heuristic, 
+            # the first safe move found is the best one.
+            return cand['move']
+            
+    # If timeout or all top moves are unsafe, resort to re-sorting by updated scores
+    candidates.sort(key=lambda x: x['score'], reverse=True)
+    return candidates[0]['move']

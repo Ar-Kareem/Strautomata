@@ -1,0 +1,175 @@
+My strategy in Clobber is to prioritize moves that either force an immediate win or create a long-term advantage by controlling key board locations.
+
+I will evaluate moves based on the following criteria in order:
+1.  **Immediate Win**: Check if a move leaves the opponent with no legal moves.
+2.  **Defensive Priority**: If no winning move exists, check if the opponent has a threat (a move that would leave me with no moves). If so, I must capture the threatening piece.
+3.  **Piece Capture Value**: If no threats exist, prioritize moves that capture the opponent's most "valuable" pieces. A piece's value is determined by its connectivity (how many neighbors it has). High-connectivity pieces are more valuable because they have more potential moves.
+4.  **Location Priority**: As a tie-breaker, I prefer moves that advance my pieces toward the center of the board or the opponent's side (lower rows), and moves that place my piece in a safer spot (lower connectivity).
+
+I will implement a helper function to count legal moves and neighbor connectivity to facilitate this evaluation.
+
+```python
+import sys
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    """
+    Determines the best move in Clobber based on a hierarchy of heuristics:
+    1. Immediate Win
+    2. Blocking Opponent Threats
+    3. Capturing High-Value Opponent Pieces
+    4. Positional Advantage
+    """
+    
+    # Directions: U, R, D, L
+    # Format: (row_change, col_change, direction_name)
+    directions = [
+        (-1, 0, 'U'),
+        (0, 1, 'R'),
+        (1, 0, 'D'),
+        (0, -1, 'L')
+    ]
+
+    ROWS = 5
+    COLS = 6
+
+    def get_opponent_moves(board_you, board_opponent):
+        """Returns a list of valid moves for the opponent."""
+        moves = []
+        for r in range(ROWS):
+            for c in range(COLS):
+                if board_opponent[r][c] == 1:
+                    for dr, dc, _ in directions:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < ROWS and 0 <= nc < COLS:
+                            if board_you[nr][nc] == 1:
+                                moves.append(((r, c), (nr, nc)))
+        return moves
+
+    def get_my_moves(board_you, board_opponent):
+        """Returns a list of valid moves for me."""
+        moves = []
+        for r in range(ROWS):
+            for c in range(COLS):
+                if board_you[r][c] == 1:
+                    for dr, dc, dir_name in directions:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < ROWS and 0 <= nc < COLS:
+                            if board_opponent[nr][nc] == 1:
+                                moves.append((r, c, dir_name, nr, nc))
+        return moves
+
+    def apply_move(board_you, board_opponent, r, c, nr, nc):
+        """Returns new boards after a move."""
+        new_you = [row[:] for row in board_you]
+        new_opponent = [row[:] for row in board_opponent]
+        
+        new_you[r][c] = 0
+        new_opponent[nr][nc] = 0
+        new_you[nr][nc] = 1
+        return new_you, new_opponent
+
+    def count_moves(board_you, board_opponent):
+        """Counts legal moves for a given state."""
+        count = 0
+        for r in range(ROWS):
+            for c in range(COLS):
+                if board_you[r][c] == 1:
+                    for dr, dc in [(-1,0), (1,0), (0,1), (0,-1)]:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < ROWS and 0 <= nc < COLS and board_opponent[nr][nc] == 1:
+                            count += 1
+        return count
+
+    def get_connectivity(board, r, c):
+        """Count how many orthogonal neighbors a piece has (0, 1, or 2 max for linear connectivity)."""
+        count = 0
+        for dr, dc in [(-1,0), (1,0), (0,1), (0,-1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < ROWS and 0 <= nc < COLS and board[nr][nc] == 1:
+                count += 1
+        return count
+
+    # 1. Check for Immediate Win
+    my_moves = get_my_moves(you, opponent)
+    if not my_moves:
+        # Should not happen based on problem statement, but fail safe
+        return "0,0,U" 
+
+    best_move = None
+    best_score = -float('inf')
+
+    # Generate opponent threats to check against
+    # We need to know which opponent pieces are dangerous
+    opponent_moves = get_opponent_moves(you, opponent)
+    opponent_threats = set() # Set of coordinates (r, c) of opponent pieces that threaten me
+    opponent_threat_targets = set() # Set of coordinates I can capture that are threats
+
+    # Identify opponent threats (pieces that can capture me in their next turn)
+    # To be a threat, the opponent piece must be adjacent to one of my pieces
+    for (orow, ocol), (mr, mc) in opponent_moves:
+        opponent_threats.add((orow, ocol))
+
+    # Evaluate each of my moves
+    for r, c, dir_name, nr, nc in my_moves:
+        
+        # Simulate Move
+        new_you, new_opponent = apply_move(you, opponent, r, c, nr, nc)
+        
+        # Check 1: Does this move leave the opponent with 0 moves? (Instant Win)
+        opponent_moves_after = count_moves(new_opponent, new_you)
+        if opponent_moves_after == 0:
+            return f"{r},{c},{dir_name}"
+        
+        # Calculate Score
+        move_score = 0
+        
+        # Check 2: Am I capturing a threat? (Defensive value)
+        if (nc, nr) in opponent_threats: # Note: (nc, nr) because opponent_threats stores (row, col) of opponent
+            # Actually, (nc, nr) is the destination. The opponent piece was at (nr, nc).
+            if (nr, nc) in opponent_threats:
+                move_score += 10000 
+        
+        # Check 3: Value of captured piece
+        # Heuristic: Higher connectivity of the opponent piece = higher value.
+        # But we subtract the connectivity of our new location (safety).
+        # Also add weight for row (prefer advancing).
+        
+        opponent_connectivity = get_connectivity(opponent, nr, nc)
+        my_new_connectivity = get_connectivity(new_you, nr, nc) + get_connectivity(new_opponent, nr, nc) # Total neighbors in new state
+        
+        # Value Score:
+        # High opponent connectivity (more options for them) = Good to remove
+        # Low my new connectivity (safe) = Good
+        
+        # Heuristic weights
+        w_opponent_conn = 50
+        w_my_safety = -20
+        w_position = 10 # Reward advancing (lower row)
+        
+        position_score = (ROWS - 1 - nr) * w_position # 0 at bottom, 4 at top. We want higher number?
+        # Actually, in Clobber, usually you want to advance toward opponent.
+        # Assuming I am playing normally (bottom), I want to go Up (row - 1). 
+        # If I don't know my side, I just want to reduce row distance to center? 
+        # Let's assume standard: 0 is top, 4 is bottom. I am likely bottom.
+        # I want to advance (decrease row index? or increase?). 
+        # Let's just use a generic "center control" and "reduce own connectivity".
+        
+        move_score += opponent_connectivity * w_opponent_conn
+        move_score += my_new_connectivity * w_my_safety
+        
+        # Add a slight preference for capturing
+        move_score += 10 
+        
+        # Update best
+        if move_score > best_score:
+            best_score = move_score
+            best_move = (r, c, dir_name)
+
+    # Fallback
+    if best_move:
+        return f"{best_move[0]},{best_move[1]},{best_move[2]}"
+    
+    # If logic fails (should not), return first legal move
+    r, c, d, _, _ = my_moves[0]
+    return f"{r},{c},{d}"
+```

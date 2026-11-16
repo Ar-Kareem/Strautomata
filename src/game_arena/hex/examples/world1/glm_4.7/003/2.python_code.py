@@ -1,0 +1,148 @@
+
+import collections
+
+# Neighbor offsets based on the specific Hex geometry described in the prompt.
+# For cell (r, c), neighbors are:
+# (r-1, c), (r-1, c+1), (r, c-1), (r, c+1), (r+1, c-1), (r+1, c)
+# This corresponds to excluding (r-1, c-1) and (r+1, c+1) from the 8-grid neighbors.
+NEIGHBOR_OFFSETS = [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0)]
+
+def calculate_shortest_path_cost(my_stones, opp_stones, color):
+    """
+    Calculates the minimum number of stones required to connect the two sides
+    for a given player using 0-1 BFS.
+
+    Args:
+        my_stones: set of (r, c) tuples for the player trying to connect.
+        opp_stones: set of (r, c) tuples for the opponent (obstacles).
+        color: 'b' (Top-Bottom) or 'w' (Left-Right).
+
+    Returns:
+        int: The shortest path cost (number of stones to place).
+    """
+    INF = 999
+    rows, cols = 11, 11
+    dist = [[INF] * cols for _ in range(rows)]
+    dq = collections.deque()
+    
+    # Initialize the queue with the source side
+    if color == 'b':
+        # Black connects Top (row 0) to Bottom (row 10)
+        for c in range(cols):
+            if (0, c) in my_stones:
+                dist[0][c] = 0
+                dq.appendleft((0, c))
+            elif (0, c) in opp_stones:
+                continue # Blocked
+            else:
+                # Empty cell on the edge: we need to place a stone there to start
+                dist[0][c] = 1
+                dq.append((0, c))
+    else: # color == 'w'
+        # White connects Left (col 0) to Right (col 10)
+        for r in range(rows):
+            if (r, 0) in my_stones:
+                dist[r][0] = 0
+                dq.appendleft((r, 0))
+            elif (r, 0) in opp_stones:
+                continue # Blocked
+            else:
+                dist[r][0] = 1
+                dq.append((r, 0))
+                
+    # 0-1 BFS propagation
+    while dq:
+        r, c = dq.popleft()
+        current_dist = dist[r][c]
+        
+        for dr, dc in NEIGHBOR_OFFSETS:
+            nr, nc = r + dr, c + dc
+            
+            # Check bounds
+            if 0 <= nr < rows and 0 <= nc < cols:
+                # Check if blocked by opponent
+                if (nr, nc) in opp_stones:
+                    continue
+                
+                # Cost is 0 if we already have a stone there, 1 if empty
+                weight = 0 if (nr, nc) in my_stones else 1
+                new_dist = current_dist + weight
+                
+                if new_dist < dist[nr][nc]:
+                    dist[nr][nc] = new_dist
+                    if weight == 0:
+                        dq.appendleft((nr, nc))
+                    else:
+                        dq.append((nr, nc))
+                        
+    # Find minimum distance to target side
+    min_cost = INF
+    if color == 'b':
+        # Target is Bottom (row 10)
+        for c in range(cols):
+            min_cost = min(min_cost, dist[10][c])
+    else:
+        # Target is Right (col 10)
+        for r in range(rows):
+            min_cost = min(min_cost, dist[r][10])
+            
+    return min_cost
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    """
+    Determines the next move for the Hex game.
+    """
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    opp_color = 'w' if color == 'b' else 'b'
+    
+    # Generate all empty cells as candidates
+    # With an 11x11 board and 1s time limit, evaluating all ~100 cells is computationally feasible
+    candidates = []
+    for r in range(11):
+        for c in range(11):
+            if (r, c) not in me_set and (r, c) not in opp_set:
+                candidates.append((r, c))
+                
+    if not candidates:
+        # Board is full (should not happen in a normal game)
+        return (5, 5)
+        
+    best_move = candidates[0]
+    best_score = -float('inf')
+    
+    for r, c in candidates:
+        # Simulate placing a stone at (r, c)
+        me_set.add((r, c))
+        
+        # Evaluate our shortest path (we want this to be low)
+        my_cost = calculate_shortest_path_cost(me_set, opp_set, color)
+        
+        # Evaluate opponent's shortest path (we want this to be high)
+        # Opponent sees our stones (including the new one) as obstacles
+        opp_cost = calculate_shortest_path_cost(opp_set, me_set, opp_color)
+        
+        # Undo simulation
+        me_set.remove((r, c))
+        
+        # Immediate win check: if our cost is 0, we are connected
+        if my_cost == 0:
+            return (r, c)
+            
+        # Scoring:
+        # We want to maximize the gap between opponent's effort and our effort.
+        # Score = (Opponent's Min Moves) - (Our Min Moves)
+        score = opp_cost - my_cost
+        
+        # Tie-breaking: Add a slight bias towards the center (5,5) to avoid 
+        # degenerate play on the edges when scores are equal.
+        # Penalize moves based on Euclidean distance squared from center.
+        center_dist_sq = (r - 5)**2 + (c - 5)**2
+        score -= center_dist_sq * 0.01
+        
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+            
+    return best_move

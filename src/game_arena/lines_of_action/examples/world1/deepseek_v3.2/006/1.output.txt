@@ -1,0 +1,237 @@
+## Strategy  
+
+My policy combines:  
+
+1. **Minimax with alpha-beta pruning** – Search 3-4 moves ahead efficiently.  
+2. **Heuristic evaluation** – Consider:  
+   - **Piece count balance**: Fewer pieces can be advantageous (closer to connecting).  
+   - **Group connectivity**: Use BFS to count disjoint groups; fewer groups is better.  
+   - **Distance to center control**: Pieces near center are more flexible.  
+   - **Mobility score**: Number of legal moves available.  
+   - **Capture opportunities**: Prioritize moves that capture opponent pieces.  
+
+3. **Move ordering** – Sort moves by capture potential and connectivity improvement to improve pruning.  
+
+4. **Safety check** – Always return a legal move, even if time runs out (fallback to random legal move).  
+
+5. **Time management** – Use iterative deepening and cut search if time is nearly exhausted.  
+
+---
+
+<code>
+import numpy as np
+import itertools
+import time
+
+INF = 10**9
+DIRS = [(0, 1), (1, 0), (0, -1), (-1, 0),
+        (1, 1), (-1, -1), (1, -1), (-1, 1)]
+
+def policy(board):
+    start_time = time.time()
+    me = 1
+    opp = -1
+
+    def is_inside(r, c):
+        return 0 <= r < 8 and 0 <= c < 8
+
+    def count_line(r, c, dr, dc):
+        cnt = 0
+        rr, cc = r, c
+        while is_inside(rr, cc):
+            if board[rr][cc] != 0:
+                cnt += 1
+            rr += dr
+            cc += dc
+        return cnt
+
+    def legal_moves(player):
+        moves = []
+        for r in range(8):
+            for c in range(8):
+                if board[r][c] == player:
+                    for dr, dc in DIRS:
+                        line_cnt = count_line(r, c, dr, dc)
+                        if line_cnt == 0:
+                            continue
+                        nr = r + dr * line_cnt
+                        nc = c + dc * line_cnt
+                        if not is_inside(nr, nc):
+                            continue
+                        # Check jumping over opponent
+                        blocked = False
+                        for step in range(1, line_cnt):
+                            tr = r + dr * step
+                            tc = c + dc * step
+                            if board[tr][tc] == -player:
+                                blocked = True
+                                break
+                        if blocked:
+                            continue
+                        if board[nr][nc] == player:
+                            continue
+                        moves.append((r, c, nr, nc))
+        return moves
+
+    def apply_move(r1, c1, r2, c2, player, temp_board):
+        temp_board[r2][c2] = player
+        temp_board[r1][c1] = 0
+
+    def undo_move(r1, c1, r2, c2, orig_piece, temp_board):
+        temp_board[r1][c1] = 1 if player == 1 else -1
+        temp_board[r2][c2] = orig_piece
+
+    def count_groups(player, state):
+        visited = set()
+        groups = 0
+        for r in range(8):
+            for c in range(8):
+                if state[r][c] == player and (r, c) not in visited:
+                    groups += 1
+                    stack = [(r, c)]
+                    while stack:
+                        cr, cc = stack.pop()
+                        if (cr, cc) in visited:
+                            continue
+                        visited.add((cr, cc))
+                        for dr, dc in DIRS:
+                            nr, nc = cr + dr, cc + dc
+                            if is_inside(nr, nc) and state[nr][nc] == player and (nr, nc) not in visited:
+                                stack.append((nr, nc))
+        return groups
+
+    def evaluate(state, player):
+        my_pieces = sum(1 for r in range(8) for c in range(8) if state[r][c] == player)
+        opp_pieces = sum(1 for r in range(8) for c in range(8) if state[r][c] == -player)
+        
+        # Group count (fewer is better)
+        my_groups = count_groups(player, state)
+        opp_groups = count_groups(-player, state)
+        
+        # Center control
+        center_squares = [(3, 3), (3, 4), (4, 3), (4, 4)]
+        my_center = sum(1 for (r, c) in center_squares if state[r][c] == player)
+        opp_center = sum(1 for (r, c) in center_squares if state[r][c] == -player)
+        
+        # Mobility approximation
+        my_moves = legal_moves_from_state(state, player)
+        opp_moves = legal_moves_from_state(state, -player)
+        
+        score = 0
+        score += (opp_pieces - my_pieces) * 20  # fewer pieces is better
+        score += (opp_groups - my_groups) * 100  # fewer groups is better
+        score += (my_center - opp_center) * 5
+        score += (len(my_moves) - len(opp_moves)) * 2
+        return score
+
+    def legal_moves_from_state(state, player):
+        moves = []
+        for r in range(8):
+            for c in range(8):
+                if state[r][c] == player:
+                    for dr, dc in DIRS:
+                        # Count pieces in line
+                        cnt = 0
+                        rr, cc = r, c
+                        while 0 <= rr < 8 and 0 <= cc < 8:
+                            if state[rr][cc] != 0:
+                                cnt += 1
+                            rr += dr
+                            cc += dc
+                        if cnt == 0:
+                            continue
+                        nr = r + dr * cnt
+                        nc = c + dc * cnt
+                        if not (0 <= nr < 8 and 0 <= nc < 8):
+                            continue
+                        blocked = False
+                        for step in range(1, cnt):
+                            tr = r + dr * step
+                            tc = c + dc * step
+                            if state[tr][tc] == -player:
+                                blocked = True
+                                break
+                        if blocked:
+                            continue
+                        if state[nr][nc] == player:
+                            continue
+                        moves.append((r, c, nr, nc))
+        return moves
+
+    def order_moves(moves, state, player):
+        def move_score(move):
+            r1, c1, r2, c2 = move
+            score = 0
+            if state[r2][c2] == -player:
+                score += 30  # capture
+            # Move towards center
+            score -= (abs(r2 - 3.5) + abs(c2 - 3.5))
+            return score
+        return sorted(moves, key=move_score, reverse=True)
+
+    def minimax(state, depth, alpha, beta, maximizing, player, start_t, max_time):
+        if time.time() - start_t > max_time:
+            return evaluate(state, me), None
+        if depth == 0:
+            return evaluate(state, me), None
+        
+        if maximizing:
+            best_val = -INF
+            best_move = None
+            moves = legal_moves_from_state(state, player)
+            if not moves:
+                return evaluate(state, me), None
+            moves = order_moves(moves, state, player)
+            for r1, c1, r2, c2 in moves:
+                new_state = [row[:] for row in state]
+                new_state[r2][c2] = player
+                new_state[r1][c1] = 0
+                val, _ = minimax(new_state, depth-1, alpha, beta, False, -player, start_t, max_time)
+                if val > best_val:
+                    best_val = val
+                    best_move = (r1, c1, r2, c2)
+                alpha = max(alpha, best_val)
+                if beta <= alpha:
+                    break
+            return best_val, best_move
+        else:
+            best_val = INF
+            best_move = None
+            moves = legal_moves_from_state(state, player)
+            if not moves:
+                return evaluate(state, me), None
+            moves = order_moves(moves, state, player)
+            for r1, c1, r2, c2 in moves:
+                new_state = [row[:] for row in state]
+                new_state[r2][c2] = player
+                new_state[r1][c1] = 0
+                val, _ = minimax(new_state, depth-1, alpha, beta, True, -player, start_t, max_time)
+                if val < best_val:
+                    best_val = val
+                    best_move = (r1, c1, r2, c2)
+                beta = min(beta, best_val)
+                if beta <= alpha:
+                    break
+            return best_val, best_move
+
+    # Main decision with iterative deepening
+    all_moves = legal_moves(me)
+    if not all_moves:
+        return "0,0:0,0"  # should not happen
+    
+    best_move_so_far = all_moves[0]
+    max_time = 0.95  # stay under 1 sec
+    start_t = time.time()
+    
+    depth = 1
+    while time.time() - start_t < max_time / 2:
+        val, move = minimax([list(row) for row in board], depth, -INF, INF, True, me, start_t, max_time)
+        if move is not None:
+            best_move_so_far = move
+        depth += 1
+        if time.time() - start_t > max_time / 2:
+            break
+    
+    r1, c1, r2, c2 = best_move_so_far
+    return f"{r1},{c1}:{r2},{c2}"
+</code>

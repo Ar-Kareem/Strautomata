@@ -1,0 +1,101 @@
+
+import re
+from typing import Dict, List
+
+def policy(pieces: Dict[str, str], to_play: str, legal_moves: List[str]) -> str:
+    """
+    Selects a single move from legal_moves.
+
+    Heuristic priorities (in descending order):
+    - Immediate mate (#) -> immediate return.
+    - Promotions (big bonus, queen > rook > bishop/knight).
+    - Captures (score by captured piece value).
+    - Checks (+) and castling (king safety).
+    - Central destination squares get a small bonus.
+    Ties broken deterministically by the original legal_moves order.
+    """
+
+    if not legal_moves:
+        # Should not happen in proper use, but return an empty string defensively.
+        return ""
+
+    # Piece values for heuristic scoring
+    piece_vals = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 1000}
+
+    # Helper: find rightmost destination square pattern like 'e4'
+    def find_destination(move: str):
+        for i in range(len(move) - 1, 0, -1):
+            if move[i] in '12345678' and move[i-1] in 'abcdefgh':
+                return move[i-1:i+1]
+        return None
+
+    # Immediate mate detection
+    for mv in legal_moves:
+        if '#' in mv:
+            return mv
+
+    scored_moves = []
+
+    for mv in legal_moves:
+        score = 0.0
+
+        # Castling (king safety) bonus
+        if mv.startswith("O-O"):
+            score += 1.0  # modest bonus for castling
+
+        # Check bonus
+        if '+' in mv:
+            score += 0.6
+
+        # Promotion bonus (very large)
+        if '=' in mv:
+            # promotion piece is the letter after '=' usually
+            prom_match = re.search(r'=(Q|R|B|N)', mv)
+            if prom_match:
+                prom_piece = prom_match.group(1)
+                # Big weight to promotions; prefer queen
+                score += (piece_vals.get(prom_piece, 9) + 2) * 10.0
+            else:
+                # fallback: generic promotion bonus
+                score += 11.0 * 10.0
+
+        dest = find_destination(mv)
+
+        # Capture handling: use board to find captured piece type when possible
+        if 'x' in mv:
+            cap_type = None
+            if dest and dest in pieces:
+                # The board square contains a piece being captured
+                cap_code = pieces[dest]  # e.g., 'bP' or 'wQ'
+                if isinstance(cap_code, str) and len(cap_code) >= 2:
+                    cap_type = cap_code[1]
+            else:
+                # En-passant or weird SAN where dest square doesn't contain the captured piece.
+                # Assume a pawn capture (common case); use pawn value.
+                cap_type = 'P'
+
+            if cap_type:
+                # Strongly favor capturing high-value pieces
+                score += piece_vals.get(cap_type, 1) * 100.0
+                # Slight penalty for the value of the attacker (risk)
+                # Estimate attacker type from SAN: leading uppercase letter indicates piece, otherwise pawn
+                attacker_char = mv[0] if mv and mv[0] in "KQRBN" else 'P'
+                score -= piece_vals.get(attacker_char, 1) * 1.0
+
+        # Small centralization bonus for landing on central squares
+        if dest in {'d4', 'd5', 'e4', 'e5', 'c4', 'c5', 'f4', 'f5'}:
+            score += 0.5
+
+        # Slight preference for developing knights/bishops (heuristic: if move is a piece move and not a capture)
+        if ('x' not in mv) and (mv and mv[0] in "NBRQ"):
+            score += 0.05
+
+        scored_moves.append((score, mv))
+
+    # Sort by score desc, tie-break by original legal_moves order
+    # Build a map for quick index lookup
+    index_map = {m: i for i, m in enumerate(legal_moves)}
+    scored_moves.sort(key=lambda x: (-x[0], index_map.get(x[1], 0)))
+
+    # Return top-scoring move (deterministic)
+    return scored_moves[0][1]

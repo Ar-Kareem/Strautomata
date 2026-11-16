@@ -1,0 +1,126 @@
+
+import random
+import time
+from typing import List, Tuple
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    # Convert lists to sets for faster lookup
+    me_set = set(me)
+    opp_set = set(opp)
+    all_stones = me_set | opp_set
+    
+    # Get empty cells
+    empty_cells = []
+    for i in range(11):
+        for j in range(11):
+            if (i, j) not in all_stones:
+                empty_cells.append((i, j))
+    
+    # If only one empty cell, return it
+    if len(empty_cells) == 1:
+        return empty_cells[0]
+    
+    # Define target sides based on color
+    if color == 'b':  # Black connects top (row 0) to bottom (row 10)
+        start_side = [(0, j) for j in range(11)]
+        target_side = [(10, j) for j in range(11)]
+    else:  # White connects left (col 0) to right (col 10)
+        start_side = [(i, 0) for i in range(11)]
+        target_side = [(i, 10) for i in range(11)]
+    
+    # Find best move using a simple heuristic
+    best_move = empty_cells[0]  # Default to first empty cell
+    best_score = -1
+    
+    # Evaluate each empty cell
+    for move in empty_cells:
+        # Create temporary board state with this move
+        temp_me = me + [move]
+        temp_me_set = set(temp_me)
+        
+        # Check if this move creates a winning connection
+        if has_connection(temp_me_set, start_side, target_side):
+            return move
+        
+        # Estimate score based on how much this move advances our connection
+        score = evaluate_position(temp_me_set, opp_set, color)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move
+
+def get_neighbors(cell: tuple[int, int]) -> List[tuple[int, int]]:
+    """Get all valid neighboring cells for a given cell on a hex board."""
+    i, j = cell
+    neighbors = [
+        (i, j-1), (i, j+1),           # Same row
+        (i-1, j), (i-1, j+1),         # Top row
+        (i+1, j-1), (i+1, j)          # Bottom row
+    ]
+    
+    # Filter out invalid coordinates
+    valid_neighbors = []
+    for ni, nj in neighbors:
+        if 0 <= ni < 11 and 0 <= nj < 11:
+            valid_neighbors.append((ni, nj))
+    
+    return valid_neighbors
+
+def has_connection(stones: set, start_side: List[tuple[int, int]], target_side: List[tuple[int, int]]) -> bool:
+    """Check if stones form a connection between start_side and target_side using BFS."""
+    # Find stones that are on the start side
+    start_stones = [s for s in stones if s in start_side]
+    
+    if not start_stones:
+        return False
+    
+    # BFS to find connection to target side
+    visited = set()
+    queue = start_stones[:]
+    
+    while queue:
+        current = queue.pop(0)
+        if current in visited:
+            continue
+        visited.add(current)
+        
+        # Check if we reached the target side
+        if current in target_side:
+            return True
+        
+        # Add neighbors to queue
+        for neighbor in get_neighbors(current):
+            if neighbor in stones and neighbor not in visited:
+                queue.append(neighbor)
+    
+    return False
+
+def evaluate_position(me: set, opp: set, color: str) -> int:
+    """Simple heuristic to evaluate board position."""
+    # Count how many of our stones are close to connecting
+    if color == 'b':
+        start_side = [(0, j) for j in range(11)]
+        target_side = [(10, j) for j in range(11)]
+    else:
+        start_side = [(i, 0) for i in range(11)]
+        target_side = [(i, 10) for i in range(11)]
+    
+    # Simple heuristic: count stones near start and target sides
+    me_near_start = len([s for s in me if s in start_side])
+    me_near_target = len([s for s in me if s in target_side])
+    
+    # Also count opponent's stones near their sides
+    if color == 'b':
+        opp_start = [(i, 0) for i in range(11)]
+        opp_target = [(i, 10) for i in range(11)]
+    else:
+        opp_start = [(0, j) for j in range(11)]
+        opp_target = [(10, j) for j in range(11)]
+    
+    opp_near_start = len([s for s in opp if s in opp_start])
+    opp_near_target = len([s for s in opp if s in opp_target])
+    
+    # Return difference in "progress" toward connection
+    return (me_near_start + me_near_target) - (opp_near_start + opp_near_target)

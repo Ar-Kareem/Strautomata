@@ -1,0 +1,477 @@
+<thinking>
+In this simplified Blackjack-like game, the goal is to get as close to the target score T (between 10 and 30) as possible without exceeding it. The Ace is worth 11 if it doesn't cause a bust, otherwise it's worth 1.
+
+Key observations:
+- We have complete knowledge of our own hand and the target.
+- We draw from a known deck (13 unique cards: A, 2–10, J, Q, K), but we don't know the opponent’s hand.
+- However, because the opponent plays independently with their own deck and we don't observe their hand, we must make decisions based only on maximizing our own chances of getting close to T without busting.
+
+Given that, our policy should:
+1. Compute the current hand value, properly handling the Ace (1 or 11).
+2. Decide whether to HIT or STAY based on:
+   - Current total
+   - How close we are to the target
+   - Risk of busting on the next hit
+   - Distribution of unseen cards in our deck
+
+Since we know all the cards in our deck, we can compute which cards we’ve already used (i.e., in our hand), and thus know which ones are left.
+
+We can use a simple expected value or bust-probability model:
+- If current hand value is very close to T, STAY.
+- If current value is far below T, HIT.
+- But we must avoid busting.
+
+We can define:
+- current_value: best value of the hand (Ace = 11 if no bust, else 1)
+- unseen_cards: all cards not in hand
+- possible_next_values: values of unseen cards
+- bust_risk: proportion of remaining cards that would cause a bust
+- expected_improvement: average gain from next card, but only if not busting
+
+Alternative: use a threshold rule.
+Let’s go with a refined heuristic:
+- If current_value >= T: we bust → return "STAY" (already lost, but avoid further hits)
+- Else:
+  - Compute min_gain needed = T - current_value
+  - If min_gain == 0: we are at T → STAY
+  - Else: check what cards can help.
+  - Count safe cards: cards with value <= min_gain
+  - If most remaining cards are risky (would cause bust), then STAY.
+  - But if we are too low, we need to hit.
+
+We can combine:
+- If current_value >= T: STAY (already bust or over)
+- Else if current_value == T: STAY
+- Else:
+  - Let needed = T - current_value
+  - Count how many unseen cards have value <= needed
+  - If less than ~50% of remaining cards are safe, then STAY
+  - Otherwise: HIT
+
+But even better: consider expected improvement vs risk.
+
+Alternatively, use a rule of thumb:
+- If current_value >= T - 1: STAY
+- If current_value <= T - 4: HIT
+- If current_value in [T-3, T-1]: only HIT if most remaining cards are safe
+
+Let's do this properly with card counting.
+
+Steps:
+1. Compute current hand value (with optimal Ace handling)
+2. Determine remaining cards (13 total, minus hand)
+3. For each remaining card, compute its value (J/Q/K = 10, A = 1 only if current + 11 > T, else 11? Not exactly — Ace in deck is just "A", but when drawn, its value depends on hand state after adding)
+
+Wait: when we draw an Ace, we can choose to count it as 1 or 11. So when evaluating risk of drawing a card:
+- For any non-Ace: value is fixed
+- For Ace: if current + 11 <= T → value = 11, else value = 1
+
+So when simulating drawing "A", we use the flexible count (1 or 11) to avoid busting if possible.
+
+So, on a hit:
+- We won’t bust on an Ace, because we can always count it as 1
+- But we might bust on other cards
+
+So only non-Ace cards can potentially cause busting? No: if I have 17 and T=18, and I draw "2", I bust. But if I draw "A", I can count as 1 → 18, which is okay.
+
+So Ace is safe (never causes bust if used optimally)
+
+Only cards with value > (T - current) will cause a bust.
+
+Thus:
+- Safe cards: cards such that their minimal usable value <= (T - current)
+  But for Ace, minimal value is 1 → always safe
+  For others: fixed value
+
+So:
+  safe if:
+    card == "A" → safe
+    else: value(card) <= (T - current_value)
+
+We can compute:
+  current = hand_value(hand, T)
+  remaining = all_cards - set(hand)
+  needed = T - current
+  safe_count = 0
+  total_remaining = len(remaining)
+
+  for card in remaining:
+      if card == "A":
+          safe_count += 1
+      else:
+          val = value(card)  # 2-10, J/Q/K = 10
+          if val <= needed:
+              safe_count += 1
+
+  safety_prob = safe_count / total_remaining
+
+Then:
+  if current >= T: return "STAY"
+  if needed == 0: return "STAY"
+  if current >= T - 1: return "STAY"  # very close, don't risk
+  if safety_prob > 0.6: return "HIT"
+  else: return "STAY"
+
+But we can do better: if we are at T-5, and 6 cards left, 3 safe: 50%, is that enough?
+
+Alternatively, use dynamic threshold:
+- The further we are from T, the lower safety threshold we accept.
+
+But simpler: if needed > 5, always hit if not bust? But some decks have few high cards.
+
+But wait: we know what cards are left.
+
+Let’s do:
+- If current >= T: STAY
+- Else:
+  - Let needed = T - current
+  - If needed == 0: STAY
+  - If needed >= 8: always HIT (we are far below, and even Ace can give 11, but we need 8+, and only 10, J, Q, K, A can give >=8, but A gives 11 only if not bust → but if needed >=8, then current <= T-8 → T >= current+8 → so current+11 >= T+3? → unless T is very low, but T>=10. If T=10, current=2, then needed=8, Ace=11 → bust. So safety of Ace depends.
+
+Wait: if needed < 11, then drawing Ace can be used as 1 → always safe.
+
+So only non-Ace cards with value > needed will cause bust.
+
+So safe if:
+- card == "A", or
+- value(card) <= needed
+
+So we can compute safety_prob as above.
+
+Now, decision rule:
+
+Option: Expected hand improvement without busting.
+
+But simpler: Use a threshold based on needed and safety_prob.
+
+Heuristic:
+- If needed >= 6: HIT if safety_prob >= 0.5
+- If needed == 5: HIT if safety_prob >= 0.6
+- If needed == 4: HIT if safety_prob >= 0.7
+- If needed <= 3: HIT only if safety_prob > 0.8 (very safe)
+
+But let's make it continuous.
+
+Alternatively: use a known concept from blackjack — hard totals.
+
+But we don't have doubling, splitting, etc.
+
+Known: in blackjack, you stand on 17+ because risk of busting is high. But here T varies.
+
+So perhaps target-specific strategy.
+
+Let’s define:
+- current_value = total(hand, T)
+
+We want to maximize P(win), but without knowing opponent strategy, we should aim to maximize P(not busting) and get close to T.
+
+Assuming opponent plays reasonably, we should try to get as close as possible.
+
+So our best bet is to get to T or very close.
+
+Proposed policy:
+
+if current_value >= T:
+    return "STAY"
+
+needed = T - current_value
+
+if needed == 0:
+    return "STAY"
+
+remaining = ALL_CARDS - set(hand)
+
+safe_count = 0
+for card in remaining:
+    if card == "A":
+        # Ace is always safe: we can use as 1
+        safe_count += 1
+    else:
+        val = 10 if card in ["10", "J", "Q", "K"] else int(card)
+        if current_value + val <= T:
+            safe_count += 1
+
+safety_prob = safe_count / len(remaining)
+
+# Now decide based on needed and safety_prob
+
+# If we are far behind, be willing to take more risk
+if needed >= 6:
+    return "HIT" if safety_prob >= 0.5 else "STAY"
+elif needed >= 3:
+    return "HIT" if safety_prob >= 0.65 else "STAY"
+else:  # needed is 1,2
+    return "HIT" if safety_prob > 0.8 else "STAY"
+
+But what if there's only one card left and it's safe? Then we can take it.
+
+But the threshold might be too conservative.
+
+Alternative: use expected gain and risk, but that might be overkill.
+
+Let’s test a corner: T=10, current_value=9, hand has a 9. Then needed=1. Only card with value 1? No card has value 1 except Ace used as 1, but Ace is safe? But value 1. So if Ace is left, we can draw it. Or if "A" is left, it's safe.
+
+But no other card is <=1, so only Ace is safe.
+
+So if "A" is not drawn yet → safe card exists.
+
+But if "A" is already in hand? Then no safe card with value=1 — only if there's a "1"? No.
+
+So after 9, only "A" (as 1) helps. Otherwise, any other card (2-10,J,Q,K) will cause 11+ → bust.
+
+So if "A" is not in hand, then safe_count = 1 if "A" in remaining, else 0.
+
+So for T=10, current=9, if "A" is available → safety_prob = 1 / remaining_count. Only safe if "A" is available.
+
+So with 3 remaining cards including "A", safety_prob ≈ 0.33 → below 0.8 → we STAY.
+
+But that's correct: 1/3 chance to get 10 (perfect), 2/3 to bust. But if we stay, we have 9. Is that better? We don't know what opponent does, but likely they might get 10. So 9 vs 10 → we lose. But 1/3 chance to get 10 → same as opponent, maybe draw, or if opponent busts, we win.
+
+But if opponent plays optimally, they might also hit to 10.
+
+But since we don’t know, we must maximize our score without busting.
+
+So with 1/3 chance to improve from 9 to 10, and 2/3 to bust → the expected outcome is bad.
+
+So STAY is correct.
+
+But if we are at 8, needed=2, then safe cards: "A" (as 1 or 11: if 8+11=19>10 → so use as 1 → 9), or "2" (value 2 → 10). So both "A" and "2" are safe.
+
+So if both are available, and other cards are unsafe, then safety_prob = 2 / remaining_count.
+
+So with 2 out of 5: 0.4, under 0.8 → STAY, but we are at 8.
+
+But maybe we should hit — 2 safe cards out of 5, 40% safe.
+
+But threshold for needed=2 is safety_prob > 0.8 → no.
+
+But we can adjust thresholds.
+
+Given the complexity, perhaps a simpler rule of thumb:
+
+Always STAY if current_value >= T - 1  # we are within 1 or already over
+
+Else if current_value <= T - 5: always HIT (we are far away, and the chance that no card helps is low)
+
+Else: (current_value in [T-4, T-2])
+   HIT only if safety_prob >= 0.7
+
+But T - 5: if T=10, T-5=5 → if current>=8 → STAY? No, current<=5 → HIT.
+
+But if current=6, that's T-4 → then we compute safety.
+
+But at T=20, being at 15 (T-5) → HIT.
+
+But at 16 (T-4), we do the safety check.
+
+Yes.
+
+But what if current_value=10, T=20 → should HIT.
+
+Yes.
+
+Also, if current_value=19, T=20 → STAY? But we are T-1 → STAY.
+
+But needed=1 → only safe card is "A" as 1, or is there a "1"? No, so only "A" helps.
+
+So if "A" is still available, we could hit.
+
+But 19+11=30>20 → so use as 1 → 20 → win.
+
+But if no "A", then any other card: 2-10,J,Q,K: 19+2=21>20 → bust.
+
+So only "A" is safe.
+
+So if "A" is available, safety_prob = 1 / len(remaining) → could be low.
+
+But the gain is 1 → from 19 to 20.
+
+But if we stay, we have 19 → close.
+
+But if opponent gets 20, we lose.
+
+So should we risk it?
+
+With only "A" safe, and say 5 cards left: 20% chance to win, 80% to bust (lose). Not good.
+
+But if we stay, we lose unless opponent busts or has less.
+
+If opponent is also good, they might get 20.
+
+So expected utility: 0.2 * P(win|score=20) + 0.8 * 0 + ... messy.
+
+Given complexity, and since we don't know opponent, the safest is to not bust when close.
+
+So: if current >= T-1 → STAY
+
+This mirrors blackjack’s “stand on soft 18” but simplified.
+
+But what if T=15, current=5? We are far.
+
+But we have to hit.
+
+So:
+
+if current_value >= T - 1:
+    return "STAY"
+
+elif current_value <= T - 5:
+    return "HIT"
+
+else:  # current_value in [T-4, T-2] i.e. 2,3,4 points below
+    compute safety_prob as above
+    return "HIT" if safety_prob >= 0.7 else "STAY"
+
+Also, if no cards left? But the game continues until STAY or bust. The deck has exactly 13 cards. The hand is subset of it. So remaining can be empty? Only if hand has 13 cards.
+
+But we would have busted long before.
+
+But to be safe: if no remaining cards → STAY. But function will not be called after STAY.
+
+So we don't worry.
+
+Let’s implement the hand value calculation with optimal Ace handling.
+
+How to compute current_value:
+We want to maximize the value without exceeding T.
+
+So: use Aces as 11 as much as possible.
+
+But we may have multiple Aces.
+
+Rule: we can assign 11 to any subset of Aces, provided total <= T; otherwise 1.
+
+We want maximum total ≤ T.
+
+This is a knapsack-like problem, but with Aces: each Ace can be 1 or 11.
+
+But since 11 is 10 more, we want to use as many 11s as possible.
+
+Algorithm:
+- Start with all Aces as 1.
+- Then, for each Ace, if we can upgrade it to 11 (i.e., current_sum + 10 <= T), do it.
+- But we can do this greedily: sort the Aces, and upgrade until adding 10 more would exceed T.
+
+Actually: since each Ace upgrade adds 10, we can do:
+
+count_aces = count of "A" in hand
+non_ace_sum = sum(value(card) for card in hand if card != "A")
+
+Then, the best we can do is:
+base = non_ace_sum + count_aces  # all aces as 1
+
+Then, for each Ace, we can add 10 if base + 10 <= T → so we can upgrade up to k Aces, where k = floor((T - base) / 10)
+
+But since each upgrade adds 10, maximum k such that base + 10*k <= T
+
+So k = min(count_aces, (T - base) // 10)
+
+Thus: total_value = base + 10 * k
+
+But (T - base) // 10 is integer division — same as floor for non-negative.
+
+Yes.
+
+Example: hand=["A","A"], T=21
+base = 1+1 = 2
+T - base = 19 → (19)//10 = 1 → k = min(2,1)=1
+total = 2 + 10 = 12? But we can have 1+11=12 or 11+11=22>21 → not allowed. So 12 is maximum.
+
+But wait: 11+1=12, same.
+
+But if T=22: then k = min(2, (22-2)//10) = min(2, 20//10)=2 → total=22
+
+But 11+11=22 → ok.
+
+Another: hand=["A","9"], T=20
+base = 1+9=10
+T-base=10 → k = min(1, 10//10)=1 → total=20 → 11+9=20
+
+If T=19: base=10, T-base=9 → 9//10=0 → k=0 → total=10 → but 11+9=20>19 → so use 1 → 10
+
+Yes.
+
+So this formula is correct.
+
+Now implement.
+
+We'll do:
+
+ALL_CARDS = {"A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"}
+
+def card_value(card):
+    if card in ["J", "Q", "K"]:
+        return 10
+    elif card == "A":
+        return 1  # minimal; we'll adjust in hand evaluation
+    else:
+        return int(card)
+
+But in hand evaluation, we use the base + 10*k method.
+
+Now, code accordingly.
+
+Let’s write the code.
+</thinking>
+<code>
+def policy(hand: list[str], target: int) -> str:
+    # Define the full deck
+    ALL_CARDS = {"A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"}
+    
+    # Helper function to compute the value of a single card (non-Ace)
+    def value(card: str) -> int:
+        if card in ["J", "Q", "K"]:
+            return 10
+        elif card == "A":
+            return 1  # Aces are handled specially in hand evaluation
+        else:
+            return int(card)
+    
+    # Compute current hand value with optimal Ace usage
+    count_aces = hand.count("A")
+    non_ace_sum = sum(value(card) for card in hand if card != "A")
+    base = non_ace_sum + count_aces  # all aces counted as 1
+    # How many aces can we upgrade to 11 (i.e., add 10) without exceeding target?
+    # Each upgrade adds 10
+    max_upgrade = (target - base) // 10
+    num_upgraded = min(count_aces, max_upgrade)
+    current_value = base + 10 * num_upgraded
+    
+    # If current value is already >= target, we stay (either at target or bust)
+    if current_value >= target:
+        return "STAY"
+    
+    # Calculate needed improvement
+    needed = target - current_value
+    
+    # Get remaining cards
+    remaining = ALL_CARDS - set(hand)
+    
+    # If no cards left, stay
+    if not remaining:
+        return "STAY"
+    
+    # Count safe cards: they won't cause a bust when drawn
+    safe_count = 0
+    for card in remaining:
+        if card == "A":
+            # Ace can always be used as 1, so it's safe
+            safe_count += 1
+        else:
+            card_val = value(card)
+            if current_value + card_val <= target:
+                safe_count += 1
+    
+    safety_prob = safe_count / len(remaining)
+    
+    # Decision logic based on how close we are to target
+    if needed >= 5:
+        # We are far from target, so we are willing to take more risk
+        return "HIT"
+    elif needed >= 2:
+        # We are close; require higher safety
+        return "HIT" if safety_prob >= 0.7 else "STAY"
+    else:
+        # needed == 1: very close, only hit if very safe
+        return "HIT" if safety_prob >= 0.85 else "STAY"
+</code>
